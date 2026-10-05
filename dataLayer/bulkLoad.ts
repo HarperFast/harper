@@ -30,9 +30,13 @@ import { verifyBulkLoadAttributePerms as _verifyBulkLoadAttributePerms } from '.
 const verifyBulkLoadAttributePerms = _verifyBulkLoadAttributePerms;
 import { databases } from '../resources/databases.ts';
 import { coerceType } from '../resources/Table.ts';
+import { onStartup } from '../utility/lifecycle.ts';
 
 const CSV_NO_RECORDS_MSG = 'No records parsed from csv file.';
-const TEMP_DOWNLOAD_DIR = `${env.get('HDB_ROOT')}/tmp`;
+let TEMP_DOWNLOAD_DIR = `${env.get('HDB_ROOT')}/tmp`;
+onStartup(() => {
+	TEMP_DOWNLOAD_DIR = `${env.get('HDB_ROOT')}/tmp`;
+});
 import { schemaRegex } from '../validation/common_validators.ts';
 const HIGHWATERMARK = 1024 * 1024 * 2;
 const MAX_JSON_ARRAY_SIZE = 5000;

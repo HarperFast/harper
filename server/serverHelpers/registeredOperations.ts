@@ -33,6 +33,7 @@ import {
 	unregisterWorkerGrantableOperation,
 } from '../../utility/operationPermissions.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
+import { onStartup } from '../../utility/lifecycle.ts';
 
 const operationLog = harperLogger.loggerWithTag('operation');
 
@@ -48,7 +49,10 @@ const NON_FORWARDABLE_FIELDS = ['baseRequest', 'baseResponse', 'fastifyResponse'
 // Bound how long the main thread waits for a worker to finish a forwarded operation. Past the
 // operations-API connection timeout the client socket is gone anyway; this just prevents a
 // wedged-but-alive worker from leaking pending forwards forever.
-const EXECUTE_TIMEOUT_MS = env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT) || 120_000;
+let EXECUTE_TIMEOUT_MS = env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT) || 120_000;
+onStartup(() => {
+	EXECUTE_TIMEOUT_MS = env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT) || 120_000;
+});
 
 // Dispatch functions injected by serverUtilities at its module load (it statically imports this
 // module, so a plain import here would be a cycle; a runtime require of a .ts path doesn't
