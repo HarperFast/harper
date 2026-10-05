@@ -107,10 +107,6 @@ resolution means "the restart finished", not "every worker is new". A caller tha
 > Every actual `listen()` error rejects startup, and the temporary bind-error listener is removed
 > once the socket is listening.
 
-### Native and compiled runtime startup
-
-Native TypeStrip execution loads the runtime as ESM; compiled distribution files remain CommonJS. Worker paths use `RUNTIME_SRC_ROOT` and `RUNTIME_FILE_EXT` from `utility/packageUtils.js`, which stays CommonJS to resolve its own directory in both modes. `threadMessageState.ts` and `processIncarnation.ts` hold dependency-free worker state: cyclic imports may register callbacks before `manageThreads.ts` evaluates, so that registration must remain synchronous and must not be overwritten by a later initializer. Configuration-dependent wiring and built-in plugin preloads run through `utility/lifecycle.ts` after configuration initialization, before worker listeners bind. The compiled and source routes are exercised by `integrationTests/server/typestrip.test.ts`.
-
 ### Where periodic maintenance runs (main thread vs last worker)
 
 Single-instance background tasks pick their thread by what state they touch:
@@ -119,6 +115,12 @@ Single-instance background tasks pick their thread by what state they touch:
 - **Main thread** (`isMainThread`) — for tasks that drive a **process-global native singleton** and need no JS state. `transactionLogCooling.ts` is the example: rocksdb-js's transaction-log registry is one C++ static shared across all worker threads, so any thread cools every log. The main thread is chosen because it is the only thread that lives for the whole process — a worker-driven timer would stall whenever that worker is recycled.
 
 ---
+
+## Native and compiled runtime startup
+
+Native TypeStrip execution loads the runtime as ESM; compiled distribution files remain CommonJS. Worker paths use `RUNTIME_SRC_ROOT` and `RUNTIME_FILE_EXT` from `utility/packageUtils.js`, which stays CommonJS to resolve its own directory in both modes. `threadMessageState.ts` and `processIncarnation.ts` hold dependency-free worker state: cyclic imports may register callbacks before `manageThreads.ts` evaluates, so that registration must remain synchronous and must not be overwritten by a later initializer. Configuration-dependent wiring and built-in plugin preloads run through `utility/lifecycle.ts` after configuration initialization, before worker listeners bind. The compiled and source routes are exercised by `integrationTests/server/typestrip.test.ts`.
+
+Runtime detection compares canonical module and package paths so `--preserve-symlinks` cannot select source workers for a compiled entry point. `threadServer.ts` automatically starts HTTP only when its own file is the worker entry; loading it from a job or evaluated worker must remain an import. Evaluated workers have a pseudo entry name rather than a real file. Both boundaries are pinned by `unitTests/server/threads/typestrip-runtime.test.mjs`.
 
 ## `http.ts` — symbol map
 
