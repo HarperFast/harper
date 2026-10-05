@@ -58,8 +58,8 @@ function aggregatedWritePath(path, message = `${path} was aggregated`) {
 	return waitFor(() => aggregatedWritePaths().includes(path), { timeout: 10000, message });
 }
 
-// One raw report per thread sample. The probe's `maxWait` and `maximum` carry the same values as
-// `maxDepth`, so the test separates the max-named rule from the mean rule on one measure name each.
+// One raw report per thread sample. The probe's `maxWait` and `maximum` carry `maxDepth`'s values,
+// so the probe's two measures show the prefix rule and the mean rule on identical inputs.
 function gaugeReport(id, threadId, depth, maxDepth) {
 	const gauge = { threadId, byThread: true, depth, maxDepth };
 	return {
@@ -164,6 +164,8 @@ describe('analytics aggregation cycle', () => {
 
 	it('takes the peak of each thread over a period and sums those peaks across threads', async function () {
 		this.timeout(30000);
+		// Stops the pending live flush, so a main-thread report cannot land inside these windows.
+		analytics.setAnalyticsEnabled(false);
 		const first = lastRawKey() + 1;
 		const second = first + PERIOD + 1;
 		// Thread 0 and sparse thread 7, two samples each, in two periods. Period one's maxDepth is
@@ -198,7 +200,6 @@ describe('analytics aggregation cycle', () => {
 				assert.strictEqual(row.depth, period.depth, `${metric} depth is the mean of samples per thread, summed`);
 				assert.strictEqual(row.maxDepth, period.maxDepth, `${metric} maxDepth is the sum of per-thread peaks`);
 			}
-			// `maximum` is not max-named, so it keeps the mean; `maxWait` is max-named and takes the peak.
 			const probe = aggregatedMetric('contract-probe', period.time);
 			assert.strictEqual(probe.maximum, period.maximum);
 			assert.strictEqual(probe.maxWait, period.maxWait);

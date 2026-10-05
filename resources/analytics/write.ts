@@ -1036,8 +1036,8 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		}
 		await rest();
 	}
-	// For peak-named measures the sum of per-thread peaks bounds peak total depth from above, but only
-	// when every thread that held depth reported in the period.
+	// Peak-named measures sum per-thread peaks, which bounds concurrent depth only over intervals that
+	// every relevant thread's samples fully cover; the peaks need not coincide.
 	for (const entry of threadsToAverage) {
 		// eslint-disable-next-line @typescript-eslint/no-unused-vars
 		let { path, method, type, metric, count, total, distribution, threads, ...measures } = entry;
