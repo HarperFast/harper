@@ -150,6 +150,8 @@ if (subs > topics) throw new Error(`--subs=${subs} needs at least as many --topi
 if (args.insert && args.publish !== 'put') throw new Error('--insert applies only to --publish=put');
 if (!['graceful', 'abrupt'].includes(args.close!)) throw new Error('--close must be graceful or abrupt');
 if (args.scenario === 'churn' && args.profile) throw new Error('--profile applies to conns and fanout, not churn');
+if (args.profile && (!Number.isFinite(Number(args.profile)) || Number(args.profile) <= 0))
+	throw new Error('--profile must be a positive duration in seconds');
 if (args.scenario === 'churn') {
 	if (!Number.isInteger(Number(args.cycles)) || Number(args.cycles) < 1)
 		throw new Error('--cycles must be a positive integer for churn');
@@ -325,7 +327,8 @@ async function main() {
 	if (usesPreload) {
 		mkdirSync(profileDir, { recursive: true });
 		for (const file of readdirSync(profileDir)) {
-			if (/^(start|gc-[\d-]+(\.tmp)?|thread-\d+\.(cpuprofile|started))$/.test(file)) rmSync(join(profileDir, file));
+			if (/^(start|gc-[\d-]+(\.tmp)?|thread-\d+\.(cpuprofile|started)(\.tmp)?)$/.test(file))
+				rmSync(join(profileDir, file));
 		}
 		env.WS_SCALE_CONTROL_DIR = profileDir;
 		console.log(`control directory: ${profileDir}`);
@@ -523,6 +526,9 @@ async function main() {
 			let firstHeld: number | undefined;
 			let openedSinceFirst = 0;
 			let subscribedBefore = 0;
+			let failedBefore = 0;
+			let closedBefore = 0;
+			let closeCodesBefore: Record<string, number> = {};
 			for (let cycle = 1; cycle <= Number(args.cycles); cycle++) {
 				await openTo(opened + conns);
 				await delay(settleMs);
@@ -534,6 +540,9 @@ async function main() {
 				const memory = await collectGarbage();
 				const stats = await clientStats();
 				const rss = rssMB(harperPid);
+				const closeCodes = Object.fromEntries(
+					Object.entries(stats.closeCodes ?? {}).map(([code, count]) => [code, count - (closeCodesBefore[code] ?? 0)])
+				);
 				// heap plus external (Buffers and ArrayBuffers a connection holds live outside the JavaScript heap)
 				const held = memory.used + memory.external;
 				if (firstHeld === undefined) firstHeld = held;
@@ -550,8 +559,9 @@ async function main() {
 					cycle,
 					open: connected.open,
 					subscribed: connected.subscribed - subscribedBefore,
-					failed: stats.failed,
-					stillOpen: stats.open,
+					failed: stats.failed - failedBefore,
+					closed: stats.closed - closedBefore,
+					closeCodes: JSON.stringify(closeCodes),
 					connectedRssMB: connectedRss,
 					connectedHeapMB: connectedMemory.used,
 					connectedExternalMB: connectedMemory.external,
@@ -564,6 +574,9 @@ async function main() {
 					...(openedSinceFirst > 0 && { retainedBytesPerConn: ((held - firstHeld!) * 2 ** 20) / openedSinceFirst }),
 				});
 				subscribedBefore = connected.subscribed;
+				failedBefore = stats.failed;
+				closedBefore = stats.closed;
+				closeCodesBefore = stats.closeCodes ?? {};
 			}
 		} else if (args.scenario === 'fanout') {
 			const ramp = await openTo(Number(args.conns));

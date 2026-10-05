@@ -25,7 +25,11 @@ function profile(seconds) {
 				setTimeout(
 					() =>
 						session.post('Profiler.stop', (error, result) => {
-							if (!error) writeFileSync(`${dir}/thread-${threadId}.cpuprofile`, JSON.stringify(result.profile));
+							if (!error) {
+								const profileFile = `${dir}/thread-${threadId}.cpuprofile`;
+								writeFileSync(`${profileFile}.tmp`, JSON.stringify(result.profile));
+								renameSync(`${profileFile}.tmp`, profileFile);
+							}
 							session.disconnect();
 						}),
 					seconds * 1000
