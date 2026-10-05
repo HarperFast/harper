@@ -610,7 +610,7 @@ async function main() {
 					externalMB: memory.external,
 					...(openedSinceFirst > 0 && { retainedBytesPerConn: ((held - firstHeld!) * 2 ** 20) / openedSinceFirst }),
 				});
-				if (stats.lastError) console.log(`  last client error: ${stats.lastError}`);
+				if (stats.failed > failedBefore && stats.lastError) console.log(`  last client error: ${stats.lastError}`);
 				subscribedBefore = connected.subscribed;
 				failedBefore = stats.failed;
 				closedBefore = stats.closed;
