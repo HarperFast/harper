@@ -59,6 +59,8 @@ const { values: args } = parseArgs({
 		'clients': { type: 'string', default: '8' },
 		'source-ips': { type: 'string', default: '16' },
 		'steps': { type: 'string', default: '10000,25000,50000' },
+		'cycles': { type: 'string', default: '5' },
+		'close': { type: 'string', default: 'graceful' },
 		'conns': { type: 'string', default: '10000' },
 		'subs': { type: 'string', default: '1' },
 		'topics': { type: 'string', default: '1' },
@@ -142,6 +144,7 @@ const subs = protocol === 'ws' ? 1 : Number(args.subs);
 const topics = Number(args.topics);
 if (subs > topics) throw new Error(`--subs=${subs} needs at least as many --topics, or a connection repeats a topic`);
 if (args.insert && args.publish !== 'put') throw new Error('--insert applies only to --publish=put');
+if (!['graceful', 'abrupt'].includes(args.close!)) throw new Error('--close must be graceful or abrupt');
 if (args.uds) {
 	// Linux caps a Unix socket path at 107 bytes, and Harper skips (Node) or fails to start (uWS) a longer mirror
 	const longestPath = join(installParent, 'harper-integration-test-XXXXXX', 'sockets', `${threads - 1}-9927-h2.sock`);
@@ -307,16 +310,35 @@ async function main() {
 		if (args.uws) env.HARPER_UWS_UDS = '1';
 	}
 	const profileDir = args['profile-dir']!;
-	if (args.profile) {
+	if (args.profile || args.scenario === 'churn') {
 		mkdirSync(profileDir, { recursive: true });
 		for (const file of readdirSync(profileDir)) {
-			if (file === 'start' || /^thread-\d+\.(cpuprofile|started)$/.test(file)) rmSync(join(profileDir, file));
+			if (/^(start|gc-[\d-]+|thread-\d+\.(cpuprofile|started))$/.test(file)) rmSync(join(profileDir, file));
 		}
-		env.WS_SCALE_PROFILE_DIR = profileDir;
-		(harperConfig.threads as any).preloadRequire = join(import.meta.dirname, 'profile-preload.cjs');
+		env.WS_SCALE_CONTROL_DIR = profileDir;
+		(harperConfig.threads as any).preloadRequire = join(import.meta.dirname, 'harness-preload.cjs');
 	}
 	let profileStartedAt = Infinity;
 	let profileTimer: NodeJS.Timeout | undefined;
+	if (args.scenario === 'churn') env.NODE_OPTIONS = '--expose-gc';
+	let collections = 0;
+	// Every worker runs a full GC and reports its heap right after it, so retained memory is not confused with
+	// uncollected garbage (system_information's per-thread heap comes from a periodic report, so it can be stale).
+	const collectGarbage = async () => {
+		const request = `gc-${++collections}`;
+		writeFileSync(join(profileDir, request), '');
+		for (let waited = 0; ; waited += 100) {
+			const acks = readdirSync(profileDir).filter((file) => file.startsWith(`${request}-`));
+			if (acks.length >= threads) {
+				const usage = acks.map((file) => JSON.parse(readFileSync(join(profileDir, file), 'utf8')));
+				if (usage.some((thread) => thread.error))
+					throw new Error('Harper workers have no gc(); --expose-gc did not reach them');
+				return { used: usage.reduce((sum, thread) => sum + thread.heapUsed, 0) / 2 ** 20 };
+			}
+			if (waited > 30_000) throw new Error(`only ${acks.length} of ${threads} workers ran ${request}`);
+			await delay(100);
+		}
+	};
 	// renamed into place so a worker polling for it never reads it half-written
 	const startProfile = () => {
 		if (!args.profile) return;
@@ -453,6 +475,45 @@ async function main() {
 				});
 				prev = { open: stats.open, rss, heap: heap.used };
 				if (stats.lastError) console.log(`  last client error: ${stats.lastError}`);
+			}
+		} else if (args.scenario === 'churn') {
+			const conns = Number(args.conns);
+			const settleMs = Number(args.settle) * 1000;
+			let firstHeap: number | undefined;
+			let subscribedBefore = 0;
+			for (let cycle = 1; cycle <= Number(args.cycles); cycle++) {
+				await openTo(opened + conns);
+				await delay(settleMs);
+				const connected = await clientStats();
+				const connectedHeap = await collectGarbage();
+				const connectedRss = rssMB(harperPid);
+				await Promise.all(clients.map((client) => client.request({ cmd: 'disconnect', mode: args.close })));
+				await delay(settleMs);
+				const heap = await collectGarbage();
+				const stats = await clientStats();
+				const rss = rssMB(harperPid);
+				firstHeap ??= heap.used;
+				report({
+					label: args.label,
+					scenario: 'churn',
+					protocol,
+					uws: args.uws,
+					close: args.close,
+					subs,
+					cycle,
+					open: connected.open,
+					subscribed: connected.subscribed - subscribedBefore,
+					failed: stats.failed,
+					stillOpen: stats.open,
+					connectedRssMB: connectedRss,
+					connectedHeapMB: connectedHeap.used,
+					heapKBPerConn: ((connectedHeap.used - heap.used) * 1024) / connected.open,
+					rssMB: rss,
+					heapUsedMB: heap.used,
+					// memory still held after disconnecting, per connection opened since the first cycle's disconnect
+					...(cycle > 1 && { retainedHeapBytesPerConn: ((heap.used - firstHeap) * 2 ** 20) / ((cycle - 1) * conns) }),
+				});
+				subscribedBefore = connected.subscribed;
 			}
 		} else if (args.scenario === 'fanout') {
 			const ramp = await openTo(Number(args.conns));

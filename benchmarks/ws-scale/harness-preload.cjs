@@ -1,0 +1,47 @@
+// Loaded into every Harper worker via threads.preloadRequire when run.mts is given --profile or runs the churn
+// scenario. run.mts drives it with files in WS_SCALE_CONTROL_DIR:
+//   start   holds a duration in seconds: CPU-profile this thread that long, then write thread-<id>.cpuprofile
+//   gc-<n>  run a full garbage collection (Harper runs with --expose-gc), then write this thread's
+//           process.memoryUsage() as JSON to gc-<n>-<threadId>
+const { Session } = require('node:inspector');
+const { threadId } = require('node:worker_threads');
+const { existsSync, readFileSync, writeFileSync } = require('node:fs');
+
+const dir = process.env.WS_SCALE_CONTROL_DIR;
+let profiling = false;
+let collections = 0;
+
+function profile(seconds) {
+	const session = new Session();
+	session.connect();
+	session.post('Profiler.enable', () =>
+		session.post('Profiler.setSamplingInterval', { interval: 250 }, () =>
+			session.post('Profiler.start', () =>
+				setTimeout(
+					() =>
+						session.post('Profiler.stop', (error, result) => {
+							if (!error) writeFileSync(`${dir}/thread-${threadId}.cpuprofile`, JSON.stringify(result.profile));
+							session.disconnect();
+						}),
+					seconds * 1000
+				)
+			)
+		)
+	);
+}
+
+const poll = setInterval(() => {
+	if (!profiling && existsSync(`${dir}/start`)) {
+		profiling = true;
+		profile(Number(readFileSync(`${dir}/start`, 'utf8')));
+	}
+	while (existsSync(`${dir}/gc-${collections + 1}`)) {
+		collections++;
+		globalThis.gc?.();
+		writeFileSync(
+			`${dir}/gc-${collections}-${threadId}`,
+			JSON.stringify(globalThis.gc ? process.memoryUsage() : { error: 'no gc()' })
+		);
+	}
+}, 100);
+poll.unref();
