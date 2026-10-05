@@ -100,10 +100,20 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    rejects on its generation, and the restore finds that release already live. Restarts that start replacements are serialized
    (`replacementRestarts`), so no restart boots a worker on a release another's canary has not decided. None starts
    a replacement while another release is armed, either, before each replacement and not only the first: that
-   replacement could not decide the armed release, whose own rollout would queue behind this one for good. The
-   requesting worker is replaced last, once its operation has answered (`release`, bounded at 10 s). A withdraw
+   replacement could not decide the armed release, whose own rollout would queue behind this one for good. Worker 0
+   is replaced first, so its replacement is the canary, and what an application runs only where `workerIndex` is 0
+   is part of the load that decides. The requesting worker is replaced last, unless it is worker 0, once its
+   operation has answered (`release`, bounded at 10 s). Past the bound its shutdown still waits for the deploy to
+   answer, through a shutdown drain the deploy registers while it certifies, bounded by the drain ceiling, rather
+   than cut the deploy off mid-replication. A withdraw
    after commit is refused: the release is live, and dropping its registration would leave the rollout
    replacing workers unchecked.
+   A worker already loading when a release is armed was not held for it, yet its load can still reach that release:
+   the requester's deploy bracket holds its load of the component until after the commit. So every HTTP worker
+   reports its load before it binds, held or not, and one whose report comes after a release it was loading across
+   committed is refused and started again, now held for that release: a rollout replaces its own replacement again,
+   and main restarts anything else. A barrier at arm cannot do this instead: that bracket, opened before the arm,
+   holds the very load the barrier would wait for.
 4. **The canary.** The first held start boots normally with its loader tracking a private boot outcome per
    component (`trackBootOutcomes`): executed, skipped (`dev-only`, `if-installed`, safe mode), failed (every
    failure site of the load), or pending (a load deferred behind a preparation lock, which it waits out).
@@ -130,7 +140,9 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    write fails, main refuses it in memory, bound to that deployment id so a later release
    loads, and the record stays `pending` for the next boot to settle. The origin's deploy fails with the
    decision in `certification` (`status`, `reason`, `failures`, `restored`, `failed_closed`), and nothing was
-   replicated. An `interrupted` certification — the process shutting down, a rollout that failed before any
+   replicated. The decision stays answerable after the rollout ends, until its requester releases it or exits: a fast
+   refusal can end the rollout before the deploy reads its decision, which would otherwise read nothing and replicate
+   the refused release as uncertified. An `interrupted` certification — the process shutting down, a rollout that failed before any
    canary decided, or a `certified` decision whose record could not be written — is restored exactly as a
    rejection is, which is also what the next boot does with a record left pending: an undecided release never
    stays live. The `load` progress phase spans the wait for the
@@ -166,6 +178,7 @@ release. A `restart_service` job then activates it on each peer in turn (`activa
 with `deploy_component { deployment_id, restart: true }`, which certifies it there with that peer's own canary.
 Verdicts are per node: a peer that refuses keeps its previous release, nothing is rolled back elsewhere, every peer
 is visited, and the job fails naming each one that did not take it, with every peer's outcome in its message. A peer
+that staged the release but left the topology before its turn did not take it either. A peer
 that activates the release uncertified (`uncertified`, `unavailable`) took it, as the origin would have. The field
 is caller-visible on `restart_service`, so `chooseOperation` lets a caller set it only when it may also deploy
 (`deploy_component`, token scope included); the deploy flow enqueues the job directly. A rolling deploy whose
