@@ -65,8 +65,7 @@ interface OperationsConfig {
 	deny?: readonly string[];
 }
 
-// Test seams. Avoids importing Harper's heavy server-helpers graph from unit
-// tests that only want to exercise the registration logic.
+// Test seams replace production dispatch when exercising registry behavior.
 let _opMapOverride: OperationFunctionMap | undefined;
 let _chooseOperationOverride: ChooseOperation | undefined;
 let _processLocalTransactionOverride: ProcessLocalTransaction | undefined;
@@ -89,10 +88,6 @@ function loadServerUtilities():
 	  }
 	| undefined {
 	try {
-		// Lazy require: Harper's server-helpers graph initializes eagerly
-		// (RocksDB lock acquisition, schema preload). Loading it from a unit
-		// test that hasn't booted Harper throws; treat that as "we're not in
-		// a Harper process" and let callers gracefully no-op.
 		return serverUtilitiesRuntimeModule as any;
 	} catch (err) {
 		harperLogger.trace(`MCP operations tools: serverUtilities unavailable (${(err as Error).message})`);
