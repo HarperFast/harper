@@ -123,8 +123,11 @@ describe('TypeStrip runtime boundaries', () => {
 		}
 	});
 
-	it('loads the server graph in evaluated workers without starting HTTP servers', async () => {
+	it('imports the CLI and server graph in evaluated workers without starting HTTP servers', async () => {
 		for (const mode of ['compiled', 'typestrip']) {
+			const cli = pathToFileURL(
+				resolve(root, `${mode === 'compiled' ? 'dist/' : ''}bin/harper.${mode === 'compiled' ? 'js' : 'ts'}`)
+			).href;
 			const entry = pathToFileURL(
 				resolve(
 					root,
@@ -132,7 +135,7 @@ describe('TypeStrip runtime boundaries', () => {
 				)
 			).href;
 			const worker = new Worker(
-				`const { parentPort } = require('node:worker_threads'); import(${JSON.stringify(entry)}).then(module => parentPort.postMessage({ type: 'import-complete', started: module.bootLoadsComponents() })).catch(error => parentPort.postMessage({ type: 'import-complete', error: error.stack }));`,
+				`const { parentPort } = require('node:worker_threads'); import(${JSON.stringify(cli)}).then(cli => import(${JSON.stringify(entry)}).then(module => parentPort.postMessage({ type: 'import-complete', cli: typeof cli.harper, started: module.bootLoadsComponents() }))).catch(error => parentPort.postMessage({ type: 'import-complete', error: error.stack }));`,
 				{
 					eval: true,
 					execArgv: mode === 'typestrip' ? ['--conditions=typestrip'] : [],
@@ -150,6 +153,7 @@ describe('TypeStrip runtime boundaries', () => {
 					worker.once('exit', (code) => reject(new Error(`Worker exited before importing the server (${code})`)));
 				});
 				assert.equal(result.error, undefined, mode);
+				assert.equal(result.cli, 'function', mode);
 				assert.equal(result.started, false, mode);
 			} finally {
 				await worker.terminate();
