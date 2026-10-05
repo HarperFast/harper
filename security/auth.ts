@@ -80,6 +80,9 @@ onStartup(() => {
 		// TODO: Eventually we probably want to be able to invalidate individual users
 		authorizationCache = new Map();
 	});
+	setInterval(() => {
+		authorizationCache = new Map();
+	}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
 });
 let bypassUser: any;
 export function bypassAuth() {
@@ -505,9 +508,6 @@ export async function authentication(request, nextHandler) {
 		return response;
 	}
 }
-setInterval(() => {
-	authorizationCache = new Map();
-}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
 let started = false;
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	if (started) return;

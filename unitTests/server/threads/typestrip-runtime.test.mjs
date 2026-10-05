@@ -737,4 +737,113 @@ describe('TypeStrip runtime boundaries', () => {
 			}
 		}
 	});
+
+	it('refreshes fresh-install configuration and bounds the real Node authorization cache', function () {
+		if (process.versions.bun) this.skip();
+		for (const mode of ['compiled', 'typestrip']) {
+			const runtimeUrl = (path) =>
+				pathToFileURL(
+					resolve(root, `${mode === 'compiled' ? 'dist/' : ''}${path}.${mode === 'compiled' ? 'js' : 'ts'}`)
+				).href;
+			const observations = {
+				[runtimeUrl('security/jsLoader')]:
+					'globalThis.snapshots.loader = () => ({lockdown:APPLICATIONS_LOCKDOWN, fsAllowed:ALLOWED_NODE_BUILTIN_MODULES.has("fs"), pathAllowed:ALLOWED_NODE_BUILTIN_MODULES.has("path")});',
+				[runtimeUrl('server/mqtt')]: 'globalThis.snapshots.mqtt = () => AUTHORIZE_LOCAL;',
+				[runtimeUrl('server/serverHelpers/registeredOperations')]:
+					'globalThis.snapshots.timeout = () => EXECUTE_TIMEOUT_MS;',
+				[runtimeUrl('dataLayer/bulkLoad')]: 'globalThis.snapshots.directory = () => TEMP_DOWNLOAD_DIR;',
+				[runtimeUrl('server/threads/threadServer')]: 'globalThis.snapshots.debug = () => debugThreads;',
+			};
+			const signature =
+				mode === 'typestrip' ? 'export function get(propName: string): any {' : 'function get(propName) {';
+			const observer =
+				' if (globalThis.coldRecording) globalThis.coldReads.push({key:propName,caller:new Error().stack.split("\\n")[2]}); ';
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert/strict')).default;
+				const fs = require('node:fs');
+				const { registerHooks } = await import('node:module');
+				const { fileURLToPath } = await import('node:url');
+				const configPath = process.env.ROOTPATH + '/harper-config.yaml';
+				fs.unlinkSync(configPath);
+				delete process.env.DEV_MODE; delete process.env.HARPER_SET_CONFIG;
+				globalThis.snapshots = {}; globalThis.hookControls = [];
+				globalThis.coldReads = []; globalThis.coldRecording = true;
+				const observations = ${JSON.stringify(observations)};
+				registerHooks({ load(url, context, next) {
+					const result = next(url, context);
+					if (url === ${JSON.stringify(runtimeUrl('utility/environment/environmentManager'))}) {
+						const source = (result.source || fs.readFileSync(fileURLToPath(url), 'utf8')).toString();
+						assert.ok(source.includes(${JSON.stringify(signature)}));
+						return {...result, source:source.replace(${JSON.stringify(signature)}, ${JSON.stringify(signature + observer)})};
+					}
+					if (observations[url]) {
+						globalThis.hookControls.push({url,beforeConfig:!fs.existsSync(configPath)});
+						return {...result, source:(result.source || fs.readFileSync(fileURLToPath(url), 'utf8')).toString() + '\\n' + observations[url]};
+					}
+					if (url !== ${JSON.stringify(runtimeUrl('security/auth'))}) return result;
+					const source = (result.source || fs.readFileSync(fileURLToPath(url), 'utf8')).toString();
+					assert.equal(source.split('setInterval(() => {').length - 1, 1);
+					globalThis.hookControls.push({url,beforeConfig:!fs.existsSync(configPath)});
+					return {...result, source:source.replace('setInterval(() => {','globalThis.authCacheTimer = setInterval(() => {')};
+				} });
+				await import(${JSON.stringify(runtimeUrl('bin/run'))});
+				globalThis.coldRecording = false;
+				assert.equal(globalThis.hookControls.length,6);
+				assert.ok(globalThis.hookControls.every(control=>control.beforeConfig));
+				assert.equal(globalThis.authCacheTimer,undefined);
+				const owners = [...new Set(globalThis.coldReads.map(({key,caller}) => {
+					let path = caller.slice(caller.indexOf(${JSON.stringify(root + '/')}) + ${root.length + 1}).split(':')[0];
+					if (path.startsWith('dist/')) path = path.slice(5);
+					if (path.endsWith('.js')) path = path.slice(0,-3) + '.ts';
+					return path + ':' + key.toLowerCase();
+				}))].sort();
+				assert.deepEqual(owners, ["dataLayer/bulkLoad.ts:hdb_root", "resources/DatabaseTransaction.ts:storage_debuglongtransactions", "resources/DatabaseTransaction.ts:storage_maxtransactionopentime", "resources/DatabaseTransaction.ts:storage_maxtransactionqueuetime", "resources/RecordEncoder.ts:storage_maxreadtransactionopentime", "resources/Table.ts:storage_prefetchwrites", "resources/analytics/write.ts:analytics_aggregateperiod", "resources/auditStore.ts:logging_auditretention", "resources/databases.ts:storage_pagesize", "security/jsLoader.ts:applications_allowedbuiltinmodules", "security/jsLoader.ts:applications_lockdown", "security/tokenAuthentication.ts:authentication_operationtokentimeout", "security/tokenAuthentication.ts:authentication_refreshtokentimeout", "security/user.ts:authentication_hashfunction", "server/mqtt.ts:authentication_authorizelocal", "server/serverHelpers/contentTypes.ts:http_compressionthreshold", "server/serverHelpers/contentTypes.ts:serialization_bigint", "server/serverHelpers/registeredOperations.ts:operationsapi_network_timeout", "server/storageReclamation.ts:storage_reclamation_interval", "server/storageReclamation.ts:storage_reclamation_threshold", "server/threads/manageThreads.ts:threads_heapsnapshotnearlimit", "server/threads/threadServer.ts:threads_debug", "utility/lmdb/OpenDBIObject.ts:storage_caching", "utility/password.ts:authentication_hashfunction"]);
+				materializePerPidRoot();
+				const YAML = require('yaml');
+				const config = YAML.parseDocument(fs.readFileSync(configPath,'utf8'));
+				config.setIn(['authentication','cacheTTL'],31337);
+				config.setIn(['authentication','authorizeLocal'],false);
+				config.setIn(['applications','allowedBuiltinModules'],['path']);
+				config.setIn(['applications','lockdown'],'freeze-after-load');
+				config.setIn(['operationsApi','network','timeout'],31339);
+				config.setIn(['operationsApi','network','domainSocket'],false);
+				config.setIn(['threads','debug'],true);
+				fs.writeFileSync(configPath,config.toString());
+				const env = await import(${JSON.stringify(runtimeUrl('utility/environment/environmentManager'))});
+				env.initSync();
+				const net = await import('node:net');
+				const reservation = net.createServer();
+				await new Promise(resolve=>reservation.listen(0,'127.0.0.1',resolve));
+				const port = reservation.address().port;
+				await new Promise(resolve=>reservation.close(resolve));
+				env.setProperty('threads_debug_port',port);
+				env.setProperty('threads_debug_host','127.0.0.1');
+				process.env.DEV_MODE='true';
+				const {runStartup} = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
+				await runStartup();
+				assert.equal(globalThis.authCacheTimer._idleTimeout,31337);
+				assert.equal(globalThis.authCacheTimer.hasRef(),false);
+				assert.deepEqual(globalThis.snapshots.loader(),{lockdown:'freeze-after-load',fsAllowed:false,pathAllowed:true});
+				assert.equal(globalThis.snapshots.mqtt(),false);
+				assert.equal(globalThis.snapshots.timeout(),31339);
+				assert.equal(globalThis.snapshots.directory(),process.env.ROOTPATH+'/tmp');
+				assert.equal(globalThis.snapshots.debug(),true);
+				const inspector = await import('node:inspector');
+				const inspectorUrl = inspector.url();
+				assert.equal(new URL(inspectorUrl).port,String(port));
+				const timer = globalThis.authCacheTimer;
+				await runStartup();
+				assert.equal(globalThis.authCacheTimer,timer);
+				assert.equal(inspector.url(),inspectorUrl);
+				inspector.close();
+				const databases = await import(${JSON.stringify(runtimeUrl('resources/databases'))});
+				await databases.closeLoadedDatabases();
+				console.log('fresh-install configuration honored');
+			`
+			);
+			assert.equal(output, 'fresh-install configuration honored', mode);
+		}
+	});
 });

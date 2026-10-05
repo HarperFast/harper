@@ -288,3 +288,100 @@ for (const mode of ['compiled', 'typestrip']) {
 		});
 	}
 }
+
+for (const mode of ['compiled', 'typestrip']) {
+	suite(`fresh-install main-thread configuration (${mode})`, (ctx: ContextWithHarper) => {
+		const username = `fresh_cache_${mode}`;
+		const sentinel = `fresh_cache_sentinel_${mode}`;
+		let logPath: string;
+		const authorization = (user: string, password: string) =>
+			`Basic ${Buffer.from(`${user}:${password}`).toString('base64')}`;
+		const operation = async (body: object, credentials?: string) =>
+			fetch(ctx.harper.operationsAPIURL, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Authorization': credentials ?? authorization(ctx.harper.admin.username, ctx.harper.admin.password),
+				},
+				body: JSON.stringify(body),
+				signal: AbortSignal.timeout(10000),
+			});
+		const logEntries = async () =>
+			(await readFile(logPath, 'utf8'))
+				.split(/(?=^\d{4}-\d{2}-\d{2}T)/m)
+				.filter((entry) => entry.includes('[auth-event]'));
+
+		before(async () => {
+			await setupHarperWithFixture(ctx, resolve(import.meta.dirname, 'typestrip'), {
+				config: {
+					threads: { count: 0 },
+					authentication: { cacheTTL: 31337, authorizeLocal: false },
+					applications: { allowedBuiltinModules: ['worker_threads'] },
+					logging: { auditAuthEvents: { logSuccessful: true, logFailed: true } },
+				},
+				env: {
+					DEV_MODE: '',
+					HARPER_STORAGE_ENGINE: 'rocksdb',
+					NODE_OPTIONS:
+						mode === 'typestrip' ? '--experimental-vm-modules --conditions=typestrip' : '--experimental-vm-modules',
+				},
+				harperBinPath: resolve(
+					import.meta.dirname,
+					`../../${mode === 'typestrip' ? 'bin/harper.ts' : 'dist/bin/harper.js'}`
+				),
+				startupMaxMs: 60000,
+			});
+			logPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+			const created = await operation({
+				operation: 'add_user',
+				role: 'super_user',
+				username,
+				password: 'Fresh-cache-pw-1!',
+				active: true,
+			});
+			strictEqual(created.status, 200, await created.text());
+		});
+		after(() => teardownHarper(ctx));
+
+		test('serves application traffic on the main thread', async () => {
+			const response = await fetch(`${ctx.harper.httpURL}/Runtime/`, {
+				headers: { Authorization: authorization(ctx.harper.admin.username, ctx.harper.admin.password) },
+				signal: AbortSignal.timeout(10000),
+			});
+			strictEqual(response.status, 200);
+			const runtime = await response.json();
+			strictEqual(runtime.isMainThread, true);
+			strictEqual(runtime.threadId, 0);
+		});
+
+		test('enforces the configured builtin list after an in-process first install', async () => {
+			const response = await fetch(`${ctx.harper.httpURL}/BuiltinCheck/`, {
+				headers: { Authorization: authorization(ctx.harper.admin.username, ctx.harper.admin.password) },
+				signal: AbortSignal.timeout(10000),
+			});
+			strictEqual(response.status, 500);
+			ok((await response.text()).includes('Module node:fs is not allowed'));
+		});
+
+		test('reuses Basic credentials across requests within the configured cache window', async () => {
+			for (let index = 0; index < 4; index++) {
+				const response = await operation({ operation: 'user_info' }, authorization(username, 'Fresh-cache-pw-1!'));
+				strictEqual(response.status, 200, await response.text());
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+			const failed = await operation({ operation: 'user_info' }, authorization(sentinel, 'wrong'));
+			strictEqual(failed.status, 401);
+			await waitFor(
+				async () =>
+					(await logEntries()).some(
+						(entry) => entry.includes(`username: '${sentinel}'`) && entry.includes("status: 'failure'")
+					),
+				{ timeout: 10000, interval: 50 }
+			);
+			const successes = (await logEntries()).filter(
+				(entry) => entry.includes(`username: '${username}'`) && entry.includes("status: 'success'")
+			);
+			strictEqual(successes.length, 1, successes.join('\n'));
+		});
+	});
+}

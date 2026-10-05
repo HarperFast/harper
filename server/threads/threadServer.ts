@@ -50,50 +50,59 @@ import { withProxyProtocol } from '../serverHelpers/proxyProtocol.ts';
 import * as globals from '../../globals.js';
 import { whenScopesClosed } from '../../components/scopeShutdown.ts';
 import { getComponentName } from '../../components/componentLoader.ts';
+import { onStartup } from '../../utility/lifecycle.ts';
 
-const debugThreads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
+let debugThreads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
+let inspectorInitialized = false;
 const isWindows = process.platform === 'win32';
 server.socket = onSocket;
 
-if (!isBun) {
-	if (debugThreads) {
-		let port;
-		if (isMainThread) {
-			port = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_PORT) ?? 9229;
-			const closeInspector = () => {
-				try {
-					inspector.close();
-				} catch (error) {
-					harperLogger.info('Could not close debugger', error);
+function initializeInspector() {
+	if (inspectorInitialized) return;
+	inspectorInitialized = true;
+	debugThreads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
+	if (!isBun) {
+		if (debugThreads) {
+			let port;
+			if (isMainThread) {
+				port = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_PORT) ?? 9229;
+				const closeInspector = () => {
+					try {
+						inspector.close();
+					} catch (error) {
+						harperLogger.info('Could not close debugger', error);
+					}
+				};
+				for (const signal of ['SIGINT', 'SIGTERM', 'SIGQUIT', 'exit']) {
+					process.on(signal, closeInspector);
 				}
-			};
-			for (const signal of ['SIGINT', 'SIGTERM', 'SIGQUIT', 'exit']) {
-				process.on(signal, closeInspector);
+			} else {
+				const startingPort = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_STARTINGPORT);
+				if (startingPort && getWorkerIndex() >= 0) {
+					port = startingPort + getWorkerIndex();
+				}
 			}
-		} else {
-			const startingPort = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_STARTINGPORT);
-			if (startingPort && getWorkerIndex() >= 0) {
-				port = startingPort + getWorkerIndex();
+			if (port) {
+				const host = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_HOST);
+				const waitForDebugger = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_WAITFORDEBUGGER);
+				try {
+					inspector.open(port, host, waitForDebugger);
+				} catch (error) {
+					harperLogger.trace(`Could not start debugging on port ${port}, you may already be debugging:`, error.message);
+				}
 			}
-		}
-		if (port) {
-			const host = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_HOST);
-			const waitForDebugger = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_WAITFORDEBUGGER);
+		} else if (process.env.DEV_MODE && isMainThread) {
 			try {
-				inspector.open(port, host, waitForDebugger);
+				inspector.open(9229);
 			} catch (error) {
-				harperLogger.trace(`Could not start debugging on port ${port}, you may already be debugging:`, error.message);
+				if (restartNumber <= 1)
+					harperLogger.trace('Could not start debugging on port 9229, you may already be debugging:', error.message);
 			}
-		}
-	} else if (process.env.DEV_MODE && isMainThread) {
-		try {
-			inspector.open(9229);
-		} catch (error) {
-			if (restartNumber <= 1)
-				harperLogger.trace('Could not start debugging on port 9229, you may already be debugging:', error.message);
 		}
 	}
 }
+if (debugThreads !== undefined) initializeInspector();
+onStartup(initializeInspector);
 
 process.on('uncaughtException', (error: any) => {
 	if (error.isHandled) return;

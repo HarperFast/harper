@@ -44,9 +44,10 @@ import {
 } from './spawnPidFile.ts';
 import { whenComponentsLoaded, bootLoadsComponents } from '../server/threads/threadServer.ts';
 import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
+import { onStartup } from '../utility/lifecycle.ts';
 
 type Lockdown = 'none' | 'freeze' | 'ses' | 'freeze-after-load';
-const APPLICATIONS_LOCKDOWN: Lockdown = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
+let APPLICATIONS_LOCKDOWN: Lockdown = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
 const HARPER_MODULE_IDS = new Set([
 	'harper',
 	'harperdb',
@@ -988,14 +989,21 @@ function getHarperExports(scope: ApplicationScope) {
 		User: undefined,
 	};
 }
-const ALLOWED_NODE_BUILTIN_MODULES = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDBUILTINMODULES)
-	? new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDBUILTINMODULES))
-	: {
-			// if we don't have a list of allowed modules, allow everything
-			has() {
-				return true;
-			},
-		};
+function getAllowedNodeBuiltinModules() {
+	return env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDBUILTINMODULES)
+		? new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDBUILTINMODULES))
+		: {
+				// if we don't have a list of allowed modules, allow everything
+				has() {
+					return true;
+				},
+			};
+}
+let ALLOWED_NODE_BUILTIN_MODULES = getAllowedNodeBuiltinModules();
+onStartup(() => {
+	APPLICATIONS_LOCKDOWN = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
+	ALLOWED_NODE_BUILTIN_MODULES = getAllowedNodeBuiltinModules();
+});
 const child_processConstrained: any = {
 	exec: createSpawn(child_process.exec),
 	execFile: createSpawn(child_process.execFile),

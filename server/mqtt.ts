@@ -20,6 +20,7 @@ import { forComponent as loggerForComponent } from '../utility/logging/harper_lo
 import { EventEmitter } from 'node:events';
 import { verifyCertificate } from '../security/certificateVerification/index.ts';
 import { registerShutdownDrain } from '../components/shutdownDrain.ts';
+import { onStartup } from '../utility/lifecycle.ts';
 import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
 import {
 	assertNoDeferredCredentialRejection,
@@ -33,6 +34,9 @@ const authEventLog = loggerWithTag('auth-event');
 const mqttLog = loggerForComponent('mqtt');
 
 let AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
+onStartup(() => {
+	AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
+});
 export function bypassAuth() {
 	AUTHORIZE_LOCAL = true;
 }
