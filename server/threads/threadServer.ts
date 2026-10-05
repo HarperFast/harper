@@ -7,7 +7,7 @@ import { isMainThread, parentPort, threadId, workerData } from 'node:worker_thre
 import { createServer as createSocketServer } from 'node:net';
 import { unlinkSync, existsSync, renameSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
+import { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT, loadRuntimeModule } from '../../utility/packageUtils.js';
 let componentsLoadedResolve;
 export const whenComponentsLoaded: any = new Promise<any>((resolve) => {
 	componentsLoadedResolve = resolve;
@@ -19,7 +19,14 @@ import * as terms from '../../utility/hdbTerms.ts';
 import { server } from '../Server.ts';
 import { createServer as _createSecureSocketServer } from 'node:tls';
 let createSecureSocketServer = _createSecureSocketServer;
-import { restartNumber, getWorkerIndex, extendShutdownDeadline, restoreShutdownDeadline } from './manageThreads.ts';
+import {
+	restartNumber,
+	getWorkerIndex,
+	extendShutdownDeadline,
+	restoreShutdownDeadline,
+	beginProcessShutdown,
+	isProcessShuttingDown,
+} from './manageThreads.ts';
 import {
 	runShutdownDrains,
 	shutdownDrainsHaveWork,
@@ -182,7 +189,49 @@ function closeServers() {
 	return Promise.all(promises);
 }
 
+let shutdownPromise: Promise<void>;
+function shutdownServers() {
+	if (shutdownPromise) return shutdownPromise;
+	const drainDeadline = Date.now() + getShutdownDrainCeilingMs();
+	const extendedForDrain = shutdownDrainsHaveWork();
+	if (extendedForDrain) extendShutdownDeadline(drainDeadline);
+	// Wait for application scopes to finish closing before exiting — some dispose a native
+	// runtime asynchronously (e.g. @harperfast/vite's rolldown dev server), and exiting the
+	// worker while that runtime is still live crashes the process. The manageThreads backstop
+	// timers still bound this if a scope's disposal hangs.
+	shutdownPromise = runShutdownDrains(drainDeadline)
+		.then(() => {
+			if (extendedForDrain) restoreShutdownDeadline();
+		})
+		.then(() => closeServers())
+		.then(() => whenScopesClosed())
+		.then(async () => {
+			const { branchDatabasesHaveWork, closeBranchDatabases } = databasesRuntimeModule;
+			if (!branchDatabasesHaveWork()) return closeBranchDatabases();
+			extendShutdownDeadline(Date.now() + getShutdownDrainCeilingMs());
+			try {
+				await closeBranchDatabases();
+			} finally {
+				restoreShutdownDeadline();
+			}
+		})
+		.then(() => {
+			if (!isMainThread) realExit(0);
+		});
+	// Clean up per-thread UDS socket and metadata files
+	httpComponent.cleanupUdsFiles();
+	if (!isBun && (debugThreads || process.env.DEV_MODE)) {
+		try {
+			inspector.close();
+		} catch (error) {
+			harperLogger.info('Could not close debugger', error);
+		}
+	}
+	return shutdownPromise;
+}
+
 function startServers() {
+	if (isProcessShuttingDown()) return shutdownServers();
 	// A worker that has not yet posted child_started owns no ref'd handle: addPort()
 	// (manageThreads) unrefs parentPort, component watchers are persistent:false, and the
 	// reporting timers are unref'd. An await inside loadRootComponents whose completion
@@ -209,97 +258,44 @@ function startServers() {
 	}
 	reportStartupPhase(startupPhase);
 	let listening;
-	// A worker held for nothing still reports its load before it binds, where main answers it: one already loading when a
-	// release went live is not admitted on that load.
 	const heldFor = workerData?.certify ?? (workerData?.reportsLoad ? [] : undefined);
-	const heldStart = heldFor ? require('./heldStart.ts') : undefined;
-	const loaded = Promise.resolve(heldStart?.beginHeldStart(heldFor))
-		.then((loadedGenerations) =>
-			loadRootComponentsRuntimeModule
-				.loadRootComponents(true)
-				.then(() => {
-					require('../../components/deployLifecycle.ts').deployLifecycle._componentsLoaded();
-					return loadedGenerations;
-				})
-		)
+	const heldStart = heldFor ? loadRuntimeModule('server/threads/heldStart') : undefined;
+	let admitted: Promise<void> | undefined;
+	let loaded: Promise<any>;
+	parentPort?.on('message', (message) => {
+		if (message.type !== terms.ITC_EVENT_TYPES.SHUTDOWN) return;
+		beginProcessShutdown();
+		harperLogger.trace('received shutdown request', threadId);
+		void loaded.then(shutdownServers, shutdownServers).catch((error) =>
+			harperLogger.error('Error shutting down HTTP worker', error)
+		);
+	});
+	loaded = Promise.resolve(heldStart?.beginHeldStart(heldFor))
 		.then(async (loadedGenerations) => {
-			parentPort
-				?.on('message', (message) => {
-					if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
-						harperLogger.trace('received shutdown request', threadId);
-						// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
-						// close connections as possible, then let the event loop complete.
-						// First, gracefully drain any in-flight work registered by components — notably a
-						// replication blob *send* streaming to a peer, which is cheaper to finish than to interrupt
-						// (interrupting leaves the peer's copy diverged until it re-requests). The drain waits only
-						// on work still making progress, bounded by an absolute deadline. When there is real work to
-						// drain we push the termination backstops out to that deadline first so the drain isn't cut
-						// short, then restore the normal short backstop once draining is done — so any later hang
-						// (closeServers / scope disposal) is still force-killed on the normal timeout, and a worker
-						// with no such work is never affected.
-						const drainDeadline = Date.now() + getShutdownDrainCeilingMs();
-						const extendedForDrain = shutdownDrainsHaveWork();
-						if (extendedForDrain) extendShutdownDeadline(drainDeadline);
-						// Wait for application scopes to finish closing before exiting — some dispose a native
-						// runtime asynchronously (e.g. @harperfast/vite's rolldown dev server), and exiting the
-						// worker while that runtime is still live crashes the process. The manageThreads backstop
-						// timers still bound this if a scope's disposal hangs.
-						runShutdownDrains(drainDeadline)
-							.then(() => {
-								if (extendedForDrain) restoreShutdownDeadline();
-							})
-							.then(() => closeServers())
-							.then(() => whenScopesClosed())
-							.then(async () => {
-								const { branchDatabasesHaveWork, closeBranchDatabases } = databasesRuntimeModule;
-								if (!branchDatabasesHaveWork()) return closeBranchDatabases();
-								extendShutdownDeadline(Date.now() + getShutdownDrainCeilingMs());
-								try {
-									await closeBranchDatabases();
-								} finally {
-									restoreShutdownDeadline();
-								}
-							})
-							.then(() => {
-								realExit(0);
-							});
-						// Clean up per-thread UDS socket and metadata files
-						httpComponent.cleanupUdsFiles();
-						if (!isBun && (debugThreads || process.env.DEV_MODE)) {
-							try {
-								await closeBranchDatabases();
-							} finally {
-								restoreShutdownDeadline();
-							}
-						})
-						.then(() => {
-							realExit(0);
-						});
-					// Clean up per-thread UDS socket and metadata files
-					httpComponent.cleanupUdsFiles();
-					if (!isBun && (debugThreads || process.env.DEV_MODE)) {
-						try {
-							inspector.close();
-						} catch (error) {
-							harperLogger.info('Could not close debugger', error);
-						}
-					}
-				})
-				.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
+			await loadRootComponentsRuntimeModule.loadRootComponents(true);
+			loadRuntimeModule('components/deployLifecycle').deployLifecycle._componentsLoaded();
 			if (heldStart) {
 				reportStartupPhase('awaiting admission');
-				await heldStart.awaitAdmission(heldFor, loadedGenerations);
+				await new Promise<void>((resolve, reject) => {
+					admitted = heldStart.awaitAdmission(heldFor, loadedGenerations, resolve);
+					admitted.catch(reject);
+				});
 			}
-			reportStartupPhase('binding listeners');
-			listening = listenOnPorts();
 		});
-	componentsLoadedResolve(loaded);
-	const started = loaded
+	const ready = loaded.then(async () => {
+		await admitted;
+		if (isProcessShuttingDown()) return shutdownServers();
+		reportStartupPhase('binding listeners');
+		listening = listenOnPorts();
+	});
+	componentsLoadedResolve(ready);
+	const started = ready
 		.then(() => listening)
 		.then(() => {
 			// An isolated worker is reachable only through a bound mirror.
 			if (thisThreadsIsolatedApplication() && !httpComponent.hasUdsMirror())
 				throw new Error(`Isolated application ${thisThreadsIsolatedApplication()} has no UDS mirror`);
+			if (isProcessShuttingDown()) return shutdownServers();
 			reportStartupPhase('ready');
 			if (getWorkerIndex() === 0) {
 				try {
@@ -311,6 +307,7 @@ function startServers() {
 			parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 		})
 		.catch((error) => {
+			if (isProcessShuttingDown()) return shutdownServers();
 			const failedPhase = startupPhase;
 			reportStartupPhase(`failed during ${failedPhase}`);
 			harperLogger.fatal(`HTTP worker startup failed during ${failedPhase}`, error);
@@ -394,6 +391,7 @@ function mirrorBindPath(socketPath?: any) {
 const POOL_BIND_RETRY_MS = 60_000;
 let listening;
 function listenOnPorts() {
+	if (isProcessShuttingDown()) return Promise.resolve([]);
 	if (isBun) return listenOnPortsBun();
 	if (listening) return Promise.all(listening); // already set up
 	listening = [];
@@ -743,6 +741,7 @@ if (
 		env.initSync();
 		const { runStartup } = await import('../../utility/lifecycle.ts');
 		await runStartup();
+		if (isProcessShuttingDown()) return shutdownServers();
 		await startServers();
 	})().catch((err) => {
 		harperLogger.fatal('Worker failed to start', err);

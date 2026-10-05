@@ -7,6 +7,8 @@ import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, strictEqual, ok } from 'node:assert/strict';
 import { resolve, join } from 'node:path';
 import { readFile } from 'node:fs/promises';
+import { once } from 'node:events';
+import WebSocket from 'ws';
 import { waitFor } from '../../unitTests/waitFor.js';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -217,4 +219,72 @@ for (const mode of ['compiled', 'typestrip']) {
 			ok((await response.text()).includes('Module node:fs is not allowed'));
 		});
 	});
+}
+
+for (const mode of ['compiled', 'typestrip']) {
+	for (const bigInt of [false, true]) {
+		suite(`Configured JSON workers (${mode}, bigInt=${bigInt})`, (ctx: ContextWithHarper) => {
+			before(async () => {
+				await setupHarperWithFixture(ctx, resolve(import.meta.dirname, 'typestrip'), {
+					config: {
+						threads: { count: 1 },
+						serialization: { bigInt },
+						applications: { allowedBuiltinModules: ['worker_threads'] },
+					},
+					env: mode === 'typestrip' ? { NODE_OPTIONS: '--conditions=typestrip' } : {},
+					harperBinPath: resolve(
+						import.meta.dirname,
+						`../../${mode === 'typestrip' ? 'bin/harper.ts' : 'dist/bin/harper.js'}`
+					),
+				});
+			});
+			after(() => teardownHarper(ctx));
+
+			test('serves the configured BigInt behavior and serializes a live subscription', async () => {
+				const headers = {
+					'Authorization': `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+					'Content-Type': 'application/json',
+				};
+				const response = await fetch(`${ctx.harper.httpURL}/BigNumber/`, {
+					headers,
+					signal: AbortSignal.timeout(10000),
+				});
+				strictEqual(response.status, bigInt ? 200 : 500);
+				if (bigInt) strictEqual(await response.text(), '{"value":9007199254740993}');
+				else ok((await response.text()).includes('Cannot serialize BigInt'));
+				const id = 'configured-codec';
+				const record = { id, value: `${mode}:${bigInt}` };
+				const initial = await fetch(`${ctx.harper.httpURL}/Probe/${id}`, {
+					method: 'PUT',
+					headers,
+					body: JSON.stringify({ id, value: 'initial' }),
+					signal: AbortSignal.timeout(10000),
+				});
+				strictEqual(initial.status, 204);
+				const ws = new WebSocket(`${ctx.harper.httpURL.replace(/^http/, 'ws')}/Probe/${id}`, { headers });
+				const messages: any[] = [];
+				ws.on('message', (data) => messages.push(JSON.parse(data.toString())));
+				try {
+					await once(ws, 'open', { signal: AbortSignal.timeout(10000) });
+					await waitFor(() => messages.some((message) => message.value?.value === 'initial'), { timeout: 10000 });
+					const write = await fetch(`${ctx.harper.httpURL}/Probe/${id}`, {
+						method: 'PUT',
+						headers,
+						body: JSON.stringify(record),
+						signal: AbortSignal.timeout(10000),
+					});
+					strictEqual(write.status, 204);
+					await waitFor(() => messages.some((message) => message.value?.value === record.value), { timeout: 10000 });
+					const read = await fetch(`${ctx.harper.httpURL}/Probe/${id}`, {
+						headers,
+						signal: AbortSignal.timeout(10000),
+					});
+					strictEqual(read.status, 200);
+					deepStrictEqual(await read.json(), record);
+				} finally {
+					ws.terminate();
+				}
+			});
+		});
+	}
 }

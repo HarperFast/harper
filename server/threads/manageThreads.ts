@@ -211,6 +211,7 @@ export {
 	restoreShutdownDeadline,
 	notifyJobCleanupComplete,
 	beginProcessShutdown,
+	isProcessShuttingDown,
 	registerWorkerDataProvider,
 	onThreadExit,
 	hasThreadExited,
@@ -1459,12 +1460,14 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 		// This is here to prevent circular dependencies
 		if (startReplacementThreads) {
 			const loadRootComponents = rootComponentsReload ?? (await import('../loadRootComponents.ts')).loadRootComponents;
+			if (processShuttingDown) return { declined: true };
 			// Installing and loading every root component reports nothing and can outlast a caller's idle
 			// window on its own (a cold npm cache, a large dependency graph), so beat while it runs. The
 			// caller's absolute ceiling is what bounds a load that never finishes.
 			const loading = setInterval(() => onProgress?.(), RESTART_PROGRESS_HEARTBEAT_MS).unref();
 			try {
 				await loadRootComponents();
+				if (processShuttingDown) return { declined: true };
 				// isolated applications added or removed by the reload get their dedicated worker started or
 				// stopped; a crash-looping newcomer can take a while, so the heartbeat runs through this too
 				try {
@@ -2012,6 +2015,9 @@ function shutdownWorkers(name?: any) {
 }
 function beginProcessShutdown() {
 	processShuttingDown = true;
+}
+function isProcessShuttingDown() {
+	return processShuttingDown;
 }
 async function shutdownWorkersNow(name?: any) {
 	if (name == null) beginProcessShutdown();
@@ -3203,6 +3209,7 @@ if (isMainThread) {
 } else {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.SHUTDOWN, async (message) => {
 		restartNumber = message.restartNumber;
+		beginProcessShutdown();
 		parentPort.unref(); // remove this handle
 		armSelfExit(threadTerminationTimeout);
 	});

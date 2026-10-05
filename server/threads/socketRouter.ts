@@ -8,6 +8,7 @@ import {
 	setRunningIsolatedApplicationsGetter,
 	workersForApplication,
 	stopWorker,
+	isProcessShuttingDown,
 } from './manageThreads.ts';
 import {
 	presentIsolatedApplicationNames,
@@ -52,6 +53,7 @@ if (isMainThread) {
 
 export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean) {
 	const workerSlots = [];
+	if (isProcessShuttingDown()) return [];
 	let dedicatedPools: { type: string; count: number }[] = [];
 	// Crash-path defense: a hard crash can skip a worker's exit-time UDS cleanup and leave stale
 	// mirror files behind. This runs before any worker below can start (and thus before any mirror
@@ -65,7 +67,9 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 	// determine database storage path" before main() ever runs.
 	if (isMainThread && !sweptSocketsDirectory) {
 		sweptSocketsDirectory = true;
-		(await import('../http.ts')).cleanupSocketsDirectory();
+		const { cleanupSocketsDirectory } = await import('../http.ts');
+		if (isProcessShuttingDown()) return [];
+		cleanupSocketsDirectory();
 	}
 	recordHostname().catch((err) => harperLogger.error?.('Error recording hostname for analytics:', err));
 	// Drive transaction-log cooling from the main thread (the registry is a
@@ -84,6 +88,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			poolSlots.push(slot);
 		} else {
 			const { loadRootComponents } = await import('../loadRootComponents.ts');
+			if (isProcessShuttingDown()) return [];
 			if (threadCount === 0) {
 				if (configuredReplicationThreads() > 0)
 					harperLogger.warn(
@@ -91,7 +96,9 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 					);
 				setMainIsWorker(true);
 				const threadServer = await import('./threadServer.ts');
+				if (isProcessShuttingDown()) return [];
 				await threadServer.startServers();
+				if (isProcessShuttingDown()) return [];
 				// startServers() schedules listener startup after loading components; await its cached
 				// batch so a bind failure reaches bin/run.ts and exits non-zero in single-thread mode too.
 				await threadServer.listenOnPorts();
@@ -102,11 +109,14 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 				setActiveWorkerPools(dedicatedPools.map((pool) => pool.type));
 			}
 			await loadRootComponents();
+			if (isProcessShuttingDown()) return [];
 			const { listenOnPorts } = await import('./threadServer.ts');
+			if (isProcessShuttingDown()) return [];
 			await listenOnPorts();
 			// Windows does not support SO_REUSEPORT, so only a single HTTP worker is supported.
 			if (process.platform === 'win32') threadCount = 1;
 		}
+		if (isProcessShuttingDown()) return [];
 		poolSize = threadCount;
 		nextIsolatedIndex = Math.max(nextIsolatedIndex, threadCount);
 		const isolated = admittedIsolatedApplications([...isolatedSlots.keys()]);
