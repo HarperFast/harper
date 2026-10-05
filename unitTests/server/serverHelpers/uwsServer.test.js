@@ -591,6 +591,12 @@ function readBody(request) {
 							if (chunked) socket.write('0\r\n\r\n');
 							return;
 						}
+						// Hold until the paused body has buffered the first chunk, so the over-limit read
+						// cannot be the server's first.
+						if (!consume && sent && !bufferedBeforeReject) {
+							nextWrite = setImmediate(upload);
+							return;
+						}
 						sent += chunk.length;
 						const data = chunked ? Buffer.concat([Buffer.from('10000\r\n'), chunk, Buffer.from('\r\n')]) : chunk;
 						const scheduleUpload = () => (nextWrite = continueUpload ? setTimeout(upload, 10) : setImmediate(upload));
