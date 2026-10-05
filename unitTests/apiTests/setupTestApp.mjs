@@ -48,11 +48,7 @@ function makeString() {
 let createdRecords;
 let serverStarted;
 export async function setupTestApp() {
-	// Drain onStartup hooks first so server-singleton wiring (server.http, server.getUser,
-	// server.operation, etc.) is installed before we override server.getUser below.
-	// Production runs this from bin/harper.ts; the API-test setup needs the same effect.
-	// Without this, the override below is later clobbered when user.ts's onStartup hook
-	// fires inside startHTTPThreads, and auth checks fall through to the real getUser.
+	// Run production startup hooks before applying the API-test auth overrides.
 	if (typeof process !== 'undefined' && !serverStarted) {
 		const { runStartup } = await import('#src/utility/lifecycle');
 		await runStartup();
@@ -138,9 +134,6 @@ export async function setupTestApp() {
 	} else {
 		const { startHTTPThreads } = await import('#src/server/threads/socketRouter');
 		serverStarted = await startHTTPThreads(config.threads || 0);
-		// startServers() schedules its loadRootComponents().then(listenOnPorts) chain
-		// internally without returning the resolved promise. Block on the shared
-		// `whenComponentsLoaded` so the test's first axios call sees a bound socket.
 		const { whenComponentsLoaded } = await import('#src/server/threads/threadServer');
 		await whenComponentsLoaded;
 	}

@@ -171,7 +171,6 @@ export function _setSubscribeImplForTest(
 
 function getResources(): ResourcesType {
 	if (_resourcesOverride) return _resourcesOverride;
-	// Lazy import — see file-top comment on Harper graph initialization.
 	const { resources } = ResourcesRuntimeModule;
 	return resources as unknown as ResourcesType;
 }
@@ -407,7 +406,6 @@ export async function subscribeToResource(
 		// so we must override both cases (else a collection URI watches a phantom
 		// record named after the resource and receives nothing).
 		const recordId = (entry.relativeURL ?? '').replace(/^\/+/, '');
-		// Lazy-require the server-layer machinery (see file-top note on eager init).
 		const { transaction } = transactionRuntimeModule;
 		const { RequestTarget } = RequestTargetRuntimeModule;
 		const request = new RequestTarget(path);
@@ -563,7 +561,6 @@ async function readCustomResource(
 		// Merge onto any ambient store (usually none on the MCP HTTP path) so an
 		// inherited transaction/cache is preserved rather than clobbered; `user`
 		// binds last. Same idiom as processLocalTransaction's `{ ...currentStore, user }`.
-		// Lazy-require the server-layer machinery (see file-top note on eager init).
 		const { transaction, contextStorage } = transactionRuntimeModule;
 		const result = await transaction({ ...contextStorage.getStore(), user: user as any }, () =>
 			def.read(params, { user, profile })
