@@ -364,7 +364,10 @@ async function main() {
 		}
 		env.WS_SCALE_CONTROL_DIR = profileDir;
 		console.log(`control directory: ${profileDir}`);
-		(harperConfig.threads as any).preloadRequire = join(import.meta.dirname, 'harness-preload.cjs');
+		(harperConfig.threads as any).preloadRequire = join(
+			import.meta.dirname,
+			args.scenario === 'churn' ? 'churn-preload.cjs' : 'profile-preload.cjs'
+		);
 	}
 	let profileStartedAt = Infinity;
 	let profileTimer: NodeJS.Timeout | undefined;
@@ -391,6 +394,11 @@ async function main() {
 			const stranger = acked.find((id) => !workerIds!.has(id));
 			if (stranger) throw new Error(`thread ${stranger} joined after the first GC; a Harper worker restarted`);
 			if (acked.length === workerIds.size) return collectGarbageResult(request, workerIds);
+			const { exitCode, signalCode } = ctx.harper.process;
+			if (exitCode !== null || signalCode !== null)
+				throw new Error(
+					`Harper exited (${exitCode !== null ? `code ${exitCode}` : `signal ${signalCode}`}) while waiting for ${request}`
+				);
 			if (waited > 30_000) throw new Error(`only ${acked.length} Harper workers ran ${request}`);
 			await delay(100);
 		}
