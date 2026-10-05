@@ -741,6 +741,11 @@ function onSocket(listener, options) {
 			throw new Error(`Port ${port} is owned by '${owner}' workers, so it cannot serve listeners on every worker`);
 	}
 	if (options.securePort) {
+		// Before any registration: a throw here must not leave a listener without its mirror.
+		const socketsDir =
+			env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(options.securePort)
+				? httpComponent.ensureSocketsDirectory()
+				: undefined;
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
 		// usageType lets a caller's certificates (tagged via hdb_certificate.uses) win the quality
 		// bonus in createTLSSelector for this listener, the same way http.ts's usageType does for
@@ -788,10 +793,6 @@ function onSocket(listener, options) {
 		SERVERS[options.securePort] = secureSocketServer;
 
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
-		const socketsDir =
-			env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(options.securePort)
-				? httpComponent.ensureSocketsDirectory()
-				: undefined;
 		if (socketsDir) {
 			const isolatedApplication = thisThreadsIsolatedApplication();
 			const socketName = isolatedApplication
