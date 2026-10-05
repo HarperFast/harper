@@ -739,12 +739,14 @@ function verdictDecision(certification, components) {
 async function decideCertification(certification, decision, canary) {
 	if (certification.decision || certification.deciding) return;
 	certification.deciding = true;
-	if (refusesRelease(decision)) await stopHeldStartsOf(certification, canary);
+	certification.refusing = refusesRelease(decision);
+	if (certification.refusing) await stopHeldStartsOf(certification, canary);
 	let settled = await recordDecision(certification, decision);
 	if (settled.status === 'certified' && settled.recordError) {
 		// A certification this node could not make durable is none: its record still reads undecided, and the next boot
 		// would put the predecessor back under a release that had gone on serving.
 		await stopHeldStartsOf(certification);
+		certification.refusing = true;
 		settled = await recordDecision(certification, {
 			status: 'interrupted',
 			reason: `its certification could not be recorded: ${settled.recordError}`,
@@ -1095,6 +1097,11 @@ const CERTIFICATION_ACTIONS = {
 	release: ({ component, deploymentId }) => releaseCertificationRequester(component, deploymentId),
 	join: ({ component, deploymentId }, threadId) => joinCertification(component, deploymentId, threadId),
 	leave: ({ component, deploymentId }, threadId) => leaveCertification(component, deploymentId, threadId),
+	// Whether a preparation must wait for this release where its record cannot say: its refusal's restore must not.
+	open: ({ component, deploymentId }) => {
+		const certification = certifications.get(component);
+		return certification?.deploymentId === deploymentId && !certification.refusing;
+	},
 };
 
 let nextCertificationRequestId = 0;

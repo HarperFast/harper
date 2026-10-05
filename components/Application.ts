@@ -20,6 +20,7 @@ import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd, deployLifecycle } from './deployLifecycle.ts';
 import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
 import {
+	certificationRequest,
 	isThreadRunning,
 	isProcessGroupAlive,
 	processIncarnation,
@@ -4913,12 +4914,15 @@ export async function assertNotCertifying(
 	sameDeploymentId?: string
 ): Promise<void> {
 	const live = await liveCertification(dirname(componentDirPath), componentName);
-	if (!live || !('record' in live)) return;
-	const { record } = live;
-	if (record.state === 'rejected' || record.incarnation !== processIncarnation) return;
-	if (sameDeploymentId === record.deploymentId) return;
+	if (!live || sameDeploymentId === live.deploymentId) return;
+	if ('record' in live) {
+		if (live.record.state === 'rejected' || live.record.incarnation !== processIncarnation) return;
+	} else if (!(await certificationRequest('open', { component: componentName, deploymentId: live.deploymentId }))) {
+		// With nothing open for it here, a deploy or a drop is how a component with an unreadable record recovers.
+		return;
+	}
 	throw new ClientError(
-		`Cannot change ${componentName} while its release ${record.deploymentId} is being certified on this node; ` +
+		`Cannot change ${componentName} while its release ${live.deploymentId} is being certified on this node; ` +
 			`retry once its canary has decided`,
 		409
 	);

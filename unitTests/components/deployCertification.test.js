@@ -234,6 +234,15 @@ describe('activating a release for certification', () => {
 		assert.equal(await readLive(root), 'V2\n', 'a deploy is how a rejected release is replaced');
 	});
 
+	it('does not fence a release whose record cannot be read when nothing here holds it open', async function () {
+		this.timeout(30000);
+		await deploy(root, 'd1', 'V1\n');
+		await fs.writeFile(certificationRecordPath(root, 'd1'), 'not a record');
+		await assertNotCertifying(path.join(root, 'web'), 'web');
+		await deploy(root, 'd2', 'V2\n');
+		assert.equal(await readLive(root), 'V2\n', 'a deploy is how a release with an unreadable record is replaced');
+	});
+
 	it('certifies a rejected live release again when its id is activated', async function () {
 		this.timeout(30000);
 		await deploy(root, 'd1', 'V1\n');

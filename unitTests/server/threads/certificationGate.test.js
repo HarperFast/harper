@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const os = require('node:os');
-const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { waitFor } = require('../../waitFor.js');
 
@@ -22,6 +22,9 @@ const {
 	setCanaryVerdictTimeout,
 	setRootComponentsReload,
 } = require('#js/server/threads/manageThreads');
+const { assertNotCertifying } = require('#src/components/Application');
+const { certificationRecordPath } = require('#src/components/releaseCertification');
+const { DEPLOYMENT_PROVENANCE_FILE, formatDeploymentProvenance } = require('#src/components/deploymentProvenance');
 
 const FIXTURE = path.join(__dirname, 'certificationGate-fixture.cjs');
 const COMPONENT = 'web';
@@ -181,6 +184,59 @@ describe('the release certification gate', function () {
 			await worker.terminate();
 		}
 		setCertificationHandler(undefined);
+	});
+
+	it('holds a release open to other preparations until its rollout ends, but not while it is being refused', async () => {
+		const openTo = (deploymentId = DEPLOYMENT) => certificationRequest('open', { component: COMPONENT, deploymentId });
+		const seenWhileRecording = [];
+		setCertificationHandler(
+			handler({
+				decide: async (certification, decision) => {
+					// Where a refusal's restore runs: it is a preparation of the component too.
+					seenWhileRecording.push({ status: decision.status, open: await openTo() });
+					return decision;
+				},
+			})
+		);
+		assert.equal(await openTo(), false, 'nothing is armed');
+		await arm();
+		assert.equal(await openTo(), true);
+		assert.equal(await openTo(OTHER.deploymentId), false, 'another release of the component');
+		await commit();
+		await rolledOut();
+		assert.equal(await openTo(), false, 'its rollout ended');
+
+		plan([{ outcome: 'failed' }]);
+		await arm();
+		await commit();
+		await waitFor(() => completions.length === 2, { timeout: 45000, message: 'the refused rollout never ended' });
+		assert.deepStrictEqual(seenWhileRecording, [
+			{ status: 'certified', open: true },
+			{ status: 'rejected', open: false },
+		]);
+	});
+
+	it('fences a preparation of a release whose record cannot be read while that release is open', async () => {
+		const componentsRoot = mkdtempSync(path.join(os.tmpdir(), 'certification-gate-unreadable-'));
+		try {
+			mkdirSync(path.join(componentsRoot, COMPONENT));
+			writeFileSync(
+				path.join(componentsRoot, COMPONENT, DEPLOYMENT_PROVENANCE_FILE),
+				formatDeploymentProvenance(COMPONENT, DEPLOYMENT)
+			);
+			mkdirSync(path.dirname(certificationRecordPath(componentsRoot, DEPLOYMENT)), { recursive: true });
+			writeFileSync(certificationRecordPath(componentsRoot, DEPLOYMENT), 'not a record');
+			const componentPath = path.join(componentsRoot, COMPONENT);
+
+			await assertNotCertifying(componentPath, COMPONENT);
+			await arm();
+			await assert.rejects(assertNotCertifying(componentPath, COMPONENT), { statusCode: 409 });
+			await assertNotCertifying(componentPath, COMPONENT, DEPLOYMENT);
+			await certificationRequest('withdraw', { component: COMPONENT, deploymentId: DEPLOYMENT });
+			await assertNotCertifying(componentPath, COMPONENT);
+		} finally {
+			rmSync(componentsRoot, { recursive: true, force: true });
+		}
 	});
 
 	it('arms only while a worker could load the release, and only once per component', async () => {
