@@ -165,6 +165,8 @@ const configuredPrivateKeyPaths = new Map<string, string>();
 const filePrivateKeys = new Map<string, string>();
 
 const TLS_REBUILD_DEBOUNCE_MS = 1500;
+// Also bounds re-attempts of a still-unmatched pair while unrelated files in its directory keep changing.
+const TLS_WATCH_RECHECK_DELAY_MS = 1000;
 
 // Self-retry backoff cap: a permanently bad record must not cost every selector on every
 // thread a table scan + X509 parse per debounce interval, forever.
@@ -339,7 +341,7 @@ const certificateWatchPollers = new Map<string, () => void>();
  * Watch the certificate and related files through filtered parent directories and the main-thread safety poll.
  * A false loader result remains unapplied so an unchanged fingerprint can be retried.
  */
-function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
+export function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 	let lastModified;
 	let lastAttempted;
 	const loadFile = (path, stats?) => {
@@ -381,6 +383,27 @@ function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 	};
 	if (fs.existsSync(path)) loadFile(path, statSync(path));
 	else logger.error?.(`${type} file not found:`, path);
+	const poll = () => {
+		let stats;
+		try {
+			stats = statSync(path);
+		} catch (error) {
+			// File may be transiently absent (e.g. atomic-rename renewal in flight); the chokidar
+			// watcher and the next poll will pick up the replacement.
+			logger.trace?.(`Watch poll could not stat ${type}:`, path, error);
+			return;
+		}
+		loadFile(path, stats);
+	};
+	// chokidar can stop emitting add/change for a path removed twice inside its 100 ms removal throttle
+	// (it keeps tracking the deleted inode), but its raw events still arrive.
+	let recheckTimer: NodeJS.Timeout | undefined;
+	const scheduleRecheck = () => {
+		recheckTimer ??= setTimeout(() => {
+			recheckTimer = undefined;
+			poll();
+		}, TLS_WATCH_RECHECK_DELAY_MS).unref();
+	};
 	const watchedDirectories = new Map<string, { mustPoll: boolean; files: Set<string> }>();
 	for (const filePath of [path, ...relatedPaths]) {
 		const target = resolveWatchTarget(filePath);
@@ -418,6 +441,7 @@ function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 			opened
 				.on('add', reload)
 				.on('change', reload)
+				.on('raw', scheduleRecheck)
 				.on('error', (error) => {
 					if (claimLostNativeWatchError(error)) return;
 					if (pollingFiles || liveWatcher !== opened) return;
@@ -453,18 +477,6 @@ function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 	}
 
 	if (isMainThread) {
-		const poll = () => {
-			let stats;
-			try {
-				stats = statSync(path);
-			} catch (error) {
-				// File may be transiently absent (e.g. atomic-rename renewal in flight); the chokidar
-				// watcher and the next poll will pick up the replacement.
-				logger.trace?.(`Watch poll could not stat ${type}:`, path, error);
-				return;
-			}
-			loadFile(path, stats);
-		};
 		certificateWatchPollers.set(path, poll);
 		const interval = getCertificateWatchInterval();
 		if (interval > 0) {

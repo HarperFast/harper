@@ -1552,11 +1552,13 @@ describe('Test keys module', () => {
 			// listener an ENOSPC here becomes an uncaughtException and the cert fast path dies silently.
 			const openedOptions = [];
 			const errorHandlers = [];
+			const rawHandlers = [];
 			const exhausted = () => Object.assign(new Error('inotify watch limit reached'), { code: 'ENOSPC' });
 			chokidar.default.watch = (_watchedPath, options) => {
 				openedOptions.push(options);
 				return fakeWatcher((event, handler) => {
 					if (event === 'error') errorHandlers.push(handler);
+					if (event === 'raw') rawHandlers.push(handler);
 				});
 			};
 
@@ -1569,6 +1571,7 @@ describe('Test keys module', () => {
 
 			expect(openedOptions).to.have.lengthOf(2);
 			expect(openedOptions[1].usePolling).to.equal(true);
+			expect(rawHandlers).to.have.lengthOf(2, 'the reopened polling watcher must keep the raw-event re-check');
 
 			errorHandlers[0](exhausted());
 			errorHandlers[1](exhausted());

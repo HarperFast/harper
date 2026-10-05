@@ -204,9 +204,9 @@ for (const readableKeyDirectory of [true, false])
 			test('aborting an unmatched renewal restores the original inode and clears the pending alarm', async () => {
 				const logOffset = (await readFile(logPath(), 'utf8')).length;
 				const savedPath = certPath + '.saved';
+				const unmatchedCertPem = await makeServerCertPem(await generateEd25519KeyPair(), currentSerial + 1);
 				await rename(certPath, savedPath);
-				const unusedKeyPair = await generateEd25519KeyPair();
-				await writeFile(certPath, await makeServerCertPem(unusedKeyPair, currentSerial + 1));
+				await writeFile(certPath, unmatchedCertPem);
 				const noticeDeadline = Date.now() + 10000;
 				let pendingNotice = false;
 				while (Date.now() < noticeDeadline) {
@@ -214,7 +214,8 @@ for (const readableKeyDirectory of [true, false])
 						.slice(logOffset)
 						.includes('Waiting for matching TLS certificate and private key');
 					if (pendingNotice) break;
-					await delay(100);
+					// Restore within chokidar's 100 ms removal throttle, the window in which it can lose track of the file.
+					await delay(10);
 				}
 				ok(pendingNotice, 'the publisher never observed the aborted pair');
 				await unlink(certPath);
@@ -225,6 +226,15 @@ for (const readableKeyDirectory of [true, false])
 				const log = (await readFile(logPath(), 'utf8')).slice(logOffset);
 				ok(!log.includes('still has no matching private key'), 'an aborted renewal left the pending alarm armed');
 				ok(!/key values mismatch|ERR_OSSL_X509_KEY_VALUES_MISMATCH/i.test(log));
+
+				// Key first, so only the certificate's own directory watch can complete the next renewal.
+				const nextSerial = currentSerial + 2;
+				const keyPair = await generateEd25519KeyPair();
+				const certPem = await makeServerCertPem(keyPair, nextSerial);
+				await renameInstall(keyPath, keyPair.privateKeyPem);
+				await renameInstall(certPath, certPem);
+				await expectRenewal(nextSerial);
+				currentKeyPair = keyPair;
 			});
 
 			test('renewal follows an atomically replaced Secret-volume data symlink', async () => {
