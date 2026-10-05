@@ -103,6 +103,7 @@ describe('constrained spawn process identity', function () {
 		const replacement = fork({ version: 2 });
 		assert.notStrictEqual(replacement.pid, child.pid);
 		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.strictEqual(child.exitCode, null);
 		assert.strictEqual(child.signalCode, null);
 	});
 
@@ -110,7 +111,8 @@ describe('constrained spawn process identity', function () {
 		const child = fork({ version: 1 });
 		const replacement = fork({ version: 2 });
 		assert.notStrictEqual(replacement.pid, child.pid);
-		await waitFor(() => child.signalCode === 'SIGTERM', 5000);
+		await waitFor(() => child.exitCode !== null || child.signalCode !== null, 5000);
+		assert.strictEqual(child.signalCode, process.platform === 'win32' ? null : 'SIGTERM');
 	});
 	async function prepareWorker() {
 		const worker = new Worker(join(fixtures, 'spawn-worker.cjs'), { workerData: { name, noServerStart: true } });
@@ -173,7 +175,7 @@ describe('constrained spawn process identity', function () {
 		const child = fork({ version: 1 });
 		const next = fork({ version: 2 });
 		const record = readFileSync(pidFile, 'utf8');
-		await waitFor(() => child.signalCode !== null, 5000);
+		await waitFor(() => child.exitCode !== null || child.signalCode !== null, 5000);
 		assert.strictEqual(readFileSync(pidFile, 'utf8'), record);
 		assert.strictEqual(Number(record.split('\n')[0]), next.pid);
 	});
