@@ -215,16 +215,12 @@ for (const readableKeyDirectory of [true, false])
 						.slice(logOffset)
 						.includes('Waiting for matching TLS certificate and private key');
 					if (pendingNotice) break;
-					// Restore within chokidar's 100 ms removal throttle, the window in which it can lose track of the file.
+					// Polling briskly usually restores within chokidar's 100 ms removal throttle, where it can lose track of the file.
 					await delay(10);
 				}
 				ok(pendingNotice, 'the publisher never observed the aborted pair');
 				await unlink(certPath);
 				const abortElapsed = performance.now() - abortStart;
-				if (abortElapsed >= 100)
-					t.diagnostic(
-						`restore ${Math.round(abortElapsed)} ms after the first removal missed chokidar's 100 ms throttle`
-					);
 				await rename(savedPath, certPath);
 				// This asserts a non-event after the publisher's 30-second pending-pair alarm window.
 				await delay(31000);
@@ -241,6 +237,9 @@ for (const readableKeyDirectory of [true, false])
 				await renameInstall(certPath, certPem);
 				await expectRenewal(nextSerial);
 				currentKeyPair = keyPair;
+				// Only after every assertion: node:test counts a failure in a skipped test as a skip.
+				if (abortElapsed >= 100)
+					t.skip(`restore ${Math.round(abortElapsed)} ms after the first removal missed chokidar's 100 ms throttle`);
 			});
 
 			test('renewal follows an atomically replaced Secret-volume data symlink', async () => {
