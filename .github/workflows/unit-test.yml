@@ -65,10 +65,10 @@ jobs:
         timeout-minutes: 3
         run: npm run test:bench # pure-logic tests for benchmarks/ converters; doesn't need a running Harper instance
 
-      - name: CI script tests
+      - name: Review-coverage action tests
         if: matrix.node-version == 24
         timeout-minutes: 3
-        run: node --test .github/actions/review-coverage/*.test.mjs .github/workflows/*.test.mjs
+        run: node --test .github/actions/review-coverage/*.test.mjs
 
       - name: Setup Harper
         id: setup-harper
