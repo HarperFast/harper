@@ -53,7 +53,7 @@ Harper supports multi-level topics for both publishing and subscribing:
 
 ### Durable Sessions
 
-<VersionBadge type="changed" version="v5.3.1" />
+<VersionBadge type="changed" version="v5.4.0" />
 
 A durable session retains a client's subscription list and any unacknowledged messages across disconnects. When the client reconnects with the same client ID, it picks up from where it left off — including any messages published while it was offline.
 
@@ -75,7 +75,7 @@ mqtt.connect('mqtts://harper.example.com:8883', {
 
 **Catch-up on reconnect** — When the client reconnects, Harper replays missed messages on subscribed topics by reading the audit log. For this to work, audit logging must be enabled on the tables backing the subscribed topics. See [Transaction Logging](../database/transaction.md) and [`logging.auditLog`](../logging/configuration.md#loggingauditlog). Catch-up applies to QoS 1 and 2 subscriptions. A QoS 0 subscription is kept with the session and resumes live, without the messages published while the client was away.
 
-**When a session can no longer catch up** — As of v5.3.1, Harper checks each subscription's saved position against the database's history before replaying from it. A position is refused if the database was restored or copied since it was saved, or if audit retention has since removed history the replay would need. Harper then resets the session instead of replaying only part of what was missed:
+**When a session can no longer catch up** — As of v5.4.0, Harper checks each subscription's saved position against the database's history before replaying from it. A position is refused if the database was restored or copied since it was saved, or if audit retention has since removed history the replay would need. Harper then resets the session instead of replaying only part of what was missed:
 
 - **At connect** — If the check fails at connect time, Harper deletes the session record and answers `CONNACK` with `sessionPresent: false`. Resubscribe when you see it.
 - **After `CONNACK`** — If the problem is found after `CONNACK`, Harper deletes the session and closes the connection, sending an MQTT v5 client `DISCONNECT` with reason code `0x83` first. The next connect gets `sessionPresent: false`.
@@ -93,7 +93,7 @@ Harper keeps a quiet topic's position current while the client is connected, and
 
 Harper supports the MQTT Last Will and Testament feature. If a client disconnects unexpectedly, the broker publishes the configured will message on its behalf. Will messages are persisted in the `hdb_session_will` system table at CONNECT time, so they survive a broker restart and fire reliably on unexpected disconnect.
 
-As of v5.3.1, each connection's will is kept separately, so a connection that closes after a newer one with the same client ID has connected publishes only its own will. When the newer connection takes a durable session over, the older connection is closed and publishes its will then, as MQTT v5 specifies.
+As of v5.4.0, each connection's will is kept separately, so a connection that closes after a newer one with the same client ID has connected publishes only its own will. When the newer connection takes a durable session over, the older connection is closed and publishes its will then, as MQTT v5 specifies.
 
 ## Content Negotiation
 

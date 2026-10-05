@@ -250,9 +250,9 @@ All properties are optional:
 
 #### Resuming from a position
 
-<VersionBadge version="v5.3.1" />
+<VersionBadge version="v5.4.0" />
 
-As of v5.3.1, a subscription on a RocksDB database can resume from a position that Harper checks against the database's history, instead of replaying whatever history is left.
+As of v5.4.0, a subscription on a RocksDB database can resume from a position that Harper checks against the database's history, instead of replaying whatever history is left.
 
 - Every subscription reports `databaseGeneration`, the generation of the database it reads (undefined on LMDB). A database gets a new generation when it is restored, branched or migrated from a copy.
 - To resume, pass back the generation with the `localTime` of an event you processed: `subscribe({ databaseGeneration, startTime })`. `startTime` must be a finite number, and `0` is a position (the start of the log) rather than "no start time". `previousCount` cannot be combined with it.
