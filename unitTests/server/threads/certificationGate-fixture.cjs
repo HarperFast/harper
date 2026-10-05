@@ -10,6 +10,7 @@ const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
 const planPath = process.env.CERTIFICATION_GATE_PLAN;
 
 let step;
+let unheldShutdownDelayMs;
 parentPort.on('message', (message) => {
 	// A deploy bracket pausing this worker's watchers: recorded for the suite, and acknowledged as a real worker does.
 	if (message?.type === 'harper:deploy:lifecycle') {
@@ -22,8 +23,9 @@ parentPort.on('message', (message) => {
 		if (message.requestId) parentPort.postMessage({ type: 'ack', id: message.requestId });
 		return;
 	}
-	if (message?.type === ITC_EVENT_TYPES.SHUTDOWN) setTimeout(() => process.exit(0), step?.shutdownDelayMs ?? 20);
-	else if (message?.type === ITC_EVENT_TYPES.CHILD_ADMITTED) {
+	if (message?.type === ITC_EVENT_TYPES.SHUTDOWN) {
+		setTimeout(() => process.exit(0), step?.shutdownDelayMs ?? unheldShutdownDelayMs ?? 20);
+	} else if (message?.type === ITC_EVENT_TYPES.CHILD_ADMITTED) {
 		if (step?.afterAdmission === 'exit') process.exit(4);
 		parentPort.postMessage({ type: 'fixture-admitted' });
 		parentPort.postMessage({ type: ITC_EVENT_TYPES.CHILD_STARTED });
@@ -39,7 +41,9 @@ parentPort.postMessage({
 
 if (!workerData.certify) {
 	// Held for nothing, it still reports its load and binds only once admitted, after the plan's load time for such a start.
-	const { unheldLoadMs = 0 } = JSON.parse(readFileSync(planPath, 'utf8'));
+	const unheld = JSON.parse(readFileSync(planPath, 'utf8'));
+	const unheldLoadMs = unheld.unheldLoadMs ?? 0;
+	unheldShutdownDelayMs = unheld.unheldShutdownDelayMs;
 	setTimeout(
 		() => parentPort.postMessage({ type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT, components: [] }),
 		unheldLoadMs

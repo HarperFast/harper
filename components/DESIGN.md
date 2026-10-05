@@ -102,10 +102,12 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    a replacement while another release is armed, either, before each replacement and not only the first: that
    replacement could not decide the armed release, whose own rollout would queue behind this one for good. Worker 0
    is replaced first, so its replacement is the canary, and what an application runs only where `workerIndex` is 0
-   is part of the load that decides. The requesting worker is replaced last, unless it is worker 0, once its
-   operation has answered (`release`, bounded at 10 s). Past the bound its shutdown still waits for the deploy to
-   answer, through a shutdown drain the deploy registers while it certifies, bounded by the drain ceiling, rather
-   than cut the deploy off mid-replication. A withdraw
+   is part of the load that decides. The requesting worker is replaced last, once its operation has answered (`release`, bounded at 10 s).
+   Past the bound its shutdown still waits for the deploy to answer, through a shutdown drain the deploy holds
+   while its release is armed, bounded by the drain ceiling, rather than cut the deploy off mid-replication; a
+   shutdown before the arm closes as it always did. A requester that is worker 0 is retired at its turn without
+   that wait, and only the rollout's end waits for it to exit, so the rest of the pool is not held behind its
+   whole deploy. A withdraw
    after commit is refused: the release is live, and dropping its registration would leave the rollout
    replacing workers unchecked.
    A worker already loading when a release is armed was not held for it, yet its load can still reach that release:
@@ -113,7 +115,8 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    reports its load before it binds, held or not, and one whose report comes after a release it was loading across
    committed is refused and started again, now held for that release: a rollout replaces its own replacement again,
    and main restarts anything else. A barrier at arm cannot do this instead: that bracket, opened before the arm,
-   holds the very load the barrier would wait for.
+   holds the very load the barrier would wait for. Where a replacement can only start once its predecessor has exited,
+   a copy the gate stops is started again too, once nothing is armed, rather than leave its slot empty.
 4. **The canary.** The first held start boots normally with its loader tracking a private boot outcome per
    component (`trackBootOutcomes`): executed, skipped (`dev-only`, `if-installed`, safe mode), failed (every
    failure site of the load), or pending (a load deferred behind a preparation lock, which it waits out).

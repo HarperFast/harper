@@ -988,6 +988,7 @@ function loadFailure(entry, component = entry.component) {
 function stopHeldStart(held, refused) {
 	if (held.stopping) return held.stopping;
 	held.settled = true;
+	held.worker.stoppedByGate = true;
 	const stopping = (held.stopping = stopWorker(held.worker));
 	// Settled, its exit decides nothing, so a release it is still the canary of is decided here rather than left waiting.
 	for (const certification of held.gated) {
@@ -1415,7 +1416,8 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 		const restarting = workers.slice(0);
 		// Worker 0 is replaced first, so its replacement is the canary, and what an application runs only in worker 0
 		// is part of the load that decides the release. The requester answers before it is replaced, so it goes last,
-		// unless it is worker 0.
+		// unless it is worker 0: then it is retired at its turn, its drain keeps its deploy answering, and only the end
+		// of the rollout waits for it to exit.
 		const workerZero = certification
 			? restarting.find((worker) => worker.workerIndex === 0 && placesCertification(certification, worker))
 			: undefined;
@@ -1425,6 +1427,8 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 				? restarting.find((worker) => worker.threadId === certification.requesterThreadId)
 				: undefined;
 		if (requester && requester !== workerZero) restarting.push(...restarting.splice(restarting.indexOf(requester), 1));
+		const requesterFirst = Boolean(requester) && requester === workerZero;
+		let requesterRetiring;
 		// a worker that exited on its own mid-restart is spliced out of `workers` and auto-restarted onto the new
 		// code (see the exit handler above); it is not still on the previous code even though this loop never got to it.
 		const untouchedAfter = (index) =>
@@ -1470,9 +1474,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 					? undefined
 					: async () => {
 							retiredForAdmission = true;
-							if (certification && worker.threadId === certification.requesterThreadId) {
-								await requesterRelease(certification);
-							}
+							if (worker === requester && !requesterFirst) await requesterRelease(certification);
 							if (postShutdown(worker)) await whenShutDownWorkerExits(worker, onProgress);
 						};
 				let newWorker = worker.startCopy(held ? { managed: true, check: checks, admission } : { managed: true });
@@ -1566,7 +1568,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 					continue;
 				}
 			}
-			if (certification && worker.threadId === certification.requesterThreadId) await requesterRelease(certification);
+			if (worker === requester && !requesterFirst) await requesterRelease(certification);
 			if (startReplacementThreads) await untilNoCertificationArmed();
 			harperLogger.trace('sending shutdown request to ', worker.threadId);
 			// the worker exited on its own while we were starting its replacement — nothing left to
@@ -1598,10 +1600,14 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 					const at = waitingToFinish.indexOf(replaced);
 					if (at > -1) waitingToFinish.splice(at, 1);
 				});
-			waitingToFinish.push(replaced);
-			if (waitingToFinish.length >= maxWorkersDown) {
-				// throttle how many workers are down at once to limit load
-				await Promise.race(waitingToFinish);
+			if (worker === requester && requesterFirst) {
+				requesterRetiring = replaced;
+			} else {
+				waitingToFinish.push(replaced);
+				if (waitingToFinish.length >= maxWorkersDown) {
+					// throttle how many workers are down at once to limit load
+					await Promise.race(waitingToFinish);
+				}
 			}
 			// Readiness throttling bounds how many workers are down at once, but not how many *fail*: with
 			// replacements that never come up, walking the rest of the pool would leave nothing serving.
@@ -1616,6 +1622,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 			}
 		}
 		await Promise.all(waitingToFinish);
+		await requesterRetiring;
 		// A caller awaiting this needs it to mean "the pool is serving the new code", so wait out the
 		// replacements that could only be started once their predecessor released its exclusive ports.
 		replacementsNotStarted =
@@ -1625,12 +1632,18 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 			: { workersKeptOnOldCode, replacementsNotStarted };
 	}
 }
-/** A copy refused for a load that a release's commit crossed is started again, which that release now holds. */
+/**
+ * Its predecessor is gone, so a copy the gate stopped, or refused for a load a release's commit crossed, is started
+ * again, held for whatever is open then. Not while a release is armed: a start booted then could not decide it, and
+ * that release's rollout queues behind this one.
+ */
 async function startedCopyOf(worker) {
 	for (;;) {
 		const copy = worker.startCopy({ managed: true });
 		if (await whenWorkerStarted(copy)) return true;
-		if (!copy.loadedAcrossRelease || processShuttingDown) return false;
+		if (processShuttingDown || !(copy.loadedAcrossRelease || copy.stoppedByGate)) return false;
+		await untilNoCertificationArmed();
+		if (processShuttingDown) return false;
 	}
 }
 

@@ -37,8 +37,8 @@ describe('the release certification gate', function () {
 	let committed;
 	let started;
 
-	function plan(sequence, { concurrentStarts, unheldLoadMs } = {}) {
-		writeFileSync(planPath, JSON.stringify({ sequence, concurrentStarts, unheldLoadMs }));
+	function plan(sequence, { concurrentStarts, unheldLoadMs, unheldShutdownDelayMs } = {}) {
+		writeFileSync(planPath, JSON.stringify({ sequence, concurrentStarts, unheldLoadMs, unheldShutdownDelayMs }));
 		rmSync(`${planPath}.starts`, { force: true });
 	}
 
@@ -815,6 +815,44 @@ describe('the release certification gate', function () {
 		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
 		await rolledOut();
 		assert.equal(shutdownOrder[0], requesterThreadId);
+	});
+
+	it('does not hold the rest of the rollout behind a requesting worker 0 that has not answered', async () => {
+		// Each serving worker takes a while to exit once asked, as a requester its drain holds would.
+		plan([{ outcome: 'loaded' }], { unheldShutdownDelayMs: 3000 });
+		const [requester, next] = pool;
+		await arm({ requesterThreadId: requester.threadId });
+		let nextAskedAt;
+		next.once('shutdown', () => (nextAskedAt = Date.now()));
+		const committedAt = Date.now();
+		await commit();
+		await waitFor(() => nextAskedAt, { timeout: 30000, message: 'the next worker was never replaced' });
+		assert.ok(nextAskedAt - committedAt < 8000, 'the rollout went on without the requester answering');
+		if (process.platform === 'linux') {
+			assert.ok(
+				!requester.exitedAt || nextAskedAt < requester.exitedAt,
+				"and without waiting for the requester's exit"
+			);
+		}
+		await rolledOut();
+	});
+
+	it("starts a slot again when the gate stops the copy that replaced it after its predecessor's exit", async () => {
+		// An uncertified rollout replaces the requester unheld; another release commits while it waits on the requester.
+		plan([{ outcome: 'skipped' }, { outcome: 'loaded', outcomes: { api: 'failed' } }]);
+		const requester = pool[1];
+		await arm({ requesterThreadId: requester.threadId });
+		await commit();
+		assert.equal((await decisionOf()).status, 'uncertified');
+		await waitFor(() => pool[2].exitedAt, { timeout: 30000, message: 'the rollout never reached the requester' });
+		assert.deepStrictEqual(await certificationRequest('arm', { ...OTHER, isolated: false, scope: undefined }), {
+			armed: true,
+		});
+		assert.equal(await certificationRequest('commit', OTHER), true);
+		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+		await waitFor(() => completions.length === 2, { timeout: 45000, message: 'a rollout never ended' });
+		assert.equal(decisions.find(({ component }) => component === 'api')?.status, 'rejected');
+		await waitFor(() => httpWorkers().length === 3, { timeout: 10000, message: 'the slot was left empty' });
 	});
 
 	it('replaces the requesting worker last, once it has answered', async () => {
