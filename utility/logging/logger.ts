@@ -12,8 +12,8 @@ function initializeLogger() {
 	}
 }
 
+initializeLogger();
 if (typeof module === 'undefined') onStartup(initializeLogger);
-else initializeLogger();
 
 export function loggerWithTag(tag: string): Logger {
 	return harperLogger.loggerWithTag(tag, true) as Logger;

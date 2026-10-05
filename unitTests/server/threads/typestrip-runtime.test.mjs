@@ -16,19 +16,19 @@ function runWithIsolatedRoot(mode, code) {
 	try {
 		output = execFileSync(
 			process.execPath,
-			[
-				...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
-				'--input-type=module',
-				'-e',
-				`const { createRequire } = await import('node:module');
+			[...(mode === 'typestrip' ? ['--conditions=typestrip'] : []), '--input-type=module'],
+			{
+				env: process.env,
+				encoding: 'utf8',
+				timeout: 30000,
+				input: `const { createRequire } = await import('node:module');
 			const require = createRequire(${JSON.stringify(pathToFileURL(resolve(root, 'package.json')).href)});
 			const { materializePerPidRoot } = require(${JSON.stringify(resolve(root, 'unitTests/perPidRoot.js'))});
 			process.env.ROOTPATH = materializePerPidRoot();
 			console.log('fixture-root ' + process.pid);
 			${code}
 			process.exit(0);`,
-			],
-			{ env: process.env, encoding: 'utf8', timeout: 30000 }
+			}
 		);
 		return output.replace(/^fixture-root \d+\r?\n/, '').trim();
 	} catch (error) {
@@ -41,6 +41,55 @@ function runWithIsolatedRoot(mode, code) {
 }
 
 describe('TypeStrip runtime boundaries', () => {
+	it('preserves environment-selected built-ins through startup', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const prefix = mode === 'compiled' ? 'dist/' : '';
+			const extension = mode === 'compiled' ? 'js' : 'ts';
+			const runtimeUrl = (path) => pathToFileURL(resolve(root, `${prefix}${path}.${extension}`)).href;
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert/strict')).default;
+				process.env.HARPER_BUILTIN_COMPONENTS = 'agent=@/test/agent,operationsApi=@/test/operationsApi';
+				const { TRUSTED_RESOURCE_PLUGINS } = await import(${JSON.stringify(runtimeUrl('components/componentLoader'))});
+				const { runStartup } = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
+				await runStartup();
+				assert.equal(TRUSTED_RESOURCE_PLUGINS.agent, '@/test/agent');
+				assert.equal(TRUSTED_RESOURCE_PLUGINS.operationsApi, '@/test/operationsApi');
+				console.log('built-in overrides preserved');
+			`
+			);
+			assert.equal(output, 'built-in overrides preserved', mode);
+		}
+	});
+
+	it('writes conditional logger warnings before startup runs', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const prefix = mode === 'compiled' ? 'dist/' : '';
+			const extension = mode === 'compiled' ? 'js' : 'ts';
+			const runtimeUrl = (path) => pathToFileURL(resolve(root, `${prefix}${path}.${extension}`)).href;
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert/strict')).default;
+				const { readFileSync } = await import('node:fs');
+				const { join } = await import('node:path');
+				assert.equal(typeof globalThis.module, 'undefined');
+				const { createLogger, setMainLogger } = await import(${JSON.stringify(runtimeUrl('utility/logging/harper_logger'))});
+				const logPath = join(process.env.ROOTPATH, 'before-startup.log');
+				setMainLogger(createLogger({ path: logPath, level: 'warn', stdStreams: false }));
+				const { logger } = await import(${JSON.stringify(runtimeUrl('utility/logging/logger'))});
+				const { hasStarted } = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
+				assert.equal(hasStarted(), false);
+				logger.warn('conditional warning before startup');
+				assert.match(readFileSync(logPath, 'utf8'), /conditional warning before startup/);
+				console.log('pre-startup warning written');
+			`
+			);
+			assert.equal(output, 'pre-startup warning written', mode);
+		}
+	});
+
 	it('skips empty component configuration without reporting a load error', () => {
 		for (const mode of ['compiled', 'typestrip']) {
 			const prefix = mode === 'compiled' ? 'dist/' : '';
@@ -121,11 +170,9 @@ describe('TypeStrip runtime boundaries', () => {
 			const modulePath = pathToFileURL(resolve(root, mode === 'compiled' ? 'dist/index.js' : 'index.ts')).href;
 			const output = execFileSync(
 				process.execPath,
-				[
-					...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
-					'--input-type=module',
-					'-e',
-					`const assert = (await import('node:assert/strict')).default;
+				[...(mode === 'typestrip' ? ['--conditions=typestrip'] : []), '--input-type=module'],
+				{
+					input: `const assert = (await import('node:assert/strict')).default;
 				const facade = await import(${JSON.stringify(modulePath)});
 				const names = ${JSON.stringify(names)};
 				assert.deepEqual(Object.keys(facade).filter(name => names.includes(name)).sort(), names.sort());
@@ -135,8 +182,10 @@ describe('TypeStrip runtime boundaries', () => {
 				assert.equal(typeof facade.server.http, 'function');
 				assert.ok(new facade.Resource('public-facade') instanceof facade.Resource);
 				console.log('public values preserved'); process.exit(0);`,
-				],
-				{ env: process.env, encoding: 'utf8', timeout: 30000 }
+					env: process.env,
+					encoding: 'utf8',
+					timeout: 30000,
+				}
 			);
 			assert.equal(output.trim(), 'public values preserved', mode);
 			const worker = new Worker(resolve(root, 'unitTests/bin/user-thread.js'), {
@@ -189,13 +238,8 @@ describe('TypeStrip runtime boundaries', () => {
 	it('passes the source condition to actual managed workers without NODE_OPTIONS', () => {
 		const manager = pathToFileURL(resolve(root, 'server/threads/manageThreads.ts')).href;
 		const fixture = resolve(import.meta.dirname, 'fixtures/runtime-condition.cjs');
-		const output = execFileSync(
-			process.execPath,
-			[
-				'--conditions=typestrip',
-				'--input-type=module',
-				'-e',
-				`const { once } = await import('node:events');
+		const output = execFileSync(process.execPath, ['--conditions=typestrip', '--input-type=module'], {
+			input: `const { once } = await import('node:events');
 				const { startWorker } = await import(${JSON.stringify(manager)});
 				const worker = startWorker(${JSON.stringify(fixture)}, { name: 'runtime-condition', autoRestart: false });
 				try {
@@ -203,9 +247,10 @@ describe('TypeStrip runtime boundaries', () => {
 					console.log(JSON.stringify(message));
 				} finally { await worker.terminate(); }
 				process.exit(0);`,
-			],
-			{ env: { ...process.env, NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 30000 }
-		);
+			env: { ...process.env, NODE_OPTIONS: '' },
+			encoding: 'utf8',
+			timeout: 30000,
+		});
 		const message = JSON.parse(output.trim());
 		assert.equal(message.modulePath, resolve(root, 'server/Server.ts'));
 		assert.ok(message.execArgv.includes('--conditions=typestrip'));
@@ -224,11 +269,9 @@ describe('TypeStrip runtime boundaries', () => {
 				).href;
 				const output = execFileSync(
 					process.execPath,
-					[
-						...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
-						'--input-type=module',
-						'-e',
-						`const assert = (await import('node:assert/strict')).default;
+					[...(mode === 'typestrip' ? ['--conditions=typestrip'] : []), '--input-type=module'],
+					{
+						input: `const assert = (await import('node:assert/strict')).default;
 						const { readFileSync, existsSync } = await import('node:fs');
 						const { createLogger, setMainLogger, loggerWithTag } = await import(${JSON.stringify(modulePath)});
 						const firstPath = ${JSON.stringify(resolve(directory, mode + '-first.log'))};
@@ -250,8 +293,10 @@ describe('TypeStrip runtime boundaries', () => {
 						assert.match(firstText, /\\[explicit\\].*explicit remains/);
 						assert.doesNotMatch(firstText, /after replacement/);
 						console.log('tagged logs preserved'); process.exit(0);`,
-					],
-					{ env: process.env, encoding: 'utf8', timeout: 30000 }
+						env: process.env,
+						encoding: 'utf8',
+						timeout: 30000,
+					}
 				);
 				assert.equal(output.trim(), 'tagged logs preserved', mode);
 			}
@@ -365,11 +410,9 @@ describe('TypeStrip runtime boundaries', () => {
 			const helpers = pathToFileURL(resolve(root, `${prefix}utility/packageUtils.js`)).href;
 			const output = execFileSync(
 				process.execPath,
-				[
-					...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
-					'--input-type=module',
-					'-e',
-					`const { registerHooks } = await import('node:module');
+				[...(mode === 'typestrip' ? ['--conditions=typestrip'] : []), '--input-type=module'],
+				{
+					input: `const { registerHooks } = await import('node:module');
 					const resolutions = [];
 					registerHooks({ resolve(specifier, context, next) { const result = next(specifier, context); resolutions.push(result.url); return result; } });
 					await import(${JSON.stringify(entry)});
@@ -379,8 +422,10 @@ describe('TypeStrip runtime boundaries', () => {
 					if (typeof sql.evaluateSQL !== 'function' || typeof sql.convertSQLToAST !== 'function' || typeof loadRuntimeModule('dataLayer/SQLSearch').default !== 'function' || typeof loadRuntimeModule('sqlTranslator/SelectValidator').default !== 'function') throw new Error('Cold module export missing');
 					if (!resolutions.some(url => url.includes('/alasql/'))) throw new Error('Cold dependency observation missing');
 					console.log('cold SQL loaded'); process.exit(0);`,
-				],
-				{ env: process.env, encoding: 'utf8', timeout: 30000 }
+					env: process.env,
+					encoding: 'utf8',
+					timeout: 30000,
+				}
 			);
 			assert.equal(output.trim(), 'cold SQL loaded', mode);
 		}
@@ -398,16 +443,12 @@ describe('TypeStrip runtime boundaries', () => {
 			assert.equal(Object.getPrototypeOf(Source), Resource);
 			assert.ok(new Derived(new Error('test')) instanceof Derived);
 		}
-		const output = execFileSync(
-			process.execPath,
-			[
-				'--conditions=typestrip',
-				'--input-type=module',
-				'-e',
-				`const { Resource } = await import(${JSON.stringify(pathToFileURL(resolve(root, 'resources/Resource.ts')).href)}); for (const [modulePath, name] of ${JSON.stringify(modules)}) { const Source = (await import(new URL(modulePath + '.ts', ${JSON.stringify(pathToFileURL(root + '/').href)})))[name]; class Derived extends Source {} if (Object.getPrototypeOf(Source) !== Resource || !(new Derived(new Error('test')) instanceof Derived)) throw new Error('Lost Resource inheritance'); } console.log('inherited'); process.exit(0);`,
-			],
-			{ env: process.env, encoding: 'utf8', timeout: 30000 }
-		);
+		const output = execFileSync(process.execPath, ['--conditions=typestrip', '--input-type=module'], {
+			input: `const { Resource } = await import(${JSON.stringify(pathToFileURL(resolve(root, 'resources/Resource.ts')).href)}); for (const [modulePath, name] of ${JSON.stringify(modules)}) { const Source = (await import(new URL(modulePath + '.ts', ${JSON.stringify(pathToFileURL(root + '/').href)})))[name]; class Derived extends Source {} if (Object.getPrototypeOf(Source) !== Resource || !(new Derived(new Error('test')) instanceof Derived)) throw new Error('Lost Resource inheritance'); } console.log('inherited'); process.exit(0);`,
+			env: process.env,
+			encoding: 'utf8',
+			timeout: 30000,
+		});
 		assert.equal(output.trim(), 'inherited');
 	});
 
@@ -416,16 +457,12 @@ describe('TypeStrip runtime boundaries', () => {
 		const state = pathToFileURL(resolve(root, 'server/threads/threadMessageState.ts')).href;
 		const operations = pathToFileURL(resolve(root, 'server/serverHelpers/serverUtilities.ts')).href;
 		const dispatch = pathToFileURL(resolve(root, 'server/serverHelpers/operationDispatchState.ts')).href;
-		const output = execFileSync(
-			process.execPath,
-			[
-				'--conditions=typestrip',
-				'--input-type=module',
-				'-e',
-				`const { workerHooks, listenersByType } = await import(${JSON.stringify(state)}); const schemaListener = () => {}; listenersByType.set('schema', [schemaListener]); const router = await import(${JSON.stringify(router)}); if (listenersByType.get('schema')?.[0] !== schemaListener) throw new Error('Lost event listener'); if (workerHooks.reconcile !== router.reconcileIsolatedWorkers || typeof workerHooks.monitorListener !== 'function') throw new Error('Lost startup registration'); const operations = await import(${JSON.stringify(operations)}); const { operationDispatchState } = await import(${JSON.stringify(dispatch)}); if (operationDispatchState.local?.chooseOperation !== operations.chooseOperation || operationDispatchState.local?.processLocalTransaction !== operations.processLocalTransaction) throw new Error('Lost operation dispatch'); console.log('registered'); process.exit(0);`,
-			],
-			{ env: process.env, encoding: 'utf8', timeout: 30000 }
-		);
+		const output = execFileSync(process.execPath, ['--conditions=typestrip', '--input-type=module'], {
+			input: `const { workerHooks, listenersByType } = await import(${JSON.stringify(state)}); const schemaListener = () => {}; listenersByType.set('schema', [schemaListener]); const router = await import(${JSON.stringify(router)}); if (listenersByType.get('schema')?.[0] !== schemaListener) throw new Error('Lost event listener'); if (workerHooks.reconcile !== router.reconcileIsolatedWorkers || typeof workerHooks.monitorListener !== 'function') throw new Error('Lost startup registration'); const operations = await import(${JSON.stringify(operations)}); const { operationDispatchState } = await import(${JSON.stringify(dispatch)}); if (operationDispatchState.local?.chooseOperation !== operations.chooseOperation || operationDispatchState.local?.processLocalTransaction !== operations.processLocalTransaction) throw new Error('Lost operation dispatch'); console.log('registered'); process.exit(0);`,
+			env: process.env,
+			encoding: 'utf8',
+			timeout: 30000,
+		});
 		assert.equal(output.trim(), 'registered');
 	});
 

@@ -100,7 +100,7 @@ replacement without being awaited. Each wait is bounded by a per-worker startup 
 resolution means "the restart finished", not "every worker is new". A caller that treats its own success as
 "the component is live" must await it (see `deployComponent` in `components/operations.ts`).
 
-> `index.ts` sets `workerData.noServerStart = true` when Harper is imported from a thread it did not spawn, so `threadServer.ts` skips `startServers()` there; Harper's own HTTP workers start their servers.
+> HTTP worker startup requires `threadServer` to be the actual entry file. Imports from user/job workers do not start listeners; `index.ts` also sets `workerData.noServerStart = true` for unmanaged workers.
 >
 > `threadServer.listenOnDomainSocket()` skips a listener only when its path exceeds the platform's
 > `sockaddr_un.sun_path` byte limit (some Node versions reject it; others silently truncate it).
@@ -119,6 +119,8 @@ Single-instance background tasks pick their thread by what state they touch:
 ## Native and compiled runtime startup
 
 Native TypeStrip execution loads the runtime as ESM; compiled distribution files remain CommonJS. Worker paths use `RUNTIME_SRC_ROOT` and `RUNTIME_FILE_EXT` from `utility/packageUtils.js`, which stays CommonJS to resolve its own directory in both modes. `threadMessageState.ts` and `processIncarnation.ts` hold dependency-free worker state: cyclic imports may register callbacks before `manageThreads.ts` evaluates, so that registration must remain synchronous and must not be overwritten by a later initializer. Configuration-dependent wiring and built-in plugin preloads run through `utility/lifecycle.ts` after configuration initialization, before worker listeners bind. HTTP workers hold their parent-port ref throughout startup hooks as well as component loading, so an unreferenced asynchronous completion cannot end startup early. The compiled and source routes are exercised by `integrationTests/server/typestrip.test.ts`.
+
+Startup imports the core operation/agent modules for their wiring while retaining `HARPER_BUILTIN_COMPONENTS` overrides in the trusted registry. The conditional logger initializes eagerly from its leaf logger dependency so offline commands and pre-startup initialization can emit warnings; native startup refreshes its enabled methods afterward. Runtime probes use ESM stdin rather than Node's `-e` mode, which injects a global `module` and can select a CommonJS compatibility branch in source modules.
 
 Transaction monitoring and token lifetimes can be imported before configuration is linked. Their startup hooks refresh cached settings, including re-arming the transaction monitor at the configured interval. Job workers also initialize configuration and run startup hooks before executing operations. Configured token lifetimes and builtin restrictions are covered by the two-mode REST test; `integrationTests/database/blob-commit-over-time.test.ts` proves the configured transaction monitor actually ticks in both modes.
 

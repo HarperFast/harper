@@ -591,13 +591,26 @@ function readBody(request) {
 							if (chunked) socket.write('0\r\n\r\n');
 							return;
 						}
+						// Hold until the paused body has buffered the first chunk, so the over-limit read
+						// cannot be the server's first.
+						if (!consume && sent && !bufferedBeforeReject) {
+							nextWrite = setImmediate(upload);
+							return;
+						}
 						sent += chunk.length;
 						const data = chunked ? Buffer.concat([Buffer.from('10000\r\n'), chunk, Buffer.from('\r\n')]) : chunk;
 						const scheduleUpload = () => (nextWrite = continueUpload ? setTimeout(upload, 10) : setImmediate(upload));
 						if (socket.write(data)) scheduleUpload();
 						else socket.once('drain', scheduleUpload);
 					}
-					let timer = setTimeout(() => socket.destroy(new Error('oversized upload did not receive 413')), 5000);
+					let timer = setTimeout(() => {
+						const stalled = !consume && !bufferedBeforeReject;
+						socket.destroy(
+							new Error(
+								stalled ? 'the paused body never buffered the first chunk' : 'oversized upload did not receive 413'
+							)
+						);
+					}, 5000);
 					socket.on('data', (data) => {
 						raw += data.toString('latin1');
 						if (sentAtHeaders !== undefined || !raw.includes('\r\n\r\n')) return;
