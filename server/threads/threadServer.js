@@ -265,7 +265,7 @@ function startServers() {
 	const started = loaded
 		.then(() => listening)
 		.then(() => {
-			// An isolated worker is reachable only through its mirror; without one it must not report ready.
+			// An isolated worker is reachable only through a bound mirror.
 			if (thisThreadsIsolatedApplication() && !httpComponent.hasUdsMirror())
 				throw new Error(`Isolated application ${thisThreadsIsolatedApplication()} has no UDS mirror`);
 			reportStartupPhase('ready');
