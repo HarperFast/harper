@@ -159,7 +159,7 @@ function main(mode, formatMode, framingMode) {
 			'',
 			framing.exempt ? `_${framing.exempt}_` : framing.detail,
 			'',
-			'Configured core-shared paths require `Framing-Verdict: chosen-approach-sound`, or a non-clearing verdict recorded under `## For the human reviewer`.'
+			'Configured core-shared paths require `Framing-Verdict: chosen-approach-sound`, or a non-clearing verdict explained under `## ⚖️ Alternatives`, in a `> ❓ **Your call:**` line, or under the legacy `## For the human reviewer`.'
 		);
 	}
 	if (process.env.GITHUB_STEP_SUMMARY) {

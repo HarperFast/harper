@@ -143,10 +143,12 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await teardownHarper(ctx);
 	});
 
-	test('loads published 0.3.0 and exposes a ready index without a stored virtual attribute', async () => {
+	test('loads the pinned native package and exposes a ready index without a stored virtual attribute', async () => {
 		const info = await runtimeInfo();
-		assert.strictEqual(info.packageVersion, '0.3.0');
-		assert.strictEqual(info.queryApiVersion, 2);
+		const packageJson = JSON.parse(await readFile(resolve(import.meta.dirname, '../..', 'package.json'), 'utf8'));
+		assert.strictEqual(info.packageVersion, packageJson.optionalDependencies['@harperfast/fulltext']);
+		assert.strictEqual(info.mutationBatchApiVersion, 5);
+		assert.strictEqual(info.queryApiVersion, 3);
 		assert.ok(info.queryClassIsolationMinimumSearchThreads > 0);
 		const description = await operation({ operation: 'describe_table', schema: 'data', table: 'Product' });
 		const index = description.full_text_indexes.find(({ name }) => name === 'catalogSearch');

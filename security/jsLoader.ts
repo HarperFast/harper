@@ -20,18 +20,19 @@ import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import { markCredentialRejection, credentialRejectionError } from './credentialRejection.ts';
 import type {} from 'ses';
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	writeFileSync,
-	unlinkSync,
-	openSync,
-	closeSync,
-	statSync,
-	realpathSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, realpathSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
+import {
+	NamedProcessError,
+	parsePidFile,
+	readProcessIdentity,
+	readProcessIdentityAsync,
+	withSpawnPidLock,
+	tryWithSpawnPidLock,
+	isPreviousBoot,
+	withFileRetry,
+	writePidRecord,
+} from './spawnPidFile.ts';
 import { whenComponentsLoaded } from '../server/threads/threadServer.js';
 import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
 
@@ -987,37 +988,46 @@ const child_processConstrained: any = {
 		throw new Error('execSync is not allowed');
 	},
 };
+const spawnWait = new Int32Array(new SharedArrayBuffer(4));
 child_processConstrained.default = child_processConstrained;
 const REPLACED_BUILTIN_MODULES = {
 	child_process: child_processConstrained,
 };
-/**
- * Creates a ChildProcess-like object for an existing process
- */
 class ExistingProcessWrapper extends EventEmitter {
 	pid: number;
+	private identity: string;
 	private checkInterval: NodeJS.Timeout;
+	private checking = false;
 
-	constructor(pid: number) {
+	constructor(pid: number, identity: string) {
 		super();
 		this.pid = pid;
-
-		// Monitor process and emit exit event when it terminates
-		this.checkInterval = setInterval(() => {
-			try {
-				// Signal 0 checks if process exists without actually killing it
-				process.kill(pid, 0);
-			} catch {
-				// Process no longer exists
-				clearInterval(this.checkInterval);
-				this.emit('exit', null, null);
-			}
-		}, 1000);
+		this.identity = identity;
+		this.checkInterval = setInterval(
+			async () => {
+				if (this.checking) return;
+				this.checking = true;
+				let current;
+				try {
+					current = await readProcessIdentityAsync(this.pid);
+				} catch {
+					// An unreadable identity does not establish exit.
+					return;
+				} finally {
+					this.checking = false;
+				}
+				if (current?.identity !== this.identity) {
+					clearInterval(this.checkInterval);
+					this.emit('exit', null, null);
+				}
+			},
+			process.platform === 'win32' ? 5000 : 1000
+		);
 	}
 
-	// Kill the process
 	kill(signal?: NodeJS.Signals | number) {
 		try {
+			if (readProcessIdentity(this.pid)?.identity !== this.identity) return false;
 			process.kill(this.pid, signal);
 			return true;
 		} catch {
@@ -1025,111 +1035,19 @@ class ExistingProcessWrapper extends EventEmitter {
 		}
 	}
 
-	// Clean up interval when wrapper is no longer needed
 	unref() {
 		clearInterval(this.checkInterval);
 		return this;
 	}
 }
 
-/**
- * Checks if a process with the given PID is running
- */
-function isProcessRunning(pid: number): boolean {
+function removePidRecord(pidFilePath: string, expected: string) {
 	try {
-		// Signal 0 checks existence without killing
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
+		if (withFileRetry(() => readFileSync(pidFilePath, 'utf8')) === expected)
+			withFileRetry(() => unlinkSync(pidFilePath));
+	} catch (error) {
+		if (error.code !== 'ENOENT') throw error;
 	}
-}
-
-/**
- * Acquires an exclusive lock using the PID file itself (synchronously with busy-wait)
- * Returns 0 if lock was acquired (need to spawn new process), or the existing PID if process is running
- */
-function parsePidFile(content: string): { pid: number; version: number } {
-	const lines = content.trim().split('\n');
-	const pid = Number.parseInt(lines[0], 10);
-	const version = lines.length > 1 ? parseInt(lines[1], 10) : 0;
-	return { pid, version };
-}
-
-function acquirePidFileLock(
-	pidFilePath: string,
-	requestedVersion?: number,
-	maxRetries = 100,
-	retryDelay = 5
-): { pid: number; version: number } {
-	for (let attempt = 0; attempt < maxRetries; attempt++) {
-		try {
-			// Try to open exclusively - 'wx' fails if file exists
-			const fd = openSync(pidFilePath, 'wx');
-			closeSync(fd);
-			return { pid: 0, version: 0 }; // Successfully acquired lock (file created), caller should spawn process
-		} catch (err) {
-			if (err.code === 'EEXIST') {
-				// File exists - check if it contains a valid running process
-				try {
-					const pidContent = readFileSync(pidFilePath, 'utf-8');
-					const { pid: existingPid, version: existingVersion } = parsePidFile(pidContent);
-
-					if (!isNaN(existingPid) && isProcessRunning(existingPid)) {
-						// If the version isn't the one we want, kill the existing process and re-acquire
-						if (requestedVersion != null && requestedVersion !== existingVersion) {
-							try {
-								process.kill(existingPid);
-							} catch {
-								// Process may have already exited
-							}
-							try {
-								unlinkSync(pidFilePath);
-							} catch {
-								// Another thread may have removed it
-							}
-							// Retry to acquire the lock for the new version
-							const start = Date.now();
-							while (Date.now() - start < retryDelay) {
-								// Busy wait for process cleanup
-							}
-							continue;
-						}
-						// Valid process is running at same or higher version, return its PID
-						return { pid: existingPid, version: existingVersion };
-					}
-
-					// Invalid/empty PID - check file age to determine if it's stale or being written
-					const stats = statSync(pidFilePath);
-					const fileAge = Date.now() - stats.mtimeMs;
-
-					// If file is very new (less than 100ms) and empty/invalid, another thread is likely still writing to it
-					if (fileAge < 100) {
-						// Just wait and retry, don't try to remove
-					} else {
-						// Stale PID file (old and invalid), try to remove it
-						try {
-							unlinkSync(pidFilePath);
-						} catch {
-							// Another thread may have removed it, retry
-						}
-					}
-				} catch {
-					// Couldn't read/stat file, another thread might be modifying it, retry
-				}
-
-				// Wait a bit before retrying
-				const start = Date.now();
-				while (Date.now() - start < retryDelay) {
-					// Busy wait
-				}
-			} else {
-				throw err;
-			}
-		}
-	}
-
-	throw new Error(`Failed to acquire PID file lock after ${maxRetries} attempts`);
 }
 
 function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess, alwaysAllow?: boolean) {
@@ -1155,42 +1073,77 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 		mkdirSync(pidDir, { recursive: true });
 
 		const pidFilePath = join(pidDir, `${processName}.pid`);
+		let spawnError;
+		const reportReleaseError = (error: unknown) =>
+			logger.warn(`Could not release PID lock for named process ${processName}`, error);
 
-		// Try to acquire lock - returns pid: 0 if acquired, or existing PID/version
-		const existing = acquirePidFileLock(pidFilePath, requestedVersion);
-
-		if (existing.pid !== 0) {
-			// Existing process is running, return wrapper
-			return new ExistingProcessWrapper(existing.pid);
-		}
-
-		// We acquired the lock (file was created), spawn new process
-		const childProcess = spawnFunction(command, args, options, callback);
-
-		// Write PID (and version if provided) to the file we just created
-		const pidFileContent =
-			requestedVersion != null ? `${childProcess.pid}\n${requestedVersion}` : childProcess.pid.toString();
 		try {
-			writeFileSync(pidFilePath, pidFileContent, 'utf-8');
-		} catch (err) {
-			// Failed to write PID, clean up
-			try {
-				childProcess.kill();
-				unlinkSync(pidFilePath);
-			} catch {}
-			throw err;
+			return withSpawnPidLock(
+				pidFilePath,
+				() => {
+					let content: string;
+					try {
+						content = withFileRetry(() => readFileSync(pidFilePath, 'utf8'));
+					} catch (error) {
+						if (error.code !== 'ENOENT') throw error;
+					}
+					if (content !== undefined) {
+						const existing = parsePidFile(content);
+						const current =
+							existing.pid && existing.identity && !isPreviousBoot(existing.identity)
+								? readProcessIdentity(existing.pid)
+								: null;
+						if (current && current.identity === existing.identity) {
+							if (requestedVersion == null || requestedVersion === existing.version) {
+								return new ExistingProcessWrapper(existing.pid, existing.identity);
+							}
+							try {
+								process.kill(existing.pid);
+							} catch (error) {
+								if (error.code !== 'ESRCH') throw error;
+							}
+							Atomics.wait(spawnWait, 0, 0, 5);
+						} else if (existing.pid && !existing.identity) {
+							logger.warn(
+								`Named process ${processName} has a legacy PID record for ${existing.pid}; replacing it without signaling the unverified process`
+							);
+						}
+						removePidRecord(pidFilePath, content);
+					}
+
+					let childProcess;
+					try {
+						childProcess = spawnFunction(command, args, options, callback);
+					} catch (error) {
+						spawnError = error;
+						throw error;
+					}
+					if (!childProcess.pid) return childProcess;
+					try {
+						const current = readProcessIdentity(childProcess.pid);
+						if (!current) return childProcess;
+						const record = `${childProcess.pid}\n${requestedVersion ?? 0}\n${current.identity}`;
+						writePidRecord(pidFilePath, record);
+						childProcess.once('exit', () => {
+							try {
+								tryWithSpawnPidLock(pidFilePath, () => removePidRecord(pidFilePath, record), reportReleaseError);
+							} catch (error) {
+								logger.warn(`Could not remove PID record for named process ${processName}`, error);
+							}
+						});
+						return childProcess;
+					} catch (error) {
+						childProcess.kill('SIGKILL');
+						throw error;
+					}
+				},
+				undefined,
+				reportReleaseError
+			);
+		} catch (error) {
+			if (error === spawnError) throw error;
+			throw new NamedProcessError(`Could not spawn named process ${processName}`, { cause: error });
 		}
-
-		// Clean up PID file when process exits
-		childProcess.on('exit', () => {
-			try {
-				unlinkSync(pidFilePath);
-			} catch {
-				// File may already be removed
-			}
-		});
-
-		return childProcess;
 	};
 }
 
