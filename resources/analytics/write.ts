@@ -1,4 +1,5 @@
 import { parentPort, threadId } from 'node:worker_threads';
+import { onStartup } from '../../utility/lifecycle.ts';
 import { onMessageByType } from '../../server/threads/manageThreads.ts';
 import { getDatabases, table, isReadOnlyMode } from '../databases.ts';
 import type { Databases, Table, Tables } from '../databases.ts';
@@ -40,6 +41,11 @@ let activeActions = new Map<string, Action>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
+
+onStartup(() => {
+	analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
+	analyticsReadOnlyChecked = false;
+});
 
 // Check read-only mode lazily to avoid circular dependency at module load time
 function checkAnalyticsEnabled(): boolean {

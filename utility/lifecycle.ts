@@ -1,27 +1,18 @@
-// Startup-phase lifecycle: lets modules declare side-effectful initialization
-// (config-derived constants, authentication initialization, plugin preloads)
-// without running it at module-load time. The entry point invokes
-// `runStartup()` after `env.initSync()` and before the server starts handling
-// requests, so all hooks see a fully-linked module graph and an initialized
-// environment.
-//
-// Unit tests: any test that exercises code paths depending on these hooks must
-// initialize configuration and call `runStartup()` in a `before`/`beforeEach`.
-// Importing the CLI does not run startup. `runStartup()` is idempotent — calling it a second
-// time is a no-op until `resetStartupForTests()` is called.
+// Entry points await this phase after configuration initialization and before accepting requests.
 
 type StartupCallback = () => void | Promise<void>;
 
-const callbacks: StartupCallback[] = [];
+let callbacks: StartupCallback[] = [];
 let started = false;
+let completed = false;
 let runningPromise: Promise<void> | null = null;
 
 /**
  * Register a callback to be run during the startup phase. If startup has
- * already run, the callback is invoked on the next microtask.
+ * completed, the callback is invoked on the next microtask.
  */
 export function onStartup(cb: StartupCallback): void {
-	if (started) {
+	if (completed) {
 		Promise.resolve().then(cb);
 		return;
 	}
@@ -34,16 +25,23 @@ export function onStartup(cb: StartupCallback): void {
  */
 export function runStartup(): Promise<void> {
 	if (runningPromise) return runningPromise;
-	runningPromise = (async () => {
-		started = true;
-		// Snapshot in case callbacks register more callbacks (they'll run
-		// immediately via the microtask path above).
-		const pending = callbacks.splice(0, callbacks.length);
-		for (const cb of pending) {
-			await cb();
+	let resolveStartup: () => void;
+	let rejectStartup: (error: unknown) => void;
+	const startup = (runningPromise = new Promise<void>((resolve, reject) => {
+		resolveStartup = resolve;
+		rejectStartup = reject;
+	}));
+	const pending = callbacks;
+	started = true;
+	(async () => {
+		try {
+			while (callbacks === pending && pending.length) await pending.shift()!();
+		} finally {
+			pending.length = 0;
+			if (callbacks === pending) completed = true;
 		}
-	})();
-	return runningPromise;
+	})().then(resolveStartup!, rejectStartup!);
+	return startup;
 }
 
 /**
@@ -51,8 +49,9 @@ export function runStartup(): Promise<void> {
  * (e.g. between describe blocks). Production code should never call this.
  */
 export function resetStartupForTests(): void {
-	callbacks.length = 0;
+	callbacks = [];
 	started = false;
+	completed = false;
 	runningPromise = null;
 }
 

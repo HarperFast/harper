@@ -1265,6 +1265,7 @@ function startWorker(path?: any, options: any = {}, startOptions: any = {}) {
 			];
 	// an explicit execArgv replaces inheritance, so `node --enable-source-maps` would not reach workers otherwise
 	if (!isBun && process.sourceMapsEnabled) execArgv.push('--enable-source-maps');
+	if (!isBun && RUNTIME_FILE_EXT === '.ts') execArgv.push('--conditions=typestrip');
 	if (!isBun && envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))
 		execArgv.push('--heapsnapshot-near-heap-limit=1');
 	// Preload configured modules (e.g. an APM agent like dd-trace) before the worker's entry
