@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { bundlePlan, checkBundle, prepareBundle } from '../../build-tools/bundleDependencies.ts';
@@ -26,7 +26,9 @@ describe('portable production dependency bundle', function () {
 			},
 		};
 	});
-	afterEach(() => rmSync(directory, { recursive: true, force: true }));
+	afterEach(() => {
+		if (directory) rmSync(directory, { recursive: true, force: true });
+	});
 
 	function writeSource() {
 		const root = { ...lock.packages[''], files: ['index.js'], devDependencies: { 'dev-only': '^1.0.0' } };
@@ -62,7 +64,14 @@ describe('portable production dependency bundle', function () {
 		const options = { cwd: consumer, encoding: 'utf8', timeout: 60_000 };
 		execFileSync(
 			'npm',
-			['install', join(directory, packed[0].filename), '--ignore-scripts', '--offline', '--no-audit', '--no-fund'],
+			[
+				'install',
+				join(directory, (Array.isArray(packed) ? packed[0] : packed[lock.packages[''].name]).filename),
+				'--ignore-scripts',
+				'--offline',
+				'--no-audit',
+				'--no-fund',
+			],
 			options
 		);
 		rmSync(join(consumer, 'node_modules'), { recursive: true });
@@ -125,6 +134,72 @@ describe('portable production dependency bundle', function () {
 		assert.strictEqual(checkBundle(stage, join(source, 'package-lock.json')).packages, 2);
 	});
 
+	it('leaves optional-only peers externally supplied even when the development lock contains them', () => {
+		lock.packages['node_modules/parent'].peerDependencies = { 'native-peer': '^1.0.0' };
+		lock.packages['node_modules/parent'].peerDependenciesMeta = { 'native-peer': { optional: true } };
+		lock.packages['node_modules/native-peer'] = { version: '1.0.0', os: ['foreign'] };
+		const stage = prepare();
+		assert.strictEqual(checkBundle(stage, join(source, 'package-lock.json')).packages, 2);
+		assert.ok(!bundlePlan(lock).packages.has('node_modules/native-peer'));
+	});
+
+	for (const spec of ['npm:another-package@1.6.2', 'https://example.test/ordered-binary.tgz', './local.tgz']) {
+		it(`rejects rewriting non-registry source ${spec} to a same-named registry package`, () => {
+			lock.packages[''].dependencies['ordered-binary'] = spec;
+			lock.packages['node_modules/ordered-binary'] = { version: '1.6.2' };
+			assert.throws(() => bundlePlan(lock), /Cannot replace non-registry dependency ordered-binary/);
+		});
+	}
+
+	it('keeps uWebSockets.js as a dev dependency and optional peer in the real manifest', () => {
+		const manifest = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url)));
+		assert.ok(manifest.devDependencies['uWebSockets.js']);
+		assert.ok(manifest.peerDependencies['uWebSockets.js']);
+		assert.strictEqual(manifest.peerDependenciesMeta['uWebSockets.js'].optional, true);
+		assert.ok(!manifest.dependencies['uWebSockets.js'] && !manifest.optionalDependencies['uWebSockets.js']);
+	});
+
+	for (const layout of ['nested', 'linked']) {
+		it(`rejects a ${layout} same-version private encoder instance in an installed engine`, () => {
+			Object.assign(lock.packages[''].dependencies, {
+				'@harperfast/rocksdb-js': '2.0.0',
+				'@harperfast/extended-iterable': '1.0.0',
+				'ordered-binary': '1.6.2',
+				'msgpackr': '2.0.0',
+			});
+			for (const [name, version] of Object.entries(lock.packages[''].dependencies)) {
+				lock.packages[`node_modules/${name}`] ??= { version };
+			}
+			const stage = prepare();
+			for (const name of Object.keys(bundlePlan(lock).external)) {
+				const file = join(stage, 'node_modules', name, 'package.json');
+				mkdirSync(dirname(file), { recursive: true });
+				writeFileSync(
+					file,
+					JSON.stringify({ name, version: lock.packages[`node_modules/${name}`].version, main: 'index.js' })
+				);
+				writeFileSync(join(dirname(file), 'index.js'), 'module.exports = {};');
+			}
+			const nested = join(stage, 'node_modules/@harperfast/rocksdb-js/node_modules/ordered-binary');
+			mkdirSync(dirname(nested), { recursive: true });
+			if (layout === 'linked') {
+				const target = join(directory, 'private-encoder');
+				mkdirSync(target);
+				writeFileSync(join(target, 'package.json'), '{"name":"ordered-binary","version":"1.6.2","main":"index.js"}');
+				writeFileSync(join(target, 'index.js'), 'module.exports = {};');
+				symlinkSync(target, nested, 'junction');
+			} else {
+				mkdirSync(nested);
+				writeFileSync(join(nested, 'package.json'), '{"name":"ordered-binary","version":"1.6.2","main":"index.js"}');
+				writeFileSync(join(nested, 'index.js'), 'module.exports = {};');
+			}
+			assert.throws(
+				() => checkBundle(stage, join(source, 'package-lock.json'), true),
+				/separate ordered-binary instances/
+			);
+		});
+	}
+
 	it('preserves a required peer even when the same React Native name is optional elsewhere', () => {
 		lock.packages['node_modules/parent'].optionalDependencies = { 'react-native-fs': '^2.0.0' };
 		lock.packages['node_modules/parent'].peerDependencies = { 'react-native-fs': '*' };
@@ -159,6 +234,10 @@ describe('portable production dependency bundle', function () {
 		});
 	}
 
+	const peBinary = Buffer.alloc(132);
+	peBinary.write('MZ');
+	peBinary.writeUInt32LE(128, 60);
+	peBinary.write('PE\0\0', 128);
 	for (const [file, contents] of [
 		['addon.node', Buffer.from('addon')],
 		['addon.bare', Buffer.from('addon')],
@@ -166,7 +245,7 @@ describe('portable production dependency bundle', function () {
 		['hermesc', Buffer.from('7f454c46', 'hex')],
 		['mach-o', Buffer.from('cffaedfe', 'hex')],
 		['mach-o-fat64', Buffer.from('cafebabf', 'hex')],
-		['windows', Buffer.from('MZ\0\0')],
+		['windows', peBinary],
 	]) {
 		it(`rejects native content ${file}`, () => {
 			writeSource();
@@ -174,6 +253,12 @@ describe('portable production dependency bundle', function () {
 			assert.throws(() => prepareBundle(source, join(directory, 'stage')), /Cannot bundle native/);
 		});
 	}
+
+	it('allows ordinary text beginning with MZ', () => {
+		writeSource();
+		writeFileSync(join(source, 'node_modules/child/README.md'), 'MZ_MODE describes a text-only option.\n'.repeat(5));
+		assert.ok(prepareBundle(source, join(directory, 'stage')));
+	});
 
 	it('rejects an unresolved optional dependency rather than leaving a floating install edge', () => {
 		lock.packages['node_modules/parent'].optionalDependencies = { absent: '^1.0.0' };
@@ -200,6 +285,26 @@ describe('portable production dependency bundle', function () {
 		assert.throws(() => checkBundle(stage, join(source, 'package-lock.json')), /Unexpected bundled package/);
 	});
 
+	it('rejects an added dependency declaration in a copied manifest', () => {
+		const stage = prepare();
+		const file = join(stage, 'node_modules/parent/package.json');
+		const manifest = JSON.parse(readFileSync(file));
+		manifest.dependencies.absent = '^1.0.0';
+		writeFileSync(file, JSON.stringify(manifest));
+		assert.throws(() => checkBundle(stage, join(source, 'package-lock.json')), /declaration for absent differs/);
+	});
+
+	it('rejects an optional peer changed into a required consumer install edge', () => {
+		lock.packages['node_modules/parent'].peerDependencies = { absent: '^1.0.0' };
+		lock.packages['node_modules/parent'].peerDependenciesMeta = { absent: { optional: true } };
+		const stage = prepare();
+		const file = join(stage, 'node_modules/parent/package.json');
+		const manifest = JSON.parse(readFileSync(file));
+		delete manifest.peerDependenciesMeta;
+		writeFileSync(file, JSON.stringify(manifest));
+		assert.throws(() => checkBundle(stage, join(source, 'package-lock.json')), /peer optionality.*absent differs/);
+	});
+
 	it('rejects a source manifest that no longer matches the checked lock', () => {
 		const stage = prepare();
 		const file = join(stage, 'package.json');
@@ -221,5 +326,14 @@ describe('portable production dependency bundle', function () {
 		assert.throws(() => prepareBundle(source, source), /destination must not contain/);
 		writeFileSync(join(source, 'package-lock.json'), JSON.stringify({ lockfileVersion: 2 }));
 		assert.throws(() => prepareBundle(source, join(directory, 'stage')), /Expected lockfileVersion 3/);
+	});
+
+	it('refuses to clear an unrelated existing directory', () => {
+		writeSource();
+		const destination = join(directory, 'unrelated');
+		mkdirSync(destination);
+		writeFileSync(join(destination, 'keep'), 'keep');
+		assert.throws(() => prepareBundle(source, destination), /not an owned bundle stage/);
+		assert.strictEqual(readFileSync(join(destination, 'keep'), 'utf8'), 'keep');
 	});
 });

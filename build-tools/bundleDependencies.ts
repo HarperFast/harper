@@ -80,6 +80,14 @@ function severed(entry: Package, name: string) {
 	);
 }
 
+function optionalPeerOnly(entry: Package, name: string) {
+	return (
+		entry.dependencies?.[name] === undefined &&
+		entry.optionalDependencies?.[name] === undefined &&
+		entry.peerDependenciesMeta?.[name]?.optional === true
+	);
+}
+
 function resolvePackage(packages: Record<string, Package>, from: string, name: string) {
 	const segments = from ? from.split('/node_modules/') : [];
 	for (let depth = segments.length; depth >= 0; depth--) {
@@ -125,7 +133,7 @@ export function bundlePlan(lock: Lock) {
 			...entry.optionalDependencies,
 			...entry.peerDependencies,
 		})) {
-			if (severed(entry, name)) continue;
+			if (severed(entry, name) || optionalPeerOnly(entry, name)) continue;
 			const target = resolvePackage(lock.packages, key, name);
 			if (target) pending.push(target);
 			else if (
@@ -141,6 +149,10 @@ export function bundlePlan(lock: Lock) {
 		Object.keys({ ...root.dependencies, ...root.optionalDependencies })
 			.filter((name) => !roots.includes(name))
 			.map((name) => {
+				const spec = root.optionalDependencies?.[name] ?? root.dependencies?.[name];
+				if (!spec || /[:/@]/.test(spec) || /\.(?:tgz|tar(?:\.gz)?)$/.test(spec)) {
+					throw new Error(`Cannot replace non-registry dependency ${name} with an exact registry version`);
+				}
 				const key = resolvePackage(lock.packages, '', name);
 				const version = key && lock.packages[key].version;
 				if (!version) throw new Error(`Missing locked version for ${name}`);
@@ -164,8 +176,20 @@ function checkNativeFiles(directory: string) {
 		}
 		const signature = Buffer.alloc(4);
 		const descriptor = openSync(file, 'r');
+		let portableExecutable = false;
 		try {
 			readSync(descriptor, signature, 0, 4, 0);
+			if (signature.subarray(0, 2).toString() === 'MZ') {
+				const header = Buffer.alloc(64);
+				if (readSync(descriptor, header, 0, header.length, 0) === header.length) {
+					const offset = header.readUInt32LE(60);
+					const peSignature = Buffer.alloc(4);
+					portableExecutable =
+						offset >= header.length &&
+						readSync(descriptor, peSignature, 0, 4, offset) === 4 &&
+						peSignature.equals(Buffer.from([0x50, 0x45, 0, 0]));
+				}
+			}
 		} finally {
 			closeSync(descriptor);
 		}
@@ -181,7 +205,7 @@ function checkNativeFiles(directory: string) {
 				'cafebabf',
 				'bfbafeca',
 			].includes(signature.toString('hex')) ||
-			signature.subarray(0, 2).toString() === 'MZ'
+			portableExecutable
 		) {
 			throw new Error(`Cannot bundle native executable ${file}`);
 		}
@@ -191,13 +215,18 @@ function checkNativeFiles(directory: string) {
 export function prepareBundle(source: string, destination: string) {
 	source = resolve(source);
 	destination = resolve(destination);
-	if (source === destination || source.startsWith(destination + sep)) {
+	if (dirname(destination) === destination || source === destination || source.startsWith(destination + sep)) {
 		throw new Error('Bundle destination must not contain the source');
 	}
 	const lock = readLock(join(source, 'package-lock.json'));
 	const plan = bundlePlan(lock);
+	const marker = join(destination, '.harper-bundle-stage.json');
+	if (existsSync(destination) && (!existsSync(marker) || readJson(marker).source !== source)) {
+		throw new Error(`Destination is not an owned bundle stage: ${destination}`);
+	}
 	rmSync(destination, { recursive: true, force: true });
 	mkdirSync(destination, { recursive: true });
+	writeFileSync(marker, JSON.stringify({ source }) + '\n');
 	const packed = JSON.parse(
 		execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', destination], {
 			cwd: source,
@@ -207,7 +236,9 @@ export function prepareBundle(source: string, destination: string) {
 	);
 	const stage = join(destination, 'package');
 	mkdirSync(stage);
-	execFileSync('tar', ['-xzf', join(destination, packed[0].filename), '--strip-components=1', '-C', stage]);
+	const artifact = Array.isArray(packed) ? packed[0] : packed[lock.packages[''].name!];
+	if (!artifact?.filename) throw new Error('npm pack did not report a package filename');
+	execFileSync('tar', ['-xzf', join(destination, artifact.filename), '--strip-components=1', '-C', stage]);
 	rmSync(join(stage, 'node_modules'), { recursive: true, force: true });
 	rmSync(join(stage, 'npm-shrinkwrap.json'), { force: true });
 	const manifest: Package = readJson(join(stage, 'package.json'));
@@ -289,12 +320,30 @@ export function checkBundle(root: string, lockFile: string, installed = false) {
 		if (entry.version !== lock.packages[key].version) throw new Error(`Bundled ${key} differs from package-lock.json`);
 		if (nativeManifest(entry)) throw new Error(`Cannot bundle native or platform dependency ${key}`);
 		checkNativeFiles(directory);
+		const locked = lock.packages[key];
+		for (const group of ['dependencies', 'optionalDependencies', 'peerDependencies'] as const) {
+			for (const name of new Set([...Object.keys(entry[group] ?? {}), ...Object.keys(locked[group] ?? {})])) {
+				const expected = severed(locked, name) ? undefined : locked[group]?.[name];
+				if (entry[group]?.[name] !== expected) {
+					throw new Error(`Bundled ${key} ${group} declaration for ${name} differs from package-lock.json`);
+				}
+			}
+		}
+		for (const name of Object.keys(locked.peerDependencies ?? {})) {
+			if (
+				!severed(locked, name) &&
+				Boolean(entry.peerDependenciesMeta?.[name]?.optional) !== Boolean(locked.peerDependenciesMeta?.[name]?.optional)
+			) {
+				throw new Error(`Bundled ${key} peer optionality for ${name} differs from package-lock.json`);
+			}
+		}
 		for (const name of Object.keys({
 			...entry.dependencies,
 			...entry.optionalDependencies,
 			...entry.peerDependencies,
 		})) {
 			if (severed(entry, name)) throw new Error(`Unused optional dependency ${key} -> ${name} remains declared`);
+			if (optionalPeerOnly(entry, name)) continue;
 			const target = resolvePackage(lock.packages, key, name);
 			if (target && !plan.packages.has(target)) throw new Error(`Bundle is not closed: ${key} -> ${name}`);
 		}
