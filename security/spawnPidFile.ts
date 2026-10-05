@@ -16,6 +16,7 @@ let ownerIdentity: string;
 export class NamedProcessError extends ServerError {
 	constructor(message: string, options?: ErrorOptions) {
 		super(message);
+		this.name = 'NamedProcessError';
 		this.cause = options?.cause;
 	}
 }

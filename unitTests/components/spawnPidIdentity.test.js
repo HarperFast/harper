@@ -203,8 +203,11 @@ describe('constrained spawn process identity', function () {
 			.find((pid) => pid !== process.pid);
 		assert(tid);
 		assert.doesNotThrow(() => process.kill(tid, 0));
-		writeFileSync(pidFile, `${tid}\n1\n${readProcessIdentity(process.pid).identity}`);
-		assert.notStrictEqual(fork({ version: 2 }).pid, tid);
+		const boot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+		const stat = readFileSync(`/proc/${process.pid}/task/${tid}/stat`, 'utf8');
+		const start = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+		writeFileSync(pidFile, `${tid}\n0\nlinux:${boot}:${tid}:${start}`);
+		assert.notStrictEqual(fork().pid, tid);
 	});
 
 	it('preserves an unreadable PID record and refuses to spawn', function () {
