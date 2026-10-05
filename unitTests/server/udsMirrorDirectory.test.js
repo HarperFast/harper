@@ -41,6 +41,7 @@ describe('UDS mirror directory and metadata publication', () => {
 
 		beforeEach(() => {
 			SOCKETS_DIR = path.join(env.getHdbBasePath(), 'sockets');
+			assert.ok(SOCKETS_DIR.startsWith(testUtils.ENV_DIR_PATH), `${SOCKETS_DIR} is outside the test root`);
 			fs.rmSync(SOCKETS_DIR, { recursive: true, force: true });
 		});
 
