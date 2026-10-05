@@ -3,8 +3,11 @@
  * with the same compiled CommonJS behavior and configured worker restrictions.
  */
 import { suite, test, before, after } from 'node:test';
-import { deepStrictEqual, strictEqual, ok } from 'node:assert';
-import { resolve } from 'node:path';
+// oxlint-disable-next-line no-restricted-imports -- repository task requires strict assertions
+import { deepStrictEqual, strictEqual, ok } from 'node:assert/strict';
+import { resolve, join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { waitFor } from '../../unitTests/waitFor.js';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 for (const mode of ['compiled', 'typestrip']) {
@@ -16,7 +19,10 @@ for (const mode of ['compiled', 'typestrip']) {
 					authentication: { operationTokenTimeout: '2h', refreshTokenTimeout: '3h' },
 					applications: { allowedBuiltinModules: ['worker_threads'] },
 				},
-				env: mode === 'typestrip' ? { NODE_OPTIONS: '--conditions=typestrip' } : {},
+				env: {
+					HARPER_SQL_ENGINE: 'legacy',
+					...(mode === 'typestrip' ? { NODE_OPTIONS: '--conditions=typestrip' } : {}),
+				},
 				harperBinPath: resolve(
 					import.meta.dirname,
 					`../../${mode === 'typestrip' ? 'bin/harper.ts' : 'dist/bin/harper.js'}`
@@ -25,6 +31,81 @@ for (const mode of ['compiled', 'typestrip']) {
 		});
 		after(async () => {
 			await teardownHarper(ctx);
+		});
+
+		test('loads cold SQL for date searches, direct queries and export jobs, preserving authorization', async () => {
+			const headers = {
+				'Authorization': `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+				'Content-Type': 'application/json',
+			};
+			async function operation(body: object, authorization = headers.Authorization) {
+				const response = await fetch(ctx.harper.operationsAPIURL, {
+					method: 'POST',
+					headers: { ...headers, Authorization: authorization },
+					body: JSON.stringify(body),
+					signal: AbortSignal.timeout(30000),
+				});
+				return { status: response.status, body: await response.json() };
+			}
+			const jobs = await operation({
+				operation: 'search_jobs_by_start_date',
+				from_date: '2000-01-01',
+				to_date: '2100-01-01',
+			});
+			strictEqual(jobs.status, 200, JSON.stringify(jobs.body));
+			ok(Array.isArray(jobs.body));
+			const sql = `SELECT username FROM system.hdb_user WHERE username = '${ctx.harper.admin.username.replaceAll("'", "''")}'`;
+			const query = await operation({ operation: 'sql', sql });
+			strictEqual(query.status, 200, JSON.stringify(query.body));
+			deepStrictEqual(query.body, [{ username: ctx.harper.admin.username }]);
+			const exported = await operation({
+				operation: 'export_local',
+				path: ctx.harper.dataRootDir,
+				filename: 'cold-sql',
+				format: 'json',
+				search_operation: { operation: 'sql', sql },
+			});
+			strictEqual(exported.status, 200, JSON.stringify(exported.body));
+			await waitFor(
+				async () => {
+					const result = await operation({ operation: 'get_job', id: exported.body.job_id });
+					strictEqual(result.status, 200);
+					const job = result.body[0];
+					if (job?.status !== 'COMPLETE' && job?.status !== 'ERROR') return false;
+					strictEqual(job.status, 'COMPLETE', JSON.stringify(job));
+					return true;
+				},
+				{ timeout: 30000, interval: 100 }
+			);
+			deepStrictEqual(JSON.parse(await readFile(join(ctx.harper.dataRootDir, 'cold-sql.json'), 'utf8')), query.body);
+			strictEqual(
+				(
+					await operation({
+						operation: 'add_role',
+						role: 'cold_sql_denied',
+						permission: { super_user: false, operations: ['user_info'] },
+					})
+				).status,
+				200
+			);
+			strictEqual(
+				(
+					await operation({
+						operation: 'add_user',
+						role: 'cold_sql_denied',
+						username: 'cold_sql_denied',
+						password: 'Cold-sql-pw-1!',
+						active: true,
+					})
+				).status,
+				200
+			);
+			const denied = await operation(
+				{ operation: 'sql', sql },
+				`Basic ${Buffer.from('cold_sql_denied:Cold-sql-pw-1!').toString('base64')}`
+			);
+			strictEqual(denied.status, 403, JSON.stringify(denied.body));
+			ok(JSON.stringify(denied.body).includes("Operation 'sql' is not permitted"));
 		});
 
 		test('serves requests in workers and persists a REST record', async () => {

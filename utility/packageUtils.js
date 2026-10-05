@@ -70,4 +70,15 @@ function loadNativePackage(name) {
 	return require(name);
 }
 
-module.exports = { packageJson, PACKAGE_ROOT, RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT, loadNativePackage };
+function loadRuntimeModule(relativePath) {
+	return require(join(__dirname, '..', relativePath + RUNTIME_FILE_EXT));
+}
+
+module.exports = {
+	packageJson,
+	PACKAGE_ROOT,
+	RUNTIME_SRC_ROOT,
+	RUNTIME_FILE_EXT,
+	loadNativePackage,
+	loadRuntimeModule,
+};

@@ -1,5 +1,4 @@
-import * as indexCjsModule from '../sqlTranslator/index.ts';
-('use strict');
+import { loadRuntimeModule } from '../utility/packageUtils.js';
 
 import * as search from './search.ts';
 import * as AWSConnector from '../utility/AWS/AWSConnector.js';
@@ -357,7 +356,7 @@ async function getRecords(exportObject: any) {
 			break;
 		case 'sql': {
 			if (!pSql) {
-				const sql = indexCjsModule;
+				const sql = loadRuntimeModule('sqlTranslator/index');
 				pSql = promisify(sql.evaluateSQL);
 			}
 			operation = pSql;

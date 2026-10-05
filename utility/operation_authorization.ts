@@ -1,6 +1,4 @@
-import * as sql_statement_bucketCjsModule from '../sqlTranslator/sql_statement_bucket.ts';
-import alasql from 'alasql';
-('use strict');
+import { loadRuntimeModule, loadNativePackage } from './packageUtils.js';
 /**
  * This module is used before a SQL or NoSQL operation is performed in order to ensure the user's assigned role
  * has the permissions and lack of restrictions needed to process the operation.  Only verifyPerms and verifyPermsAST
@@ -541,6 +539,8 @@ function sqlWriteScopeDenial(userObject: any, sqlVariant: string) {
 	return tokenScopeDenial(userObject, sqlVariant);
 }
 
+let StatementBucket;
+let alasql;
 export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.OPERATIONS_ENUM.SQL) {
 	//TODO - update these validation checks to use validate.js
 	if (commonUtils.isEmptyOrZeroLength(ast)) {
@@ -565,11 +565,11 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 	if (scopeDenial) return scopeDenial;
 
 	try {
-		const bucketModule = sql_statement_bucketCjsModule;
-		const bucket = bucketModule.default;
+		StatementBucket ??= loadRuntimeModule('sqlTranslator/sql_statement_bucket').default;
+		alasql ??= loadNativePackage('alasql');
 
 		const permsResponse = new PermissionResponseObject();
-		let parsedAst = new bucket(ast);
+		let parsedAst = new StatementBucket(ast);
 		let schemas = parsedAst.getSchemas();
 		let schemaTableMap = new Map();
 

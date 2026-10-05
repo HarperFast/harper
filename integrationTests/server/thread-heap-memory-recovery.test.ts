@@ -14,10 +14,12 @@
  * API. It has to run in its own process: on the unfixed code the failure kills the parent.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+// oxlint-disable-next-line no-restricted-imports -- repository task requires strict assertions
+import { ok, strictEqual } from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { waitFor } from '../../unitTests/waitFor.js';
 
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import { MIN_THREAD_HEAP_MEMORY_MB } from '../../utility/hdbTerms.ts';
@@ -68,26 +70,53 @@ suite('Harper boots on a threads.maxHeapMemory no worker thread could start on',
 // The accepted boundary is the one number the guard hinges on, so prove a worker actually completes
 // startup there rather than only that an isolate initializes. Measured floor for a bare worker is
 // between 48 (fails) and 56 (serves).
-suite('Harper boots at the accepted threads.maxHeapMemory minimum', (ctx: ContextWithHarper) => {
-	before(async () => {
-		await startHarper(ctx, {
-			config: { threads: { count: 1, maxHeapMemory: MIN_THREAD_HEAP_MEMORY_MB } },
-			env: {},
+for (const mode of ['compiled', 'typestrip']) {
+	suite(`Harper boots at the accepted threads.maxHeapMemory minimum (${mode})`, (ctx: ContextWithHarper) => {
+		before(async () => {
+			await startHarper(ctx, {
+				config: { threads: { count: 1, maxHeapMemory: MIN_THREAD_HEAP_MEMORY_MB } },
+				env: mode === 'typestrip' ? { NODE_OPTIONS: '--conditions=typestrip' } : {},
+				startupMaxMs: 60000,
+				harperBinPath: resolve(
+					import.meta.dirname,
+					`../../${mode === 'typestrip' ? 'bin/harper.ts' : 'dist/bin/harper.js'}`
+				),
+			});
+		});
+
+		after(async () => {
+			await teardownHarper(ctx);
+		});
+
+		test('the operations API serves traffic on the configured minimum', async () => {
+			const res = await fetch(`${ctx.harper.operationsAPIURL}/health`);
+			strictEqual(res.status, 200);
+			const threads = await waitFor(
+				async () => {
+					const response = await fetch(ctx.harper.operationsAPIURL, {
+						method: 'POST',
+						headers: {
+							'Authorization': `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+							'Content-Type': 'application/json',
+						},
+						body: JSON.stringify({ operation: 'system_information', attributes: ['threads'] }),
+						signal: AbortSignal.timeout(10000),
+					});
+					strictEqual(response.status, 200);
+					const { threads } = await response.json();
+					return threads.some((thread) => thread.heapUsed > 0) && threads;
+				},
+				{ timeout: 10000, interval: 100 }
+			);
+			console.log(
+				`[${mode}] ready worker heap: ${JSON.stringify(threads.map(({ heapUsed, heapTotal }) => ({ heapUsed, heapTotal })))}`
+			);
+		});
+
+		test('the configured minimum is honored, not displaced', async () => {
+			const logDir = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
+			const contents = await waitForLogMatch(logDir, RECOVERY_LOG, 2000);
+			ok(!RECOVERY_LOG.test(contents), 'a value at the minimum must not trigger recovery');
 		});
 	});
-
-	after(async () => {
-		await teardownHarper(ctx);
-	});
-
-	test('the operations API serves traffic on the configured minimum', async () => {
-		const res = await fetch(`${ctx.harper.operationsAPIURL}/health`);
-		strictEqual(res.status, 200);
-	});
-
-	test('the configured minimum is honored, not displaced', async () => {
-		const logDir = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
-		const contents = await waitForLogMatch(logDir, RECOVERY_LOG, 2000);
-		ok(!RECOVERY_LOG.test(contents), 'a value at the minimum must not trigger recovery');
-	});
-});
+}

@@ -14,7 +14,8 @@
  * and its blob must be readable afterwards.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+// oxlint-disable-next-line no-restricted-imports -- repository task requires strict assertions
+import { ok, strictEqual } from 'node:assert/strict';
 import { resolve, join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';

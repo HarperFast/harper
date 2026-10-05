@@ -1,6 +1,4 @@
-import * as SelectValidatorCjsModule from '../sqlTranslator/SelectValidator.ts';
-import * as SQLSearchCjsModule from './SQLSearch.ts';
-('use strict');
+import { loadRuntimeModule } from '../utility/packageUtils.js';
 
 import harperBridge from './harperBridge/harperBridge.ts';
 import { transformReq } from '../utility/common_utils.ts';
@@ -32,10 +30,12 @@ export async function searchByValue(searchObject: any) {
 	return array;
 }
 
+let SelectValidator;
+let SQLSearch;
 export function search(statement: any, callback: any) {
 	try {
-		const SelectValidator = SelectValidatorCjsModule.default;
-		const SQLSearch = SQLSearchCjsModule.default;
+		SelectValidator ??= loadRuntimeModule('sqlTranslator/SelectValidator').default;
+		SQLSearch ??= loadRuntimeModule('dataLayer/SQLSearch').default;
 		let validator = new SelectValidator(statement);
 		validator.validate();
 
