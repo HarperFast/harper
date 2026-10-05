@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
     # on a required check. Every step below is capped in its own right and this sits above their
-    # sum (52 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
+    # sum (54 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
     timeout-minutes: 55
     strategy:
       fail-fast: false
@@ -94,8 +94,10 @@ jobs:
       # from the Actions step API: a cap-killed sample is right-censored and reads far too low.
       # Derived 2026-09-18 over the 30 `Unit Test` pushes since 2026-09-14, and only `resources`
       # was re-budgeted — capped at 7m off a ~4m30-5m25 estimate nobody re-measured, it reached
-      # 6m58 completed, went red on main, and needed ~7m40 at its worst. `main` (3m19) sits at ~1.2x
-      # its own worst, not 1.5x. `lmdb` was re-derived 2026-09-28 over the pushes since 2026-09-26:
+      # 6m58 completed, went red on main, and needed ~7m40 at its worst. `main` was re-derived
+      # 2026-10-05 over ten pushes: slowest successful step 3m59, so 6m at 1.5x. The new named-child
+      # suites add ~12s; all three Node legs reached their epilogues in 4m03 to 4m13, past the old 4m cap.
+      # `lmdb` was re-derived 2026-09-28 over the pushes since 2026-09-26:
       # slowest completed 3m38, ~3m20 once `subscriptionSuperseded` stopped replaying the shared
       # `test` database's whole audit log; 1.5x is 5m, and the legs killed at 4m ran longer than any
       # that completed, so 6m. Its LMDB-`resources` phase stretches on a slow runner in tests that
@@ -112,7 +114,7 @@ jobs:
       # core 4m50 -> 8m, indexes 2m50 -> 5m.
       - name: 'Unit tests: main'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 4
+        timeout-minutes: 6
         run: npm run test:unit:main
 
       - name: 'Unit tests: apitests'
