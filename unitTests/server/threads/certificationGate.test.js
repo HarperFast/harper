@@ -16,6 +16,7 @@ const {
 	startWorker,
 	workers,
 	certificationRequest,
+	certificationRollout,
 	setCertificationHandler,
 	setCanaryVerdictTimeout,
 	setRootComponentsReload,
@@ -237,6 +238,21 @@ describe('the release certification gate', function () {
 			'the pool is exactly the workers that were serving'
 		);
 		assert.ok(pool.every((worker) => !worker.wasShutdown));
+	});
+
+	it('keeps a refused decision and its rollout for the requester that reads them after the rollout ended', async () => {
+		plan([{ outcome: 'failed' }]);
+		await arm({ requesterThreadId: pool[0].threadId });
+		await commit();
+		await rolledOut();
+
+		const decision = await decisionOf();
+		assert.equal(decision?.status, 'rejected', 'the requester still reads the refusal');
+		const outcome = await certificationRollout(COMPONENT, DEPLOYMENT);
+		assert.equal(outcome?.certification?.status, 'rejected', 'and the rollout that followed it');
+
+		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+		assert.equal(await decisionOf(), undefined, 'released, it is gone');
 	});
 
 	for (const [label, step, pattern] of [

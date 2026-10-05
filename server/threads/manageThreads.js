@@ -526,6 +526,9 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CERTIFICATION_RESPONSE, null);
  * worker to report decides the release; the rest wait for that decision. components/DESIGN.md has the protocol.
  */
 const certifications = new Map();
+// A completed certification stays answerable until its requester releases it: a fast refusal can end the rollout
+// before the deploy that requested it reads the decision.
+const settledCertifications = new Map();
 const heldStarts = new Set();
 const failClosedInMemory = new Map();
 let certificationHandler;
@@ -568,8 +571,11 @@ function openCertificationsPlacedBy(workerOrOptions) {
 }
 
 function findCertification(component, deploymentId) {
-	const certification = certifications.get(component);
-	return certification?.deploymentId === deploymentId ? certification : undefined;
+	for (const registry of [certifications, settledCertifications]) {
+		const certification = registry.get(component);
+		if (certification?.deploymentId === deploymentId) return certification;
+	}
+	return undefined;
 }
 
 function armCertification({ component, deploymentId, isolated, scope, requesterThreadId }) {
@@ -658,6 +664,7 @@ async function completeCertification(certification, outcome) {
 		);
 	}
 	if (certifications.get(certification.component) === certification) certifications.delete(certification.component);
+	if (!certification.requesterReleased) settledCertifications.set(certification.component, certification);
 	if (certification.watchersPaused) resumeWatchersOf(certification.component, certification.watchersPaused);
 	certification.rolledOut.resolve(outcome);
 	startDeferredStarts(certification);
@@ -967,7 +974,11 @@ function certificationRollout(component, deploymentId, onProgress) {
 }
 
 function releaseCertificationRequester(component, deploymentId) {
-	findCertification(component, deploymentId)?.released.resolve();
+	const certification = findCertification(component, deploymentId);
+	if (!certification) return;
+	certification.requesterReleased = true;
+	certification.released.resolve();
+	if (settledCertifications.get(component) === certification) settledCertifications.delete(component);
 }
 
 function failClosedComponentsPlacedBy(options) {
@@ -1033,6 +1044,9 @@ function registerCertificationRequests() {
 			);
 	});
 	onThreadExit((threadId) => {
+		for (const [component, certification] of settledCertifications) {
+			if (certification.requesterThreadId === threadId) settledCertifications.delete(component);
+		}
 		for (const certification of certifications.values()) {
 			if (certification.phase !== 'armed' || certification.requesterThreadId !== threadId) continue;
 			Promise.resolve(certificationHandler?.resolveArmed?.(certification))
