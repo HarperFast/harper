@@ -271,6 +271,7 @@ async function reconcileIsolatedWorkersNow(): Promise<string[]> {
 		for (const application of stoppedApplications) cleanupApplicationSockets(application);
 	}
 	const started: string[] = [];
+	if (isProcessShuttingDown()) return started;
 	const heapShareCount = poolSize + dedicatedWorkerCount + wanted.size;
 	for (const slot of poolSlots) slot.setHeapShareCount(heapShareCount);
 	for (const slot of isolatedSlots.values()) slot.setHeapShareCount(heapShareCount);
