@@ -265,6 +265,9 @@ function startServers() {
 	const started = loaded
 		.then(() => listening)
 		.then(() => {
+			// An isolated worker is reachable only through its mirror; without one it must not report ready.
+			if (thisThreadsIsolatedApplication() && !httpComponent.hasUdsMirror())
+				throw new Error(`Isolated application ${thisThreadsIsolatedApplication()} has no UDS mirror`);
 			reportStartupPhase('ready');
 			if (getWorkerIndex() === 0) {
 				try {
@@ -675,11 +678,6 @@ function onSocket(listener, options) {
 	let getComponentName = require('../../components/componentLoader.ts').getComponentName;
 	let socketServer;
 	if (options.securePort) {
-		// Before any registration: a throw here must not leave a listener without its mirror.
-		const socketsDir =
-			env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(options.securePort)
-				? httpComponent.ensureSocketsDirectory()
-				: undefined;
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
 		// usageType lets a caller's certificates (tagged via hdb_certificate.uses) win the quality
 		// bonus in createTLSSelector for this listener, the same way http.ts's usageType does for
@@ -730,6 +728,7 @@ function onSocket(listener, options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 		if (env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
 			const socketsDir = join(env.getHdbBasePath(), 'sockets');
 			mkdirSync(socketsDir, { recursive: true });
@@ -742,12 +741,17 @@ function onSocket(listener, options) {
 		) {
 >>>>>>> 396ab5ffc (Harden the UDS mirror directory and publish its metadata atomically)
 =======
+=======
+>>>>>>> cd6eff0e6 (Refuse ready for an isolated worker that bound no UDS mirror)
 		const socketsDir =
 			env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(options.securePort)
 				? httpComponent.ensureSocketsDirectory()
 				: undefined;
+<<<<<<< HEAD
 =======
 >>>>>>> 5970700ab (Check the UDS mirror directory before registering the secure listener)
+=======
+>>>>>>> cd6eff0e6 (Refuse ready for an isolated worker that bound no UDS mirror)
 		if (socketsDir) {
 >>>>>>> 7b26d4c87 (Resolve the UDS mirror directory from the helper and fail isolated workers loudly)
 			const isolatedApplication = thisThreadsIsolatedApplication();
