@@ -47,7 +47,6 @@ export function resolveRocksMemoryConfig(input: RocksMemoryConfigInput): RocksMe
 	const writeBufferManagerSize = Math.floor(
 		typeof configuredWriteBufferManagerSize === 'number' ? configuredWriteBufferManagerSize : blockCacheSize / 3
 	);
-	// Serial unless explicitly parallel; see resources/DESIGN.md for why serial is the default.
 	const occValidation: OccValidation = configuredOccValidation === 'parallel' ? 'parallel' : 'serial';
 	const config: RocksMemoryConfig = { blockCacheSize, occValidation };
 	// costToCache and allowStall only matter when the WBM is enabled. allowStall defaults to false
