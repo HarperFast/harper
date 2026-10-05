@@ -44,8 +44,7 @@ describe('Auto-increment id allocation under concurrent allocation writes', func
 		assert.fail(`condition not reached within ${MAX_IDS} ids`);
 	}
 
-	// Commits a sibling worker's allocation (and its shared-counter reset, in that order) just before
-	// this thread's next write of the allocation record.
+	// the sibling's counter reset follows its commit, as in production
 	function siblingCommitsBeforeNextAllocationWrite(store, sibling, siblingCounterStart) {
 		const put = store.put;
 		let fired = false;
@@ -116,7 +115,6 @@ describe('Auto-increment id allocation under concurrent allocation writes', func
 			assert(restore(), 'expected the range to be extended');
 		}
 		assert.deepStrictEqual(readAllocation(store), sibling);
-		// approaching the end of the sibling's range must trigger this thread's range check and extension
 		getNewIdsUntil(IdTable, (id) => id >= sibling.end - 50);
 		assert(readAllocation(store).end > sibling.end, 'ids approached the stored range end without extending it');
 	});
