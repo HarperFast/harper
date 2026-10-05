@@ -58,6 +58,29 @@ function aggregatedWritePath(path, message = `${path} was aggregated`) {
 	return waitFor(() => aggregatedWritePaths().includes(path), { timeout: 10000, message });
 }
 
+// One raw report per thread sample. The probe's `maxWait` and `maximum` carry the same values as
+// `maxDepth`, so the test separates the max-named rule from the mean rule on one measure name each.
+function gaugeReport(id, threadId, depth, maxDepth) {
+	const gauge = { threadId, byThread: true, depth, maxDepth };
+	return {
+		id,
+		time: id,
+		period: PERIOD,
+		threadId,
+		metrics: [
+			{ metric: 'write-transaction-queue-depth', ...gauge },
+			{ metric: 'read-transaction-queue-depth', ...gauge },
+			{ metric: 'contract-probe', threadId, byThread: true, maxWait: maxDepth, maximum: maxDepth },
+		],
+	};
+}
+
+function aggregatedMetric(metric, time) {
+	for (const { value } of databases.system.hdb_analytics.primaryStore.getRange({ start: false, end: Infinity })) {
+		if (value?.metric === metric && value.time === time) return value;
+	}
+}
+
 describe('analytics aggregation cycle', () => {
 	// Rollups of this path, taken from the cycle itself: no wait on storage can establish that a
 	// second one will never arrive, and the listener runs synchronously inside the cycle. Held by
@@ -137,5 +160,48 @@ describe('analytics aggregation cycle', () => {
 		await aggregatedWritePath('AggWindowConcurrent');
 		const aggregated = aggregatedWritePaths().filter((path) => path === 'AggWindowConcurrent');
 		assert.deepStrictEqual(aggregated, ['AggWindowConcurrent']);
+	});
+
+	it('takes the peak of each thread over a period and sums those peaks across threads', async function () {
+		this.timeout(30000);
+		const first = lastRawKey() + 1;
+		const second = first + PERIOD + 1;
+		// Thread 0 and sparse thread 7, two samples each, in two periods. Period one's maxDepth is
+		// 10 + 8 = 18: the per-thread peaks, not their means (7 + 5.5 = 12.5) or the largest peak (10).
+		await seedRawReports([
+			gaugeReport(first, 0, 2, 10),
+			gaugeReport(first + 1, 0, 4, 4),
+			gaugeReport(first + 2, 7, 1, 3),
+			gaugeReport(first + 3, 7, 3, 8),
+			gaugeReport(second, 0, 0, 0),
+			gaugeReport(second + 1, 0, 0, 0),
+			gaugeReport(second + 2, 7, 0, 1),
+			gaugeReport(second + 3, 7, 1, 1),
+		]);
+		await nextPeriod();
+		await runCycle();
+		await runCycle();
+
+		const periods = [
+			{ time: first + 3, depth: 5, maxDepth: 18, maximum: 12.5, maxWait: 18 },
+			{ time: second + 3, depth: 0.5, maxDepth: 1, maximum: 1, maxWait: 1 },
+		];
+		for (const period of periods) {
+			for (const metric of ['write-transaction-queue-depth', 'read-transaction-queue-depth', 'contract-probe']) {
+				await waitFor(() => aggregatedMetric(metric, period.time), {
+					timeout: 10000,
+					message: `${metric} at ${period.time} was aggregated`,
+				});
+			}
+			for (const metric of ['write-transaction-queue-depth', 'read-transaction-queue-depth']) {
+				const row = aggregatedMetric(metric, period.time);
+				assert.strictEqual(row.depth, period.depth, `${metric} depth is the mean of samples per thread, summed`);
+				assert.strictEqual(row.maxDepth, period.maxDepth, `${metric} maxDepth is the sum of per-thread peaks`);
+			}
+			// `maximum` is not max-named, so it keeps the mean; `maxWait` is max-named and takes the peak.
+			const probe = aggregatedMetric('contract-probe', period.time);
+			assert.strictEqual(probe.maximum, period.maximum);
+			assert.strictEqual(probe.maxWait, period.maxWait);
+		}
 	});
 });
