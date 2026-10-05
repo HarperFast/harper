@@ -217,7 +217,10 @@ export async function scanLiveClaims(
 	return { choosing, tickets };
 }
 
-function ticketPrecedes(left: ComponentPreparationLockOwner, right: ComponentPreparationLockOwner): boolean {
+export function ticketPrecedes(
+	left: Pick<ComponentPreparationLockOwner, 'ticket' | 'token'>,
+	right: Pick<ComponentPreparationLockOwner, 'ticket' | 'token'>
+): boolean {
 	const leftTicket = left.ticket ?? Number.MAX_SAFE_INTEGER;
 	const rightTicket = right.ticket ?? Number.MAX_SAFE_INTEGER;
 	return leftTicket < rightTicket || (leftTicket === rightTicket && left.token < right.token);

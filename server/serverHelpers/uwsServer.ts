@@ -138,10 +138,15 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 		const ip = port != null ? normalizeAddress(Buffer.from(res.getRemoteAddressAsText()).toString()) : undefined;
 
 		const ac = new AbortController();
-		res.onAborted(() => ac.abort());
-		// Once a response has been committed (handler result, error, or a 413), writing again to the
-		// same uWS response is invalid and aborts the process — so every write site guards on this in
-		// addition to ac.signal.aborted (which only covers a client-side teardown, not our own writes).
+		let bodyDrainTimeout: ReturnType<typeof setTimeout> | undefined;
+		let finishRejectedResponse: (() => void) | undefined;
+		res.onAborted(() => {
+			clearTimeout(bodyDrainTimeout);
+			finishRejectedResponse = undefined;
+			ac.abort();
+		});
+		// A second handler response is invalid in uWS. The deferred 413 end instead uses its
+		// own finisher, which native onAborted invalidates independently of handler cancellation.
 		let responseCompleted = false;
 
 		const dispatch = (body?: UwsRequestBody) => {
@@ -183,19 +188,41 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 				if (ended || body.destroyed) return;
 				ended = true;
 				body.destroy(error && body.listenerCount('error') > 0 ? error : undefined);
+				body.removeAllListeners('data');
+				while (body.readableLength) body.read(Math.min(body.readableLength, body.readableHighWaterMark));
 			};
 			ac.signal.addEventListener('abort', () => tearDown(new Error('request aborted')), { once: true });
 			res.onData((chunk: ArrayBuffer, isLast: boolean) => {
-				if (ended || body.destroyed) return;
+				if (ended || body.destroyed) {
+					if (isLast) finishRejectedResponse?.();
+					return;
+				}
 				total += chunk.byteLength;
 				if (total > maxBodyBytes) {
+					const error = new ClientError(`Request body exceeds ${maxBodyBytes} bytes`, 413);
 					// Only send 413 if nothing has been written yet: the handler may have already responded
 					// (or streamed) without consuming the body, and writing to that completed response aborts.
 					if (!ac.signal.aborted && !responseCompleted) {
 						responseCompleted = true;
-						res.cork(() => res.writeStatus('413 Payload Too Large').end());
+						const connection = Array.isArray(headers.connection) ? headers.connection[0] : headers.connection;
+						res.cork(() => {
+							res.writeStatus('413 Payload Too Large');
+							if (!isLast && typeof connection === 'string' && connection.toLowerCase() === 'close') {
+								res.writeHeader('Connection', 'close');
+								res.writeHeader('content-type', 'text/plain');
+								res.write(errorToString(error));
+								finishRejectedResponse = () => {
+									if (!finishRejectedResponse) return;
+									finishRejectedResponse = undefined;
+									clearTimeout(bodyDrainTimeout);
+									res.cork(() => res.end());
+								};
+								bodyDrainTimeout = setTimeout(finishRejectedResponse, 1_000);
+								bodyDrainTimeout.unref();
+							} else res.end();
+						});
 					}
-					tearDown(new ClientError(`Request body exceeds ${maxBodyBytes} bytes`, 413));
+					tearDown(error);
 					ac.abort();
 					return;
 				}

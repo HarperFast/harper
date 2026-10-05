@@ -12,7 +12,41 @@ const {
 	derivePackageIdentifier,
 	parseGitReference,
 	shouldPackLocalDirectory,
+	getEnvBuiltInComponents,
+	installApplications,
 } = require('#src/components/Application');
+
+async function withBuiltInComponents(value, run) {
+	const savedBuiltIns = process.env.HARPER_BUILTIN_COMPONENTS;
+	process.env.HARPER_BUILTIN_COMPONENTS = value;
+	try {
+		return await run();
+	} finally {
+		if (savedBuiltIns === undefined) delete process.env.HARPER_BUILTIN_COMPONENTS;
+		else process.env.HARPER_BUILTIN_COMPONENTS = savedBuiltIns;
+	}
+}
+
+describe('getEnvBuiltInComponents', () => {
+	it('skips incomplete declarations and preserves complete entries', async () => {
+		await withBuiltInComponents(
+			'first=@/first.js,secretCustody,=@/missing-name.js,empty=,  ,padded = @/padded.js?sig=a=b,last=@/last.js,',
+			() => {
+				assert.deepStrictEqual(getEnvBuiltInComponents(), [
+					{ name: 'first', packageIdentifier: '@/first.js' },
+					{ name: 'padded', packageIdentifier: '@/padded.js?sig=a=b' },
+					{ name: 'last', packageIdentifier: '@/last.js' },
+				]);
+			}
+		);
+	});
+
+	it('lets application installation continue past a bare declaration', async () => {
+		await withBuiltInComponents('secretCustody,valid=@/dist/utility/common_utils.js', async () => {
+			await assert.doesNotReject(installApplications());
+		});
+	});
+});
 
 describe('derivePackageIdentifier', () => {
 	it('classifies Windows drive and UNC archive paths as local files on every host', () => {

@@ -11,7 +11,7 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 ## `set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)
 
 `server.replication.replicateOperation` (installed by harper-pro's replicator) fans out whenever
-`req.replicated \!== false` — absence of the flag means "replicate". That default-on contract is what
+`req.replicated !== false` — absence of the flag means "replicate". That default-on contract is what
 DDL ops rely on (`dropSchema`/`dropTable` call it unconditionally), so a handler that mirrors the
 drop_schema pattern without a guard silently becomes replicate-by-default. `setConfiguration` must
 stay **opt-in** (`if (replicated)` truthy guard) because config bodies routinely carry node-local
@@ -211,13 +211,13 @@ What a scope does about a config that arrives late is the other half of settling
 config of its own to having one, which is both the recreated-config-file path and a scope that
 booted while the file was unreadable. Nothing downstream re-runs on it — `componentLoader` is long
 past its `await scope.ready` — so `Scope` answers a repeat `ready` the same way it answers `remove`,
-by requesting a restart. Without that, one worker keeps serving the defaults while every worker
+by requesting a restart, unless the plugin listens for `ready` itself. Without that, one worker keeps serving the defaults while every worker
 that read the file cleanly serves the operator's config.
 
 Arming is a terminal outcome of its own: chokidar reports a scan that found no file by emitting
 `ready` and nothing else, so `RootConfigWatcher` always re-reads when the gate opens rather than
-publishing what an earlier read staged — a missing config file takes the ladder and settles on the
-defaults instead of holding the barrier open. That fallback must also discard the staged value:
+publishing what an earlier read staged — a missing config file settles on the defaults at once (it
+never takes the ladder) instead of holding the barrier open. That fallback must also discard the staged value:
 the arming re-read is authoritative precisely because a write in the unarmed window may have
 superseded it, including by replacing the file with an unusable or missing one. A watcher scan error
 also settles the barrier, but preserves a successfully staged value because no read superseded it.
@@ -258,7 +258,7 @@ cleanup that frees space needs a started process (#847). Two rules follow.
 **Derived boot writes are best-effort; user-requested ones are not.** `persistConfigDuringBoot()`
 swallows exactly ENOSPC/EDQUOT (matching on `errno` as well as `code`, because Linux has no libuv
 mapping for EDQUOT and reports `Unknown system error -122`) and lets the boot proceed on the
-in-memory config. `updateConfig`/`set_configuration`, `addConfig`, `deleteConfigFromFile` and the
+in-memory config. `set_configuration` (`updateConfigValue`), deploy/drop's `applyRootConfigEffect` and the
 install path keep persist-or-throw: a caller who asked to persist must not get a silent success, and
 an install has no last-known-good config to fall back on.
 
@@ -321,3 +321,7 @@ An `{}` in the config system is context-dependent, and conflating the contexts i
 Removal therefore prunes: `deleteNestedValue` removes ancestors the deletion emptied, only when it actually deleted an existing leaf, and reports what it pruned. The overlap case — a file-declared empty scope an env layer temporarily populated — is tracked in the state file's `emptyScopeOriginals` (separate from `originalValues` so a marker can never mask or be consumed as a real leaf original at the same path; older state files lacking the field are defaulted). Restore consumes a marker only for a path the prune actually removed, so a scalar overwrite or an absent-leaf no-op can never resurrect a scope over live env-layer content. Note there are two coexisting mechanisms for "file `{}` is user content": `restoreBaseEmptyObjects` on the stateless compose path and the marker pair on the stateful removal path — if you touch one, check the other.
 
 Two durable limitations of the marker mechanism, both with user config-file content as the blast radius: markers can only be recorded at populate time, so a scope an env layer populated _before_ `emptyScopeOriginals` existed (any pre-upgrade boot) has no marker and prunes away on its first post-upgrade vacate; and a corrupt config-state file resets to fresh state — dropping `originalValues` and `emptyScopeOriginals` for every tracked path — after which the next removal prunes those scopes for good; `saveConfigState` writes via temp+rename precisely so a torn write cannot be the trigger, leaving genuine corruption (disk faults, hand edits) as the remaining path.
+
+## Built-in environment entries are validated before runtime use (`config/configUtils.ts`)
+
+[harper#2028](https://github.com/HarperFast/harper/issues/2028) found that a bare built-in name reached runtime consumers without a package identifier. Every reader goes through `getEnvBuiltInComponents()`, which warns and skips incomplete entries before runtime loading or config backfill can use them. It trims the fields around the first `=` and keeps the rest of the package identifier intact.

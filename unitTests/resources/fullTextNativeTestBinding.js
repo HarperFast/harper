@@ -32,13 +32,18 @@ class FullTextNativeTestBinding {
 			nativeAbiVersion: 5,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
-			mutationBatchApiVersion: 4,
-			queryApiVersion: 2,
+			mutationBatchApiVersion: 5,
+			queryApiVersion: 3,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
+				maxRecordIdBytes: 4_096,
+				maxRecordVersionBytes: 4_096,
+				maxCandidateIds: 1_024,
+				maxCandidateBytes: 1024 * 1024,
 				maxSearchWindow: 10_000,
 				maxAutocompleteResults: 100,
+				maxSearchResponseBytes: 8 * 1024 * 1024,
 				maxSearchBudgetMilliseconds: 30_000,
 				maxTraceRecords: 128,
 				maxTraceSourceBytes: 1024 * 1024,
@@ -46,14 +51,18 @@ class FullTextNativeTestBinding {
 		};
 	}
 
-	validateNativeFullTextIndexOptions() {}
+	validateNativeFullTextIndexOptions(options) {
+		validateIndexOptions(options, true);
+	}
 
 	inspectNativeFullTextIndex(options) {
+		validateIndexOptions(options, false);
 		const state = this.states.get(key(options));
 		return state?.payload ? { state: 'checkpointed', committedPayload: state.payload } : { state: 'missing' };
 	}
 
 	async openNativeFullTextIndex(options) {
+		validateIndexOptions(options, true);
 		this.opens.push(options);
 		mkdirSync(options.path, { recursive: true });
 		const binding = this;
@@ -62,6 +71,8 @@ class FullTextNativeTestBinding {
 		return {
 			committedPayload: state.payload,
 			async applyMutationBatch(batch) {
+				assertAllowedKeys(batch, ['upserts', 'deletes'], 'mutation batch');
+				for (const upsert of batch.upserts) assertAllowedKeys(upsert, ['id', 'version', 'fields'], 'mutation upsert');
 				for (const id of batch.deletes) state.documents.delete(id);
 				for (const document of batch.upserts) state.documents.set(document.id, document);
 				return {
@@ -86,6 +97,7 @@ class FullTextNativeTestBinding {
 	}
 
 	async openNativeFullTextReader(options) {
+		validateIndexOptions(options, true);
 		this.readerOpens.push(options);
 		const binding = this;
 		let state = this.states.get(key(options));
@@ -98,13 +110,12 @@ class FullTextNativeTestBinding {
 				this.committedPayload = state.payload;
 			},
 			async search(request) {
+				validateSearchRequest(request);
 				binding.readerSearches.push(request);
 				await binding.readerSearchWait;
 				const query = request.query ?? { text: request.text, mode: request.mode, fields: request.fields };
-				const candidates = request.candidateIds && new Set(request.candidateIds);
 				const hits = [];
 				for (const document of state.documents.values()) {
-					if (candidates && !candidates.has(document.id)) continue;
 					const score = scoreExpression(query, document.fields);
 					if (score > 0) hits.push({ id: document.id, version: document.version, score });
 				}
@@ -118,6 +129,7 @@ class FullTextNativeTestBinding {
 				};
 			},
 			async traceMatches(request, records) {
+				validateTraceRequest(request);
 				const terms = String(request.text).toLowerCase().split(/\s+/).filter(Boolean);
 				return {
 					complete: true,
@@ -172,6 +184,61 @@ class FullTextNativeTestBinding {
 
 function key(options) {
 	return `${options.path}\0${options.indexId}\0${options.generation}`;
+}
+
+function assertAllowedKeys(value, allowed, label) {
+	const keys = new Set(allowed);
+	for (const name of Object.keys(value)) {
+		if (!keys.has(name)) throw new Error(`${label} unexpectedly included ${name}`);
+	}
+}
+
+function validateIndexOptions(options, withLimits) {
+	assertAllowedKeys(
+		options,
+		[
+			'path',
+			'indexId',
+			'generation',
+			'fields',
+			'analyzer',
+			'stopWords',
+			'positions',
+			'surfaceTerms',
+			'synonyms',
+			...(withLimits ? ['limits'] : []),
+		],
+		'index options'
+	);
+	for (const field of options.fields) assertAllowedKeys(field, ['name', 'weight'], 'index field');
+	for (const synonym of options.synonyms ?? []) assertAllowedKeys(synonym, ['source', 'replacements'], 'synonym rule');
+}
+
+function validateSearchExpression(expression) {
+	if (expression.operator === 'and' || expression.operator === 'or') {
+		assertAllowedKeys(expression, ['operator', 'clauses'], 'search expression');
+		for (const clause of expression.clauses) validateSearchExpression(clause);
+		return;
+	}
+	if (expression.operator === 'not') {
+		assertAllowedKeys(expression, ['operator', 'clause'], 'search expression');
+		validateSearchExpression(expression.clause);
+		return;
+	}
+	assertAllowedKeys(expression, ['text', 'mode', 'operator', 'fields'], 'search expression');
+}
+
+function validateSearchRequest(request) {
+	assertAllowedKeys(
+		request,
+		['text', 'query', 'mode', 'operator', 'fields', 'offset', 'limit', 'exactTotal'],
+		'search request'
+	);
+	if (request.query) validateSearchExpression(request.query);
+}
+
+function validateTraceRequest(request) {
+	assertAllowedKeys(request, ['text', 'mode', 'operator', 'fields'], 'trace request');
 }
 
 function scoreExpression(expression, fields) {

@@ -614,6 +614,7 @@ export type TransactionWrite = {
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
 	reloadCommitBase?: boolean;
+	baseReadTxn?: any;
 	writeGeneration?: WriteGeneration;
 	instanceClosed?: boolean;
 };
@@ -906,6 +907,7 @@ export class DatabaseTransaction implements Transaction {
 				disableSnapshot: disableSnapshot || this.snapshotFree,
 			})
 		);
+		if (disableSnapshot || this.snapshotFree) (this.transaction as any).snapshotDisabled = true;
 
 		if (this.timestamp) {
 			this.transaction.setTimestamp(this.timestamp);
@@ -1507,10 +1509,22 @@ export class DatabaseTransaction implements Transaction {
 		// against; a snapshot-free transaction (this.snapshotFree, after a mid-scope-commit rotation)
 		// has no snapshot for rocksdb-js to validate the Put against, so it only narrows the window to
 		// the read-to-put span rather than closing it (open follow-up, tracked in the PR description).
-		// Replays keep their pre-read base — their convergence contract is the replay pass itself.
+		// Replay bypasses the cache: WeakRef targets survive the entire synchronous job, even after eviction.
 		const reloadsCommitBase = operation.reloadCommitBase && !operation.saved && !this.isReplay;
-		if (reloadEntry || operation.entry === undefined || reloadsCommitBase) {
-			const uncachedRead = (!!operation.reloadCommitBase && !this.isReplay) || reloadEntry;
+		// An entry read uncached through this same pinned-snapshot handle is already that base, until a retry resets
+		// the snapshot or an earlier staged write to the key changes what a read returns; the resource withholds the
+		// handle once its entry was replaced or evicted, and locked, snapshot-free and replayed writes always reload.
+		const reusesBaseRead =
+			operation.baseReadTxn === transaction &&
+			this.retries === 0 &&
+			!reloadEntry &&
+			!operation.priorWrite &&
+			!operation.lockHandle &&
+			!this.snapshotFree &&
+			!(transaction as any).snapshotDisabled &&
+			!this.isReplay;
+		if (!reusesBaseRead && (reloadEntry || operation.entry === undefined || reloadsCommitBase)) {
+			const uncachedRead = !!operation.reloadCommitBase || reloadEntry || this.isReplay;
 			operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead });
 		}
 		if (!operation.saved) {
