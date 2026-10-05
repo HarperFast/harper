@@ -58,7 +58,8 @@ describe('the release certification gate', function () {
 					worker.on('message', (message) => {
 						if (message?.type === 'fixture-lifecycle') worker.lifecycle.push(message);
 						if (message?.type === 'fixture-admitted') worker.admitted = true;
-						if (message?.type === 'fixture-joined') worker.joined = true;
+						if (message?.type === 'fixture-joined') worker.joined = (worker.joined ?? 0) + 1;
+						if (message?.type === 'fixture-left') worker.left = (worker.left ?? 0) + 1;
 						if (message?.type !== 'fixture-booted') return;
 						worker.certifyRequests.push(message.certify);
 						worker.failClosed = message.failClosed;
@@ -290,6 +291,25 @@ describe('the release certification gate', function () {
 		assert.equal((await decisionOf())?.status, 'rejected', 'the deploy that joined still reads the refusal');
 		await certificationRequest('leave', identity);
 		assert.equal(await decisionOf(), undefined, 'once it left, the decision is gone');
+	});
+
+	it('counts the joins of one worker apart, so its first deploy to leave keeps the decision for the other', async () => {
+		plan([{ outcome: 'failed' }]);
+		await arm({ requesterThreadId: pool[0].threadId });
+		await commit();
+		await rolledOut();
+		const identity = { component: COMPONENT, deploymentId: DEPLOYMENT };
+		const worker = pool[1];
+		worker.postMessage({ type: 'fixture-join', payload: identity });
+		worker.postMessage({ type: 'fixture-join', payload: identity });
+		await waitFor(() => worker.joined === 2, { message: 'the worker never joined twice' });
+		worker.postMessage({ type: 'fixture-leave', payload: identity });
+		await waitFor(() => worker.left === 1, { message: 'the worker never left' });
+		await certificationRequest('release', identity);
+		assert.equal((await decisionOf())?.status, 'rejected', "the worker's other deploy still reads the refusal");
+		worker.postMessage({ type: 'fixture-leave', payload: identity });
+		await waitFor(() => worker.left === 2, { message: 'the worker never left again' });
+		assert.equal(await decisionOf(), undefined, 'once both left, the decision is gone');
 	});
 
 	it("does not release the requester when a deploy that joined its release's decision finishes", async () => {

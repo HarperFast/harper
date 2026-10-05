@@ -32,8 +32,21 @@ parentPort.on('message', (message) => {
 		});
 		return;
 	}
+	if (message?.type === 'fixture-leave') {
+		parentPort.postMessage({
+			type: ITC_EVENT_TYPES.CERTIFICATION_REQUEST,
+			requestId: 'fixture-leave',
+			action: 'leave',
+			payload: message.payload,
+		});
+		return;
+	}
 	if (message?.type === ITC_EVENT_TYPES.CERTIFICATION_RESPONSE && message.requestId === 'fixture-join') {
 		parentPort.postMessage({ type: 'fixture-joined' });
+		return;
+	}
+	if (message?.type === ITC_EVENT_TYPES.CERTIFICATION_RESPONSE && message.requestId === 'fixture-leave') {
+		parentPort.postMessage({ type: 'fixture-left' });
 		return;
 	}
 	if (message?.type === ITC_EVENT_TYPES.SHUTDOWN) {

@@ -606,7 +606,7 @@ function armCertification({ component, deploymentId, isolated, scope, requesterT
 		rolledOut: Promise.withResolvers(),
 		released: Promise.withResolvers(),
 		// Other deploys of the release, activating it while its decision is open: each reads that decision too.
-		joiners: new Set(),
+		joiners: new Map(),
 		mainJoiners: 0,
 		deferredStarts: [],
 		progress: new Set(),
@@ -1042,19 +1042,27 @@ function releaseCertificationRequester(component, deploymentId) {
 	forgetIfUnread(certification);
 }
 
-/** A worker's joiner is answering a deploy as its requester is; main's counts only toward keeping the decision. */
+/**
+ * A worker's joiner is answering a deploy as its requester is; main's counts only toward keeping the decision. Joins
+ * are counted per thread, since one worker can run two such deploys at once.
+ */
 function joinCertification(component, deploymentId, threadId) {
 	const certification = findCertification(component, deploymentId);
 	if (!certification) return;
 	if (threadId === undefined) certification.mainJoiners++;
-	else certification.joiners.add(threadId);
+	else certification.joiners.set(threadId, (certification.joiners.get(threadId) ?? 0) + 1);
 }
 
 function leaveCertification(component, deploymentId, threadId) {
 	const certification = findCertification(component, deploymentId);
 	if (!certification) return;
-	if (threadId === undefined) certification.mainJoiners = Math.max(0, certification.mainJoiners - 1);
-	else certification.joiners.delete(threadId);
+	if (threadId === undefined) {
+		certification.mainJoiners = Math.max(0, certification.mainJoiners - 1);
+	} else {
+		const joins = (certification.joiners.get(threadId) ?? 0) - 1;
+		if (joins > 0) certification.joiners.set(threadId, joins);
+		else certification.joiners.delete(threadId);
+	}
 	forgetIfUnread(certification);
 }
 
