@@ -147,7 +147,9 @@ async function dropCreatedSince(atStart, file) {
 	}
 	if (failures.length > 0) {
 		// mocha's reporter prints the message and the cause chain, not AggregateError.errors
-		const details = failures.map((failure) => `${failure.message}: ${failure.cause?.message}`).join('; ');
+		const details = failures
+			.map((failure) => `${failure.message}: ${failure.cause?.message ?? failure.cause}`)
+			.join('; ');
 		throw new AggregateError(failures, `per-file database teardown failed after ${file} — ${details}`, {
 			cause: failures[0].cause,
 		});
