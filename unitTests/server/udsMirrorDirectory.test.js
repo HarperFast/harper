@@ -10,8 +10,7 @@ const path = require('path');
 const env = require('#src/utility/environment/environmentManager');
 const { ensureSocketsDirectory, writeUdsMetadata } = require('#src/server/http');
 
-// Portable suite on purpose: udsMirror.test.js is excluded from the Windows gate, so the directory
-// and publication guarantees here would otherwise never run on Windows.
+// Kept out of udsMirror.test.js, which the Windows gate excludes.
 const POSIX = process.platform !== 'win32';
 const posixIt = POSIX ? it : it.skip;
 const posixNonRootIt = POSIX && process.getuid?.() !== 0 ? it : it.skip;
