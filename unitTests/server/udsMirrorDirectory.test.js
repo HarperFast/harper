@@ -3,9 +3,9 @@
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const env = require('#src/utility/environment/environmentManager');
 const { ensureSocketsDirectory, writeUdsMetadata } = require('#src/server/http');
