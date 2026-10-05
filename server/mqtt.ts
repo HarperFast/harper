@@ -484,9 +484,9 @@ function onSocket(socket, send, request, user, mqttSettings) {
 									const deadline = Date.now() + takeoverTimeout;
 									if (previous) await beforeDeadline(previous, deadline, packet.protocolVersion);
 									// a durable session has one owner: an older connection for this client on this thread gives
-									// way, to a clean start too, and its save in flight lands before this one reads or deletes
+									// way, to a clean start too, and its last save lands before this one reads or deletes
 									const older = [...(clientSessions.get(clientId) ?? [])];
-									for (const other of older) other.supersede?.();
+									for (const other of older) other.yieldTo?.();
 									if (older.length > 0) {
 										await beforeDeadline(
 											Promise.all(older.map((other) => other.writes)),

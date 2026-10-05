@@ -265,6 +265,26 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		third.session.disconnect(true);
 	});
 
+	it('checks the entries a node bound before its name changed', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `renamed-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		await T.put('a', { value: 1 });
+		await waitFor(() => first.received.length >= 1);
+		await ackAll(first.session, first.received);
+		const entry = await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+		first.session.disconnect(true);
+		await first.session.writes;
+		await databases.system.hdb_durable_session.put({ id: clientId, nodeName: 'its-old-name', subscriptions: [entry] });
+		await T.put('b', { value: 2 });
+		raiseAuditFloor(T.auditStore, entry.startTime + 0.001);
+		const second = await connect(clientId);
+		assert.ok(!second.session.sessionWasPresent, 'its own generation is still checked against the floor');
+		second.session.disconnect(true);
+	});
+
 	it('discards the session when the checked replay is refused after CONNACK', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
@@ -772,6 +792,36 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		assert.deepStrictEqual(first.closed, ['superseded']);
 		assert.strictEqual((await stored(clientId)).incarnation, second.session.incarnation);
 		second.session.disconnect(true);
+	});
+
+	it('saves what an older connection had acknowledged before a takeover reads the session', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const topic = `${name}/#`;
+		const clientId = `yield-${name}`;
+		const older = open();
+		older.handlers.message(
+			Buffer.concat([
+				connectPacket(clientId),
+				generate({ cmd: 'subscribe', messageId: 1, subscriptions: [{ topic, qos: 1, rh: 2 }] }, { protocolVersion: 5 }),
+			])
+		);
+		await waitFor(() => sentPackets(older).some((packet) => packet.cmd === 'suback'));
+		const olderSession = [...open.sessions].find((session) => session.sessionId === clientId);
+		await T.put('a', { value: 1 });
+		const delivered = await waitFor(() => sentPackets(older).find((packet) => packet.cmd === 'publish'));
+		const state = olderSession.topics.get(topic);
+		await waitFor(() => state.subscription.progress() >= state.deliveredKey);
+		// the PUBACK's checkpoint waits for a later turn, and the takeover arrives first
+		older.handlers.message(generate({ cmd: 'puback', messageId: delivered.messageId }, { protocolVersion: 5 }));
+		const newer = open();
+		newer.handlers.message(connectPacket(clientId));
+		await waitFor(() => sentPackets(newer).some((packet) => packet.cmd === 'connack'));
+		const saved = (await stored(clientId)).subscriptions[0];
+		assert.ok(saved.startTime >= state.deliveredKey, 'the acknowledged delivery is not sent again');
+		older.handlers.close();
+		newer.handlers.close();
 	});
 
 	it('answers packets sent right behind a CONNECT, a takeover included', async () => {

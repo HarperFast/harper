@@ -580,13 +580,12 @@ function checkpointInterval(): number {
 /**
  * Whether every generation-bound entry can still resume, checked from metadata before CONNACK. A
  * collection is checked against the floor too; a record's own history walk decides the rest after
- * CONNACK, and a resource that is not a table is left to its own subscribe. Only a record this node
- * wrote is checked: its entries name this node's generations, while another node's resume unbound.
+ * CONNACK, and a resource that is not a table is left to its own subscribe. An entry bound on another
+ * node is not checked: it resumes unbound.
  */
 function sessionRecordResumable(record: any): boolean {
-	if (record.nodeName !== getThisNodeName()) return true;
 	for (const entry of record.subscriptions || []) {
-		if (entry.databaseGeneration === undefined) continue;
+		if (!boundHere(record, entry)) continue;
 		const match = resources.getMatch(entry.topic.split('?')[0], 'mqtt');
 		const auditStore = match?.Resource?.auditStore;
 		if (!auditStore) continue;
@@ -597,6 +596,17 @@ function sessionRecordResumable(record: any): boolean {
 		if (!resumable) return false;
 	}
 	return true;
+}
+
+/**
+ * A record replicates, but each node mints its own generations, so only this node's bindings can be
+ * checked here. A node whose name changed still holds the generation it bound its entries to.
+ */
+function boundHere(record: any, entry: DurableEntry): boolean {
+	if (entry.databaseGeneration === undefined) return false;
+	if (record.nodeName === getThisNodeName()) return true;
+	const auditStore = resources.getMatch(entry.topic.split('?')[0], 'mqtt')?.Resource?.auditStore;
+	return Boolean(auditStore) && getDatabaseGeneration(auditStore)?.id === entry.databaseGeneration;
 }
 
 export class DurableSubscriptionsSession extends SubscriptionsSession {
@@ -616,14 +626,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	constructor(sessionId, user, record?) {
 		super(sessionId, user);
 		this.mayCreate = !record;
-		// a record replicates, but each node has its own generations, so another node's bindings mean nothing here
-		const boundHere = record?.nodeName === getThisNodeName();
-		for (const { qos, topic, startTime, databaseGeneration } of record?.subscriptions || []) {
+		for (const entry of record?.subscriptions || []) {
+			const { qos, topic, startTime, databaseGeneration } = entry;
 			this.topics.set(
 				topic,
 				newTopicState(
 					qos > 0
-						? { qos, topic, startTime, databaseGeneration: boundHere ? databaseGeneration : undefined }
+						? { qos, topic, startTime, databaseGeneration: boundHere(record, entry) ? databaseGeneration : undefined }
 						: { qos, topic }
 				)
 			);
@@ -896,6 +905,15 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (stored ? stored.incarnation !== this.incarnation : !this.mayCreate) return this.supersede();
 		await getDurableSession().put(record, { source: true });
 		this.mayCreate = false;
+	}
+	/** Hands the session to a newer connection on this thread, saving its positions first; that save is in `writes`. */
+	yieldTo() {
+		if (this.terminated) return;
+		const changed = this.advancePositions();
+		this.terminated = true;
+		clearInterval(this.checkpointTimer);
+		if (changed || this.dirty) this.persist().catch(() => {});
+		this.closeConnection?.();
 	}
 	supersede() {
 		if (this.terminated) return;
