@@ -360,7 +360,13 @@ async function main() {
 			await delay(100);
 		}
 	};
-	const collectGarbageResult = (request: string, ids: Set<string>) => {
+	const collectGarbageResult = async (request: string, ids: Set<string>) => {
+		const info = await sendOperation(ctx.harper, { operation: 'system_information', attributes: ['threads'] });
+		const liveHttpWorkers = new Set(
+			(info.threads ?? []).filter((thread: any) => thread.name === 'http').map((thread: any) => String(thread.threadId))
+		);
+		if (liveHttpWorkers.size !== ids.size || [...ids].some((id) => !liveHttpWorkers.has(id)))
+			throw new Error('HTTP worker set changed while collecting memory');
 		const usage = [...ids].map((id) => JSON.parse(readFileSync(join(profileDir, `${request}-${id}`), 'utf8')));
 		if (usage.some((thread) => thread.error))
 			throw new Error('Harper workers have no gc(); --expose-gc did not reach them');
@@ -385,7 +391,12 @@ async function main() {
 		args.profile ? { profiled: !finishedAtRowStart && profileStartedAt < rowEnd } : {};
 	for (const pair of args['harper-env']!) {
 		const eq = pair.indexOf('=');
-		env[pair.slice(0, eq)] = pair.slice(eq + 1);
+		const key = pair.slice(0, eq);
+		if (usesPreload && key === 'WS_SCALE_CONTROL_DIR')
+			throw new Error(
+				'--harper-env cannot override WS_SCALE_CONTROL_DIR; use --profile-dir to choose the control directory'
+			);
+		env[key] = pair.slice(eq + 1);
 	}
 	if (args.scenario === 'churn')
 		env.NODE_OPTIONS = [env.NODE_OPTIONS ?? process.env.NODE_OPTIONS, '--expose-gc'].filter(Boolean).join(' ');

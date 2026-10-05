@@ -26,6 +26,7 @@ npm run build                                 # from the repo root; the harness 
 sudo cpupower frequency-set -d 2GHz -u 2GHz   # pin the clock (min and max); the harness records it with every result
 node benchmarks/ws-scale/run.mts --scenario=conns --steps=10000,50000,100000 --subs=0
 node benchmarks/ws-scale/run.mts --scenario=fanout --conns=50000 --topics=1 --payload=200 --rates=5,10,15 --uds
+node benchmarks/ws-scale/run.mts --scenario=churn --conns=10000 --cycles=5 --close=graceful
 ```
 
 ## Options that matter
