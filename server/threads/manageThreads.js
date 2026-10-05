@@ -1580,11 +1580,11 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 			});
 			// Overlapping types we couldn't pre-start (Windows/Bun): start the replacement now that the old
 			// worker is releasing its port. server.close() stops accepting immediately, so the port frees up
-			// well before the replacement finishes booting and binds. The requester keeps its ports while its
-			// drain holds its deploy, so its copy starts once it has exited.
+			// well before the replacement finishes booting and binds. A worker answering a certifying deploy keeps
+			// its ports while its drain holds that deploy, so its copy starts once it has exited.
 			let replacementStarting;
 			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown) {
-				replacementStarting = (worker === requester ? whenDone : Promise.resolve())
+				replacementStarting = (answersCertifyingDeploy(worker) ? whenDone : Promise.resolve())
 					.then(() => (processShuttingDown ? false : startedCopyOf(worker)))
 					.then((started) => {
 						if (!started && !processShuttingDown) replacementsFailedToStart++;
@@ -1648,6 +1648,16 @@ async function startedCopyOf(worker) {
 		if (await whenWorkerStarted(copy)) return true;
 		if (processShuttingDown || !(copy.loadedAcrossRelease || copy.stoppedByGate)) return false;
 	}
+}
+
+/** Whichever restart retires it, a worker whose certifying deploy has not answered is holding on through its drain. */
+function answersCertifyingDeploy(worker) {
+	for (const registry of [certifications, settledCertifications]) {
+		for (const certification of registry.values()) {
+			if (certification.requesterThreadId === worker.threadId && !certification.requesterReleased) return true;
+		}
+	}
+	return false;
 }
 
 async function untilQuietFor(worker) {

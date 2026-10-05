@@ -17,6 +17,7 @@ const {
 	workers,
 	certificationRequest,
 	certificationRollout,
+	restartWorkers,
 	setCertificationHandler,
 	setCanaryVerdictTimeout,
 	setRootComponentsReload,
@@ -879,22 +880,45 @@ describe('the release certification gate', function () {
 		await waitFor(() => httpWorkers().length === 3, { timeout: 10000, message: 'the slot was left empty' });
 	});
 
-	it('starts the copy of a requester that cannot share its ports only once it has exited', async function () {
+	it('starts the copy of a requester still answering past the release bound only once it has exited', async function () {
 		// Where replacements pre-start beside their predecessor, there is no such copy.
 		if (process.platform === 'linux') this.skip();
 		// An uncertified rollout replaces the requester unheld; its drain would keep it, and its ports, for a while.
 		plan([{ outcome: 'skipped' }], { unheldShutdownDelayMs: 2000 });
 		const requester = pool[1];
 		await arm({ requesterThreadId: requester.threadId });
+		let copyAt;
+		requester.once('shutdown', () => (copyAt = started.length));
 		await commit();
 		assert.equal((await decisionOf()).status, 'uncertified');
-		await waitFor(() => pool[2].exitedAt, { timeout: 30000, message: 'the rollout never reached the requester' });
-		const before = started.length;
-		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+		// It never answers, so the rollout retires it once the release bound passes.
 		await rolledOut();
-		const copy = started[before];
+		const copy = started[copyAt];
 		assert.ok(copy && requester.exitedAt, 'the requester was replaced');
 		assert.ok(copy.startedAt >= requester.exitedAt, 'its copy started only once it had exited');
+		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+	});
+
+	it("waits out the exit of a worker another release's deploy is answering, before starting its copy", async function () {
+		if (process.platform === 'linux') this.skip();
+		// A plain restart is held in its reload while another release, whose deploy a pool worker answers, commits.
+		plan([{ outcome: 'loaded' }], { unheldShutdownDelayMs: 2000 });
+		const loading = Promise.withResolvers();
+		rootLoad = loading.promise;
+		releaseRootLoad = loading.resolve;
+		const answering = pool[1];
+		const restart = restartWorkers('http', 1, true, undefined, undefined);
+		await arm({ requesterThreadId: answering.threadId });
+		await commit();
+		let copyAt;
+		answering.once('shutdown', () => (copyAt = started.length));
+		releaseRootLoad();
+		await restart;
+		const copy = started[copyAt];
+		assert.ok(copy && answering.exitedAt, 'the restart replaced the worker answering that deploy');
+		assert.ok(copy.startedAt >= answering.exitedAt, 'its copy started only once it had exited');
+		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+		await rolledOut();
 	});
 
 	it('replaces the requesting worker last, once it has answered', async () => {

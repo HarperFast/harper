@@ -106,9 +106,11 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    Past the bound its shutdown still waits for the deploy to answer, through a shutdown drain the deploy holds
    while its release is armed, bounded by the drain ceiling, rather than cut the deploy off mid-replication; a
    shutdown before the arm closes as it always did. A requester that is worker 0 is retired at its turn without
-   that wait, and only the rollout's end waits for it to exit, so the rest of the pool is not held behind its
-   whole deploy. Where a replacement cannot start beside its predecessor, the requester's copy starts only once the requester has
-   exited, since its drain keeps its ports bound until its deploy answers. A withdraw
+   that wait, and only the rollout's end waits for it to exit. Where replacements start beside their predecessors,
+   that spares the rest of the pool its whole deploy; where they cannot, worker 0's canary is admitted only once the
+   requester has exited, so there the rollout still waits for that deploy. There, too, the copy of any worker still
+   answering a certifying deploy, whichever restart retires it, starts only once that worker has exited, since its
+   drain keeps its ports bound until the deploy answers. A withdraw
    after commit is refused: the release is live, and dropping its registration would leave the rollout
    replacing workers unchecked.
    A worker already loading when a release is armed was not held for it, yet its load can still reach that release:
