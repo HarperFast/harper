@@ -11,7 +11,7 @@
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -561,6 +561,7 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 				.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 				.expect(200);
 			await awaitJobCompleted(client, r.body.job_id, { timeoutSeconds: JOB_TIMEOUT_SECONDS });
+			assert.ok(existsSync(path.join(exportDir, 'test_export_terminology_test.json')));
 		} finally {
 			rmSync(exportDir, { recursive: true, force: true });
 		}

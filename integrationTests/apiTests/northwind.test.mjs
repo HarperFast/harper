@@ -2033,7 +2033,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 	let client;
 	let adminPwd, adminUsername;
 	let jobId; // shared job_id state used by 7_jobsAndJobRoleTesting tests
-	let exportDir; // per-run export target; export_local must not write into the repo root
+	let exportDir;
 	// Per-user headers — built in before() from the Harper admin password.
 	let headersTestUser, headersBulkLoadUser, headersNoPermsUser, headersOnePermUser, headersImportantUser;
 	let dateYesterday, dateTomorrow;
@@ -2123,8 +2123,11 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 	});
 
 	after(async () => {
-		await teardownHarper(ctx);
-		rmSync(exportDir, { recursive: true, force: true });
+		try {
+			await teardownHarper(ctx);
+		} finally {
+			if (exportDir) rmSync(exportDir, { recursive: true, force: true });
+		}
 	});
 
 	// ── Legacy utility shims — defined at suite scope so they close over client ──
