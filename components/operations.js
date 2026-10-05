@@ -1181,7 +1181,12 @@ function drainWhileDeploying(isDeploying, isDecided = () => true, undecidedBound
 			const undecided = new Promise((resolve) => {
 				if (!Number.isFinite(undecidedBoundMs)) return;
 				bound = setTimeout(() => {
-					if (!isDecided()) resolve();
+					if (isDecided()) return;
+					log.warn(
+						`Not holding this worker's shutdown any longer: its deploy's release was not decided within ` +
+							`${undecidedBoundMs}ms, so that deploy will not answer`
+					);
+					resolve();
 				}, undecidedBoundMs);
 				bound.unref();
 			});

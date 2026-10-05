@@ -43,12 +43,13 @@ describe('the release certification gate', function () {
 		rmSync(`${planPath}.starts`, { force: true });
 	}
 
-	function startFixture(index) {
+	function startFixture(index, { application } = {}) {
 		return new Promise((resolve, reject) => {
 			startWorker(FIXTURE, {
 				name: 'http',
 				workerIndex: index,
 				threadCount: 3,
+				application,
 				onStarted(worker) {
 					started.push(worker);
 					worker.startedAt = Date.now();
@@ -914,11 +915,42 @@ describe('the release certification gate', function () {
 		answering.once('shutdown', () => (copyAt = started.length));
 		releaseRootLoad();
 		await restart;
-		const copy = started[copyAt];
+		const copy = started.slice(copyAt).find((worker) => worker.workerIndex === answering.workerIndex);
 		assert.ok(copy && answering.exitedAt, 'the restart replaced the worker answering that deploy');
 		assert.ok(copy.startedAt >= answering.exitedAt, 'its copy started only once it had exited');
 		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
 		await rolledOut();
+	});
+
+	it('does not throttle a restart behind a worker still answering a certifying deploy', async () => {
+		// Its deploy waits on an isolated release, which only that release's own rollout can decide, and that rollout
+		// queues behind this restart. Each serving worker takes a while to exit, as one its drain holds would.
+		plan([{ outcome: 'loaded' }], { unheldShutdownDelayMs: 3000 });
+		await startFixture(0, { application: 'isolated-app' });
+		const isolatedRelease = { component: 'isolated-app', deploymentId: '44444444-4444-4444-4444-444444444444' };
+		const loading = Promise.withResolvers();
+		rootLoad = loading.promise;
+		releaseRootLoad = loading.resolve;
+		const [, answering, last] = pool;
+		const restart = restartWorkers('http', 1, true, undefined, undefined);
+		assert.deepStrictEqual(
+			await certificationRequest('arm', {
+				...isolatedRelease,
+				isolated: true,
+				scope: 'isolated-app',
+				requesterThreadId: answering.threadId,
+			}),
+			{ armed: true }
+		);
+		assert.equal(await certificationRequest('commit', isolatedRelease), true);
+		let lastAskedAt;
+		last.once('shutdown', () => (lastAskedAt = Date.now()));
+		releaseRootLoad();
+		await restart;
+		assert.ok(lastAskedAt && answering.exitedAt, 'the restart replaced both workers');
+		assert.ok(lastAskedAt < answering.exitedAt, 'it went on past the worker still answering, not after its exit');
+		await certificationRequest('release', isolatedRelease);
+		await waitFor(() => completions.length > 0, { timeout: 45000, message: 'the isolated release never rolled out' });
 	});
 
 	it('replaces the requesting worker last, once it has answered', async () => {

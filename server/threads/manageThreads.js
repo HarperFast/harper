@@ -1429,7 +1429,9 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 				: undefined;
 		if (requester && requester !== workerZero) restarting.push(...restarting.splice(restarting.indexOf(requester), 1));
 		const requesterFirst = Boolean(requester) && requester === workerZero;
-		let requesterRetiring;
+		// Workers retired while answering a certifying deploy: each serves through its drain, so it is not down, and
+		// waiting on its exit could hold back the start that decides what its deploy waits for.
+		const answering = [];
 		// a worker that exited on its own mid-restart is spliced out of `workers` and auto-restarted onto the new
 		// code (see the exit handler above); it is not still on the previous code even though this loop never got to it.
 		const untouchedAfter = (index) =>
@@ -1603,8 +1605,8 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 					const at = waitingToFinish.indexOf(replaced);
 					if (at > -1) waitingToFinish.splice(at, 1);
 				});
-			if (worker === requester && requesterFirst) {
-				requesterRetiring = replaced;
+			if ((worker === requester && requesterFirst) || answersCertifyingDeploy(worker)) {
+				answering.push(replaced);
 			} else {
 				waitingToFinish.push(replaced);
 				if (waitingToFinish.length >= maxWorkersDown) {
@@ -1625,7 +1627,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 			}
 		}
 		await Promise.all(waitingToFinish);
-		await requesterRetiring;
+		await Promise.all(answering);
 		// A caller awaiting this needs it to mean "the pool is serving the new code", so wait out the
 		// replacements that could only be started once their predecessor released its exclusive ports.
 		replacementsNotStarted =
