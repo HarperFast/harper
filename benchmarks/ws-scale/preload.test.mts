@@ -46,7 +46,7 @@ test('churn preload ignores profile requests and continues acknowledging GC requ
 		const { worker, threadId } = await startWorker(churnPreload, dir, true);
 		try {
 			writeFileSync(join(dir, 'start'), '0.1');
-			for (const request of ['gc-1', 'gc-2']) {
+			for (const request of ['gc-1', 'gc-2', 'gc-3', 'gc-4']) {
 				writeFileSync(join(dir, request), '');
 				const acknowledgement = join(dir, `${request}-${threadId}`);
 				await waitForFile(acknowledgement, `${request} acknowledgement`);
