@@ -26,11 +26,22 @@ jobs:
           if [ "$reviewers" -eq 0 ] && [ "$teams" -eq 0 ]; then
             case "$PR_AUTHOR" in
               'renovate[bot]' | 'dependabot[bot]') default_reviewers='["kriszyp"]' ;;
-              *) default_reviewers='["cb1kenobi","heskew","Ethan-Arrowood","kriszyp"]' ;;
+              *) default_reviewers='["cb1kenobi","Ethan-Arrowood","kriszyp"]' ;;
             esac
-            echo "$default_reviewers" \
-              | jq --arg author "$PR_AUTHOR" '{"reviewers": [.[] | select(. != $author)]}' \
-              | gh api "repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" \
-                --method POST \
-                --input -
+            # One request per reviewer: GitHub rejects the whole batch with a 422 when any one
+            # handle is no longer a collaborator, which would leave the PR with no reviewers.
+            requested=0
+            failed=0
+            for reviewer in $(echo "$default_reviewers" | jq -r --arg author "$PR_AUTHOR" '.[] | select(. != $author)'); do
+              if gh api "repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" --method POST -f "reviewers[]=$reviewer" --silent; then
+                requested=$((requested + 1))
+              else
+                failed=$((failed + 1))
+                echo "::warning::Could not request a review from $reviewer; if they no longer have access to $REPO, drop them from this workflow's default reviewers"
+              fi
+            done
+            if [ "$requested" -eq 0 ] && [ "$failed" -gt 0 ]; then
+              echo "::error::None of the default reviewers could be requested"
+              exit 1
+            fi
           fi
