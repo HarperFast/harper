@@ -15,8 +15,6 @@ const POSIX = process.platform !== 'win32';
 const posixIt = POSIX ? it : it.skip;
 const posixNonRootIt = POSIX && process.getuid?.() !== 0 ? it : it.skip;
 
-const SOCKETS_DIR = path.join(env.getHdbBasePath(), 'sockets');
-
 function modeOf(filePath) {
 	return fs.statSync(filePath).mode & 0o777;
 }
@@ -38,7 +36,11 @@ describe('UDS mirror directory and metadata publication', () => {
 	});
 
 	describe('ensureSocketsDirectory', () => {
+		// Read at test time: other suites in the same mocha process re-point the base path.
+		let SOCKETS_DIR;
+
 		beforeEach(() => {
+			SOCKETS_DIR = path.join(env.getHdbBasePath(), 'sockets');
 			fs.rmSync(SOCKETS_DIR, { recursive: true, force: true });
 		});
 
