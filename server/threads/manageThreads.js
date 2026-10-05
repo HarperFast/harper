@@ -1217,6 +1217,8 @@ function startWorker(path, options = {}, startOptions = {}) {
 			ticketKeys: getTicketKeys(),
 			databaseDropPreparations: databaseDropPreparationSnapshot(),
 			certify,
+			// Main answers its load report, held or not, so it waits to be admitted before it binds.
+			reportsLoad: options.name === hdbTerms.THREAD_TYPES.HTTP,
 			failClosed: failClosedComponentsPlacedBy(options),
 		},
 		transferList: portsToSend,

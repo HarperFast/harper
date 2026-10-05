@@ -200,9 +200,9 @@ function startServers() {
 	}
 	reportStartupPhase(startupPhase);
 	let listening;
-	// A worker held for nothing still reports its load before it binds: one already loading when a release went live is
-	// not admitted on that load.
-	const heldFor = isMainThread ? undefined : (workerData?.certify ?? []);
+	// A worker held for nothing still reports its load before it binds, where main answers it: one already loading when a
+	// release went live is not admitted on that load.
+	const heldFor = workerData?.certify ?? (workerData?.reportsLoad ? [] : undefined);
 	const heldStart = heldFor ? require('./heldStart.ts') : undefined;
 	const loaded = Promise.resolve(heldStart?.beginHeldStart(heldFor))
 		.then((loadedGenerations) =>
