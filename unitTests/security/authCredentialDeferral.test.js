@@ -16,6 +16,7 @@ const resourcesModule = require('#src/resources/Resources');
 const tokenAuthentication = require('#src/security/tokenAuthentication');
 const { databases } = require('#src/resources/databases');
 const { authentication } = require('#src/security/auth');
+const { runStartup } = require('#src/utility/lifecycle');
 
 const HARPER_OWNED = '/Ledger/1';
 const HARPER_OWNED_PUBLIC = '/PublicNotice/1';
@@ -488,7 +489,7 @@ describe('#2703 principal resolution failures become decisions, not thrown error
 	const SESSION_COOKIE = `example_com-hdb-session=${SESSION_ID}`;
 	const CERT_CN = 'svc.example.com';
 
-	const sessionTable = databases.system.hdb_session;
+	let sessionTable;
 	let originalGetUser;
 	let originalValidateOperationToken;
 
@@ -554,6 +555,8 @@ describe('#2703 principal resolution failures become decisions, not thrown error
 	}
 
 	before(async () => {
+		await runStartup();
+		sessionTable = databases.system.hdb_session;
 		originalGetUser = serverModule.server.getUser;
 		originalValidateOperationToken = tokenAuthentication.validateOperationToken;
 

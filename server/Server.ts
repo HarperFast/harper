@@ -1,11 +1,11 @@
-import { Socket } from 'net';
+import type { Socket } from 'node:net';
 import { _assignPackageExport } from '../globals.js';
 import type { Value } from '../resources/analytics/write.ts';
 import type { Resources } from '../resources/Resources.ts';
 import type { McpQuotaHandler } from '../components/mcp/quota.ts';
-import { OperationDefinition } from './serverHelpers/serverUtilities.ts';
-import { Duplex } from 'stream';
-import { Request } from './serverHelpers/Request.ts';
+import type { OperationDefinition } from './serverHelpers/serverUtilities.ts';
+import type { Duplex } from 'node:stream';
+import type { Request } from './serverHelpers/Request.ts';
 
 export type HttpListener = (request: Request, nextLayer: (request: Request) => Response) => void;
 // based on `upgrade` event in Node.js http server: https://nodejs.org/docs/latest/api/http.html#event-upgrade-1

@@ -1,3 +1,4 @@
 'use strict';
 
-require('../server/operationsServer.ts').hdbServer();
+const entryPoint = '#src/launchServiceScripts/startHarperDB';
+require(entryPoint);

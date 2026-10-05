@@ -1,6 +1,7 @@
 require('../testUtils');
 const assert = require('assert');
 const { Worker } = require('worker_threads');
+const { once } = require('node:events');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -65,7 +66,21 @@ describe('Create records', () => {
 		let id_after = CreateTest.getNewId();
 		assert(Math.abs(id_before - id_after) > 1000000);
 	});
-	after(() => {
-		test_thread.terminate();
+	after(async () => {
+		if (!test_thread || test_thread.threadId === -1) return;
+		// Graceful shutdown — let the worker close its rocksdb handles on its own
+		// event loop rather than relying on Worker.terminate(), which under
+		// rocksdb-js triggers a native finalizer crash during the next test's
+		// process-wide handle setup.
+		const exited = once(test_thread, 'exit', { signal: AbortSignal.timeout(5000) });
+		const fallback = setTimeout(() => {
+			test_thread.terminate().catch(() => {});
+		}, 1000);
+		try {
+			test_thread.postMessage({ type: 'shutdown' });
+			await exited;
+		} finally {
+			clearTimeout(fallback);
+		}
 	});
 });

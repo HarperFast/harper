@@ -3,13 +3,14 @@ import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 import { createHash } from 'node:crypto';
 import type { Stats } from 'node:fs';
 import { EventEmitter } from 'node:events';
-import { Component, FileAndURLPathConfig } from './Component.ts';
-import { FSWatcher, FSWatcherEventMap } from 'chokidar';
+import { Component, type FileAndURLPathConfig } from './Component.ts';
+import { FSWatcher, type FSWatcherEventMap } from 'chokidar';
 import { isAbsolute, join } from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { FilesOption } from './deriveGlobOptions.ts';
+import { type FilesOption } from './deriveGlobOptions.ts';
 import { deriveURLPath } from './deriveURLPath.ts';
-import { isMatch } from 'micromatch';
+import _typestrip_micromatch from 'micromatch';
+const { isMatch } = _typestrip_micromatch;
 import {
 	DIRECTORY_POLLING_FALLBACK_OPTIONS,
 	claimLostNativeWatchError,

@@ -1,17 +1,26 @@
 // @ts-nocheck
-import cluster from 'cluster';
+import cluster from 'node:cluster';
 import zlib from 'node:zlib';
 import * as env from '../utility/environment/environmentManager.ts';
-env.initSync();
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 import * as terms from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { realExit } from './threads/workerProcessGuard.ts';
-import fastify, { FastifyInstance, FastifyReply, FastifyRequest, FastifyServerOptions } from 'fastify';
+import fastify, {
+	type FastifyInstance,
+	type FastifyReply,
+	type FastifyRequest,
+	type FastifyServerOptions,
+} from 'fastify';
 import fastifyCors, { type FastifyCorsOptions } from '@fastify/cors';
 import fastifyCompress from '@fastify/compress';
 import fastifyStatic from '@fastify/static';
-import requestTimePlugin from './serverHelpers/requestTimePlugin.js';
-import guidePath from 'path';
+import requestTimePlugin from './serverHelpers/requestTimePlugin.ts';
+import guidePath from 'node:path';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as globalSchema from '../utility/globalSchema.ts';
 import * as commonUtils from '../utility/common_utils.ts';
@@ -24,7 +33,7 @@ import {
 	handlePostRequest,
 	serverErrorHandler,
 	reqBodyValidationHandler,
-} from './serverHelpers/serverHandlers.js';
+} from './serverHelpers/serverHandlers.ts';
 import { registerFastifyInstance } from './http.ts';
 import { registerContentHandlers } from './serverHelpers/contentTypes.ts';
 import { getConfigObj } from '../config/configUtils.ts';
@@ -34,8 +43,8 @@ type ParsedSqlObject = any;
 import { generateJsonApi } from '../resources/openApi.ts';
 import { Resources } from '../resources/Resources.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
-import { sendItcEvent } from './threads/itc.js';
-import { onMessageByType } from './threads/manageThreads.js';
+import { sendItcEvent } from './threads/itc.ts';
+import { onMessageByType } from './threads/manageThreads.ts';
 
 const DEFAULT_HEADERS_TIMEOUT = 60000;
 const REQ_MAX_BODY_SIZE = env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_MAXREQUESTBODYSIZE) ?? 1024 * 1024 * 1024; //this defaults to 1GB in bytes
@@ -50,7 +59,7 @@ export { operationsServer as startOnMainThread };
 /**
  * Builds a Harper server.
  */
-async function operationsServer(options: ServerOptions & { resources?: Resources }) {
+async function operationsServer(options: ServerOptions & { resources?: Resources } = {}) {
 	try {
 		harperLogger.debug('In Fastify server' + process.cwd());
 		harperLogger.debug(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);

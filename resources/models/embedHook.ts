@@ -1,3 +1,5 @@
+import * as loggerRuntimeModule from '../../utility/logging/harper_logger.ts';
+import * as ModelsRuntimeModule from './Models.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import { validateDecisionSchema } from './decision.ts';
 
@@ -5,7 +7,7 @@ import { validateDecisionSchema } from './decision.ts';
 function getLogger(): { error?: (...args: any[]) => void } {
 	try {
 		// eslint-disable-next-line @typescript-eslint/no-var-requires
-		return require('#src/utility/logging/logger').logger ?? {};
+		return { error: loggerRuntimeModule.default.logsAtLevel('error') ? loggerRuntimeModule.default.error : undefined };
 	} catch {
 		return {};
 	}
@@ -39,7 +41,7 @@ type EmbedFn = (
 let _embedFn: EmbedFn | undefined;
 function resolveEmbedFn(): EmbedFn {
 	if (_embedFn) return _embedFn;
-	const { Models } = require('#src/resources/models/Models'); // eslint-disable-line @typescript-eslint/no-var-requires
+	const { Models } = ModelsRuntimeModule; // eslint-disable-line @typescript-eslint/no-var-requires
 	const models = new Models();
 	_embedFn = (input, opts) => models.embed(input, opts);
 	return _embedFn;

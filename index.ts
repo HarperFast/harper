@@ -135,18 +135,8 @@ export type {
 	DirectoryEntryEvent,
 } from './components/EntryHandler.ts';
 
-// Globals and values
-// This section is responsible for creating the CJS exports map (for static analysis)
-// as well as defining the globals and values exports.
-// The stuff exported here are actually functional pieces of code.
-// Importantly, do not import any values directly.
-// For example, `import { tables } from './resources/databases.ts';` is NOT OKAY!
-// This breaks Harper's dynamic runtime assignment of exports
-// You MUST import as a type and then use `export declare const` instead.
-// This results in the types being written to dist/index.d.ts, but not dist/index.js
-
-// And for my sanity please keep these alphabetically sorted so we can ensure nothing is missing.
-
+import runtimeGlobals from './globals.js';
+import './server/threads/threadServer.ts';
 import type { contentTypes as ContentTypesImport } from './server/serverHelpers/contentTypes.ts';
 import type { createBlob as CreateBlobImport } from './resources/blob.ts';
 import type { databases as DatabasesImport } from './resources/databases.ts';
@@ -157,12 +147,15 @@ import type { Resource as ResourceImport } from './resources/Resource.ts';
 import type { SecretsView as SecretsImport } from './components/componentSecrets.ts'; // per-component secrets view (#1550)
 import type { server as ServerImport } from './server/Server.ts';
 import type { tables as TablesImport } from './resources/databases.ts';
-type ThreadsImport = unknown[]; // TODO: figure out actual type for this
+type ThreadsImport = unknown[] & {
+	sendToThread?: (threadId: number, message: any) => boolean;
+	onMessageByType?: (type: string, listener: (...args: any[]) => any) => void;
+};
 import type { transaction as TransactionImport } from './resources/transaction.ts';
 
 // These names are exposed TWO ways that resolve to the SAME live, process-wide value:
 //   1. as ambient globals (the `declare global` block below), and
-//   2. as named exports of the `harper` package (the `export declare const` block below).
+//   2. as named exports of the `harper` package (the `export const` block below).
 // At runtime each is populated in place by `_assignPackageExport(name, value)` (see globals.js),
 // which assigns BOTH `global[name]` and `exports[name]` to the one shared instance. So
 // `tables`/`databases`/etc. are not per-module or per-compartment copies: the bare global `tables`
@@ -185,37 +178,18 @@ declare global {
 	const transaction: typeof TransactionImport;
 }
 
-// Declare constant types so these are defined in `index.d.ts`
-export declare const contentTypes: typeof ContentTypesImport;
-export declare const createBlob: typeof CreateBlobImport;
-export declare const databases: typeof DatabasesImport;
-export declare const logger: Logger;
-export declare const models: typeof ModelsImport;
-export declare const operation: typeof OperationImport;
-export declare const Resource: typeof ResourceImport;
-export declare const secrets: SecretsImport;
-export declare const server: typeof ServerImport;
-export declare const tables: typeof TablesImport;
-export declare const threads: ThreadsImport;
-export declare const transaction: typeof TransactionImport;
+// The CommonJS default is the live object; its ESM namespace named properties are early snapshots.
+export const contentTypes = runtimeGlobals.contentTypes as typeof ContentTypesImport;
+export const createBlob = runtimeGlobals.createBlob as typeof CreateBlobImport;
+export const databases = runtimeGlobals.databases as typeof DatabasesImport;
+export const logger = runtimeGlobals.logger as Logger;
+export const models = runtimeGlobals.models as typeof ModelsImport;
+export const operation = runtimeGlobals.operation as typeof OperationImport;
+export const Resource = runtimeGlobals.Resource as typeof ResourceImport;
+export const secrets = runtimeGlobals.secrets as SecretsImport;
+export const server = runtimeGlobals.server as typeof ServerImport;
+export const tables = runtimeGlobals.tables as typeof TablesImport;
+export const threads = runtimeGlobals.threads as ThreadsImport;
+export const transaction = runtimeGlobals.transaction as typeof TransactionImport;
 
-// Actual define the values on the `exports` for CJS static analysis
-exports.contentTypes = null;
-exports.createBlob = undefined;
-exports.databases = {};
-exports.logger = {};
-exports.models = undefined;
-exports.operation = undefined;
-exports.Resource = undefined;
-exports.secrets = undefined;
-exports.server = {};
-exports.tables = {};
-exports.threads = [];
-exports.transaction = undefined;
-
-// And finally assign globals to exports.
-// These values are populated at runtime by `_assignPackageExport()` in their respective modules
-// (e.g. Resource.ts, databases.ts, Server.ts, etc.)
-import { globals } from './server/threads/threadServer.js';
-
-Object.assign(exports, globals);
+if (typeof exports !== 'undefined') Object.assign(exports, runtimeGlobals);

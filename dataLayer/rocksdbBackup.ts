@@ -26,7 +26,7 @@ import { getBackupDirPath } from '../config/configHelpers.ts';
 import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
-import { SchemaEventMsg } from '../server/threads/itc.js';
+import { SchemaEventMsg } from '../server/threads/itc.ts';
 import {
 	beginRestore,
 	clearRestoringMarker,

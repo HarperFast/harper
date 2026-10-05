@@ -1,13 +1,19 @@
+import { onStartup } from '../lifecycle.ts';
 /** Like harperLogger, but conditionally exports functions based on the log level. */
 import harperLogger from './harper_logger.ts';
 
 export const logger: Logger = {};
 
-for (let level of ['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'notify']) {
-	if (harperLogger.logsAtLevel(level)) {
-		logger[level] = harperLogger[level];
+function initializeLogger() {
+	for (let level of ['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'notify']) {
+		if (harperLogger.logsAtLevel(level)) {
+			logger[level] = harperLogger[level];
+		}
 	}
 }
+
+initializeLogger();
+if (typeof module === 'undefined') onStartup(initializeLogger);
 
 export function loggerWithTag(tag: string): Logger {
 	return harperLogger.loggerWithTag(tag, true) as Logger;

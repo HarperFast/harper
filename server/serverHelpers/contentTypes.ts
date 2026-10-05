@@ -1,7 +1,7 @@
 import { streamAsJSON, stringify, parse } from './JSONStream.ts';
 import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, Encoder, EncoderStream } from 'cbor-x';
-import { createBrotliCompress, brotliCompress, constants } from 'zlib';
+import { createBrotliCompress, brotliCompress, constants } from 'node:zlib';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import stream, { Readable, Transform } from 'node:stream';
 import { server } from '../Server.ts';
@@ -18,9 +18,10 @@ import { Blob } from '../../resources/blob.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
 import { parseMultipartRequest } from './multipartParser.ts';
-const SERIALIZATION_BIGINT = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
-const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
-const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
+import { onStartup } from '../../utility/lifecycle.ts';
+let JSONStringify: typeof JSON.stringify = stringify;
+let JSONParse: typeof JSON.parse = parse;
+let COMPRESSION_THRESHOLD: number | undefined;
 const streamStartup = Symbol('streamStartup');
 const serializedStreamError = Symbol('serializedStreamError');
 
@@ -244,6 +245,22 @@ const genericHandler = {
 };
 mediaTypes.set('*/*', genericHandler);
 mediaTypes.set('', genericHandler);
+function initializeSerialization() {
+	const previousStringify = JSONStringify;
+	const useBigInt = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
+	JSONStringify = useBigInt ? stringify : JSON.stringify;
+	JSONParse = useBigInt ? parse : JSON.parse;
+	for (const codec of mediaTypes.values()) {
+		if (codec.serialize === previousStringify) codec.serialize = JSONStringify;
+	}
+	COMPRESSION_THRESHOLD = envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD);
+}
+try {
+	initializeSerialization();
+} catch (error) {
+	if (!(error instanceof ReferenceError)) throw error;
+}
+onStartup(initializeSerialization);
 // try to JSON parse, but since we don't know for sure, this will return the body
 // otherwise
 function tryJSONParse(input) {
@@ -416,7 +433,6 @@ export function findBestSerializer(incomingMessage) {
 	return { serializer: bestSerializer, type: bestType, parameters: bestParameters };
 }
 
-const COMPRESSION_THRESHOLD = envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD);
 const brotliParams = (mode: number) => ({
 	params: { [constants.BROTLI_PARAM_MODE]: mode, [constants.BROTLI_PARAM_QUALITY]: 2 },
 });

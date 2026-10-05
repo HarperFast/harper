@@ -1,12 +1,11 @@
 'use strict';
 
 import Joi from 'joi';
-import * as path from 'path';
+import * as path from 'node:path';
 
 import { handleHDBError, hdbErrors } from './errors/hdbError.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
-
 import * as validator from '../validation/validationWrapper.ts';
 import harperLogger from './logging/harper_logger.ts';
 
@@ -14,7 +13,7 @@ import { CONFIG_PARAMS } from './hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { nonInteractiveSpawn, packageManagerInstallArguments } from '../components/Application.ts';
 import { withComponentPreparationLock } from '../components/componentPreparationLock.ts';
-import { isThreadRunning } from '../server/threads/manageThreads.js';
+import { isThreadRunning } from '../server/threads/manageThreads.ts';
 
 /**
  * Executes npm install against specified custom function projects

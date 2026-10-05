@@ -1,13 +1,17 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { statfs } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { ownsStoreMaintenance } from '../server/threads/manageThreads.js';
+import { ownsStoreMaintenance } from '../server/threads/manageThreads.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMgr from '../utility/environment/environmentManager.ts';
 import { convertToMS } from '../utility/common_utils.ts';
-envMgr.initSync();
 
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const reclamationHandlers = new Map<
 	string,
 	{ priority: number; handler: (priority: number) => Promise<void> | void }[]

@@ -72,7 +72,7 @@ describe('Test insert module', () => {
 		});
 
 		beforeEach(() => {
-			insert_rw.__set__('harperBridge', { upsertRecords: bridge_upsert_stub });
+			insert_rw.__set__('harperBridge_ts_1', { default: { upsertRecords: bridge_upsert_stub } });
 		});
 
 		afterEach(async () => {
@@ -177,7 +177,7 @@ describe('Test insert module', () => {
 		let bridge_insert_stub = sandbox.stub().resolves(bridge_insert_resp_test);
 
 		before(() => {
-			insert_rw.__set__('harperBridge', { createRecords: bridge_insert_stub });
+			insert_rw.__set__('harperBridge_ts_1', { default: { createRecords: bridge_insert_stub } });
 		});
 
 		after(() => {
@@ -226,7 +226,7 @@ describe('Test insert module', () => {
 		let bridge_update_stub = sandbox.stub();
 
 		before(() => {
-			insert_rw.__set__('harperBridge', { updateRecords: bridge_update_stub });
+			insert_rw.__set__('harperBridge_ts_1', { default: { updateRecords: bridge_update_stub } });
 		});
 
 		after(() => {

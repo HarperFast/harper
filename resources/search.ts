@@ -7,7 +7,7 @@ import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { lastMetadata } from './RecordEncoder.ts';
 import { writeKeyId, getReadTransactionGuard } from './DatabaseTransaction.ts';
-import { recordAction } from './analytics/write';
+import { recordAction } from './analytics/write.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import type { FullTextCondition } from './indexes/fullTextQueryIndex.ts';

@@ -1,4 +1,4 @@
-import * as _ from 'lodash';
+import _ from 'lodash';
 import * as validator from './validationWrapper.ts';
 import Joi from 'joi';
 import * as hdbUtils from '../utility/common_utils.ts';
@@ -120,7 +120,7 @@ export default function (searchObject: any, type: any) {
 			return handleHDBError(new Error(), checkSchemaTable, HTTP_STATUS_CODES.NOT_FOUND);
 		}
 
-		let tableSchema = getDatabases()[searchObject.schema][searchObject.table];
+		let tableSchema: any = getDatabases()[searchObject.schema][searchObject.table];
 		let allTableAttributes = tableSchema.attributes;
 
 		//this clones the get_attributes array

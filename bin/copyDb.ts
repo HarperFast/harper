@@ -7,7 +7,8 @@ import {
 } from '../resources/databases.ts';
 import { open, asBinary } from 'lmdb';
 import { isAbsolute, join, relative, sep } from 'node:path';
-import { move, remove } from 'fs-extra';
+import _typestrip_fs_extra from 'fs-extra';
+const { move, remove } = _typestrip_fs_extra;
 import { existsSync, mkdirSync } from 'node:fs';
 import { rename, writeFile } from 'node:fs/promises';
 import { get } from '../utility/environment/environmentManager.ts';

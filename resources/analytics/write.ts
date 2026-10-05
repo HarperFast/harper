@@ -1,14 +1,15 @@
-import { parentPort, threadId } from 'worker_threads';
-import { onMessageByType } from '../../server/threads/manageThreads.js';
+import { parentPort, threadId } from 'node:worker_threads';
+import { onStartup } from '../../utility/lifecycle.ts';
+import { onMessageByType } from '../../server/threads/manageThreads.ts';
 import { getDatabases, table, isReadOnlyMode } from '../databases.ts';
 import type { Databases, Table, Tables } from '../databases.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { stat, opendir } from 'node:fs/promises';
 const { getLogFilePath, forComponent } = harperLogger;
-import { dirname, join } from 'path';
-import { open } from 'fs/promises';
+import { dirname, join } from 'node:path';
+import { open } from 'node:fs/promises';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.ts';
-import { get as envGet, getHdbBasePath, initSync } from '../../utility/environment/environmentManager.ts';
+import { get as envGet, getHdbBasePath } from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../../utility/hdbTerms.ts';
 import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
@@ -20,8 +21,6 @@ import { RocksDatabase, type TransactionLogStats } from '@harperfast/rocksdb-js'
 
 const log = forComponent('analytics').conditional;
 const isBun = typeof globalThis.Bun !== 'undefined';
-
-initSync();
 
 type ActionCallback = (action: Action) => void;
 export type Value = number | boolean | ActionCallback;
@@ -42,6 +41,11 @@ let activeActions = new Map<string, Action>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
+
+onStartup(() => {
+	analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
+	analyticsReadOnlyChecked = false;
+});
 
 // Check read-only mode lazily to avoid circular dependency at module load time
 function checkAnalyticsEnabled(): boolean {
@@ -129,8 +133,6 @@ export function recordAction(value: Value, metric: string, path?: string, method
 	}
 	if (!sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
 }
-
-server.recordAnalytics = recordAction;
 
 // Let the storage layer emit write-commit latency without statically depending on this module.
 setCommitLatencyRecorder((durationMs) => recordAction(durationMs, METRIC.TRANSACTION_COMMIT_TIME));
@@ -1384,3 +1386,5 @@ function rebalance({ counts, values, totalCount }, resetCounts: boolean) {
 	else counts.set(targetCounts);
 }
 */
+
+server.recordAnalytics = recordAction;

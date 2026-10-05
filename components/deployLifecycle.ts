@@ -30,7 +30,7 @@ import {
 	isThreadRunning,
 	onMessageByType,
 	onThreadExit,
-} from '../server/threads/manageThreads.js';
+} from '../server/threads/manageThreads.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 
 const DEPLOY_LIFECYCLE_MSG = 'harper:deploy:lifecycle';

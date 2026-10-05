@@ -1,6 +1,7 @@
 // for now we are using mqtt-packet, but we may implement some of this ourselves, particularly packet generation so that
 // we can implement more efficient progressive buffer allocation.
-import { parser as makeParser, generate } from 'mqtt-packet';
+import _mqtt_packet from 'mqtt-packet';
+const { parser: makeParser, generate } = _mqtt_packet;
 import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession.ts';
 import { getSuperUser } from '../security/user.ts';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
@@ -16,9 +17,10 @@ import { get } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
 import { forComponent as loggerForComponent } from '../utility/logging/harper_logger.ts';
-import { EventEmitter } from 'events';
+import { EventEmitter } from 'node:events';
 import { verifyCertificate } from '../security/certificateVerification/index.ts';
 import { registerShutdownDrain } from '../components/shutdownDrain.ts';
+import { onStartup } from '../utility/lifecycle.ts';
 import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
 import {
 	assertNoDeferredCredentialRejection,
@@ -32,6 +34,9 @@ const authEventLog = loggerWithTag('auth-event');
 const mqttLog = loggerForComponent('mqtt');
 
 let AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
+onStartup(() => {
+	AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
+});
 export function bypassAuth() {
 	AUTHORIZE_LOCAL = true;
 }

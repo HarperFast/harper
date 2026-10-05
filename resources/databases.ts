@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { setDatabasesGetter } from '../utility/databasesRef.ts';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
@@ -18,7 +19,7 @@ import { rm, unlink } from 'node:fs/promises';
 import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
-} from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
+} from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 import {
 	makeTable,
 	ignoreAlreadyDropped,
@@ -40,11 +41,11 @@ import { ClientError, DatabaseClosingError } from '../utility/errors/hdbError.ts
 import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
-import { SchemaEventMsg } from '../server/threads/itc.js';
-import { workerData } from 'worker_threads';
+import { SchemaEventMsg } from '../server/threads/itc.ts';
+import { workerData } from 'node:worker_threads';
 import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent } = harperLogger;
-import * as manageThreads from '../server/threads/manageThreads.js';
+import * as manageThreads from '../server/threads/manageThreads.ts';
 import {
 	establishAuditFloor,
 	openAuditStore,
@@ -92,7 +93,7 @@ import {
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
-import { isProcessRunning } from '../utility/processManagement/processManagement.js';
+import { isProcessRunning } from '../utility/processManagement/processManagement.ts';
 import {
 	compileFullTextDefinitions,
 	compileFullTextFields,
@@ -183,7 +184,11 @@ const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
 const CATALOG_RELATIONSHIP = Symbol('catalog-relationship');
 const DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
-initSync();
+try {
+	initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 
 type RelationshipTarget = { database: string; table: string };
 type PersistedRelationship = {
@@ -720,6 +725,9 @@ export function getTables(): Tables {
  * but in newer multi-table databases, there is one consistent, integrated audit table for the database since transactions
  * can span any tables in the database.
  */
+// Register getter in the shared registry so common_utils.ts can access databases
+// without importing this module directly (which would create a circular dep).
+setDatabasesGetter(() => getDatabases());
 export function getDatabases(): Databases {
 	if (loadedDatabases) {
 		return databases;

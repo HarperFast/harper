@@ -91,14 +91,21 @@ import * as delete_ from '../dataLayer/delete.ts';
 import * as validation from '../validation/user_validation.ts';
 import * as search from '../dataLayer/search.ts';
 import * as hdbUtility from '../utility/common_utils.ts';
-import * as validate from 'validate.js';
+import _validate from 'validate.js';
+// validate.js is a CJS module; in ESM (typestrip) the default export IS the library object.
+const validate: any = (_validate as any).default ?? _validate;
 import * as logger from '../utility/logging/harper_logger.ts';
-import { promisify } from 'util';
+import { promisify } from 'node:util';
 import * as env from '../utility/environment/environmentManager.ts';
-import systemSchema from '../json/systemSchema.json';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+const systemSchema: Record<string, any> = JSON.parse(
+	readFileSync(join(PACKAGE_ROOT, 'json/systemSchema.json'), 'utf-8')
+);
 import { hdbErrors, ClientError } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdbErrors;
-import * as _ from 'lodash';
+import _ from 'lodash';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 // Need to use `.js` even for other TS files since TS compiler won't replace requires.
@@ -114,13 +121,13 @@ import { VERSION_REUSED } from '../resources/RecordEncoder.ts';
 import { contextStorage } from '../resources/transaction.ts';
 import { writeKey } from 'ordered-binary';
 
-server.getUser = (username: string, password?: string | null): Promise<User> => {
+function getUserImpl(username: string, password?: string | null): Promise<User> {
 	return findAndValidateUser(username, password, password != null);
-};
+}
 
-server.authenticateUser = (username: string, password?: string | null): Promise<User> => {
+function authenticateUserImpl(username: string, password?: string | null): Promise<User> {
 	return findAndValidateUser(username, password);
-};
+}
 
 const USER_ATTRIBUTE_ALLOWLIST = {
 	username: true,
@@ -705,7 +712,7 @@ function notifyUserChangeListeners(): void {
 }
 
 let invalidateCallbacks = [];
-(server as any).invalidateUser = function (user: User | any) {
+function invalidateUserImpl(user: User | any) {
 	for (let callback of invalidateCallbacks) {
 		try {
 			callback(user);
@@ -713,8 +720,13 @@ let invalidateCallbacks = [];
 			harperLogger.error('Error invalidating user', error);
 		}
 	}
-};
+}
 
-server.onInvalidatedUser = function (callback) {
+function onInvalidatedUserImpl(callback) {
 	invalidateCallbacks.push(callback);
-};
+}
+
+server.getUser = getUserImpl;
+server.authenticateUser = authenticateUserImpl;
+server.onInvalidatedUser = onInvalidatedUserImpl;
+(server as any).invalidateUser = invalidateUserImpl;

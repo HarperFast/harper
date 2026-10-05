@@ -1,8 +1,9 @@
-'use strict';
+import { PACKAGE_ROOT } from '../packageUtils.js';
+('use strict');
 
-import * as fs from 'fs-extra';
-import * as path from 'path';
-import * as os from 'os';
+import fs from 'fs-extra';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import PropertiesReader from 'properties-reader';
 import log from '../logging/harper_logger.ts';
 import * as commonUtils from '../common_utils.ts';
@@ -44,7 +45,7 @@ let inheritedOverridesApplied = false;
  * currently known base path here to help with this case.
  */
 export function getHdbBasePath() {
-	return installProps[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY];
+	return installProps?.[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY];
 }
 
 /**
@@ -62,11 +63,18 @@ export function setHdbBasePath(hdbPath: string) {
  * @returns {*}
  */
 export function get(propName: string): any {
-	const value = configUtils.getConfigValue(propName);
-	if (value === undefined) {
-		return installProps[propName];
+	// Tolerate calls before this module's body has executed (ESM cycle):
+	// configUtils.ts / installProps may not be initialized yet, in which case
+	// no config has been read so the value is genuinely unknown.
+	let value;
+	try {
+		value = configUtils.getConfigValue(propName);
+	} catch (err: any) {
+		if (err?.name !== 'ReferenceError') throw err;
 	}
-
+	if (value === undefined) {
+		return installProps?.[propName];
+	}
 	return value;
 }
 
@@ -266,7 +274,13 @@ export function initSync(force: boolean = false) {
 				installProps[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY] = configHdbRoot;
 			}
 		}
-	} catch (err) {
+	} catch (err: any) {
+		// During typestrip ESM evaluation, module-load callers of initSync may
+		// reach this before configUtils has finished its own top-level evaluation,
+		// producing a ReferenceError (TDZ) on a module-scope binding. Don't exit
+		// the process for that — the same module-load chain will retry once
+		// evaluation completes, or bin/harper.ts will re-call initSync().
+		if (err?.name === 'ReferenceError') return;
 		log.error(INIT_ERR);
 		log.error(err);
 		console.error(err);
@@ -294,8 +308,7 @@ export function initTestEnvironment(testConfigObj: any = {}) {
 			cors_accesslist,
 			local_studio_on,
 		} = testConfigObj;
-		// __dirname is dist/utility/environment when running tests, so go up 3 levels to reach project root
-		const propsPath = path.join(__dirname, '../../../', 'unitTests');
+		const propsPath = path.join(PACKAGE_ROOT, 'unitTests');
 		installProps[BOOT_PROPS_FILE_PATH] = path.join(propsPath, 'hdb_boot_properties.file');
 		const TEST_HDB_PATH = path.join(propsPath, 'envDir', process.pid.toString());
 		try {

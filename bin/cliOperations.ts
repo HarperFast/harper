@@ -3,11 +3,11 @@
 import { loadCredentials, saveCredentials, normalizeTarget, extractTargetCredentials } from './cliCredentials.ts';
 import { isJWTExpired } from '../security/tokenAuthentication.ts';
 import * as envMgr from '../utility/environment/environmentManager.ts';
-envMgr.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import { httpRequest } from '../utility/common_utils.ts';
 import { workloadIdentityAvailable, exchangeWorkloadIdentityForToken } from './workloadIdentity.ts';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
+import dotenv from 'dotenv';
 import * as YAML from 'yaml';
 import { Readable } from 'node:stream';
 import { execFileSync } from 'node:child_process';
@@ -16,13 +16,18 @@ import { encode as encodeCbor } from 'cbor-x';
 import { buildMultipartBody } from './multipartBuilder.ts';
 import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
-import { getHdbPid } from '../utility/processManagement/processManagement.js';
+import { getHdbPid } from '../utility/processManagement/processManagement.ts';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
 // The `deploy setup` seal and this by-reference flag both name the same hdb_secret row, and the
 // server re-derives it from its own request — so the derivation lives in one dependency-free module
 // rather than being restated per caller (it also keeps `components/` off the CLI's import graph).
 import { deriveGitSecretName, directoryProjectName, normalizeGitHost } from '../utility/componentNames.ts';
 
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
 
 // Shown for any local-instance connection failure (missing pid, missing/stale domain
@@ -881,7 +886,7 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 }
 
 async function cliOperations(req: any, skipResponseLog = false) {
-	require('dotenv').config();
+	dotenv.config();
 
 	// Resolve target/auth inside the try so a credential or connection error (e.g. an incomplete
 	// `auth_username=`/`auth_password=` pair, which resolveRequestOptions throws on) is mapped to the

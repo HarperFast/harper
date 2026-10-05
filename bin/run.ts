@@ -1,16 +1,19 @@
 'use strict';
 
 import * as env from '../utility/environment/environmentManager.ts';
-env.initSync();
-
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 // This unused restart import is here so that main thread loads ITC event listener defined in restart file. Do not remove.
 import './restart.ts';
 import * as terms from '../utility/hdbTerms.ts';
 const { CONFIG_PARAMS } = terms;
 import hdbLogger from '../utility/logging/harper_logger.ts';
-import * as fs from 'fs-extra';
-import * as path from 'path';
-import checkJwtTokens from '../utility/install/checkJWTTokensExist.js';
+import fs from 'fs-extra';
+import * as path from 'node:path';
+import checkJwtTokens from '../utility/install/checkJWTTokensExist.ts';
 import { install } from '../utility/install/installer.ts';
 import chalk from 'chalk';
 import { packageJson } from '../utility/packageUtils.js';
@@ -18,19 +21,19 @@ import * as hdbUtils from '../utility/common_utils.ts';
 import * as installation from '../utility/installation.ts';
 import * as configUtils from '../config/configUtils.ts';
 import assignCMDENVVariables from '../utility/assignCmdEnvVariables.ts';
-import * as upgrade from './upgrade.js';
+import * as upgrade from './upgrade.ts';
 import { compactOnStart, migrateOnStart } from './copyDb.ts';
 import minimist from 'minimist';
 import * as keys from '../security/keys.ts';
 import { startHTTPThreads } from '../server/threads/socketRouter.ts';
-import { beginProcessShutdown } from '../server/threads/manageThreads.js';
+import { beginProcessShutdown } from '../server/threads/manageThreads.ts';
 import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
 import { isReadOnlyMode } from '../resources/databases.ts';
 import { declareTokenUseTable } from '../security/authn/oidc/tokenUseTable.ts';
 import { ensureCertificateVerificationTables } from '../security/certificateVerification/verificationTables.ts';
 import { getThisNodeName, getThisNodeHostname } from '../server/nodeName.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
-import { getHdbPid, isProcessRunning } from '../utility/processManagement/processManagement.js';
+import { getHdbPid, isProcessRunning } from '../utility/processManagement/processManagement.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 
 let pmUtils;
@@ -117,7 +120,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 
 		// If HARPER_SET_CONFIG is present, filter out any config keys that are set in it
 		// to prevent individual env vars from overriding explicit runtime configuration
-		const { filterArgsAgainstRuntimeConfig } = require('../config/harperConfigEnvVars');
+		const { filterArgsAgainstRuntimeConfig } = await import('../config/harperConfigEnvVars.ts');
 		parsedArgs = filterArgsAgainstRuntimeConfig(parsedArgs);
 
 		if (!hdbUtils.isEmpty(parsedArgs) && !hdbUtils.isEmptyOrZeroLength(Object.keys(parsedArgs))) {
@@ -236,6 +239,12 @@ async function main(calledByInstall = false) {
 
 		if (process.env.HARPER_SAFE_MODE) hdbLogger.notify(SAFE_MODE_MSG);
 
+		// Drain onStartup hooks after install/initialize so server.X singletons
+		// (server.http, server.getUser, etc.) and auth.ts's onStartup table()
+		// call see the populated env / installed hdbBasePath.
+		const lifecycle = await import('../utility/lifecycle.ts');
+		await lifecycle.runStartup();
+
 		if (env.get(terms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
 		if (env.get(terms.CONFIG_PARAMS.STORAGE_MIGRATEONSTART)) await migrateOnStart();
 
@@ -270,7 +279,7 @@ function started() {
 async function launch(exit = true) {
 	skipExitListeners = !exit;
 	try {
-		if (pmUtils === undefined) pmUtils = require('../utility/processManagement/processManagement.js');
+		if (pmUtils === undefined) pmUtils = await import('../utility/processManagement/processManagement.ts');
 		hdbLogger.debug('initializing processManagement...');
 		await initialize();
 		hdbLogger.debug('Starting new main process');

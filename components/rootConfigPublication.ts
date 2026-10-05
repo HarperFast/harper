@@ -13,7 +13,7 @@ import { composeReassertedEnvConfig, REASSERTING_CONFIG_ENV_VARS } from '../conf
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
 import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
-import { isThreadRunning } from '../server/threads/manageThreads.js';
+import { isThreadRunning } from '../server/threads/manageThreads.ts';
 
 /**
  * What an activation does to the component's entry in the root config, recorded in the activation journal

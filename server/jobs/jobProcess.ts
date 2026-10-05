@@ -14,14 +14,16 @@ import { runWithDispatchedOperation } from '../serverHelpers/operationAuthorizat
 import { stripSuppliedParsedSqlObject } from '../serverHelpers/requestSanitization.ts';
 import moment from 'moment';
 import * as jobs from './jobs.ts';
-import { cloneDeep } from 'lodash';
-
+import _lodash from 'lodash';
+const { cloneDeep } = _lodash;
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import { parentPort } from 'node:worker_threads';
-import { notifyJobCleanupComplete } from '../threads/manageThreads.js';
+import { notifyJobCleanupComplete } from '../threads/manageThreads.ts';
 import { getEnvBuiltInComponents } from './../../components/Application.ts';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
+import * as env from '../../utility/environment/environmentManager.ts';
+import { runStartup } from '../../utility/lifecycle.ts';
 const JOB_NAME = process.env[(hdbTerms as any).PROCESS_NAME_ENV_PROP] as string;
 const JOB_ID = JOB_NAME.substring(4);
 
@@ -35,8 +37,10 @@ const JOB_ID = JOB_NAME.substring(4);
 	let jobObj: any = { id: JOB_ID, request: undefined };
 	let exitCode = 0;
 	try {
+		env.initSync();
 		harperLogger.notify('Starting job:', JOB_ID);
 		globalSchema.setSchemaDataToGlobal();
+		await runStartup();
 
 		for (const { packageIdentifier } of getEnvBuiltInComponents()) {
 			if (packageIdentifier.startsWith('@/')) {

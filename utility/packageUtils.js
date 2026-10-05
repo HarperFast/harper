@@ -46,4 +46,39 @@ const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
  */
 const PACKAGE_ROOT = realpathSync(dirname(packageJsonPath));
 
-module.exports = { packageJson, PACKAGE_ROOT };
+/**
+ * The directory that holds source files at runtime: `PACKAGE_ROOT` in
+ * type-strip mode (where `node bin/harper.ts` runs the .ts sources directly)
+ * and `PACKAGE_ROOT/dist` in dist mode (where transpiled .js files live).
+ *
+ * This CJS file's canonical location is either `<PACKAGE_ROOT>/utility`
+ * (source) or `<PACKAGE_ROOT>/dist/utility` (dist), including when Node
+ * preserves symlinks. Compare canonical paths to detect the mode.
+ */
+const RUNTIME_SRC_ROOT = realpathSync(__dirname).startsWith(join(PACKAGE_ROOT, 'dist'))
+	? join(PACKAGE_ROOT, 'dist')
+	: PACKAGE_ROOT;
+
+/**
+ * File extension of the running modules: `.ts` in type-strip mode, `.js` in
+ * dist mode. Use this when constructing file paths for `new Worker(...)` or
+ * similar APIs that need the on-disk filename.
+ */
+const RUNTIME_FILE_EXT = RUNTIME_SRC_ROOT === PACKAGE_ROOT ? '.ts' : '.js';
+
+function loadNativePackage(name) {
+	return require(name);
+}
+
+function loadRuntimeModule(relativePath) {
+	return require(join(__dirname, '..', relativePath + RUNTIME_FILE_EXT));
+}
+
+module.exports = {
+	packageJson,
+	PACKAGE_ROOT,
+	RUNTIME_SRC_ROOT,
+	RUNTIME_FILE_EXT,
+	loadNativePackage,
+	loadRuntimeModule,
+};

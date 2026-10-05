@@ -48,10 +48,11 @@ import {
 import type { ReadStream, StatsFs } from 'node:fs';
 import { createDeflate, createInflate, inflate } from 'node:zlib';
 import { Readable, Transform, pipeline } from 'node:stream';
-import { ensureDirSync } from 'fs-extra';
+import _typestrip_fs_extra from 'fs-extra';
+const { ensureDirSync } = _typestrip_fs_extra;
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
-import { join, dirname } from 'path';
+import { join, dirname } from 'node:path';
 import { logger } from '../utility/logging/logger.ts';
 import { resolveWatchTarget } from '../utility/watchPath.ts';
 import type { RootDatabase } from 'lmdb';

@@ -1,3 +1,4 @@
+import { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
 import {
 	startWorker,
 	setMonitorListener,
@@ -7,7 +8,8 @@ import {
 	setRunningIsolatedApplicationsGetter,
 	workersForApplication,
 	stopWorker,
-} from './manageThreads.js';
+	isProcessShuttingDown,
+} from './manageThreads.ts';
 import {
 	presentIsolatedApplicationNames,
 	isolatedApplicationRefusal,
@@ -49,6 +51,7 @@ if (isMainThread) {
 
 export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean) {
 	const workerSlots = [];
+	if (isProcessShuttingDown()) return [];
 	// Crash-path defense: a hard crash can skip a worker's exit-time UDS cleanup and leave stale
 	// mirror files behind. This runs before any worker below can start (and thus before any mirror
 	// can bind), so it can only ever clear files nothing is using yet — never a live mirror. The
@@ -61,7 +64,9 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 	// determine database storage path" before main() ever runs.
 	if (isMainThread && !sweptSocketsDirectory) {
 		sweptSocketsDirectory = true;
-		(await import('../http.ts')).cleanupSocketsDirectory();
+		const { cleanupSocketsDirectory } = await import('../http.ts');
+		if (isProcessShuttingDown()) return [];
+		cleanupSocketsDirectory();
 	}
 	recordHostname().catch((err) => harperLogger.error?.('Error recording hostname for analytics:', err));
 	// Drive transaction-log cooling from the main thread (the registry is a
@@ -79,22 +84,28 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			workerSlots.push(slot);
 			poolSlots.push(slot);
 		} else {
-			const { loadRootComponents } = require('../loadRootComponents.js');
+			const { loadRootComponents } = await import('../loadRootComponents.ts');
+			if (isProcessShuttingDown()) return [];
 			if (threadCount === 0) {
 				setMainIsWorker(true);
-				const threadServer = require('./threadServer.js');
+				const threadServer = await import('./threadServer.ts');
+				if (isProcessShuttingDown()) return [];
 				await threadServer.startServers();
+				if (isProcessShuttingDown()) return [];
 				// startServers() schedules listener startup after loading components; await its cached
 				// batch so a bind failure reaches bin/run.ts and exits non-zero in single-thread mode too.
 				await threadServer.listenOnPorts();
 				return Promise.resolve([]);
 			}
 			await loadRootComponents();
-			const { listenOnPorts } = require('./threadServer.js');
+			if (isProcessShuttingDown()) return [];
+			const { listenOnPorts } = await import('./threadServer.ts');
+			if (isProcessShuttingDown()) return [];
 			await listenOnPorts();
 			// Windows does not support SO_REUSEPORT, so only a single HTTP worker is supported.
 			if (process.platform === 'win32') threadCount = 1;
 		}
+		if (isProcessShuttingDown()) return [];
 		poolSize = threadCount;
 		nextIsolatedIndex = Math.max(nextIsolatedIndex, threadCount);
 		const isolated = admittedIsolatedApplications([...isolatedSlots.keys()]);
@@ -236,6 +247,7 @@ async function reconcileIsolatedWorkersNow(): Promise<string[]> {
 		for (const application of stoppedApplications) cleanupApplicationSockets(application);
 	}
 	const started: string[] = [];
+	if (isProcessShuttingDown()) return started;
 	const heapShareCount = poolSize + wanted.size;
 	for (const slot of poolSlots) slot.setHeapShareCount(heapShareCount);
 	for (const slot of isolatedSlots.values()) slot.setHeapShareCount(heapShareCount);
@@ -353,7 +365,7 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 			}
 		},
 	};
-	startWorker(join(__dirname, './threadServer.js'), workerOptions);
+	startWorker(join(RUNTIME_SRC_ROOT, `server/threads/threadServer${RUNTIME_FILE_EXT}`), workerOptions);
 	// Stop of a dedicated worker whose application is gone: every worker carrying the application,
 	// a crashed one's replacement still booting included, so none is left running the removed app.
 	let shutdownPromise: Promise<void> | undefined;

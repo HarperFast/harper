@@ -1,4 +1,5 @@
-'use strict';
+import * as CreateTableObjectCjsModule from '../../dataLayer/CreateTableObject.ts';
+('use strict');
 
 // 5.2.0 — introduces system.hdb_secret for the encrypted secrets store (#715).
 //
@@ -13,10 +14,15 @@
 // dependent code means it never fires and the table is missing on upgraded installs
 // (see the mis-tagging history documented in 5-1-0.ts).
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
+const systemSchema: Record<string, any> = JSON.parse(
+	readFileSync(join(PACKAGE_ROOT, 'json/systemSchema.json'), 'utf-8')
+);
 import { databases } from '../../resources/databases.ts';
-import systemSchema from '../../json/systemSchema.json';
 import * as terms from '../../utility/hdbTerms.ts';
-import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
+import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 import bridge from '../../dataLayer/harperBridge/harperBridge.ts';
 import hdbLogger from '../../utility/logging/harper_logger.ts';
 
@@ -32,8 +38,7 @@ async function createHdbSecretIfMissing() {
 
 	hdbLogger.info(`Creating system.${SECRET_TABLE} table for the secrets store.`);
 
-	const CreateTableObject =
-		require('../../dataLayer/CreateTableObject').default || require('../../dataLayer/CreateTableObject');
+	const CreateTableObject = CreateTableObjectCjsModule.default || CreateTableObjectCjsModule;
 	const schema = (systemSchema as any)[SECRET_TABLE];
 	if (!schema) {
 		throw new Error(`systemSchema.${SECRET_TABLE} is missing; cannot run 5.2.0 directive.`);

@@ -1,4 +1,5 @@
-import { onMessageByType } from '../server/threads/manageThreads.js';
+import { onMessageByType } from '../server/threads/manageThreads.ts';
+import { onStartup } from '../utility/lifecycle.ts';
 import {
 	readdirSync,
 	readFileSync,
@@ -28,7 +29,7 @@ import * as loadEnv from '../resources/loadEnv.ts';
 import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import * as dataLoader from '../resources/dataLoader.ts';
 import * as scheduler from '../resources/scheduler/scheduler.ts';
-import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
+import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { trackScopeClose } from './scopeShutdown.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
@@ -61,7 +62,7 @@ import { Status } from '../server/status/index.ts';
 import { lifecycle as componentLifecycle, statusForComponent } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
-import { PluginModule } from './PluginModule.ts';
+import { type PluginModule } from './PluginModule.ts';
 import {
 	getEnvBuiltInComponents,
 	recoverInterruptedActivations,
@@ -72,7 +73,7 @@ import {
 import { ComponentPreparationLockTimeoutError } from './componentPreparationLock.ts';
 import { pathToFileURL } from 'node:url';
 
-const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+const getComponentsRoot = () => getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 
 let loadedComponents = new Map<any, any>();
 
@@ -242,7 +243,7 @@ export async function loadComponentDirectories(
 		// startup sequencing does not protect a worker that restarts later. Safe to run on any thread: each deployment is settled under
 		// the component preparation lock, which is cross-thread and cross-process, and the pass is idempotent.
 		try {
-			for (const [component, error] of await recoverInterruptedActivations(CF_ROUTES_DIR)) {
+			for (const [component, error] of await recoverInterruptedActivations(getComponentsRoot())) {
 				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
 			}
 		} catch (error) {
@@ -253,7 +254,7 @@ export async function loadComponentDirectories(
 		}
 		// Plus anything a previous pass recorded as unsettleable, which settlement above leaves in place.
 		try {
-			for (const [component, error] of await unsettleableComponentsFromDisk(CF_ROUTES_DIR)) {
+			for (const [component, error] of await unsettleableComponentsFromDisk(getComponentsRoot())) {
 				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
 			}
 		} catch (error) {
@@ -264,7 +265,7 @@ export async function loadComponentDirectories(
 		}
 	}
 	try {
-		for (const [component, error] of await recoverInterruptedComponentExtractions(CF_ROUTES_DIR)) {
+		for (const [component, error] of await recoverInterruptedComponentExtractions(getComponentsRoot())) {
 			if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
 		}
 	} catch (error) {
@@ -287,13 +288,13 @@ export async function loadComponentDirectories(
 		[...failedRecoveries].filter(([, error]) => !(error instanceof ComponentPreparationLockTimeoutError))
 	);
 	const deferComponentLoad = (appName: string) => {
-		const appFolder = join(CF_ROUTES_DIR, appName);
+		const appFolder = join(getComponentsRoot(), appName);
 		const appWasVisible = existsSync(appFolder);
 		if (appWasVisible) {
 			componentLifecycle.loading(appName, `Component '${appName}' is waiting for in-progress preparation to finish`);
 		}
 		void serializeComponentLoad(appName, () =>
-			recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
+			recoverInterruptedComponentExtraction(getComponentsRoot(), appName)
 				.then(async () => {
 					if (!existsSync(appFolder)) {
 						if (appWasVisible) {
@@ -327,8 +328,8 @@ export async function loadComponentDirectories(
 				})
 		);
 	};
-	if (existsSync(CF_ROUTES_DIR)) {
-		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
+	if (existsSync(getComponentsRoot())) {
+		const cfFolders = readdirSync(getComponentsRoot(), { withFileTypes: true });
 		for (const appEntry of cfFolders) {
 			if (!appEntry.isDirectory() && !appEntry.isSymbolicLink()) continue;
 			// Skip hidden entries: component names are never dot-prefixed, and this keeps
@@ -351,7 +352,7 @@ export async function loadComponentDirectories(
 				continue;
 			}
 			if (!placedOnThisThread(appName)) continue;
-			const appFolder = join(CF_ROUTES_DIR, appName);
+			const appFolder = join(getComponentsRoot(), appName);
 			const mountResult = tryRootConfigMount(appName);
 			if (!mountResult.ok) continue;
 			cfsLoaded.push(
@@ -411,9 +412,7 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	graphqlSchema: graphqlHandler,
 	roles,
 	jsResource: jsHandler,
-	get fastifyRoutes() {
-		return require('../server/fastifyRoutes');
-	},
+	fastifyRoutes: '#src/server/fastifyRoutes',
 	login,
 	// String entry: the loader `await import()`s these lazily when the component is actually
 	// processed, so the gateway's module graph is not pulled into componentLoader's own
@@ -440,28 +439,29 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	login: ...
 	 */
 };
-if (isMainThread) {
-	TRUSTED_RESOURCE_PLUGINS.operationsApi = require('../server/operationsServer');
-	// Built-in agent component (#626). Only loads if the root config carries an `agent:` block;
-	// the block's `enabled: false` default keeps it inert even when the key is present.
-	TRUSTED_RESOURCE_PLUGINS.agent = require('../agent/agent');
-} else {
-	// The HTTP operations API itself only binds in the main thread, but worker threads still
-	// dispatch operations — most notably, the replication WebSocket handler in workers receives
-	// inter-node operations like `add_node_back` and calls `server.operation(...)`. That requires
-	// `server.operation` / `server.registerOperation` to be wired up here too, and the operation
-	// function map to be initialized, BEFORE component plugins (replication, etc.) load and call
-	// `server.registerOperation?.({...})` at their module top level. Requiring serverUtilities
-	// directly (rather than the full operationsServer) avoids binding the fastify HTTP layer in
-	// workers while still installing the dispatch machinery.
-	require('../server/serverHelpers/serverUtilities');
-}
+onStartup(async () => {
+	if (isMainThread) {
+		const operationsApi = await import('../server/operationsServer.ts');
+		if (!Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, 'operationsApi'))
+			TRUSTED_RESOURCE_PLUGINS.operationsApi = operationsApi;
+		const agent = await import('../agent/agent.ts');
+		if (!Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, 'agent')) TRUSTED_RESOURCE_PLUGINS.agent = agent;
+	} else {
+		// The HTTP operations API itself only binds in the main thread, but worker threads still
+		// dispatch operations — most notably, the replication WebSocket handler in workers receives
+		// inter-node operations like `add_node_back` and calls `server.operation(...)`. That requires
+		// `server.operation` / `server.registerOperation` to be wired up here too, and the operation
+		// function map to be initialized, BEFORE component plugins (replication, etc.) load and call
+		// `server.registerOperation?.({...})` at their module top level. Loading serverUtilities
+		// directly (rather than the full operationsServer) avoids binding the fastify HTTP layer in
+		// workers while still installing the dispatch machinery.
+		await import('../server/serverHelpers/serverUtilities.ts');
+	}
+});
 
 for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
 	TRUSTED_RESOURCE_PLUGINS[name] = packageIdentifier;
 }
-
-const BUILT_INS = Object.keys(TRUSTED_RESOURCE_PLUGINS);
 
 export const loadedPaths = new Map();
 
@@ -844,6 +844,7 @@ export async function loadComponent(
 		} else {
 			config = DEFAULT_CONFIG;
 		}
+		if (isRoot) config ??= DEFAULT_CONFIG;
 		applicationScope.config ??= config;
 
 		// Before any of the application's modules are imported: a branch has to exist by the time its
@@ -876,15 +877,8 @@ export async function loadComponent(
 			);
 		}
 
-		// For non-root components with empty/null config (e.g., comment-only YAML),
-		// don't synthesize DEFAULT_CONFIG. Empty config means the component has nothing
-		// to load; falling back to DEFAULT_CONFIG would cause OptionsWatcher to wait
-		// forever for plugins that the file doesn't actually declare.
-		if (isRoot) config ??= DEFAULT_CONFIG;
-		if (!config) {
-			// Empty/comment-only config file on a non-root component: nothing to load.
-			return undefined;
-		}
+		// Empty non-root configurations declare no plugins to load.
+		if (!config) return undefined;
 
 		// #629 (Phase 2 of #510): populate the model-backend registry from the root
 		// config's `models:` block before any user `handleApplication(scope)` runs,
@@ -1114,7 +1108,7 @@ export async function loadComponent(
 
 				// Old Extension API (`start` or `startOnMainThread`)
 				if (
-					!BUILT_INS.includes(componentName) &&
+					!Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, componentName) &&
 					('startOnMainThread' in extensionModule ||
 						'start' in extensionModule ||
 						'handleFile' in extensionModule ||

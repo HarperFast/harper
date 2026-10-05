@@ -1,9 +1,13 @@
 'use strict';
 
-import { existsSync, mkdirSync, statSync, promises as fsProm } from 'fs';
-import * as path from 'path';
+import { existsSync, mkdirSync, statSync, promises as fsProm } from 'node:fs';
+import * as path from 'node:path';
 import * as envMgr from '../environment/environmentManager.ts';
-envMgr.initSync();
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 import hdbLogger from './harper_logger.ts';
 import { CONFIG_PARAMS } from '../hdbTerms.ts';
 import { convertToMS } from '../common_utils.ts';

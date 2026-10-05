@@ -1,3 +1,4 @@
+import { loadRuntimeModule } from '../../utility/packageUtils.js';
 import * as search from '../../dataLayer/search.ts';
 import * as bulkLoad from '../../dataLayer/bulkLoad.ts';
 import * as schema from '../../dataLayer/schema.ts';
@@ -6,7 +7,7 @@ import * as delete_ from '../../dataLayer/delete.ts';
 import readAuditLog from '../../dataLayer/readAuditLog.ts';
 import * as user from '../../security/user.ts';
 import * as role from '../../security/role.ts';
-import customFunctionOperations from '../../components/operations.js';
+import * as customFunctionOperations from '../../components/operations.ts';
 import { setMcpQuotaHandler } from '../../components/mcp/quota.ts';
 import { isDeployValidating } from './deployValidationState.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
@@ -19,7 +20,7 @@ import * as terms from '../../utility/hdbTerms.ts';
 import { hdbErrors, handleHDBError } from '../../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES } = hdbErrors;
 import * as restart from '../../bin/restart.ts';
-import * as util from 'util';
+import * as util from 'node:util';
 import * as insert from '../../dataLayer/insert.ts';
 import * as globalSchema from '../../utility/globalSchema.ts';
 import { systemInformation } from '../../utility/environment/systemInformation.ts';
@@ -54,10 +55,14 @@ import { runWithOperationAuthorizationBypass } from './operationAuthorizationSta
 import { stripSuppliedParsedSqlObject } from './requestSanitization.ts';
 
 const pSearchSearch = util.promisify(search.search);
+let sqlModule;
+function getSqlModule() {
+	return (sqlModule ??= loadRuntimeModule('sqlTranslator/index'));
+}
 let pEvaluateSql: (sql: string) => Promise<any>;
 function evaluateSQL(command) {
 	if (!pEvaluateSql) {
-		const sql = require('../../sqlTranslator/index');
+		const sql = getSqlModule();
 		pEvaluateSql = util.promisify(sql.evaluateSQL);
 	}
 	return pEvaluateSql(command);
@@ -180,7 +185,6 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 
 export const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
-server.operation = operation;
 export type OperationDefinition = {
 	name: string;
 	execute: (operation: any) => any | Promise<any>;
@@ -206,7 +210,7 @@ const declaredPermissionNames = new Set<string>();
  * Register an operation function with the server.
  * @param operationDefinition
  */
-server.registerOperation = (operationDefinition: OperationDefinition) => {
+function registerOperation(operationDefinition: OperationDefinition) {
 	// A throwaway deploy-validation load must not register (or announce) operations onto the live worker.
 	if (isDeployValidating()) return;
 	const { name, execute, requiresSuperUser } = operationDefinition;
@@ -236,7 +240,7 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 	// so the main thread can forward calls here (#1736), and can mirror the role-allowlist mark that
 	// registerOperationPermission above made only in this thread's scope.
 	if (!isMainThread) announceRegisteredOperation(name, requiresSuperUser !== undefined);
-};
+}
 
 // Register the durable MCP quota policy as a function (see components/mcp/quota.ts). Worker-local,
 // like the tool dispatch that consults it, so no cross-thread announcement is needed. Skipped during
@@ -324,7 +328,7 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 
 	try {
 		if (isSqlOperation || hasNestedSqlSearch) {
-			const sql = require('../../sqlTranslator/index');
+			const sql = getSqlModule();
 			const sqlStatement = isSqlOperation ? json.sql : nestedSearch.sql;
 			// Before this dispatch's own parse is assigned, so a body-supplied object cannot survive it.
 			stripSuppliedParsedSqlObject(json);
@@ -822,3 +826,6 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 
 	return opFuncMap;
 }
+
+server.operation = operation;
+server.registerOperation = registerOperation;

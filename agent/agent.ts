@@ -20,7 +20,7 @@ import * as env from '../utility/environment/environmentManager.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { Models } from '../resources/models/Models.ts';
 import type { AuthedUser } from '../components/mcp/toolRegistry.ts';
-import { workers } from '../server/threads/manageThreads.js';
+import { workers } from '../server/threads/manageThreads.ts';
 import { composeToolset } from './toolset.ts';
 import { buildInspectorTools } from './tools/inspectorTool.ts';
 import { buildBestPracticeTool, loadBestPracticesOverview } from './bestPractices.ts';

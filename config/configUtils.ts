@@ -1,15 +1,18 @@
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
-import logger from '../utility/logging/harper_logger.ts';
+import _logger from '../utility/logging/harper_logger.ts';
+const logger = _logger;
 import {
 	configValidator,
 	getDomainSocketPathLengthWarning,
 	isLegacySqlApplicationEntry,
 } from '../validation/configValidator.ts';
 import { isReservedComponentName } from '../utility/componentNames.ts';
-import fs from 'fs-extra';
-import YAML from 'yaml';
-import path from 'path';
+import _fs from 'fs-extra';
+const fs = _fs;
+import _YAML from 'yaml';
+const YAML = _YAML;
+import path from 'node:path';
 import { constants as osConstants } from 'node:os';
 import { isMainThread, threadId } from 'node:worker_threads';
 import { randomBytes } from 'node:crypto';

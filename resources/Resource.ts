@@ -1,15 +1,16 @@
+import * as userRuntimeModule from '../security/user.ts';
 import type { User } from '../security/user.ts';
 import type { RecordObject } from './RecordEncoder.ts';
 import {
-	ResourceInterface,
-	SubscriptionRequest,
-	Id,
-	Context,
-	Query,
-	SourceContext,
-	RequestTargetOrId,
+	type ResourceInterface,
+	type SubscriptionRequest,
+	type Id,
+	type Context,
+	type Query,
+	type SourceContext,
+	type RequestTargetOrId,
 } from './ResourceInterface.ts';
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 import {
 	DatabaseTransaction,
 	isJoinableScope,
@@ -1055,7 +1056,7 @@ function registerLiveSubscriptionForContext(subscription: any, resource: any, ad
 			} else {
 				// Re-read current user state from hdb_user/hdb_role, so a dropped or
 				// role-stripped user no longer authorizes.
-				const { findAndValidateUser } = require('../security/user');
+				const { findAndValidateUser } = userRuntimeModule;
 				fresh = await findAndValidateUser(username, undefined, false);
 				if (!fresh?.role) return false;
 				// Advance the subscription's context to the fresh user so downstream checks — context.user

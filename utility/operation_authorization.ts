@@ -1,4 +1,4 @@
-'use strict';
+import { loadRuntimeModule, loadNativePackage } from './packageUtils.js';
 /**
  * This module is used before a SQL or NoSQL operation is performed in order to ensure the user's assigned role
  * has the permissions and lack of restrictions needed to process the operation.  Only verifyPerms and verifyPermsAST
@@ -31,12 +31,12 @@ import {
 	registerGrantableOperation,
 	unregisterGrantableOperation,
 } from './operationPermissions.ts';
-import * as permsTranslator from '../security/permissionsTranslator.js';
+import * as permsTranslator from '../security/permissionsTranslator.ts';
 import { systemInformation } from '../utility/environment/systemInformation.ts';
 import * as tokenAuthentication from '../security/tokenAuthentication.ts';
 import * as auth from '../security/auth.ts';
 import * as configUtils from '../config/configUtils.ts';
-import * as functionsOperations from '../components/operations.js';
+import * as functionsOperations from '../components/operations.ts';
 import * as transactionLog from '../utility/logging/transactionLog.ts';
 import * as npmUtilities from './npmUtilities.ts';
 import * as analytics from '../resources/analytics/read.ts';
@@ -463,15 +463,6 @@ requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.SELECT, new permission(false, [
 requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.INSERT, new permission(false, [INSERT_PERM], null));
 requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.UPDATE, new permission(false, [UPDATE_PERM], null));
 
-module.exports = {
-	verifyPerms,
-	verifyPermsAST,
-	verifyOperationsAllowlist,
-	verifyBulkLoadAttributePerms,
-	registerOperationPermission,
-	unregisterOperationPermission,
-};
-
 /**
  * Verifies permissions and restrictions for a SQL operation based on the user's assigned role.
  * @param ast - The SQL statement in Syntax Tree form.
@@ -548,6 +539,8 @@ function sqlWriteScopeDenial(userObject: any, sqlVariant: string) {
 	return tokenScopeDenial(userObject, sqlVariant);
 }
 
+let StatementBucket;
+let alasql;
 export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.OPERATIONS_ENUM.SQL) {
 	//TODO - update these validation checks to use validate.js
 	if (commonUtils.isEmptyOrZeroLength(ast)) {
@@ -572,12 +565,11 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 	if (scopeDenial) return scopeDenial;
 
 	try {
-		const bucketModule = require('../sqlTranslator/sql_statement_bucket');
-		const bucket = bucketModule.default || bucketModule;
-		const alasql = require('alasql');
+		StatementBucket ??= loadRuntimeModule('sqlTranslator/sql_statement_bucket').default;
+		alasql ??= loadNativePackage('alasql');
 
 		const permsResponse = new PermissionResponseObject();
-		let parsedAst = new bucket(ast);
+		let parsedAst = new StatementBucket(ast);
 		let schemas = parsedAst.getSchemas();
 		let schemaTableMap = new Map();
 
@@ -620,7 +612,7 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 
 		//If the AST is for a SELECT, we need to check for wildcards and, if they exist, update the AST to include the
 		// attributes that the user has READ perms for - we can skip this step for super users
-		if (!isSuperUser && ast instanceof alasql.yy.Select) {
+		if (!isSuperUser && ast instanceof (alasql.yy as any).Select) {
 			ast = parsedAst.updateAttributeWildcardsForRolePerms(fullRolePerms);
 		}
 

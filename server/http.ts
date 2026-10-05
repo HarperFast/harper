@@ -12,7 +12,7 @@ import { parentPort } from 'node:worker_threads';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
-import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
+import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.ts';
 import {
 	applicationSocketName,
 	isolatedApplicationRoute,
@@ -42,7 +42,7 @@ import { recordAction, recordActionBinary } from '../resources/analytics/write.t
 import { Readable, Writable, pipeline } from 'node:stream';
 import { mkdirSync, writeFileSync, unlinkSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.ts';
+import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, type UpgradeListener } from './Server.ts';
 import { setPortServerMap, SERVERS, socketOptionDefaults } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
@@ -50,10 +50,6 @@ import { makeCallbackChain as buildCallbackChain, describeChains, type HttpEntry
 import { WebSocketServer } from 'ws';
 
 const { errorToString, errorForLog } = harperLogger;
-server.http = httpServer;
-server.request = onRequest;
-server.ws = onWebSocket;
-server.upgrade = onUpgrade;
 const websocketServers = {};
 const httpServers = {},
 	httpChain = {},
@@ -2055,3 +2051,8 @@ export function getRequestId() {
 	}
 	return Number(Atomics.add(nextRequestId, 0, 1n));
 }
+
+server.http = httpServer;
+server.request = onRequest;
+server.ws = onWebSocket;
+server.upgrade = onUpgrade;

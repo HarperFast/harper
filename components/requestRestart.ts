@@ -1,3 +1,4 @@
+import { workerHooks } from '../server/threads/threadMessageState.ts';
 import { Status } from '../server/status/index.ts';
 
 interface NotifyingArrayBuffer extends ArrayBuffer {
@@ -44,6 +45,8 @@ export function resetRestartNeeded() {
 	ensureInitialized();
 	restartNeededArray[0] = 0;
 }
+
+workerHooks.resetRestartNeeded = resetRestartNeeded;
 
 export function subscribeToRestartRequests(callback: () => void) {
 	ensureInitialized();
