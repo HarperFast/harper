@@ -6,6 +6,7 @@ import { transaction } from '../resources/transaction.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { whenComponentsLoaded } from '../server/threads/threadServer.js';
 import { server } from '../server/Server.ts';
+import { getThisNodeName } from '../server/nodeName.ts';
 import { RequestTarget } from '../resources/RequestTarget';
 import { randomBytes } from 'node:crypto';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
@@ -28,6 +29,7 @@ function getDurableSession() {
 					type: 'array',
 				},
 				{ name: 'incarnation', type: 'string' },
+				{ name: 'nodeName', type: 'string' },
 			],
 		});
 	}
@@ -578,9 +580,11 @@ function checkpointInterval(): number {
 /**
  * Whether every generation-bound entry can still resume, checked from metadata before CONNACK. A
  * collection is checked against the floor too; a record's own history walk decides the rest after
- * CONNACK, and a resource that is not a table is left to its own subscribe.
+ * CONNACK, and a resource that is not a table is left to its own subscribe. Only a record this node
+ * wrote is checked: its entries name this node's generations, while another node's resume unbound.
  */
 function sessionRecordResumable(record: any): boolean {
+	if (record.nodeName !== getThisNodeName()) return true;
 	for (const entry of record.subscriptions || []) {
 		if (entry.databaseGeneration === undefined) continue;
 		const match = resources.getMatch(entry.topic.split('?')[0], 'mqtt');
@@ -612,8 +616,17 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	constructor(sessionId, user, record?) {
 		super(sessionId, user);
 		this.mayCreate = !record;
+		// a record replicates, but each node has its own generations, so another node's bindings mean nothing here
+		const boundHere = record?.nodeName === getThisNodeName();
 		for (const { qos, topic, startTime, databaseGeneration } of record?.subscriptions || []) {
-			this.topics.set(topic, newTopicState(qos > 0 ? { qos, topic, startTime, databaseGeneration } : { qos, topic }));
+			this.topics.set(
+				topic,
+				newTopicState(
+					qos > 0
+						? { qos, topic, startTime, databaseGeneration: boundHere ? databaseGeneration : undefined }
+						: { qos, topic }
+				)
+			);
 		}
 	}
 	/** Claim the record for this connection before CONNACK, so an older connection's writes stop. */
@@ -849,7 +862,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (databaseGeneration !== undefined) saved.databaseGeneration = databaseGeneration;
 			subscriptions.push(saved);
 		}
-		return { id: this.sessionId, incarnation: this.incarnation, subscriptions };
+		return { id: this.sessionId, incarnation: this.incarnation, nodeName: getThisNodeName(), subscriptions };
 	}
 	persist(): Promise<void> {
 		this.dirty = true;

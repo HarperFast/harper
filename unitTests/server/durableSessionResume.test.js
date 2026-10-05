@@ -12,6 +12,7 @@ const { EventEmitter } = require('node:events');
 const mqttPacket = require('mqtt-packet');
 const { ResumeHistoryUnavailableError } = require('#src/utility/errors/hdbError');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { getThisNodeName } = require('#src/server/nodeName');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -220,6 +221,48 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		assert.ok(!second.session.sessionWasPresent);
 		assert.ok((await stored(clientId)) == null, 'the stale record is gone');
 		second.session.disconnect(true);
+	});
+
+	it('resumes a session another node saved from its position, unchecked, and checks one this node saved', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const clientId = `other-node-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await T.put('a', { value: 1 });
+		await waitFor(() => first.received.length >= 1);
+		await ackAll(first.session, first.received);
+		const entry = await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+		first.session.disconnect(true);
+		await first.session.writes;
+		assert.strictEqual((await stored(clientId)).nodeName, getThisNodeName());
+		await T.put('missed', { value: 'missed' });
+		const foreignGeneration = 'f'.repeat(entry.databaseGeneration.length);
+		const saveFrom = (nodeName) =>
+			databases.system.hdb_durable_session.put({
+				id: clientId,
+				nodeName,
+				subscriptions: [{ ...entry, databaseGeneration: foreignGeneration }],
+			});
+		await saveFrom('another-node');
+		const second = await connect(clientId);
+		assert.strictEqual(second.session.sessionWasPresent, true, 'another node names its own generation');
+		await second.session.resume();
+		await waitFor(() => values(second.received).includes('missed'));
+		// a live write gives the session a certified position to bind
+		await T.put('later', { value: 'later' });
+		await waitFor(() => values(second.received).includes('later'));
+		await ackAll(second.session, second.received);
+		const here = getDatabaseGeneration(T.auditStore).id;
+		await storedEntry(clientId, (saved) => saved.databaseGeneration === here);
+		assert.strictEqual((await stored(clientId)).nodeName, getThisNodeName(), 'bound again here');
+		second.session.disconnect(true);
+		await second.session.writes;
+		await saveFrom(getThisNodeName());
+		const third = await connect(clientId);
+		assert.ok(!third.session.sessionWasPresent, 'a generation this node does not have means its database was replaced');
+		third.session.disconnect(true);
 	});
 
 	it('discards the session when the checked replay is refused after CONNACK', async () => {
