@@ -241,10 +241,18 @@ describe('the release certification gate', function () {
 	});
 
 	it('keeps a refused decision and its rollout for the requester that reads them after the rollout ended', async () => {
-		plan([{ outcome: 'failed' }]);
-		await arm({ requesterThreadId: pool[0].threadId });
+		plan([{ outcome: 'failed' }, { outcome: 'loaded' }]);
+		await arm();
 		await commit();
 		await rolledOut();
+		// A later release of the component completes before this requester reads its own decision.
+		const later = { component: COMPONENT, deploymentId: '33333333-3333-3333-3333-333333333333' };
+		assert.deepStrictEqual(await certificationRequest('arm', { ...later, isolated: false, scope: undefined }), {
+			armed: true,
+		});
+		assert.equal(await certificationRequest('commit', later), true);
+		await waitFor(() => completions.length === 2, { timeout: 45000, message: 'the later rollout never ended' });
+		assert.equal((await certificationRequest('decision', later))?.status, 'certified');
 
 		const decision = await decisionOf();
 		assert.equal(decision?.status, 'rejected', 'the requester still reads the refusal');
@@ -253,6 +261,18 @@ describe('the release certification gate', function () {
 
 		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
 		assert.equal(await decisionOf(), undefined, 'released, it is gone');
+	});
+
+	it('forgets a decision once the worker that requested it has exited without reading it', async () => {
+		plan([{ outcome: 'failed' }]);
+		const requester = pool[1];
+		await arm({ requesterThreadId: requester.threadId });
+		await commit();
+		await rolledOut();
+		assert.equal((await decisionOf())?.status, 'rejected');
+		requester.wasShutdown = true;
+		await requester.terminate();
+		await waitFor(async () => (await decisionOf()) === undefined, { message: 'the decision outlived its requester' });
 	});
 
 	for (const [label, step, pattern] of [

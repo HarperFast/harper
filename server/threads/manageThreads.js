@@ -527,8 +527,10 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CERTIFICATION_RESPONSE, null);
  */
 const certifications = new Map();
 // A completed certification stays answerable until its requester releases it: a fast refusal can end the rollout
-// before the deploy that requested it reads the decision.
+// before the deploy that requested it reads the decision. Keyed by release, since a later release of the component can
+// complete before then too.
 const settledCertifications = new Map();
+const settledKey = (component, deploymentId) => `${component}\u0000${deploymentId}`;
 const heldStarts = new Set();
 const failClosedInMemory = new Map();
 let certificationHandler;
@@ -571,11 +573,9 @@ function openCertificationsPlacedBy(workerOrOptions) {
 }
 
 function findCertification(component, deploymentId) {
-	for (const registry of [certifications, settledCertifications]) {
-		const certification = registry.get(component);
-		if (certification?.deploymentId === deploymentId) return certification;
-	}
-	return undefined;
+	const certification = certifications.get(component);
+	if (certification?.deploymentId === deploymentId) return certification;
+	return settledCertifications.get(settledKey(component, deploymentId));
 }
 
 function armCertification({ component, deploymentId, isolated, scope, requesterThreadId }) {
@@ -675,7 +675,9 @@ async function completeCertification(certification, outcome) {
 		);
 	}
 	if (certifications.get(certification.component) === certification) certifications.delete(certification.component);
-	if (!certification.requesterReleased) settledCertifications.set(certification.component, certification);
+	if (!certification.requesterReleased && !certification.requesterExited) {
+		settledCertifications.set(settledKey(certification.component, certification.deploymentId), certification);
+	}
 	if (certification.watchersPaused) resumeWatchersOf(certification.component, certification.watchersPaused);
 	certification.rolledOut.resolve(outcome);
 	startDeferredStarts(certification);
@@ -1032,7 +1034,7 @@ function releaseCertificationRequester(component, deploymentId) {
 	if (!certification) return;
 	certification.requesterReleased = true;
 	certification.released.resolve();
-	if (settledCertifications.get(component) === certification) settledCertifications.delete(component);
+	settledCertifications.delete(settledKey(component, deploymentId));
 }
 
 function failClosedComponentsPlacedBy(options) {
@@ -1098,8 +1100,11 @@ function registerCertificationRequests() {
 			);
 	});
 	onThreadExit((threadId) => {
-		for (const [component, certification] of settledCertifications) {
-			if (certification.requesterThreadId === threadId) settledCertifications.delete(component);
+		for (const [key, certification] of settledCertifications) {
+			if (certification.requesterThreadId === threadId) settledCertifications.delete(key);
+		}
+		for (const certification of certifications.values()) {
+			if (certification.requesterThreadId === threadId) certification.requesterExited = true;
 		}
 		for (const certification of certifications.values()) {
 			if (certification.phase !== 'armed' || certification.requesterThreadId !== threadId) continue;
