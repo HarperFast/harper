@@ -27,6 +27,16 @@ const { certificationRecordPath } = require('#src/components/releaseCertificatio
 const { DEPLOYMENT_PROVENANCE_FILE, formatDeploymentProvenance } = require('#src/components/deploymentProvenance');
 
 const FIXTURE = path.join(__dirname, 'certificationGate-fixture.cjs');
+
+function within(promise, ms, what) {
+	let timer;
+	return Promise.race([
+		promise,
+		new Promise((_resolve, reject) => {
+			timer = setTimeout(() => reject(new Error(`${what} did not happen within ${ms}ms`)), ms);
+		}),
+	]).finally(() => clearTimeout(timer));
+}
 const COMPONENT = 'web';
 const DEPLOYMENT = '11111111-1111-1111-1111-111111111111';
 const OTHER = { component: 'api', deploymentId: '22222222-2222-2222-2222-222222222222' };
@@ -937,6 +947,37 @@ describe('the release certification gate', function () {
 		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
 		await rolledOut();
 		assert.equal(besideIt ? shutdownOrder.at(-1) : shutdownOrder[0], requesterThreadId);
+	});
+
+	it('finishes a restart whose deferred worker exits before its deploy answers', async () => {
+		const loading = Promise.withResolvers();
+		rootLoad = loading.promise;
+		releaseRootLoad = loading.resolve;
+		const [, answering, other] = pool;
+		const restart = restartWorkers('http', 1, true, undefined, undefined);
+		await arm({ requesterThreadId: answering.threadId });
+		await commit();
+		releaseRootLoad();
+		await waitFor(() => other.exitedAt, { timeout: 30000, message: 'the restart never replaced the rest' });
+		await answering.terminate();
+		await within(restart, 20000, 'the restart ended');
+		await rolledOut();
+	});
+
+	it('finishes a restart whose worker, kept beside its replacement, exits before its deploy answers', async function () {
+		if (process.platform !== 'linux') this.skip();
+		const loading = Promise.withResolvers();
+		rootLoad = loading.promise;
+		releaseRootLoad = loading.resolve;
+		const [answering, , last] = pool;
+		const restart = restartWorkers('http', 1, true, undefined, undefined);
+		await arm({ requesterThreadId: answering.threadId });
+		await commit();
+		releaseRootLoad();
+		await waitFor(() => last.exitedAt, { timeout: 30000, message: 'the restart never replaced the rest' });
+		await answering.terminate();
+		await within(restart, 20000, 'the restart ended');
+		await rolledOut();
 	});
 
 	it("retires a worker whose deploy its own replacement's canary decided once that deploy answers, after the rest", async function () {

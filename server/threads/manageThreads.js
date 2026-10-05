@@ -1811,6 +1811,8 @@ async function untilQuietFor(worker) {
 
 /** Ask a worker being replaced to shut down; false when it has already exited. */
 function postShutdown(worker) {
+	// An exited worker can still accept a message without complaint, and its exit would never come again.
+	if (!workers.includes(worker)) return false;
 	try {
 		worker.postMessage({
 			restartNumber: module.exports.restartNumber,
