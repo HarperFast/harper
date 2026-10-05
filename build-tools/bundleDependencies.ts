@@ -396,7 +396,11 @@ export function checkBundle(root: string, lockFile: string, installed = false) {
 	return { roots: plan.roots.length, packages: plan.packages.size };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+	process.argv[1] &&
+	existsSync(process.argv[1]) &&
+	realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+) {
 	const [command, root, target] = process.argv.slice(2);
 	if (!root || !target || !['prepare', 'check', 'installed'].includes(command)) {
 		throw new Error(
