@@ -582,12 +582,11 @@ async function listenOnPortsBun() {
 			}
 
 			// Create a corresponding Unix Domain Socket mirror for secure ports
-			const socketsDir = join(env.getHdbBasePath(), 'sockets');
-			if (
-				config.isSecure &&
-				env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) &&
-				httpComponent.ensureSocketsDirectory(socketsDir)
-			) {
+			const socketsDir =
+				config.isSecure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)
+					? httpComponent.ensureSocketsDirectory()
+					: undefined;
+			if (socketsDir) {
 				const isolatedApplication = thisThreadsIsolatedApplication();
 				const socketName = isolatedApplication
 					? applicationSocketName(isolatedApplication, port)
@@ -724,6 +723,7 @@ function onSocket(listener, options) {
 
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
 <<<<<<< HEAD
+<<<<<<< HEAD
 		if (env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
 			const socketsDir = join(env.getHdbBasePath(), 'sockets');
 			mkdirSync(socketsDir, { recursive: true });
@@ -735,6 +735,13 @@ function onSocket(listener, options) {
 			httpComponent.ensureSocketsDirectory(socketsDir)
 		) {
 >>>>>>> 396ab5ffc (Harden the UDS mirror directory and publish its metadata atomically)
+=======
+		const socketsDir =
+			env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(options.securePort)
+				? httpComponent.ensureSocketsDirectory()
+				: undefined;
+		if (socketsDir) {
+>>>>>>> 7b26d4c87 (Resolve the UDS mirror directory from the helper and fail isolated workers loudly)
 			const isolatedApplication = thisThreadsIsolatedApplication();
 			const socketName = isolatedApplication
 				? applicationSocketName(isolatedApplication, options.securePort)
