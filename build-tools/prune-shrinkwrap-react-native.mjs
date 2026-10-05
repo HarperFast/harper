@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Remove the react-native tree from the shrinkwrap that ships in the published package.
+// Remove unused optional subtrees from the shrinkwrap that ships in the published package.
 //
 // alasql declares `optionalDependencies: { "react-native-fs": "^2.20.0" }`, and
 // react-native-fs peer-depends on react-native *without* marking it optional. npm 7+
@@ -18,25 +18,34 @@
 // Same invariant as prune-shrinkwrap-dev.mjs — the published shrinkwrap should describe
 // only the production tree a consumer needs — so this runs alongside it.
 //
+// ws also declares an optional utf-8-validate peer. All Node versions Harper supports
+// provide buffer.isUtf8, which ws uses instead of that addon. A development dependency
+// can install the addon into a shared location that ws keeps reachable after dev pruning.
+// Sever only optional peer references: an explicit dependency or optionalDependency on
+// the addon is preserved, since that consumer may actually use it.
+//
 // Deliberately surgical: it computes the set of packages reachable *with* the
-// react-native-fs edge and the set reachable *without* it, and deletes only the
+// dispensable edges and the set reachable *without* them, and deletes only the
 // difference, so the removed set is derived rather than a hardcoded list of directory
 // names that would silently rot as alasql's tree shifts.
 //
-// Only edges the dependent declared as an `optionalDependency` are severed. A package
+// For react-native-fs, only edges declared as an `optionalDependency` are severed. A package
 // that hard-depends on react-native-fs keeps it alive for the whole tree — otherwise
 // severing every edge by name would delete a package another dependent still requires and
 // leave that requirement dangling. Belt and braces, the result is checked for unresolved
 // *required* edges before it is written, so a bad prune fails the build instead of
 // shipping a broken shrinkwrap to every consumer.
 //
-// Delete this script once react-native-fs marks its react-native peer optional, or once
-// alasql stops declaring the optional dependency.
+// Retire the React Native rule when alasql no longer installs the unused subtree.
+// Retire the UTF-8 rule after the dev framework's Harper peer updates to a release without
+// the addon and the full lock has no explicit dependency or required peer producing it.
 //
 // Usage: node build-tools/prune-shrinkwrap-react-native.mjs [npm-shrinkwrap.json]
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const SEVER = 'react-native-fs';
+const OPTIONAL_PEER = 'utf-8-validate';
+const TARGETS = `${SEVER} or optional ${OPTIONAL_PEER} peers`;
 
 const file = process.argv[2] ?? 'npm-shrinkwrap.json';
 const lock = JSON.parse(readFileSync(file, 'utf8'));
@@ -62,24 +71,30 @@ function requiredBy(key) {
 	return Object.keys({ ...entry.dependencies, ...entry.optionalDependencies, ...entry.peerDependencies });
 }
 
-// Severable only if the dependent declared it optional and does not also hard-depend on
-// it. A plain `dependencies` (or non-optional peer) entry is a real requirement, so that
-// edge is traversed normally and keeps the package alive for everyone.
+// An optional utf-8-validate peer is dispensable only without any explicit dependency
+// declaration on the same consumer. All required peers and other optional peers survive.
 function isSeverableEdge(key, name) {
-	if (name !== SEVER) return false;
 	const entry = lock.packages[key] ?? {};
-	return entry.optionalDependencies?.[name] !== undefined && entry.dependencies?.[name] === undefined;
+	if (name === SEVER) {
+		return entry.optionalDependencies?.[name] !== undefined && entry.dependencies?.[name] === undefined;
+	}
+	return (
+		name === OPTIONAL_PEER &&
+		entry.peerDependencies?.[name] !== undefined &&
+		entry.peerDependenciesMeta?.[name]?.optional === true &&
+		entry.dependencies?.[name] === undefined &&
+		entry.optionalDependencies?.[name] === undefined
+	);
 }
 
-// Walk the tree from the root manifest. When `sever` is true, refuse to traverse the
-// optional react-native-fs edges, so anything only reachable through them never gets marked.
-function reachableFromRoot({ sever }) {
+// Walk the tree from the root manifest, skipping dispensable edges named in `sever`.
+function reachableFromRoot(sever = new Set()) {
 	const seen = new Set();
 	const queue = [''];
 	while (queue.length > 0) {
 		const key = queue.pop();
 		for (const name of requiredBy(key)) {
-			if (sever && isSeverableEdge(key, name)) continue;
+			if (sever.has(name) && isSeverableEdge(key, name)) continue;
 			const target = resolve(key, name);
 			if (target && !seen.has(target)) {
 				seen.add(target);
@@ -103,8 +118,9 @@ function danglingRequiredEdges() {
 	return dangling;
 }
 
-const withEdge = reachableFromRoot({ sever: false });
-const withoutEdge = reachableFromRoot({ sever: true });
+const withEdge = reachableFromRoot();
+const withoutReactNative = reachableFromRoot(new Set([SEVER]));
+const withoutEdge = reachableFromRoot(new Set([SEVER, OPTIONAL_PEER]));
 const danglingBefore = danglingRequiredEdges();
 
 let removed = 0;
@@ -123,15 +139,23 @@ for (const key of withEdge) {
 const introduced = [...danglingRequiredEdges()].filter((edge) => !danglingBefore.has(edge));
 if (introduced.length > 0) {
 	throw new Error(
-		`pruning ${SEVER} left ${introduced.length} required dependenc${introduced.length === 1 ? 'y' : 'ies'} ` +
+		`pruning ${TARGETS} left ${introduced.length} required dependenc${introduced.length === 1 ? 'y' : 'ies'} ` +
 			`unresolved, refusing to write ${file}:\n  ${introduced.join('\n  ')}\n` +
 			`(if this is a full shrinkwrap, run prune-shrinkwrap-dev.mjs first — this expects a production-only tree)`
 	);
 }
 
-if (removed === 0) {
-	console.log(`No ${SEVER} tree found in ${file} — nothing to prune (has it been fixed upstream?)`);
-} else {
+if (removed > 0) {
 	writeFileSync(file, JSON.stringify(lock, null, 2) + '\n');
-	console.log(`Pruned ${removed} entries reachable only through ${SEVER} from ${file}`);
+}
+for (const [target, before, after] of [
+	[SEVER, withEdge, withoutReactNative],
+	[`optional ${OPTIONAL_PEER} peers`, withoutReactNative, withoutEdge],
+]) {
+	const count = [...before].filter((key) => !after.has(key)).length;
+	if (count === 0) {
+		console.log(`No unused ${target} tree found in ${file} — nothing to prune (has it been fixed upstream?)`);
+	} else {
+		console.log(`Pruned ${count} entries reachable only through ${target} from ${file}`);
+	}
 }
