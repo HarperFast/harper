@@ -824,6 +824,40 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		newer.handlers.close();
 	});
 
+	it('lets no SUBSCRIBE still in flight on a taken-over connection write the session again', async () => {
+		const { name } = topicTable();
+		let releaseSubscribe;
+		class Slow extends Resource {
+			static subscribe() {
+				return new Promise((resolve) => (releaseSubscribe = () => resolve(undefined)));
+			}
+		}
+		Resources.resources.set(name, Slow, { mqtt: true }, true);
+		const open = mqttListener();
+		const clientId = `late-subscribe-${name}`;
+		const older = open();
+		older.handlers.message(connectPacket(clientId));
+		await waitFor(() => older.sends.length > 0);
+		older.handlers.message(
+			generate(
+				{ cmd: 'subscribe', messageId: 1, subscriptions: [{ topic: `${name}/#`, qos: 1 }] },
+				{ protocolVersion: 5 }
+			)
+		);
+		await waitFor(() => releaseSubscribe);
+		const newer = open();
+		newer.handlers.message(connectPacket(clientId));
+		await waitFor(() => newer.sends.length > 0);
+		releaseSubscribe();
+		await waitFor(() => sentPackets(older).some((packet) => packet.cmd === 'suback'));
+		const newerSession = [...open.sessions].find((session) => session.sessionId === clientId && !session.terminated);
+		await newerSession.persist();
+		assert.deepStrictEqual(newer.closes, [], 'the older connection did not take the session back');
+		assert.strictEqual((await stored(clientId)).incarnation, newerSession.incarnation);
+		older.handlers.close();
+		newer.handlers.close();
+	});
+
 	it('answers packets sent right behind a CONNECT, a takeover included', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });

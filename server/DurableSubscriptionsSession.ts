@@ -906,13 +906,17 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		await getDurableSession().put(record, { source: true });
 		this.mayCreate = false;
 	}
-	/** Hands the session to a newer connection on this thread, saving its positions first; that save is in `writes`. */
+	/** Hands the session to a newer connection on this thread: its positions are saved, then it writes no more, both in `writes`. */
 	yieldTo() {
 		if (this.terminated) return;
 		const changed = this.advancePositions();
 		this.terminated = true;
 		clearInterval(this.checkpointTimer);
 		if (changed || this.dirty) this.persist().catch(() => {});
+		// nothing after that save may write: a SUBSCRIBE still in flight could otherwise recreate the record
+		this.writes = this.writes.then(() => {
+			this.discarded = true;
+		});
 		this.closeConnection?.();
 	}
 	supersede() {
