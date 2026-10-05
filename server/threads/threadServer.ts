@@ -668,6 +668,7 @@ if (
 ) {
 	// The shared module graph also loads here in job and user workers, which must not bind listeners.
 	(async () => {
+		parentPort?.ref();
 		env.initSync();
 		const { runStartup } = await import('../../utility/lifecycle.ts');
 		await runStartup();

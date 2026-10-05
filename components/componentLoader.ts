@@ -843,7 +843,6 @@ export async function loadComponent(
 		}
 		if (isRoot) config ??= DEFAULT_CONFIG;
 		applicationScope.config ??= config;
-		if (!config) throw new Error('Component configuration is empty');
 
 		// Before any of the application's modules are imported: a branch has to exist by the time its
 		// code first reaches `databases`, and a declared branch that cannot be created must fail this
@@ -874,6 +873,9 @@ export async function loadComponent(
 				applicationScope.mode
 			);
 		}
+
+		// Empty non-root configurations declare no plugins to load.
+		if (!config) return undefined;
 
 		// #629 (Phase 2 of #510): populate the model-backend registry from the root
 		// config's `models:` block before any user `handleApplication(scope)` runs,

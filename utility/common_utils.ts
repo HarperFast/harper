@@ -9,7 +9,7 @@ import RecursiveIterator from 'recursive-iterator';
 import * as terms from './hdbTerms.ts';
 import { PACKAGE_ROOT } from './packageUtils.js';
 export { PACKAGE_ROOT };
-import * as papaParse from 'papaparse';
+import papaParse from 'papaparse';
 import moment from 'moment';
 import isNumber from 'is-number';
 import minimist from 'minimist';

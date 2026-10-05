@@ -41,7 +41,7 @@ function runWithIsolatedRoot(mode, code) {
 }
 
 describe('TypeStrip runtime boundaries', () => {
-	it('reports empty component configuration through the existing load error path', () => {
+	it('skips empty component configuration without reporting a load error', () => {
 		for (const mode of ['compiled', 'typestrip']) {
 			const prefix = mode === 'compiled' ? 'dist/' : '';
 			const extension = mode === 'compiled' ? 'js' : 'ts';
@@ -56,17 +56,15 @@ describe('TypeStrip runtime boundaries', () => {
 				mkdirSync(componentDirectory); writeFileSync(join(componentDirectory,'config.yaml'),'# empty configuration\\n');
 				const { loadComponent, setErrorReporter } = await import(${JSON.stringify(runtimeUrl('components/componentLoader'))});
 				const { Resources } = await import(${JSON.stringify(runtimeUrl('resources/Resources'))});
-				const { ErrorResource } = await import(${JSON.stringify(runtimeUrl('resources/ErrorResource'))});
 				const errors = []; setErrorReporter(error => errors.push(error));
 				const resources = new Resources();
 				await loadComponent(componentDirectory,resources,'test-origin');
-				assert.equal(errors.length, 1);
-				assert.match(errors[0].message, /Component configuration is empty/);
-				assert.ok(resources.get('').Resource instanceof ErrorResource);
-				console.log('empty configuration reported');
+				assert.equal(errors.length, 0);
+				assert.equal(resources.get(''), undefined);
+				console.log('empty configuration skipped');
 			`
 			);
-			assert.equal(output, 'empty configuration reported', mode);
+			assert.equal(output, 'empty configuration skipped', mode);
 		}
 	});
 
@@ -157,6 +155,37 @@ describe('TypeStrip runtime boundaries', () => {
 		}
 	});
 
+	it('keeps HTTP workers alive through startup hooks with unreferenced completion sources', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const workerPath = resolve(
+				root,
+				`${mode === 'compiled' ? 'dist/' : ''}server/threads/threadServer.${mode === 'compiled' ? 'js' : 'ts'}`
+			);
+			const execArgv = [
+				...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
+				'--require',
+				resolve(import.meta.dirname, 'fixtures/startup-ref.cjs'),
+			];
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert/strict')).default;
+				const { Worker } = await import('node:worker_threads');
+				const { once } = await import('node:events');
+				const worker = new Worker(${JSON.stringify(workerPath)}, { execArgv: ${JSON.stringify(execArgv)}, workerData: { addPorts: [], addThreadIds: [] } });
+				const messages = []; worker.on('message', message => messages.push(message));
+				try {
+					const [code] = await once(worker, 'exit', { signal: AbortSignal.timeout(10000) });
+					assert.equal(code, 0);
+					assert.ok(messages.some(message => message.type === 'startup-ref' && message.held === true));
+					assert.ok(messages.some(message => message.type === 'startup-hook-completed'));
+				} finally { if (worker.threadId !== -1) await worker.terminate(); }
+				console.log('startup hook completed');`
+			);
+			assert.equal(output, 'startup hook completed', mode);
+		}
+	});
+
 	it('passes the source condition to actual managed workers without NODE_OPTIONS', () => {
 		const manager = pathToFileURL(resolve(root, 'server/threads/manageThreads.ts')).href;
 		const fixture = resolve(import.meta.dirname, 'fixtures/runtime-condition.cjs');
@@ -238,7 +267,7 @@ describe('TypeStrip runtime boundaries', () => {
 			const output = runWithIsolatedRoot(
 				mode,
 				`const assert = (await import('node:assert/strict')).default;
-					await import(${JSON.stringify(pathToFileURL(resolve(root, `${prefix}launchServiceScripts/launchHarperDB.${extension}`)).href)});
+					await import(${JSON.stringify(pathToFileURL(resolve(root, `${prefix}launchServiceScripts/launchHarperDB.js`)).href)});
 					const { hasStarted, runStartup } = await import(${JSON.stringify(pathToFileURL(resolve(root, `${prefix}utility/lifecycle.${extension}`)).href)});
 					assert.equal(hasStarted(), true);
 					await runStartup();
@@ -250,6 +279,29 @@ describe('TypeStrip runtime boundaries', () => {
 					console.log('launcher initialized');`
 			);
 			assert.equal(output.trim(), 'launcher initialized', mode);
+		}
+	});
+
+	it('parses CSV streams through the shared file-load helper in both modes', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const modulePath = pathToFileURL(
+				resolve(root, `${mode === 'compiled' ? 'dist/' : ''}utility/common_utils.${mode === 'compiled' ? 'js' : 'ts'}`)
+			).href;
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert/strict')).default;
+				const { Readable } = await import('node:stream');
+				const { parsePromise } = await import(${JSON.stringify(modulePath)});
+				const rows = [];
+				await parsePromise(Readable.from([${JSON.stringify('\uFEFFid,name\n1,first\n2,second\n')}]), (reject, result) => {
+					if (result.errors.length) reject(new Error(JSON.stringify(result.errors)));
+					rows.push(...result.data);
+				}, value => value);
+				assert.deepEqual(rows, [{ id: '1', name: 'first' }, { id: '2', name: 'second' }]);
+				console.log('CSV stream parsed');`
+			);
+			assert.equal(output, 'CSV stream parsed', mode);
 		}
 	});
 
