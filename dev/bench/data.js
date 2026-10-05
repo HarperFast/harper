@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791112061131,
+  "lastUpdate": 1791186509074,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -7064,6 +7064,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1004.31,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "da24feb668e7fa79268fdde87303a11f5d0723d0",
+          "message": "Drop the databases each unit-test file creates, so test:unit:resources no longer grows to 12 GB (#3002)\n\n* test: drop the databases each unit-test file creates once the file finishes\n\nAn open RocksDB database holds ~40 MiB of native memory however little it\nstores (the lock buckets OptimisticTransactionDB allocates on every open),\nand getDatabases() reopens every database directory left under the storage\npath. 45 resources test files create databases they never drop, so\ntest:unit:resources ended with 222 open databases and 12.26 GB RSS.\n\nmocha.init.js now installs a per-file teardown: after each file's own after\nhooks, every database that file created is dropped through dropDatabase(),\nand a RocksDB directory it closed but left on disk is removed. system,\nconfigured databases, anything that existed before the file started,\nanything sharing a root with another database, and anything outside the\nper-PID storage directory are left alone.\n\nRefs #2999\n\nDispatch-Task: harper-2999\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01XPPDZsgtqzTNEjZ5tLpNxw\n\n* test: name the database in a per-file teardown failure and tighten its guards\n\nMocha prints an error's message and cause chain, not AggregateError.errors,\nso the failure message now carries each database and its error. A database\nwhose default directory does not exist (a tableless one opened elsewhere)\nis left alone, the native-registry check counts only referenced entries,\nand a child named \"..x\" counts as inside the storage root. AGENTS.md now\nstates the root-level-hook rule and the LMDB closed-on-disk gap.\n\nRefs #2999\n\nDispatch-Task: harper-2999\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01XPPDZsgtqzTNEjZ5tLpNxw\n\n* test: keep system and configured names out of the closed-directory sweep\n\nThe sweep that removes RocksDB directories a file closed but left on disk\nnow skips `system` and configured database names, as the registered-\ndatabase loop already did. isDisposable runs inside the per-database try,\nso a throw names its database and the remaining drops still run. The\nregression fixture counts only referenced registry entries as open, as\nthe teardown does.\n\nRefs #2999\n\nDispatch-Task: harper-2999\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01XPPDZsgtqzTNEjZ5tLpNxw\n\n* test: check the root dropDatabase() will destroy, not just the default directory\n\nA database with no tables has its root only in the database registry's\ndefined root, which dropDatabase() destroys. Reading that root through\ndatabase() replaces the directory-exists proxy, so a tableless database\nreopened under another storage path is kept even when a same-name\ndirectory exists under the per-PID root.\n\nRefs #2999\n\nDispatch-Task: harper-2999\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01XPPDZsgtqzTNEjZ5tLpNxw\n\n* test: leave the storage root alone when a database is configured inside it\n\nA database configured at or inside the per-PID storage root scans or\nnests in the directories the per-file teardown drops, so neither a name\nnor a root check can tell what the file owns. The teardown now skips\nboth passes for that file instead. No unit file configures such a path.\n\nRefs #2999\n\nDispatch-Task: harper-2999\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01XPPDZsgtqzTNEjZ5tLpNxw\n\n* test: print a primitive teardown failure cause instead of undefined\n\nRefs #2999\n\nDispatch-Task: harper-2999\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01XPPDZsgtqzTNEjZ5tLpNxw\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-05T04:51:48Z",
+          "url": "https://github.com/HarperFast/harper/commit/da24feb668e7fa79268fdde87303a11f5d0723d0"
+        },
+        "date": 1791186506909,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6070.76,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8125.33,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8117.03,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 5946.05,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4262.28,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8051.1,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 949.82,
             "unit": "ops/sec"
           }
         ]
