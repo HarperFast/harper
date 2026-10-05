@@ -5,7 +5,7 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
 
-const FIXTURE = path.join(__dirname, 'manageThreads-shutdown-fixture.js');
+const FIXTURE = path.join(__dirname, 'manageThreads-shutdown-fixture.cjs');
 
 function spawnFixture() {
 	const worker = new Worker(FIXTURE, { workerData: { addPorts: [], addThreadIds: [], restartNumber: 1 } });
