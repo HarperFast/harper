@@ -58,7 +58,7 @@ function aggregatedWritePath(path, message = `${path} was aggregated`) {
 	return waitFor(() => aggregatedWritePaths().includes(path), { timeout: 10000, message });
 }
 
-// One raw report per thread sample. The probe's `maxWait` and `maximum` carry `maxDepth`'s values,
+// One raw report per thread sample. The probe's `maxCount` and `maximum` carry `maxDepth`'s values,
 // so the probe's two measures show the prefix rule and the mean rule on identical inputs.
 function gaugeReport(id, threadId, depth, maxDepth) {
 	const gauge = { threadId, byThread: true, depth, maxDepth };
@@ -70,7 +70,7 @@ function gaugeReport(id, threadId, depth, maxDepth) {
 		metrics: [
 			{ metric: 'write-transaction-queue-depth', ...gauge },
 			{ metric: 'read-transaction-queue-depth', ...gauge },
-			{ metric: 'contract-probe', threadId, byThread: true, maxWait: maxDepth, maximum: maxDepth },
+			{ metric: 'contract-probe', threadId, byThread: true, maxCount: maxDepth, maximum: maxDepth },
 		],
 	};
 }
@@ -164,8 +164,10 @@ describe('analytics aggregation cycle', () => {
 
 	it('takes the peak of each thread over a period and sums those peaks across threads', async function () {
 		this.timeout(30000);
-		// Stops the pending live flush, so a main-thread report cannot land inside these windows.
+		// Stop new live reports, then let an in-flight flush finish and consume what it left above the cursor.
 		analytics.setAnalyticsEnabled(false);
+		await nextPeriod();
+		await runCycle();
 		const first = lastRawKey() + 1;
 		const second = first + PERIOD + 1;
 		// Thread 0 and sparse thread 7, two samples each, in two periods. Period one's maxDepth is
@@ -185,8 +187,8 @@ describe('analytics aggregation cycle', () => {
 		await runCycle();
 
 		const periods = [
-			{ time: first + 3, depth: 5, maxDepth: 18, maximum: 12.5, maxWait: 18 },
-			{ time: second + 3, depth: 0.5, maxDepth: 1, maximum: 1, maxWait: 1 },
+			{ time: first + 3, depth: 5, maxDepth: 18, maximum: 12.5, maxCount: 18 },
+			{ time: second + 3, depth: 0.5, maxDepth: 1, maximum: 1, maxCount: 1 },
 		];
 		for (const period of periods) {
 			for (const metric of ['write-transaction-queue-depth', 'read-transaction-queue-depth', 'contract-probe']) {
@@ -202,7 +204,7 @@ describe('analytics aggregation cycle', () => {
 			}
 			const probe = aggregatedMetric('contract-probe', period.time);
 			assert.strictEqual(probe.maximum, period.maximum);
-			assert.strictEqual(probe.maxWait, period.maxWait);
+			assert.strictEqual(probe.maxCount, period.maxCount);
 		}
 	});
 });
