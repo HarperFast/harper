@@ -52,6 +52,10 @@ const unbundled = new Set([
 	'weak-lru-cache',
 	'ws',
 ]);
+const engineModules = {
+	'@harperfast/rocksdb-js': ['@harperfast/extended-iterable', 'ordered-binary', 'msgpackr'],
+	'lmdb': ['@harperfast/extended-iterable', 'ordered-binary'],
+};
 
 function readJson(file: string) {
 	return JSON.parse(readFileSync(file, 'utf8'));
@@ -112,6 +116,15 @@ function nativeManifest(entry: Package) {
 
 export function bundlePlan(lock: Lock) {
 	const root = lock.packages[''];
+	for (const [engine, names] of Object.entries(engineModules)) {
+		if (!root.dependencies?.[engine] && !root.optionalDependencies?.[engine]) continue;
+		const key = resolvePackage(lock.packages, '', engine);
+		for (const name of names) {
+			if (!key || !lock.packages[key].dependencies?.[name]) {
+				throw new Error(`${engine} no longer declares ${name} — update the shared-module contract`);
+			}
+		}
+	}
 	const roots = Object.keys(root.dependencies ?? {}).filter((name) => !unbundled.has(name));
 	if (!roots.length) throw new Error('Expected at least one bundled dependency');
 	const packages = new Set<string>();
@@ -369,10 +382,7 @@ export function checkBundle(root: string, lockFile: string, installed = false) {
 	}
 	if (installed) {
 		const requireFromRoot = createRequire(join(root, 'package.json'));
-		for (const [engine, names] of [
-			['@harperfast/rocksdb-js', ['@harperfast/extended-iterable', 'ordered-binary', 'msgpackr']],
-			['lmdb', ['@harperfast/extended-iterable', 'ordered-binary']],
-		] as const) {
+		for (const [engine, names] of Object.entries(engineModules)) {
 			const file = installedPackage(root, engine);
 			if (!file) continue;
 			const requireFromEngine = createRequire(realpathSync(file));
