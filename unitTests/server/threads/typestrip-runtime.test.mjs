@@ -846,4 +846,130 @@ describe('TypeStrip runtime boundaries', () => {
 			assert.equal(output, 'fresh-install configuration honored', mode);
 		}
 	});
+
+	it('honors final main-thread inspector overrides on configured roots', function () {
+		if (process.versions.bun) this.skip();
+		for (const mode of ['compiled', 'typestrip']) {
+			const runtimeUrl = (path) =>
+				pathToFileURL(
+					resolve(root, `${mode === 'compiled' ? 'dist/' : ''}${path}.${mode === 'compiled' ? 'js' : 'ts'}`)
+				).href;
+			for (const [initialDebug, finalDebug] of [
+				[false, true],
+				[true, false],
+				[true, true],
+			]) {
+				const output = runWithIsolatedRoot(
+					mode,
+					`
+					const assert = (await import('node:assert/strict')).default;
+					delete process.env.DEV_MODE; delete process.env.HARPER_SET_CONFIG;
+					const fs = require('node:fs'); const YAML = require('yaml');
+					const net = await import('node:net');
+					const reservations = [net.createServer(),net.createServer()];
+					for (const server of reservations) await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+					const [initialPort,finalPort] = reservations.map(server=>server.address().port);
+					for (const server of reservations) await new Promise(resolve=>server.close(resolve));
+					const configPath = process.env.ROOTPATH + '/harper-config.yaml';
+					const config = YAML.parseDocument(fs.readFileSync(configPath,'utf8'));
+					config.setIn(['threads','debug'],${initialDebug});
+					config.setIn(['threads','debug_port'],initialPort);
+					config.setIn(['threads','debug_host'],'127.0.0.1');
+					config.setIn(['operationsApi','network','domainSocket'],false);
+					fs.writeFileSync(configPath,config.toString());
+					await import(${JSON.stringify(runtimeUrl('bin/run'))});
+					const inspector = await import('node:inspector');
+					assert.equal(inspector.url(),undefined,'main-thread inspector waits for final configuration');
+					const env = await import(${JSON.stringify(runtimeUrl('utility/environment/environmentManager'))});
+					env.setProperty('threads_debug',${finalDebug});
+					env.setProperty('threads_debug_port',finalPort);
+					env.setProperty('threads_debug_host','127.0.0.1');
+					const {runStartup} = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
+					await runStartup();
+					if (${finalDebug}) {
+						assert.ok(inspector.url(),'main-thread inspector honors the final debug override');
+						assert.equal(new URL(inspector.url()).port,String(finalPort));
+					} else assert.equal(inspector.url(),undefined);
+					inspector.close();
+					const {closeLoadedDatabases} = await import(${JSON.stringify(runtimeUrl('resources/databases'))});
+					await closeLoadedDatabases();
+					console.log('final inspector override honored');
+					`
+				);
+				assert.equal(output, 'final inspector override honored', mode + ':' + initialDebug + ':' + finalDebug);
+			}
+		}
+	});
+
+	it('initializes a configured worker inspector once across import and startup', function () {
+		if (process.versions.bun) this.skip();
+		for (const mode of ['compiled', 'typestrip']) {
+			const runtimeUrl = (path) =>
+				pathToFileURL(
+					resolve(root, `${mode === 'compiled' ? 'dist/' : ''}${path}.${mode === 'compiled' ? 'js' : 'ts'}`)
+				).href;
+			const workerCode = `
+				const assert = (await import('node:assert/strict')).default;
+				const {parentPort} = await import('node:worker_threads');
+				parentPort.ref();
+				const {registerHooks} = await import('node:module');
+				const {readFileSync} = await import('node:fs');
+				const {fileURLToPath} = await import('node:url');
+				globalThis.inspectorAttempts = 0;
+				registerHooks({load(url,context,next) {
+					const result = next(url,context);
+					if (url !== ${JSON.stringify(runtimeUrl('server/threads/threadServer'))}) return result;
+					const source = (result.source || readFileSync(fileURLToPath(url),'utf8')).toString();
+					assert.equal(source.split('inspectorInitialized = true;').length - 1,1);
+					return {...result,source:source.replace('inspectorInitialized = true;','inspectorInitialized = true; globalThis.inspectorAttempts++;')};
+				}});
+				await import(${JSON.stringify(runtimeUrl('server/threads/threadServer'))});
+				const inspector = await import('node:inspector');
+				assert.equal(globalThis.inspectorAttempts,1);
+				assert.equal(new URL(inspector.url()).port,String(process.env.EXPECTED_INSPECTOR_PORT));
+				const initialUrl = inspector.url();
+				const {runStartup} = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
+				await runStartup();
+				assert.equal(globalThis.inspectorAttempts,1,'startup skips the already initialized worker inspector');
+				assert.equal(inspector.url(),initialUrl);
+				inspector.close();
+				const {closeLoadedDatabases} = await import(${JSON.stringify(runtimeUrl('resources/databases'))});
+				await closeLoadedDatabases();
+				parentPort.postMessage({type:'inspector-proof'});
+			`;
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				delete process.env.DEV_MODE; delete process.env.HARPER_SET_CONFIG;
+				const net = await import('node:net'); const reservation = net.createServer();
+				await new Promise(resolve=>reservation.listen(0,'127.0.0.1',resolve));
+				const port = reservation.address().port;
+				await new Promise(resolve=>reservation.close(resolve));
+				const fs = require('node:fs'); const YAML = require('yaml');
+				const configPath = process.env.ROOTPATH + '/harper-config.yaml';
+				const config = YAML.parseDocument(fs.readFileSync(configPath,'utf8'));
+				config.setIn(['threads','debug'],true);
+				config.setIn(['operationsApi','network','domainSocket'],false);
+				fs.writeFileSync(configPath,config.toString());
+				const {Worker} = await import('node:worker_threads');
+				const worker = new Worker(new URL('data:text/javascript,' + encodeURIComponent(${JSON.stringify(workerCode)})),{
+					execArgv:${JSON.stringify(mode === 'typestrip' ? ['--conditions=typestrip'] : [])},
+					env:{...process.env,EXPECTED_INSPECTOR_PORT:String(port)},
+					workerData:{noServerStart:true,workerIndex:0,workerCount:1,addPorts:[],addThreadIds:[],configOverrides:{threads_debug:true,threads_debug_startingPort:port,threads_debug_host:'127.0.0.1'}}
+				});
+				try {
+					await new Promise((resolve,reject)=>{
+						const signal = AbortSignal.timeout(25000);
+						signal.addEventListener('abort',()=>reject(signal.reason),{once:true});
+						worker.on('message',message=>{if(message.type === 'inspector-proof') resolve();});
+						worker.once('error',reject);
+						worker.once('exit',code=>reject(new Error('Worker exited before inspector proof: '+code)));
+					});
+				} finally { await worker.terminate(); }
+				console.log('worker inspector initialized once');
+				`
+			);
+			assert.equal(output, 'worker inspector initialized once', mode);
+		}
+	});
 });

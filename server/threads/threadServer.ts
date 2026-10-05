@@ -101,7 +101,7 @@ function initializeInspector() {
 		}
 	}
 }
-if (debugThreads !== undefined) initializeInspector();
+if (debugThreads !== undefined && !isMainThread) initializeInspector();
 onStartup(initializeInspector);
 
 process.on('uncaughtException', (error: any) => {
