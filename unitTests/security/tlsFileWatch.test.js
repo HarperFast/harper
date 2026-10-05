@@ -12,9 +12,6 @@ const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { loadAndWatch } = require('#src/security/keys');
 const { waitFor } = require('../waitFor.js');
 
-// chokidar's removal throttle; a cancelled renewal only loses track of the file inside it (security/DESIGN.md).
-const CHOKIDAR_REMOVE_THROTTLE_MS = 100;
-
 describe('TLS file watch after a cancelled renewal', () => {
 	const realWatch = chokidar.default.watch;
 	const previousInterval = env.get(CONFIG_PARAMS.TLS_CERTIFICATEWATCHINTERVAL);
@@ -23,6 +20,7 @@ describe('TLS file watch after a cancelled renewal', () => {
 	let keyPath;
 	let watchers = [];
 	let loaded;
+	let reportedPaths;
 
 	before(() => {
 		env.setProperty(CONFIG_PARAMS.TLS_CERTIFICATEWATCHINTERVAL, 0);
@@ -34,8 +32,11 @@ describe('TLS file watch after a cancelled renewal', () => {
 
 	beforeEach(() => {
 		watchers = [];
+		reportedPaths = new Set();
 		chokidar.default.watch = (...args) => {
 			const watcher = realWatch.apply(chokidar.default, args);
+			const report = (reportedPath) => reportedPaths.add(path.resolve(reportedPath));
+			watcher.on('add', report).on('change', report);
 			watchers.push(watcher);
 			return watcher;
 		};
@@ -58,7 +59,7 @@ describe('TLS file watch after a cancelled renewal', () => {
 		loadAndWatch(
 			certPath,
 			(certificate) => {
-				const pair = `${certificate}+${fs.readFileSync(keyPath, 'utf8')}`;
+				const pair = `${certificate}+${fs.existsSync(keyPath) ? fs.readFileSync(keyPath, 'utf8') : 'MISSING'}`;
 				loaded.push(pair);
 				return /^CERT-\d\+KEY-\d$/.test(pair);
 			},
@@ -81,22 +82,19 @@ describe('TLS file watch after a cancelled renewal', () => {
 		}
 	}
 
-	/** Returns how long after the first removal the second one happened. */
 	async function cancelRenewal(filePath, unmatchedPair) {
 		const savedPath = filePath + '.saved';
-		const start = performance.now();
 		await fsp.rename(filePath, savedPath);
 		await fsp.writeFile(filePath, 'UNMATCHED');
 		await waitForLoaded(unmatchedPair, 2);
 		await fsp.unlink(filePath);
-		const elapsed = performance.now() - start;
+		reportedPaths.clear();
 		await fsp.rename(savedPath, filePath);
-		return elapsed;
 	}
 
-	// A run that missed the window passes with or without the fix, so it must not count as coverage.
-	function requireThrottleWindow(test, elapsed) {
-		if (elapsed >= CHOKIDAR_REMOVE_THROTTLE_MS) test.skip();
+	// chokidar still reporting the path means it did not lose track of it, so only its own events were exercised.
+	function requireLostTracking(test, filePath) {
+		if (reportedPaths.has(path.resolve(filePath))) test.skip();
 	}
 
 	function churnUnrelatedFile() {
@@ -116,40 +114,39 @@ describe('TLS file watch after a cancelled renewal', () => {
 
 	it('re-reads a certificate restored right after an unmatched one', async function () {
 		await watchPair();
-		const elapsed = await cancelRenewal(certPath, 'UNMATCHED+KEY-1');
+		await cancelRenewal(certPath, 'UNMATCHED+KEY-1');
 		await waitForLoaded('CERT-1+KEY-1', 3);
-		requireThrottleWindow(this, elapsed);
+		requireLostTracking(this, certPath);
 	});
 
 	it('re-reads a private key restored right after an unmatched one', async function () {
 		await watchPair();
-		const elapsed = await cancelRenewal(keyPath, 'CERT-1+UNMATCHED');
+		await cancelRenewal(keyPath, 'CERT-1+UNMATCHED');
 		await waitForLoaded('CERT-1+KEY-1', 3);
-		requireThrottleWindow(this, elapsed);
+		requireLostTracking(this, keyPath);
 	});
 
 	it('reads a renewal installed after the cancelled one has settled', async function () {
 		await watchPair();
-		const elapsed = await cancelRenewal(certPath, 'UNMATCHED+KEY-1');
+		await cancelRenewal(certPath, 'UNMATCHED+KEY-1');
 		// Outlasts any re-check of the restore, so only an event from this renewal can reveal it.
 		await delay(1500);
 		await fsp.writeFile(certPath + '.next', 'CERT-2');
 		await fsp.rename(certPath + '.next', certPath);
 		await waitForLoaded('CERT-2+KEY-1', 3);
-		requireThrottleWindow(this, elapsed);
+		requireLostTracking(this, certPath);
 	});
 
 	it('re-reads the restore while unrelated files in its directory keep changing', async function () {
 		await watchPair();
 		const stopChurn = churnUnrelatedFile();
-		let elapsed;
 		try {
-			elapsed = await cancelRenewal(certPath, 'UNMATCHED+KEY-1');
+			await cancelRenewal(certPath, 'UNMATCHED+KEY-1');
 			await waitForLoaded('CERT-1+KEY-1', 3);
 		} finally {
 			await stopChurn();
 		}
-		requireThrottleWindow(this, elapsed);
+		requireLostTracking(this, certPath);
 	});
 
 	it('does not re-attempt an unchanged unmatched pair while unrelated files keep changing', async () => {
@@ -167,5 +164,21 @@ describe('TLS file watch after a cancelled renewal', () => {
 			await stopChurn();
 		}
 		assert.strictEqual(loaded.length, attempts, `unchanged pair re-attempted: ${loaded}`);
+	});
+
+	it('attempts a pair whose key is missing once while unrelated files keep changing', async () => {
+		await watchPair();
+		await fsp.unlink(keyPath);
+		await waitForLoaded('CERT-1+MISSING', 2);
+		// Outlasts the re-check this removal armed.
+		await delay(1500);
+		const attempts = loaded.length;
+		const stopChurn = churnUnrelatedFile();
+		try {
+			await delay(2500);
+		} finally {
+			await stopChurn();
+		}
+		assert.strictEqual(loaded.length, attempts, `pair without its key re-attempted: ${loaded}`);
 	});
 });

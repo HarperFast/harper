@@ -344,6 +344,14 @@ const certificateWatchPollers = new Map<string, () => void>();
 export function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 	let lastModified;
 	let lastAttempted;
+	// An unstattable related file still yields a fingerprint, so an attempt without it is not repeated until it changes.
+	const statRelated = (relatedPath: string) => {
+		try {
+			return statSync(relatedPath);
+		} catch {
+			return null;
+		}
+	};
 	const loadFile = (path, stats?, retryUnapplied = true) => {
 		// The latch dedupes chokidar/poll but must mean "last successfully APPLIED", or a failed
 		// apply is deduplicated forever (#2382). Rollbacks are equality-guarded so an old failure
@@ -352,8 +360,10 @@ export function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) 
 		let modified;
 		try {
 			const fileStats = stats ?? statSync(path);
-			const fingerprints = [fileStats, ...relatedPaths.map((relatedPath) => statSync(relatedPath))];
-			modified = JSON.stringify(fingerprints.map(({ mtimeMs, ino, size }) => [mtimeMs, ino, size]));
+			const fingerprints = [fileStats, ...relatedPaths.map(statRelated)];
+			modified = JSON.stringify(
+				fingerprints.map((fingerprint) => fingerprint && [fingerprint.mtimeMs, fingerprint.ino, fingerprint.size])
+			);
 			// Restoring an applied fingerprint after a failed attempt must clear the loader's pending state.
 			if (modified !== lastAttempted || (retryUnapplied && modified !== lastModified)) {
 				if (lastModified && modified !== lastAttempted && isMainThread) logger.warn?.(`Reloading ${type}:`, path);
