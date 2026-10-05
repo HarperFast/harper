@@ -21,6 +21,7 @@ import { parseMultipartRequest } from './multipartParser.ts';
 import { onStartup } from '../../utility/lifecycle.ts';
 let JSONStringify: typeof JSON.stringify = stringify;
 let JSONParse: typeof JSON.parse = parse;
+let COMPRESSION_THRESHOLD: number | undefined;
 const streamStartup = Symbol('streamStartup');
 const serializedStreamError = Symbol('serializedStreamError');
 
@@ -244,7 +245,7 @@ const genericHandler = {
 };
 mediaTypes.set('*/*', genericHandler);
 mediaTypes.set('', genericHandler);
-function initializeJSONCodecs() {
+function initializeSerialization() {
 	const previousStringify = JSONStringify;
 	const useBigInt = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
 	JSONStringify = useBigInt ? stringify : JSON.stringify;
@@ -252,13 +253,14 @@ function initializeJSONCodecs() {
 	for (const codec of mediaTypes.values()) {
 		if (codec.serialize === previousStringify) codec.serialize = JSONStringify;
 	}
+	COMPRESSION_THRESHOLD = envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD);
 }
 try {
-	initializeJSONCodecs();
+	initializeSerialization();
 } catch (error) {
 	if (!(error instanceof ReferenceError)) throw error;
 }
-onStartup(initializeJSONCodecs);
+onStartup(initializeSerialization);
 // try to JSON parse, but since we don't know for sure, this will return the body
 // otherwise
 function tryJSONParse(input) {
@@ -431,10 +433,6 @@ export function findBestSerializer(incomingMessage) {
 	return { serializer: bestSerializer, type: bestType, parameters: bestParameters };
 }
 
-let _compressionThreshold: number | undefined;
-function COMPRESSION_THRESHOLD() {
-	return (_compressionThreshold ??= envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD));
-}
 const brotliParams = (mode: number) => ({
 	params: { [constants.BROTLI_PARAM_MODE]: mode, [constants.BROTLI_PARAM_QUALITY]: 2 },
 });
@@ -453,7 +451,7 @@ export function brotliOptions(contentType: string) {
 export function serialize(responseData, request, responseObject) {
 	// TODO: Maybe support other compression encodings; browsers basically universally support brotli, but Node's HTTP
 	//  client itself actually (just) supports gzip/deflate
-	let canCompress = COMPRESSION_THRESHOLD() && request.headers.asObject?.['accept-encoding']?.includes('br');
+	let canCompress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
 	let responseBody;
 	let contentType: string;
 	if (responseData?.contentType != null && responseData.data != null) {
@@ -514,7 +512,7 @@ export function serialize(responseData, request, responseObject) {
 			}
 		} else responseBody = serializer.serializer.serialize(responseData, responseObject);
 	}
-	if (canCompress && responseBody?.length > COMPRESSION_THRESHOLD()) {
+	if (canCompress && responseBody?.length > COMPRESSION_THRESHOLD) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
 		responseObject.headers.set('Content-Encoding', 'br');
 		// if we have a single buffer (or string) we compress in a single async call

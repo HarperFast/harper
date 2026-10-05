@@ -95,6 +95,47 @@ describe('TypeStrip runtime boundaries', () => {
 		}
 	});
 
+	it('honors disabled and enabled response compression after serialization startup', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			for (const threshold of [0, 32]) {
+				const prefix = mode === 'compiled' ? 'dist/' : '';
+				const extension = mode === 'compiled' ? 'js' : 'ts';
+				const runtimeUrl = (path) => pathToFileURL(resolve(root, `${prefix}${path}.${extension}`)).href;
+				const output = runWithIsolatedRoot(
+					mode,
+					`
+					const assert = (await import('node:assert/strict')).default;
+					const { readFileSync, writeFileSync } = await import('node:fs');
+					const YAML = require('yaml');
+					const configPath = process.env.ROOTPATH + '/harper-config.yaml';
+					const config = YAML.parseDocument(readFileSync(configPath, 'utf8'));
+					config.setIn(['http', 'compressionThreshold'], ${threshold});
+					writeFileSync(configPath, config.toString());
+					await import(${JSON.stringify(runtimeUrl('server/threads/threadServer'))});
+					const codecs = await import(${JSON.stringify(runtimeUrl('server/serverHelpers/contentTypes'))});
+					const { runStartup } = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
+					await runStartup();
+					const value = { value: 'x'.repeat(100) };
+					const request = { headers: { asObject: { accept: 'application/json', 'accept-encoding': 'br' } } };
+					const response = { headers: new Map() };
+					const body = await codecs.serialize(value, request, response);
+					if (${threshold}) {
+						const { brotliDecompressSync } = await import('node:zlib');
+						assert.equal(response.headers.get('Content-Encoding'), 'br');
+						assert.ok(body instanceof Uint8Array);
+						assert.equal(brotliDecompressSync(body).toString(), JSON.stringify(value));
+					} else {
+						assert.equal(response.headers.has('Content-Encoding'), false);
+						assert.equal(body, JSON.stringify(value));
+					}
+					console.log('configured response compression served');
+					`
+				);
+				assert.equal(output, 'configured response compression served', mode);
+			}
+		}
+	});
+
 	it('keeps rotation disabled after rapid cold reconfiguration', () => {
 		for (const mode of ['compiled', 'typestrip']) {
 			const runtimeUrl = pathToFileURL(
@@ -176,6 +217,45 @@ describe('TypeStrip runtime boundaries', () => {
 			`
 			);
 			assert.equal(output, 'startup shutdown drained', mode);
+		}
+	});
+
+	it('drains the held component scope when shutdown interrupts component loading', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const workerPath = resolve(
+				root,
+				`${mode === 'compiled' ? 'dist/' : ''}server/threads/threadServer.${mode === 'compiled' ? 'js' : 'ts'}`
+			);
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert/strict')).default;
+				const { readFileSync, writeFileSync } = await import('node:fs');
+				const YAML = require('yaml');
+				const configPath = process.env.ROOTPATH + '/harper-config.yaml';
+				const config = YAML.parseDocument(readFileSync(configPath, 'utf8'));
+				config.set('startupShutdownProbe', {});
+				writeFileSync(configPath, config.toString());
+				process.env.HARPER_BUILTIN_COMPONENTS = 'startupShutdownProbe=' + ${JSON.stringify(resolve(import.meta.dirname, 'fixtures/component-shutdown.cjs'))};
+				const { Worker } = await import('node:worker_threads');
+				const { once } = await import('node:events');
+				const worker = new Worker(${JSON.stringify(workerPath)}, { execArgv: ${JSON.stringify(mode === 'typestrip' ? ['--conditions=typestrip'] : [])}, workerData: { addPorts: [], addThreadIds: [] } });
+				const messages = []; worker.on('message', message => messages.push(message));
+				const deadline = AbortSignal.timeout(5000);
+				try {
+					while (!messages.some(message => message.type === 'component-held')) await once(worker, 'message', { signal: deadline });
+					worker.postMessage({ type: 'shutdown', restartNumber: 2 });
+					worker.postMessage({ type: 'release-component' });
+					const [code] = await once(worker, 'exit', { signal: AbortSignal.timeout(3000) });
+					assert.equal(code, 0);
+					assert.ok(messages.some(message => message.type === 'component-disposed'));
+					assert.ok(messages.some(message => message.type === 'child_startup_phase' && message.phase === 'loading components'));
+					assert.equal(messages.some(message => message.type === 'child_started' || (message.type === 'child_startup_phase' && message.phase !== 'loading components')), false);
+				} finally { if (worker.threadId !== -1) await worker.terminate(); }
+				console.log('component shutdown drained');
+			`
+			);
+			assert.equal(output, 'component shutdown drained', mode);
 		}
 	});
 
