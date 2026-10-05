@@ -560,6 +560,10 @@ const RELOAD_REFUSAL =
 	'A bulk reload after this resume position left rows with no history; resubscribe to resynchronize';
 const UNREADABLE_LOG_REFUSAL =
 	'Part of the transaction log after this resume position could not be read; resubscribe to resynchronize';
+const ID_ALLOCATION_KEY = Symbol.for('id_allocation');
+function isSameIdAllocation(a: any, b: any): boolean {
+	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
+}
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
@@ -2531,8 +2535,7 @@ export function makeTable(options): TableResourceClass {
 			if (type === 'String' || type === 'ID') return super.getNewId();
 			if (!idIncrementer) {
 				// if there is no id incrementer yet, we get or create one
-				const idAllocationEntry = primaryStore.getEntry(Symbol.for('id_allocation'));
-				let idAllocation = idAllocationEntry?.value;
+				let idAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY)?.value;
 				let lastKey;
 				if (
 					idAllocation &&
@@ -2549,7 +2552,7 @@ export function makeTable(options): TableResourceClass {
 					}
 				} else {
 					// we need to create a new id allocation
-					idAllocation = createNewAllocation(idAllocationEntry?.version ?? null);
+					idAllocation = createNewAllocation(idAllocation);
 					lastKey = idAllocation.start;
 				}
 				// all threads will use a shared buffer to atomically increment the id
@@ -2584,7 +2587,7 @@ export function makeTable(options): TableResourceClass {
 						idAfter = key;
 					}
 					readTxn?.done();
-					const { value: updatedIdAllocation, version } = primaryStore.getEntry(Symbol.for('id_allocation'));
+					const updatedIdAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY).value;
 					if (idIncrementer.maxSafeId < idAfter) {
 						// note that this is just a noop/direct callback if we are inside the sync transaction
 						// first check to see if it actually got updated by another thread
@@ -2592,24 +2595,19 @@ export function makeTable(options): TableResourceClass {
 							// the allocation was already updated by another thread
 							return;
 						}
-						logger.info?.('New id allocation', nextId, idIncrementer.maxSafeId, version);
-						primaryStore.put(
-							Symbol.for('id_allocation'),
-							{
-								start: updatedIdAllocation.start,
-								end: idIncrementer.maxSafeId,
-								nodeName: server.hostname,
-								pid: process.pid,
-							},
-							Date.now(),
-							version
-						);
+						logger.info?.('New id allocation', nextId, idIncrementer.maxSafeId);
+						replaceIdAllocation(updatedIdAllocation, {
+							start: updatedIdAllocation.start,
+							end: idIncrementer.maxSafeId,
+							nodeName: server.hostname,
+							pid: process.pid,
+						});
 					} else {
 						// indicate that we have run out of ids in the allocated range, so we need to allocate a new range
 						logger.warn?.(
 							`Id conflict detected, starting new id allocation range, attempting to allocate to ${idIncrementer.maxSafeId}, but id of ${idAfter} detected`
 						);
-						const idAllocation = createNewAllocation(version);
+						const idAllocation = createNewAllocation(updatedIdAllocation);
 						// reassign the incrementer to the new range/starting point
 						if (!idAllocation.alreadyUpdated) Atomics.store(idIncrementer, 0, BigInt(idAllocation.start + 1));
 						// and we set the maximum safe id to the end of the allocated range before we check for conflicting ids again
@@ -2632,7 +2630,7 @@ export function makeTable(options): TableResourceClass {
 				//TODO: Add a check to recordUpdate to check if a new id infringes on the allocated id range
 			}
 			return nextId;
-			function createNewAllocation(expectedVersion) {
+			function createNewAllocation(expectedAllocation) {
 				// there is no id allocation (or it is for the wrong node name or used up), so we need to create one
 				// start by determining the max id for the type
 				const maxId = (type === 'Int' ? Math.pow(2, 31) : Math.pow(2, 49)) - 1;
@@ -2677,19 +2675,29 @@ export function makeTable(options): TableResourceClass {
 					}
 					// see if we maintained an adequate distance from the surrounding ids
 				} while (!(safeDistance < idAfter - lastKey && (safeDistance < lastKey - idBefore || idBefore === 0)));
-				// we have to ensure that the id allocation is atomic and multiple threads don't set different ids, so we use a sync transaction
-				return primaryStore.transactionSync(() => {
-					// first check to see if it actually got set by another thread
-					const updatedIdAllocation = primaryStore.getEntry(Symbol.for('id_allocation'));
-					if ((updatedIdAllocation?.version ?? null) == expectedVersion) {
-						logger.info?.('Allocated new id range', idAllocation);
-						primaryStore.put(Symbol.for('id_allocation'), idAllocation, Date.now());
-						return idAllocation;
-					} else {
-						logger.debug?.('Looks like ids were already allocated');
-						return { alreadyUpdated: true, ...updatedIdAllocation.value };
-					}
-				});
+				const committedAllocation = replaceIdAllocation(expectedAllocation, idAllocation);
+				if (committedAllocation === idAllocation) {
+					logger.info?.('Allocated new id range', idAllocation);
+					return idAllocation;
+				}
+				logger.debug?.('Looks like ids were already allocated');
+				return { alreadyUpdated: true, ...committedAllocation };
+			}
+			// Compare-and-replace of the stored allocation; returns whichever allocation is stored afterwards.
+			// The value is the comparison token because RocksDB stores this record without a version. On RocksDB
+			// the read and write must join the transaction so a sibling thread's commit in between is a conflict;
+			// the retry then reads the sibling's allocation.
+			function replaceIdAllocation(expectedAllocation, nextAllocation) {
+				return primaryStore.transactionSync(
+					(transaction) => {
+						const options = transaction && { transaction };
+						const storedAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY, options)?.value;
+						if (!isSameIdAllocation(storedAllocation, expectedAllocation)) return storedAllocation;
+						primaryStore.put(ID_ALLOCATION_KEY, nextAllocation, options ?? Date.now());
+						return nextAllocation;
+					},
+					isRocksDB ? { retryOnBusy: true } : undefined
+				);
 			}
 		}
 
