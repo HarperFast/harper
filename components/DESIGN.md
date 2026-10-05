@@ -110,7 +110,8 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    Any restart treats a worker answering a deploy whose release is decided the same way. That deploy waits on no
    rollout, and its peers' answers can outlast the shutdown drain's ceiling. So the restart moves the worker to the
    end and replaces it once the deploy has answered, beating its progress meanwhile (`untilDecidedDeploysAnswer`).
-   A requester that is worker 0 is replaced first. Where its canary starts beside it, it is retired the same way, after
+   A release can also be decided while a worker's replacement boots, as when a requesting worker 0's canary decides it,
+   or a plain restart's. Where that replacement serves beside the worker, the worker is retired the same way, after
    the rest; elsewhere, at its turn. A worker retired while its deploy still runs, there or with its release still
    undecided, is held by a shutdown drain the deploy registers while its release is armed. That drain is bounded by the
    drain ceiling, and a shutdown before the arm closes as it always did. Until the release is decided, the drain holds
@@ -201,8 +202,9 @@ tree's deployment declared an entry, startup now compares that entry with root c
 tree that runs is the tree certified. The lock still names the entry the deploy replaced, so a root config set back to
 that entry would otherwise keep the deployed tree. A record that exists but cannot be read, one of a later version
 included, installs from root config, since the lock cannot describe a deployed tree. Otherwise the lock decides, but
-only for the tree it records installing. With each entry, startup records what that tree's deployment marker named
-(`trees` in `harper-application-lock.json`, `null` for a link). A live tree whose marker names anything else was
+only for the tree it records installing. With each entry, startup records the marker of the tree its preparation made
+live, taken under that preparation's lock (`trees` in `harper-application-lock.json`, `null` for a link). Reading it
+afterwards could pick up a tree a competing deploy swapped in. A live tree whose marker names anything else was
 made live by a deploy whose record is gone, so it is installed over. A lock written before it recorded trees decides
 for any tree, as before, until the next install records one.
 

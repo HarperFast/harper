@@ -1496,8 +1496,8 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 		// Workers retired while their deploy waits on a decision this restart's own replacements make: each serves
 		// through its drain, so it is not down, and waiting on its exit would hold back the start that decides it.
 		const answering = [];
-		// A requesting worker 0 whose replacement already serves beside it, retired once its deploy has answered.
-		let requesterToRetire;
+		// Workers whose replacement serves beside them already, retired once their decided deploys have answered.
+		const retireOnceAnswered = [];
 		const deferredUntilAnswered = new Set();
 		// a worker that exited on its own mid-restart is spliced out of `workers` and auto-restarted onto the new
 		// code (see the exit handler above); it is not still on the previous code even though this loop never got to it.
@@ -1650,9 +1650,10 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 				}
 			}
 			if (worker === requester && !requesterFirst) await requesterRelease(certification);
-			// Its replacement serves already, so it can keep serving too until its deploy answers, after the rest.
-			if (worker === requester && requesterFirst && canPreStartReplacement && certification.decision) {
-				requesterToRetire = worker;
+			// A release decided while this worker's replacement booted, a requesting worker 0's among them: that replacement
+			// serves already, so the worker can keep serving too until the deploy answers, after the rest.
+			if (overlapping && startReplacementThreads && canPreStartReplacement && answersDecidedDeploy(worker)) {
+				retireOnceAnswered.push(worker);
 				continue;
 			}
 			if (startReplacementThreads) await untilNoCertificationArmed();
@@ -1709,10 +1710,12 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 				break;
 			}
 		}
-		if (requesterToRetire) {
-			await untilDecidedDeploysAnswer(requesterToRetire, onProgress);
-			if (postShutdown(requesterToRetire)) answering.push(whenShutDownWorkerExits(requesterToRetire, onProgress));
-		}
+		await Promise.all(
+			retireOnceAnswered.map(async (worker) => {
+				await untilDecidedDeploysAnswer(worker, onProgress);
+				if (postShutdown(worker)) answering.push(whenShutDownWorkerExits(worker, onProgress));
+			})
+		);
 		await Promise.all(waitingToFinish);
 		await Promise.all(answering);
 		// A caller awaiting this needs it to mean "the pool is serving the new code", so wait out the

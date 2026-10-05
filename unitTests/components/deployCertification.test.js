@@ -671,6 +671,13 @@ describe('whether startup keeps the installed tree', () => {
 		assert.equal(await keepsInstalledTree('web', ENTRY, dirPath, lockPath), false, 'a record of another version');
 	});
 
+	it('names the tree a preparation made live, whatever a later deploy swaps in', async function () {
+		this.timeout(30000);
+		const installed = await deploy(root, 'boot', 'V1\n', { describeArtifact: undefined });
+		await deploy(root, 'd1', 'V2\n');
+		assert.equal(installed.installedTree, 'boot');
+	});
+
 	it('trusts the lock only for the tree it records installing', async function () {
 		this.timeout(30000);
 		await lockNaming(ENTRY, 'boot');

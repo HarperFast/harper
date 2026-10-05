@@ -4625,6 +4625,8 @@ export class Application {
 	alreadyActive: boolean = false;
 	/** This preparation registered its release for certification, or joined one already in flight. */
 	certificationArmed: boolean = false;
+	/** What the tree this preparation made live is marked as, read under its lock: `null` for a link. */
+	installedTree: string | null | undefined;
 	sourceIdentity?: string;
 	installFingerprint?: InstallFingerprint;
 
@@ -5041,7 +5043,8 @@ export async function prepareApplication(application: Application, options: Prep
 						const declared = options.describeArtifact?.();
 						// The directory outlives the swap as the record a later displacement puts this release back into;
 						// a link has no bytes of its own to put back.
-						const described = declared && !(await lstat(candidateDirPath)).isSymbolicLink() ? declared : undefined;
+						const linked = (await lstat(candidateDirPath)).isSymbolicLink();
+						const described = declared && !linked ? declared : undefined;
 						if (described) {
 							await writeArtifactDescriptor(application.dirPath, artifactId, {
 								v: ARTIFACT_DESCRIPTOR_VERSION,
@@ -5060,6 +5063,7 @@ export async function prepareApplication(application: Application, options: Prep
 							declared ? rootConfigEffectFromDeclaration(declared.rootConfig) : { kind: 'keep' },
 							described ? options.certification : undefined
 						);
+						application.installedTree = linked ? null : artifactId;
 					} catch (error) {
 						// The builder's own cleanup only covers a failed BUILD. A rejected validation, or an
 						// activation that was cleanly compensated, would otherwise leave a whole installed
@@ -5479,11 +5483,7 @@ async function installConfiguredApplication(
 			applicationConfig,
 			(clearEntry) => prepareApplication(application, { beforePrepare: clearEntry, onDeployStart }),
 			(mutate) => updateApplicationLock(harperApplicationLockPath, mutate),
-			() =>
-				readDeploymentProvenance(dirPath, name).then(
-					(deploymentId) => deploymentId ?? null,
-					() => undefined
-				)
+			async () => application.installedTree
 		);
 	} catch (error) {
 		logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));

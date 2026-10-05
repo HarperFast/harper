@@ -926,9 +926,45 @@ describe('the release certification gate', function () {
 		await commit();
 		await decisionOf();
 		assert.equal(started[before].workerIndex, 0);
+		// Where its canary serves beside it, it is retired once its deploy has answered, after the rest.
+		const besideIt = process.platform === 'linux';
+		if (besideIt) {
+			await waitFor(() => pool[1].exitedAt && pool[2].exitedAt, {
+				timeout: 30000,
+				message: 'the rest were not replaced',
+			});
+		}
 		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
 		await rolledOut();
-		assert.equal(shutdownOrder[0], requesterThreadId);
+		assert.equal(besideIt ? shutdownOrder.at(-1) : shutdownOrder[0], requesterThreadId);
+	});
+
+	it("retires a worker whose deploy its own replacement's canary decided once that deploy answers, after the rest", async function () {
+		// Only where a replacement serves beside its predecessor; elsewhere the predecessor makes way for it.
+		if (process.platform !== 'linux') this.skip();
+		// A plain restart, held in its reload while a release worker 0 is deploying commits: worker 0's replacement,
+		// the restart's first, is that release's canary.
+		const loading = Promise.withResolvers();
+		rootLoad = loading.promise;
+		releaseRootLoad = loading.resolve;
+		const [answering, , last] = pool;
+		const answeringThreadId = answering.threadId;
+		const restart = restartWorkers('http', 1, true, undefined, undefined);
+		await arm({ requesterThreadId: answeringThreadId });
+		await commit();
+		const asked = [];
+		for (const worker of pool) {
+			const threadId = worker.threadId;
+			worker.once('shutdown', () => asked.push(threadId));
+		}
+		releaseRootLoad();
+		assert.equal((await decisionOf()).status, 'certified');
+		await waitFor(() => last.exitedAt, { timeout: 30000, message: 'the restart never replaced the rest' });
+		assert.ok(!asked.includes(answeringThreadId), 'it keeps serving while its deploy answers');
+		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+		await restart;
+		assert.equal(asked.at(-1), answeringThreadId, 'and is retired once it has, after the rest');
+		await rolledOut();
 	});
 
 	it('does not hold the rest of the rollout behind a requesting worker 0 that has not answered', async () => {
