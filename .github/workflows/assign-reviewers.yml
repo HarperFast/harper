@@ -28,11 +28,11 @@ jobs:
               'renovate[bot]' | 'dependabot[bot]') default_reviewers='["kriszyp"]' ;;
               *) default_reviewers='["cb1kenobi","Ethan-Arrowood","kriszyp"]' ;;
             esac
-            # One request per reviewer: GitHub rejects the whole batch with a 422 when any one
-            # handle is no longer a collaborator, which would leave the PR with no reviewers.
+            candidates=$(echo "$default_reviewers" | jq -r --arg author "$PR_AUTHOR" '.[] | select(. != $author)')
             requested=0
             failed=0
-            for reviewer in $(echo "$default_reviewers" | jq -r --arg author "$PR_AUTHOR" '.[] | select(. != $author)'); do
+            # GitHub rejects a batched request whole (HTTP 422) if any one handle is no longer a collaborator.
+            for reviewer in $candidates; do
               if gh api "repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" --method POST -f "reviewers[]=$reviewer" --silent; then
                 requested=$((requested + 1))
               else
