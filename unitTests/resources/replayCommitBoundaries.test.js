@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { copyFileSync, readFileSync, rmSync } = require('node:fs');
+const { copyFileSync, cpSync, readFileSync, rmSync } = require('node:fs');
 const { setupTestDBPath } = require('../testUtils');
 const { table, databases, database } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
@@ -130,6 +130,48 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 		dbPath = setupTestDBPath();
 		setMainIsWorker(true);
 	});
+
+	for (const unflushedTail of [false, true]) {
+		it(`preserves safe replay-abort advice with ${unflushedTail ? 'an unflushed tail' : 'an already durable backlog'}`, async function () {
+			const crashDir = path.join(dbPath, `replay-advice-${unflushedTail}`);
+			rmSync(crashDir, { recursive: true, force: true });
+			const sharedPath = path.join(crashDir, 'shared');
+			const markerPath = path.join(crashDir, 'marker');
+			const childArgs = [path.join(crashDir, 'writer-root'), sharedPath, 'replayadvice', 'Rows', markerPath];
+			const written = await runCrashChild([...childArgs, unflushedTail ? 'write-advice-tail' : 'write-advice']);
+			assert.strictEqual(written.signal, 'SIGKILL', written.stderr);
+			copyFileSync(
+				markerPath + '.state',
+				path.join(sharedPath, 'replayadvice', 'transaction_logs', 'local', 'txn.state')
+			);
+			const preservedPath = path.join(crashDir, 'preserved');
+			childArgs[0] = path.join(crashDir, 'replayer-root');
+			const replayed = await runCrashChild([...childArgs, 'replay-advice']);
+			assert.strictEqual(replayed.code, 0, replayed.stderr);
+			assert.deepStrictEqual(JSON.parse(readFileSync(markerPath, 'utf8')), { rows: [0, 1, 2], tail: null });
+			assert.match(replayed.stderr, /wall-clock time limit/);
+			assert.match(replayed.stderr, /may already be durable in RocksDB/);
+			assert.match(
+				replayed.stderr,
+				/Preserve a copy of this database and its transaction logs before restarting or accepting further writes/
+			);
+			assert.match(replayed.stderr, /Re-cloning discards local-only writes/);
+			assert.match(replayed.stderr, /verify that the recovery source contains all needed data/);
+			assert.match(replayed.stderr, /replication\.replayTimeout/);
+			assert.match(replayed.stderr, /Later writes and flushes can advance txn\.state past unreplayed entries/);
+			assert.match(replayed.stderr, /only after verifying its replay position still covers the needed entries/);
+			assert.doesNotMatch(replayed.stderr, /Re-clone this node|pathologically deep|no recovery needed/);
+			if (unflushedTail) {
+				cpSync(sharedPath, preservedPath, { recursive: true });
+				childArgs[0] = path.join(crashDir, 'recovery-root');
+				childArgs[1] = preservedPath;
+				const recovered = await runCrashChild([...childArgs, 'replay-advice-recover']);
+				assert.strictEqual(recovered.code, 0, recovered.stderr);
+				assert.deepStrictEqual(JSON.parse(readFileSync(markerPath, 'utf8')), { rows: [0, 1, 2], tail: 3 });
+				assert.doesNotMatch(recovered.stderr, /wall-clock time limit/);
+			}
+		});
+	}
 
 	it('reads replay commit bases from storage without consulting or populating the record cache', async function () {
 		const Rows = table({
@@ -472,6 +514,9 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 				}
 			);
 			assert.match(failure?.message ?? '', /wall-clock time limit/);
+			assert.match(failure.message, /may already be durable in RocksDB/);
+			assert.match(failure.message, /Preserve a copy/);
+			assert.doesNotMatch(failure.message, /[Rr]e-clon|peer|leader/);
 			assert.deepStrictEqual(groups, [{ ids: ['a', 'b'], outcome: 'committed' }]);
 		} finally {
 			env.setProperty(terms.CONFIG_PARAMS.REPLICATION_REPLAYTIMEOUT, configured);

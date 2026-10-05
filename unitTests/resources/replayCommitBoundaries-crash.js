@@ -6,6 +6,14 @@ const assert = require('node:assert');
 
 if (require.main === module) {
 	const [rootPath, databasePath, database, tableName, markerPath, mode, logKeyArg] = process.argv.slice(2);
+	if (mode.includes('advice')) {
+		process.env.ROOTPATH = rootPath;
+		mkdirSync(rootPath, { recursive: true });
+		writeFileSync(
+			path.join(rootPath, 'harper-config.yaml'),
+			`rootPath: ${JSON.stringify(rootPath)}\nlogging:\n  file: false\n  stdStreams: true\n  level: warn\n`
+		);
+	}
 	const env = require('#src/utility/environment/environmentManager');
 	const terms = require('#src/utility/hdbTerms');
 	// A private root keeps this process off the parent's system database; only the database under
@@ -13,6 +21,7 @@ if (require.main === module) {
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, rootPath);
 	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(rootPath, 'database'));
 	env.setProperty(terms.CONFIG_PARAMS.DATABASES, { [database]: { path: databasePath } });
+	if (mode === 'replay-advice') env.setProperty(terms.CONFIG_PARAMS.REPLICATION_REPLAYTIMEOUT, 0.000001);
 	mkdirSync(path.join(rootPath, 'database'), { recursive: true });
 	const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
 	const replayCommits = [];
@@ -44,6 +53,17 @@ if (require.main === module) {
 	});
 
 	const writeThenCrash = async () => {
+		if (mode.startsWith('write-advice')) {
+			await Tbl.put({ id: 'seed', n: -1 });
+			await Tbl.primaryStore.rootStore.flush();
+			const statePath = path.join(Tbl.primaryStore.rootStore.path, 'transaction_logs', 'local', 'txn.state');
+			writeFileSync(markerPath + '.state', readFileSync(statePath));
+			for (let n = 0; n < 3; n++) await Tbl.put({ id: String(n), n });
+			await Tbl.primaryStore.rootStore.flush();
+			if (mode === 'write-advice-tail') await Tbl.put({ id: 'tail', n: 3 });
+			process.kill(process.pid, 'SIGKILL');
+			return;
+		}
 		if (mode === 'write-stale') {
 			await Tbl.put({ id: 'seed', n: -1 });
 			await Tbl.primaryStore.rootStore.flush();
@@ -69,6 +89,12 @@ if (require.main === module) {
 	};
 
 	const reportReplay = async () => {
+		if (mode.startsWith('replay-advice')) {
+			const rows = [];
+			for (let n = 0; n < 3; n++) rows.push((await Tbl.get(String(n)))?.n);
+			writeFileSync(markerPath, JSON.stringify({ rows, tail: (await Tbl.get('tail'))?.n ?? null }));
+			process.exit(0);
+		}
 		if (mode === 'replay-stale') {
 			let rowCount = 0;
 			for (const { key, value } of Tbl.primaryStore.getRange()) {

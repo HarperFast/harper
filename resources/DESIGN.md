@@ -654,6 +654,10 @@ table-scoped instead of widening to a database purge.
 
 `DatabaseTransaction.save` reads replay commit bases with `uncachedRead`: WeakRef targets survive a synchronous replay job even after cache eviction, so caching already-durable records behind a stale watermark retained the whole scanned backlog (harper#2950); enforced by `replayCommitBoundaries.test.js`'s cache-identity and crash-reopen heap-growth tests.
 
+## Replay limits do not establish data loss
+
+`replayLogs`' time and progress guards cannot prove tail durability or peer completeness from a potentially stale `txn.state`; their diagnostics require preserving a separate database/log copy before further writes can advance the replay position, checking that position before recovery, and verifying peer completeness before re-cloning. `replayCommitBoundaries.test.js` enforces the advice on durable-backlog and unflushed-tail crash/reopen cases, including recovery from a copy taken after the aborted boot closed without further writes; elected replay still rejects without peer recovery advice (harper#2951).
+
 ## A numeric transaction-log selector is a lookup, never a log name (`RocksTransactionLogStore.getRange`)
 
 `useLog` is get-or-create, so only a string log name may reach it; a node id with no log (a relayed or removed origin, whose writes `put()` routes to the via-node or `local` log) is an empty range ([harper#2778](https://github.com/HarperFast/harper/issues/2778)). Pinned by `auditLog.test.js` "a numeric log id with no log misses without creating one".
