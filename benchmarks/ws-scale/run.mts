@@ -23,6 +23,7 @@ import { fork, execFileSync, type ChildProcess } from 'node:child_process';
 import {
 	existsSync,
 	mkdirSync,
+	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	renameSync,
@@ -85,7 +86,8 @@ const { values: args } = parseArgs({
 		// CPU-profile every worker for this many seconds, starting 5s into the first fanout rate or at
 		// the start of the last conns step's settle window; profiles land in --profile-dir
 		'profile': { type: 'string' },
-		'profile-dir': { type: 'string', default: join(tmpdir(), 'ws-scale-profile') },
+		// profiles and the preload's control files; a fresh directory per run when not given
+		'profile-dir': { type: 'string' },
 		'harper-env': { type: 'string', multiple: true, default: [] },
 		'engine': { type: 'string', default: 'rocksdb' },
 		'label': { type: 'string', default: '' },
@@ -309,18 +311,19 @@ async function main() {
 		(harperConfig as any).tls = { unixDomainSockets: true };
 		if (args.uws) env.HARPER_UWS_UDS = '1';
 	}
-	const profileDir = args['profile-dir']!;
+	const profileDir = args['profile-dir'] ?? mkdtempSync(join(tmpdir(), 'ws-scale-'));
 	if (args.profile || args.scenario === 'churn') {
 		mkdirSync(profileDir, { recursive: true });
 		for (const file of readdirSync(profileDir)) {
-			if (/^(start|gc-[\d-]+|thread-\d+\.(cpuprofile|started))$/.test(file)) rmSync(join(profileDir, file));
+			if (/^(start|gc-[\d-]+(\.tmp)?|thread-\d+\.(cpuprofile|started))$/.test(file)) rmSync(join(profileDir, file));
 		}
 		env.WS_SCALE_CONTROL_DIR = profileDir;
+		if (args.profile) console.log(`profiles: ${profileDir}`);
 		(harperConfig.threads as any).preloadRequire = join(import.meta.dirname, 'harness-preload.cjs');
 	}
 	let profileStartedAt = Infinity;
 	let profileTimer: NodeJS.Timeout | undefined;
-	if (args.scenario === 'churn') env.NODE_OPTIONS = '--expose-gc';
+	if (args.scenario === 'churn') env.NODE_OPTIONS = [process.env.NODE_OPTIONS, '--expose-gc'].filter(Boolean).join(' ');
 	let collections = 0;
 	// Every worker runs a full GC and reports its heap right after it, so retained memory is not confused with
 	// uncollected garbage (system_information's per-thread heap comes from a periodic report, so it can be stale).
@@ -328,7 +331,7 @@ async function main() {
 		const request = `gc-${++collections}`;
 		writeFileSync(join(profileDir, request), '');
 		for (let waited = 0; ; waited += 100) {
-			const acks = readdirSync(profileDir).filter((file) => file.startsWith(`${request}-`));
+			const acks = readdirSync(profileDir).filter((file) => file.startsWith(`${request}-`) && !file.endsWith('.tmp'));
 			if (acks.length >= threads) {
 				const usage = acks.map((file) => JSON.parse(readFileSync(join(profileDir, file), 'utf8')));
 				if (usage.some((thread) => thread.error))
@@ -480,6 +483,7 @@ async function main() {
 			const conns = Number(args.conns);
 			const settleMs = Number(args.settle) * 1000;
 			let firstHeap: number | undefined;
+			let openedSinceFirst = 0;
 			let subscribedBefore = 0;
 			for (let cycle = 1; cycle <= Number(args.cycles); cycle++) {
 				await openTo(opened + conns);
@@ -492,7 +496,8 @@ async function main() {
 				const heap = await collectGarbage();
 				const stats = await clientStats();
 				const rss = rssMB(harperPid);
-				firstHeap ??= heap.used;
+				if (firstHeap === undefined) firstHeap = heap.used;
+				else openedSinceFirst += connected.open;
 				report({
 					label: args.label,
 					scenario: 'churn',
@@ -507,11 +512,13 @@ async function main() {
 					stillOpen: stats.open,
 					connectedRssMB: connectedRss,
 					connectedHeapMB: connectedHeap.used,
-					heapKBPerConn: ((connectedHeap.used - heap.used) * 1024) / connected.open,
+					...(connected.open > 0 && { heapKBPerConn: ((connectedHeap.used - heap.used) * 1024) / connected.open }),
 					rssMB: rss,
 					heapUsedMB: heap.used,
 					// memory still held after disconnecting, per connection opened since the first cycle's disconnect
-					...(cycle > 1 && { retainedHeapBytesPerConn: ((heap.used - firstHeap) * 2 ** 20) / ((cycle - 1) * conns) }),
+					...(openedSinceFirst > 0 && {
+						retainedHeapBytesPerConn: ((heap.used - firstHeap) * 2 ** 20) / openedSinceFirst,
+					}),
 				});
 				subscribedBefore = connected.subscribed;
 			}

@@ -5,7 +5,7 @@
 //           process.memoryUsage() as JSON to gc-<n>-<threadId>
 const { Session } = require('node:inspector');
 const { threadId } = require('node:worker_threads');
-const { existsSync, readFileSync, writeFileSync } = require('node:fs');
+const { existsSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
 
 const dir = process.env.WS_SCALE_CONTROL_DIR;
 let profiling = false;
@@ -38,10 +38,10 @@ const poll = setInterval(() => {
 	while (existsSync(`${dir}/gc-${collections + 1}`)) {
 		collections++;
 		globalThis.gc?.();
-		writeFileSync(
-			`${dir}/gc-${collections}-${threadId}`,
-			JSON.stringify(globalThis.gc ? process.memoryUsage() : { error: 'no gc()' })
-		);
+		// renamed into place so run.mts never parses a half-written acknowledgement
+		const ack = `${dir}/gc-${collections}-${threadId}`;
+		writeFileSync(`${ack}.tmp`, JSON.stringify(globalThis.gc ? process.memoryUsage() : { error: 'no gc()' }));
+		renameSync(`${ack}.tmp`, ack);
 	}
 }, 100);
 poll.unref();
