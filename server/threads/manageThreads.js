@@ -1574,23 +1574,25 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 			// the worker exited on its own while we were starting its replacement — nothing left to
 			// shut down (its overlapping replacement, if any, is already up). Skip to the next worker.
 			if (!postShutdown(worker)) continue;
-			// Overlapping types we couldn't pre-start (Windows/Bun): start the replacement now that the old
-			// worker is releasing its port. server.close() stops accepting immediately, so the port frees up
-			// well before the replacement finishes booting and binds.
-			let replacementStarting;
-			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown) {
-				replacementStarting = startedCopyOf(worker).then((started) => {
-					if (!started) replacementsFailedToStart++;
-					onProgress?.();
-					return started;
-				});
-				replacementsStarting.push(replacementStarting);
-			}
-
 			let whenDone = whenShutDownWorkerExits(worker, onProgress, () => {
 				// non-overlapping types have no advance replacement, so start it once the old one is gone
 				if (!overlapping && startReplacementThreads && !processShuttingDown) worker.startCopy();
 			});
+			// Overlapping types we couldn't pre-start (Windows/Bun): start the replacement now that the old
+			// worker is releasing its port. server.close() stops accepting immediately, so the port frees up
+			// well before the replacement finishes booting and binds. The requester keeps its ports while its
+			// drain holds its deploy, so its copy starts once it has exited.
+			let replacementStarting;
+			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown) {
+				replacementStarting = (worker === requester ? whenDone : Promise.resolve())
+					.then(() => (processShuttingDown ? false : startedCopyOf(worker)))
+					.then((started) => {
+						if (!started && !processShuttingDown) replacementsFailedToStart++;
+						onProgress?.();
+						return started;
+					});
+				replacementsStarting.push(replacementStarting);
+			}
 			// A worker counts as replaced only once its replacement is accepting connections, not merely
 			// once it has exited. This promise is held unawaited between throttle points, so it must not
 			// be able to reject.

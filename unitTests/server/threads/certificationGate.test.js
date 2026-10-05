@@ -50,6 +50,7 @@ describe('the release certification gate', function () {
 				threadCount: 3,
 				onStarted(worker) {
 					started.push(worker);
+					worker.startedAt = Date.now();
 					worker.certifyRequests = [];
 					worker.lifecycle = [];
 					worker.on('message', (message) => {
@@ -876,6 +877,24 @@ describe('the release certification gate', function () {
 		await waitFor(() => completions.length === 2, { timeout: 45000, message: 'a rollout never ended' });
 		assert.equal(decisions.find(({ component }) => component === 'api')?.status, 'rejected');
 		await waitFor(() => httpWorkers().length === 3, { timeout: 10000, message: 'the slot was left empty' });
+	});
+
+	it('starts the copy of a requester that cannot share its ports only once it has exited', async function () {
+		// Where replacements pre-start beside their predecessor, there is no such copy.
+		if (process.platform === 'linux') this.skip();
+		// An uncertified rollout replaces the requester unheld; its drain would keep it, and its ports, for a while.
+		plan([{ outcome: 'skipped' }], { unheldShutdownDelayMs: 2000 });
+		const requester = pool[1];
+		await arm({ requesterThreadId: requester.threadId });
+		await commit();
+		assert.equal((await decisionOf()).status, 'uncertified');
+		await waitFor(() => pool[2].exitedAt, { timeout: 30000, message: 'the rollout never reached the requester' });
+		const before = started.length;
+		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+		await rolledOut();
+		const copy = started[before];
+		assert.ok(copy && requester.exitedAt, 'the requester was replaced');
+		assert.ok(copy.startedAt >= requester.exitedAt, 'its copy started only once it had exited');
 	});
 
 	it('replaces the requesting worker last, once it has answered', async () => {
