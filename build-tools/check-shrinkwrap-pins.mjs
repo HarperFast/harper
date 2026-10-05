@@ -13,7 +13,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-// The edge build-tools/prune-shrinkwrap-react-native.mjs severs.
+// The severed edge that the image's local npm install re-adds; unused UTF-8 peers are not exempt.
 const RESIDUAL_OPTIONAL_EDGE = 'react-native-fs';
 const ROCKSDB_SINGLE_INSTANCE_DEPS = ['@harperfast/extended-iterable', 'msgpackr'];
 const FRESH_RESOLVE_ATTEMPTS = 3;

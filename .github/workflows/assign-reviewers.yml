@@ -24,24 +24,12 @@ jobs:
           reviewers=$(echo "$REVIEWERS_JSON" | jq 'length')
           teams=$(echo "$TEAMS_JSON" | jq 'length')
           if [ "$reviewers" -eq 0 ] && [ "$teams" -eq 0 ]; then
-            case "$PR_AUTHOR" in
-              'renovate[bot]' | 'dependabot[bot]') default_reviewers='["kriszyp"]' ;;
-              *) default_reviewers='["cb1kenobi","Ethan-Arrowood","kriszyp"]' ;;
-            esac
-            candidates=$(echo "$default_reviewers" | jq -r --arg author "$PR_AUTHOR" '.[] | select(. != $author)')
-            requested=0
-            failed=0
-            # GitHub rejects a batched request whole (HTTP 422) if any one handle is no longer a collaborator.
-            for reviewer in $candidates; do
-              if gh api "repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" --method POST -f "reviewers[]=$reviewer" --silent; then
-                requested=$((requested + 1))
-              else
-                failed=$((failed + 1))
-                echo "::warning::Could not request a review from $reviewer; if they no longer have access to $REPO, drop them from this workflow's default reviewers"
-              fi
-            done
-            if [ "$requested" -eq 0 ] && [ "$failed" -gt 0 ]; then
-              echo "::error::None of the default reviewers could be requested"
-              exit 1
+            payload=$(echo '["kriszyp"]' \
+              | jq --arg author "$PR_AUTHOR" '{"reviewers": [.[] | select(. != $author)]}')
+            if [ "$(echo "$payload" | jq '.reviewers | length')" -gt 0 ]; then
+              echo "$payload" \
+                | gh api "repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" \
+                  --method POST \
+                  --input -
             fi
           fi
