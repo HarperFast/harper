@@ -362,7 +362,9 @@ function resolveHttpFetchOrDisable(raw: unknown): HttpFetchConfig {
 	try {
 		return resolveHttpFetchConfig(raw);
 	} catch (err) {
-		log.error?.(`${(err as Error).message}; http_fetch is disabled until agent.httpFetch is corrected`);
+		log.error?.(
+			`${err instanceof Error ? err.message : String(err)}; http_fetch is disabled until agent.httpFetch is corrected`
+		);
 		return false;
 	}
 }

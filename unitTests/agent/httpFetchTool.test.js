@@ -256,8 +256,10 @@ describe('agent/httpFetchTool request handling', () => {
 	});
 
 	after(() => {
-		for (const server of [allowedServer, secondAllowedServer, deniedServer]) server.closeAllConnections();
-		for (const server of [allowedServer, secondAllowedServer, deniedServer]) server.close();
+		for (const server of [allowedServer, secondAllowedServer, deniedServer]) {
+			server?.closeAllConnections();
+			server?.close();
+		}
 	});
 
 	beforeEach(() => {
