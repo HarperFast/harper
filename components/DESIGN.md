@@ -112,8 +112,7 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    moves the worker to the end and replaces it once the deploy has answered, beating its progress meanwhile
    (`untilDecidedDeploysAnswer`). A release can also be decided while a worker's replacement boots, as when a
    requesting worker 0's canary decides it, or a plain restart's. Where that replacement serves beside the worker, the
-   worker is retired the same way, after the rest. Where it needs the worker's ports, the worker is retired at
-   admission, also once that deploy has answered, so there the rollout waits for it. A worker retired while its
+   worker is retired the same way, after the rest. Where it needs the worker's ports, the worker is retired at admission, also once that deploy has answered, so there the rollout waits for it. The replacement's start backstop waits that out too, and a replacement that does not come up meanwhile leaves the worker serving. A worker retired while its
    release is still undecided is held by a shutdown drain the deploy registers while its release is armed, bounded by
    the drain ceiling; a shutdown before the arm closes as it always did. The drain holds only as long as a canary may
    take, the verdict timeout, because what decides the release may be that release's own rollout, queued behind the
@@ -168,7 +167,7 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    instead of arming, counts as answering a certifying deploy like the requester, and on finishing leaves rather than
    releasing the requester: a fast
    refusal can end the rollout before the deploy reads its decision, which would otherwise read nothing and replicate
-   the refused release as uncertified. A join that finds its decision already closed reads it from the record that
+   the refused release as uncertified. Arming that release again while its decision is still being read is refused as in-flight, since the new attempt would answer that reader, and take its release, instead. A join that finds its decision already closed reads it from the record that
    decision left, as a later activation would. No record, or a `certified` one, means the release stands, decided. A
    `rejected` record is certified again. One still `pending` is refused with 409 until a restart settles it, since its
    decision may have been a refusal whose record could not be written. An `interrupted` certification — the process shutting down, a rollout that failed before any

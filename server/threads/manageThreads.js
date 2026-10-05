@@ -172,6 +172,7 @@ module.exports = {
 	startWorker,
 	restartWorkers,
 	canaryVerdictTimeoutMs,
+	setHeldReplacementTimeout,
 	shutdownWorkers,
 	shutdownWorkersNow,
 	workers,
@@ -582,6 +583,8 @@ function findCertification(component, deploymentId) {
 function armCertification({ component, deploymentId, isolated, scope, requesterThreadId }) {
 	const existing = certifications.get(component);
 	if (existing) return { armed: false, reason: existing.deploymentId === deploymentId ? 'in-flight' : 'busy' };
+	// Its last decision is still being read: arming it again would answer that reader, and take its release, instead.
+	if (settledCertifications.has(settledKey(component, deploymentId))) return { armed: false, reason: 'in-flight' };
 	const certification = { component, deploymentId, isolated: Boolean(isolated), scope, requesterThreadId };
 	const placed = workers.some(
 		(worker) =>
@@ -1573,14 +1576,23 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 				// leave a duplicate once the replacement is up). Restored below if the replacement fails.
 				worker.wasShutdown = true;
 				let retiredForAdmission = false;
+				let awaitingPredecessor = false;
+				let startSettled = false;
 				const admission = canPreStartReplacement
 					? undefined
 					: async () => {
-							retiredForAdmission = true;
-							if (worker === requester && !requesterFirst) await requesterRelease(certification);
 							// Its replacement takes its ports, so it cannot keep serving after the rest: it is retired here, once
-							// any decided deploy it is answering has answered.
-							await untilDecidedDeploysAnswer(worker, onProgress);
+							// it has answered as the requester and any decided deploy it is answering has answered.
+							awaitingPredecessor = true;
+							try {
+								if (worker === requester && !requesterFirst) await requesterRelease(certification);
+								await untilDecidedDeploysAnswer(worker, onProgress);
+							} finally {
+								awaitingPredecessor = false;
+							}
+							// A replacement that did not come up meanwhile leaves its predecessor serving.
+							if (startSettled) return;
+							retiredForAdmission = true;
 							if (postShutdown(worker)) await whenShutDownWorkerExits(worker, onProgress);
 						};
 				let newWorker = worker.startCopy(held ? { managed: true, check: checks, admission } : { managed: true });
@@ -1591,16 +1603,22 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 				let started = await new Promise((resolve) => {
 					// Generous backstop so a replacement that deadlocks during init can't wedge the whole
 					// restart forever. Far longer than any legitimate startup, so it never fires in practice.
+					const giveUp = () => {
+						// The ports it waits for are still held by a predecessor answering a decided deploy.
+						if (awaitingPredecessor) {
+							timeout = setTimeout(giveUp, heldReplacementTimeoutMs()).unref();
+							return;
+						}
+						harperLogger.error(
+							'Replacement worker did not start in time; leaving the existing worker in place',
+							newWorker.threadId
+						);
+						newWorker.terminate();
+						cleanup();
+						resolve(false);
+					};
 					let timeout = setTimeout(
-						() => {
-							harperLogger.error(
-								'Replacement worker did not start in time; leaving the existing worker in place',
-								newWorker.threadId
-							);
-							newWorker.terminate();
-							cleanup();
-							resolve(false);
-						},
+						giveUp,
 						held ? heldReplacementTimeoutMs() : Math.max(threadTerminationTimeout * 2, 60000)
 					).unref();
 					const startListener = (message) => {
@@ -1623,6 +1641,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 						resolve(false);
 					};
 					const cleanup = () => {
+						startSettled = true;
 						clearTimeout(timeout);
 						newWorker.off('message', startListener);
 						newWorker.off('exit', exitListener);
@@ -1909,8 +1928,15 @@ function requesterRelease(certification) {
 	]);
 }
 
+let heldReplacementTimeoutOverride;
+/** Test seam: the backstop below is minutes long, too long to wait out in a unit test. */
+function setHeldReplacementTimeout(timeoutMs) {
+	heldReplacementTimeoutOverride = timeoutMs;
+}
+
 /** A held replacement's verdict, the predecessor's retirement where they cannot share a port, and its bind. */
 function heldReplacementTimeoutMs() {
+	if (heldReplacementTimeoutOverride !== undefined) return heldReplacementTimeoutOverride;
 	const { getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
 	return canaryVerdictTimeoutMs() + Math.max(threadTerminationTimeout * 2, 60000) + getShutdownDrainCeilingMs();
 }

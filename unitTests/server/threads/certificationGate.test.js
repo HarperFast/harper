@@ -20,6 +20,7 @@ const {
 	restartWorkers,
 	setCertificationHandler,
 	setCanaryVerdictTimeout,
+	setHeldReplacementTimeout,
 	setRootComponentsReload,
 } = require('#js/server/threads/manageThreads');
 const { assertNotCertifying } = require('#src/components/Application');
@@ -40,6 +41,14 @@ function within(promise, ms, what) {
 const COMPONENT = 'web';
 const DEPLOYMENT = '11111111-1111-1111-1111-111111111111';
 const OTHER = { component: 'api', deploymentId: '22222222-2222-2222-2222-222222222222' };
+// Every release this suite arms.
+const RELEASES = [
+	{ component: COMPONENT, deploymentId: DEPLOYMENT },
+	{ component: COMPONENT, deploymentId: '33333333-3333-3333-3333-333333333333' },
+	OTHER,
+	{ component: 'isolated-app', deploymentId: '44444444-4444-4444-4444-444444444444' },
+	{ component: 'isolated-app', deploymentId: '55555555-5555-5555-5555-555555555555' },
+];
 
 describe('the release certification gate', function () {
 	this.timeout(60000);
@@ -137,6 +146,7 @@ describe('the release certification gate', function () {
 		else process.env.HARPER_SAFE_MODE = safeMode;
 		setRootComponentsReload(undefined);
 		setCanaryVerdictTimeout(undefined);
+		setHeldReplacementTimeout(undefined);
 		rmSync(planDir, { recursive: true, force: true });
 	});
 
@@ -190,6 +200,8 @@ describe('the release certification gate', function () {
 		// The next test's restart would queue behind this one's.
 		releaseRootLoad();
 		if (committed) await rolledOut();
+		// A decision main requested stays until read, and would keep the next test from arming that release again.
+		for (const release of RELEASES) await certificationRequest('release', release);
 		for (const worker of httpWorkers()) {
 			worker.wasShutdown = true;
 			await worker.terminate();
@@ -216,6 +228,7 @@ describe('the release certification gate', function () {
 		await commit();
 		await rolledOut();
 		assert.equal(await openTo(), false, 'its rollout ended');
+		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
 
 		plan([{ outcome: 'failed' }]);
 		await arm();
@@ -310,6 +323,17 @@ describe('the release certification gate', function () {
 			'the pool is exactly the workers that were serving'
 		);
 		assert.ok(pool.every((worker) => !worker.wasShutdown));
+	});
+
+	it('refuses to arm a release again while its last decision is still being read', async () => {
+		plan([{ outcome: 'failed' }]);
+		await arm({ requesterThreadId: pool[1].threadId });
+		await commit();
+		assert.equal((await decisionOf()).status, 'rejected');
+		await rolledOut();
+		assert.deepStrictEqual(await arm(), { armed: false, reason: 'in-flight' }, 'its requester has not read it yet');
+		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+		assert.deepStrictEqual(await arm(), { armed: true });
 	});
 
 	it('keeps a refused decision and its rollout for the requester that reads them after the rollout ended', async () => {
@@ -1057,6 +1081,41 @@ describe('the release certification gate', function () {
 			other.wasShutdown = true;
 			await other.terminate();
 		}
+	});
+
+	it('keeps a canary waiting on its predecessor past its start backstop, while that predecessor answers its deploy', async function () {
+		if (process.platform === 'linux') this.skip();
+		setHeldReplacementTimeout(1000);
+		try {
+			const [requester] = pool;
+			await arm({ requesterThreadId: requester.threadId });
+			const before = started.length;
+			await commit();
+			assert.equal((await decisionOf()).status, 'certified');
+			await sleep(2500);
+			assert.equal(started.length - before, 1, 'its canary was not given up on, nor its slot started again');
+			assert.equal(requester.exitedAt, undefined);
+			await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+			await rolledOut();
+			assert.ok(requester.exitedAt, 'it was retired once its deploy had answered');
+			assert.equal(httpWorkers().length, 3);
+		} finally {
+			setHeldReplacementTimeout(undefined);
+		}
+	});
+
+	it('leaves the predecessor serving when its canary exits while that predecessor answers its deploy', async function () {
+		if (process.platform === 'linux') this.skip();
+		const [requester] = pool;
+		await arm({ requesterThreadId: requester.threadId });
+		const before = started.length;
+		await commit();
+		assert.equal((await decisionOf()).status, 'certified');
+		await started[before].terminate();
+		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+		await rolledOut();
+		await sleep(200);
+		assert.equal(requester.exitedAt, undefined, 'a replacement that never came up retires nothing');
 	});
 
 	it('retires a requesting worker 0 whose canary needs its ports only once its deploy has answered', async function () {
