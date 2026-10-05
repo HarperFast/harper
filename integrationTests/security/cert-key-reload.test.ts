@@ -201,12 +201,13 @@ for (const readableKeyDirectory of [true, false])
 			}
 
 			if (!readableKeyDirectory) return;
-			test('aborting an unmatched renewal restores the original inode and clears the pending alarm', async () => {
+			test('aborting an unmatched renewal restores the original inode and clears the pending alarm', async (t) => {
 				const logOffset = (await readFile(logPath(), 'utf8')).length;
 				const savedPath = certPath + '.saved';
+				const unmatchedCertPem = await makeServerCertPem(await generateEd25519KeyPair(), currentSerial + 1);
+				const abortStart = performance.now();
 				await rename(certPath, savedPath);
-				const unusedKeyPair = await generateEd25519KeyPair();
-				await writeFile(certPath, await makeServerCertPem(unusedKeyPair, currentSerial + 1));
+				await writeFile(certPath, unmatchedCertPem);
 				const noticeDeadline = Date.now() + 10000;
 				let pendingNotice = false;
 				while (Date.now() < noticeDeadline) {
@@ -214,10 +215,12 @@ for (const readableKeyDirectory of [true, false])
 						.slice(logOffset)
 						.includes('Waiting for matching TLS certificate and private key');
 					if (pendingNotice) break;
-					await delay(100);
+					// Polling briskly usually restores within chokidar's 100 ms removal throttle, where it can lose track of the file.
+					await delay(10);
 				}
 				ok(pendingNotice, 'the publisher never observed the aborted pair');
 				await unlink(certPath);
+				const abortElapsed = performance.now() - abortStart;
 				await rename(savedPath, certPath);
 				// This asserts a non-event after the publisher's 30-second pending-pair alarm window.
 				await delay(31000);
@@ -225,6 +228,18 @@ for (const readableKeyDirectory of [true, false])
 				const log = (await readFile(logPath(), 'utf8')).slice(logOffset);
 				ok(!log.includes('still has no matching private key'), 'an aborted renewal left the pending alarm armed');
 				ok(!/key values mismatch|ERR_OSSL_X509_KEY_VALUES_MISMATCH/i.test(log));
+
+				// Key first, so the pair completes only once the replaced certificate is read.
+				const nextSerial = currentSerial + 2;
+				const keyPair = await generateEd25519KeyPair();
+				const certPem = await makeServerCertPem(keyPair, nextSerial);
+				await renameInstall(keyPath, keyPair.privateKeyPem);
+				await renameInstall(certPath, certPem);
+				await expectRenewal(nextSerial);
+				currentKeyPair = keyPair;
+				// Only after every assertion: node:test counts a failure in a skipped test as a skip.
+				if (abortElapsed >= 100)
+					t.skip(`restore ${Math.round(abortElapsed)} ms after the first removal missed chokidar's 100 ms throttle`);
 			});
 
 			test('renewal follows an atomically replaced Secret-volume data symlink', async () => {
