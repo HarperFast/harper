@@ -5473,7 +5473,7 @@ async function installConfiguredApplication(
  * Whether startup keeps the tree at `dirPath` rather than installing `applicationConfig` over it. When the live
  * tree's deployment declared an entry, that entry decides, ahead of the application lock: no deploy writes the lock,
  * so after one it still names the entry the deploy replaced, and a root config set back to that entry would keep
- * the deployed tree. The lock decides only for a tree no deployment declared an entry for.
+ * the deployed tree. The lock decides only for a tree no deployment record describes.
  */
 export async function keepsInstalledTree(
 	name: string,
@@ -5500,24 +5500,31 @@ export async function keepsInstalledTree(
 }
 
 /**
- * The root-config entry the live tree's deployment declared, `null` for a payload build, or `undefined` when there is
- * no record to ask: a tree startup installed, a link, a tree made live before deployments kept records, or a record
- * that cannot be read.
+ * The root-config entry the live tree's deployment declared: `null` for a payload build, and for a record that exists
+ * but cannot be read, since only a deploy writes one and no deploy writes the lock. `undefined` when there is no
+ * record to ask: a tree startup installed, a link, a tree made live before deployments kept records, or a marker that
+ * cannot be read.
  */
 async function liveTreeDeclaredEntry(
 	name: string,
 	dirPath: string
 ): Promise<Record<string, unknown> | null | undefined> {
+	let deploymentId: string | undefined;
 	try {
-		const deploymentId = await readDeploymentProvenance(dirPath, name);
-		if (deploymentId === undefined) return undefined;
-		return (await readArtifactDescriptor(join(dirname(dirPath), DEPLOY_STAGING_DIR, deploymentId), name))?.rootConfig;
+		deploymentId = await readDeploymentProvenance(dirPath, name);
 	} catch (error) {
 		logger.warn?.(
-			`Could not read the deployment ${name} was activated from; its application lock decides instead:`,
+			`Could not read which deployment ${name} was activated from; its application lock decides instead:`,
 			error
 		);
 		return undefined;
+	}
+	if (deploymentId === undefined) return undefined;
+	try {
+		return (await readArtifactDescriptor(join(dirname(dirPath), DEPLOY_STAGING_DIR, deploymentId), name))?.rootConfig;
+	} catch (error) {
+		logger.warn?.(`Could not read the deployment ${name} was activated from; installing it from root config:`, error);
+		return null;
 	}
 }
 

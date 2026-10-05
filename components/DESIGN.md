@@ -190,8 +190,9 @@ resolve the package again and swap a fresh install over the release the deploy h
 tree's deployment declared an entry, startup now compares that entry with root config, ahead of the lock
 (`keepsInstalledTree`). It keeps the tree when the two match and installs from root config when they differ. So the
 tree that runs is the tree certified. The lock still names the entry the deploy replaced, so a root config set back to
-that entry would otherwise keep the deployed tree. The lock decides only for a tree no deployment declared an entry
-for.
+that entry would otherwise keep the deployed tree. A record that exists but cannot be read, one of a later version
+included, installs from root config, since the lock cannot describe a deployed tree. The lock decides only for a tree
+no deployment record describes.
 
 **Rolling.** `restart: 'rolling'` certifies on the origin exactly as `true` does, while the peers only stage the
 release. A `restart_service` job then activates it on each peer in turn (`activate_deployment`, `bin/restart.ts`)
