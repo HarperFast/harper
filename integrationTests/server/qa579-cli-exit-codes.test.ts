@@ -99,8 +99,6 @@ function runCli(args: string[], env: NodeJS.ProcessEnv, homeDir: string): CliRes
 		stdout: result.stdout ?? '',
 		stderr: result.stderr ?? '',
 		durationMs,
-		// When its `timeout` fires, spawnSync reports the configured killSignal (SIGKILL) with
-		// status=null. This distinguishes termination by signal from a clean non-zero exit.
 		hung: result.status === null && result.signal !== null,
 	};
 }

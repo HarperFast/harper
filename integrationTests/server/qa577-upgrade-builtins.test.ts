@@ -59,8 +59,7 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'qa577-upgrade-builtins');
 
-// secretCustody is one of the two UPGRADE_BACKFILL_BUILTIN_KEYS; this suite registers it validly
-// and checks that a bare `waf` registration is skipped.
+// One of UPGRADE_BACKFILL_BUILTIN_KEYS in config/configUtils.ts.
 const BACKFILL_KEY = 'secretCustody';
 const ACTIVATION_LOG_SNIPPET = 'Activated built-in component(s) absent from an upgraded config';
 const MALFORMED_BACKFILL_REGISTRATION = 'waf';
