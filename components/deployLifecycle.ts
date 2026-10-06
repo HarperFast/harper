@@ -41,6 +41,11 @@ export type DeployLifecycleEvent = {
 	phase: DeployPhase;
 	deploymentId?: string;
 	ownerThreadId?: number;
+	/**
+	 * Opened over a tree already complete: a thread still loading its components ignores it, so no load waits on it,
+	 * and a thread that has loaded them holds its watchers through it as through any deploy.
+	 */
+	watchersOnly?: boolean;
 };
 
 type DeployLifecycleEventsMap = {
@@ -55,6 +60,7 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 	#legacyDeployments = new Map<string, string[]>();
 	#legacySequence = 0;
 	#releasedFromLoads = new Set<string>();
+	#componentsLoaded = false;
 
 	isDeployInFlight(componentName: string): boolean {
 		return (this.#byComponent.get(componentName)?.size ?? 0) > 0;
@@ -79,6 +85,11 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 		if (this.#unreleasedCount(componentName) === 0) this.#emitSafely('deploy:end', componentName);
 	}
 
+	/** This thread has loaded its components, so a deploy opened with `watchersOnly` holds its watchers from now on. */
+	_componentsLoaded(): void {
+		this.#componentsLoaded = true;
+	}
+
 	#unreleasedCount(componentName: string): number {
 		let count = 0;
 		for (const deploymentId of this.#byComponent.get(componentName) ?? []) {
@@ -95,6 +106,8 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 		let deploymentId = event.deploymentId;
 		if (event.phase === 'start') {
 			if (this.#deadOwners.has(ownerThreadId)) return;
+			// What it holds is not this thread's yet, and the rollout it belongs to may be waiting on this load.
+			if (event.watchersOnly && !this.#componentsLoaded) return;
 			if (!deploymentId) {
 				deploymentId = `legacy:${threadId}:${++this.#legacySequence}`;
 				const legacy = this.#legacyDeployments.get(event.name) ?? [];
@@ -160,6 +173,7 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 		this.#legacyDeployments.clear();
 		this.#legacySequence = 0;
 		this.#releasedFromLoads.clear();
+		this.#componentsLoaded = false;
 	}
 }
 
@@ -208,12 +222,17 @@ onThreadExit((deadThreadId: number) => {
  *
  * Ref-counted via DeployLifecycle so overlapping deploys of the same
  * component compose correctly (each call must be paired with exactly one
- * broadcastDeployEnd).
+ * broadcastDeployEnd). `watchersOnly` is for a tree already complete (see
+ * DeployLifecycleEvent).
  */
-export async function broadcastDeployStart(componentName: string): Promise<string> {
+export async function broadcastDeployStart(
+	componentName: string,
+	{ watchersOnly = false }: { watchersOnly?: boolean } = {}
+): Promise<string> {
 	ensureReceiver();
 	const deploymentId = randomUUID();
 	const event: DeployLifecycleEvent = { name: componentName, phase: 'start', deploymentId, ownerThreadId: threadId };
+	if (watchersOnly) event.watchersOnly = true;
 	deployLifecycle._handle(event); // local thread first
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {

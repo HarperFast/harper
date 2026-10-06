@@ -1,0 +1,59 @@
+# Harper WebSocket scale characterization
+
+Measures the unit costs that bound how many realtime (WebSocket) clients one Harper node can serve: memory per connection and per subscription, CPU per connect, CPU per delivered message, and the write rates that drive fan-out. The unit costs combine into a per-node capacity estimate for a given workload (connections × subscriptions per connection × messages per second × payload size).
+
+## What it runs
+
+`run.mts` installs and starts this checkout's build (`dist/bin/harper.js`, or another build via `--harper-bin`) with the table in `app/`, pins Harper's worker threads to one CPU set and the load generators to another, and drives one of two scenarios. Each record in `Bench` is one topic: MQTT subscribers use `Bench/<id>`, native WebSocket subscribers `/Bench/<id>`.
+
+| Scenario | What it holds / drives                                                                                                                      | Reports                                                                                                                                                                        |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `conns`  | Ramps to each `--steps` connection count with `--subs` subscriptions per connection (always 1 with `--protocol=ws`)                         | RSS and heap KB per connection (whole-run and per-step slope), connects/s, CPU per connect, idle CPU (keepalives, background sweeps)                                           |
+| `fanout` | Holds `--conns` connections × `--subs` subscriptions over `--topics` topics, then publishes at each `--rates` rate for `--duration` seconds | deliveries/s, delivery ratio, CPU per delivery, CPU per PUT (`--publish=put`), end-to-end latency p50/p99/p99.9, disk bytes per publish, idle CPU baseline, load-generator CPU |
+
+The load generators (`client.mts`, one child process per `--clients`) hold connections with raw `ws` plus `mqtt-packet` rather than a full MQTT client, so one process can hold tens of thousands of connections. Every payload carries its send time, so latency is measured end to end from the publisher to each subscriber. Publishing is an open load model: a constant offered rate, split across `--publishers` processes.
+
+## Requirements
+
+- Linux (reads `/proc`, pins with `taskset`, spreads connections over `127.0.1.x` source addresses to get past the ~28k ephemeral ports per source/destination pair).
+- Node.js 24 or later (the harness is type-stripped TypeScript).
+- More CPUs than `--threads`: Harper gets the first `--threads` CPUs and the load generators the rest, unless `--harper-cpus` / `--client-cpus` say otherwise.
+- A disk-backed temp directory. The harness refuses to run when Harper's install directory is on tmpfs.
+
+```sh
+npm run build                                 # from the repo root; the harness starts dist/bin/harper.js
+sudo cpupower frequency-set -d 2GHz -u 2GHz   # pin the clock (min and max); the harness records it with every result
+node benchmarks/ws-scale/run.mts --scenario=conns --steps=10000,50000,100000 --subs=0
+node benchmarks/ws-scale/run.mts --scenario=fanout --conns=50000 --topics=1 --payload=200 --rates=5,10,15 --uds
+```
+
+## Options that matter
+
+| Option                            | Effect                                                                                                                                                                                                                                                                |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--threads`                       | Harper worker threads (default 8)                                                                                                                                                                                                                                     |
+| `--harper-cpus` / `--client-cpus` | The CPU sets Harper and the load generators are pinned to. On a CPU with simultaneous multithreading, two logical CPUs of one core are not two cores: pick one logical CPU per physical core to measure scaling with cores, or both to model hyperthreaded vCPUs      |
+| `--protocol=mqtt\|ws`             | MQTT over WebSocket (default), or native WebSocket record subscriptions                                                                                                                                                                                               |
+| `--uds`                           | Subscribers connect to Harper's per-worker Unix socket mirrors, the path a TLS-terminating proxy in front of Harper uses. Loopback TCP roughly doubles the measured per-message cost because the kernel runs the receiver's TCP stack inline in the sender's `writev` |
+| `--uws`                           | Serve with uWebSockets.js instead of `ws`                                                                                                                                                                                                                             |
+| `--publish=mqtt\|put`             | Publish MQTT messages (non-retained publishes are persisted and fanned out), or update records with REST `PUT`                                                                                                                                                        |
+| `--publishers`                    | Processes (and, for MQTT, connections) the offered rate is split across. One MQTT connection is served by one Harper worker thread, so node-wide publish capacity needs several                                                                                       |
+| `--insert`                        | With `--publish=put`, every PUT creates a new record instead of updating the pre-created topic records                                                                                                                                                                |
+| `--harper-bin`                    | Another build's `dist/bin/harper.js`, for A/B runs of a change under the same harness                                                                                                                                                                                 |
+| `--profile=<seconds>`             | CPU-profile every Harper worker thread during the first fanout rate (or the last conns step) and write one `.cpuprofile` per thread to `--profile-dir`. Rows the profile overlaps carry `profiled=true`: their CPU and memory include the profiler's own cost         |
+| `--harper-env KEY=VALUE`          | Extra environment for Harper (repeatable)                                                                                                                                                                                                                             |
+| `--out`                           | Write all result rows as JSON                                                                                                                                                                                                                                         |
+
+## Reading the results
+
+Each result prints as one `WS_SCALE_RESULT key=value …` line. CPU is read from `/proc` for Harper's process alone, so it excludes the load generators. Every CPU-per-operation field (`cpuUsPer*`) has a `cpuKCyclesPer*` twin normalized by the recorded `cpuMaxMHz`. The twins are emitted only when the clock is pinned (the minimum and maximum frequency of Harper's first CPU are equal, reported as `clockPinned`), because a frequency cap alone lets an idle CPU run slower. Rates (`deliveredPerSec`, `harperCores`, …) and CPU are measured from the start of publishing to the last progress (a delivery or a settled PUT), so the quiet wait at the end is not charged; `publishedPerSec` is the offered rate. That CPU includes Harper's idle work (keepalives, background sweeps): `idleCores` is Harper's CPU over the `--settle` wait, with every connection open and nothing published, so `idleCores / harperCores` is the idle share of the row's `cpuUsPerDelivery` / `cpuUsPerPut`, largest at low rates. After publishing, the harness drains until every expected delivery has arrived and every PUT has settled (`drainEnd=complete`), nothing progresses for 3 s (`quiet`), or 60 s pass (`deadline`). A row that ends `quiet` or `deadline` is short: its missing deliveries or PUTs may still arrive and be counted in the next rate's row, so treat both rows as past saturation. The exception is a row whose missing deliveries never arrive: subscribers paused by `--slow-fraction` never read, and coalesced record updates (below) are never delivered, so those rows end `quiet` even below saturation. Delivery fields are omitted when no delivery is expected (`--insert`, or no subscribers).
+
+Check these before trusting a number:
+
+- **The load generators are not the bottleneck.** `clientCores` and `publisherCores` are the load generators' CPU. A publisher process near 1.0 core, or client processes near their CPU set, means the harness, not Harper, limited the run. Add `--publishers` or `--clients`, or give the load generators more CPUs.
+- **Delivery kept up.** `deliveryRatio` compares deliveries with the exact number expected: the granted subscriptions on each topic published to. Below 1 with rising latency means Harper is saturated at that rate. The expected count is built from granted subscriptions and assumes each stays live, so connections dropped after subscribing (`disconnected`) lower it, and so do subscribers paused by `--slow-fraction` (to at most 1 − the fraction); failed connections (`failed`) never subscribed and do not. Past that point Harper queues messages in memory rather than dropping them, so `rssMB` climbs and latency grows without bound; the useful number is the highest rate with a stable p99.
+- **Unix socket mirrors bound.** With `--uds`, the harness waits for one mirror per worker and fails if the socket path would exceed Linux's 107-byte limit (a deep temp directory is enough to hit it).
+- **Record updates coalesce.** With `--publish=put`, a subscriber receives a record's latest version, not every intermediate one, so a delivery ratio below 1 on a few hot records can be correct behavior rather than loss.
+- **Abnormal closes (1006).** Harper drops an MQTT client it has not heard from for 1.5 × keepalive. Each connection pings every 0.75 × keepalive, so closes that appear only past saturation usually mean a load-generator process fell far enough behind to miss its pings; check `clientCores`.
+
+The measurements are on one machine with loopback networking and no TLS. A deployment adds TLS termination and a real NIC in front of Harper: per-byte costs, handshake CPU and network bandwidth are outside what this measures.
