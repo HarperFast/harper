@@ -457,7 +457,7 @@ function listenOnPorts() {
 							// Without reusePort the outgoing member 0 of a restart may still hold the port while it drains.
 							bindRetryDeadline ??= Date.now() + POOL_BIND_RETRY_MS;
 							if (!listen_on.reusePort && !serversClosing && Date.now() < bindRetryDeadline) {
-								setTimeout(() => server.listen(listen_on), 250).unref();
+								setTimeout(() => (serversClosing ? reject(err) : server.listen(listen_on)), 250).unref();
 								return;
 							}
 							logExternalBindConflict(port, err);
