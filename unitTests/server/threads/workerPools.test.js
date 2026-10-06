@@ -43,6 +43,37 @@ describe('dedicated worker pools', () => {
 		});
 	});
 
+	describe('server.http registration', () => {
+		const http = () => require('#src/server/http');
+		const env = () => require('#src/utility/environment/environmentManager');
+		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+
+		it('claims the secure port and its UDS mirror for the owning type', () => {
+			const before = env().get(CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS);
+			env().setProperty(CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS, true);
+			try {
+				http().httpServer(() => {}, { securePort: 19936, threadType: 'replication' });
+			} finally {
+				env().setProperty(CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS, before);
+			}
+			const { SERVERS } = require('#src/server/serverRegistry');
+			const mirror = Object.keys(SERVERS).find((key) => key.endsWith('-19936.sock'));
+			assert.ok(mirror, 'the secure port got a UDS mirror');
+			assert.strictEqual(pools().listenerOwner(19936), 'replication');
+			assert.strictEqual(pools().listenerOwner(mirror), 'replication', 'the mirror is owned with its port');
+		});
+
+		it('keeps owned and unowned listeners off each other’s ports', () => {
+			http().httpServer(() => {}, { port: 19937, threadType: 'replication' });
+			assert.throws(() => http().httpServer(() => {}, { port: 19937 }), /owned by 'replication' workers/);
+			http().httpServer(() => {}, { port: 19938 });
+			assert.throws(
+				() => http().httpServer(() => {}, { port: 19938, threadType: 'replication' }),
+				/already serves listeners on every worker/
+			);
+		});
+	});
+
 	describe('admittedWorkerPools', () => {
 		const env = () => require('#src/utility/environment/environmentManager');
 		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');

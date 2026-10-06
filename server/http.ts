@@ -623,19 +623,25 @@ function hasConnectionToken(tokens: string[], wanted: string) {
 
 /**
  * A `threadType` registration makes the port that worker type's own (see server/threads/workerPools.ts).
- * A port already serving unowned listeners cannot be claimed afterwards: those listeners expect every
- * worker to bind it.
+ * Owned and unowned listeners never share a port: the unowned ones expect every HTTP worker to bind it,
+ * and an owned port is bound only by its pool, which loads no application.
  */
 function claimPortForThreadType(port: number | string, options: ServerOptions | undefined) {
 	const threadType = options?.threadType;
-	if (!threadType) return;
-	if (httpServers[port] && listenerOwner(port) === undefined)
+	const owner = listenerOwner(port);
+	if (!threadType) {
+		if (owner !== undefined)
+			throw new Error(`Port ${port} is owned by '${owner}' workers, so it cannot serve listeners on every worker`);
+		return;
+	}
+	if (httpServers[port] && owner === undefined)
 		throw new Error(`Port ${port} already serves listeners on every worker, so '${threadType}' workers cannot own it`);
 	claimListener(port, threadType);
 }
 
 function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 	claimPortForThreadType(port, options);
+	const threadType = options?.threadType;
 	const { mtls: isMtls, usageType } = options || {};
 	const isOperationsServer = usageType === 'operations-api';
 	setPortServerMap(port, { protocol_name: secure ? 'HTTPS' : 'HTTP', name: getComponentName() });
@@ -927,7 +933,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				: `${getWorkerIndex()}-${port}`;
 			const udsPath = join(socketsDir, `${socketName}.sock`);
 			const yamlPath = join(socketsDir, `${socketName}.yaml`);
-			if (options?.threadType) claimListener(udsPath, options.threadType);
+			if (threadType) claimListener(udsPath, threadType);
 
 			if (process.env.HARPER_UWS_UDS) {
 				// uWS backend (#914): serve the UDS mirror with uWebSockets.js instead of a Node http
@@ -993,7 +999,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			if (process.env.HARPER_H2C_UDS) {
 				const udsPathH2 = join(socketsDir, `${socketName}-h2.sock`);
 				const yamlPathH2 = join(socketsDir, `${socketName}-h2.yaml`);
-				if (options?.threadType) claimListener(udsPathH2, options.threadType);
+				if (threadType) claimListener(udsPathH2, threadType);
 				const h2Server = createH2CServer({}, (nodeRequest: any, nodeResponse: any) => {
 					const method = nodeRequest.method;
 					if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);

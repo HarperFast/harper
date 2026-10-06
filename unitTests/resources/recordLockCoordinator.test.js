@@ -18,6 +18,7 @@ const {
 } = require('#src/resources/recordLockCoordinator');
 const { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS, makeKeyLockHandle } = require('#src/resources/recordLock');
 const { toBufferKey } = require('ordered-binary');
+const { ClientError } = require('#src/utility/errors/hdbError');
 const { waitFor } = require('../waitFor');
 
 /** A real lock handle over a fake store, so revocation is tested through production code. */
@@ -3191,7 +3192,8 @@ describe('relayed admissions across worker threads (harper-pro#852)', () => {
 			},
 			releaseOnOwner: () => {},
 		});
-		failure = Object.assign(new Error('Record is locked and was not released in time'), { statusCode: 423 });
+		// the shape harper-pro's relay rethrows (recordLockRpc.ts: ClientError with the owner's statusCode)
+		failure = new ClientError('Record is locked and was not released in time', 423);
 		await assert.rejects(caller.acquire('k', LEASE, WAIT), (error) => error.statusCode === 423);
 		failure = new Error('the owner worker is not reachable');
 		await assert.rejects(

@@ -642,7 +642,7 @@ async function listenOnPortsBun() {
 			}
 		} catch (error) {
 			harperLogger.error(`Unable to start Bun server on port ${port}`, error);
-			if (thisThreadsIsolatedApplication()) throw error;
+			if (thisThreadsIsolatedApplication() || isDedicatedPoolWorker()) throw error;
 		}
 	}
 	// Also start any non-HTTP servers (raw socket servers) that were registered in SERVERS
@@ -676,7 +676,7 @@ async function listenOnPortsBun() {
 								harperLogger.trace('Listening on port ' + port, threadId);
 							})
 							.on('error', (err) => {
-								if (err.code !== 'EADDRINUSE') return reject(err);
+								if (err.code !== 'EADDRINUSE' || isDedicatedPoolWorker()) return reject(err);
 								// The main thread binds before any worker and never restarts, and a
 								// dedicated listener's owner worker is the only thread that binds it — in
 								// both cases EADDRINUSE can only come from an unrelated external process;

@@ -6,7 +6,7 @@
 import { isMainThread, workerData } from 'node:worker_threads';
 import { THREAD_TYPES } from '../../utility/hdbTerms.ts';
 
-export const DEDICATED_POOL_TYPES: readonly string[] = [THREAD_TYPES.REPLICATION];
+const DEDICATED_POOL_TYPES: readonly string[] = [THREAD_TYPES.REPLICATION];
 
 let activePools: string[] = [];
 
@@ -28,7 +28,7 @@ export function isWorkerPoolActive(type: string): boolean {
 }
 
 /** This thread's worker type, or undefined on the main thread. */
-export function thisThreadType(): string | undefined {
+function thisThreadType(): string | undefined {
 	return (workerData as any)?.name;
 }
 
@@ -41,7 +41,7 @@ export function poolMemberIndex(): number | undefined {
 	return (workerData as any)?.poolIndex;
 }
 
-export function assertListenerThreadType(threadType: unknown): void {
+function assertListenerThreadType(threadType: unknown): void {
 	if (threadType !== undefined && !DEDICATED_POOL_TYPES.includes(threadType as string))
 		throw new Error(`Unknown listener threadType '${threadType}'; expected one of ${DEDICATED_POOL_TYPES.join(', ')}`);
 }

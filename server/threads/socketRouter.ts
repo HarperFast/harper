@@ -106,7 +106,6 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 		nextIsolatedIndex = Math.max(nextIsolatedIndex, threadCount);
 		const isolated = admittedIsolatedApplications([...isolatedSlots.keys()]);
 		const dedicatedPools = dedicatedPoolsStarted || dynamicThreads ? [] : admittedWorkerPools();
-		dedicatedPoolsStarted = true;
 		for (const pool of dedicatedPools) dedicatedWorkerCount += pool.count;
 		const heapShareCount = threadCount + dedicatedWorkerCount + isolated.length;
 		for (let i = 0; i < threadCount; i++) {
@@ -122,6 +121,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 				poolSlots.push(slot);
 			}
 		}
+		if (dedicatedPools.length > 0) dedicatedPoolsStarted = true;
 		// One dedicated worker per isolated application, numbered past the pool so no pool-only duty
 		// (worker 0's startup log, the last worker's cleanup) ever lands on it.
 		for (const application of isolated) {
@@ -314,6 +314,10 @@ export function admittedWorkerPools(): { type: string; count: number }[] {
 		if (port !== undefined && replicationPorts.includes(port))
 			throw new Error(`replication.threads requires a replication port of its own, but port ${port} is also ${label}`);
 	}
+	if (count > 1 && (process.platform === 'darwin' || process.platform === 'win32'))
+		harperLogger.warn(
+			`replication.threads is ${count}, but without SO_REUSEPORT only one replication worker listens on the replication port; the others carry outbound subscriptions only`
+		);
 	return [{ type: hdbTerms.THREAD_TYPES.REPLICATION, count }];
 }
 
