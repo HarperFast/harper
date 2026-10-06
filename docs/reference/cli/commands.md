@@ -194,7 +194,7 @@ echo "Job $JOB_ID was still running after 10 minutes"
 exit 1
 ```
 
-A user whose role has an `operations` allowlist needs `get_job` in it to poll. The rolling job restarts across the cluster, so it needs Harper Pro or Fabric; on Harper core alone it ends `ERROR` with `Replication not implemented`. With `restart=true` there is no job: the command fails when a node rejects the release, unless you pass `ignore_replication_errors=true`.
+A user whose role has an `operations` allowlist needs `get_job` in it to poll. On Harper core alone, a job that only restarts, as in the second case above, ends `ERROR` with `Replication not implemented`, because it restarts across the cluster. With `restart=true` there is no job: the command fails when a node rejects the release, unless you pass `ignore_replication_errors=true`.
 
 [Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci) uses this in a complete GitHub Actions workflow.
 
