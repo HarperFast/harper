@@ -3048,7 +3048,20 @@ export function receiveLockControlEntry(
 	if (coordinator) return coordinator.applyEntry(entry, author, position);
 	if (entry?.type !== 'lockRelease') return;
 	const transport = clusterLockTransports.get(database);
-	if (!transport?.relayControlEntry || transport.ownsCoordination()) return;
+	if (!transport) return;
+	let owns: boolean;
+	try {
+		owns = transport.ownsCoordination();
+	} catch (error) {
+		warnOnce('could not tell whether this thread coordinates a database with a received release', error);
+		return;
+	}
+	if (owns) return;
+	if (!transport.relayControlEntry) {
+		// Nothing here holds a grant, so the drop is logged rather than counted — see record-locks.md §14.
+		warnOnce('a record lock release reached a thread with no coordinator and no relay; it is dropped');
+		return;
+	}
 	relayControlEntryContained(transport, database, table, entry, author, position, () =>
 		warnOnce('a record lock release could not be relayed from a thread without a coordinator')
 	);

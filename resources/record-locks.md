@@ -1313,8 +1313,9 @@ must not be read as fully implemented. Closing it means hanging the release hook
 logical-transaction settlement rather than off the last admission unlocking. harper-pro#822 supplies
 the operator-agreed home map and `establishLockFreshness()`; the feature is opt-in
 (`replication.recordLocks: true`). A `lockRelease` that reaches a non-coordinating thread is handed
-to the transport's `relayControlEntry` (harper-pro#977); only a transport without the hook still
-counts, warns and drops it. **The measurement gate
+to the transport's `relayControlEntry` (harper-pro#977). Without the hook, a thread that has a
+coordinator counts and warns (`droppedOffOwner`); a thread with none only warns once — it holds no
+grant and no counter. **The measurement gate
 (harper-pro#824) has loopback results only** (`replication/RECORD_LOCK_COST_DELEGATIONS.md`) and
 remains open, and the decision to implement ahead of it was the human's, recorded here so the
 sequence is not mistaken for the one this note recommends.
