@@ -783,12 +783,13 @@ the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.
 ## Every `.mdb` under a storage path must open as LMDB (`databases.ts` `getDatabases`)
 
 A rescan (`resetDatabases()`, which any schema change triggers) opens each `.mdb` file at the top level
-of the storage path, and each one a directory below as a legacy `<schema>/<table>.mdb` table. lmdb-js
-3.5.x crashes the process when `mdb_env_open` fails (the failure path in `EnvWrap::openEnv` frees its
-`ExtendedEnv`, then `closeEnv` frees it again), so a file there that is not an LMDB environment takes
-the process down with SIGSEGV and no stack, at whatever moment the next rescan runs. Tests keep their
-non-database fixtures outside the storage path; `unitTests/bin/copyDbIntegrity.test.js` rescans right
-after writing one (harper#2669).
+of the storage path and of every configured database path, and each one a directory below the storage
+path as a legacy `<schema>/<table>.mdb` table. lmdb-js (3.5.6, and still 3.5.7) crashes the process
+when `mdb_env_open` fails: the failure path in `EnvWrap::openEnv` frees its `ExtendedEnv`, then
+`closeEnv` frees it again. A file there that is not an LMDB environment therefore takes the process
+down with SIGSEGV and no stack, at whatever moment the next rescan runs. Until lmdb-js returns the
+open error instead, tests keep non-database fixtures outside those paths;
+`unitTests/bin/copyDbIntegrity.test.js` rescans while its fixture exists (harper#2669).
 
 ## A local-only write marks both the record and its audit entry, and replay preserves it (`Table.ts` internal writes, `replayLogs.ts`)
 
