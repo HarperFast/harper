@@ -745,7 +745,9 @@ and last-worker duties never land on one. The invariants:
 
 - **No application code.** `shouldLoadApplicationHere` returns false on a pool worker; trusted
   built-ins (including `HARPER_BUILTIN_COMPONENTS`) still load, and databases open from storage.
-  Anything an application installs per thread (for example `Table.setResidencyById`) is absent there.
+  Anything an application installs per thread (for example `Table.setResidencyById`, or a
+  `setComputedAttribute` resolver) is absent there; `Table.unresolvedComputedIndexes()` names the
+  indexes such a thread cannot maintain, so a consumer can refuse rather than index wrongly.
 - **Exclusive listeners.** A component passes `threadType` in its `server.http`/`server.ws`/
   `server.socket` options to claim a port (and its UDS mirrors). `listenOnPorts` then binds it only on
   that pool's workers, and a pool worker binds nothing else, so it never receives HTTP traffic.

@@ -1004,6 +1004,11 @@ interface TableResourceClass {
 	updatedAttributes(): void;
 	setComputedAttribute(attribute_name: any, resolver: any): void;
 	/**
+	 * Indexed computed attributes whose resolver this thread does not have: one an application assigns
+	 * with `setComputedAttribute` exists only on threads that ran the application.
+	 */
+	unresolvedComputedIndexes(): string[];
+	/**
 	 * Override the default embedder for an `@embed` attribute. Return the vector to
 	 * store at `attribute_name`. The embedder receives the write payload (the fields
 	 * present in the PUT/PATCH body), not the post-merge record, so multi-field
@@ -8058,7 +8063,7 @@ export function makeTable(options): TableResourceClass {
 								`Computed attribute "${attribute.name}" does not have a function assigned to it. Please use setComputedAttribute('${attribute.name}', resolver) to assign a resolver function.`
 							);
 							// silence future warnings but just returning undefined
-							this.userResolvers[attribute.name] = () => {};
+							this.userResolvers[attribute.name] = Object.assign(() => {}, { unresolved: true });
 						}
 					};
 					attribute.resolve.directReturn = true;
@@ -8129,6 +8134,15 @@ export function makeTable(options): TableResourceClass {
 			primaryStore.encoder.surfacedToJSON = primaryStore.encoder.structPrototype.toJSON;
 		}
 		// #section: computed-history
+		static unresolvedComputedIndexes(): string[] {
+			const unresolved = [];
+			for (const attribute of attributes) {
+				if (!attribute.computed || !indices[attribute.name]) continue;
+				const resolver = this.userResolvers[attribute.name];
+				if (!resolver || resolver.unresolved) unresolved.push(attribute.name);
+			}
+			return unresolved;
+		}
 		static setComputedAttribute(attribute_name, resolver) {
 			const attribute = findAttribute(attributes, attribute_name);
 			if (!attribute) {
