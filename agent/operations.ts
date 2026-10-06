@@ -16,11 +16,11 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import {
 	AGENT_SESSION_ATTRIBUTES,
 	appendMessage,
+	cancelSession,
 	createSession,
 	getSession,
 	listSessions,
 	resolveApproval,
-	setStatus,
 } from './session.ts';
 import { parseBudgetCap, summarizeSessionUsage } from './budget.ts';
 import type { AgentConfig, AgentMessage, AgentRunStatus, AgentSessionRow, AgentSessionUsage } from './types.ts';
@@ -133,7 +133,7 @@ async function cancelAgentRun(op: any, deps: OperationDeps) {
 	// status so a paused session can still be terminated by the operator.
 	const signalledLiveRun = deps.cancelRun(sessionId);
 	const wasTerminal = session.status === 'completed' || session.status === 'aborted' || session.status === 'error';
-	if (!wasTerminal) await setStatus(sessionId, 'aborted', 'Cancelled by operator');
+	if (!wasTerminal) await cancelSession(sessionId);
 	return { cancelled: !wasTerminal, signalledLiveRun };
 }
 

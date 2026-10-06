@@ -113,6 +113,42 @@ describe('agent/operations budgets (#3040)', () => {
 			return created.session_id;
 		}
 
+		it('cancel_agent_run answers and closes every open approval in the write that marks the session aborted', async () => {
+			const created = await session.createSession({ user: 'admin' });
+			await session.appendMessage(created.session_id, {
+				role: 'assistant',
+				content: '',
+				createdAt: 1,
+				toolCalls: [
+					{ id: 'c1', name: 'drop', arguments: {} },
+					{ id: 'c2', name: 'drop', arguments: {} },
+				],
+			});
+			const first = await session.addPendingApproval(created.session_id, {
+				toolName: 'drop',
+				arguments: {},
+				toolCallId: 'c1',
+				reason: 'destructive',
+			});
+			await session.addPendingApproval(created.session_id, {
+				toolName: 'drop',
+				arguments: {},
+				toolCallId: 'c2',
+				reason: 'destructive',
+			});
+			await session.resolveApproval(created.session_id, first.id, true);
+			await session.setStatus(created.session_id, 'awaiting_approval');
+
+			const result = await operation('cancel_agent_run').execute({ session_id: created.session_id });
+			assert.deepStrictEqual(result, { cancelled: true, signalledLiveRun: false });
+			const cancelled = await session.getSession(created.session_id);
+			assert.strictEqual(cancelled.status, 'aborted');
+			assert.ok(cancelled.pendingApprovals.every((a) => a.resolved && a.consumed));
+			const responses = cancelled.messages.filter((m) => m.role === 'tool');
+			assert.deepStrictEqual(responses.map((m) => m.toolCallId).sort(), ['c1', 'c2']);
+			assert.ok(responses.every((m) => JSON.parse(m.content).error === 'cancelled_by_operator'));
+		});
+
 		it('get_agent_session returns the row plus its usage', async () => {
 			const sessionId = await seed();
 			const result = await operation('get_agent_session').execute({ session_id: sessionId });

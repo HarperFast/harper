@@ -724,7 +724,7 @@ describe('agent/loop per-session budgets (#3040)', () => {
 		assert.deepStrictEqual(answered.sort(), ['c1', 'c2']);
 	});
 
-	it('a run cancelled before it consumes approvals does not execute an approved action', async () => {
+	it('a run cancelled before it consumes approvals does not execute an approved action, then or later', async () => {
 		for (const caps of [{}, { maxSessionTokens: 1_000_000 }]) {
 			_resetInFlightForTests();
 			const sessionId = await newSession();
@@ -739,8 +739,10 @@ describe('agent/loop per-session budgets (#3040)', () => {
 			});
 			const paused = await session.getSession(sessionId);
 			await session.resolveApproval(sessionId, paused.pendingApprovals[0].id, true);
+			// What cancel_agent_run does: abort the live run, then cancel the session in one write.
 			const controller = new AbortController();
 			controller.abort();
+			await session.cancelSession(sessionId);
 			await runAgent({
 				sessionId,
 				models: stubModels([]),

@@ -149,11 +149,7 @@ export function endRun(
 		if (end.append) session.messages.push(...end.append);
 		const now = Date.now();
 		for (const approval of session.pendingApprovals) {
-			if (!end.closeApprovals?.includes(approval.id)) continue;
-			approval.approved ??= false;
-			approval.resolvedAt ??= now;
-			approval.resolved = true;
-			approval.consumed = true;
+			if (end.closeApprovals?.includes(approval.id)) closeApproval(approval, now);
 		}
 		if (session.status !== 'aborted') {
 			session.status = end.status;
@@ -163,6 +159,39 @@ export function endRun(
 		await getAgentSessionTable().put(session);
 		return session;
 	});
+}
+
+/**
+ * Cancel a session and answer every open approval in the same write, so the cancel is acknowledged only
+ * once no approved action is left to run on a later prompt, and no tool call is left without a response.
+ */
+export function cancelSession(sessionId: string): Promise<AgentSessionRow> {
+	return withSessionLock(sessionId, async () => {
+		const session = await requireSession(sessionId);
+		const now = Date.now();
+		for (const approval of session.pendingApprovals) {
+			if (approval.consumed) continue;
+			session.messages.push({
+				role: 'tool',
+				content: JSON.stringify({ ok: false, error: 'cancelled_by_operator', tool: approval.toolName }),
+				toolCallId: approval.toolCallId,
+				createdAt: now,
+			});
+			closeApproval(approval, now);
+		}
+		session.status = 'aborted';
+		session.lastError = 'Cancelled by operator';
+		session.updatedAt = now;
+		await getAgentSessionTable().put(session);
+		return session;
+	});
+}
+
+function closeApproval(approval: ApprovalRequest, now: number): void {
+	approval.approved ??= false;
+	approval.resolvedAt ??= now;
+	approval.resolved = true;
+	approval.consumed = true;
 }
 
 export function addPendingApproval(
