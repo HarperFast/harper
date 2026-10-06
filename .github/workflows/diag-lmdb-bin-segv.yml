@@ -11,13 +11,19 @@ permissions:
 
 jobs:
   loop:
-    name: bin loop (Node.js v${{ matrix.node-version }})
+    name: bin loop (Node.js v${{ matrix.node-version }}${{ matrix.perturb && ', perturb' || '' }})
     runs-on: ubuntu-latest
     timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
         node-version: [22, 24, 26]
+        perturb: ['']
+        include:
+          - node-version: 22
+            perturb: 'glibc.malloc.perturb=165'
+          - node-version: 24
+            perturb: 'glibc.malloc.perturb=165'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -41,15 +47,21 @@ jobs:
           mkdir -p /tmp/cores
           sudo sysctl -w kernel.core_pattern=/tmp/cores/core.%e.%p
       - name: Loop the LMDB bin suite
-        timeout-minutes: 45
+        timeout-minutes: 47
         run: |
           ulimit -c unlimited
           crashes=0
-          for i in $(seq 1 60); do
+          FILES="activateDeploymentOnPeers agentCli backup blobMigration cliCredentials cliOperations copyDB copyDbBlobAwait copyDbIntegrity"
+          FILES=$(for f in $FILES; do printf 'unitTests/bin/%s.test.js ' $f; done)
+          if [ -n "${{ matrix.perturb }}" ]; then export GLIBC_TUNABLES="${{ matrix.perturb }}"; fi
+          deadline=$(( $(date +%s) + 2500 ))
+          for i in $(seq 1 2000); do
+            [ $(date +%s) -lt $deadline ] || break
             start=$(date +%s)
             rc=0
-            HARPER_STORAGE_ENGINE=lmdb npx mocha "unitTests/bin/**/*.js" > /tmp/run.log 2>&1 || rc=$?
-            echo "iteration $i rc=$rc $(( $(date +%s) - start ))s"
+            HARPER_STORAGE_ENGINE=lmdb npx mocha $FILES > /tmp/run.log 2>&1 || rc=$?
+            [ $rc -ne 0 ] || [ $((i % 50)) -ne 0 ] || echo "iteration $i ok $(( $(date +%s) - start ))s"
+            [ $rc -eq 0 ] || echo "iteration $i rc=$rc"
             if [ $rc -ne 0 ]; then
               crashes=$((crashes + 1))
               echo "::group::iteration $i tail"
@@ -63,5 +75,5 @@ jobs:
               done
             fi
           done
-          echo "crashes=$crashes"
+          echo "iterations=$i crashes=$crashes"
           [ $crashes -eq 0 ]
