@@ -100,7 +100,9 @@ describe('cherry-pick-patch.yml', function () {
 		assert.strictEqual(fixture.releaseFile(), fixture.lines(SECOND_FIX), run.log);
 		const landedTip = fixture.releaseTip();
 		const rerun = fixture.runJob();
-		assert.strictEqual(rerun.outputs.no_op, 'true', rerun.log);
+		// The lone `-m 1` pick would also come out empty; the skip must come from the containment check.
+		assert.match(rerun.log, /already on v5\.3 — nothing to pick/);
+		assert.strictEqual(rerun.outputs.pick_flags, undefined, rerun.log);
 		assert.strictEqual(fixture.releaseTip(), landedTip);
 	});
 
