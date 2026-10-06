@@ -2104,9 +2104,14 @@ export function makeTable(options): TableResourceClass {
 										continue;
 									}
 									let updateRecordedSequenceId: () => MaybePromise<void>;
-									if (event.localTime && stream.lastSequenceId !== event.localTime) {
+									const advancesSequence = event.localTime && stream.lastSequenceId !== event.localTime;
+									// The source fills `originCursors` in from onCommit, after this decision, so a source that
+									// reports origin progress declares the array up front.
+									if (advancesSequence || event.originCursors !== undefined) {
 										if (event.remoteNodeIds?.length > 0) {
 											updateRecordedSequenceId = () => {
+												const originCursors: [number, number][] | undefined = event.originCursors;
+												if (!advancesSequence && !(originCursors?.length > 0)) return;
 												// the key for tracking the sequence ids and txn times received from this node
 												const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
 												// getSync (not get): dbisDb is the raw __dbis__ store, so on RocksDB get() returns a
@@ -2121,22 +2126,33 @@ export function makeTable(options): TableResourceClass {
 												// if we are not the only node in the list, we are getting proxied subscriptions, and we need
 												// to track this separately
 												// track the other nodes in the list
-												for (const nodeId of event.remoteNodeIds.slice(1)) {
-													let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-													// remove any duplicates
-													nodeStates = nodeStates.filter(
-														(existingNode) => existingNode.id !== nodeId || existingNode === nodeState
-													);
-													if (!nodeState) {
-														nodeState = { id: nodeId, seqId: 0 };
-														nodeStates.push(nodeState);
-													}
-													nodeState.seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
-													if (nodeId === committingTxn?.nodeId) {
-														nodeState.lastTxnTime = event.timestamp;
+												if (advancesSequence) {
+													for (const nodeId of event.remoteNodeIds.slice(1)) {
+														let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+														// remove any duplicates
+														nodeStates = nodeStates.filter(
+															(existingNode) => existingNode.id !== nodeId || existingNode === nodeState
+														);
+														if (!nodeState) {
+															nodeState = { id: nodeId, seqId: 0 };
+															nodeStates.push(nodeState);
+														}
+														nodeState.seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
+														if (nodeId === committingTxn?.nodeId) {
+															nodeState.lastTxnTime = event.timestamp;
+														}
 													}
 												}
-												const seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
+												// The highest origin log key applied from this peer, per origin: a cursor in the origin's own
+												// key space, so it only ever rises.
+												for (const [nodeId, originLogKey] of originCursors ?? []) {
+													let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+													if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+													if (!(nodeState.originLogKey >= originLogKey)) nodeState.originLogKey = originLogKey;
+												}
+												const seqId = advancesSequence
+													? Math.max(existingSeq?.seqId ?? 1, event.localTime)
+													: (existingSeq?.seqId ?? 1);
 												logger.trace?.(
 													'Received txn',
 													databaseName,
@@ -2185,7 +2201,7 @@ export function makeTable(options): TableResourceClass {
 												}
 												return dbisDb.put(seqKey, seqRecord);
 											};
-											stream.lastSequenceId = event.localTime;
+											if (advancesSequence) stream.lastSequenceId = event.localTime;
 										}
 									}
 									// Backpressure: wait for the transaction's commit to land before recording the sequence

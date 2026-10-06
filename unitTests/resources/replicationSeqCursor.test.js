@@ -153,6 +153,49 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 		}
 	});
 
+	it('merges per-origin cursors attached at commit, even when the sequence does not advance', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		// A source attaches origin progress from onCommit, after the apply loop decided whether to record.
+		const endTxn = (localTime, cursors) => {
+			const event = { type: 'end_txn', localTime, timestamp: localTime, remoteNodeIds: [44], originCursors: [] };
+			event.onCommit = () => event.originCursors.push(...cursors);
+			return event;
+		};
+		const ReplicatedTable = makeReplicatedTable(
+			'SeqCursorOriginTable',
+			[
+				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
+				endTxn(now, [[7, now - 5]]),
+				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now },
+				// same localTime: only the origin cursors are new, and the lower key for origin 7 must not win
+				endTxn(now, [
+					[7, now - 10],
+					[8, now],
+				]),
+			],
+			held
+		);
+		try {
+			await waitFor(() => readCursor(ReplicatedTable, 44)?.nodes?.some((node) => node.id === 8), {
+				timeout: 5000,
+				message: 'the second frame recorded its origin cursors',
+			});
+			const cursor = readCursor(ReplicatedTable, 44);
+			assert.equal(cursor.seqId, now);
+			assert.deepEqual(
+				cursor.nodes.map((node) => ({ ...node })),
+				[
+					{ id: 7, originLogKey: now - 5 },
+					{ id: 8, originLogKey: now },
+				]
+			);
+		} finally {
+			release();
+		}
+	});
+
 	it('continues replication after teardown denies a cursor commit', async function () {
 		let release;
 		const held = new Promise((resolve) => (release = resolve));
