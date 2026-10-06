@@ -4831,8 +4831,7 @@ export type ActivationCertification = {
 	arm(previous: string | null, wasAbsent: boolean): Promise<boolean>;
 	commit(): Promise<void>;
 	withdraw(): Promise<void>;
-	/** This activation reads a decision another deploy armed, so main keeps that decision for it too. */
-	/** Whether its decision was still open to join. */
+	/** Has main keep the decision another deploy armed for this activation too; false once that decision closed. */
 	join?(): Promise<boolean>;
 };
 
