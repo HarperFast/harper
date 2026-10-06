@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791278417948,
+  "lastUpdate": 1791278422437,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -26142,6 +26142,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 3111,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "ad6feb1276fc92d3818f4033bfcf23956c1490bb",
+          "message": "Merge pull request #2648 from HarperFast/feat/backup-archive-manifest\n\nIdentify a get_backup archive with a capability manifest as its first entry",
+          "timestamp": "2026-10-06T04:02:01Z",
+          "url": "https://github.com/HarperFast/harper/commit/ad6feb1276fc92d3818f4033bfcf23956c1490bb"
+        },
+        "date": 1791278421066,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 3741.27,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 3741.27,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 250,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 848.9,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 1082,
             "unit": "ms"
           }
         ]
