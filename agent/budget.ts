@@ -8,12 +8,12 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import type { AgentCallUsage, AgentMessage, AgentSessionUsage } from './types.ts';
 
 export interface BudgetCaps {
-	maxTokens?: number;
+	maxSessionTokens?: number;
 	maxCostUsd?: number;
 }
 
 export function hasBudget(caps: BudgetCaps): boolean {
-	return caps.maxTokens !== undefined || caps.maxCostUsd !== undefined;
+	return caps.maxSessionTokens !== undefined || caps.maxCostUsd !== undefined;
 }
 
 export function summarizeSessionUsage(messages: Iterable<AgentMessage>): AgentSessionUsage {
@@ -53,12 +53,13 @@ export function callUsage(
 
 /** An unmeasured total violates its cap: running uncapped under a configured cap is what this prevents. */
 export function budgetViolation(usage: AgentSessionUsage, caps: BudgetCaps): string | undefined {
-	if (caps.maxTokens !== undefined) {
+	if (caps.maxSessionTokens !== undefined) {
 		if (usage.promptTokens === undefined || usage.completionTokens === undefined) {
-			return `agent.maxTokens=${caps.maxTokens} cannot be enforced: a model call in this session reported no token usage`;
+			return `agent.maxSessionTokens=${caps.maxSessionTokens} cannot be enforced: a model call in this session reported no token usage`;
 		}
 		const used = usage.promptTokens + usage.completionTokens;
-		if (used >= caps.maxTokens) return `agent.maxTokens=${caps.maxTokens} reached: this session used ${used} tokens`;
+		if (used >= caps.maxSessionTokens)
+			return `agent.maxSessionTokens=${caps.maxSessionTokens} reached: this session used ${used} tokens`;
 	}
 	if (caps.maxCostUsd !== undefined) {
 		if (usage.costUsd === undefined) {
@@ -78,9 +79,9 @@ export function parseBudgetCap(name: keyof BudgetCaps, value: unknown): number |
 	const valid =
 		typeof cap === 'number' &&
 		Number.isFinite(cap) &&
-		(name === 'maxTokens' ? Number.isInteger(cap) && cap >= 1 : cap >= 0);
+		(name === 'maxSessionTokens' ? Number.isInteger(cap) && cap >= 1 : cap >= 0);
 	if (!valid) {
-		const expected = name === 'maxTokens' ? 'a positive integer' : 'a non-negative number';
+		const expected = name === 'maxSessionTokens' ? 'a positive integer' : 'a non-negative number';
 		throw new ClientError(`agent.${name} must be ${expected} or null, got ${JSON.stringify(value)}`, 400);
 	}
 	return cap;

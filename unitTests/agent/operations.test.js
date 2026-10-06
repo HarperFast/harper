@@ -56,18 +56,18 @@ describe('agent/operations budgets (#3040)', () => {
 		return { execute: all.find((op) => op.name === name).execute, patches };
 	}
 
-	it('set_agent_config applies maxTokens and maxCostUsd, and null clears a cap', async () => {
+	it('set_agent_config applies maxSessionTokens and maxCostUsd, and null clears a cap', async () => {
 		const { execute, patches } = operation('set_agent_config');
-		await execute({ operation: 'set_agent_config', maxTokens: 200000, maxCostUsd: '1.5' });
+		await execute({ operation: 'set_agent_config', maxSessionTokens: 200000, maxCostUsd: '1.5' });
 		await execute({ operation: 'set_agent_config', maxCostUsd: null });
-		assert.deepStrictEqual(patches, [{ maxTokens: 200000, maxCostUsd: 1.5 }, { maxCostUsd: undefined }]);
+		assert.deepStrictEqual(patches, [{ maxSessionTokens: 200000, maxCostUsd: 1.5 }, { maxCostUsd: undefined }]);
 	});
 
 	it('set_agent_config rejects a malformed cap and applies nothing from that request', async () => {
 		const { execute, patches } = operation('set_agent_config');
-		await assert.rejects(execute({ operation: 'set_agent_config', maxTurns: 3, maxTokens: -5 }), (err) => {
+		await assert.rejects(execute({ operation: 'set_agent_config', maxTurns: 3, maxSessionTokens: -5 }), (err) => {
 			assert.strictEqual(err.statusCode, 400);
-			assert.match(err.message, /agent\.maxTokens must be a positive integer/);
+			assert.match(err.message, /agent\.maxSessionTokens must be a positive integer/);
 			return true;
 		});
 		assert.deepStrictEqual(patches, []);

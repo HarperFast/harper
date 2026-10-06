@@ -19,7 +19,7 @@ Host matching compares canonical forms. Targets and allow entries both go throug
 
 ## Spend caps are folded from the transcript and fail closed (`agent/budget.ts`, `agent/loop.ts`)
 
-`agent.maxTokens` and `agent.maxCostUsd` bound a session, not a run: `approve_agent_action` and a follow-up `agent_prompt` each start a new `runAgent`, so a per-run counter (which is what `maxTurns` is) would reset on every resume (harper#3040). Three rules keep the caps honest:
+`agent.maxSessionTokens` and `agent.maxCostUsd` bound a session, not a run: `approve_agent_action` and a follow-up `agent_prompt` each start a new `runAgent`, so a per-run counter (which is what `maxTurns` is) would reset on every resume (harper#3040). Three rules keep the caps honest:
 
 - **Usage lives on the call it describes.** Each assistant message carries the `usage` its `generate` reported and its `costUsd`, in the same write as the message. Session totals are folded from the transcript by `summarizeSessionUsage`, never stored, so they cannot drift from the calls. A total stays present only while every assistant message reported it, so a backend that reports nothing, an unpriced model, or a message written before usage was recorded makes that total unmeasured, not zero.
 - **Unmeasured stops the session.** `budgetViolation` treats a cap whose total is unmeasured as violated. Checked before `consumeResolvedApprovals` (so a cap lowered during a pause stops an approved action from running) and after every call.

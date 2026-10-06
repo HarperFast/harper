@@ -101,7 +101,7 @@ export interface AgentConfig {
 	model?: string;
 	maxTurns: number;
 	/** Per-session cap on prompt + completion tokens. Unset: uncapped. */
-	maxTokens?: number;
+	maxSessionTokens?: number;
 	/** Per-session cap in USD, from the serving model entry's `pricing`. Unset: uncapped. */
 	maxCostUsd?: number;
 	autoApprove: boolean;

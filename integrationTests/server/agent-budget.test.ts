@@ -148,14 +148,17 @@ suite('agent per-session usage and caps (#3040)', (ctx: any) => {
 		deepStrictEqual(listed.usage, session.usage);
 	});
 
-	test('maxTokens stops the session after the call that reaches it, with every tool call answered', async () => {
-		await op({ operation: 'set_agent_config', maxTokens: 2000 });
+	test('maxSessionTokens stops the session after the call that reaches it, with every tool call answered', async () => {
+		await op({ operation: 'set_agent_config', maxSessionTokens: 2000 });
 		try {
 			const callsBefore = fake.calls();
 			const session = await runToEnd('look again');
 			strictEqual(fake.calls() - callsBefore, 2, 'the second call reaches 2400 tokens');
 			strictEqual(session.status, 'error');
-			ok(/agent\.maxTokens=2000 reached: this session used 2400 tokens/.test(session.lastError), session.lastError);
+			ok(
+				/agent\.maxSessionTokens=2000 reached: this session used 2400 tokens/.test(session.lastError),
+				session.lastError
+			);
 			toolResponsesAnswerEveryCall(session);
 
 			const before = fake.calls();
@@ -167,7 +170,7 @@ suite('agent per-session usage and caps (#3040)', (ctx: any) => {
 			strictEqual(after.messages.at(-1).content, 'continue');
 			strictEqual(fake.calls(), before, 'a capped session makes no further model call');
 		} finally {
-			await op({ operation: 'set_agent_config', maxTokens: null });
+			await op({ operation: 'set_agent_config', maxSessionTokens: null });
 		}
 	});
 
@@ -198,7 +201,7 @@ suite('agent per-session usage and caps (#3040)', (ctx: any) => {
 	});
 
 	test('set_agent_config refuses a malformed cap', async () => {
-		const body = await op({ operation: 'set_agent_config', maxTokens: -1 }, 400);
-		ok(/agent\.maxTokens must be a positive integer/.test(JSON.stringify(body)), JSON.stringify(body));
+		const body = await op({ operation: 'set_agent_config', maxSessionTokens: -1 }, 400);
+		ok(/agent\.maxSessionTokens must be a positive integer/.test(JSON.stringify(body)), JSON.stringify(body));
 	});
 });

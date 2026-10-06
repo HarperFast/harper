@@ -28,7 +28,7 @@ export interface RunAgentOpts {
 	scopes: AgentScopes;
 	maxTurns: number;
 	/** Per-session caps, measured from the transcript, so an approval resume or a new prompt cannot reset them. */
-	maxTokens?: number;
+	maxSessionTokens?: number;
 	maxCostUsd?: number;
 	/** When false, destructive tools pause the loop with a pending approval instead of executing. */
 	autoApprove?: boolean;

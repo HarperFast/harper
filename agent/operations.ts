@@ -167,7 +167,7 @@ async function setAgentConfig(op: any, deps: OperationDeps) {
 	]) {
 		if (op?.[key] !== undefined) (patch as any)[key] = op[key];
 	}
-	for (const key of ['maxTokens', 'maxCostUsd'] as const) {
+	for (const key of ['maxSessionTokens', 'maxCostUsd'] as const) {
 		if (op?.[key] !== undefined) patch[key] = parseBudgetCap(key, op[key]);
 	}
 	return deps.setConfig(patch);

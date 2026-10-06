@@ -559,16 +559,16 @@ describe('agent/loop per-session budgets (#3040)', () => {
 		});
 	});
 
-	it('maxTokens reached on a tool-call turn answers the calls without running them and ends the session error', async () => {
+	it('maxSessionTokens reached on a tool-call turn answers the calls without running them and ends the session error', async () => {
 		const sessionId = await newSession();
 		const read = countingTool('read');
 		const models = stubModels([toolTurn('c1', 'read', usage(80, 30))]);
-		await runAgent({ sessionId, models, tools: [read], scopes, maxTurns: 5, maxTokens: 100 });
+		await runAgent({ sessionId, models, tools: [read], scopes, maxTurns: 5, maxSessionTokens: 100 });
 
 		const reloaded = await session.getSession(sessionId);
 		assert.equal(read.runs, 0);
 		assert.equal(reloaded.status, 'error');
-		assert.match(reloaded.lastError, /agent\.maxTokens=100 reached: this session used 110 tokens/);
+		assert.match(reloaded.lastError, /agent\.maxSessionTokens=100 reached: this session used 110 tokens/);
 		const toolMessages = reloaded.messages.filter((m) => m.role === 'tool');
 		assert.equal(toolMessages.length, 1, 'every tool call keeps its response, so the transcript stays sendable');
 		assert.equal(toolMessages[0].toolCallId, 'c1');
@@ -578,11 +578,11 @@ describe('agent/loop per-session budgets (#3040)', () => {
 	it('a final answer that crosses the cap is delivered, and the completed run names the cap', async () => {
 		const sessionId = await newSession();
 		const models = stubModels([finalTurn('the answer', usage(80, 30))]);
-		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, maxTokens: 100 });
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, maxSessionTokens: 100 });
 
 		const reloaded = await session.getSession(sessionId);
 		assert.equal(reloaded.status, 'completed');
-		assert.match(reloaded.lastError, /agent\.maxTokens=100 reached/);
+		assert.match(reloaded.lastError, /agent\.maxSessionTokens=100 reached/);
 		assert.equal(reloaded.messages.at(-1).content, 'the answer');
 	});
 
@@ -594,7 +594,7 @@ describe('agent/loop per-session budgets (#3040)', () => {
 			tools: noTools,
 			scopes,
 			maxTurns: 5,
-			maxTokens: 100,
+			maxSessionTokens: 100,
 		});
 		await session.appendMessage(sessionId, { role: 'user', content: 'more', createdAt: Date.now() });
 		let generateCalls = 0;
@@ -604,12 +604,12 @@ describe('agent/loop per-session budgets (#3040)', () => {
 				return finalTurn('unreached', usage(1, 1));
 			},
 		};
-		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, maxTokens: 100 });
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, maxSessionTokens: 100 });
 
 		const reloaded = await session.getSession(sessionId);
 		assert.equal(generateCalls, 0);
 		assert.equal(reloaded.status, 'error');
-		assert.match(reloaded.lastError, /maxTokens=100 reached/);
+		assert.match(reloaded.lastError, /maxSessionTokens=100 reached/);
 	});
 
 	it('maxCostUsd stops after a call it cannot price, naming the missing pricing', async () => {
@@ -624,14 +624,14 @@ describe('agent/loop per-session budgets (#3040)', () => {
 		assert.match(reloaded.lastError, /maxCostUsd=1 cannot be enforced: .*declare pricing/);
 	});
 
-	it('maxTokens stops after a call that reported no token usage', async () => {
+	it('maxSessionTokens stops after a call that reported no token usage', async () => {
 		const sessionId = await newSession();
 		const models = stubModels([toolTurn('c1', 'read', {}), finalTurn('unreached', usage(1, 1))]);
-		await runAgent({ sessionId, models, tools: [countingTool('read')], scopes, maxTurns: 5, maxTokens: 1000 });
+		await runAgent({ sessionId, models, tools: [countingTool('read')], scopes, maxTurns: 5, maxSessionTokens: 1000 });
 
 		const reloaded = await session.getSession(sessionId);
 		assert.equal(reloaded.status, 'error');
-		assert.match(reloaded.lastError, /maxTokens=1000 cannot be enforced/);
+		assert.match(reloaded.lastError, /maxSessionTokens=1000 cannot be enforced/);
 	});
 
 	it('priced calls under maxCostUsd keep running', async () => {
@@ -667,7 +667,7 @@ describe('agent/loop per-session budgets (#3040)', () => {
 			scopes,
 			maxTurns: 5,
 			autoApprove: false,
-			maxTokens: 50,
+			maxSessionTokens: 50,
 		});
 
 		const reloaded = await session.getSession(sessionId);
@@ -712,7 +712,7 @@ describe('agent/loop per-session budgets (#3040)', () => {
 			scopes,
 			maxTurns: 5,
 			autoApprove: false,
-			maxTokens: 50,
+			maxSessionTokens: 50,
 		});
 
 		const reloaded = await session.getSession(sessionId);
@@ -730,7 +730,7 @@ describe('agent/loop per-session budgets (#3040)', () => {
 		await session.endRun(sessionId, {
 			append: [{ role: 'tool', content: '{}', toolCallId: 'c1', createdAt: Date.now() }],
 			status: 'error',
-			lastError: 'agent.maxTokens=1 reached',
+			lastError: 'agent.maxSessionTokens=1 reached',
 		});
 		const reloaded = await session.getSession(sessionId);
 		assert.equal(reloaded.status, 'aborted');
@@ -749,7 +749,7 @@ describe('agent/loop per-session budgets (#3040)', () => {
 				return finalTurn('unreached', usage(1, 1));
 			},
 		};
-		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, maxTokens: 1_000_000 });
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, maxSessionTokens: 1_000_000 });
 
 		const reloaded = await session.getSession(sessionId);
 		assert.equal(generateCalls, 0);

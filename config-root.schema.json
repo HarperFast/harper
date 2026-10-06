@@ -710,7 +710,7 @@
 					"minimum": 1,
 					"description": "Maximum tool-call iterations per agent run. Default: 50"
 				},
-				"maxTokens": {
+				"maxSessionTokens": {
 					"type": "integer",
 					"minimum": 1,
 					"description": "Per-session cap on prompt plus completion tokens, checked after each model call; a session at the cap makes no further calls. A model that reports no token usage stops the session instead of running uncapped. Default: none"

@@ -55,7 +55,7 @@ interface StartOpts {
 	provider?: string;
 	model?: string;
 	maxTurns?: number;
-	maxTokens?: unknown;
+	maxSessionTokens?: unknown;
 	maxCostUsd?: unknown;
 	autoApprove?: boolean;
 	allowDestructive?: boolean;
@@ -72,7 +72,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		return;
 	}
 	// A malformed cap fails the agent's start rather than running it uncapped.
-	config.maxTokens = parseBudgetCap('maxTokens', opts.maxTokens);
+	config.maxSessionTokens = parseBudgetCap('maxSessionTokens', opts.maxSessionTokens);
 	config.maxCostUsd = parseBudgetCap('maxCostUsd', opts.maxCostUsd);
 
 	// Lazily imported to avoid pulling configUtils at module-eval time for tests.
@@ -172,7 +172,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			tools: currentTools(),
 			scopes,
 			maxTurns: liveConfig.maxTurns,
-			maxTokens: liveConfig.maxTokens,
+			maxSessionTokens: liveConfig.maxSessionTokens,
 			maxCostUsd: liveConfig.maxCostUsd,
 			autoApprove: liveConfig.autoApprove,
 			signal: controller.signal,

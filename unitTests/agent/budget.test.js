@@ -62,14 +62,14 @@ describe('agent/budget', () => {
 		const measured = { calls: 1, promptTokens: 60, completionTokens: 40, costUsd: 0.5 };
 
 		it('allows a session under every cap, and any session with no caps', () => {
-			assert.strictEqual(budgetViolation(measured, { maxTokens: 101, maxCostUsd: 0.51 }), undefined);
+			assert.strictEqual(budgetViolation(measured, { maxSessionTokens: 101, maxCostUsd: 0.51 }), undefined);
 			assert.strictEqual(budgetViolation({ calls: 9 }, {}), undefined);
 		});
 
 		it('trips at the cap, not only past it', () => {
 			assert.match(
-				budgetViolation(measured, { maxTokens: 100 }),
-				/maxTokens=100 reached: this session used 100 tokens/
+				budgetViolation(measured, { maxSessionTokens: 100 }),
+				/maxSessionTokens=100 reached: this session used 100 tokens/
 			);
 			assert.match(
 				budgetViolation(measured, { maxCostUsd: 0.5 }),
@@ -83,8 +83,8 @@ describe('agent/budget', () => {
 
 		it('stops a session whose capped figure is unmeasured', () => {
 			assert.match(
-				budgetViolation({ calls: 1, costUsd: 0.1 }, { maxTokens: 1000 }),
-				/maxTokens=1000 cannot be enforced/
+				budgetViolation({ calls: 1, costUsd: 0.1 }, { maxSessionTokens: 1000 }),
+				/maxSessionTokens=1000 cannot be enforced/
 			);
 			assert.match(
 				budgetViolation({ calls: 1, promptTokens: 1, completionTokens: 1 }, { maxCostUsd: 5 }),
@@ -95,20 +95,20 @@ describe('agent/budget', () => {
 
 	describe('parseBudgetCap', () => {
 		it('accepts valid caps, numeric strings from env-style config, and clears on null or absence', () => {
-			assert.strictEqual(parseBudgetCap('maxTokens', 500000), 500000);
-			assert.strictEqual(parseBudgetCap('maxTokens', '500000'), 500000);
+			assert.strictEqual(parseBudgetCap('maxSessionTokens', 500000), 500000);
+			assert.strictEqual(parseBudgetCap('maxSessionTokens', '500000'), 500000);
 			assert.strictEqual(parseBudgetCap('maxCostUsd', 0), 0);
 			assert.strictEqual(parseBudgetCap('maxCostUsd', 2.5), 2.5);
 			assert.strictEqual(parseBudgetCap('maxCostUsd', null), undefined);
-			assert.strictEqual(parseBudgetCap('maxTokens', undefined), undefined);
+			assert.strictEqual(parseBudgetCap('maxSessionTokens', undefined), undefined);
 		});
 
 		it('refuses a value that would silently uncap or mis-trip', () => {
 			for (const [name, value] of [
-				['maxTokens', 0],
-				['maxTokens', 1.5],
-				['maxTokens', 'many'],
-				['maxTokens', ''],
+				['maxSessionTokens', 0],
+				['maxSessionTokens', 1.5],
+				['maxSessionTokens', 'many'],
+				['maxSessionTokens', ''],
 				['maxCostUsd', -1],
 				['maxCostUsd', Number.NaN],
 				['maxCostUsd', Infinity],

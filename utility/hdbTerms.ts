@@ -637,7 +637,7 @@ export const CONFIG_PARAMS = {
 	AGENT_PROVIDER: 'agent_provider',
 	AGENT_MODEL: 'agent_model',
 	AGENT_MAXTURNS: 'agent_maxTurns',
-	AGENT_MAXTOKENS: 'agent_maxTokens',
+	AGENT_MAXSESSIONTOKENS: 'agent_maxSessionTokens',
 	AGENT_MAXCOSTUSD: 'agent_maxCostUsd',
 	AGENT_AUTOAPPROVE: 'agent_autoApprove',
 	AGENT_ALLOWDESTRUCTIVE: 'agent_allowDestructive',
