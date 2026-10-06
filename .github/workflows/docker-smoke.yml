@@ -2,8 +2,8 @@ name: Docker Image Smoke Test
 
 # Builds the container image and boots it to catch breakage that only shows up
 # at runtime (e.g. an empty/unexecutable entrypoint producing "exec format
-# error"). The publish workflow only runs on release and never starts the
-# container, so this guards the gap for changes to the image build.
+# error"). publish-docker.yaml calls this workflow with `publish: true`, so a
+# release can only copy to Docker Hub the image that passed every check here.
 
 on:
   pull_request:
@@ -19,6 +19,7 @@ on:
       - server/threads/manageThreads.js
       - utility/processManagement/processManagement.js
       - .github/workflows/docker-smoke.yml
+      - .github/scripts/docker-smoke-boot.sh
   push:
     # Release branches too: the image is built from a release branch at publish time, so a branch
     # that never runs this has no boot coverage for the artifact it actually ships. Same pattern
@@ -36,23 +37,37 @@ on:
       - server/threads/manageThreads.js
       - utility/processManagement/processManagement.js
       - .github/workflows/docker-smoke.yml
+      - .github/scripts/docker-smoke-boot.sh
+  workflow_call:
+    inputs:
+      publish:
+        description: Copy each smoke-tested platform image to Docker Hub by digest and upload its digest artifact for the caller to tag.
+        type: boolean
+        default: false
+    secrets:
+      DOCKERHUB_TOKEN:
+        required: false
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Not github.workflow: a called workflow sees the caller's name, and a group equal to the
+  # caller's own cancels the run as a deadlock.
+  group: docker-smoke-${{ github.ref }}
   cancel-in-progress: true
 
-# Building and booting the image only needs read access to the checkout.
+# Building and booting the image only needs read access to the checkout; publishing
+# authenticates to Docker Hub with its own token.
 permissions:
   contents: read
 
 jobs:
   smoke:
-    # arm64 is exercised only on push to main (the publish workflow ships both
+    # arm64 is exercised on pushes and releases (the publish workflow ships both
     # arches); PRs stay amd64-only to keep the extra build off every PR run.
+    # A called workflow sees the caller's event, so a release is not 'pull_request'.
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ github.event_name == 'push' && fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"},{"platform":"linux/arm64","runner":"ubuntu-24.04-arm"}]') || fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"}]') }}
+        include: ${{ github.event_name != 'pull_request' && fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"},{"platform":"linux/arm64","runner":"ubuntu-24.04-arm"}]') || fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"}]') }}
     runs-on: ${{ matrix.runner }}
     # Two boot-check loops can each take up to ~6 minutes in the worst case (60 iterations
     # of a 5s curl timeout plus a 1s sleep) on top of the build itself; 20m was tight even
@@ -61,17 +76,51 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Setup Docker metadata
+        if: inputs.publish
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: harperfast/harper
+
+      - name: Login to Docker Hub
+        if: inputs.publish
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Outside PRs the image is built once into a registry on the runner and smoke-tested from
+      # there, so a release copies to Docker Hub the exact index it booted, provenance attestation
+      # included, instead of rebuilding. Pushes copy into a second local repository instead,
+      # which keeps the release path exercised.
+      - name: Start local registry
+        if: github.event_name != 'pull_request'
+        run: docker run -d --name registry -p 5000:5000 registry:3
+
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: ${{ github.event_name != 'pull_request' && 'network=host' || '' }}
 
-      - name: Build image (${{ matrix.platform }}, load locally)
+      - name: Build image (${{ matrix.platform }}, ${{ github.event_name == 'pull_request' && 'load locally' || 'push to local registry' }})
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: ${{ matrix.platform }}
-          load: true
-          tags: harperfast/harper:smoke-test
+          labels: ${{ steps.meta.outputs.labels }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ github.event_name == 'pull_request' && 'harperfast/harper:smoke-test' || '' }}
+          outputs: ${{ github.event_name != 'pull_request' && 'type=image,name=localhost:5000/harperfast/harper,push-by-digest=true,name-canonical=true,push=true' || '' }}
+
+      - name: Pull the staged image as harperfast/harper:smoke-test
+        if: github.event_name != 'pull_request'
+        env:
+          STAGED: localhost:5000/harperfast/harper@${{ steps.build.outputs.digest }}
+        run: |
+          docker pull "$STAGED"
+          docker tag "$STAGED" harperfast/harper:smoke-test
 
       - name: Entrypoint is non-empty and valid shell
         run: |
@@ -108,32 +157,7 @@ jobs:
           '
 
       - name: Container boots and serves the Operations API (default runtime)
-        run: |
-          docker run -d --name harper-smoke \
-            -e HDB_ADMIN_USERNAME=admin \
-            -e HDB_ADMIN_PASSWORD=password \
-            -p 9925:9925 \
-            harperfast/harper:smoke-test
-
-          echo "Waiting for Operations API on :9925 ..."
-          for i in $(seq 1 60); do
-            code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
-            # Any HTTP response (even 401/404) means the server is up and listening.
-            if [ -n "$code" ] && [ "$code" != "000" ]; then
-              echo "Operations API responded with HTTP $code after ${SECONDS}s"
-              exit 0
-            fi
-            if ! docker ps --filter name=harper-smoke --filter status=running -q | grep -q .; then
-              echo "::error::Container exited before the Operations API came up"
-              docker logs harper-smoke
-              exit 1
-            fi
-            sleep 1
-          done
-
-          echo "::error::Operations API did not come up within ${SECONDS}s"
-          docker logs harper-smoke
-          exit 1
+        run: .github/scripts/docker-smoke-boot.sh harperfast/harper:smoke-test harper-smoke
 
       # @aws-sdk/client-s3 and @aws-sdk/lib-storage are optional peerDependencies the
       # Dockerfile preinstalls globally so S3 export/import keeps working out of the box
@@ -297,32 +321,7 @@ jobs:
       # unrelated "pull access denied" instead of a useful signal.
       - name: Container boots and serves the Operations API (HARPER_RUNTIME=bun)
         if: steps.build.outcome == 'success' && (success() || failure())
-        run: |
-          docker run -d --name harper-smoke-bun \
-            -e HARPER_RUNTIME=bun \
-            -e HDB_ADMIN_USERNAME=admin \
-            -e HDB_ADMIN_PASSWORD=password \
-            -p 9925:9925 \
-            harperfast/harper:smoke-test
-
-          echo "Waiting for Operations API on :9925 (bun runtime) ..."
-          for i in $(seq 1 60); do
-            code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
-            if [ -n "$code" ] && [ "$code" != "000" ]; then
-              echo "Operations API responded with HTTP $code after ${SECONDS}s"
-              exit 0
-            fi
-            if ! docker ps --filter name=harper-smoke-bun --filter status=running -q | grep -q .; then
-              echo "::error::Container exited before the Operations API came up"
-              docker logs harper-smoke-bun
-              exit 1
-            fi
-            sleep 1
-          done
-
-          echo "::error::Operations API did not come up within ${SECONDS}s"
-          docker logs harper-smoke-bun
-          exit 1
+        run: .github/scripts/docker-smoke-boot.sh harperfast/harper:smoke-test harper-smoke-bun bun
 
       - name: Container logs (HARPER_RUNTIME=bun)
         if: always()
@@ -331,3 +330,29 @@ jobs:
       - name: Teardown (HARPER_RUNTIME=bun)
         if: always()
         run: docker rm -f harper-smoke-bun 2>/dev/null || true
+
+      # Every smoke step above must have passed: the legs that run after an earlier failure still
+      # leave the job failed, so success() is false here.
+      - name: Copy the smoke-tested image to ${{ inputs.publish && 'Docker Hub' || 'a second local repository' }} by digest
+        if: github.event_name != 'pull_request' && success()
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TARGET: ${{ inputs.publish && 'docker.io/harperfast/harper' || 'localhost:5000/harperfast/harper-promoted' }}
+        run: docker buildx imagetools create -t "$TARGET@$DIGEST" "localhost:5000/harperfast/harper@$DIGEST"
+
+      - name: Export digest
+        if: inputs.publish && success()
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: inputs.publish && success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
