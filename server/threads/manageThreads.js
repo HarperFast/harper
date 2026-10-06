@@ -1256,11 +1256,12 @@ function startWorker(path, options = {}, startOptions = {}) {
 	const execArgv = isBun
 		? []
 		: [
-				'--enable-source-maps',
 				'--experimental-vm-modules', // used for giving applications their own top level scope
 				'--disable-warning=ExperimentalWarning', // yeah, yeah, we know it is experimental
 				'--expose-internals', // expose Node.js internal utils so jsLoader can use `decorateErrorStack()`
 			];
+	// an explicit execArgv replaces inheritance, so `node --enable-source-maps` would not reach workers otherwise
+	if (!isBun && process.sourceMapsEnabled) execArgv.push('--enable-source-maps');
 	if (!isBun && envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))
 		execArgv.push('--heapsnapshot-near-heap-limit=1');
 	// Preload configured modules (e.g. an APM agent like dd-trace) before the worker's entry
