@@ -375,10 +375,14 @@ export interface ClusterLockTransport {
 		author: string,
 		position: number | undefined
 <<<<<<< HEAD
+<<<<<<< HEAD
 	): void | Promise<void>;
 =======
 	): void;
 >>>>>>> 57f28c5c8 (Relay a record lock control entry received off the coordinating thread instead of dropping it)
+=======
+	): void | Promise<void>;
+>>>>>>> 8ca964c32 (Route the registered receive callback through the receive boundary; type the relay hook as possibly async)
 	/**
 	 * Assigned at registration so a transport can push a received entry in directly. `author` and
 	 * `position` come from the authenticated origin-log header, never from the payload.
@@ -846,9 +850,12 @@ function isPromiseLike(value: unknown): value is Promise<unknown> {
 	return value != null && typeof (value as Promise<unknown>).then === 'function';
 }
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 /** A relay that throws or rejects is a drop, never an escape from the apply loop. */
 >>>>>>> 0eb395a9c (Relay a release from a thread with no coordinator, and contain an asynchronous relay rejection)
+=======
+>>>>>>> 8ca964c32 (Route the registered receive callback through the receive boundary; type the relay hook as possibly async)
 function relayControlEntryContained(
 	transport: ClusterLockTransport,
 	database: string,
@@ -860,6 +867,7 @@ function relayControlEntryContained(
 ): void {
 	try {
 <<<<<<< HEAD
+<<<<<<< HEAD
 		const outcome = transport.relayControlEntry!(database, table, entry, author, position);
 		if (isPromiseLike(outcome))
 			outcome.then(undefined, (error) => {
@@ -868,6 +876,11 @@ function relayControlEntryContained(
 		if (isPromiseLike(outcome))
 			outcome.catch((error) => {
 >>>>>>> 0eb395a9c (Relay a release from a thread with no coordinator, and contain an asynchronous relay rejection)
+=======
+		const outcome = transport.relayControlEntry!(database, table, entry, author, position);
+		if (isPromiseLike(outcome))
+			outcome.then(undefined, (error) => {
+>>>>>>> 8ca964c32 (Route the registered receive callback through the receive boundary; type the relay hook as possibly async)
 				warnOnce('failed to relay a record lock control entry to the coordinating thread', error);
 				onFailure();
 			});
