@@ -21,7 +21,6 @@ const {
 	abandonRestore,
 	acquireRestoreLock,
 	releaseRestoreLock,
-	restoreLockPath,
 	restoringMarkerPath,
 	RESTORE_META_DIR,
 } = require('#src/dataLayer/restoreMarker');

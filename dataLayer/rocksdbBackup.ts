@@ -35,7 +35,13 @@ import {
 	releaseRestoreLock,
 	type RestoreLock,
 } from './restoreMarker.ts';
-import { assertBackupsUnpinned, pinBackup, unpinBackup, withBackupRepositoryLock } from './backupRepository.ts';
+import {
+	assertBackupsUnpinned,
+	pinBackup,
+	readBackupPins,
+	unpinBackup,
+	withBackupRepositoryLock,
+} from './backupRepository.ts';
 import {
 	ARCHIVE_MANIFEST_ENTRY,
 	assertArchiveRestorable,
@@ -1272,15 +1278,18 @@ export async function restoreBackupOffline(
 		return beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName, (preexisting) => {
 			// Inside the reservation, so a create_database racing this restore cannot pass the absence
 			// check and then lose the database it just made.
-			// `preexisting` exempts a target that carries its own restoring marker: that directory is
-			// this protocol's debris from an interrupted restore of the same target, not a database an
-			// operator made. Refusing it wedges the rerun for good — drop_database refuses a marked
-			// directory too, and the marker keeps the pin live, so every purge of the source the rerun
-			// needs 409s as well.
+			// The exemption is for debris this source left: an interrupted restore out of this very
+			// repository, which refusing would wedge for good (drop_database refuses a marked directory
+			// too, and the marker keeps the pin live, so every purge of the source the rerun needs 409s).
+			// A marker alone does not prove that — it records only the directory name — so this source's
+			// own pin has to be there too. A restore wrote that pin before publishing the marker, and the
+			// marker keeps it live, so for our own debris it always is. A target marked by a restore out
+			// of some other repository is still refused.
+			const ourInterruptedRestore = preexisting && readBackupPins(backupDir).some((pin) => pin.pin_id === pinId);
 			if (
 				targetDatabase !== undefined &&
 				targetDatabase !== databaseName &&
-				!preexisting &&
+				!ourInterruptedRestore &&
 				!isMissingOrEmptyDir(databaseDir)
 			) {
 				throw new ClientError(

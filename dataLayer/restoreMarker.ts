@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
 import { fsyncDirectory, pathPresent, writeFileDurably } from '../utility/durableFile.ts';
+import logger from '../utility/logging/harper_logger.ts';
 
 /**
  * Restore lock + marker protocol for RocksDB database restores (online operation and offline CLI),
@@ -26,8 +27,10 @@ import { fsyncDirectory, pathPresent, writeFileDurably } from '../utility/durabl
  *
  * - `<meta-dir>/<key>.lock` — an OS-level exclusive file lock (via rocksdb-js `tryFileLock`),
  *   effective across processes, containers, and worker threads, auto-released on process exit.
- *   Only *held-ness* is meaningful; the file itself persists after release (harmless). Held for the
- *   duration of a restore, and briefly by `dropDatabase` so the two serialize on the same primitive.
+ *   Only *held-ness* is meaningful; the file itself persists after release (harmless). Held
+ *   exclusively for the duration of a restore, and by `dropDatabase` so the two serialize on the
+ *   same primitive; held *shared* by every database open (`withRestoreExclusion`), so a conflict
+ *   means one of the three and the lock cannot say which.
  *   Known limitation: the lock is owned by the process, so if the restore job's worker *thread*
  *   dies without the process exiting, the lock stays held (restores 409) until Harper restarts.
  * - `<meta-dir>/<key>.restoring` — the completion marker. Published (temp → fsync → rename → parent
@@ -151,6 +154,34 @@ export function checkRestoreState(dbPath: string): RestoreState {
 	return 'incomplete';
 }
 
+/** Codes a databases root Harper cannot write to produces; anything else is not a root to degrade for. */
+const UNWRITABLE_ROOT_CODES = new Set(['EACCES', 'EPERM', 'EROFS']);
+/** The strerror text behind those codes, for the binding's untyped throw (see `isUnwritableRootError`). */
+const UNWRITABLE_ROOT_MESSAGE = /open failed: (Permission denied|Operation not permitted|Read-only file system)/;
+const unwritableRootsWarned = new Set<string>();
+
+/**
+ * Whether taking the lock failed because the root cannot be written, as opposed to a transient or
+ * unrelated failure. `mkdirSync` reports an errno; `tryFileLock` throws a plain `Error` with none
+ * (the same untyped-native-error gap `isRocksDbLockError` works around in `rocksdbBackup.ts`), so
+ * its message is the only signal available. Matched conservatively and deliberately *not* widened to
+ * every throw: degrading on a transient EMFILE would open a database with no exclusion at all.
+ */
+function isUnwritableRootError(error: any): boolean {
+	if (UNWRITABLE_ROOT_CODES.has(error?.code)) return true;
+	return UNWRITABLE_ROOT_MESSAGE.test(typeof error?.message === 'string' ? error.message : '');
+}
+
+/** One line per root, not per database: a read-only root would otherwise log on every rescan. */
+function warnOnceUnwritableRoot(dbPath: string, error: any): void {
+	const metaDir = restoreMetaDir(dbPath);
+	if (unwritableRootsWarned.has(metaDir)) return;
+	unwritableRootsWarned.add(metaDir);
+	logger.warn(
+		`Cannot take restore locks under ${metaDir} (${error?.code}); databases there load on the restoring marker alone`
+	);
+}
+
 /**
  * Open a database under the restore lock, held in shared mode across the marker check and the open
  * itself.
@@ -161,8 +192,9 @@ export function checkRestoreState(dbPath: string): RestoreState {
  * succeed while any opener holds it, and no opener can start while a restore holds it — and readers
  * never exclude each other.
  *
- * `blocked` is called when a marker is present, so each caller can decide between throwing (an
- * on-demand open) and skipping (the startup scan).
+ * `blocked` is called when a marker is present ('incomplete') and when the lock is held exclusively
+ * ('in-progress'), so each caller can decide between throwing (an on-demand open) and skipping (the
+ * startup scan).
  */
 export function withRestoreExclusion<T>(dbPath: string, open: () => T, blocked: (state: BlockedRestoreState) => T): T {
 	let token = 0;
@@ -170,11 +202,12 @@ export function withRestoreExclusion<T>(dbPath: string, open: () => T, blocked: 
 		const metaDir = restoreMetaDir(dbPath);
 		if (!existsSync(metaDir)) mkdirSync(metaDir, { recursive: true });
 		token = tryFileLock(restoreLockPath(dbPath), true);
-	} catch {
-		// The exclusion needs a writable metadata directory, and a databases root Harper cannot write
-		// to is not a reason to refuse to load anything from it — that is a strictly worse outcome than
-		// the check-then-open this replaces. Fall back to the marker check alone, which needs only a
-		// read, and which is what every caller did before.
+	} catch (error: any) {
+		// A databases root Harper cannot write to is not a reason to refuse to load anything from it, so
+		// the exclusion degrades to the marker check alone, which needs only a read. Anything else
+		// propagates: silently opening with no exclusion is the window this guard exists to close.
+		if (!isUnwritableRootError(error)) throw error;
+		warnOnceUnwritableRoot(dbPath, error);
 		return pathPresent(restoringMarkerPath(dbPath)) ? blocked('incomplete') : open();
 	}
 	// tryFileLock throws on an open failure and returns 0 only on contention, so a zero token means

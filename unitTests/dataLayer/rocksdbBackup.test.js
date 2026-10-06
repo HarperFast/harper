@@ -69,7 +69,14 @@ describe('rocksdbBackup', function () {
 	after(function () {
 		// blob roots resolve outside storageDir (under the hdb base / configured blobPaths), so clean
 		// them explicitly for every database name these tests touch
-		for (const name of [DB_NAME, `${DB_NAME}-restored`, `${DB_NAME}-occupied`, `${DB_NAME}-blobs`]) {
+		for (const name of [
+			DB_NAME,
+			`${DB_NAME}-restored`,
+			`${DB_NAME}-occupied`,
+			`${DB_NAME}-blobs`,
+			`${DB_NAME}-interrupted`,
+			`${DB_NAME}-foreign`,
+		]) {
 			for (const root of getBlobPathsForDatabaseName(name)) rmSync(root, { recursive: true, force: true });
 			rmSync(backupDirForDatabase(name), { recursive: true, force: true });
 		}
@@ -272,6 +279,32 @@ describe('rocksdbBackup', function () {
 				assert.strictEqual(checkRestoreState(targetDir), 'clear', 'the rerun must clear the marker it inherited');
 				assert.deepStrictEqual(readBackupPins(backupDir), [], 'and release the pin that was blocking every purge');
 			} finally {
+				rmSync(targetDir, { recursive: true, force: true });
+				await purgeBackupsOffline(DB_NAME, 0).catch(() => {});
+			}
+		});
+
+		it("refuses a marked target when the marker is not this source's own interrupted restore", async function () {
+			this.timeout(30000);
+			const TARGET = `${DB_NAME}-foreign`;
+			writeRecords([['alpha', { n: 1 }]]);
+			const first = await createBackupOffline(DB_NAME);
+			await restoreBackupOffline(DB_NAME, first.backup_id, TARGET);
+
+			const targetDir = join(storageDir, TARGET);
+			const backupDir = backupDirForDatabase(DB_NAME);
+			// a marker with no pin in THIS source's repository: debris of a restore out of some other
+			// repository. The marker records only the directory name, so it is not proof of ownership,
+			// and purging on the strength of it would destroy a database this source never claimed.
+			abandonRestore(beginRestore(targetDir));
+			assert.deepStrictEqual(readBackupPins(backupDir), [], 'precondition: this source claims nothing here');
+
+			try {
+				await assert.rejects(restoreBackupOffline(DB_NAME, first.backup_id, TARGET), (error) =>
+					/already exists/.test(error.message)
+				);
+			} finally {
+				completeRestore(beginRestore(targetDir));
 				rmSync(targetDir, { recursive: true, force: true });
 				await purgeBackupsOffline(DB_NAME, 0).catch(() => {});
 			}
@@ -864,8 +897,8 @@ describe('rocksdbBackup', function () {
 			const { first } = await seedTwoBackups();
 			const backupDir = backupDirForDatabase(PINNED);
 
-			// what create_backup faces when a purge is admitted between its engine phase and the
-			// management lock it finalizes under: the id it holds no longer exists
+			// what finalization faces when a writer outside the management lock removes the backup: the
+			// id it holds no longer exists
 			await assertBackupStillPresent(backupDir, first.backup_id, PINNED);
 			await backups.delete(backupDir, first.backup_id);
 			await assert.rejects(

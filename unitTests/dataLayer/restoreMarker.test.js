@@ -413,6 +413,25 @@ describe('restoreMarker', function () {
 			}
 		});
 
+		it('propagates a lock failure that is not an unwritable root, rather than opening unguarded', function () {
+			// Degrading to the marker check is for a root Harper cannot write to. Any other failure means
+			// the exclusion is not in place for a reason nobody chose, and opening anyway would reopen
+			// the check-then-open window this guard exists to close — so it has to be loud.
+			const misconfigured = join(tempDir, 'misconfigured');
+			mkdirSync(misconfigured);
+			// a file where the metadata directory belongs: not a permissions problem, a broken root
+			writeFileSync(join(misconfigured, RESTORE_META_DIR), '');
+			assert.throws(
+				() =>
+					withRestoreExclusion(
+						join(misconfigured, 'somedb'),
+						() => 'opened',
+						() => 'blocked'
+					),
+				/failed to create parent directory/
+			);
+		});
+
 		it('still blocks on a marker when the lock cannot be created', function () {
 			// chmod does not deny these, so the root would be writable and nothing would degrade
 			if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();

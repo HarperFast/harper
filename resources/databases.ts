@@ -2590,6 +2590,11 @@ function openDatabaseRoot(
  * there and is closed the same way.
  */
 function openUnlessBlocked(rootPath: string, dbName: string, load: () => void): void {
+	// A root already in the engine map needs no exclusion: `load` then only re-runs `initStores` and
+	// never opens the directory, and a restore has to close the live handle first anyway (its close
+	// broadcast and `verifyDatabaseClosed` own that). Taking the lock here would make every rescan on
+	// every thread contend with drop and restore, which claim it once and do not wait.
+	if (rocksdbDatabaseEnvs.has(rootPath) || lmdbDatabaseEnvs.has(rootPath)) return void load();
 	withRestoreExclusion(
 		rootPath,
 		() => {

@@ -77,10 +77,10 @@ Three non-obvious mechanics keep that safe:
   directory without re-applying `schemaRegex`, it also explicitly skips the reserved `` `restore` ``
   entry so an out-of-band directory at that name is never loaded as a database. Startup/rescan
   detection (`databasesBlockedByRestore` in `resources/databases.ts` → `scanBlockedRestores` in `dataLayer/restoreMarker.ts`)
-  reads the metadata directory and checks the **marker first**, only probing the lock when the marker exists —
-  probes take the flock and are mutually exclusive across threads, so probing the (persistent) lock
-  file of every long-ago-restored database on every rescan would make concurrent rescans misclassify
-  healthy databases as in-progress. Marker-present + lock-held = restore in progress (don't load);
+  reads the metadata directory and checks the **marker first**, only probing the lock when the marker
+  exists — the probe is shared, so it coexists with other readers, but it is still skipped without a
+  marker so a rescan does no lock work for the (persistent) lock file of every long-ago-restored
+  database. Marker-present + lock-held = restore in progress (don't load);
   marker-present + lock-free = crashed mid-restore (don't load; rerun the restore to recover).
 - **A recovery restore must not clear a pre-existing marker on a pre-destruction failure.**
   `beginRestore` returns `preexisting: true` when a `.restoring` marker was already present (this run
