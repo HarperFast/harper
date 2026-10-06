@@ -337,11 +337,10 @@ jobs:
               if [ "$IS_MERGED" = "true" ]; then
                 # Nothing replayable: the PR's own content exists only in
                 # commits that cannot be replayed. The merge SHA gives a human
-                # something to review, but it is not provably the whole change.
+                # something to review, but it is not provably the whole change,
+                # so it cannot prove the whole change landed either.
                 PICK_SHAS="$MERGE_SHA"
                 HOLD="the PR has no replayable non-merge commits, so this branch was built from the merge commit alone"
-                # Not provably the whole change, so it cannot prove the whole
-                # change landed either.
                 CHANGE_HEAD=""
               elif [ -n "$EXCLUDED_MERGES" ]; then
               echo "pushed=false" >> "$GITHUB_OUTPUT"
@@ -364,11 +363,9 @@ jobs:
 
           # ── Skip a change the release branch already has ────────────────
           #
-          # Replaying it re-applies each intermediate commit against its own
-          # final content, which conflicts. Skip only when one pick of the whole
-          # net change would come out empty — the test apply-picks.sh applies to
-          # each commit — and pick on anything else, including a check that
-          # could not run.
+          # Replaying it commit by commit conflicts: each intermediate commit
+          # meets its own final content. One pick of the whole net change comes
+          # out empty instead, the test apply-picks.sh applies to each commit.
           if [ -n "$CHANGE_HEAD" ] && "$RUNNER_TEMP/change-landed.sh" "origin/$RELEASE_BRANCH" "$CHANGE_BASE" "$CHANGE_HEAD"; then
             echo "The change from PR #$PR_NUMBER is already on $RELEASE_BRANCH — nothing to pick"
             echo "no_op=true" >> "$GITHUB_OUTPUT"
