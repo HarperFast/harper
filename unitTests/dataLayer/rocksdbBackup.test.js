@@ -41,6 +41,13 @@ const { beginRestore, completeRestore, checkRestoreState } = require('#src/dataL
 const { pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } = require('#src/dataLayer/backupRepository');
 const { backups } = require('@harperfast/rocksdb-js');
 const { closeLoadedDatabases } = require('#src/resources/databases');
+const {
+	ARCHIVE_MANIFEST_ENTRY,
+	ARCHIVE_SCHEMA_VERSION,
+	assertArchiveRestorable,
+	parseArchiveManifest,
+} = require('#src/dataLayer/backupArchiveManifest');
+const { readBackupManifest } = require('#src/dataLayer/backupManifest');
 
 const DB_NAME = 'rocksdb-backup-unit-test';
 
@@ -540,7 +547,7 @@ describe('rocksdbBackup', function () {
 		afterEach(async function () {
 			// The online operations reach getDatabases(), whose scan opens every database under
 			// STORAGE_PATH — including the fixtures other tests in this file expect to be closed.
-			closeLoadedDatabases();
+			await closeLoadedDatabases();
 			rmSync(join(storageDir, ORPHAN), { recursive: true, force: true });
 			rmSync(backupDirForDatabase(ORPHAN), { recursive: true, force: true });
 			for (const suffix of ['delete', 'purge']) {
@@ -939,6 +946,137 @@ describe('rocksdbBackup', function () {
 		});
 	});
 
+	describe('managed backup provenance', function () {
+		const PROV_DB = `${DB_NAME}-provenance`;
+
+		afterEach(async function () {
+			await closeLoadedDatabases();
+			rmSync(join(storageDir, PROV_DB), { recursive: true, force: true });
+			rmSync(backupDirForDatabase(PROV_DB), { recursive: true, force: true });
+			for (const root of getBlobPathsForDatabaseName(PROV_DB)) rmSync(root, { recursive: true, force: true });
+		});
+
+		it('records what produced a managed backup in its completion manifest', async function () {
+			this.timeout(30000);
+			const database = RocksDatabase.open(join(storageDir, PROV_DB));
+			try {
+				database.putSync('rec', { n: 1 });
+			} finally {
+				database.close();
+			}
+			const created = await createBackupOffline(PROV_DB);
+
+			const manifest = await readBackupManifest(backupDirForDatabase(PROV_DB), created.backup_id);
+			assert.strictEqual(manifest.blobs, true);
+			assert.ok(manifest.producer, 'a managed backup should record its producer');
+			assert.strictEqual(manifest.producer.database, PROV_DB);
+			assert.ok(manifest.producer.harper_version);
+			assertArchiveRestorable(manifest.producer);
+		});
+
+		// The capability list is only worth recording if something refuses on it, and the `latest` path
+		// is the half that can silently skip the check by rebuilding the manifest instead of reading it.
+		for (const [label, restoreArgs] of [
+			['an explicitly requested backup', (id) => [PROV_DB, id]],
+			['the latest backup', () => [PROV_DB, undefined]],
+		]) {
+			it(`refuses to restore ${label} whose producer requires a capability this build lacks`, async function () {
+				this.timeout(30000);
+				const database = RocksDatabase.open(join(storageDir, PROV_DB));
+				try {
+					database.putSync('rec', { n: 1 });
+				} finally {
+					database.close();
+				}
+				const created = await createBackupOffline(PROV_DB);
+				const backupDir = backupDirForDatabase(PROV_DB);
+
+				const manifestFile = join(backupDir, 'manifests', `${created.backup_id}.json`);
+				const stored = JSON.parse(readFileSync(manifestFile, 'utf8'));
+				stored.producer.requires = [...stored.producer.requires, 'blob-encryption-v2'];
+				writeFileSync(manifestFile, JSON.stringify(stored));
+
+				const sentinel = join(storageDir, PROV_DB, 'CURRENT');
+				assert.ok(existsSync(sentinel), 'precondition: the destination database is on disk');
+
+				await assert.rejects(
+					validateRestoreBackup({ ...SU, database: PROV_DB, backup_id: restoreArgs(created.backup_id)[1] }),
+					(error) => error.statusCode === 400 && /blob-encryption-v2/.test(error.message),
+					'incompatible backups must be refused before submitting a restore job'
+				);
+				await assert.rejects(
+					restoreBackupOffline(...restoreArgs(created.backup_id)),
+					(error) => error.statusCode === 400 && /blob-encryption-v2/.test(error.message)
+				);
+				assert.ok(existsSync(sentinel), 'the destination must not be purged by a refused restore');
+			});
+		}
+
+		// a hand-edited or truncated producer must surface the manifest error, not a TypeError from the
+		// capability check reading `requires` off it
+		it('reports a malformed producer as a manifest error rather than crashing the restore', async function () {
+			this.timeout(30000);
+			const database = RocksDatabase.open(join(storageDir, PROV_DB));
+			try {
+				database.putSync('rec', { n: 1 });
+			} finally {
+				database.close();
+			}
+			const created = await createBackupOffline(PROV_DB);
+
+			const manifestFile = join(backupDirForDatabase(PROV_DB), 'manifests', `${created.backup_id}.json`);
+			const stored = JSON.parse(readFileSync(manifestFile, 'utf8'));
+			delete stored.producer.requires;
+			writeFileSync(manifestFile, JSON.stringify(stored));
+
+			await assert.rejects(
+				restoreBackupOffline(PROV_DB, created.backup_id),
+				(error) => error.statusCode === 400 && /requires/.test(error.message)
+			);
+		});
+
+		// `producer: null` is present-but-unreadable, not absent. Harper only ever writes the key
+		// alongside a value, so this is the malformed case and must not take the legacy path.
+		it('refuses a producer key that is present but null rather than treating it as legacy', async function () {
+			this.timeout(30000);
+			const database = RocksDatabase.open(join(storageDir, PROV_DB));
+			try {
+				database.putSync('rec', { n: 1 });
+			} finally {
+				database.close();
+			}
+			const created = await createBackupOffline(PROV_DB);
+
+			const manifestFile = join(backupDirForDatabase(PROV_DB), 'manifests', `${created.backup_id}.json`);
+			const stored = JSON.parse(readFileSync(manifestFile, 'utf8'));
+			stored.producer = null;
+			writeFileSync(manifestFile, JSON.stringify(stored));
+
+			await assert.rejects(
+				restoreBackupOffline(PROV_DB, created.backup_id),
+				(error) => error.statusCode === 400 && /archive_schema_version/.test(error.message)
+			);
+		});
+
+		it('still restores a backup whose completion manifest predates the producer field', async function () {
+			this.timeout(30000);
+			const database = RocksDatabase.open(join(storageDir, PROV_DB));
+			try {
+				database.putSync('rec', { n: 1 });
+			} finally {
+				database.close();
+			}
+			const created = await createBackupOffline(PROV_DB);
+
+			const manifestFile = join(backupDirForDatabase(PROV_DB), 'manifests', `${created.backup_id}.json`);
+			const stored = JSON.parse(readFileSync(manifestFile, 'utf8'));
+			delete stored.producer;
+			writeFileSync(manifestFile, JSON.stringify(stored));
+
+			await restoreBackupOffline(PROV_DB, created.backup_id);
+		});
+	});
+
 	describe('createBackupStream with blobs', function () {
 		async function extractTarNames(stream) {
 			const names = new Map();
@@ -960,6 +1098,122 @@ describe('rocksdbBackup', function () {
 			await done;
 			return names;
 		}
+
+		async function extractTarOrder(stream) {
+			const chunks = [];
+			for await (const chunk of stream) chunks.push(chunk);
+			const archive = Buffer.concat(chunks);
+			const order = [];
+			for (let offset = 0; offset + 512 <= archive.length;) {
+				const header = archive.subarray(offset, offset + 512);
+				// Stop at the first end marker; tar-stream's extractor accepts intervening zero headers.
+				if (header.every((byte) => byte === 0)) return order;
+				order.push(header.toString('utf8', 0, 100).split('\0')[0]);
+				const sizeField = header.toString('ascii', 124, 136).replace(/\0.*$/, '').trim();
+				assert.match(sizeField, /^[0-7]+$/, 'tar entry size must be octal');
+				const size = Number.parseInt(sizeField, 8);
+				offset += 512 + Math.ceil(size / 512) * 512;
+				assert.ok(offset <= archive.length, 'tar entry must not extend past the archive');
+			}
+			assert.fail('tar archive must have an end marker');
+		}
+
+		it('makes the manifest the first entry of an archive with blobs', async function () {
+			this.timeout(30000);
+			const MANIFEST_DB = `${DB_NAME}-archive-manifest`;
+			const dir = join(storageDir, MANIFEST_DB);
+			const seed = RocksDatabase.open(dir);
+			try {
+				seed.putSync('rec', { blob: 'x' });
+			} finally {
+				seed.close();
+			}
+			writeBlobFile(MANIFEST_DB, join('111', '222', '333'), 'whole-blob');
+
+			const store = RocksDatabase.open(dir);
+			try {
+				const order = await extractTarOrder(createBackupStream(store, MANIFEST_DB, false, false));
+				assert.strictEqual(order[0], ARCHIVE_MANIFEST_ENTRY, 'a reader must identify the archive after a few KB');
+				assert.ok(order.includes('blobs/0/111/222/333'), 'blob entries must precede the first end marker');
+				assert.strictEqual(order.at(-1), 'README.md', 'the final entry must precede the first end marker');
+
+				const entries = await extractTarNames(createBackupStream(store, MANIFEST_DB, false, false));
+				const manifest = parseArchiveManifest(entries.get(ARCHIVE_MANIFEST_ENTRY).toString('utf8'));
+				assert.strictEqual(manifest.archive_schema_version, ARCHIVE_SCHEMA_VERSION);
+				assert.strictEqual(manifest.database, MANIFEST_DB);
+				assert.strictEqual(manifest.blobs, true);
+				assert.strictEqual(manifest.blob_root_count, getBlobPathsForDatabaseName(MANIFEST_DB).length);
+				assertArchiveRestorable(manifest);
+				assert.ok(entries.has('README.md'));
+			} finally {
+				store.close();
+				rmSync(dir, { recursive: true, force: true });
+				for (const root of getBlobPathsForDatabaseName(MANIFEST_DB)) rmSync(root, { recursive: true, force: true });
+			}
+		});
+
+		// In-process this proves nothing: destroying the response stream emits 'close' on it whether or
+		// not the native producer was torn down, and the leaked producer is a native thread, so it is
+		// invisible to `process.getActiveResourcesInfo()` too. The observable is that a process with
+		// nothing left to do actually exits.
+		it('stops the engine-only producer when the consumer aborts', async function () {
+			this.timeout(60000);
+			const child = spawn(process.execPath, [join(__dirname, 'backupStreamAbort-fixture.cjs')], {
+				cwd: join(__dirname, '..', '..'),
+				stdio: ['ignore', 'pipe', 'pipe'],
+			});
+			let stderr = '';
+			child.stderr.on('data', (chunk) => (stderr += chunk));
+			const exited = new Promise((resolve, reject) => {
+				child.on('error', reject);
+				child.on('exit', (code, signal) => resolve({ code, signal }));
+			});
+			const timer = setTimeout(() => child.kill('SIGKILL'), 30000);
+			let result;
+			try {
+				result = await exited;
+			} finally {
+				clearTimeout(timer);
+			}
+			assert.strictEqual(
+				result.signal,
+				null,
+				'the backup producer was left waiting on a stream nobody will ever read again'
+			);
+			assert.strictEqual(result.code, 0, `abort fixture failed: ${stderr}`);
+		});
+
+		it('makes the manifest the first entry of an engine-only archive too, and says so', async function () {
+			this.timeout(30000);
+			const MANIFEST_DB = `${DB_NAME}-archive-manifest-engine`;
+			const dir = join(storageDir, MANIFEST_DB);
+			const seed = RocksDatabase.open(dir);
+			try {
+				seed.putSync('rec', { n: 1 });
+			} finally {
+				seed.close();
+			}
+
+			const store = RocksDatabase.open(dir);
+			try {
+				const order = await extractTarOrder(createBackupStream(store, MANIFEST_DB, false, true));
+				assert.strictEqual(order[0], ARCHIVE_MANIFEST_ENTRY);
+				assert.strictEqual(order.at(-1), 'README.md', 'the final entry must precede the first end marker');
+
+				const entries = await extractTarNames(createBackupStream(store, MANIFEST_DB, false, true));
+				const manifest = parseArchiveManifest(entries.get(ARCHIVE_MANIFEST_ENTRY).toString('utf8'));
+				assert.strictEqual(manifest.blobs, false);
+				assert.strictEqual(manifest.blob_root_count, 0);
+				assert.deepStrictEqual(manifest.requires, ['rocksdb-stream-backup']);
+				assert.ok(
+					![...entries.keys()].some((name) => name.startsWith('blobs/')),
+					'exclude_blobs must still carry no blob entries'
+				);
+			} finally {
+				store.close();
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
 
 		it('packs a PENDING marker for an incomplete blob, keeping the tar valid', async function () {
 			this.timeout(30000);
