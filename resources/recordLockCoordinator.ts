@@ -3114,6 +3114,9 @@ export function receiveLockControlEntry(
 	if (entry?.type !== 'lockRelease') return;
 	const transport = clusterLockTransports.get(database);
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> abdca38e8 (Warn on a hook-less cold-thread release and contain an ownsCoordination throw at the receive boundary)
 	if (!transport) return;
 	let owns: boolean;
 	try {
@@ -3128,9 +3131,12 @@ export function receiveLockControlEntry(
 		warnOnce('a record lock release reached a thread with no coordinator and no relay; it is dropped');
 		return;
 	}
+<<<<<<< HEAD
 =======
 	if (!transport?.relayControlEntry || transport.ownsCoordination()) return;
 >>>>>>> 0eb395a9c (Relay a release from a thread with no coordinator, and contain an asynchronous relay rejection)
+=======
+>>>>>>> abdca38e8 (Warn on a hook-less cold-thread release and contain an ownsCoordination throw at the receive boundary)
 	relayControlEntryContained(transport, database, table, entry, author, position, () =>
 		warnOnce('a record lock release could not be relayed from a thread without a coordinator')
 	);
