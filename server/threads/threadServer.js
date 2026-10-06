@@ -375,6 +375,7 @@ function mirrorBindPath(socketPath) {
 	return join(dirname(socketPath), `.${threadId}.${++mirrorBindSequence}`);
 }
 
+const POOL_BIND_RETRY_MS = 60_000;
 let listening;
 function listenOnPorts() {
 	if (isBun) return listenOnPortsBun();
@@ -437,6 +438,7 @@ function listenOnPorts() {
 			getWorkerIndex() !== ownerWorkerIndex
 		)
 			continue;
+		let bindRetryDeadline;
 		listening.push(
 			new Promise((resolve, reject) => {
 				server
@@ -450,6 +452,12 @@ function listenOnPorts() {
 						// (reusePort) or defer to pool member 0, so this conflict is external: failing startup is
 						// what keeps a pool with no reachable listener from reporting ready.
 						if (poolWorker) {
+							// Without reusePort the outgoing member 0 of a restart may still hold the port while it drains.
+							bindRetryDeadline ??= Date.now() + POOL_BIND_RETRY_MS;
+							if (!listen_on.reusePort && Date.now() < bindRetryDeadline) {
+								setTimeout(() => server.listen(listen_on), 250).unref();
+								return;
+							}
 							logExternalBindConflict(port, err);
 							return reject(err);
 						}
