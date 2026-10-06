@@ -14,6 +14,7 @@
 // `contextStorage.getStore() ?? {}` and opens its OWN transaction (Resource.ts ~L752, ~L797) —
 // so this is a free-standing call, safe to fire at top-level module init.
 import { RequestTarget } from 'harper';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const G = (globalThis.__QA883__ ??= {
 	started: false,
@@ -88,6 +89,60 @@ export class ReplayProbe extends Resource {
 		} finally {
 			clearTimeout(timeout);
 			subscription.end();
+		}
+	}
+}
+
+async function waitForSnapshot(condition) {
+	const deadline = Date.now() + 10_000;
+	while (!condition()) {
+		if (Date.now() >= deadline) throw new Error('Snapshot probe condition did not complete');
+		await sleep(10);
+	}
+}
+
+export class BufferedSnapshotProbe extends Resource {
+	static loadAsInstance = false;
+	async post(query, body) {
+		const { prefix } = await body;
+		const id = `${prefix}000`;
+		for (let i = 0; i < 150; i++) {
+			await tables.Burst.put(`${prefix}${String(i).padStart(3, '0')}`, { seq: 0 }, {});
+		}
+		const notices = [];
+		const sibling = await tables.Burst.subscribe(
+			{ id, omitCurrent: true, listener: (event) => notices.push(event) },
+			{}
+		);
+		let snapshot;
+		try {
+			snapshot = await tables.Burst.subscribe(
+				{
+					isCollection: true,
+					eventFilter: (event) => typeof event.id === 'string' && event.id.startsWith(prefix),
+				},
+				{}
+			);
+			await waitForSnapshot(() => snapshot.queue?.length > 100 && snapshot.currentDrainResolver);
+			if (!snapshot.queue.some((event) => event.id === id && event.value?.seq === 0)) {
+				throw new Error('Snapshot did not scan the old row before pausing');
+			}
+			await tables.Burst.put(id, { seq: 1 }, {});
+			await waitForSnapshot(() => notices.some((event) => event.type === 'put' && event.value?.seq === 1));
+			await tables.Burst.publish(id, { seq: 2 }, {});
+			await waitForSnapshot(() => notices.some((event) => event.type === 'message'));
+			const events = [];
+			snapshot.on('data', (event) => events.push(event));
+			await waitForSnapshot(
+				() => events.some((event) => event.id === `${prefix}149`) && events.some((event) => event.type === 'message')
+			);
+			return {
+				current: (await tables.Burst.get(id, {})).seq,
+				events: events.filter((event) => event.id === id).map((event) => ({ type: event.type, seq: event.value?.seq })),
+			};
+		} finally {
+			snapshot?.end();
+			sibling.end();
 		}
 	}
 }
