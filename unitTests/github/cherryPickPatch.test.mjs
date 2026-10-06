@@ -27,7 +27,8 @@ describe('cherry-pick-patch.yml', function () {
 	});
 
 	afterEach(function () {
-		rmSync(fixture.dir, { recursive: true, force: true });
+		if (fixture) rmSync(fixture.dir, { recursive: true, force: true });
+		fixture = undefined;
 	});
 
 	function incidentPr() {
@@ -90,13 +91,17 @@ describe('cherry-pick-patch.yml', function () {
 		assert.strictEqual(fixture.releaseFile(), fixture.lines(SECOND_FIX), run.log);
 	});
 
-	it('lands a change merged with a merge commit, whose PR head is already on main', function () {
+	it('lands a change merged with a merge commit, whose PR head is already on main, then skips it', function () {
 		fixture.prCommit(FIRST_FIX, 'First fix');
 		fixture.prCommit(SECOND_FIX, 'Second fix');
 		fixture.mergeCommit();
 		const run = fixture.runJob();
 		assert.strictEqual(run.outputs.pick_flags, '-m 1', run.log);
 		assert.strictEqual(fixture.releaseFile(), fixture.lines(SECOND_FIX), run.log);
+		const landedTip = fixture.releaseTip();
+		const rerun = fixture.runJob();
+		assert.strictEqual(rerun.outputs.no_op, 'true', rerun.log);
+		assert.strictEqual(fixture.releaseTip(), landedTip);
 	});
 
 	it('still opens the conflict PR when the release branch changed the same lines differently', function () {
@@ -119,7 +124,9 @@ describe('cherry-pick-patch.yml', function () {
 		fixture.runJob();
 		const run = fixture.runJob({
 			afterStash(temp) {
-				writeFileSync(join(temp, 'change-landed.sh'), '#!/usr/bin/env bash\necho "::warning::check failed"\nexit 2\n');
+				const stub = join(temp, 'change-landed.sh');
+				writeFileSync(stub, '#!/usr/bin/env bash\necho "::warning::check failed"\nexit 2\n');
+				chmodSync(stub, 0o755);
 			},
 		});
 		assert.match(run.log, /::warning::check failed/);
@@ -196,7 +203,8 @@ describe('change-landed.sh', function () {
 	});
 
 	afterEach(function () {
-		rmSync(dir, { recursive: true, force: true });
+		if (dir) rmSync(dir, { recursive: true, force: true });
+		dir = undefined;
 	});
 
 	const changes = {
@@ -502,6 +510,7 @@ function readOutputs(file) {
 		const heredoc = /^(\w+)<<(.+)$/.exec(lines[index]);
 		if (heredoc) {
 			const end = lines.indexOf(heredoc[2], index + 1);
+			if (end < 0) throw new Error(`output ${heredoc[1]} has no closing ${heredoc[2]}`);
 			outputs[heredoc[1]] = lines.slice(index + 1, end).join('\n');
 			index = end;
 			continue;

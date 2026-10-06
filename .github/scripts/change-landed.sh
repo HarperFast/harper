@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
-# Report whether a branch already contains a change.
-#
 # Usage: change-landed.sh <target> <base> <head>
-# Exits 0 when merging <base>..<head> into <target> (three-way, <base> as the
-# merge base) is clean and leaves <target>'s tree unchanged: every hunk of the
-# change is already there verbatim. Exits 1 otherwise — a change that is only
-# partly present, was reverted, or conflicts — and 2, with a warning, when the
-# check cannot run. Only 0 means "skip"; the caller picks on anything else.
+# Exits 0 only when one pick of <base>..<head> onto <target> would come out
+# empty under Git's merge rules: merge-tree with <base> as the merge base is
+# clean and leaves <target>'s tree unchanged. 1 means it would change <target>,
+# 2 that the check could not run. Callers pick on anything but 0.
 set -u
 
 TARGET="$1"
