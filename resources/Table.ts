@@ -6927,7 +6927,7 @@ export function makeTable(options): TableResourceClass {
 						}
 					} else if (!request.omitCurrent) {
 						// The latest record-time the cursor saw, tombstones included; only includeSuperseded
-						// subscribers gate on it (audit-log time domain, unlike `getNextMonotonicTime()`).
+						// subscribers without progress reporting gate on it (audit-log time domain).
 						let cursorMaxTime = 0;
 						// Retained-message semantics: subscriber may legitimately receive a record twice
 						// if a post-subscribe write hits a key the cursor also visits. This is

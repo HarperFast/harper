@@ -68,11 +68,11 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 			// with rocksdb-js iterator we can and should not specify a start time so we just start at the end of the txn log
 			// and still match older version numbers that may commit in the future. But we have to start
 			// immediately so we are at the right position.
-			if (auditStore.reusableIterable) databaseSubscriptions.auditLogIterator = auditStore.getRange({});
+			if (auditStore.reusableIterable) auditStore.subscriptionLogRange = auditStore.getRange({});
 		} else if (!databaseSubscriptions.passYielded && !databaseSubscriptions.dispatching) {
 			notifyFromTransactionData(
 				databaseSubscriptions,
-				auditStore.reusableIterable ? databaseSubscriptions.auditLogIterator : null,
+				auditStore.reusableIterable ? auditStore.subscriptionLogRange : null,
 				false,
 				true
 			);
@@ -94,9 +94,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 				}
 				if (databaseSubscriptions.notifyScheduled) return;
 				databaseSubscriptions.notifyScheduled = true;
-				setImmediate(() =>
-					notifyFromTransactionData(databaseSubscriptions, databaseSubscriptions.auditLogIterator, true)
-				);
+				setImmediate(() => notifyFromTransactionData(databaseSubscriptions, auditStore.subscriptionLogRange, true));
 			});
 		}
 	}
@@ -458,7 +456,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 				setImmediate(() =>
 					notifyFromTransactionData(
 						subscriptions,
-						auditStore.reusableIterable ? subscriptions.auditLogIterator : null,
+						auditStore.reusableIterable ? auditStore.subscriptionLogRange : null,
 						true
 					)
 				);
