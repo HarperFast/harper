@@ -81,12 +81,12 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 				{ messages, tools: toolDefs, system: opts.systemPrompt },
 				{ ...opts.generateOpts, toolMode: 'return', signal: opts.signal }
 			);
+			if (opts.signal?.aborted) return;
 			log.debug?.(
 				`Session ${opts.sessionId} turn ${turn}: finishReason=${result.finishReason} toolCalls=${result.toolCalls?.length ?? 0} contentChars=${result.content?.length ?? 0} completionTokens=${result.usage?.completionTokens ?? 'unknown'}`
 			);
 
-			// Rejected before anything is appended: a recorded partial reply would read as the answer,
-			// and recorded tool calls without responses would make the session's next request invalid.
+			// Must run before appendMessage: nothing from a rejected turn may reach the transcript (agent/DESIGN.md).
 			const rejection = rejectTurn(result, opts.generateOpts?.maxTokens);
 			if (rejection) {
 				await setStatus(opts.sessionId, 'error', rejection);
@@ -124,10 +124,10 @@ function rejectTurn(result: GenerateResult, maxTokens: number | undefined): stri
 	const toolCallCount = result.toolCalls?.length ?? 0;
 	const notExecuted = toolCallCount > 0 ? `; its ${toolCallCount} tool call(s) were not executed` : '';
 	if (result.finishReason === 'length') {
-		return `Model response was cut off at the output-token limit (maxTokens=${maxTokens ?? 'backend default'})${notExecuted}; raise agent.maxTokens.`;
+		return `Model response was cut off (finishReason=length)${notExecuted}: it reached either the output-token limit (maxTokens=${maxTokens ?? 'backend default'}; raise agent.maxTokens) or the model's context window (start a new session).`;
 	}
 	if (result.finishReason === 'content_filter') {
-		return `Model response was stopped by the provider's content filter${notExecuted}.`;
+		return `Model response was stopped by the provider's content filter or a model refusal${notExecuted}.`;
 	}
 	if (toolCallCount > 0) return undefined;
 	if (result.finishReason === 'tool_calls') return 'Model requested a tool call that could not be parsed.';

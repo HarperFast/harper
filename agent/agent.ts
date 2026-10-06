@@ -56,7 +56,7 @@ interface StartOpts {
 	provider?: string;
 	model?: string;
 	maxTurns?: number;
-	maxTokens?: number;
+	maxTokens?: unknown;
 	maxCostUsd?: number;
 	autoApprove?: boolean;
 	allowDestructive?: boolean;
@@ -342,7 +342,7 @@ function resolveScopes(
 	return { componentsRoot: scopedComponents, logDir, configDir };
 }
 
-function mergeConfig(opts: StartOpts): AgentConfig {
+export function mergeConfig(opts: StartOpts): AgentConfig {
 	return {
 		...DEFAULT_CONFIG,
 		...(opts.enabled !== undefined && { enabled: !!opts.enabled }),
@@ -361,11 +361,9 @@ function mergeConfig(opts: StartOpts): AgentConfig {
 }
 
 function resolveMaxTokens(raw: unknown): number {
-	const maxTokens = Number(raw);
-	if (Number.isSafeInteger(maxTokens) && maxTokens > 0) return maxTokens;
-	log.error?.(
-		`agent.maxTokens must be a positive integer, got ${JSON.stringify(raw)}; using ${DEFAULT_CONFIG.maxTokens}`
-	);
+	const maxTokens = typeof raw === 'string' ? Number(raw) : raw;
+	if (Number.isSafeInteger(maxTokens) && (maxTokens as number) > 0) return maxTokens as number;
+	log.error?.(`agent.maxTokens must be a positive integer, got ${String(raw)}; using ${DEFAULT_CONFIG.maxTokens}`);
 	return DEFAULT_CONFIG.maxTokens;
 }
 

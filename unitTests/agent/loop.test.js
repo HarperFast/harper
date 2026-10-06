@@ -456,7 +456,13 @@ describe('agent/loop runAgent', () => {
 	it('ends in error, not completed, when a turn is cut off at maxTokens with no content', async () => {
 		const created = await session.createSession({ user: 'admin' });
 		await session.appendMessage(created.session_id, { role: 'user', content: 'report', createdAt: Date.now() });
-		const models = stubModels([{ content: '', finishReason: 'length' }]);
+		const sentOpts = [];
+		const models = {
+			async generate(_input, generateOpts) {
+				sentOpts.push(generateOpts);
+				return { content: '', finishReason: 'length' };
+			},
+		};
 
 		await runAgent({
 			sessionId: created.session_id,
@@ -467,11 +473,15 @@ describe('agent/loop runAgent', () => {
 			generateOpts: { maxTokens: 1234 },
 		});
 
+		assert.deepEqual(
+			sentOpts.map((o) => o.maxTokens),
+			[1234]
+		);
 		const reloaded = await session.getSession(created.session_id);
 		assert.equal(reloaded.status, 'error');
 		assert.match(reloaded.lastError, /maxTokens=1234/);
 		assert.match(reloaded.lastError, /agent\.maxTokens/);
-		// A blank assistant turn is not recorded: some providers reject it on the session's next request.
+		assert.match(reloaded.lastError, /context window/);
 		assert.deepEqual(
 			reloaded.messages.map((m) => m.role),
 			['user']
@@ -592,7 +602,6 @@ describe('agent/loop runAgent', () => {
 			['user']
 		);
 
-		// The operator re-prompts the errored session: every tool call it sends must have its response.
 		await session.appendMessage(created.session_id, { role: 'user', content: 'try again', createdAt: Date.now() });
 		await runAgent({
 			sessionId: created.session_id,
@@ -610,6 +619,32 @@ describe('agent/loop runAgent', () => {
 		for (const message of sent) {
 			for (const call of message.toolCalls ?? []) assert.ok(answered.has(call.id), `tool call ${call.id} unanswered`);
 		}
+	});
+
+	it('keeps the aborted status when a cancel lands after generate has resolved', async () => {
+		const created = await session.createSession({ user: 'admin' });
+		await session.appendMessage(created.session_id, { role: 'user', content: 'go', createdAt: Date.now() });
+		const controller = new AbortController();
+		const models = {
+			async generate() {
+				controller.abort();
+				await session.setStatus(created.session_id, 'aborted', 'Cancelled by operator');
+				return { content: '', finishReason: 'length' };
+			},
+		};
+
+		await runAgent({
+			sessionId: created.session_id,
+			models,
+			tools: noTools,
+			scopes,
+			maxTurns: 5,
+			signal: controller.signal,
+		});
+
+		const reloaded = await session.getSession(created.session_id);
+		assert.equal(reloaded.status, 'aborted');
+		assert.equal(reloaded.lastError, 'Cancelled by operator');
 	});
 
 	it('preserves aborted status when signal aborts mid-generate', async () => {
