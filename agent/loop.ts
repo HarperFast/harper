@@ -19,6 +19,9 @@ import type { GenerateOpts, GenerateResult, Message, Models, ToolCall, ToolDef }
 import { addPendingApproval, appendMessage, getSession, markApprovalConsumed, setStatus } from './session.ts';
 import type { AgentMessage, AgentScopes, AgentTool, AgentToolContext } from './types.ts';
 import { toolMapByName } from './toolset.ts';
+import harperLogger from '../utility/logging/harper_logger.ts';
+
+const log = harperLogger.loggerWithTag('agent');
 
 export interface RunAgentOpts {
 	sessionId: string;
@@ -78,6 +81,17 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 				{ messages, tools: toolDefs, system: opts.systemPrompt },
 				{ ...opts.generateOpts, toolMode: 'return', signal: opts.signal }
 			);
+			log.debug?.(
+				`Session ${opts.sessionId} turn ${turn}: finishReason=${result.finishReason} toolCalls=${result.toolCalls?.length ?? 0} contentChars=${result.content?.length ?? 0} completionTokens=${result.usage?.completionTokens ?? 'unknown'}`
+			);
+
+			// Rejected before anything is appended: a recorded partial reply would read as the answer,
+			// and recorded tool calls without responses would make the session's next request invalid.
+			const rejection = rejectTurn(result, opts.generateOpts?.maxTokens);
+			if (rejection) {
+				await setStatus(opts.sessionId, 'error', rejection);
+				return;
+			}
 
 			await appendMessage(opts.sessionId, {
 				role: 'assistant',
@@ -103,6 +117,22 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 		await setStatus(opts.sessionId, 'error', err instanceof Error ? err.message : String(err));
 		throw err;
 	}
+}
+
+/** Why a model turn cannot stand as the run's reply or be acted on; undefined when it can. */
+function rejectTurn(result: GenerateResult, maxTokens: number | undefined): string | undefined {
+	const toolCallCount = result.toolCalls?.length ?? 0;
+	const notExecuted = toolCallCount > 0 ? `; its ${toolCallCount} tool call(s) were not executed` : '';
+	if (result.finishReason === 'length') {
+		return `Model response was cut off at the output-token limit (maxTokens=${maxTokens ?? 'backend default'})${notExecuted}; raise agent.maxTokens.`;
+	}
+	if (result.finishReason === 'content_filter') {
+		return `Model response was stopped by the provider's content filter${notExecuted}.`;
+	}
+	if (toolCallCount > 0) return undefined;
+	if (result.finishReason === 'tool_calls') return 'Model requested a tool call that could not be parsed.';
+	if (!result.content?.trim()) return `Model returned an empty response (finishReason=${result.finishReason}).`;
+	return undefined;
 }
 
 /**

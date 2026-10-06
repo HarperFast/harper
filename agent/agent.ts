@@ -37,6 +37,7 @@ const log = harperLogger.loggerWithTag('agent');
 const DEFAULT_CONFIG: AgentConfig = {
 	enabled: false,
 	maxTurns: 50,
+	maxTokens: 16384,
 	maxCostUsd: 5,
 	autoApprove: false,
 	allowDestructive: false,
@@ -55,6 +56,7 @@ interface StartOpts {
 	provider?: string;
 	model?: string;
 	maxTurns?: number;
+	maxTokens?: number;
 	maxCostUsd?: number;
 	autoApprove?: boolean;
 	allowDestructive?: boolean;
@@ -178,7 +180,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			maxTurns: liveConfig.maxTurns,
 			autoApprove: liveConfig.autoApprove,
 			signal: controller.signal,
-			generateOpts: { model: liveConfig.model },
+			generateOpts: { model: liveConfig.model, maxTokens: liveConfig.maxTokens },
 			systemPrompt: composeSystemPrompt(staticSystemPrompt, liveConfig.systemPromptAppend),
 		})
 			.catch((err) => log.error?.(`Agent run failed for ${sessionId}: ${(err as Error)?.message ?? err}`))
@@ -347,6 +349,7 @@ function mergeConfig(opts: StartOpts): AgentConfig {
 		...(opts.provider !== undefined && { provider: String(opts.provider) }),
 		...(opts.model !== undefined && { model: String(opts.model) }),
 		...(opts.maxTurns !== undefined && { maxTurns: Number(opts.maxTurns) }),
+		...(opts.maxTokens !== undefined && { maxTokens: resolveMaxTokens(opts.maxTokens) }),
 		...(opts.maxCostUsd !== undefined && { maxCostUsd: Number(opts.maxCostUsd) }),
 		...(opts.autoApprove !== undefined && { autoApprove: !!opts.autoApprove }),
 		...(opts.allowDestructive !== undefined && { allowDestructive: !!opts.allowDestructive }),
@@ -355,6 +358,15 @@ function mergeConfig(opts: StartOpts): AgentConfig {
 		...(opts.httpFetch !== undefined && { httpFetch: resolveHttpFetchOrDisable(opts.httpFetch) }),
 		...(opts.systemPromptAppend !== undefined && { systemPromptAppend: String(opts.systemPromptAppend) }),
 	};
+}
+
+function resolveMaxTokens(raw: unknown): number {
+	const maxTokens = Number(raw);
+	if (Number.isSafeInteger(maxTokens) && maxTokens > 0) return maxTokens;
+	log.error?.(
+		`agent.maxTokens must be a positive integer, got ${JSON.stringify(raw)}; using ${DEFAULT_CONFIG.maxTokens}`
+	);
+	return DEFAULT_CONFIG.maxTokens;
 }
 
 /** A malformed policy disables the tool rather than the agent: the egress stays closed, the rest stays usable. */

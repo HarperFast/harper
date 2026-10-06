@@ -166,6 +166,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 ## agent/ — built-in agent
 
 - [`http_fetch` egress is fixed at boot and checked on every hop (`agent/tools/httpFetchTool.ts`)](agent/DESIGN.md#http_fetch-egress-is-fixed-at-boot-and-checked-on-every-hop-agenttoolshttpfetchtoolts) — `agent.httpFetch` is built into the tool once at boot, no runtime path can patch it, and each redirect hop is checked before it is sent.
+- [A turn that did not finish is rejected before anything is recorded (`agent/loop.ts`)](agent/DESIGN.md#a-turn-that-did-not-finish-is-rejected-before-anything-is-recorded-agentloopts) — a cut-short, unparsed or empty turn ends the run `error` and appends nothing, so `completed` without `lastError` always means a real final answer.
 
 ## config/
 

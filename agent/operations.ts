@@ -136,12 +136,16 @@ async function setAgentConfig(op: any, deps: OperationDeps) {
 	if (op?.httpFetch !== undefined) {
 		throw new ClientError('agent.httpFetch is fixed at startup; change it in the config file and restart', 400);
 	}
+	if (op?.maxTokens !== undefined && !(Number.isSafeInteger(op.maxTokens) && op.maxTokens > 0)) {
+		throw new ClientError('maxTokens must be a positive integer', 400);
+	}
 	const patch: Partial<AgentConfig> = {};
 	for (const key of [
 		'enabled',
 		'provider',
 		'model',
 		'maxTurns',
+		'maxTokens',
 		'maxCostUsd',
 		'autoApprove',
 		'allowDestructive',

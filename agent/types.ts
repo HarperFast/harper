@@ -80,6 +80,8 @@ export interface AgentConfig {
 	provider?: string;
 	model?: string;
 	maxTurns: number;
+	/** Output-token cap sent with every model request the agent makes. */
+	maxTokens: number;
 	maxCostUsd: number;
 	autoApprove: boolean;
 	allowDestructive: boolean;

@@ -453,6 +453,165 @@ describe('agent/loop runAgent', () => {
 		assert.deepEqual(toolMsgs.map((m) => m.toolCallId).sort(), ['c1', 'c2']);
 	});
 
+	it('ends in error, not completed, when a turn is cut off at maxTokens with no content', async () => {
+		const created = await session.createSession({ user: 'admin' });
+		await session.appendMessage(created.session_id, { role: 'user', content: 'report', createdAt: Date.now() });
+		const models = stubModels([{ content: '', finishReason: 'length' }]);
+
+		await runAgent({
+			sessionId: created.session_id,
+			models,
+			tools: noTools,
+			scopes,
+			maxTurns: 5,
+			generateOpts: { maxTokens: 1234 },
+		});
+
+		const reloaded = await session.getSession(created.session_id);
+		assert.equal(reloaded.status, 'error');
+		assert.match(reloaded.lastError, /maxTokens=1234/);
+		assert.match(reloaded.lastError, /agent\.maxTokens/);
+		// A blank assistant turn is not recorded: some providers reject it on the session's next request.
+		assert.deepEqual(
+			reloaded.messages.map((m) => m.role),
+			['user']
+		);
+	});
+
+	it('ends in error when the model returns an empty reply with finishReason stop', async () => {
+		const created = await session.createSession({ user: 'admin' });
+		await session.appendMessage(created.session_id, { role: 'user', content: 'report', createdAt: Date.now() });
+		const models = stubModels([{ content: '  \n', finishReason: 'stop' }]);
+
+		await runAgent({ sessionId: created.session_id, models, tools: noTools, scopes, maxTurns: 5 });
+
+		const reloaded = await session.getSession(created.session_id);
+		assert.equal(reloaded.status, 'error');
+		assert.match(reloaded.lastError, /empty/i);
+		assert.match(reloaded.lastError, /finishReason=stop/);
+		assert.deepEqual(
+			reloaded.messages.map((m) => m.role),
+			['user']
+		);
+	});
+
+	it('does not record the partial text of a truncated reply as an answer', async () => {
+		const created = await session.createSession({ user: 'admin' });
+		await session.appendMessage(created.session_id, { role: 'user', content: 'report', createdAt: Date.now() });
+		const models = stubModels([{ content: 'Health summary: 1. cluster-a OK 2. clu', finishReason: 'length' }]);
+
+		await runAgent({ sessionId: created.session_id, models, tools: noTools, scopes, maxTurns: 5 });
+
+		const reloaded = await session.getSession(created.session_id);
+		assert.equal(reloaded.status, 'error');
+		assert.match(reloaded.lastError, /maxTokens=backend default/);
+		assert.deepEqual(
+			reloaded.messages.map((m) => m.role),
+			['user']
+		);
+	});
+
+	it('ends in error when the model signals tool_calls but no call could be parsed', async () => {
+		const created = await session.createSession({ user: 'admin' });
+		await session.appendMessage(created.session_id, { role: 'user', content: 'go', createdAt: Date.now() });
+		const models = stubModels([{ content: 'Let me check the logs.', finishReason: 'tool_calls' }]);
+
+		await runAgent({ sessionId: created.session_id, models, tools: noTools, scopes, maxTurns: 5 });
+
+		const reloaded = await session.getSession(created.session_id);
+		assert.equal(reloaded.status, 'error');
+		assert.match(reloaded.lastError, /could not be parsed/);
+	});
+
+	it('ends in error when the provider content filter stops the reply', async () => {
+		const created = await session.createSession({ user: 'admin' });
+		await session.appendMessage(created.session_id, { role: 'user', content: 'report', createdAt: Date.now() });
+		const models = stubModels([{ content: 'Partial', finishReason: 'content_filter' }]);
+
+		await runAgent({ sessionId: created.session_id, models, tools: noTools, scopes, maxTurns: 5 });
+
+		const reloaded = await session.getSession(created.session_id);
+		assert.equal(reloaded.status, 'error');
+		assert.match(reloaded.lastError, /content filter/);
+	});
+
+	it('neither executes nor queues tool calls from a truncated turn, and keeps the transcript resumable', async () => {
+		const created = await session.createSession({ user: 'admin' });
+		await session.appendMessage(created.session_id, { role: 'user', content: 'go', createdAt: Date.now() });
+		const executed = [];
+		const readTool = {
+			def: { name: 'read', description: 'read', parameters: { type: 'object' } },
+			handler: async (args) => {
+				executed.push(['read', args]);
+				return { value: 'data' };
+			},
+		};
+		const writeTool = {
+			def: { name: 'write', description: 'write', parameters: { type: 'object' } },
+			destructive: true,
+			handler: async (args) => {
+				executed.push(['write', args]);
+				return { written: true };
+			},
+		};
+		const requests = [];
+		const turns = [
+			{
+				content: '',
+				finishReason: 'length',
+				toolCalls: [
+					{ id: 'c1', name: 'read', arguments: { what: 'x' } },
+					{ id: 'c2', name: 'write', arguments: { content: 'first half of a fi' } },
+				],
+			},
+			{ content: 'retried properly', finishReason: 'stop' },
+		];
+		const models = {
+			async generate(input) {
+				requests.push(input.messages);
+				return turns[requests.length - 1];
+			},
+		};
+
+		await runAgent({
+			sessionId: created.session_id,
+			models,
+			tools: [readTool, writeTool],
+			scopes,
+			maxTurns: 5,
+			autoApprove: false,
+		});
+
+		let reloaded = await session.getSession(created.session_id);
+		assert.equal(reloaded.status, 'error');
+		assert.match(reloaded.lastError, /2 tool call\(s\) were not executed/);
+		assert.deepEqual(executed, []);
+		assert.deepEqual(reloaded.pendingApprovals, []);
+		assert.deepEqual(
+			reloaded.messages.map((m) => m.role),
+			['user']
+		);
+
+		// The operator re-prompts the errored session: every tool call it sends must have its response.
+		await session.appendMessage(created.session_id, { role: 'user', content: 'try again', createdAt: Date.now() });
+		await runAgent({
+			sessionId: created.session_id,
+			models,
+			tools: [readTool, writeTool],
+			scopes,
+			maxTurns: 5,
+			autoApprove: false,
+		});
+
+		reloaded = await session.getSession(created.session_id);
+		assert.equal(reloaded.status, 'completed');
+		const sent = requests[1];
+		const answered = new Set(sent.filter((m) => m.role === 'tool').map((m) => m.toolCallId));
+		for (const message of sent) {
+			for (const call of message.toolCalls ?? []) assert.ok(answered.has(call.id), `tool call ${call.id} unanswered`);
+		}
+	});
+
 	it('preserves aborted status when signal aborts mid-generate', async () => {
 		const created = await session.createSession({ user: 'admin' });
 		await session.appendMessage(created.session_id, { role: 'user', content: 'go', createdAt: Date.now() });

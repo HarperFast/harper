@@ -710,6 +710,11 @@
 					"minimum": 1,
 					"description": "Maximum tool-call iterations per agent run. Default: 50"
 				},
+				"maxTokens": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Output-token cap sent with every model request the agent makes. Must not exceed the model's own output limit, or the provider rejects the request. A reply cut off at this cap ends the run with status error. Tunable at runtime via set_agent_config; a change applies from the next run. Default: 16384"
+				},
 				"maxCostUsd": {
 					"type": "number",
 					"minimum": 0,
