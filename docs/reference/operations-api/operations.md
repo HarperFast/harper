@@ -1712,7 +1712,7 @@ A session's `status` is one of:
 
 `completed` also covers hitting the `agent.maxTurns` ceiling — in that case `lastError` reads `Reached maxTurns=<n> without a final answer.`, so check it before treating a completed session as finished.
 
-<VersionBadge version="v5.3.2" /> A model reply that did not finish ends the run `error`, never `completed`, and `lastError` says why. That covers a reply cut off at [`agent.maxTokens`](../configuration/options.md#agent) or at the model's context window, one stopped by the provider's content filter or a model refusal, one that asks for tool calls of which none could be parsed, and one with neither text nor tool calls. Nothing from that reply is added to `messages`: its text is dropped, and its tool calls are neither run nor queued for approval. The session can be prompted again. Earlier versions ended such a run `completed`, often with an empty final message, and ran a cut-off tool call with its cut-off arguments.
+As of v5.3.2, a model reply that did not finish ends the run `error`, never `completed`, and `lastError` says why. That covers a reply cut off at [`agent.maxTokens`](../configuration/options.md#agent) or at the model's context window, one stopped by the provider's content filter or a model refusal, one that asks for tool calls of which none could be parsed, and one with neither text nor tool calls. Nothing from that reply is added to `messages`: its text is dropped, and its tool calls are neither run nor queued for approval. The session can be prompted again. Earlier versions ended such a run `completed`, often with an empty final message, and ran a cut-off tool call with its cut-off arguments.
 
 ### `agent_prompt`
 
