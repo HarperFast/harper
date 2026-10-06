@@ -1657,9 +1657,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		return primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 	}
-	// Hoisted out of getNewId() so it is allocated once per table, not once per insert: a
-	// nested function declaration there would be created at every call, including ones that
-	// return before reaching it.
+	// Table-scoped, not nested in getNewId(): a nested declaration is instantiated on every call.
 	function replaceIdAllocation(expectedAllocation, nextAllocation) {
 		const storedAllocation = primaryStore.transactionSync(
 			(transaction) => {
