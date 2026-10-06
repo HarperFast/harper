@@ -249,7 +249,16 @@ async function compressOneArchive(archivePath: string) {
  * The write-path size guard. One subtraction and one branch per flush; one pathname stat once per
  * quantum of this writer's own output.
  */
-export function createRotationGuard(options: any) {
+export function createRotationGuard(options: {
+	logPath: string;
+	maxBytes: number;
+	rotatedLogDir: string;
+	compress?: boolean;
+	getLogIdentity: () => FileIdentity | null;
+	closeLogFile: () => void;
+	report: (message: string) => void;
+	onRotated?: (archivePath: string) => void;
+}) {
 	const { logPath, maxBytes, rotatedLogDir, compress, getLogIdentity, closeLogFile, report, onRotated } = options;
 	const checkQuantum = Math.max(1, Math.floor(maxBytes / CHECK_QUANTUM_DIVISOR));
 	const logDir = dirname(logPath);
