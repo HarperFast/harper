@@ -81,7 +81,7 @@ const componentLoadTails = new Map<string, Promise<void>>();
 type ComponentReadyPromises = WeakMap<object, Promise<void>>;
 
 export type BootLoadFailure = { key: string; name: string; message: string; stack?: string };
-export type BootOutcome = { executed: boolean; skipped: boolean; pending: number; failures: BootLoadFailure[] };
+type BootOutcome = { executed: boolean; skipped: boolean; pending: number; failures: BootLoadFailure[] };
 
 // Allocated only on a worker held for certification. Public component status cannot serve: a status update
 // overwrites a load failure, and a skipped load reports itself loaded.

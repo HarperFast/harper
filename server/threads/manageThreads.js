@@ -1502,7 +1502,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 		// Worker 0 is replaced first, so its replacement is the canary, and what an application runs only in worker 0
 		// is part of the load that decides the release. The requester answers before it is replaced, so it goes last,
 		// unless it is worker 0. Then, where its replacement serves beside it, it is retired once its deploy has
-		// answered, after the rest; elsewhere it is retired at its turn, and its drain keeps its deploy answering.
+		// answered, after the rest; elsewhere it is retired at that replacement's admission, also once it has answered.
 		const workerZero = certification
 			? restarting.find(
 					(worker) =>
@@ -1576,6 +1576,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 				// leave a duplicate once the replacement is up). Restored below if the replacement fails.
 				worker.wasShutdown = true;
 				let retiredForAdmission = false;
+				let predecessorExits;
 				let awaitingPredecessor = false;
 				let startSettled = false;
 				const admission = canPreStartReplacement
@@ -1587,13 +1588,14 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 							try {
 								if (worker === requester && !requesterFirst) await requesterRelease(certification);
 								await untilDecidedDeploysAnswer(worker, onProgress);
+								// A replacement that did not come up meanwhile leaves its predecessor serving.
+								if (startSettled) return;
+								retiredForAdmission = true;
+								if (postShutdown(worker)) predecessorExits = whenShutDownWorkerExits(worker, onProgress);
+								await predecessorExits;
 							} finally {
 								awaitingPredecessor = false;
 							}
-							// A replacement that did not come up meanwhile leaves its predecessor serving.
-							if (startSettled) return;
-							retiredForAdmission = true;
-							if (postShutdown(worker)) await whenShutDownWorkerExits(worker, onProgress);
 						};
 				let newWorker = worker.startCopy(held ? { managed: true, check: checks, admission } : { managed: true });
 				// Likewise suppress auto-restart on the replacement *while it boots*: if it fails to come up
@@ -1604,7 +1606,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 					// Generous backstop so a replacement that deadlocks during init can't wedge the whole
 					// restart forever. Far longer than any legitimate startup, so it never fires in practice.
 					const giveUp = () => {
-						// The ports it waits for are still held by a predecessor answering a decided deploy.
+						// The ports it waits for are still held by a predecessor answering a decided deploy, or draining.
 						if (awaitingPredecessor) {
 							timeout = setTimeout(giveUp, heldReplacementTimeoutMs()).unref();
 							return;
@@ -1669,8 +1671,9 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 						continue;
 					}
 					if (retiredForAdmission) {
-						// Its predecessor is gone, and a held replacement boots with its auto-restart suppressed: start the
-						// slot again, on whichever release is live now.
+						// Its predecessor is retired, and a held replacement boots with its auto-restart suppressed: start the
+						// slot again, on whichever release is live now, once that predecessor has let go of its ports.
+						await predecessorExits;
 						heldReplacementsNotStarted++;
 						if (!processShuttingDown) worker.startCopy();
 					} else {

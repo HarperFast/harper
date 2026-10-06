@@ -1083,10 +1083,12 @@ describe('the release certification gate', function () {
 		}
 	});
 
-	it('keeps a canary waiting on its predecessor past its start backstop, while that predecessor answers its deploy', async function () {
+	it('keeps a canary waiting on its predecessor past its start backstop, while that predecessor answers its deploy and drains', async function () {
 		if (process.platform === 'linux') this.skip();
 		setHeldReplacementTimeout(1000);
 		try {
+			// Once asked, each serving worker takes longer than that backstop to exit, as one its drain holds would.
+			plan([{ outcome: 'loaded' }], { unheldShutdownDelayMs: 2000 });
 			const [requester] = pool;
 			await arm({ requesterThreadId: requester.threadId });
 			const before = started.length;
@@ -1098,6 +1100,7 @@ describe('the release certification gate', function () {
 			await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
 			await rolledOut();
 			assert.ok(requester.exitedAt, 'it was retired once its deploy had answered');
+			assert.equal(started.length - before, 3, 'no replacement was given up on while its predecessor drained');
 			assert.equal(httpWorkers().length, 3);
 		} finally {
 			setHeldReplacementTimeout(undefined);
@@ -1116,6 +1119,26 @@ describe('the release certification gate', function () {
 		await rolledOut();
 		await sleep(200);
 		assert.equal(requester.exitedAt, undefined, 'a replacement that never came up retires nothing');
+	});
+
+	it('starts the slot again only once a predecessor retired at admission has exited, when its canary exits first', async function () {
+		if (process.platform === 'linux') this.skip();
+		// Once asked, the requester takes a while to exit, as one its drain holds would.
+		plan([{ outcome: 'loaded' }], { unheldShutdownDelayMs: 3000 });
+		const [requester] = pool;
+		await arm({ requesterThreadId: requester.threadId });
+		const before = started.length;
+		let askedAt;
+		requester.once('shutdown', () => (askedAt = Date.now()));
+		await commit();
+		assert.equal((await decisionOf()).status, 'certified');
+		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+		await waitFor(() => askedAt, { timeout: 10000, message: 'the requester was never retired' });
+		await started[before].terminate();
+		await waitFor(() => started.length - before > 1, { timeout: 30000, message: 'its slot was never started again' });
+		assert.ok(requester.exitedAt, 'its predecessor had exited');
+		assert.ok(started[before + 1].startedAt >= requester.exitedAt, 'before its slot was started again');
+		await rolledOut();
 	});
 
 	it('retires a requesting worker 0 whose canary needs its ports only once its deploy has answered', async function () {

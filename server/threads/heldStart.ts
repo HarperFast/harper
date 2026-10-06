@@ -7,7 +7,7 @@ import { liveDeploymentId } from '../../components/releaseCertification.ts';
 
 export type HeldStartRequest = { component: string; deploymentId: string };
 
-export type ComponentVerdict = {
+type ComponentVerdict = {
 	component: string;
 	outcome: Exclude<BootVerdictOutcome, 'pending'>;
 	failures: { key: string; name: string; message: string; stack?: string }[];

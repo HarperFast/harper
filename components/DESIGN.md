@@ -112,16 +112,19 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    moves the worker to the end and replaces it once the deploy has answered, beating its progress meanwhile
    (`untilDecidedDeploysAnswer`). A release can also be decided while a worker's replacement boots, as when a
    requesting worker 0's canary decides it, or a plain restart's. Where that replacement serves beside the worker, the
-   worker is retired the same way, after the rest. Where it needs the worker's ports, the worker is retired at admission, also once that deploy has answered, so there the rollout waits for it. The replacement's start backstop waits that out too, and a replacement that does not come up meanwhile leaves the worker serving. A worker retired while its
-   release is still undecided is held by a shutdown drain the deploy registers while its release is armed, bounded by
-   the drain ceiling; a shutdown before the arm closes as it always did. The drain holds only as long as a canary may
-   take, the verdict timeout, because what decides the release may be that release's own rollout, queued behind the
-   restart retiring the worker, as for an isolated release a pool worker requested. Then main decides the release
-   `interrupted` (`interruptCertification`), which restores it as a refusal does, and the deploy answers that rather
-   than being cut off. Only a worker whose
-   deploy waits on a decision this restart's own replacements make stays out of the restart's throttle
-   (`awaitsDecisionPlacedBy`): waiting on its exit would hold back the start that decides it. One whose release only a
-   queued rollout can decide waits its turn like any other, so a pool of such workers never drains out at once. Where
+   worker is retired the same way, after the rest. Where it needs the worker's ports, the worker is retired at
+   admission, also once that deploy has answered, so there the rollout waits for it. The replacement's start backstop
+   waits that out too, and the worker's drain after it. A replacement that does not come up meanwhile leaves the worker
+   serving, and one lost once the worker is retired is started again only after that worker has exited. A worker retired
+   while its release is still undecided is held by a shutdown drain the deploy registers while its release is armed,
+   bounded by the drain ceiling; a shutdown before the arm closes as it always did. The drain waits for the decision
+   only as long as a canary may take, the verdict timeout, because what decides the release may be that release's own
+   rollout, queued behind the restart retiring the worker, as for an isolated release a pool worker requested. Then main
+   decides the release `interrupted` (`interruptCertification`), which restores it as a refusal does, and the deploy
+   answers that rather than being cut off. Only a worker whose deploy waits on a decision this restart's own
+   replacements make stays out of the restart's throttle (`awaitsDecisionPlacedBy`): waiting on its exit would hold back
+   the start that decides it. One whose release only a queued rollout can decide waits its turn like any other, so a
+   pool of such workers never drains out at once. Where
    replacements cannot start beside their predecessors, the copy of any worker still answering a certifying deploy,
    whichever restart retires it, starts only once that worker has exited, since its drain keeps its ports bound until
    the deploy answers. A withdraw
