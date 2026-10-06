@@ -64,4 +64,4 @@ Every `@inquirer`-based one-shot prompt in the codebase (`bin/login.ts`, `bin/de
 
 ## Log-file identity is compared as BigInt (`utility/logging/logGenerationCoordinator.ts` `FileIdentity`)
 
-Every `(dev, ino)` log rotation compares is read with `{ bigint: true }`: Windows reports a 64-bit file ID, and past 2^53 a Number rounds neighbouring files to one value, so a descriptor on an archived generation passes as live. Enforced by the `FileIdentity` type and `unitTests/utility/logging/logFileIdentity.test.js`, which emulates such a volume.
+Every `(dev, ino)` log rotation compares is read with `{ bigint: true }`: Windows reports a 64-bit file ID, and past 2^53 a Number rounds neighbouring files to one value, so a descriptor on an archived generation passes as live. Enforced by the `FileIdentity` type on every identity producer and on the coordinator's sink and announcement API, and by `unitTests/utility/logging/logFileIdentity.test.js`, which emulates such a volume.

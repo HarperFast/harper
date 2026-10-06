@@ -109,7 +109,7 @@ export function rotateLogFileSync(
  * it if requested. The plain archive is only unlinked once that release is proven.
  */
 export async function publishArchivedGeneration(
-	generation: any,
+	generation: ReturnType<typeof rotateLogFileSync>,
 	compress?: boolean,
 	reportCompressionError?: (error: any) => void
 ) {
