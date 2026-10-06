@@ -384,6 +384,7 @@ agent:
   enabled: true
   model: default
   maxTurns: 50
+  maxTokens: 16384
   autoApprove: false
   allowDestructive: false
   user: hdb_agent
@@ -393,6 +394,7 @@ agent:
 - `provider` — Recorded on the session but **not yet used to route the model call** — only `model` reaches the provider. Set the provider through the [`models`](../models/overview.md#configuration) configuration instead
 - `model` — Model id override, passed through to the model call; _Default_: the [`models`](../models/overview.md#configuration) generative default
 - `maxTurns` — Maximum tool-call iterations in a single run; _Default_: `50`
+- `maxTokens` <VersionBadge version="v5.3.2" /> — Output-token cap sent with every model request the agent makes. A reply cut off at this cap ends the run with status `error`, not `completed`; raise it if runs end that way. It must not exceed the model's own output limit, or the provider rejects each request and the run ends `error` with the provider's message, so lower it for a model with a small output limit (some older models allow 4096 or 8192). Before v5.3.2 the agent sent no cap: the Anthropic and Bedrock backends then used 4096, and the OpenAI and Ollama backends sent none; _Default_: `16384`
 - `maxCostUsd` — Intended per-run cost ceiling. **Not enforced** — it is a stored setting only, and nothing checks spend against it; _Default_: `5.00`
 - `autoApprove` — Run without per-action approval gates; _Default_: `false`
 - `allowDestructive` — Include the tools marked destructive in the agent's toolset: `write_file`, the inspector's code-evaluation tools, and any operations tool carrying MCP's [`destructiveHint`](../mcp/tool-metadata.md) (`drop_table`, `delete`, `restart`, `set_configuration`, ...). When `false` they are removed entirely rather than gated. That hint comes from a curated set in core which does not cover every damaging operation, so this is not a complete safety boundary on its own — see [Agent operations](../operations-api/operations.md#agent); _Default_: `false`
@@ -401,7 +403,7 @@ agent:
 - `httpFetch` <VersionBadge version="v5.3.2" /> — Whether the agent has its `http_fetch` tool, and which hosts it may reach: `true`, `false`, or `{ allow: [...] }`. Read at startup only. See [Restricting `http_fetch`](#restricting-http_fetch); _Default_: `true`
 - `systemPromptAppend` — Operator text appended to the agent's system prompt
 
-`enabled`, `provider`, `model`, `maxTurns`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend` can also be changed at runtime with [`set_agent_config`](../operations-api/operations.md#set_agent_config), which applies in memory only. `enabled` is the exception worth knowing: it cannot switch the agent on, because with the agent disabled at startup no agent operation is registered at all.
+`enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend` can also be changed at runtime with [`set_agent_config`](../operations-api/operations.md#set_agent_config), which applies in memory only. `enabled` is the exception worth knowing: it cannot switch the agent on, because with the agent disabled at startup no agent operation is registered at all.
 
 ### Restricting `http_fetch`
 

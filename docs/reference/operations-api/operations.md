@@ -1701,16 +1701,18 @@ A run does not resume across a restart, and nothing reconciles session status at
 
 A session's `status` is one of:
 
-| Status              | Meaning                                                                                       |
-| ------------------- | --------------------------------------------------------------------------------------------- |
-| `idle`              | Created, or resumable — no run in flight                                                      |
-| `running`           | A run is in progress                                                                          |
-| `awaiting_approval` | Paused on one or more destructive tool calls; see `pendingApprovals`                          |
-| `completed`         | The run ended without throwing — a final answer, or the `maxTurns` ceiling; check `lastError` |
-| `aborted`           | Cancelled by an operator via `cancel_agent_run`                                               |
-| `error`             | The run failed; `lastError` carries the message                                               |
+| Status              | Meaning                                                                            |
+| ------------------- | ---------------------------------------------------------------------------------- |
+| `idle`              | Created, or resumable — no run in flight                                           |
+| `running`           | A run is in progress                                                               |
+| `awaiting_approval` | Paused on one or more destructive tool calls; see `pendingApprovals`               |
+| `completed`         | The run ended with a final answer, or at the `maxTurns` ceiling; check `lastError` |
+| `aborted`           | Cancelled by an operator via `cancel_agent_run`                                    |
+| `error`             | The run failed; `lastError` carries the message                                    |
 
 `completed` also covers hitting the `agent.maxTurns` ceiling — in that case `lastError` reads `Reached maxTurns=<n> without a final answer.`, so check it before treating a completed session as finished.
+
+<VersionBadge version="v5.3.2" /> A model reply that did not finish ends the run `error`, never `completed`. That covers a reply cut off at [`agent.maxTokens`](../configuration/options.md#agent), one stopped by the provider's content filter, a tool call the agent could not parse, and a reply with neither text nor tool calls. `lastError` names which. Nothing from that reply is added to `messages`: its text is dropped, and its tool calls are neither run nor queued for approval. The session can be prompted again. Earlier versions ended such a run `completed`, often with an empty final message, and ran a cut-off tool call with its cut-off arguments.
 
 ### `agent_prompt`
 
@@ -1809,7 +1811,7 @@ One gap is worth knowing: changing `allowDestructive` with [`set_agent_config`](
 
 ### `set_agent_config`
 
-Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Each field is described under [`agent`](../configuration/options.md#agent). A request that includes `httpFetch` is rejected with a 400 and nothing in it is applied: the [`http_fetch` policy](../configuration/options.md#restricting-http_fetch) is read at startup only.
+Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Each field is described under [`agent`](../configuration/options.md#agent). A request that includes `httpFetch` is rejected with a 400 and nothing in it is applied: the [`http_fetch` policy](../configuration/options.md#restricting-http_fetch) is read at startup only. A `maxTokens` that is not a positive integer is rejected the same way.
 
 ```json
 { "operation": "set_agent_config", "autoApprove": false, "maxTurns": 20 }
@@ -1818,7 +1820,7 @@ Updates agent settings and returns the resulting configuration. Accepts any of `
 Three limits are worth knowing:
 
 - **The change is in-memory and not persisted.** It applies for the life of the process and is lost on restart; edit `harper-config.yaml` for a durable change.
-- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, and `systemPromptAppend` are all captured at start. Changes take effect on the next run. To stop a run immediately, use `cancel_agent_run`.
+- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, `maxTokens`, and `systemPromptAppend` are all captured at start. Changes take effect on the next run. To stop a run immediately, use `cancel_agent_run`.
 - **`enabled` is not a kill switch.** It cannot turn the agent on — if it was off at startup, this operation does not exist. Setting it to `false` only makes subsequent `agent_prompt` calls return 409; a run already in flight continues, and `approve_agent_action` still resumes a paused one. Use `cancel_agent_run` to stop a run.
 
 ### MCP access
