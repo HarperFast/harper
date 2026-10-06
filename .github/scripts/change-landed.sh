@@ -12,7 +12,10 @@ HEAD="$3"
 
 MERGED=$(git merge-tree --write-tree --merge-base="$BASE" "$TARGET" "$HEAD")
 case $? in
-	0) [ "$MERGED" = "$(git rev-parse "$TARGET^{tree}")" ] ;;
+	0)
+		[ "$MERGED" = "$(git rev-parse "$TARGET^{tree}")" ] && exit 0
+		exit 1
+		;;
 	1) exit 1 ;;
 	*)
 		echo "::warning::could not check whether $TARGET already contains $BASE..$HEAD, so it will be picked"
