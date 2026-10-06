@@ -1,5 +1,6 @@
 require('../testUtils');
 const assert = require('node:assert');
+const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
@@ -11,15 +12,17 @@ const {
 const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
 const { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED } = require('#src/resources/derivedIndexRuntime');
 const { waitFor } = require('../waitFor');
+const fullTextPackageVersion = require('../../package.json').optionalDependencies['@harperfast/fulltext'];
 
 const limits = {
-	indexingThreads: 1,
+	indexingThreads: 2,
 	searchThreads: 1,
-	writerMemoryBytes: 32 * 1024 * 1024,
+	writerMemoryBytes: 64 * 1024 * 1024,
 	maxQueuedCommands: 16,
 	maxQueuedBytes: 64 * 1024 * 1024,
 	maxBatchBytes: 8 * 1024 * 1024,
 };
+const readerLimits = { ...limits, searchThreads: 2 };
 
 function options(storePath, binding, overrides = {}) {
 	return {
@@ -28,7 +31,7 @@ function options(storePath, binding, overrides = {}) {
 		indexId: 'products-title',
 		sourceGeneration: 'table-generation-1',
 		fields: [{ name: 'title', weight: 2 }],
-		analyzer: 'english@1',
+		analyzer: 'english@2',
 		positions: true,
 		surfaceTerms: false,
 		limits,
@@ -60,10 +63,24 @@ class FakeNativeModule {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
 			nativeAbiVersion: 5,
+			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
-			mutationBatchApiVersion: 3,
+			mutationBatchApiVersion: 5,
+			queryApiVersion: 3,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: this.maxCommitPayloadBytes },
+			limits: {
+				maxCommitPayloadBytes: this.maxCommitPayloadBytes,
+				maxRecordIdBytes: 4_096,
+				maxRecordVersionBytes: 4_096,
+				maxCandidateIds: 1_024,
+				maxCandidateBytes: 1024 * 1024,
+				maxSearchWindow: 10_000,
+				maxAutocompleteResults: 100,
+				maxSearchResponseBytes: 8 * 1024 * 1024,
+				maxSearchBudgetMilliseconds: 30_000,
+				maxTraceRecords: 128,
+				maxTraceSourceBytes: 1024 * 1024,
+			},
 		};
 	}
 
@@ -98,6 +115,10 @@ class FakeNativeModule {
 		};
 	}
 
+	async openNativeFullTextReader() {
+		throw Object.assign(new Error('test reader is not configured'), { code: 'E_INDEX_NOT_READY' });
+	}
+
 	async resetNativeFullTextIndex(resetOptions) {
 		this.resets.push(resetOptions);
 		return this.resetResult ?? { state: 'missing' };
@@ -128,12 +149,20 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		if (!supportedTarget) this.skip();
 
 		const binding = await loadFullTextNativeBinding();
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		const runtime = await binding.runtimeInfo();
+		assert.strictEqual(runtime.packageVersion, fullTextPackageVersion);
+		assert.strictEqual(runtime.tantivyVersion, '0.26.2');
+		assert.strictEqual(runtime.nativeAbiVersion, 8);
+		assert.strictEqual(runtime.lifecycleApiVersion, 1);
+		assert.strictEqual(runtime.mutationBatchApiVersion, 5);
+		assert.strictEqual(runtime.queryApiVersion, 3);
+		assert.strictEqual(runtime.queryClassIsolationMinimumSearchThreads, 2);
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding, { surfaceTerms: true }));
 		await lifecycle.initialize();
 		const index = await lifecycle.open();
 		await index.applyMutationBatch(
 			{
-				upserts: [{ id: 'product-1', fields: { title: 'Red running shoes' } }],
+				upserts: [{ id: 'product-1', version: '7', fields: { title: 'Café running shoes' } }],
 				deletes: [],
 			},
 			{ assumeDistinctIds: true, rejectedUpsert: 'delete' }
@@ -145,14 +174,64 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			['product-1']
 		);
 		await index.close({ mode: 'require-clean' });
+		const reader = await binding.openNativeFullTextReader({
+			fields: [{ name: 'title', weight: 2 }],
+			analyzer: 'english@2',
+			positions: true,
+			surfaceTerms: true,
+			limits: readerLimits,
+			path: lifecycle.path,
+			indexId: 'products-title',
+			generation: createHash('sha256').update('table-generation-1').digest('hex'),
+		});
+		assert.strictEqual(reader.committedPayload, 'registry-checkpoint');
+		const readerResult = await reader.search({ text: 'running', limit: 10 });
+		assert.deepStrictEqual(
+			readerResult.hits.map(({ id, version }) => ({ id, version })),
+			[{ id: 'product-1', version: '7' }]
+		);
+		const traced = await reader.traceMatches(
+			{ text: 'cafe', mode: 'any' },
+			[{ id: 'product-1', fields: { title: 'Café running shoes' } }],
+			{ snippets: true, fragmentLength: 40, maxFragmentsPerValue: 1 }
+		);
+		assert.strictEqual(traced.complete, true);
+		assert.deepStrictEqual(traced.records[0].values[0].spans, [{ start: 0, end: 4 }]);
+		assert.strictEqual('Café running shoes'.slice(0, 4), 'Café');
+		const [searchDuringReload] = await Promise.all([reader.search({ text: 'running', limit: 10 }), reader.reload()]);
+		assert.deepStrictEqual(
+			searchDuringReload.hits.map(({ id }) => id),
+			['product-1']
+		);
+		const updater = await lifecycle.open();
+		await updater.publish('registry-checkpoint-2');
+		await updater.close({ mode: 'require-clean' });
+		await reader.reload();
+		assert.strictEqual(reader.committedPayload, 'registry-checkpoint-2');
+		await reader.close();
+		const reweightedReader = await binding.openNativeFullTextReader({
+			fields: [{ name: 'title', weight: 7 }],
+			analyzer: 'english@2',
+			positions: true,
+			surfaceTerms: true,
+			limits: readerLimits,
+			path: lifecycle.path,
+			indexId: 'products-title',
+			generation: createHash('sha256').update('table-generation-1').digest('hex'),
+		});
+		assert.deepStrictEqual(
+			(await reweightedReader.search({ text: 'running', limit: 10 })).hits.map(({ id }) => id),
+			['product-1']
+		);
+		await reweightedReader.close();
 
 		assert.deepStrictEqual(lifecycle.inspect(), {
 			state: 'checkpointed',
-			committedPayload: 'registry-checkpoint',
+			committedPayload: 'registry-checkpoint-2',
 		});
 
 		const nextGeneration = new NativeFullTextDerivedIndexLifecycle(
-			options(storePath, binding, { sourceGeneration: 'table-generation-2' })
+			options(storePath, binding, { sourceGeneration: 'table-generation-2', surfaceTerms: true })
 		);
 		await nextGeneration.initialize();
 		assert.deepStrictEqual(nextGeneration.inspect(), { state: 'incompatible', code: 'E_IDENTITY_MISMATCH' });
@@ -210,7 +289,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await lifecycle.open();
 		assert.strictEqual(binding.runtimeInfoCalls, 1);
 		assert.deepStrictEqual(binding.opens[0].fields, [{ name: 'title', weight: 2 }]);
-		assert.strictEqual(binding.opens[0].analyzer, 'english@1');
+		assert.strictEqual(binding.opens[0].analyzer, 'english@2');
 		assert.strictEqual(binding.opens[0].positions, true);
 		assert.strictEqual(binding.opens[0].surfaceTerms, false);
 		assert.deepStrictEqual(binding.opens[0].limits, limits);
@@ -228,6 +307,49 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			{ path: lifecycle.path, retiredPath: undefined },
 			{ path: lifecycle.path, retiredPath: 'wrapper-owned' },
 		]);
+	});
+
+	it('quiesces query readers before reset and resumes them after success', async () => {
+		const binding = new FakeNativeModule();
+		const events = [];
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(
+			options(storePath, binding, {
+				beforeReset: async () => events.push('paused'),
+				afterReset: () => events.push('resumed'),
+			})
+		);
+		binding.resetNativeFullTextIndex = async (resetOptions) => {
+			events.push('reset');
+			binding.resets.push(resetOptions);
+			return { state: 'missing' };
+		};
+		await lifecycle.initialize();
+		await lifecycle.reset();
+		assert.deepStrictEqual(events, ['paused', 'reset', 'resumed']);
+	});
+
+	it('resumes query readers when reset preparation or native reset fails', async () => {
+		for (const failure of ['prepare', 'reset']) {
+			const binding = new FakeNativeModule();
+			const events = [];
+			const lifecycle = new NativeFullTextDerivedIndexLifecycle(
+				options(storePath, binding, {
+					beforeReset: async () => {
+						events.push('paused');
+						if (failure === 'prepare') throw new Error('pause failed');
+					},
+					afterReset: async () => events.push('resumed'),
+				})
+			);
+			if (failure === 'reset')
+				binding.resetNativeFullTextIndex = async () => {
+					events.push('reset');
+					throw new Error('reset failed');
+				};
+			await lifecycle.initialize();
+			await assert.rejects(lifecycle.reset(), /failed/);
+			assert.deepStrictEqual(events, failure === 'prepare' ? ['paused', 'resumed'] : ['paused', 'reset', 'resumed']);
+		}
 	});
 
 	it('does not block reset on best-effort retired storage reclamation', async () => {
@@ -361,10 +483,24 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
 			nativeAbiVersion: 5,
+			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 2,
-			mutationBatchApiVersion: 3,
+			mutationBatchApiVersion: 5,
+			queryApiVersion: 3,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: 64 * 1024 },
+			limits: {
+				maxCommitPayloadBytes: 64 * 1024,
+				maxRecordIdBytes: 4_096,
+				maxRecordVersionBytes: 4_096,
+				maxCandidateIds: 1_024,
+				maxCandidateBytes: 1024 * 1024,
+				maxSearchWindow: 10_000,
+				maxAutocompleteResults: 100,
+				maxSearchResponseBytes: 8 * 1024 * 1024,
+				maxSearchBudgetMilliseconds: 30_000,
+				maxTraceRecords: 128,
+				maxTraceSourceBytes: 1024 * 1024,
+			},
 		});
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
@@ -376,9 +512,20 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
 			nativeAbiVersion: 5,
+			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: 64 * 1024 },
+			limits: {
+				maxCommitPayloadBytes: 64 * 1024,
+				maxRecordIdBytes: 4_096,
+				maxRecordVersionBytes: 4_096,
+				maxSearchWindow: 10_000,
+				maxAutocompleteResults: 100,
+				maxSearchResponseBytes: 8 * 1024 * 1024,
+				maxSearchBudgetMilliseconds: 30_000,
+				maxTraceRecords: 128,
+				maxTraceSourceBytes: 1024 * 1024,
+			},
 		});
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
@@ -387,7 +534,43 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 	it('rejects an unknown mutation-batch API version', async () => {
 		const binding = new FakeNativeModule();
 		const runtimeInfo = binding.runtimeInfo.bind(binding);
-		binding.runtimeInfo = async () => ({ ...(await runtimeInfo()), mutationBatchApiVersion: 4 });
+		binding.runtimeInfo = async () => ({ ...(await runtimeInfo()), mutationBatchApiVersion: 6 });
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
+	});
+
+	it('requires the native trace source-byte limit', async () => {
+		const binding = new FakeNativeModule();
+		const runtimeInfo = binding.runtimeInfo.bind(binding);
+		binding.runtimeInfo = async () => {
+			const info = await runtimeInfo();
+			delete info.limits.maxTraceSourceBytes;
+			return info;
+		};
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
+	});
+
+	it('requires the native search execution budget', async () => {
+		const binding = new FakeNativeModule();
+		const runtimeInfo = binding.runtimeInfo.bind(binding);
+		binding.runtimeInfo = async () => {
+			const info = await runtimeInfo();
+			delete info.limits.maxSearchBudgetMilliseconds;
+			return info;
+		};
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
+	});
+
+	it('requires the native autocomplete result limit', async () => {
+		const binding = new FakeNativeModule();
+		const runtimeInfo = binding.runtimeInfo.bind(binding);
+		binding.runtimeInfo = async () => {
+			const info = await runtimeInfo();
+			delete info.limits.maxAutocompleteResults;
+			return info;
+		};
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
 	});
@@ -417,6 +600,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		backend.attach({
 			isOwnerEpoch: (epoch) => epoch === 1n,
 			getReadiness: () => ({ state: 'ready', ownerEpoch: 1n, rebuildAttempts: 0 }),
+			publicationChanged() {},
 		});
 		const batch = { ownerEpoch: 1n, transactions: [], records: [], bytes: 800 };
 		assert.strictEqual(backend.deliver(batch), DERIVED_INDEX_ACCEPTED);

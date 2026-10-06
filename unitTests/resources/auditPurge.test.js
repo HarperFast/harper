@@ -36,24 +36,28 @@ describe('purgeAgedLogs', () => {
 				return purgedFiles;
 			},
 		};
-		// A REAL RocksTransactionLogStore, because `updateAuditFloor` branches on `instanceof` and
+		// A REAL RocksTransactionLogStore, because the metadata write branches on `instanceof` and
 		// purgeAgedLogs is typed `rootStore: RocksDatabase` — a plain object would silently route this
 		// test through the LMDB branch and leave the one production path that always uses the RocksDB
 		// branch untested.
 		const auditStandIn = new RocksTransactionLogStore({ useLog: () => ({}) });
-		// Holds what it is given, because updateAuditFloor reads its own write back inside the
-		// transaction to catch a put that failed without saying so. Starts at the baseline a database
-		// that has provably pruned nothing carries; an absent floor would instead mean "unknown", which
-		// a prune deliberately leaves alone.
-		let stored = new Uint8Array(Float64Array.of(1).buffer);
+		// Holds what it is given, per record, because the write reads itself back inside the transaction
+		// to catch a put that failed without saying so. Starts at the baseline a database that has
+		// provably pruned nothing carries: a floor, and the genesis resume floor. An absent floor would
+		// instead mean "unknown", which a prune deliberately leaves alone.
+		const FLOOR_KEY = Symbol.for('audit-floor');
+		const records = new Map([
+			[FLOOR_KEY, new Uint8Array(Float64Array.of(1).buffer)],
+			[Symbol.for('audit-resume-floor'), new Uint8Array(Float64Array.of(0).buffer)],
+		]);
 		const txn = {
-			getBinarySync: () => stored,
-			putSync(_key, value) {
+			getBinarySync: (key) => records.get(key),
+			putSync(key, value) {
 				// the real write wraps the bytes in lmdb's asBinary(), which bypasses both engines' encoders
 				const wrapped = Object.values(value)[0] ?? value;
 				const bytes = Uint8Array.from(Object.values(wrapped));
-				stored = failFloorWrite ? stored : bytes;
-				store.floorWrites.push(new Float64Array(bytes.slice().buffer)[0]);
+				if (!failFloorWrite) records.set(key, bytes);
+				if (key === FLOOR_KEY) store.floorWrites.push(new Float64Array(bytes.slice().buffer)[0]);
 			},
 		};
 		let failFloorWrite = false;
@@ -63,13 +67,13 @@ describe('purgeAgedLogs', () => {
 		// A floorless store is the case where the resolver writes the unknown sentinel, and where a
 		// read-back comparing decoded values alone cannot tell that write from no record at all.
 		store.startFloorless = () => {
-			stored = undefined;
+			records.delete(FLOOR_KEY);
 		};
 		auditStandIn.rootStore = {
 			// RocksTransactionLogStore.getBinary delegates here, which is how raiseAuditFloor's lock-free
 			// pre-check reads the floor
-			getBinarySync: () => stored,
-			// returns the callback's value, as both real engines do: updateAuditFloor requires an
+			getBinarySync: (key) => records.get(key),
+			// returns the callback's value, as both real engines do: the metadata write requires an
 			// explicit `true` because RocksDB swallows an aborted transaction and returns undefined.
 			transactionSync(callback) {
 				order.push('floor');

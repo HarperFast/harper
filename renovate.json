@@ -32,6 +32,18 @@
 			"allowedVersions": "<3.2.1"
 		},
 		{
+			"description": "typescript emits the published dist/ JS and .d.ts, so a compiler major is a runtime and public-type change: never automerge one, and gate it on the Dependency Dashboard. Diff the emitted dist/ against the current compiler before merging.",
+			"matchPackageNames": ["typescript"],
+			"matchUpdateTypes": ["major"],
+			"automerge": false,
+			"dependencyDashboardApproval": true
+		},
+		{
+			"description": "Skip typescript 6.0.x-7.0.x. 7.0.x miscompiles a computed import() in CommonJS output with rewriteRelativeImportExtensions (bare imported names, ReferenceError at runtime; microsoft/typescript-go#4771, fixed for 7.1). 6.0+ stops emitting dist/resources/Table.d.ts until makeTable() has an explicit public type (TS4094 on its #private fields).",
+			"matchPackageNames": ["typescript"],
+			"allowedVersions": "<6.0.0 || >=7.1.0"
+		},
+		{
 			"groupName": "all non-major dependencies",
 			"groupSlug": "all-minor-patch",
 			"matchUpdateTypes": ["minor", "patch"],

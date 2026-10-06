@@ -513,12 +513,6 @@ let addedMetrics;
 let connectionCount = 0;
 
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
-	// A deploy pre-flight validation scope exists only to validate config, and may share a live
-	// component's identity — registering real HTTP/WS handlers from it would splice a validation
-	// run into the live request path, and permanently marking its mount as started below would
-	// leave the REAL scope's later registration silently skipped (review finding).
-	if (scope.isTransientValidation) return;
-
 	const httpOptions = scope.options.getAll();
 	if ((httpOptions as any).includeExpensiveRecordCountEstimates) {
 		// If they really want to enable expensive record count estimates
@@ -620,7 +614,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					let result;
 					while (!(result = await iterator.next()).done) {
 						const messageBinary = await serializeMessage(result.value, request);
-						ws.send(messageBinary);
+						ws.send(messageBinary as string | Buffer<ArrayBuffer>);
 						recordAction(messageBinary.length, 'bytes-sent', request.handlerPath, 'message', 'ws');
 						if ((ws as any)._socket.writableNeedDrain) {
 							await new Promise((resolve) => (ws as any)._socket.once('drain', resolve));

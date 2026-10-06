@@ -14,7 +14,7 @@ import { _assignPackageExport } from '../../globals.js';
 import { Console } from 'console';
 import { inspect, types } from 'node:util';
 import { createRotationGuard, INVALID_MAX_SIZE_MSG, parseMaxSize, resolveRotatedLogDir } from './logRotation.ts';
-import { registerLogSink } from './logGenerationCoordinator.ts';
+import { type FileIdentity, registerLogSink } from './logGenerationCoordinator.ts';
 
 const { isNativeError } = types;
 // store the native write function so we can call it after we write to the log file (and store it on process.stdout
@@ -869,8 +869,8 @@ function getFileLogger(path, rotation, isExternalInstance, rotationPolicy) {
 	let rotationProblemNotice;
 	let logTimeUsage = 0;
 	let rotationGuard,
-		logFDIdentity,
 		nextRotationReport = 0;
+	let logFDIdentity: FileIdentity | null;
 	if (!logger) {
 		logger = logToFile;
 		logger.closeLogFile = closeLogFile;
@@ -1053,7 +1053,7 @@ function getFileLogger(path, rotation, isExternalInstance, rotationPolicy) {
 				// Which generation this descriptor belongs to, recorded once here so the size guard's
 				// checkpoint needs a single pathname stat to tell whether the file has moved under it.
 				try {
-					const opened = fs.fstatSync(logFD);
+					const opened = fs.fstatSync(logFD, { bigint: true });
 					logFDIdentity = { ino: opened.ino, dev: opened.dev };
 				} catch {
 					logFDIdentity = null;

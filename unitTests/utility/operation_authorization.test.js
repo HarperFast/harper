@@ -1295,6 +1295,44 @@ describe('Test operation_authorization', function () {
 			});
 		});
 
+		it('does not treat a full-text index name as a stored attribute', function () {
+			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+			let req_json = clone(TEST_CONDITIONS_JSON);
+			req_json.conditions = [
+				{
+					conditions: [
+						{ search_attribute: 'catalogSearch', search_type: 'matches_phrase', search_value: 'trail shoe' },
+						{ attribute: 'age', comparator: 'gt', value: 2 },
+					],
+				},
+			];
+			let result = getRecordAttributes(req_json);
+			assert.deepStrictEqual(
+				[...result],
+				['age', ...req_json.get_attributes.filter((attribute) => attribute !== 'age')]
+			);
+		});
+
+		it('does not treat full-text result metadata as stored attributes', function () {
+			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+			let req_json = clone(TEST_CONDITIONS_JSON);
+			req_json.get_attributes = ['id', '$score', '$highlights'];
+			let result = getRecordAttributes(req_json);
+			assert(result.has('id'));
+			assert.strictEqual(result.has('$score'), false);
+			assert.strictEqual(result.has('$highlights'), false);
+		});
+
+		it('does not treat an unknown comparator containing matches as full text', function () {
+			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+			let req_json = clone(TEST_CONDITIONS_JSON);
+			req_json.conditions = [
+				{ search_attribute: 'catalogSearch', search_type: 'xmatchesx', search_value: 'trail shoe' },
+			];
+			let result = getRecordAttributes(req_json);
+			assert(result.has('catalogSearch'));
+		});
+
 		it('Nominal case, valid JSON for search_by_conditions w/ deprecated property names', function () {
 			let expected_attrs = ['id', 'age', 'name', 'adorable', 'location', 'owner_name'];
 			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
@@ -1640,6 +1678,16 @@ describe('Test operations permissions', function () {
 			req_json.operation = terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS;
 			const result = op_auth.verifyPerms(req_json, search.searchByConditions.name);
 			assert.equal(result, null);
+		});
+
+		it('preserves full-text metadata selections while expanding a wildcard', function () {
+			const req_json = makeOpUserRequest(['read_only'], { read: true });
+			req_json.operation = terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS;
+			req_json.get_attributes = ['*', '$score', '$highlights'];
+			const result = op_auth.verifyPerms(req_json, search.searchByConditions.name);
+			assert.equal(result, null);
+			assert(req_json.get_attributes.includes('$score'));
+			assert(req_json.get_attributes.includes('$highlights'));
 		});
 
 		it('op NOT in operations list — insert blocked even with table perms', function () {

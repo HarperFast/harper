@@ -31,7 +31,12 @@ interface RotationTransport {
 }
 
 let transport: RotationTransport | undefined;
-type LogSink = { identity(): any; close(): void };
+/**
+ * Which file a descriptor or pathname is on. Read with `{ bigint: true }`: Windows reports a 64-bit file
+ * ID, and past 2^53 a Number rounds two neighbouring files to the same value.
+ */
+export type FileIdentity = { ino: bigint; dev: bigint };
+type LogSink = { identity(): FileIdentity | null; close(): void };
 // A set per path, not one sink: harper_logger caches its file loggers by the raw configured path, so
 // two spellings of one file are two sinks holding two descriptors on it, and a release has to close
 // both. The key is resolved because retention compares resolved paths.
@@ -125,7 +130,10 @@ function requestRelease(message: any, deadline?: number): Promise<{ released: bo
 }
 
 /** One archived generation: release any descriptor still pointing at the inode that was renamed. */
-export async function requestGenerationClose(generation: any, deadline?: number): Promise<boolean> {
+export async function requestGenerationClose(
+	generation: FileIdentity & { generation: string; logPath: string },
+	deadline?: number
+): Promise<boolean> {
 	return (
 		await requestRelease(
 			{
@@ -178,7 +186,7 @@ function releaseStaleDescriptors() {
 	for (const [logPath, sinks] of sinksByPath) {
 		let live;
 		try {
-			live = statSync(logPath);
+			live = statSync(logPath, { bigint: true });
 		} catch {
 			for (const sink of sinks) sink.close();
 			continue;

@@ -11,8 +11,6 @@ const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 const registeredOperations = require('#src/server/serverHelpers/registeredOperations');
 const manageThreads = require('#src/server/threads/manageThreads');
 const operationAuthorizationState = require('#src/server/serverHelpers/operationAuthorizationState');
-const { runWithDeployValidationGuard } = require('#src/server/serverHelpers/deployValidationState');
-const quota = require('#src/components/mcp/quota');
 const operation_function_caller = require('#src/utility/OperationFunctionCaller');
 const logger = require('#src/utility/logging/harper_logger');
 const { contextStorage } = require('#src/resources/transaction');
@@ -90,6 +88,53 @@ describe('Test serverUtilities.js module ', () => {
 			return request;
 		}
 
+		describe('a restart_service that activates a deployment on peers', function () {
+			const activation = {
+				project: 'web',
+				deployment_id: '11111111-1111-1111-1111-111111111111',
+				deployment_row: '22222222-2222-2222-2222-222222222222',
+			};
+			const restartRequest = (permission, extra = {}) => ({
+				operation: 'restart_service',
+				service: 'http_workers',
+				...extra,
+				hdb_user: { active: true, role: { permission, role: 'scoped' }, username: 'scoped_user', ...extra.user },
+			});
+
+			it('is refused to a caller allowed to restart but not to deploy', function () {
+				const allowed = { super_user: false, operations: ['restart_service'] };
+				assert.doesNotThrow(
+					() => serverUtilities.chooseOperation(restartRequest(allowed)),
+					'a plain restart is allowed'
+				);
+				assert.throws(
+					() => serverUtilities.chooseOperation(restartRequest(allowed, { activate_deployment: activation })),
+					(error) => (error.statusCode ?? error.http_code) === 403
+				);
+			});
+
+			it('is refused to a token scoped to restarting', function () {
+				const request = restartRequest(
+					{ super_user: true },
+					{ activate_deployment: activation, user: { tokenOperations: ['restart_service'] } }
+				);
+				assert.throws(
+					() => serverUtilities.chooseOperation(request),
+					(error) => (error.statusCode ?? error.http_code) === 403
+				);
+			});
+
+			it('is allowed to a caller allowed to deploy', function () {
+				const allowed = { super_user: false, operations: ['restart_service', 'deploy_component'] };
+				assert.doesNotThrow(() =>
+					serverUtilities.chooseOperation(restartRequest(allowed, { activate_deployment: activation }))
+				);
+				assert.doesNotThrow(() =>
+					serverUtilities.chooseOperation(restartRequest({ super_user: true }, { activate_deployment: activation }))
+				);
+			});
+		});
+
 		it('rejects write SQL nested in an export job', function () {
 			assert.throws(
 				() => serverUtilities.chooseOperation(exportJobRequest(undefined, 'DELETE FROM data.dog')),
@@ -148,7 +193,7 @@ describe('Test serverUtilities.js module ', () => {
 			};
 			try {
 				registeredOperations.operationRegisteredHandler({
-					message: { name: operationName, originator: 17 },
+					message: { name: operationName, originator: 9_000_017 },
 				});
 				const forward = registeredOperations.getRemoteOperationFunction(operationName, true);
 				assert.strictEqual(typeof forward, 'function');
@@ -277,7 +322,7 @@ describe('Test serverUtilities.js module ', () => {
 			assert.notEqual(validateOperations([GRANTABLE]), null);
 
 			registeredOperations.operationRegisteredHandler({
-				message: { name: GRANTABLE, grantable: true, originator: 31 },
+				message: { name: GRANTABLE, grantable: true, originator: 9_000_031 },
 			});
 
 			assert.equal(validateOperations([GRANTABLE]), null, 'name should be grantable after the announcement');
@@ -285,7 +330,7 @@ describe('Test serverUtilities.js module ', () => {
 
 		it('leaves an op that declared no permission ungrantable', function () {
 			registeredOperations.operationRegisteredHandler({
-				message: { name: PLAIN, grantable: false, originator: 31 },
+				message: { name: PLAIN, grantable: false, originator: 9_000_031 },
 			});
 
 			assert.notEqual(validateOperations([PLAIN]), null);
@@ -296,7 +341,7 @@ describe('Test serverUtilities.js module ', () => {
 			// restartWorkers loads root components before draining old workers, so a startOnMainThread
 			// component can claim a name a retiring worker still offers.
 			registeredOperations.operationRegisteredHandler({
-				message: { name: SHARED, grantable: true, originator: 41 },
+				message: { name: SHARED, grantable: true, originator: 9_000_041 },
 			});
 			registerGrantableOperation(SHARED);
 
@@ -309,12 +354,12 @@ describe('Test serverUtilities.js module ', () => {
 
 		it('retracts grantability when a re-announcement drops the declared permission', function () {
 			registeredOperations.operationRegisteredHandler({
-				message: { name: RETRACTED, grantable: true, originator: 51 },
+				message: { name: RETRACTED, grantable: true, originator: 9_000_051 },
 			});
 			assert.equal(validateOperations([RETRACTED]), null);
 
 			registeredOperations.operationRegisteredHandler({
-				message: { name: RETRACTED, grantable: false, originator: 51 },
+				message: { name: RETRACTED, grantable: false, originator: 9_000_051 },
 			});
 			assert.notEqual(validateOperations([RETRACTED]), null, 'the same thread withdrawing must retract its claim');
 		});
@@ -1108,53 +1153,6 @@ describe('Test serverUtilities.js module ', () => {
 
 		it('allows a non-super_user whose role grants the op via the operations allowlist (SU-bypass)', function () {
 			assert.equal(op_auth.verifyPerms(nonSuRequest(SU_OP, [SU_OP]), SU_OP), null);
-		});
-	});
-
-	// #1809 — process-wide server.* registrations must not leak from a throwaway deploy-validation load.
-	describe('deploy-validation guard: registrations no-op while validating', () => {
-		const CAND_OP = 'validation_candidate_op';
-		const QUOTA_INFO = { tool: 'answer', user: { username: 'u' }, profile: 'application', sessionId: 's' };
-
-		afterEach(() => {
-			serverUtilities.OPERATION_FUNCTION_MAP.delete(CAND_OP);
-			quota.setMcpQuotaHandler(undefined);
-		});
-
-		it('skips server.registerOperation during validation, then resumes after', async () => {
-			await runWithDeployValidationGuard(async () => {
-				server.registerOperation({ name: CAND_OP, execute: async () => ({}) });
-				assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.has(CAND_OP), false, 'not registered during validation');
-			});
-			server.registerOperation({ name: CAND_OP, execute: async () => ({}) });
-			assert.equal(
-				serverUtilities.OPERATION_FUNCTION_MAP.has(CAND_OP),
-				true,
-				'registers normally after the guard lowers'
-			);
-		});
-
-		it('skips server.setMcpQuotaHandler during validation, keeping the live policy', async () => {
-			server.setMcpQuotaHandler(() => ({ allowed: false, message: 'live policy' }));
-			await runWithDeployValidationGuard(async () => {
-				server.setMcpQuotaHandler(() => true); // a candidate trying to disable the live policy
-			});
-			assert.deepEqual(await quota.checkDurableQuota(QUOTA_INFO), { allowed: false, message: 'live policy' });
-		});
-
-		it('lowers the guard even when the validation load throws', async () => {
-			await assert.rejects(
-				runWithDeployValidationGuard(async () => {
-					throw new Error('load failed');
-				}),
-				/load failed/
-			);
-			server.registerOperation({ name: CAND_OP, execute: async () => ({}) });
-			assert.equal(
-				serverUtilities.OPERATION_FUNCTION_MAP.has(CAND_OP),
-				true,
-				'registration works again after a failure'
-			);
 		});
 	});
 });

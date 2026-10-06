@@ -158,14 +158,26 @@ function notifyJobCleanupComplete() {
 
 const listenersByType = new Map();
 const messagesQueuedByType = new Map();
+const { promise: whenThreadsStarted, resolve: threadsHaveStarted } = Promise.withResolvers();
+const initialRestartNumber = workerData?.restartNumber || 1;
+// Identifies this process incarnation, where the PID cannot: a container reuses PID 1. Minted once
+// on the main thread and carried to workers, so live siblings agree on it — one derived per thread
+// would not. `undefined` on a worker started without it; consumers must fall back, not treat that
+// as a mismatch.
+const processIncarnation = workerData ? workerData.processIncarnation : randomBytes(8).toString('hex');
 
+// Every value in this literal is a bare identifier: Node's CommonJS export scan, which supplies the
+// named bindings an ES module import can use, stops reading the literal at the first value that is not.
 module.exports = {
 	startWorker,
 	restartWorkers,
+	canaryVerdictTimeoutMs,
+	setHeldReplacementTimeout,
 	shutdownWorkers,
 	shutdownWorkersNow,
 	workers,
 	setMonitorListener,
+	sampleWorkerELU,
 	onMessageFromWorkers,
 	setIsolatedWorkerReconciler,
 	setRunningIsolatedApplicationsGetter,
@@ -205,12 +217,21 @@ module.exports = {
 	terminateProcessGroupsForThread,
 	isProcessGroupAlive,
 	isThreadRunning,
-	restartNumber: workerData?.restartNumber || 1,
-	// Identifies this process incarnation, where the PID cannot: a container reuses PID 1. Minted once
-	// on the main thread and carried to workers, so live siblings agree on it — one derived per thread
-	// would not. `undefined` on a worker started without it; consumers must fall back, not treat that
-	// as a mismatch.
-	processIncarnation: workerData ? workerData.processIncarnation : randomBytes(8).toString('hex'),
+	certificationRequest,
+	certificationRollout,
+	setCertificationHandler,
+	setCanaryVerdictTimeout,
+	setRootComponentsReload,
+	restartNumber: initialRestartNumber,
+	processIncarnation,
+	whenThreadsStarted,
+	threadsHaveStarted,
+	// Assigned further down once defined. TypeScript 7 only treats keys of this literal as exports and
+	// types them from it, so only a value that cannot be built before the literal belongs here.
+	sendToThread: undefined,
+	getThreadInfo: undefined,
+	getRunningIsolatedApplications: undefined,
+	watchDir: undefined,
 };
 
 connectedPorts.onMessageByType = onMessageByType;
@@ -232,9 +253,6 @@ connectedPorts.sendToThread = function (threadId, message) {
 // Direct thread-to-thread send, so a worker can reach a sibling (e.g. the record lock owner worker)
 // without a hop through main. Returns false when no port for the thread is connected.
 module.exports.sendToThread = connectedPorts.sendToThread;
-module.exports.whenThreadsStarted = new Promise((resolve) => {
-	module.exports.threadsHaveStarted = resolve;
-});
 
 // make sure this is set on all threads, including the main thread (this is no-op
 // if it was already with the execArgv below)
@@ -380,6 +398,8 @@ const RESERVED_WORKER_DATA_KEYS = [
 	'databaseDropPreparations',
 	'noServerStart',
 	'isolatedApplication',
+	'certify',
+	'failClosed',
 	'__proto__', // never a legitimate payload name; spread would define it as an own property
 ];
 const workerDataProviders = new Map();
@@ -498,8 +518,698 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE, null);
 listenersByType.set(THREAD_INFO, null);
 listenersByType.set(RUNNING_ISOLATED_APPLICATIONS, null);
 listenersByType.set(PROCESS_GROUP_TERMINATION_CONFIRMED, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_ADMITTED, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CERTIFICATION_RESPONSE, null);
 
-function startWorker(path, options = {}) {
+/*
+ * Release certification (main thread). While a release is registered here, every HTTP worker started that places it
+ * — a restart's replacement, a crash restart, a dedicated start — is held before it binds a listener. The first held
+ * worker to report decides the release; the rest wait for that decision. components/DESIGN.md has the protocol.
+ */
+const certifications = new Map();
+// A completed certification stays answerable until its requester releases it: a fast refusal can end the rollout
+// before the deploy that requested it reads the decision. Keyed by release, since a later release of the component can
+// complete before then too.
+const settledCertifications = new Map();
+const settledKey = (component, deploymentId) => `${component}\u0000${deploymentId}`;
+const heldStarts = new Set();
+const failClosedInMemory = new Map();
+let certificationHandler;
+const REQUESTER_RELEASE_TIMEOUT_MS = 10000;
+let canaryVerdictTimeoutOverride;
+
+function canaryVerdictTimeoutMs() {
+	return canaryVerdictTimeoutOverride ?? Math.max(threadTerminationTimeout * 2, 60000);
+}
+
+/** Test seam: the replacement backstop is at least a minute, too long to wait out in a unit test. */
+function setCanaryVerdictTimeout(timeoutMs) {
+	canaryVerdictTimeoutOverride = timeoutMs;
+}
+
+let rootComponentsReload;
+/** Test seam: what a restart reloads on main before it replaces a worker, which a unit test has no tree for. */
+function setRootComponentsReload(reload) {
+	rootComponentsReload = reload;
+}
+
+/** components/canaryRollout.ts: durable decisions, the restore, and resolving a registration whose requester died. */
+function setCertificationHandler(handler) {
+	certificationHandler = handler;
+}
+
+function placesCertification(certification, workerOrOptions) {
+	return certification.isolated
+		? workerOrOptions.application === certification.component
+		: !workerOrOptions.application;
+}
+
+function openCertificationsPlacedBy(workerOrOptions) {
+	if (!isMainThread || workerOrOptions.name !== hdbTerms.THREAD_TYPES.HTTP) return [];
+	const placed = [];
+	for (const certification of certifications.values()) {
+		if (!certification.decision && placesCertification(certification, workerOrOptions)) placed.push(certification);
+	}
+	return placed;
+}
+
+function findCertification(component, deploymentId) {
+	const certification = certifications.get(component);
+	if (certification?.deploymentId === deploymentId) return certification;
+	return settledCertifications.get(settledKey(component, deploymentId));
+}
+
+function armCertification({ component, deploymentId, isolated, scope, requesterThreadId }) {
+	const existing = certifications.get(component);
+	if (existing) return { armed: false, reason: existing.deploymentId === deploymentId ? 'in-flight' : 'busy' };
+	// Its last decision is still being read: arming it again would answer that reader, and take its release, instead.
+	if (settledCertifications.has(settledKey(component, deploymentId))) return { armed: false, reason: 'in-flight' };
+	const certification = { component, deploymentId, isolated: Boolean(isolated), scope, requesterThreadId };
+	const placed = workers.some(
+		(worker) =>
+			worker.name === hdbTerms.THREAD_TYPES.HTTP && !worker.wasShutdown && placesCertification(certification, worker)
+	);
+	if (!placed) return { armed: false, reason: 'unavailable' };
+	// A worker already loading was not held for this release, and its load can still reach the release once it goes
+	// live; it reports before it binds, and a report that comes after the commit is refused.
+	for (const worker of workers) {
+		if (
+			worker.name === hdbTerms.THREAD_TYPES.HTTP &&
+			!worker.loadReported &&
+			placesCertification(certification, worker)
+		) {
+			(worker.loadingAcross ??= new Set()).add(certification);
+		}
+	}
+	Object.assign(certification, {
+		phase: 'armed',
+		unarmed: Promise.withResolvers(),
+		decided: Promise.withResolvers(),
+		rolledOut: Promise.withResolvers(),
+		released: Promise.withResolvers(),
+		// Other deploys of the release, activating it while its decision is open: each reads that decision too.
+		joiners: new Map(),
+		mainJoiners: 0,
+		deferredStarts: [],
+		progress: new Set(),
+	});
+	certifications.set(component, certification);
+	return { armed: true };
+}
+
+async function commitCertification(component, deploymentId) {
+	const certification = findCertification(component, deploymentId);
+	if (!certification || certification.phase !== 'armed') return false;
+	certification.phase = 'committed';
+	// Every thread that has loaded its components stops watching this one until the rollout ends: the release on disk
+	// is not theirs to pick up while its canary decides, and a refused one is put back under them. Each has paused
+	// before this answers, so before the requester's own deploy bracket closes.
+	certification.watchersPaused = await pauseWatchersOf(component);
+	certification.unarmed.resolve();
+	// A release goes live in place of the refused one, or that release is being certified again.
+	failClosedInMemory.delete(component);
+	settleHeldStarts();
+	const onProgress = (untilMs) => {
+		for (const listener of certification.progress) listener(untilMs);
+	};
+	restartWorkers(hdbTerms.THREAD_TYPES.HTTP, undefined, true, onProgress, certification.scope, certification).then(
+		(outcome) => completeCertification(certification, outcome),
+		(error) => completeCertification(certification, { error })
+	);
+	return true;
+}
+
+function withdrawCertification(component, deploymentId) {
+	const certification = findCertification(component, deploymentId);
+	// A committed release is live: dropping its registration would leave its rollout replacing workers unchecked.
+	if (!certification || certification.phase !== 'armed') return false;
+	certifications.delete(component);
+	certification.unarmed.resolve();
+	certification.decision ??= { status: 'withdrawn' };
+	certification.decided.resolve(certification.decision);
+	certification.rolledOut.resolve(undefined);
+	settleHeldStarts();
+	startDeferredStarts(certification);
+	return true;
+}
+
+async function completeCertification(certification, outcome) {
+	if (!certification.decision && !outcome?.declined) {
+		// Replacing nothing is not a verdict: a start held back for the release is its canary, as is one still loading.
+		if (!certification.canary && !processShuttingDown) startDeferredStarts(certification);
+		if (certification.canary) await certification.decided.promise;
+	}
+	// A decision already under way stands, even at shutdown: closing before it records would remove its record.
+	if (certification.deciding && !certification.decision) await certification.decided.promise;
+	if (!certification.decision) {
+		const decision =
+			outcome?.declined || outcome?.error
+				? {
+						status: 'interrupted',
+						reason: outcome.error ? errorMessageOf(outcome.error) : 'the process is shutting down',
+					}
+				: { status: 'uncertified', reason: 'no replaced worker loaded it' };
+		await decideCertification(certification, decision);
+	}
+	try {
+		await certificationHandler?.complete?.(certification);
+	} catch (error) {
+		harperLogger.error(
+			`Could not close the certification of ${certification.component}; until its record in deployment ` +
+				`${certification.deploymentId} is removed, or Harper restarts, this node refuses other deploys of it`,
+			error
+		);
+	}
+	if (certifications.get(certification.component) === certification) certifications.delete(certification.component);
+	if (stillRead(certification)) {
+		settledCertifications.set(settledKey(certification.component, certification.deploymentId), certification);
+	}
+	if (certification.watchersPaused) resumeWatchersOf(certification.component, certification.watchersPaused);
+	certification.rolledOut.resolve(outcome);
+	startDeferredStarts(certification);
+}
+
+/** A start made while a release is armed loaded a tree that release's verdict cannot rest on. */
+async function untilNoCertificationArmed() {
+	for (;;) {
+		const armed = [...certifications.values()].find((pending) => pending.phase === 'armed');
+		if (!armed) return;
+		await armed.unarmed.promise;
+	}
+}
+
+/** A deploy bracket of main's own (components/deployLifecycle.ts) over a complete tree: it holds watchers, not loads. */
+function pauseWatchersOf(component) {
+	return require('../../components/deployLifecycle.ts').broadcastDeployStart(component, { watchersOnly: true });
+}
+
+function resumeWatchersOf(component, bracket) {
+	require('../../components/deployLifecycle.ts').broadcastDeployEnd(component, bracket);
+}
+
+function errorMessageOf(error) {
+	return error?.message ?? String(error);
+}
+
+function verdictDecision(certification, components) {
+	const entry = components?.find?.((candidate) => candidate?.component === certification.component);
+	if (!entry) return { status: 'rejected', reason: `the canary reported nothing for ${certification.component}` };
+	if (
+		entry.loadedDeploymentId !== certification.deploymentId ||
+		entry.reportedDeploymentId !== certification.deploymentId
+	) {
+		return {
+			status: 'rejected',
+			reason: `the canary loaded release ${entry.loadedDeploymentId ?? 'none'} rather than ${certification.deploymentId}`,
+		};
+	}
+	if (entry.outcome === 'failed') {
+		const failures = Array.isArray(entry.failures) ? entry.failures : [];
+		return {
+			status: 'rejected',
+			reason: failures.map((failure) => `${failure.key}: ${failure.message}`).join('; ') || 'its load failed',
+			failures,
+		};
+	}
+	if (entry.outcome === 'loaded') return { status: 'certified' };
+	return {
+		status: 'uncertified',
+		reason: entry.outcome === 'skipped' ? 'its load was skipped' : 'the canary did not load it',
+	};
+}
+
+async function decideCertification(certification, decision, canary) {
+	if (certification.decision || certification.deciding) return;
+	certification.deciding = true;
+	certification.refusing = refusesRelease(decision);
+	if (certification.refusing) await stopHeldStartsOf(certification, canary);
+	let settled = await recordDecision(certification, decision);
+	if (settled.status === 'certified' && settled.recordError) {
+		// A certification this node could not make durable is none: its record still reads undecided, and the next boot
+		// would put the predecessor back under a release that had gone on serving.
+		await stopHeldStartsOf(certification);
+		certification.refusing = true;
+		settled = await recordDecision(certification, {
+			status: 'interrupted',
+			reason: `its certification could not be recorded: ${settled.recordError}`,
+		});
+	}
+	certification.decision = settled;
+	certification.decided.resolve(settled);
+	settleHeldStarts();
+	startDeferredStarts(certification);
+}
+
+/** Every held start loading a release about to be refused stops first, so no restore runs under one still holding it. */
+function stopHeldStartsOf(certification, canary) {
+	const stopping = [...heldStarts].filter((held) => held.gated.includes(certification));
+	if (canary && heldStarts.has(canary) && !stopping.includes(canary)) stopping.push(canary);
+	return Promise.all(stopping.map((held) => stopHeldStart(held, certification)));
+}
+
+async function recordDecision(certification, decision) {
+	try {
+		return (await certificationHandler?.decide?.(certification, decision)) ?? decision;
+	} catch (error) {
+		harperLogger.error(`Could not record the certification decision for ${certification.component}`, error);
+		if (refusesRelease(decision)) {
+			failClosedInMemory.set(certification.component, {
+				deploymentId: certification.deploymentId,
+				reason: decision.reason,
+			});
+		}
+		return { ...decision, recordError: errorMessageOf(error) };
+	}
+}
+
+function deferStartBehindCertification(options, start) {
+	for (const certification of openCertificationsPlacedBy(options)) {
+		if (certification.phase === 'armed' || (certification.canary && !certification.decision)) {
+			certification.deferredStarts.push(start);
+			return true;
+		}
+	}
+	return false;
+}
+
+function startDeferredStarts(certification) {
+	const starts = certification.deferredStarts.splice(0);
+	for (const start of starts) {
+		if (processShuttingDown) return;
+		try {
+			start();
+		} catch (error) {
+			harperLogger.error('Could not start a worker held back for a release certification', error);
+		}
+	}
+}
+
+function heldRequests(gated, checks) {
+	const requests = gated.map(({ component, deploymentId }) => ({ component, deploymentId }));
+	for (const check of checks ?? []) {
+		if (!requests.some((request) => request.component === check.component)) requests.push(check);
+	}
+	return requests.length ? requests : undefined;
+}
+
+function holdStart(worker, gated, startOptions) {
+	const held = {
+		worker,
+		gated,
+		checks: startOptions.check ?? [],
+		admission: startOptions.admission,
+		managed: Boolean(startOptions.managed),
+		// Booted before the release could have gone live, so its load says nothing about it.
+		startedWhileArmed: new Set(gated.filter((certification) => certification.phase === 'armed')),
+		components: undefined,
+		settled: false,
+		timer: undefined,
+	};
+	// The first committed start is the canary from the moment it boots, so a crash restart waits behind it and an
+	// exit before any verdict still decides.
+	for (const certification of gated) {
+		if (certification.phase === 'committed' && !certification.canary) certification.canary = worker;
+	}
+	heldStarts.add(held);
+	const onMessage = (message) => {
+		if (message?.type !== hdbTerms.ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT || held.components) return;
+		held.components = Array.isArray(message.components) ? message.components : [];
+		held.loadedAcross = loadedAcrossRelease(worker);
+		clearTimeout(held.timer);
+		settleHeldStart(held);
+	};
+	worker.on('message', onMessage);
+	worker.once('exit', () => {
+		clearTimeout(held.timer);
+		worker.off('message', onMessage);
+		heldStarts.delete(held);
+		if (held.settled) return;
+		held.settled = true;
+		for (const certification of held.gated) {
+			if (certification.canary === worker && !certification.decision) {
+				void decideCertification(certification, {
+					status: 'rejected',
+					reason: 'the canary exited before it reported',
+				});
+			}
+		}
+	});
+	held.timer = setTimeout(() => {
+		if (held.components || held.settled) return;
+		const reason = `the canary did not report within ${canaryVerdictTimeoutMs()}ms`;
+		held.silence = reason;
+		let canaryFor = false;
+		for (const certification of held.gated) {
+			if (
+				certification.decision ||
+				certification.deciding ||
+				held.startedWhileArmed.has(certification) ||
+				(certification.canary && certification.canary !== worker)
+			)
+				continue;
+			certification.canary = worker;
+			canaryFor = true;
+			void decideCertification(certification, { status: 'rejected', reason }, held);
+		}
+		// Not admitted without a report, whichever decision it waited on: nothing else would end it.
+		if (!canaryFor) {
+			harperLogger.warn(
+				`Not admitting worker ${worker.threadId}: it did not report its load within ${canaryVerdictTimeoutMs()}ms`
+			);
+			void stopHeldStart(held);
+		}
+	}, canaryVerdictTimeoutMs()).unref();
+	return held;
+}
+
+function settleHeldStarts() {
+	for (const held of heldStarts) settleHeldStart(held);
+}
+
+function settleHeldStart(held) {
+	if (held.settled || !held.components) return;
+	const open = held.gated.filter((certification) => certifications.get(certification.component) === certification);
+	if (open.some((certification) => certification.phase === 'armed')) return;
+	for (const certification of open) {
+		if (certification.decision || certification.deciding || held.startedWhileArmed.has(certification)) continue;
+		if (certification.canary && certification.canary !== held.worker) continue;
+		certification.canary = held.worker;
+		const decision = verdictDecision(certification, held.components);
+		void decideCertification(certification, decision, decision.status === 'rejected' ? held : undefined);
+	}
+	if (held.gated.some((certification) => !certification.decision)) return;
+	held.settled = true;
+	const refusal = admissionRefusal(held) ?? held.loadedAcross;
+	if (refusal) {
+		harperLogger.warn(`Not admitting worker ${held.worker.threadId}: ${refusal}`);
+		if (refusal === held.loadedAcross) held.worker.loadedAcrossRelease = true;
+		void stopHeldStart(held);
+		return;
+	}
+	Promise.resolve()
+		.then(() => held.admission?.())
+		.then(
+			() => held.worker.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.CHILD_ADMITTED }),
+			(error) => {
+				harperLogger.error(`Could not admit worker ${held.worker.threadId}`, error);
+				return stopHeldStart(held);
+			}
+		)
+		.catch(() => {});
+}
+
+/**
+ * Why a worker that reports its load now must not bind: it was already loading when a release placed on it was armed,
+ * and that release went live before the load ended, so the load may hold it without any gate having checked it.
+ */
+function loadedAcrossRelease(worker) {
+	worker.loadReported = true;
+	const loadingAcross = worker.loadingAcross;
+	worker.loadingAcross = undefined;
+	for (const certification of loadingAcross ?? []) {
+		if (certification.phase !== 'committed') continue;
+		return (
+			`it was already loading when release ${certification.deploymentId} of ${certification.component} went live, ` +
+			'and may have loaded it unchecked'
+		);
+	}
+	return undefined;
+}
+
+/** A worker held for nothing reports its load too, before it binds, and is admitted unless that load crossed a release. */
+function admitOnReport(worker, startOptions) {
+	const onMessage = (message) => {
+		if (message?.type !== hdbTerms.ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT) return;
+		worker.off('message', onMessage);
+		const refusal = loadedAcrossRelease(worker);
+		if (!refusal) {
+			worker.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.CHILD_ADMITTED });
+			return;
+		}
+		harperLogger.warn(`Not admitting worker ${worker.threadId}: ${refusal}`);
+		worker.loadedAcrossRelease = true;
+		void stopWorker(worker);
+		// A restart replaces its own start; anything else is started again, now held for what went live.
+		if (!startOptions.managed && !processShuttingDown) {
+			const start = () => worker.startCopy();
+			if (!deferStartBehindCertification(worker, start)) start();
+		}
+	};
+	worker.on('message', onMessage);
+	worker.once('exit', () => worker.off('message', onMessage));
+}
+
+/** Rejected, or interrupted before a canary decided: either way the release is put back, and nothing runs it. */
+function refusesRelease(decision) {
+	return decision.status === 'rejected' || decision.status === 'interrupted';
+}
+
+function admissionRefusal(held) {
+	const entryFor = (component) => held.components.find((candidate) => candidate?.component === component);
+	for (const certification of held.gated) {
+		if (certification.decision.status === 'withdrawn') continue;
+		if (refusesRelease(certification.decision)) {
+			return `it loaded ${certification.component}, whose release was not certified`;
+		}
+		const entry = entryFor(certification.component);
+		if (entry?.loadedDeploymentId !== certification.deploymentId) {
+			return `it loaded a different release of ${certification.component} than the one certified`;
+		}
+		// The canary's load certified the release, not this worker's own load of it.
+		if (certification.decision.status === 'certified' && entry.outcome !== 'loaded') return loadFailure(entry);
+	}
+	for (const check of held.checks) {
+		const entry = entryFor(check.component);
+		if (entry?.outcome !== 'loaded' || entry.loadedDeploymentId !== check.deploymentId) {
+			return loadFailure(entry, check.component);
+		}
+	}
+	return undefined;
+}
+
+function loadFailure(entry, component = entry.component) {
+	return `${component} did not load: ${
+		entry?.failures?.map((failure) => failure.message).join('; ') || entry?.outcome || 'no verdict'
+	}`;
+}
+
+function stopHeldStart(held, refused) {
+	if (held.stopping) return held.stopping;
+	held.settled = true;
+	held.worker.stoppedByGate = true;
+	const stopping = (held.stopping = stopWorker(held.worker));
+	// Settled, its exit decides nothing, so a release it is still the canary of is decided here rather than left waiting.
+	for (const certification of held.gated) {
+		if (certification.canary !== held.worker || certification.decision || certification.deciding) continue;
+		void decideCertification(certification, stoppedCanaryDecision(held, certification, refused));
+	}
+	// A restart keeps the worker a managed start would have replaced; nothing else restarts an unmanaged one. Its copy
+	// starts once the decision is made, so it loads whatever release that leaves live.
+	if (!held.managed && !processShuttingDown) {
+		const start = () => held.worker.startCopy();
+		if (!deferStartBehindCertification(held.worker, start)) start();
+	}
+	return stopping;
+}
+
+/** What a canary that is being stopped says of a release: its report or its silence, and only failing both, nothing. */
+function stoppedCanaryDecision(held, certification, refused) {
+	if (held.silence) return { status: 'rejected', reason: held.silence };
+	if (held.components && !held.startedWhileArmed.has(certification)) {
+		return verdictDecision(certification, held.components);
+	}
+	return {
+		status: 'interrupted',
+		reason: refused
+			? `its canary was stopped when release ${refused.deploymentId} of ${refused.component}, which it also loaded, was refused`
+			: 'its canary was stopped before it reported',
+	};
+}
+
+function certificationDecision(component, deploymentId) {
+	const certification = findCertification(component, deploymentId);
+	return certification ? certification.decided.promise : Promise.resolve(undefined);
+}
+
+function certificationRollout(component, deploymentId, onProgress) {
+	const certification = findCertification(component, deploymentId);
+	if (!certification) return Promise.resolve(undefined);
+	if (onProgress) certification.progress.add(onProgress);
+	return certification.rolledOut.promise.finally(() => certification.progress.delete(onProgress));
+}
+
+function releaseCertificationRequester(component, deploymentId) {
+	const certification = findCertification(component, deploymentId);
+	if (!certification) return;
+	certification.requesterReleased = true;
+	certification.released.resolve();
+	forgetIfUnread(certification);
+	noteAnswered();
+}
+
+let answered = Promise.withResolvers();
+/** A deploy stopped answering: it released, left, or its worker exited. */
+function noteAnswered() {
+	answered.resolve();
+	answered = Promise.withResolvers();
+}
+
+/**
+ * A worker's joiner is answering a deploy as its requester is; main's counts only toward keeping the decision. Joins
+ * are counted per thread, since one worker can run two such deploys at once.
+ */
+function joinCertification(component, deploymentId, threadId) {
+	const certification = findCertification(component, deploymentId);
+	if (!certification) return false;
+	if (threadId === undefined) certification.mainJoiners++;
+	else certification.joiners.set(threadId, (certification.joiners.get(threadId) ?? 0) + 1);
+	return true;
+}
+
+function leaveCertification(component, deploymentId, threadId) {
+	const certification = findCertification(component, deploymentId);
+	if (!certification) return;
+	if (threadId === undefined) {
+		certification.mainJoiners = Math.max(0, certification.mainJoiners - 1);
+	} else {
+		const joins = (certification.joiners.get(threadId) ?? 0) - 1;
+		if (joins > 0) certification.joiners.set(threadId, joins);
+		else certification.joiners.delete(threadId);
+	}
+	forgetIfUnread(certification);
+	noteAnswered();
+}
+
+/**
+ * Its requesting worker is being retired before the release could be decided, as when that release's own rollout
+ * queues behind the restart retiring it. Deciding it interrupted restores as a refusal does, so the deploy answers with
+ * that rather than being cut off.
+ */
+function interruptCertification(component, deploymentId, threadId) {
+	const certification = certifications.get(component);
+	if (certification?.deploymentId !== deploymentId || certification.phase !== 'committed') return false;
+	if (certification.decision || certification.deciding || certification.requesterThreadId !== threadId) return false;
+	void decideCertification(certification, {
+		status: 'interrupted',
+		reason: 'its requesting worker was retired before its canary could decide',
+	});
+	return true;
+}
+
+function stillRead(certification) {
+	return (
+		!(certification.requesterReleased || certification.requesterExited) ||
+		certification.joiners.size > 0 ||
+		certification.mainJoiners > 0
+	);
+}
+
+function forgetIfUnread(certification) {
+	const key = settledKey(certification.component, certification.deploymentId);
+	if (settledCertifications.get(key) === certification && !stillRead(certification)) settledCertifications.delete(key);
+}
+
+function failClosedComponentsPlacedBy(options) {
+	if (!isMainThread || options.name !== hdbTerms.THREAD_TYPES.HTTP || failClosedInMemory.size === 0) return undefined;
+	const failClosed = {};
+	for (const [component, refusal] of failClosedInMemory) failClosed[component] = refusal;
+	return failClosed;
+}
+
+const CERTIFICATION_ACTIONS = {
+	arm: (payload, requesterThreadId) =>
+		armCertification({ ...payload, requesterThreadId: payload.requesterThreadId ?? requesterThreadId }),
+	commit: ({ component, deploymentId }) => commitCertification(component, deploymentId),
+	withdraw: ({ component, deploymentId }) => withdrawCertification(component, deploymentId),
+	decision: ({ component, deploymentId }) => certificationDecision(component, deploymentId),
+	release: ({ component, deploymentId }) => releaseCertificationRequester(component, deploymentId),
+	join: ({ component, deploymentId }, threadId) => joinCertification(component, deploymentId, threadId),
+	leave: ({ component, deploymentId }, threadId) => leaveCertification(component, deploymentId, threadId),
+	interrupt: ({ component, deploymentId }, threadId) => interruptCertification(component, deploymentId, threadId),
+	// Whether a preparation must wait for this release where its record cannot say: its refusal's restore must not.
+	open: ({ component, deploymentId }) => {
+		const certification = certifications.get(component);
+		return certification?.deploymentId === deploymentId && !certification.refusing;
+	},
+};
+
+let nextCertificationRequestId = 0;
+/** Works on every thread: main answers directly, a worker asks main over its port. */
+function certificationRequest(action, payload) {
+	if (isMainThread) {
+		return Promise.resolve().then(() => CERTIFICATION_ACTIONS[action](payload, undefined));
+	}
+	return new Promise((resolve, reject) => {
+		const requestId = ++nextCertificationRequestId;
+		const onMessage = (message) => {
+			if (message?.type !== hdbTerms.ITC_EVENT_TYPES.CERTIFICATION_RESPONSE || message.requestId !== requestId) return;
+			parentPort.off('message', onMessage);
+			if (message.error) reject(new Error(message.error));
+			else resolve(message.result);
+		};
+		parentPort.on('message', onMessage);
+		try {
+			parentPort.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.CERTIFICATION_REQUEST, requestId, action, payload });
+		} catch (error) {
+			parentPort.off('message', onMessage);
+			reject(error);
+		}
+	});
+}
+
+function registerCertificationRequests() {
+	onMessageByType(hdbTerms.ITC_EVENT_TYPES.CERTIFICATION_REQUEST, (message, port) => {
+		const respond = (reply) => {
+			try {
+				port?.postMessage({
+					type: hdbTerms.ITC_EVENT_TYPES.CERTIFICATION_RESPONSE,
+					requestId: message.requestId,
+					...reply,
+				});
+			} catch {
+				// the requester is gone; main owns the certification regardless
+			}
+		};
+		const handle = CERTIFICATION_ACTIONS[message.action];
+		if (!handle) return respond({ error: `Unknown certification action ${message.action}` });
+		Promise.resolve()
+			.then(() => handle(message.payload ?? {}, port?.threadId))
+			.then(
+				(result) => respond({ result }),
+				(error) => respond({ error: errorMessageOf(error) })
+			);
+	});
+	onThreadExit((threadId) => {
+		for (const registry of [certifications, settledCertifications]) {
+			for (const certification of [...registry.values()]) {
+				if (certification.requesterThreadId === threadId) {
+					certification.requesterExited = true;
+					certification.released.resolve();
+				}
+				certification.joiners.delete(threadId);
+				forgetIfUnread(certification);
+			}
+		}
+		noteAnswered();
+		for (const certification of certifications.values()) {
+			if (certification.phase !== 'armed' || certification.requesterThreadId !== threadId) continue;
+			Promise.resolve(certificationHandler?.resolveArmed?.(certification))
+				.then((resolution) => {
+					if (resolution === 'committed') void commitCertification(certification.component, certification.deploymentId);
+					else withdrawCertification(certification.component, certification.deploymentId);
+				})
+				.catch((error) => {
+					// Whether the swap happened is unknown, so the release is treated as live: a canary loading the
+					// previous release instead rejects on its generation, and the restore finds that one live.
+					harperLogger.error(`Could not resolve the certification of ${certification.component}`, error);
+					void commitCertification(certification.component, certification.deploymentId);
+				});
+		}
+	});
+}
+
+function startWorker(path, options = {}, startOptions = {}) {
 	if (processShuttingDown) {
 		const error = new Error('Cannot start a worker while the Harper process is shutting down');
 		error.code = 'ERR_HARPER_PROCESS_SHUTTING_DOWN';
@@ -569,6 +1279,8 @@ function startWorker(path, options = {}) {
 	// Only a start that declares the serving topology may write it; see DESIGN.md on the two workerCounts.
 	if (typeof options.threadCount === 'number') workerCount = options.threadCount;
 
+	const gated = openCertificationsPlacedBy(options);
+	const certify = heldRequests(gated, startOptions.check);
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
 		resourceLimits: {
 			maxOldGenerationSizeMb: maxOldMemory,
@@ -590,6 +1302,10 @@ function startWorker(path, options = {}) {
 			processIncarnation: module.exports.processIncarnation,
 			ticketKeys: getTicketKeys(),
 			databaseDropPreparations: databaseDropPreparationSnapshot(),
+			certify,
+			// Main answers its load report, held or not, so it waits to be admitted before it binds.
+			reportsLoad: options.name === hdbTerms.THREAD_TYPES.HTTP,
+			failClosed: failClosedComponentsPlacedBy(options),
 		},
 		transferList: portsToSend,
 		...options,
@@ -610,10 +1326,10 @@ function startWorker(path, options = {}) {
 	}
 	addPort(worker, true, isJobWorker);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
-	worker.startCopy = () => {
+	worker.startCopy = (copyOptions) => {
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
 		// to die, to ensure there is no loss of service and maximum availability.
-		return startWorker(path, options);
+		return startWorker(path, options, copyOptions);
 	};
 	worker.on('error', (error) => {
 		// log errors, and it also important that we catch errors so we can recover if a thread dies (in a recoverable
@@ -631,7 +1347,8 @@ function startWorker(path, options = {}) {
 			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;
-				startWorker(path, options);
+				const restart = () => startWorker(path, options);
+				if (!deferStartBehindCertification(options, restart)) restart();
 			} else {
 				harperLogger.error(`Thread has been restarted ${worker.unexpectedRestarts} times and will not be restarted`);
 				options.onRestartExhausted?.(worker);
@@ -642,7 +1359,10 @@ function startWorker(path, options = {}) {
 	startMonitoring();
 	if (options.onStarted) options.onStarted(worker); // notify that it is ready
 	worker.name = options.name;
+	worker.workerIndex = options.workerIndex;
 	worker.application = options.application; // the isolated application this worker is dedicated to, if any
+	if (certify) holdStart(worker, gated, startOptions);
+	else if (options.name === hdbTerms.THREAD_TYPES.HTTP) admitOnReport(worker, startOptions);
 	return worker;
 }
 
@@ -669,15 +1389,35 @@ const OVERLAPPING_RESTART_TYPES = [hdbTerms.THREAD_TYPES.HTTP];
  * behavior, explicit undefined restarts the shared pool only, a name restarts only that application's
  * dedicated worker, and '*' restarts all.
  */
+let replacementRestarts = Promise.resolve();
 async function restartWorkers(
 	name = null,
 	maxWorkersDown = Math.max(Math.floor(workerCount / 8), 1), // restart 1/8 of the threads at a time, but at least 1
 	startReplacementThreads = true,
 	onProgress = null,
-	application = undefined
+	application = undefined,
+	certification = undefined
 ) {
 	if (arguments.length < 5) application = '*';
 	if (isMainThread) {
+		if (!startReplacementThreads) return replaceWorkers(name, maxWorkersDown, false, onProgress, application);
+		// One at a time, so no restart starts a worker on a release another restart's canary has not decided.
+		const replacing = replacementRestarts.then(() =>
+			replaceWorkers(name, maxWorkersDown, true, onProgress, application, certification)
+		);
+		replacementRestarts = replacing.catch(() => {});
+		return replacing;
+	} else {
+		parentPort.postMessage({
+			type: RESTART_TYPE,
+			workerType: name,
+			scope: encodeRestartScope(application),
+		});
+	}
+}
+
+async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onProgress, application, certification) {
+	{
 		// Declining is not the same as delegating: a caller reporting on the restart must not read this
 		// as "another thread is completing it".
 		if (processShuttingDown && startReplacementThreads) return { declined: true };
@@ -704,7 +1444,7 @@ async function restartWorkers(
 		if (coversEveryWorker) resetRestartNeeded();
 		// This is here to prevent circular dependencies
 		if (startReplacementThreads) {
-			const { loadRootComponents } = require('../loadRootComponents.js');
+			const loadRootComponents = rootComponentsReload ?? require('../loadRootComponents.js').loadRootComponents;
 			// Installing and loading every root component reports nothing and can outlast a caller's idle
 			// window on its own (a cold npm cache, a large dependency graph), so beat while it runs. The
 			// caller's absolute ceiling is what bounds a load that never finishes.
@@ -744,6 +1484,7 @@ async function restartWorkers(
 		// costs capacity until startWorker's auto-restart brings a fresh one up.
 		let workersKeptOnOldCode = 0;
 		let replacementsNotStarted = 0;
+		let heldReplacementsNotStarted = 0;
 		let replacementsFailedToStart = 0;
 		// We can only start the replacement *before* the old worker releases its port when the OS lets
 		// both listen on the same port at once (SO_REUSEPORT). Without that — Windows (no SO_REUSEPORT),
@@ -756,17 +1497,75 @@ async function restartWorkers(
 		// thread keeps serving the HTTP ports throughout. This ordering is also what lets
 		// listenOnPorts() treat a dedicated listener's EADDRINUSE as an external conflict.
 		const platformCanPreStartReplacement = process.platform !== 'win32' && process.platform !== 'darwin' && !isBun;
+		if (startReplacementThreads) await untilNoCertificationArmed();
 		const restarting = workers.slice(0);
+		// Worker 0 is replaced first, so its replacement is the canary, and what an application runs only in worker 0
+		// is part of the load that decides the release. The requester answers before it is replaced, so it goes last,
+		// unless it is worker 0. Then, where its replacement serves beside it, it is retired once its deploy has
+		// answered, after the rest; elsewhere it is retired at that replacement's admission, also once it has answered.
+		const workerZero = certification
+			? restarting.find(
+					(worker) =>
+						worker.name === hdbTerms.THREAD_TYPES.HTTP &&
+						worker.workerIndex === 0 &&
+						placesCertification(certification, worker)
+				)
+			: undefined;
+		if (workerZero) restarting.unshift(...restarting.splice(restarting.indexOf(workerZero), 1));
+		const requester =
+			certification?.requesterThreadId !== undefined
+				? restarting.find((worker) => worker.threadId === certification.requesterThreadId)
+				: undefined;
+		if (requester && requester !== workerZero) restarting.push(...restarting.splice(restarting.indexOf(requester), 1));
+		const requesterFirst = Boolean(requester) && requester === workerZero;
+		// Workers retired while their deploy waits on a decision this restart's own replacements make: each serves
+		// through its drain, so it is not down, and waiting on its exit would hold back the start that decides it.
+		const answering = [];
+		// Workers whose replacement serves beside them already, retired once their decided deploys have answered.
+		const retireOnceAnswered = [];
+		const deferredUntilAnswered = new Set();
+		// a worker that exited on its own mid-restart is spliced out of `workers` and auto-restarted onto the new
+		// code (see the exit handler above); it is not still on the previous code even though this loop never got to it.
+		const untouchedAfter = (index) =>
+			restarting
+				.slice(index + 1)
+				.filter((other) => (!name || other.name === name) && !other.wasShutdown && workers.includes(other)).length;
 		for (let index = 0; index < restarting.length; index++) {
 			const worker = restarting[index];
+			// Before every replacement, not just the first: one booted while another release is armed cannot decide it,
+			// and that release's own rollout waits behind this one.
+			if (startReplacementThreads) await untilNoCertificationArmed();
 			// Terminal shutdown: stop replacing workers mid-loop — the guard for every replacement start below.
 			if (processShuttingDown && startReplacementThreads) break;
+			// A refusal ends the rollout wherever it was decided, including by a crash restart's canary.
+			if (certification?.decision && refusesRelease(certification.decision)) break;
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
+			// exited on its own since the snapshot; its exit handler restarts it (or holds that start for a decision)
+			if (!workers.includes(worker)) continue;
 			if (application !== '*' && worker.application !== application) continue; // and by isolated application
 			if (worker.application && freshlyStarted.has(worker.application)) continue;
+			// A deploy whose release is decided waits on no rollout, and a drain would give it only the shutdown ceiling,
+			// which its peers' answers can outlast: retire its worker once it has answered, after the rest.
+			if (worker !== workerZero && answersDecidedDeploy(worker)) {
+				if (!deferredUntilAnswered.has(worker)) {
+					deferredUntilAnswered.add(worker);
+					restarting.push(worker);
+					continue;
+				}
+				await untilDecidedDeploysAnswer(worker, onProgress);
+				if (!workers.includes(worker)) continue;
+			}
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
 			const canPreStartReplacement = platformCanPreStartReplacement && !worker.application;
-			if (overlapping && startReplacementThreads && canPreStartReplacement) {
+			const placed = startReplacementThreads ? openCertificationsPlacedBy(worker) : [];
+			const checks =
+				certification?.decision?.status === 'certified' && placesCertification(certification, worker)
+					? [{ component: certification.component, deploymentId: certification.deploymentId }]
+					: undefined;
+			// A held replacement binds nothing until admitted, so it can boot beside its predecessor on any platform;
+			// where they cannot share a port, the predecessor is retired only once the replacement is admitted.
+			const held = placed.length > 0 || checks !== undefined;
+			if (overlapping && startReplacementThreads && (canPreStartReplacement || held)) {
 				// Overlapping restart: start the replacement and wait until it is accepting connections
 				// *before* shutting down the worker it replaces. The replacement joins the (SO_REUSEPORT)
 				// listener group while the old worker is still serving, so the pool never loses capacity
@@ -776,7 +1575,29 @@ async function restartWorkers(
 				// replacement, startWorker's unexpected-exit handler must not auto-restart it (that would
 				// leave a duplicate once the replacement is up). Restored below if the replacement fails.
 				worker.wasShutdown = true;
-				let newWorker = worker.startCopy();
+				let retiredForAdmission = false;
+				let predecessorExits;
+				let awaitingPredecessor = false;
+				let startSettled = false;
+				const admission = canPreStartReplacement
+					? undefined
+					: async () => {
+							// Its replacement takes its ports, so it cannot keep serving after the rest: it is retired here, once
+							// it has answered as the requester and any decided deploy it is answering has answered.
+							awaitingPredecessor = true;
+							try {
+								if (worker === requester && !requesterFirst) await requesterRelease(certification);
+								await untilDecidedDeploysAnswer(worker, onProgress);
+								// A replacement that did not come up meanwhile leaves its predecessor serving.
+								if (startSettled) return;
+								retiredForAdmission = true;
+								if (postShutdown(worker)) predecessorExits = whenShutDownWorkerExits(worker, onProgress);
+								await predecessorExits;
+							} finally {
+								awaitingPredecessor = false;
+							}
+						};
+				let newWorker = worker.startCopy(held ? { managed: true, check: checks, admission } : { managed: true });
 				// Likewise suppress auto-restart on the replacement *while it boots*: if it fails to come up
 				// we leave the existing worker in place, and a background retry succeeding later would push the
 				// pool over its configured worker count. Re-enabled once it has started.
@@ -784,17 +1605,23 @@ async function restartWorkers(
 				let started = await new Promise((resolve) => {
 					// Generous backstop so a replacement that deadlocks during init can't wedge the whole
 					// restart forever. Far longer than any legitimate startup, so it never fires in practice.
+					const giveUp = () => {
+						// The ports it waits for are still held by a predecessor answering a decided deploy, or draining.
+						if (awaitingPredecessor) {
+							timeout = setTimeout(giveUp, heldReplacementTimeoutMs()).unref();
+							return;
+						}
+						harperLogger.error(
+							'Replacement worker did not start in time; leaving the existing worker in place',
+							newWorker.threadId
+						);
+						newWorker.terminate();
+						cleanup();
+						resolve(false);
+					};
 					let timeout = setTimeout(
-						() => {
-							harperLogger.error(
-								'Replacement worker did not start in time; leaving the existing worker in place',
-								newWorker.threadId
-							);
-							newWorker.terminate(); // canPreStartReplacement excludes Bun, so terminate() is safe here
-							cleanup();
-							resolve(false);
-						},
-						Math.max(threadTerminationTimeout * 2, 60000)
+						giveUp,
+						held ? heldReplacementTimeoutMs() : Math.max(threadTerminationTimeout * 2, 60000)
 					).unref();
 					const startListener = (message) => {
 						if (message.type === hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED) {
@@ -816,6 +1643,7 @@ async function restartWorkers(
 						resolve(false);
 					};
 					const cleanup = () => {
+						startSettled = true;
 						clearTimeout(timeout);
 						newWorker.off('message', startListener);
 						newWorker.off('exit', exitListener);
@@ -824,88 +1652,81 @@ async function restartWorkers(
 					newWorker.on('message', startListener);
 					newWorker.on('exit', exitListener);
 				});
+				for (const open of placed) await open.decided.promise;
+				const rejected = Boolean(certification?.decision && refusesRelease(certification.decision));
 				if (!started) {
-					// Replacement didn't come up — keep the existing worker serving. Restore its auto-restart
-					// protection if it is still alive (it may have exited on its own during the wait).
-					if (workers.includes(worker)) worker.wasShutdown = false;
-					workersKeptOnOldCode++;
+					// Stopped for another release's refusal, or for a load that release's commit crossed, not for its own
+					// load: replace this worker again. Either release now holds a start made for it, so this repeats at most
+					// once for each.
+					if (
+						!retiredForAdmission &&
+						!rejected &&
+						workers.includes(worker) &&
+						(newWorker.loadedAcrossRelease ||
+							placed.some((open) => open !== certification && open.decision && refusesRelease(open.decision)))
+					) {
+						worker.wasShutdown = false;
+						onProgress?.();
+						index--;
+						continue;
+					}
+					if (retiredForAdmission) {
+						// Its predecessor is retired, and a held replacement boots with its auto-restart suppressed: start the
+						// slot again, on whichever release is live now, once that predecessor has let go of its ports.
+						await predecessorExits;
+						heldReplacementsNotStarted++;
+						if (!processShuttingDown) worker.startCopy();
+					} else {
+						// Replacement didn't come up — keep the existing worker serving. Restore its auto-restart
+						// protection if it is still alive (it may have exited on its own during the wait).
+						if (workers.includes(worker)) worker.wasShutdown = false;
+						// A refused release leaves every worker on the release it was serving, which is the point.
+						if (!rejected) workersKeptOnOldCode++;
+					}
+					onProgress?.();
+					// A later replacement that fails its check ends the rollout, as a rejection does.
+					if (checks) {
+						workersKeptOnOldCode += untouchedAfter(index);
+						break;
+					}
+					continue;
+				}
+				if (retiredForAdmission) {
 					onProgress?.();
 					continue;
 				}
 			}
-			harperLogger.trace('sending shutdown request to ', worker.threadId);
-			try {
-				worker.postMessage({
-					restartNumber: module.exports.restartNumber,
-					type: hdbTerms.ITC_EVENT_TYPES.SHUTDOWN,
-				});
-			} catch (err) {
-				// the worker exited on its own while we were starting its replacement — nothing left to
-				// shut down (its overlapping replacement, if any, is already up). Skip to the next worker.
-				if (err?.code === 'ERR_CLOSED_MESSAGE_PORT') continue;
-				throw err;
+			if (worker === requester && !requesterFirst) await requesterRelease(certification);
+			// A release decided while this worker's replacement booted, a requesting worker 0's among them: that replacement
+			// serves already, so the worker can keep serving too until the deploy answers, after the rest.
+			if (overlapping && startReplacementThreads && canPreStartReplacement && answersDecidedDeploy(worker)) {
+				retireOnceAnswered.push(worker);
+				continue;
 			}
-			worker.wasShutdown = true;
-			worker.emit('shutdown', {});
+			if (startReplacementThreads) await untilNoCertificationArmed();
+			harperLogger.trace('sending shutdown request to ', worker.threadId);
+			// the worker exited on its own while we were starting its replacement — nothing left to
+			// shut down (its overlapping replacement, if any, is already up). Skip to the next worker.
+			if (!postShutdown(worker)) continue;
+			let whenDone = whenShutDownWorkerExits(worker, onProgress, () => {
+				// non-overlapping types have no advance replacement, so start it once the old one is gone
+				if (!overlapping && startReplacementThreads && !processShuttingDown) worker.startCopy();
+			});
 			// Overlapping types we couldn't pre-start (Windows/Bun): start the replacement now that the old
 			// worker is releasing its port. server.close() stops accepting immediately, so the port frees up
-			// well before the replacement finishes booting and binds.
+			// well before the replacement finishes booting and binds. A worker answering a certifying deploy keeps
+			// its ports while its drain holds that deploy, so its copy starts once it has exited.
 			let replacementStarting;
 			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown) {
-				replacementStarting = whenWorkerStarted(worker.startCopy()).then((started) => {
-					if (!started) replacementsFailedToStart++;
-					onProgress?.();
-					return started;
-				});
+				replacementStarting = (answersCertifyingDeploy(worker) ? whenDone : Promise.resolve())
+					.then(() => (processShuttingDown ? false : startedCopyOf(worker)))
+					.then((started) => {
+						if (!started && !processShuttingDown) replacementsFailedToStart++;
+						onProgress?.();
+						return started;
+					});
 				replacementsStarting.push(replacementStarting);
 			}
-
-			let whenDone = new Promise((resolve) => {
-				// in case the exit inside the thread doesn't timeout, force it from the outside
-				const armTerminate = (delay) =>
-					setTimeout(() => {
-						harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
-						if (isBun) {
-							// worker.terminate() triggers a NAPI segfault in Bun; ask the worker to self-exit instead
-							try {
-								worker.postMessage({ type: FORCE_EXIT });
-							} catch {}
-						} else {
-							worker.terminate();
-						}
-					}, delay).unref();
-				let timeout = armTerminate(threadTerminationTimeout * 2);
-				// The worker can push this backstop out while it gracefully drains in-flight work (e.g. a
-				// replication blob send) before exiting. It only asks when it actually has such work, so a
-				// worker hung for an unrelated reason is still force-killed on the normal short timeout.
-				// This timer is armed synchronously above, in the same tick as the SHUTDOWN post, so the
-				// worker's EXTEND request can only arrive after it exists.
-				worker.extendTerminateDeadline = (deadlineMs) => {
-					clearTimeout(timeout);
-					// Clamp the worker-requested deadline to the configured ceiling (and to a finite value) so a
-					// buggy/rogue message can't defer the force-kill unboundedly; a shrink (drain-done reset)
-					// passes through untouched. See boundedTerminateDelay for the arithmetic + its unit tests.
-					const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
-					const delay = boundedTerminateDelay(
-						deadlineMs,
-						Date.now(),
-						threadTerminationTimeout * 2,
-						getShutdownDrainCeilingMs()
-					);
-					timeout = armTerminate(delay);
-					// The worker is telling us it has work still moving and how long it may take, so pass that
-					// on: a caller waiting on the restart must not treat a live drain as a stalled one.
-					onProgress?.(Date.now() + delay);
-				};
-				worker.on('exit', () => {
-					clearTimeout(timeout);
-					onProgress?.();
-					worker.extendTerminateDeadline = undefined;
-					// non-overlapping types have no advance replacement, so start it once the old one is gone
-					if (!overlapping && startReplacementThreads && !processShuttingDown) worker.startCopy();
-					resolve();
-				});
-			});
 			// A worker counts as replaced only once its replacement is accepting connections, not merely
 			// once it has exited. This promise is held unawaited between throttle points, so it must not
 			// be able to reject.
@@ -915,21 +1736,20 @@ async function restartWorkers(
 					const at = waitingToFinish.indexOf(replaced);
 					if (at > -1) waitingToFinish.splice(at, 1);
 				});
-			waitingToFinish.push(replaced);
-			if (waitingToFinish.length >= maxWorkersDown) {
-				// throttle how many workers are down at once to limit load
-				await Promise.race(waitingToFinish);
+			if ((worker === requester && requesterFirst) || awaitsDecisionPlacedBy(worker)) {
+				answering.push(replaced);
+			} else {
+				waitingToFinish.push(replaced);
+				if (waitingToFinish.length >= maxWorkersDown) {
+					// throttle how many workers are down at once to limit load
+					await Promise.race(waitingToFinish);
+				}
 			}
 			// Readiness throttling bounds how many workers are down at once, but not how many *fail*: with
 			// replacements that never come up, walking the rest of the pool would leave nothing serving.
 			// The workers not yet touched are still running the old code, which beats none running at all.
 			if (replacementsFailedToStart >= maxWorkersDown) {
-				const untouched = restarting
-					.slice(index + 1)
-					// a worker that exited on its own mid-restart is spliced out of `workers` and
-					// auto-restarted onto the new code (see the exit handler above); it is not still on
-					// the previous code even though this loop never got to it.
-					.filter((other) => (!name || other.name === name) && !other.wasShutdown && workers.includes(other)).length;
+				const untouched = untouchedAfter(index);
 				harperLogger.error(
 					`${replacementsFailedToStart} replacement worker thread(s) did not start; stopping this restart with ${untouched} worker(s) still on the previous code`
 				);
@@ -937,19 +1757,193 @@ async function restartWorkers(
 				break;
 			}
 		}
+		await Promise.all(
+			retireOnceAnswered.map(async (worker) => {
+				await untilDecidedDeploysAnswer(worker, onProgress);
+				if (postShutdown(worker)) answering.push(whenShutDownWorkerExits(worker, onProgress));
+			})
+		);
 		await Promise.all(waitingToFinish);
+		await Promise.all(answering);
 		// A caller awaiting this needs it to mean "the pool is serving the new code", so wait out the
 		// replacements that could only be started once their predecessor released its exclusive ports.
-		replacementsNotStarted = (await Promise.all(replacementsStarting)).filter((started) => !started).length;
-		return { workersKeptOnOldCode, replacementsNotStarted };
-	} else {
-		parentPort.postMessage({
-			type: RESTART_TYPE,
-			workerType: name,
-			scope: encodeRestartScope(application),
-		});
+		replacementsNotStarted =
+			(await Promise.all(replacementsStarting)).filter((started) => !started).length + heldReplacementsNotStarted;
+		return certification
+			? { workersKeptOnOldCode, replacementsNotStarted, certification: certification.decision }
+			: { workersKeptOnOldCode, replacementsNotStarted };
 	}
 }
+/**
+ * Its predecessor is gone, so a copy the gate stopped, or refused for a load a release's commit crossed, is started
+ * again, held for whatever is open then. Each copy starts only once no release it would load is armed, since a start
+ * booted then could not decide it and that release's rollout queues behind this one, and once no decision about one is
+ * under way, since a refusal being recorded is restoring its predecessor, which no load may race.
+ */
+async function startedCopyOf(worker) {
+	for (;;) {
+		await untilQuietFor(worker);
+		if (processShuttingDown) return false;
+		const copy = worker.startCopy({ managed: true });
+		if (await whenWorkerStarted(copy)) return true;
+		if (processShuttingDown || !(copy.loadedAcrossRelease || copy.stoppedByGate)) return false;
+	}
+}
+
+/** Whichever restart retires it, a worker whose certifying deploy has not answered is holding on through its drain. */
+function answersCertifyingDeploy(worker) {
+	for (const registry of [certifications, settledCertifications]) {
+		for (const certification of registry.values()) {
+			if (certification.requesterThreadId === worker.threadId && !certification.requesterReleased) return true;
+			if (certification.joiners.has(worker.threadId)) return true;
+		}
+	}
+	return false;
+}
+
+/** Whether a worker is answering a deploy whose release is decided. */
+function answersDecidedDeploy(worker) {
+	for (const registry of [certifications, settledCertifications]) {
+		for (const certification of registry.values()) {
+			if (!certification.decision) continue;
+			if (
+				certification.requesterThreadId === worker.threadId &&
+				!certification.requesterReleased &&
+				!certification.requesterExited
+			) {
+				return true;
+			}
+			if (certification.joiners.has(worker.threadId)) return true;
+		}
+	}
+	return false;
+}
+
+/** Until a worker answers the decided deploys it is answering, or exits. Each beat says the wait is not a stall. */
+async function untilDecidedDeploysAnswer(worker, onProgress) {
+	const beating = setInterval(() => onProgress?.(), RESTART_PROGRESS_HEARTBEAT_MS).unref();
+	try {
+		while (answersDecidedDeploy(worker) && workers.includes(worker)) await answered.promise;
+	} finally {
+		clearInterval(beating);
+	}
+}
+
+/**
+ * Whether a worker's deploy waits on a decision this restart's replacements can make. One a release this restart
+ * cannot place is decided only by that release's own rollout, which queues behind this one, so retiring that worker
+ * waits its turn like any other.
+ */
+function awaitsDecisionPlacedBy(worker) {
+	for (const certification of certifications.values()) {
+		if (certification.decision || !placesCertification(certification, worker)) continue;
+		if (certification.requesterThreadId === worker.threadId && !certification.requesterReleased) return true;
+		if (certification.joiners.has(worker.threadId)) return true;
+	}
+	return false;
+}
+
+async function untilQuietFor(worker) {
+	for (;;) {
+		const deciding = openCertificationsPlacedBy(worker).find((open) => open.deciding);
+		if (deciding) {
+			await deciding.decided.promise;
+			continue;
+		}
+		const armed = [...certifications.values()].find((pending) => pending.phase === 'armed');
+		if (!armed) return;
+		await armed.unarmed.promise;
+	}
+}
+
+/** Ask a worker being replaced to shut down; false when it has already exited. */
+function postShutdown(worker) {
+	// An exited worker can still accept a message without complaint, and its exit would never come again.
+	if (!workers.includes(worker)) return false;
+	try {
+		worker.postMessage({
+			restartNumber: module.exports.restartNumber,
+			type: hdbTerms.ITC_EVENT_TYPES.SHUTDOWN,
+		});
+	} catch (err) {
+		if (err?.code === 'ERR_CLOSED_MESSAGE_PORT') return false;
+		throw err;
+	}
+	worker.wasShutdown = true;
+	worker.emit('shutdown', {});
+	return true;
+}
+
+/** Resolves once a worker asked to shut down has exited, forcing it after the backstop it may extend. */
+function whenShutDownWorkerExits(worker, onProgress, onExit) {
+	return new Promise((resolve) => {
+		// in case the exit inside the thread doesn't timeout, force it from the outside
+		const armTerminate = (delay) =>
+			setTimeout(() => {
+				harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
+				if (isBun) {
+					// worker.terminate() triggers a NAPI segfault in Bun; ask the worker to self-exit instead
+					try {
+						worker.postMessage({ type: FORCE_EXIT });
+					} catch {}
+				} else {
+					worker.terminate();
+				}
+			}, delay).unref();
+		let timeout = armTerminate(threadTerminationTimeout * 2);
+		// The worker can push this backstop out while it gracefully drains in-flight work (e.g. a
+		// replication blob send) before exiting. It only asks when it actually has such work, so a
+		// worker hung for an unrelated reason is still force-killed on the normal short timeout.
+		// This timer is armed synchronously above, in the same tick as the SHUTDOWN post, so the
+		// worker's EXTEND request can only arrive after it exists.
+		worker.extendTerminateDeadline = (deadlineMs) => {
+			clearTimeout(timeout);
+			// Clamp the worker-requested deadline to the configured ceiling (and to a finite value) so a
+			// buggy/rogue message can't defer the force-kill unboundedly; a shrink (drain-done reset)
+			// passes through untouched. See boundedTerminateDelay for the arithmetic + its unit tests.
+			const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
+			const delay = boundedTerminateDelay(
+				deadlineMs,
+				Date.now(),
+				threadTerminationTimeout * 2,
+				getShutdownDrainCeilingMs()
+			);
+			timeout = armTerminate(delay);
+			// The worker is telling us it has work still moving and how long it may take, so pass that
+			// on: a caller waiting on the restart must not treat a live drain as a stalled one.
+			onProgress?.(Date.now() + delay);
+		};
+		worker.on('exit', () => {
+			clearTimeout(timeout);
+			onProgress?.();
+			worker.extendTerminateDeadline = undefined;
+			onExit?.();
+			resolve();
+		});
+	});
+}
+
+/** The requesting worker answers its operation before it is replaced, within a bound. */
+function requesterRelease(certification) {
+	return Promise.race([
+		certification.released.promise,
+		new Promise((resolve) => setTimeout(resolve, REQUESTER_RELEASE_TIMEOUT_MS).unref()),
+	]);
+}
+
+let heldReplacementTimeoutOverride;
+/** Test seam: the backstop below is minutes long, too long to wait out in a unit test. */
+function setHeldReplacementTimeout(timeoutMs) {
+	heldReplacementTimeoutOverride = timeoutMs;
+}
+
+/** A held replacement's verdict, the predecessor's retirement where they cannot share a port, and its bind. */
+function heldReplacementTimeoutMs() {
+	if (heldReplacementTimeoutOverride !== undefined) return heldReplacementTimeoutOverride;
+	const { getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
+	return canaryVerdictTimeoutMs() + Math.max(threadTerminationTimeout * 2, 60000) + getShutdownDrainCeilingMs();
+}
+
 /**
  * Resolve once a newly started worker reports that it is accepting connections, or gives up on it.
  * There is no old worker left to fall back on here, so a replacement that fails to start is left to
@@ -1149,6 +2143,7 @@ function broadcastWithAcknowledgement(
 			)
 				continue;
 			let ackHandler;
+			let postingToRecipient = false;
 			try {
 				let requestId = nextId++;
 				ackHandler = (response) => {
@@ -1172,10 +2167,16 @@ function broadcastWithAcknowledgement(
 					}
 				};
 				ackHandler.port = port;
-				ackHandler.closeResponse = strict
-					? { error: { message: 'exited before acknowledging preparation' } }
-					: undefined;
 				ackHandler.allowNormalJobExit = strict && includeJobWorkers && port.isJobWorker;
+				ackHandler.closeResponse = strict
+					? {
+							error: {
+								message: 'exited before acknowledging preparation',
+								code: 'E_ITC_RECIPIENT_EXITED',
+								retryable: true,
+							},
+						}
+					: undefined;
 				pending.add(ackHandler);
 				waitingCount++;
 				port.refCount = (port.refCount || 0) + 1;
@@ -1188,10 +2189,16 @@ function broadcastWithAcknowledgement(
 						settleAcknowledgementsForClosedPort(port, port.jobCleanupComplete === true)
 					);
 				}
+				postingToRecipient = true;
 				port.postMessage(message);
 			} catch (error) {
 				harperLogger.error(`Unable to send message to worker`, error);
-				ackHandler?.({ error: { message: error.message ?? String(error) } });
+				ackHandler?.({
+					error: {
+						message: error.message ?? String(error),
+						...(postingToRecipient ? { code: 'E_ITC_RECIPIENT_EXITED', retryable: true } : null),
+					},
+				});
 			}
 		}
 		initializing = false;
@@ -1202,7 +2209,17 @@ function broadcastWithAcknowledgement(
 				const stuck = [];
 				for (let ackHandler of [...pending]) {
 					stuck.push(ackHandler.port);
-					ackHandler(strict ? { error: { message: `did not acknowledge within ${timeout}ms` } } : undefined); // same cleanup path as an ack/close; drives waitingCount to 0 and settles
+					ackHandler(
+						strict
+							? {
+									error: {
+										message: `did not acknowledge within ${timeout}ms`,
+										code: 'E_ITC_ACK_TIMEOUT',
+										retryable: true,
+									},
+								}
+							: undefined
+					); // same cleanup path as an ack/close; drives waitingCount to 0 and settles
 				}
 				harperLogger.warn(
 					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; ${strict ? 'failing the coordinated operation' : 'proceeding best-effort'}`
@@ -1393,6 +2410,64 @@ function setMonitorListener(listener) {
 }
 
 const MONITORING_INTERVAL = 1000;
+
+// See server/DESIGN.md.
+const PINNED_ELU_UTILIZATION_THRESHOLD = 0.99;
+const PINNED_ELU_SUSTAINED_MS = 30_000;
+const PINNED_ELU_SUSTAINED_TICKS = Math.ceil(PINNED_ELU_SUSTAINED_MS / MONITORING_INTERVAL);
+module.exports.PINNED_ELU_UTILIZATION_THRESHOLD = PINNED_ELU_UTILIZATION_THRESHOLD;
+module.exports.PINNED_ELU_SUSTAINED_TICKS = PINNED_ELU_SUSTAINED_TICKS;
+
+function describePinnedWorker(worker) {
+	const identity = [worker.name, worker.application].filter(Boolean).join('/');
+	return `Worker thread ${worker.threadId}${identity ? ` (${identity})` : ''}`;
+}
+
+function checkPinnedWorkerELU(worker, recentELU) {
+	const { utilization } = recentELU;
+	// idle can briefly read negative while a worker tears down, producing a nonsense ratio
+	// outside [0, 1]; treat that tick as unmeasured rather than counting or resetting on it.
+	if (!(utilization >= 0 && utilization <= 1)) return;
+	if (utilization >= PINNED_ELU_UTILIZATION_THRESHOLD) {
+		worker.pinnedELUTicks = (worker.pinnedELUTicks || 0) + 1;
+		if (worker.pinnedELUTicks === PINNED_ELU_SUSTAINED_TICKS) {
+			worker.pinnedELUWarned = true;
+			harperLogger.warn(
+				`${describePinnedWorker(worker)} event loop utilization has been pinned at ${Math.round(utilization * 100)}% for ${PINNED_ELU_SUSTAINED_MS / 1000}s; the worker may be wedged`
+			);
+		}
+	} else {
+		if (worker.pinnedELUWarned)
+			harperLogger.warn(
+				`${describePinnedWorker(worker)} event loop utilization has recovered to ${Math.round(utilization * 100)}% after being pinned`
+			);
+		worker.pinnedELUTicks = 0;
+		worker.pinnedELUWarned = false;
+	}
+}
+
+function sampleWorkerELU(worker) {
+	if (!isBun && worker.performance?.eventLoopUtilization) {
+		let current_ELU = worker.performance.eventLoopUtilization();
+		let recent_ELU;
+		// Excludes Node's pre-online placeholder ({ idle: 0, active: 0 }, truthy but not a real
+		// sample) as well as a worker's first real sample, which is a lifetime total, not a 1s delta.
+		const hadBaseline = worker.lastTotalELU?.active > 0 || worker.lastTotalELU?.idle > 0;
+		if (hadBaseline) {
+			// get the difference between current and last to determine the last second of utilization
+			recent_ELU = worker.performance.eventLoopUtilization(current_ELU, worker.lastTotalELU);
+		} else {
+			recent_ELU = current_ELU;
+		}
+		worker.lastTotalELU = current_ELU;
+		worker.recentELU = recent_ELU;
+		if (hadBaseline) checkPinnedWorkerELU(worker, recent_ELU);
+	} else {
+		// Bun doesn't support eventLoopUtilization, use a default idle value
+		worker.recentELU = worker.recentELU || { idle: 1, active: 0, utilization: 0 };
+	}
+}
+
 let monitoring = false;
 function startMonitoring() {
 	if (monitoring) return;
@@ -1400,23 +2475,7 @@ function startMonitoring() {
 	// we periodically get the event loop utilitization so we have a reasonable time frame to check the recent
 	// utilization levels (last second) and so we don't have to make these calls to frequently
 	setInterval(() => {
-		for (let worker of workers) {
-			if (!isBun && worker.performance?.eventLoopUtilization) {
-				let current_ELU = worker.performance.eventLoopUtilization();
-				let recent_ELU;
-				if (worker.lastTotalELU) {
-					// get the difference between current and last to determine the last second of utilization
-					recent_ELU = worker.performance.eventLoopUtilization(current_ELU, worker.lastTotalELU);
-				} else {
-					recent_ELU = current_ELU;
-				}
-				worker.lastTotalELU = current_ELU;
-				worker.recentELU = recent_ELU;
-			} else {
-				// Bun doesn't support eventLoopUtilization, use a default idle value
-				worker.recentELU = worker.recentELU || { idle: 1, active: 0, utilization: 0 };
-			}
-		}
+		for (let worker of workers) sampleWorkerELU(worker);
 		if (monitorListener) monitorListener();
 	}, MONITORING_INTERVAL).unref();
 }
@@ -2125,6 +3184,8 @@ if (isMainThread) {
 		realExit(0);
 	});
 }
+
+if (isMainThread) registerCertificationRequests();
 
 // Required here, not from logging, which must never import this module; last in the file because it
 // calls onThreadExit.

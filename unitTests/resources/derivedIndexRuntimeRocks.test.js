@@ -145,7 +145,7 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			indexId: 'rocks-fulltext-products',
 			sourceGeneration: 'product-table-generation',
 			fields: [{ name: 'title' }],
-			analyzer: 'english@1',
+			analyzer: 'english@2',
 			limits: {
 				indexingThreads: 1,
 				searchThreads: 1,
@@ -233,7 +233,7 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			indexId: 'invalid-generation-products',
 			sourceGeneration: 'product-table-generation',
 			fields: [{ name: 'title' }],
-			analyzer: 'english@1',
+			analyzer: 'english@2',
 			limits: {
 				indexingThreads: 1,
 				searchThreads: 1,
@@ -307,7 +307,7 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			indexId: 'replay-rebuild-parity-products',
 			sourceGeneration: 'product-table-generation',
 			fields: [{ name: 'title' }],
-			analyzer: 'english@1',
+			analyzer: 'english@2',
 			limits: {
 				indexingThreads: 1,
 				searchThreads: 1,
@@ -396,10 +396,24 @@ class FakeNativeFullTextModule {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
 			nativeAbiVersion: 5,
+			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
-			mutationBatchApiVersion: 3,
+			mutationBatchApiVersion: 5,
+			queryApiVersion: 3,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: 64 * 1024 },
+			limits: {
+				maxCommitPayloadBytes: 64 * 1024,
+				maxRecordIdBytes: 4_096,
+				maxRecordVersionBytes: 4_096,
+				maxCandidateIds: 1_024,
+				maxCandidateBytes: 1024 * 1024,
+				maxSearchWindow: 10_000,
+				maxAutocompleteResults: 100,
+				maxSearchResponseBytes: 8 * 1024 * 1024,
+				maxSearchBudgetMilliseconds: 30_000,
+				maxTraceRecords: 128,
+				maxTraceSourceBytes: 1024 * 1024,
+			},
 		};
 	}
 
@@ -457,6 +471,10 @@ class FakeNativeFullTextModule {
 				return {};
 			},
 		};
+	}
+
+	async openNativeFullTextReader() {
+		throw Object.assign(new Error('test reader is not configured'), { code: 'E_INDEX_NOT_READY' });
 	}
 }
 

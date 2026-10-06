@@ -17,6 +17,7 @@ module.exports = {
 	SchemaEventMsg,
 };
 let serverItcHandlers;
+const RESTORE_CLOSE_ACK_TIMEOUT_MS = 30000;
 onMessageFromWorkers(async (event, sender) => {
 	serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
 	let error;
@@ -54,6 +55,26 @@ function sendItcEvent(event, includeJobWorkers = false) {
 	// The main thread's threadId is 0 (worker_threads convention); parentPort.threadId
 	// is set to 0 in workers, so sendToThread(0, ...) routes back to main.
 	if (event.message) event.message.originator = threadId;
+	if (
+		event.type === hdbTerms.ITC_EVENT_TYPES.SCHEMA &&
+		event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP &&
+		event.message.restorePhase
+	) {
+		// Both restore phases reach job workers, because they write blobs too. Ordinary gossip excludes
+		// them to avoid re-entrant waits, but their message handlers stay live while a job's own async
+		// work is suspended, so that objection does not apply here -- and fencing them at close while
+		// sending the release only to ordinary workers would leave every job thread fenced for the life
+		// of the process.
+		if (event.message.restorePhase === 'close') {
+			// Strict and bounded: the restore must not proceed past a worker that never acknowledged the
+			// close, nor wait on a wedged one forever -- unbounded would strand the restore holding its
+			// marker, before verifyDatabaseClosed's own deadline could report a clean 409.
+			return broadcastWithStrictAcknowledgement(event, RESTORE_CLOSE_ACK_TIMEOUT_MS, true);
+		}
+		// The release is deliberately best-effort: a restore that has already done its work must not be
+		// reported as failed because one worker was slow to take its fence back off.
+		return broadcastWithAcknowledgement(event, undefined, false, true);
+	}
 	return broadcastWithAcknowledgement(event, undefined, false, includeJobWorkers);
 }
 

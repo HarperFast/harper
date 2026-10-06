@@ -20,6 +20,7 @@ import { EventEmitter } from 'events';
 import { verifyCertificate } from '../security/certificateVerification/index.ts';
 import { registerShutdownDrain } from '../components/shutdownDrain.ts';
 import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
+import { DatabaseGenerationChangedError, ResumeHistoryUnavailableError } from '../utility/errors/hdbError.ts';
 import {
 	assertNoDeferredCredentialRejection,
 	getAuthenticationRejectedInPlace,
@@ -211,6 +212,54 @@ const ACK_PACKET_OVERHEAD = 16;
  * is indistinguishable to the client from a network failure.
  */
 const liveConnections = new Set<{ protocolVersion: () => number; send: (data: any) => void; close: () => void }>();
+/** Settles once every CONNECT so far for each client id on this thread has finished or given up its turn. */
+const connecting = new Map<string, Promise<void>>();
+/** Each client id's sessions on this thread, kept until their last save settles so a takeover can wait for it. */
+const clientSessions = new Map<string, Set<DurableSubscriptionsSession>>();
+let takeoverTimeout = 10_000;
+
+export function setTakeoverTimeoutForTests(milliseconds: number): number {
+	const previous = takeoverTimeout;
+	takeoverTimeout = milliseconds;
+	return previous;
+}
+
+function addClientSession(session: DurableSubscriptionsSession) {
+	if (!session.sessionId) return;
+	let sessions = clientSessions.get(session.sessionId);
+	if (!sessions) clientSessions.set(session.sessionId, (sessions = new Set()));
+	sessions.add(session);
+}
+
+function releaseClientSession(session: DurableSubscriptionsSession) {
+	const sessions = clientSessions.get(session?.sessionId);
+	if (!sessions?.has(session)) return;
+	const writes = session.writes;
+	Promise.resolve(writes).then(() => {
+		if (session.writes !== writes) return releaseClientSession(session);
+		sessions.delete(session);
+		if (sessions.size === 0 && clientSessions.get(session.sessionId) === sessions)
+			clientSessions.delete(session.sessionId);
+	});
+}
+
+function beforeDeadline<T>(promise: Promise<T>, deadline: number, protocolVersion: number): Promise<T> {
+	let timer: NodeJS.Timeout;
+	return Promise.race([
+		promise,
+		new Promise<never>((_resolve, reject) => {
+			timer = setTimeout(
+				() => {
+					const error: any = new Error('An earlier connection for this client id did not finish in time');
+					error.code = protocolVersion >= 5 ? 0x88 : 0x03; // server unavailable
+					reject(error);
+				},
+				Math.max(0, deadline - Date.now())
+			);
+			timer.unref?.();
+		}),
+	]).finally(() => clearTimeout(timer));
+}
 let shutdownDisconnectRegistered = false;
 
 /** v3.1.1 has no server-to-client DISCONNECT, so those connections are only closed. */
@@ -275,6 +324,33 @@ function onSocket(socket, send, request, user, mqttSettings) {
 	};
 	liveConnections.add(connection);
 	let session: DurableSubscriptionsSession;
+	function closeConnection(error?: Error) {
+		try {
+			if (mqttOptions.protocolVersion >= 5) {
+				const packet: any = { cmd: 'disconnect', reasonCode: error ? 0x83 : 0x8e };
+				// as for PUBACK: only failures this layer describes itself are safe to hand a client
+				const describable =
+					error instanceof DatabaseGenerationChangedError ||
+					error instanceof ResumeHistoryUnavailableError ||
+					(error as any)?.statusCode === 403 ||
+					(error as any)?.statusCode === 404;
+				const reasonString =
+					describable && error.message && sendProblemInformation
+						? Buffer.from(String(error.message), 'utf8').subarray(0, REASON_STRING_LIMIT).toString('utf8')
+						: undefined;
+				if (
+					reasonString &&
+					(!maximumPacketSize || maximumPacketSize >= Buffer.byteLength(reasonString) + ACK_PACKET_OVERHEAD)
+				)
+					packet.properties = { reasonString };
+				send(generate(packet, mqttOptions));
+			}
+		} catch (sendError) {
+			mqttLog.warn?.('Could not send DISCONNECT before closing the connection', sendError);
+		} finally {
+			connection.close();
+		}
+	}
 	// [MQTT-3.1.2-29]: a client that asks for no problem information must not be sent a reason
 	// string on a PUBACK/PUBREC, and [MQTT-3.1.2-24] caps what it will accept at all.
 	let sendProblemInformation = true;
@@ -292,6 +368,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 			session?.disconnect?.(false);
 			emitEvent('disconnected', session, socket);
 			mqttSettings.sessions.delete(session);
+			releaseClientSession(session);
 			recordActionBinary(false, 'connection', 'mqtt', 'disconnect');
 			mqttLog.debug?.('MQTT connection was closed', socket.remoteAddress);
 		}
@@ -307,7 +384,14 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		}
 		const command = packet.cmd;
 		if (session) {
-			if ((session as any).then) await session;
+			if ((session as any).then) {
+				try {
+					await session;
+				} catch {
+					return; // the CONNECT has answered its own failure
+				}
+				if (!session) return; // the client left before its CONNECT finished
+			}
 		} else if (command !== 'connect') {
 			mqttLog.info?.('Received packet before connection was established, closing connection');
 			if (socket?.destroy) socket.destroy();
@@ -383,18 +467,64 @@ function onSocket(socket, send, request, user, mqttSettings) {
 								packet.will.payload?.length > 0 ? deserialize(packet.will.payload) : undefined;
 							delete packet.will.payload;
 						}
-						session = getSession({
-							user,
-							...packet,
-						} as any) as any;
-						session = await session;
-						// the session is used in the context, and we want to make sure we can access this
-						session.socket = socket;
-						if (request) {
-							// if there a request, store it in the session so we can use it as part of the context
-							session.request = request;
+						const clientId = packet.clientId;
+						let releaseClaim: (() => void) | undefined;
+						try {
+							// assigned before any wait, so packets sent right behind the CONNECT wait for it too
+							session = (async () => {
+								if (clientId) {
+									// simultaneous CONNECTs for one client id take the session over in turn
+									const previous = connecting.get(clientId);
+									const own = new Promise<void>((resolve) => (releaseClaim = resolve));
+									// one that gives up waiting keeps its place until the CONNECT before it finishes
+									const turn = previous ? Promise.all([previous, own]).then(() => {}) : own;
+									connecting.set(clientId, turn);
+									turn.then(() => {
+										if (connecting.get(clientId) === turn) connecting.delete(clientId);
+									});
+									const deadline = Date.now() + takeoverTimeout;
+									if (previous) await beforeDeadline(previous, deadline, packet.protocolVersion);
+									// a client that left while it waited takes nothing over
+									if (disconnected) return;
+									// a durable session has one owner: an older connection for this client on this thread gives
+									// way, to a clean start too, and its last save lands before this one reads or deletes
+									const older = [...(clientSessions.get(clientId) ?? [])];
+									for (const other of older) other.yieldTo?.();
+									if (older.length > 0) {
+										await beforeDeadline(
+											Promise.all(older.map((other) => other.writes)),
+											deadline,
+											packet.protocolVersion
+										);
+										if (disconnected) return;
+									}
+								}
+								return getSession({
+									user,
+									...packet,
+								} as any);
+							})() as any;
+							session = await session;
+							if (!session) return;
+							session.closeConnection = closeConnection;
+							// the session is used in the context, and we want to make sure we can access this
+							session.socket = socket;
+							if (request) {
+								// if there a request, store it in the session so we can use it as part of the context
+								session.request = request;
+							}
+							mqttSettings.sessions.add(session);
+							addClientSession(session);
+							if (disconnected) {
+								// the client left while this CONNECT waited, and nothing else will end its session
+								session.disconnect(false);
+								mqttSettings.sessions.delete(session);
+								releaseClientSession(session);
+								return;
+							}
+						} finally {
+							releaseClaim?.();
 						}
-						mqttSettings.sessions.add(session);
 					} catch (error) {
 						mqttLog.error?.(error);
 						emitEvent('auth-failed', packet, socket, error);
@@ -467,6 +597,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							mqttLog.error?.(error);
 							session?.disconnect(false);
 							mqttSettings.sessions.delete(session);
+							releaseClientSession(session);
 							return false;
 						}
 					};
@@ -512,7 +643,12 @@ function onSocket(socket, send, request, user, mqttSettings) {
 				case 'unsubscribe': {
 					const granted = [];
 					for (const subscription of packet.unsubscriptions) {
-						granted.push(session.removeSubscription(subscription) ? 0 : 17);
+						try {
+							granted.push((await session.removeSubscription(subscription)) ? 0 : 0x11); // no subscription existed
+						} catch (error) {
+							mqttLog.warn?.(error);
+							granted.push(0x80); // unspecified error
+						}
 					}
 					generateAndSendPacket({
 						// Send a subscription acknowledgment
@@ -617,6 +753,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					session?.disconnect(true);
 					emitEvent('disconnected', session, socket);
 					mqttSettings.sessions.delete(session);
+					releaseClientSession(session);
 					recordActionBinary(true, 'connection', 'mqtt', 'disconnect');
 					mqttLog.debug?.('Received disconnect command, closing MQTT session', socket.remoteAddress);
 					if (socket.close) socket.close();

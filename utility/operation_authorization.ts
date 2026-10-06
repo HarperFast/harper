@@ -41,6 +41,7 @@ import * as transactionLog from '../utility/logging/transactionLog.ts';
 import * as npmUtilities from './npmUtilities.ts';
 import * as analytics from '../resources/analytics/read.ts';
 import * as status from '../server/status/index.ts';
+import { FULL_TEXT_COMPARATORS } from '../resources/indexes/fullTextQueryProtocol.ts';
 import PermissionResponseObject from '../security/data_objects/PermissionResponseObject.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 
@@ -92,6 +93,7 @@ const BULK_OPS = {
 };
 /** The same set, precomputed: `isBulkLoadOperation` runs on every operations authorization. */
 const BULK_OP_NAMES = new Set(Object.values(BULK_OPS));
+const FULL_TEXT_COMPARATOR_SET = new Set<string>(FULL_TEXT_COMPARATORS);
 
 const STRUCTURE_USER_OPS = [
 	schema.createTable.name,
@@ -886,6 +888,10 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	//we will convert the * to the specific attributes the user has READ permissions for via their role.
 	if (!isSuperUser && requestJson.get_attributes && terms.SEARCH_WILDCARDS.includes(requestJson.get_attributes[0])) {
 		let finalGetAttrs = [];
+		const requestedMetadata =
+			requestJson.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS
+				? requestJson.get_attributes.filter((attribute) => attribute === '$score' || attribute === '$highlights')
+				: [];
 		const table_perms = (fullRolePerms as any)[operationSchema].tables[table];
 
 		if (table_perms[terms.PERMS_CRUD_ENUM.READ]) {
@@ -898,7 +904,7 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 				finalGetAttrs = global.hdb_schema[operationSchema][table].attributes.map((obj) => obj.attribute);
 			}
 
-			requestJson.get_attributes = finalGetAttrs;
+			requestJson.get_attributes = [...new Set([...finalGetAttrs, ...requestedMetadata])];
 		}
 	}
 
@@ -1135,13 +1141,22 @@ function getRecordAttributes(json, operationName?) {
 			return affectedAttributes;
 		}
 		if (json.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS) {
-			json.conditions.forEach((condition) => {
-				let attribute = condition.attribute;
-				if (condition.search_attribute !== undefined) {
-					attribute = condition.search_attribute;
+			const addConditionAttributes = (conditions) => {
+				for (const condition of conditions) {
+					if (condition.conditions) {
+						addConditionAttributes(condition.conditions);
+						continue;
+					}
+					const comparator = condition.comparator ?? condition.search_type;
+					if (FULL_TEXT_COMPARATOR_SET.has(comparator)) continue;
+					let attribute = condition.attribute;
+					if (condition.search_attribute !== undefined) {
+						attribute = condition.search_attribute;
+					}
+					affectedAttributes.add(attribute);
 				}
-				affectedAttributes.add(attribute);
-			});
+			};
+			addConditionAttributes(json.conditions);
 		}
 
 		if (json && (json.attribute || json.search_attribute)) {
@@ -1158,6 +1173,11 @@ function getRecordAttributes(json, operationName?) {
 			}
 
 			for (const attr of json.get_attributes) {
+				if (
+					json.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS &&
+					(attr === '$score' || attr === '$highlights')
+				)
+					continue;
 				affectedAttributes.add(attr);
 			}
 		} else {

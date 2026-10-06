@@ -6,7 +6,8 @@ const { join } = require('node:path');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { setupTestDBPath } = require('../testUtils');
 const { table, databases, database, BRANCH_ROOT_DIR, resolveBranchPath } = require('#src/resources/databases');
-const { getOrCreateBranch, removeBranches } = require('#src/resources/branchDatabase');
+const { getOrCreateBranch, removeBranches, closeBranchAt } = require('#src/resources/branchDatabase');
+const { getAuditFloor, getDatabaseGeneration } = require('#src/resources/auditStore');
 const { replayLogs } = require('#src/resources/replayLogs');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
@@ -56,6 +57,20 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 		const expected = resolveBranchPath('lifebase', 'appA');
 		assert.ok(existsSync(expected), `expected the branch at ${expected}`);
 		assert.ok(expected.includes(BRANCH_ROOT_DIR), 'branches belong under the reserved root');
+	});
+
+	it('gives a new branch a generation of its own, and keeps it when the branch is adopted again', async function () {
+		const branch = await getOrCreateBranch('lifebase', 'appGeneration');
+		const forked = getDatabaseGeneration(branch.tables.LifecycleSource.auditStore);
+		assert.notStrictEqual(forked.id, getDatabaseGeneration(Source.auditStore).id);
+		assert.ok(forked.epoch > 0, 'a branch is a copy, not genesis');
+		assert.ok(
+			getAuditFloor(branch.tables.LifecycleSource.auditStore) >= forked.epoch,
+			'the checkpoint carried no log below the fork'
+		);
+		await closeBranchAt(resolveBranchPath('lifebase', 'appGeneration'));
+		const adopted = await getOrCreateBranch('lifebase', 'appGeneration');
+		assert.deepStrictEqual(getDatabaseGeneration(adopted.tables.LifecycleSource.auditStore), forked);
 	});
 
 	it('gives concurrent callers the same branch rather than racing two checkpoints', async function () {

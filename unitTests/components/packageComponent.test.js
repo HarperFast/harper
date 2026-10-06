@@ -227,6 +227,27 @@ describe('streamPackagedDirectory round-trip', () => {
 		}
 	});
 
+	it("leaves out the component's own deployment provenance, and keeps a file of that name deeper down", async function () {
+		// Packed from a live tree, the marker would carry that release's deployment id into the next one.
+		this.timeout(15000);
+		const sourceDir = await makeFixture({
+			'index.js': 'x\n',
+			'.harper-deployment.json': '{"v":1,"component":"web","deploymentId":"live"}',
+			'assets/.harper-deployment.json': 'the component’s own file\n',
+		});
+		const extractDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-provenance-'));
+		try {
+			await pipeline(streamPackagedDirectory(sourceDir), gunzip(), tar.extract(extractDir));
+			const extracted = await readDirTree(extractDir);
+			assert.strictEqual(extracted['.harper-deployment.json'], undefined);
+			assert.strictEqual(extracted[path.join('assets', '.harper-deployment.json')], 'the component’s own file\n');
+			assert.strictEqual(extracted['index.js'], 'x\n');
+		} finally {
+			await fs.rm(sourceDir, { recursive: true, force: true });
+			await fs.rm(extractDir, { recursive: true, force: true });
+		}
+	});
+
 	it('findDanglingSymlinks reports broken links and ignores valid ones and node_modules', async function () {
 		this.timeout(15000);
 		const sourceDir = await makeFixture({ 'index.js': 'x\n', 'src/a.js': 'a\n' });

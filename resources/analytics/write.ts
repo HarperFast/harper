@@ -15,6 +15,7 @@ import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
 import { METRIC } from './metadata.ts';
 import { getTransactionQueueDepths, setCommitLatencyRecorder } from '../DatabaseTransaction.ts';
+import { contextStorage } from '../transaction.ts';
 import { RocksDatabase, type TransactionLogStats } from '@harperfast/rocksdb-js';
 
 const log = forComponent('analytics').conditional;
@@ -126,7 +127,7 @@ export function recordAction(value: Value, metric: string, path?: string, method
 	} else {
 		recordNewAction(key, value, metric, path, method, type);
 	}
-	if (!sendAnalyticsTimeout) sendAnalytics();
+	if (!sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
 }
 
 server.recordAnalytics = recordAction;
@@ -151,7 +152,10 @@ export function addAnalyticsListener(callback) {
 const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1];
 
 /**
- * Periodically send analytics data back to the main thread for storage
+ * Periodically send analytics data back to the main thread for storage. Callers arm it through
+ * contextStorage.exit(): the first sample of a period comes from some request, but the flush and the
+ * scheduled tasks it starts are process-wide work, which under that request's context would write as
+ * its user and, once its client disconnected, have every write rejected by its aborted signal.
  */
 function sendAnalytics() {
 	analyticsStart ||= performance.now();
@@ -355,7 +359,7 @@ function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Ta
 	return dbUsedSize;
 }
 
-function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
+export function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 	for (const [db, tables] of Object.entries(databases)) {
 		try {
 			const [firstTable] = Object.values(tables);
@@ -400,7 +404,7 @@ function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 	}
 }
 
-async function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
+export async function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
 	await Promise.all(
 		Object.entries(databases).map(async ([db, tables]) => {
 			try {
@@ -669,7 +673,7 @@ export function buildRocksDBTxnLogMetric(
  * @param now - The current time.
  * @param period - The period to store the metrics for.
  */
-function storeRocksDBStatsMetrics(
+export function storeRocksDBStatsMetrics(
 	analyticsTable: Table,
 	databases: Databases,
 	now: number,
@@ -921,6 +925,9 @@ export async function runAggregationCycle(fromPeriod, toPeriod = 60000) {
 	}
 }
 
+// A mean of per-sample peaks is not a peak, so peak-named measures fold with max.
+const MAX_MEASURE_NAME = /^max[A-Z]/;
+
 async function aggregation(fromPeriod, toPeriod = 60000) {
 	const rawAnalyticsTable = getRawAnalyticsTable();
 	const analyticsTable = getAnalyticsTable();
@@ -998,7 +1005,9 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 				for (const measureName in measures) {
 					const value = measures[measureName];
 					if (typeof value === 'number') {
-						action[measureName] = (action[measureName] * previousCount + value * count) / (previousCount + count);
+						action[measureName] = MAX_MEASURE_NAME.test(measureName)
+							? Math.max(action[measureName], value)
+							: (action[measureName] * previousCount + value * count) / (previousCount + count);
 					}
 				}
 				action.count += count;
@@ -1027,6 +1036,8 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		}
 		await rest();
 	}
+	// Peak-named measures sum per-thread peaks, which bounds concurrent depth only over intervals that
+	// every relevant thread's samples fully cover; the peaks need not coincide.
 	for (const entry of threadsToAverage) {
 		// eslint-disable-next-line @typescript-eslint/no-unused-vars
 		let { path, method, type, metric, count, total, distribution, threads, ...measures } = entry;

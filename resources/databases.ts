@@ -25,6 +25,7 @@ import {
 	acquireUpdateAttributesLock,
 	releaseUpdateAttributesLock,
 	tryUpdateAttributesLock,
+	withUpdateAttributesLock,
 	withUpdateAttributesLockNonBlocking,
 } from './Table.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
@@ -38,7 +39,7 @@ import {
 import { getConfigPath } from '../config/configUtils.ts';
 import { ClientError, DatabaseClosingError } from '../utility/errors/hdbError.ts';
 import { _assignPackageExport } from '../globals.js';
-import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
+import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
 import { workerData } from 'worker_threads';
@@ -95,6 +96,7 @@ import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
 import {
 	compileFullTextDefinitions,
+	compileFullTextFields,
 	persistedFullTextIndexNames,
 	reconcileFullTextIndexGenerations,
 	type FullTextDefinition,
@@ -104,7 +106,9 @@ import { projectAttributesToProperties } from './jsonSchemaTypes.ts';
 import {
 	definitionsEqual,
 	mergePeerFullTextDefinitions,
+	mergePeerFullTextFields,
 	readPersistedFullTextDefinitions,
+	readPersistedFullTextFields,
 	retainFullTextDefinitions,
 	serializeFullTextState,
 } from './fullTextSchemaLifecycle.ts';
@@ -643,6 +647,196 @@ export function recordRetiredGeneration(
 		primaryStore,
 	});
 	return merged;
+}
+const DROPPED_ROW_PREFIX = '/dropped/';
+const DROPPED_ROW_END = '/dropped0';
+const LIFECYCLE_STEP = 0.001;
+export interface TableDropMarker {
+	table: string;
+	droppedTime: number;
+	tableId?: number;
+}
+/**
+ * The record-version clock, floored strictly above `after`: a stamp synthesized here for a fact that
+ * follows another (a recreate after a known drop, a drop of a generation stamped by a faster peer clock)
+ * must order after it even when this node's clock has not caught up.
+ */
+export function tableLifecycleTime(after?: number): number {
+	const now = getNextMonotonicTime();
+	return Number.isFinite(after) && now <= after ? after + LIFECYCLE_STEP : now;
+}
+export function isDeadGeneration(createdTime: number | undefined, droppedTime: number): boolean {
+	return (Number.isFinite(createdTime) ? createdTime : 0) < droppedTime;
+}
+function droppedRowKey(tableName: string): string {
+	return DROPPED_ROW_PREFIX + tableName;
+}
+function dropMarkerStoreFor(databaseName: string): { rootStore: RootDatabaseKind; attributesDbi: any } | undefined {
+	if (!databases[databaseName]) return;
+	const rootStore = database({ database: databaseName, table: null });
+	const attributesDbi = (rootStore as any)?.dbisDb;
+	return attributesDbi ? { rootStore, attributesDbi } : undefined;
+}
+/**
+ * Read-compare-write of the newest drop time, serialized against every other writer: the catalog lock
+ * on RocksDB (held by the caller when `exclusive` is false), a write transaction on LMDB. A live
+ * tombstone is read again inside that section, so a drop that joined and raised its time cannot be
+ * promoted from a copy read earlier. A tombstone written before the stamps existed has no time, and no
+ * marker is synthesized for it: a time made up at completion could postdate a peer's live recreate.
+ */
+function writeTableDropMarker(
+	rootStore: RootDatabaseKind,
+	attributesDbi,
+	databaseName: string,
+	tableName: string,
+	droppedTime: number | undefined,
+	tableId: number | undefined,
+	exclusive: boolean,
+	tombstoneKey?: string
+): boolean {
+	const key = droppedRowKey(tableName);
+	const write = () => {
+		if (tombstoneKey) {
+			const live = attributesDbi.getSync(tombstoneKey);
+			if (live?.dropping && Number.isFinite(live.droppedTime) && !(droppedTime >= live.droppedTime)) {
+				droppedTime = live.droppedTime;
+				tableId = live.tableId ?? tableId;
+			}
+		}
+		if (!Number.isFinite(droppedTime)) return false;
+		const existing: TableDropMarker | undefined = attributesDbi.getSync(key);
+		if (existing && existing.droppedTime >= droppedTime) return false;
+		const marker: TableDropMarker = { table: tableName, droppedTime };
+		if (tableId != null) marker.tableId = tableId;
+		attributesDbi.putSync(key, marker);
+		return true;
+	};
+	let written: boolean;
+	if (rootStore instanceof RocksDatabase) {
+		written = exclusive
+			? withUpdateAttributesLock(rootStore, `drop marker for '${databaseName}.${tableName}'`, write)
+			: write();
+	} else {
+		written = (rootStore as any).transactionSync(write);
+	}
+	// Committed by here on both engines; emitted outside the caller's lock because listeners re-send
+	// schemas, which read this catalog.
+	if (written)
+		queueMicrotask(() => {
+			try {
+				databaseEventsEmitter.emit('tableDropRecorded', databaseName, tableName);
+			} catch (error) {
+				logger.warn(`A tableDropRecorded listener failed for ${databaseName}.${tableName}`, error);
+			}
+		});
+	return written;
+}
+export function getTableDrops(databaseName: string): TableDropMarker[] {
+	const store = dropMarkerStoreFor(databaseName);
+	if (!store) return [];
+	const markers: TableDropMarker[] = [];
+	for (const { value } of store.attributesDbi.getRange({ start: DROPPED_ROW_PREFIX, end: DROPPED_ROW_END })) {
+		if (value && typeof value.table === 'string' && Number.isFinite(value.droppedTime)) markers.push(value);
+	}
+	return markers;
+}
+/** A peer's drop of a table this node does not hold; false when the database is unknown here or the marker is not newer. */
+export function recordTableDrop(databaseName: string, tableName: string, droppedTime: number): boolean {
+	if (!Number.isFinite(droppedTime)) return false;
+	const store = dropMarkerStoreFor(databaseName);
+	if (!store) return false;
+	return writeTableDropMarker(
+		store.rootStore,
+		store.attributesDbi,
+		databaseName,
+		tableName,
+		droppedTime,
+		undefined,
+		true
+	);
+}
+export function onTableDropRecorded(listener: (databaseName: string, tableName: string) => void) {
+	databaseEventsEmitter.on('tableDropRecorded', listener);
+	return {
+		remove() {
+			databaseEventsEmitter.off('tableDropRecorded', listener);
+		},
+	};
+}
+/** The primary catalog row of a live table, under either key layout. */
+function primaryCatalogRowFor(table: {
+	dbisDB: any;
+	tableName: string;
+	primaryKey?: string;
+}): { key: string; value: any } | undefined {
+	const bareKey = table.tableName + '/';
+	const bare = table.dbisDB?.getSync(bareKey);
+	if (bare) return { key: bareKey, value: bare };
+	if (!table.primaryKey) return;
+	const legacyKey = `${table.tableName}/${table.primaryKey}`;
+	const legacy = table.dbisDB?.getSync(legacyKey);
+	return legacy?.isPrimaryKey ? { key: legacyKey, value: legacy } : undefined;
+}
+/** The stamp on disk, which a class loaded on another thread may not carry yet. */
+export function catalogCreatedTime(table: { dbisDB: any; tableName: string; primaryKey?: string }): number | undefined {
+	const createdTime = primaryCatalogRowFor(table)?.value?.createdTime;
+	return Number.isFinite(createdTime) ? createdTime : undefined;
+}
+/**
+ * Backfills the stamp of a generation created on a build that stored none, once a peer's stamped definition
+ * proves which generation it is. Only an absent stamp is written; false when one exists or the table is gone.
+ */
+export function stampTableCreatedTime(
+	table: { dbisDB: any; tableName: string; primaryKey?: string; primaryStore: any; createdTime?: number },
+	createdTime: number
+): boolean {
+	if (!Number.isFinite(createdTime)) return false;
+	const rootStore = table.primaryStore?.rootStore;
+	const attributesDbi = table.dbisDB;
+	if (!rootStore || !attributesDbi) return false;
+	const write = () => {
+		const row = primaryCatalogRowFor(table);
+		if (!row || row.value.dropping || Number.isFinite(row.value.createdTime)) return false;
+		row.value.createdTime = createdTime;
+		attributesDbi.putSync(row.key, row.value);
+		return true;
+	};
+	const written: boolean =
+		rootStore instanceof RocksDatabase
+			? withUpdateAttributesLock(rootStore, `stamp '${table.tableName}'`, write)
+			: (rootStore as any).transactionSync(write);
+	if (written) table.createdTime = createdTime;
+	return written;
+}
+/** The time a drop of this name carries for peers: its marker, or the live tombstone of a drop still completing. */
+export function pendingOrRecordedDropTime(databaseName: string, tableName: string): number | undefined {
+	const store = dropMarkerStoreFor(databaseName);
+	if (!store) return;
+	const marker: TableDropMarker | undefined = store.attributesDbi.getSync(droppedRowKey(tableName));
+	const tombstone = store.attributesDbi.getSync(tableName + '/');
+	const pending = tombstone?.dropping ? tombstone.droppedTime : undefined;
+	const candidates = [marker?.droppedTime, pending].filter((time) => Number.isFinite(time)) as number[];
+	return candidates.length ? Math.max(...candidates) : undefined;
+}
+/** Right before a completion path removes the live tombstone at `tombstoneKey`; RocksDB callers hold the catalog lock. */
+export function promoteTombstoneToDropMarker(
+	rootStore: RootDatabaseKind,
+	attributesDbi,
+	databaseName: string,
+	tableName: string,
+	tombstoneKey: string,
+	tombstone: { droppedTime?: number; tableId?: number } | undefined
+): void {
+	writeTableDropMarker(
+		rootStore,
+		attributesDbi,
+		databaseName,
+		tableName,
+		tombstone?.droppedTime,
+		tombstone?.tableId,
+		false,
+		tombstoneKey
+	);
 }
 export function storeNamesFor(attributesDbi, tableName: string, generation: string | undefined): string[] {
 	const names: string[] = [];
@@ -1283,7 +1477,8 @@ function initStores(
 	for (const result of attributesDbi.getRange({ start: false })) {
 		const { key, value } = result as { key: string; value: any };
 		if (value == null) continue;
-		if (typeof key === 'string' && key.startsWith(GENERATION_ROW_PREFIX)) continue;
+		if (typeof key === 'string' && (key.startsWith(GENERATION_ROW_PREFIX) || key.startsWith(DROPPED_ROW_PREFIX)))
+			continue;
 		let [tableName, attribute_name] = key.toString().split('/');
 		if (attribute_name === '') {
 			// primary key
@@ -1443,6 +1638,12 @@ function initStores(
 				for (const warning of warnings) logger.warn(warning);
 			} else if (warnings.length === 0) warnedFullTextStates.delete(warningKey);
 		}
+		const fullTextFields = readPersistedFullTextFields(
+			primaryAttribute.fullTextFields,
+			primaryAttribute.fullTextIndexes,
+			attributes,
+			(message) => logger.warn(`${databaseName}.${tableName}: ${message}`)
+		);
 		const fullTextIndexGenerations = persistedFullTextIndexGenerations(
 			primaryAttribute.fullTextIndexGenerations,
 			fullTextIndexes
@@ -1450,7 +1651,11 @@ function initStores(
 		const fullTextIndexRetirements = persistedFullTextIndexNames(primaryAttribute.fullTextIndexRetirements);
 		if (table && !recreateTable) {
 			if (primaryAttribute.audit === true && table.audit !== true) table.enableAuditing();
+			// Absent means unchanged, not `replicates`: NON_REPLICATING_SYSTEM_TABLES sets `replicate = false`
+			// on the live class and stores nothing, so an unconditional refresh would clear that override.
+			if (typeof primaryAttribute.replicate === 'boolean') table.replicate = primaryAttribute.replicate;
 			table.fullTextIndexes = fullTextIndexes;
+			table.fullTextFields = fullTextFields;
 			table.fullTextIndexGenerations = fullTextIndexGenerations;
 			table.fullTextIndexRetirements = fullTextIndexRetirements;
 			indices = table.indices;
@@ -1602,9 +1807,11 @@ function initStores(
 					databasePath: isLegacy ? `${databaseName}/${tableName}` : databaseName,
 					databaseName,
 					storageGeneration: primaryAttribute.generation,
+					createdTime: primaryAttribute.createdTime,
 					indices,
 					attributes,
 					fullTextIndexes,
+					fullTextFields,
 					fullTextIndexGenerations,
 					fullTextIndexRetirements,
 					schemaDefined: primaryAttribute.schemaDefined,
@@ -2143,6 +2350,8 @@ interface TableDefinition {
 	table: string;
 	database?: string;
 	path?: string;
+	/** Kept when a peer's definition creates the table here, so every copy of a generation shares one stamp. */
+	createdTime?: number;
 	expiration?: number;
 	eviction?: number;
 	scanInterval?: number;
@@ -2165,6 +2374,7 @@ interface TableDefinition {
 	/** Internal: this declaration came from the application owned by the current dedicated worker. */
 	isolatedApplicationOwner?: boolean;
 	fullTextIndexes?: FullTextDefinition[];
+	fullTextFields?: string[];
 }
 /**
  * Ensure that we have this database object (that holds a set of tables) set up
@@ -3353,6 +3563,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		cacheControl,
 		isolatedApplicationOwner,
 		fullTextIndexes,
+		fullTextFields,
+		createdTime,
 	} = tableDefinition;
 	const auditExplicitlyEnabled = audit === true;
 	const auditExplicitlyDisabled = audit === false;
@@ -3555,6 +3767,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let published = false;
 	let fullTextValuesForPersistence: unknown;
 	let fullTextPersistencePending = false;
+	let fullTextFieldsForPersistence: string[] | undefined;
 	let activeFullTextIndexes: FullTextDefinition[] | undefined;
 	let fullTextIndexGenerationMap: FullTextIndexGenerations = Object.create(null);
 	let fullTextIndexRetirementNames: string[] | undefined;
@@ -3604,23 +3817,43 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				);
 			}
 			let persistedPrimary = persistedPrimaryDescriptor(Table.dbisDB);
-			let persistedFullTextValues = persistedPrimary.descriptor?.fullTextIndexes;
+			const persistedFullTextState = (name: string, liveValue: unknown) =>
+				persistedPrimary.descriptor === undefined ? liveValue : persistedPrimary.descriptor[name];
+			let persistedFullTextValues = persistedFullTextState('fullTextIndexes', Table.fullTextIndexes);
+			if (origin === 'cluster') {
+				const declaredFields = new Set(
+					readPersistedFullTextFields(
+						persistedFullTextState('fullTextFields', Table.fullTextFields),
+						persistedFullTextValues,
+						catalogAttributes(Table.dbisDB),
+						fullTextWarning
+					)
+				);
+				attributes = attributes.filter((attribute) => {
+					if (!declaredFields.has(attribute.name)) return true;
+					fullTextWarning(`Ignoring peer attribute '${attribute.name}'; the local full-text field is authoritative`);
+					return false;
+				});
+			}
 			const incomingFullTextValues = fullTextIndexesExplicit ? fullTextIndexes : [];
 			let fullTextValidationAttributes: any[] | undefined;
 			if (
 				(persistedFullTextValues !== undefined && (rootStore instanceof RocksDatabase || fullTextIndexesExplicit)) ||
-				persistedPrimary.descriptor?.fullTextIndexRetirements !== undefined ||
+				persistedFullTextState('fullTextIndexRetirements', Table.fullTextIndexRetirements) !== undefined ||
+				(persistedFullTextState('fullTextFields', Table.fullTextFields) !== undefined &&
+					(rootStore instanceof RocksDatabase || fullTextIndexesExplicit || fullTextFields !== undefined)) ||
+				(fullTextFields !== undefined && (!Array.isArray(fullTextFields) || fullTextFields.length > 0)) ||
 				Table.fullTextIndexes?.length > 0 ||
 				(fullTextIndexesExplicit && (!Array.isArray(incomingFullTextValues) || incomingFullTextValues.length > 0))
 			) {
 				if (!(rootStore instanceof RocksDatabase)) {
 					exclusiveLock();
 					persistedPrimary = persistedPrimaryDescriptor(Table.dbisDB);
-					persistedFullTextValues = persistedPrimary.descriptor?.fullTextIndexes;
+					persistedFullTextValues = persistedFullTextState('fullTextIndexes', Table.fullTextIndexes);
 				}
 				const originalAttributes = Table.attributes.slice();
 				fullTextIndexRetirementNames = persistedFullTextIndexNames(
-					persistedPrimary.descriptor?.fullTextIndexRetirements
+					persistedFullTextState('fullTextIndexRetirements', Table.fullTextIndexRetirements)
 				);
 				const relationshipAttributes = originalAttributes.filter((attribute: any) => attribute.relationship);
 				const originalMetadata = {
@@ -3628,6 +3861,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					hidden: Table.hidden,
 					cacheControl: Table.cacheControl,
 					schemaDefined: Table.schemaDefined,
+				};
+				const originalFullTextState = {
+					indexes: Table.fullTextIndexes.slice(),
+					fields: [...Table.fullTextFields],
+					generations: Object.assign(Object.create(null), Table.fullTextIndexGenerations),
+					retirements: [...Table.fullTextIndexRetirements],
 				};
 				armFullTextLiveStateRestore = () => {
 					if (restoreFullTextLiveState) return;
@@ -3640,16 +3879,32 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						Object.assign(Table, originalMetadata);
 						Table.properties = projectAttributesToProperties(restored);
 						const restoredPrimary = persistedPrimaryDescriptor(Table.dbisDB).descriptor;
+						if (restoredPrimary === undefined) {
+							Table.fullTextIndexes = originalFullTextState.indexes;
+							Table.fullTextFields = originalFullTextState.fields;
+							Table.fullTextIndexGenerations = originalFullTextState.generations;
+							Table.fullTextIndexRetirements = originalFullTextState.retirements;
+							Table.schemaVersion++;
+							Table.updatedAttributes();
+							refreshDerivedIndexes(Table);
+							return;
+						}
 						const restoredFullTextIndexes =
-							rootStore instanceof RocksDatabase && restoredPrimary?.audit === true
-								? readPersistedFullTextDefinitions(restoredPrimary?.fullTextIndexes, restored, fullTextWarning)
+							rootStore instanceof RocksDatabase && restoredPrimary.audit === true
+								? readPersistedFullTextDefinitions(restoredPrimary.fullTextIndexes, restored, fullTextWarning)
 								: [];
 						Table.fullTextIndexes = restoredFullTextIndexes;
+						Table.fullTextFields = readPersistedFullTextFields(
+							restoredPrimary.fullTextFields,
+							restoredPrimary.fullTextIndexes,
+							restored,
+							fullTextWarning
+						);
 						Table.fullTextIndexGenerations = persistedFullTextIndexGenerations(
-							restoredPrimary?.fullTextIndexGenerations,
+							restoredPrimary.fullTextIndexGenerations,
 							restoredFullTextIndexes
 						);
-						Table.fullTextIndexRetirements = persistedFullTextIndexNames(restoredPrimary?.fullTextIndexRetirements);
+						Table.fullTextIndexRetirements = persistedFullTextIndexNames(restoredPrimary.fullTextIndexRetirements);
 						Table.schemaVersion++;
 						Table.updatedAttributes();
 						refreshDerivedIndexes(Table);
@@ -3672,8 +3927,28 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// Before the full-text branches can write an interim descriptor; the check on the merged list
 				// below stays authoritative.
 				assertDerivedFieldOwnership(validationAttributes as any[]);
+				const validateFullTextFields = (definitions: unknown) => {
+					const names = persistedFullTextIndexNames(definitions).map((name) => ({ name }));
+					if (origin === 'cluster')
+						return mergePeerFullTextFields(
+							persistedFullTextState('fullTextFields', Table.fullTextFields),
+							fullTextFields,
+							persistedFullTextValues,
+							definitions,
+							validationAttributes,
+							fullTextWarning
+						);
+					const requestedNames = new Set(names.map(({ name }) => name));
+					return compileFullTextFields(
+						fullTextFields === undefined ? [...requestedNames] : fullTextFields,
+						names,
+						validationAttributes,
+						true
+					);
+				};
 
-				const persistedAudit = persistedPrimary.descriptor?.audit;
+				const persistedAudit =
+					persistedPrimary.descriptor === undefined ? Table.audit : persistedPrimary.descriptor.audit;
 				const durableAudit = persistedAudit === true;
 				const finalAudit =
 					origin === 'cluster'
@@ -3700,6 +3975,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							: [];
 				} else if (fullTextIndexesExplicit) {
 					const compiled = compileFullTextDefinitions(incomingFullTextValues, validationAttributes);
+					fullTextFieldsForPersistence = validateFullTextFields(compiled);
 					if (compiled.length > 0 && !(rootStore instanceof RocksDatabase))
 						throw new ClientError(
 							`Table '${databaseName}.${tableName}' cannot use @fullText with the LMDB storage engine`,
@@ -3710,7 +3986,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							`Table '${databaseName}.${tableName}' must enable audit logging before using @fullText because its transaction log is the derived-index recovery source`,
 							400
 						);
-					const pinAudit = compiled.length > 0 && persistedPrimary.descriptor?.audit !== true;
+					const pinAudit = compiled.length > 0 && persistedAudit !== true;
 					const requestedNames = new Set(compiled.map(({ name }) => name));
 					const durableDefinitions = readPersistedFullTextDefinitions(
 						persistedFullTextValues,
@@ -3739,15 +4015,25 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							if (interimDefinitions.length > 0) {
 								interimPrimary.fullTextIndexes = interimDefinitions;
 								interimPrimary.fullTextIndexGenerations = persistedFullTextIndexGenerations(
-									persistedPrimary.descriptor?.fullTextIndexGenerations,
+									persistedFullTextState('fullTextIndexGenerations', Table.fullTextIndexGenerations),
 									interimDefinitions
 								);
 							} else {
 								delete interimPrimary.fullTextIndexes;
 								delete interimPrimary.fullTextIndexGenerations;
 							}
+							const interimFullTextFields = readPersistedFullTextFields(
+								persistedFullTextState('fullTextFields', Table.fullTextFields),
+								persistedFullTextValues,
+								durableAttributes,
+								fullTextWarning
+							).filter((name) => requestedNames.has(name));
+							if (interimFullTextFields.length > 0) interimPrimary.fullTextFields = interimFullTextFields;
+							else delete interimPrimary.fullTextFields;
 							const retirements = new Set(
-								persistedFullTextIndexNames(persistedPrimary.descriptor?.fullTextIndexRetirements)
+								persistedFullTextIndexNames(
+									persistedFullTextState('fullTextIndexRetirements', Table.fullTextIndexRetirements)
+								)
 							);
 							for (const name of transitionRetirements) retirements.add(name);
 							for (const name of requestedNames) if (!transitionRetirements.has(name)) retirements.delete(name);
@@ -3779,6 +4065,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					fullTextValuesForPersistence = persistedFullTextValues;
 					activeFullTextIndexes = rootStore instanceof RocksDatabase && finalAudit ? retained : [];
 				}
+				fullTextFieldsForPersistence ??= validateFullTextFields(fullTextValuesForPersistence);
 			}
 			if (activeFullTextIndexes !== undefined) {
 				const durableGenerationDefinitions = readPersistedFullTextDefinitions(
@@ -3793,7 +4080,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				);
 				fullTextIndexGenerationMap = reconcileFullTextIndexGenerations(
 					durableGenerationDefinitions,
-					persistedPrimary.descriptor?.fullTextIndexGenerations,
+					persistedFullTextState('fullTextIndexGenerations', Table.fullTextIndexGenerations),
 					finalGenerationDefinitions,
 					createFullTextIndexGeneration
 				);
@@ -3889,12 +4176,30 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					activeFullTextIndexes = compiled;
 				}
 			}
+			fullTextFieldsForPersistence =
+				origin === 'cluster'
+					? mergePeerFullTextFields(
+							undefined,
+							fullTextFields,
+							[],
+							fullTextValuesForPersistence,
+							attributes,
+							fullTextWarning
+						)
+					: compileFullTextFields(
+							fullTextFields === undefined ? persistedFullTextIndexNames(fullTextValuesForPersistence) : fullTextFields,
+							persistedFullTextIndexNames(fullTextValuesForPersistence).map((name) => ({ name })),
+							attributes,
+							true
+						);
 			const auditStore = rootStore.auditStore;
 			primaryKeyAttribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
 			primaryKey = primaryKeyAttribute.name;
 			primaryKeyAttribute.isPrimaryKey = true;
 			primaryKeyAttribute.is_hash_attribute = true; // backward-compat: harperdb@4.x reads this field to open the DBI with correct flags
 			primaryKeyAttribute.schemaDefined = schemaDefined;
+			if (fullTextFieldsForPersistence.length > 0) primaryKeyAttribute.fullTextFields = fullTextFieldsForPersistence;
+			else delete primaryKeyAttribute.fullTextFields;
 			// Old readers treat every attribute row as live schema, so relationships stay on the ignored primary descriptor.
 			if (relationshipDefinitions) primaryKeyAttribute.relationships = relationshipDefinitions;
 			if (Array.isArray(fullTextValuesForPersistence) && fullTextValuesForPersistence.length > 0) {
@@ -3999,6 +4304,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// generation this table has ever spent, not just the one on this row.
 				clearInterruptedDropEntries(rootStore.path, tableName);
 			}
+			// After any interrupted drop completed, and never below the newest drop of this name: a recreate
+			// that follows a drop this node knows of must read as the newer generation everywhere.
+			primaryKeyAttribute.createdTime = Number.isFinite(createdTime)
+				? createdTime
+				: tableLifecycleTime((attributesDbi as any).getSync(droppedRowKey(tableName))?.droppedTime);
 			if (rootStore instanceof RocksDatabase) {
 				generation = randomUUID();
 				attributesDbi.putSync(generationRowKey(generation), { table: tableName, generation, phase: 'creating' });
@@ -4040,9 +4350,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				databasePath: databaseName,
 				databaseName,
 				storageGeneration: generation,
+				createdTime: primaryKeyAttribute.createdTime,
 				indices: {},
 				attributes,
 				fullTextIndexes: activeFullTextIndexes ?? [],
+				fullTextFields: fullTextFieldsForPersistence,
 				fullTextIndexGenerations: fullTextIndexGenerationMap,
 				fullTextIndexRetirements: fullTextIndexRetirementNames ?? [],
 				schemaDefined,
@@ -4197,8 +4509,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					origin !== 'cluster' &&
 					(schemaDefinedMismatch ||
 						(typeof audit === 'boolean' && audit !== attributeDescriptor.audit) ||
-						(sealed !== undefined && sealed !== Table.sealed) ||
-						(replicate !== undefined && replicate !== Table.replicate) ||
+						(sealed !== undefined && sealed !== attributeDescriptor.sealed) ||
+						(replicate !== undefined && replicate !== attributeDescriptor.replicate) ||
 						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
 						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
 						attribute.type !== attributeDescriptor.type)
@@ -4463,6 +4775,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		if (
 			!deferredPrimaryRow &&
 			(fullTextPersistencePending ||
+				fullTextFieldsForPersistence !== undefined ||
 				(rootStore instanceof RocksDatabase &&
 					activeFullTextIndexes !== undefined &&
 					Array.isArray(fullTextValuesForPersistence)))
@@ -4470,10 +4783,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			const { key, descriptor } = persistedPrimaryDescriptor(attributesDbi);
 			if (descriptor && !tableIsDropping(descriptor, key)) {
 				const updatedPrimary = { ...descriptor };
+				if (fullTextFieldsForPersistence?.length) updatedPrimary.fullTextFields = fullTextFieldsForPersistence;
+				else if (fullTextFieldsForPersistence) delete updatedPrimary.fullTextFields;
 				if (Array.isArray(fullTextValuesForPersistence) && fullTextValuesForPersistence.length > 0) {
 					updatedPrimary.fullTextIndexes = fullTextValuesForPersistence;
 					updatedPrimary.fullTextIndexGenerations = fullTextIndexGenerationMap;
-				} else {
+				} else if (Array.isArray(fullTextValuesForPersistence)) {
 					delete updatedPrimary.fullTextIndexes;
 					delete updatedPrimary.fullTextIndexGenerations;
 				}
@@ -4488,6 +4803,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				else delete updatedPrimary.fullTextIndexRetirements;
 				if (
 					!definitionsEqual(descriptor.fullTextIndexes, updatedPrimary.fullTextIndexes) ||
+					!definitionsEqual(descriptor.fullTextFields, updatedPrimary.fullTextFields) ||
 					JSON.stringify(descriptor.fullTextIndexGenerations ?? {}) !==
 						JSON.stringify(updatedPrimary.fullTextIndexGenerations ?? {}) ||
 					JSON.stringify(descriptor.fullTextIndexRetirements ?? []) !==
@@ -4560,6 +4876,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	} finally {
 		releaseLock();
 	}
+	if (fullTextFieldsForPersistence !== undefined) Table.fullTextFields = fullTextFieldsForPersistence;
 	if (activeFullTextIndexes !== undefined) {
 		Table.fullTextIndexes = activeFullTextIndexes;
 		Table.fullTextIndexGenerations = fullTextIndexGenerationMap;
@@ -4583,6 +4900,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		);
 	refreshDerivedIndexes(Table);
 
+	if (typeof replicate === 'boolean' && origin !== 'cluster') Table.replicate = replicate;
 	Table.origin = origin;
 	// scope-private: replication and other global subscribers must not learn of a branch class
 	if ((hasChanges || refreshRelationshipAttributes) && !target.branch) {
@@ -5546,7 +5864,17 @@ function completeInterruptedDrop(
 		// catalog-removal failure would bypass the retry accounting entirely.
 		(attributesDbi as any).removeSync(key);
 	}
-	if (tombstoneEntry) (attributesDbi as any).removeSync(tombstoneEntry.key);
+	if (tombstoneEntry) {
+		promoteTombstoneToDropMarker(
+			rootStore,
+			attributesDbi,
+			databaseName,
+			tableName,
+			tombstoneEntry.key,
+			tombstoneEntry.value
+		);
+		(attributesDbi as any).removeSync(tombstoneEntry.key);
+	}
 	return true;
 }
 
@@ -5554,7 +5882,11 @@ export function dropTableMeta({ table: tableName, database: databaseName }) {
 	const rootStore = database({ database: databaseName, table: tableName });
 	const removals = [];
 	const dbisDb = rootStore.dbisDb;
-	for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
+	for (const { key, value } of dbisDb.getRange({ start: tableName + '/', end: tableName + '0' })) {
+		// A drop that returned with its tombstone still in place (full-text retirement pending) must not
+		// lose the drop time with the row.
+		if (value?.dropping)
+			writeTableDropMarker(rootStore, dbisDb, databaseName, tableName, value.droppedTime, value.tableId, true, key);
 		removals.push(dbisDb.remove(key));
 	}
 	databaseEventsEmitter.emit('dropTable', tableName, databaseName);

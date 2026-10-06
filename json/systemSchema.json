@@ -401,6 +401,9 @@
 				"attribute": "payload_blob"
 			},
 			{
+				"attribute": "install_fingerprint"
+			},
+			{
 				"attribute": "status"
 			},
 			{
@@ -548,6 +551,17 @@
 	"hdb_model_outcomes": {
 		"hash_attribute": "id",
 		"name": "hdb_model_outcomes",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "id"
+			}
+		]
+	},
+	"hdb_model_calibrations": {
+		"hash_attribute": "id",
+		"name": "hdb_model_calibrations",
 		"schema": "system",
 		"audit": true,
 		"attributes": [

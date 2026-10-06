@@ -10,6 +10,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const fs = require('node:fs');
+const net = require('node:net');
 const { Readable } = require('node:stream');
 
 // A Readable that emits the given chunks one per read() tick (async), then ends.
@@ -117,7 +118,6 @@ function udsRequest(socketPath, { method = 'GET', pathName = '/', headers = {}, 
 					}
 					return;
 				}
-				if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
 				settleReject(err);
 			});
 		});
@@ -127,6 +127,45 @@ function udsRequest(socketPath, { method = 'GET', pathName = '/', headers = {}, 
 		});
 		if (body) req.write(body);
 		req.end();
+	});
+}
+
+// Send one GET over a raw socket and collect every byte until the server closes the connection, so a
+// test can tell an aborted response from a completed one (Node's http client hides the framing).
+// `pauseUntil` holds the client's reads back until it resolves, which is what builds backpressure
+// on the server. Rejects if the server has not closed the connection in time: the response these
+// tests guard against is one that never finishes.
+function rawExchange(socketPath, pathName, { pauseUntil, timeout = 5000 } = {}) {
+	return new Promise((resolve, reject) => {
+		const chunks = [];
+		const socket = net.connect(socketPath, () =>
+			socket.write(`GET ${pathName} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`)
+		);
+		if (pauseUntil) {
+			socket.pause();
+			pauseUntil.then(() => socket.resume());
+		}
+		const timer = setTimeout(() => {
+			socket.destroy();
+			reject(new Error(`server left ${pathName} open for ${timeout}ms`));
+		}, timeout);
+		socket.on('data', (chunk) => chunks.push(chunk));
+		socket.on('error', (error) => {
+			// a reset is a close too; the bytes received so far are still what the client saw
+			if (error.code !== 'ECONNRESET') reject(error);
+		});
+		socket.on('close', () => {
+			clearTimeout(timer);
+			const raw = Buffer.concat(chunks).toString('latin1');
+			const headerEnd = raw.indexOf('\r\n\r\n');
+			resolve({
+				raw,
+				headersComplete: headerEnd !== -1,
+				body: headerEnd === -1 ? '' : raw.slice(headerEnd + 4),
+				// the zero-length chunk is what tells a client the body is complete
+				complete: headerEnd !== -1 && raw.endsWith('0\r\n\r\n'),
+			});
+		});
 	});
 }
 
@@ -144,8 +183,19 @@ function readBody(request) {
 	let server;
 	let socketPath;
 	let onDispatch; // set per-test to observe when the handler is dispatched
+	let failing;
 
-	const handler = async (request) => {
+	// Not async: the sink then receives the source in the tick that destroyed it, while the 'error'
+	// that destroy() queued has not been emitted yet.
+	const handler = (request) => {
+		if (request.pathname !== '/failing-at-handoff') return respond(request);
+		const source = new Readable({ read() {} });
+		source.destroy(new Error('source failure'));
+		failing = { source, request };
+		return { status: 200, body: source };
+	};
+
+	const respond = async (request) => {
 		switch (request.pathname) {
 			case '/echo':
 				return { status: 200, body: await readBody(request) };
@@ -175,6 +225,52 @@ function readBody(request) {
 			case '/bigstream': {
 				const chunk = Buffer.alloc(64 * 1024, 0x61); // 64 KiB of 'a'
 				return { status: 200, body: chunkStream(Array.from({ length: 64 }, () => chunk)) }; // 4 MiB total
+			}
+			case '/fail-after-chunk':
+			case '/fail-before-chunk':
+			case '/close-without-end':
+			case '/error-without-destroy': {
+				let step = 0;
+				const source = new Readable({
+					autoDestroy: request.pathname !== '/error-without-destroy',
+					read() {
+						if (step++ === 0 && request.pathname !== '/fail-before-chunk') return void this.push('first chunk ');
+						if (step > 2) return;
+						setImmediate(() => {
+							if (request.pathname === '/close-without-end') this.destroy();
+							else if (request.pathname === '/error-without-destroy') this.emit('error', new Error('source failure'));
+							else this.destroy(new Error('source failure'));
+						});
+					},
+				});
+				failing = { source, request };
+				return { status: 200, body: source };
+			}
+			case '/failed-before-handoff':
+			case '/closed-before-handoff': {
+				const source = new Readable({ read() {} });
+				source.on('error', () => {});
+				source.destroy(request.pathname === '/failed-before-handoff' ? new Error('source failure') : undefined);
+				failing = { source, request };
+				await new Promise((resolve) => source.once('close', resolve));
+				return { status: 200, body: source };
+			}
+			case '/fail-under-backpressure': {
+				const chunk = Buffer.alloc(64 * 1024, 0x61);
+				const source = new Readable({
+					read() {
+						setImmediate(() => this.push(chunk));
+					},
+				});
+				failing = { source, request };
+				const poll = setInterval(() => {
+					if (!source.isPaused()) return;
+					clearInterval(poll);
+					failing.pausedAtFailure = true;
+					source.destroy(new Error('source failure'));
+				}, 1);
+				source.once('close', () => clearInterval(poll));
+				return { status: 200, body: source };
 			}
 			case '/ip':
 				return { status: 200, body: String(request.ip) };
@@ -356,6 +452,62 @@ function readBody(request) {
 		assert.ok(res.body.equals(Buffer.alloc(4 * 1024 * 1024, 0x61)), 'streamed bytes intact under backpressure');
 	});
 
+	describe('a response stream that does not end cleanly', function () {
+		// a regression here is a response that never finishes, and mocha's own timeout is off
+		this.timeout(10_000);
+
+		const serverStillServes = async () => {
+			const res = await udsRequest(socketPath, { pathName: '/method' });
+			assert.strictEqual(res.body.toString(), 'method=GET');
+		};
+		const signalAborted = async () => {
+			for (let i = 0; i < 100 && !failing.request.signal.aborted; i++) await new Promise((r) => setTimeout(r, 10));
+			assert.ok(failing.request.signal.aborted, 'aborting the response aborts the request signal');
+		};
+
+		for (const pathName of ['/fail-after-chunk', '/close-without-end', '/error-without-destroy']) {
+			it(`aborts the connection instead of completing the response (${pathName})`, async function () {
+				const response = await rawExchange(socketPath, pathName);
+				assert.ok(response.headersComplete, 'the first chunk commits the headers');
+				assert.ok(response.body.includes('first chunk '), 'what was written before the failure is delivered');
+				assert.ok(!response.complete, `a failed source must not be framed as a complete body: ${response.raw}`);
+				assert.ok(failing.source.destroyed, 'the source is torn down so its producer stops');
+				await signalAborted();
+				await assert.rejects(udsRequest(socketPath, { pathName }), 'an HTTP client sees the request fail');
+				await serverStillServes();
+			});
+		}
+
+		for (const pathName of [
+			'/fail-before-chunk',
+			'/failing-at-handoff',
+			'/failed-before-handoff',
+			'/closed-before-handoff',
+		]) {
+			it(`gives the client no complete response when nothing was streamed (${pathName})`, async function () {
+				const response = await rawExchange(socketPath, pathName);
+				assert.ok(!response.complete, `a failed source must not be framed as a complete body: ${response.raw}`);
+				assert.strictEqual(response.body, '');
+				await assert.rejects(udsRequest(socketPath, { pathName }), 'an HTTP client sees the request fail');
+				await serverStillServes();
+			});
+		}
+
+		it('aborts when the source fails while paused for backpressure', async function () {
+			let release;
+			const pauseUntil = new Promise((resolve) => (release = resolve));
+			failing = undefined;
+			const exchange = rawExchange(socketPath, '/fail-under-backpressure', { pauseUntil });
+			for (let i = 0; i < 500 && !failing?.source.destroyed; i++) await new Promise((r) => setTimeout(r, 10));
+			release();
+			const response = await exchange;
+			assert.ok(failing.pausedAtFailure, 'the source failed while streamResponse held it paused');
+			assert.ok(response.headersComplete);
+			assert.ok(!response.complete, 'a failed source must not be framed as a complete body');
+			await serverStillServes();
+		});
+	});
+
 	it('returns 404 when the handler yields no response', async function () {
 		const res = await udsRequest(socketPath, { pathName: '/miss' });
 		assert.strictEqual(res.status, 404);
@@ -375,6 +527,154 @@ function readBody(request) {
 		assert.strictEqual(res.status, 429);
 		assert.strictEqual(res.statusMessage, 'Too Many Requests');
 	});
+});
+
+(uwsAvailable ? describe : describe.skip)('uWS oversized TCP uploads', function () {
+	for (const {
+		name,
+		chunked = false,
+		connection = 'close',
+		finish = false,
+		disconnect = false,
+		duplicateConnection = false,
+		continueUpload = false,
+		consume = true,
+	} of [
+		{ name: 'completes a 413 after a fixed-length uploader stops at its headers' },
+		{ name: 'completes a 413 after a chunked uploader stops at its headers', chunked: true },
+		{ name: 'finishes draining when the remaining upload arrives', finish: true, connection: 'Close' },
+		{ name: 'preserves an immediate complete 413 on keep-alive', connection: 'keep-alive' },
+		{ name: 'cancels the drain deadline when the peer disconnects', disconnect: true },
+		{ name: 'delivers 413 with repeated Connection headers', duplicateConnection: true },
+		{ name: 'delivers 413 before bounding an uploader that ignores it', chunked: true, continueUpload: true },
+		{ name: 'releases a paused body before draining the upload', consume: false },
+	]) {
+		it(name, async function () {
+			const port = 36000 + (process.pid % 1500);
+			let request;
+			let bufferedBeforeReject = 0;
+			let delivered = 0;
+			const server = await createUwsServer({
+				host: '127.0.0.1',
+				port,
+				maxBodyBytes: consume ? 1024 : 128 * 1024,
+				handler: async (incoming) => {
+					if (incoming.method === 'GET') return { status: 200, body: 'alive' };
+					request = incoming;
+					if (!consume) {
+						incoming.body.on('data', () => delivered++);
+						incoming.body.pause();
+						await new Promise((resolve) => incoming.signal.addEventListener('abort', resolve, { once: true }));
+						return { status: 200 };
+					}
+					return { status: 200, body: await readBody(incoming) };
+				},
+			});
+			try {
+				const response = await new Promise((resolve, reject) => {
+					const chunk = Buffer.alloc(64 * 1024);
+					const length = (continueUpload ? 16 : 1) * 1024 * 1024;
+					let sent = 0;
+					let sentAtHeaders;
+					let raw = '';
+					let nextWrite;
+					const socket = net.connect({ host: '127.0.0.1', port }, () => {
+						const framing = chunked ? 'Transfer-Encoding: chunked' : `Content-Length: ${length}`;
+						const connectionHeaders = `Connection: ${connection}\r\n${duplicateConnection ? 'Connection: close\r\n' : ''}`;
+						socket.write(`POST / HTTP/1.1\r\nHost: localhost\r\n${connectionHeaders}${framing}\r\n\r\n`);
+						upload();
+					});
+					function upload() {
+						bufferedBeforeReject = Math.max(bufferedBeforeReject, request?.body.readableLength ?? 0);
+						if (socket.destroyed || (!continueUpload && raw.includes('\r\n\r\n'))) return;
+						if (sent === length) {
+							if (chunked) socket.write('0\r\n\r\n');
+							return;
+						}
+						// Hold until the paused body has buffered the first chunk, so the over-limit read
+						// cannot be the server's first.
+						if (!consume && sent && !bufferedBeforeReject) {
+							nextWrite = setImmediate(upload);
+							return;
+						}
+						sent += chunk.length;
+						const data = chunked ? Buffer.concat([Buffer.from('10000\r\n'), chunk, Buffer.from('\r\n')]) : chunk;
+						const scheduleUpload = () => (nextWrite = continueUpload ? setTimeout(upload, 10) : setImmediate(upload));
+						if (socket.write(data)) scheduleUpload();
+						else socket.once('drain', scheduleUpload);
+					}
+					let timer = setTimeout(() => {
+						const stalled = !consume && !bufferedBeforeReject;
+						socket.destroy(
+							new Error(
+								stalled ? 'the paused body never buffered the first chunk' : 'oversized upload did not receive 413'
+							)
+						);
+					}, 5000);
+					socket.on('data', (data) => {
+						raw += data.toString('latin1');
+						if (sentAtHeaders !== undefined || !raw.includes('\r\n\r\n')) return;
+						sentAtHeaders = sent;
+						if (disconnect) socket.destroy();
+						else if (connection === 'keep-alive') {
+							socket.write(Buffer.alloc(length - sent));
+							sent = length;
+							socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n');
+						} else if (finish) {
+							clearTimeout(timer);
+							timer = setTimeout(() => socket.destroy(new Error('finished upload waited for the drain deadline')), 500);
+							socket.write(Buffer.alloc(length - sent));
+							sent = length;
+						}
+					});
+					socket.on('error', (error) => {
+						if (!continueUpload || !raw.includes('\r\n\r\n')) reject(error);
+					});
+					socket.on('close', () => {
+						clearTimeout(timer);
+						if (continueUpload) clearTimeout(nextWrite);
+						else clearImmediate(nextWrite);
+						resolve({ raw, sentAtHeaders, length });
+					});
+				});
+				assert.match(response.raw, /^HTTP\/1\.1 413 Payload Too Large\r\n/);
+				assert.match(response.raw, /\r\n\r\n/);
+				if (!disconnect && !continueUpload) {
+					assert.ok(
+						/\r\ncontent-length: 0\r\n/i.test(response.raw) || response.raw.endsWith('\r\n0\r\n\r\n'),
+						'the 413 response body must be complete'
+					);
+				}
+				if (continueUpload) assert.match(response.raw, /ClientError: Request body exceeds 1024 bytes/);
+				if (connection === 'keep-alive') {
+					assert.match(response.raw, /HTTP\/1\.1 200 OK\r\n/);
+					assert.ok(response.raw.endsWith('alive'), 'the fully drained keep-alive connection serves another request');
+				}
+				assert.ok(response.sentAtHeaders < response.length, '413 headers must arrive before the upload finishes');
+				assert.ok(request.signal.aborted, 'the rejected handler is cancelled');
+				assert.ok(request.body.destroyed, 'the rejected body is destroyed');
+				assert.strictEqual(request.body.readableLength, 0, 'rejected body buffers are released');
+				if (!consume) {
+					assert.ok(bufferedBeforeReject > 0, 'the paused body buffered upload bytes before rejection');
+					assert.strictEqual(delivered, 0, 'teardown never delivers buffered bytes to the paused consumer');
+				}
+				if (disconnect || finish) {
+					await new Promise((resolve) => setTimeout(resolve, 1100));
+					const status = await new Promise((resolve, reject) => {
+						http
+							.get({ host: '127.0.0.1', port, agent: false }, (res) => {
+								res.resume();
+								res.on('end', () => resolve(res.statusCode));
+							})
+							.on('error', reject);
+					});
+					assert.strictEqual(status, 200, 'the server survives past the cancelled drain deadline');
+				}
+			} finally {
+				server.close();
+			}
+		});
+	}
 });
 
 let WebSocket;

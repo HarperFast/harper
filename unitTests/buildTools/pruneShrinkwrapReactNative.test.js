@@ -1,7 +1,5 @@
-// Covers build-tools/prune-shrinkwrap-react-native.mjs, which strips the react-native
-// tree from the published shrinkwrap (#1937). The risk worth testing is over-reach: the
-// script must remove only what is reachable *solely* through alasql's optional
-// react-native-fs edge, and never a package something else still depends on.
+// Covers production shrinkwrap pruning: the unused React Native tree (#1937) and
+// optional UTF-8 peers. Shared packages and explicit addon dependencies must survive.
 const assert = require('node:assert');
 const path = require('node:path');
 const os = require('node:os');
@@ -30,15 +28,149 @@ function fixture() {
 function runPrune(lock) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prune-rn-'));
 	const file = path.join(dir, 'npm-shrinkwrap.json');
-	fs.writeFileSync(file, JSON.stringify(lock));
-	// stderr is captured rather than inherited so the expected-throw case does not print
-	// the child's stack trace into the test output.
-	const stdout = execFileSync(process.execPath, [SCRIPT, file], {
-		encoding: 'utf8',
-		stdio: ['ignore', 'pipe', 'pipe'],
-	});
-	return { stdout, result: JSON.parse(fs.readFileSync(file, 'utf8')) };
+	try {
+		fs.writeFileSync(file, JSON.stringify(lock));
+		// Capture expected-throw errors without printing the child's stack into the test output.
+		const stdout = execFileSync(process.execPath, [SCRIPT, file], {
+			encoding: 'utf8',
+			stdio: ['ignore', 'pipe', 'pipe'],
+			timeout: 30_000,
+		});
+		return { stdout, result: JSON.parse(fs.readFileSync(file, 'utf8')) };
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 }
+
+function utf8Fixture() {
+	return {
+		lockfileVersion: 3,
+		packages: {
+			'': { dependencies: { ws: '^8.0.0' }, optionalDependencies: { bufferutil: '^4.0.0' } },
+			'node_modules/ws': {
+				version: '8.0.0',
+				peerDependencies: { 'utf-8-validate': '>=5.0.2' },
+				peerDependenciesMeta: { 'utf-8-validate': { optional: true } },
+			},
+			'node_modules/utf-8-validate': {
+				version: '5.0.10',
+				dependencies: { 'node-gyp-build': '^4.0.0', 'addon-only': '^1.0.0' },
+			},
+			'node_modules/bufferutil': { version: '4.0.0', dependencies: { 'node-gyp-build': '^4.0.0' } },
+			'node_modules/node-gyp-build': { version: '4.0.0' },
+			'node_modules/addon-only': { version: '1.0.0' },
+		},
+	};
+}
+
+describe('prune-shrinkwrap optional utf-8-validate peers', () => {
+	it('removes the addon and exclusive children even without a react-native tree', () => {
+		const { stdout, result } = runPrune(utf8Fixture());
+		assert.ok(!result.packages['node_modules/utf-8-validate'], 'optional peer must not ship the unused addon');
+		assert.ok(!result.packages['node_modules/addon-only'], 'exclusive children must be pruned');
+		assert.ok(result.packages['node_modules/node-gyp-build'], 'bufferutil still requires the shared native loader');
+		assert.ok(result.packages['node_modules/bufferutil'], 'other optional native packages must survive');
+		assert.ok(result.packages['node_modules/ws'], 'ws itself must survive');
+		assert.match(stdout, /No unused react-native-fs tree.*nothing to prune/);
+		assert.match(stdout, /Pruned 2 entries reachable only through optional utf-8-validate peers/);
+	});
+
+	it('preserves other optional peers even when no explicit dependency produces them', () => {
+		const lock = utf8Fixture();
+		delete lock.packages[''].optionalDependencies;
+		lock.packages['node_modules/ws'].peerDependencies.bufferutil = '^4.0.0';
+		lock.packages['node_modules/ws'].peerDependenciesMeta.bufferutil = { optional: true };
+		const { result } = runPrune(lock);
+		assert.ok(!result.packages['node_modules/utf-8-validate'], 'UTF-8 peer should be pruned');
+		assert.ok(result.packages['node_modules/bufferutil'], 'rule must not extend to other optional peers');
+		assert.ok(result.packages['node_modules/node-gyp-build'], 'their dependencies must survive');
+	});
+
+	it('refuses to write if an unreachable entry still requires the addon', () => {
+		const lock = utf8Fixture();
+		lock.packages['node_modules/dev-only-tool'] = { version: '1.0.0', dependencies: { 'utf-8-validate': '^5.0.0' } };
+		assert.throws(
+			() => runPrune(lock),
+			/pruning .*utf-8-validate.*required dependenc.*unresolved[\s\S]*dev-only-tool -> utf-8-validate/
+		);
+	});
+
+	it('omits the addon from the real production lock without dropping native dependencies', () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prune-utf8-lock-'));
+		const file = path.join(dir, 'npm-shrinkwrap.json');
+		try {
+			fs.copyFileSync(path.join(__dirname, '..', '..', 'package-lock.json'), file);
+			for (const script of ['prune-shrinkwrap-dev.mjs', 'prune-shrinkwrap-react-native.mjs']) {
+				execFileSync(process.execPath, [path.join(__dirname, '..', '..', 'build-tools', script), file], {
+					timeout: 30_000,
+				});
+			}
+			const { packages } = JSON.parse(fs.readFileSync(file, 'utf8'));
+			assert.ok(
+				!Object.keys(packages).some(
+					(key) => key.endsWith('/node_modules/utf-8-validate') || key === 'node_modules/utf-8-validate'
+				)
+			);
+			for (const name of [
+				'ws',
+				'bufferutil',
+				'node-gyp-build',
+				'@harperfast/rocksdb-js',
+				'@harperfast/rocksdb-js-linux-x64-glibc',
+			]) {
+				assert.ok(packages[`node_modules/${name}`], `${name} must remain in the production lock`);
+			}
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+		it(`keeps the addon when another package declares it in ${field}`, () => {
+			const lock = utf8Fixture();
+			lock.packages[''].dependencies.consumer = '^1.0.0';
+			lock.packages['node_modules/consumer'] = { version: '1.0.0', [field]: { 'utf-8-validate': '^5.0.0' } };
+			const { result } = runPrune(lock);
+			assert.ok(result.packages['node_modules/utf-8-validate'], 'explicit dependency must survive');
+			assert.ok(result.packages['node_modules/addon-only'], 'its dependencies must survive too');
+		});
+	}
+
+	for (const field of ['dependencies', 'optionalDependencies']) {
+		it(`keeps an optional peer that the same package also declares in ${field}`, () => {
+			const lock = utf8Fixture();
+			lock.packages['node_modules/ws'][field] = { 'utf-8-validate': '^5.0.0' };
+			const { result } = runPrune(lock);
+			assert.ok(result.packages['node_modules/utf-8-validate'], 'peer metadata cannot override an explicit dependency');
+		});
+	}
+
+	it('keeps a peer unless its metadata explicitly marks it optional', () => {
+		const lock = utf8Fixture();
+		lock.packages['node_modules/ws'].peerDependenciesMeta['utf-8-validate'].optional = false;
+		const { result } = runPrune(lock);
+		assert.ok(result.packages['node_modules/utf-8-validate'], 'required peer must survive');
+	});
+
+	it('prunes a nested optional-peer copy while keeping a directly required hoisted copy', () => {
+		const lock = utf8Fixture();
+		lock.packages[''].dependencies['utf-8-validate'] = '^5.0.0';
+		lock.packages['node_modules/ws/node_modules/utf-8-validate'] = { version: '6.0.6' };
+		const { result } = runPrune(lock);
+		assert.ok(!result.packages['node_modules/ws/node_modules/utf-8-validate'], 'nested optional peer must be pruned');
+		assert.strictEqual(
+			result.packages['node_modules/utf-8-validate'].version,
+			'5.0.10',
+			'explicit hoisted copy survives'
+		);
+	});
+
+	it('is idempotent after removing optional peers', () => {
+		const { result: once } = runPrune(utf8Fixture());
+		const { result: twice } = runPrune(once);
+		assert.deepStrictEqual(twice, once);
+	});
+});
 
 describe('prune-shrinkwrap-react-native', () => {
 	it('removes packages reachable only through react-native-fs', () => {
@@ -69,7 +201,8 @@ describe('prune-shrinkwrap-react-native', () => {
 		delete lock.packages['node_modules/rn-only'];
 		delete lock.packages['node_modules/alasql'].optionalDependencies;
 		const { stdout, result } = runPrune(lock);
-		assert.match(stdout, /nothing to prune/);
+		assert.match(stdout, /No unused react-native-fs tree.*nothing to prune/);
+		assert.doesNotMatch(stdout, /^Pruned /m);
 		assert.deepStrictEqual(Object.keys(result.packages).sort(), ['', 'node_modules/alasql', 'node_modules/shared']);
 	});
 
@@ -89,7 +222,8 @@ describe('prune-shrinkwrap-react-native', () => {
 		const { stdout, result } = runPrune(lock);
 		assert.ok(result.packages['node_modules/react-native-fs'], 'react-native-fs is still required by other-pkg');
 		assert.ok(result.packages['node_modules/react-native'], 'its peer tree stays reachable through it');
-		assert.match(stdout, /nothing to prune/);
+		assert.match(stdout, /No unused react-native-fs tree.*nothing to prune/);
+		assert.doesNotMatch(stdout, /^Pruned /m);
 	});
 
 	it('still prunes when the only other reference is another optional declaration', () => {

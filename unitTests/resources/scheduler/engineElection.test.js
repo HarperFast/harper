@@ -24,6 +24,8 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const {
 	registerComponentJobs,
 	unregisterComponentJobs,
+	registerInternalJobs,
+	internalJobOwner,
 	startSchedulerEngine,
 	stopSchedulerEngine,
 	getEngineRole,
@@ -251,6 +253,24 @@ describe('scheduler engine election and failover (simulated peer, #1866)', () =>
 		assert.strictEqual(getEngineRole(), 'inactive', 'a stopped engine must stay inactive after the election settles');
 		const lease = await stateTable.get(LEADER_ROW_ID);
 		assert.ok(lease == null, 'an abandoned election must not claim the lease row');
+	});
+
+	it('fires an internal interval job as leader', async () => {
+		stopSchedulerEngine();
+		await stateTable.delete(LEADER_ROW_ID);
+		global.server.nodes = [{ name: LAST_PEER }];
+		const owner = internalJobOwner('interval-test');
+		const runs = [];
+		registerInternalJobs('interval-test', [
+			{ name: 'tick', componentName: owner, intervalMs: 50, handler: (context) => runs.push(context) },
+		]);
+		startSchedulerEngine();
+		await electionSettledForTests();
+		assert.strictEqual(getEngineRole(), 'leader');
+		await waitFor(() => runs.length > 0, { timeout: 5000 });
+		assert.strictEqual(runs[0].jobName, 'tick');
+		stopSchedulerEngine();
+		await stateTable.delete(`job:${owner}:tick`).catch(() => {});
 	});
 
 	it('replaces the job set on re-registration and forgets it on unregister', async () => {

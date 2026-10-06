@@ -218,6 +218,7 @@ export const SYSTEM_TABLE_NAMES = {
 	OIDC_TOKEN_USE_TABLE_NAME: 'hdb_oidc_token_use',
 	MODEL_DECISIONS_TABLE_NAME: 'hdb_model_decisions',
 	MODEL_OUTCOMES_TABLE_NAME: 'hdb_model_outcomes',
+	MODEL_CALIBRATIONS_TABLE_NAME: 'hdb_model_calibrations',
 } as const;
 
 /** Hash attribute for the system info table */
@@ -641,6 +642,8 @@ export const CONFIG_PARAMS = {
 	AGENT_ALLOWDESTRUCTIVE: 'agent_allowDestructive',
 	AGENT_USER: 'agent_user',
 	AGENT_COMPONENTSSCOPE: 'agent_componentsScope',
+	AGENT_HTTPFETCH: 'agent_httpFetch',
+	AGENT_HTTPFETCH_ALLOW: 'agent_httpFetch_allow',
 	REPLICATION: 'replication',
 	REPLICATION_HOSTNAME: 'replication_hostname',
 	REPLICATION_URL: 'replication_url',
@@ -950,6 +953,11 @@ export const ITC_EVENT_TYPES = {
 	SHUTDOWN: 'shutdown',
 	CHILD_STARTED: 'child_started',
 	CHILD_STARTUP_PHASE: 'child_startup_phase',
+	// A worker held for certification reports its load before binding a listener, and binds only once admitted.
+	CHILD_COMPONENT_VERDICT: 'child_component_verdict',
+	CHILD_ADMITTED: 'child_admitted',
+	CERTIFICATION_REQUEST: 'certification_request',
+	CERTIFICATION_RESPONSE: 'certification_response',
 	CHILD_STOPPED: 'child_stopped',
 	SCHEMA: 'schema',
 	METRICS: 'metrics',

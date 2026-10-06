@@ -237,7 +237,7 @@ test('the structured Review-Coverage field is preferred over prose, and counts o
 			'authored=claude; ran=codex,gemini; adjudicated=domain; blocked=cursor-grok(auth); declined=cursor-composer; rounds=2 @ abcdef123456'
 		),
 		'',
-		'<sub>Human-Review-Need: 3 @ abcdef123456</sub>',
+		'<sub>Review-Attention: read ~30m (critical: a.cpp +1) @ abcdef123456</sub>',
 		'',
 		'🤖 Generated with [Claude Code](https://claude.com/claude-code)',
 	].join('\n');

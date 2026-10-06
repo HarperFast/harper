@@ -4,6 +4,9 @@ const {
 	LOCK_LEASE_SKEW_MS,
 	DELEGATION_LEASE_MS,
 	RECALL_RETRY_MS,
+	receiveLockControlEntry,
+	registerClusterLockTransport,
+	unregisterClusterLockTransport,
 	compareTokens,
 	decodeLockControlPayload,
 	encodeLockControlPayload,
@@ -2546,6 +2549,109 @@ describe('record lock delegations', () => {
 			});
 			beta.owns = false;
 			beta.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha');
+			assert.strictEqual(beta.coordinator.stats.granted, 1);
+			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 1);
+		});
+
+		it('is relayed off the coordinating thread when the transport can, with author and position', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta');
+			const granted = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			const relayed = [];
+			beta.coordinator.transport.relayControlEntry = (...args) => relayed.push(args);
+			beta.owns = false;
+			const entry = { type: 'lockRelease', key, requester: 'alpha', token: granted.token, dependencies: null };
+			beta.coordinator.applyEntry(entry, 'alpha', 42);
+			assert.deepStrictEqual(relayed, [[cluster.database, cluster.table, entry, 'alpha', 42]]);
+			assert.strictEqual(beta.coordinator.stats.granted, 1, 'the non-owner applied nothing itself');
+			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 0);
+			beta.owns = true;
+			beta.coordinator.applyEntry(...relayed[0].slice(2));
+			assert.strictEqual(beta.coordinator.stats.granted, 0);
+		});
+
+		it('counts a drop when an asynchronous relay rejects, and never leaves an unhandled rejection', async () => {
+			const rejections = [];
+			const onUnhandled = (reason) => rejections.push(reason);
+			process.on('unhandledRejection', onUnhandled);
+			try {
+				const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+				const key = cluster.keyHomedOn('beta');
+				const beta = cluster.node('beta');
+				const granted = await beta.coordinator.onDelegationRequest({
+					key,
+					requester: 'alpha',
+					generation: 1,
+					leaseMs: LEASE,
+				});
+				beta.coordinator.transport.relayControlEntry = async () => {
+					throw new Error('owner port closed');
+				};
+				beta.owns = false;
+				beta.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha');
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.deepStrictEqual(rejections, []);
+				assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 1);
+			} finally {
+				process.removeListener('unhandledRejection', onUnhandled);
+			}
+		});
+
+		it('relays through the registered transport on a thread that never built a coordinator for the table', () => {
+			const relayed = [];
+			const transport = {
+				homeMap: () => undefined,
+				ownsCoordination: () => false,
+				requestDelegation: async () => ({ granted: false, reason: 'not-home' }),
+				recallDelegation: async () => undefined,
+				establishLockFreshness: async () => undefined,
+				relayControlEntry: (...args) => relayed.push(args),
+			};
+			setLockCoordinatorResolver(
+				() => undefined,
+				() => undefined
+			);
+			registerClusterLockTransport('cold-db', transport);
+			try {
+				const entry = { type: 'lockRelease', key: 'k', requester: 'alpha', token: [1, 1, 1], dependencies: null };
+				receiveLockControlEntry('cold-db', 'cold-table', entry, 'alpha', 9);
+				assert.deepStrictEqual(relayed, [['cold-db', 'cold-table', entry, 'alpha', 9]]);
+				transport.onControlEntry('cold-db', 'cold-table', entry, 'alpha', 12);
+				assert.strictEqual(relayed.length, 2, 'the registered receive callback takes the same boundary');
+				receiveLockControlEntry('cold-db', 'cold-table', { type: 'lockBarrier', nonce: 1 }, 'alpha', 10);
+				assert.strictEqual(relayed.length, 2, 'only releases are relayed');
+				transport.ownsCoordination = () => true;
+				receiveLockControlEntry('cold-db', 'cold-table', entry, 'alpha', 11);
+				assert.strictEqual(relayed.length, 2, 'the owner thread with no coordinator holds no grant to clear');
+			} finally {
+				unregisterClusterLockTransport('cold-db', true);
+				setLockCoordinatorResolver(() => undefined);
+			}
+		});
+
+		it('counts a drop when the relay throws, and never surfaces the throw', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta');
+			const granted = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			beta.coordinator.transport.relayControlEntry = () => {
+				throw new Error('port closed');
+			};
+			beta.owns = false;
+			assert.doesNotThrow(() =>
+				beta.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha')
+			);
 			assert.strictEqual(beta.coordinator.stats.granted, 1);
 			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 1);
 		});

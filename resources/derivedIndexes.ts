@@ -1,5 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { settleBeforeDeadline } from '../utility/when.ts';
+import { ITC_EVENT_TYPES } from '../utility/hdbTerms.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
+import { sendItcEventStrict } from '../server/threads/itc.js';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import type { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import {
@@ -23,9 +27,17 @@ import {
 } from './indexes/hnswDerivedIndex.ts';
 import {
 	createNativeFullTextDerivedIndexBackend,
+	nativeFullTextIndexPath,
 	retireNativeFullTextDerivedIndexStorage,
 } from './indexes/nativeFullTextDerivedIndexLifecycle.ts';
 import type { NativeFullTextModule } from './indexes/fullTextNativeBinding.ts';
+import {
+	FULL_TEXT_QUERY_PAUSE_OPERATION,
+	FULL_TEXT_QUERY_RESUME_OPERATION,
+	FullTextQueryIndex,
+	pauseNativeFullTextQueryReaders,
+	resumeNativeFullTextQueryReaders,
+} from './indexes/fullTextQueryIndex.ts';
 import { fullTextStorageDefinition, type FullTextDefinition } from './fullTextSchema.ts';
 
 const logger = loggerWithTag('HNSW');
@@ -33,14 +45,17 @@ const fullTextLogger = loggerWithTag('fulltext-derived-index');
 const derivedIndexLogger = loggerWithTag('derived-index');
 const DEFAULT_MAX_LAG_MILLISECONDS = 30_000;
 const DEFAULT_FULL_TEXT_RETIREMENT_RETRY_MILLISECONDS = 70_000;
-const FULL_TEXT_LIMITS = Object.freeze({
-	indexingThreads: 1,
+const FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS = 35_000;
+const FULL_TEXT_RESET_TIMEOUT_MILLISECONDS = 105_000;
+const FULL_TEXT_WRITER_LIMITS = Object.freeze({
+	indexingThreads: 2,
 	searchThreads: 1,
-	writerMemoryBytes: 32 * 1024 * 1024,
+	writerMemoryBytes: 64 * 1024 * 1024,
 	maxQueuedCommands: 16,
 	maxQueuedBytes: 64 * 1024 * 1024,
 	maxBatchBytes: 8 * 1024 * 1024,
 });
+const FULL_TEXT_READER_LIMITS = Object.freeze({ ...FULL_TEXT_WRITER_LIMITS, searchThreads: 2 });
 
 type RegisteredTable = { current: { Table: any }; owners: Set<{ Table: any }> };
 type RegisteredBackend = {
@@ -71,6 +86,7 @@ type FullTextTestConfiguration = {
 	binding: NativeFullTextModule;
 	closeTimeoutMilliseconds: number;
 	shutdownTimeoutMilliseconds: number;
+	readerCoordinationTimeoutMilliseconds?: number;
 	runnerOptions: {
 		rebuildBackoffMilliseconds: number;
 		maxRebuildBackoffMilliseconds: number;
@@ -291,6 +307,7 @@ export function attachDerivedIndexes(
 	const hnswRetryBackendIds: string[] = [];
 	const registeredBackends = new Map<string, RegisteredBackend>();
 	const fullTextSetups = new Map<string, Promise<void>>();
+	const fullTextQueryIndexes = new Map<string, FullTextQueryIndex>();
 	let closing = false;
 	let registrationReleased = false;
 	let closeOperation: Promise<void> | undefined;
@@ -393,6 +410,23 @@ export function attachDerivedIndexes(
 			);
 			return;
 		}
+		if (!fullTextQueryIndexes.has(definition.name)) {
+			const queryIndex = new FullTextQueryIndex({
+				Table,
+				definition,
+				auditStore,
+				readinessId,
+				indexId: id,
+				storePath: Table.primaryStore.rootStore.path,
+				storeName: `${Table.tableName}/${definition.name}`,
+				sourceGeneration: `${Table.tableId}:${generation}`,
+				limits: { ...FULL_TEXT_READER_LIMITS },
+				...(fullTextTest ? { binding: fullTextTest.binding } : null),
+			});
+			fullTextQueryIndexes.set(definition.name, queryIndex);
+			Table.fullTextQueryIndexes[definition.name] = { customIndex: queryIndex };
+			Table.hasFullTextQueryIndexes = true;
+		}
 
 		const { settlePredecessor, predecessorSettled } = beginBackendHandoff(registered, id);
 		const quiescePredecessor = async () => {
@@ -431,6 +465,7 @@ export function attachDerivedIndexes(
 			if (retryUnavailableReadiness) retryDerivedIndexUnavailable(auditStore, readinessId);
 			const storage = fullTextStorageDefinition(definition);
 			const storeName = `${Table.tableName}/${definition.name}`;
+			const nativePath = nativeFullTextIndexPath(Table.primaryStore.rootStore.path, storeName);
 			const warningKey = `${Table.primaryStore.rootStore.path}:${storeName}`;
 			if (!warnedAuditIndexes.has(warningKey)) {
 				warnedAuditIndexes.add(warningKey);
@@ -443,12 +478,17 @@ export function attachDerivedIndexes(
 				storePath: Table.primaryStore.rootStore.path,
 				storeName,
 				sourceGeneration: `${Table.tableId}:${generation}`,
-				fields: storage.fields,
+				fields: definition.fields.map(({ name, weight }) => ({ name, weight })),
 				analyzer: storage.analyzer,
 				stopWords: storage.stopWords,
 				positions: storage.positions,
 				surfaceTerms: storage.surfaceTerms,
-				limits: { ...FULL_TEXT_LIMITS },
+				synonyms: storage.synonyms,
+				limits: { ...FULL_TEXT_WRITER_LIMITS },
+				hasBlobSources: definition.fields.some(({ mediaType }) => mediaType === 'text/plain'),
+				beforeReset: (ownerEpoch) => coordinateFullTextQueryReaders(nativePath, readinessId, ownerEpoch, true),
+				afterReset: (ownerEpoch) => coordinateFullTextQueryReaders(nativePath, readinessId, ownerEpoch, false),
+				shutdownTimeoutMilliseconds: FULL_TEXT_RESET_TIMEOUT_MILLISECONDS,
 				...(fullTextTest
 					? {
 							binding: fullTextTest.binding,
@@ -467,6 +507,11 @@ export function attachDerivedIndexes(
 					maxLagMilliseconds: DEFAULT_MAX_LAG_MILLISECONDS,
 					...fullTextTest?.runnerOptions,
 				},
+			});
+			fullTextQueryIndexes.get(definition.name)?.attachDerivedHost({
+				readiness: () => registered.runtime.getReadiness(id),
+				requestRebuild: () => registered.runtime.requestRebuild(id),
+				waitForCoverage: (since, timeout, signal) => registered.runtime.waitForCoverage(id, since, timeout, signal),
 			});
 		})().catch((error) => {
 			if (!isCurrent()) return;
@@ -494,6 +539,11 @@ export function attachDerivedIndexes(
 			const settlements = dropping
 				? [...(registered.tableBackends.get(Table.tableId) ?? [])].map((backend) => backend.settle())
 				: releases.map((release) => release());
+			for (const queryIndex of fullTextQueryIndexes.values()) settlements.push(queryIndex.close());
+			for (const [name, queryIndex] of fullTextQueryIndexes) {
+				if (Table.fullTextQueryIndexes[name]?.customIndex === queryIndex) delete Table.fullTextQueryIndexes[name];
+			}
+			Table.hasFullTextQueryIndexes = Object.keys(Table.fullTextQueryIndexes).length > 0;
 			const retained = new Set(
 				((Table.fullTextIndexes ?? []) as FullTextDefinition[]).map((definition) => definition.name)
 			);
@@ -559,10 +609,14 @@ export function attachDerivedIndexes(
 		matchesCurrent() {
 			if (closing || fullTextRetirementRecoveryFailed || !matchesCurrentHnsw()) return false;
 			const currentDefinitions = (Table.fullTextIndexes ?? []) as FullTextDefinition[];
-			return (
-				fullTextActivationSnapshot(Table, currentDefinitions) === fullTextSnapshot &&
-				JSON.stringify(Table.fullTextIndexRetirements ?? []) === fullTextRetirementSnapshot
-			);
+			if (
+				fullTextActivationSnapshot(Table, currentDefinitions) !== fullTextSnapshot ||
+				JSON.stringify(Table.fullTextIndexRetirements ?? []) !== fullTextRetirementSnapshot
+			)
+				return false;
+			for (const definition of currentDefinitions)
+				fullTextQueryIndexes.get(definition.name)?.updateDefinition(definition);
+			return true;
 		},
 		retryUnavailableFullText() {
 			if (closing) return;
@@ -629,6 +683,40 @@ export function attachDerivedIndexes(
 	}
 }
 
+async function coordinateFullTextQueryReaders(
+	path: string,
+	readinessId: string,
+	ownerEpoch: bigint,
+	pause: boolean,
+	timeout = FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS,
+	allowUnregisteredReadiness = false
+): Promise<void> {
+	if (pause) {
+		const draining = pauseNativeFullTextQueryReaders(path, readinessId, ownerEpoch, allowUnregisteredReadiness);
+		await settleBeforeDeadline([draining], Date.now() + timeout, () =>
+			Object.assign(new Error('Full-text reader drain timed out'), {
+				code: 'E_FULL_TEXT_READER_COORDINATION_TIMEOUT',
+				retryable: true,
+			})
+		);
+		await draining;
+	} else resumeNativeFullTextQueryReaders(path, readinessId, ownerEpoch);
+	await sendItcEventStrict(
+		{
+			type: ITC_EVENT_TYPES.SCHEMA,
+			message: {
+				operation: pause ? FULL_TEXT_QUERY_PAUSE_OPERATION : FULL_TEXT_QUERY_RESUME_OPERATION,
+				path,
+				readinessId,
+				ownerEpoch: ownerEpoch.toString(),
+				allowUnregisteredReadiness,
+			},
+		},
+		timeout,
+		true
+	);
+}
+
 /** Retire durable native indexes even when their in-memory attachment could not be restored. */
 export async function retireFullTextIndexes(
 	Table: any,
@@ -638,20 +726,48 @@ export async function retireFullTextIndexes(
 	const fullTextTest = fullTextTestConfiguration;
 	const retryMilliseconds =
 		fullTextTest?.shutdownTimeoutMilliseconds ?? DEFAULT_FULL_TEXT_RETIREMENT_RETRY_MILLISECONDS;
+	const coordinationTimeoutMilliseconds =
+		fullTextTest?.readerCoordinationTimeoutMilliseconds ?? FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS;
 	const deadline = Date.now() + retryMilliseconds;
 	let retired = true;
+	const rootStore = Table.primaryStore.rootStore;
 	for (const definition of definitions) {
 		if (!shouldContinue()) return false;
+		const indexId = fullTextDerivedIndexId(Table, definition.name);
+		const storeName = `${Table.tableName}/${definition.name}`;
+		const nativePath = nativeFullTextIndexPath(rootStore.path, storeName);
+		const lockKey = `derived-index:${indexId}:runner`;
+		const readinessId = `${indexId}:retirement:${randomUUID()}`;
 		let retryDelayMilliseconds = 10;
 		let retrying = false;
 		for (;;) {
 			try {
-				await retireNativeFullTextDerivedIndexStorage({
-					storePath: Table.primaryStore.rootStore.path,
-					storeName: `${Table.tableName}/${definition.name}`,
-					indexId: fullTextDerivedIndexId(Table, definition.name),
-					...(fullTextTest ? { binding: fullTextTest.binding } : {}),
-				});
+				if (!rootStore.tryLock(lockKey))
+					throw Object.assign(new Error('Full-text runner still owns the index'), { code: 'E_LOCK_BUSY' });
+				try {
+					// Keep orphan-pause recovery and every writer fenced until peer readers have drained.
+					try {
+						await coordinateFullTextQueryReaders(
+							nativePath,
+							readinessId,
+							0n,
+							true,
+							Math.max(1, Math.min(coordinationTimeoutMilliseconds, deadline - Date.now())),
+							true
+						);
+						if (!shouldContinue()) return false;
+						await retireNativeFullTextDerivedIndexStorage({
+							storePath: rootStore.path,
+							storeName,
+							indexId,
+							...(fullTextTest ? { binding: fullTextTest.binding } : {}),
+						});
+					} finally {
+						await coordinateFullTextQueryReaders(nativePath, readinessId, 0n, false, coordinationTimeoutMilliseconds);
+					}
+				} finally {
+					rootStore.unlock(lockKey);
+				}
 				break;
 			} catch (error) {
 				if (!shouldContinue()) return false;
@@ -659,8 +775,9 @@ export async function retireFullTextIndexes(
 					error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
 						? error.code
 						: undefined;
+				const retryable = error && typeof error === 'object' && 'retryable' in error && error.retryable === true;
 				const remaining = deadline - Date.now();
-				if (code === 'E_LOCK_BUSY' && remaining > 0) {
+				if ((code === 'E_LOCK_BUSY' || retryable) && remaining > 0) {
 					if (!retrying) {
 						retrying = true;
 						fullTextLogger.warn?.(
@@ -802,8 +919,8 @@ export function assertFullTextActivationSupported(
 
 function fullTextProjection(definition: FullTextDefinition) {
 	return (record: Record<string, unknown>) => {
-		const projection: Record<string, string | string[]> = Object.create(null);
-		for (const { name } of definition.fields) {
+		const projection: Record<string, string | string[] | Blob> = Object.create(null);
+		for (const { name, mediaType } of definition.fields) {
 			const value = record[name];
 			if (typeof value === 'string') {
 				projection[name] = value;
@@ -817,6 +934,13 @@ function fullTextProjection(definition: FullTextDefinition) {
 						throw new ClientError(`Full-text source '${name}' contains a non-text array value`, 400);
 				}
 				projection[name] = copied;
+				continue;
+			}
+			if (mediaType === 'text/plain' && value instanceof Blob) {
+				const actualMediaType = value.type.split(';', 1)[0].trim().toLowerCase();
+				if (actualMediaType && actualMediaType !== mediaType)
+					throw new ClientError(`Full-text Blob source '${name}' must contain ${mediaType} data`, 400);
+				projection[name] = value;
 				continue;
 			}
 			if (value != null) throw new ClientError(`Full-text source '${name}' contains a non-text value`, 400);

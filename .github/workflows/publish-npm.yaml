@@ -20,8 +20,8 @@ jobs:
     outputs:
       harper-version: ${{ steps.version-components.outputs.version }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: '.node-version'
           registry-url: 'https://registry.npmjs.org'
@@ -33,7 +33,7 @@ jobs:
         run: gh release download "$TAG_NAME" --pattern "harper-*.tgz"
       - name: Get version components
         id: version-components
-        uses: matt-usurp/validate-semver@7bbc9584679de1aeef57aa531504ab00438481ab # v2.1.0
+        uses: matt-usurp/validate-semver@c5050374644a5ab2e03ddca02ce8d282911620ce # v3.0.0
         with:
           version: ${{ github.event.release.tag_name || inputs.tag_name }}
       - name: Set package tag
@@ -87,11 +87,11 @@ jobs:
     outputs:
       harper-version: ${{ steps.version-components.outputs.version }}
     steps:
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: latest
           registry-url: 'https://registry.npmjs.org'
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Get release build
         env:
           GH_TOKEN: ${{ github.token }}
@@ -99,7 +99,7 @@ jobs:
         run: gh release download "$TAG_NAME" --pattern "harper-*.tgz"
       - name: Get version components
         id: version-components
-        uses: matt-usurp/validate-semver@7bbc9584679de1aeef57aa531504ab00438481ab # v2.1.0
+        uses: matt-usurp/validate-semver@c5050374644a5ab2e03ddca02ce8d282911620ce # v3.0.0
         with:
           version: ${{ github.event.release.tag_name || inputs.tag_name }}
       - name: Rename package to '@harperfast/harper'
@@ -164,7 +164,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Send Slack published notification
-        uses: slackapi/slack-github-action@0d95c9a7becc1e6e297d76df9bc735c44f4cbcbc # v3.0.5
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -211,7 +211,7 @@ jobs:
       - publish-harper-npm-package
     runs-on: ubuntu-latest
     steps:
-      - uses: slackapi/slack-github-action@0d95c9a7becc1e6e297d76df9bc735c44f4cbcbc # v3.0.5
+      - uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}

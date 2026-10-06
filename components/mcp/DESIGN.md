@@ -51,12 +51,12 @@ A handful of design points are non-obvious and easy to break:
   honor its `post`/`patch` overrides, matching REST — previously they bound to the base table class and
   silently bypassed those overrides. Advertised CRUD output schemas are still table-derived, so an overridden
   write verb whose return diverges from `{ id }`/`{ ok }`/`{ deleted }` advertises a subset shape (the in-use
-  SDK tolerates supersets; tightening per-override envelopes is sibling-issue work — see the `derive.ts`
+  SDK tolerates supersets; tightening per-override envelopes is sibling-issue work — see the `tools/schemas/derive.ts`
   envelope note).
 
 - **Resource subscriptions are row-backed via the audit log.** `resources/subscribe` resolves the URI to a
-  Resource and drives `Table.subscribe` off the audit-store `'committed'` path (same machinery as the
-  "Audit-store `'committed'` notification batching" section above). The targeting is the subtle part:
+  Resource and drives `Table.subscribe` off the audit-store `'committed'` path (same machinery as
+  [Audit-store `'committed'` notification batching](../../resources/DESIGN.md#audit-store-committed-notification-batching-transactionbroadcastts)). The targeting is the subtle part:
   `getMatch` returns the matched Resource plus the remaining path on `relativeURL`, and `subscribeToResource`
   sets **both** `request.id` (the record key, or `undefined`) **and** `request.isCollection` from it. A record
   URI (`…/WorkItem/42`) watches that record; a collection URI (`…/WorkItem`, what `resources/list` advertises)
@@ -81,7 +81,7 @@ A handful of design points are non-obvious and easy to break:
 - **Test seams avoid loading thread/audit machinery in unit tests.** `_setSubscribeImplForTest`
   (`resources.ts`) and `_setItcForTest` (`serverRequests.ts`) inject fakes so the unit suite needn't spin up
   the audit log or ITC. Consequence: the subscribe **targeting** logic (`id`/`isCollection` derivation) is
-  _bypassed_ by the seam and is therefore covered at the **integration** level (`sse-listchanged.test.ts` N3
+  _bypassed_ by the seam and is therefore covered at the **integration** level (`integrationTests/mcp/sse-listchanged.test.ts` N3
   record / N4 collection), not in unit tests.
 
 - **Discovery filtering must mirror dispatch's ORDER _and_ its name namespace.**

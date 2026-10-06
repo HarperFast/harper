@@ -2,14 +2,12 @@
 
 const { isMainThread, parentPort, threadId, workerData } = require('node:worker_threads');
 const { createServer: createSocketServer } = require('node:net');
-const { unlinkSync, existsSync, mkdirSync } = require('fs');
-const { join } = require('path');
+const { unlinkSync, existsSync, mkdirSync, renameSync } = require('node:fs');
+const { join, dirname } = require('node:path');
 let componentsLoadedResolve;
 exports.whenComponentsLoaded = new Promise((resolve) => {
 	componentsLoadedResolve = resolve;
 });
-let bootLoadStarted = false;
-exports.bootLoadsComponents = () => bootLoadStarted;
 
 const harperLogger = require('../../utility/logging/harper_logger.ts');
 const env = require('../../utility/environment/environmentManager.ts');
@@ -176,7 +174,6 @@ function closeServers() {
 }
 
 function startServers() {
-	bootLoadStarted = true;
 	// A worker that has not yet posted child_started owns no ref'd handle: addPort()
 	// (manageThreads) unrefs parentPort, component watchers are persistent:false, and the
 	// reporting timers are unref'd. An await inside loadRootComponents whose completion
@@ -203,9 +200,20 @@ function startServers() {
 	}
 	reportStartupPhase(startupPhase);
 	let listening;
-	const loaded = require('../loadRootComponents.js')
-		.loadRootComponents(true)
-		.then(() => {
+	// A worker held for nothing still reports its load before it binds, where main answers it: one already loading when a
+	// release went live is not admitted on that load.
+	const heldFor = workerData?.certify ?? (workerData?.reportsLoad ? [] : undefined);
+	const heldStart = heldFor ? require('./heldStart.ts') : undefined;
+	const loaded = Promise.resolve(heldStart?.beginHeldStart(heldFor))
+		.then((loadedGenerations) =>
+			require('../loadRootComponents.js')
+				.loadRootComponents(true)
+				.then(() => {
+					require('../../components/deployLifecycle.ts').deployLifecycle._componentsLoaded();
+					return loadedGenerations;
+				})
+		)
+		.then(async (loadedGenerations) => {
 			parentPort
 				?.on('message', (message) => {
 					if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
@@ -258,6 +266,10 @@ function startServers() {
 					}
 				})
 				.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
+			if (heldStart) {
+				reportStartupPhase('awaiting admission');
+				await heldStart.awaitAdmission(heldFor, loadedGenerations);
+			}
 			reportStartupPhase('binding listeners');
 			listening = listenOnPorts();
 		});
@@ -304,22 +316,35 @@ function startServers() {
  * An overlong path is the only condition that can skip a domain-socket listener. Check before
  * listen() because supported Node versions differ: some reject the path while others truncate and
  * bind it somewhere clients cannot reach using the configured path.
+ *
+ * A per-thread mirror binds at a temp name and is renamed over its published path: libuv unlinks a
+ * pipe server's bound path on close whoever owns it by then (server/DESIGN.md).
  */
 function listenOnDomainSocket(port, server) {
-	if (isDomainSocketPathTooLong(port)) {
+	const bindPath = server.isPerThreadSocket && !isWindows ? mirrorBindPath(port) : port;
+	const overlong = [port, bindPath].find((path) => isDomainSocketPathTooLong(path));
+	if (overlong) {
 		httpComponent.markUdsBindFailed(port);
 		harperLogger.error(
-			`Not binding domain socket listener${server.name ? ` for '${server.name}'` : ''} at ${port}: the ${Buffer.byteLength(port)}-byte path exceeds the platform limit of ${getDomainSocketPathMaxBytes()} bytes. Continuing without this domain socket.`
+			`Not binding domain socket listener${server.name ? ` for '${server.name}'` : ''} at ${port}: the ${Buffer.byteLength(overlong)}-byte path ${overlong} exceeds the platform limit of ${getDomainSocketPathMaxBytes()} bytes. Continuing without this domain socket.`
 		);
 		return Promise.resolve({ port, failed: true });
 	}
-	if (existsSync(port)) unlinkSync(port);
+	if (bindPath === port && existsSync(port)) unlinkSync(port);
 	return new Promise((resolve, reject) => {
 		function onError(error) {
 			reject(error);
 		}
 		function onListening() {
 			server.removeListener('error', onError);
+			if (bindPath !== port) {
+				try {
+					renameSync(bindPath, port);
+				} catch (error) {
+					server.close(); // libuv unlinks the temp name, which still exists
+					return reject(error);
+				}
+			}
 			// Record ownership of the inode we just bound, so cleanupUdsFiles()/markUdsBindFailed()
 			// (see http.ts) can tell this worker's own file apart from a replacement's later rebind
 			// at the same path (see registerUdsCleanupPaths). A no-op for domain sockets that aren't
@@ -330,12 +355,17 @@ function listenOnDomainSocket(port, server) {
 		}
 		try {
 			server.once('error', onError);
-			server.listen({ path: port }, onListening);
+			server.listen({ path: bindPath }, onListening);
 		} catch (error) {
 			server.removeListener('error', onError);
 			reject(error);
 		}
 	});
+}
+
+let mirrorBindSequence = 0;
+function mirrorBindPath(socketPath) {
+	return join(dirname(socketPath), `.${threadId}.${++mirrorBindSequence}`);
 }
 
 let listening;

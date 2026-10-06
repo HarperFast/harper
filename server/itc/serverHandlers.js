@@ -6,6 +6,10 @@ const hdbTerms = require('../../utility/hdbTerms.ts');
 const cleanLmdbMap =
 	require('../../utility/lmdb/cleanLMDBMap.ts').default || require('../../utility/lmdb/cleanLMDBMap.ts');
 const { validateEvent } = require('../threads/itc.js');
+const {
+	FULL_TEXT_QUERY_PAUSE_OPERATION,
+	FULL_TEXT_QUERY_RESUME_OPERATION,
+} = require('../../resources/indexes/fullTextQueryProtocol.ts');
 const { isMainThread, threadId, workerData } = require('node:worker_threads');
 const {
 	databases,
@@ -16,6 +20,7 @@ const {
 	reloadBranchAt,
 	markDropInProgress,
 } = require('../../resources/databases.ts');
+const { blockBlobSavesForRestore, resumeBlobSavesAfterRestore } = require('../../resources/blob.ts');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
@@ -46,6 +51,33 @@ async function schemaHandler(event) {
 		hdbLogger.error(validate);
 		return;
 	}
+	if (
+		event.message?.operation === FULL_TEXT_QUERY_PAUSE_OPERATION ||
+		event.message?.operation === FULL_TEXT_QUERY_RESUME_OPERATION
+	) {
+		if (typeof event.message.path !== 'string' || event.message.path.length === 0)
+			throw new Error('Full-text query reader coordination requires an index path');
+		if (typeof event.message.readinessId !== 'string' || event.message.readinessId.length === 0)
+			throw new Error('Full-text query reader coordination requires a readiness id');
+		if (typeof event.message.ownerEpoch !== 'string' || !/^(?:0|[1-9]\d*)$/.test(event.message.ownerEpoch))
+			throw new Error('Full-text query reader coordination requires an owner epoch');
+		if (
+			event.message.allowUnregisteredReadiness !== undefined &&
+			typeof event.message.allowUnregisteredReadiness !== 'boolean'
+		)
+			throw new Error('Full-text query reader coordination requires a boolean unregistered-readiness flag');
+		const fullTextQueries = require('../../resources/indexes/fullTextQueryIndex.ts');
+		const ownerEpoch = BigInt(event.message.ownerEpoch);
+		if (event.message.operation === FULL_TEXT_QUERY_PAUSE_OPERATION)
+			await fullTextQueries.pauseNativeFullTextQueryReaders(
+				event.message.path,
+				event.message.readinessId,
+				ownerEpoch,
+				event.message.allowUnregisteredReadiness === true
+			);
+		else fullTextQueries.resumeNativeFullTextQueryReaders(event.message.path, event.message.readinessId, ownerEpoch);
+		return;
+	}
 
 	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA && event.message.schema) {
@@ -71,17 +103,38 @@ async function schemaHandler(event) {
 	// restore_backup: this thread must release its store handles so the restore can purge and
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
 	// the restoring marker is present, and reloads it on the completion signal (marker gone).
+	let resumeBlobSavesFor;
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
-		try {
-			await closeDatabase(event.message.schema);
-		} catch (error) {
-			// Let the originator's process-wide closure check fail the restore immediately instead of
-			// withholding this worker's acknowledgement until the broadcast timeout.
-			hdbLogger.error(`Could not release database '${event.message.schema}' for restore`, error);
+		if (event.message.restorePhase === 'reload') {
+			resumeBlobSavesFor = {
+				database: event.message.schema,
+				token: event.message.restoreToken,
+				generationReplaced: event.message.generationReplaced !== false,
+			};
+		} else {
+			// Stop and drain blob writes before releasing the handles: closing a database is not a
+			// write barrier on its own, because a save's file pipeline outlives the handle it started from.
+			await blockBlobSavesForRestore(event.message.schema, event.message.restoreToken);
+			try {
+				await closeDatabase(event.message.schema);
+			} catch (error) {
+				// Let the originator's process-wide closure check fail the restore immediately instead of
+				// withholding this worker's acknowledgement until the broadcast timeout.
+				hdbLogger.error(`Could not release database '${event.message.schema}' for restore`, error);
+			}
 		}
 	}
-	await cleanLmdbMap(event.message);
-	await syncSchemaMetadata(event.message);
+	try {
+		await cleanLmdbMap(event.message);
+		await syncSchemaMetadata(event.message);
+	} finally {
+		if (resumeBlobSavesFor)
+			resumeBlobSavesAfterRestore(
+				resumeBlobSavesFor.database,
+				resumeBlobSavesFor.token,
+				resumeBlobSavesFor.generationReplaced
+			);
+	}
 	for (let listener of schemaListeners) {
 		try {
 			listener(event?.message);

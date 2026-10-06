@@ -118,6 +118,26 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		assert.ok(/cpuTicks \+[1-9]\d* /.test(progress), progress);
 	});
 
+	it('rejects a strict broadcast when a worker misses the acknowledgement deadline', async function () {
+		const worker = await startFixtureWorker('block');
+		started.push(worker);
+		const initialRefCount = worker.refCount;
+		await assert.rejects(broadcastWithAcknowledgement({ type: 'restore-close-probe' }, 100, true), (error) => {
+			// Strict rejects with an aggregate; the missed deadline is on the per-worker cause inside it.
+			assert.equal(error.name, 'AggregateError', error.stack);
+			assert.ok(
+				error.errors.some((cause) => /did not acknowledge within 100ms/.test(cause.cause?.message ?? cause.message)),
+				error.errors.map((cause) => cause.message).join('\n')
+			);
+			return true;
+		});
+		assert.equal(
+			worker.refCount,
+			initialRefCount,
+			'the timed-out acknowledgement must release its worker port reference'
+		);
+	});
+
 	it('samples a sibling that failed to ack a worker-originated broadcast', async function () {
 		if (process.platform !== 'linux') this.skip();
 		const blocked = await startFixtureWorker('block');
@@ -169,6 +189,17 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		});
 	});
 
+	it('marks a strict acknowledgement timeout as retryable', async function () {
+		const worker = await startFixtureWorker('ignore');
+		started.push(worker);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 100), (error) => {
+			assert(error instanceof AggregateError);
+			assert.strictEqual(error.code, 'E_ITC_ACK_TIMEOUT');
+			assert.strictEqual(error.retryable, true);
+			return true;
+		});
+	});
+
 	it('settles immediately when recipient setup fails', async function () {
 		const worker = await startFixtureWorker('acknowledge');
 		started.push(worker);
@@ -183,6 +214,26 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 			);
 		} finally {
 			worker.ref = originalRef;
+		}
+	});
+
+	it('marks a synchronous recipient send failure as retryable', async function () {
+		const worker = await startFixtureWorker('acknowledge');
+		started.push(worker);
+		const originalPostMessage = worker.postMessage;
+		worker.postMessage = () => {
+			throw new Error('fixture send failure');
+		};
+		try {
+			await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
+				assert(error instanceof AggregateError);
+				assert.match(error.errors[0].message, /fixture send failure/);
+				assert.strictEqual(error.code, 'E_ITC_RECIPIENT_EXITED');
+				assert.strictEqual(error.retryable, true);
+				return true;
+			});
+		} finally {
+			worker.postMessage = originalPostMessage;
 		}
 	});
 
@@ -218,6 +269,8 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
 			assert(error instanceof AggregateError);
 			assert.match(error.errors[0].message, /exited before acknowledging preparation/);
+			assert.strictEqual(error.code, 'E_ITC_RECIPIENT_EXITED');
+			assert.strictEqual(error.retryable, true);
 			return true;
 		});
 	});

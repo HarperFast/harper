@@ -5,7 +5,7 @@
  */
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
-import { type Database } from 'lmdb';
+import { type Database, type Transaction as LMDBReadTransaction } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
@@ -22,8 +22,13 @@ import type {
 	Sort,
 	SubSelect,
 	RequestTargetOrId,
+	Query,
+	SourceContext,
 } from './ResourceInterface.ts';
 import type { User } from '../security/user.ts';
+import type { AssertNoDrift, AssertTrue, ExactlyEqual, MemberDrift, ParitySentinel } from './typeParity.ts';
+import type { IterableEventQueue } from './IterableEventQueue.ts';
+import type { Contract, SchemaClass } from './defineResource.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
 import { Resource, SEARCH_AUTHORIZATION, transformForSelect } from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
@@ -40,6 +45,7 @@ import {
 	commitTrackedRocksTransaction,
 	getDatabaseCommitDrainTimeoutMilliseconds,
 	type WriteGeneration,
+	type Transaction as DatabaseTransactionRecord,
 } from './DatabaseTransaction.ts';
 import {
 	acquireRecordKey,
@@ -52,12 +58,15 @@ import {
 } from './recordLock.ts';
 import { getThisNodeName } from '../server/nodeName.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
-import { addSubscription } from './transactionBroadcast.ts';
+import { addSubscription, dispatchedThrough } from './transactionBroadcast.ts';
 import { databaseDropPrepared } from './databaseDropPreparation.ts';
 import {
 	DerivedIndexLagError,
+	IndexRebuildingError,
 	DatabaseClosingError,
 	DatabaseDrainTimeoutError,
+	DatabaseGenerationChangedError,
+	ResumeHistoryUnavailableError,
 	handleHDBError,
 	ClientError,
 	ServerError,
@@ -76,6 +85,8 @@ import {
 	dropColumnFamily,
 	markDropInProgress,
 	recordRetiredGeneration,
+	promoteTombstoneToDropMarker,
+	tableLifecycleTime,
 	sweepDroppedTableBlobs,
 	storeNameFor,
 	storeNamesFor,
@@ -91,6 +102,7 @@ import {
 	COERCIBLE_OPERATORS,
 	executeConditions,
 	resolveComparator,
+	fullTextComparatorMode,
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
@@ -123,6 +135,8 @@ import {
 	boundedAuditPruneEnd,
 	isLockControlType,
 	isAuditEntryWrite,
+	isResumablePosition,
+	getDatabaseGeneration,
 } from './auditStore.ts';
 import {
 	acquireFullTextClearFence,
@@ -133,6 +147,7 @@ import {
 } from './derivedIndexRegistry.ts';
 import {
 	decodeLockControlPayload,
+	receiveLockControlEntry,
 	encodeLockControlPayload,
 	getClusterLockTransport,
 	isClusterLockRequired,
@@ -161,6 +176,7 @@ import {
 	recordUpdater,
 	removeEntry,
 	PENDING_LOCAL_TIME,
+	VERSION_REUSED,
 	RecordObject,
 	type Entry,
 	type StructureCounts,
@@ -177,6 +193,7 @@ import {
 	removeStorageReclamation,
 	removeStorageReclamationHandler,
 	getStorageSpaceStats,
+	type StorageSpaceStats,
 } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -539,8 +556,14 @@ const MAX_OUT_OF_ORDER_AUDIT_DEPTH = 1000;
 // a full walk of the retained audit log — this bounds that walk regardless of how many
 // records the filter accepts.
 const MAX_PREVIOUS_COUNT_SCAN = 10_000;
+const VERSION_CAP_REFUSAL = `More than ${MAX_PREVIOUS_COUNT_SCAN} versions follow this resume position; resubscribe to resynchronize`;
+const RELOAD_REFUSAL =
+	'A bulk reload after this resume position left rows with no history; resubscribe to resynchronize';
+const UNREADABLE_LOG_REFUSAL =
+	'Part of the transaction log after this resume position could not be read; resubscribe to resynchronize';
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
+const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
 function propagateSearchAuthorization(iterable: any, authorization: Promise<any>, source?: any) {
@@ -593,6 +616,518 @@ export interface Table {
 }
 type ResidencyDefinition = number | string[] | void;
 
+interface TableResourceInstance<Record extends object = any> {
+	getProperty: (name: string) => any;
+	_loadRecord(
+		target: RequestTarget,
+		request: Context,
+		resourceOptions?: any
+	): MaybePromise<TableResourceInstance<Record>>;
+	/**
+	 * This is a request to explicitly ensure that the record is loaded from source, rather than only using the local record.
+	 * This will load from source if the current record is expired, missing, or invalidated.
+	 */
+	ensureLoaded(): void | Promise<void>;
+	/**
+	 * This retrieves the data of this resource.
+	 * @param target - If included, is an identifier/query that specifies the requested target to retrieve and query
+	 */
+	get(target?: any): any;
+	/**
+	 * Determine if the user is allowed to get/read data from the current resource
+	 * @deprecated Override the resource operation for application-specific authorization.
+	 */
+	allowRead(user: User, target: RequestTarget, context: Context): boolean;
+	/**
+	 * Determine if the user is allowed to update data from the current resource
+	 * @deprecated Override the resource operation for application-specific authorization.
+	 */
+	allowUpdate(user: User, updatedData: Record, context: Context): boolean;
+	/**
+	 * Determine if the user is allowed to create new data in the current resource
+	 * @deprecated Override the resource operation for application-specific authorization.
+	 */
+	allowCreate(user: User, newData: Record, context: Context): boolean;
+	/**
+	 * Determine if the user is allowed to delete from the current resource
+	 * @deprecated Override the resource operation for application-specific authorization.
+	 */
+	allowDelete(user: User, target: RequestTarget, context: Context): boolean;
+	/**
+	 * Start updating a record. The returned resource will record changes which are written
+	 * once the corresponding transaction is committed. These changes can (eventually) include CRDT type operations.
+	 */
+	update(updates: Record & RecordObject, fullUpdate: true): any;
+	update(updates: Partial<Record & RecordObject>, target?: RequestTarget): any;
+	update(target: RequestTarget, updates?: any): any;
+	/**
+	 * Save any changes into this instance to the current transaction
+	 */
+	save(): any;
+	addTo(property: any, value: any): void;
+	subtractFrom(property: any, value: any): void;
+	getMetadata(): Entry;
+	getRecord(): any;
+	getChanges(): any;
+	_setChanges(changes: any): void;
+	setRecord(record: any): void;
+	invalidate(target: RequestTargetOrId): void | Promise<void>;
+	_writeInvalidate(id: Id, partialRecord?: any, options?: any): void;
+	_writeRelocate(id: Id, options: any): void;
+	/**
+	 * Acquire an exclusive lock on this record (or on `target`'s) and return it ready for updates
+	 * (harper#483, Phase 0: exclusive across every worker thread of this node). The lock is held
+	 * in process memory only — no durable writes. Phase 0 contract: lock() is mutually exclusive
+	 * with other lock() calls on the same key; plain writes (put/patch/delete/create) are never
+	 * gated or blocked. The generation expires after `lease` if it is never released.
+	 *
+	 * Transaction-scoped (default): write through the returned record (or the table's static verbs
+	 * in the same transaction), and the commit or abort releases it. `{ hold: true }`: the lock
+	 * outlives the transaction; write through the returned record and release with `unlock()`, or
+	 * let the lease expire.
+	 */
+	lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any>;
+	/**
+	 * Release the lock this instance holds. Resolves true when this call cleared the native key lock.
+	 * Works for both held (`{ hold: true }`) and transaction-scoped locks. After unlock() the
+	 * instance is no longer lock-writable; writes through it require a fresh lock.
+	 */
+	unlock(): Promise<boolean>;
+	/**
+	 * Store the provided record data into the current resource. This is not written
+	 * until the corresponding transaction is committed.
+	 */
+	put(
+		target: RequestTarget,
+		record: Record & RecordObject
+	): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)>;
+	create(
+		target: RequestTargetOrId,
+		record: Partial<Record & RecordObject>
+	): void | (Record & Partial<RecordObject>) | Promise<Record & Partial<RecordObject>>;
+	patch(
+		target: RequestTarget,
+		recordUpdate: Partial<Record & RecordObject>
+	): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)>;
+	_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any): any;
+	delete(target: RequestTargetOrId): Promise<boolean>;
+	_writeDelete(id: Id, options?: any): boolean;
+	search(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>>;
+	subscribe(request: SubscriptionRequest): Promise<AsyncIterable<Record>>;
+	doesExist(): boolean;
+	/**
+	 * Publishing a message to a record adds an (observable) entry in the audit log, but does not change
+	 * the record at all. This entries should be replicated and trigger subscription listeners.
+	 */
+	publish(target: RequestTarget, message: Record, options?: any): void | Promise<void>;
+	_writePublish(id: Id, message: any, options?: any): void;
+	validate(record: any, patch?: boolean): void;
+	getUpdatedTime(): number;
+	[ASSERT_TRACKED_WRITABLE](generation?: WriteGeneration): void;
+	[GET_TRACKED_WRITE_GENERATION](): WriteGeneration;
+	post(target: RequestTargetOrId, newRecord: Partial<Record & RecordObject>): Promise<Record & Partial<RecordObject>>;
+	get isCollection(): boolean;
+	connect(
+		target: RequestTarget,
+		incomingMessages: IterableEventQueue<Record>
+	): AsyncIterable<Record> | Promise<AsyncIterable<Record>>;
+	getId(): Id;
+	getContext(): Context | SourceContext;
+	getCurrentUser(): User | undefined;
+}
+
+interface TableResourceClass {
+	new <Record extends object = any>(identifier: Id, source: any): TableResourceInstance<Record>;
+	prototype: TableResourceInstance;
+	name: any;
+	primaryStore: any;
+	storageGeneration: any;
+	/** Undefined for a table that predates the stamps. */
+	createdTime: number | undefined;
+	auditStore: any;
+	primaryKey: any;
+	tableName: any;
+	tableId: any;
+	indices: any;
+	derivedIndexRuntime:
+		| {
+				close(dropping?: boolean): Promise<void>;
+				fullTextDefinitions?(): readonly FullTextDefinition[];
+				matchesCurrent?(): boolean;
+				restoreAfterFailedDrop?(): TableResourceClass['derivedIndexRuntime'];
+				retireAfterConfirmedDrop?(definitions?: readonly Pick<FullTextDefinition, 'name'>[]): Promise<boolean>;
+				completeDrop?(dropped?: boolean): void;
+		  }
+		| undefined;
+	audit: any;
+	fullTextIndexes: FullTextDefinition[];
+	get fullTextFields(): readonly string[];
+	set fullTextFields(names: readonly string[]);
+	assertFullTextSelection(select: unknown, sort?: any): void;
+	assertFullTextRecordField(name: unknown): void;
+	isFullTextSearchEntryCurrent(entry: Entry): boolean;
+	fullTextQueryIndexes: {
+		[name: string]: {
+			customIndex: unknown;
+		};
+	};
+	hasFullTextQueryIndexes: boolean;
+	fullTextIndexGenerations: FullTextIndexGenerations;
+	fullTextIndexRetirements: string[];
+	hasCurrentFullTextIndexRetirements(names: readonly string[]): boolean | Promise<boolean>;
+	completeFullTextIndexRetirements(names: readonly string[]): void | Promise<void>;
+	databasePath: any;
+	databaseName: any;
+	attributes: Attribute[];
+	description: any;
+	properties: Record<string, JsonSchemaFragment>;
+	hidden: any;
+	cacheControl: any;
+	outputSchemas:
+		| {
+				[verb: string]: JsonSchemaFragment;
+		  }
+		| undefined;
+	mcp:
+		| {
+				annotations?: {
+					[verb: string]: any;
+				};
+		  }
+		| undefined;
+	replicate: any;
+	sealed: any;
+	splitSegments: any;
+	createdTimeProperty: Attribute;
+	updatedTimeProperty: Attribute;
+	propertyResolvers: any;
+	enumerableRelationDefs: any;
+	userResolvers: {};
+	userEmbedders: {
+		[name: string]: Embedder;
+	};
+	userSetEmbedders: Set<string>;
+	embedAttributes: EmbedAttribute[];
+	userDeciders: {
+		[name: string]: Decider;
+	};
+	userSetDeciders: Set<string>;
+	decideAttributes: DecideAttribute[];
+	source?: any;
+	sourceOptions: any;
+	intermediateSource: boolean;
+	getResidencyById: (id: Id) => number | void;
+	get expirationMS(): any;
+	get evictionMS(): any;
+	dbisDB: any;
+	schemaDefined: any;
+	/**
+	 * This defines a source for a table. This effectively makes a table into a cache, where the canonical
+	 * source of data (or source of truth) is provided here in the Resource argument. Additional options
+	 * can be provided to indicate how the caching should be handled.
+	 */
+	sourcedFrom(source: any, options: any): any;
+	get isCaching(): any;
+	/** Indicates if the events should be revalidated when they are received. By default we do this if the get
+	 * method is overriden */
+	get shouldRevalidateEvents(): boolean;
+	/**
+	 * Gets a resource instance, as defined by the Resource class, adding the table-specific handling
+	 * of also loading the stored record into the resource instance.
+	 * @param resourceOptions An important option is ensureLoaded, which can be used to indicate that it is necessary for a caching table to load data from the source if there is not a local copy of the data in the table (usually not necessary for a delete, for example).
+	 */
+	getResource<Record extends object = any>(
+		target: RequestTarget,
+		request: Context,
+		resourceOptions?: any
+	): Promise<TableResourceInstance<Record>> | TableResourceInstance<Record>;
+	_updateResource(resource: any, entry: any): void;
+	getNewId(): any;
+	/**
+	 * Set TTL expiration for records in this table. On retrieval, record timestamps are checked for expiration.
+	 * This also informs the scheduling for record eviction.
+	 * @param opts Time in seconds until records expire, or an options object with `expiration`, `eviction`,
+	 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
+	 * eviction/scanInterval; object form replaces all three. An internal schema ownership-only call with
+	 * none of those values preserves the settings already loaded from the catalog.
+	 */
+	setTTLExpiration(
+		opts:
+			| number
+			| {
+					expiration?: number;
+					eviction?: number;
+					scanInterval?: number;
+					fromSchema?: boolean;
+					isolatedApplicationOwner?: boolean;
+			  }
+	): void;
+	getResidencyRecord(id: Id): any;
+	setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition): void;
+	setResidencyById(getResidencyById?: (id: Id) => number | void): void;
+	getResidency(record: object, context: Context): number | void | string[];
+	/**
+	 * Turn on auditing at runtime
+	 */
+	enableAuditing(): void;
+	/**
+	 * Coerce the id as a string to the correct type for the primary key
+	 */
+	coerceId(id: string): number | string;
+	/**
+	 * A branch's Table classes deliberately carry the BASE's logical database name so an
+	 * application's schema and code resolve unchanged (harper#643). That makes every schema
+	 * mutation resolve against the global catalog — a `dropTable()` through a branch would delete
+	 * the live base table. Reads and writes are per-branch and unaffected; DDL is refused until a
+	 * branch owns a schema identity of its own.
+	 */
+	assertSchemaMutable(operation: string): void;
+	/** `localOnly`: a drop the caller asked not to replicate leaves no drop marker for peers. */
+	dropTable(options?: { droppedTime?: number; localOnly?: boolean }): Promise<void>;
+	/**
+	 * Record the relocation of an entry (when a record is moved to a different node), return true if it is now located locally
+	 */
+	_recordRelocate(existingEntry: any, entry: any): boolean;
+	/**
+	 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
+	 */
+	evict(id: any, existingRecord: any, existingVersion: any): Promise<unknown>;
+	/**
+	 * Static entry point: `Table.lock(id, options?, context?)` — creates an instance in the given,
+	 * ambient, or a fresh context and delegates to the instance lock(). This shadows Resource.static
+	 * lock so that both callers share the same transaction link (required for cross-instance upgrade
+	 * detection).  lock() is an in-process API with no authorization hook of its own; it is not
+	 * protocol-dispatched, so no allowUpdate/allowCreate check runs on acquisition.
+	 *
+	 * Dropping the trailing `context` leaks the key: the bare `{}` fallback is an
+	 * ImmediateTransaction, which releases no record locks.
+	 */
+	lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions, context?: any): Promise<any>;
+	operation(operation: any, context: any): any;
+	/**
+	 * This is responsible for ordering and select()ing the attributes/properties from returned entries
+	 */
+	transformToOrderedSelect(
+		entries: any[],
+		select: (string | SubSelect)[],
+		sort: Sort,
+		context: Context,
+		readTxn: any,
+		transformToRecord: Function
+	): any;
+	/**
+	 * This is responsible for select()ing the attributes/properties from returned entries
+	 * @param rowFilter explicit row predicate applied to the record actually being
+	 * returned — i.e. AFTER any caching-source revalidation replaces a stale local copy — so an
+	 * authorization verdict can't be made on bytes that differ from what the caller receives.
+	 * @param includeExpired when true, a row past its TTL but not yet swept is treated as a live
+	 * match rather than gone (used by the SQL engine's UPDATE/DELETE row-finder).
+	 * @param sort post-ordering owned by this selection
+	 */
+	transformEntryForSelect(
+		select: any,
+		context: any,
+		readTxn: any,
+		filtered: any,
+		ensure_loaded?: any,
+		canSkip?: any,
+		rowFilter?: any,
+		includeExpired?: any,
+		sort?: any
+	): (entry: Entry) => any;
+	/**
+	 * Subscribe on one thread unless this is a per-thread subscription
+	 */
+	subscribeOnThisThread(workerIndex: any, options: any): boolean;
+	/**
+	 * Write a single table-reload marker for this table (harper-pro#489): a LOCAL_ONLY audit entry of
+	 * type 'reload' with no record, committed in its own transaction. Subscribers driven off the audit
+	 * stream — hdb_nodes peer discovery and hdb_certificate CA install — treat it as "this table was
+	 * bulk-reloaded, re-read it". It is needed after a copyApply base copy, whose per-row snapshot rows
+	 * carry no audit entry, so the per-row events those subscribers rely on never fire. The marker is
+	 * never replicated (its LOCAL_ONLY bit makes the send path skip it without decoding the
+	 * peers-may-not-know type), and a lost marker self-heals on restart because each subscriber re-scans
+	 * the table when it (re)subscribes.
+	 */
+	writeReloadMarker(context?: any): void;
+	/**
+	 * Write one cluster record-lock control entry (harper#483 Phase 1). Not local-only: replicating
+	 * it IS the send.
+	 *
+	 * `recordId` must stay null. An entry carrying the locked key would share
+	 * `(version, tableId, recordId, nodeId)` with the holder's own first write, which is stamped at
+	 * exactly `ts_R`, and `RocksTransactionLogStore.getSync` answers with the FIRST entry at a
+	 * timestamp and key — so `_writeUpdate`'s keyed dedup would find this one and drop that write.
+	 * The payload goes in as bytes rather than through `recordUpdater`, which would run it through
+	 * schema projection and the table's shared structure dictionary.
+	 */
+	writeLockControlEntry(entry: LockControlEntry): Promise<number | undefined>;
+	/**
+	 * The coordinator that holds this node's admissions, transport or not. Releasing and registering
+	 * go here rather than through `lockCoordinator`, which answers undefined while a transport is
+	 * momentarily unregistered — and a release dropped on that answer leaves the key's home holding
+	 * its grant until the delegation's own deadline.
+	 */
+	get admittingCoordinator(): LockCoordinator | undefined;
+	/**
+	 * This table's cluster lock coordinator, created on first use and only while a transport is
+	 * registered for the database. Nothing is allocated on the Phase 0 path.
+	 */
+	get lockCoordinator(): LockCoordinator | undefined;
+	addAttributes(attributesToAdd: Attribute[]): Promise<any>;
+	removeAttributes(names: string[]): Promise<any>;
+	/**
+	 * Get the size of the table in bytes (based on amount of pages stored in the database)
+	 */
+	getSize(): number;
+	/** Sizes of this table's durable record-structure dictionaries. */
+	getStructureCounts(): StructureCounts | undefined;
+	getAuditSize(): number;
+	/**
+	 * Get available/free/size storage stats for the table's underlying volume. Async because
+	 * this may need to read quota-status.json (#1976); getSize/getAuditSize stay sync because
+	 * they only read in-memory store stats.
+	 */
+	getStorageStats(): Promise<StorageSpaceStats>;
+	getRecordCount(options?: any): Promise<
+		| {
+				recordCount: number;
+				estimatedRange?: undefined;
+		  }
+		| {
+				recordCount: number;
+				estimatedRange: number[];
+		  }
+	>;
+	/**
+	 * When attributes have been changed, we update the accessors that are assigned to this table
+	 */
+	updatedAttributes(): void;
+	setComputedAttribute(attribute_name: any, resolver: any): void;
+	/**
+	 * Override the default embedder for an `@embed` attribute. Return the vector to
+	 * store at `attribute_name`. The embedder receives the write payload (the fields
+	 * present in the PUT/PATCH body), not the post-merge record, so multi-field
+	 * concatenation only works when all source fields are in the same write.
+	 */
+	setEmbedAttribute(attribute_name: string, embedder: Embedder): void;
+	/**
+	 * Override the default decider for a `@decide` attribute. Return `{ value, probability }`
+	 * to store at the attribute and its confidence attribute, or `null` to clear both. The
+	 * value must be one the directive allows, and the probability is required when the
+	 * directive names a confidence attribute. Like an embedder, the decider receives the write
+	 * payload, not the post-merge record, and a `signal` that aborts when a sibling hook fails.
+	 */
+	setDecideAttribute(attribute_name: string, decider: Decider): void;
+	deleteHistory(endTime?: number, cleanupDeletedRecords?: boolean): Promise<number>;
+	getHistory(
+		startTime?: number,
+		endTime?: number
+	): AsyncGenerator<
+		{
+			id: any;
+			localTime: any;
+			version: any;
+			type: any;
+			value: any;
+			user: any;
+			operation: any;
+		},
+		void,
+		unknown
+	>;
+	getHistoryOfRecord(id: any): Promise<any[]>;
+	clear(): any;
+	/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
+	cleanup(): void;
+	closeMaintenance(deadline?: number): Promise<void>;
+	resumeMaintenance(): void;
+	_readTxnForContext(context: any): (LMDBReadTransaction | RocksTransaction) & {
+		openTimer?: number;
+		retryRisk?: number;
+		isDone?: boolean;
+		isCommitted?: boolean;
+	};
+	transactions: DatabaseTransactionRecord[] & {
+		timestamp: number;
+	};
+	path?: string;
+	directURLMapping: boolean;
+	loadAsInstance: boolean;
+	requestContract?: Contract;
+	inputSchemas?: {
+		[verb: string]: {
+			query?: JsonSchemaFragment;
+			body?: JsonSchemaFragment;
+		};
+	};
+	withSchema<Base extends new (...args: any[]) => any, const C extends Contract>(
+		this: Base,
+		contract: C
+	): SchemaClass<Base, C>;
+	get: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	put: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	patch: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	delete: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	create(idPrefix: Id, record: any, context: Context): Promise<Id>;
+	create(record: any, context: Context): Promise<Id>;
+	invalidate: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	post: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	update: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	connect: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	subscribe: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	publish: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	search: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	query: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	copy: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	move: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	isCollection(resource: any): any;
+	parseQuery(search: any, query: any): any;
+	parsePath(path: any, context: any, query: any): any;
+}
+
 /**
  * This returns a Table class for the given table settings (determined from the metadata table)
  * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
@@ -616,6 +1151,31 @@ function cloneConditions(conditions: any[]): any[] {
 		if (copy.conditions) copy.conditions = cloneConditions(copy.conditions);
 		return copy;
 	});
+}
+
+function selectRequestsProperty(select: any, propertyName: string): boolean {
+	if (!select) return false;
+	const selected = Array.isArray(select) ? select : [select];
+	return selected.some((property) => (typeof property === 'string' ? property : property?.name) === propertyName);
+}
+
+function appendSelectProperty(select: any, propertyName: string): any[] {
+	if (!Array.isArray(select)) return [select, propertyName];
+	return Object.assign([...select, propertyName], select);
+}
+
+function conditionsContainFullText(entries: any[], definitions: readonly FullTextDefinition[]): boolean {
+	for (const entry of entries) {
+		if (entry.conditions) {
+			if (conditionsContainFullText(entry.conditions, definitions)) return true;
+		} else if (
+			fullTextComparatorMode(entry.comparator) &&
+			typeof (entry[0] ?? entry.attribute) === 'string' &&
+			definitions.some(({ name }) => name === (entry[0] ?? entry.attribute))
+		)
+			return true;
+	}
+	return false;
 }
 // Ambient, path-scoped cycle guard for the enumerable-struct `toJSON` serialization path. A record on
 // a cyclically-enumerable table can (transitively) reference itself, which would recurse forever through
@@ -714,6 +1274,18 @@ function scopeViolation(
 	);
 }
 
+function rescope(resolved: ResolvedRecordLockOptions, tableReplicates: boolean): ResolvedRecordLockOptions {
+	if (resolved.scopeRequested) return resolved;
+	const scope = tableReplicates ? 'cluster' : 'node';
+	return scope === resolved.scope ? resolved : { ...resolved, scope };
+}
+
+function transportUnavailable(databaseName: string): LockUnavailableError {
+	return new LockUnavailableError(
+		`Cluster-scoped record locks are not available on ${databaseName}: no record lock transport is registered`
+	);
+}
+
 /** Distinguishes bare lock options from a record target (id, URL, {id:...}). */
 function isPlainOptions(value: unknown): boolean {
 	return (
@@ -737,7 +1309,41 @@ setLockCoordinatorResolver(
 	}
 );
 
-export function makeTable(options) {
+// Valid for one synchronous notify pass, in which a key's subscribers on this thread all receive the same
+// freshly decoded audit record; cleared after it so it pins no store or record once delivery is done.
+let memoizedEntryAuditRecord: any;
+let memoizedEntryStore: any;
+let memoizedEntryId: Id;
+let memoizedEntry: Entry | undefined;
+function clearEntryMemo() {
+	memoizedEntryAuditRecord = memoizedEntryStore = memoizedEntryId = memoizedEntry = undefined;
+}
+function currentEntryForAudit(store: any, id: Id, auditRecord: any): Entry | undefined {
+	if (auditRecord !== memoizedEntryAuditRecord || store !== memoizedEntryStore || id !== memoizedEntryId) {
+		if (memoizedEntryAuditRecord === undefined) queueMicrotask(clearEntryMemo);
+		memoizedEntry = store.getEntry(id);
+		memoizedEntryAuditRecord = auditRecord;
+		memoizedEntryStore = store;
+		memoizedEntryId = id;
+	}
+	return memoizedEntry;
+}
+
+// the log store ends a failed or corrupt log's iteration quietly and records it on the range
+function unreadableLogRefusal(range: any): Error | undefined {
+	if (range.failedLogs?.size || range.corruptFrameStop?.breaks) {
+		return new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL);
+	}
+}
+
+function resumeRefusal(auditStore: any, generationId: string, cursor: number): Error | undefined {
+	if (isResumablePosition(auditStore, generationId, cursor)) return;
+	return getDatabaseGeneration(auditStore)?.id === generationId
+		? new ResumeHistoryUnavailableError()
+		: new DatabaseGenerationChangedError();
+}
+
+export function makeTable(options): TableResourceClass {
 	const {
 		primaryKey,
 		indices,
@@ -757,9 +1363,12 @@ export function makeTable(options) {
 		cacheControl,
 		isBranch,
 		fullTextIndexes = [],
+		fullTextFields = [],
 		fullTextIndexGenerations = Object.create(null),
 		fullTextIndexRetirements = [],
 	} = options;
+	let declaredFullTextFields: readonly string[] = Object.freeze([...fullTextFields]);
+	let fullTextFieldNames = fullTextFields.length > 0 ? new Set<string>(fullTextFields) : undefined;
 	const tableRootStore = primaryStore.rootStore;
 	const tableRootPath = tableRootStore.path;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
@@ -800,6 +1409,7 @@ export function makeTable(options) {
 		if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 	}
 	const tableGeneration = options.storageGeneration ?? (primaryKeyAttribute as any)?.generation;
+	const createdTime: number | undefined = options.createdTime ?? (primaryKeyAttribute as any)?.createdTime;
 	let deleteCallbackHandle: { remove: () => void };
 	let prefetchIds = [];
 	let prefetchCallbacks = [];
@@ -1032,12 +1642,25 @@ export function makeTable(options) {
 			return;
 		return { key, descriptor };
 	}
+	const COMMIT_BASE_METHODS = new Set(['put', 'patch', 'delete']);
+	function entryBeforeWrite(loadedEntry: Entry | undefined, id: Id, transaction: any, reloadsCommitBase: boolean) {
+		if (loadedEntry != null) return loadedEntry;
+		if (isRocksDB && reloadsCommitBase) {
+			// save() reads this write's base from the staging snapshot (harper#2259); the read handle is still opened
+			// here because it is what gives the staged write coordinated conflict retries
+			transaction.getReadTxn();
+			return undefined;
+		}
+		return primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
+	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
 		#version?: number; // version of the record
 		#entry?: Entry; // the entry from the database
 		#savingOperation?: any; // operation for the record is currently being saved
+		#baseReadTxn?: any; // staging handle this instance's uncached pre-load read through
+		#baseReadEntry?: Entry; // what that read returned, reusable as the commit base only while it is still #entry
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		#writeGeneration?: WriteGeneration;
@@ -1074,6 +1697,7 @@ export function makeTable(options) {
 		static name = tableName; // for display/debugging purposes
 		static primaryStore = primaryStore;
 		static storageGeneration = tableGeneration;
+		static createdTime = createdTime;
 		static auditStore = auditStore;
 		static primaryKey = primaryKey;
 		static tableName = tableName;
@@ -1084,13 +1708,32 @@ export function makeTable(options) {
 					close(dropping?: boolean): Promise<void>;
 					fullTextDefinitions?(): readonly FullTextDefinition[];
 					matchesCurrent?(): boolean;
-					restoreAfterFailedDrop?(): typeof TableResource.derivedIndexRuntime;
+					restoreAfterFailedDrop?(): TableResourceClass['derivedIndexRuntime'];
 					retireAfterConfirmedDrop?(definitions?: readonly Pick<FullTextDefinition, 'name'>[]): Promise<boolean>;
 					completeDrop?(dropped?: boolean): void;
 			  }
 			| undefined;
 		static audit = audit;
 		static fullTextIndexes: FullTextDefinition[] = fullTextIndexes;
+		static get fullTextFields(): readonly string[] {
+			return declaredFullTextFields;
+		}
+		static set fullTextFields(names: readonly string[]) {
+			declaredFullTextFields = Object.freeze([...names]);
+			fullTextFieldNames = names.length > 0 ? new Set(names) : undefined;
+		}
+		static assertFullTextSelection(select: unknown, sort?: any): void {
+			assertFullTextSelection(select);
+			for (let order = sort; order; order = order.next) assertRecordField(order.attribute);
+		}
+		static assertFullTextRecordField(name: unknown): void {
+			assertFullTextRecordField(name);
+		}
+		static isFullTextSearchEntryCurrent(entry: Entry): boolean {
+			return !(entry.metadataFlags & (INVALIDATED | EVICTED | VERSION_REUSED));
+		}
+		static fullTextQueryIndexes: { [name: string]: { customIndex: unknown } } = Object.create(null);
+		static hasFullTextQueryIndexes = false;
 		static fullTextIndexGenerations: FullTextIndexGenerations = fullTextIndexGenerations;
 		static fullTextIndexRetirements: string[] = fullTextIndexRetirements;
 		static hasCurrentFullTextIndexRetirements(names: readonly string[]): boolean | Promise<boolean> {
@@ -1153,7 +1796,7 @@ export function makeTable(options) {
 		static userDeciders: { [name: string]: Decider } = {};
 		static userSetDeciders: Set<string> = new Set();
 		static decideAttributes: DecideAttribute[] = (attributes as any[]).filter((a) => a?.decide);
-		static source?: typeof TableResource;
+		static source?: any;
 		declare static sourceOptions: any;
 		declare static intermediateSource: boolean;
 		static getResidencyById: (id: Id) => number | void;
@@ -1174,7 +1817,7 @@ export function makeTable(options) {
 		 * @returns
 		 */
 		// #section: resource-registry
-		static sourcedFrom(source, options) {
+		static sourcedFrom(source: any, options: any): any {
 			// define a source for retrieving invalidated entries for caching purposes
 			if (options) {
 				this.sourceOptions = options;
@@ -1240,7 +1883,6 @@ export function makeTable(options) {
 						logger.warn?.('discarding a malformed record lock control entry from', event.nodeId, event.type);
 						return reportDroppedWrite(event, context, new Error('Malformed record lock control entry'));
 					}
-					const target = event.table ? databases[databaseName]?.[event.table] : TableResource;
 					try {
 						// The audit header's nodeId is the origin, translated on receive and preserved across
 						// relays. The payload's own names are peer-supplied and prove nothing. Rebuild the id
@@ -1256,14 +1898,16 @@ export function makeTable(options) {
 							logger.warn?.('discarding a record lock control entry whose origin node could not be resolved');
 							return reportDroppedWrite(event, context, new Error('Record lock control origin could not be resolved'));
 						}
-						// The coordinator getter fails closed on an unusable node identity. That is right for
-						// an acquire and wrong here: rejecting out of this sink stalls the apply loop for
-						// every later entry rather than dropping one.
-						// `admittingCoordinator`, because `lockCoordinator` answers undefined while a transport
-						// is momentarily unregistered — and this sink runs off the replication stream, not off
-						// that transport. Dropping a peer's clean-handoff release there leaves the home holding
-						// its grant for the delegation's whole deadline.
-						target?.admittingCoordinator?.applyEntry(entry, author, event.timestamp);
+						// Never the `lockCoordinator` getter: it fails closed on an unusable node identity (a
+						// throw here would stall the apply loop) and answers undefined while a transport is
+						// momentarily unregistered.
+						receiveLockControlEntry(
+							databaseName,
+							event.table ?? TableResource.tableName,
+							entry,
+							author,
+							event.timestamp
+						);
 					} catch (error) {
 						logger.warn?.('dropping a record lock control entry: the coordinator is unavailable', error);
 						return reportDroppedWrite(event, context, error);
@@ -1305,7 +1949,7 @@ export function makeTable(options) {
 					}
 					if (Table && event.type === 'put' && value == null && !shouldRevalidateEvents)
 						await reportDroppedWrite(event, context, new Error('Source-applied put has no record content'));
-					const resource: TableResource = await Table.getResource(id, context, options);
+					const resource = await Table.getResource(id, context, options);
 					if (event.finished) await event.finished;
 					// an aborted source transaction's released context would otherwise commit this write on its own
 					if (context.sourceAborted) return;
@@ -1671,13 +2315,14 @@ export function makeTable(options) {
 												hasChanges = true;
 											}
 										}
-										if (hasChanges || event.fullTextIndexes !== undefined) {
+										if (hasChanges || event.fullTextIndexes !== undefined || event.fullTextFields !== undefined) {
 											const schemaVersion = (this as any).schemaVersion;
 											const definedTable: any = table({
 												table: tableName,
 												database: databaseName,
 												attributes: updatedAttributes,
 												fullTextIndexes: event.fullTextIndexes,
+												fullTextFields: event.fullTextFields,
 												origin: 'cluster',
 											});
 											if (definedTable.schemaVersion !== schemaVersion)
@@ -1762,7 +2407,7 @@ export function makeTable(options) {
 			target: RequestTarget,
 			request: Context,
 			resourceOptions?: any
-		): Promise<TableResource<Record>> | TableResource<Record> {
+		): Promise<TableResourceInstance<Record>> | TableResourceInstance<Record> {
 			if (databaseDropPrepared(tableRootPath) || databaseCommitsSuspended(tableRootStore))
 				throw new DatabaseClosingError(
 					databaseName,
@@ -1774,7 +2419,11 @@ export function makeTable(options) {
 			}
 			return resource;
 		}
-		_loadRecord(target: RequestTarget, request: Context, resourceOptions?: any): MaybePromise<TableResource<Record>> {
+		_loadRecord(
+			target: RequestTarget,
+			request: Context,
+			resourceOptions?: any
+		): MaybePromise<TableResourceInstance<Record>> {
 			const id = target && typeof target === 'object' ? target.id : target;
 			if (id == null) return this;
 			checkValidId(id);
@@ -1789,15 +2438,29 @@ export function makeTable(options) {
 				if (readTxn?.isDone) {
 					throw new Error('You can not read from a transaction that has already been committed/aborted');
 				}
+				const readsCommitBase =
+					isRocksDB &&
+					COMMIT_BASE_METHODS.has(resourceOptions?.method) &&
+					!resourceOptions?.ensureLoaded &&
+					readTxn &&
+					!(readTxn as any).snapshotDisabled;
 				return loadLocalRecord(
 					id,
 					request,
-					{ transaction: readTxn, ensureLoaded: resourceOptions?.ensureLoaded },
+					{
+						transaction: readTxn,
+						ensureLoaded: resourceOptions?.ensureLoaded,
+						uncachedRead: readsCommitBase || undefined,
+					},
 					sync,
 					(entry) => {
 						if (entry) {
 							TableResource._updateResource(this, entry);
 						} else this.#record = null;
+						if (readsCommitBase) {
+							this.#baseReadTxn = readTxn;
+							this.#baseReadEntry = entry;
+						}
 						if (request.onlyIfCached) {
 							// don't go into the loading from source condition, but HTTP spec says to
 							// return 504 (rather than 404) if there is no content and the cache-control header
@@ -1829,6 +2492,14 @@ export function makeTable(options) {
 				throw error;
 			}
 		}
+		// Reusable only for the key this instance read and while #entry is the entry that read returned: a source fill
+		// or retry replaces #entry, and ensureLoaded() can evict it in place, so ensureLoaded() drops the receipt.
+		#commitBaseTxn(id: Id) {
+			const baseReadTxn = this.#baseReadTxn;
+			if (!baseReadTxn || this.#baseReadEntry !== this.#entry) return;
+			const receiverId = this.getId();
+			if (Object.is(id, receiverId) || writeKeyId(id) === writeKeyId(receiverId)) return baseReadTxn;
+		}
 		static _updateResource(resource, entry) {
 			resource.#entry = entry;
 			resource.#record = entry?.value ?? null;
@@ -1840,6 +2511,7 @@ export function makeTable(options) {
 		 * @returns
 		 */
 		ensureLoaded() {
+			this.#baseReadTxn = undefined;
 			const loadedFromSource = ensureLoadedFromSource(
 				(this.constructor as any).source,
 				this.getId(),
@@ -2176,7 +2848,7 @@ export function makeTable(options) {
 			throw error;
 		}
 
-		static async dropTable() {
+		static async dropTable(options?: { droppedTime?: number; localOnly?: boolean }) {
 			TableResource.assertSchemaMutable('drop a table');
 			const rootStore = primaryStore.rootStore;
 			if (
@@ -2285,8 +2957,26 @@ export function makeTable(options) {
 								409
 							);
 					}
-					if (primaryMeta.dropping) return true;
+					if (primaryMeta.dropping) {
+						// A joining drop that replicates stamps a tombstone a local-only drop left bare, or raises it.
+						const joinedTime = options?.localOnly
+							? undefined
+							: Number.isFinite(options?.droppedTime)
+								? options.droppedTime
+								: primaryMeta.droppedTime === undefined
+									? tableLifecycleTime(createdTime)
+									: undefined;
+						if (joinedTime !== undefined && !(primaryMeta.droppedTime >= joinedTime)) {
+							primaryMeta.droppedTime = joinedTime;
+							tombstoneWrite = (dbisDb as any).put(primaryCatalogKey, primaryMeta);
+						}
+						return true;
+					}
 					primaryMeta.dropping = true;
+					if (!options?.localOnly)
+						primaryMeta.droppedTime = Number.isFinite(options?.droppedTime)
+							? options.droppedTime
+							: tableLifecycleTime(createdTime);
 					// Stamps this drop's identity so the interrupted-drop retry budget in
 					// databases.ts can be scoped to THIS drop rather than the table name: a
 					// worker that exhausts the budget for a table can observe the catalog
@@ -2386,6 +3076,14 @@ export function makeTable(options) {
 					for (const attribute of attributes) {
 						dbisDb.remove(TableResource.tableName + '/' + attribute.name);
 					}
+					promoteTombstoneToDropMarker(
+						rootStore,
+						dbisDb,
+						databaseName,
+						TableResource.tableName,
+						primaryCatalogKey,
+						currentPrimary
+					);
 					dbisDb.remove(primaryCatalogKey);
 					return true;
 				};
@@ -2509,6 +3207,7 @@ export function makeTable(options) {
 						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 							if (key !== primaryCatalogKey) dbisDb.remove(key);
 						}
+						promoteTombstoneToDropMarker(rootStore, dbisDb, databaseName, tableName, primaryCatalogKey, currentPrimary);
 						dbisDb.remove(primaryCatalogKey);
 						return true;
 					});
@@ -2530,6 +3229,12 @@ export function makeTable(options) {
 		 */
 		get(target?: any): any {
 			const constructor: any = this.constructor;
+			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target?.select);
+			if (fullTextFieldNames) {
+				assertRecordField(
+					target?.property ?? (typeof target === 'string' && constructor.loadAsInstance !== false ? target : undefined)
+				);
+			}
 			if (typeof target === 'string' && constructor.loadAsInstance !== false) return this.getProperty(target);
 			if (isSearchTarget(target)) {
 				// go back to the static search method so it gets a chance to override
@@ -2643,6 +3348,9 @@ export function makeTable(options) {
 		 */
 		allowRead(user: User, target: RequestTarget, context: Context): boolean {
 			const tablePermission = getTablePermissions(user, target);
+			// Resource.search consumes checkPermission before full-text source-field authorization runs.
+			if (TableResource.fullTextIndexes.length > 0 && target?.checkPermission && tablePermission)
+				(target as any)[FULL_TEXT_READ_PERMISSION] = tablePermission;
 			if (tablePermission?.read) {
 				if (tablePermission.isSuperUser) return true;
 				const attribute_permissions = tablePermission.attribute_permissions;
@@ -2658,7 +3366,13 @@ export function makeTable(options) {
 						(target as any).select = selectArray
 							.map((property: any) => {
 								const propertyName = property.name || property;
-								if (!attrsForType || attrsForType[propertyName]) {
+								if (
+									!attrsForType ||
+									attrsForType[propertyName] ||
+									fullTextFieldNames?.has(propertyName) ||
+									propertyName === '$score' ||
+									propertyName === '$highlights'
+								) {
 									const relatedTable = propertyResolvers[propertyName]?.definition?.tableClass;
 									if (relatedTable) {
 										// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
@@ -2677,7 +3391,12 @@ export function makeTable(options) {
 							.filter(Boolean);
 					} else {
 						target.select = attribute_permissions
-							.filter((attribute) => attribute.read && !propertyResolvers[attribute.attribute_name])
+							.filter(
+								(attribute) =>
+									attribute.read &&
+									!fullTextFieldNames?.has(attribute.attribute_name) &&
+									!propertyResolvers[attribute.attribute_name]
+							)
 							.map((attribute) => attribute.attribute_name);
 					}
 					(target as any)[AUTHORIZATION_SELECT] = true;
@@ -2708,7 +3427,7 @@ export function makeTable(options) {
 					// that the user doesn't have permission to remove
 					for (const permission of attribute_permissions) {
 						const key = permission.attribute_name;
-						if (!permission.update && !(key in updatedData)) {
+						if (!permission.update && !fullTextFieldNames?.has(key) && !(key in updatedData)) {
 							updatedData[key] = this.getProperty(key);
 						}
 					}
@@ -3063,6 +3782,7 @@ export function makeTable(options) {
 								isRocksDB && audit && txnLogKey !== txnTime
 									? [{ version: txnLogKey, nodeId: options?.nodeId }]
 									: undefined,
+							localOnly: options?.localOnly,
 						},
 						'invalidate'
 					);
@@ -3131,6 +3851,7 @@ export function makeTable(options) {
 								isRocksDB && audit && txnLogKey !== txnTime
 									? [{ version: txnLogKey, nodeId: options?.nodeId }]
 									: undefined,
+							localOnly: options?.localOnly,
 						},
 						'relocate',
 						false,
@@ -3308,7 +4029,7 @@ export function makeTable(options) {
 			const id = target != null ? requestTargetToId(target as RequestTargetOrId) : this.getId();
 			checkValidId(id);
 			this.#assertLiveHandle(id);
-			const resolved = resolveLockOptions(options);
+			const resolved = resolveLockOptions(options, TableResource.replicate !== false);
 			const context = this.getContext();
 			const link = txnForContext(context);
 			const keyId = writeKeyId(id);
@@ -3320,11 +4041,7 @@ export function makeTable(options) {
 				(resolved.scopeRequested || isClusterLockRequired(databaseName)) &&
 				!getClusterLockTransport(databaseName)
 			)
-				return Promise.reject(
-					new LockUnavailableError(
-						`Cluster-scoped record locks are not available on ${databaseName}: no record lock transport is registered`
-					)
-				);
+				return Promise.reject(transportUnavailable(databaseName));
 			const held = this.#lockHandle;
 			if (held && !held.isExpired() && held.keyId === keyId) {
 				// Re-entrant: upgrade to hold if requested, then preserve staged changes.
@@ -3415,7 +4132,11 @@ export function makeTable(options) {
 						clearTimeout(followerTimer);
 						const acquired = link.recordLockFor(primaryStore, keyId);
 						if (acquired && !acquired.isExpired()) {
-							const violation = scopeViolation(acquired, resolved, databaseName);
+							const violation = scopeViolation(
+								acquired,
+								rescope(resolved, TableResource.replicate !== false),
+								databaseName
+							);
 							if (violation) throw violation;
 							if (resolved.hold && !acquired.hold) {
 								detachScopedUpgradeWrite(link, keyId, acquired);
@@ -3464,8 +4185,9 @@ export function makeTable(options) {
 				// caller's whole timeout, long enough for harper-pro to register the transport on this
 				// worker. Using the snapshot would take the native key alone and hand back a node-scoped
 				// handle while a peer that already had the transport is granted the same key.
+				const current = rescope(resolved, TableResource.replicate !== false);
 				try {
-					if (resolved.scope !== 'node') coordinator = TableResource.lockCoordinator ?? coordinator;
+					coordinator = current.scope === 'cluster' ? (TableResource.lockCoordinator ?? coordinator) : undefined;
 				} catch (error) {
 					// The getter fails closed on an unusable node identity, and that has to reach the caller
 					// the same way it does before the wait. Swallowing it let an implicit cluster lock fall
@@ -3473,6 +4195,15 @@ export function makeTable(options) {
 					// because `coordinator` is still whatever it was, including undefined.
 					handle.release();
 					throw error as Error;
+				}
+				// The entry check cannot cover this: the wait is where the call became cluster-scoped.
+				if (
+					current.scope === 'cluster' &&
+					!coordinator &&
+					(current.scopeRequested || isClusterLockRequired(databaseName))
+				) {
+					handle.release();
+					throw transportUnavailable(databaseName);
 				}
 				if (coordinator) {
 					try {
@@ -3791,7 +4522,9 @@ export function makeTable(options) {
 					}
 				};
 			}
-			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
+			const reloadsCommitBase = options?.isCopyApply !== true;
+			const entry = entryBeforeWrite(this.#entry, id, transaction, reloadsCommitBase);
+			const baseReadTxn = this.#commitBaseTxn(id);
 			const writeToSource = () => {
 				if (!(this.constructor as any).source || (context as any)?.source) return;
 				if (fullUpdate) {
@@ -3819,11 +4552,12 @@ export function makeTable(options) {
 				key: id,
 				store: primaryStore,
 				entry,
+				baseReadTxn,
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
 				chainsStagedState: true,
 				// copy-apply rows keep their pre-read base: one read per row, healed by the post-copy replay
-				reloadCommitBase: options?.isCopyApply !== true,
+				reloadCommitBase: reloadsCommitBase,
 				deferSave: true,
 				// the origin's record version on an applied write; absent for a locally-originated one
 				recordVersion: options?.version,
@@ -3836,6 +4570,7 @@ export function makeTable(options) {
 				captureChanges,
 				validate: (txnTime, committedBy = transaction) => {
 					write.captureChanges?.();
+					if ((context as any)?.source && !committedBy.isReplay) assertFullTextWrite(recordUpdate, true);
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
 							committedBy.checkOverloaded();
@@ -4710,12 +5445,14 @@ export function makeTable(options) {
 			const transaction = txnForContext(context);
 			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
-			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
+			const entry = entryBeforeWrite(this.#entry, id, transaction, true);
+			const baseReadTxn = this.#commitBaseTxn(id);
 
 			const write: any = {
 				key: id,
 				store: primaryStore,
 				entry,
+				baseReadTxn,
 				chainsStagedState: true,
 				reloadCommitBase: true,
 				nodeName: (context as any)?.nodeName,
@@ -4778,6 +5515,7 @@ export function makeTable(options) {
 									isRocksDB && audit && txnLogKey !== txnTime
 										? [{ version: txnLogKey, nodeId: options?.nodeId }]
 										: undefined,
+								localOnly: options?.localOnly,
 							},
 							'delete'
 						);
@@ -4804,6 +5542,7 @@ export function makeTable(options) {
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
+			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
 			const getColumns = () => {
 				const select = target.select;
 				if (select) {
@@ -4952,6 +5691,7 @@ export function makeTable(options) {
 			conditions = cloneConditions(conditions);
 			let orderAlignedCondition;
 			let syntheticOrderCondition;
+			let includeFullTextHighlights = false;
 			const filtered = {};
 
 			function prepareConditions(conditions: any[], operator: string) {
@@ -4983,6 +5723,54 @@ export function makeTable(options) {
 						}
 					}
 					const attribute_name = condition[0] ?? condition.attribute;
+					const fullTextMode =
+						TableResource.fullTextIndexes.length > 0 ||
+						Array.isArray(attribute_name) ||
+						(typeof attribute_name === 'string' && fullTextFieldNames?.has(attribute_name))
+							? fullTextComparatorMode(condition.comparator)
+							: undefined;
+					if (!fullTextMode && (fullTextFieldNames || hasRelationships)) assertFullTextRecordField(attribute_name);
+					const fullTextDefinition =
+						fullTextMode && typeof attribute_name === 'string'
+							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
+							: undefined;
+					if (fullTextMode && Array.isArray(attribute_name))
+						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
+					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target, attribute_name);
+					if (fullTextDefinition) {
+						const fields = condition.fields;
+						if (fields !== undefined) {
+							if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
+								throw new ClientError(`Full-text index '${attribute_name}' requires a non-empty fields list`, 400);
+							assertFullTextReadAccess(context, target, fullTextDefinition, fields);
+						} else assertFullTextReadAccess(context, target, fullTextDefinition);
+						const value = condition[1] ?? condition.value;
+						if (typeof value !== 'string' || value.length === 0)
+							throw new ClientError(
+								`Full-text index '${attribute_name}' requires a full-text comparator and non-empty string value`,
+								400
+							);
+						if (fullTextMode === 'phrase' && !fullTextDefinition.positions)
+							throw new ClientError(`Full-text index '${attribute_name}' does not store phrase positions`, 400);
+						if ((fullTextMode === 'prefix' || fullTextMode === 'fuzzy-prefix') && !fullTextDefinition.surfaceTerms)
+							throw new ClientError(`Full-text index '${attribute_name}' does not store surface terms`, 400);
+						if (fields !== undefined) {
+							const sourceNames = new Set(fullTextDefinition.fields.map(({ name }) => name));
+							if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
+								throw new ClientError(
+									`Full-text index '${attribute_name}' contains an unknown or duplicate field`,
+									400
+								);
+						}
+						condition.includeHighlights =
+							condition.includeHighlights === true || selectRequestsProperty(target.select, '$highlights');
+						if (condition.includeHighlights && !fullTextDefinition.highlighting)
+							throw new ClientError(`Full-text index '${attribute_name}' does not enable highlighting`, 400);
+						if (!TableResource.fullTextQueryIndexes[attribute_name]?.customIndex)
+							throw new IndexRebuildingError(`Full-text index '${attribute_name}' is not ready`);
+						includeFullTextHighlights ||= condition.includeHighlights;
+						continue;
+					}
 					let attribute = attribute_name == null ? primaryKeyAttribute : findAttribute(attributes, attribute_name);
 					if (!attribute && Array.isArray(attribute_name) && attribute_name.length > 1) {
 						// Plain JSON nested path: the leaf may not be declared in the
@@ -5058,8 +5846,19 @@ export function makeTable(options) {
 			}
 			const operator = target.operator;
 			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
-			const sort = typeof target.sort === 'object' && target.sort;
+			let sort = typeof target.sort === 'object' && target.sort;
+			if (
+				TableResource.fullTextIndexes.length > 0 &&
+				conditionsContainFullText(conditions, TableResource.fullTextIndexes)
+			) {
+				if ((target as any).reverse)
+					throw new ClientError('Full-text results can only use descending $score order', 400);
+				if (sort && (sort.attribute !== '$score' || sort.next || sort.descending !== true))
+					throw new ClientError('Full-text results can only use descending $score order', 400);
+				sort = undefined;
+			}
 			for (let order = sort; order; order = order.next) {
+				if (fullTextFieldNames) assertRecordField(order.attribute);
 				if (typeof order.attribute !== 'string') continue;
 				const customIndex = indices[order.attribute]?.customIndex;
 				if (customIndex?.exactDistance) customIndex.exactDistance(order, null);
@@ -5133,7 +5932,13 @@ export function makeTable(options) {
 					postOrdering = sort;
 				}
 			}
-			const select = target.select;
+			const select = includeFullTextHighlights
+				? target.select === undefined
+					? ['*', '$highlights']
+					: selectRequestsProperty(target.select, '$highlights')
+						? target.select
+						: appendSelectProperty(target.select, '$highlights')
+				: target.select;
 			// Whether the caller supplied real filter conditions — read from the raw request, NOT the
 			// planner-augmented `conditions` (which by now may carry a synthetic `sort` pseudo-condition and
 			// injected full-scan condition). Used to pick the count-estimate source below.
@@ -5263,7 +6068,10 @@ export function makeTable(options) {
 							if (!c) return false;
 							if (c.conditions) return touchesCustomIndex(c.conditions);
 							const attr = Array.isArray(c.attribute) ? c.attribute[0] : (c.attribute ?? c[0]);
-							return typeof attr === 'string' && Boolean(indices[attr]?.customIndex);
+							if (typeof attr !== 'string') return false;
+							return fullTextComparatorMode(c.comparator)
+								? Boolean(TableResource.fullTextQueryIndexes?.[attr]?.customIndex)
+								: Boolean(indices[attr]?.customIndex);
 						});
 					const approximateResultSet = typeof target.vectorFilter === 'function' || touchesCustomIndex(conditions);
 					return (async () => {
@@ -5335,8 +6143,12 @@ export function makeTable(options) {
 				if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
 				results.onDone = () => {
 					results.onDone = null; // ensure that it isn't called twice
+					txn.unregisterReadIterator(results);
 					txn.doneReadTxn();
 				};
+				// Recorded ownership: if the request dies before anything consumes these results, the
+				// transaction closes them itself rather than leaving its read snapshot pinned.
+				txn.registerReadIterator(results);
 				results.selectApplied = true;
 				results.getColumns = getColumns;
 				return results;
@@ -5811,6 +6623,25 @@ export function makeTable(options) {
 				if (!allowed) throw new AccessViolation(context?.user);
 			}
 			if (!auditStore) throw new Error('Can not subscribe to a table without an audit log');
+			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
+			const resumeGeneration = request.databaseGeneration;
+			const resuming = resumeGeneration !== undefined;
+			if (resuming) {
+				if (typeof request.startTime !== 'number' || !Number.isFinite(request.startTime)) {
+					throw new ClientError('Resuming in a database generation requires a finite startTime');
+				}
+				if (request.previousCount != null) {
+					throw new ClientError('previousCount can not be combined with a resume position');
+				}
+				// a record's own history walk proves its replay complete, so only a collection needs the floor here
+				const refusal =
+					(request.isCollection ?? thisId == null)
+						? resumeRefusal(auditStore, resumeGeneration, request.startTime)
+						: getDatabaseGeneration(auditStore)?.id === resumeGeneration
+							? undefined
+							: new DatabaseGenerationChangedError();
+				if (refusal) throw refusal;
+			}
 			if (!audit) {
 				// Turning auditing on is a schema write, and a branch's Table classes carry the base's
 				// logical name: without this a subscribe through a branched application would enable
@@ -5832,7 +6663,7 @@ export function makeTable(options) {
 			// Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener below.
 			let reloadResnapshotRunning = false;
 			let reloadResnapshotPending = false;
-			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
+			let reportingProgress = false;
 			const subContext = this.getContext() as any;
 			const rowFilter = typeof request.rowFilter === 'function' ? request.rowFilter : undefined;
 			const eventFilter = typeof request.eventFilter === 'function' ? request.eventFilter : undefined;
@@ -5876,6 +6707,8 @@ export function makeTable(options) {
 					try {
 						if (isLockControlType(auditRecord.type)) return;
 						if (auditRecord.type === 'reload' && !request.rawEvents && databaseName !== 'system') {
+							// back-filled rows have no history, so a progress certificate cannot pass the marker
+							if (reportingProgress) return void this.close(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
 							return scheduleReloadResnapshot();
 						}
 						const event = eventFromAudit(id, auditRecord, txnLogKey, beginTxn);
@@ -5892,12 +6725,65 @@ export function makeTable(options) {
 						}
 					} catch (error) {
 						logger.error?.(error);
+						// a certificate cannot pass an event it failed to deliver
+						if (reportingProgress) this.close(error);
 					}
 				},
 				request.startTime || 0,
 				request
 			);
 			const isActive = () => !subscription.closed && Boolean(subscription.subscriptions);
+			let progressLive = false;
+			let progressFloor: number | undefined;
+			let goLive: (() => void) | undefined;
+			if (request.reportProgress && subscription.reportsProgress) {
+				reportingProgress = true;
+				subscription.sentCount = 0;
+				const queueSend = subscription.send;
+				subscription.send = function (event) {
+					this.sentCount++;
+					return queueSend.call(this, event);
+				};
+				const collection = request.isCollection ?? thisId == null;
+				const beforeLive = (): number | undefined =>
+					resuming
+						? collection
+							? subscription.startTime
+							: request.startTime
+						: request.startTime === undefined
+							? subscription.registeredThrough
+							: undefined;
+				subscription.progress = () => {
+					if (!isActive()) return;
+					if (!progressLive) return beforeLive();
+					const dispatched = dispatchedThrough(subscription);
+					if (progressFloor === undefined) return dispatched;
+					return dispatched === undefined || dispatched < progressFloor ? progressFloor : dispatched;
+				};
+				goLive = () => {
+					progressFloor = beforeLive();
+					progressLive = true;
+				};
+			}
+			let settleResume: ((verified: boolean) => void) | undefined;
+			if (resuming) subscription.resumeVerified = new Promise<boolean>((resolve) => (settleResume = resolve));
+			// Each check compares the floor with the position the replay had reached at the previous check: a
+			// prune raises the floor before it deletes anything below it, so a pass means nothing unread was deleted.
+			let resumeCheckedThrough = request.startTime;
+			const checkResume = resuming
+				? (refusal?: Error): boolean => {
+						refusal ??= resumeRefusal(auditStore, resumeGeneration, resumeCheckedThrough);
+						if (!refusal) return true;
+						logger.debug?.(`Refused resuming a subscription to ${tableName}: ${refusal.message}`);
+						try {
+							subscription.close(refusal);
+						} finally {
+							// a listener that throws on the refusal must not leave the subscription open
+							if (!subscription.closed) subscription.close();
+						}
+						return false;
+					}
+				: undefined;
 			// Attach the request.listener BEFORE invoking the IIFE so that sync sends from the
 			// IIFE's prologue go directly to the listener via emit('data') instead of accumulating
 			// in subscription.queue. Without this, the IIFE can fill the queue past
@@ -5917,7 +6803,7 @@ export function makeTable(options) {
 
 				if (isCollection) {
 					// a collection should retrieve all descendant ids
-					if (startTime) {
+					if (startTime || resuming) {
 						if (count)
 							throw new ClientError('startTime and previousCount can not be combined for a table level subscription');
 						// start time specified, get the audit history for this time range. We drop real-time
@@ -5928,28 +6814,53 @@ export function makeTable(options) {
 						// transaction the same txnLogKey, so it only moves to a key once all of that key's records are
 						// handled; an early return leaves it before a partly delivered transaction.
 						let handledTxnLogKey: number | undefined;
+						const replayRange = auditStore.getRange({
+							start: startTime,
+							exclusiveStart: true,
+							snapshot: false, // no need for a snapshot, audits don't change
+						});
 						try {
-							for (const auditRecord of auditStore.getRange({
-								start: startTime,
-								exclusiveStart: true,
-								snapshot: false, // no need for a snapshot, audits don't change
-							})) {
+							for (const auditRecord of replayRange) {
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 									recordsSinceYield = 0;
 									await rest();
 									if (!isActive()) return;
+									if (checkResume) {
+										if (!checkResume(unreadableLogRefusal(replayRange))) return;
+										// every key below the record in hand has been read
+										resumeCheckedThrough = auditRecord.txnLogKey;
+									}
+								}
+								// an entry that failed to decode names no table, so a checked replay cannot rule it out
+								if (checkResume && auditRecord.type === undefined) {
+									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
+									return;
 								}
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								if (isLockControlType(auditRecord.type)) continue;
+								if (checkResume && auditRecord.type === 'reload') {
+									// the rows a reload back-filled have no history, so no replay can deliver them
+									checkResume(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
+									return;
+								}
 								if (handledTxnLogKey !== undefined && auditRecord.txnLogKey !== handledTxnLogKey) {
 									subscription!.startTime = handledTxnLogKey;
 								}
 								const id = auditRecord.recordId;
+								if (checkResume && id === undefined) {
+									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
+									return;
+								}
 								if (thisId == null || isDescendantId(thisId, id)) {
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
 									if (event) {
 										if (!send(event)) return;
 										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+											// a prune while the consumer drains may reach what was read before the wait
+											if (checkResume) {
+												if (!checkResume(unreadableLogRefusal(replayRange))) return;
+												resumeCheckedThrough = auditRecord.txnLogKey;
+											}
 											if ((await subscription.waitForDrain()) === false) return;
 										}
 									}
@@ -5957,6 +6868,7 @@ export function makeTable(options) {
 								handledTxnLogKey = auditRecord.txnLogKey;
 							}
 							if (handledTxnLogKey !== undefined) subscription!.startTime = handledTxnLogKey;
+							if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
 						} finally {
 							// replay is done, we can start sending real-time messages again
 							dropDuringReplay = false;
@@ -6044,17 +6956,21 @@ export function makeTable(options) {
 							const t = localTime ?? version;
 							if (t > cursorMaxTime) cursorMaxTime = t;
 							if (!value) continue;
-							if (!send({ id, localTime, value, version, type: 'put', size })) return;
+							const scanned: any = { id, localTime, value, version, type: 'put', size };
+							if (reportingProgress) scanned.fromScan = true;
+							if (!send(scanned)) return;
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								// if we have too many messages, we need to pause and let the client catch up
 								if ((await subscription.waitForDrain()) === false) return;
 							}
 						}
-						if (cursorMaxTime) subscription!.startTime = cursorMaxTime;
 						// Filter the queue to drop in-flight pre-subscribe events the listener queued
 						// while subscription.startTime was still 0. Anything strictly newer than what
-						// the cursor saw is a real post-subscribe commit and is kept.
-						if (pendingRealTimeQueue && cursorMaxTime) {
+						// the cursor saw is a real post-subscribe commit and is kept. A progress
+						// certificate keeps every buffered event instead: the filter can drop ones the scan
+						// never covered (harper#2933), and duplicate state is safe where lost history is not.
+						if (cursorMaxTime && !reportingProgress) subscription!.startTime = cursorMaxTime;
+						if (pendingRealTimeQueue && cursorMaxTime && !reportingProgress) {
 							pendingRealTimeQueue = pendingRealTimeQueue.filter(
 								(event) => (event.localTime ?? event.version) > cursorMaxTime
 							);
@@ -6090,6 +7006,7 @@ export function makeTable(options) {
 						subscription!.startTime = localTime ?? entry?.version;
 						const history = [];
 						let inspected = 0;
+						let missingVersion = false;
 						let nextTime = localTime;
 						do {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
@@ -6099,7 +7016,7 @@ export function makeTable(options) {
 							}
 							if (++inspected > MAX_PREVIOUS_COUNT_SCAN) break;
 							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId);
-							if (auditRecord) {
+							if (auditRecord && !(checkResume && auditRecord.type === undefined)) {
 								if (startTime < nextTime) {
 									const event = eventFromAudit(thisId, auditRecord, nextTime);
 									const historyEntry = event && { ...auditRecord, ...event };
@@ -6119,22 +7036,30 @@ export function makeTable(options) {
 									: { txnLogKey: auditRecord.previousVersion, nodeId: auditRecord.previousNodeId };
 								nextTime = previousHead.txnLogKey;
 								nodeId = previousHead.nodeId;
-							} else break;
+							} else {
+								missingVersion = true;
+								break;
+							}
 						} while (nextTime > startTime && count !== 0);
+						const capped = inspected > MAX_PREVIOUS_COUNT_SCAN;
+						if (checkResume) {
+							if (capped || missingVersion) {
+								checkResume(new ResumeHistoryUnavailableError(capped ? VERSION_CAP_REFUSAL : undefined));
+								return;
+							}
+							// a first version may be a record recreated after retention pruned its tombstone
+							if (!(nextTime > 0) && !checkResume()) return;
+						}
 						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
 						}
-					}
+						// with no entry, a pruned tombstone may have taken the history with it
+					} else if (checkResume && !entry && !checkResume()) return;
 					if (!request.omitCurrent && entry?.value) {
 						// if retain and it exists, send the current value first
-						if (
-							!send({
-								id: thisId,
-								...entry,
-								type: 'put',
-							})
-						)
-							return;
+						const current: any = { id: thisId, ...entry, type: 'put' };
+						if (reportingProgress) current.fromScan = true;
+						if (!send(current)) return;
 					}
 				}
 				// now send any queued messages
@@ -6144,12 +7069,22 @@ export function makeTable(options) {
 					}
 					pendingRealTimeQueue = null;
 				}
+				settleResume?.(isActive());
+				goLive?.();
 			})();
 			result.catch(failSubscription);
+			if (settleResume) {
+				const settleUnverified = () => settleResume?.(false);
+				result.then(settleUnverified, settleUnverified);
+			}
 			function failSubscription(error: any) {
 				if (subscription.closed) return;
 				harperLogger.error?.('Error in real-time subscription:', error);
-				subscription.close(error);
+				try {
+					subscription.close(error);
+				} catch (listenerError) {
+					harperLogger.error?.('Error in real-time subscription listener:', listenerError);
+				}
 			}
 			function eventFromAudit(id: Id, auditRecord: any, localTime: number, beginTxn?: boolean) {
 				let type = auditRecord.type;
@@ -6158,7 +7093,7 @@ export function makeTable(options) {
 					type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate';
 				if (isMutation && !includeSuperseded) {
 					if (id === undefined) return;
-					const entry: Entry = primaryStore.getEntry(id);
+					const entry = currentEntryForAudit(primaryStore, id, auditRecord);
 					if (!entry || entry.version !== auditRecord.version) return;
 					if (getFullRecord) {
 						value = entry?.value;
@@ -6344,7 +7279,7 @@ export function makeTable(options) {
 						existingEntry?.value ?? null,
 						existingEntry,
 						txnTime,
-						0,
+						(existingEntry?.metadataFlags ?? 0) & LOCAL_ONLY,
 						true,
 						{
 							user: (context as any)?.user,
@@ -6354,6 +7289,7 @@ export function makeTable(options) {
 							viaNodeId: options?.viaNodeId,
 							transaction,
 							tableToTrack: tableName,
+							auditLocalOnly: options?.localOnly,
 						},
 						'message',
 						false,
@@ -6512,6 +7448,7 @@ export function makeTable(options) {
 		}
 		// #section: validation
 		validate(record: any, patch?: boolean) {
+			if (fullTextFieldNames) assertFullTextWrite(record);
 			// Accumulate structured per-field issues so the 400 carries `{ path, code,
 			// message }[]` matching the emitted OpenAPI, instead of a single joined string. The joined
 			// message is still built for the HTTP title, preserving back-compat for callers that read it.
@@ -6955,6 +7892,8 @@ export function makeTable(options) {
 				$updatedTime: (object, context, entry) => entry.version,
 				$expiresAt: (object, context, entry) => entry.expiresAt,
 				$record: (object, context, entry) => (entry ? { value: object } : object),
+				$score: (object, context, entry) => entry?.$score,
+				$highlights: (object, context, entry) => entry?.$highlights,
 				$distance: (object, context, entry, returnEntry, sort) => {
 					if (!entry) return;
 					if (entry.distance !== undefined) return entry.distance;
@@ -6975,6 +7914,7 @@ export function makeTable(options) {
 					return customIndex.propertyResolver(vector, context, entry, distanceSort);
 				},
 			};
+			propertyResolvers.$highlights.directReturn = true;
 			for (const attribute of this.attributes) {
 				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 				attribute.resolve = null; // reset this
@@ -7515,6 +8455,13 @@ export function makeTable(options) {
 			return txnForContext(context).getReadTxn();
 		}
 	}
+	type _TableResourceMatchesItsDeclaredTypes = [
+		AssertNoDrift<MemberDrift<TableResource<ParitySentinel>, TableResourceInstance<ParitySentinel>>>,
+		AssertNoDrift<MemberDrift<Omit<typeof TableResource, 'prototype'>, Omit<TableResourceClass, 'prototype'>>>,
+		AssertTrue<ExactlyEqual<ConstructorParameters<typeof TableResource>, ConstructorParameters<TableResourceClass>>>,
+		AssertTrue<ExactlyEqual<InstanceType<TableResourceClass>, TableResourceInstance<object>>>,
+		AssertTrue<ExactlyEqual<TableResourceClass['prototype'], TableResourceInstance>>,
+	];
 	const throttledCallToSource = throttle(
 		async (source, id, sourceContext, existingEntry) => {
 			// call the data source if it exists and will fulfill our request for data
@@ -7809,13 +8756,86 @@ export function makeTable(options) {
 			return table;
 		}
 	}
+	function assertRecordField(name: unknown): void {
+		const field = Array.isArray(name) ? name[0] : name;
+		if (typeof field === 'string' && fullTextFieldNames?.has(field))
+			throw new ClientError(
+				`Full-text field "${field}" is query-only; use a full-text comparator and select $score or $highlights`,
+				400
+			);
+	}
+
+	function assertFullTextRecordField(name: unknown): void {
+		if (!Array.isArray(name)) return assertRecordField(name);
+		const [first, ...remaining] = name;
+		assertRecordField(first);
+		if (remaining.length === 0) return;
+		propertyResolvers[first]?.definition?.tableClass?.assertFullTextRecordField?.(
+			remaining.length === 1 ? remaining[0] : remaining
+		);
+	}
+
+	function assertFullTextSelection(select: unknown): void {
+		if (!fullTextFieldNames && !hasRelationships) return;
+		if (typeof select === 'string') assertRecordField(select);
+		else if (Array.isArray(select)) {
+			for (const property of select) {
+				const name = typeof property === 'object' ? property?.name : property;
+				assertRecordField(name);
+				if (property && typeof property === 'object')
+					propertyResolvers[name]?.definition?.tableClass?.assertFullTextSelection?.(
+						property.select || (Array.isArray(property) ? property : undefined),
+						property.sort
+					);
+			}
+		}
+	}
+
+	function assertFullTextWrite(record: any, sourceFill = false): void {
+		if (!fullTextFieldNames || !record || typeof record !== 'object') return;
+		for (const name in record) {
+			if (fullTextFieldNames.has(name)) {
+				if (sourceFill)
+					throw new ServerError(`Source for ${tableName} returned query-only full-text field "${name}"`, 502);
+				throw new ClientError(`Full-text field "${name}" is query-only and cannot be written`, 400);
+			}
+		}
+	}
+
+	function assertFullTextReadAccess(
+		context: Context | undefined,
+		target: RequestTarget,
+		definition: FullTextDefinition,
+		requestedFields?: string[]
+	) {
+		const user = (context as any)?.user;
+		const permission = (target as any)[FULL_TEXT_READ_PERMISSION] ?? getTablePermissions(user, target);
+		// Calls without a principal or explicit permission are trusted internal calls, matching allowRead.
+		if (!permission && !user) return;
+		if (permission?.isSuperUser || !permission?.attribute_permissions?.length) return;
+		const readable = attributesAsObject(permission.attribute_permissions, 'read');
+		const searched = requestedFields ?? definition.fields.map(({ name }) => name);
+		if (searched.some((name) => !readable[name])) throw new AccessViolation(user);
+	}
+	function throwUnknownFullTextIndex(
+		context: Context | undefined,
+		target: RequestTarget,
+		attributeName?: unknown
+	): never {
+		const user = (context as any)?.user;
+		const permission = (target as any)[FULL_TEXT_READ_PERMISSION] ?? getTablePermissions(user, target);
+		if (permission?.attribute_permissions?.length) throw new AccessViolation(user);
+		if (typeof attributeName === 'string' && fullTextFieldNames?.has(attributeName))
+			throw new IndexRebuildingError(`Full-text index '${attributeName}' is unavailable`);
+		throw new ClientError('Full-text comparator requires a declared @fullText index', 400);
+	}
 
 	function setLoadedFromSource(target: RequestTarget | undefined, loadedFromSource: boolean) {
 		// cache disposition is a per-get result, recorded on the RequestTarget of the get (#1576)
 		// target may be a primitive id on instance-API calls, which can't hold the flag
 		if (target && typeof target === 'object') target.loadedFromSource = loadedFromSource;
 	}
-	function ensureLoadedFromSource(source: typeof TableResource, id, entry, context, resource?, target?) {
+	function ensureLoadedFromSource(source: TableResourceClass, id, entry, context, resource?, target?) {
 		if (context?.onlyIfCached) {
 			if (!entry?.value) throw new ServerError('Entry is not cached', 504);
 			return;
@@ -7937,6 +8957,13 @@ export function makeTable(options) {
 						// regardless of this state.
 						transaction.next.open = TRANSACTION_STATE.CLOSED;
 					}
+					// A poison flag must travel with `open`, or a link created after the poisoning (a
+					// handler touching this database for the first time post-poison) sees CLOSED but not
+					// the reason, takes save()'s immediateCommit path, and commits on behalf of a request
+					// that was supposed to have been cut off.
+					if (transaction.timedOut) transaction.next.timedOut = true;
+					if (transaction.disconnected) transaction.next.disconnected = true;
+					if (transaction.postSubmitPoisoned) transaction.next.postSubmitPoisoned = true;
 					transaction = transaction.next;
 					transaction.db = primaryStore;
 					return transaction;
@@ -7950,6 +8977,7 @@ export function makeTable(options) {
 			if (context) {
 				context.transaction = transaction;
 				if (context.timestamp) transaction.timestamp = context.timestamp;
+				if (!context.sourceApply) transaction.requestSignal = context.signal;
 			}
 			return transaction;
 		}
@@ -8091,7 +9119,7 @@ export function makeTable(options) {
 	 * This is used to record that a retrieve a record from source
 	 */
 	async function getFromSource(
-		source: typeof TableResource,
+		source: TableResourceClass,
 		id: Id,
 		existingEntry: Entry,
 		context: Context,
@@ -8170,6 +9198,7 @@ export function makeTable(options) {
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
 				let updatedRecord, assignCreatedTime, sourceVersion;
+				let reusedCachedRecord = false;
 				let hasChanges, invalidated;
 				try {
 					updatedRecord = await throttledCallToSource(source, id, sourceContext, existingEntry);
@@ -8213,6 +9242,7 @@ export function makeTable(options) {
 							if (status === 304) {
 								// revalidation of our current cached record
 								updatedRecord = existingRecord;
+								reusedCachedRecord = true;
 								sourceVersion = existingVersion;
 							} else if (!CACHEABLE_STATUS_CODES.has(status)) {
 								// non-cacheable status - propagate to client without caching
@@ -8281,6 +9311,7 @@ export function makeTable(options) {
 							}
 						}
 						updatedRecord = storedFieldsOnly(primaryStore.encoder, updatedRecord);
+						if (!reusedCachedRecord) assertFullTextWrite(updatedRecord, true);
 						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
 					}
 					assignCreatedTime = createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null;

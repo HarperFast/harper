@@ -160,4 +160,47 @@ describe('commit with open read iterators commits writes immediately on a replay
 		await delay(100);
 		assert.deepEqual(unhandled, [], 'a replay-commit failure must reject the awaited chain, never float unhandled');
 	});
+
+	it('a terminally failing commit with no open iterator rejects and releases the context', async function () {
+		this.timeout(15000);
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const originalCommit = Transaction.prototype.commit;
+		const targetDb = LingerTable.primaryStore.store.db;
+		let forcedFailures = 0;
+		let rejection;
+		const context = {};
+		try {
+			await transaction(context, async () => {
+				await LingerTable.put({ id: 'terminal-fail-no-iterator', v: 42 }, context);
+				Transaction.prototype.commit = function (...args) {
+					if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+					forcedFailures++;
+					return Promise.reject(Object.assign(new Error('forced terminal failure'), { code: 'ERR_CORRUPTION' }));
+				};
+			}).then(
+				() => {},
+				(error) => {
+					rejection = error;
+				}
+			);
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+		}
+		assert.equal(forcedFailures, 1, 'premise: the single-store commit must reach the native commit exactly once');
+		assert.ok(rejection, 'a terminal commit failure must reject the awaited transaction, not vanish');
+		assert.equal(rejection.message, 'forced terminal failure');
+		assert.equal(rejection.code, 'ERR_CORRUPTION');
+		assert.equal(
+			context.transaction,
+			RELEASED_TRANSACTION,
+			'a terminal commit failure with no open iterator must release the context’s back-reference'
+		);
+		assert.equal(await LingerTable.get('terminal-fail-no-iterator'), undefined, 'the failed write is not committed');
+		await delay(100);
+		assert.deepEqual(
+			unhandled,
+			[],
+			'a terminal commit failure must reject the awaited transaction, never float unhandled'
+		);
+	});
 });

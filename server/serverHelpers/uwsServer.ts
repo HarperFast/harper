@@ -24,7 +24,7 @@ import { UwsRequest, UwsRequestBody } from './Request.ts';
 import { Headers } from './Headers.ts';
 import { when } from '../../utility/when.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
-import { errorToString } from '../../utility/logging/harper_logger.ts';
+import { errorToString, errorForLog, warn } from '../../utility/logging/harper_logger.ts';
 
 // uWS has no npm package; it's installed from a GitHub tag and is platform/ABI-specific.
 // Imported lazily so harper builds/loads on platforms without a uWS binary.
@@ -138,10 +138,15 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 		const ip = port != null ? normalizeAddress(Buffer.from(res.getRemoteAddressAsText()).toString()) : undefined;
 
 		const ac = new AbortController();
-		res.onAborted(() => ac.abort());
-		// Once a response has been committed (handler result, error, or a 413), writing again to the
-		// same uWS response is invalid and aborts the process — so every write site guards on this in
-		// addition to ac.signal.aborted (which only covers a client-side teardown, not our own writes).
+		let bodyDrainTimeout: ReturnType<typeof setTimeout> | undefined;
+		let finishRejectedResponse: (() => void) | undefined;
+		res.onAborted(() => {
+			clearTimeout(bodyDrainTimeout);
+			finishRejectedResponse = undefined;
+			ac.abort();
+		});
+		// A second handler response is invalid in uWS. The deferred 413 end instead uses its
+		// own finisher, which native onAborted invalidates independently of handler cancellation.
 		let responseCompleted = false;
 
 		const dispatch = (body?: UwsRequestBody) => {
@@ -183,19 +188,41 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 				if (ended || body.destroyed) return;
 				ended = true;
 				body.destroy(error && body.listenerCount('error') > 0 ? error : undefined);
+				body.removeAllListeners('data');
+				while (body.readableLength) body.read(Math.min(body.readableLength, body.readableHighWaterMark));
 			};
 			ac.signal.addEventListener('abort', () => tearDown(new Error('request aborted')), { once: true });
 			res.onData((chunk: ArrayBuffer, isLast: boolean) => {
-				if (ended || body.destroyed) return;
+				if (ended || body.destroyed) {
+					if (isLast) finishRejectedResponse?.();
+					return;
+				}
 				total += chunk.byteLength;
 				if (total > maxBodyBytes) {
+					const error = new ClientError(`Request body exceeds ${maxBodyBytes} bytes`, 413);
 					// Only send 413 if nothing has been written yet: the handler may have already responded
 					// (or streamed) without consuming the body, and writing to that completed response aborts.
 					if (!ac.signal.aborted && !responseCompleted) {
 						responseCompleted = true;
-						res.cork(() => res.writeStatus('413 Payload Too Large').end());
+						const connection = Array.isArray(headers.connection) ? headers.connection[0] : headers.connection;
+						res.cork(() => {
+							res.writeStatus('413 Payload Too Large');
+							if (!isLast && typeof connection === 'string' && connection.toLowerCase() === 'close') {
+								res.writeHeader('Connection', 'close');
+								res.writeHeader('content-type', 'text/plain');
+								res.write(errorToString(error));
+								finishRejectedResponse = () => {
+									if (!finishRejectedResponse) return;
+									finishRejectedResponse = undefined;
+									clearTimeout(bodyDrainTimeout);
+									res.cork(() => res.end());
+								};
+								bodyDrainTimeout = setTimeout(finishRejectedResponse, 1_000);
+								bodyDrainTimeout.unref();
+							} else res.end();
+						});
 					}
-					tearDown(new ClientError(`Request body exceeds ${maxBodyBytes} bytes`, 413));
+					tearDown(error);
 					ac.abort();
 					return;
 				}
@@ -323,29 +350,57 @@ function writeResponse(
  * Stream a Node Readable to the uWS response with backpressure. uWS only flushes the status/headers
  * on the first body write, so for text/event-stream (SSE) — where the client must see the stream
  * open before any event — we emit a spec-valid comment line to force the flush. Client disconnect
- * (via `signal`) or a source error destroys the source and stops writing (writing to an aborted uWS
- * response is invalid).
+ * (via `signal`) destroys the source and stops writing (writing to an aborted uWS response is
+ * invalid).
+ *
+ * The response is completed only when the source ends cleanly. A source that errors, or closes
+ * without ending, aborts the connection instead: `res.end()` would write the chunked terminator and
+ * hand the client a truncated body as a complete response.
  */
 function streamResponse(
 	res: UwsResponse,
 	status: number,
 	headers: Headers,
-	source: { on: Function; once: Function; pause: Function; resume: Function; destroy?: Function },
+	source: {
+		on: Function;
+		once: Function;
+		pause: Function;
+		resume: Function;
+		destroy?: Function;
+		destroyed?: boolean;
+		errored?: Error | null;
+	},
 	signal?: AbortSignal
 ): void {
 	let finished = false;
-	const finish = (endResponse: boolean) => {
+	const finish = (sourceEnded: boolean) => {
 		if (finished) return;
 		finished = true;
 		signal?.removeEventListener('abort', onAbort);
-		if (endResponse) res.cork(() => res.end());
+		if (sourceEnded) res.cork(() => res.end());
+		else {
+			source.destroy?.();
+			// runs the onAborted callback, so `finished` has to be set by now
+			res.close();
+		}
+	};
+	const fail = (error?: Error | null) => {
+		if (finished) return;
+		if (error) warn(errorForLog(error));
+		finish(false);
 	};
 	function onAbort() {
 		if (finished) return;
 		finished = true;
 		source.destroy?.();
 	}
+	// Attached before anything can return: destroy(error) emits on a later tick, and an 'error' with
+	// no listener is thrown. Not once(), because a source may emit more than one.
+	source.on('error', fail);
 	if (signal?.aborted) return onAbort();
+	// the handler resolves asynchronously, so a source can be destroyed, and its 'close' already
+	// emitted, before this gets to listen for it
+	if (source.destroyed) return fail(source.errored);
 	signal?.addEventListener('abort', onAbort, { once: true });
 
 	const isSse = String(headers.get('content-type') ?? '').includes('text/event-stream');
@@ -371,7 +426,7 @@ function streamResponse(
 		}
 	});
 	source.once('end', () => finish(true));
-	source.once('error', () => finish(true)); // headers already sent; just terminate the response
+	source.once('close', () => fail());
 }
 
 // Normalize uWS's remote-address text (raw IPv6 form, IPv4-mapped for v4 peers) to a readable IP.

@@ -117,6 +117,24 @@ export class DatabaseClosingError extends ServerError {
 	}
 }
 
+export class DatabaseGenerationChangedError extends ClientError {
+	code: string;
+	constructor() {
+		super('The database was replaced by a restored or copied state; resubscribe to resynchronize', 409);
+		this.name = 'DatabaseGenerationChangedError';
+		this.code = 'DATABASE_GENERATION_CHANGED';
+	}
+}
+
+export class ResumeHistoryUnavailableError extends ClientError {
+	code: string;
+	constructor(message = 'The history after this resume position is no longer retained; resubscribe to resynchronize') {
+		super(message, 410);
+		this.name = 'ResumeHistoryUnavailableError';
+		this.code = 'RESUME_HISTORY_UNAVAILABLE';
+	}
+}
+
 export class DatabaseDrainTimeoutError extends DatabaseClosingError {
 	constructor(databaseName: string, timeoutMilliseconds: number) {
 		super(databaseName);

@@ -6,7 +6,9 @@ echo -e "\n📦 Installing core deps"
 npm install --ignore-scripts
 
 echo -e "\n📦 Building project"
-npm run build || true
+# A stale dist/ would mask a declaration file the compiler stopped emitting.
+rm -rf dist
+npm run build
 
 echo -e "\n📦 Creating shrinkwrap"
 npm shrinkwrap
@@ -14,9 +16,9 @@ npm shrinkwrap
 echo -e "\n📦 Pruning devDependencies from shrinkwrap"
 node build-tools/prune-shrinkwrap-dev.mjs npm-shrinkwrap.json
 
-# Order is load-bearing: the react-native prune walks production edges only, so it must
+# Order is load-bearing: the optional subtree prune walks production edges only, so it must
 # see a shrinkwrap whose dev entries are already gone or it will refuse to write.
-echo -e "\n📦 Pruning react-native tree from shrinkwrap"
+echo -e "\n📦 Pruning react-native and unused UTF-8 peer trees from shrinkwrap"
 node build-tools/prune-shrinkwrap-react-native.mjs npm-shrinkwrap.json
 
 ./build-tools/build-studio.sh

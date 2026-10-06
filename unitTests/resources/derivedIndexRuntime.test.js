@@ -5,10 +5,13 @@ const {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
 	DerivedIndexRuntime,
+	derivedIndexTime,
 	publishDerivedIndexReadiness,
 	publishDerivedIndexUnavailableIfUnknown,
+	readDerivedIndexPublicationRevision,
 	readDerivedIndexReadiness,
 	retryDerivedIndexUnavailable,
+	subscribeDerivedIndexPublications,
 } = require('#src/resources/derivedIndexRuntime');
 const {
 	FullTextDerivedIndexBackend,
@@ -25,7 +28,15 @@ class FakeLogStore {
 		this.rangeCalls = [];
 		this.rootStore = new EventEmitter();
 		this.rootStore.listLogs = () => logNames.slice();
-		this.rootStore.useLog = (name) => ({ name, getStats: () => ({ oldestSequenceNumber: 1 }) });
+		this.rootStore.useLog = (name) => ({
+			name,
+			getStats: () => ({
+				oldestSequenceNumber: 1,
+				lastCommittedPosition: this.committedPosition,
+				nextLogPosition: this.committedPosition ?? { sequence: 0, offset: 0 },
+			}),
+		});
+		this.rootStore.getMonotonicTimestamp = () => performance.now();
 	}
 
 	getRange(options) {
@@ -37,6 +48,8 @@ class FakeLogStore {
 		iterable.exactStartFailures = new Map();
 		return iterable;
 	}
+
+	ensureLogExists() {}
 
 	tryLock(key, onUnlocked) {
 		if (!this.locks.has(key)) {
@@ -69,6 +82,7 @@ class FakeLogStore {
 		const { callback } = options ?? {};
 		if (callback) memory.callbacks.add(callback);
 		wrapper.notify = () => {
+			if (this.throwPublicationNotify && String(key).endsWith(':publication')) throw new Error('notify failed');
 			for (const listener of memory.callbacks) setImmediate(listener);
 		};
 		wrapper.cancel = () => {
@@ -86,7 +100,9 @@ class FakeBackend {
 		this.deliverImpl = deliver;
 	}
 
-	attach() {}
+	attach(host) {
+		this.host = host;
+	}
 
 	flush() {}
 
@@ -142,6 +158,90 @@ const registration = (backend) => ({
 });
 
 describe('DerivedIndexRuntime', () => {
+	it('publishes rebuilding readiness before invoking a destructive backend reset', async () => {
+		const store = new FakeLogStore(new Map());
+		const backend = new FakeBackend('reset-readiness', undefined);
+		let readinessDuringReset;
+		backend.reset = async () => {
+			readinessDuringReset = readDerivedIndexReadiness(store, backend.id);
+		};
+		const runtime = runtimeFor(store, new Map(), { scanRecords: () => [] }).runtime;
+		runtime.register(registration(backend));
+		await waitFor(() => runtime.requestRebuild(backend.id));
+
+		await waitFor(() => readinessDuringReset !== undefined);
+		assert.strictEqual(readinessDuringReset.state, 'rebuilding');
+		assert(readinessDuringReset.ownerEpoch > 0n);
+		await runtime.stop();
+	});
+
+	it('publishes backend-only revisions for peer refresh', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const runtime = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
+		const backend = new FakeBackend('backend-publication', cursor(10));
+		backend.publishesQueryRevisions = true;
+		runtime.register(registration(backend));
+		let notifications = 0;
+		const subscription = subscribeDerivedIndexPublications(store, backend.id, () => notifications++);
+		assert.strictEqual(readDerivedIndexPublicationRevision(store, backend.id).revision, 0n);
+		backend.host.publicationChanged();
+		assert.strictEqual(readDerivedIndexPublicationRevision(store, backend.id).revision, 1n);
+		await waitFor(() => notifications === 1);
+		subscription.close();
+		backend.host.publicationChanged();
+		await new Promise(setImmediate);
+		assert.strictEqual(notifications, 1);
+		store.throwPublicationNotify = true;
+		assert.doesNotThrow(() => backend.host.publicationChanged());
+		assert.strictEqual(readDerivedIndexPublicationRevision(store, backend.id).revision, 3n);
+		await runtime.stop();
+	});
+
+	it('does not allocate publication state for backends without external readers', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const runtime = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
+		const backend = new FakeBackend('backend-without-readers', cursor(10));
+		runtime.register(registration(backend));
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'ready');
+		assert.strictEqual(store.sharedBuffers.has(`derived-index:${backend.id}:publication`), false);
+		backend.host.publicationChanged();
+		assert.strictEqual(store.sharedBuffers.has(`derived-index:${backend.id}:publication`), false);
+		await runtime.stop();
+	});
+
+	it('does not certify coverage across a mutation awaiting its durable barrier', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		store.committedPosition = { sequence: 1, offset: 64 };
+		const backend = new FakeBackend('coverage-after-data', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		backend.publishesQueryRevisions = true;
+		const readinessId = 'coverage-after-data:generation';
+		const publications = [];
+		backend.publishCoverage = (positions) =>
+			publications.push({ positions, revision: readDerivedIndexPublicationRevision(store, readinessId).revision });
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			flushAfterMutations: 1,
+			idleGraceMilliseconds: 1000,
+			maxFlushAgeMilliseconds: 1,
+		});
+		runtime.register({ ...registration(backend), readinessId });
+
+		await waitFor(() => backend.deliveries.length === 1 && runtime.getMetrics(backend.id)?.acceptedMutations === 1);
+		const publicationsBeforeBarrier = publications.length;
+		const since = derivedIndexTime(store.rootStore);
+		let resolved = false;
+		const waiting = runtime.waitForCoverage(backend.id, since, 1000).then(() => (resolved = true));
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		assert.strictEqual(resolved, false);
+		assert.strictEqual(publications.length, publicationsBeforeBarrier);
+
+		backend.cursor = cursor(20);
+		backend.stateChange();
+		await waiting;
+		assert(publications.length > publicationsBeforeBarrier);
+		assert.strictEqual(publications.at(-1).revision, 1n);
+		await runtime.stop();
+	});
+
 	it('does not let a local setup failure replace peer-owned readiness', () => {
 		const store = new FakeLogStore(new Map());
 		publishDerivedIndexReadiness(store, 'peer-owned', 'ready');

@@ -128,6 +128,13 @@ export type {
 	OutcomeTruth,
 	OutcomeAction,
 } from './resources/models/types.ts';
+export type {
+	CalibrationBudgets,
+	CalibrationConfig,
+	CalibrationReport,
+	CalibrationRunResult,
+	CalibrationSummary,
+} from './resources/models/calibrationStore.ts';
 export type { FilesOption, FilesOptionObject } from './components/deriveGlobOptions.ts';
 export type { FileAndURLPathConfig } from './components/Component.ts';
 export type { OptionsWatcher, Config, ConfigValue } from './components/OptionsWatcher.ts';
