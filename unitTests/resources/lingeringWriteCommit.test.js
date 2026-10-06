@@ -187,11 +187,8 @@ describe('commit with open read iterators commits writes immediately on a replay
 			Transaction.prototype.commit = originalCommit;
 		}
 		assert.equal(forcedFailures, 1, 'premise: the single-store commit must reach the native commit exactly once');
-		assert.equal(
-			rejection?.message,
-			'forced terminal failure',
-			'a terminal commit failure must reject the awaited transaction'
-		);
+		assert.ok(rejection, 'a terminal commit failure must reject the awaited transaction, not vanish');
+		assert.equal(rejection.message, 'forced terminal failure');
 		assert.equal(
 			context.transaction,
 			RELEASED_TRANSACTION,
