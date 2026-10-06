@@ -968,7 +968,7 @@ export function getDatabases(): Databases {
 				!schemaConfigs[dbName]?.path
 			) {
 				logger.trace(`loading lmdb database: ${dbPath}`);
-				readMetaDb(dbPath, null, dbName);
+				openUnlessBlocked(dbPath, dbName, () => readMetaDb(dbPath, null, dbName));
 				continue;
 			}
 			try {
@@ -980,7 +980,7 @@ export function getDatabases(): Databases {
 				) {
 					// blockedByRestore was read once for the whole scan; re-check under the lock so a restore
 					// that started mid-scan cannot have this directory opened out from under it
-					openUnlessBlocked(dbPath, dbName);
+					openUnlessBlocked(dbPath, dbName, () => readRocksMetaDb(dbPath, null, dbName));
 					continue;
 				}
 			} catch (err) {
@@ -1005,7 +1005,9 @@ export function getDatabases(): Databases {
 						if (databaseRootUnavailable(tablePath)) continue;
 						if (blockedByDrop.rootPaths.has(tablePath) || blockedByDrop.databaseNames.has(schemaEntry.name)) continue;
 						const auditPath = join(schemaAuditPath, tableEntry.name);
-						readMetaDb(tablePath, basename(tableEntry.name, '.mdb'), schemaEntry.name, auditPath, true);
+						openUnlessBlocked(tablePath, schemaEntry.name, () =>
+							readMetaDb(tablePath, basename(tableEntry.name, '.mdb'), schemaEntry.name, auditPath, true)
+						);
 					}
 				}
 			}
@@ -1031,7 +1033,7 @@ export function getDatabases(): Databases {
 					if (blockedByDrop.rootPaths.has(dbPath) || blockedByDrop.databaseNames.has(dbName)) continue;
 					if (isOpenBranchPath(dbPath)) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
-						readMetaDb(dbPath, basename(databaseEntry.name, '.mdb'), dbName);
+						openUnlessBlocked(dbPath, dbName, () => readMetaDb(dbPath, basename(databaseEntry.name, '.mdb'), dbName));
 					} else {
 						try {
 							const files = readdirSync(dbPath, { withFileTypes: true });
@@ -1039,7 +1041,7 @@ export function getDatabases(): Databases {
 								files.find((file) => file.name === 'CURRENT')?.isFile() &&
 								files.some((file) => file.name.startsWith('MANIFEST-'))
 							) {
-								openUnlessBlocked(dbPath, dbName);
+								openUnlessBlocked(dbPath, dbName, () => readRocksMetaDb(dbPath, null, dbName));
 								continue;
 							}
 						} catch (err) {
@@ -1055,8 +1057,10 @@ export function getDatabases(): Databases {
 				for (const tableName in tableConfigs) {
 					const tableConfig = tableConfigs[tableName];
 					const tablePath = join(tableConfig.path, basename(tableName + '.mdb'));
-					if (!databaseRootUnavailable(tablePath) && !databaseDropMarkerPresent(tablePath) && existsSync(tablePath)) {
-						readMetaDb(tablePath, tableName, dbName, null, true);
+					if (!databaseRootUnavailable(tablePath) && existsSync(tablePath)) {
+						// the drop-marker read that was here is now inside the exclusion, where it cannot be
+						// overtaken between the check and the open
+						openUnlessBlocked(tablePath, dbName, () => readMetaDb(tablePath, tableName, dbName, null, true));
 					}
 				}
 			}
@@ -2559,8 +2563,19 @@ function openDatabaseRoot(
 		rootStore = lmdbDatabaseEnvs.get(path);
 		if (!rootStore || rootStore.status === 'closed') {
 			// TODO: validate database name
-			const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
-			rootStore = open(envInit) as any;
+			// The same exclusion the RocksDB branch takes. A restore never targets LMDB, but a drop
+			// takes this lock and publishes its marker, so the pre-check above is check-then-act alone.
+			rootStore = withRestoreExclusion(
+				path,
+				() => {
+					if (databaseDropMarkerPresent(path)) throwBlockedByDrop(databaseName);
+					const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
+					return open(envInit) as any;
+				},
+				(state) => {
+					throwBlockedByRestore(databaseName, state);
+				}
+			);
 			lmdbDatabaseEnvs.set(path, rootStore as any);
 		}
 	}
@@ -2571,23 +2586,28 @@ function openDatabaseRoot(
 	return rootStore;
 }
 /**
- * Load a scanned RocksDB database unless a restore or a drop has claimed it. Both markers are read
+ * Load a scanned database root unless a restore or a drop has claimed it. Both markers are read
  * inside the exclusion: the scan samples the blocked sets once, so one published mid-scan is only
  * visible to a re-read under the lock, and the drop protocol takes the same lock a restore does.
+ *
+ * Both engines go through this. Restores never target LMDB, but `dropDatabase` locks and marks LMDB
+ * roots exactly as it does RocksDB ones, so the scan's drop pre-check is the same check-then-act
+ * there and is closed the same way.
  */
-function openUnlessBlocked(dbPath: string, dbName: string): void {
+function openUnlessBlocked(rootPath: string, dbName: string, load: () => void): void {
 	withRestoreExclusion(
-		dbPath,
+		rootPath,
 		() => {
-			if (databaseDropMarkerPresent(dbPath)) {
+			if (databaseDropMarkerPresent(rootPath)) {
 				logger.warn(`Not loading database '${dbName}': an incomplete drop must be rerun`);
 				return undefined;
 			}
-			return readRocksMetaDb(dbPath, null, dbName);
+			return load();
 		},
 		(state) => {
+			// a drop holds this lock exclusively too, so 'in-progress' cannot be attributed to a restore
 			logger.warn(
-				`Not loading database '${dbName}': ${state === 'in-progress' ? 'a restore is in progress' : 'an incomplete restore must be rerun'}`
+				`Not loading database '${dbName}': ${state === 'in-progress' ? 'a restore or drop is in progress' : 'an incomplete restore must be rerun'}`
 			);
 			return undefined;
 		}
@@ -2611,9 +2631,10 @@ function throwBlockedByRestore(databaseName: string, restoreState: BlockedRestor
 }
 
 /**
- * The fast pre-check both engines still run. It is check-then-act by construction, which is why the
- * RocksDB open also runs under {@link withRestoreExclusion}; this keeps the clear 409 for a caller
- * that is plainly blocked, and is the only guard the LMDB path has.
+ * The fast pre-check both engines still run before taking the exclusion. It is check-then-act by
+ * construction, which is why every open — scan and on-demand, both engines — also runs under
+ * {@link withRestoreExclusion}. It survives because it answers a plainly blocked caller with a clear
+ * 409 without paying for a lock.
  */
 function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
 	if (databaseDropMarkerPresent(dbPath)) throwBlockedByDrop(databaseName);

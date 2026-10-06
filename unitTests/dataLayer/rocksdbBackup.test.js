@@ -885,6 +885,37 @@ describe('rocksdbBackup', function () {
 			);
 		});
 
+		// The check above is only worth having if finalizeBackup runs it. Without this, removing either
+		// call from finalizeBackup leaves the suite green and a manifest gets published for engine files
+		// that are gone.
+		it('does not publish a manifest when the engine backup disappears mid-finalization', async function () {
+			this.timeout(30000);
+			const database = RocksDatabase.open(join(storageDir, PINNED));
+			try {
+				database.putSync('rec', { n: 1 });
+			} finally {
+				database.close();
+			}
+			// stand in for a writer outside Harper's management lock removing the backup under us
+			const original = blobBackupModule.snapshotBlobs;
+			blobBackupModule.snapshotBlobs = async (dir) => {
+				for (const backup of await listBackupsInDir(dir)) await backups.delete(dir, backup.backupId);
+			};
+			try {
+				await assert.rejects(
+					createBackupOffline(PINNED),
+					(error) => error.statusCode === 404 && /removed while it was being finalized/.test(error.message)
+				);
+			} finally {
+				blobBackupModule.snapshotBlobs = original;
+			}
+			assert.deepStrictEqual(
+				await listBackupsOffline(PINNED),
+				[],
+				'no backup may be published for missing engine files'
+			);
+		});
+
 		it('sweeps blob snapshots the engine no longer has, whatever removed them', async function () {
 			this.timeout(30000);
 			const { first, second } = await seedTwoBackups();

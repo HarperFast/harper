@@ -179,15 +179,10 @@ function requireRocksRootStore(databaseName: string, operation: string): RocksDa
 }
 
 /**
- * Apply the engine gate only when there is a loaded database to gate. A repository outlives its
- * database — a failed restore leaves it blocked with the repository intact — and those are the
- * states maintenance is most needed in. A name that is neither a loaded database nor a repository is
- * still a 404, so a typo does not answer with an empty list.
- */
-/**
- * Resolve a repository that already exists. Taking the management lock creates the directory, so a
- * mutating operation run against a mistyped database name would otherwise leave one behind and make
- * that name look like a database with an empty repository ever after.
+ * Resolve a repository that already exists, applying the engine gate only when there is a loaded
+ * database to gate. A repository outlives its database — a failed restore leaves it blocked with the
+ * repository intact — and those are the states maintenance is most needed in. A name that is neither
+ * a loaded database nor a repository is still a 404, so a typo does not answer with an empty list.
  */
 function requireBackupRepositoryAccess(databaseName: string, operation: string): void {
 	const loaded = getDatabases()[databaseName];
@@ -371,15 +366,11 @@ async function reconcileHarperManagedBackupFiles(backupDir: string): Promise<voi
 }
 
 /**
- * Publish a backup's completion manifest after the engine backup and (when included) blob snapshot
- * are durable. On failure, best-effort roll back the just-created engine backup, its partial blob
- * snapshot, and any manifest so an incomplete backup never lingers as usable.
- */
-/**
- * The engine backup is created outside the management lock (`db.backup` takes only the binding's
- * own), so a purge can remove it while Harper is still assembling the rest. Publishing a manifest
- * and blob snapshot for engine files that are gone is the #2031 false-green shape: a backup that
- * lists and verifies as usable with nothing to restore.
+ * Fail if the engine backup is no longer in the repository. Harper's own purge cannot reach here —
+ * the whole create is one critical section under the management lock — so this guards writers that
+ * do not take that lock: an older binary, or a direct binding call. The manifest is what publishes a
+ * backup as usable, so writing one for engine files that are gone is the #2031 false-green shape: a
+ * backup that lists and verifies with nothing to restore.
  */
 export async function assertBackupStillPresent(
 	backupDir: string,
@@ -392,6 +383,11 @@ export async function assertBackupStillPresent(
 	);
 }
 
+/**
+ * Publish a backup's completion manifest after the engine backup and (when included) blob snapshot
+ * are durable. On failure, best-effort roll back the just-created engine backup, its partial blob
+ * snapshot, and any manifest so an incomplete backup never lingers as usable.
+ */
 async function finalizeBackup(
 	backupDir: string,
 	backupId: number,
@@ -400,8 +396,8 @@ async function finalizeBackup(
 ): Promise<void> {
 	try {
 		const blobRoots = getBlobPathsForDatabaseName(databaseName);
-		// Before the snapshot so gigabytes are not copied under the management lock for a backup that is
-		// already gone, and again after it because that copy is the long window.
+		// Before the snapshot so gigabytes are not copied for a backup that is already gone, and again
+		// after it because that copy is the longest stretch an outside writer could remove it in.
 		await assertBackupStillPresent(backupDir, backupId, databaseName);
 		if (blobs) await snapshotBlobs(backupDir, backupId, blobRoots);
 		await assertBackupStillPresent(backupDir, backupId, databaseName);
@@ -810,10 +806,6 @@ async function verifyDatabaseClosed(databaseDir: string, databaseName: string): 
 }
 
 /**
- * beginRestore's own error message carries the filesystem path (useful in CLI/server logs);
- * client-facing operations report by database name instead.
- */
-/**
  * One pin per target database, not per attempt: two attempts can never collide on it, and a rerun
  * after a failed restore reuses the claim the failed attempt left protecting its source.
  */
@@ -821,6 +813,10 @@ export function restorePinId(databaseDir: string): string {
 	return `restore-${createHash('sha256').update(resolve(databaseDir)).digest('hex').slice(0, 32)}`;
 }
 
+/**
+ * beginRestore's own error message carries the filesystem path (useful in CLI/server logs);
+ * client-facing operations report by database name instead.
+ */
 function beginRestoreForDatabase(
 	databaseDir: string,
 	databaseName: string,
@@ -830,7 +826,9 @@ function beginRestoreForDatabase(
 		return beginRestore(databaseDir, beforePublishMarker);
 	} catch (error) {
 		if (error.statusCode === 409) {
-			throw new BackupInProgressError(`Restore already in progress for database '${databaseName}'`);
+			throw new BackupInProgressError(
+				`Cannot claim database '${databaseName}': a restore, a drop, or a database open holds its lock; retry once that finishes`
+			);
 		}
 		throw error;
 	}

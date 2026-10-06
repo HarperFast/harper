@@ -202,12 +202,14 @@ describe('restoreMarker', function () {
 			}
 		});
 
-		it('fails with 409 when a restore is already in progress', function () {
+		it('fails with 409, naming every holder the lock could have, when it is already held', function () {
 			const lock = beginRestore(dbPath);
 			try {
 				assert.throws(
 					() => beginRestore(dbPath),
-					(error) => error.statusCode === 409 && /already in progress/.test(error.message)
+					// an opener holds this lock shared too, so the 409 must not pin the blame on a restore
+					(error) =>
+						error.statusCode === 409 && /a restore, a drop, or a database open holds its lock/.test(error.message)
 				);
 			} finally {
 				completeRestore(lock);
@@ -411,30 +413,43 @@ describe('restoreMarker', function () {
 			}
 		});
 
-		it('still blocks on a marker when the metadata directory cannot be created', function () {
+		it('still blocks on a marker when the lock cannot be created', function () {
+			// chmod does not deny these, so the root would be writable and nothing would degrade
+			if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
 			// an unwritable databases root: the exclusion degrades to the marker check rather than
-			// throwing out through the startup scan and taking every later database with it
-			abandonRestore(beginRestore(dbPath));
+			// throwing out through the startup scan and taking every later database with it. The
+			// degraded check must still deny, or a root that went read-only under a half-purged
+			// database would quietly open it.
 			const unwritable = join(tempDir, 'readonly');
-			mkdirSync(unwritable);
+			const marked = join(unwritable, 'marked');
+			mkdirSync(marked, { recursive: true });
+			abandonRestore(beginRestore(marked)); // the marker survives the abandon
+			// beginRestore leaves its lock file behind, and an existing file still opens under an
+			// unwritable directory; removing it is what leaves the fallback as the only path
+			rmSync(restoreLockPath(marked), { force: true });
+			chmodSync(restoreMetaDir(marked), 0o500);
 			chmodSync(unwritable, 0o500);
 			try {
 				const states = [];
+				const blocked = (state) => {
+					states.push(state);
+					return 'blocked';
+				};
 				assert.strictEqual(
-					withRestoreExclusion(
-						join(unwritable, 'somedb'),
-						() => 'opened',
-						(state) => {
-							states.push(state);
-							return 'blocked';
-						}
-					),
+					withRestoreExclusion(join(unwritable, 'unmarked'), () => 'opened', blocked),
 					'opened',
 					'an unmarked database in an unwritable root still loads'
 				);
 				assert.deepStrictEqual(states, []);
+				assert.strictEqual(
+					withRestoreExclusion(marked, () => 'opened', blocked),
+					'blocked',
+					'a marked database must not open just because the lock could not be created'
+				);
+				assert.deepStrictEqual(states, ['incomplete']);
 			} finally {
 				chmodSync(unwritable, 0o700);
+				chmodSync(restoreMetaDir(marked), 0o700);
 			}
 		});
 	});

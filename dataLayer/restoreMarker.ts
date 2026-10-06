@@ -207,7 +207,12 @@ export function acquireRestoreLock(dbPath: string): RestoreLock {
 	if (createMetaDir) fsyncDirectory(dirname(metaDir));
 	const token = tryFileLock(restoreLockPath(dbPath));
 	if (token === 0) {
-		const error: any = new Error(`Restore already in progress for database at ${dbPath}`);
+		// The holder cannot be named: flock reports contention, not who. Since `withRestoreExclusion`
+		// every open holds this lock shared for as long as the open runs, so a conflict here is a
+		// restore, a drop, or an opener — reporting it as a restore sends the operator hunting one.
+		const error: any = new Error(
+			`Cannot claim the database at ${dbPath}: a restore, a drop, or a database open holds its lock; retry once that finishes`
+		);
 		error.statusCode = 409;
 		throw error;
 	}

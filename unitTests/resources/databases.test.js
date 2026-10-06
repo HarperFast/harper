@@ -19,6 +19,9 @@ const {
 	beginRestore,
 	completeRestore,
 	abandonRestore,
+	acquireRestoreLock,
+	releaseRestoreLock,
+	restoreLockPath,
 	restoringMarkerPath,
 	RESTORE_META_DIR,
 } = require('#src/dataLayer/restoreMarker');
@@ -199,6 +202,35 @@ describe('dropDatabase restore serialization', () => {
 		table({ table: 'Two', database: MULTI, attributes: [{ name: 'id', isPrimaryKey: true }] });
 		if (!(T1.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
 		await assert.doesNotReject(dropDatabase(MULTI));
+	});
+
+	it('holds the restore exclusion around an LMDB open, as it does around a RocksDB one', async function () {
+		this.timeout(30000);
+		const DB_LMDB = 'drop-vs-open-lmdb-test';
+		const Table = table({
+			table: 'DropOpen',
+			database: DB_LMDB,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = Table.primaryStore.rootStore;
+		if (rootStore instanceof RocksDatabase) return this.skip(); // the LMDB leg of the same guard
+
+		// a restore never targets LMDB, but a drop takes this lock and publishes the same marker, so
+		// an LMDB open that did not hold it would be check-then-act against a drop. The lock file is
+		// what proves the open went through withRestoreExclusion rather than straight to the engine.
+		assert.ok(existsSync(restoreLockPath(rootStore.path)), 'an LMDB open must take the restore exclusion');
+
+		// and it is the lock dropDatabase takes: held, the drop is refused rather than racing the open
+		const lock = acquireRestoreLock(rootStore.path);
+		try {
+			await assert.rejects(dropDatabase(DB_LMDB), (error) => error.statusCode === 409);
+		} finally {
+			releaseRestoreLock(lock);
+		}
+		// the refused drop unloaded the database from the in-memory map; re-resolve it, then confirm
+		// the drop proceeds once nothing holds the lock
+		table({ table: 'DropOpen', database: DB_LMDB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		await assert.doesNotReject(dropDatabase(DB_LMDB));
 	});
 
 	it('never loads the reserved restore-metadata directory as a database', function () {
