@@ -1,7 +1,6 @@
 'use strict';
 
-// Runs in a fresh process: reports whether PKI.js loads with the verification modules, and whether it is
-// patched by the time the first consumer (named in argv) has used it.
+// Runs in a fresh process so nothing another test loaded is already in the require cache.
 const { webcrypto } = require('node:crypto');
 
 const isPkijsLoaded = () => Object.keys(require.cache).some((path) => /[\\/]node_modules[\\/]pkijs[\\/]/.test(path));
