@@ -16,6 +16,7 @@ Native-containing roots remain ordinary dependencies with exact versions from th
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 - `overrides` in harper's `package.json` are **root-only** and do nothing for anyone installing
   harper. The shrinkwrap is the only lever that reaches consumers, which is why the react-native
   prune lives in `build-tools/prune-shrinkwrap-react-native.mjs` rather than in `overrides` (#1937).
@@ -72,6 +73,10 @@ requirement is why the check walks the whole packed tree, not a few named packag
 =======
 The bundle must be closed over declared dependencies and optional dependencies, including foreign-platform lock records. Missing optional peers remain externally supplied, as with `node-fetch`'s optional `encoding` peer. Native selectors, install-phase lifecycle hooks, Bare addons, `binding.gyp`, native file extensions and ELF/Mach-O/PE signatures fail preparation or archive inspection. A new native transitive therefore fails packaging instead of silently shipping a host binary. Add its containing root to the unbundled policy deliberately.
 =======
+=======
+The same helper supports harper-pro’s `re2` and `@datadog/pprof` native roots as ordinary exact-pinned dependencies. Neither is present in core’s lock, so these exclusions do not change core’s bundle. New pro-only native roots require an explicit policy update here rather than a separate copier or CLI policy parameter.
+
+>>>>>>> 047f9aeb7 (Share native root exclusions with harper-pro packaging)
 The bundle must be closed over declared dependencies and optional dependencies, including foreign-platform lock records. Optional-only peers remain externally supplied, even when the development lock contains them, as with `node-fetch`'s optional `encoding` peer. Required type-package dependencies still belong to the closure. Native selectors, install-phase lifecycle hooks, Bare addons, `binding.gyp`, native file extensions and ELF/Mach-O/PE signatures fail preparation or archive inspection. PE detection follows the executable header, so text beginning with `MZ` is permitted. A new native transitive therefore fails packaging instead of silently shipping a host binary. Add its containing root to the unbundled policy deliberately.
 >>>>>>> 882e52bc8 (Validate bundle declarations and guard release artifact publication)
 

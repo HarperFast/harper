@@ -175,6 +175,22 @@ describe('portable production dependency bundle', function () {
 		assert.ok(!bundlePlan(lock).packages.has('node_modules/native-peer'));
 	});
 
+	for (const name of ['re2', '@datadog/pprof']) {
+		it(`keeps harper-pro native root ${name} outside the archive with an exact pin`, () => {
+			lock.packages[''].dependencies[name] = '^1.0.0';
+			const nativeRoot = `node_modules/${name}`;
+			lock.packages[nativeRoot] = { version: '1.0.1', hasInstallScript: true };
+			writeSource();
+			writeFileSync(join(source, nativeRoot, 'binding.node'), Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+			const stage = prepareBundle(source, join(directory, 'stage'));
+			const manifest = JSON.parse(readFileSync(join(stage, 'package.json')));
+			assert.strictEqual(manifest.dependencies[name], '1.0.1');
+			assert.deepStrictEqual(checkBundle(stage, join(source, 'package-lock.json')), { roots: 1, packages: 2 });
+			moduleFixture(join(stage, nativeRoot), name);
+			checkBundle(stage, join(source, 'package-lock.json'), true);
+		});
+	}
+
 	for (const spec of ['npm:another-package@1.6.2', 'https://example.test/ordered-binary.tgz', './local.tgz']) {
 		it(`rejects rewriting non-registry source ${spec} to a same-named registry package`, () => {
 			lock.packages[''].dependencies['ordered-binary'] = spec;

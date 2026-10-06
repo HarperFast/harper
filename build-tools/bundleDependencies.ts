@@ -38,6 +38,7 @@ type Package = {
 type Lock = { lockfileVersion: number; packages: Record<string, Package> };
 
 const unbundled = new Set([
+	'@datadog/pprof',
 	'@harperfast/rocksdb-js',
 	'@harperfast/extended-iterable',
 	'argon2',
@@ -45,6 +46,7 @@ const unbundled = new Set([
 	'lmdb',
 	'msgpackr',
 	'ordered-binary',
+	're2',
 	'structon',
 	'systeminformation',
 	'tar-fs',
