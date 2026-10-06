@@ -151,7 +151,6 @@ export HARPER_CLI_PASSWORD=password
 When you run `harper login <URL>` in a directory that already has a `.env` file, the CLI appends `HARPER_CLI_TARGET` with the URL you logged in to. It does not create a `.env` file, and it leaves the file alone if the file, or your environment, already sets `HARPER_CLI_TARGET` or `CLI_TARGET`.
 
 ```bash
-# Appends HARPER_CLI_TARGET to an existing .env that sets no target
 harper login https://my-project.harperdb.cloud
 ```
 

@@ -177,11 +177,12 @@ This list is abbreviated and is **not** in precedence order. See [Authentication
 ```bash
 # Log in to a specific target
 harper login https://server.com:9925
-# If ./.env exists and sets no target, this also appends HARPER_CLI_TARGET to it
 
 # Subsequently execute operations without target or credentials
 harper describe_database database=dev
 ```
+
+If the current directory has a `.env` file that sets no target, `harper login` also appends `HARPER_CLI_TARGET` to it.
 
 **Example: CLI Target Environment Variables**:
 
