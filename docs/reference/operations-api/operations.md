@@ -1805,6 +1805,8 @@ Whether a tool is treated as destructive at all is governed by `agent.allowDestr
 
 Cancels a session's run, clears any followups it scheduled, and marks the session `aborted`. Works on a paused (`awaiting_approval`) or `idle` session as well as an actively running one.
 
+From v5.4.0 the cancel also answers every pending approval, decided or not, with a `cancelled_by_operator` result, in the same write that marks the session `aborted`. An action approved before the cancel therefore never runs, neither in the cancelled run nor when you next prompt the session, and nothing is left awaiting a decision.
+
 ```json
 { "operation": "cancel_agent_run", "session_id": "3f7c..." }
 ```
