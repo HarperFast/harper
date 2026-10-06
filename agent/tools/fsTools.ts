@@ -6,7 +6,7 @@
  * to `componentsRoot` — `logDir` and `configDir` are observation-only so
  * the agent can read logs and inspect config without rewriting either. The
  * `config` scope is usually a single file (`configFile`), never enumerated.
- * Key material is refused in every scope (harper#3041): reads by name, by key
+ * Key material is refused in every scope: reads by name, by key
  * directory and by PEM private-key armor in the text about to be returned;
  * writes by key directory.
  *
@@ -59,7 +59,6 @@ function scopeRoot(scopes: AgentScopes, scope: Scope): string {
 	}
 }
 
-/** The one file a single-file scope admits, or undefined for a directory scope. */
 function scopeFile(scopes: AgentScopes, scope: Scope): string | undefined {
 	return scope === 'config' ? scopes.configFile : undefined;
 }

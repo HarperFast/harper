@@ -19,6 +19,7 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { resolveAgentIdentity, resolveScopes, buildStaticSystemPrompt } = require('#src/agent/agent');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+const { readFileTool, listDirTool } = require('#src/agent/tools/fsTools');
 
 const DEFAULT_USER = 'hdb_agent';
 
@@ -157,6 +158,37 @@ describe('agent/agent resolveScopes (harper#3041)', () => {
 			throw err;
 		}
 		assert.deepEqual(scopesFor({}, linkedRoot).keyDirs, [join(root, 'keys'), join(root, 'ssh')]);
+	});
+
+	it('denies a key directory that is itself a symlink by its target', () => {
+		const realKeys = join(mkdtempSync(join(tmpdir(), 'agent-scopes-keys-')), 'keys');
+		mkdirSync(realKeys);
+		try {
+			symlinkSync(realKeys, join(root, 'keys'), 'dir');
+		} catch (err) {
+			if (err.code === 'EPERM' || err.code === 'ENOTSUP') return;
+			throw err;
+		}
+		assert.equal(scopesFor({}).keyDirs[0], realpathSync(realKeys));
+	});
+
+	it('admits a symlinked config file as its target, and the tools read it through those scopes', async () => {
+		const realConfig = join(mkdtempSync(join(tmpdir(), 'agent-scopes-cfg-')), 'harper-config.yaml');
+		writeFileSync(realConfig, 'http: {}\n');
+		const linkedRoot = realpathSync(mkdtempSync(join(tmpdir(), 'agent-scopes-linkcfg-')));
+		try {
+			symlinkSync(realConfig, join(linkedRoot, 'harper-config.yaml'), 'file');
+		} catch (err) {
+			if (err.code === 'EPERM' || err.code === 'ENOTSUP') return;
+			throw err;
+		}
+		const scopes = scopesFor({}, linkedRoot);
+		assert.equal(join(scopes.configDir, scopes.configFile), realpathSync(realConfig));
+		const ctx = { sessionId: 's', scopes };
+		const { content } = await readFileTool.handler({ root: 'config' }, ctx);
+		assert.equal(content, 'http: {}\n');
+		const { entries } = await listDirTool.handler({ root: 'config' }, ctx);
+		assert.deepEqual(entries, [{ name: 'harper-config.yaml', kind: 'file' }]);
 	});
 
 	it('still resolves a relative componentsScope against rootPath', () => {

@@ -274,7 +274,7 @@ export function buildStaticSystemPrompt(
 		`- components — the app source directory, your only WRITE scope: ${scopes.componentsRoot}`,
 		`- logs — read-only: ${scopes.logDir}`,
 		`- config — ${configScope}`,
-		"Key material is refused in every scope: *.pem, *.key and .jwtPass files, Harper's keys and ssh directories, and any file whose returned text holds a PEM private key.",
+		"Key material is refused in every scope: the fs tools never read *.pem, *.key or .jwtPass files, anything in Harper's keys or ssh directories, or text holding a PEM private key, and never write into those directories.",
 		'',
 		`A Harper app is a component directory under the components dir. Define tables/resources in a schema (GraphQL \`.graphql\` with \`@table\`/\`@export\`, or \`config.yaml\` + resource files). After writing or changing component files, deploy/restart as needed for them to load, then ${verifyStep}.`,
 		'Prefer the operations tools for database/cluster actions; use the filesystem tools for app source. When designing schemas or building app logic, consult the Harper best practices below and read the relevant rule via the best-practice tool. Be concise and verify your work.',
@@ -327,10 +327,6 @@ export async function resolveAgentIdentity(server: StartOpts['server'], username
 	throw new Error(`agent.user '${username}' could not be resolved to a permissioned user; failing closed`);
 }
 
-/**
- * Fix the fs tools' scopes at boot. `config` is the Harper config file alone unless `agent.configScope`
- * names a file or directory; a target that is neither leaves the scope unavailable rather than guessing.
- */
 export function resolveScopes(
 	config: AgentConfig,
 	getConfigPath: (param: string) => string | undefined,
@@ -345,30 +341,37 @@ export function resolveScopes(
 	const configTarget = config.configScope ? fromRootPath(config.configScope) : getConfigFilePath();
 	let configScope: Pick<AgentScopes, 'configDir' | 'configFile'> = {};
 	try {
-		const target = statSync(configTarget);
-		if (target.isFile()) configScope = { configDir: dirname(configTarget), configFile: basename(configTarget) };
-		else if (target.isDirectory()) configScope = { configDir: configTarget };
-		else throw new Error('not a file or directory');
+		// Canonical, so a symlinked config file is admitted as its target instead of refused as a link.
+		const canonicalTarget = realpathSync.native(configTarget);
+		const target = statSync(canonicalTarget);
+		if (target.isFile()) {
+			configScope = { configDir: dirname(canonicalTarget), configFile: basename(canonicalTarget) };
+		} else if (target.isDirectory()) {
+			configScope = { configDir: canonicalTarget };
+		} else {
+			throw new Error('not a file or directory');
+		}
 	} catch (err) {
 		log.error?.(
 			`Agent 'config' scope is unavailable: ${configTarget}: ${err instanceof Error ? err.message : String(err)}`
 		);
 	}
-	// Compared against canonical paths in fsTools, so a symlinked rootPath can't route around them.
-	const canonicalRoot = canonicalPath(rootPath);
 	return {
 		componentsRoot: config.componentsScope ? fromRootPath(config.componentsScope) : componentsRoot,
 		logDir,
 		...configScope,
-		keyDirs: [join(canonicalRoot, LICENSE_KEY_DIR_NAME), join(canonicalRoot, SSH_KEY_DIR_NAME)],
+		// fsTools compares canonical paths, and a key directory may itself be a symlink.
+		keyDirs: [LICENSE_KEY_DIR_NAME, SSH_KEY_DIR_NAME].map((name) => canonicalPath(join(rootPath, name))),
 	};
 }
 
+/** `realpath` of `path`, or of its deepest existing ancestor with the rest appended (as fsTools resolves). */
 function canonicalPath(path: string): string {
 	try {
-		return realpathSync(path);
+		return realpathSync.native(path);
 	} catch {
-		return resolvePath(path);
+		const parent = dirname(path);
+		return parent === path ? path : join(canonicalPath(parent), basename(path));
 	}
 }
 
