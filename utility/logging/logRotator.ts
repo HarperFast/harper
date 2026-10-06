@@ -1,6 +1,6 @@
 'use strict';
 
-import { existsSync, mkdirSync, statSync, promises as fsProm } from 'fs';
+import { type BigIntStats, existsSync, mkdirSync, statSync, promises as fsProm } from 'fs';
 import * as path from 'path';
 import * as envMgr from '../environment/environmentManager.ts';
 envMgr.initSync();
@@ -80,9 +80,9 @@ function logRotator({
 	let lastRotationTime = Date.now();
 	let observedGeneration;
 	try {
-		const active = statSync(logger.path);
+		const active = statSync(logger.path, { bigint: true });
 		observedGeneration = generationIdentity(active);
-		if (active.birthtimeMs > 0) lastRotationTime = Math.min(lastRotationTime, active.birthtimeMs);
+		if (active.birthtimeMs > 0) lastRotationTime = Math.min(lastRotationTime, Number(active.birthtimeMs));
 	} catch {}
 	hdbLogger.trace('Log rotate enabled, maxSize:', maxSize, 'interval:', interval);
 	let tickInFlight = false;
@@ -124,7 +124,7 @@ function logRotator({
 					// statSync, and the rename in the same turn: an await here lets a writing thread rotate
 					// the generation this tick measured and start a fresh one, which the tick would then
 					// archive near-empty.
-					const active = statSync(logger.path);
+					const active = statSync(logger.path, { bigint: true });
 					if (active.size >= maxBytes) {
 						lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir, logger, compressArchives, active);
 						// The interval clock counts from the last rotation of any kind. Without this an
@@ -142,7 +142,7 @@ function logRotator({
 
 			if (maxInterval) {
 				try {
-					const activeGeneration = generationIdentity(statSync(logger.path));
+					const activeGeneration = generationIdentity(statSync(logger.path, { bigint: true }));
 					if (activeGeneration && activeGeneration !== observedGeneration) {
 						observedGeneration = activeGeneration;
 						lastRotationTime = Date.now();
@@ -259,7 +259,7 @@ function logRotator({
 		},
 	};
 
-	function generationIdentity(stats: any) {
+	function generationIdentity(stats: BigIntStats) {
 		return stats.ino ? `${stats.dev}:${stats.ino}` : undefined;
 	}
 }
@@ -269,7 +269,7 @@ async function moveLogFile(
 	rotatedLogPath: string,
 	logger?: any,
 	compress?: boolean,
-	activeStats?: any
+	activeStats?: BigIntStats
 ) {
 	// The rename and the descriptor close must not be separated by an await: the descriptor would
 	// otherwise keep feeding the archived inode while the event loop runs. Closing the rotating
