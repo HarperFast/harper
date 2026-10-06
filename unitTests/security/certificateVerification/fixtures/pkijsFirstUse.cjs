@@ -4,7 +4,7 @@
 // patched by the time the first consumer (named in argv) has used it.
 const { webcrypto } = require('node:crypto');
 
-const isPkijsLoaded = () => Object.keys(require.cache).some((path) => path.includes('/node_modules/pkijs/'));
+const isPkijsLoaded = () => Object.keys(require.cache).some((path) => /[\\/]node_modules[\\/]pkijs[\\/]/.test(path));
 
 async function main() {
 	const ocsp = require('#src/security/certificateVerification/ocspVerification');

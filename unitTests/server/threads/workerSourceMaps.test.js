@@ -47,5 +47,6 @@ describe('worker source maps', () => {
 		process.setSourceMapsEnabled(true);
 		const report = await getWorkerReport();
 		assert.strictEqual(report.sourceMapsEnabled, true);
+		assert.strictEqual(report.execArgv.includes('--enable-source-maps'), true);
 	});
 });

@@ -12,7 +12,6 @@ import '../../security/user.ts';
 import * as serverUtils from '../serverHelpers/serverUtilities.ts';
 import { runWithDispatchedOperation } from '../serverHelpers/operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from '../serverHelpers/requestSanitization.ts';
-import moment from 'moment';
 import * as jobs from './jobs.ts';
 import cloneDeep from 'lodash/cloneDeep.js';
 
@@ -75,7 +74,7 @@ const JOB_ID = JOB_NAME.substring(4);
 			jobObj.result = results;
 			jobObj.message = 'Successfully completed job: ' + JOB_ID;
 		}
-		jobObj.end_datetime = moment().valueOf();
+		jobObj.end_datetime = Date.now();
 		harperLogger.notify('Successfully completed job:', JOB_ID);
 	} catch (err) {
 		exitCode = 1;
@@ -84,7 +83,7 @@ const JOB_ID = JOB_NAME.substring(4);
 		// get_job answers a refused bulk load with its structured permission report as the message.
 		const report = err?.http_resp_msg;
 		jobObj.message = report !== null && typeof report === 'object' ? report : err?.message ? err.message : err;
-		jobObj.end_datetime = moment().valueOf();
+		jobObj.end_datetime = Date.now();
 	} finally {
 		// A rejected updateJob must not skip handle cleanup and exit scheduling below (that would
 		// leak this worker's process-global RocksDB handles and leave the worker hanging).

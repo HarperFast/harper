@@ -48,10 +48,17 @@ describe('build-dist non-Latin-1 literal escaping', function () {
 		assert.strictEqual(compile(once).outputText, once);
 	});
 
-	it('leaves tagged templates alone because the tag can read .raw', function () {
+	it('leaves the text of tagged templates alone because the tag can read .raw', function () {
 		const escaped = compile('export const raw = String.raw`a — b`;').outputText;
 		assert.match(escaped, /a — b/);
 		assert.strictEqual(evaluate(escaped).raw, 'a — b');
+	});
+
+	it('escapes literals inside the tag and substitutions of a tagged template', function () {
+		const source = "const tags = { '→': String.raw }; export const raw = tags['→']`a ${'—'} b ${`→ ${1}`}`;";
+		const escaped = compile(source).outputText;
+		assert.doesNotMatch(escaped, NON_LATIN1);
+		assert.strictEqual(evaluate(escaped).raw, 'a — b → 1');
 	});
 
 	it('keeps source-map positions for code after an escaped literal on the same line', function () {

@@ -9,7 +9,6 @@ import { generateKeyPair as generateKeyPairOrig, X509Certificate, createPrivateK
 import * as util from 'util';
 const generateKeyPair = util.promisify(generateKeyPairOrig);
 
-// node-forge is only needed to create or renew certificates, so it is not loaded at startup
 const loadForge = () => require('node-forge') as typeof Forge;
 import { v4 as uuidv4 } from 'uuid';
 import { forComponent } from '../utility/logging/harper_logger.ts';

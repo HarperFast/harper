@@ -1,8 +1,5 @@
 #!/usr/bin/env node
-// Production emit of dist/. V8 keeps every loaded module's source text on each thread's heap, and
-// stores a whole file as UTF-16 when it holds one char above 0xFF, so the JS is emitted without
-// comments and with every non-Latin-1 literal escaped. Declarations are emitted in a second pass so
-// they keep their JSDoc.
+// Production emit of dist/; why it strips comments and escapes non-Latin-1 text: build-tools/DESIGN.md.
 import ts from 'typescript';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -11,16 +8,29 @@ import { fileURLToPath } from 'node:url';
 const NON_LATIN1 = /[^\x00-\xff]/;
 const CONFIG_PATH = 'tsconfig.build.json';
 
-/**
- * Re-creates string and untagged template literals that contain non-Latin-1 text as synthesized
- * nodes, which the printer escapes instead of copying the original source text.
- */
+// Synthesized literal nodes are printed escaped; ones parsed from source are copied verbatim.
 export function escapeNonLatin1Literals(context) {
 	const { factory } = context;
 	const replace = (node, created) => ts.setSourceMapRange(ts.setOriginalNode(created, node), node);
 	const visit = (node) => {
-		// a tag can read `.raw`, so its text is left alone and the final Latin-1 check reports it
-		if (ts.isTaggedTemplateExpression(node)) return node;
+		// a tag can read `.raw`, so only its text stays as written (the final Latin-1 check reports it)
+		if (ts.isTaggedTemplateExpression(node)) {
+			const { template } = node;
+			return factory.updateTaggedTemplateExpression(
+				node,
+				ts.visitNode(node.tag, visit),
+				node.typeArguments,
+				ts.isTemplateExpression(template)
+					? factory.updateTemplateExpression(
+							template,
+							template.head,
+							template.templateSpans.map((span) =>
+								factory.updateTemplateSpan(span, ts.visitNode(span.expression, visit), span.literal)
+							)
+						)
+					: template
+			);
+		}
 		if (NON_LATIN1.test(node.text ?? '')) {
 			switch (node.kind) {
 				case ts.SyntaxKind.StringLiteral:
@@ -73,7 +83,6 @@ function* emittedScripts(directory) {
 	}
 }
 
-/** Lists `file:line` for every non-Latin-1 char left in emitted JS. */
 export function findNonLatin1(directory) {
 	const found = [];
 	for (const path of emittedScripts(directory)) {

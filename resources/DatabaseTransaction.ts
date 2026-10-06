@@ -1,5 +1,5 @@
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
-import { Transaction as LMDBTransaction } from 'lmdb';
+import type { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import {
 	DatabaseClosingError,

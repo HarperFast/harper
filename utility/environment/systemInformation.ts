@@ -11,7 +11,6 @@ import { getDatabases, type Table } from '../../resources/databases.ts';
 import { TableSizeObject } from '../../dataLayer/harperBridge/TableSizeObject.ts';
 import { RocksDatabase, StatsHistogramData } from '@harperfast/rocksdb-js';
 
-// only system_information requests use it, so it is not loaded at startup
 const loadSi = () => require('systeminformation') as typeof import('systeminformation');
 
 env.initSync();
