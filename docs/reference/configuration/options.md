@@ -397,7 +397,7 @@ agent:
 - `autoApprove` — Run without per-action approval gates; _Default_: `false`
 - `allowDestructive` — Include the tools marked destructive in the agent's toolset: `write_file`, the inspector's code-evaluation tools, and any operations tool carrying MCP's [`destructiveHint`](../mcp/tool-metadata.md) (`drop_table`, `delete`, `restart`, `set_configuration`, ...). When `false` they are removed entirely rather than gated. That hint comes from a curated set in core which does not cover every damaging operation, so this is not a complete safety boundary on its own — see [Agent operations](../operations-api/operations.md#agent); _Default_: `false`
 - `user` — Harper user the agent's **operations** tools run as; the filesystem, HTTP, schedule, and inspector tools always run at process privilege regardless. If it cannot be resolved and it is not the default, the agent fails closed and runs with no operations tools; _Default_: `hdb_agent`, which falls back to a `super_user` bootstrap identity
-- `componentsScope` — The agent's `components` filesystem scope, which it reads and, with `allowDestructive`, writes; relative to `rootPath`. Read at startup only; _Default_: the full `componentsRoot`
+- `componentsScope` — The agent's `components` filesystem scope, which it reads and, with `allowDestructive`, writes; absolute or relative to `rootPath`. Read at startup only; _Default_: the full `componentsRoot`
 - `configScope` <VersionBadge version="v5.3.2" /> — The agent's read-only `config` filesystem scope: a file or a directory, absolute or relative to `rootPath`. Read at startup only. See [Filesystem scopes](#filesystem-scopes); _Default_: the Harper config file only
 - `httpFetch` <VersionBadge version="v5.3.2" /> — Whether the agent has its `http_fetch` tool, and which hosts it may reach: `true`, `false`, or `{ allow: [...] }`. Read at startup only. See [Restricting `http_fetch`](#restricting-http_fetch); _Default_: `true`
 - `systemPromptAppend` — Operator text appended to the agent's system prompt
@@ -406,9 +406,9 @@ agent:
 
 ### Filesystem scopes
 
-<VersionBadge version="v5.3.2" />
+<VersionBadge type="changed" version="v5.3.2" />
 
-The agent's filesystem tools (`read_file`, `list_dir`, `grep_files`, `tail_file`, and `write_file` when `allowDestructive` is on) take a `root` naming one of three scopes:
+The agent's read tools (`read_file`, `list_dir`, `grep_files`, and `tail_file`) take a `root` naming one of three scopes. `write_file`, available when `allowDestructive` is on, takes no `root` and always writes to `components`.
 
 | Scope        | Reaches                                           | Access         |
 | ------------ | ------------------------------------------------- | -------------- |
@@ -426,11 +426,13 @@ agent:
   configScope: /etc/harper/extra
 ```
 
-Key material is refused in every scope, whatever `componentsScope` and `configScope` say:
+Whatever `componentsScope` and `configScope` say, every scope refuses:
 
 - **Harper's key directories**, `<rootPath>/keys` (TLS and JWT keys) and `<rootPath>/ssh` (git deploy keys): nothing in them is read, listed, or written. Paths are compared after resolving symlinks.
 - **Key file names**, `*.pem`, `*.key`, and `.jwtPass`: not read. `list_dir` still shows the names, and `write_file` can still create such a file outside the key directories.
-- **Text holding a PEM private key** (`-----BEGIN ... PRIVATE KEY-----`), such as an inline `tls.privateKey` in the config file: `read_file` and `tail_file` refuse it, and `grep_files` skips the file. The check looks only at the text about to be returned.
+- **Text holding a PEM private key** (`-----BEGIN ... PRIVATE KEY-----`), such as an inline `tls.privateKey` in the config file: `read_file` refuses the file, `tail_file` refuses lines that hold one or a file that ends partway through one, and `grep_files` skips the file.
+
+A key with neither a key file name nor PEM armor, such as a `.p12` bundle or raw DER, is not recognized outside the key directories.
 
 The config file can still hold secrets that are not PEM keys, such as a model `apiKey` or storage credentials, and the agent reads it. Setting `configScope` to `rootPath` also restores read access to the raw database files and backups.
 
