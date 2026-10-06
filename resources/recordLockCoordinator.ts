@@ -353,8 +353,9 @@ export interface ClusterLockTransport {
 	/**
 	 * A control entry this thread applied from a peer's stream while another thread owns coordination:
 	 * hand it to the owner, which receives it through its own `onControlEntry`. Idempotent by exact
-	 * token on the owner, so a relay that is late, reordered or lost can only delay a re-grant. Absent,
-	 * the entry is dropped and counted (`droppedOffOwner`).
+	 * token on the owner, so a relay that is late, reordered or lost can only delay a re-grant. May
+	 * return a promise; a throw or rejection counts as a drop (`droppedOffOwner`) and never escapes.
+	 * Absent, the entry is dropped and counted.
 	 */
 	relayControlEntry?(
 		database: string,
@@ -828,6 +829,28 @@ function noRevoke() {}
  */
 function isPromiseLike(value: unknown): value is Promise<unknown> {
 	return value != null && typeof (value as Promise<unknown>).then === 'function';
+}
+/** A relay that throws or rejects is a drop, never an escape from the apply loop. */
+function relayControlEntryContained(
+	transport: ClusterLockTransport,
+	database: string,
+	table: string,
+	entry: LockControlEntry,
+	author: string,
+	position: number | undefined,
+	onFailure: () => void
+): void {
+	try {
+		const outcome = transport.relayControlEntry!(database, table, entry, author, position) as unknown;
+		if (isPromiseLike(outcome))
+			outcome.catch((error) => {
+				warnOnce('failed to relay a record lock control entry to the coordinating thread', error);
+				onFailure();
+			});
+	} catch (error) {
+		warnOnce('failed to relay a record lock control entry to the coordinating thread', error);
+		onFailure();
+	}
 }
 function fireRevokeAndForget(revoke: () => void | Promise<void>): void {
 	try {
@@ -1796,24 +1819,11 @@ export class LockCoordinator {
 		if (entry.type !== 'lockRelease' || !isNodeName(author)) return;
 		if (entry.requester !== author) return;
 		if (!this.transport.ownsCoordination()) {
-			if (this.transport.relayControlEntry) {
-				try {
-					this.transport.relayControlEntry(this.database, this.table, entry, author, position);
-					return;
-				} catch (error) {
-					warnOnce('failed to relay a record lock control entry to the coordinating thread', error);
-				}
-			}
-			this.#droppedOffOwner++;
-			const now = this.#monotonic();
-			if (now - this.#lastOffOwnerWarn > WARN_INTERVAL_MS) {
-				this.#lastOffOwnerWarn = now;
-				harperLogger.warn?.('record lock control entries are reaching a non-coordinating thread', {
-					database: this.database,
-					table: this.table,
-					dropped: this.#droppedOffOwner,
-				});
-			}
+			if (this.transport.relayControlEntry)
+				relayControlEntryContained(this.transport, this.database, this.table, entry, author, position, () =>
+					this.#noteOffOwnerDrop()
+				);
+			else this.#noteOffOwnerDrop();
 			return;
 		}
 		if (!isFencingToken(entry.token)) return;
@@ -1849,6 +1859,19 @@ export class LockCoordinator {
 			}
 		} else if (grant.renewed) this.#dependencySets.delete(keyId);
 		this.#clearGrant(keyId, grant);
+	}
+
+	#noteOffOwnerDrop(): void {
+		this.#droppedOffOwner++;
+		const now = this.#monotonic();
+		if (now - this.#lastOffOwnerWarn > WARN_INTERVAL_MS) {
+			this.#lastOffOwnerWarn = now;
+			harperLogger.warn?.('record lock control entries are reaching a non-coordinating thread', {
+				database: this.database,
+				table: this.table,
+				dropped: this.#droppedOffOwner,
+			});
+		}
 	}
 
 	/**
@@ -3007,6 +3030,29 @@ export function deliverLockControlEntry(
 	position: number
 ): void {
 	coordinatorFor(database, table, admittingResolver)?.applyEntry(entry, author, position);
+}
+
+/**
+ * The replication sink's receive boundary for a control entry. A thread that never built a
+ * coordinator for the table holds no grant the entry could clear, so the entry is for the owning
+ * thread: relay it through the registered transport rather than let it vanish — with round-robin
+ * subscription placement a release routinely lands on a worker that has never served a lock.
+ */
+export function receiveLockControlEntry(
+	database: string,
+	table: string,
+	entry: LockControlEntry,
+	author: string,
+	position?: number
+): void {
+	const coordinator = coordinatorFor(database, table, admittingResolver);
+	if (coordinator) return coordinator.applyEntry(entry, author, position);
+	if (entry?.type !== 'lockRelease') return;
+	const transport = clusterLockTransports.get(database);
+	if (!transport?.relayControlEntry || transport.ownsCoordination()) return;
+	relayControlEntryContained(transport, database, table, entry, author, position, () =>
+		warnOnce('a record lock release could not be relayed from a thread without a coordinator')
+	);
 }
 
 export async function deliverDelegationRequest(
