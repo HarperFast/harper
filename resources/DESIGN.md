@@ -780,6 +780,16 @@ an LMDB root once, only while `open`, skips its dbis, and closes every alias sha
 column families are independently refcounted handles, so they are still closed one by one. Enforced by
 the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
 
+## Every `.mdb` under a storage path must open as LMDB (`databases.ts` `getDatabases`)
+
+A rescan (`resetDatabases()`, which any schema change triggers) opens each `.mdb` file at the top level
+of the storage path, and each one a directory below as a legacy `<schema>/<table>.mdb` table. lmdb-js
+3.5.x crashes the process when `mdb_env_open` fails (the failure path in `EnvWrap::openEnv` frees its
+`ExtendedEnv`, then `closeEnv` frees it again), so a file there that is not an LMDB environment takes
+the process down with SIGSEGV and no stack, at whatever moment the next rescan runs. Tests keep their
+non-database fixtures outside the storage path; `unitTests/bin/copyDbIntegrity.test.js` rescans right
+after writing one (harper#2669).
+
 ## A local-only write marks both the record and its audit entry, and replay preserves it (`Table.ts` internal writes, `replayLogs.ts`)
 
 `LOCAL_ONLY` rides both persisted forms — the audit entry's `extendedType` and the stored record's

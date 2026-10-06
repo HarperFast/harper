@@ -301,13 +301,23 @@ describe('copy-db integrity (harper#2048)', () => {
 	});
 
 	it('refuses a copy target that already exists', async () => {
-		const copy_path = path.join(storage_path, 'existing-target.mdb');
-		await fs.writeFile(copy_path, 'not a database');
-		await assert.rejects(
-			() => copyDB.copyDb(DATABASE, copy_path, { blobs: 'copy' }),
-			/already exists/,
-			'an existing target would be merged into rather than replaced'
-		);
+		// Outside the storage path, which a rescan opens as databases (each `.mdb` at its top level, and one
+		// directory down as legacy tables): lmdb-js crashes the process (SIGSEGV), rather than throwing,
+		// when it fails to open one.
+		const occupied_path = path.resolve(storage_path, '../copyIntegrityOccupied');
+		const copy_path = path.join(occupied_path, 'existing-target.mdb');
+		await fs.outputFile(copy_path, 'not a database');
+		try {
+			await assert.rejects(
+				() => copyDB.copyDb(DATABASE, copy_path, { blobs: 'copy' }),
+				/already exists/,
+				'an existing target would be merged into rather than replaced'
+			);
+		} finally {
+			await fs.remove(occupied_path);
+		}
+		// any schema change rescans the storage path, at a moment no test controls
+		resetDatabases();
 	});
 
 	it('requires the caller to declare what happens to the blobs', async () => {
