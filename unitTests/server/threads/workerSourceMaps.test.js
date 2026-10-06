@@ -36,6 +36,8 @@ describe('worker source maps', () => {
 
 	it('are off in workers when the parent has them off', async function () {
 		this.timeout(30000);
+		// NODE_OPTIONS reaches workers regardless of execArgv
+		if (process.env.NODE_OPTIONS?.includes('--enable-source-maps')) this.skip();
 		process.setSourceMapsEnabled(false);
 		const report = await getWorkerReport();
 		assert.strictEqual(report.sourceMapsEnabled, false);
