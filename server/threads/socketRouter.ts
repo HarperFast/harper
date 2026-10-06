@@ -51,6 +51,7 @@ if (isMainThread) {
 
 export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean) {
 	const workerSlots = [];
+	let dedicatedPools: { type: string; count: number }[] = [];
 	// Crash-path defense: a hard crash can skip a worker's exit-time UDS cleanup and leave stale
 	// mirror files behind. This runs before any worker below can start (and thus before any mirror
 	// can bind), so it can only ever clear files nothing is using yet — never a live mirror. The
@@ -95,7 +96,10 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 				await threadServer.listenOnPorts();
 				return Promise.resolve([]);
 			}
-			if (!dedicatedPoolsStarted) setActiveWorkerPools(admittedWorkerPools().map((pool) => pool.type));
+			if (!dedicatedPoolsStarted) {
+				dedicatedPools = admittedWorkerPools();
+				setActiveWorkerPools(dedicatedPools.map((pool) => pool.type));
+			}
 			await loadRootComponents();
 			const { listenOnPorts } = require('./threadServer.js');
 			await listenOnPorts();
@@ -105,7 +109,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 		poolSize = threadCount;
 		nextIsolatedIndex = Math.max(nextIsolatedIndex, threadCount);
 		const isolated = admittedIsolatedApplications([...isolatedSlots.keys()]);
-		const dedicatedPools = dedicatedPoolsStarted || dynamicThreads ? [] : admittedWorkerPools();
+		if (dedicatedPools.length > 0) dedicatedWorkerCount = 0;
 		for (const pool of dedicatedPools) dedicatedWorkerCount += pool.count;
 		const heapShareCount = threadCount + dedicatedWorkerCount + isolated.length;
 		for (let i = 0; i < threadCount; i++) {

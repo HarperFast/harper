@@ -31,7 +31,13 @@ const {
 	applicationSocketName,
 	shouldStartUwsListenerHere,
 } = require('./isolatedApplications.ts');
-const { shouldBindListenerHere, isDedicatedPoolWorker, poolMemberIndex, claimListener } = require('./workerPools.ts');
+const {
+	shouldBindListenerHere,
+	isDedicatedPoolWorker,
+	poolMemberIndex,
+	claimListener,
+	listenerOwner,
+} = require('./workerPools.ts');
 const { isBun } = require('../serverHelpers/Request.ts');
 const { getDomainSocketPathMaxBytes, isDomainSocketPathTooLong } = require('../../utility/domainSocket.ts');
 const { createTLSSelector, getEffectiveTlsCiphers } = require('../../security/keys.ts');
@@ -417,11 +423,11 @@ function listenOnPorts() {
 			harperLogger.error(`Unable to bind to port ${port}`, error);
 			continue;
 		}
-		// A dedicated listener (see onSocket()) with an exclusive (non-reusePort) bind is owned by a
-		// single deterministic worker — the lowest eligible index — instead of every worker racing
-		// for it. Nothing else in-process can then hold its port (the main thread doesn't bind these,
-		// and restarts of the owner are non-overlapping on non-reusePort platforms, see
-		// restartWorkers()), which is what makes the owner's EADDRINUSE below unambiguously external.
+		// An exclusive (non-reusePort) bind of a dedicated listener (see onSocket()) or of a pool-owned
+		// listener has a single deterministic owner -- the lowest eligible worker index, or pool member 0 --
+		// instead of every worker racing for it. Nothing else in-process can then hold its port (the main
+		// thread doesn't bind these, and restarts of the owner are non-overlapping on non-reusePort
+		// platforms, see restartWorkers()), which makes the owner's EADDRINUSE below unambiguously external.
 		if (poolWorker) {
 			if (!listen_on.reusePort && poolMemberIndex() !== 0) continue;
 		} else if (
@@ -551,6 +557,8 @@ async function listenOnPortsBun() {
 				reusePort: config.reusePort ?? (!isWindows && !isMac),
 				fetch: config.fetch,
 			};
+			// as in listenOnPorts(): an exclusive pool-owned bind belongs to pool member 0 alone
+			if (!serveOptions.reusePort && isDedicatedPoolWorker() && poolMemberIndex() !== 0) continue;
 			if (portHostname) serveOptions.hostname = portHostname;
 			// Add TLS config if this is a secure server
 			if (config.isSecure && config.tlsSelector) {
@@ -663,8 +671,11 @@ async function listenOnPortsBun() {
 				// These raw-socket listens bind exclusively (no reusePort), so a dedicated listener
 				// gets a single owner worker — same reasoning as listenOnPorts(). Bun restarts are
 				// already non-overlapping (see restartWorkers()).
-				const ownerIndex = isDedicatedPoolWorker() ? poolMemberIndex() : getWorkerIndex();
-				if (server.dedicatedListener && !isMainThread && ownerIndex !== 0) {
+				if (
+					isDedicatedPoolWorker()
+						? poolMemberIndex() !== 0
+						: server.dedicatedListener && !isMainThread && getWorkerIndex() !== 0
+				) {
 					listening.push(Promise.resolve({ port }));
 					continue;
 				}
@@ -705,9 +716,17 @@ function onSocket(listener, options) {
 	let getComponentName = require('../../components/componentLoader.ts').getComponentName;
 	let socketServer;
 	const { threadType } = options;
-	if (threadType) {
-		if (options.securePort) claimListener(options.securePort, threadType);
-		if (options.port) claimListener(options.port, threadType);
+	for (const port of [options.securePort, options.port]) {
+		if (!port) continue;
+		const owner = listenerOwner(port);
+		if (threadType) {
+			if (SERVERS[port] && owner === undefined)
+				throw new Error(
+					`Port ${port} already serves listeners on every worker, so '${threadType}' workers cannot own it`
+				);
+			claimListener(port, threadType);
+		} else if (owner !== undefined)
+			throw new Error(`Port ${port} is owned by '${owner}' workers, so it cannot serve listeners on every worker`);
 	}
 	if (options.securePort) {
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });

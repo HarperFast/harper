@@ -79,6 +79,7 @@ import {
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
+import { isDedicatedPoolWorker } from '../server/threads/workerPools.ts';
 import {
 	databases,
 	table,
@@ -8058,6 +8059,11 @@ export function makeTable(options): TableResourceClass {
 						const value = typeof computed.from === 'string' ? object[computed.from] : object;
 						const userResolver = this.userResolvers[attribute.name];
 						if (userResolver) return userResolver(value, context, entry);
+						// a pool worker would otherwise maintain this index with undefined values, silently
+						if (indices[attribute.name] && isDedicatedPoolWorker())
+							throw new Error(
+								`Computed index "${attribute.name}" of table "${tableName}" is resolved by application code, which this replication worker does not run`
+							);
 						else {
 							logger.warn?.(
 								`Computed attribute "${attribute.name}" does not have a function assigned to it. Please use setComputedAttribute('${attribute.name}', resolver) to assign a resolver function.`

@@ -82,6 +82,7 @@ suite('a replication worker pool (replication.threads)', { skip: UNSUPPORTED_HER
 		await sendOperation(ctx.harper, { operation: 'drop_component', project: basename(RECORDER), restart: true });
 		const after = await threads(ctx);
 		const httpBefore = ofType(before, 'http');
+		strictEqual(ofType(after, 'http').length, HTTP_THREADS);
 		for (const id of ofType(after, 'http')) ok(!httpBefore.includes(id), `HTTP worker ${id} was replaced`);
 		strictEqual(
 			JSON.stringify(ofType(after, 'replication')),
