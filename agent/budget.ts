@@ -55,7 +55,7 @@ export function callUsage(
 export function budgetViolation(usage: AgentSessionUsage, caps: BudgetCaps): string | undefined {
 	if (caps.maxSessionTokens !== undefined) {
 		if (usage.promptTokens === undefined || usage.completionTokens === undefined) {
-			return `agent.maxSessionTokens=${caps.maxSessionTokens} cannot be enforced: a model call in this session reported no token usage`;
+			return `agent.maxSessionTokens=${caps.maxSessionTokens} cannot be enforced: a model call in this session reported no token usage; start a new session or clear the cap`;
 		}
 		const used = usage.promptTokens + usage.completionTokens;
 		if (used >= caps.maxSessionTokens)
@@ -63,7 +63,7 @@ export function budgetViolation(usage: AgentSessionUsage, caps: BudgetCaps): str
 	}
 	if (caps.maxCostUsd !== undefined) {
 		if (usage.costUsd === undefined) {
-			return `agent.maxCostUsd=${caps.maxCostUsd} cannot be enforced: a model call in this session was not priced; declare pricing on the models.generative entry the agent uses`;
+			return `agent.maxCostUsd=${caps.maxCostUsd} cannot be enforced: a model call in this session was not priced; declare pricing on the models.generative entry the agent uses, then start a new session or clear the cap`;
 		}
 		if (usage.costUsd >= caps.maxCostUsd) {
 			return `agent.maxCostUsd=${caps.maxCostUsd} reached: this session cost $${usage.costUsd.toFixed(4)}`;
