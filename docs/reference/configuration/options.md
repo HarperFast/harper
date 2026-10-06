@@ -425,7 +425,7 @@ If you upgrade with `maxCostUsd` already set in your configuration, it starts be
 
 ### Restricting `http_fetch`
 
-<VersionBadge version="v5.4.0" />
+<VersionBadge version="v5.3.2" />
 
 `http_fetch` lets the agent send HTTP requests from the Harper process: to its own REST endpoints while it builds an app, or to pull a reference page. The same agent reads table rows, logs, and component source, and text in any of them can steer it, so an enabled agent has a read path and an egress path in one toolset. `agent.httpFetch` bounds that tool. It is not a bound on every way the agent can reach the network: with `allowDestructive` on, for example, the agent can write component code, and the Harper process runs that code.
 

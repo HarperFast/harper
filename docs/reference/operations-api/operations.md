@@ -1743,7 +1743,11 @@ Returns the full session record: `status`, `user` (the Operations API caller who
 From v5.4.0 each assistant message carries the `usage` its model call reported (`promptTokens`, `completionTokens`, and `costUsd` when the model is [priced](../models/overview.md#pricing)), and the response adds the session's totals:
 
 ```json
-"usage": { "calls": 3, "promptTokens": 41230, "completionTokens": 2210, "costUsd": 0.157 }
+{
+	"session_id": "3f7c...",
+	"status": "completed",
+	"usage": { "calls": 3, "promptTokens": 41230, "completionTokens": 2210, "costUsd": 0.157 }
+}
 ```
 
 `calls` counts the model calls that returned an answer; a failed call is not counted. A total is left out once any call in the session did not report it, such as an unpriced model for `costUsd`, so a missing total means unmeasured, not zero. The [spend caps](../configuration/options.md#agent-spend-caps) read the same totals.
