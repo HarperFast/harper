@@ -246,44 +246,33 @@ describe('rocksdbBackup', function () {
 			await purgeBackupsOffline(DB_NAME, 0);
 		});
 
-		// The occupancy check runs under the restore lock but ahead of the claim: if it ran after, a
-		// rejected restore into an already-occupied target would have replaced the pin that the target's
-		// own unfinished restore still needs, leaving that source free to be purged.
-		it("leaves an incomplete restore's pin alone when a later restore into the same target is refused", async function () {
+		// An interrupted restore leaves its target populated and marked. Refusing the rerun on occupancy
+		// grounds wedges it for good: drop_database refuses a marked directory too, and the marker keeps
+		// the pin live, so every purge of the source the rerun needs 409s as well.
+		it('reruns an interrupted restore into the same target instead of wedging it', async function () {
 			this.timeout(30000);
-			const TARGET = `${DB_NAME}-contested`;
+			const TARGET = `${DB_NAME}-interrupted`;
 			writeRecords([['alpha', { n: 1 }]]);
 			const first = await createBackupOffline(DB_NAME);
 			await restoreBackupOffline(DB_NAME, first.backup_id, TARGET);
 
-			// leave the target looking like a half-finished restore: a marker, and a pin naming its source
 			const targetDir = join(storageDir, TARGET);
 			const backupDir = backupDirForDatabase(DB_NAME);
-			const heldPinId = restorePinId(targetDir);
+			// leave the target exactly as a killed restore would: populated, marked, its source pinned
 			await withBackupRepositoryLock(backupDir, DB_NAME, async () => {
-				pinBackup(backupDir, heldPinId, first.backup_id, 'an unfinished restore', targetDir);
+				pinBackup(backupDir, restorePinId(targetDir), first.backup_id, 'an interrupted restore', targetDir);
 			});
-			// abandon, not hold: the lock must be free, or the next restore is refused before it ever
-			// reaches the claim and the test proves nothing
+			// abandon, not hold: the lock must be free, or the rerun is refused for contention instead
 			abandonRestore(beginRestore(targetDir));
-			const pinsBefore = readBackupPins(backupDir);
-			assert.strictEqual(pinsBefore.length, 1, 'precondition: the unfinished restore holds its source');
+			assert.strictEqual(readBackupPins(backupDir).length, 1, 'precondition: the interrupted restore holds its source');
 
 			try {
 				const second = await createBackupOffline(DB_NAME);
-				await assert.rejects(
-					restoreBackupOffline(DB_NAME, second.backup_id, TARGET),
-					(error) => error.statusCode === 400 || error.statusCode === 409
-				);
-				assert.deepStrictEqual(
-					readBackupPins(backupDir),
-					pinsBefore,
-					'a refused restore must not replace the pin protecting the unfinished one'
-				);
+				await assert.doesNotReject(restoreBackupOffline(DB_NAME, second.backup_id, TARGET));
+				assert.strictEqual(checkRestoreState(targetDir), 'clear', 'the rerun must clear the marker it inherited');
+				assert.deepStrictEqual(readBackupPins(backupDir), [], 'and release the pin that was blocking every purge');
 			} finally {
-				await withBackupRepositoryLock(backupDir, DB_NAME, async () => unpinBackup(backupDir, heldPinId));
 				rmSync(targetDir, { recursive: true, force: true });
-				rmSync(join(storageDir, `${DB_NAME}-occupied`), { recursive: true, force: true });
 				await purgeBackupsOffline(DB_NAME, 0).catch(() => {});
 			}
 		});
@@ -885,9 +874,9 @@ describe('rocksdbBackup', function () {
 			);
 		});
 
-		// The check above is only worth having if finalizeBackup runs it. Without this, removing either
-		// call from finalizeBackup leaves the suite green and a manifest gets published for engine files
-		// that are gone.
+		// The check above is only worth having if finalizeBackup runs it. This covers the post-snapshot
+		// call — the one that decides whether a manifest gets published for engine files that are gone.
+		// The pre-snapshot call only saves wasted copying, and no test distinguishes its absence.
 		it('does not publish a manifest when the engine backup disappears mid-finalization', async function () {
 			this.timeout(30000);
 			const database = RocksDatabase.open(join(storageDir, PINNED));

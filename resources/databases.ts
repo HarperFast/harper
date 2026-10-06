@@ -1058,8 +1058,6 @@ export function getDatabases(): Databases {
 					const tableConfig = tableConfigs[tableName];
 					const tablePath = join(tableConfig.path, basename(tableName + '.mdb'));
 					if (!databaseRootUnavailable(tablePath) && existsSync(tablePath)) {
-						// the drop-marker read that was here is now inside the exclusion, where it cannot be
-						// overtaken between the check and the open
 						openUnlessBlocked(tablePath, dbName, () => readMetaDb(tablePath, tableName, dbName, null, true));
 					}
 				}
@@ -2538,15 +2536,13 @@ function openDatabaseRoot(
 		}
 		rootStore = rocksdbDatabaseEnvs.get(path);
 		if (!rootStore || rootStore.status === 'closed') {
-			// This on-demand open (create_table/create_database and friends) must not resurrect a
-			// database that a restore is rewriting (or left half-purged); the scan-time restore checks
-			// don't cover this path. The lock is held across the check AND the open, so a restore cannot
-			// claim the directory in between — checking first and opening after is check-then-act.
+			// A create_table/create_database must not resurrect a database a restore is rewriting or left
+			// half-purged, and the scan-time checks do not cover this path. The lock spans the check and
+			// the open, so a restore cannot claim the directory between them.
 			rootStore = withRestoreExclusion(
 				path,
 				() => {
-					// drop takes the same lock, so re-reading its marker here puts it inside the exclusion
-					// too, rather than relying on the pre-check above having still been true.
+					// re-read under the lock: the pre-check above may no longer hold
 					if (databaseDropMarkerPresent(path)) throwBlockedByDrop(databaseName);
 					return openRocksDatabase(path, {
 						disableWAL: false,
@@ -2563,8 +2559,7 @@ function openDatabaseRoot(
 		rootStore = lmdbDatabaseEnvs.get(path);
 		if (!rootStore || rootStore.status === 'closed') {
 			// TODO: validate database name
-			// The same exclusion the RocksDB branch takes. A restore never targets LMDB, but a drop
-			// takes this lock and publishes its marker, so the pre-check above is check-then-act alone.
+			// A restore never targets LMDB, but a drop takes this same lock and publishes its marker.
 			rootStore = withRestoreExclusion(
 				path,
 				() => {
@@ -2623,7 +2618,7 @@ function throwBlockedByDrop(databaseName: string): never {
 function throwBlockedByRestore(databaseName: string, restoreState: BlockedRestoreState): never {
 	const error: any = new Error(
 		restoreState === 'in-progress'
-			? `Database '${databaseName}' is being restored; retry when the restore completes`
+			? `Database '${databaseName}' is being restored or dropped; retry when that completes`
 			: `Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
 	);
 	error.statusCode = 409;

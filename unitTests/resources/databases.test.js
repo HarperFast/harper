@@ -204,33 +204,45 @@ describe('dropDatabase restore serialization', () => {
 		await assert.doesNotReject(dropDatabase(MULTI));
 	});
 
-	it('holds the restore exclusion around an LMDB open, as it does around a RocksDB one', async function () {
+	it('refuses an open while the restore lock is held, with no marker to fall back on', async function () {
 		this.timeout(30000);
-		const DB_LMDB = 'drop-vs-open-lmdb-test';
-		const Table = table({
-			table: 'DropOpen',
-			database: DB_LMDB,
+		// An anchor gives us the databases root and tells us which engine's path shape to build, so this
+		// runs on both. There is deliberately NO marker: before the exclusion, throwIfBlockedByRestore
+		// read 'clear' without probing the lock and the open went straight through, so the lock alone
+		// has to be what stops it. Reverting either open site to a bare open fails this.
+		const anchor = table({
+			table: 'Anchor',
+			database: 'exclusion-anchor-test',
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
-		const rootStore = Table.primaryStore.rootStore;
-		if (rootStore instanceof RocksDatabase) return this.skip(); // the LMDB leg of the same guard
+		const rootStore = anchor.primaryStore.rootStore;
+		const BLOCKED = 'exclusion-blocked-test';
+		const blockedPath = join(dirname(rootStore.path), rootStore instanceof RocksDatabase ? BLOCKED : `${BLOCKED}.mdb`);
 
-		// a restore never targets LMDB, but a drop takes this lock and publishes the same marker, so
-		// an LMDB open that did not hold it would be check-then-act against a drop. The lock file is
-		// what proves the open went through withRestoreExclusion rather than straight to the engine.
-		assert.ok(existsSync(restoreLockPath(rootStore.path)), 'an LMDB open must take the restore exclusion');
-
-		// and it is the lock dropDatabase takes: held, the drop is refused rather than racing the open
-		const lock = acquireRestoreLock(rootStore.path);
+		const lock = acquireRestoreLock(blockedPath);
 		try {
-			await assert.rejects(dropDatabase(DB_LMDB), (error) => error.statusCode === 409);
+			assert.throws(
+				() =>
+					table({
+						table: 'Blocked',
+						database: BLOCKED,
+						attributes: [{ name: 'id', isPrimaryKey: true }],
+					}),
+				(error) => error.statusCode === 409
+			);
 		} finally {
 			releaseRestoreLock(lock);
 		}
-		// the refused drop unloaded the database from the in-memory map; re-resolve it, then confirm
-		// the drop proceeds once nothing holds the lock
-		table({ table: 'DropOpen', database: DB_LMDB, attributes: [{ name: 'id', isPrimaryKey: true }] });
-		await assert.doesNotReject(dropDatabase(DB_LMDB));
+
+		// and the exclusion is the lock dropDatabase takes, so a held lock refuses the drop too
+		const held = acquireRestoreLock(rootStore.path);
+		try {
+			await assert.rejects(dropDatabase('exclusion-anchor-test'), (error) => error.statusCode === 409);
+		} finally {
+			releaseRestoreLock(held);
+		}
+		table({ table: 'Anchor', database: 'exclusion-anchor-test', attributes: [{ name: 'id', isPrimaryKey: true }] });
+		await assert.doesNotReject(dropDatabase('exclusion-anchor-test'));
 	});
 
 	it('never loads the reserved restore-metadata directory as a database', function () {
