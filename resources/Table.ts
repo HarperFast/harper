@@ -2144,16 +2144,18 @@ export function makeTable(options): TableResourceClass {
 												}
 												// an origin's frames can arrive below its highest key, which must not be lowered
 												let originCursorsChanged = false;
-												for (const [nodeId, originLogKey] of originCursors ?? []) {
-													let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-													if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
-													if (!(nodeState.originLogKey >= originLogKey)) {
-														nodeState.originLogKey = originLogKey;
-														originCursorsChanged = true;
+												if (originCursors)
+													for (const [nodeId, originLogKey] of originCursors) {
+														let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+														if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+														if (!(nodeState.originLogKey >= originLogKey)) {
+															nodeState.originLogKey = originLogKey;
+															originCursorsChanged = true;
+														}
 													}
-												}
-												if (!advancesSequence && !originCursorsChanged) return;
 												const seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime || 0);
+												// a scalar above the persisted one is a repair: the cache moves before the write lands
+												if (!advancesSequence && !originCursorsChanged && seqId === existingSeq?.seqId) return;
 												logger.trace?.(
 													'Received txn',
 													databaseName,

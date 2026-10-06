@@ -170,7 +170,6 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
 				endTxn(now, [[7, now - 5]]),
 				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now },
-				// a repeated localTime, and a lower key for origin 7
 				endTxn(now, [
 					[7, now - 10],
 					[8, now],

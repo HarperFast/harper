@@ -1177,6 +1177,38 @@ describe('Audit log', () => {
 
 		assert(true, 'Should complete successfully after adding and removing logs');
 	});
+	it('re-admits an excluded log at its startByLog position once addLog is called (harper-pro#989)', async function () {
+		if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+		const auditStore = AuditedTable.auditStore;
+		const peerName = 'addlog-peer-' + Date.now();
+		const peerNodeId = auditStore.ensureLogExists(peerName);
+		const base = Date.now() - 10000;
+		for (const [id, time] of [
+			['addlog-old', base],
+			['addlog-new', base + 5000],
+		]) {
+			const context = { source: {}, sourceApply: true, timestamp: time };
+			await transaction(context, async () => {
+				const resource = await AuditedTable.getResource(id, context);
+				return resource._writeUpdate(id, { name: id }, true, {
+					isNotification: true,
+					nodeId: peerNodeId,
+					version: time,
+				});
+			});
+		}
+		const startByLog = new Map([['local', Date.now()]]);
+		const iterable = auditStore.getRange({ start: Date.now(), excludeLogs: [peerName], startByLog, snapshot: false });
+		const peerIdsRead = () => {
+			const ids = [];
+			for (const entry of iterable) if (String(entry.recordId).startsWith('addlog-')) ids.push(entry.recordId);
+			return ids;
+		};
+		assert.deepEqual(peerIdsRead(), []);
+		startByLog.set(peerName, base + 1);
+		iterable.addLog(peerName);
+		assert.deepEqual(peerIdsRead(), ['addlog-new']);
+	});
 	// A corrupt audit entry must surface as a skip-eligible sentinel record rather than
 	// throwing through the for-of consumer — otherwise the throw escapes in an async context
 	// and lands as uncaughtException, stalling outgoing replication for the affected (peer,

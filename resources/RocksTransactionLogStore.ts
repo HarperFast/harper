@@ -406,11 +406,13 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// holds the queue of next entries from each iterator
 			let nextEntries: any[];
 			let latestUpdates: number;
+			let excludeLogsChanged = false;
 			const iterators: TrackedIterator[] = [];
 			const expectedExactStarts: Array<number | undefined> = [];
 			const observedExactStarts = new Set<string>();
 			const updateIterators = () => {
-				if (latestUpdates !== this.updates) {
+				if (latestUpdates !== this.updates || excludeLogsChanged) {
+					excludeLogsChanged = false;
 					const latestLogs = (this.nodeLogs || this.loadLogs()).filter(
 						(log) => !options.excludeLogs?.includes(log.name)
 					);
@@ -525,6 +527,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 					let index = options.excludeLogs?.indexOf(logName);
 					if (index >= 0) {
 						options.excludeLogs.splice(index, 1);
+						// the store's log list did not change, so membership is re-read only on this signal
+						excludeLogsChanged = true;
 					}
 				},
 				removeLog: (logName: string) => {
