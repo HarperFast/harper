@@ -363,7 +363,7 @@ export interface ClusterLockTransport {
 		entry: LockControlEntry,
 		author: string,
 		position: number | undefined
-	): void;
+	): void | Promise<void>;
 	/**
 	 * Assigned at registration so a transport can push a received entry in directly. `author` and
 	 * `position` come from the authenticated origin-log header, never from the payload.
@@ -830,7 +830,6 @@ function noRevoke() {}
 function isPromiseLike(value: unknown): value is Promise<unknown> {
 	return value != null && typeof (value as Promise<unknown>).then === 'function';
 }
-/** A relay that throws or rejects is a drop, never an escape from the apply loop. */
 function relayControlEntryContained(
 	transport: ClusterLockTransport,
 	database: string,
@@ -841,9 +840,9 @@ function relayControlEntryContained(
 	onFailure: () => void
 ): void {
 	try {
-		const outcome = transport.relayControlEntry!(database, table, entry, author, position) as unknown;
+		const outcome = transport.relayControlEntry!(database, table, entry, author, position);
 		if (isPromiseLike(outcome))
-			outcome.catch((error) => {
+			outcome.then(undefined, (error) => {
 				warnOnce('failed to relay a record lock control entry to the coordinating thread', error);
 				onFailure();
 			});
@@ -2975,7 +2974,7 @@ export function registerClusterLockTransport(database: string, transport: Cluste
 			'A cluster lock transport must provide homeMap(), ownsCoordination(), requestDelegation(), recallDelegation() and establishLockFreshness()'
 		);
 	transport.onControlEntry = (db: string, table: string, entry: LockControlEntry, author: string, position: number) =>
-		deliverLockControlEntry(db, table, entry, author, position);
+		receiveLockControlEntry(db, table, entry, author, position);
 	transport.onDelegationRequest = (db: string, table: string, request: DelegationRequest) =>
 		deliverDelegationRequest(db, table, request);
 	transport.onDelegationRecall = (db: string, table: string, recall: DelegationRecall) =>

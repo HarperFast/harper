@@ -2604,9 +2604,6 @@ describe('record lock delegations', () => {
 		});
 
 		it('relays through the registered transport on a thread that never built a coordinator for the table', () => {
-			// The replication sink reaches the coordinator through the admitting resolver, which never
-			// creates one; a worker applying a peer's stream before anything locked here would otherwise
-			// let the release vanish, uncounted, and the home would hold its grant to the deadline.
 			const relayed = [];
 			const transport = {
 				homeMap: () => undefined,
@@ -2625,11 +2622,13 @@ describe('record lock delegations', () => {
 				const entry = { type: 'lockRelease', key: 'k', requester: 'alpha', token: [1, 1, 1], dependencies: null };
 				receiveLockControlEntry('cold-db', 'cold-table', entry, 'alpha', 9);
 				assert.deepStrictEqual(relayed, [['cold-db', 'cold-table', entry, 'alpha', 9]]);
+				transport.onControlEntry('cold-db', 'cold-table', entry, 'alpha', 12);
+				assert.strictEqual(relayed.length, 2, 'the registered receive callback takes the same boundary');
 				receiveLockControlEntry('cold-db', 'cold-table', { type: 'lockBarrier', nonce: 1 }, 'alpha', 10);
-				assert.strictEqual(relayed.length, 1, 'only releases are relayed');
+				assert.strictEqual(relayed.length, 2, 'only releases are relayed');
 				transport.ownsCoordination = () => true;
 				receiveLockControlEntry('cold-db', 'cold-table', entry, 'alpha', 11);
-				assert.strictEqual(relayed.length, 1, 'the owner thread with no coordinator holds no grant to clear');
+				assert.strictEqual(relayed.length, 2, 'the owner thread with no coordinator holds no grant to clear');
 			} finally {
 				unregisterClusterLockTransport('cold-db', true);
 				setLockCoordinatorResolver(() => undefined);
