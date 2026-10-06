@@ -68,4 +68,5 @@ char is left in `dist/**/*.js` — a tagged template is deliberately left untouc
 read `.raw`, so that is the case that would trip it.
 
 `npm run build:watch` is plain `tsc --watch`: comments and non-Latin-1 text stay, which only costs
-memory on a development box.
+memory on a development box. harper-pro compiles core into its own `dist/core`, so it runs this
+script with `--project tsconfig.json` rather than core's build.

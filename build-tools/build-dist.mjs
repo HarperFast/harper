@@ -4,9 +4,9 @@ import ts from 'typescript';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 
 const NON_LATIN1 = /[\u0100-\uffff]/;
-const CONFIG_PATH = 'tsconfig.build.json';
 
 // Synthesized literal nodes are printed escaped; ones parsed from source are copied verbatim.
 export function escapeNonLatin1Literals(context) {
@@ -50,9 +50,9 @@ export function escapeNonLatin1Literals(context) {
 	return (sourceFile) => ts.visitNode(sourceFile, visit);
 }
 
-function readConfig() {
+function readConfig(configPath) {
 	return ts.getParsedCommandLineOfConfigFile(
-		CONFIG_PATH,
+		configPath,
 		{},
 		{
 			...ts.sys,
@@ -94,8 +94,8 @@ export function findNonLatin1(directory) {
 	return found;
 }
 
-function build() {
-	const config = readConfig();
+export function build(configPath) {
+	const config = readConfig(configPath);
 	if (reportDiagnostics(config.errors)) return 1;
 	const { fileNames, projectReferences } = config;
 
@@ -129,4 +129,9 @@ function build() {
 	return failed ? 1 : 0;
 }
 
-if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) process.exitCode = build();
+if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+	const { values } = parseArgs({
+		options: { project: { type: 'string', short: 'p', default: 'tsconfig.build.json' } },
+	});
+	process.exitCode = build(values.project);
+}

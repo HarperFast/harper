@@ -1,10 +1,10 @@
 import assert from 'node:assert';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { SourceMap } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ts from 'typescript';
-import { escapeNonLatin1Literals, findNonLatin1 } from '../../build-tools/build-dist.mjs';
+import { build, escapeNonLatin1Literals, findNonLatin1 } from '../../build-tools/build-dist.mjs';
 
 const NON_LATIN1 = /[\u0100-\uffff]/;
 
@@ -79,6 +79,32 @@ describe('build-dist non-Latin-1 literal escaping', function () {
 			await writeFile(join(directory, 'nested', 'dirty.js'), `'use strict';\nconst a = String.raw\`—\`;\n`);
 			await writeFile(join(directory, 'nested', 'ignored.d.ts'), `/** — */\n`);
 			assert.deepStrictEqual(findNonLatin1(directory), [join(directory, 'nested', 'dirty.js') + ':2']);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('builds the project of the tsconfig it is given', async function () {
+		this.timeout(30000);
+		const directory = await mkdtemp(join(tmpdir(), 'build-dist-'));
+		try {
+			await mkdir(join(directory, 'src'));
+			await writeFile(
+				join(directory, 'src', 'index.ts'),
+				`/** Says — hi. */\nexport const greeting: string = 'hi → there'; // trailing\n`
+			);
+			await writeFile(
+				join(directory, 'tsconfig.custom.json'),
+				JSON.stringify({
+					include: ['src/**/*'],
+					compilerOptions: { outDir: 'out', declaration: true, module: 'NodeNext', moduleResolution: 'NodeNext' },
+				})
+			);
+			assert.strictEqual(build(join(directory, 'tsconfig.custom.json')), 0);
+			const js = await readFile(join(directory, 'out', 'index.js'), 'utf8');
+			assert.doesNotMatch(js, /\/\*\*|\/\/ trailing/);
+			assert.doesNotMatch(js, NON_LATIN1);
+			assert.match(await readFile(join(directory, 'out', 'index.d.ts'), 'utf8'), /\/\*\* Says — hi\. \*\//);
 		} finally {
 			await rm(directory, { recursive: true, force: true });
 		}
