@@ -677,8 +677,7 @@ async function runOne(opts: CliOptions, codec: string, dataset: string): Promise
 		// killed flush loses SST bytes that were never written — which this benchmark, having
 		// excluded WAL bytes, would report as the codec being smaller. Give the flush a
 		// benchmark-sized budget and confirm the process actually exited on its own.
-		// Keep synchronous with killHarper: an exit that already happened is invisible to any listener
-		// added now, and killHarper returns at once for a dead process.
+		// Keep synchronous with killHarper: a process that already exited emits no 'exit' to wait on.
 		const child = started.harper.process;
 		if (child.exitCode !== null || child.signalCode !== null) {
 			throw new Error(
