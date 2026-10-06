@@ -724,6 +724,37 @@ describe('agent/loop per-session budgets (#3040)', () => {
 		assert.deepStrictEqual(answered.sort(), ['c1', 'c2']);
 	});
 
+	it('a run cancelled before it consumes approvals does not execute an approved action', async () => {
+		for (const caps of [{}, { maxSessionTokens: 1_000_000 }]) {
+			_resetInFlightForTests();
+			const sessionId = await newSession();
+			const drop = countingTool('drop', { destructive: true });
+			await runAgent({
+				sessionId,
+				models: stubModels([toolTurn('c1', 'drop', usage(60, 10))]),
+				tools: [drop],
+				scopes,
+				maxTurns: 5,
+				autoApprove: false,
+			});
+			const paused = await session.getSession(sessionId);
+			await session.resolveApproval(sessionId, paused.pendingApprovals[0].id, true);
+			const controller = new AbortController();
+			controller.abort();
+			await runAgent({
+				sessionId,
+				models: stubModels([]),
+				tools: [drop],
+				scopes,
+				maxTurns: 5,
+				autoApprove: false,
+				signal: controller.signal,
+				...caps,
+			});
+			assert.equal(drop.runs, 0, JSON.stringify(caps));
+		}
+	});
+
 	it('endRun completes the transcript but keeps an aborted status a cancel already wrote', async () => {
 		const sessionId = await newSession();
 		await session.setStatus(sessionId, 'aborted', 'Cancelled by operator');

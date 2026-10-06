@@ -109,6 +109,14 @@ describe('Models.generate pricing', () => {
 		assert.strictEqual(result.costUsd, 1);
 	});
 
+	it('a completed result with no output falls through to the next candidate', async () => {
+		setGenerative('default', defineBackend({ name: 'hollow', generate: async () => ({ status: 'completed' }) }));
+		setGenerative('backup', backendReturning('backup', { promptTokens: 1, completionTokens: 1 }));
+		setFallbackGroup('generative', 'default', ['backup']);
+		const result = await new Models(writer()).generate('hi');
+		assert.strictEqual(result.content, 'ok');
+	});
+
 	it('an unpriced fallback leaves the call unpriced even when the requested entry is priced', async () => {
 		const primary = defineBackend({
 			name: 'primary',

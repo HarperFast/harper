@@ -60,6 +60,8 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 		// Before the approvals below can execute anything: a cap lowered while a run sat awaiting
 		// approval must stop the approved action, not just the next model call.
 		if (await stopIfOverBudget(opts)) return;
+		// A cancel that landed while the session was read must not let an approved action run.
+		if (opts.signal?.aborted) return;
 
 		// First, drain any resolved-but-unconsumed approvals from a prior pause. Either execute
 		// or refuse each saved call, recording an observation, so the next model turn sees the
@@ -131,9 +133,8 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 }
 
 /**
- * Stop a run whose session is already at a cap, in one write: every open approval, resolved or not, is
- * answered without executing it, so no tool call is left without a response once the session leaves
- * `awaiting_approval`. Returns `true` when it stopped the run.
+ * Every open approval, resolved or not, is answered without executing it, so no tool call is left
+ * without a response once the session leaves `awaiting_approval`.
  */
 async function stopIfOverBudget(opts: RunAgentOpts): Promise<boolean> {
 	if (!hasBudget(opts)) return false;

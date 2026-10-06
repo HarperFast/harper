@@ -1493,13 +1493,13 @@ describe("agentLoop (toolMode: 'auto')", () => {
 				assert.strictEqual(warnings.filter((w) => /budget is unenforceable/.test(w)).length, 1);
 			});
 
-			it('a half token report counts as no usage for maxToolTokens', async () => {
+			it('a half or negative token report counts as no usage for maxToolTokens', async () => {
 				backend.queue(
 					{
 						output: { content: 'r1', finishReason: 'tool_calls', toolCalls: [tc('c1', 'echo', { i: 1 })] },
 						usage: { completionTokens: 5 },
 					},
-					{ output: { content: 'final', finishReason: 'stop' }, usage: { completionTokens: 5 } }
+					{ output: { content: 'final', finishReason: 'stop' }, usage: { promptTokens: -1, completionTokens: 5 } }
 				);
 				const result = await models.generate('q', {
 					toolMode: 'auto',

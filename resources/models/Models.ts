@@ -243,7 +243,8 @@ export class Models implements ModelsContract {
 				const result = await backend.generate!(input, backendOpts);
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
 				this.#record(backend, 'generate', opts.model, accounting, opts, result, attemptStart);
-				completed = { output: result.output, usage: result.usage };
+				// A result with no output was never an answer; it falls through to the next candidate.
+				if (result.output) completed = { output: result.output, usage: result.usage };
 			} catch (err) {
 				this.#recordFailure(backend, 'generate', opts.model, accounting, opts, attemptStart, err);
 				if (!hasError) {
