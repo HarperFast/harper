@@ -25,6 +25,7 @@ const KEY_FILE_NAME = /\.(?:pem|key)$|^\.jwtPass$/i;
 // Checked against the text a tool returns, so a key without armor passes; the name and key-directory
 // rules are the guarantee.
 const PRIVATE_KEY_ARMOR = /-----(BEGIN|END) [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
+const ARMOR_LINE_OVERLAP_BYTES = 64;
 
 type Access = 'read' | 'write';
 type Scope = 'components' | 'logs' | 'config';
@@ -331,11 +332,13 @@ export const tailFileTool: AgentTool = {
 		const st = await stat(path);
 		const start = Math.max(0, st.size - TAIL_READ_BYTES);
 		const truncated = start > 0;
+		// A little before the window too, so an armor line cut by the window start is still seen.
+		const scanStart = Math.max(0, start - ARMOR_LINE_OVERLAP_BYTES);
 		const fh = await open(path, 'r');
 		try {
-			const buf = Buffer.alloc(st.size - start);
-			await fh.read(buf, 0, buf.length, start);
-			const text = buf.toString('utf8');
+			const scanned = Buffer.alloc(st.size - scanStart);
+			await fh.read(scanned, 0, scanned.length, scanStart);
+			const text = scanned.subarray(start - scanStart).toString('utf8');
 			const all = text.split('\n');
 			// `split('\n')` on a file ending with `\n` leaves a trailing empty entry — drop it so the
 			// "last N lines" the agent sees matches what a human reading the file would see.
@@ -345,7 +348,7 @@ export const tailFileTool: AgentTool = {
 			if (truncated && all.length > 0) all.shift();
 			const lines = all.slice(Math.max(0, all.length - wanted));
 			assertNoPrivateKey(lines.join('\n'), requested);
-			if (endsInsidePrivateKey(text)) {
+			if (endsInsidePrivateKey(scanned.toString('utf8'))) {
 				throw new Error(`Refusing to read key material: ${requested} ends inside a PEM private key`);
 			}
 			return { path, lines, truncated };

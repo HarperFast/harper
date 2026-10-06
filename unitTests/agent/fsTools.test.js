@@ -351,5 +351,16 @@ describe('agent/fsTools key material and the single-file config scope (harper#30
 				/ends inside a PEM private key/
 			);
 		});
+
+		it('tail_file still sees a BEGIN line that its 1 MiB read window cuts in half', async () => {
+			// The body is 10 bytes short of the window, so the window starts 18 bytes into the BEGIN line.
+			const body = `${'A'.repeat(63)}\n`.repeat(16383) + `${'A'.repeat(53)}\n`;
+			assert.equal(body.length, 1024 * 1024 - 10);
+			writeFileSync(join(root, 'log', 'hdb.log'), `start\n-----BEGIN PRIVATE KEY-----\n${body}`);
+			await assert.rejects(
+				tailFileTool.handler({ root: 'logs', path: 'hdb.log', lines: 5 }, ctx(defaultScopes())),
+				/ends inside a PEM private key/
+			);
+		});
 	});
 });
