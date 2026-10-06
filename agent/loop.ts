@@ -47,7 +47,6 @@ export function isValidMaxToolResultBytes(value: unknown): value is number {
 	);
 }
 
-/** What each of the newest tool results is cut to after a request that included them overflowed the context window. */
 const CONTEXT_SHRINK_BYTES = 2048;
 const ASK_FOR_LESS =
 	'Ask for less: read_file with startLine/lineCount, tail_file with fewer lines, grep_files with a narrower pattern, or a narrower query';

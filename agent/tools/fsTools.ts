@@ -213,7 +213,6 @@ interface Page {
 	content: string;
 	/** Lines in `content`, counting a partial line. */
 	lines: number;
-	/** File offset just past `content`. */
 	endOffset: number;
 	lineTruncated: boolean;
 }
@@ -384,7 +383,8 @@ export const grepFilesTool: AgentTool = {
 		description:
 			'Search recursively within a scope for a regex pattern. Returns matched lines with line numbers ' +
 			`(each cut to ${MAX_GREP_LINE_CHARS} characters), up to one page of results; \`truncated: true\` ` +
-			'means the search stopped early, so narrow the pattern or path.',
+			'means the search stopped early, so narrow the pattern or path. Files over 5 MiB are not searched; ' +
+			'`skippedFiles` counts them, and read_file pages through them.',
 		parameters: {
 			type: 'object',
 			properties: {
@@ -415,6 +415,7 @@ export const grepFilesTool: AgentTool = {
 		const budget = pageBytes(ctx, root);
 		let resultBytes = 0;
 		let truncated = false;
+		let skippedFiles = 0;
 		const results: Array<{ path: string; line: number; text: string }> = [];
 		await walk(root, async (file) => {
 			if (truncated) return false;
@@ -427,7 +428,10 @@ export const grepFilesTool: AgentTool = {
 			} catch {
 				return true;
 			}
-			if (size > MAX_READ_BYTES) return true;
+			if (size > MAX_READ_BYTES) {
+				skippedFiles++;
+				return true;
+			}
 			const text = await readFile(file, 'utf8').catch(() => '');
 			if (!text) return true;
 			const lines = text.split('\n');
@@ -449,7 +453,7 @@ export const grepFilesTool: AgentTool = {
 			}
 			return true;
 		});
-		return { root, count: results.length, results, truncated };
+		return { root, count: results.length, results, truncated, skippedFiles };
 	},
 };
 

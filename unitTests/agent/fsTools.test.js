@@ -380,6 +380,20 @@ describe('agent/fsTools pages', () => {
 		assert.equal(serializeToolResult({ ok: true, result }, 1024).truncated, false);
 	});
 
+	it('grep_files counts the files it skips for being over 5 MiB', async () => {
+		writeFileSync(join(scopes.logDir, 'huge.log'), 'error\n'.repeat(1_000_000));
+		writeFileSync(join(scopes.logDir, 'small.log'), 'fine\n');
+		const result = await grepFilesTool.handler({ root: 'logs', pattern: 'error' }, pagedCtx(65536));
+		assert.deepEqual(
+			{ count: result.count, truncated: result.truncated, skippedFiles: result.skippedFiles },
+			{
+				count: 0,
+				truncated: false,
+				skippedFiles: 1,
+			}
+		);
+	});
+
 	it('grep_files is not truncated when every match fits', async () => {
 		writeFileSync(join(scopes.componentsRoot, 'a.txt'), 'apple\nbanana\nApple');
 		const result = await grepFilesTool.handler({ pattern: 'apple' }, pagedCtx(65536));
