@@ -9,8 +9,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Builds each platform image, boots it through every docker-smoke.yml check, and only then copies
-  # that exact image to Docker Hub by digest (untagged). `merge` tags only the digests it uploads.
   build:
     name: Build, smoke test, push by digest
     uses: ./.github/workflows/docker-smoke.yml

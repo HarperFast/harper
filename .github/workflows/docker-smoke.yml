@@ -2,8 +2,8 @@ name: Docker Image Smoke Test
 
 # Builds the container image and boots it to catch breakage that only shows up
 # at runtime (e.g. an empty/unexecutable entrypoint producing "exec format
-# error"). publish-docker.yaml calls this workflow with `publish: true`, so a
-# release can only copy to Docker Hub the image that passed every check here.
+# error"). publish-docker.yaml calls this workflow with `publish: true`: every
+# step here gates the release image.
 
 on:
   pull_request:
@@ -90,13 +90,11 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Outside PRs the image is built once into a registry on the runner and smoke-tested from
-      # there, so a release copies to Docker Hub the exact index it booted, provenance attestation
-      # included, instead of rebuilding. Pushes copy into a second local repository instead,
-      # which keeps the release path exercised.
+      # Outside PRs the image is smoke-tested from a runner-local registry, so a release copies
+      # the tested index itself to Docker Hub (.github/DESIGN.md).
       - name: Start local registry
         if: github.event_name != 'pull_request'
-        run: docker run -d --name registry -p 5000:5000 registry:3
+        run: docker run -d --name registry -p 5000:5000 registry:3.1.2
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
