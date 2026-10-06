@@ -119,7 +119,6 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 	}
 }
 
-/** Why a model turn cannot stand as the run's reply or be acted on; undefined when it can. */
 function rejectTurn(result: GenerateResult, maxTokens: number | undefined): string | undefined {
 	const toolCallCount = result.toolCalls?.length ?? 0;
 	const notExecuted = toolCallCount > 0 ? `; its ${toolCallCount} tool call(s) were not executed` : '';
