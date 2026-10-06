@@ -281,7 +281,9 @@ jobs:
     name: Integration Tests ${{matrix.shard}}/6 (Bun)
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    needs: [build]
+    # Downloads the node-24 build artifact, which exists only when 24 is in the build matrix.
+    needs: [generate-node-version-matrix, build]
+    if: contains(fromJSON(needs.generate-node-version-matrix.outputs.node-versions), 24)
     strategy:
       fail-fast: false
       matrix:
@@ -333,7 +335,9 @@ jobs:
     name: Integration Tests ${{matrix.shard}}/6 (uWS HTTP)
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    needs: [build]
+    # Downloads the node-24 build artifact, which exists only when 24 is in the build matrix.
+    needs: [generate-node-version-matrix, build]
+    if: contains(fromJSON(needs.generate-node-version-matrix.outputs.node-versions), 24)
     strategy:
       fail-fast: false
       matrix:
