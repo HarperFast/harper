@@ -1944,6 +1944,8 @@ Returns job status (`COMPLETE`, `IN_PROGRESS`, `ERROR`), timing, and result mess
 { "operation": "get_job", "id": "4a982782-929a-4507-8794-26dae1132def" }
 ```
 
+A job is recorded only on the node that ran it, because `system.hdb_job` is not replicated, so `get_job` answers only there; any other node returns an empty array. For a `deploy_component` with `"restart": "rolling"`, that is the node that received the deploy.
+
 Any role may call `get_job`, unless the role has an `operations` allowlist, or the caller's token an `operations` scope, that does not list it. Either one refuses every operation it doesn't name, so a deploy-only role that waits for its rolling deploys must list `get_job`.
 
 ### `search_jobs_by_start_date`

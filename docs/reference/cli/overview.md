@@ -106,8 +106,8 @@ kill -0 $(cat /path/to/hdb/hdb.pid)  # Check if process is running
 | `harper restart`                   | Restart Harper                                                  | v4.1.0          |
 | `harper start`                     | Start Harper in background (daemon mode)                        | v4.1.0          |
 | `harper stop`                      | Stop a running Harper instance                                  | v4.1.0          |
-| `harper login`                     | Log in to a Harper instance                                     | v5.0.0          |
-| `harper logout`                    | Log out of a Harper instance                                    | v5.0.0          |
+| `harper login`                     | Log in to a Harper instance                                     | v5.1.0          |
+| `harper logout`                    | Log out of a Harper instance                                    | v5.1.0          |
 | `harper status`                    | Display Harper and clustering status                            | v4.1.0          |
 | `harper version`                   | Show installed Harper version                                   | v4.1.0          |
 | `harper renew-certs`               | Renew Harper-generated self-signed certificates                 | v4.1.0          |
