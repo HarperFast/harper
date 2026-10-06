@@ -11,16 +11,33 @@
  * reach more of the filesystem than a remote CLI.
  */
 
-import { readFile, writeFile, readdir, stat, mkdir, realpath, lstat, open } from 'node:fs/promises';
+import { readFile, writeFile, readdir, stat, mkdir, realpath, lstat, open, type FileHandle } from 'node:fs/promises';
 import { resolve, dirname, relative, sep, isAbsolute } from 'node:path';
 import type { AgentTool, AgentToolContext, AgentScopes } from '../types.ts';
 
-const MAX_READ_BYTES = 5 * 1024 * 1024; // 5 MiB
+const MAX_READ_BYTES = 5 * 1024 * 1024; // 5 MiB — grep skips larger files
 const MAX_WRITE_BYTES = 5 * 1024 * 1024;
 const MAX_GREP_RESULTS = 500;
+const MAX_GREP_LINE_CHARS = 500;
 const MAX_PATTERN_LENGTH = 1000;
 const DEFAULT_TAIL_LINES = 200;
-const TAIL_READ_BYTES = 1 * 1024 * 1024; // 1 MiB — enough for thousands of normal log lines
+const MAX_TAIL_LINES = 5000;
+const DEFAULT_PAGE_BYTES = 32 * 1024;
+const SCAN_CHUNK_BYTES = 64 * 1024;
+const NEWLINE = 0x0a;
+
+/** Most file text one read returns: half the loop's per-result cap, which leaves room for JSON escaping. */
+function pageBytes(ctx: AgentToolContext): number {
+	return ctx.maxResultBytes ? Math.floor(ctx.maxResultBytes / 2) : DEFAULT_PAGE_BYTES;
+}
+
+function optionalPositiveInteger(value: unknown, name: string): number | undefined {
+	if (value == null) return undefined;
+	if (!Number.isSafeInteger(value) || (value as number) < 1) {
+		throw new Error(`${name} must be a positive integer; got ${JSON.stringify(value)}`);
+	}
+	return value as number;
+}
 
 type Access = 'read' | 'write';
 type Scope = 'components' | 'logs' | 'config';
@@ -111,26 +128,133 @@ function isInside(child: string, parent: string): boolean {
 export const readFileTool: AgentTool = {
 	def: {
 		name: 'read_file',
-		description: 'Read a UTF-8 text file from the components, logs, or config scope.',
+		description:
+			'Read a UTF-8 text file from the components, logs, or config scope, one page of whole lines at a time. ' +
+			'A file that fits in one page comes back whole. When the file continues, `nextLine` is the startLine of ' +
+			'the next page; `totalLines` is present once a page reaches the end of the file. A line longer than a ' +
+			'page comes back cut, with `lineTruncated: true`; use grep_files to search inside it. write_file replaces ' +
+			'the whole file, so read every page before rewriting one.',
 		parameters: {
 			type: 'object',
 			properties: {
 				root: { type: 'string', enum: SCOPES, description: SCOPE_DESCRIPTION },
 				path: { type: 'string', description: 'Path relative to the chosen root, e.g. "my_app/schema.graphql".' },
+				startLine: { type: 'integer', minimum: 1, description: 'First line to return, 1-based. Default 1.' },
+				lineCount: {
+					type: 'integer',
+					minimum: 1,
+					description: 'Most lines to return. Default: as many as fit in one page.',
+				},
 			},
 			required: ['path'],
 		},
 	},
 	handler: async (args: any, ctx: AgentToolContext) => {
 		const path = await resolveScoped(ctx.scopes, normalizeScope(args.root), args.path, 'read');
-		const st = await stat(path);
-		if (st.size > MAX_READ_BYTES) {
-			throw new Error(`File ${path} exceeds ${MAX_READ_BYTES}-byte read cap (size ${st.size})`);
+		const startLine = optionalPositiveInteger(args.startLine, 'startLine') ?? 1;
+		const lineCount = optionalPositiveInteger(args.lineCount, 'lineCount') ?? Infinity;
+		const fh = await open(path, 'r');
+		try {
+			const { size } = await fh.stat();
+			const page = await readLinePage(fh, size, startLine, lineCount, pageBytes(ctx), ctx.signal);
+			return { path, size, startLine, ...page };
+		} finally {
+			await fh.close();
 		}
-		const content = await readFile(path, 'utf8');
-		return { path, size: st.size, content };
 	},
 };
+
+interface LinePage {
+	content: string;
+	/** Last line in `content`; absent when the page holds no line. */
+	endLine?: number;
+	nextLine?: number;
+	totalLines?: number;
+	lineTruncated?: true;
+}
+
+/**
+ * Whole lines from `startLine` on, up to `lineCount` lines and `budget` bytes, as the file's exact
+ * bytes. Memory stays bounded by `budget` and one scan chunk however large the file or its lines.
+ */
+async function readLinePage(
+	fh: FileHandle,
+	size: number,
+	startLine: number,
+	lineCount: number,
+	budget: number,
+	signal?: AbortSignal
+): Promise<LinePage> {
+	const located = await findLineStart(fh, size, startLine, signal);
+	if ('totalLines' in located) return { content: '', totalLines: located.totalLines };
+	const offset = located.offset;
+	const window = Buffer.alloc(Math.min(budget, size - offset));
+	const { bytesRead } = await fh.read(window, 0, window.length, offset);
+	const page = window.subarray(0, bytesRead);
+	const reachesEnd = offset + bytesRead >= size;
+	if (page.length === 0) return { content: '', totalLines: startLine - 1 };
+
+	let end = 0;
+	let lines = 0;
+	for (let index = page.indexOf(NEWLINE); lines < lineCount && index !== -1; index = page.indexOf(NEWLINE, end)) {
+		end = index + 1;
+		lines++;
+	}
+	if (lines < lineCount && reachesEnd && end < page.length) {
+		end = page.length;
+		lines++;
+	}
+	if (lines === 0) {
+		// One line longer than the page: return its head, cut on a character boundary.
+		return {
+			content: page.subarray(0, completeUtf8Length(page)).toString('utf8'),
+			endLine: startLine,
+			nextLine: startLine + 1,
+			lineTruncated: true,
+		};
+	}
+	const endLine = startLine + lines - 1;
+	const content = page.subarray(0, end).toString('utf8');
+	return offset + end < size ? { content, endLine, nextLine: endLine + 1 } : { content, endLine, totalLines: endLine };
+}
+
+/** The byte offset where `line` starts, or the file's line count when it has fewer lines than that. */
+async function findLineStart(
+	fh: FileHandle,
+	size: number,
+	line: number,
+	signal?: AbortSignal
+): Promise<{ offset: number } | { totalLines: number }> {
+	if (line === 1) return { offset: 0 };
+	const chunk = Buffer.alloc(SCAN_CHUNK_BYTES);
+	let newlines = 0;
+	let lastByte = NEWLINE;
+	for (let position = 0; position < size;) {
+		signal?.throwIfAborted();
+		const { bytesRead } = await fh.read(chunk, 0, Math.min(chunk.length, size - position), position);
+		if (bytesRead === 0) break;
+		const read = chunk.subarray(0, bytesRead);
+		for (let index = read.indexOf(NEWLINE); index !== -1; index = read.indexOf(NEWLINE, index + 1)) {
+			if (++newlines === line - 1) {
+				const offset = position + index + 1;
+				return offset < size ? { offset } : { totalLines: newlines };
+			}
+		}
+		lastByte = read[bytesRead - 1];
+		position += bytesRead;
+	}
+	return { totalLines: newlines + (lastByte === NEWLINE ? 0 : 1) };
+}
+
+/** Length of the longest prefix of `bytes` that does not end inside a UTF-8 character. */
+function completeUtf8Length(bytes: Buffer): number {
+	if (bytes.length === 0) return 0;
+	let lead = bytes.length - 1;
+	while (lead > 0 && bytes.length - lead < 4 && (bytes[lead] & 0xc0) === 0x80) lead--;
+	const first = bytes[lead];
+	const width = first >= 0xf0 ? 4 : first >= 0xe0 ? 3 : first >= 0xc0 ? 2 : 1;
+	return lead + width <= bytes.length ? bytes.length : lead;
+}
 
 export const writeFileTool: AgentTool = {
 	def: {
@@ -193,7 +317,10 @@ export const listDirTool: AgentTool = {
 export const grepFilesTool: AgentTool = {
 	def: {
 		name: 'grep_files',
-		description: 'Search recursively within a scope for a regex pattern. Returns matched lines.',
+		description:
+			'Search recursively within a scope for a regex pattern. Returns matched lines with line numbers ' +
+			`(each cut to ${MAX_GREP_LINE_CHARS} characters), up to one page of results; \`truncated: true\` ` +
+			'means the search stopped early, so narrow the pattern or path.',
 		parameters: {
 			type: 'object',
 			properties: {
@@ -221,9 +348,12 @@ export const grepFilesTool: AgentTool = {
 		}
 		const pattern = new RegExp(patternSource, args.flags ?? 'i');
 		const cap = Math.min(args.maxResults ?? MAX_GREP_RESULTS, MAX_GREP_RESULTS);
+		const budget = pageBytes(ctx);
+		let resultBytes = 0;
+		let truncated = false;
 		const results: Array<{ path: string; line: number; text: string }> = [];
 		await walk(root, async (file) => {
-			if (results.length >= cap) return false;
+			if (results.length >= cap || truncated) return false;
 			// `stat` first so a multi-GB log or database file can't be slurped into memory by a
 			// well-formed grep request. Anything over the read cap is silently skipped.
 			let size = 0;
@@ -239,49 +369,62 @@ export const grepFilesTool: AgentTool = {
 			const lines = text.split('\n');
 			for (let i = 0; i < lines.length; i++) {
 				if (results.length >= cap) return false;
-				if (pattern.test(lines[i])) results.push({ path: file, line: i + 1, text: lines[i] });
+				if (!pattern.test(lines[i])) continue;
+				const text = lines[i].length > MAX_GREP_LINE_CHARS ? `${lines[i].slice(0, MAX_GREP_LINE_CHARS)}…` : lines[i];
+				const match = { path: file, line: i + 1, text };
+				resultBytes += Buffer.byteLength(JSON.stringify(match), 'utf8');
+				if (resultBytes > budget) {
+					truncated = true;
+					return false;
+				}
+				results.push(match);
 			}
 			return true;
 		});
-		return { root, count: results.length, results };
+		return { root, count: results.length, results, truncated };
 	},
 };
 
 export const tailFileTool: AgentTool = {
 	def: {
 		name: 'tail_file',
-		description: 'Return the last N lines of a UTF-8 file. Useful for log tails (root: "logs").',
+		description:
+			`Return the last N lines of a UTF-8 file (default ${DEFAULT_TAIL_LINES}, at most ${MAX_TAIL_LINES}) that fit in ` +
+			'one page. Useful for log tails (root: "logs"). `truncated: true` means fewer lines than asked fit, or the ' +
+			'last line was longer than a page and comes back cut; read earlier content with grep_files or read_file.',
 		parameters: {
 			type: 'object',
 			properties: {
 				root: { type: 'string', enum: SCOPES, description: SCOPE_DESCRIPTION },
 				path: { type: 'string', description: 'Path relative to the chosen root, e.g. "hdb.log".' },
-				lines: { type: 'integer', minimum: 1, maximum: 5000 },
+				lines: { type: 'integer', minimum: 1, maximum: MAX_TAIL_LINES },
 			},
 			required: ['path'],
 		},
 	},
 	handler: async (args: any, ctx: AgentToolContext) => {
 		const path = await resolveScoped(ctx.scopes, normalizeScope(args.root), args.path, 'read');
-		const wanted = Math.min(args.lines ?? DEFAULT_TAIL_LINES, 5000);
-		// Read only the trailing TAIL_READ_BYTES — a multi-GB log file otherwise OOMs the process.
-		const st = await stat(path);
-		const start = Math.max(0, st.size - TAIL_READ_BYTES);
-		const truncated = start > 0;
+		const wanted = Math.min(optionalPositiveInteger(args.lines, 'lines') ?? DEFAULT_TAIL_LINES, MAX_TAIL_LINES);
 		const fh = await open(path, 'r');
 		try {
-			const buf = Buffer.alloc(st.size - start);
+			// Read only the trailing page — a multi-GB log file otherwise OOMs the process.
+			const { size } = await fh.stat();
+			const start = Math.max(0, size - pageBytes(ctx));
+			const buf = Buffer.alloc(size - start);
 			await fh.read(buf, 0, buf.length, start);
-			const text = buf.toString('utf8');
-			const all = text.split('\n');
+			// Starting mid-file can land inside a character; skip to the next character boundary.
+			let firstChar = 0;
+			while (start > 0 && firstChar < buf.length && (buf[firstChar] & 0xc0) === 0x80) firstChar++;
+			const all = buf.subarray(firstChar).toString('utf8').split('\n');
 			// `split('\n')` on a file ending with `\n` leaves a trailing empty entry — drop it so the
 			// "last N lines" the agent sees matches what a human reading the file would see.
 			if (all.length > 0 && all[all.length - 1] === '') all.pop();
-			// When we read from a mid-file offset the first "line" is almost certainly a partial
-			// fragment of a real line. Drop it so we don't hand the agent a misleading prefix.
-			if (truncated && all.length > 0) all.shift();
-			const sliceStart = Math.max(0, all.length - wanted);
-			return { path, lines: all.slice(sliceStart), truncated };
+			// From a mid-file offset the first "line" is almost certainly a fragment; drop it, unless it
+			// is the only line, which is then the cut end of a line longer than the page.
+			const lastLineCut = start > 0 && all.length === 1;
+			if (start > 0 && all.length > 1) all.shift();
+			const lines = all.slice(Math.max(0, all.length - wanted));
+			return { path, lines, truncated: start > 0 && (lines.length < wanted || lastLineCut) };
 		} finally {
 			await fh.close();
 		}

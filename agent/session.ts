@@ -135,6 +135,37 @@ export function setStatus(sessionId: string, status: AgentRunStatus, lastError?:
 	});
 }
 
+/**
+ * Find the newest tool message larger than `maxBytes` and replace every message over `maxBytes` in
+ * its run of consecutive tool messages with `shrink(content)`, which must return at most `maxBytes`.
+ * Returns how many messages changed; 0 means no tool message is over `maxBytes`.
+ */
+export function shrinkNewestToolResults(
+	sessionId: string,
+	maxBytes: number,
+	shrink: (content: string) => string
+): Promise<number> {
+	return withSessionLock(sessionId, async () => {
+		const session = await requireSession(sessionId);
+		const { messages } = session;
+		const oversized = (message: AgentMessage) =>
+			message.role === 'tool' && Buffer.byteLength(message.content, 'utf8') > maxBytes;
+		let index = messages.length - 1;
+		while (index >= 0 && !oversized(messages[index])) index--;
+		if (index < 0) return 0;
+		while (index > 0 && messages[index - 1].role === 'tool') index--;
+		let shrunk = 0;
+		for (; index < messages.length && messages[index].role === 'tool'; index++) {
+			if (!oversized(messages[index])) continue;
+			messages[index] = { ...messages[index], content: shrink(messages[index].content) };
+			shrunk++;
+		}
+		session.updatedAt = Date.now();
+		await getAgentSessionTable().put(session);
+		return shrunk;
+	});
+}
+
 export function addPendingApproval(
 	sessionId: string,
 	approval: Omit<ApprovalRequest, 'id' | 'createdAt'>

@@ -498,3 +498,327 @@ describe('agent/loop runAgent', () => {
 		assert.equal(calls, 1);
 	});
 });
+
+describe('agent/loop observation size and context window', () => {
+	beforeEach(() => {
+		session._setTableForTests(makeMockTable());
+		_resetInFlightForTests();
+	});
+
+	afterEach(() => {
+		session._setTableForTests(undefined);
+	});
+
+	function contextWindowError() {
+		return Object.assign(new Error('prompt is too long: 250000 tokens > 200000 maximum'), {
+			contextWindowExceeded: true,
+		});
+	}
+
+	function bigTool(name, bytes) {
+		return {
+			def: { name, description: name, parameters: { type: 'object' } },
+			handler: async () => ({ text: 'L'.repeat(bytes) }),
+		};
+	}
+
+	function toolTurn(...names) {
+		return {
+			content: '',
+			finishReason: 'tool_calls',
+			toolCalls: names.map((name, i) => ({ id: `${name}-${i}`, name, arguments: {} })),
+		};
+	}
+
+	/** A model that replays `script` entries in order; an Error entry is thrown, anything else returned. */
+	function scriptedModels(script) {
+		const requests = [];
+		return {
+			requests,
+			models: {
+				async generate(input) {
+					requests.push(structuredClone(input));
+					const step = script[requests.length - 1];
+					if (!step) throw new Error('script exhausted');
+					if (step instanceof Error) throw step;
+					return step;
+				},
+			},
+		};
+	}
+
+	async function sessionWith(...messages) {
+		const created = await session.createSession({ user: 'admin' });
+		for (const message of messages) {
+			await session.appendMessage(created.session_id, { createdAt: Date.now(), ...message });
+		}
+		return created.session_id;
+	}
+
+	it('cuts a tool result over maxToolResultBytes to the cap, with a marker, and the next turn runs', async () => {
+		const sessionId = await sessionWith({ role: 'user', content: 'read the log' });
+		const { models, requests } = scriptedModels([toolTurn('big'), { content: 'summary', finishReason: 'stop' }]);
+
+		await runAgent({
+			sessionId,
+			models,
+			tools: [bigTool('big', 200_000)],
+			scopes,
+			maxTurns: 5,
+			maxToolResultBytes: 4096,
+		});
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'completed');
+		const toolMessage = reloaded.messages.find((m) => m.role === 'tool');
+		assert.ok(Buffer.byteLength(toolMessage.content, 'utf8') <= 4096);
+		assert.match(toolMessage.content, /^\{"ok":true,"result":\{"text":"LLL/);
+		assert.match(
+			toolMessage.content,
+			/…\[truncated; full result is 200032 bytes\. Ask for less: read_file with startLine\/lineCount/
+		);
+		assert.equal(requests[1].messages.find((m) => m.role === 'tool').content, toolMessage.content);
+	});
+
+	it('caps a tool error observation too', async () => {
+		const sessionId = await sessionWith({ role: 'user', content: 'go' });
+		const failing = {
+			def: { name: 'fail', description: 'fail', parameters: { type: 'object' } },
+			handler: async () => {
+				throw new Error('E'.repeat(50_000));
+			},
+		};
+		const { models } = scriptedModels([toolTurn('fail'), { content: 'ok', finishReason: 'stop' }]);
+
+		await runAgent({ sessionId, models, tools: [failing], scopes, maxTurns: 5, maxToolResultBytes: 2048 });
+
+		const toolMessage = (await session.getSession(sessionId)).messages.find((m) => m.role === 'tool');
+		assert.ok(Buffer.byteLength(toolMessage.content, 'utf8') <= 2048);
+		assert.match(toolMessage.content, /^\{"ok":false,"error":"EEE/);
+	});
+
+	it('defaults the cap to 65536 bytes and hands it to tools as ctx.maxResultBytes', async () => {
+		const sessionId = await sessionWith({ role: 'user', content: 'go' });
+		let seen;
+		const probe = {
+			def: { name: 'probe', description: 'probe', parameters: { type: 'object' } },
+			handler: async (_args, ctx) => {
+				seen = ctx.maxResultBytes;
+				return { text: 'x'.repeat(100_000) };
+			},
+		};
+		const { models } = scriptedModels([toolTurn('probe'), { content: 'ok', finishReason: 'stop' }]);
+
+		await runAgent({ sessionId, models, tools: [probe], scopes, maxTurns: 5 });
+
+		assert.equal(seen, 65536);
+		const toolMessage = (await session.getSession(sessionId)).messages.find((m) => m.role === 'tool');
+		assert.ok(Buffer.byteLength(toolMessage.content, 'utf8') <= 65536);
+	});
+
+	it('reports a result JSON cannot serialize as a tool error with its message', async () => {
+		// Harper's BigInt.prototype.toJSON throws a plain { message } object, not an Error.
+		require('#src/server/serverHelpers/JSONStream');
+		const sessionId = await sessionWith({ role: 'user', content: 'go' });
+		const bigint = {
+			def: { name: 'bigint', description: 'bigint', parameters: { type: 'object' } },
+			handler: async () => ({ count: 10n }),
+		};
+		const { models } = scriptedModels([toolTurn('bigint'), { content: 'ok', finishReason: 'stop' }]);
+
+		await runAgent({ sessionId, models, tools: [bigint], scopes, maxTurns: 5 });
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'completed');
+		assert.match(
+			reloaded.messages.find((m) => m.role === 'tool').content,
+			/^\{"ok":false,"error":"Cannot serialize BigInt to JSON"\}$/
+		);
+	});
+
+	it('sends the system prompt once, as `system`, not also as a message', async () => {
+		const sessionId = await sessionWith({ role: 'user', content: 'hi' });
+		const { models, requests } = scriptedModels([{ content: 'hello', finishReason: 'stop' }]);
+
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, systemPrompt: 'You are the agent.' });
+
+		assert.equal(requests[0].system, 'You are the agent.');
+		assert.deepEqual(
+			requests[0].messages.map((m) => m.role),
+			['user']
+		);
+	});
+
+	it('shrinks the newest tool results and retries once when the request overflows the context window', async () => {
+		const sessionId = await sessionWith({ role: 'user', content: 'investigate' });
+		const { models, requests } = scriptedModels([
+			toolTurn('big', 'big'),
+			contextWindowError(),
+			{ content: 'answer', finishReason: 'stop' },
+		]);
+
+		await runAgent({ sessionId, models, tools: [bigTool('big', 30_000)], scopes, maxTurns: 5 });
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'completed');
+		assert.equal(reloaded.lastError, undefined);
+		const toolMessages = reloaded.messages.filter((m) => m.role === 'tool');
+		assert.equal(toolMessages.length, 2);
+		for (const message of toolMessages) {
+			assert.ok(Buffer.byteLength(message.content, 'utf8') <= 2048);
+			assert.match(message.content, /^\{"ok":true,"result":\{"text":"LLL/);
+			assert.match(
+				message.content,
+				/…\[cut from 30032 bytes: a request including this result exceeded the model's context window/
+			);
+		}
+		assert.equal(requests.length, 3);
+		assert.ok(JSON.stringify(requests[2]).length < JSON.stringify(requests[1]).length / 10);
+		assert.deepEqual(
+			requests[2].messages.map((m) => m.role),
+			['user', 'assistant', 'tool', 'tool']
+		);
+	});
+
+	it('leaves older tool results alone and shrinks only the newest oversized group', async () => {
+		const sessionId = await sessionWith(
+			{ role: 'user', content: 'go' },
+			{ role: 'assistant', content: '', toolCalls: [{ id: 'old', name: 'big', arguments: {} }] },
+			{ role: 'tool', toolCallId: 'old', content: 'O'.repeat(10_000) },
+			{
+				role: 'assistant',
+				content: '',
+				toolCalls: [
+					{ id: 'a', name: 'big', arguments: {} },
+					{ id: 'b', name: 'big', arguments: {} },
+				],
+			},
+			{ role: 'tool', toolCallId: 'a', content: 'small' },
+			{ role: 'tool', toolCallId: 'b', content: 'N'.repeat(10_000) },
+			{ role: 'user', content: 'and now?' }
+		);
+		const { models } = scriptedModels([contextWindowError(), { content: 'answer', finishReason: 'stop' }]);
+
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5 });
+
+		const byId = Object.fromEntries(
+			(await session.getSession(sessionId)).messages
+				.filter((m) => m.role === 'tool')
+				.map((m) => [m.toolCallId, m.content])
+		);
+		assert.equal(byId.old, 'O'.repeat(10_000));
+		assert.equal(byId.a, 'small');
+		assert.match(byId.b, /^N+…\[cut from 10000 bytes/);
+	});
+
+	it('recovers a session whose oversized result predates the cap, behind a newer prompt', async () => {
+		const sessionId = await sessionWith(
+			{ role: 'user', content: 'read it' },
+			{ role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'read_file', arguments: {} }] },
+			{ role: 'tool', toolCallId: 'c1', content: JSON.stringify({ ok: true, result: 'x'.repeat(1_000_000) }) },
+			{ role: 'user', content: 'Try again.' }
+		);
+		const { models } = scriptedModels([contextWindowError(), { content: 'recovered', finishReason: 'stop' }]);
+
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5 });
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'completed');
+		assert.ok(Buffer.byteLength(reloaded.messages[2].content, 'utf8') <= 2048);
+	});
+
+	it('shrinks results written from resolved approvals before the first model call', async () => {
+		const sessionId = await sessionWith(
+			{ role: 'user', content: 'deploy' },
+			{ role: 'assistant', content: '', toolCalls: [{ id: 'd1', name: 'dump', arguments: {} }] }
+		);
+		const approval = await session.addPendingApproval(sessionId, {
+			toolName: 'dump',
+			arguments: {},
+			toolCallId: 'd1',
+			reason: 'destructive',
+		});
+		await session.resolveApproval(sessionId, approval.id, true);
+		const dump = { ...bigTool('dump', 50_000), destructive: true };
+		const { models } = scriptedModels([contextWindowError(), { content: 'done', finishReason: 'stop' }]);
+
+		await runAgent({ sessionId, models, tools: [dump], scopes, maxTurns: 5 });
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'completed');
+		const toolMessage = reloaded.messages.find((m) => m.toolCallId === 'd1');
+		assert.ok(Buffer.byteLength(toolMessage.content, 'utf8') <= 2048);
+		assert.equal(reloaded.pendingApprovals[0].consumed, true);
+	});
+
+	it('ends in error when the retry also overflows', async () => {
+		const sessionId = await sessionWith({ role: 'user', content: 'go' });
+		const { models, requests } = scriptedModels([toolTurn('big'), contextWindowError(), contextWindowError()]);
+
+		await assert.rejects(runAgent({ sessionId, models, tools: [bigTool('big', 30_000)], scopes, maxTurns: 5 }));
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'error');
+		assert.match(
+			reloaded.lastError,
+			/no longer fits the model's context window: it still does not fit after shrinking/
+		);
+		assert.match(reloaded.lastError, /start a new session/);
+		assert.match(reloaded.lastError, /prompt is too long/);
+		assert.equal(requests.length, 3);
+	});
+
+	it('ends in error without retrying when no tool result is large enough to shrink', async () => {
+		const sessionId = await sessionWith({ role: 'user', content: 'x'.repeat(5000) });
+		const { models, requests } = scriptedModels([contextWindowError()]);
+
+		await assert.rejects(runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5 }));
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'error');
+		assert.match(
+			reloaded.lastError,
+			/no tool result over 2048 bytes is left to shrink; shorten the prompt or start a new session/
+		);
+		assert.equal(requests.length, 1);
+	});
+
+	it('does not retry other provider errors', async () => {
+		const sessionId = await sessionWith({ role: 'user', content: 'go' });
+		const rateLimited = Object.assign(new Error('OpenAI /chat/completions returned HTTP 429'), { upstreamStatus: 429 });
+		const { models, requests } = scriptedModels([toolTurn('big'), rateLimited]);
+
+		await assert.rejects(runAgent({ sessionId, models, tools: [bigTool('big', 30_000)], scopes, maxTurns: 5 }));
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'error');
+		assert.equal(reloaded.lastError, 'OpenAI /chat/completions returned HTTP 429');
+		assert.equal(requests.length, 2);
+		assert.ok(reloaded.messages.find((m) => m.role === 'tool').content.length > 30_000);
+	});
+
+	it('neither shrinks nor retries once the run is cancelled', async () => {
+		const sessionId = await sessionWith(
+			{ role: 'user', content: 'go' },
+			{ role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'big', arguments: {} }] },
+			{ role: 'tool', toolCallId: 'c1', content: 'B'.repeat(10_000) }
+		);
+		const controller = new AbortController();
+		let calls = 0;
+		const models = {
+			async generate() {
+				calls++;
+				controller.abort();
+				await session.setStatus(sessionId, 'aborted', 'Cancelled by operator');
+				throw contextWindowError();
+			},
+		};
+
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, signal: controller.signal });
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'aborted');
+		assert.equal(calls, 1);
+		assert.equal(reloaded.messages[2].content, 'B'.repeat(10_000));
+	});
+});

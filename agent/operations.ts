@@ -14,6 +14,7 @@ import type { OperationDefinition } from '../server/serverHelpers/serverUtilitie
 import { OPERATIONS_ENUM } from '../utility/hdbTerms.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { createSession, getSession, listSessions, appendMessage, resolveApproval, setStatus } from './session.ts';
+import { isValidMaxToolResultBytes, MAX_MAX_TOOL_RESULT_BYTES, MIN_MAX_TOOL_RESULT_BYTES } from './loop.ts';
 import type { AgentConfig, AgentMessage, AgentRunStatus } from './types.ts';
 
 export interface OperationDeps {
@@ -136,12 +137,19 @@ async function setAgentConfig(op: any, deps: OperationDeps) {
 	if (op?.httpFetch !== undefined) {
 		throw new ClientError('agent.httpFetch is fixed at startup; change it in the config file and restart', 400);
 	}
+	if (op?.maxToolResultBytes !== undefined && !isValidMaxToolResultBytes(op.maxToolResultBytes)) {
+		throw new ClientError(
+			`maxToolResultBytes must be an integer from ${MIN_MAX_TOOL_RESULT_BYTES} to ${MAX_MAX_TOOL_RESULT_BYTES}`,
+			400
+		);
+	}
 	const patch: Partial<AgentConfig> = {};
 	for (const key of [
 		'enabled',
 		'provider',
 		'model',
 		'maxTurns',
+		'maxToolResultBytes',
 		'maxCostUsd',
 		'autoApprove',
 		'allowDestructive',

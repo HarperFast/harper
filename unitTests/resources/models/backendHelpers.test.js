@@ -11,6 +11,8 @@ const {
 	requireModel,
 	requireCredential,
 	normalizeOrigin,
+	isContextWindowRejection,
+	isContextWindowExceeded,
 } = require('#src/resources/models/backendHelpers');
 
 // Backend-specific error class used to verify the helpers route the thrown
@@ -318,5 +320,52 @@ describe('readBoundedJson', () => {
 
 	it('MAX_ERROR_BODY_BYTES is 256 KiB', () => {
 		assert.strictEqual(MAX_ERROR_BODY_BYTES, 256 * 1024);
+	});
+
+	describe('isContextWindowRejection', () => {
+		it('recognizes each provider wording for an input over the context window', () => {
+			for (const [status, message] of [
+				[
+					400,
+					"This model's maximum context length is 128000 tokens. However, your messages resulted in 250000 tokens.",
+				],
+				[400, 'prompt is too long: 215000 tokens > 200000 maximum'],
+				[400, 'input length and `max_tokens` exceed context limit: 188240 + 21333 > 200000'],
+				[400, 'Input is too long for requested model.'],
+				[400, 'The input token count (1234567) exceeds the maximum number of tokens allowed (1048576).'],
+				[400, 'Prompt contains 40000 tokens, too large for model with 32768 maximum context length'],
+				[413, 'Too many input tokens.'],
+			]) {
+				assert.ok(isContextWindowRejection(status, message), message);
+			}
+		});
+
+		it("trusts OpenAI's context_length_exceeded code whatever the message", () => {
+			assert.ok(isContextWindowRejection(400, 'Request rejected.', 'context_length_exceeded'));
+		});
+
+		it('rejects other failures, and the wording on any status but 400 or 413', () => {
+			assert.ok(!isContextWindowRejection(400, 'Invalid model: gpt-9000'));
+			assert.ok(
+				!isContextWindowRejection(
+					400,
+					'max_tokens: 300000 > 64000, which is the maximum allowed number of output tokens'
+				)
+			);
+			assert.ok(!isContextWindowRejection(429, 'prompt is too long'));
+			assert.ok(!isContextWindowRejection(500, "This model's maximum context length is 8192 tokens"));
+			assert.ok(!isContextWindowRejection(undefined, 'Input is too long for requested model.'));
+			assert.ok(!isContextWindowRejection(400, undefined));
+		});
+	});
+
+	describe('isContextWindowExceeded', () => {
+		it('reads only an explicit true flag', () => {
+			assert.ok(isContextWindowExceeded(Object.assign(new Error('x'), { contextWindowExceeded: true })));
+			assert.ok(!isContextWindowExceeded(Object.assign(new Error('x'), { contextWindowExceeded: 'yes' })));
+			assert.ok(!isContextWindowExceeded(new Error('prompt is too long')));
+			assert.ok(!isContextWindowExceeded(null));
+			assert.ok(!isContextWindowExceeded(undefined));
+		});
 	});
 });

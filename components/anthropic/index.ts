@@ -25,6 +25,7 @@ import { setGenerative } from '../../resources/models/backendRegistry.ts';
 import {
 	assignFiniteTokenCount,
 	composeSignal,
+	isContextWindowRejection,
 	MAX_ERROR_BODY_BYTES,
 	normalizeOrigin,
 	parseJsonResponse,
@@ -266,10 +267,10 @@ export class AnthropicBackend implements ModelBackend {
 			signal,
 		});
 		if (!res.ok) {
-			throw new AnthropicBackendError(
-				`Anthropic ${path} returned HTTP ${res.status}${await readErrorSuffix(res)}`,
-				res.status
-			);
+			const suffix = await readErrorSuffix(res);
+			const failure = new AnthropicBackendError(`Anthropic ${path} returned HTTP ${res.status}${suffix}`, res.status);
+			if (isContextWindowRejection(res.status, suffix)) failure.contextWindowExceeded = true;
+			throw failure;
 		}
 		return res;
 	}
@@ -298,6 +299,8 @@ export class AnthropicBackendError extends ServerError {
 	/** HTTP status returned by the upstream provider, when the failure came from an HTTP response.
 	 * Distinct from ServerError's statusCode, which is Harper's own response status (#1593). */
 	declare upstreamStatus?: number;
+	/** The provider rejected the request because its input does not fit the model's context window. */
+	declare contextWindowExceeded?: boolean;
 	constructor(message: string, upstreamStatus?: number) {
 		super(message);
 		this.name = 'AnthropicBackendError';

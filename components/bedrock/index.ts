@@ -21,7 +21,12 @@
  * helpers below.
  */
 import { setEmbedding, setGenerative } from '../../resources/models/backendRegistry.ts';
-import { assignFiniteTokenCount, composeSignal, requireModel } from '../../resources/models/backendHelpers.ts';
+import {
+	assignFiniteTokenCount,
+	composeSignal,
+	isContextWindowRejection,
+	requireModel,
+} from '../../resources/models/backendHelpers.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import type {
@@ -287,6 +292,7 @@ export class BedrockBackend implements ModelBackend {
 				`Bedrock request failed${sdkName ? ` (${sdkName})` : ''}`,
 				typeof status === 'number' ? status : undefined
 			);
+			if (isContextWindowRejection(status, (err as any)?.message)) wrapped.contextWindowExceeded = true;
 			// Keep the raw SDK error for the unsanitized server log; only class name +
 			// upstreamStatus surface to callers.
 			(wrapped as any).cause = err;
@@ -315,6 +321,8 @@ export class BedrockBackendError extends ServerError {
 	/** HTTP status returned by the upstream provider, when the failure came from an HTTP response.
 	 * Distinct from ServerError's statusCode, which is Harper's own response status (#1593). */
 	declare upstreamStatus?: number;
+	/** The provider rejected the request because its input does not fit the model's context window. */
+	declare contextWindowExceeded?: boolean;
 	constructor(message: string, upstreamStatus?: number) {
 		super(message);
 		this.name = 'BedrockBackendError';

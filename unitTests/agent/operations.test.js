@@ -36,4 +36,18 @@ describe('agent/operations set_agent_config', () => {
 		await execute({ operation: 'set_agent_config', maxTurns: 3, allowDestructive: true });
 		assert.deepStrictEqual(patches, [{ maxTurns: 3, allowDestructive: true }]);
 	});
+
+	it('applies maxToolResultBytes within 1024..1048576 and rejects anything else with a 400', async () => {
+		const { execute, patches } = setAgentConfig();
+		await execute({ operation: 'set_agent_config', maxToolResultBytes: 1024 });
+		await execute({ operation: 'set_agent_config', maxToolResultBytes: 1_048_576 });
+		for (const maxToolResultBytes of [0, 1023, 1_048_577, 65536.5, '65536', null]) {
+			await assert.rejects(execute({ operation: 'set_agent_config', maxToolResultBytes, maxTurns: 3 }), (err) => {
+				assert.strictEqual(err.statusCode, 400);
+				assert.match(err.message, /maxToolResultBytes must be an integer from 1024 to 1048576/);
+				return true;
+			});
+		}
+		assert.deepStrictEqual(patches, [{ maxToolResultBytes: 1024 }, { maxToolResultBytes: 1_048_576 }]);
+	});
 });

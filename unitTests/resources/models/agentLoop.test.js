@@ -11,6 +11,7 @@ const {
 	ToolHandlerError,
 	_setComputeCallCostUsdForTests,
 	_resetComputeCallCostUsdForTests,
+	serializeToolResult,
 } = require('#src/resources/models/agentLoop');
 const { logger } = require('#src/utility/logging/logger');
 
@@ -1708,5 +1709,31 @@ describe('agentLoop abort gate at runSingleToolCall entry', () => {
 		);
 		assert.strictEqual(firstRan, true, 'first handler ran');
 		assert.strictEqual(secondRan, false, 'second handler must not run after abort');
+	});
+});
+
+describe('serializeToolResult', () => {
+	it('never exceeds maxBytes or splits a character, whatever the cut point', () => {
+		for (const text of ['漢'.repeat(500), '😀'.repeat(500), 'aé漢😀'.repeat(200)]) {
+			for (let maxBytes = 120; maxBytes < 140; maxBytes++) {
+				const { content, truncated } = serializeToolResult({ text }, maxBytes);
+				assert.strictEqual(truncated, true);
+				assert.ok(
+					Buffer.byteLength(content, 'utf8') <= maxBytes,
+					`${Buffer.byteLength(content, 'utf8')} > ${maxBytes}`
+				);
+				assert.ok(!content.includes('\uFFFD'), `U+FFFD at maxBytes=${maxBytes}`);
+			}
+		}
+	});
+
+	it('puts the hint inside the marker and leaves a fitting result untouched', () => {
+		const { content } = serializeToolResult({ text: 'x'.repeat(1000) }, 200, 'Ask for less');
+		assert.match(content, /…\[truncated; full result is 1011 bytes\. Ask for less\]$/);
+		assert.deepStrictEqual(serializeToolResult({ a: 1 }, 200, 'Ask for less'), {
+			content: '{"a":1}',
+			totalBytes: 7,
+			truncated: false,
+		});
 	});
 });

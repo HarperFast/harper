@@ -710,6 +710,12 @@
 					"minimum": 1,
 					"description": "Maximum tool-call iterations per agent run. Default: 50"
 				},
+				"maxToolResultBytes": {
+					"type": "integer",
+					"minimum": 1024,
+					"maximum": 1048576,
+					"description": "Largest tool result, in bytes of JSON, the agent adds to its conversation. A larger result is cut to this size with a note telling the model how to ask for less, and the filesystem read tools return pages of at most half this size. Tunable at runtime via set_agent_config. Default: 65536"
+				},
 				"maxCostUsd": {
 					"type": "number",
 					"minimum": 0,
