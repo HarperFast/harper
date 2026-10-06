@@ -624,10 +624,7 @@ describe('contentTypes – a multipart upload its route answers without reading'
 		for (let sent = 0; sent < fileBytes; sent += CHUNK.length) yield CHUNK;
 	}
 
-	/**
-	 * Uploads with a raw socket that keeps writing after the answer, honouring only TCP backpressure, then
-	 * asks for `next` on the same socket. Rejects if the upload or the second answer misses the deadline.
-	 */
+	// Node's own client stops writing after an early complete answer, so these use raw sockets.
 	function uploadOnRawSocket(path, { fileBytes = 16 * 1024 * 1024, next = '/health', deadlineMs = 10_000 } = {}) {
 		const multipart = buildMultipartBody(
 			{ operation: 'deploy_component' },
@@ -666,11 +663,13 @@ describe('contentTypes – a multipart upload its route answers without reading'
 							'Transfer-Encoding: chunked\r\n\r\n'
 					);
 					for await (const chunk of multipart.stream) {
+						if (socket.destroyed) return;
 						const frame = Buffer.concat([Buffer.from(`${chunk.length.toString(16)}\r\n`), chunk, Buffer.from('\r\n')]);
 						if (!socket.write(frame)) await new Promise((resume) => socket.once('drain', resume));
-						if (socket.destroyed) return;
 					}
-					socket.write('0\r\n\r\n', () => {
+					if (socket.destroyed) return;
+					socket.write('0\r\n\r\n', (error) => {
+						if (error || socket.destroyed) return;
 						uploadEnded = true;
 						uploadEndedAt = Date.now();
 						socket.write(`GET ${next} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n`);
@@ -682,10 +681,6 @@ describe('contentTypes – a multipart upload its route answers without reading'
 		});
 	}
 
-	/**
-	 * Sends the start of an upload over a raw socket, then stops writing without closing. Resolves with what
-	 * arrived once the server closes the connection; rejects if it is still open at the deadline.
-	 */
 	function holdUnfinishedUpload(path, deadlineMs = 5_000) {
 		const boundary = '----HarperUnfinishedUpload';
 		const head =

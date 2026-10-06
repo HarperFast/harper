@@ -15,13 +15,12 @@ const UNSAFE_FIELD_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 // Operation handlers stream the file part directly into extraction (gunzip + tar-fs),
 // so there is no separate filesize cap to enforce here. Backpressure flows through busboy
 // → the file Readable → the consumer, bounded by disk space rather than memory.
-// A bounded grace period for the client to read its response while the rest of a discarded upload
-// still arrives; then the connection is closed. Closing at once risks a reset that loses the response
-// (RFC 9112 §9.6), and waiting for the whole upload has no bound but the request timeout.
+// Long enough for the client to read its response before a still-arriving discarded upload is cut off
+// (closing at once risks a reset that loses it, RFC 9112 §9.6), short enough to bound the discard.
 const UNREAD_UPLOAD_GRACE_MS = 1_000;
 
 interface Upload {
-	// What the client is still sending; the parser's input can be a `preParsing` transform of it.
+	// The parser's input can be a `preParsing` transform of this.
 	httpRequest: Readable & { complete?: boolean };
 	input: Readable;
 	parser: Writable;
@@ -114,7 +113,7 @@ export function parseMultipartRequest(
 
 	bb.on('file', (name, fileStream) => {
 		fileSeen = true;
-		fileStream.on('error', ignoreUnreadPartError);
+		fileStream.on('error', logPartError);
 		if (name !== 'payload') {
 			// We only consume a single field named `payload`. Other file fields are an error
 			// rather than silently consumed — the CLI never sends them and accepting them
@@ -125,6 +124,9 @@ export function parseMultipartRequest(
 		}
 		upload.file = fileStream;
 		upload.handedOut = true;
+		fileStream.once('close', () => {
+			if (upload.responded && !fileStream.readableEnded) discardUnreadUpload(upload);
+		});
 		body.payload = fileStream;
 		// Hand control to the route handler immediately — the file stream is now wired
 		// into body.payload and will be drained by extraction. busboy keeps pumping data
@@ -163,11 +165,11 @@ export function parseMultipartRequest(
 }
 
 /**
- * Fastify `onResponse` hook, registered beside the parser. Node discards a body nothing read once its
- * response finishes, but busboy reading the request counts as consuming it; so when the route never
- * read the file part, or let it go before its end, the rest of the request is discarded here instead.
- * A route keeps the part by reading it before its response finishes: piping it, iterating it, or
- * listening for `data` or `readable`. A part it took but had not started reading is discarded.
+ * Node discards a body nothing read once its response finishes, but busboy reading the request counts
+ * as consuming it, so the rest of an upload the route did not read is discarded here instead. A route
+ * keeps the part by reading it before its response finishes: piping it, iterating it, or listening for
+ * `data` or `readable`. A part it took but had not started reading is discarded, and so is one it
+ * lets go before its end, whenever that happens.
  */
 export function releaseUnreadUpload(request: FastifyRequest, _reply: FastifyReply, done: () => void): void {
 	const upload = uploads.get(request);
@@ -194,7 +196,9 @@ function discardUnreadUpload(upload: Upload): void {
 		input.resume();
 	}
 	if (upload.responded && !upload.grace && !fullyReceived(httpRequest) && !httpRequest.destroyed) {
-		const grace = setTimeout(() => httpRequest.destroy(), UNREAD_UPLOAD_GRACE_MS);
+		const grace = setTimeout(() => {
+			if (!fullyReceived(httpRequest) && !httpRequest.destroyed) httpRequest.destroy();
+		}, UNREAD_UPLOAD_GRACE_MS);
 		grace.unref();
 		upload.grace = grace;
 		const endGrace = () => clearTimeout(grace);
@@ -207,8 +211,8 @@ function fullyReceived(stream: Readable & { complete?: boolean }): boolean {
 	return stream.readableEnded || stream.complete === true;
 }
 
-function ignoreUnreadPartError(error: Error): void {
-	logger.debug?.('Multipart upload ended before it was read: ' + error.message);
+function logPartError(error: Error): void {
+	logger.debug?.('Multipart file part failed: ' + error.message);
 }
 
 function decodeFieldValue(raw: string): unknown {

@@ -70,7 +70,6 @@ function postMultipart(
 	});
 }
 
-/** The first response's body, de-chunked when it was sent chunked. */
 function firstResponseBody(response: string): string {
 	const headEnd = response.indexOf('\r\n\r\n');
 	const head = response.slice(0, headEnd).toLowerCase();
@@ -89,7 +88,6 @@ function firstResponseBody(response: string): string {
 	}
 }
 
-/** The data of each `error` event in a text/event-stream body. */
 function sseErrors(body: string): Array<{ message?: string; code?: number }> {
 	return body
 		.split('\n\n')
@@ -111,11 +109,7 @@ interface RawUpload {
 	statuses: string[];
 }
 
-/**
- * Upload over a raw socket that keeps writing after the server answers, honouring only TCP backpressure (what
- * curl does while the connection stays alive), then ask for `/health` on the same socket. Rejects when the
- * upload or that second answer misses the deadline.
- */
+// Node's own client stops writing after an early complete answer, so this uses a raw socket.
 function uploadOnRawSocket(
 	ctx: ContextWithHarper,
 	fields: Record<string, unknown>,
@@ -166,11 +160,13 @@ function uploadOnRawSocket(
 						'Transfer-Encoding: chunked\r\n\r\n'
 				);
 				for await (const part of multipart.stream) {
+					if (socket.destroyed) return;
 					const frame = Buffer.concat([Buffer.from(`${part.length.toString(16)}\r\n`), part, Buffer.from('\r\n')]);
 					if (!socket.write(frame)) await new Promise((resume) => socket.once('drain', resume));
-					if (socket.destroyed) return;
 				}
-				socket.write('0\r\n\r\n', () => {
+				if (socket.destroyed) return;
+				socket.write('0\r\n\r\n', (error) => {
+					if (error || socket.destroyed) return;
 					receivedWhenUploadEnded = response;
 					socket.write(`GET /health HTTP/1.1\r\nHost: ${url.host}\r\n\r\n`);
 				});

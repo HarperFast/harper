@@ -248,6 +248,21 @@ describe('multipartParser – an upload its response left unread', () => {
 		await waitFor(() => raw.destroyed, 3000);
 	});
 
+	it('leaves a request alone at the end of its grace period once its body has fully arrived', async () => {
+		const raw = new PassThrough();
+		const request = { headers: { 'content-type': CONTENT_TYPE }, raw };
+		raw.write(partHead('payload'));
+		raw.write(CHUNK);
+		await new Promise((resolve, reject) =>
+			parseMultipartRequest(request, raw, (error, parsedBody) => (error ? reject(error) : resolve(parsedBody)))
+		);
+		await respond(request);
+		// Every byte has arrived, though the stream has not ended: the connection may already carry another request.
+		raw.complete = true;
+		await sleep(1200);
+		assert.strictEqual(raw.destroyed, false);
+	});
+
 	for (const [description, hold] of [
 		['a flowing part', (payload) => payload.resume()],
 		[
@@ -272,11 +287,13 @@ describe('multipartParser – an upload its response left unread', () => {
 	}
 
 	it('leaves a part whose iterator is paused between reads to its consumer', async () => {
-		const fileBytes = 1024 * 1024;
-		const { request, parsed } = start({ fileBytes });
+		const fileBytes = 4 * 1024 * 1024;
+		const { request, raw, parsed } = start({ fileBytes });
 		const { payload } = await parsed;
 		const iterator = payload[Symbol.asyncIterator]();
 		let read = (await iterator.next()).value.length;
+		await sleep(50);
+		assert.strictEqual(raw.readableEnded, false, 'the rest of the upload is still held back by the paused iterator');
 		await respond(request);
 		await sleep(50);
 		for (let step = await iterator.next(); !step.done; step = await iterator.next()) read += step.value.length;
@@ -321,6 +338,18 @@ describe('multipartParser – an upload its response left unread', () => {
 		await sleep(1200);
 		assert.strictEqual(raw.destroyed, false, 'a request whose part was read is not cut off');
 		raw.end();
+		await waitFor(() => raw.readableEnded, 5000);
+	});
+
+	it('discards the rest when a consumer lets the part go after the response', async () => {
+		const { request, raw, parsed } = start();
+		const { payload } = await parsed;
+		payload.on('data', () => {});
+		payload.pause();
+		await respond(request);
+		await sleep(50);
+		assert.strictEqual(raw.readableEnded, false, 'a held part is left to its consumer');
+		payload.destroy();
 		await waitFor(() => raw.readableEnded, 5000);
 	});
 
