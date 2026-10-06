@@ -418,7 +418,7 @@ The agent's read tools (`read_file`, `list_dir`, `grep_files`, and `tail_file`) 
 
 Before v5.4.0, `config` was the directory holding `harper-config.yaml`. On a default install that is `rootPath` itself, so the agent could read `keys/`, `database/`, and the rest of the root. It is now the config file alone, and `list_dir` shows only that file.
 
-To give the agent more, such as a directory of extra configuration, set `configScope` to a file or a directory, absolute or relative to `rootPath`. It is read at startup only. A path that names no file or directory at startup leaves the `config` scope unavailable and logs an error.
+To point the agent somewhere else, such as a directory of extra configuration, set `configScope` to a file or a directory, absolute or relative to `rootPath`. It replaces the config file as the scope: the config file stays readable only if the new target contains it, as `rootPath` does. It is read at startup only. A path that names no file or directory at startup leaves the `config` scope unavailable and logs an error.
 
 ```yaml
 agent:
