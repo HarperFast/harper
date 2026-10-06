@@ -163,7 +163,7 @@ models:
         outputPerMtok: 10 # USD per million completion tokens
 ```
 
-Each `generate()` call is priced at the rates of the entry that served it, and the result carries `costUsd`. A call that fell back to another entry in a [fallback group](./routing#fallback-groups) is priced at that entry's rates, not the requested one's. A call has no `costUsd` when the entry that served it declares no `pricing`, or when the provider did not report both a prompt and a completion token count.
+Each `generate()` call is priced at the rates of the entry that served it, and the result carries `costUsd`. With `toolMode: 'auto'`, the result's `costUsd` covers the final round only, like its `usage`. A call that fell back to another entry in a [fallback group](./routing#fallback-groups) is priced at that entry's rates, not the requested one's. A call has no `costUsd` when the entry that served it declares no `pricing`, or when the provider did not report both a prompt and a completion token count.
 
 The two rates are all Harper models. Discounts for cached prompt tokens, long-context surcharges and provisioned capacity are not, so set rates that match what an average call costs you, or rates that overestimate it if the figure backs a cap. Streaming calls (`generateStream()`) are not priced.
 

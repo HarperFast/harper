@@ -1746,7 +1746,7 @@ From v5.3.2 each assistant message carries the `usage` its model call reported (
 "usage": { "calls": 3, "promptTokens": 41230, "completionTokens": 2210, "costUsd": 0.157 }
 ```
 
-`calls` counts model calls. A total is left out once any call in the session did not report it, such as an unpriced model for `costUsd`, so a missing total means unmeasured, not zero. The [spend caps](../configuration/options.md#agent-spend-caps) read the same totals.
+`calls` counts the model calls that returned an answer; a failed call is not counted. A total is left out once any call in the session did not report it, such as an unpriced model for `costUsd`, so a missing total means unmeasured, not zero. The [spend caps](../configuration/options.md#agent-spend-caps) read the same totals.
 
 ```json
 { "operation": "get_agent_session", "session_id": "3f7c..." }
@@ -1817,7 +1817,7 @@ One gap is worth knowing: changing `allowDestructive` with [`set_agent_config`](
 
 ### `set_agent_config`
 
-Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Set `maxTokens` or `maxCostUsd` to `null` to remove that cap; a value that is not a usable number is rejected with a 400, and nothing in the request is applied. Each field is described under [`agent`](../configuration/options.md#agent). A request that includes `httpFetch` is rejected with a 400 and nothing in it is applied: the [`http_fetch` policy](../configuration/options.md#restricting-http_fetch) is read at startup only.
+Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxSessionTokens`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Set `maxSessionTokens` or `maxCostUsd` to `null` to remove that cap; a value that is not a usable number is rejected with a 400, and nothing in the request is applied. Each field is described under [`agent`](../configuration/options.md#agent). A request that includes `httpFetch` is rejected with a 400 and nothing in it is applied: the [`http_fetch` policy](../configuration/options.md#restricting-http_fetch) is read at startup only.
 
 ```json
 { "operation": "set_agent_config", "autoApprove": false, "maxTurns": 20 }
