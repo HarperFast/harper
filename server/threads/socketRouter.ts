@@ -351,6 +351,7 @@ function startWorkerSlot(
 		finishCurrentStartup();
 		rejectReady(error);
 	};
+	const slotLabel = type === hdbTerms.THREAD_TYPES.HTTP ? 'HTTP' : type;
 	const workerOptions = {
 		name: type,
 		workerIndex: index,
@@ -376,7 +377,7 @@ function startWorkerSlot(
 				worker.off('message', onMessage);
 			};
 			const describeStartup = (event) =>
-				`${type} worker slot ${index}${application ? ` (isolated application '${application}')` : ''} ${event} before ready (thread ${threadId}, attempt ${attempt}, phase ${startupPhase})`;
+				`${slotLabel} worker slot ${index}${application ? ` (isolated application '${application}')` : ''} ${event} before ready (thread ${threadId}, attempt ${attempt}, phase ${startupPhase})`;
 			const onMessage = (message) => {
 				if (message.type === hdbTerms.ITC_EVENT_TYPES.CHILD_STARTUP_PHASE) {
 					startupPhase = message.phase;
@@ -411,7 +412,7 @@ function startWorkerSlot(
 			}
 		},
 		onRestartExhausted() {
-			const error = new Error(`${type} worker slot ${index} exhausted restarts (thread ${lastThreadId})`);
+			const error = new Error(`${slotLabel} worker slot ${index} exhausted restarts (thread ${lastThreadId})`);
 			if (waitingForInitialReady) failStartup(error);
 			else if (application && isolatedSlot && isolatedSlots.get(application) === isolatedSlot) {
 				isolatedSlots.delete(application);
