@@ -14,6 +14,7 @@ import {
 	REPLAY_WALL_CLOCK_LIMIT_MS,
 } from './replayLogsGuards.ts';
 import { LOCAL_ONLY, purgeAgedLogs } from './auditStore.ts';
+import { asBinary } from './asBinary.ts';
 import { get as envGet } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
@@ -435,7 +436,4 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 			resolve();
 		}
 	});
-}
-function asBinary(buffer) {
-	return { ['\x10binary-data\x02']: buffer };
 }

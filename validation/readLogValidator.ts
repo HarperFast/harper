@@ -2,7 +2,6 @@
 
 import Joi from 'joi';
 import * as validator from './validationWrapper.ts';
-import moment from 'moment';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { getConfigPath } from '../config/configUtils.ts';
@@ -36,6 +35,7 @@ const readLogSchema = Joi.object({
 });
 
 function validateDatetime(value, helpers) {
+	const moment = require('moment') as typeof import('moment');
 	if (moment(value, moment.ISO_8601).format(LOG_DATE_FORMAT) === 'Invalid date') {
 		return helpers.message(`'${helpers.state.path[0]}' date '${value}' is invalid.`);
 	}

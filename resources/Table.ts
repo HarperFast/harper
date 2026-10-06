@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping, getNodeNameForId } from './nodeIdMapping.ts';
-import lodash from 'lodash';
+import sortBy from 'lodash/sortBy.js';
 import { ExtendedIterable, SKIP } from '@harperfast/extended-iterable';
 import type {
 	ResourceInterface,
@@ -210,7 +210,6 @@ import {
 	type FullTextIndexGenerations,
 } from './fullTextSchema.ts';
 
-const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
 
 export type Attribute = {

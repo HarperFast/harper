@@ -12,7 +12,7 @@ import {
 } from './replayLogsGuards.ts';
 import { isMainThread } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
-import { asBinary } from 'lmdb';
+import { asBinary } from './asBinary.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 if (!process.env.HARPER_NO_FLUSH_ON_EXIT && isMainThread) {

@@ -2,9 +2,7 @@
  * OCSP (Online Certificate Status Protocol) verification
  */
 
-// Apply PKI.js Ed25519 patch before importing easy-ocsp
-import './pkijs-ed25519-patch.ts';
-import { getCertStatus } from 'easy-ocsp';
+import { loadPkijs } from './pkijs-ed25519-patch.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import {
 	bufferToPem,
@@ -123,6 +121,8 @@ export async function performOCSPCheck(
 	ocspUrls?: string[]
 ): Promise<OCSPCheckResult> {
 	try {
+		loadPkijs();
+		const { getCertStatus } = require('easy-ocsp') as typeof import('easy-ocsp');
 		const response = await getCertStatus(certPem, {
 			ca: issuerPem,
 			timeout: config.timeout,

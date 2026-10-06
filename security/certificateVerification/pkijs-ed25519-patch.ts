@@ -9,10 +9,12 @@
  * - Certificate verification using Ed25519/Ed448 signatures
  * - OCSP response signature verification with Ed25519/Ed448
  *
- * This patch must be loaded before any module that uses PKI.js (including easy-ocsp).
+ * Every PKI.js consumer, including easy-ocsp, must load PKI.js through loadPkijs() so the patch is in
+ * place first. PKI.js is loaded on first use rather than at startup because most servers never verify
+ * a certificate chain.
  */
 
-import * as pkijs from 'pkijs';
+import type * as Pkijs from 'pkijs';
 import { webcrypto, X509Certificate } from 'node:crypto';
 
 // Ed25519/Ed448 OIDs (these are standardized object identifiers, not IP addresses)
@@ -25,7 +27,6 @@ const ED25519_NAME = 'Ed25519' as const;
 const ED448_NAME = 'Ed448' as const;
 type EdDSAAlgorithmName = typeof ED25519_NAME | typeof ED448_NAME;
 
-// Apply patches only once
 let patchesApplied = false;
 
 function isEd25519OrEd448(oid: string): oid is EdDSAOID {
@@ -40,10 +41,16 @@ function getEdDSAAlgorithmName(oid: string): EdDSAAlgorithmName {
 	return oid === ED25519_OID ? ED25519_NAME : ED448_NAME;
 }
 
-export function applyEd25519Patch(): void {
-	if (patchesApplied) return;
-	patchesApplied = true;
+export function loadPkijs(): typeof Pkijs {
+	const pkijs = require('pkijs') as typeof Pkijs;
+	if (!patchesApplied) {
+		applyEd25519Patch(pkijs);
+		patchesApplied = true;
+	}
+	return pkijs;
+}
 
+function applyEd25519Patch(pkijs: typeof Pkijs): void {
 	const CryptoEngine = pkijs.CryptoEngine.prototype;
 	const Certificate = pkijs.Certificate.prototype;
 
@@ -183,6 +190,3 @@ export function applyEd25519Patch(): void {
 		};
 	}
 }
-
-// Apply patch on module load
-applyEd25519Patch();

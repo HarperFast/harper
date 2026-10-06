@@ -2,14 +2,15 @@
 
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import * as forge from 'node-forge';
+import type * as Forge from 'node-forge';
 import * as net from 'net';
 import { generateKeyPair as generateKeyPairOrig, X509Certificate, createPrivateKey, randomBytes } from 'node:crypto';
 
 import * as util from 'util';
 const generateKeyPair = util.promisify(generateKeyPairOrig);
 
-const pki = forge.pki;
+// node-forge is only needed to create or renew certificates, so it is not loaded at startup
+const loadForge = () => require('node-forge') as typeof Forge;
 import { v4 as uuidv4 } from 'uuid';
 import { forComponent } from '../utility/logging/harper_logger.ts';
 import * as envManager from '../utility/environment/environmentManager.ts';
@@ -571,7 +572,7 @@ async function createCertificateTable(cert, caCert) {
 	await setCertTable({
 		name: caCert.subject.getField('CN').value,
 		uses: [],
-		certificate: pki.certificateToPem(caCert),
+		certificate: loadForge().pki.certificateToPem(caCert),
 		private_key_name: 'privateKey.pem',
 		is_authority: true,
 		is_self_signed: true,
@@ -625,19 +626,19 @@ export async function generateKeys() {
 	});
 
 	return {
-		publicKey: pki.publicKeyFromPem(keys.publicKey),
-		privateKey: pki.privateKeyFromPem(keys.privateKey),
+		publicKey: loadForge().pki.publicKeyFromPem(keys.publicKey),
+		privateKey: loadForge().pki.privateKeyFromPem(keys.privateKey),
 	};
 }
 
 //https://www.openssl.org/docs/manmaster/man5/x509v3Config.html
 
 async function generateCertificates(caPrivateKey, publicKey, caCert) {
-	const publicCert = pki.createCertificate();
+	const publicCert = loadForge().pki.createCertificate();
 
 	if (!publicKey) {
 		const repCert = await getReplicationCert();
-		const opsCert = pki.certificateFromPem(repCert.options.cert);
+		const opsCert = loadForge().pki.certificateFromPem(repCert.options.cert);
 		publicKey = opsCert.publicKey;
 	}
 
@@ -659,9 +660,9 @@ async function generateCertificates(caPrivateKey, publicKey, caCert) {
 	publicCert.setSubject(subject);
 	publicCert.setIssuer(caCert.subject.attributes);
 	publicCert.setExtensions(certExtensions());
-	publicCert.sign(caPrivateKey, forge.md.sha256.create());
+	publicCert.sign(caPrivateKey, loadForge().md.sha256.create());
 
-	return pki.certificateToPem(publicCert);
+	return loadForge().pki.certificateToPem(publicCert);
 }
 
 export async function getCertAuthority() {
@@ -691,7 +692,7 @@ export async function getCertAuthority() {
 }
 
 async function generateCertAuthority(private_key, publicKey, writeKey = true) {
-	const caCert = pki.createCertificate();
+	const caCert = loadForge().pki.createCertificate();
 
 	caCert.publicKey = publicKey;
 	caCert.serialNumber = generateSerialNumber();
@@ -717,12 +718,12 @@ async function generateCertAuthority(private_key, publicKey, writeKey = true) {
 		{ name: 'subjectKeyIdentifier' },
 	]);
 
-	caCert.sign(private_key, forge.md.sha256.create());
+	caCert.sign(private_key, loadForge().md.sha256.create());
 
 	const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
 	const privatePath = path.join(keysPath, certificatesTerms.PRIVATEKEY_PEM_NAME);
 	if (writeKey) {
-		await fs.writeFile(privatePath, pki.privateKeyToPem(private_key));
+		await fs.writeFile(privatePath, loadForge().pki.privateKeyToPem(private_key));
 	}
 
 	return caCert;
@@ -763,7 +764,7 @@ export async function reviewSelfSignedCert() {
 
 		const tryToParseKey = (keyPath) => {
 			try {
-				const key = pki.privateKeyFromPem(fs.readFileSync(keyPath));
+				const key = loadForge().pki.privateKeyFromPem(fs.readFileSync(keyPath));
 				return { key, keyPath };
 			} catch (err) {
 				logger.warn?.(`Failed to parse private key from ${keyPath}:`, err.message);
@@ -809,15 +810,19 @@ export async function reviewSelfSignedCert() {
 			if (fs.existsSync(path.join(keysPath, certificatesTerms.PRIVATEKEY_PEM_NAME)))
 				keyName = `privateKey${uuidv4().split('-')[0]}.pem`;
 
-			await fs.writeFile(path.join(keysPath, keyName), pki.privateKeyToPem(privateKey));
+			await fs.writeFile(path.join(keysPath, keyName), loadForge().pki.privateKeyToPem(privateKey));
 		}
 
-		const hdbCa = await generateCertAuthority(privateKey, pki.setRsaPublicKey(privateKey.n, privateKey.e), false);
+		const hdbCa = await generateCertAuthority(
+			privateKey,
+			loadForge().pki.setRsaPublicKey(privateKey.n, privateKey.e),
+			false
+		);
 
 		await setCertTable({
 			name: hdbCa.subject.getField('CN').value,
 			uses: [],
-			certificate: pki.certificateToPem(hdbCa),
+			certificate: loadForge().pki.certificateToPem(hdbCa),
 			private_key_name: keyName,
 			is_authority: true,
 			is_self_signed: true,
@@ -832,9 +837,13 @@ export async function reviewSelfSignedCert() {
 		);
 
 		caAndKey = caAndKey ?? (await getCertAuthority());
-		const hdbCa = pki.certificateFromPem(caAndKey.ca.certificate);
+		const hdbCa = loadForge().pki.certificateFromPem(caAndKey.ca.certificate);
 		const publicKey = hdbCa.publicKey;
-		const newPublicCert = await generateCertificates(pki.privateKeyFromPem(caAndKey.private_key), publicKey, hdbCa);
+		const newPublicCert = await generateCertificates(
+			loadForge().pki.privateKeyFromPem(caAndKey.private_key),
+			publicKey,
+			hdbCa
+		);
 		await setCertTable({
 			name: certName,
 			uses: ['replication'],

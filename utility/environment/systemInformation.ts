@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import si from 'systeminformation';
+import type { Systeminformation } from 'systeminformation';
 import logger from '../logging/harper_logger.ts';
 import * as hdbTerms from '../hdbTerms.ts';
 import { getQuotaStatus } from '../../server/storageReclamation.ts';
@@ -10,6 +10,9 @@ import * as env from './environmentManager.ts';
 import { getDatabases, type Table } from '../../resources/databases.ts';
 import { TableSizeObject } from '../../dataLayer/harperBridge/TableSizeObject.ts';
 import { RocksDatabase, StatsHistogramData } from '@harperfast/rocksdb-js';
+
+// only system_information requests use it, so it is not loaded at startup
+const loadSi = () => require('systeminformation') as typeof import('systeminformation');
 
 env.initSync();
 
@@ -63,7 +66,7 @@ export class SystemInformationResponse {
 	}
 }
 
-type TimeData = si.Systeminformation.TimeData & { process_uptime: number };
+type TimeData = Systeminformation.TimeData & { process_uptime: number };
 
 /**
  * Returns the current local time, timezone, and two uptimes in seconds: `uptime` (host uptime, from
@@ -72,11 +75,12 @@ type TimeData = si.Systeminformation.TimeData & { process_uptime: number };
  * CLI process.
  */
 export function getTimeInfo(): TimeData {
+	const si = loadSi();
 	return { ...si.time(), process_uptime: Math.round(process.uptime()) };
 }
 
 type CpuInfo = Pick<
-	si.Systeminformation.CpuData,
+	Systeminformation.CpuData,
 	| 'manufacturer'
 	| 'brand'
 	| 'vendor'
@@ -89,9 +93,9 @@ type CpuInfo = Pick<
 	| 'flags'
 	| 'virtualization'
 > & {
-	cpu_speed: si.Systeminformation.CpuCurrentSpeedData;
+	cpu_speed: Systeminformation.CpuCurrentSpeedData;
 	current_load: Pick<
-		si.Systeminformation.CurrentLoadData,
+		Systeminformation.CurrentLoadData,
 		| 'avgLoad'
 		| 'currentLoad'
 		| 'currentLoadUser'
@@ -101,7 +105,7 @@ type CpuInfo = Pick<
 		| 'currentLoadIrq'
 	> & {
 		cpus: Pick<
-			si.Systeminformation.CurrentLoadCpuData,
+			Systeminformation.CurrentLoadCpuData,
 			'load' | 'loadUser' | 'loadSystem' | 'loadNice' | 'loadIdle' | 'loadIrq'
 		>[];
 	};
@@ -113,6 +117,7 @@ type CpuInfo = Pick<
  */
 export async function getCPUInfo(): Promise<CpuInfo | null> {
 	try {
+		const si = loadSi();
 		const [cpu, cpu_speed, loadInfo] = await Promise.all([si.cpu(), si.cpuCurrentSpeed(), si.currentLoad()]);
 
 		const {
@@ -178,7 +183,7 @@ export async function getCPUInfo(): Promise<CpuInfo | null> {
 }
 
 type MemoryInfo = Pick<
-	si.Systeminformation.MemData,
+	Systeminformation.MemData,
 	| 'total'
 	| 'free'
 	| 'used'
@@ -198,6 +203,7 @@ type MemoryInfo = Pick<
  */
 export async function getMemoryInfo(): Promise<MemoryInfo | null> {
 	try {
+		const si = loadSi();
 		const { total, free, used, active, available, reclaimable, swaptotal, swapused, swapfree, writeback, dirty } =
 			await si.mem();
 		return {
@@ -236,7 +242,7 @@ async function getHdbPid(): Promise<number | null> {
 	}
 }
 
-type CoreInfo = si.Systeminformation.ProcessesProcessData & { parent?: string };
+type CoreInfo = Systeminformation.ProcessesProcessData & { parent?: string };
 
 type HarperdbProcesses = {
 	core: CoreInfo[];
@@ -252,6 +258,7 @@ export async function getHDBProcessInfo(): Promise<HarperdbProcesses> {
 	};
 
 	try {
+		const si = loadSi();
 		const [processes, hdbPid] = await Promise.all([si.processes(), getHdbPid()]);
 
 		const proc = processes.list.find((p) => p.pid === hdbPid);
@@ -265,9 +272,9 @@ export async function getHDBProcessInfo(): Promise<HarperdbProcesses> {
 }
 
 type DiskInfo = {
-	io?: Pick<si.Systeminformation.DisksIoData, 'rIO' | 'wIO' | 'tIO'>;
-	read_write?: Pick<si.Systeminformation.FsStatsData, 'rx' | 'tx' | 'wx'>;
-	size?: si.Systeminformation.FsSizeData[];
+	io?: Pick<Systeminformation.DisksIoData, 'rIO' | 'wIO' | 'tIO'>;
+	read_write?: Pick<Systeminformation.FsStatsData, 'rx' | 'tx' | 'wx'>;
+	size?: Systeminformation.FsSizeData[];
 	free_space_basis?: 'quota' | 'filesystem';
 	quota_size_bytes?: number;
 	quota_used_bytes?: number;
@@ -292,6 +299,7 @@ export async function getDiskInfo(): Promise<DiskInfo> {
 	try {
 		if (!env.get(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_SYSINFO_DISK)) return disk;
 
+		const si = loadSi();
 		const [disksIO, fsStats, fsSize] = await Promise.all([si.disksIO(), si.fsStats(), si.fsSize()]);
 
 		const { rIO, wIO, tIO } = disksIO;
@@ -309,9 +317,9 @@ export async function getDiskInfo(): Promise<DiskInfo> {
 
 type NetworkInfo = {
 	default_interface: string | null;
-	latency: si.Systeminformation.InetChecksiteData | Record<never, never>;
+	latency: Systeminformation.InetChecksiteData | Record<never, never>;
 	interfaces: Pick<
-		si.Systeminformation.NetworkInterfacesData,
+		Systeminformation.NetworkInterfacesData,
 		| 'iface'
 		| 'ifaceName'
 		| 'default'
@@ -344,6 +352,7 @@ export async function getNetworkInfo(): Promise<NetworkInfo> {
 	try {
 		if (!env.get(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_SYSINFO_NETWORK)) return network;
 
+		const si = loadSi();
 		const [defaultInterface, latency, nInterfaces, stats] = await Promise.all([
 			si.networkInterfaceDefault(),
 			si.inetChecksite('https://google.com').catch(() => ({})),
@@ -397,7 +406,7 @@ export async function getNetworkInfo(): Promise<NetworkInfo> {
 
 type SystemInfo = Partial<
 	Pick<
-		si.Systeminformation.OsData,
+		Systeminformation.OsData,
 		'platform' | 'distro' | 'release' | 'codename' | 'kernel' | 'arch' | 'hostname' | 'fqdn'
 	>
 > & {
@@ -416,6 +425,7 @@ export async function getSystemInformation(): Promise<SystemInfo> {
 
 	let systemInfo: SystemInfo = {};
 	try {
+		const si = loadSi();
 		const [osInfo, versions] = await Promise.all([si.osInfo(), si.versions('node, npm')]);
 		const { platform, distro, release, codename, kernel, arch, hostname, fqdn } = osInfo;
 		const { node, npm } = versions;

@@ -1,6 +1,6 @@
 'use strict';
 
-import * as lmdb from 'lmdb';
+import type * as lmdb from 'lmdb';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as common from './commonUtility.ts';
@@ -122,7 +122,7 @@ export async function createEnvironment(
 			let environmentPath = path.join(basePath, envName);
 			await fs.mkdirp(isV3 ? environmentPath : basePath);
 			let envInit = new OpenEnvironmentObject(isV3 ? environmentPath : environmentPath + MDB_FILE_EXTENSION, false);
-			let env = lmdb.open(envInit);
+			let env = (require('lmdb') as typeof lmdb).open(envInit);
 
 			(env as any).dbis = Object.create(null);
 			//next we create an internal dbi to track the named databases
@@ -166,7 +166,7 @@ export async function openEnvironment(basePath: string, envName: string, isTxn: 
 	let standardPath = path.join(basePath, envName + MDB_FILE_EXTENSION);
 	let readOnly = envPath != standardPath; // legacy database, only open in read only mode
 	let envInit = new OpenEnvironmentObject(envPath, readOnly);
-	let env = lmdb.open(envInit);
+	let env = (require('lmdb') as typeof lmdb).open(envInit);
 
 	(env as any).dbis = Object.create(null);
 
