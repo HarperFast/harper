@@ -11,14 +11,15 @@ permissions:
 
 jobs:
   loop:
-    name: bin loop (Node.js v${{ matrix.node-version }}${{ matrix.perturb && ', perturb' || '' }})
+    name: bin loop (Node.js v${{ matrix.node-version }}${{ matrix.perturb && ', perturb' || '' }}, ${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
         node-version: [24]
-        perturb: ['glibc.malloc.perturb=165', '']
+        perturb: ['glibc.malloc.perturb=165']
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -60,9 +61,7 @@ jobs:
               opens=$((opens + 1))
               if [ $opens -le 6 ]; then
                 echo "::group::iteration $i opened existing-target (rc=$rc)"
-                grep -B2 -A40 "OPEN existing-target" /tmp/run.log | head -120
-                echo "--- scans:"
-                grep -A14 "SCAN copyIntegrity" /tmp/run.log | grep -v "node:internal" | tail -60
+                grep -A62 "OPEN existing-target" /tmp/run.log | head -70
                 echo "::endgroup::"
               fi
             fi
