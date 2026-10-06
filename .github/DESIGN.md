@@ -2,7 +2,7 @@
 
 CI workflows.
 
-**Read this when:** a workflow that installs dependencies fails on one Node line but not another, when changing which npm writes `package-lock.json`, when changing how the Docker image is built, smoke-tested or published, or when `Unit tests: lmdb` hits its cap or a new unit suite seeds or clears rows.
+**Read this when:** a workflow that installs dependencies fails on one Node line but not another, when changing which npm writes `package-lock.json`, when changing how the Docker image is built, smoke-tested or published, when `Unit tests: lmdb` hits its cap or a new unit suite seeds or clears rows, or when changing what the release cherry-pick decides to pick.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -27,3 +27,9 @@ Pushes to `main` and release branches run the same staging path, copying into a 
 `test:unit:lmdb` re-runs `unitTests/resources`, `unitTests/apiTests` and `unitTests/bin` on LMDB, where every awaited commit waits on a disk sync. A fixture that seeds or clears one row per transaction costs seconds on the default engine and minutes on LMDB, and a runner with slow fsync multiplies exactly that part. `subscriptionPreviousCountScanBound.test.js` (harper#2826), `subscriptionSuperseded.test.js` (harper#2887) and `calibrationStore.test.js` each pushed the step past its cap this way. Nothing enforces this; the step's `timeout-minutes` is the only detector.
 
 Write a fixture's rows in one transaction and await a write only before the step that reads it. Empty a table with `Table.clear()`, or with every delete in one transaction where the table has a full-text index (`clear()` refuses it) or the suite reads the deletes from the audit log (`clear()` writes none). Where a test checks write order (calibration discovery scans decisions by time), keep those writes serial and let the independent ones commit alongside them. Before raising the cap, compare each suite's time in the `lmdb` step with the same suite in `resources (core)`/`resources (indexes)` of the same job, and fix the suite whose LMDB time grew.
+
+## A release cherry-pick skips a change its branch already has (`workflows/cherry-pick-patch.yml`, `scripts/change-landed.sh`)
+
+Before picking, the cherry-pick job asks `scripts/change-landed.sh` whether one pick of the PR's whole net change onto the release branch would come out empty: `git merge-tree` of that change, with its own base as the merge base, is clean and leaves the release tree unchanged. Only that answer skips the PR, with no branch and no PR. A change that is partly present, reverted, or conflicting picks as before, and so does a check that cannot run. This is the empty-pick test `scripts/apply-picks.sh` already applies to each commit, lifted to the net change. Replaying a landed PR one commit at a time re-applies each intermediate commit against its own final content, which conflicts instead of coming out empty. harper#3067 was the second run of a `demilestoned`/`milestoned` pair re-picking harper#3038 onto the v5.3 the first run had just landed it on.
+
+The net change is `MERGE_BASE..HEAD_SHA` when the job replays the PR's commits, which includes any merge-commit resolutions; a contained change therefore also clears that hold. It is `MERGE_SHA^1..MERGE_SHA` for a PR merged with a merge commit. The fallback that builds from a lone merge commit is not provably the whole change, so it is never checked and keeps its hold. The check runs after the release branch is checked out, so it reads the same `.gitattributes` as the picks. `unitTests/github/cherryPickPatch.test.mjs` runs the shipped job's steps against a fixture origin.

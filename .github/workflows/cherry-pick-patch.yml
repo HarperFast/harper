@@ -243,6 +243,7 @@ jobs:
         run: |
           cp .github/scripts/upsert-sticky-comment.js "$RUNNER_TEMP/upsert-sticky-comment.js"
           cp .github/scripts/apply-picks.sh "$RUNNER_TEMP/apply-picks.sh"
+          cp .github/scripts/change-landed.sh "$RUNNER_TEMP/change-landed.sh"
 
       - name: Configure git
         run: |
@@ -311,9 +312,13 @@ jobs:
             # The PR was merged with a merge commit: it IS the change.
             PICK_FLAGS="-m 1"
             PICK_SHAS="$MERGE_SHA"
+            CHANGE_BASE="${MERGE_SHA}^1"
+            CHANGE_HEAD="$MERGE_SHA"
           else
             PICK_FLAGS=""
             PICK_SHAS=$(git rev-list --reverse --no-merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
+            CHANGE_BASE="$MERGE_BASE"
+            CHANGE_HEAD="$HEAD_SHA"
             # Only merges a human DECIDED something in need holding, so a
             # routine "merge main in, no conflicts" PR still lands
             # automatically. The test is whether the recorded merge matches what
@@ -335,6 +340,9 @@ jobs:
                 # something to review, but it is not provably the whole change.
                 PICK_SHAS="$MERGE_SHA"
                 HOLD="the PR has no replayable non-merge commits, so this branch was built from the merge commit alone"
+                # Not provably the whole change, so it cannot prove the whole
+                # change landed either.
+                CHANGE_HEAD=""
               elif [ -n "$EXCLUDED_MERGES" ]; then
               echo "pushed=false" >> "$GITHUB_OUTPUT"
                 # Nothing replayable and a merge that resolved something: the
@@ -350,6 +358,23 @@ jobs:
               fi
             fi
           fi
+
+          # ── Create / reset cherry-pick branch off release branch ────────
+          git checkout -B "$BRANCH" "origin/$RELEASE_BRANCH"
+
+          # ── Skip a change the release branch already has ────────────────
+          #
+          # Replaying it re-applies each intermediate commit against its own
+          # final content, which conflicts. Skip only when one pick of the whole
+          # net change would come out empty — the test apply-picks.sh applies to
+          # each commit — and pick on anything else, including a check that
+          # could not run.
+          if [ -n "$CHANGE_HEAD" ] && "$RUNNER_TEMP/change-landed.sh" "origin/$RELEASE_BRANCH" "$CHANGE_BASE" "$CHANGE_HEAD"; then
+            echo "The change from PR #$PR_NUMBER is already on $RELEASE_BRANCH — nothing to pick"
+            echo "no_op=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           echo "pick_flags=$PICK_FLAGS" >> "$GITHUB_OUTPUT"
           echo "pick_shas=$PICK_SHAS" >> "$GITHUB_OUTPUT"
           if [ -n "$EXCLUDED_MERGES" ]; then
@@ -357,9 +382,6 @@ jobs:
           fi
           echo "excluded_merges=$EXCLUDED_MERGES" >> "$GITHUB_OUTPUT"
           echo "hold=$HOLD" >> "$GITHUB_OUTPUT"
-
-          # ── Create / reset cherry-pick branch off release branch ────────
-          git checkout -B "$BRANCH" "origin/$RELEASE_BRANCH"
 
           # ── Apply commits, tracking which conflicted ────────────────────
           CONFLICTS=$("$RUNNER_TEMP/apply-picks.sh" "$PICK_FLAGS" "$PICK_SHAS")
@@ -392,10 +414,10 @@ jobs:
             --base "$RELEASE_BRANCH" --head "$BRANCH" --json number --jq '.[0].number' 2>/dev/null || true)
           if [ -n "$STALE_PR" ] && [ "$STALE_PR" != "null" ]; then
             gh pr close "$STALE_PR" --repo "$GITHUB_REPOSITORY" \
-              --comment "Superseded: PR #${PR_NUMBER} no longer produces any commits to cherry-pick onto \`${RELEASE_BRANCH}\`." >/dev/null || true
+              --comment "Superseded: PR #${PR_NUMBER} has nothing left to cherry-pick onto \`${RELEASE_BRANCH}\`." >/dev/null || true
           fi
           git push origin --delete "$BRANCH" 2>/dev/null || true
-          BODY=$(printf '%s\n## Release cherry-pick `%s`: already present\n\nEvery commit from this PR is already on `%s` — nothing to cherry-pick.\n' \
+          BODY=$(printf '%s\n## Release cherry-pick `%s`: already present\n\nThe change from this PR is already on `%s` — nothing to cherry-pick.\n' \
             "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH")
           node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
 
