@@ -2105,9 +2105,8 @@ export function makeTable(options): TableResourceClass {
 									}
 									let updateRecordedSequenceId: () => MaybePromise<void>;
 									const advancesSequence = event.localTime && stream.lastSequenceId !== event.localTime;
-									// The source fills `originCursors` in from onCommit, after this decision, so a source that
-									// reports origin progress declares the array up front.
-									if (advancesSequence || event.originCursors !== undefined) {
+									// a source may attach `originCursors` from its onCommit, which runs after this decision
+									if (advancesSequence || event.originCursors !== undefined || event.onCommit !== undefined) {
 										if (event.remoteNodeIds?.length > 0) {
 											updateRecordedSequenceId = () => {
 												const originCursors: [number, number][] | undefined = event.originCursors;
@@ -2143,16 +2142,18 @@ export function makeTable(options): TableResourceClass {
 														}
 													}
 												}
-												// The highest origin log key applied from this peer, per origin: a cursor in the origin's own
-												// key space, so it only ever rises.
+												// an origin's frames can arrive below its highest key, which must not be lowered
+												let originCursorsChanged = false;
 												for (const [nodeId, originLogKey] of originCursors ?? []) {
 													let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
 													if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
-													if (!(nodeState.originLogKey >= originLogKey)) nodeState.originLogKey = originLogKey;
+													if (!(nodeState.originLogKey >= originLogKey)) {
+														nodeState.originLogKey = originLogKey;
+														originCursorsChanged = true;
+													}
 												}
-												const seqId = advancesSequence
-													? Math.max(existingSeq?.seqId ?? 1, event.localTime)
-													: (existingSeq?.seqId ?? 1);
+												if (!advancesSequence && !originCursorsChanged) return;
+												const seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime || 0);
 												logger.trace?.(
 													'Received txn',
 													databaseName,

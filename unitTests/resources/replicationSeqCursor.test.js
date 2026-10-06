@@ -157,10 +157,11 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 		let release;
 		const held = new Promise((resolve) => (release = resolve));
 		const now = Date.now();
-		// A source attaches origin progress from onCommit, after the apply loop decided whether to record.
 		const endTxn = (localTime, cursors) => {
-			const event = { type: 'end_txn', localTime, timestamp: localTime, remoteNodeIds: [44], originCursors: [] };
-			event.onCommit = () => event.originCursors.push(...cursors);
+			const event = { type: 'end_txn', localTime, timestamp: localTime, remoteNodeIds: [44] };
+			event.onCommit = () => {
+				event.originCursors = cursors;
+			};
 			return event;
 		};
 		const ReplicatedTable = makeReplicatedTable(
@@ -169,21 +170,25 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
 				endTxn(now, [[7, now - 5]]),
 				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now },
-				// same localTime: only the origin cursors are new, and the lower key for origin 7 must not win
+				// a repeated localTime, and a lower key for origin 7
 				endTxn(now, [
 					[7, now - 10],
 					[8, now],
 				]),
+				{ type: 'put', id: 3, value: { id: 3, name: 'third' }, timestamp: now },
+				endTxn(now, [[8, now - 1]]),
+				{ type: 'put', id: 4, value: { id: 4, name: 'fourth' }, timestamp: now + 1 },
+				endTxn(now + 1, []),
 			],
 			held
 		);
+		const spy = spyOnCursorWrites(ReplicatedTable);
 		try {
-			await waitFor(() => readCursor(ReplicatedTable, 44)?.nodes?.some((node) => node.id === 8), {
+			await waitFor(() => readCursor(ReplicatedTable, 44)?.seqId === now + 1, {
 				timeout: 5000,
-				message: 'the second frame recorded its origin cursors',
+				message: 'the last frame recorded its sequence id',
 			});
 			const cursor = readCursor(ReplicatedTable, 44);
-			assert.equal(cursor.seqId, now);
 			assert.deepEqual(
 				cursor.nodes.map((node) => ({ ...node })),
 				[
@@ -191,7 +196,9 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 					{ id: 8, originLogKey: now },
 				]
 			);
+			assert.equal(spy.staged.length, 3, 'a frame that advances nothing writes no cursor');
 		} finally {
+			spy.restore();
 			release();
 		}
 	});
