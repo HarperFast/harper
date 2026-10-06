@@ -843,9 +843,9 @@ export class ToolHandlerError extends ServerError {
 	}
 }
 
-/** A backend that omits usage often reports `{}`, which measures nothing, same as no usage at all. */
+/** Both counts, as the facade requires for pricing: `{}` or a half report would silently under-count the cap. */
 function reportsTokenCounts(usage: TokenUsage | undefined): boolean {
-	return typeof usage?.promptTokens === 'number' || typeof usage?.completionTokens === 'number';
+	return Number.isFinite(usage?.promptTokens) && Number.isFinite(usage?.completionTokens);
 }
 
 function sumTokens(usage: TokenUsage | undefined): number {

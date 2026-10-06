@@ -680,11 +680,7 @@ function usageFromError(err: unknown): TokenUsage | undefined {
 	return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
-/**
- * The caller-facing result. `usage` and `costUsd` are framework-owned: whatever the backend put on its
- * output is replaced. Called after the candidate try/catch, so an accounting fault cannot turn a billed
- * success into a fallback call.
- */
+/** Runs after the candidate try/catch, so an accounting fault cannot turn a billed success into a fallback call. */
 function finalizeGenerateResult(
 	output: GenerateResult,
 	usage: TokenUsage | undefined,

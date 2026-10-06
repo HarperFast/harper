@@ -575,14 +575,14 @@ describe('agent/loop per-session budgets (#3040)', () => {
 		assert.equal(JSON.parse(toolMessages[0].content).error, 'budget_exceeded');
 	});
 
-	it('a final answer that crosses the cap is delivered and the run completes', async () => {
+	it('a final answer that crosses the cap is delivered, and the completed run names the cap', async () => {
 		const sessionId = await newSession();
 		const models = stubModels([finalTurn('the answer', usage(80, 30))]);
 		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, maxTokens: 100 });
 
 		const reloaded = await session.getSession(sessionId);
 		assert.equal(reloaded.status, 'completed');
-		assert.equal(reloaded.lastError, undefined);
+		assert.match(reloaded.lastError, /agent\.maxTokens=100 reached/);
 		assert.equal(reloaded.messages.at(-1).content, 'the answer');
 	});
 
@@ -678,6 +678,64 @@ describe('agent/loop per-session budgets (#3040)', () => {
 		assert.equal(toolMessages.length, 1);
 		assert.equal(toolMessages[0].toolCallId, 'c1');
 		assert.equal(JSON.parse(toolMessages[0].content).error, 'budget_exceeded');
+	});
+
+	it('a stop on resume answers every open approval, resolved or not, so none is left pending', async () => {
+		const sessionId = await newSession();
+		const drop = countingTool('drop', { destructive: true });
+		await runAgent({
+			sessionId,
+			models: stubModels([
+				{
+					content: '',
+					finishReason: 'tool_calls',
+					toolCalls: [
+						{ id: 'c1', name: 'drop', arguments: {} },
+						{ id: 'c2', name: 'drop', arguments: {} },
+					],
+					...usage(60, 10),
+				},
+			]),
+			tools: [drop],
+			scopes,
+			maxTurns: 5,
+			autoApprove: false,
+		});
+		const paused = await session.getSession(sessionId);
+		assert.equal(paused.pendingApprovals.length, 2);
+		await session.resolveApproval(sessionId, paused.pendingApprovals[0].id, true);
+
+		await runAgent({
+			sessionId,
+			models: stubModels([]),
+			tools: [drop],
+			scopes,
+			maxTurns: 5,
+			autoApprove: false,
+			maxTokens: 50,
+		});
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(drop.runs, 0);
+		assert.equal(reloaded.status, 'error');
+		assert.ok(reloaded.pendingApprovals.every((a) => a.resolved && a.consumed));
+		assert.equal(reloaded.pendingApprovals[1].approved, false);
+		const answered = reloaded.messages.filter((m) => m.role === 'tool').map((m) => m.toolCallId);
+		assert.deepStrictEqual(answered.sort(), ['c1', 'c2']);
+	});
+
+	it('endRun completes the transcript but keeps an aborted status a cancel already wrote', async () => {
+		const sessionId = await newSession();
+		await session.setStatus(sessionId, 'aborted', 'Cancelled by operator');
+		await session.endRun(sessionId, {
+			append: [{ role: 'tool', content: '{}', toolCallId: 'c1', createdAt: Date.now() }],
+			status: 'error',
+			lastError: 'agent.maxTokens=1 reached',
+		});
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'aborted');
+		assert.equal(reloaded.lastError, 'Cancelled by operator');
+		assert.equal(reloaded.messages.at(-1).toolCallId, 'c1');
 	});
 
 	it('an assistant turn written before usage was recorded makes a capped session unmeasured, not free', async () => {

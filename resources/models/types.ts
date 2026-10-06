@@ -503,7 +503,8 @@ export interface GenerateResult {
 	/**
 	 * USD cost of this call, from the `pricing` declared on the model entry that
 	 * served it (a fallback is priced at its own rate). Absent when that entry
-	 * declares no pricing or the backend did not report both token counts.
+	 * declares no pricing or the backend did not report both token counts. With
+	 * `toolMode: 'auto'` it covers the final round only, like `usage`.
 	 */
 	costUsd?: number;
 	/**

@@ -16,7 +16,6 @@ export function hasBudget(caps: BudgetCaps): boolean {
 	return caps.maxTokens !== undefined || caps.maxCostUsd !== undefined;
 }
 
-/** Every assistant message is one model call; a call that did not report a figure makes that total absent. */
 export function summarizeSessionUsage(messages: Iterable<AgentMessage>): AgentSessionUsage {
 	let calls = 0;
 	let promptTokens: number | undefined = 0;
@@ -41,7 +40,6 @@ function addMeasured(total: number | undefined, value: unknown): number | undefi
 	return total + value;
 }
 
-/** The figures a call reported, keeping only fields that were supplied. */
 export function callUsage(
 	usage: { promptTokens?: number; completionTokens?: number } | undefined,
 	costUsd: number | undefined
@@ -53,11 +51,7 @@ export function callUsage(
 	return Object.keys(reported).length > 0 ? reported : undefined;
 }
 
-/**
- * Why the session may not make another model call, or `undefined` when it may. A cap that cannot be
- * measured stops the session too: running uncapped under a configured cap is what this module exists
- * to prevent. Trips at `>=`, matching the `toolMode: 'auto'` loop.
- */
+/** An unmeasured total violates its cap: running uncapped under a configured cap is what this prevents. */
 export function budgetViolation(usage: AgentSessionUsage, caps: BudgetCaps): string | undefined {
 	if (caps.maxTokens !== undefined) {
 		if (usage.promptTokens === undefined || usage.completionTokens === undefined) {
@@ -77,10 +71,7 @@ export function budgetViolation(usage: AgentSessionUsage, caps: BudgetCaps): str
 	return undefined;
 }
 
-/**
- * Validate a cap from config or `set_agent_config`. `null` or absent clears it. A value that is not a
- * usable number is refused: coerced to `NaN`, it would compare false forever and silently uncap.
- */
+/** Refuses rather than coerces: a cap coerced to `NaN` would compare false forever and silently uncap. */
 export function parseBudgetCap(name: keyof BudgetCaps, value: unknown): number | undefined {
 	if (value === undefined || value === null) return undefined;
 	const cap = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;

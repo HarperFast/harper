@@ -113,7 +113,7 @@ async function listAgentSessions(op: any) {
 	return { sessions: (await listSessions({ limit })).map(withUsage) };
 }
 
-/** The stored row plus its folded usage. Copies fields by name, never by spread: a record may expose fields as accessors a spread skips. */
+/** Copies fields by name, never by spread: a stored record may expose fields as accessors a spread skips. */
 function withUsage(session: AgentSessionRow): Record<string, unknown> & { usage: AgentSessionUsage } {
 	const view: Record<string, unknown> & { usage?: AgentSessionUsage } = {};
 	for (const { name } of AGENT_SESSION_ATTRIBUTES) {
@@ -167,7 +167,6 @@ async function setAgentConfig(op: any, deps: OperationDeps) {
 	]) {
 		if (op?.[key] !== undefined) (patch as any)[key] = op[key];
 	}
-	// Validated before anything is applied; `null` clears a cap.
 	for (const key of ['maxTokens', 'maxCostUsd'] as const) {
 		if (op?.[key] !== undefined) patch[key] = parseBudgetCap(key, op[key]);
 	}
