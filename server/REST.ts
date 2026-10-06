@@ -513,12 +513,6 @@ let addedMetrics;
 let connectionCount = 0;
 
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
-	// A deploy pre-flight validation scope exists only to validate config, and may share a live
-	// component's identity — registering real HTTP/WS handlers from it would splice a validation
-	// run into the live request path, and permanently marking its mount as started below would
-	// leave the REAL scope's later registration silently skipped (review finding).
-	if (scope.isTransientValidation) return;
-
 	const httpOptions = scope.options.getAll();
 	if ((httpOptions as any).includeExpensiveRecordCountEstimates) {
 		// If they really want to enable expensive record count estimates

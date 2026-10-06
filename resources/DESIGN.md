@@ -190,7 +190,9 @@ Every copy path gives the copy a generation of its own before anything can read 
 - **An ordinary open never repairs:** it adopts the record, mints genesis as a compare-and-set on absence, or leaves the handle without one (every resume refused). The resume floor is read as never below a finite audit floor, since an older binary's prunes raise only the audit floor.
 - **No scalar mode.** A position without an id is never resumable; bind an id only to a position established within the generation. Cursors must be progress-based: a snapshot's newest in-scope key can sit below a floor that retention advances on a quiet database, and would be refused forever.
 - **Live subscriptions:** the per-path registry outlives the store, but a subscription from before a reopen can never deliver again (its commit listener and table stores belong to the closed handle). Every open first records its audit store as the only handle a registration on the path may use, then detaches the registry and ends each subscription: `DatabaseGenerationChangedError` for another or an unknown generation on RocksDB, and otherwise (the same generation, or any LMDB reopen) the retryable `DatabaseClosingError`. A registration through an earlier or closed handle, even from inside that close, is refused with the same pair of errors.
-- **Not covered:** copies no generation-aware code made, a pre-generation binary pruning while the audit floor is unknown, keys reissued below a cursor after a clock rollback across a restart, cross-node identity (an id is per database per node), and subscription teardown and the handle check on a legacy LMDB `auditPath` root, which is reopened on every metadata read.
+- **Resuming through `subscribe`:** a request carrying `databaseGeneration` (with a finite `startTime`, where 0 is a position) is checked before it registers — 409 for another generation or any LMDB table, 410 `ResumeHistoryUnavailableError` below the floor — and again during the replay. A collection replay reads forward, so each check (at every replay yield, before each wait for a slow consumer to drain, and at the end) compares the floor with the position reached at the _previous_ check: a prune raises the floor before it deletes below it, so a pass means nothing unread was removed, while a prune of already-replayed history does not end the replay. The replay also refuses when its log range records a failed or corrupt log read (the store ends that log quietly), when it meets an entry or record id that failed to decode (the decoder returns a sentinel with no table), or when it crosses a `reload` marker for the table, whose back-filled rows have no history to replay; a record walk treats an undecodable version as missing. A record's history walk is its own evidence, checked before anything is sent: a walk that reaches the cursor with every version present verifies whatever the floor says (so a quiet or long-offline record does not reset), a missing version or the 10,000-version cap refuses, and a record with no entry, or a walk that ends at a first version before the cursor, falls back to the floor, since a pruned tombstone takes its history with it and a recreation then starts a new chain. The pre-check for a record is therefore the generation only. `resumeVerified` resolves true only after the final check; nothing delivered before that is safe to checkpoint.
+- **Certified progress (`reportProgress`):** the broadcaster keeps a dispatched-through watermark per database, advanced only when a new key begins or a pass exhausts the log (never at a yield inside a transaction), tracked only while a progress consumer exists, and stopped for good by a failed read or an undecodable entry. A `reportProgress` subscription's `progress()` follows its checked replay, holds at the registration watermark while a snapshot or buffered live events are pending, and follows the watermark once live; its snapshot keeps every buffered event (harper#2933), and a `reload` marker or a live event it fails to build ends it. MQTT durable sessions persist the older of `progress()` and the transaction before the oldest unacknowledged message (`server/DESIGN.md`).
+- **Not covered:** copies no generation-aware code made, a pre-generation binary pruning while the audit floor is unknown, keys reissued below a cursor after a clock rollback across a restart, a transaction that commits after a position was recorded with a key below it (keys are assigned at creation; harper#2928), rows a replication base copy back-fills without history, for a record resume or for any resume while the copy runs, since the `reload` marker follows the back-fill (harper-pro#944 decides whether a base copy starts a new generation), cross-node identity (an id is per database per node), and subscription teardown and the handle check on a legacy LMDB `auditPath` root, which is reopened on every metadata read.
 
 ---
 
@@ -602,18 +604,25 @@ When a blob attribute is created from a Node `Readable` (e.g. `createBlob(stream
 
 Consequence for callers that wrap the source in a hashing `Transform`: calling `hash.digest('hex')` after `await table.put()` is unsafe — more `chunk.update()` calls can still fire as the stream drains, producing `Error [ERR_CRYPTO_HASH_FINALIZED]: Digest already called`. Finalize the hash only after the source has ended and the blob's `storageInfo.saving` has settled, as `components/deploymentRecorder.ts`'s streaming ingest does (`await Promise.all([putDone, tapDone, saving])` before `digest`). Its in-memory sources, and its capped fallback for a missing deployment table, buffer and hash before the put instead.
 
-## Table drops, the `dropping` tombstone, and ghost tables
+## Table drops, the `dropping` tombstone, ghost tables, and lifecycle stamps
 
-A table is a set of RocksDB column families (`T/` plus `T/<attr>`) and a set of catalog rows
-in the `__dbis__` store, with no transaction spanning the two. `Table.dropTable()` therefore
-persists a `dropping: true` flag on the table's primary catalog entry (`T/`) before any
-destructive work, then drops the column families (awaited - a failed drop must surface as the
-operation's error, never a swallowed rejection), then removes the catalog rows. If the process
-dies or a drop fails partway, the tombstone survives; both the boot-time schema load in
-`databases.ts` (`completeInterruptedDrop`) and a same-name `table()` create complete the
-interrupted drop instead of resurrecting the table. Without this, surviving catalog rows are
-silently re-opened with create-if-missing on the next start, which resurrects "deleted" tables
-(with their data, if the column families were never actually removed).
+A table is a set of RocksDB column families (`T/` plus `T/<attr>`) and a set of catalog rows in the
+`__dbis__` store, with no transaction spanning the two. `Table.dropTable()` therefore persists a
+`dropping: true` flag on the primary catalog entry (`T/`) before any destructive work, then drops the
+column families (awaited - a failed drop must surface as the operation's error), then removes the
+catalog rows. If the process dies or a drop fails partway, the tombstone survives; the boot-time schema
+load (`completeInterruptedDrop`) and a same-name `table()` create both complete the interrupted drop
+instead of re-opening the surviving rows with create-if-missing, which resurrected "deleted" tables.
+
+**Lifecycle stamps (harper#1212).** The tombstone is node-local, so a peer offline for a replicated
+`drop_table` would bring the table back through the schema handshake. Two durable facts give every node
+one rule: the primary row carries `createdTime` from create (`declareTable`, kept from a peer's propagated
+definition), and the tombstone carries `droppedTime` (`dropTable({ droppedTime })` applies a peer's), which
+every completion path promotes to a `/dropped/<table>` row (`promoteTombstoneToDropMarker`) before removing
+the tombstone — no second-write crash cut. Both come from `tableLifecycleTime()`, the record-version clock;
+`isDeadGeneration(createdTime, droppedTime)` is strict (equal survives, a missing stamp is 0). The marker
+outlives a same-name recreate, only a newer drop overwrites it, the load parser skips `/dropped/` rows, and
+`getTableDrops` / `recordTableDrop` / `onTableDropRecorded` serve replication. `unitTests/resources/dropTableLifecycle.test.js`.
 
 ## The exclusive `update-attributes` lock is a bounded synchronous wait, and drop-then-recreate needs the column-family eviction fix (`Table.ts`)
 

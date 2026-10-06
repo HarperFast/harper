@@ -649,6 +649,54 @@ describe('Scope', () => {
 			}
 		});
 
+		it("loads the installed tree while a rollout holds the component's watchers in a thread still loading", async () => {
+			deployLifecycle._handle({ name: this.appName, phase: 'start', deploymentId: 'rollout', watchersOnly: true });
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope(this.appName, this.resources, this.server)
+			);
+			try {
+				const entries = [];
+				const entryHandler = scope.handleEntry({ files: 'test.js' }, (entry) => entries.push(entry));
+				await scope.waitForDeployCompletion();
+				await entryHandler.ready;
+				assert.ok(entries.length > 0, 'the handler scans instead of pausing behind a rollout that may wait on it');
+			} finally {
+				deployLifecycle._handle({ name: this.appName, phase: 'end', deploymentId: 'rollout' });
+				await scope.close();
+			}
+		});
+
+		it('holds a loaded scope through a rollout, and replays a restart it asked for once the rollout ends', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+			deployLifecycle._componentsLoaded();
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, this.server)
+			);
+			try {
+				await scope.ready;
+				const entryHandler = scope.handleEntry();
+				await entryHandler.ready;
+				resetRestartNeeded();
+				deployLifecycle._handle({ name: this.appName, phase: 'start', deploymentId: 'rollout', watchersOnly: true });
+				await waitFor(() => entryHandler._liveWatcherCountForTests === 0);
+				scope.requestRestart();
+				assert.equal(restartNeeded(), false, 'the restart waits for the rollout');
+				deployLifecycle._handle({ name: this.appName, phase: 'end', deploymentId: 'rollout' });
+				assert.equal(restartNeeded(), true, 'and is replayed once it ends');
+			} finally {
+				resetRestartNeeded();
+				await scope.close();
+			}
+		});
+
 		it('resumes a mid-deploy scope when the deploy owner exits', async () => {
 			const ownerThreadId = 41;
 			deployLifecycle._handle({

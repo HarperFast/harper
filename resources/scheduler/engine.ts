@@ -287,7 +287,7 @@ function installJobs(componentName: string, jobs: ScheduledJob[]): void {
 
 /**
  * Cancel timers and forget the jobs of a component (its scope is closing —
- * worker shutdown, redeploy, or a discarded deploy-validation load).
+ * worker shutdown or redeploy).
  *
  * Leadership is deliberately retained even if this empties the job set: the
  * common cause is a reload that re-registers moments later, and stepping down
