@@ -126,6 +126,15 @@ export class DatabaseGenerationChangedError extends ClientError {
 	}
 }
 
+export class ResumeHistoryUnavailableError extends ClientError {
+	code: string;
+	constructor(message = 'The history after this resume position is no longer retained; resubscribe to resynchronize') {
+		super(message, 410);
+		this.name = 'ResumeHistoryUnavailableError';
+		this.code = 'RESUME_HISTORY_UNAVAILABLE';
+	}
+}
+
 export class DatabaseDrainTimeoutError extends DatabaseClosingError {
 	constructor(databaseName: string, timeoutMilliseconds: number) {
 		super(databaseName);

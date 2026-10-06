@@ -7,7 +7,8 @@
  * (same technique as `unitTests/components/mcp/toolRegistry.test.js`), then
  * verifies `composeRegistryTools` filters by RBAC visibility, adapts the tool
  * shape, wires the destructive gate, and unwraps / re-throws the handler result.
- * `composeToolset` is checked for the operator-wins-on-collision merge rule.
+ * `composeToolset` is checked for the operator-wins-on-collision merge rule and the reserved
+ * `http_fetch` name.
  *
  * No server boot and no real operations runtime — the registry is populated
  * with stubs, so this stays a fast, credit-free unit test.
@@ -17,6 +18,7 @@ const assert = require('node:assert/strict');
 const { addTool, setProfileToolProvider, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
 const { composeRegistryTools, _resetRegistryToolsForTests } = require('#src/agent/registryTools');
 const { composeToolset } = require('#src/agent/toolset');
+const { buildHttpFetchTool } = require('#src/agent/tools/httpFetchTool');
 
 const SUPER_USER = { username: 'agent', role: { permission: { super_user: true } } };
 const RESTRICTED = { username: 'ro', role: { permission: { super_user: false } } };
@@ -221,6 +223,23 @@ describe('agent/toolset composeToolset — registry merge', () => {
 		const readFile = tools.filter((t) => t.def.name === 'read_file');
 		assert.equal(readFile.length, 1, 'no duplicate read_file');
 		assert.notEqual(readFile[0]._fromRegistry, true, 'operator read_file survives, not the registry one');
+	});
+
+	it('composes no http_fetch when the policy built none, even if a registry or extra tool claims the name', () => {
+		const { tools } = composeToolset({
+			...scheduleDeps,
+			registryTools: [registryTool('http_fetch')],
+			extraTools: [registryTool('http_fetch')],
+		});
+		assert.ok(!tools.some((t) => t.def.name === 'http_fetch'));
+	});
+
+	it('composes the policy-built http_fetch over a same-named registry tool', () => {
+		const httpFetchTool = buildHttpFetchTool({ allow: ['localhost'] });
+		const { tools } = composeToolset({ ...scheduleDeps, httpFetchTool, registryTools: [registryTool('http_fetch')] });
+		const fetchTools = tools.filter((t) => t.def.name === 'http_fetch');
+		assert.equal(fetchTools.length, 1);
+		assert.equal(fetchTools[0], httpFetchTool);
 	});
 
 	it('filters destructive registry tools when allowDestructive is false', () => {

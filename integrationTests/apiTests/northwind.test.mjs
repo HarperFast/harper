@@ -16,6 +16,8 @@
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { setTimeout } from 'node:timers/promises';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
@@ -2031,11 +2033,13 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 	let client;
 	let adminPwd, adminUsername;
 	let jobId; // shared job_id state used by 7_jobsAndJobRoleTesting tests
+	let exportDir;
 	// Per-user headers — built in before() from the Harper admin password.
 	let headersTestUser, headersBulkLoadUser, headersNoPermsUser, headersOnePermUser, headersImportantUser;
 	let dateYesterday, dateTomorrow;
 
 	before(async () => {
+		exportDir = mkdtempSync(join(tmpdir(), 'northwind-export-'));
 		await startHarper(ctx, { config: {}, env: {} });
 		client = createApiClient(ctx.harper);
 		adminPwd = ctx.harper.admin.password;
@@ -2119,7 +2123,11 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 	});
 
 	after(async () => {
-		await teardownHarper(ctx);
+		try {
+			await teardownHarper(ctx);
+		} finally {
+			if (exportDir) rmSync(exportDir, { recursive: true, force: true });
+		}
 	});
 
 	// ── Legacy utility shims — defined at suite scope so they close over client ──
@@ -11869,7 +11877,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					.req()
 					.send({
 						operation: 'export_local',
-						path: './',
+						path: exportDir,
 						format: 'json',
 						filename: 'integration-test',
 						search_operation: {
@@ -12425,7 +12433,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.req()
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export.json',
 					format: 'json',
 					search_operation: {
@@ -12442,7 +12450,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.req()
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export.json',
 					format: 'json',
 					search_operation: {
@@ -12462,7 +12470,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.reqAs(headersTestUser)
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export.json',
 					format: 'json',
 					search_operation: {
@@ -12493,7 +12501,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.reqAs(headersTestUser)
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export.json',
 					format: 'json',
 					search_operation: {
@@ -12524,7 +12532,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.reqAs(headersTestUser)
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export.json',
 					format: 'json',
 					search_operation: {
@@ -12555,7 +12563,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.reqAs(headersTestUser)
 				.send({
 					operation: 'export_local',
-					path: './',
+					path: exportDir,
 					filename: 'test_export',
 					format: 'json',
 					search_operation: {

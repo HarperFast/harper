@@ -20,7 +20,7 @@ const {
 	removeEnvKeys,
 } = require('../utility/envFile.ts');
 const { canonicalProjectName, projectNameFromPackage } = require('../utility/componentNames.ts');
-const { handleHDBError, ServerError, hdbErrors } = require('../utility/errors/hdbError.ts');
+const { handleHDBError, ClientError, ServerError, hdbErrors } = require('../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const manageThreads = require('../server/threads/manageThreads.js');
 const {
@@ -28,9 +28,9 @@ const {
 	scanPackageDirectory,
 	streamPackagedDirectory,
 } = require('../components/packageComponent.ts');
-const { Resources } = require('../resources/Resources.ts');
 const {
 	Application,
+	assertNotCertifying,
 	prepareApplication,
 	componentPreparationBudgetMs,
 	ASIDE_STAGING_DIR,
@@ -448,115 +448,6 @@ async function packageComponent(req) {
 	return { project, payload };
 }
 
-/**
- * Load the built candidate to surface load-time errors. A load-ERROR PROBE, not a safety guarantee: it runs
- * the component's own top-level code with incomplete side-effect isolation.
- *
- * A no-op on the main thread, and the operations API deploys there — so operator deploys are unvalidated
- * (#2315 step 2). What this guarantees is ORDER: where validation runs, a rejected candidate never goes live.
- *
- * Also a no-op on a worker that `freeze-after-load` froze after its boot load; see components/DESIGN.md.
- */
-// `componentLoader.setErrorReporter` is ONE process-global callback, so two components validating
-// concurrently on the same worker cross-attribute their failures: B installs its reporter while A is
-// loading, A's load error lands in B, and A then activates broken code while B rejects a good candidate.
-// Validation is serialized (it is already the slow path) and the previous reporter is restored, so the
-// global is only ever owned by one in-flight validation.
-let validationChain = Promise.resolve();
-
-async function validateComponentLoads(candidateDirPath, emit) {
-	if (!isMainThread && require('../security/jsLoader.ts').laterLoadsMeetFrozenIntrinsics()) {
-		log.trace(
-			`Not load-validating ${path.basename(candidateDirPath)}: this worker's intrinsics are frozen after its boot load, so the load would not match the one a restarted worker performs`
-		);
-		return;
-	}
-	const run = validationChain.then(
-		() => validateComponentLoadsExclusive(candidateDirPath, emit),
-		() => validateComponentLoadsExclusive(candidateDirPath, emit)
-	);
-	validationChain = run.then(
-		() => {},
-		() => {}
-	);
-	return run;
-}
-
-async function validateComponentLoadsExclusive(candidateDirPath, emit) {
-	// now we attempt to actually load the component in case there is
-	// an error we can immediately detect and report, but app code should not run on the main thread
-	if (!isMainThread && !process.env.HARPER_SAFE_MODE) {
-		const pseudoResources = new Resources();
-		pseudoResources.isWorker = true;
-
-		const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
-		const { trackScopeClose } = require('./scopeShutdown.ts');
-		let lastError;
-		const priorErrorReporter = componentLoader.getErrorReporter?.();
-		componentLoader.setErrorReporter((error) => (lastError = error));
-		emit('phase', { phase: 'load', status: 'start' });
-		// This load exists only to surface load-time errors early; the Scopes it creates are
-		// throwaway. They are collected (instead of registered for worker-shutdown auto-close) so we
-		// can close them here once validation completes — otherwise each deploy leaks the Scope's
-		// deploy-lifecycle listeners on this worker, eventually tripping MaxListenersExceededWarning
-		// (#1462).
-		const validationScopes = new Set();
-		// Process-wide `server.*` registrations (registerOperation, setMcpQuotaHandler) are not owned by
-		// a Scope, so a candidate's top-level registration during this throwaway load would otherwise
-		// outlive it and pollute the live worker on a failed/rolled-back deploy. The guard makes those
-		// registration methods no-op for the duration of the load.
-		const { runWithDeployValidationGuard } = require('../server/serverHelpers/deployValidationState.ts');
-		// The candidate loads under the REAL component's name, so a candidate that throws would mark the live
-		// component ERROR. Its status writes are diverted into the guard's throwaway sink instead — see
-		// `deployValidationState.ts` for why this is context-scoped rather than captured and reverted here.
-		const componentName = path.basename(candidateDirPath);
-		// Extension modules the candidate load pulls in are registered in the loader's module registry keyed by
-		// module, so forgetting only the candidate's realpath leaves those behind — one set per deploy. Their
-		// identities are collected by the load itself; diffing the global registry instead would delete a live
-		// module registered by an interleaving real load, since validations serialize only with each other.
-		const validationModules = new Set();
-		const validation = runWithDeployValidationGuard(async () => {
-			try {
-				await componentLoader.loadComponent(candidateDirPath, pseudoResources, undefined, {
-					collectScopes: validationScopes,
-					collectLoadedModules: validationModules,
-				});
-			} finally {
-				const closeResults = await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
-				const failedCloses = closeResults.filter((result) => result.status === 'rejected');
-				for (const result of failedCloses) {
-					log.warn('Failed to close a deploy-validation Scope', result.reason);
-				}
-				// A rejected close is a REJECTED VALIDATION, not a warning. `Scope.close()` stops at the
-				// throwing listener, so its remaining internal listener removal and subscription-hold release
-				// never run and the throwaway scope stays partially live — one leak per deploy, on the worker
-				// that serves the component.
-				if (failedCloses.length) {
-					throw new AggregateError(
-						failedCloses.map((result) => result.reason),
-						`Could not tear down deploy validation for ${componentName}: ${failedCloses.length} scope(s) failed to close`
-					);
-				}
-			}
-		});
-		// Track the load+close so a concurrent worker shutdown waits for these scopes to finish
-		// disposing — a plugin may start a native runtime in handleApplication — before realExit.
-		trackScopeClose(validation);
-		try {
-			await validation;
-		} finally {
-			componentLoader.setErrorReporter(priorErrorReporter);
-			// The candidate path is unique per deploy, so leaving it in the loader's realpath registry leaks
-			// one dead entry per deploy for the life of the process.
-			componentLoader.forgetLoadedPath?.(candidateDirPath);
-			componentLoader.forgetLoadedModules?.(validationModules);
-		}
-		emit('phase', { phase: 'load', status: 'done' });
-
-		if (lastError) throw lastError;
-	}
-}
-
 const BRANCH_STORAGE_RETAINED =
 	'. Any branched database storage this application owns was left in place; drop it again with restart: true to discard that data';
 
@@ -585,8 +476,8 @@ function logRestartOutcome(restart, what) {
 		);
 }
 
-// A peer's validation load and swap, which have no allowance of their own to sum.
-const PEER_DEPLOY_VALIDATION_MARGIN_MS = 10 * 60 * 1000;
+// A peer's swap, and its canary's decision when it restarts, which have no allowance of their own to sum.
+const PEER_DEPLOY_ACTIVATION_MARGIN_MS = 10 * 60 * 1000;
 
 /**
  * How long the origin waits for each peer to answer a replicated deploy: every wait and command the peer is
@@ -604,7 +495,7 @@ function peerDeployAnswerTimeoutMs(req) {
 		payloadWaitMs * (req.credentials?.length ? 2 : 1) +
 			// the lock's wait on another deploy's preparation, then this deploy's own
 			2 * componentPreparationBudgetMs(installTimeoutMs) +
-			PEER_DEPLOY_VALIDATION_MARGIN_MS +
+			PEER_DEPLOY_ACTIVATION_MARGIN_MS +
 			(req.restart === true ? RESTART_WAIT_CEILING_MS : 0),
 		hdbTerms.MAX_SET_TIMEOUT_MS
 	);
@@ -754,6 +645,7 @@ async function deployComponent(req) {
 	// in the thrown error. SSE callers still stream every line live.
 	const installCapture = createInstallCapture();
 	let stagedOnOrigin = false;
+	let releaseRequester;
 	try {
 		// On the origin, tee the tarball (Buffer or Readable from the multipart parser)
 		// through a hash-and-size tap into the row's payload_blob, then re-source extraction
@@ -845,6 +737,33 @@ async function deployComponent(req) {
 		// is the authority on whether the deploy landed, not the phase stream.
 		emit('phase', { phase: 'prepare', status: 'start' });
 		let declaredRootConfig = null;
+		const certification =
+			mode !== 'stage' && (req.restart === true || req.restart === 'rolling')
+				? require('./canaryRollout.ts').deployCertification({
+						component: req.project,
+						deploymentId: req.deployment_id ?? req._deploymentId,
+						eligible: () => (wasIsolated ?? initiallyIsolated) === (nowIsolated ?? initiallyIsolated),
+						isolated: () => Boolean(nowIsolated ?? initiallyIsolated),
+						scope: () => ((nowIsolated ?? initiallyIsolated) ? req.project : undefined),
+					})
+				: undefined;
+		let certificationDecided = false;
+		const endDrain =
+			certification && !isMainThread
+				? drainWhileDeploying(
+						() => application.certificationArmed,
+						() => certificationDecided,
+						manageThreads.canaryVerdictTimeoutMs(),
+						() => certification.interrupt()
+					)
+				: undefined;
+		releaseRequester = async () => {
+			try {
+				if (application.certificationArmed) await certification.release();
+			} finally {
+				endDrain?.();
+			}
+		};
 		await prepareApplication(application, {
 			// `.deploy-staging/<artifactId>`. The public deployment id, so the id the caller was handed is
 			// the id a later `deployment_id` request can name; an activation names the artifact's own id,
@@ -885,14 +804,33 @@ async function deployComponent(req) {
 				if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
 				declaredRootConfig = applicationConfig;
 			},
-			validateCandidate: async (candidateDirPath) => {
+			validateCandidate: async () => {
 				emit('phase', { phase: 'prepare', status: 'done' });
-				await validateComponentLoads(candidateDirPath, emit);
 			},
 			fingerprintInstall: !isActivation,
+			certification,
 		});
 		// Nothing ran `validateCandidate`, which ends this phase.
 		if (application.alreadyActive) emit('phase', { phase: 'prepare', status: 'done' });
+		// Requested but not armed: no worker here could load it, its isolation moved, its tree is a link to its
+		// source, or it was already live and decided.
+		let certificationOutcome = certification ? 'unavailable' : 'not-requested';
+		if (certification && application.certificationArmed) {
+			// Nothing replicates before the canary decides, so a rejection stops the deploy on the origin.
+			emit('phase', { phase: 'load', status: 'start' });
+			const decision = (await certification.decision()) ?? {
+				status: 'uncertified',
+				reason: 'its certification closed before this deploy read it',
+			};
+			certificationDecided = true;
+			emit('phase', { phase: 'load', status: 'done' });
+			certificationOutcome = decision.status;
+			if (decision.status === 'rejected' || decision.status === 'interrupted') {
+				throw certificationFailure(application.name, req.deployment_id ?? req._deploymentId, decision, {
+					onOrigin: !isReplicatedExecution,
+				});
+			}
+		}
 		if (recorder && application.installFingerprint) recorder.row.install_fingerprint = application.installFingerprint;
 		// The build is certified on disk from here on, so every later failure — a peer result, or a rejection
 		// thrown by the replication layer itself — still leaves an artifact this id can activate.
@@ -900,6 +838,12 @@ async function deployComponent(req) {
 		const rollingRestart = req.restart === 'rolling';
 		// if doing a rolling restart set restart to false so that other nodes don't also restart.
 		req.restart = rollingRestart ? false : req.restart;
+		// Peers only stage a certified rolling release, so none goes live before its turn in the activation job.
+		const rollingActivation = rollingRestart && application.certificationArmed;
+		if (rollingActivation) {
+			delete req.restart;
+			if (mode === 'deploy') req.activate = false;
+		}
 		// ProgressEmitter holds function listeners that can't survive the replication
 		// channel's serialization; strip it unconditionally.
 		delete req.progress;
@@ -931,10 +875,14 @@ async function deployComponent(req) {
 		// finish()'s single write; live SSE 'peer' events still fire below.
 		recorder?.seal();
 		emit('phase', { phase: 'replicate', status: 'start' });
-		let response = await server.replication.replicateOperation(req, {
-			onPeerResult,
-			timeoutMs: peerDeployAnswerTimeoutMs(req),
-		});
+		// A rolling activation's peers already hold the artifact; the job activates it on each.
+		let response =
+			rollingActivation && mode === 'activate'
+				? { message: '' }
+				: await server.replication.replicateOperation(req, {
+						onPeerResult,
+						timeoutMs: peerDeployAnswerTimeoutMs(req),
+					});
 		emit('phase', { phase: 'replicate', status: 'done' });
 		if (application.installFingerprint) response.install = application.installFingerprint;
 		// Marked on the aggregate, which the recorder re-records below, so a peer's per-peer entry is replaced
@@ -954,6 +902,13 @@ async function deployComponent(req) {
 		// restartWorkers starts or stops the moving application's own worker. An already-live retry cannot know
 		// which workers loaded the previous release, so it restarts them all.
 		const restartScope = application.alreadyActive ? '*' : wasIsolated && nowIsolated ? application.name : undefined;
+		const { awaitRestart } = require('./awaitRestart.ts');
+		// Main started this release's rollout at its commit; the origin only waits for it.
+		const awaitCertifiedRollout = async () => {
+			if (!isMainThread) return;
+			const restart = await awaitRestart((onProgress) => certification.rollout(onProgress));
+			logRestartOutcome(restart, `deploying ${application.name}`);
+		};
 		if (mode === 'stage') {
 			// No restart and no restart-required flag: nothing about the running component changed. The
 			// marker is what tells the origin which peers understood the request — see the confirmation
@@ -961,13 +916,36 @@ async function deployComponent(req) {
 			// object as its operation response.
 			response.staged = true;
 			response.message = `Staged: ${application.name}`;
+		} else if (application.certificationArmed && req.restart === true) {
+			emit('phase', { phase: 'restart', status: 'start' });
+			await awaitCertifiedRollout();
+			emit('phase', { phase: 'restart', status: 'done' });
+			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
+		} else if (rollingActivation) {
+			emit('phase', { phase: 'restart', status: 'start' });
+			await awaitCertifiedRollout();
+			if (recorder && !req.ignore_replication_errors) assertPeersStaged(application.name, recorder, response);
+			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
+			const jobResponse = await serverUtilities.executeJob({
+				operation: 'restart_service',
+				service: 'http',
+				replicated: true,
+				activate_deployment: {
+					project: application.name,
+					deployment_id: req.deployment_id ?? req._deploymentId,
+					deployment_row: recorder?.deploymentId ?? req._deploymentId,
+					nodes: mode === 'activate' ? undefined : confirmedStagingPeers(response?.replicated).map((peer) => peer.node),
+				},
+			});
+			emit('phase', { phase: 'restart', status: 'done' });
+			response.restartJobId = jobResponse.job_id;
+			response.message = `Successfully deployed: ${application.name}, activating it on each other node in turn`;
 		} else if (req.restart === true) {
 			emit('phase', { phase: 'restart', status: 'start' });
 			// Workers not yet replaced keep serving the pre-deploy component set, and where the OS lets
 			// replacements share a port they keep accepting connections for the whole rolling restart, so
 			// a caller that reads success as "the component is live" can be served by a worker that has
 			// never heard of it.
-			const { awaitRestart } = require('./awaitRestart.ts');
 			const restart = await awaitRestart((onProgress) =>
 				manageThreads.restartWorkers('http', undefined, undefined, onProgress, restartScope)
 			);
@@ -1092,6 +1070,7 @@ async function deployComponent(req) {
 			}
 		}
 		if (installDrift) response.message = `${response.message} ${installDrift}`;
+		if (mode !== 'stage') response.certification = certificationOutcome;
 		return response;
 	} catch (err) {
 		// Pack phase, install output tail, and deployment_id into http_resp_msg so the
@@ -1112,6 +1091,7 @@ async function deployComponent(req) {
 		// stay symmetric (the CLI uses SSE for deploy_component).
 		const failedPeers = recorder?.getFailedPeers() ?? [];
 		if (failedPeers.length > 0) structured.failed_peers = failedPeers;
+		if (err?.certification) structured.certification = err.certification;
 
 		// Wrap as a ServerError so the Fastify error handler picks a 500 by default; preserve
 		// an upstream statusCode (e.g. a ClientError from payload validation) if present.
@@ -1125,6 +1105,7 @@ async function deployComponent(req) {
 			install_output: capture.lines.length > 0 ? capture : undefined,
 			deployment_id: recorder?.deploymentId,
 			failed_peers: failedPeers.length > 0 ? failedPeers : undefined,
+			certification: err?.certification,
 		});
 		// Record the terminal failure, but never let a finish() write error (full disk, lock,
 		// dropped system table) mask the actual deploy failure — outErr carries the phase,
@@ -1137,6 +1118,9 @@ async function deployComponent(req) {
 			}
 		}
 		throw outErr;
+	} finally {
+		// A worker that asked for its own restart answers, or fails, before main replaces it.
+		await releaseRequester?.();
 	}
 }
 
@@ -1150,10 +1134,116 @@ async function deployComponent(req) {
  * than one — so the marker is read flat or from a wrapped body; assuming flat would report every peer in a
  * fully-upgraded cluster as unconfirmed.
  */
+function isConfirmedStaging(peer) {
+	return peer?.staged === true || peer?.value?.staged === true || peer?.body?.staged === true;
+}
+
 function unconfirmedStagingPeers(replicated) {
 	if (!Array.isArray(replicated)) return [];
-	const confirmed = (peer) => peer?.staged === true || peer?.value?.staged === true || peer?.body?.staged === true;
-	return replicated.filter((peer) => peer && !confirmed(peer));
+	return replicated.filter((peer) => peer && !isConfirmedStaging(peer));
+}
+
+function confirmedStagingPeers(replicated) {
+	return Array.isArray(replicated) ? replicated.filter((peer) => peer && isConfirmedStaging(peer)) : [];
+}
+
+/** Before a rolling activation starts: every peer it will activate must hold the staged release. */
+function assertPeersStaged(component, recorder, response) {
+	const unconfirmed = unconfirmedStagingPeers(response?.replicated);
+	if (unconfirmed.length === 0) return;
+	throw new ServerError(
+		`Component '${component}' was deployed on the origin node, but ${unconfirmed.length} peer node(s) did not ` +
+			`confirm staging it: ${unconfirmed.map((peer) => peer.node ?? 'unknown').join(', ')}. Nothing was activated ` +
+			`on any peer. Activate deployment ${recorder.deploymentId} on the others with deploy_component ` +
+			`deployment_id once they are reachable, or pass ignore_replication_errors: true to activate only the peers ` +
+			`that staged it.`
+	);
+}
+
+/**
+ * A restart retires a worker answering a decided release's deploy only once that deploy has answered, so this drain
+ * holds a deploy whose release is not decided yet. It waits so long as a canary may take, since what decides the
+ * release may be a rollout queued behind the restart retiring this worker. Then it has main decide the release
+ * interrupted, and the deploy answers that. Like every drain, it ends at the shutdown ceiling. Returns what ends the
+ * wait.
+ */
+function drainWhileDeploying(
+	isDeploying,
+	isDecided = () => true,
+	undecidedBoundMs = Infinity,
+	interruptUndecided = async () => false
+) {
+	const { registerShutdownDrain } = require('./shutdownDrain.ts');
+	const answered = Promise.withResolvers();
+	const unregister = registerShutdownDrain({
+		hasWork: () => Boolean(isDeploying()),
+		drain: (deadlineMs) => {
+			if (!isDeploying()) return Promise.resolve();
+			let timer;
+			let bound;
+			const deadline = new Promise((resolve) => {
+				timer = setTimeout(resolve, Math.max(0, deadlineMs - Date.now()));
+				timer.unref();
+			});
+			const undecided = new Promise((resolve) => {
+				if (!Number.isFinite(undecidedBoundMs)) return;
+				bound = setTimeout(async () => {
+					if (isDecided()) return;
+					// Decided as interrupted, the release is restored and the deploy answers that, which ends this wait.
+					if (await interruptUndecided()) {
+						log.warn(
+							`Interrupted the certification of this worker's deploy: its release was not decided within ` +
+								`${undecidedBoundMs}ms of this worker's retirement`
+						);
+						return;
+					}
+					if (isDecided()) return;
+					log.warn(
+						`Not holding this worker's shutdown any longer: its deploy's release was not decided within ` +
+							`${undecidedBoundMs}ms, so that deploy will not answer`
+					);
+					resolve();
+				}, undecidedBoundMs);
+				bound.unref();
+			});
+			return Promise.race([answered.promise, deadline, undecided]).finally(() => {
+				clearTimeout(timer);
+				clearTimeout(bound);
+			});
+		},
+	});
+	return () => {
+		answered.resolve();
+		unregister();
+	};
+}
+
+/** A release its canary refused, as the deploy reports it; the fields ride the error to every transport. */
+function certificationFailure(component, deploymentId, decision, { onOrigin }) {
+	const outcome =
+		decision.status === 'interrupted'
+			? `could not be certified: ${decision.reason}`
+			: `failed to load in its canary worker: ${decision.reason}`;
+	const remedy = decision.restored
+		? `Deployment ${decision.restored}, the release it replaced, is live again. `
+		: decision.failedClosed
+			? `There was no earlier release to restore, so ${component} is failed closed on this node until it is deployed ` +
+				`again. `
+			: '';
+	const retry = `Deploy a fix, or activate deployment ${deploymentId} again once the cause is fixed.`;
+	const error = new ClientError(
+		`${component} was not deployed${onOrigin ? '' : ' on this node'}: release ${deploymentId} ${outcome}. ${remedy}` +
+			`${onOrigin ? 'No other node received it. ' : ''}${retry}`,
+		HTTP_STATUS_CODES.BAD_REQUEST
+	);
+	error.certification = {
+		status: decision.status,
+		reason: decision.reason,
+		failures: decision.failures,
+		restored: decision.restored ?? null,
+		failed_closed: Boolean(decision.failedClosed),
+	};
+	return error;
 }
 
 /** The fingerprint is read flat or from a wrapped body, as `unconfirmedStagingPeers` reads its marker. */
@@ -1556,6 +1646,7 @@ async function dropComponent(req) {
 	await withComponentPreparationLock(
 		componentPath,
 		async () => {
+			await assertNotCertifying(componentPath, project);
 			if (req.restart === true) {
 				let runningApplications;
 				try {
@@ -1662,6 +1753,9 @@ exports.dropCustomFunctionProject = dropCustomFunctionProject;
 exports.packageComponent = packageComponent;
 exports.deployComponent = deployComponent;
 exports.unconfirmedStagingPeers = unconfirmedStagingPeers;
+exports.confirmedStagingPeers = confirmedStagingPeers;
+exports.certificationFailure = certificationFailure;
+exports.drainWhileDeploying = drainWhileDeploying;
 exports.markInstallComparisons = markInstallComparisons;
 exports.peerDeployAnswerTimeoutMs = peerDeployAnswerTimeoutMs;
 exports.getComponents = getComponents;

@@ -4,6 +4,7 @@ import {
 	type CountEstimateOptions,
 	DBI,
 	type StoreIteratorOptions,
+	type StoreGetOptions,
 	type StorePutOptions,
 	type StoreRemoveOptions,
 	RocksDatabase,
@@ -44,6 +45,10 @@ function translateIndexBounds<
  * RocksDatabase rather than a store because it actually alters the interface
  */
 export class RocksIndexStore extends RocksDatabase {
+	hasIndexEntry(indexedValue: any, primaryKey: Id, options?: StoreGetOptions): boolean {
+		return super.getBinaryFastSync([indexedValue, primaryKey], options) !== undefined;
+	}
+
 	/**
 	 * Get all entries matching the range
 	 * @param options

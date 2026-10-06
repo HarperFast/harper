@@ -925,6 +925,9 @@ export async function runAggregationCycle(fromPeriod, toPeriod = 60000) {
 	}
 }
 
+// A mean of per-sample peaks is not a peak, so peak-named measures fold with max.
+const MAX_MEASURE_NAME = /^max[A-Z]/;
+
 async function aggregation(fromPeriod, toPeriod = 60000) {
 	const rawAnalyticsTable = getRawAnalyticsTable();
 	const analyticsTable = getAnalyticsTable();
@@ -1002,7 +1005,9 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 				for (const measureName in measures) {
 					const value = measures[measureName];
 					if (typeof value === 'number') {
-						action[measureName] = (action[measureName] * previousCount + value * count) / (previousCount + count);
+						action[measureName] = MAX_MEASURE_NAME.test(measureName)
+							? Math.max(action[measureName], value)
+							: (action[measureName] * previousCount + value * count) / (previousCount + count);
 					}
 				}
 				action.count += count;
@@ -1031,6 +1036,8 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		}
 		await rest();
 	}
+	// Peak-named measures sum per-thread peaks, which bounds concurrent depth only over intervals that
+	// every relevant thread's samples fully cover; the peaks need not coincide.
 	for (const entry of threadsToAverage) {
 		// eslint-disable-next-line @typescript-eslint/no-unused-vars
 		let { path, method, type, metric, count, total, distribution, threads, ...measures } = entry;

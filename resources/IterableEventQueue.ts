@@ -5,6 +5,7 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 	queue: any[];
 	hasDataListeners: boolean;
 	closed = false;
+	closedWith: Event | undefined;
 	drainCloseListener: boolean;
 	currentDrainResolver: null | ((draining: boolean) => void) = null;
 	[Symbol.asyncIterator](): AsyncIterator<Event> {
@@ -37,6 +38,7 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 		if (this.closed) return;
 		// Closing is authoritative: buffered events must not leak after revocation or policy failure.
 		if (this.queue) this.queue.length = 0;
+		this.closedWith = finalMessage;
 		try {
 			if (finalMessage !== undefined) this.send(finalMessage);
 		} finally {

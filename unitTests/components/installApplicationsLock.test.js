@@ -120,6 +120,35 @@ describe('installApplications lock state', () => {
 		assert.deepStrictEqual(lock.applications, {});
 	});
 
+	it('records the tree a preparation made live with its entry, and clears it with the entry', async () => {
+		const applicationConfig = { package: 'test-package' };
+		const lock = { applications: { test: applicationConfig }, trees: { test: 'previous' } };
+		const seen = [];
+		const updateLock = async (mutate) => {
+			mutate(lock.applications, lock);
+			seen.push(JSON.parse(JSON.stringify(lock)));
+		};
+
+		await recordApplicationPreparation(
+			'test',
+			applicationConfig,
+			async (clearEntry) => clearEntry(),
+			updateLock,
+			async () => 'installed'
+		);
+		assert.deepStrictEqual(seen, [
+			{ applications: {}, trees: {} },
+			{ applications: { test: applicationConfig }, trees: { test: 'installed' } },
+		]);
+
+		await recordApplicationPreparation('test', applicationConfig, async (clearEntry) => clearEntry(), updateLock);
+		assert.deepStrictEqual(
+			lock,
+			{ applications: { test: applicationConfig }, trees: {} },
+			'an unknown tree records none'
+		);
+	});
+
 	it('durably persists the removal before preparation starts, and the success entry only after it fulfills', async () => {
 		// A crash between these two transitions must leave the on-disk lock file showing the component as
 		// NOT installed — never still claiming success for a config whose reinstall a subsequent boot would

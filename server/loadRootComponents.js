@@ -1,4 +1,4 @@
-const { isMainThread } = require('worker_threads');
+const { isMainThread, workerData } = require('worker_threads');
 const { getTables } = require('../resources/databases.ts');
 const {
 	loadComponentDirectories,
@@ -11,6 +11,7 @@ const configUtils = require('../config/configUtils.ts');
 const { dirname } = require('path');
 const { loadCertificates } = require('../security/keys.ts');
 const { installApplications, recoverInterruptedActivations } = require('../components/Application.ts');
+const { failClosedReleases, liveDeploymentId, RejectedReleaseError } = require('../components/releaseCertification.ts');
 const { errorForLog } = require('../utility/logging/harper_logger.ts');
 const { CONFIG_PARAMS } = require('../utility/hdbTerms.ts');
 
@@ -62,6 +63,15 @@ async function loadRootComponents(isWorkerThread = false) {
 		console.error(errorForLog(error));
 		interruptedActivationFailures = await failEveryComponentClosed(error);
 	}
+	// After settlement, which can roll a certified activation forward, and before installApplications(), which
+	// reads the config a restore publishes.
+	if (isMainThread && !process.env.HARPER_SAFE_MODE) {
+		try {
+			await require('../components/canaryRollout.ts').resolveInterruptedCertifications();
+		} catch (error) {
+			console.error(errorForLog(error));
+		}
+	}
 	try {
 		if (isMainThread && !process.env.HARPER_SAFE_MODE) {
 			await startSecretCustodyOnMainThread();
@@ -70,6 +80,7 @@ async function loadRootComponents(isWorkerThread = false) {
 	} catch (error) {
 		console.error(errorForLog(error));
 	}
+	const failClosed = await componentsFailedClosed();
 
 	let resources = resetResources();
 	getTables();
@@ -92,15 +103,44 @@ async function loadRootComponents(isWorkerThread = false) {
 		isRoot: true,
 		providedLoadedComponents: loadedComponents,
 		autoReload: false,
+		failClosed,
 	});
 	if (!process.env.HARPER_SAFE_MODE) {
 		// once the global plugins are loaded, we now load all the CF and run applications (and their components)
 		const readyComponentPromises = new WeakMap();
-		await loadComponentDirectories(loadedComponents, resources, readyComponentPromises, interruptedActivationFailures);
+		await loadComponentDirectories(
+			loadedComponents,
+			resources,
+			readyComponentPromises,
+			interruptedActivationFailures,
+			failClosed
+		);
 		await readyComponentModules(loadedComponents.keys(), readyComponentPromises);
 		return;
 	}
 	await readyComponentModules(loadedComponents.keys());
+}
+
+/**
+ * Releases no thread may load: those a canary rejected on disk, and those main could not record as rejected and
+ * handed to this worker instead. An unreadable answer fails every component closed rather than none.
+ */
+async function componentsFailedClosed() {
+	const componentsRoot = configUtils.getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+	const { processIncarnation } = require('./threads/manageThreads.js');
+	let failClosed;
+	try {
+		failClosed = await failClosedReleases(componentsRoot, processIncarnation);
+	} catch (error) {
+		console.error(errorForLog(error));
+		failClosed = await failEveryComponentClosed(error);
+	}
+	// Each holds only while the release it refused is still the live one.
+	for (const [component, { deploymentId, reason }] of Object.entries(workerData?.failClosed ?? {})) {
+		if ((await liveDeploymentId(componentsRoot, component).catch(() => undefined)) !== deploymentId) continue;
+		failClosed.set(component, new RejectedReleaseError(component, deploymentId, reason));
+	}
+	return failClosed;
 }
 
 module.exports.loadRootComponents = loadRootComponents;

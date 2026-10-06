@@ -65,11 +65,10 @@ interface SchedulerJobConfig {
  * not backfill every occurrence it missed.
  */
 export async function handleApplication(scope): Promise<void> {
-	// Validation runs UNCONDITIONALLY — on every worker and on deploy
-	// pre-flight validation loads, which land on an arbitrary worker. Gating
-	// validation behind worker 0 would let a bad config pass pre-flight
-	// nondeterministically and then fail cluster-wide at the next restart
-	// (review finding). Only ACTIVATION is gated below.
+	// Validation runs UNCONDITIONALLY, on every worker: a deploy's canary is an
+	// arbitrary worker, and gating validation behind the primary one would let a
+	// bad config pass its canary nondeterministically and then fail cluster-wide
+	// at the next restart. Only ACTIVATION is gated below.
 	const config = scope.options.getAll() ?? {};
 	// null covers the common "all jobs commented out" edit, which YAML parses
 	// as `jobs: null` — that must degrade like an absent key, not fail the
@@ -93,18 +92,11 @@ export async function handleApplication(scope): Promise<void> {
 		jobs.push(job);
 	}
 
-	// Activation gates: one worker owns scheduling for the whole node
+	// Activation gate: one worker owns scheduling for the whole node
 	// (the application's primary worker is correct in every threading mode, including
-	// threads:0 where the main thread acts as worker 0), and a deploy
-	// pre-flight validation scope must never touch the live engine — it can
-	// share a running component's identity, so registering from it would
-	// displace the real component's jobs.
+	// threads:0 where the main thread acts as worker 0).
 	if (!isApplicationPrimaryWorker(scope.applicationScope?.name)) {
 		schedulerLogger.debug?.('Scheduler config validated; activation skipped on non-primary worker');
-		return;
-	}
-	if (scope.isTransientValidation) {
-		schedulerLogger.debug?.(`Scheduler config validated for ${scope.appName}; activation skipped for validation load`);
 		return;
 	}
 
