@@ -190,7 +190,7 @@ for attempt in $(seq 60); do
     ERROR) jq -r '.[0].message' job.json; exit 1 ;;
   esac
 done
-echo "Job $JOB_ID did not finish within 10 minutes"
+echo "Job $JOB_ID did not finish after 60 polls"
 exit 1
 ```
 

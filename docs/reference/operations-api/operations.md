@@ -1171,7 +1171,7 @@ A `deploy_component` request that accepts `text/event-stream` gets its progress 
 | `error`           | `{ message, code, phase }`, plus `deployment_id`, and when they apply `install_output`, `failed_peers`, and `certification`. The stream ends after it                                                                                           |
 | `done`            | `{ result }`: the response the deploy would have returned as JSON. The stream ends after it                                                                                                                                                     |
 
-From v5.4.0, the `load` phase brackets the [canary's decision](#certifying-a-release-in-a-canary-worker), so a deploy that does not restart, or whose release is not certified, sends no `load` phase. Before v5.4.0, every deploy sends one.
+From v5.4.0, the `load` phase brackets the [canary's decision](#certifying-a-release-in-a-canary-worker), so a deploy that does not restart, or whose `certification` is `unavailable`, sends no `load` phase. Before v5.4.0, every deploy sends one.
 
 Every event but `done` is also appended to the deployment's `event_log`, which [`get_deployment`](#get_deployment) replays as a stream. A replayed log can also contain `truncated`, `{ dropped_events }`, where the log reached its 200-entry bound and dropped entries from its middle, keeping the start and the most recent, and a `payload_dropped` carrying `deleted_by` instead of `max_size` when [`delete_deployment_payload`](#delete_deployment_payload) reclaimed the tarball.
 

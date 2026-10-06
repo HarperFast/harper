@@ -166,11 +166,10 @@ This resolves the repository's `origin` remote and the current commit, then depl
 - `ref` _(optional)_ - Deploy a specific commit, tag, or branch instead of `HEAD`. Resolved to a commit SHA before it is sent to the cluster. Implies `by_ref`.
 - `credential` _(optional)_ - Set to `true` to authenticate the clone with the stored credential for the repository's host. Omit for public repositories.
 
-```sh
-# Deploy a specific tag
-harper deploy ref=v1.2.0 restart=true replicated=true
+`ref` takes a tag or a commit:
 
-# Deploy a specific commit
+```sh
+harper deploy ref=v1.2.0 restart=true replicated=true
 harper deploy ref=9f8c2a1 restart=true replicated=true
 ```
 
