@@ -46,6 +46,7 @@ export function isValidMaxToolResultBytes(value: unknown): value is number {
 		(value as number) <= MAX_MAX_TOOL_RESULT_BYTES
 	);
 }
+
 /** What each of the newest tool results is cut to after a request that included them overflowed the context window. */
 const CONTEXT_SHRINK_BYTES = 2048;
 const ASK_FOR_LESS =

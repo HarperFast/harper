@@ -321,7 +321,9 @@ describe('readBoundedJson', () => {
 	it('MAX_ERROR_BODY_BYTES is 256 KiB', () => {
 		assert.strictEqual(MAX_ERROR_BODY_BYTES, 256 * 1024);
 	});
+});
 
+describe('context-window classification', () => {
 	describe('isContextWindowRejection', () => {
 		it('recognizes each provider wording for an input over the context window', () => {
 			for (const [status, message] of [
