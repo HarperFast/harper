@@ -353,9 +353,14 @@ export interface ClusterLockTransport {
 	/**
 	 * A control entry this thread applied from a peer's stream while another thread owns coordination:
 	 * hand it to the owner, which receives it through its own `onControlEntry`. Idempotent by exact
+<<<<<<< HEAD
 	 * token on the owner, so a relay that is late, reordered or lost can only delay a re-grant. May
 	 * return a promise; a throw or rejection counts as a drop (`droppedOffOwner`) and never escapes.
 	 * Absent, the entry is dropped and counted.
+=======
+	 * token on the owner, so a relay that is late, reordered or lost can only delay a re-grant. Absent,
+	 * the entry is dropped and counted (`droppedOffOwner`).
+>>>>>>> 57f28c5c8 (Relay a record lock control entry received off the coordinating thread instead of dropping it)
 	 */
 	relayControlEntry?(
 		database: string,
@@ -363,7 +368,11 @@ export interface ClusterLockTransport {
 		entry: LockControlEntry,
 		author: string,
 		position: number | undefined
+<<<<<<< HEAD
 	): void | Promise<void>;
+=======
+	): void;
+>>>>>>> 57f28c5c8 (Relay a record lock control entry received off the coordinating thread instead of dropping it)
 	/**
 	 * Assigned at registration so a transport can push a received entry in directly. `author` and
 	 * `position` come from the authenticated origin-log header, never from the payload.
@@ -1818,11 +1827,32 @@ export class LockCoordinator {
 		if (entry.type !== 'lockRelease' || !isNodeName(author)) return;
 		if (entry.requester !== author) return;
 		if (!this.transport.ownsCoordination()) {
+<<<<<<< HEAD
 			if (this.transport.relayControlEntry)
 				relayControlEntryContained(this.transport, this.database, this.table, entry, author, position, () =>
 					this.#noteOffOwnerDrop()
 				);
 			else this.#noteOffOwnerDrop();
+=======
+			if (this.transport.relayControlEntry) {
+				try {
+					this.transport.relayControlEntry(this.database, this.table, entry, author, position);
+					return;
+				} catch (error) {
+					warnOnce('failed to relay a record lock control entry to the coordinating thread', error);
+				}
+			}
+			this.#droppedOffOwner++;
+			const now = this.#monotonic();
+			if (now - this.#lastOffOwnerWarn > WARN_INTERVAL_MS) {
+				this.#lastOffOwnerWarn = now;
+				harperLogger.warn?.('record lock control entries are reaching a non-coordinating thread', {
+					database: this.database,
+					table: this.table,
+					dropped: this.#droppedOffOwner,
+				});
+			}
+>>>>>>> 57f28c5c8 (Relay a record lock control entry received off the coordinating thread instead of dropping it)
 			return;
 		}
 		if (!isFencingToken(entry.token)) return;

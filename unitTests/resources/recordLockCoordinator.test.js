@@ -2571,11 +2571,16 @@ describe('record lock delegations', () => {
 			assert.deepStrictEqual(relayed, [[cluster.database, cluster.table, entry, 'alpha', 42]]);
 			assert.strictEqual(beta.coordinator.stats.granted, 1, 'the non-owner applied nothing itself');
 			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 0);
+<<<<<<< HEAD
+=======
+			// The owner applies the relayed entry through the same method and clears the grant.
+>>>>>>> 57f28c5c8 (Relay a record lock control entry received off the coordinating thread instead of dropping it)
 			beta.owns = true;
 			beta.coordinator.applyEntry(...relayed[0].slice(2));
 			assert.strictEqual(beta.coordinator.stats.granted, 0);
 		});
 
+<<<<<<< HEAD
 		it('counts a drop when an asynchronous relay rejects, and never leaves an unhandled rejection', async () => {
 			const rejections = [];
 			const onUnhandled = (reason) => rejections.push(reason);
@@ -2635,6 +2640,8 @@ describe('record lock delegations', () => {
 			}
 		});
 
+=======
+>>>>>>> 57f28c5c8 (Relay a record lock control entry received off the coordinating thread instead of dropping it)
 		it('counts a drop when the relay throws, and never surfaces the throw', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
