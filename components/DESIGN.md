@@ -393,7 +393,10 @@ boundary settles config to the same end state as the tree. `deploy_component` on
 - `unset-package` — a payload build removes `package`, `install` and `credentials` and keeps the rest
   (`isolated`, `urlPath`, `host`, `branchedDatabases`), removing the entry if nothing remains. "No package"
   is an opinion: left in place, a cold install resolves the old package over the payload release that is
-  live. This is a behaviour change operators can see.
+  live. This is a behaviour change operators can see. A payload deploy keeps those four but cannot set them,
+  since its build declares no entry, so `deploy_component` refuses each one without a `package` (400) rather
+  than drop it: a dropped `branchedDatabases` would leave the application reading and writing the base
+  databases it asked to fork (harper#3044). Accepting them is harper#3043.
 - `keep` — a caller installing FROM root config (`installApplications()`, `add_component`, harper-pro's
   clone) owns no effect. It returns before taking any lock, so a boot re-install never waits on a config
   writer.
