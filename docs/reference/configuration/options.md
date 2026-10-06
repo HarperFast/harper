@@ -398,7 +398,7 @@ agent:
 - `allowDestructive` — Include the tools marked destructive in the agent's toolset: `write_file`, the inspector's code-evaluation tools, and any operations tool carrying MCP's [`destructiveHint`](../mcp/tool-metadata.md) (`drop_table`, `delete`, `restart`, `set_configuration`, ...). When `false` they are removed entirely rather than gated. That hint comes from a curated set in core which does not cover every damaging operation, so this is not a complete safety boundary on its own — see [Agent operations](../operations-api/operations.md#agent); _Default_: `false`
 - `user` — Harper user the agent's **operations** tools run as; the filesystem, HTTP, schedule, and inspector tools always run at process privilege regardless. If it cannot be resolved and it is not the default, the agent fails closed and runs with no operations tools; _Default_: `hdb_agent`, which falls back to a `super_user` bootstrap identity
 - `componentsScope` — The agent's `components` filesystem scope, which it reads and, with `allowDestructive`, writes; absolute or relative to `rootPath`. Read at startup only; _Default_: the full `componentsRoot`
-- `configScope` <VersionBadge version="v5.3.2" /> — The agent's read-only `config` filesystem scope: a file or a directory, absolute or relative to `rootPath`. Read at startup only. See [Filesystem scopes](#filesystem-scopes); _Default_: the Harper config file only
+- `configScope` <VersionBadge version="v5.4.0" /> — The agent's read-only `config` filesystem scope: a file or a directory, absolute or relative to `rootPath`. Read at startup only. See [Filesystem scopes](#filesystem-scopes); _Default_: the Harper config file only
 - `httpFetch` <VersionBadge version="v5.3.2" /> — Whether the agent has its `http_fetch` tool, and which hosts it may reach: `true`, `false`, or `{ allow: [...] }`. Read at startup only. See [Restricting `http_fetch`](#restricting-http_fetch); _Default_: `true`
 - `systemPromptAppend` — Operator text appended to the agent's system prompt
 
@@ -406,7 +406,7 @@ agent:
 
 ### Filesystem scopes
 
-<VersionBadge type="changed" version="v5.3.2" />
+<VersionBadge type="changed" version="v5.4.0" />
 
 The agent's read tools (`read_file`, `list_dir`, `grep_files`, and `tail_file`) take a `root` naming one of three scopes. `write_file`, available when `allowDestructive` is on, takes no `root` and always writes to `components`.
 
@@ -416,7 +416,7 @@ The agent's read tools (`read_file`, `list_dir`, `grep_files`, and `tail_file`) 
 | `logs`       | the log directory                                 | read           |
 | `config`     | the Harper config file, or `configScope` when set | read           |
 
-Before v5.3.2, `config` was the directory holding `harper-config.yaml`. On a default install that is `rootPath` itself, so the agent could read `keys/`, `database/`, and the rest of the root. It is now the config file alone, and `list_dir` shows only that file.
+Before v5.4.0, `config` was the directory holding `harper-config.yaml`. On a default install that is `rootPath` itself, so the agent could read `keys/`, `database/`, and the rest of the root. It is now the config file alone, and `list_dir` shows only that file.
 
 To give the agent more, such as a directory of extra configuration, set `configScope` to a file or a directory, absolute or relative to `rootPath`. It is read at startup only. A path that names no file or directory at startup leaves the `config` scope unavailable and logs an error.
 
