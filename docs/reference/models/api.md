@@ -83,7 +83,7 @@ Additional options apply only when `toolMode: 'auto'`; they are documented in [T
 models.generateStream(input: GenerateInput, options?: GenerateOpts): AsyncIterable<GenerateChunk>
 ```
 
-Identical to `generate()` but yields the completion incrementally:
+Identical to `generate()` but yields the completion incrementally. Streamed calls are not [priced](./overview#pricing), so no chunk carries `costUsd`:
 
 ```javascript
 let text = '';

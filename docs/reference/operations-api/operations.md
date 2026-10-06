@@ -1710,7 +1710,7 @@ A session's `status` is one of:
 | `aborted`           | Cancelled by an operator via `cancel_agent_run`                                               |
 | `error`             | The run failed or a spend cap stopped it; `lastError` carries the message                     |
 
-`completed` also covers hitting the `agent.maxTurns` ceiling — in that case `lastError` reads `Reached maxTurns=<n> without a final answer.`, so check it before treating a completed session as finished.
+`completed` also covers hitting the `agent.maxTurns` ceiling — in that case `lastError` reads `Reached maxTurns=<n> without a final answer.`, so check it before treating a completed session as finished. From v5.4.0 a final answer that reached a [spend cap](../configuration/options.md#agent-spend-caps) also ends `completed` with `lastError` set, naming the cap.
 
 ### `agent_prompt`
 
