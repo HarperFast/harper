@@ -67,7 +67,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ github.event_name != 'pull_request' && fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"},{"platform":"linux/arm64","runner":"ubuntu-24.04-arm"}]') || fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"}]') }}
+        include: ${{ github.event_name != 'pull_request_rehearsal' && fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"},{"platform":"linux/arm64","runner":"ubuntu-24.04-arm"}]') || fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"}]') }}
     runs-on: ${{ matrix.runner }}
     # Two boot-check loops can each take up to ~6 minutes in the worst case (60 iterations
     # of a 5s curl timeout plus a 1s sleep) on top of the build itself; 20m was tight even
@@ -93,27 +93,27 @@ jobs:
       # Outside PRs the image is smoke-tested from a runner-local registry, so a release copies
       # the tested index itself to Docker Hub (.github/DESIGN.md).
       - name: Start local registry
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request_rehearsal'
         run: docker run -d --name registry -p 5000:5000 registry:3.1.2
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
-          driver-opts: ${{ github.event_name != 'pull_request' && 'network=host' || '' }}
+          driver-opts: ${{ github.event_name != 'pull_request_rehearsal' && 'network=host' || '' }}
 
-      - name: Build image (${{ matrix.platform }}, ${{ github.event_name == 'pull_request' && 'load locally' || 'push to local registry' }})
+      - name: Build image (${{ matrix.platform }}, ${{ github.event_name == 'pull_request_rehearsal' && 'load locally' || 'push to local registry' }})
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          load: ${{ github.event_name == 'pull_request' }}
-          tags: ${{ github.event_name == 'pull_request' && 'harperfast/harper:smoke-test' || '' }}
-          outputs: ${{ github.event_name != 'pull_request' && 'type=image,name=localhost:5000/harperfast/harper,push-by-digest=true,name-canonical=true,push=true' || '' }}
+          load: ${{ github.event_name == 'pull_request_rehearsal' }}
+          tags: ${{ github.event_name == 'pull_request_rehearsal' && 'harperfast/harper:smoke-test' || '' }}
+          outputs: ${{ github.event_name != 'pull_request_rehearsal' && 'type=image,name=localhost:5000/harperfast/harper,push-by-digest=true,name-canonical=true,push=true' || '' }}
 
       - name: Pull the staged image as harperfast/harper:smoke-test
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request_rehearsal'
         env:
           STAGED: localhost:5000/harperfast/harper@${{ steps.build.outputs.digest }}
         run: |
@@ -332,7 +332,7 @@ jobs:
       # Every smoke step above must have passed: the legs that run after an earlier failure still
       # leave the job failed, so success() is false here.
       - name: Copy the smoke-tested image to ${{ inputs.publish && 'Docker Hub' || 'a second local repository' }} by digest
-        if: github.event_name != 'pull_request' && success()
+        if: github.event_name != 'pull_request_rehearsal' && success()
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           TARGET: ${{ inputs.publish && 'docker.io/harperfast/harper' || 'localhost:5000/harperfast/harper-promoted' }}
