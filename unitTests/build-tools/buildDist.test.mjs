@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import ts from 'typescript';
 import { escapeNonLatin1Literals, findNonLatin1 } from '../../build-tools/build-dist.mjs';
 
-const NON_LATIN1 = /[^\x00-\xff]/;
+const NON_LATIN1 = /[\u0100-\uffff]/;
 
 function compile(source, transform = true) {
 	return ts.transpileModule(source, {

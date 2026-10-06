@@ -1,7 +1,6 @@
 'use strict';
 
 import { LMDB_ERRORS_ENUM as LMDB_ERRORS } from '../errors/commonErrors.ts';
-import type * as lmdb from 'lmdb';
 import * as lmdbTerms from './terms.ts';
 
 const PRIMITIVES = ['number', 'string', 'symbol', 'boolean', 'bigint'];

@@ -5,7 +5,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const NON_LATIN1 = /[^\x00-\xff]/;
+const NON_LATIN1 = /[\u0100-\uffff]/;
 const CONFIG_PATH = 'tsconfig.build.json';
 
 // Synthesized literal nodes are printed escaped; ones parsed from source are copied verbatim.
