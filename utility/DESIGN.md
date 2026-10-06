@@ -2,7 +2,7 @@
 
 Cross-cutting helpers.
 
-**Read this when:** touching `watchPath.ts` or anything that arms a native file watch, adding an interactive CLI prompt (`interactivePrompts.ts`), or passing an object to `handleHDBError` (`errors/hdbError.ts`).
+**Read this when:** touching `watchPath.ts` or anything that arms a native file watch, adding an interactive CLI prompt (`interactivePrompts.ts`), passing an object to `handleHDBError` (`errors/hdbError.ts`), or comparing which file a log descriptor is on (`logging/`).
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -61,3 +61,7 @@ Every `@inquirer`-based one-shot prompt in the codebase (`bin/login.ts`, `bin/de
 ## An HdbError's `message` is a string; the structured body is `http_resp_msg` (`utility/errors/hdbError.ts`)
 
 `handleHDBError(new Error(), <object>, status)` is how a permission report or validation report becomes an error: the object is the response body. `serverErrorHandler` sends an object `http_resp_msg` verbatim, and the job worker (`server/jobs/jobProcess.ts`) records it as the job's `message`, which is what `get_job` answers a refused bulk load with. The constructor derives `message` from it — the `error` summary followed by the reasons the object lists, anything else through `inspectForLog`, which cannot throw and does not expose a nested Error's properties — because the logger, `String(error)` and `errorToString` (HTTP error bodies, replication replies) all need a string. A non-string `message` rendered as `Error: [object Object]`. Read the structure from `http_resp_msg`, never from `message`.
+
+## Log-file identity is compared as BigInt (`utility/logging/logGenerationCoordinator.ts` `FileIdentity`)
+
+Every `(dev, ino)` log rotation compares is read with `{ bigint: true }`: Windows reports a 64-bit file ID, and past 2^53 a Number rounds neighbouring files to one value, so a descriptor on an archived generation passes as live. Enforced by the `FileIdentity` type on every identity producer and on the coordinator's sink and announcement API, and by `unitTests/utility/logging/logFileIdentity.test.js`, which emulates such a volume.
