@@ -16,7 +16,7 @@
  */
 
 import type { GenerateOpts, GenerateResult, Message, Models, ToolCall, ToolDef } from '../resources/models/types.ts';
-import { addPendingApproval, appendMessage, endRun, getSession, markApprovalConsumed, setStatus } from './session.ts';
+import { addPendingApproval, appendMessage, claimApproval, endRun, getSession, setStatus } from './session.ts';
 import type { AgentMessage, AgentScopes, AgentTool, AgentToolContext, ApprovalRequest } from './types.ts';
 import { toolMapByName } from './toolset.ts';
 import { budgetViolation, callUsage, hasBudget, summarizeSessionUsage } from './budget.ts';
@@ -60,9 +60,6 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 		// Before the approvals below can execute anything: a cap lowered while a run sat awaiting
 		// approval must stop the approved action, not just the next model call.
 		if (await stopIfOverBudget(opts)) return;
-		// A cancel that landed while the session was read must not let an approved action run; the cancel
-		// itself has closed the approvals (`cancelSession`).
-		if (opts.signal?.aborted) return;
 
 		// First, drain any resolved-but-unconsumed approvals from a prior pause. Either execute
 		// or refuse each saved call, recording an observation, so the next model turn sees the
@@ -143,10 +140,8 @@ async function stopIfOverBudget(opts: RunAgentOpts): Promise<boolean> {
 	if (!session) return false;
 	const violation = budgetViolation(summarizeSessionUsage(session.messages), opts);
 	if (!violation) return false;
-	const open = session.pendingApprovals.filter((approval) => !approval.consumed);
 	await endRun(opts.sessionId, {
-		append: open.map((approval) => approvalRefusal(approval, violation)),
-		closeApprovals: open.map((approval) => approval.id),
+		answerOpenApprovals: (approval) => approvalRefusal(approval, violation),
 		status: 'error',
 		lastError: violation,
 	});
@@ -154,17 +149,15 @@ async function stopIfOverBudget(opts: RunAgentOpts): Promise<boolean> {
 }
 
 function budgetRefusal(toolCallId: string, reason: string): AgentMessage {
-	return {
-		role: 'tool',
-		content: JSON.stringify({ ok: false, error: 'budget_exceeded', reason }),
-		toolCallId,
-		createdAt: Date.now(),
-	};
+	return { role: 'tool', content: budgetExceeded(reason), toolCallId, createdAt: Date.now() };
 }
 
-function approvalRefusal(approval: ApprovalRequest, reason: string): AgentMessage {
-	if (!approval.resolved || approval.approved) return budgetRefusal(approval.toolCallId, reason);
-	return { role: 'tool', content: deniedObservation(approval), toolCallId: approval.toolCallId, createdAt: Date.now() };
+function budgetExceeded(reason: string): string {
+	return JSON.stringify({ ok: false, error: 'budget_exceeded', reason });
+}
+
+function approvalRefusal(approval: ApprovalRequest, reason: string): string {
+	return !approval.resolved || approval.approved ? budgetExceeded(reason) : deniedObservation(approval);
 }
 
 function deniedObservation(approval: ApprovalRequest): string {
@@ -223,6 +216,8 @@ async function consumeResolvedApprovals(
 	if (!session) return;
 	const toConsume = session.pendingApprovals.filter((a) => a.resolved && !a.consumed);
 	for (const approval of toConsume) {
+		if (ctx.signal?.aborted) return;
+		if (!(await claimApproval(sessionId, approval.id))) continue;
 		const observation = approval.approved
 			? await invokeTool(
 					{ id: approval.toolCallId, name: approval.toolName, arguments: approval.arguments },
@@ -236,7 +231,6 @@ async function consumeResolvedApprovals(
 			toolCallId: approval.toolCallId,
 			createdAt: Date.now(),
 		});
-		await markApprovalConsumed(sessionId, approval.id);
 	}
 }
 

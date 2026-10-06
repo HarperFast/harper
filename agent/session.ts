@@ -136,21 +136,25 @@ export function setStatus(sessionId: string, status: AgentRunStatus, lastError?:
 }
 
 /**
- * End a run in one write: append its closing messages, close the given approvals, set the terminal
- * status. One write, so a crash cannot persist an assistant's tool calls without the responses a
- * provider requires before the next call. A cancel that landed first keeps its `aborted` status.
+ * End a run in one write: append its closing messages, answer and close every approval still open under
+ * the lock, set the terminal status. One write, so a crash cannot persist an assistant's tool calls
+ * without the responses a provider requires before the next call. A cancel that landed first keeps its
+ * `aborted` status.
  */
 export function endRun(
 	sessionId: string,
-	end: { append?: AgentMessage[]; closeApprovals?: string[]; status: AgentRunStatus; lastError?: string }
+	end: {
+		append?: AgentMessage[];
+		answerOpenApprovals?: (approval: ApprovalRequest) => string;
+		status: AgentRunStatus;
+		lastError?: string;
+	}
 ): Promise<AgentSessionRow> {
 	return withSessionLock(sessionId, async () => {
 		const session = await requireSession(sessionId);
 		if (end.append) session.messages.push(...end.append);
 		const now = Date.now();
-		for (const approval of session.pendingApprovals) {
-			if (end.closeApprovals?.includes(approval.id)) closeApproval(approval, now);
-		}
+		if (end.answerOpenApprovals) closeOpenApprovals(session, end.answerOpenApprovals, now);
 		if (session.status !== 'aborted') {
 			session.status = end.status;
 			session.lastError = end.lastError;
@@ -169,16 +173,11 @@ export function cancelSession(sessionId: string): Promise<AgentSessionRow> {
 	return withSessionLock(sessionId, async () => {
 		const session = await requireSession(sessionId);
 		const now = Date.now();
-		for (const approval of session.pendingApprovals) {
-			if (approval.consumed) continue;
-			session.messages.push({
-				role: 'tool',
-				content: JSON.stringify({ ok: false, error: 'cancelled_by_operator', tool: approval.toolName }),
-				toolCallId: approval.toolCallId,
-				createdAt: now,
-			});
-			closeApproval(approval, now);
-		}
+		closeOpenApprovals(
+			session,
+			(approval) => JSON.stringify({ ok: false, error: 'cancelled_by_operator', tool: approval.toolName }),
+			now
+		);
 		session.status = 'aborted';
 		session.lastError = 'Cancelled by operator';
 		session.updatedAt = now;
@@ -187,11 +186,20 @@ export function cancelSession(sessionId: string): Promise<AgentSessionRow> {
 	});
 }
 
-function closeApproval(approval: ApprovalRequest, now: number): void {
-	approval.approved ??= false;
-	approval.resolvedAt ??= now;
-	approval.resolved = true;
-	approval.consumed = true;
+/** Decided on the row read under the lock, so an approval another writer already claimed is never answered twice. */
+function closeOpenApprovals(
+	session: AgentSessionRow,
+	answer: (approval: ApprovalRequest) => string,
+	now: number
+): void {
+	for (const approval of session.pendingApprovals) {
+		if (approval.consumed) continue;
+		session.messages.push({ role: 'tool', content: answer(approval), toolCallId: approval.toolCallId, createdAt: now });
+		approval.approved ??= false;
+		approval.resolvedAt ??= now;
+		approval.resolved = true;
+		approval.consumed = true;
+	}
 }
 
 export function addPendingApproval(
@@ -209,16 +217,21 @@ export function addPendingApproval(
 	});
 }
 
-export function markApprovalConsumed(sessionId: string, approvalId: string): Promise<void> {
+/**
+ * Claim a resolved approval before its action runs; only the first claim wins. A cancel or budget stop
+ * therefore closes only approvals whose action has not started, and no tool call gets two responses.
+ * The cost is at-most-once: a crash between the claim and the result write leaves that call unanswered
+ * rather than running an operator-approved action twice.
+ */
+export function claimApproval(sessionId: string, approvalId: string): Promise<boolean> {
 	return withSessionLock(sessionId, async () => {
 		const session = await requireSession(sessionId);
 		const entry = session.pendingApprovals.find((a) => a.id === approvalId);
-		if (!entry) throw new Error(`No pending approval ${approvalId} on session ${sessionId}`);
-		if (!entry.resolved) throw new Error(`Approval ${approvalId} not yet resolved`);
-		if (entry.consumed) return;
+		if (!entry?.resolved || entry.consumed) return false;
 		entry.consumed = true;
 		session.updatedAt = Date.now();
 		await getAgentSessionTable().put(session);
+		return true;
 	});
 }
 

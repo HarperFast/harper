@@ -724,7 +724,7 @@ describe('agent/loop per-session budgets (#3040)', () => {
 		assert.deepStrictEqual(answered.sort(), ['c1', 'c2']);
 	});
 
-	it('a run cancelled before it consumes approvals does not execute an approved action, then or later', async () => {
+	it('a run that sees a cancel runs no approved action, and the cancel closes it for later prompts', async () => {
 		for (const caps of [{}, { maxSessionTokens: 1_000_000 }]) {
 			_resetInFlightForTests();
 			const sessionId = await newSession();
@@ -739,10 +739,8 @@ describe('agent/loop per-session budgets (#3040)', () => {
 			});
 			const paused = await session.getSession(sessionId);
 			await session.resolveApproval(sessionId, paused.pendingApprovals[0].id, true);
-			// What cancel_agent_run does: abort the live run, then cancel the session in one write.
 			const controller = new AbortController();
 			controller.abort();
-			await session.cancelSession(sessionId);
 			await runAgent({
 				sessionId,
 				models: stubModels([]),
@@ -755,13 +753,10 @@ describe('agent/loop per-session budgets (#3040)', () => {
 			});
 			assert.equal(drop.runs, 0, JSON.stringify(caps));
 
+			await session.cancelSession(sessionId);
 			const cancelled = await session.getSession(sessionId);
-			assert.ok(
-				cancelled.pendingApprovals.every((a) => a.consumed),
-				'no approval is left to run later'
-			);
-			const toolMessages = cancelled.messages.filter((m) => m.role === 'tool');
-			assert.equal(JSON.parse(toolMessages.at(-1).content).error, 'cancelled_by_operator');
+			assert.ok(cancelled.pendingApprovals.every((a) => a.consumed));
+			assert.equal(JSON.parse(cancelled.messages.at(-1).content).error, 'cancelled_by_operator');
 
 			await session.appendMessage(sessionId, { role: 'user', content: 'summarize', createdAt: Date.now() });
 			await runAgent({
@@ -775,6 +770,53 @@ describe('agent/loop per-session budgets (#3040)', () => {
 			});
 			assert.equal(drop.runs, 0, 'the next prompt must not run the cancelled approval');
 		}
+	});
+
+	it('a cancel that lands while an approved action runs leaves that call one response, its real result', async () => {
+		const sessionId = await newSession();
+		let release;
+		let markStarted;
+		const started = new Promise((resolve) => (markStarted = resolve));
+		const drop = {
+			runs: 0,
+			def: { name: 'drop', description: 'drop', parameters: { type: 'object' } },
+			destructive: true,
+			handler: async () => {
+				drop.runs++;
+				markStarted();
+				await new Promise((resolve) => (release = resolve));
+				return { dropped: true };
+			},
+		};
+		await runAgent({
+			sessionId,
+			models: stubModels([toolTurn('c1', 'drop', usage(60, 10))]),
+			tools: [drop],
+			scopes,
+			maxTurns: 5,
+			autoApprove: false,
+		});
+		const paused = await session.getSession(sessionId);
+		await session.resolveApproval(sessionId, paused.pendingApprovals[0].id, true);
+
+		const run = runAgent({
+			sessionId,
+			models: stubModels([finalTurn('done', usage(1, 1))]),
+			tools: [drop],
+			scopes,
+			maxTurns: 5,
+			autoApprove: false,
+		});
+		await started;
+		await session.cancelSession(sessionId);
+		release();
+		await run;
+
+		const reloaded = await session.getSession(sessionId);
+		const responses = reloaded.messages.filter((m) => m.role === 'tool' && m.toolCallId === 'c1');
+		assert.equal(responses.length, 1, 'one response per tool call');
+		assert.deepStrictEqual(JSON.parse(responses[0].content), { ok: true, result: { dropped: true } });
+		assert.equal(drop.runs, 1);
 	});
 
 	it('endRun completes the transcript but keeps an aborted status a cancel already wrote', async () => {
