@@ -240,6 +240,21 @@ describe('agent/fsTools pages', () => {
 		assert.deepEqual({ content: empty.content, totalLines: empty.totalLines }, { content: '', totalLines: 0 });
 	});
 
+	it('keeps a whole result, cursor included, under the minimum cap even with a long path', async () => {
+		const { serializeToolResult } = require('#src/resources/models/agentLoop');
+		const deep = join('d'.repeat(120), 'e'.repeat(120), 'f'.repeat(120));
+		mkdirSync(join(scopes.logDir, deep), { recursive: true });
+		writeFileSync(join(scopes.logDir, deep, 'srv.log'), numberedLines(200));
+		const read = await readFileTool.handler({ root: 'logs', path: join(deep, 'srv.log') }, pagedCtx(1024));
+		const tail = await tailFileTool.handler({ root: 'logs', path: join(deep, 'srv.log') }, pagedCtx(1024));
+		const grep = await grepFilesTool.handler({ root: 'logs', path: deep, pattern: 'line' }, pagedCtx(1024));
+		assert.ok(read.path.length > 400);
+		assert.ok(read.nextLine > 1);
+		for (const result of [read, tail, grep]) {
+			assert.equal(serializeToolResult({ ok: true, result }, 1024).truncated, false);
+		}
+	});
+
 	it('read_file returns a line longer than a page in parts, on character boundaries, losing nothing', async () => {
 		const longLine = `${'漢'.repeat(1000)}${'\u0002'.repeat(300)}end\n`;
 		writeFileSync(join(scopes.componentsRoot, 'bundle.js'), `${longLine}next\n`);

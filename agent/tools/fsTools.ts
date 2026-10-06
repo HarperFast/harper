@@ -24,14 +24,20 @@ const DEFAULT_TAIL_LINES = 200;
 const MAX_TAIL_LINES = 5000;
 const DEFAULT_PAGE_BYTES = 32 * 1024;
 const SCAN_CHUNK_BYTES = 64 * 1024;
+// The observation envelope and a result's fields other than its text and `path`, numbers included.
+const RESULT_FIELD_BYTES = 256;
+const MIN_PAGE_BYTES = 64;
 const NEWLINE = 0x0a;
 
 /**
- * Most file text, measured JSON-escaped, one read returns: half the loop's per-result cap, leaving
- * the other half for the result's other fields so the loop never cuts a page.
+ * Most file text, measured JSON-escaped, one read returns: half the loop's per-result cap, and
+ * never more than what the result's other fields (`path` among them) leave of it, so the loop
+ * never cuts a page.
  */
-function pageBytes(ctx: AgentToolContext): number {
-	return ctx.maxResultBytes ? Math.floor(ctx.maxResultBytes / 2) : DEFAULT_PAGE_BYTES;
+function pageBytes(ctx: AgentToolContext, path: string): number {
+	const cap = ctx.maxResultBytes ?? 2 * DEFAULT_PAGE_BYTES;
+	const besidePage = cap - escapedBytes(path) - RESULT_FIELD_BYTES;
+	return Math.max(MIN_PAGE_BYTES, Math.min(Math.floor(cap / 2), besidePage));
 }
 
 /** Bytes `text` takes inside a JSON string: control characters escape to six bytes, quotes to two. */
@@ -140,8 +146,8 @@ export const readFileTool: AgentTool = {
 			'Read a UTF-8 text file from the components, logs, or config scope, one page at a time. A page holds as ' +
 			'many whole lines as fit; a file that fits in one page comes back whole. While the file continues, the ' +
 			'result has `nextLine` and `nextOffset`: pass both back as `startLine` and `offset` to read the next page ' +
-			'without rescanning the file. A line longer than a page comes back in parts, each flagged ' +
-			'`lineTruncated: true`, continued the same way. `totalLines` is present once a page reaches the end of the ' +
+			'without rescanning the file. A line longer than a page comes back in parts, continued the same way; every ' +
+			'part but the last is flagged `lineTruncated: true`. `totalLines` is present once a page reaches the end of the ' +
 			'file. write_file replaces the whole file, so read every page before rewriting one.',
 		parameters: {
 			type: 'object',
@@ -186,7 +192,7 @@ export const readFileTool: AgentTool = {
 				if ('totalLines' in located) return { path, size, startLine, content: '', totalLines: located.totalLines };
 				start = located.offset;
 			}
-			const page = await readPage(fh, size, start, lineCount, pageBytes(ctx));
+			const page = await readPage(fh, size, start, lineCount, pageBytes(ctx, path));
 			const result: Record<string, unknown> = { path, size, offset: start, content: page.content };
 			const endLine = startLine === undefined || page.lines === 0 ? undefined : startLine + page.lines - 1;
 			if (startLine !== undefined) Object.assign(result, { startLine, endLine });
@@ -396,7 +402,7 @@ export const grepFilesTool: AgentTool = {
 		}
 		const pattern = new RegExp(patternSource, args.flags ?? 'i');
 		const cap = Math.min(args.maxResults ?? MAX_GREP_RESULTS, MAX_GREP_RESULTS);
-		const budget = pageBytes(ctx);
+		const budget = pageBytes(ctx, root);
 		let resultBytes = 0;
 		let truncated = false;
 		const results: Array<{ path: string; line: number; text: string }> = [];
@@ -451,7 +457,7 @@ export const tailFileTool: AgentTool = {
 	handler: async (args: any, ctx: AgentToolContext) => {
 		const path = await resolveScoped(ctx.scopes, normalizeScope(args.root), args.path, 'read');
 		const wanted = Math.min(optionalInteger(args.lines, 'lines', 1) ?? DEFAULT_TAIL_LINES, MAX_TAIL_LINES);
-		const budget = pageBytes(ctx);
+		const budget = pageBytes(ctx, path);
 		const fh = await open(path, 'r');
 		try {
 			// Read only the trailing page — a multi-GB log file otherwise OOMs the process.
