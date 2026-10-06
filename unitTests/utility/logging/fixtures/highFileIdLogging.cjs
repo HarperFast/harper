@@ -8,9 +8,11 @@
 const fs = require('node:fs');
 const HIGH_FILE_ID = 2n ** 70n;
 const fileIndexes = new Map();
+const statsByPath = new Map();
 for (const name of ['statSync', 'fstatSync', 'lstatSync']) {
 	const original = fs[name];
 	fs[name] = (...args) => {
+		if (typeof args[0] === 'string') statsByPath.set(args[0], (statsByPath.get(args[0]) ?? 0) + 1);
 		const stats = original(...args);
 		if (stats?.ino) {
 			const realId = BigInt(stats.ino);
@@ -26,7 +28,6 @@ require('node:module').syncBuiltinESMExports();
 const assert = require('node:assert');
 const path = require('node:path');
 const { setTimeout: sleep } = require('node:timers/promises');
-const sinon = require('sinon');
 const { pinLogConfig } = require('../../../logConfigFixture.js');
 const { waitFor } = require('../../../waitFor.js');
 
@@ -54,6 +55,14 @@ function replaceUnderLogger(logPath, archivePath = `${logPath}.archived`) {
 	assert.notStrictEqual(exact[0], exact[1], 'the emulated file IDs must stay distinct as BigInt');
 	assert.strictEqual(rounded[0], rounded[1], 'the emulated file IDs must collide as Numbers');
 	return archivePath;
+}
+
+async function untilStatted(file, count) {
+	const target = (statsByPath.get(file) ?? 0) + count;
+	for (let polls = 0; (statsByPath.get(file) ?? 0) < target; polls++) {
+		if (polls === 1000) throw new Error(`${file} was statted fewer than ${count} times in 10s`);
+		await sleep(10);
+	}
 }
 
 function contains(file, marker) {
@@ -102,28 +111,32 @@ async function intervalClockSeesTheReplacement() {
 	const { logger, logPath } = newLogger('intervalClock');
 	logger.error('first generation');
 	const rotatedDir = path.join(root, 'intervalClock', 'rotated');
-	// Only Date is faked: the audit ticks still run on real timers, but time passes only when this
-	// scenario advances it, so a late tick can postpone a rotation and never cause one.
-	const clock = sinon.useFakeTimers({ now: Date.now(), toFake: ['Date'] });
+	// Time passes only when this scenario advances it, while the audit ticks stay on real timers, so a
+	// late tick can postpone a rotation and never cause one.
+	const realNow = Date.now;
+	let now = realNow();
+	Date.now = () => now;
 	try {
 		const rotator = logRotator({
 			logger,
 			path: rotatedDir,
 			enabled: true,
+			compress: false,
 			auditInterval: 20,
 			interval: `${intervalMs / 1000}s`,
 		});
-		clock.tick(intervalMs / 2);
+		now += intervalMs / 2;
 		logger.closeLogFile();
 		replaceUnderLogger(logPath, path.join(rotatedDir, 'replaced-by-writer.log'));
-		await sleep(100);
 		// Past the first generation's interval and short of the replacement's.
-		clock.tick(intervalMs / 2 + 1000);
-		await sleep(100);
+		now += intervalMs / 2 + 1000;
+		// A tick stats the log once, or twice when it rotates, and ticks never overlap, so a third stat
+		// means the first tick on the advanced clock has finished.
+		await untilStatted(logPath, 3);
 		rotator.end();
 		assert.strictEqual(rotator.getLastRotatedLogPath(), undefined, 'the replacement was rotated as if it were old');
 	} finally {
-		clock.restore();
+		Date.now = realNow;
 	}
 }
 
