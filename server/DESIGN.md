@@ -100,6 +100,14 @@ replacement without being awaited. Each wait is bounded by a per-worker startup 
 resolution means "the restart finished", not "every worker is new". A caller that treats its own success as
 "the component is live" must await it (see `deployComponent` in `components/operations.js`).
 
+A restart can hold its replacements, for release certification (components/DESIGN.md, "A restarting deploy is
+certified by its canary worker"). A held worker runs its boot load, reports `CHILD_COMPONENT_VERDICT`, and binds
+nothing until main posts `CHILD_ADMITTED` (`threadServer.startServers`, `threads/heldStart.ts`); a refusal arrives
+as an ordinary `SHUTDOWN`. Since it binds nothing, it boots beside its predecessor even where the two cannot share
+a port, and the predecessor is retired at admission. Restarts that start replacements are serialized on main
+(`replacementRestarts`), none starts one while a release is armed (`untilNoCertificationArmed`), and the worker
+that asked for a certifying restart is replaced last.
+
 > `index.ts` sets `workerData.noServerStart = true` when Harper is imported from a thread it did not spawn, so `threadServer.js` skips `startServers()` there; Harper's own HTTP workers start their servers.
 >
 > `threadServer.listenOnDomainSocket()` skips a listener only when its path exceeds the platform's
@@ -174,7 +182,7 @@ An operator mounts an application by putting `host`/`urlPath` on its entry in th
 Consequences worth knowing:
 
 - Everything inside an application addresses itself **mount-relative**. Only two things need the absolute path: code that emits a URL back to the client (use `Scope.externalBasePath()` — static's redirect `Location`), and code that bypasses the routed chain (legacy fastify registers on the bare server, so its route prefix must be the full external path). `static.ts`'s mount-root redirect gates on the _external_ base path, not the plugin-local one — a root-level static plugin (`baseURLPath === '/'`) still needs the redirect when the application itself carries a mount, since the client-visible mount root is then `externalBaseURLPath`, not `/`.
-- A plugin registering per-mount state must key it on `Scope.routeFor()`'s resolved route, not on the parts it composes from — distinct `(mount, pluginUrlPath)` pairs can flatten to the same string (`/a`+`bc` and `/ab`+`c`). `REST.ts`'s `startedMounts` does this; it replaced a process-global `started` flag that silently 404'd the second mounted application's REST API. `handleApplication` also closes over `resources`/`httpOptions` per call rather than a module-level var, and skips deploy pre-flight validation scopes (`scope.isTransientValidation`) entirely — registering handlers from a throwaway validation scope would splice a validation run into the live request path and permanently mark that mount started, silently skipping the real scope's later registration.
+- A plugin registering per-mount state must key it on `Scope.routeFor()`'s resolved route, not on the parts it composes from — distinct `(mount, pluginUrlPath)` pairs can flatten to the same string (`/a`+`bc` and `/ab`+`c`). `REST.ts`'s `startedMounts` does this; it replaced a process-global `started` flag that silently 404'd the second mounted application's REST API. `handleApplication` also closes over `resources`/`httpOptions` per call rather than a module-level var.
 - A mount is routing, **not** isolation: exported resources stay instance-wide, and a `host` mount cannot constrain legacy fastify routes — `fastifyRoutes.ts` refuses to load (throws) rather than warn when a `host` mount is configured, since the fallback really is reachable on every host.
 - An invalid mount (unparseable `host`/`urlPath`) fails the application **closed**: `componentLoader.tryRootConfigMount` skips loading it entirely rather than falling back to unmounted access — loading unconstrained would silently drop the isolation the operator asked for, which is worse than not loading at all.
 - Two applications mounted at different routes can register same-named middleware (e.g. both enable `rest`) without colliding: `middlewareChain.resolveRoutedChains` resolves `before`/`after` name references against a registry scoped to that route's own group, falling back to a _global_ registry that only holds genuinely unmounted entries (e.g. `authentication`) — never another mounted route's entries.
