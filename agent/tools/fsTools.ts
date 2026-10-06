@@ -4,11 +4,7 @@
  * Every path is resolved against the configured scopes (componentsRoot,
  * logDir, configDir) and rejected if it escapes them. Writes are restricted
  * to `componentsRoot` — `logDir` and `configDir` are observation-only so
- * the agent can read logs and inspect config without rewriting either. The
- * `config` scope is usually a single file (`configFile`), never enumerated.
- * Key material is refused in every scope: reads by name, by key
- * directory and by PEM private-key armor in the text about to be returned;
- * writes by key directory.
+ * the agent can read logs and inspect config without rewriting either.
  *
  * Lifted in spirit from the external `harper-agent` CLI's file tools; the
  * sandboxing rules are tightened here because the in-process agent can
@@ -26,9 +22,9 @@ const MAX_PATTERN_LENGTH = 1000;
 const DEFAULT_TAIL_LINES = 200;
 const TAIL_READ_BYTES = 1 * 1024 * 1024; // 1 MiB — enough for thousands of normal log lines
 const KEY_FILE_NAME = /\.(?:pem|key)$|^\.jwtPass$/i;
-// Checked only against the text a tool is about to return: key body lines with neither armor line
-// (the tail of a file cut off mid-key) pass. The name and key-directory rules are the guarantee.
-const PRIVATE_KEY_ARMOR = /-----(?:BEGIN|END) [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
+// Checked against the text a tool returns, so a key without armor passes; the name and key-directory
+// rules are the guarantee.
+const PRIVATE_KEY_ARMOR = /-----(BEGIN|END) [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
 
 type Access = 'read' | 'write';
 type Scope = 'components' | 'logs' | 'config';
@@ -63,19 +59,29 @@ function scopeFile(scopes: AgentScopes, scope: Scope): string | undefined {
 	return scope === 'config' ? scopes.configFile : undefined;
 }
 
-/** A tool `path` argument, where a single-file scope's root stands for its one file. */
 function scopedPath(scopes: AgentScopes, scope: Scope, path: unknown): string {
 	const file = scopeFile(scopes, scope);
 	if (file && (path == null || path === '' || path === '.')) return file;
 	return (path as string) ?? '';
 }
 
-function inKeyDir(scopes: AgentScopes, realPath: string): boolean {
-	return scopes.keyDirs.some((keyDir) => isInside(realPath, keyDir));
+// Resolved on every call, like scope roots, so a key directory that becomes a link after boot is followed.
+function realKeyDirs(scopes: AgentScopes): Promise<string[]> {
+	return Promise.all(scopes.keyDirs.map(safeRealPath));
+}
+
+function inKeyDir(realKeyDirs: string[], realPath: string): boolean {
+	return realKeyDirs.some((keyDir) => isInside(realPath, keyDir));
 }
 
 function assertNoPrivateKey(text: string, path: string): void {
 	if (PRIVATE_KEY_ARMOR.test(text)) throw new Error(`Refusing to read key material: ${path} holds a PEM private key`);
+}
+
+function endsInsidePrivateKey(text: string): boolean {
+	let last: string | undefined;
+	for (const match of text.matchAll(new RegExp(PRIVATE_KEY_ARMOR.source, 'g'))) last = match[1];
+	return last === 'BEGIN';
 }
 
 /** Coerce/validate a tool's `root` argument, defaulting to the writable components scope. */
@@ -118,7 +124,10 @@ async function resolveScoped(scopes: AgentScopes, scope: Scope, path: string, ac
 	const file = scopeFile(scopes, scope);
 	const admitted = file ? realAbsolute === resolve(realRoot, file) : isInside(realAbsolute, realRoot);
 	if (!admitted) throw new Error(`Path is outside the agent's '${scope}' scope: ${path}`);
-	if (inKeyDir(scopes, realAbsolute) || (access === 'read' && KEY_FILE_NAME.test(basename(realAbsolute)))) {
+	if (
+		inKeyDir(await realKeyDirs(scopes), realAbsolute) ||
+		(access === 'read' && KEY_FILE_NAME.test(basename(realAbsolute)))
+	) {
 		throw new Error(`Refusing to ${access} key material: ${path}`);
 	}
 	return realAbsolute;
@@ -290,8 +299,11 @@ export const grepFilesTool: AgentTool = {
 			return true;
 		};
 		const target = await stat(root).catch(() => undefined);
-		if (target?.isFile()) await grepFile(root);
-		else if (target?.isDirectory() && !scopeFile(ctx.scopes, scope)) await walk(root, ctx.scopes, grepFile);
+		if (target?.isFile()) {
+			await grepFile(root);
+		} else if (target?.isDirectory() && !scopeFile(ctx.scopes, scope)) {
+			await walk(root, await realKeyDirs(ctx.scopes), grepFile);
+		}
 		return { root, count: results.length, results };
 	},
 };
@@ -333,6 +345,9 @@ export const tailFileTool: AgentTool = {
 			if (truncated && all.length > 0) all.shift();
 			const lines = all.slice(Math.max(0, all.length - wanted));
 			assertNoPrivateKey(lines.join('\n'), requested);
+			if (endsInsidePrivateKey(text)) {
+				throw new Error(`Refusing to read key material: ${requested} ends inside a PEM private key`);
+			}
 			return { path, lines, truncated };
 		} finally {
 			await fh.close();
@@ -342,7 +357,7 @@ export const tailFileTool: AgentTool = {
 
 export const fsTools: AgentTool[] = [readFileTool, writeFileTool, listDirTool, grepFilesTool, tailFileTool];
 
-async function walk(root: string, scopes: AgentScopes, visit: (file: string) => Promise<boolean>): Promise<void> {
+async function walk(root: string, realKeyDirs: string[], visit: (file: string) => Promise<boolean>): Promise<void> {
 	// Resolve the scope root once via realpath so the per-entry symlink check below has a
 	// stable comparison anchor; otherwise a symlink in the root itself could shift the anchor.
 	const realRoot = await safeRealPath(root);
@@ -362,12 +377,12 @@ async function walk(root: string, scopes: AgentScopes, visit: (file: string) => 
 				// Re-resolve via realpath so a symlinked directory pointing outside the scope is rejected.
 				// Without this, `componentsRoot/escape -> /etc` would let grep walk into /etc.
 				const realFull = await safeRealPath(full);
-				if (!isInside(realFull, realRoot) || inKeyDir(scopes, realFull)) continue;
+				if (!isInside(realFull, realRoot) || inKeyDir(realKeyDirs, realFull)) continue;
 				stack.push(full);
 			} else if (entry.isFile()) {
 				if (KEY_FILE_NAME.test(entry.name)) continue;
 				const realFull = await safeRealPath(full);
-				if (!isInside(realFull, realRoot) || inKeyDir(scopes, realFull)) continue;
+				if (!isInside(realFull, realRoot) || inKeyDir(realKeyDirs, realFull)) continue;
 				const proceed = await visit(full);
 				if (proceed === false) return;
 			}

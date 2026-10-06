@@ -310,10 +310,45 @@ describe('agent/fsTools key material and the single-file config scope (harper#30
 				if (err.code === 'EPERM' || err.code === 'ENOTSUP') return;
 				throw err;
 			}
-			const scopes = { componentsRoot: linkedRoot, logDir: linkedRoot, configDir: linkedRoot, keyDirs: keyDirs() };
+			// Key directories named through the link, as a symlinked rootPath would name them.
+			const scopes = {
+				componentsRoot: root,
+				logDir: root,
+				configDir: root,
+				keyDirs: [join(linkedRoot, 'keys'), join(linkedRoot, 'ssh')],
+			};
 			await assert.rejects(
 				readFileTool.handler({ path: 'keys/privateKey.pem' }, ctx(scopes)),
 				/Refusing to read key material/
+			);
+		});
+
+		it('follows a key directory that becomes a link after the scopes were fixed', async () => {
+			const scopes = widenedScopes();
+			rmSync(join(root, 'ssh'), { recursive: true });
+			mkdirSync(join(root, 'components', 'ssh-store'));
+			writeFileSync(join(root, 'components', 'ssh-store', 'deploy_id'), 'secret ssh key');
+			try {
+				symlinkSync(join(root, 'components', 'ssh-store'), join(root, 'ssh'), 'dir');
+			} catch (err) {
+				if (err.code === 'EPERM' || err.code === 'ENOTSUP') return;
+				throw err;
+			}
+			await assert.rejects(
+				readFileTool.handler({ path: 'components/ssh-store/deploy_id' }, ctx(scopes)),
+				/Refusing to read key material/
+			);
+			await assert.rejects(
+				writeFileTool.handler({ path: 'components/ssh-store/new_id', content: 'x' }, ctx(scopes)),
+				/Refusing to write key material/
+			);
+		});
+
+		it('tail_file refuses a file that ends inside a private key, even when no armor line is returned', async () => {
+			writeFileSync(join(root, 'log', 'hdb.log'), 'start\n-----BEGIN PRIVATE KEY-----\nMIIbodyone\nMIIbodytwo\n');
+			await assert.rejects(
+				tailFileTool.handler({ root: 'logs', path: 'hdb.log', lines: 1 }, ctx(defaultScopes())),
+				/ends inside a PEM private key/
 			);
 		});
 	});

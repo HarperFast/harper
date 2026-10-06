@@ -73,7 +73,7 @@ export interface AgentScopes {
 	configDir?: string;
 	/** Set when the `config` scope is a single file: its name, directly under `configDir`. */
 	configFile?: string;
-	/** Canonical directories no fs tool reads from or writes into, whatever the scope. */
+	/** Directories no fs tool reads from or writes into, whatever the scope; compared by real path on every call. */
 	keyDirs: string[];
 }
 

@@ -264,7 +264,7 @@ export function buildStaticSystemPrompt(
 	const configScope = !scopes.configDir
 		? 'unavailable (agent.configScope named no readable file or directory at startup)'
 		: scopes.configFile
-			? `read-only, the Harper config file only — address it as "${scopes.configFile}": ${join(scopes.configDir, scopes.configFile)}`
+			? `read-only, a single file — address it as "${scopes.configFile}": ${join(scopes.configDir, scopes.configFile)}`
 			: `read-only: ${scopes.configDir}`;
 	const parts = [
 		'You are the built-in Harper agent, running on the main thread inside a live Harper server.',
@@ -360,19 +360,8 @@ export function resolveScopes(
 		componentsRoot: config.componentsScope ? fromRootPath(config.componentsScope) : componentsRoot,
 		logDir,
 		...configScope,
-		// fsTools compares canonical paths, and a key directory may itself be a symlink.
-		keyDirs: [LICENSE_KEY_DIR_NAME, SSH_KEY_DIR_NAME].map((name) => canonicalPath(join(rootPath, name))),
+		keyDirs: [join(rootPath, LICENSE_KEY_DIR_NAME), join(rootPath, SSH_KEY_DIR_NAME)],
 	};
-}
-
-/** `realpath` of `path`, or of its deepest existing ancestor with the rest appended (as fsTools resolves). */
-function canonicalPath(path: string): string {
-	try {
-		return realpathSync.native(path);
-	} catch {
-		const parent = dirname(path);
-		return parent === path ? path : join(canonicalPath(parent), basename(path));
-	}
 }
 
 function mergeConfig(opts: StartOpts): AgentConfig {

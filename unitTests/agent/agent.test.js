@@ -149,27 +149,8 @@ describe('agent/agent resolveScopes (harper#3041)', () => {
 		assert.equal(scopes.configFile, undefined);
 	});
 
-	it('denies the keys and ssh directories by their canonical path under a symlinked rootPath', () => {
-		const linkedRoot = join(mkdtempSync(join(tmpdir(), 'agent-scopes-link-')), 'harper');
-		try {
-			symlinkSync(root, linkedRoot, 'dir');
-		} catch (err) {
-			if (err.code === 'EPERM' || err.code === 'ENOTSUP') return;
-			throw err;
-		}
-		assert.deepEqual(scopesFor({}, linkedRoot).keyDirs, [join(root, 'keys'), join(root, 'ssh')]);
-	});
-
-	it('denies a key directory that is itself a symlink by its target', () => {
-		const realKeys = join(mkdtempSync(join(tmpdir(), 'agent-scopes-keys-')), 'keys');
-		mkdirSync(realKeys);
-		try {
-			symlinkSync(realKeys, join(root, 'keys'), 'dir');
-		} catch (err) {
-			if (err.code === 'EPERM' || err.code === 'ENOTSUP') return;
-			throw err;
-		}
-		assert.equal(scopesFor({}).keyDirs[0], realpathSync(realKeys));
+	it('names the keys and ssh directories under rootPath as the key directories', () => {
+		assert.deepEqual(scopesFor({}).keyDirs, [join(root, 'keys'), join(root, 'ssh')]);
 	});
 
 	it('admits a symlinked config file as its target, and the tools read it through those scopes', async () => {
@@ -201,7 +182,7 @@ describe('agent/agent buildStaticSystemPrompt config scope line', () => {
 
 	it('names the single config file and the key-material refusal', () => {
 		const prompt = buildStaticSystemPrompt({ ...base, configDir: '/h', configFile: 'harper-config.yaml' }, false);
-		assert.match(prompt, /- config — read-only, the Harper config file only — address it as "harper-config.yaml"/);
+		assert.match(prompt, /- config — read-only, a single file — address it as "harper-config.yaml"/);
 		assert.match(prompt, /Key material is refused in every scope/);
 	});
 
