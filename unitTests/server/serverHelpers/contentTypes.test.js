@@ -567,3 +567,211 @@ describe('contentTypes – application/x-www-form-urlencoded', function () {
 		assert.strictEqual(handler.serialize(handler.deserialize(body)), body);
 	});
 });
+
+describe('contentTypes – a multipart upload its route answers without reading', function () {
+	const Fastify = require('fastify');
+	const net = require('node:net');
+	const { Readable, PassThrough } = require('node:stream');
+	const { randomBytes } = require('node:crypto');
+	const { setTimeout: sleep } = require('node:timers/promises');
+	const { registerContentHandlers } = require('#src/server/serverHelpers/contentTypes');
+	const { buildMultipartBody } = require('#src/bin/multipartBuilder');
+
+	const CHUNK = randomBytes(64 * 1024);
+	let app;
+	let port;
+
+	before(async function () {
+		// A regression leaves connections mid-request; close them so it fails on its own deadline.
+		app = Fastify({ forceCloseConnections: true });
+		app.post('/early', async () => ({ ok: true }));
+		registerContentHandlers(app);
+		app.post('/ignore', async () => ({ ok: true }));
+		app.post(
+			'/transformed',
+			{
+				preParsing: (request, reply, payload, done) => {
+					const transformed = new PassThrough();
+					payload.pipe(transformed);
+					done(null, transformed);
+				},
+			},
+			async () => ({ ok: true })
+		);
+		app.post('/echo', async (request, reply) => {
+			reply.type('application/octet-stream');
+			const { payload } = request.body;
+			return Readable.from(
+				(async function* () {
+					for await (const chunk of payload) yield chunk;
+				})()
+			);
+		});
+		app.get('/health', async () => 'ok');
+		app.get('/slow', async () => {
+			await sleep(1500);
+			return 'slow';
+		});
+		await app.listen({ port: 0, host: '127.0.0.1' });
+		port = app.server.address().port;
+	});
+
+	after(async function () {
+		await app?.close();
+	});
+
+	async function* fileChunks(fileBytes) {
+		for (let sent = 0; sent < fileBytes; sent += CHUNK.length) yield CHUNK;
+	}
+
+	/**
+	 * Uploads with a raw socket that keeps writing after the answer, honouring only TCP backpressure, then
+	 * asks for `next` on the same socket. Rejects if the upload or the second answer misses the deadline.
+	 */
+	function uploadOnRawSocket(path, { fileBytes = 16 * 1024 * 1024, next = '/health', deadlineMs = 10_000 } = {}) {
+		const multipart = buildMultipartBody(
+			{ operation: 'deploy_component' },
+			{ name: 'payload', filename: 'package.tar.gz', stream: Readable.from(fileChunks(fileBytes)) }
+		);
+		return new Promise((resolve, reject) => {
+			const socket = net.connect(port, '127.0.0.1');
+			let received = '';
+			let uploadEnded = false;
+			let uploadEndedAt;
+			let answeredBeforeUploadEnded = false;
+			const fail = (error) => {
+				clearTimeout(deadline);
+				socket.destroy();
+				reject(error);
+			};
+			const deadline = setTimeout(
+				() => fail(new Error(`${path}: upload or second answer not finished within ${deadlineMs}ms`)),
+				deadlineMs
+			);
+			const statuses = () => received.match(/HTTP\/1\.1 \d{3}/g) ?? [];
+			socket.on('error', fail);
+			socket.on('data', (data) => {
+				if (!received && !uploadEnded) answeredBeforeUploadEnded = true;
+				received += data;
+				if (uploadEnded && statuses().length >= 2 && received.endsWith(next === '/slow' ? 'slow' : 'ok')) {
+					clearTimeout(deadline);
+					socket.destroy();
+					resolve({ statuses: statuses(), answeredBeforeUploadEnded, nextAnsweredAfterMs: Date.now() - uploadEndedAt });
+				}
+			});
+			socket.once('connect', async () => {
+				try {
+					socket.write(
+						`POST ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: ${multipart.contentType}\r\n` +
+							'Transfer-Encoding: chunked\r\n\r\n'
+					);
+					for await (const chunk of multipart.stream) {
+						const frame = Buffer.concat([Buffer.from(`${chunk.length.toString(16)}\r\n`), chunk, Buffer.from('\r\n')]);
+						if (!socket.write(frame)) await new Promise((resume) => socket.once('drain', resume));
+						if (socket.destroyed) return;
+					}
+					socket.write('0\r\n\r\n', () => {
+						uploadEnded = true;
+						uploadEndedAt = Date.now();
+						socket.write(`GET ${next} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n`);
+					});
+				} catch (error) {
+					fail(error);
+				}
+			});
+		});
+	}
+
+	/**
+	 * Sends the start of an upload over a raw socket, then stops writing without closing. Resolves with what
+	 * arrived once the server closes the connection; rejects if it is still open at the deadline.
+	 */
+	function holdUnfinishedUpload(path, deadlineMs = 5_000) {
+		const boundary = '----HarperUnfinishedUpload';
+		const head =
+			`--${boundary}\r\nContent-Disposition: form-data; name="operation"\r\n\r\ndeploy_component\r\n` +
+			`--${boundary}\r\nContent-Disposition: form-data; name="payload"; filename="package.tar.gz"\r\n\r\n`;
+		const frame = (data) => Buffer.concat([Buffer.from(`${data.length.toString(16)}\r\n`), data, Buffer.from('\r\n')]);
+		return new Promise((resolve, reject) => {
+			const socket = net.connect(port, '127.0.0.1');
+			let received = '';
+			const deadline = setTimeout(() => {
+				socket.destroy();
+				reject(new Error(`${path}: the server kept the connection of an unfinished upload open for ${deadlineMs}ms`));
+			}, deadlineMs);
+			socket.on('data', (data) => (received += data));
+			socket.on('error', () => {});
+			socket.on('close', () => {
+				clearTimeout(deadline);
+				resolve(received);
+			});
+			socket.once('connect', () => {
+				socket.write(
+					`POST ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: multipart/form-data; boundary=${boundary}\r\n` +
+						'Transfer-Encoding: chunked\r\n\r\n'
+				);
+				socket.write(frame(Buffer.from(head)));
+				for (let chunk = 0; chunk < 16; chunk++) socket.write(frame(CHUNK));
+			});
+		});
+	}
+
+	it('reads the rest of an upload the route never read, so the request ends and the socket serves another', async function () {
+		this.timeout(20_000);
+		const { statuses, answeredBeforeUploadEnded } = await uploadOnRawSocket('/ignore');
+		assert.ok(answeredBeforeUploadEnded, 'the route answered while the upload was still arriving');
+		assert.deepStrictEqual(statuses, ['HTTP/1.1 200', 'HTTP/1.1 200']);
+	});
+
+	it('releases the upload of a route registered before the parser was', async function () {
+		this.timeout(20_000);
+		const { statuses } = await uploadOnRawSocket('/early');
+		assert.deepStrictEqual(statuses, ['HTTP/1.1 200', 'HTTP/1.1 200']);
+	});
+
+	it('keeps a reused connection open past the grace period of the upload it discarded', async function () {
+		this.timeout(20_000);
+		const { statuses, nextAnsweredAfterMs } = await uploadOnRawSocket('/ignore', { next: '/slow' });
+		assert.deepStrictEqual(statuses, ['HTTP/1.1 200', 'HTTP/1.1 200']);
+		assert.ok(nextAnsweredAfterMs >= 1500, `the slow request was answered after ${nextAnsweredAfterMs}ms`);
+	});
+
+	it('closes the connection when the rest of a discarded upload stops arriving, after answering', async function () {
+		this.timeout(20_000);
+		const received = await holdUnfinishedUpload('/ignore');
+		assert.match(received, /^HTTP\/1\.1 200/);
+		assert.ok(received.includes('{"ok":true}'), 'the answer arrived before the connection closed');
+	});
+
+	it('closes it too when a preParsing hook handed the parser a transform of the request', async function () {
+		this.timeout(20_000);
+		const received = await holdUnfinishedUpload('/transformed');
+		assert.match(received, /^HTTP\/1\.1 200/);
+	});
+
+	it('leaves the upload to a response stream that reads it while it is sent', async function () {
+		this.timeout(20_000);
+		const fileBytes = 2 * 1024 * 1024;
+		const multipart = buildMultipartBody(
+			{ operation: 'deploy_component' },
+			{ name: 'payload', filename: 'package.tar.gz', stream: Readable.from(fileChunks(fileBytes)) }
+		);
+		const echoed = await new Promise((resolve, reject) => {
+			const request = http.request(
+				{ host: '127.0.0.1', port, method: 'POST', path: '/echo', headers: { 'Content-Type': multipart.contentType } },
+				(response) => {
+					const chunks = [];
+					response.on('data', (chunk) => chunks.push(chunk));
+					response.on('end', () => resolve(Buffer.concat(chunks)));
+					response.on('error', reject);
+				}
+			);
+			request.on('error', reject);
+			multipart.stream.pipe(request);
+		});
+		assert.strictEqual(echoed.length, fileBytes);
+		for (let offset = 0; offset < fileBytes; offset += CHUNK.length) {
+			assert.ok(echoed.subarray(offset, offset + CHUNK.length).equals(CHUNK), `bytes at ${offset} were echoed intact`);
+		}
+	});
+});

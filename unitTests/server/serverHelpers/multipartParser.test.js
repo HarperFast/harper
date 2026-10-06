@@ -1,13 +1,16 @@
 'use strict';
 
 const assert = require('node:assert');
-const { Readable, PassThrough } = require('node:stream');
+const { Readable, PassThrough, Writable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 const { once } = require('node:events');
+const { setTimeout: sleep } = require('node:timers/promises');
 const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
 
-const { parseMultipartRequest } = require('#src/server/serverHelpers/multipartParser');
+const { parseMultipartRequest, releaseUnreadUpload } = require('#src/server/serverHelpers/multipartParser');
 const { buildMultipartBody } = require('#src/bin/multipartBuilder');
+const { waitFor } = require('../../waitFor.js');
 
 function parse(contentType, stream) {
 	return new Promise((resolve, reject) => {
@@ -187,6 +190,192 @@ describe('multipartParser', () => {
 			})
 			.catch(testDone);
 		raw.write(headerThroughFileStart);
+	});
+});
+
+describe('multipartParser – an upload its response left unread', () => {
+	const BOUNDARY = '----HarperUnreadUploadTest';
+	const CONTENT_TYPE = `multipart/form-data; boundary=${BOUNDARY}`;
+	const CHUNK = Buffer.alloc(64 * 1024, 7);
+	const partHead = (fileName) =>
+		`--${BOUNDARY}\r\nContent-Disposition: form-data; name="operation"\r\n\r\ndeploy_component\r\n` +
+		`--${BOUNDARY}\r\nContent-Disposition: form-data; name="${fileName}"; filename="package.tar.gz"\r\n` +
+		`Content-Type: application/gzip\r\n\r\n`;
+	const closing = `\r\n--${BOUNDARY}--\r\n`;
+	const malformedTail = `\r\n--${BOUNDARY}\r\nthis header has no colon\r\n\r\n`;
+
+	async function* body({ fileName = 'payload', fileBytes = 4 * 1024 * 1024, tail = closing } = {}) {
+		yield Buffer.from(partHead(fileName));
+		for (let sent = 0; sent < fileBytes; sent += CHUNK.length) yield CHUNK;
+		yield Buffer.from(tail);
+	}
+
+	function start(options) {
+		const request = { headers: { 'content-type': CONTENT_TYPE } };
+		const raw = new PassThrough();
+		raw.on('error', () => {});
+		const source = Readable.from(body(options));
+		source.pipe(raw);
+		const parsed = new Promise((resolve, reject) =>
+			parseMultipartRequest(request, raw, (error, parsedBody) => (error ? reject(error) : resolve(parsedBody)))
+		);
+		return { request, raw, source, parsed };
+	}
+
+	const respond = (request) => new Promise((resolve) => releaseUnreadUpload(request, undefined, resolve));
+
+	it('discards the rest of a part the route never read, and only once', async () => {
+		const { request, raw, parsed } = start();
+		const { payload } = await parsed;
+		await sleep(50);
+		assert.strictEqual(raw.readableEnded, false, 'the unread part holds the upload back');
+		await respond(request);
+		await respond(request);
+		await waitFor(() => raw.readableEnded, 5000);
+		assert.strictEqual(payload.destroyed, true);
+	});
+
+	it('closes a request whose body is still arriving a second after its response', async () => {
+		const request = { headers: { 'content-type': CONTENT_TYPE } };
+		const raw = new PassThrough();
+		raw.write(partHead('payload'));
+		raw.write(CHUNK);
+		await new Promise((resolve, reject) =>
+			parseMultipartRequest(request, raw, (error, parsedBody) => (error ? reject(error) : resolve(parsedBody)))
+		);
+		await respond(request);
+		assert.strictEqual(raw.destroyed, false, 'the client gets a moment to read the response');
+		await waitFor(() => raw.destroyed, 3000);
+	});
+
+	for (const [description, hold] of [
+		['a flowing part', (payload) => payload.resume()],
+		[
+			'a paused data consumer',
+			(payload) => {
+				payload.on('data', () => {});
+				payload.pause();
+			},
+		],
+		['a readable consumer', (payload) => payload.on('readable', () => {})],
+	]) {
+		it(`leaves ${description} to its consumer`, async () => {
+			const { request, parsed } = start();
+			const { payload } = await parsed;
+			const errors = [];
+			payload.on('error', (error) => errors.push(error));
+			hold(payload);
+			await respond(request);
+			await sleep(50);
+			assert.deepStrictEqual(errors, [], 'a discard would have ended the part with an error');
+		});
+	}
+
+	it('leaves a part whose iterator is paused between reads to its consumer', async () => {
+		const fileBytes = 1024 * 1024;
+		const { request, parsed } = start({ fileBytes });
+		const { payload } = await parsed;
+		const iterator = payload[Symbol.asyncIterator]();
+		let read = (await iterator.next()).value.length;
+		await respond(request);
+		await sleep(50);
+		for (let step = await iterator.next(); !step.done; step = await iterator.next()) read += step.value.length;
+		assert.strictEqual(read, fileBytes, 'every byte still reached the consumer');
+	});
+
+	it('discards a part the route took an iterator for but had not started reading', async () => {
+		const { request, raw, parsed } = start();
+		const { payload } = await parsed;
+		payload[Symbol.asyncIterator]();
+		await respond(request);
+		await waitFor(() => raw.readableEnded, 5000);
+	});
+
+	for (const [description, change] of [
+		['replaced', (parsedBody) => (parsedBody.payload = new PassThrough())],
+		['deleted', (parsedBody) => delete parsedBody.payload],
+	]) {
+		it(`discards the part the parser handed out when the route ${description} body.payload`, async () => {
+			const { request, raw, parsed } = start();
+			const parsedBody = await parsed;
+			const original = parsedBody.payload;
+			change(parsedBody);
+			await respond(request);
+			await waitFor(() => raw.readableEnded, 5000);
+			assert.strictEqual(original.destroyed, true);
+			if (parsedBody.payload) assert.strictEqual(parsedBody.payload.destroyed, false, 'the replacement is not touched');
+		});
+	}
+
+	it('does nothing for a part read to its end while the rest of the body is still arriving', async () => {
+		const request = { headers: { 'content-type': CONTENT_TYPE } };
+		const raw = new PassThrough();
+		raw.write(partHead('payload'));
+		raw.write('file-bytes');
+		raw.write(closing);
+		const { payload } = await new Promise((resolve, reject) =>
+			parseMultipartRequest(request, raw, (error, parsedBody) => (error ? reject(error) : resolve(parsedBody)))
+		);
+		assert.strictEqual((await collect(payload)).toString(), 'file-bytes');
+		await respond(request);
+		await sleep(1200);
+		assert.strictEqual(raw.destroyed, false, 'a request whose part was read is not cut off');
+		raw.end();
+		await waitFor(() => raw.readableEnded, 5000);
+	});
+
+	it('discards the rest when a consumer let the part go before its end', async () => {
+		const { request, raw, parsed } = start();
+		const { payload } = await parsed;
+		payload.once('data', () => payload.destroy());
+		await once(payload, 'close');
+		await respond(request);
+		await waitFor(() => raw.readableEnded, 5000);
+	});
+
+	it('discards the rest of a body whose framing breaks after an unexpected-name part was refused', async () => {
+		const { request, raw, parsed } = start({ fileName: 'other', tail: malformedTail + 'x'.repeat(256 * 1024) });
+		await assert.rejects(parsed, { statusCode: 400 });
+		await respond(request);
+		await waitFor(() => raw.readableEnded, 5000);
+	});
+
+	it('discards the rest of a body whose framing breaks after its part was read', async () => {
+		const { request, raw, parsed } = start({
+			fileBytes: 256 * 1024,
+			tail: malformedTail + 'x'.repeat(256 * 1024),
+		});
+		const { payload } = await parsed;
+		await collect(payload);
+		await respond(request);
+		await waitFor(() => raw.readableEnded, 5000);
+	});
+
+	it('raises no uncaught error when the request aborts after the hand-off, while a consumer still sees it', async () => {
+		const uncaught = [];
+		const onUncaught = (error) => uncaught.push(error);
+		process.on('uncaughtException', onUncaught);
+		try {
+			const unread = start();
+			const { payload } = await unread.parsed;
+			const closed = new Promise((resolve) => payload.once('close', resolve));
+			unread.raw.destroy(new Error('socket reset'));
+			await closed;
+
+			const refused = start({ fileName: 'other' });
+			await assert.rejects(refused.parsed, { statusCode: 400 });
+			refused.raw.destroy(new Error('socket reset'));
+
+			const consumed = start();
+			const consumedBody = await consumed.parsed;
+			const reading = pipeline(consumedBody.payload, new Writable({ write: (chunk, encoding, next) => next() }));
+			consumed.raw.destroy(new Error('socket reset'));
+			await assert.rejects(reading, /socket reset/);
+			await sleep(10);
+		} finally {
+			process.removeListener('uncaughtException', onUncaught);
+		}
+		assert.deepStrictEqual(uncaught, []);
 	});
 });
 
