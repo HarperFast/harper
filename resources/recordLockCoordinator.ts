@@ -354,6 +354,7 @@ export interface ClusterLockTransport {
 	 * A control entry this thread applied from a peer's stream while another thread owns coordination:
 	 * hand it to the owner, which receives it through its own `onControlEntry`. Idempotent by exact
 <<<<<<< HEAD
+<<<<<<< HEAD
 	 * token on the owner, so a relay that is late, reordered or lost can only delay a re-grant. May
 	 * return a promise; a throw or rejection counts as a drop (`droppedOffOwner`) and never escapes.
 	 * Absent, the entry is dropped and counted.
@@ -361,6 +362,11 @@ export interface ClusterLockTransport {
 	 * token on the owner, so a relay that is late, reordered or lost can only delay a re-grant. Absent,
 	 * the entry is dropped and counted (`droppedOffOwner`).
 >>>>>>> 57f28c5c8 (Relay a record lock control entry received off the coordinating thread instead of dropping it)
+=======
+	 * token on the owner, so a relay that is late, reordered or lost can only delay a re-grant. May
+	 * return a promise; a throw or rejection counts as a drop (`droppedOffOwner`) and never escapes.
+	 * Absent, the entry is dropped and counted.
+>>>>>>> 0eb395a9c (Relay a release from a thread with no coordinator, and contain an asynchronous relay rejection)
 	 */
 	relayControlEntry?(
 		database: string,
@@ -839,6 +845,10 @@ function noRevoke() {}
 function isPromiseLike(value: unknown): value is Promise<unknown> {
 	return value != null && typeof (value as Promise<unknown>).then === 'function';
 }
+<<<<<<< HEAD
+=======
+/** A relay that throws or rejects is a drop, never an escape from the apply loop. */
+>>>>>>> 0eb395a9c (Relay a release from a thread with no coordinator, and contain an asynchronous relay rejection)
 function relayControlEntryContained(
 	transport: ClusterLockTransport,
 	database: string,
@@ -849,9 +859,15 @@ function relayControlEntryContained(
 	onFailure: () => void
 ): void {
 	try {
+<<<<<<< HEAD
 		const outcome = transport.relayControlEntry!(database, table, entry, author, position);
 		if (isPromiseLike(outcome))
 			outcome.then(undefined, (error) => {
+=======
+		const outcome = transport.relayControlEntry!(database, table, entry, author, position) as unknown;
+		if (isPromiseLike(outcome))
+			outcome.catch((error) => {
+>>>>>>> 0eb395a9c (Relay a release from a thread with no coordinator, and contain an asynchronous relay rejection)
 				warnOnce('failed to relay a record lock control entry to the coordinating thread', error);
 				onFailure();
 			});
@@ -1828,11 +1844,15 @@ export class LockCoordinator {
 		if (entry.requester !== author) return;
 		if (!this.transport.ownsCoordination()) {
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 0eb395a9c (Relay a release from a thread with no coordinator, and contain an asynchronous relay rejection)
 			if (this.transport.relayControlEntry)
 				relayControlEntryContained(this.transport, this.database, this.table, entry, author, position, () =>
 					this.#noteOffOwnerDrop()
 				);
 			else this.#noteOffOwnerDrop();
+<<<<<<< HEAD
 =======
 			if (this.transport.relayControlEntry) {
 				try {
@@ -1853,6 +1873,8 @@ export class LockCoordinator {
 				});
 			}
 >>>>>>> 57f28c5c8 (Relay a record lock control entry received off the coordinating thread instead of dropping it)
+=======
+>>>>>>> 0eb395a9c (Relay a release from a thread with no coordinator, and contain an asynchronous relay rejection)
 			return;
 		}
 		if (!isFencingToken(entry.token)) return;
@@ -3078,6 +3100,7 @@ export function receiveLockControlEntry(
 	if (coordinator) return coordinator.applyEntry(entry, author, position);
 	if (entry?.type !== 'lockRelease') return;
 	const transport = clusterLockTransports.get(database);
+<<<<<<< HEAD
 	if (!transport) return;
 	let owns: boolean;
 	try {
@@ -3092,6 +3115,9 @@ export function receiveLockControlEntry(
 		warnOnce('a record lock release reached a thread with no coordinator and no relay; it is dropped');
 		return;
 	}
+=======
+	if (!transport?.relayControlEntry || transport.ownsCoordination()) return;
+>>>>>>> 0eb395a9c (Relay a release from a thread with no coordinator, and contain an asynchronous relay rejection)
 	relayControlEntryContained(transport, database, table, entry, author, position, () =>
 		warnOnce('a record lock release could not be relayed from a thread without a coordinator')
 	);
