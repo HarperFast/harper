@@ -539,8 +539,6 @@ async function deployComponent(req) {
 			HTTP_STATUS_CODES.BAD_REQUEST
 		);
 	}
-	// A payload deploy publishes no root-config entry, the only place branchedDatabases takes effect, so accepting
-	// it would leave the application reading and writing the base databases it asked to fork.
 	if (req.branchedDatabases !== undefined && !req.package) {
 		throw handleHDBError(
 			new Error(),
