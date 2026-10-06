@@ -37,8 +37,8 @@ async function newDataRoot(ctx: ContextWithHarper) {
 	return dataRootDir;
 }
 
-// The Bun listener path is not exercised here, as in isolated-application.test.ts.
-const UNSUPPORTED_HERE = process.env.HARPER_RUNTIME === 'bun';
+// The Bun listener path is not exercised here, as in isolated-application.test.ts; Windows runs one HTTP worker.
+const UNSUPPORTED_HERE = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
 suite('a replication worker pool (replication.threads)', { skip: UNSUPPORTED_HERE }, (ctx: ContextWithHarper) => {
 	let loadsLog: string;

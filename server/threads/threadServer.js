@@ -113,7 +113,9 @@ exports.listenOnPorts = listenOnPorts;
 exports.startServers = startServers;
 exports.closeServers = closeServers;
 
+let serversClosing = false;
 function closeServers() {
+	serversClosing = true;
 	if (isBun) {
 		// Bun servers use .stop() for graceful shutdown
 		for (let port in SERVERS) {
@@ -454,7 +456,7 @@ function listenOnPorts() {
 						if (poolWorker) {
 							// Without reusePort the outgoing member 0 of a restart may still hold the port while it drains.
 							bindRetryDeadline ??= Date.now() + POOL_BIND_RETRY_MS;
-							if (!listen_on.reusePort && Date.now() < bindRetryDeadline) {
+							if (!listen_on.reusePort && !serversClosing && Date.now() < bindRetryDeadline) {
 								setTimeout(() => server.listen(listen_on), 250).unref();
 								return;
 							}

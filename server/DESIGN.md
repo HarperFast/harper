@@ -747,12 +747,15 @@ and last-worker duties never land on one. The invariants:
   built-ins (including `HARPER_BUILTIN_COMPONENTS`) still load, and databases open from storage.
   Anything an application installs per thread (for example `Table.setResidencyById`, or a
   `setComputedAttribute` resolver) is absent there; `Table.unresolvedComputedIndexes()` names the
-  indexes such a thread cannot maintain, so a consumer can refuse rather than index wrongly.
+  indexes such a thread cannot maintain, so a consumer can refuse rather than index wrongly, and a pool
+  worker that resolves one anyway throws instead of indexing `undefined`.
 - **Exclusive listeners.** A component passes `threadType` in its `server.http`/`server.ws`/
   `server.socket` options to claim a port (and its UDS mirrors). `listenOnPorts` then binds it only on
   that pool's workers, and a pool worker binds nothing else, so it never receives HTTP traffic.
-  Without `SO_REUSEPORT` only pool member 0 binds. A pool worker fails startup on `EADDRINUSE` rather
-  than reporting ready with no listener.
+  Without `SO_REUSEPORT` only pool member 0 binds, and it retries `EADDRINUSE` for up to a minute
+  because its restarted predecessor keeps the port through its shutdown drain. A pool worker then fails
+  startup on `EADDRINUSE` rather than reporting ready with no listener; a drain longer than that minute
+  costs auto-restarts of the replacement until the port frees.
 - **Active means admitted, not live.** `activeWorkerPools()` is fixed at startup and passed to every
   worker in `workerData.workerPools`, so an owned port is never handed back to HTTP workers while the
   pool restarts. Changing the pool size needs a full restart.
