@@ -54,8 +54,7 @@ concurrency:
   group: docker-smoke-${{ github.ref }}
   cancel-in-progress: true
 
-# Building and booting the image only needs read access to the checkout; publishing
-# authenticates to Docker Hub with its own token.
+# Building and booting the image only needs read access to the checkout.
 permissions:
   contents: read
 

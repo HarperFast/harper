@@ -2,8 +2,6 @@
 # Start a Harper container and wait for its Operations API to answer on :9925.
 #
 # Usage: docker-smoke-boot.sh <image> <container-name> [harper-runtime]
-# Passes [harper-runtime] as HARPER_RUNTIME when given. Exits non-zero, after
-# dumping the container's logs, if it stops first or never answers.
 set -e
 
 image=$1
