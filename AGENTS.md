@@ -14,8 +14,8 @@ Harper is a Node.js unified development platform that fuses a document database 
 
 ```bash
 # Build
-npm run build              # TypeScript → dist/ via tsconfig.build.json
-npm run build:watch        # Incremental watch build
+npm run build              # TypeScript → dist/ via build-tools/build-dist.mjs (comment-free, Latin-1 JS; .d.ts keep JSDoc)
+npm run build:watch        # Incremental watch build (plain tsc: keeps comments and non-Latin-1 text)
 
 # Lint / Format
 npm run lint               # oxlint (warnings = errors)
