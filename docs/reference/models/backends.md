@@ -26,7 +26,7 @@ All backends support these common fields:
 | `model`            | Provider-side model identifier (e.g. `gpt-4o`) used when a call does not pass its own `model` option                                                                                                                       |
 | `requestTimeoutMs` | Per-request timeout in milliseconds; composed with any caller-provided `AbortSignal`                                                                                                                                       |
 | `revision`         | From v5.3.1, a non-secret label for the deployment behind the entry, for [calibration](./calibration#when-the-deployment-changes-but-the-configuration-does-not); change it when the same settings reach a different model |
-| `pricing`          | From v5.3.2, `generative` entries only: `{ inputPerMtok, outputPerMtok }`, what you pay in USD per million prompt and completion tokens. See [Pricing](./overview#pricing)                                                 |
+| `pricing`          | From v5.4.0, `generative` entries only: `{ inputPerMtok, outputPerMtok }`, what you pay in USD per million prompt and completion tokens. See [Pricing](./overview#pricing)                                                 |
 
 ## Ollama
 

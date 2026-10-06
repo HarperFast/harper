@@ -147,7 +147,7 @@ See [Backends](./backends) for the full set of configuration fields supported by
 
 ### Pricing
 
-<VersionBadge version="v5.3.2" />
+<VersionBadge version="v5.4.0" />
 
 A `generative` entry can declare what you pay for its model, so Harper can put a dollar figure on each call. Harper ships no prices of its own: the rates are yours to keep current.
 

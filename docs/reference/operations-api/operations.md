@@ -1740,7 +1740,7 @@ A session that is `running` or `awaiting_approval` rejects a new prompt with a 4
 
 Returns the full session record: `status`, `user` (the Operations API caller who created the session, falling back to `agent.user`), the `messages` transcript (user, assistant, and tool messages, including tool calls and their observations), `pendingApprovals`, `model`, `provider`, `createdAt`/`updatedAt`, and `lastError`. This is the polling endpoint for a run in flight.
 
-From v5.3.2 each assistant message carries the `usage` its model call reported (`promptTokens`, `completionTokens`, and `costUsd` when the model is [priced](../models/overview.md#pricing)), and the response adds the session's totals:
+From v5.4.0 each assistant message carries the `usage` its model call reported (`promptTokens`, `completionTokens`, and `costUsd` when the model is [priced](../models/overview.md#pricing)), and the response adds the session's totals:
 
 ```json
 "usage": { "calls": 3, "promptTokens": 41230, "completionTokens": 2210, "costUsd": 0.157 }

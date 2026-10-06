@@ -393,8 +393,8 @@ agent:
 - `provider` — Recorded on the session but **not yet used to route the model call** — only `model` reaches the provider. Set the provider through the [`models`](../models/overview.md#configuration) configuration instead
 - `model` — Model id override, passed through to the model call; _Default_: the [`models`](../models/overview.md#configuration) generative default
 - `maxTurns` — Maximum tool-call iterations in a single run; _Default_: `50`
-- `maxSessionTokens` <VersionBadge version="v5.3.2" /> — Per-session cap on prompt plus completion tokens, summed over every model call in the session that returns; a positive integer. See [Spend caps](#agent-spend-caps); _Default_: none
-- `maxCostUsd` <VersionBadge type="changed" version="v5.3.2" /> — Per-session cap in USD, priced from the [`pricing`](../models/overview.md#pricing) on the `models.generative` entry that served each call; a number of `0` or more, and `0` stops every session before its first call. See [Spend caps](#agent-spend-caps). Before v5.3.2 this setting was stored but never enforced, and defaulted to `5.00`; _Default_: none
+- `maxSessionTokens` <VersionBadge version="v5.4.0" /> — Per-session cap on prompt plus completion tokens, summed over every model call in the session that returns; a positive integer. See [Spend caps](#agent-spend-caps); _Default_: none
+- `maxCostUsd` <VersionBadge type="changed" version="v5.4.0" /> — Per-session cap in USD, priced from the [`pricing`](../models/overview.md#pricing) on the `models.generative` entry that served each call; a number of `0` or more, and `0` stops every session before its first call. See [Spend caps](#agent-spend-caps). Before v5.4.0 this setting was stored but never enforced, and defaulted to `5.00`; _Default_: none
 - `autoApprove` — Run without per-action approval gates; _Default_: `false`
 - `allowDestructive` — Include the tools marked destructive in the agent's toolset: `write_file`, the inspector's code-evaluation tools, and any operations tool carrying MCP's [`destructiveHint`](../mcp/tool-metadata.md) (`drop_table`, `delete`, `restart`, `set_configuration`, ...). When `false` they are removed entirely rather than gated. That hint comes from a curated set in core which does not cover every damaging operation, so this is not a complete safety boundary on its own — see [Agent operations](../operations-api/operations.md#agent); _Default_: `false`
 - `user` — Harper user the agent's **operations** tools run as; the filesystem, HTTP, schedule, and inspector tools always run at process privilege regardless. If it cannot be resolved and it is not the default, the agent fails closed and runs with no operations tools; _Default_: `hdb_agent`, which falls back to a `super_user` bootstrap identity
@@ -406,14 +406,14 @@ agent:
 
 ### Agent spend caps
 
-<VersionBadge version="v5.3.2" />
+<VersionBadge version="v5.4.0" />
 
 `maxSessionTokens` and `maxCostUsd` bound a whole session, across every run in it. Approving a paused action or sending a follow-up prompt starts a new run, but does not reset a cap the way it resets `maxTurns`. Each assistant message records the usage of the model call that produced it, and [`get_agent_session`](../operations-api/operations.md#get_agent_session) reports the session's totals as `usage`.
 
 A cap is checked when a run starts, before it executes an approved action, and after every model call:
 
 - **At or over a cap**, the session makes no further model call and ends `error`, with `lastError` naming the cap, for example `agent.maxSessionTokens=200000 reached: this session used 201450 tokens`. Tool calls the model had just requested are answered with a `budget_exceeded` result rather than run, so the transcript stays valid if you continue the session. A final answer that crosses the cap is still delivered: the run ends `completed`, with `lastError` naming the cap.
-- **A cap that cannot be measured stops the session too.** `maxCostUsd` needs every call priced, and `maxSessionTokens` needs every call's token counts. A model with no `pricing`, or a provider that reports no usage, stops the session after its first call rather than letting it run uncapped: it ends `error`, or `completed` if that call was the final answer, with `lastError` saying why either way. The unmeasured call stays in the session's totals, so later runs stop before making any call, and raising the cap or adding `pricing` does not clear it: start a new session, or set the cap to `null`. A session created before v5.3.2, whose earlier calls recorded no usage, is in the same state.
+- **A cap that cannot be measured stops the session too.** `maxCostUsd` needs every call priced, and `maxSessionTokens` needs every call's token counts. A model with no `pricing`, or a provider that reports no usage, stops the session after its first call rather than letting it run uncapped: it ends `error`, or `completed` if that call was the final answer, with `lastError` saying why either way. The unmeasured call stays in the session's totals, so later runs stop before making any call, and raising the cap or adding `pricing` does not clear it: start a new session, or set the cap to `null`. A session created before v5.4.0, whose earlier calls recorded no usage, is in the same state.
 - **Pending approvals are closed too.** A run stopped before it executes an approved action answers that action, and any approval still awaiting a decision, with `budget_exceeded`, so nothing is left pending. The action does not run later, even once the cap is raised; the model sees the refusal and can ask again.
 - **A capped session stays capped.** Raise the cap with `set_agent_config` or start a new session.
 
@@ -425,7 +425,7 @@ If you upgrade with `maxCostUsd` already set in your configuration, it starts be
 
 ### Restricting `http_fetch`
 
-<VersionBadge version="v5.3.2" />
+<VersionBadge version="v5.4.0" />
 
 `http_fetch` lets the agent send HTTP requests from the Harper process: to its own REST endpoints while it builds an app, or to pull a reference page. The same agent reads table rows, logs, and component source, and text in any of them can steer it, so an enabled agent has a read path and an egress path in one toolset. `agent.httpFetch` bounds that tool. It is not a bound on every way the agent can reach the network: with `allowDestructive` on, for example, the agent can write component code, and the Harper process runs that code.
 
