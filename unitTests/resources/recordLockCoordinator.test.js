@@ -2550,6 +2550,51 @@ describe('record lock delegations', () => {
 			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 1);
 		});
 
+		it('is relayed off the coordinating thread when the transport can, with author and position', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta');
+			const granted = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			const relayed = [];
+			beta.coordinator.transport.relayControlEntry = (...args) => relayed.push(args);
+			beta.owns = false;
+			const entry = { type: 'lockRelease', key, requester: 'alpha', token: granted.token, dependencies: null };
+			beta.coordinator.applyEntry(entry, 'alpha', 42);
+			assert.deepStrictEqual(relayed, [[cluster.database, cluster.table, entry, 'alpha', 42]]);
+			assert.strictEqual(beta.coordinator.stats.granted, 1, 'the non-owner applied nothing itself');
+			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 0);
+			// The owner applies the relayed entry through the same method and clears the grant.
+			beta.owns = true;
+			beta.coordinator.applyEntry(...relayed[0].slice(2));
+			assert.strictEqual(beta.coordinator.stats.granted, 0);
+		});
+
+		it('counts a drop when the relay throws, and never surfaces the throw', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta');
+			const granted = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			beta.coordinator.transport.relayControlEntry = () => {
+				throw new Error('port closed');
+			};
+			beta.owns = false;
+			assert.doesNotThrow(() =>
+				beta.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha')
+			);
+			assert.strictEqual(beta.coordinator.stats.granted, 1);
+			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 1);
+		});
+
 		it('contains a malformed entry rather than surfacing it to the apply loop', async () => {
 			// A malformed entry must not reach the replicated apply loop, which would drop the whole
 			// enclosing transaction and stall replication for the database.

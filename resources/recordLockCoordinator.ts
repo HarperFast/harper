@@ -351,6 +351,19 @@ export interface ClusterLockTransport {
 	/** Emit a control entry and return the committed entry's local origin-log position when available. */
 	writeControl?(table: string, entry: LockControlEntry): Promise<number | void> | number | void;
 	/**
+	 * A control entry this thread applied from a peer's stream while another thread owns coordination:
+	 * hand it to the owner, which receives it through its own `onControlEntry`. Idempotent by exact
+	 * token on the owner, so a relay that is late, reordered or lost can only delay a re-grant. Absent,
+	 * the entry is dropped and counted (`droppedOffOwner`).
+	 */
+	relayControlEntry?(
+		database: string,
+		table: string,
+		entry: LockControlEntry,
+		author: string,
+		position: number | undefined
+	): void;
+	/**
 	 * Assigned at registration so a transport can push a received entry in directly. `author` and
 	 * `position` come from the authenticated origin-log header, never from the payload.
 	 */
@@ -1783,6 +1796,14 @@ export class LockCoordinator {
 		if (entry.type !== 'lockRelease' || !isNodeName(author)) return;
 		if (entry.requester !== author) return;
 		if (!this.transport.ownsCoordination()) {
+			if (this.transport.relayControlEntry) {
+				try {
+					this.transport.relayControlEntry(this.database, this.table, entry, author, position);
+					return;
+				} catch (error) {
+					warnOnce('failed to relay a record lock control entry to the coordinating thread', error);
+				}
+			}
 			this.#droppedOffOwner++;
 			const now = this.#monotonic();
 			if (now - this.#lastOffOwnerWarn > WARN_INTERVAL_MS) {
