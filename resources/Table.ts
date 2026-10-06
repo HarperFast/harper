@@ -141,6 +141,7 @@ import {
 } from './derivedIndexRegistry.ts';
 import {
 	decodeLockControlPayload,
+	receiveLockControlEntry,
 	encodeLockControlPayload,
 	getClusterLockTransport,
 	isClusterLockRequired,
@@ -1852,7 +1853,6 @@ export function makeTable(options): TableResourceClass {
 						logger.warn?.('discarding a malformed record lock control entry from', event.nodeId, event.type);
 						return reportDroppedWrite(event, context, new Error('Malformed record lock control entry'));
 					}
-					const target = event.table ? databases[databaseName]?.[event.table] : TableResource;
 					try {
 						// The audit header's nodeId is the origin, translated on receive and preserved across
 						// relays. The payload's own names are peer-supplied and prove nothing. Rebuild the id
@@ -1868,14 +1868,18 @@ export function makeTable(options): TableResourceClass {
 							logger.warn?.('discarding a record lock control entry whose origin node could not be resolved');
 							return reportDroppedWrite(event, context, new Error('Record lock control origin could not be resolved'));
 						}
-						// The coordinator getter fails closed on an unusable node identity. That is right for
-						// an acquire and wrong here: rejecting out of this sink stalls the apply loop for
-						// every later entry rather than dropping one.
-						// `admittingCoordinator`, because `lockCoordinator` answers undefined while a transport
-						// is momentarily unregistered — and this sink runs off the replication stream, not off
-						// that transport. Dropping a peer's clean-handoff release there leaves the home holding
-						// its grant for the delegation's whole deadline.
-						target?.admittingCoordinator?.applyEntry(entry, author, event.timestamp);
+						// Through the admitting resolver, never the `lockCoordinator` getter: that one fails
+						// closed on an unusable node identity (right for an acquire, and here a throw would
+						// stall the apply loop) and answers undefined while a transport is momentarily
+						// unregistered. A thread with no coordinator for the table relays the entry to the
+						// thread that has one.
+						receiveLockControlEntry(
+							databaseName,
+							event.table ?? TableResource.tableName,
+							entry,
+							author,
+							event.timestamp
+						);
 					} catch (error) {
 						logger.warn?.('dropping a record lock control entry: the coordinator is unavailable', error);
 						return reportDroppedWrite(event, context, error);
