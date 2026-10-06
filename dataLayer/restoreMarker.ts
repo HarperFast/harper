@@ -134,10 +134,8 @@ export type RestoreLock = {
  *   be partial garbage) — do not load; rerun the restore.
  * - 'clear': no marker — load normally (a stale, unheld lock file alone is fine).
  *
- * The marker is checked FIRST and the lock is only probed when the marker exists. Probing takes
- * and releases the flock, and probes are mutually exclusive across threads — if every rescan on
- * every thread probed the (persistent) lock file of a long-ago-restored database, concurrent
- * rescans would collide and misclassify healthy databases as 'in-progress'. Marker-first is
+ * The marker is checked FIRST and the lock is only probed when the marker exists, so a rescan does
+ * no lock work for the (persistent) lock file of a long-ago-restored database. Marker-first is
  * safe: `beginRestore` writes (and fsyncs) the marker immediately after taking the lock and
  * before any destructive step, so a database without a marker has nothing to protect yet.
  */

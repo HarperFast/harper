@@ -1277,14 +1277,11 @@ export async function restoreBackupOffline(
 		await findBackup(backupDir, backupId as number, databaseName);
 		return beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName, (preexisting) => {
 			// Inside the reservation, so a create_database racing this restore cannot pass the absence
-			// check and then lose the database it just made.
-			// The exemption is for debris this source left: an interrupted restore out of this very
-			// repository, which refusing would wedge for good (drop_database refuses a marked directory
-			// too, and the marker keeps the pin live, so every purge of the source the rerun needs 409s).
-			// A marker alone does not prove that — it records only the directory name — so this source's
-			// own pin has to be there too. A restore wrote that pin before publishing the marker, and the
-			// marker keeps it live, so for our own debris it always is. A target marked by a restore out
-			// of some other repository is still refused.
+			// check and then lose the database it just made. Debris this source left is exempt, or the
+			// rerun wedges for good — a drop refuses a marked directory too, and the marker keeps the pin
+			// live. A marker records only the directory name, so this source's own pin is what proves
+			// the debris is ours. Known gap: a pin that outlived its marker vouches for a later,
+			// unrelated one (harper#2632).
 			const ourInterruptedRestore = preexisting && readBackupPins(backupDir).some((pin) => pin.pin_id === pinId);
 			if (
 				targetDatabase !== undefined &&
