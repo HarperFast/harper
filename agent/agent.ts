@@ -14,8 +14,9 @@
  * `registryTools.ts`.
  */
 
-import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { realpathSync, statSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
+import { CONFIG_PARAMS, LICENSE_KEY_DIR_NAME, SSH_KEY_DIR_NAME } from '../utility/hdbTerms.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { Models } from '../resources/models/Models.ts';
@@ -60,6 +61,7 @@ interface StartOpts {
 	allowDestructive?: boolean;
 	user?: string;
 	componentsScope?: string;
+	configScope?: string;
 	httpFetch?: unknown;
 	systemPromptAppend?: string;
 }
@@ -250,7 +252,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
  * `agent.systemPromptAppend` — which can change via `set_agent_config` without a restart — is folded
  * in per run by `composeSystemPrompt`.
  */
-function buildStaticSystemPrompt(
+export function buildStaticSystemPrompt(
 	scopes: AgentScopes,
 	httpFetchAvailable: boolean,
 	bestPracticesOverview?: string
@@ -259,6 +261,11 @@ function buildStaticSystemPrompt(
 	const verifyStep = httpFetchAvailable
 		? 'verify by querying the REST endpoint via an HTTP fetch against this server'
 		: 'verify the result through the operations tools';
+	const configScope = !scopes.configDir
+		? 'unavailable (agent.configScope named no readable file or directory at startup)'
+		: scopes.configFile
+			? `read-only, the Harper config file only — address it as "${scopes.configFile}": ${join(scopes.configDir, scopes.configFile)}`
+			: `read-only: ${scopes.configDir}`;
 	const parts = [
 		'You are the built-in Harper agent, running on the main thread inside a live Harper server.',
 		`You operate this instance for an operator through the tools provided to you: Harper database/cluster operations, scoped filesystem tools, ${fetchSurface}followup scheduling, and (when available) V8 inspector tools for debugging worker threads plus a Harper best-practices lookup. Consult the provided tool schemas for the exact set and their parameters.`,
@@ -266,7 +273,8 @@ function buildStaticSystemPrompt(
 		'Filesystem scopes (the fs tools take a `root` naming one of these; paths are relative to it):',
 		`- components — the app source directory, your only WRITE scope: ${scopes.componentsRoot}`,
 		`- logs — read-only: ${scopes.logDir}`,
-		`- config — read-only: ${scopes.configDir}`,
+		`- config — ${configScope}`,
+		"Key material is refused in every scope: *.pem, *.key and .jwtPass files, Harper's keys and ssh directories, and any file whose returned text holds a PEM private key.",
 		'',
 		`A Harper app is a component directory under the components dir. Define tables/resources in a schema (GraphQL \`.graphql\` with \`@table\`/\`@export\`, or \`config.yaml\` + resource files). After writing or changing component files, deploy/restart as needed for them to load, then ${verifyStep}.`,
 		'Prefer the operations tools for database/cluster actions; use the filesystem tools for app source. When designing schemas or building app logic, consult the Harper best practices below and read the relevant rule via the best-practice tool. Be concise and verify your work.',
@@ -319,25 +327,49 @@ export async function resolveAgentIdentity(server: StartOpts['server'], username
 	throw new Error(`agent.user '${username}' could not be resolved to a permissioned user; failing closed`);
 }
 
-function resolveScopes(
+/**
+ * Fix the fs tools' scopes at boot. `config` is the Harper config file alone unless `agent.configScope`
+ * names a file or directory; a target that is neither leaves the scope unavailable rather than guessing.
+ */
+export function resolveScopes(
 	config: AgentConfig,
 	getConfigPath: (param: string) => string | undefined,
-	getConfigFilePath?: () => string
+	getConfigFilePath: () => string
 ): AgentScopes {
 	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT) ?? process.cwd();
 	const logDir = getConfigPath(CONFIG_PARAMS.LOGGING_ROOT) ?? process.cwd();
 	const rootPath = getConfigPath(CONFIG_PARAMS.ROOTPATH) ?? componentsRoot;
-	const configFile = getConfigFilePath?.();
-	const configDir = configFile ? dirname(configFile) : process.cwd();
-	// A relative `componentsScope` is resolved against rootPath, as documented in the schema —
-	// NOT against componentsRoot, which would double-nest (`./components` → componentsRoot/components).
-	// With no scope set, the full componentsRoot is the FS write scope.
-	const scopedComponents = config.componentsScope
-		? isAbsolute(config.componentsScope)
-			? config.componentsScope
-			: resolvePath(rootPath, config.componentsScope)
-		: componentsRoot;
-	return { componentsRoot: scopedComponents, logDir, configDir };
+	// Relative scopes resolve against rootPath, as documented in the schema — NOT against
+	// componentsRoot, which would double-nest (`./components` → componentsRoot/components).
+	const fromRootPath = (scope: string) => (isAbsolute(scope) ? scope : resolvePath(rootPath, scope));
+	const configTarget = config.configScope ? fromRootPath(config.configScope) : getConfigFilePath();
+	let configScope: Pick<AgentScopes, 'configDir' | 'configFile'> = {};
+	try {
+		const target = statSync(configTarget);
+		if (target.isFile()) configScope = { configDir: dirname(configTarget), configFile: basename(configTarget) };
+		else if (target.isDirectory()) configScope = { configDir: configTarget };
+		else throw new Error('not a file or directory');
+	} catch (err) {
+		log.error?.(
+			`Agent 'config' scope is unavailable: ${configTarget}: ${err instanceof Error ? err.message : String(err)}`
+		);
+	}
+	// Compared against canonical paths in fsTools, so a symlinked rootPath can't route around them.
+	const canonicalRoot = canonicalPath(rootPath);
+	return {
+		componentsRoot: config.componentsScope ? fromRootPath(config.componentsScope) : componentsRoot,
+		logDir,
+		...configScope,
+		keyDirs: [join(canonicalRoot, LICENSE_KEY_DIR_NAME), join(canonicalRoot, SSH_KEY_DIR_NAME)],
+	};
+}
+
+function canonicalPath(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return resolvePath(path);
+	}
 }
 
 function mergeConfig(opts: StartOpts): AgentConfig {
@@ -352,6 +384,7 @@ function mergeConfig(opts: StartOpts): AgentConfig {
 		...(opts.allowDestructive !== undefined && { allowDestructive: !!opts.allowDestructive }),
 		...(opts.user !== undefined && { user: String(opts.user) }),
 		...(opts.componentsScope !== undefined && { componentsScope: String(opts.componentsScope) }),
+		...(opts.configScope !== undefined && { configScope: String(opts.configScope) }),
 		...(opts.httpFetch !== undefined && { httpFetch: resolveHttpFetchOrDisable(opts.httpFetch) }),
 		...(opts.systemPromptAppend !== undefined && { systemPromptAppend: String(opts.systemPromptAppend) }),
 	};

@@ -731,6 +731,10 @@
 					"type": "string",
 					"description": "Filesystem scope for component edits, relative to rootPath. Default: ./components"
 				},
+				"configScope": {
+					"type": "string",
+					"description": "The agent's read-only 'config' filesystem scope: a file or a directory, absolute or relative to rootPath. Key material (*.pem, *.key, .jwtPass, the keys and ssh directories, PEM private keys) is refused in every scope. Read at startup only; set_agent_config cannot change it. Default: the Harper config file only"
+				},
 				"httpFetch": {
 					"description": "The agent's http_fetch tool. true: enabled, with cloud-metadata and link-local addresses blocked. false: the tool is removed from the agent's toolset. { allow: [...] }: requests, including every redirect hop, are refused unless the host matches an entry. Read at startup only; set_agent_config cannot change it. Default: true",
 					"oneOf": [
