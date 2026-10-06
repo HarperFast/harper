@@ -7091,7 +7091,6 @@ export function makeTable(options): TableResourceClass {
 					)
 				);
 			}
-			// The event for the record's newer version follows this one in the queue.
 			function isStaleRecordEvent(event: any) {
 				const type = event.type;
 				if (

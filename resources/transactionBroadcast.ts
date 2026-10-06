@@ -448,7 +448,6 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 				subscriptions.pendingProgressKey = progressKey;
 				yielded = true;
 				subscriptions.passYielded = true;
-				// a registration drain leaves the rest to the pass already scheduled, or schedules one
 				if (registrationDrain) {
 					if (subscriptions.notifyScheduled) return;
 					subscriptions.notifyScheduled = true;
