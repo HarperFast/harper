@@ -1,0 +1,96 @@
+/**
+ * Per-session spend caps for the built-in agent (#3040). Usage is never stored as a running total:
+ * each assistant message carries what its model call reported, and the session's usage is folded
+ * from the transcript, so a total cannot drift from the calls it summarizes.
+ */
+
+import { ClientError } from '../utility/errors/hdbError.ts';
+import type { AgentCallUsage, AgentMessage, AgentSessionUsage } from './types.ts';
+
+export interface BudgetCaps {
+	maxTokens?: number;
+	maxCostUsd?: number;
+}
+
+export function hasBudget(caps: BudgetCaps): boolean {
+	return caps.maxTokens !== undefined || caps.maxCostUsd !== undefined;
+}
+
+/** Every assistant message is one model call; a call that did not report a figure makes that total absent. */
+export function summarizeSessionUsage(messages: Iterable<AgentMessage>): AgentSessionUsage {
+	let calls = 0;
+	let promptTokens: number | undefined = 0;
+	let completionTokens: number | undefined = 0;
+	let costUsd: number | undefined = 0;
+	for (const message of messages) {
+		if (message.role !== 'assistant') continue;
+		calls++;
+		promptTokens = addMeasured(promptTokens, message.usage?.promptTokens);
+		completionTokens = addMeasured(completionTokens, message.usage?.completionTokens);
+		costUsd = addMeasured(costUsd, message.usage?.costUsd);
+	}
+	const usage: AgentSessionUsage = { calls };
+	if (promptTokens !== undefined) usage.promptTokens = promptTokens;
+	if (completionTokens !== undefined) usage.completionTokens = completionTokens;
+	if (costUsd !== undefined) usage.costUsd = costUsd;
+	return usage;
+}
+
+function addMeasured(total: number | undefined, value: unknown): number | undefined {
+	if (total === undefined || typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
+	return total + value;
+}
+
+/** The figures a call reported, keeping only fields that were supplied. */
+export function callUsage(
+	usage: { promptTokens?: number; completionTokens?: number } | undefined,
+	costUsd: number | undefined
+): AgentCallUsage | undefined {
+	const reported: AgentCallUsage = {};
+	if (usage?.promptTokens !== undefined) reported.promptTokens = usage.promptTokens;
+	if (usage?.completionTokens !== undefined) reported.completionTokens = usage.completionTokens;
+	if (costUsd !== undefined) reported.costUsd = costUsd;
+	return Object.keys(reported).length > 0 ? reported : undefined;
+}
+
+/**
+ * Why the session may not make another model call, or `undefined` when it may. A cap that cannot be
+ * measured stops the session too: running uncapped under a configured cap is what this module exists
+ * to prevent. Trips at `>=`, matching the `toolMode: 'auto'` loop.
+ */
+export function budgetViolation(usage: AgentSessionUsage, caps: BudgetCaps): string | undefined {
+	if (caps.maxTokens !== undefined) {
+		if (usage.promptTokens === undefined || usage.completionTokens === undefined) {
+			return `agent.maxTokens=${caps.maxTokens} cannot be enforced: a model call in this session reported no token usage`;
+		}
+		const used = usage.promptTokens + usage.completionTokens;
+		if (used >= caps.maxTokens) return `agent.maxTokens=${caps.maxTokens} reached: this session used ${used} tokens`;
+	}
+	if (caps.maxCostUsd !== undefined) {
+		if (usage.costUsd === undefined) {
+			return `agent.maxCostUsd=${caps.maxCostUsd} cannot be enforced: a model call in this session was not priced; declare pricing on the models.generative entry the agent uses`;
+		}
+		if (usage.costUsd >= caps.maxCostUsd) {
+			return `agent.maxCostUsd=${caps.maxCostUsd} reached: this session cost $${usage.costUsd.toFixed(4)}`;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Validate a cap from config or `set_agent_config`. `null` or absent clears it. A value that is not a
+ * usable number is refused: coerced to `NaN`, it would compare false forever and silently uncap.
+ */
+export function parseBudgetCap(name: keyof BudgetCaps, value: unknown): number | undefined {
+	if (value === undefined || value === null) return undefined;
+	const cap = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+	const valid =
+		typeof cap === 'number' &&
+		Number.isFinite(cap) &&
+		(name === 'maxTokens' ? Number.isInteger(cap) && cap >= 1 : cap >= 0);
+	if (!valid) {
+		const expected = name === 'maxTokens' ? 'a positive integer' : 'a non-negative number';
+		throw new ClientError(`agent.${name} must be ${expected} or null, got ${JSON.stringify(value)}`, 400);
+	}
+	return cap;
+}

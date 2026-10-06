@@ -498,3 +498,204 @@ describe('agent/loop runAgent', () => {
 		assert.equal(calls, 1);
 	});
 });
+
+describe('agent/loop per-session budgets (#3040)', () => {
+	const { summarizeSessionUsage } = require('#src/agent/budget');
+
+	beforeEach(() => {
+		session._setTableForTests(makeMockTable());
+		_resetInFlightForTests();
+	});
+	afterEach(() => {
+		session._setTableForTests(undefined);
+	});
+
+	const usage = (promptTokens, completionTokens, costUsd) => ({
+		usage: { promptTokens, completionTokens },
+		...(costUsd !== undefined && { costUsd }),
+	});
+	const toolTurn = (id, name, metered) => ({
+		content: '',
+		finishReason: 'tool_calls',
+		toolCalls: [{ id, name, arguments: {} }],
+		...metered,
+	});
+	const finalTurn = (content, metered) => ({ content, finishReason: 'stop', ...metered });
+
+	function countingTool(name, { destructive = false } = {}) {
+		const tool = {
+			runs: 0,
+			def: { name, description: name, parameters: { type: 'object' } },
+			destructive,
+			handler: async () => {
+				tool.runs++;
+				return { ok: true };
+			},
+		};
+		return tool;
+	}
+
+	async function newSession() {
+		const created = await session.createSession({ user: 'admin' });
+		await session.appendMessage(created.session_id, { role: 'user', content: 'go', createdAt: Date.now() });
+		return created.session_id;
+	}
+
+	it('records each call on its assistant message, and the folded total matches the sum', async () => {
+		const sessionId = await newSession();
+		const read = countingTool('read');
+		const models = stubModels([toolTurn('c1', 'read', usage(100, 20, 0.01)), finalTurn('done', usage(150, 30, 0.02))]);
+		await runAgent({ sessionId, models, tools: [read], scopes, maxTurns: 5 });
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'completed');
+		const assistants = reloaded.messages.filter((m) => m.role === 'assistant');
+		assert.deepStrictEqual(assistants[0].usage, { promptTokens: 100, completionTokens: 20, costUsd: 0.01 });
+		assert.deepStrictEqual(summarizeSessionUsage(reloaded.messages), {
+			calls: 2,
+			promptTokens: 250,
+			completionTokens: 50,
+			costUsd: 0.03,
+		});
+	});
+
+	it('maxTokens reached on a tool-call turn answers the calls without running them and ends the session error', async () => {
+		const sessionId = await newSession();
+		const read = countingTool('read');
+		const models = stubModels([toolTurn('c1', 'read', usage(80, 30))]);
+		await runAgent({ sessionId, models, tools: [read], scopes, maxTurns: 5, maxTokens: 100 });
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(read.runs, 0);
+		assert.equal(reloaded.status, 'error');
+		assert.match(reloaded.lastError, /agent\.maxTokens=100 reached: this session used 110 tokens/);
+		const toolMessages = reloaded.messages.filter((m) => m.role === 'tool');
+		assert.equal(toolMessages.length, 1, 'every tool call keeps its response, so the transcript stays sendable');
+		assert.equal(toolMessages[0].toolCallId, 'c1');
+		assert.equal(JSON.parse(toolMessages[0].content).error, 'budget_exceeded');
+	});
+
+	it('a final answer that crosses the cap is delivered and the run completes', async () => {
+		const sessionId = await newSession();
+		const models = stubModels([finalTurn('the answer', usage(80, 30))]);
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, maxTokens: 100 });
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'completed');
+		assert.equal(reloaded.lastError, undefined);
+		assert.equal(reloaded.messages.at(-1).content, 'the answer');
+	});
+
+	it('a session already at its cap makes no model call on the next prompt', async () => {
+		const sessionId = await newSession();
+		await runAgent({
+			sessionId,
+			models: stubModels([finalTurn('first', usage(80, 30))]),
+			tools: noTools,
+			scopes,
+			maxTurns: 5,
+			maxTokens: 100,
+		});
+		await session.appendMessage(sessionId, { role: 'user', content: 'more', createdAt: Date.now() });
+		let generateCalls = 0;
+		const models = {
+			async generate() {
+				generateCalls++;
+				return finalTurn('unreached', usage(1, 1));
+			},
+		};
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, maxTokens: 100 });
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(generateCalls, 0);
+		assert.equal(reloaded.status, 'error');
+		assert.match(reloaded.lastError, /maxTokens=100 reached/);
+	});
+
+	it('maxCostUsd stops after a call it cannot price, naming the missing pricing', async () => {
+		const sessionId = await newSession();
+		const read = countingTool('read');
+		const models = stubModels([toolTurn('c1', 'read', usage(10, 10)), finalTurn('unreached', usage(1, 1))]);
+		await runAgent({ sessionId, models, tools: [read], scopes, maxTurns: 5, maxCostUsd: 1 });
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(read.runs, 0);
+		assert.equal(reloaded.status, 'error');
+		assert.match(reloaded.lastError, /maxCostUsd=1 cannot be enforced: .*declare pricing/);
+	});
+
+	it('maxTokens stops after a call that reported no token usage', async () => {
+		const sessionId = await newSession();
+		const models = stubModels([toolTurn('c1', 'read', {}), finalTurn('unreached', usage(1, 1))]);
+		await runAgent({ sessionId, models, tools: [countingTool('read')], scopes, maxTurns: 5, maxTokens: 1000 });
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'error');
+		assert.match(reloaded.lastError, /maxTokens=1000 cannot be enforced/);
+	});
+
+	it('priced calls under maxCostUsd keep running', async () => {
+		const sessionId = await newSession();
+		const read = countingTool('read');
+		const models = stubModels([toolTurn('c1', 'read', usage(10, 10, 0.2)), finalTurn('done', usage(10, 10, 0.2))]);
+		await runAgent({ sessionId, models, tools: [read], scopes, maxTurns: 5, maxCostUsd: 1 });
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(read.runs, 1);
+		assert.equal(reloaded.status, 'completed');
+	});
+
+	it('a cap lowered while an action awaits approval stops the approved action from running', async () => {
+		const sessionId = await newSession();
+		const drop = countingTool('drop', { destructive: true });
+		await runAgent({
+			sessionId,
+			models: stubModels([toolTurn('c1', 'drop', usage(60, 10))]),
+			tools: [drop],
+			scopes,
+			maxTurns: 5,
+			autoApprove: false,
+		});
+		const paused = await session.getSession(sessionId);
+		assert.equal(paused.status, 'awaiting_approval');
+		await session.resolveApproval(sessionId, paused.pendingApprovals[0].id, true);
+
+		await runAgent({
+			sessionId,
+			models: stubModels([]),
+			tools: [drop],
+			scopes,
+			maxTurns: 5,
+			autoApprove: false,
+			maxTokens: 50,
+		});
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(drop.runs, 0, 'the approved destructive action must not run over the cap');
+		assert.equal(reloaded.status, 'error');
+		assert.equal(reloaded.pendingApprovals[0].consumed, true);
+		const toolMessages = reloaded.messages.filter((m) => m.role === 'tool');
+		assert.equal(toolMessages.length, 1);
+		assert.equal(toolMessages[0].toolCallId, 'c1');
+		assert.equal(JSON.parse(toolMessages[0].content).error, 'budget_exceeded');
+	});
+
+	it('an assistant turn written before usage was recorded makes a capped session unmeasured, not free', async () => {
+		const sessionId = await newSession();
+		await session.appendMessage(sessionId, { role: 'assistant', content: 'legacy', createdAt: Date.now() });
+		await session.appendMessage(sessionId, { role: 'user', content: 'again', createdAt: Date.now() });
+		let generateCalls = 0;
+		const models = {
+			async generate() {
+				generateCalls++;
+				return finalTurn('unreached', usage(1, 1));
+			},
+		};
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, maxTokens: 1_000_000 });
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(generateCalls, 0);
+		assert.equal(reloaded.status, 'error');
+		assert.match(reloaded.lastError, /cannot be enforced/);
+	});
+});

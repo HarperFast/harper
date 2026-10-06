@@ -13,8 +13,17 @@
 import type { OperationDefinition } from '../server/serverHelpers/serverUtilities.ts';
 import { OPERATIONS_ENUM } from '../utility/hdbTerms.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
-import { createSession, getSession, listSessions, appendMessage, resolveApproval, setStatus } from './session.ts';
-import type { AgentConfig, AgentMessage, AgentRunStatus } from './types.ts';
+import {
+	AGENT_SESSION_ATTRIBUTES,
+	appendMessage,
+	createSession,
+	getSession,
+	listSessions,
+	resolveApproval,
+	setStatus,
+} from './session.ts';
+import { parseBudgetCap, summarizeSessionUsage } from './budget.ts';
+import type { AgentConfig, AgentMessage, AgentRunStatus, AgentSessionRow, AgentSessionUsage } from './types.ts';
 
 export interface OperationDeps {
 	getConfig: () => AgentConfig;
@@ -96,12 +105,22 @@ async function getAgentSession(op: any) {
 	if (!sessionId) throw new ClientError('session_id is required', 400);
 	const session = await getSession(sessionId);
 	if (!session) throw new ClientError(`Unknown session ${sessionId}`, 404);
-	return session;
+	return withUsage(session);
 }
 
 async function listAgentSessions(op: any) {
 	const limit = Number.isFinite(op?.limit) ? Number(op.limit) : undefined;
-	return { sessions: await listSessions({ limit }) };
+	return { sessions: (await listSessions({ limit })).map(withUsage) };
+}
+
+/** The stored row plus its folded usage. Copies fields by name, never by spread: a record may expose fields as accessors a spread skips. */
+function withUsage(session: AgentSessionRow): Record<string, unknown> & { usage: AgentSessionUsage } {
+	const view: Record<string, unknown> & { usage?: AgentSessionUsage } = {};
+	for (const { name } of AGENT_SESSION_ATTRIBUTES) {
+		const value = session[name as keyof AgentSessionRow];
+		if (value !== undefined) view[name] = value;
+	}
+	return Object.assign(view, { usage: summarizeSessionUsage(session.messages) });
 }
 
 async function cancelAgentRun(op: any, deps: OperationDeps) {
@@ -142,12 +161,15 @@ async function setAgentConfig(op: any, deps: OperationDeps) {
 		'provider',
 		'model',
 		'maxTurns',
-		'maxCostUsd',
 		'autoApprove',
 		'allowDestructive',
 		'systemPromptAppend',
 	]) {
 		if (op?.[key] !== undefined) (patch as any)[key] = op[key];
+	}
+	// Validated before anything is applied; `null` clears a cap.
+	for (const key of ['maxTokens', 'maxCostUsd'] as const) {
+		if (op?.[key] !== undefined) patch[key] = parseBudgetCap(key, op[key]);
 	}
 	return deps.setConfig(patch);
 }

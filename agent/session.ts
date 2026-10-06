@@ -135,6 +135,29 @@ export function setStatus(sessionId: string, status: AgentRunStatus, lastError?:
 	});
 }
 
+/**
+ * End a run in one write: append its closing messages, consume approvals, set the terminal status.
+ * Used when a budget stops a run, so a crash cannot persist an assistant's tool calls without the
+ * responses a provider requires before the next call.
+ */
+export function endRun(
+	sessionId: string,
+	end: { append?: AgentMessage[]; consumeApprovals?: string[]; status: AgentRunStatus; lastError?: string }
+): Promise<AgentSessionRow> {
+	return withSessionLock(sessionId, async () => {
+		const session = await requireSession(sessionId);
+		if (end.append) session.messages.push(...end.append);
+		for (const approval of session.pendingApprovals) {
+			if (end.consumeApprovals?.includes(approval.id)) approval.consumed = true;
+		}
+		session.status = end.status;
+		session.lastError = end.lastError;
+		session.updatedAt = Date.now();
+		await getAgentSessionTable().put(session);
+		return session;
+	});
+}
+
 export function addPendingApproval(
 	sessionId: string,
 	approval: Omit<ApprovalRequest, 'id' | 'createdAt'>

@@ -37,8 +37,8 @@
  *     supply a handler for is a caller config bug (hard `ClientError(400)`); an UNdeclared
  *     name is a model hallucination, surfaced as a recoverable tool error (`toolErrorMode`
  *     decides recover-vs-abort).
- *   - A token/cost budget set against a backend that reports no `usage` warns once that it
- *     is unenforceable rather than silently no-opping.
+ *   - A token budget against a backend that reports no `usage`, or a cost budget against an
+ *     entry with no `pricing`, warns once that it is unenforceable rather than silently no-opping.
  *   - An incomplete streamed tool call (id without a name) is recorded in the trace + warned,
  *     not silently dropped.
  *   - `toolErrorMode: 'abort'` throws BEFORE the conversation sink sees the round's tool
@@ -156,26 +156,25 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 				`[models] auto-loop iteration ${iteration}: finishReason=${result.finishReason} toolCalls=${result.toolCalls?.length ?? 0} cumulativeTokens=${totalTokens}`
 			);
 
-			// A token/cost budget is only as good as the backend's usage reporting. If a
-			// cap is set but this round reported no usage, the cap is unmeasurable — warn
-			// once rather than letting the caller believe spend is bounded when it isn't.
+			// A budget is only as good as its measurement: a token cap needs reported usage,
+			// a cost cap needs a priced entry. When this round can't be measured, warn once
+			// rather than letting the caller believe spend is bounded when it isn't.
 			if (
-				(maxToolTokens !== undefined || maxCostUsd !== undefined) &&
-				result.usage === undefined &&
-				!budgetUnmeasurableWarned
+				!budgetUnmeasurableWarned &&
+				((maxToolTokens !== undefined && !reportsTokenCounts(result.usage)) ||
+					(maxCostUsd !== undefined && result.costUsd === undefined))
 			) {
 				budgetUnmeasurableWarned = true;
 				logger.warn?.(
-					`[models] auto-loop token/cost budget set but backend '${opts.model ?? 'default'}' reported no usage; budget is unenforceable for this run (maxToolIterations still applies)`
+					`[models] auto-loop budget set but model '${opts.model ?? 'default'}' reported no usage or has no pricing; budget is unenforceable for this run (maxToolIterations still applies)`
 				);
 			}
 
 			// Tally this round's usage BEFORE deciding terminal vs continue. A round
 			// that crosses the cap trips even if it would otherwise have been the last
 			// one — the cap is on what we paid for, not on what we'd have paid for next.
-			// Cost trip semantics: `>= cap`, so `maxCostUsd: 0` blocks every call rather
-			// than dormantly admitting all of them until a real rate card lands and then
-			// abruptly blocking everything. Token trip uses `>=` for symmetry.
+			// Cost trip semantics: `>= cap`, so `maxCostUsd: 0` stops after the first call
+			// whether or not the model is priced. Token trip uses `>=` for symmetry.
 			//
 			// Discarded-content asymmetry: a TERMINAL round that trips returns
 			// BudgetExceededError instead of the final assistant content. The content is
@@ -184,7 +183,7 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 			// budget-trip should set `maxToolTokens` / `maxCostUsd` conservatively or read
 			// the per-iteration analytics rows (one row per round in `hdb_model_calls`).
 			totalTokens += sumTokens(result.usage);
-			totalCostUsd += computeCallCostUsd(result.usage, opts.model);
+			totalCostUsd += result.costUsd ?? 0;
 			if (maxToolTokens !== undefined && totalTokens >= maxToolTokens) {
 				throw new BudgetExceededError(
 					'tokens',
@@ -844,32 +843,9 @@ export class ToolHandlerError extends ServerError {
 	}
 }
 
-/**
- * Cost computation hook. v1 returns 0 — no per-model rate card is wired today —
- * so `maxCostUsd` never trips in production. The cap, the trip path, and the
- * `BudgetExceededError({kind: 'cost'})` shape ARE wired and exercised by tests
- * that inject a non-zero function via `_setComputeCallCostUsdForTests`. When the
- * rate card lands, replace this implementation; no surface change needed.
- */
-let computeCallCostUsd: (usage: TokenUsage | undefined, model: string | undefined) => number = () => 0;
-
-/**
- * Test-only override. Public callers must not depend on this — it exists so unit
- * tests can prove the `maxCostUsd` trip path works end-to-end before a real rate
- * card lands. Leading underscore marks the intent.
- */
-export function _setComputeCallCostUsdForTests(
-	fn: (usage: TokenUsage | undefined, model: string | undefined) => number
-): void {
-	computeCallCostUsd = fn;
-}
-
-/**
- * Reset the cost function to the v1 stub. Pair with `_setComputeCallCostUsdForTests`
- * in test `afterEach` so suites don't leak state into each other.
- */
-export function _resetComputeCallCostUsdForTests(): void {
-	computeCallCostUsd = () => 0;
+/** A backend that omits usage often reports `{}`, which measures nothing, same as no usage at all. */
+function reportsTokenCounts(usage: TokenUsage | undefined): boolean {
+	return typeof usage?.promptTokens === 'number' || typeof usage?.completionTokens === 'number';
 }
 
 function sumTokens(usage: TokenUsage | undefined): number {

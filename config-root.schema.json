@@ -710,10 +710,15 @@
 					"minimum": 1,
 					"description": "Maximum tool-call iterations per agent run. Default: 50"
 				},
+				"maxTokens": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Per-session cap on prompt plus completion tokens, checked after each model call; a session at the cap makes no further calls. A model that reports no token usage stops the session instead of running uncapped. Default: none"
+				},
 				"maxCostUsd": {
 					"type": "number",
 					"minimum": 0,
-					"description": "Per-session cost budget. NOT YET ENFORCED — surfacing operator intent until #612 ships per-call cost telemetry. Default: 5.00"
+					"description": "Per-session cost cap in USD, checked after each model call and priced from the `pricing` on the models.generative entry that served it. A call with no pricing stops the session instead of running uncapped. Default: none"
 				},
 				"autoApprove": {
 					"type": "boolean",

@@ -29,6 +29,7 @@ import { composeRegistryTools, ensureOperationsToolsRegistered } from './registr
 import { buildOperations } from './operations.ts';
 import { registerAgentMcpTools } from './mcpTools.ts';
 import { runAgent, _resetInFlightForTests } from './loop.ts';
+import { parseBudgetCap } from './budget.ts';
 import { appendMessage, getSession } from './session.ts';
 import type { AgentConfig, AgentScopes, AgentTool, HttpFetchConfig } from './types.ts';
 
@@ -37,7 +38,6 @@ const log = harperLogger.loggerWithTag('agent');
 const DEFAULT_CONFIG: AgentConfig = {
 	enabled: false,
 	maxTurns: 50,
-	maxCostUsd: 5,
 	autoApprove: false,
 	allowDestructive: false,
 	user: 'hdb_agent',
@@ -55,7 +55,8 @@ interface StartOpts {
 	provider?: string;
 	model?: string;
 	maxTurns?: number;
-	maxCostUsd?: number;
+	maxTokens?: unknown;
+	maxCostUsd?: unknown;
 	autoApprove?: boolean;
 	allowDestructive?: boolean;
 	user?: string;
@@ -70,6 +71,9 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		log.info?.('Agent component disabled (agent.enabled=false); skipping registration');
 		return;
 	}
+	// A malformed cap fails the agent's start rather than running it uncapped.
+	config.maxTokens = parseBudgetCap('maxTokens', opts.maxTokens);
+	config.maxCostUsd = parseBudgetCap('maxCostUsd', opts.maxCostUsd);
 
 	// Lazily imported to avoid pulling configUtils at module-eval time for tests.
 	const { getConfigPath, getConfigFilePath } = await import('../config/configUtils.ts');
@@ -139,14 +143,6 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		}
 	}
 
-	// Only warn when the operator explicitly configured `maxCostUsd`. Logging on the default
-	// every boot would flood the log without telling anyone anything actionable.
-	if (opts.maxCostUsd !== undefined) {
-		log.warn?.(
-			`agent.maxCostUsd=${liveConfig.maxCostUsd} is advertised but not yet enforced; cost-cap wiring depends on #612 telemetry.`
-		);
-	}
-
 	async function handleFollowup(sessionId: string, prompt: string): Promise<void> {
 		const session = await getSession(sessionId);
 		if (!session) {
@@ -176,6 +172,8 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			tools: currentTools(),
 			scopes,
 			maxTurns: liveConfig.maxTurns,
+			maxTokens: liveConfig.maxTokens,
+			maxCostUsd: liveConfig.maxCostUsd,
 			autoApprove: liveConfig.autoApprove,
 			signal: controller.signal,
 			generateOpts: { model: liveConfig.model },
@@ -347,7 +345,6 @@ function mergeConfig(opts: StartOpts): AgentConfig {
 		...(opts.provider !== undefined && { provider: String(opts.provider) }),
 		...(opts.model !== undefined && { model: String(opts.model) }),
 		...(opts.maxTurns !== undefined && { maxTurns: Number(opts.maxTurns) }),
-		...(opts.maxCostUsd !== undefined && { maxCostUsd: Number(opts.maxCostUsd) }),
 		...(opts.autoApprove !== undefined && { autoApprove: !!opts.autoApprove }),
 		...(opts.allowDestructive !== undefined && { allowDestructive: !!opts.allowDestructive }),
 		...(opts.user !== undefined && { user: String(opts.user) }),

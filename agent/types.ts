@@ -17,6 +17,26 @@ export interface AgentMessage {
 	toolCallId?: string;
 	/** Wall-clock timestamp of when this item entered the transcript. */
 	createdAt: number;
+	/** Assistant messages only: what the model call that produced this message reported. */
+	usage?: AgentCallUsage;
+}
+
+/** One model call's usage as reported; a field the backend or pricing did not supply is absent. */
+export interface AgentCallUsage {
+	promptTokens?: number;
+	completionTokens?: number;
+	costUsd?: number;
+}
+
+/**
+ * A session's usage folded from its transcript (`summarizeSessionUsage`). A total is present only
+ * while every call in the session reported it, so an absent total with `calls > 0` means unmeasured.
+ */
+export interface AgentSessionUsage {
+	calls: number;
+	promptTokens?: number;
+	completionTokens?: number;
+	costUsd?: number;
 }
 
 export interface ApprovalRequest {
@@ -80,7 +100,10 @@ export interface AgentConfig {
 	provider?: string;
 	model?: string;
 	maxTurns: number;
-	maxCostUsd: number;
+	/** Per-session cap on prompt + completion tokens. Unset: uncapped. */
+	maxTokens?: number;
+	/** Per-session cap in USD, from the serving model entry's `pricing`. Unset: uncapped. */
+	maxCostUsd?: number;
 	autoApprove: boolean;
 	allowDestructive: boolean;
 	user: string;

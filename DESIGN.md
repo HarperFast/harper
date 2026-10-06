@@ -106,6 +106,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [A recorded decision is committed before its id is returned, and its facts are separate rows](resources/models/DESIGN.md#a-recorded-decision-is-committed-before-its-id-is-returned-and-its-facts-are-separate-rows) — Recording is opt-in (`persist: true`); a recorded `decide` commits its `hdb_model_decisions` row in its own transaction before returning; truth and action are separate `hdb_model_outcomes` rows that copy the decision's expiry, so facts from different nodes never overwrite each other.
 - [No-match is a separate score, never a value](resources/models/DESIGN.md#no-match-is-a-separate-score-never-a-value) — An opted-in leaf gets a no-match score beside the unchanged distribution; no sentinel, capability-gated per candidate, dropped where not asked for.
 - [A `@decide` decision is recorded only when the record can reach it](resources/models/DESIGN.md#a-decide-decision-is-recorded-only-when-the-record-can-reach-it) — A directive records its decision only with a `decision` attribute, which is server-owned; association is bounded, and read-only nodes run no model hook and stage no cache fill.
+- [A generative call is priced by the entry that served it](resources/models/DESIGN.md#a-generative-call-is-priced-by-the-entry-that-served-it) — `costUsd` comes from the serving backend's `pricing`, needs both token counts, is computed outside the fallback catch, and never changes calibration identity.
 - [A fitted calibration never crosses a score source, and never waits on storage or fails a call](resources/models/DESIGN.md#a-fitted-calibration-never-crosses-a-score-source-and-never-waits-on-storage-or-fails-a-call) — Populations are keyed by served-entry fingerprints and signatures; the decide path reads a cache only and fails open; immutable versions are ranked by the evidence they saw; the job is internal to the scheduler.
 
 ## server/ — HTTP stacks, threads, operation dispatch
@@ -166,6 +167,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 ## agent/ — built-in agent
 
 - [`http_fetch` egress is fixed at boot and checked on every hop (`agent/tools/httpFetchTool.ts`)](agent/DESIGN.md#http_fetch-egress-is-fixed-at-boot-and-checked-on-every-hop-agenttoolshttpfetchtoolts) — `agent.httpFetch` is built into the tool once at boot, no runtime path can patch it, and each redirect hop is checked before it is sent.
+- [Spend caps are folded from the transcript and fail closed (`agent/budget.ts`, `agent/loop.ts`)](agent/DESIGN.md#spend-caps-are-folded-from-the-transcript-and-fail-closed-agentbudgetts-agentloopts) — Usage rides on each assistant message; caps are per session, checked before approvals and after every call; unmeasured stops; a stop answers every tool call in one write.
 
 ## config/
 

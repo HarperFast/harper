@@ -94,3 +94,22 @@ describe('agent/agent resolveAgentIdentity', () => {
 		assert.strictEqual(identity.role.permission.super_user, true);
 	});
 });
+
+describe('agent/agent startOnMainThread budget caps (#3040)', () => {
+	const { startOnMainThread } = require('#src/agent/agent');
+
+	it('refuses to start an enabled agent with a malformed cap, before registering anything', async () => {
+		const registered = [];
+		const server = { registerOperation: (op) => registered.push(op.name) };
+		await assert.rejects(startOnMainThread({ server, enabled: true, maxTokens: 'lots' }), (err) => {
+			assert.match(err.message, /agent\.maxTokens must be a positive integer/);
+			return true;
+		});
+		await assert.rejects(startOnMainThread({ server, enabled: true, maxCostUsd: -1 }), /agent\.maxCostUsd must be/);
+		assert.deepStrictEqual(registered, []);
+	});
+
+	it('ignores a malformed cap while the agent is disabled', async () => {
+		await startOnMainThread({ server: { registerOperation: () => {} }, enabled: false, maxTokens: 'lots' });
+	});
+});
