@@ -1657,6 +1657,23 @@ export function makeTable(options): TableResourceClass {
 		}
 		return primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 	}
+	// Hoisted out of getNewId() so it is allocated once per table, not once per insert: a
+	// nested function declaration there would be created at every call, including ones that
+	// return before reaching it.
+	function replaceIdAllocation(expectedAllocation, nextAllocation) {
+		const storedAllocation = primaryStore.transactionSync(
+			(transaction) => {
+				const options = transaction && { transaction };
+				const storedAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY, options)?.value;
+				if (storedAllocation && !isSameIdAllocation(storedAllocation, expectedAllocation)) return storedAllocation;
+				primaryStore.put(ID_ALLOCATION_KEY, nextAllocation, options ?? Date.now());
+				return nextAllocation;
+			},
+			isRocksDB ? ID_ALLOCATION_TRANSACTION_OPTIONS : undefined
+		);
+		if (!storedAllocation) throw new Error(`Id range allocation for table ${tableName} was aborted`);
+		return storedAllocation;
+	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -2597,7 +2614,6 @@ export function makeTable(options): TableResourceClass {
 							return;
 						}
 						logger.info?.('New id allocation', nextId, idIncrementer.maxSafeId);
-						// a sibling's allocation may have won, and its range, not this proposal, bounds the shared counter
 						idIncrementer.maxSafeId = replaceIdAllocation(updatedIdAllocation, {
 							start: updatedIdAllocation.start,
 							end: idIncrementer.maxSafeId,
@@ -2684,23 +2700,6 @@ export function makeTable(options): TableResourceClass {
 				}
 				logger.debug?.('Looks like ids were already allocated');
 				return { alreadyUpdated: true, ...committedAllocation };
-			}
-			// The value is the comparison token because RocksDB stores this record without a version. On RocksDB
-			// the read and write must join the transaction so a sibling thread's commit in between is a conflict;
-			// the retry then reads the sibling's allocation.
-			function replaceIdAllocation(expectedAllocation, nextAllocation) {
-				const storedAllocation = primaryStore.transactionSync(
-					(transaction) => {
-						const options = transaction && { transaction };
-						const storedAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY, options)?.value;
-						if (storedAllocation && !isSameIdAllocation(storedAllocation, expectedAllocation)) return storedAllocation;
-						primaryStore.put(ID_ALLOCATION_KEY, nextAllocation, options ?? Date.now());
-						return nextAllocation;
-					},
-					isRocksDB ? ID_ALLOCATION_TRANSACTION_OPTIONS : undefined
-				);
-				if (!storedAllocation) throw new Error(`Id range allocation for table ${tableName} was aborted`);
-				return storedAllocation;
 			}
 		}
 
