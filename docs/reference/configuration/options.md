@@ -397,11 +397,42 @@ agent:
 - `autoApprove` — Run without per-action approval gates; _Default_: `false`
 - `allowDestructive` — Include the tools marked destructive in the agent's toolset: `write_file`, the inspector's code-evaluation tools, and any operations tool carrying MCP's [`destructiveHint`](../mcp/tool-metadata.md) (`drop_table`, `delete`, `restart`, `set_configuration`, ...). When `false` they are removed entirely rather than gated. That hint comes from a curated set in core which does not cover every damaging operation, so this is not a complete safety boundary on its own — see [Agent operations](../operations-api/operations.md#agent); _Default_: `false`
 - `user` — Harper user the agent's **operations** tools run as; the filesystem, HTTP, schedule, and inspector tools always run at process privilege regardless. If it cannot be resolved and it is not the default, the agent fails closed and runs with no operations tools; _Default_: `hdb_agent`, which falls back to a `super_user` bootstrap identity
-- `componentsScope` — Filesystem write scope for component edits, relative to `rootPath`; _Default_: the full `componentsRoot`
+- `componentsScope` — The agent's `components` filesystem scope, which it reads and, with `allowDestructive`, writes; relative to `rootPath`. Read at startup only; _Default_: the full `componentsRoot`
+- `configScope` <VersionBadge version="v5.3.2" /> — The agent's read-only `config` filesystem scope: a file or a directory, absolute or relative to `rootPath`. Read at startup only. See [Filesystem scopes](#filesystem-scopes); _Default_: the Harper config file only
 - `httpFetch` <VersionBadge version="v5.3.2" /> — Whether the agent has its `http_fetch` tool, and which hosts it may reach: `true`, `false`, or `{ allow: [...] }`. Read at startup only. See [Restricting `http_fetch`](#restricting-http_fetch); _Default_: `true`
 - `systemPromptAppend` — Operator text appended to the agent's system prompt
 
-`enabled`, `provider`, `model`, `maxTurns`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend` can also be changed at runtime with [`set_agent_config`](../operations-api/operations.md#set_agent_config), which applies in memory only. `enabled` is the exception worth knowing: it cannot switch the agent on, because with the agent disabled at startup no agent operation is registered at all.
+`enabled`, `provider`, `model`, `maxTurns`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend` can also be changed at runtime with [`set_agent_config`](../operations-api/operations.md#set_agent_config), which applies in memory only. `enabled` is the exception worth knowing: it cannot switch the agent on, because with the agent disabled at startup no agent operation is registered at all. `httpFetch`, `componentsScope`, and `configScope` are read at startup only, and `set_agent_config` rejects them.
+
+### Filesystem scopes
+
+<VersionBadge version="v5.3.2" />
+
+The agent's filesystem tools (`read_file`, `list_dir`, `grep_files`, `tail_file`, and `write_file` when `allowDestructive` is on) take a `root` naming one of three scopes:
+
+| Scope        | Reaches                                           | Access         |
+| ------------ | ------------------------------------------------- | -------------- |
+| `components` | `componentsRoot`, or `componentsScope` when set   | read and write |
+| `logs`       | the log directory                                 | read           |
+| `config`     | the Harper config file, or `configScope` when set | read           |
+
+Before v5.3.2, `config` was the directory holding `harper-config.yaml`. On a default install that is `rootPath` itself, so the agent could read `keys/`, `database/`, and the rest of the root. It is now the config file alone, and `list_dir` shows only that file.
+
+To give the agent more, such as a directory of extra configuration, set `configScope` to a file or a directory, absolute or relative to `rootPath`. It is read at startup only. A path that names no file or directory at startup leaves the `config` scope unavailable and logs an error.
+
+```yaml
+agent:
+  enabled: true
+  configScope: /etc/harper/extra
+```
+
+Key material is refused in every scope, whatever `componentsScope` and `configScope` say:
+
+- **Harper's key directories**, `<rootPath>/keys` (TLS and JWT keys) and `<rootPath>/ssh` (git deploy keys): nothing in them is read, listed, or written. Paths are compared after resolving symlinks.
+- **Key file names**, `*.pem`, `*.key`, and `.jwtPass`: not read. `list_dir` still shows the names, and `write_file` can still create such a file outside the key directories.
+- **Text holding a PEM private key** (`-----BEGIN ... PRIVATE KEY-----`), such as an inline `tls.privateKey` in the config file: `read_file` and `tail_file` refuse it, and `grep_files` skips the file. The check looks only at the text about to be returned.
+
+The config file can still hold secrets that are not PEM keys, such as a model `apiKey` or storage credentials, and the agent reads it. Setting `configScope` to `rootPath` also restores read access to the raw database files and backups.
 
 ### Restricting `http_fetch`
 
