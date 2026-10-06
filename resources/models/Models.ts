@@ -28,7 +28,7 @@ import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelC
 import { recordAction } from '../analytics/write.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import { runAgentLoop, runAgentLoopStream } from './agentLoop.ts';
-import { assignFiniteTokenCount, ChoiceScoringUnsupportedError } from './backendHelpers.ts';
+import { assignFiniteTokenCount, ChoiceScoringUnsupportedError, isTokenCount } from './backendHelpers.ts';
 import {
 	DecisionContractError,
 	DecisionInputError,
@@ -242,9 +242,9 @@ export class Models implements ModelsContract {
 				const backendOpts = toBackendOpts(opts, signal, accounting);
 				const result = await backend.generate!(input, backendOpts);
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
+				if (!result.output) throw new ServerError(`Model backend '${backend.name}' completed without output`);
 				this.#record(backend, 'generate', opts.model, accounting, opts, result, attemptStart);
-				// A result with no output was never an answer; it falls through to the next candidate.
-				if (result.output) completed = { output: result.output, usage: result.usage };
+				completed = { output: result.output, usage: result.usage };
 			} catch (err) {
 				this.#recordFailure(backend, 'generate', opts.model, accounting, opts, attemptStart, err);
 				if (!hasError) {
@@ -701,10 +701,6 @@ function callCostUsd(usage: TokenUsage | undefined, pricing: ModelPricing | unde
 	const costUsd =
 		(usage.promptTokens * pricing.inputPerMtok + usage.completionTokens * pricing.outputPerMtok) / 1_000_000;
 	return Number.isFinite(costUsd) && costUsd >= 0 ? costUsd : undefined;
-}
-
-function isTokenCount(value: unknown): value is number {
-	return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 function buildRecord(

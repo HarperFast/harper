@@ -60,8 +60,12 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 		// Before the approvals below can execute anything: a cap lowered while a run sat awaiting
 		// approval must stop the approved action, not just the next model call.
 		if (await stopIfOverBudget(opts)) return;
-		// A cancel that landed while the session was read must not let an approved action run.
-		if (opts.signal?.aborted) return;
+		// A cancel that landed while the session was read must not let an approved action run, now or on
+		// the session's next prompt.
+		if (opts.signal?.aborted) {
+			await closeApprovalsOnCancel(opts.sessionId);
+			return;
+		}
 
 		// First, drain any resolved-but-unconsumed approvals from a prior pause. Either execute
 		// or refuse each saved call, recording an observation, so the next model turn sees the
@@ -150,6 +154,23 @@ async function stopIfOverBudget(opts: RunAgentOpts): Promise<boolean> {
 		lastError: violation,
 	});
 	return true;
+}
+
+async function closeApprovalsOnCancel(sessionId: string): Promise<void> {
+	const session = await getSession(sessionId);
+	const open = session?.pendingApprovals.filter((approval) => !approval.consumed) ?? [];
+	if (open.length === 0) return;
+	await endRun(sessionId, {
+		append: open.map((approval) => ({
+			role: 'tool',
+			content: JSON.stringify({ ok: false, error: 'cancelled_by_operator', tool: approval.toolName }),
+			toolCallId: approval.toolCallId,
+			createdAt: Date.now(),
+		})),
+		closeApprovals: open.map((approval) => approval.id),
+		status: 'aborted',
+		lastError: 'Cancelled by operator',
+	});
 }
 
 function budgetRefusal(toolCallId: string, reason: string): AgentMessage {

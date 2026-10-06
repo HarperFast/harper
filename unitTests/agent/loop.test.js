@@ -752,6 +752,26 @@ describe('agent/loop per-session budgets (#3040)', () => {
 				...caps,
 			});
 			assert.equal(drop.runs, 0, JSON.stringify(caps));
+
+			const cancelled = await session.getSession(sessionId);
+			assert.ok(
+				cancelled.pendingApprovals.every((a) => a.consumed),
+				'no approval is left to run later'
+			);
+			const toolMessages = cancelled.messages.filter((m) => m.role === 'tool');
+			assert.equal(JSON.parse(toolMessages.at(-1).content).error, 'cancelled_by_operator');
+
+			await session.appendMessage(sessionId, { role: 'user', content: 'summarize', createdAt: Date.now() });
+			await runAgent({
+				sessionId,
+				models: stubModels([finalTurn('summary', usage(1, 1))]),
+				tools: [drop],
+				scopes,
+				maxTurns: 5,
+				autoApprove: false,
+				...caps,
+			});
+			assert.equal(drop.runs, 0, 'the next prompt must not run the cancelled approval');
 		}
 	});
 

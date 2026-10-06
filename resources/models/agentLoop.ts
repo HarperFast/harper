@@ -54,6 +54,7 @@
  */
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import { logger } from '../../utility/logging/logger.ts';
+import { isTokenCount } from './backendHelpers.ts';
 import type {
 	AccountingContext,
 	GenerateChunk,
@@ -846,10 +847,6 @@ export class ToolHandlerError extends ServerError {
 /** Both counts, as the facade requires for pricing: `{}` or a half report would silently under-count the cap. */
 function reportsTokenCounts(usage: TokenUsage | undefined): boolean {
 	return isTokenCount(usage?.promptTokens) && isTokenCount(usage?.completionTokens);
-}
-
-function isTokenCount(value: number | undefined): boolean {
-	return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 function sumTokens(usage: TokenUsage | undefined): number {

@@ -1493,22 +1493,27 @@ describe("agentLoop (toolMode: 'auto')", () => {
 				assert.strictEqual(warnings.filter((w) => /budget is unenforceable/.test(w)).length, 1);
 			});
 
-			it('a half or negative token report counts as no usage for maxToolTokens', async () => {
-				backend.queue(
-					{
-						output: { content: 'r1', finishReason: 'tool_calls', toolCalls: [tc('c1', 'echo', { i: 1 })] },
-						usage: { completionTokens: 5 },
-					},
-					{ output: { content: 'final', finishReason: 'stop' }, usage: { promptTokens: -1, completionTokens: 5 } }
-				);
-				const result = await models.generate('q', {
-					toolMode: 'auto',
-					maxToolTokens: 1000,
-					toolHandlers: { echo: (a) => a },
+			for (const [label, usage] of [
+				['a half', { completionTokens: 5 }],
+				['a negative', { promptTokens: -1, completionTokens: 5 }],
+			]) {
+				it(`${label} token report counts as no usage for maxToolTokens`, async () => {
+					backend.queue(
+						{
+							output: { content: 'r1', finishReason: 'tool_calls', toolCalls: [tc('c1', 'echo', { i: 1 })] },
+							usage,
+						},
+						{ output: { content: 'final', finishReason: 'stop' }, usage }
+					);
+					const result = await models.generate('q', {
+						toolMode: 'auto',
+						maxToolTokens: 1000,
+						toolHandlers: { echo: (a) => a },
+					});
+					assert.strictEqual(result.content, 'final');
+					assert.strictEqual(warnings.filter((w) => /budget is unenforceable/.test(w)).length, 1);
 				});
-				assert.strictEqual(result.content, 'final');
-				assert.strictEqual(warnings.filter((w) => /budget is unenforceable/.test(w)).length, 1);
-			});
+			}
 
 			it('maxCostUsd set against an unpriced entry → warns once, does NOT trip, loop completes', async () => {
 				backend.queue(toolCallRound('r1', [tc('c1', 'echo', { i: 1 })]), final('final'));
