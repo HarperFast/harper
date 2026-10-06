@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
+const { randomUUID } = require('node:crypto');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -47,7 +48,6 @@ describe('deployComponentValidator branchedDatabases (harper#643)', () => {
 
 describe('deploy_component branchedDatabases (harper#3044)', function () {
 	this.timeout(30_000);
-	// A package deploy publishes the component's root-config entry.
 	preserveRootConfig();
 	let workDirectory;
 	let payload;
@@ -67,7 +67,7 @@ describe('deploy_component branchedDatabases (harper#3044)', function () {
 	after(async () => {
 		// A first deploy of a component asks for a restart, which this process never performs.
 		resetRestartNeeded();
-		await fs.rm(workDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		if (workDirectory) await fs.rm(workDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	});
 
 	it('refuses it on a payload deploy, which publishes no root-config entry to carry it', async () => {
@@ -90,6 +90,25 @@ describe('deploy_component branchedDatabases (harper#3044)', function () {
 			}
 		);
 		assert.strictEqual(rootConfigEntry(project), undefined);
+	});
+
+	it('refuses it on a peer replaying a payload deploy, as an origin before this check could send one', async () => {
+		await assert.rejects(
+			deployComponent({
+				operation: 'deploy_component',
+				project: 'branched-replicated',
+				payload,
+				branchedDatabases: ['data'],
+				restart: false,
+				// A replicated execution: the payload stays in the operation when `system` does not replicate.
+				_deploymentId: randomUUID(),
+			}),
+			(error) => {
+				assert.strictEqual(error.statusCode, 400);
+				assert.match(error.message, /'branchedDatabases' is only supported for package deployments/);
+				return true;
+			}
+		);
 	});
 
 	it('publishes it on the root-config entry of a package deploy', async () => {
