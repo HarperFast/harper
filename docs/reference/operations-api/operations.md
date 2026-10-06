@@ -1708,7 +1708,7 @@ A session's `status` is one of:
 | `awaiting_approval` | Paused on one or more destructive tool calls; see `pendingApprovals`                          |
 | `completed`         | The run ended without throwing — a final answer, or the `maxTurns` ceiling; check `lastError` |
 | `aborted`           | Cancelled by an operator via `cancel_agent_run`                                               |
-| `error`             | The run failed; `lastError` carries the message                                               |
+| `error`             | The run failed or a spend cap stopped it; `lastError` carries the message                     |
 
 `completed` also covers hitting the `agent.maxTurns` ceiling — in that case `lastError` reads `Reached maxTurns=<n> without a final answer.`, so check it before treating a completed session as finished.
 
@@ -1740,6 +1740,14 @@ A session that is `running` or `awaiting_approval` rejects a new prompt with a 4
 
 Returns the full session record: `status`, `user` (the Operations API caller who created the session, falling back to `agent.user`), the `messages` transcript (user, assistant, and tool messages, including tool calls and their observations), `pendingApprovals`, `model`, `provider`, `createdAt`/`updatedAt`, and `lastError`. This is the polling endpoint for a run in flight.
 
+From v5.3.2 each assistant message carries the `usage` its model call reported (`promptTokens`, `completionTokens`, and `costUsd` when the model is [priced](../models/overview.md#pricing)), and the response adds the session's totals:
+
+```json
+"usage": { "calls": 3, "promptTokens": 41230, "completionTokens": 2210, "costUsd": 0.157 }
+```
+
+`calls` counts model calls. A total is left out once any call in the session did not report it, such as an unpriced model for `costUsd`, so a missing total means unmeasured, not zero. The [spend caps](../configuration/options.md#agent-spend-caps) read the same totals.
+
 ```json
 { "operation": "get_agent_session", "session_id": "3f7c..." }
 ```
@@ -1748,7 +1756,7 @@ Unknown `session_id` returns a 404.
 
 ### `list_agent_sessions`
 
-Lists agent sessions.
+Lists agent sessions, each with the same `usage` totals as `get_agent_session`.
 
 | Parameter | Type    | Description                              |
 | --------- | ------- | ---------------------------------------- |
@@ -1809,7 +1817,7 @@ One gap is worth knowing: changing `allowDestructive` with [`set_agent_config`](
 
 ### `set_agent_config`
 
-Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Each field is described under [`agent`](../configuration/options.md#agent). A request that includes `httpFetch` is rejected with a 400 and nothing in it is applied: the [`http_fetch` policy](../configuration/options.md#restricting-http_fetch) is read at startup only.
+Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Set `maxTokens` or `maxCostUsd` to `null` to remove that cap; a value that is not a usable number is rejected with a 400, and nothing in the request is applied. Each field is described under [`agent`](../configuration/options.md#agent). A request that includes `httpFetch` is rejected with a 400 and nothing in it is applied: the [`http_fetch` policy](../configuration/options.md#restricting-http_fetch) is read at startup only.
 
 ```json
 { "operation": "set_agent_config", "autoApprove": false, "maxTurns": 20 }
@@ -1818,7 +1826,7 @@ Updates agent settings and returns the resulting configuration. Accepts any of `
 Three limits are worth knowing:
 
 - **The change is in-memory and not persisted.** It applies for the life of the process and is lost on restart; edit `harper-config.yaml` for a durable change.
-- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, and `systemPromptAppend` are all captured at start. Changes take effect on the next run. To stop a run immediately, use `cancel_agent_run`.
+- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, `systemPromptAppend` and spend caps are all captured at start. Changes take effect on the next run. To stop a run immediately, use `cancel_agent_run`.
 - **`enabled` is not a kill switch.** It cannot turn the agent on — if it was off at startup, this operation does not exist. Setting it to `false` only makes subsequent `agent_prompt` calls return 409; a run already in flight continues, and `approve_agent_action` still resumes a paused one. Use `cancel_agent_run` to stop a run.
 
 ### MCP access
