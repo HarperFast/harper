@@ -1,0 +1,67 @@
+name: Diag LMDB bin SIGSEGV
+
+# Temporary diagnostic (harper#2669): loop the `Unit tests: lmdb` bin suite with core dumps on, and
+# print a native backtrace of any crash. Not for merge.
+on:
+  push:
+    branches: [diag/lmdb-bin-segfault-backtrace]
+
+permissions:
+  contents: read
+
+jobs:
+  loop:
+    name: bin loop (Node.js v${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          package-manager-cache: false
+      - run: npm install --ignore-scripts
+      - run: npm run build
+      - name: Setup Harper
+        env:
+          DEFAULTS_MODE: 'dev'
+          HDB_ADMIN_USERNAME: 'admin'
+          HDB_ADMIN_PASSWORD: 'password'
+          ROOTPATH: '/tmp/hdb'
+          NODE_HOSTNAME: 'localhost'
+          LOGGING_LEVEL: 'info'
+        run: node --enable-source-maps ./dist/bin/harper.js install
+      - name: Enable core dumps
+        run: |
+          sudo apt-get install -y -q gdb > /dev/null
+          mkdir -p /tmp/cores
+          sudo sysctl -w kernel.core_pattern=/tmp/cores/core.%e.%p
+      - name: Loop the LMDB bin suite
+        timeout-minutes: 45
+        run: |
+          ulimit -c unlimited
+          crashes=0
+          for i in $(seq 1 60); do
+            start=$(date +%s)
+            rc=0
+            HARPER_STORAGE_ENGINE=lmdb npx mocha "unitTests/bin/**/*.js" > /tmp/run.log 2>&1 || rc=$?
+            echo "iteration $i rc=$rc $(( $(date +%s) - start ))s"
+            if [ $rc -ne 0 ]; then
+              crashes=$((crashes + 1))
+              echo "::group::iteration $i tail"
+              tail -25 /tmp/run.log
+              echo "::endgroup::"
+              for core in /tmp/cores/core.*; do
+                [ -f "$core" ] || continue
+                ls -la "$core"
+                gdb -q -batch -ex 'info threads' -ex 'bt 40' -ex 'thread apply all bt 25' "$(which node)" "$core" 2>&1 | grep -v '^\[New LWP' | head -400
+                rm -f "$core"
+              done
+            fi
+          done
+          echo "crashes=$crashes"
+          [ $crashes -eq 0 ]
