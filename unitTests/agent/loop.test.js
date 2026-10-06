@@ -819,6 +819,45 @@ describe('agent/loop per-session budgets (#3040)', () => {
 		assert.equal(drop.runs, 1);
 	});
 
+	it('a cancel that lands during the claim answers the call instead of running the action', async () => {
+		const sessionId = await newSession();
+		const drop = countingTool('drop', { destructive: true });
+		await runAgent({
+			sessionId,
+			models: stubModels([toolTurn('c1', 'drop', usage(60, 10))]),
+			tools: [drop],
+			scopes,
+			maxTurns: 5,
+			autoApprove: false,
+		});
+		const paused = await session.getSession(sessionId);
+		const approvalId = paused.pendingApprovals[0].id;
+		await session.resolveApproval(sessionId, approvalId, true);
+
+		const controller = new AbortController();
+		const table = session.getAgentSessionTable();
+		const put = table.put.bind(table);
+		table.put = async (row) => {
+			await put(row);
+			if (row.pendingApprovals.some((a) => a.id === approvalId && a.consumed)) controller.abort();
+		};
+		await runAgent({
+			sessionId,
+			models: stubModels([]),
+			tools: [drop],
+			scopes,
+			maxTurns: 5,
+			autoApprove: false,
+			signal: controller.signal,
+		});
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(drop.runs, 0);
+		const responses = reloaded.messages.filter((m) => m.role === 'tool' && m.toolCallId === 'c1');
+		assert.equal(responses.length, 1);
+		assert.equal(JSON.parse(responses[0].content).error, 'cancelled_by_operator');
+	});
+
 	it('endRun completes the transcript but keeps an aborted status a cancel already wrote', async () => {
 		const sessionId = await newSession();
 		await session.setStatus(sessionId, 'aborted', 'Cancelled by operator');

@@ -218,6 +218,17 @@ async function consumeResolvedApprovals(
 	for (const approval of toConsume) {
 		if (ctx.signal?.aborted) return;
 		if (!(await claimApproval(sessionId, approval.id))) continue;
+		// The claim makes this run the only writer that can answer the call; a cancel that landed during
+		// the claim gets that answer instead of the action.
+		if (ctx.signal?.aborted) {
+			await appendMessage(sessionId, {
+				role: 'tool',
+				content: JSON.stringify({ ok: false, error: 'cancelled_by_operator', tool: approval.toolName }),
+				toolCallId: approval.toolCallId,
+				createdAt: Date.now(),
+			});
+			return;
+		}
 		const observation = approval.approved
 			? await invokeTool(
 					{ id: approval.toolCallId, name: approval.toolName, arguments: approval.arguments },
