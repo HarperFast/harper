@@ -865,7 +865,8 @@ describe('agent/loop observation size and context window', () => {
 
 			await runAgent({
 				sessionId,
-				models: new Models({ write() {} }),
+				// Stub every sink, so the test writes nothing to Harper's real analytics or decision tables.
+				models: new Models({ write() {} }, () => {}, {}),
 				tools: [bigTool('big', 30_000)],
 				scopes,
 				maxTurns: 5,
