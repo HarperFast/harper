@@ -370,6 +370,16 @@ describe('agent/fsTools pages', () => {
 		assert.equal(result.results[0].text, `${'a'.repeat(499)}…`);
 	});
 
+	it('grep_files returns a first match too long for the page cut to fit, not an empty result', async () => {
+		const { serializeToolResult } = require('#src/resources/models/agentLoop');
+		writeFileSync(join(scopes.componentsRoot, 'cjk.txt'), `${'漢'.repeat(600)}\n漢\n`);
+		const result = await grepFilesTool.handler({ pattern: '漢' }, pagedCtx(1024));
+		assert.equal(result.count, 1);
+		assert.equal(result.truncated, true);
+		assert.match(result.results[0].text, /^漢+$/);
+		assert.equal(serializeToolResult({ ok: true, result }, 1024).truncated, false);
+	});
+
 	it('grep_files is not truncated when every match fits', async () => {
 		writeFileSync(join(scopes.componentsRoot, 'a.txt'), 'apple\nbanana\nApple');
 		const result = await grepFilesTool.handler({ pattern: 'apple' }, pagedCtx(65536));

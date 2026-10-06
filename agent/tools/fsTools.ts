@@ -178,7 +178,6 @@ export const readFileTool: AgentTool = {
 		const requestedLine = optionalInteger(args.startLine, 'startLine', 1);
 		const offset = optionalInteger(args.offset, 'offset', 0);
 		const lineCount = optionalInteger(args.lineCount, 'lineCount', 1) ?? Infinity;
-		// Line numbers are known unless the caller resumes at a byte offset without saying which line it is.
 		const startLine = offset === undefined ? (requestedLine ?? 1) : requestedLine;
 		const fh = await open(path, 'r');
 		try {
@@ -280,6 +279,17 @@ async function findLineStart(
 		position += bytesRead;
 	}
 	return { totalLines: newlines + (lastByte === NEWLINE ? 0 : 1) };
+}
+
+/** The longest start of `text` whose JSON-escaped form fits in `budget` bytes. */
+function escapedHead(text: string, budget: number): string {
+	let head = text;
+	for (let cost = escapedBytes(head); cost > budget && head.length > 1; cost = escapedBytes(head)) {
+		head = head.slice(0, Math.max(1, Math.floor((head.length * budget) / cost)));
+		const last = head.charCodeAt(head.length - 1);
+		if (last >= 0xd800 && last <= 0xdbff) head = head.slice(0, -1);
+	}
+	return head;
 }
 
 /** The longest end of `text` whose JSON-escaped form fits in `budget` bytes. */
@@ -424,11 +434,17 @@ export const grepFilesTool: AgentTool = {
 			for (let i = 0; i < lines.length; i++) {
 				if (!pattern.test(lines[i])) continue;
 				const match = { path: file, line: i + 1, text: clipLine(lines[i]) };
-				resultBytes += Buffer.byteLength(JSON.stringify(match), 'utf8');
-				if (results.length >= cap || resultBytes > budget) {
+				const matchBytes = Buffer.byteLength(JSON.stringify(match), 'utf8');
+				if (results.length >= cap || resultBytes + matchBytes > budget) {
 					truncated = true;
+					// A first match too long for the page still comes back, cut to fit, rather than none.
+					if (results.length === 0 && cap > 0) {
+						match.text = escapedHead(match.text, budget - (matchBytes - escapedBytes(match.text)));
+						results.push(match);
+					}
 					return false;
 				}
+				resultBytes += matchBytes;
 				results.push(match);
 			}
 			return true;

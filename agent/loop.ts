@@ -121,6 +121,7 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 			});
 
 			if (!result.toolCalls || result.toolCalls.length === 0) {
+				if (opts.signal?.aborted) return;
 				await setStatus(opts.sessionId, 'completed');
 				return;
 			}
@@ -175,6 +176,7 @@ async function generateTurn(opts: RunAgentOpts, toolDefs: ToolDef[]): Promise<Ge
 async function requestTurn(opts: RunAgentOpts, toolDefs: ToolDef[]): Promise<GenerateResult> {
 	const session = await getSession(opts.sessionId);
 	if (!session) throw new Error(`Session ${opts.sessionId} vanished mid-run`);
+	opts.signal?.throwIfAborted();
 	return opts.models.generate(
 		{ messages: toModelMessages(session.messages), tools: toolDefs, system: opts.systemPrompt },
 		{ ...opts.generateOpts, toolMode: 'return', signal: opts.signal }

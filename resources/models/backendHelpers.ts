@@ -49,7 +49,6 @@ export function isContextWindowRejection(status: number | undefined, message: un
 	return typeof message === 'string' && CONTEXT_WINDOW_REJECTION.test(message);
 }
 
-/** True when a model backend reported that a request's input did not fit the model's context window. */
 export function isContextWindowExceeded(err: unknown): boolean {
 	return (err as { contextWindowExceeded?: unknown } | null | undefined)?.contextWindowExceeded === true;
 }
