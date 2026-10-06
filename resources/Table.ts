@@ -1868,11 +1868,9 @@ export function makeTable(options): TableResourceClass {
 							logger.warn?.('discarding a record lock control entry whose origin node could not be resolved');
 							return reportDroppedWrite(event, context, new Error('Record lock control origin could not be resolved'));
 						}
-						// Through the admitting resolver, never the `lockCoordinator` getter: that one fails
-						// closed on an unusable node identity (right for an acquire, and here a throw would
-						// stall the apply loop) and answers undefined while a transport is momentarily
-						// unregistered. A thread with no coordinator for the table relays the entry to the
-						// thread that has one.
+						// Never the `lockCoordinator` getter: it fails closed on an unusable node identity (a
+						// throw here would stall the apply loop) and answers undefined while a transport is
+						// momentarily unregistered.
 						receiveLockControlEntry(
 							databaseName,
 							event.table ?? TableResource.tableName,
