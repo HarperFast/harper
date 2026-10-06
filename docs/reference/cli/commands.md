@@ -182,19 +182,22 @@ set -euo pipefail
 harper deploy restart=rolling json=true > deploy.json
 JOB_ID=$(jq -r '.restartJobId // empty' deploy.json)
 [ -n "$JOB_ID" ] || exit 0
+LAST="could not be read"
 for attempt in $(seq 60); do
   sleep 10
   harper get_job id="$JOB_ID" json=true > job.json || continue
-  case $(jq -r '.[0].status' job.json) in
+  case $(jq -r '.[0].status // "MISSING"' job.json) in
     COMPLETE) exit 0 ;;
     ERROR) jq -r '.[0].message' job.json; exit 1 ;;
+    MISSING) LAST="was not on the node that answered" ;;
+    *) LAST="was still running" ;;
   esac
 done
-echo "Job $JOB_ID did not finish after 60 polls"
+echo "Job $JOB_ID $LAST after 60 polls"
 exit 1
 ```
 
-The loop retries a poll that fails, such as one that reaches a node while it restarts. Poll the node you deployed to: Harper does not replicate jobs, so any other node answers `get_job` with an empty list. A user whose role has an `operations` allowlist needs `get_job` in it to poll. On Harper core alone, a job that only restarts, as in the second case above, ends `ERROR` with `Replication not implemented`, because it restarts across the cluster. With `restart=true` there is no job: the command fails when a node rejects the release, unless you pass `ignore_replication_errors=true`.
+The loop retries a poll that fails, such as one that reaches a node while it restarts. Harper does not replicate jobs, so a node other than the one that received the deploy answers `get_job` with an empty list; the loop keeps polling, and through a load-balanced cluster URL it sees the job on the polls that reach that node. A user whose role has an `operations` allowlist needs `get_job` in it to poll. On Harper core alone, a job that only restarts, as in the second case above, ends `ERROR` with `Replication not implemented`, because it restarts across the cluster. With `restart=true` there is no job: the command fails when a node rejects the release, unless you pass `ignore_replication_errors=true`.
 
 [Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci) uses this in a complete GitHub Actions workflow.
 
