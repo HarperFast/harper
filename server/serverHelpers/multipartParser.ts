@@ -169,7 +169,7 @@ export function parseMultipartRequest(
  * as consuming it, so the rest of an upload the route did not read is discarded here instead. A route
  * keeps the part by reading it before its response finishes: piping it, iterating it, or listening for
  * `data` or `readable`. A part it took but had not started reading is discarded, and so is one it
- * lets go before its end, whenever that happens.
+ * destroys before its end, whenever that happens.
  */
 export function releaseUnreadUpload(request: FastifyRequest, _reply: FastifyReply, done: () => void): void {
 	const upload = uploads.get(request);

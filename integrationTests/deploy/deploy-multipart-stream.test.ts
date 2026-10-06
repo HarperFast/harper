@@ -249,8 +249,7 @@ suite('Multipart streaming deploy_component', (ctx: ContextWithHarper) => {
 		ok((await response.text()).includes('<h1>Hello, Multipart!</h1>'));
 	});
 
-	// Under Bun, Harper reads the whole body before Fastify sees the request, so no upload can stall
-	// behind an unread part; Bun also answers these raw chunked uploads intermittently on main.
+	// Under Bun, Harper reads the whole body before Fastify sees the request, so no upload can stall behind an unread part.
 	const skip = process.env.HARPER_RUNTIME === 'bun' && 'the body is buffered before Fastify under Bun';
 	const refusals: Array<[string, Record<string, unknown>, boolean, string, string]> = [
 		[
