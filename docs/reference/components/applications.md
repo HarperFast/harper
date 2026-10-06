@@ -313,7 +313,7 @@ Harper generates a `package.json` and installs all components into `<componentsR
 
 ## Operations API
 
-Component operations are restricted to `super_user` roles.
+Component operations require `super_user`, unless a role's [`operations` allowlist](../users-and-roles/overview.md#operation-permissions) lists them, which is how a deploy-only CI role gets `deploy_component`. A few cannot be granted that way, such as `get_deployment_payload`, and a deploy that passes a literal `token` in `credentials` still needs `super_user`.
 
 ### `add_component`
 

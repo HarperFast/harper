@@ -866,6 +866,8 @@ Detailed documentation: [Components Overview](../components/overview.md)
 | `get_ssh_known_hosts`       | Returns the contents of the SSH known_hosts file                        | super_user    |
 | `install_node_modules`      | _(Deprecated)_ Run npm install on component projects                    | super_user    |
 
+A role that is not `super_user` can be granted these operations by listing them in its [`operations` allowlist](../users-and-roles/overview.md#operation-permissions), which is how a deploy-only CI role gets `deploy_component` and `get_deployment`. A few cannot be granted that way, such as `get_deployment_payload`; that section lists them.
+
 ### `deploy_component`
 
 Deploys a component. The `package` option accepts any valid NPM reference including GitHub repos (`HarperDB/app#semver:v1.0.0`), tarballs, or NPM packages. The `payload` option accepts a base64-encoded tar string from `package_component`. Supports `"restart": true` or `"restart": "rolling"`. On Harper Pro and Fabric, a deploy goes to every node in the cluster unless you pass `"replicated": false`; Harper core on its own does not replicate.
@@ -1177,7 +1179,7 @@ Every event but `done` is also appended to the deployment's `event_log`, which [
 
 Harper records every `deploy_component` call in the `system.hdb_deployment` table, capturing the full lifecycle of a deployment including phase transitions (prepare → load → replicate → restart → success/failed), per-node outcomes, and a bounded event log of install output.
 
-The record is written by the node that received the deploy, and describes that deploy, not what each node is running now. With `"restart": "rolling"` it reports `success` once that node has taken the release, before the other nodes have, and keeps reporting it if one of them [rejects the release](#certifying-a-release-in-a-canary-worker). To learn whether every node took it, wait for the deploy's `restartJobId` with [`get_job`](#get_job).
+The record is written by the node that received the deploy, and describes that deploy, not what each node is running now. With `"restart": "rolling"` on v5.4.0 and later, it can report `success` once that node has taken the release, before the other nodes have, and keeps reporting it if one of them [rejects the release](#certifying-a-release-in-a-canary-worker). To learn whether every node took it, wait for the deploy's `restartJobId` with [`get_job`](#get_job).
 
 ### `list_deployments`
 
@@ -1205,7 +1207,7 @@ Response includes a `deployments` array and a `total` count. The `payload_blob` 
 
 A deploy in progress reads `pending`, or `loading` once its release has started loading, so filtering on `pending` alone misses some deploys in flight. List without `status` and check each record's `completed_at` instead, which is set once the deploy finishes.
 
-The list is the history of deploys as each receiving node recorded them, newest first. It answers what was deployed and when, but the newest `success` for a project is not necessarily the release every node is serving: a rolling deploy's record says `success` before the other nodes have taken the release, and keeps saying it if one rejects it.
+The list is the history of deploys as each receiving node recorded them, newest first. It answers what was deployed and when, but the newest `success` for a project is not necessarily the release every node is serving: a rolling deploy's record can say `success` before the other nodes have taken the release, and keeps saying it if one rejects it.
 
 ### `get_deployment`
 

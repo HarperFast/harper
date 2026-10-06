@@ -170,9 +170,15 @@ All parameters are passed as `key=value` arguments. Every parameter is optional.
 
 #### Waiting for a rolling deploy
 
-`harper deploy restart=rolling` exits `0` once the node you called has taken the release and started a job that restarts the other nodes one at a time. Those nodes take the release after the command has exited, and a node that rejects it fails the job, not the command. To learn whether every node took it, poll the job named by the result's `restartJobId` with `harper get_job` until it ends `COMPLETE`, or `ERROR` with a `message` listing each node's outcome under `activated`:
+`harper deploy restart=rolling` exits `0` once the node you called has taken the release and started a job that restarts the nodes one at a time. What the job does depends on the release:
+
+- On v5.4.0 and later, unless the result's `certification` is `unavailable`, the other nodes only stage the release, and the job activates it on each in turn, certifying it in a [canary worker](../operations-api/operations.md#certifying-a-release-in-a-canary-worker). They take the release after the command has exited, and a node that rejects it fails the job, not the command. The failed job's `message` lists each node's outcome under `activated`.
+- Otherwise, every node has installed the release before the command exits, and the job only restarts them.
+
+Either way, the exit status does not say whether every node is serving the release. Poll the job named by the result's `restartJobId` with `harper get_job` until it ends `COMPLETE` or `ERROR`:
 
 ```bash
+set -euo pipefail
 harper deploy restart=rolling json=true > deploy.json
 JOB_ID=$(jq -r '.restartJobId // empty' deploy.json)
 [ -n "$JOB_ID" ] || exit 0
@@ -188,7 +194,7 @@ echo "Job $JOB_ID was still running after 10 minutes"
 exit 1
 ```
 
-A user whose role has an `operations` allowlist needs `get_job` in it to poll. With `restart=true` there is no job: the command fails when a node rejects the release, unless you pass `ignore_replication_errors=true`.
+A user whose role has an `operations` allowlist needs `get_job` in it to poll. The rolling job restarts across the cluster, so it needs Harper Pro or Fabric; on Harper core alone it ends `ERROR` with `Replication not implemented`. With `restart=true` there is no job: the command fails when a node rejects the release, unless you pass `ignore_replication_errors=true`.
 
 [Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci) uses this in a complete GitHub Actions workflow.
 
