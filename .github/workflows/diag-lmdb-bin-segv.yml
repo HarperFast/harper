@@ -17,13 +17,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: [22, 24, 26]
-        perturb: ['']
-        include:
-          - node-version: 22
-            perturb: 'glibc.malloc.perturb=165'
-          - node-version: 24
-            perturb: 'glibc.malloc.perturb=165'
+        node-version: [24]
+        perturb: ['glibc.malloc.perturb=165', '']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -49,17 +44,28 @@ jobs:
       - name: Loop the LMDB bin suite
         timeout-minutes: 47
         run: |
-          ulimit -c unlimited
+          ulimit -c 0
           crashes=0
+          opens=0
           FILES="activateDeploymentOnPeers agentCli backup blobMigration cliCredentials cliOperations copyDB copyDbBlobAwait copyDbIntegrity"
           FILES=$(for f in $FILES; do printf 'unitTests/bin/%s.test.js ' $f; done)
           if [ -n "${{ matrix.perturb }}" ]; then export GLIBC_TUNABLES="${{ matrix.perturb }}"; fi
-          deadline=$(( $(date +%s) + 2500 ))
+          deadline=$(( $(date +%s) + 1200 ))
           for i in $(seq 1 2000); do
             [ $(date +%s) -lt $deadline ] || break
             start=$(date +%s)
             rc=0
-            HARPER_STORAGE_ENGINE=lmdb npx mocha $FILES > /tmp/run.log 2>&1 || rc=$?
+            HARPER_STORAGE_ENGINE=lmdb npx mocha --require .github/diag/trace-open.cjs $FILES > /tmp/run.log 2>&1 || rc=$?
+            if grep -q "OPEN existing-target" /tmp/run.log; then
+              opens=$((opens + 1))
+              if [ $opens -le 6 ]; then
+                echo "::group::iteration $i opened existing-target (rc=$rc)"
+                grep -B2 -A40 "OPEN existing-target" /tmp/run.log | head -120
+                echo "--- scans:"
+                grep -A14 "SCAN copyIntegrity" /tmp/run.log | grep -v "node:internal" | tail -60
+                echo "::endgroup::"
+              fi
+            fi
             [ $rc -ne 0 ] || [ $((i % 50)) -ne 0 ] || echo "iteration $i ok $(( $(date +%s) - start ))s"
             [ $rc -eq 0 ] || echo "iteration $i rc=$rc"
             if [ $rc -ne 0 ]; then
@@ -67,7 +73,8 @@ jobs:
               echo "::group::iteration $i tail"
               tail -25 /tmp/run.log
               echo "::endgroup::"
-              for core in /tmp/cores/core.*; do
+              rm -f /tmp/cores/core.*
+              for core in /tmp/cores/none.*; do
                 [ -f "$core" ] || continue
                 ls -la "$core"
                 gdb -q -batch -ex 'info threads' -ex 'bt 40' -ex 'thread apply all bt 25' "$(which node)" "$core" 2>&1 | grep -v '^\[New LWP' | head -400
@@ -75,5 +82,5 @@ jobs:
               done
             fi
           done
-          echo "iterations=$i crashes=$crashes"
+          echo "iterations=$i crashes=$crashes opens=$opens"
           [ $crashes -eq 0 ]
