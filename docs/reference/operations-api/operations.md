@@ -1712,7 +1712,7 @@ A session's `status` is one of:
 
 `completed` also covers hitting the `agent.maxTurns` ceiling — in that case `lastError` reads `Reached maxTurns=<n> without a final answer.`, so check it before treating a completed session as finished.
 
-<VersionBadge version="v5.3.2" /> A model reply that did not finish ends the run `error`, never `completed`. That covers a reply cut off at [`agent.maxTokens`](../configuration/options.md#agent), one stopped by the provider's content filter, a tool call the agent could not parse, and a reply with neither text nor tool calls. `lastError` names which. Nothing from that reply is added to `messages`: its text is dropped, and its tool calls are neither run nor queued for approval. The session can be prompted again. Earlier versions ended such a run `completed`, often with an empty final message, and ran a cut-off tool call with its cut-off arguments.
+<VersionBadge version="v5.3.2" /> A model reply that did not finish ends the run `error`, never `completed`, and `lastError` says why. That covers a reply cut off at [`agent.maxTokens`](../configuration/options.md#agent) or at the model's context window, one stopped by the provider's content filter or a model refusal, one that asks for tool calls of which none could be parsed, and one with neither text nor tool calls. Nothing from that reply is added to `messages`: its text is dropped, and its tool calls are neither run nor queued for approval. The session can be prompted again. Earlier versions ended such a run `completed`, often with an empty final message, and ran a cut-off tool call with its cut-off arguments.
 
 ### `agent_prompt`
 
@@ -1820,7 +1820,7 @@ Updates agent settings and returns the resulting configuration. Accepts any of `
 Three limits are worth knowing:
 
 - **The change is in-memory and not persisted.** It applies for the life of the process and is lost on restart; edit `harper-config.yaml` for a durable change.
-- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, `maxTokens`, and `systemPromptAppend` are all captured at start. Changes take effect on the next run. To stop a run immediately, use `cancel_agent_run`.
+- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, `maxTokens`, and `systemPromptAppend` are all captured at start. Changes take effect on the next run, and a paused run that `approve_agent_action` resumes counts as a new one: it picks up the current settings. To stop a run immediately, use `cancel_agent_run`.
 - **`enabled` is not a kill switch.** It cannot turn the agent on — if it was off at startup, this operation does not exist. Setting it to `false` only makes subsequent `agent_prompt` calls return 409; a run already in flight continues, and `approve_agent_action` still resumes a paused one. Use `cancel_agent_run` to stop a run.
 
 ### MCP access
