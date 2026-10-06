@@ -299,7 +299,6 @@ export class AnthropicBackendError extends ServerError {
 	/** HTTP status returned by the upstream provider, when the failure came from an HTTP response.
 	 * Distinct from ServerError's statusCode, which is Harper's own response status (#1593). */
 	declare upstreamStatus?: number;
-	/** The provider rejected the request because its input does not fit the model's context window. */
 	declare contextWindowExceeded?: boolean;
 	constructor(message: string, upstreamStatus?: number) {
 		super(message);

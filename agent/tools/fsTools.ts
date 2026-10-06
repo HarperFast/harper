@@ -26,15 +26,23 @@ const DEFAULT_PAGE_BYTES = 32 * 1024;
 const SCAN_CHUNK_BYTES = 64 * 1024;
 const NEWLINE = 0x0a;
 
-/** Most file text one read returns: half the loop's per-result cap, which leaves room for JSON escaping. */
+/**
+ * Most file text, measured JSON-escaped, one read returns: half the loop's per-result cap, leaving
+ * the other half for the result's other fields so the loop never cuts a page.
+ */
 function pageBytes(ctx: AgentToolContext): number {
 	return ctx.maxResultBytes ? Math.floor(ctx.maxResultBytes / 2) : DEFAULT_PAGE_BYTES;
 }
 
-function optionalPositiveInteger(value: unknown, name: string): number | undefined {
+/** Bytes `text` takes inside a JSON string: control characters escape to six bytes, quotes to two. */
+function escapedBytes(text: string): number {
+	return Buffer.byteLength(JSON.stringify(text), 'utf8') - 2;
+}
+
+function optionalInteger(value: unknown, name: string, minimum: number): number | undefined {
 	if (value == null) return undefined;
-	if (!Number.isSafeInteger(value) || (value as number) < 1) {
-		throw new Error(`${name} must be a positive integer; got ${JSON.stringify(value)}`);
+	if (!Number.isSafeInteger(value) || (value as number) < minimum) {
+		throw new Error(`${name} must be an integer of at least ${minimum}; got ${JSON.stringify(value)}`);
 	}
 	return value as number;
 }
@@ -129,17 +137,27 @@ export const readFileTool: AgentTool = {
 	def: {
 		name: 'read_file',
 		description:
-			'Read a UTF-8 text file from the components, logs, or config scope, one page of whole lines at a time. ' +
-			'A file that fits in one page comes back whole. When the file continues, `nextLine` is the startLine of ' +
-			'the next page; `totalLines` is present once a page reaches the end of the file. A line longer than a ' +
-			'page comes back cut, with `lineTruncated: true`; use grep_files to search inside it. write_file replaces ' +
-			'the whole file, so read every page before rewriting one.',
+			'Read a UTF-8 text file from the components, logs, or config scope, one page at a time. A page holds as ' +
+			'many whole lines as fit; a file that fits in one page comes back whole. While the file continues, the ' +
+			'result has `nextLine` and `nextOffset`: pass both back as `startLine` and `offset` to read the next page ' +
+			'without rescanning the file. A line longer than a page comes back in parts, each flagged ' +
+			'`lineTruncated: true`, continued the same way. `totalLines` is present once a page reaches the end of the ' +
+			'file. write_file replaces the whole file, so read every page before rewriting one.',
 		parameters: {
 			type: 'object',
 			properties: {
 				root: { type: 'string', enum: SCOPES, description: SCOPE_DESCRIPTION },
 				path: { type: 'string', description: 'Path relative to the chosen root, e.g. "my_app/schema.graphql".' },
-				startLine: { type: 'integer', minimum: 1, description: 'First line to return, 1-based. Default 1.' },
+				startLine: {
+					type: 'integer',
+					minimum: 1,
+					description: 'Line to start at, 1-based. Default 1. With `offset`, the line number of that byte.',
+				},
+				offset: {
+					type: 'integer',
+					minimum: 0,
+					description: 'Byte offset to start at, as returned in `nextOffset`. Skips scanning for `startLine`.',
+				},
 				lineCount: {
 					type: 'integer',
 					minimum: 1,
@@ -151,71 +169,83 @@ export const readFileTool: AgentTool = {
 	},
 	handler: async (args: any, ctx: AgentToolContext) => {
 		const path = await resolveScoped(ctx.scopes, normalizeScope(args.root), args.path, 'read');
-		const startLine = optionalPositiveInteger(args.startLine, 'startLine') ?? 1;
-		const lineCount = optionalPositiveInteger(args.lineCount, 'lineCount') ?? Infinity;
+		const requestedLine = optionalInteger(args.startLine, 'startLine', 1);
+		const offset = optionalInteger(args.offset, 'offset', 0);
+		const lineCount = optionalInteger(args.lineCount, 'lineCount', 1) ?? Infinity;
+		// Line numbers are known unless the caller resumes at a byte offset without saying which line it is.
+		const startLine = offset === undefined ? (requestedLine ?? 1) : requestedLine;
 		const fh = await open(path, 'r');
 		try {
 			const { size } = await fh.stat();
-			const page = await readLinePage(fh, size, startLine, lineCount, pageBytes(ctx), ctx.signal);
-			return { path, size, startLine, ...page };
+			if (offset !== undefined && offset > size) {
+				throw new Error(`offset ${offset} is past the end of the file (${size} bytes)`);
+			}
+			let start = offset;
+			if (start === undefined) {
+				const located = await findLineStart(fh, size, startLine, ctx.signal);
+				if ('totalLines' in located) return { path, size, startLine, content: '', totalLines: located.totalLines };
+				start = located.offset;
+			}
+			const page = await readPage(fh, size, start, lineCount, pageBytes(ctx));
+			const result: Record<string, unknown> = { path, size, offset: start, content: page.content };
+			const endLine = startLine === undefined || page.lines === 0 ? undefined : startLine + page.lines - 1;
+			if (startLine !== undefined) Object.assign(result, { startLine, endLine });
+			if (page.lineTruncated) result.lineTruncated = true;
+			if (page.endOffset < size) {
+				result.nextOffset = page.endOffset;
+				if (startLine !== undefined) result.nextLine = page.lineTruncated ? endLine : (endLine ?? startLine - 1) + 1;
+			} else if (startLine !== undefined) {
+				result.totalLines = endLine ?? startLine - 1;
+			}
+			return result;
 		} finally {
 			await fh.close();
 		}
 	},
 };
 
-interface LinePage {
+interface Page {
 	content: string;
-	/** Last line in `content`; absent when the page holds no line. */
-	endLine?: number;
-	nextLine?: number;
-	totalLines?: number;
-	lineTruncated?: true;
+	/** Lines in `content`, counting a partial line. */
+	lines: number;
+	/** File offset just past `content`. */
+	endOffset: number;
+	lineTruncated: boolean;
 }
 
 /**
- * Whole lines from `startLine` on, up to `lineCount` lines and `budget` bytes, as the file's exact
- * bytes. Memory stays bounded by `budget` and one scan chunk however large the file or its lines.
+ * Whole lines from byte `start`, up to `lineCount` lines whose JSON-escaped text fits in `budget`
+ * bytes; when not even one line fits, the part of it that does. `content` is the file's exact bytes
+ * and `endOffset` always lands on a character boundary.
  */
-async function readLinePage(
-	fh: FileHandle,
-	size: number,
-	startLine: number,
-	lineCount: number,
-	budget: number,
-	signal?: AbortSignal
-): Promise<LinePage> {
-	const located = await findLineStart(fh, size, startLine, signal);
-	if ('totalLines' in located) return { content: '', totalLines: located.totalLines };
-	const offset = located.offset;
-	const window = Buffer.alloc(Math.min(budget, size - offset));
-	const { bytesRead } = await fh.read(window, 0, window.length, offset);
-	const page = window.subarray(0, bytesRead);
-	const reachesEnd = offset + bytesRead >= size;
-	if (page.length === 0) return { content: '', totalLines: startLine - 1 };
-
+async function readPage(fh: FileHandle, size: number, start: number, lineCount: number, budget: number): Promise<Page> {
+	const window = Buffer.alloc(Math.min(budget, size - start));
+	const { bytesRead } = await fh.read(window, 0, window.length, start);
+	const bytes = window.subarray(0, bytesRead);
+	const reachesEnd = start + bytesRead >= size;
 	let end = 0;
 	let lines = 0;
-	for (let index = page.indexOf(NEWLINE); lines < lineCount && index !== -1; index = page.indexOf(NEWLINE, end)) {
-		end = index + 1;
+	let used = 0;
+	while (lines < lineCount && end < bytes.length) {
+		const newline = bytes.indexOf(NEWLINE, end);
+		if (newline === -1 && !reachesEnd) break;
+		const lineEnd = newline === -1 ? bytes.length : newline + 1;
+		const cost = escapedBytes(bytes.toString('utf8', end, lineEnd));
+		if (used + cost > budget) break;
+		used += cost;
+		end = lineEnd;
 		lines++;
 	}
-	if (lines < lineCount && reachesEnd && end < page.length) {
-		end = page.length;
-		lines++;
+	if (lines > 0 || bytes.length === 0) {
+		return { content: bytes.toString('utf8', 0, end), lines, endOffset: start + end, lineTruncated: false };
 	}
-	if (lines === 0) {
-		// One line longer than the page: return its head, cut on a character boundary.
-		return {
-			content: page.subarray(0, completeUtf8Length(page)).toString('utf8'),
-			endLine: startLine,
-			nextLine: startLine + 1,
-			lineTruncated: true,
-		};
+	let cut = completeUtf8Length(bytes);
+	for (let cost = escapedBytes(bytes.toString('utf8', 0, cut)); cost > budget;) {
+		cut = Math.max(1, completeUtf8Length(bytes.subarray(0, Math.floor((cut * budget) / cost))));
+		cost = escapedBytes(bytes.toString('utf8', 0, cut));
+		if (cut === 1) break;
 	}
-	const endLine = startLine + lines - 1;
-	const content = page.subarray(0, end).toString('utf8');
-	return offset + end < size ? { content, endLine, nextLine: endLine + 1 } : { content, endLine, totalLines: endLine };
+	return { content: bytes.toString('utf8', 0, cut), lines: 1, endOffset: start + cut, lineTruncated: true };
 }
 
 /** The byte offset where `line` starts, or the file's line count when it has fewer lines than that. */
@@ -244,6 +274,24 @@ async function findLineStart(
 		position += bytesRead;
 	}
 	return { totalLines: newlines + (lastByte === NEWLINE ? 0 : 1) };
+}
+
+/** The longest end of `text` whose JSON-escaped form fits in `budget` bytes. */
+function escapedTail(text: string, budget: number): string {
+	let tail = text;
+	for (let cost = escapedBytes(tail); cost > budget && tail.length > 1; cost = escapedBytes(tail)) {
+		tail = tail.slice(tail.length - Math.max(1, Math.floor((tail.length * budget) / cost)));
+		const first = tail.charCodeAt(0);
+		if (first >= 0xdc00 && first <= 0xdfff) tail = tail.slice(1);
+	}
+	return tail;
+}
+
+function clipLine(line: string): string {
+	if (line.length <= MAX_GREP_LINE_CHARS) return line;
+	const last = line.charCodeAt(MAX_GREP_LINE_CHARS - 1);
+	const end = last >= 0xd800 && last <= 0xdbff ? MAX_GREP_LINE_CHARS - 1 : MAX_GREP_LINE_CHARS;
+	return `${line.slice(0, end)}…`;
 }
 
 /** Length of the longest prefix of `bytes` that does not end inside a UTF-8 character. */
@@ -353,7 +401,7 @@ export const grepFilesTool: AgentTool = {
 		let truncated = false;
 		const results: Array<{ path: string; line: number; text: string }> = [];
 		await walk(root, async (file) => {
-			if (results.length >= cap || truncated) return false;
+			if (truncated) return false;
 			// `stat` first so a multi-GB log or database file can't be slurped into memory by a
 			// well-formed grep request. Anything over the read cap is silently skipped.
 			let size = 0;
@@ -368,12 +416,10 @@ export const grepFilesTool: AgentTool = {
 			if (!text) return true;
 			const lines = text.split('\n');
 			for (let i = 0; i < lines.length; i++) {
-				if (results.length >= cap) return false;
 				if (!pattern.test(lines[i])) continue;
-				const text = lines[i].length > MAX_GREP_LINE_CHARS ? `${lines[i].slice(0, MAX_GREP_LINE_CHARS)}…` : lines[i];
-				const match = { path: file, line: i + 1, text };
+				const match = { path: file, line: i + 1, text: clipLine(lines[i]) };
 				resultBytes += Buffer.byteLength(JSON.stringify(match), 'utf8');
-				if (resultBytes > budget) {
+				if (results.length >= cap || resultBytes > budget) {
 					truncated = true;
 					return false;
 				}
@@ -404,27 +450,35 @@ export const tailFileTool: AgentTool = {
 	},
 	handler: async (args: any, ctx: AgentToolContext) => {
 		const path = await resolveScoped(ctx.scopes, normalizeScope(args.root), args.path, 'read');
-		const wanted = Math.min(optionalPositiveInteger(args.lines, 'lines') ?? DEFAULT_TAIL_LINES, MAX_TAIL_LINES);
+		const wanted = Math.min(optionalInteger(args.lines, 'lines', 1) ?? DEFAULT_TAIL_LINES, MAX_TAIL_LINES);
+		const budget = pageBytes(ctx);
 		const fh = await open(path, 'r');
 		try {
 			// Read only the trailing page — a multi-GB log file otherwise OOMs the process.
 			const { size } = await fh.stat();
-			const start = Math.max(0, size - pageBytes(ctx));
-			const buf = Buffer.alloc(size - start);
-			await fh.read(buf, 0, buf.length, start);
-			// Starting mid-file can land inside a character; skip to the next character boundary.
+			const start = Math.max(0, size - budget);
+			const window = Buffer.alloc(size - start);
+			const { bytesRead } = await fh.read(window, 0, window.length, start);
+			const bytes = window.subarray(0, bytesRead);
 			let firstChar = 0;
-			while (start > 0 && firstChar < buf.length && (buf[firstChar] & 0xc0) === 0x80) firstChar++;
-			const all = buf.subarray(firstChar).toString('utf8').split('\n');
+			while (start > 0 && firstChar < bytes.length && (bytes[firstChar] & 0xc0) === 0x80) firstChar++;
+			const all = bytes.toString('utf8', firstChar).split('\n');
 			// `split('\n')` on a file ending with `\n` leaves a trailing empty entry — drop it so the
 			// "last N lines" the agent sees matches what a human reading the file would see.
 			if (all.length > 0 && all[all.length - 1] === '') all.pop();
 			// From a mid-file offset the first "line" is almost certainly a fragment; drop it, unless it
 			// is the only line, which is then the cut end of a line longer than the page.
-			const lastLineCut = start > 0 && all.length === 1;
+			let lastLineCut = start > 0 && all.length === 1;
 			if (start > 0 && all.length > 1) all.shift();
 			const lines = all.slice(Math.max(0, all.length - wanted));
-			return { path, lines, truncated: start > 0 && (lines.length < wanted || lastLineCut) };
+			let used = lines.reduce((total, line) => total + escapedBytes(line) + 3, 0);
+			while (lines.length > 1 && used > budget) used -= escapedBytes(lines.shift()!) + 3;
+			if (lines.length === 1 && used > budget) {
+				lines[0] = escapedTail(lines[0], budget);
+				lastLineCut = true;
+			}
+			const omitted = lines.length < Math.min(wanted, start > 0 ? Infinity : all.length);
+			return { path, lines, truncated: omitted || lastLineCut };
 		} finally {
 			await fh.close();
 		}

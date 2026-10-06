@@ -111,6 +111,7 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 		for (let turn = 0; turn < opts.maxTurns; turn++) {
 			if (opts.signal?.aborted) return; // status was already set to `aborted` by cancelRun
 			const result = await generateTurn(opts, toolDefs);
+			if (opts.signal?.aborted) return;
 
 			await appendMessage(opts.sessionId, {
 				role: 'assistant',
@@ -261,7 +262,7 @@ async function consumeResolvedApprovals(
 
 async function invokeTool(call: ToolCall, toolMap: Map<string, AgentTool>, ctx: AgentToolContext): Promise<string> {
 	const tool = toolMap.get(call.name);
-	if (!tool) return JSON.stringify({ error: 'unknown_tool', name: call.name });
+	if (!tool) return capObservation({ error: 'unknown_tool', name: call.name }, ctx);
 	try {
 		const result = await tool.handler(call.arguments ?? {}, ctx);
 		return capObservation({ ok: true, result }, ctx);

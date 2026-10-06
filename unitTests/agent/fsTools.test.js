@@ -166,24 +166,55 @@ describe('agent/fsTools pages', () => {
 		);
 	});
 
-	it('read_file pages a file through nextLine until totalLines, reassembling it exactly', async () => {
+	it('read_file pages a file through nextLine/nextOffset until totalLines, reassembling it exactly', async () => {
 		const text = numberedLines(500);
 		writeFileSync(join(scopes.logDir, 'big.log'), text);
 		const pages = [];
-		let startLine = 1;
+		let cursor = {};
 		for (;;) {
-			const page = await readFileTool.handler({ root: 'logs', path: 'big.log', startLine }, pagedCtx(2048));
+			const page = await readFileTool.handler({ root: 'logs', path: 'big.log', ...cursor }, pagedCtx(2048));
 			assert.ok(Buffer.byteLength(page.content) <= 1024, `page of ${Buffer.byteLength(page.content)} bytes`);
 			assert.ok(page.content.endsWith('\n'));
 			pages.push(page);
 			if (!page.nextLine) break;
 			assert.equal(page.nextLine, page.endLine + 1);
-			startLine = page.nextLine;
+			assert.equal(page.nextOffset, page.offset + Buffer.byteLength(page.content));
+			const rescanned = await readFileTool.handler(
+				{ root: 'logs', path: 'big.log', startLine: page.nextLine },
+				pagedCtx(2048)
+			);
+			cursor = { startLine: page.nextLine, offset: page.nextOffset };
+			const resumed = await readFileTool.handler({ root: 'logs', path: 'big.log', ...cursor }, pagedCtx(2048));
+			assert.deepEqual(resumed, rescanned);
 		}
 		assert.ok(pages.length > 5);
 		assert.equal(pages.map((page) => page.content).join(''), text);
 		assert.equal(pages.at(-1).totalLines, 500);
 		assert.equal(pages.at(-1).endLine, 500);
+	});
+
+	it('read_file from an offset alone returns content without line numbers', async () => {
+		writeFileSync(join(scopes.componentsRoot, 'a.txt'), 'one\ntwo\nthree\n');
+		const result = await readFileTool.handler({ path: 'a.txt', offset: 4 }, pagedCtx(65536));
+		assert.equal(result.content, 'two\nthree\n');
+		assert.equal(result.offset, 4);
+		assert.equal(result.startLine, undefined);
+		assert.equal(result.totalLines, undefined);
+		assert.equal(result.nextOffset, undefined);
+		await assert.rejects(
+			readFileTool.handler({ path: 'a.txt', offset: 15 }, pagedCtx(65536)),
+			/past the end of the file \(14 bytes\)/
+		);
+	});
+
+	it('read_file sizes a page by its JSON-escaped length, so the loop never cuts it', async () => {
+		const { serializeToolResult } = require('#src/resources/models/agentLoop');
+		const line = `${'\u0001"'.repeat(20)}\n`;
+		writeFileSync(join(scopes.logDir, 'ctl.log'), line.repeat(200));
+		const page = await readFileTool.handler({ root: 'logs', path: 'ctl.log' }, pagedCtx(2048));
+		assert.ok(page.nextLine > 2);
+		assert.ok(Buffer.byteLength(JSON.stringify(page.content)) <= 1024 + 2);
+		assert.equal(serializeToolResult({ ok: true, result: page }, 2048).truncated, false);
 	});
 
 	it('read_file honors lineCount and reads files over the old 5 MiB limit', async () => {
@@ -209,23 +240,33 @@ describe('agent/fsTools pages', () => {
 		assert.deepEqual({ content: empty.content, totalLines: empty.totalLines }, { content: '', totalLines: 0 });
 	});
 
-	it('read_file cuts a line longer than a page on a character boundary and moves on', async () => {
-		writeFileSync(join(scopes.componentsRoot, 'bundle.js'), `${'漢'.repeat(2000)}\nnext\n`);
-		const first = await readFileTool.handler({ path: 'bundle.js' }, pagedCtx(2048));
-		assert.equal(first.lineTruncated, true);
-		assert.equal(first.content, '漢'.repeat(341));
-		assert.equal(first.nextLine, 2);
-		const second = await readFileTool.handler({ path: 'bundle.js', startLine: 2 }, pagedCtx(2048));
-		assert.equal(second.content, 'next\n');
-		assert.equal(second.totalLines, 2);
+	it('read_file returns a line longer than a page in parts, on character boundaries, losing nothing', async () => {
+		const longLine = `${'漢'.repeat(1000)}${'\u0002'.repeat(300)}end\n`;
+		writeFileSync(join(scopes.componentsRoot, 'bundle.js'), `${longLine}next\n`);
+		const parts = [];
+		let cursor = {};
+		for (;;) {
+			const page = await readFileTool.handler({ path: 'bundle.js', ...cursor }, pagedCtx(2048));
+			assert.ok(Buffer.byteLength(JSON.stringify(page.content)) <= 1024 + 2);
+			assert.ok(!page.content.includes('\uFFFD'));
+			parts.push(page);
+			if (!page.lineTruncated) break;
+			assert.equal(page.startLine, 1);
+			assert.equal(page.nextLine, 1);
+			cursor = { startLine: page.nextLine, offset: page.nextOffset };
+		}
+		assert.ok(parts.length > 3);
+		assert.equal(parts.map((page) => page.content).join(''), `${longLine}next\n`);
+		assert.equal(parts.at(-1).endLine, 2);
+		assert.equal(parts.at(-1).totalLines, 2);
 	});
 
-	it('read_file rejects a startLine or lineCount that is not a positive integer', async () => {
+	it('read_file rejects a startLine, lineCount or offset out of range', async () => {
 		writeFileSync(join(scopes.componentsRoot, 'a.txt'), 'a\n');
-		for (const args of [{ startLine: 0 }, { startLine: 1.5 }, { startLine: '2' }, { lineCount: -1 }]) {
+		for (const args of [{ startLine: 0 }, { startLine: 1.5 }, { startLine: '2' }, { lineCount: -1 }, { offset: -1 }]) {
 			await assert.rejects(
 				readFileTool.handler({ path: 'a.txt', ...args }, pagedCtx(65536)),
-				/must be a positive integer/
+				/must be an integer of at least/
 			);
 		}
 	});
@@ -234,7 +275,7 @@ describe('agent/fsTools pages', () => {
 		writeFileSync(join(scopes.componentsRoot, 'a.txt'), numberedLines(5000));
 		const result = await readFileTool.handler({ path: 'a.txt' }, ctx(scopes));
 		assert.ok(Buffer.byteLength(result.content) <= 32 * 1024);
-		assert.ok(Buffer.byteLength(result.content) > 31 * 1024);
+		assert.ok(Buffer.byteLength(JSON.stringify(result.content)) > 31 * 1024);
 		assert.equal(result.nextLine, result.endLine + 1);
 	});
 
@@ -267,7 +308,7 @@ describe('agent/fsTools pages', () => {
 		writeFileSync(join(scopes.logDir, 'srv.log'), 'a\n');
 		await assert.rejects(
 			tailFileTool.handler({ root: 'logs', path: 'srv.log', lines: 0 }, pagedCtx(65536)),
-			/positive integer/
+			/must be an integer of at least 1/
 		);
 	});
 
@@ -279,6 +320,39 @@ describe('agent/fsTools pages', () => {
 		assert.equal(result.results[0].text.length, 501);
 		assert.ok(result.results[0].text.endsWith('…'));
 		assert.ok(Buffer.byteLength(JSON.stringify(result.results)) <= 2048);
+	});
+
+	it('tail_file keeps its JSON-escaped lines within a page', async () => {
+		writeFileSync(join(scopes.logDir, 'ctl.log'), `${'\u0001'.repeat(40)}\n`.repeat(200));
+		const result = await tailFileTool.handler({ root: 'logs', path: 'ctl.log', lines: 5000 }, pagedCtx(2048));
+		assert.equal(result.truncated, true);
+		assert.ok(result.lines.length > 1);
+		assert.ok(Buffer.byteLength(JSON.stringify(result.lines)) <= 1024 + 2 * result.lines.length + 2);
+		const oneLine = await tailFileTool.handler({ root: 'logs', path: 'ctl.log', lines: 1 }, pagedCtx(2048));
+		assert.deepEqual(oneLine, { path: oneLine.path, lines: ['\u0001'.repeat(40)], truncated: false });
+	});
+
+	it('tail_file of a small file is not truncated', async () => {
+		writeFileSync(join(scopes.logDir, 'small.log'), 'a\nb\n');
+		const result = await tailFileTool.handler({ root: 'logs', path: 'small.log', lines: 10 }, pagedCtx(65536));
+		assert.deepEqual(result.lines, ['a', 'b']);
+		assert.equal(result.truncated, false);
+	});
+
+	it('grep_files says it stopped when maxResults left matches unreturned, and only then', async () => {
+		writeFileSync(join(scopes.componentsRoot, 'a.txt'), 'hit\nhit\nhit\n');
+		const capped = await grepFilesTool.handler({ pattern: 'hit', maxResults: 2 }, pagedCtx(65536));
+		assert.equal(capped.count, 2);
+		assert.equal(capped.truncated, true);
+		const exact = await grepFilesTool.handler({ pattern: 'hit', maxResults: 3 }, pagedCtx(65536));
+		assert.equal(exact.count, 3);
+		assert.equal(exact.truncated, false);
+	});
+
+	it('grep_files does not split a surrogate pair when it cuts a line', async () => {
+		writeFileSync(join(scopes.componentsRoot, 'emoji.txt'), `${'a'.repeat(499)}${'😀'.repeat(10)}\n`);
+		const result = await grepFilesTool.handler({ pattern: 'a' }, pagedCtx(65536));
+		assert.equal(result.results[0].text, `${'a'.repeat(499)}…`);
 	});
 
 	it('grep_files is not truncated when every match fits', async () => {

@@ -750,7 +750,7 @@ export function errorInfo(err: unknown): { name: string; message: string } {
 	return { name: 'Error', message: String(err) };
 }
 
-export interface SerializedResult {
+interface SerializedResult {
 	content: string;
 	totalBytes: number;
 	truncated: boolean;

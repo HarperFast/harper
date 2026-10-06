@@ -797,6 +797,90 @@ describe('agent/loop observation size and context window', () => {
 		assert.ok(reloaded.messages.find((m) => m.role === 'tool').content.length > 30_000);
 	});
 
+	it('caps the observation for a tool the model invented', async () => {
+		const sessionId = await sessionWith({ role: 'user', content: 'go' });
+		const invented = {
+			content: '',
+			finishReason: 'tool_calls',
+			toolCalls: [{ id: 'x', name: 'n'.repeat(10_000), arguments: {} }],
+		};
+		const { models } = scriptedModels([invented, { content: 'ok', finishReason: 'stop' }]);
+
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, maxToolResultBytes: 2048 });
+
+		const toolMessage = (await session.getSession(sessionId)).messages.find((m) => m.role === 'tool');
+		assert.ok(Buffer.byteLength(toolMessage.content, 'utf8') <= 2048);
+		assert.match(toolMessage.content, /^\{"error":"unknown_tool","name":"nnn/);
+	});
+
+	it('keeps the aborted status when a cancel lands while the model is answering', async () => {
+		const sessionId = await sessionWith({ role: 'user', content: 'go' });
+		const controller = new AbortController();
+		const models = {
+			async generate() {
+				controller.abort();
+				await session.setStatus(sessionId, 'aborted', 'Cancelled by operator');
+				return { content: 'late answer', finishReason: 'stop' };
+			},
+		};
+
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, signal: controller.signal });
+
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'aborted');
+		assert.deepEqual(
+			reloaded.messages.map((m) => m.role),
+			['user']
+		);
+	});
+
+	it('recovers through the real OpenAI backend and Models when the server rejects the request as too long', async () => {
+		require('#src/resources/databases');
+		const { OpenAIBackend } = require('#src/components/openai/index');
+		const { setGenerative, clearRegistry } = require('#src/resources/models/backendRegistry');
+		const { Models } = require('#src/resources/models/Models');
+		const json = (body, status = 200) =>
+			new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+		const requestBytes = [];
+		const fetch = async (_url, init) => {
+			requestBytes.push(init.body.length);
+			if (init.body.length > 20_000) {
+				return json({ error: { message: 'Context length exceeded.', code: 'context_length_exceeded' } }, 400);
+			}
+			const last = JSON.parse(init.body).messages.at(-1);
+			const message =
+				last.role === 'tool'
+					? { role: 'assistant', content: 'done' }
+					: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [{ id: 'c1', type: 'function', function: { name: 'big', arguments: '{}' } }],
+						};
+			return json({ choices: [{ message, finish_reason: last.role === 'tool' ? 'stop' : 'tool_calls' }] });
+		};
+		clearRegistry();
+		setGenerative('default', new OpenAIBackend({ apiKey: 'sk-test', model: 'm' }, fetch));
+		try {
+			const sessionId = await sessionWith({ role: 'user', content: 'read it' });
+
+			await runAgent({
+				sessionId,
+				models: new Models({ write() {} }),
+				tools: [bigTool('big', 30_000)],
+				scopes,
+				maxTurns: 5,
+			});
+
+			const reloaded = await session.getSession(sessionId);
+			assert.equal(reloaded.status, 'completed', reloaded.lastError);
+			assert.equal(requestBytes.length, 3);
+			assert.ok(requestBytes[1] > 20_000 && requestBytes[2] < 20_000, String(requestBytes));
+			assert.ok(Buffer.byteLength(reloaded.messages.find((m) => m.role === 'tool').content, 'utf8') <= 2048);
+		} finally {
+			clearRegistry();
+		}
+	});
+
 	it('neither shrinks nor retries once the run is cancelled', async () => {
 		const sessionId = await sessionWith(
 			{ role: 'user', content: 'go' },
