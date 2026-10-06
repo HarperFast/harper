@@ -2571,22 +2571,11 @@ describe('record lock delegations', () => {
 			assert.deepStrictEqual(relayed, [[cluster.database, cluster.table, entry, 'alpha', 42]]);
 			assert.strictEqual(beta.coordinator.stats.granted, 1, 'the non-owner applied nothing itself');
 			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 0);
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-			// The owner applies the relayed entry through the same method and clears the grant.
->>>>>>> 57f28c5c8 (Relay a record lock control entry received off the coordinating thread instead of dropping it)
-=======
->>>>>>> 0eb395a9c (Relay a release from a thread with no coordinator, and contain an asynchronous relay rejection)
 			beta.owns = true;
 			beta.coordinator.applyEntry(...relayed[0].slice(2));
 			assert.strictEqual(beta.coordinator.stats.granted, 0);
 		});
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 0eb395a9c (Relay a release from a thread with no coordinator, and contain an asynchronous relay rejection)
 		it('counts a drop when an asynchronous relay rejects, and never leaves an unhandled rejection', async () => {
 			const rejections = [];
 			const onUnhandled = (reason) => rejections.push(reason);
@@ -2615,15 +2604,6 @@ describe('record lock delegations', () => {
 		});
 
 		it('relays through the registered transport on a thread that never built a coordinator for the table', () => {
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-			// The replication sink reaches the coordinator through the admitting resolver, which never
-			// creates one; a worker applying a peer's stream before anything locked here would otherwise
-			// let the release vanish, uncounted, and the home would hold its grant to the deadline.
->>>>>>> 0eb395a9c (Relay a release from a thread with no coordinator, and contain an asynchronous relay rejection)
-=======
->>>>>>> 8ca964c32 (Route the registered receive callback through the receive boundary; type the relay hook as possibly async)
 			const relayed = [];
 			const transport = {
 				homeMap: () => undefined,
@@ -2642,8 +2622,6 @@ describe('record lock delegations', () => {
 				const entry = { type: 'lockRelease', key: 'k', requester: 'alpha', token: [1, 1, 1], dependencies: null };
 				receiveLockControlEntry('cold-db', 'cold-table', entry, 'alpha', 9);
 				assert.deepStrictEqual(relayed, [['cold-db', 'cold-table', entry, 'alpha', 9]]);
-<<<<<<< HEAD
-<<<<<<< HEAD
 				transport.onControlEntry('cold-db', 'cold-table', entry, 'alpha', 12);
 				assert.strictEqual(relayed.length, 2, 'the registered receive callback takes the same boundary');
 				receiveLockControlEntry('cold-db', 'cold-table', { type: 'lockBarrier', nonce: 1 }, 'alpha', 10);
@@ -2651,32 +2629,12 @@ describe('record lock delegations', () => {
 				transport.ownsCoordination = () => true;
 				receiveLockControlEntry('cold-db', 'cold-table', entry, 'alpha', 11);
 				assert.strictEqual(relayed.length, 2, 'the owner thread with no coordinator holds no grant to clear');
-=======
-=======
-				transport.onControlEntry('cold-db', 'cold-table', entry, 'alpha', 12);
-				assert.strictEqual(relayed.length, 2, 'the registered receive callback takes the same boundary');
->>>>>>> 8ca964c32 (Route the registered receive callback through the receive boundary; type the relay hook as possibly async)
-				receiveLockControlEntry('cold-db', 'cold-table', { type: 'lockBarrier', nonce: 1 }, 'alpha', 10);
-				assert.strictEqual(relayed.length, 2, 'only releases are relayed');
-				transport.ownsCoordination = () => true;
-				receiveLockControlEntry('cold-db', 'cold-table', entry, 'alpha', 11);
-<<<<<<< HEAD
-				assert.strictEqual(relayed.length, 1, 'the owner thread with no coordinator holds no grant to clear');
->>>>>>> 0eb395a9c (Relay a release from a thread with no coordinator, and contain an asynchronous relay rejection)
-=======
-				assert.strictEqual(relayed.length, 2, 'the owner thread with no coordinator holds no grant to clear');
->>>>>>> 8ca964c32 (Route the registered receive callback through the receive boundary; type the relay hook as possibly async)
 			} finally {
 				unregisterClusterLockTransport('cold-db', true);
 				setLockCoordinatorResolver(() => undefined);
 			}
 		});
 
-<<<<<<< HEAD
-=======
->>>>>>> 57f28c5c8 (Relay a record lock control entry received off the coordinating thread instead of dropping it)
-=======
->>>>>>> 0eb395a9c (Relay a release from a thread with no coordinator, and contain an asynchronous relay rejection)
 		it('counts a drop when the relay throws, and never surfaces the throw', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
