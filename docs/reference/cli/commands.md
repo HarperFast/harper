@@ -122,13 +122,15 @@ harper deploy package=HarperDB/application-template
 harper deploy target=https://server.com:9925 restart=true
 ```
 
-Remote deploys authenticate the same way as any other remote CLI operation (stored login token, `auth_username`/`auth_password` or the legacy `username`/`password`, or environment variables). See [Remote Operations](./overview.md#remote-operations).
+Remote deploys authenticate the same way as any other remote CLI operation (stored login token, `auth_username`/`auth_password` or the legacy `username`/`password`, environment variables, or on GitHub Actions a [workload identity token](./authentication.md#workload-identity-oidc)). See [Remote Operations](./overview.md#remote-operations).
 
 #### Live progress
 
 <VersionBadge type="changed" version="v5.1.0" />
 
-Deploys stream live progress: an upload progress bar followed by real-time install output, as the deploy advances through its phases (prepare → load → replicate → restart). Against Harper servers older than 5.1, the CLI automatically falls back to a non-streaming deploy without live progress.
+A directory deploy streams live progress to stderr: an upload progress bar followed by real-time install output, as the deploy advances through its phases (prepare → load → replicate → restart). A `package` or `by_ref` deploy prints only its result. From v5.4.0, the `load` phase is the [canary](../operations-api/operations.md#certifying-a-release-in-a-canary-worker) deciding whether the release loads, so a deploy that does not restart has no `load` phase. Against Harper servers older than 5.1, the CLI automatically falls back to a non-streaming deploy without live progress.
+
+The result goes to stdout, so `json=true` gives a script a parseable result to read, such as `harper deploy restart=rolling json=true > deploy.json`.
 
 Every deploy is recorded in the `system.hdb_deployment` table and the response includes a `deployment_id` you can use to query the deployment record. See [Deployment Operations](../operations-api/operations.md#deployment-operations).
 
@@ -139,8 +141,8 @@ All parameters are passed as `key=value` arguments. Every parameter is optional.
 - `project=<name>` - Component project name. Defaults to the current directory's name for a directory deploy, or is derived from the package for a package deploy.
 - `package=<reference>` - An npm, GitHub, or tarball reference to deploy instead of the current directory (e.g. `HarperDB/app#semver:v1.0.0`).
 - `target=<url>` - Remote Harper instance to deploy to. Omit to deploy to the local instance. A bare host defaults to `https://<host>:9925`.
-- `restart=true` or `restart=rolling` - Restart Harper after deploying. Use `rolling` for a staggered, zero-downtime restart across a cluster.
-- `replicated=true` - Replicate the deploy to cluster peers.
+- `restart=true` or `restart=rolling` - Restart Harper after deploying. Use `rolling` for a staggered, zero-downtime restart across a cluster. With `rolling`, the command exits `0` once the node you called has taken the release and started the rolling restart's job; see [Waiting for a rolling deploy](#waiting-for-a-rolling-deploy). Cannot be combined with `activate=false`.
+- `replicated=false` - Deploy to the node you called only. On Harper Pro and Fabric, a deploy goes to every node in the cluster unless you pass this; Harper core on its own does not replicate.
 - `install_command=<command>` - Override the install command run for the component.
 - `install_timeout=<ms>` - Maximum time, in milliseconds, to allow the install to run.
 - `install_allow_scripts=true` - Allow npm pre/post-install scripts to run (disabled by default).
@@ -150,6 +152,8 @@ All parameters are passed as `key=value` arguments. Every parameter is optional.
 - `urlPath=<path>` - HTTP path the component is mounted at (e.g. `/api/v2`). Requires `package`.
 - `host=<hostname>` - Virtual hostname the component is served on (e.g. `api.example.com`). Requires `package`. (Added in: v5.2.0)
 - `credentials='<json>'` - JSON array of credential objects for installing from a private npm registry or git repository. See [Private deploy sources](#private-deploy-sources). (Added in: v5.2.0)
+- `activate=false` - Build and install the release on each node without making it live. The result's `deployment_id` names the staged build. Cannot be combined with `restart`. See [Staging a build and activating it later](../operations-api/operations.md#staging-a-build-and-activating-it-later). (Added in: v5.3.0)
+- `deployment_id=<id>` - Make a staged build live, or go back to a release a later deploy replaced, with no rebuild or reinstall. Takes no `package`, `by_ref`, or other build inputs. Pass `restart` here rather than on the stage. See [Going back to a previous release](../operations-api/operations.md#going-back-to-a-previous-release). (Added in: v5.3.0)
 - `json=true` - Print output as JSON instead of the default YAML.
 
 **Packaging options** (directory deploy only):
@@ -163,6 +167,30 @@ All parameters are passed as `key=value` arguments. Every parameter is optional.
 - `ref=<committish>` - The branch, tag, or commit to deploy. Resolved to an immutable commit SHA so every cluster node deploys the same commit. Defaults to the current `HEAD`; implies `by_ref`. (Added in: v5.2.3)
 - `credential=true` - Attach the sealed credential reference so the cluster can clone a private repository. Provision it first with `harper deploy setup=true`. (Added in: v5.2.3)
 - `setup=true` - Provision (seal) a durable encrypted credential for a private deploy source instead of deploying. Interactive. (Added in: v5.2.3)
+
+#### Waiting for a rolling deploy
+
+`harper deploy restart=rolling` exits `0` once the node you called has taken the release and started a job that restarts the other nodes one at a time. Those nodes take the release after the command has exited, and a node that rejects it fails the job, not the command. To learn whether every node took it, poll the job named by the result's `restartJobId` with `harper get_job` until it ends `COMPLETE`, or `ERROR` with a `message` listing each node's outcome under `activated`:
+
+```bash
+harper deploy restart=rolling json=true > deploy.json
+JOB_ID=$(jq -r '.restartJobId // empty' deploy.json)
+[ -n "$JOB_ID" ] || exit 0
+for attempt in $(seq 60); do
+  harper get_job id="$JOB_ID" json=true > job.json
+  case $(jq -r '.[0].status' job.json) in
+    COMPLETE) exit 0 ;;
+    ERROR) jq -r '.[0].message' job.json; exit 1 ;;
+  esac
+  sleep 10
+done
+echo "Job $JOB_ID was still running after 10 minutes"
+exit 1
+```
+
+A user whose role has an `operations` allowlist needs `get_job` in it to poll. With `restart=true` there is no job: the command fails when a node rejects the release, unless you pass `ignore_replication_errors=true`.
+
+[Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci) uses this in a complete GitHub Actions workflow.
 
 #### Deploy by reference
 
@@ -190,7 +218,7 @@ Installing a component from a private npm registry or a private git repository r
 harper deploy setup=true
 ```
 
-This interactive flow prompts for the provider (a private GitHub repository or a private npm registry), encrypts a token you supply (from `gh auth token`, `npm token create`, or a pasted PAT) on your machine using the cluster's public key, and stores only the ciphertext. It then prints a `credentials='[...]'` reference — containing the sealed secret's name, not the token — to use in your deploy.
+This interactive flow prompts for the provider (a private GitHub repository or a private npm registry) unless you pass `provider=github` or `provider=npm`, encrypts a token you supply (from `gh auth token`, `npm token create`, or a pasted PAT) on your machine using the cluster's public key, and stores only the ciphertext. It then prints a `credentials='[...]'` reference — containing the sealed secret's name, not the token — to use in your deploy.
 
 - **Private git repository** - After `setup=true`, deploy by reference with `credential=true`, which attaches the sealed credential reference for the clone automatically:
 
@@ -198,7 +226,7 @@ This interactive flow prompts for the provider (a private GitHub repository or a
   harper deploy by_ref=true credential=true
   ```
 
-- **Private npm registry** - After `setup=true`, pass the printed `credentials` reference on your deploy. CLI argument values are parsed as JSON, so a shell-quoted array works:
+- **Private npm registry** - The flow does not ask which registry: pass `registry=<url>` (and `scope=@my-org` to apply it to one scope), or it uses `registry.npmjs.org`. After `setup=true`, pass the printed `credentials` reference on your deploy. CLI argument values are parsed as JSON, so a shell-quoted array works:
 
   ```bash
   harper deploy package=npm:@my-org/my-app@1.2.3 \
@@ -257,11 +285,11 @@ The `harper install` command operates exactly like the [`harper`](#harper) comma
 
 ### `harper login`
 
-Available since: v5.0.0
+Available since: v5.1.0
 
 Log in to a Harper instance to store authentication tokens locally. Once logged in, subsequent commands targeting this instance (via `target`) will automatically use the stored token.
 
-The CLI also supports `.env` files. When you log in, the `HARPER_CLI_TARGET` environment variable will be automatically added to a `.env` file in your current directory if it exists. This allows you to omit the `target` parameter in subsequent commands within that directory.
+The CLI also supports `.env` files. When you log in in a directory that already has a `.env` file, and neither that file nor your environment sets `HARPER_CLI_TARGET` or `CLI_TARGET`, the CLI appends `HARPER_CLI_TARGET` to it. It never creates the file. This allows you to omit the `target` parameter in subsequent commands within that directory.
 
 ```bash
 harper login <URL>
@@ -295,7 +323,7 @@ Run this as a **dedicated CI user**, not your own account: a user holds only one
 
 ### `harper logout`
 
-Available since: v5.0.0
+Available since: v5.1.0
 
 Log out of a Harper instance and remove the stored authentication token.
 

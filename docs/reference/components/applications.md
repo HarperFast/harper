@@ -101,18 +101,7 @@ harper deploy \
   replicated=true
 ```
 
-Alternatively, credentials can be provided via environment variables (recommended for CI/CD):
-
-```sh
-export HARPER_CLI_USERNAME=<username>
-export HARPER_CLI_PASSWORD=<password>
-harper deploy \
-  project=<name> \
-  package=<package> \
-  target=<remote> \
-  restart=true \
-  replicated=true
-```
+For CI/CD on GitHub Actions, use [workload identity (OIDC)](../cli/authentication.md#workload-identity-oidc) instead: the CLI trades the runner's identity token for an operation token against a trust policy on the cluster, so the pipeline stores no Harper credential, and the policy can name a deploy-only user rather than an administrator. [Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci) has a complete workflow. Elsewhere, give the pipeline a refresh token from [`harper login --for-ci`](../cli/authentication.md#token-credentials-for-cicd) rather than a password.
 
 ### Dedicated Authentication Parameters
 
@@ -159,7 +148,7 @@ For SSH-based private repos, use the [Add SSH Key](#add_ssh_key) operation to re
 
 Omitting `package` uploads a snapshot of your working directory. The result is an anonymous artifact: nothing records _which_ commit it came from, so reproducing it later — or stepping back to a previous release — means finding those exact files again.
 
-Deploying by **reference** sends a pinned git reference instead, and the cluster fetches that exact commit. Redeploying the same reference deploys the same source revision, and rolling back is deploying an older one.
+Deploying by **reference** sends a pinned git reference instead, and the cluster fetches that exact commit. Redeploying the same reference deploys the same source revision.
 
 A pinned SHA fixes the _source_, not the built artifact. The cluster installs and builds from that source on each node, so unpinned dependency ranges, a mutable registry artifact, install scripts, or a different toolchain can still produce different bytes — or a failure — from the same commit. Commit your lockfile if you need the build itself to be reproducible.
 
@@ -181,9 +170,17 @@ This resolves the repository's `origin` remote and the current commit, then depl
 # Deploy a specific tag
 harper deploy ref=v1.2.0 restart=true replicated=true
 
-# Roll back by deploying an older commit
+# Deploy a specific commit
 harper deploy ref=9f8c2a1 restart=true replicated=true
 ```
+
+To go back to a release a later deploy replaced, activate the kept release by its `deployment_id` instead (v5.3.0). That puts back the exact installed release with no fetch, rebuild, or reinstall, where deploying an older commit installs it again from source:
+
+```sh
+harper deploy project=<name> deployment_id=<id> restart=true
+```
+
+[`list_deployments`](../operations-api/operations.md#list_deployments) shows each deployment's id, and [Going back to a previous release](../operations-api/operations.md#going-back-to-a-previous-release) says which releases are kept.
 
 **A reference is pinned to a SHA, not to the name you typed.** Tags and branches are resolved to a full commit SHA before the deploy is sent — from your local checkout when it has the ref, and from the remote when it doesn't (a shallow CI clone usually doesn't). Annotated tags resolve to the commit they point at. This matters on a cluster: peers resolve the package independently, so a tag that moves mid-deploy — or a branch that advances — could otherwise leave nodes running different code.
 
@@ -344,8 +341,8 @@ Deploys a component using a package reference or a base64-encoded `.tar` payload
 - `package` _(optional)_ — Any valid npm reference (GitHub, npm, tarball, local path, URL)
 - `payload` _(optional)_ — Base64-encoded `.tar` file content
 - `force` _(optional)_ — Allow deploying over protected core components. Defaults to `false`
-- `restart` _(optional)_ — `true` for immediate restart, `'rolling'` for sequential cluster restart. Either one [certifies the release in a canary worker](../operations-api/operations.md#certifying-a-release-in-a-canary-worker) before rolling it out, unless the response's `certification` says it went out unchecked
-- `replicated` _(optional)_ — Replicate to all cluster nodes
+- `restart` _(optional)_ — `true` for immediate restart, `'rolling'` for sequential cluster restart. Either one [certifies the release in a canary worker](../operations-api/operations.md#certifying-a-release-in-a-canary-worker) before rolling it out (v5.4.0), unless the response's `certification` says it went out unchecked
+- `replicated` _(optional)_ — On Harper Pro and Fabric, a deploy goes to every node in the cluster unless this is `false`. Harper core on its own does not replicate
 - `install_command` _(optional)_ — Install command override
 - `install_timeout` _(optional)_ — Install timeout override in milliseconds
 - `install_allow_scripts` _(optional)_ — Allow install scripts to run. Defaults to `false`, which causes `--ignore-scripts` to be passed to the install command (this is ignored with `install_command`).

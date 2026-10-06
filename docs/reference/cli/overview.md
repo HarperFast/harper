@@ -19,10 +19,12 @@ Available since: v4.1.0
 Harper is typically installed globally via npm:
 
 ```bash
-npm i -g harperdb
+npm install -g harper
 ```
 
 The installation includes the Harper CLI, which provides comprehensive management capabilities for local and remote Harper instances.
+
+Install the `harper` package, not `harperdb`. The `harperdb` package on npm is the v4 line, so it has none of the v5 CLI features, such as `harper login`, workload identity (OIDC), or deploying by reference.
 
 For detailed installation instructions, see the [Getting Started / Install And Connect Harper](https://docs.harperdb.io/docs/getting-started/install-and-connect-harper) guide.
 
@@ -163,7 +165,8 @@ Provide credentials via:
 - **Dedicated authentication parameters**: Use `auth_username=<user> auth_password=<pass>` for one-off commands
 - **Target URL credentials**: Embed a complete username and password in the URL (supported, but not recommended because URLs are easily exposed)
 - **Environment variables and `.env` files**: Use `HARPER_CLI_TARGET` with `HARPER_CLI_USERNAME` and `HARPER_CLI_PASSWORD` (project-specific configuration)
-- **Token credentials**: `HARPER_CLI_REFRESH_TOKEN`, provisioned with [`harper login --for-ci`](./authentication.md#token-credentials-for-cicd) (recommended for CI/CD)
+- **Workload identity (OIDC)**: on GitHub Actions, the CLI trades the runner's identity token for an operation token against a [trust policy](./authentication.md#workload-identity-oidc), so the pipeline stores no Harper credential (recommended for CI/CD, v5.3.0)
+- **Token credentials**: `HARPER_CLI_REFRESH_TOKEN`, provisioned with [`harper login --for-ci`](./authentication.md#token-credentials-for-cicd) (for CI/CD where workload identity is not available)
 - **Persistent Login**: `harper login` to store tokens (recommended for local development)
 - **Legacy parameters**: `username=<user> password=<pass>` remain a fallback when no higher-priority authentication source is available
 
@@ -174,7 +177,7 @@ This list is abbreviated and is **not** in precedence order. See [Authentication
 ```bash
 # Log in to a specific target
 harper login https://server.com:9925
-# This automatically sets HARPER_CLI_TARGET in your local .env file
+# If ./.env exists and sets no target, this also appends HARPER_CLI_TARGET to it
 
 # Subsequently execute operations without target or credentials
 harper describe_database database=dev
