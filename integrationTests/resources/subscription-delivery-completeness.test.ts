@@ -343,6 +343,24 @@ function runSuite(threadCount: 1 | 4) {
 			await teardownHarper(ctx);
 		});
 
+		test('paused snapshot preserves a buffered update followed by publish', async () => {
+			const response = await request(restBase)
+				.post('/BufferedSnapshotProbe/')
+				.set(client.headers)
+				.send({
+					prefix: `snapshot-${threadCount}-${Date.now()}-`,
+				})
+				.timeout(20_000)
+				.expect(200);
+			strictEqual(response.body.current, 1);
+			const rows = response.body.events.filter((event: any) => event.type === 'put');
+			strictEqual(rows.at(-1)?.seq, 1, 'updated row missing after publish');
+			deepStrictEqual(
+				response.body.events.filter((event: any) => event.type === 'message'),
+				[{ type: 'message', seq: 2 }]
+			);
+		});
+
 		for (const { label, options, versions } of [
 			{ label: 'default', options: {}, versions: [3] },
 			{ label: 'includeSuperseded', options: { includeSuperseded: true }, versions: [1, 2, 3] },

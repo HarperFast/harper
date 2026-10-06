@@ -6967,7 +6967,11 @@ export function makeTable(options): TableResourceClass {
 								}
 							}
 						} else if (!includeSuperseded && !reportingProgress && pendingRealTimeQueue) {
-							pendingRealTimeQueue = pendingRealTimeQueue.filter((event) => !isStaleRecordEvent(event));
+							let kept = 0;
+							for (const event of pendingRealTimeQueue) {
+								if (keepCurrentRecordEvent(event)) pendingRealTimeQueue[kept++] = event;
+							}
+							pendingRealTimeQueue.length = kept;
 						}
 					}
 				} else {
@@ -7091,14 +7095,20 @@ export function makeTable(options): TableResourceClass {
 					)
 				);
 			}
-			function isStaleRecordEvent(event: any) {
+			function keepCurrentRecordEvent(event: any) {
 				const type = event.type;
 				if (
 					event.id === undefined ||
 					!(type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate')
 				)
-					return false;
-				return primaryStore.getEntry(event.id)?.version > event.version;
+					return true;
+				const entry = primaryStore.getEntry(event.id);
+				if (!entry || entry.version <= event.version) return true;
+				if (!getFullRecord) return false;
+				event.value = entry.value;
+				event.version = entry.version;
+				event.type = entry.metadataFlags & INVALIDATED ? 'invalidate' : entry.value ? 'put' : 'delete';
+				return true;
 			}
 			function eventFromAudit(id: Id, auditRecord: any, localTime: number, beginTxn?: boolean, live?: boolean) {
 				let type = auditRecord.type;
