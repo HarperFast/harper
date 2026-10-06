@@ -318,7 +318,7 @@ describe('agent/fsTools key material and the single-file config scope (harper#30
 				keyDirs: [join(linkedRoot, 'keys'), join(linkedRoot, 'ssh')],
 			};
 			await assert.rejects(
-				readFileTool.handler({ path: 'keys/privateKey.pem' }, ctx(scopes)),
+				readFileTool.handler({ path: 'keys/notes.txt' }, ctx(scopes)),
 				/Refusing to read key material/
 			);
 		});
