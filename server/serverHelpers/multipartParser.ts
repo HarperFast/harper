@@ -182,7 +182,7 @@ export function releaseUnreadUpload(request: FastifyRequest, _reply: FastifyRepl
 }
 
 function isAbandoned({ httpRequest, file, handedOut }: Upload): boolean {
-	if (!handedOut || !file || fullyReceived(httpRequest) || file.readableEnded) return false;
+	if (!handedOut || !file || httpRequest.readableEnded || file.readableEnded) return false;
 	if (file.destroyed) return true;
 	return file.readableFlowing !== true && file.listenerCount('data') === 0 && file.listenerCount('readable') === 0;
 }

@@ -248,6 +248,18 @@ describe('multipartParser – an upload its response left unread', () => {
 		await waitFor(() => raw.destroyed, 3000);
 	});
 
+	it('discards the rest of a body that has fully arrived but still waits behind the unread part', async () => {
+		const { request, raw, parsed } = start({ fileBytes: 256 * 1024 });
+		request.raw = raw;
+		await parsed;
+		await sleep(50);
+		raw.complete = true;
+		await respond(request);
+		await waitFor(() => raw.readableEnded, 5000);
+		await sleep(1200);
+		assert.strictEqual(raw.destroyed && !raw.readableEnded, false, 'a body that arrived is never cut off');
+	});
+
 	it('leaves a request alone at the end of its grace period once its body has fully arrived', async () => {
 		const raw = new PassThrough();
 		const request = { headers: { 'content-type': CONTENT_TYPE }, raw };
