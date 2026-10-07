@@ -251,7 +251,6 @@ function resolveESMPackageExports(
 	}
 }
 
-// Shared by the VM loader and the compartment resolveHook, so both modes resolve a dependency the same way
 function resolveModule(specifier: string, referrer: string, scope: ApplicationScope): string {
 	if (HARPER_MODULE_IDS.has(specifier)) {
 		return 'harper'; // resolve any harper package as an alias to a single synthetic module

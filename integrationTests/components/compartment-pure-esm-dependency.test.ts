@@ -69,6 +69,7 @@ for (const lockdown of ['freeze-after-load', 'ses'] as const) {
 				try {
 					response = await fetch(`${ctx.harper.httpURL}/PureESMProbe`, {
 						headers: { Authorization: authHeader(ctx) },
+						signal: AbortSignal.timeout(5_000),
 					});
 				} catch {
 					await sleep(250);

@@ -1,8 +1,8 @@
 'use strict';
 
-const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
-const { join } = require('node:path');
+const { dirname, join } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { scopedImport } = require('#src/security/jsLoader');
 const { expect } = require('chai');
@@ -200,6 +200,22 @@ describe('symlinked module resolution', () => {
 		// Same scenario for ESM: import cache from '../cache.mjs' must resolve via realpath
 		const result = await scopedImport(join(SYMLINK_FIXTURE, 'index.mjs'), vmScope());
 		expect(result.cached).to.equal('hit');
+	});
+
+	it('should resolve relative ESM import through a symlinked module in a compartment', async () => {
+		const result = await scopedImport(join(SYMLINK_FIXTURE, 'index.mjs'), { mode: 'compartment', resources: {} });
+		expect(result.cached).to.equal('hit');
+	});
+});
+
+describe('SES loading', () => {
+	it('requires the same shims, in the same order, as ses/index.js', () => {
+		const sesIndex = readFileSync(join(dirname(require.resolve('ses/package.json')), 'index.js'), 'utf8');
+		const loaderSource = readFileSync(join(__dirname, '..', '..', '..', 'security', 'jsLoader.ts'), 'utf8');
+		const sesShims = [...sesIndex.matchAll(/^import '\.\/src\/([\w-]+-shim\.js)';$/gm)].map((match) => match[1]);
+		const loadedShims = [...loaderSource.matchAll(/require\('ses\/([\w-]+-shim\.js)'\)/g)].map((match) => match[1]);
+		expect(sesShims).to.have.length.above(0);
+		expect(loadedShims).to.deep.equal(sesShims);
 	});
 });
 
