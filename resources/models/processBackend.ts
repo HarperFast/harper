@@ -691,11 +691,12 @@ function resolveOptions(kind: ModelKind, options: ProcessBackendOptions | undefi
 }
 
 /**
- * Register `kind`/`id` once per process. Every thread that loads the component calls this where it
- * would call `registerBackend`; `factory` runs on the elected owner only, and each thread's registry
- * gets a proxy that forwards `embed`, `generate`, `decide` and `scoreChoices` to the owner. Calling
- * it again on a thread updates the factory and options a later start uses; a started owner keeps
- * the backend it built.
+ * Register `kind`/`id` for the whole process, with at most one live instance at a time. Every thread
+ * that loads the component calls this where it would call `registerBackend`; `factory` runs on the
+ * elected owner only, and each thread's registry gets a proxy that forwards `embed`, `generate`,
+ * `decide` and `scoreChoices` to the owner. Calling it again on a thread updates the factory and
+ * options a later start uses and claims again (as a caller only, once the thread is shutting down);
+ * a started owner keeps the backend it built.
  */
 export function registerProcessBackend(
 	kind: ModelKind,
