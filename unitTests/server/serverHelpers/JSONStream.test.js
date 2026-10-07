@@ -101,10 +101,8 @@ describe('Test JSONStream module ', () => {
 			stream = streamAsJSON(outer);
 			return new Promise((resolve, reject) => {
 				let out = '';
-				// outer's pending promise is the only thing keeping this stream (and this test) alive;
-				// this timer must NOT be unref()'d, or Node exits before it ever fires, silently
-				// turning a serialization regression into an unattributed whole-run failure instead
-				// of a failure of this test
+				// nothing else keeps the event loop alive while outer's next() is stuck on a promise
+				// that never resolves, so this timer must stay ref'd or Node exits before it can fire
 				const timer = setTimeout(() => {
 					reject(new Error(`timed out waiting for ${JSON.stringify(EXPECTED_PREFIX)}, got ${JSON.stringify(out)}`));
 				}, 2000);
