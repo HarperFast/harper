@@ -323,6 +323,39 @@ describe('models.registerProcessBackend: one live backend instance per key, serv
 		assert.strictEqual(callFor('exact:tenant').accounting.tenantId, 'other-tenant');
 	});
 
+	it('merges calls whose class-instance options have equal fields, since the owner compares the plain objects structured clone delivers', async function () {
+		const [owner, ...callers] = await startWorkers(3);
+		await registerInOrder([owner, ...callers], 'class-options', { maxBatchInputs: 8 });
+		const gate = occupy(owner, 'class-options');
+		await waitingOn('gate:class-options');
+		// Each worker builds the option from its own Tier class; only the instance's own fields cross threads.
+		const sent = [
+			[callers[0], 'class-options:gold-a', 'gold'],
+			[callers[1], 'class-options:gold-b', 'gold'],
+			[callers[0], 'class-options:silver', 'silver'],
+		].map(([worker, text, tier]) => ({
+			texts: [text],
+			reply: command(worker, { command: 'embed', id: 'class-options', texts: [text], tier }),
+		}));
+		await waitFor(async () => (await ownerLoad(owner, 'class-options'))?.queued === 3, 10000);
+		await command(owner, { command: 'release', text: 'gate:class-options' });
+
+		await gate;
+		for (const { texts, reply } of sent) assertServedBy(await reply, texts, owner.threadId);
+		const calls = backendCalls('class-options:');
+		assert.deepStrictEqual(
+			calls.map((event) => [...event.texts].sort()).sort(),
+			[['class-options:gold-a', 'class-options:gold-b'], ['class-options:silver']],
+			'the two calls whose instances have equal fields were merged; the third ran alone'
+		);
+		for (const call of calls)
+			assert.deepStrictEqual(
+				call.tier,
+				{ plain: true, name: call.texts[0].includes('silver') ? 'silver' : 'gold', label: undefined },
+				'the backend gets a plain object of the instance’s own fields, merged or not'
+			);
+	});
+
 	it('splits a request larger than maxBatchInputs into backend calls of at most that many inputs', async function () {
 		const [owner, caller] = await startWorkers(2);
 		await registerInOrder([owner, caller], 'split', { maxBatchInputs: 4 });
@@ -1315,6 +1348,45 @@ describe('models.registerProcessBackend: one live backend instance per key, serv
 		assert.strictEqual(backendCalls('old-epoch:stale').length, 0);
 	});
 
+	it('refuses at once as not-owner, and never holds, a request from an admitted caller whose epoch is not an integer', async function () {
+		const [owner, caller] = await startWorkers(2);
+		await registerInOrder([owner, caller], 'bad-epoch');
+		// A call the owner serves shows that its last state admits the caller.
+		assertServedBy(
+			await command(caller, { command: 'embed', id: 'bad-epoch', texts: ['bad-epoch:admitted'] }),
+			['bad-epoch:admitted'],
+			owner.threadId
+		);
+		const seen = await ownerLoad(owner, 'bad-epoch');
+		// Neither is older than the owner's election, and both name a state it has not seen, so only the
+		// epoch's own shape keeps them out of the hold.
+		for (const [index, epoch] of [seen.epoch + 0.5, String(seen.epoch + 1)].entries()) {
+			const request = 1e6 + 7 + index;
+			await command(caller, {
+				command: 'send',
+				target: owner.threadId,
+				message: rawRequest('bad-epoch', caller.threadId, request, {
+					version: seen.version + 1,
+					epoch,
+					args: [[`bad-epoch:malformed-${index}`]],
+				}),
+			});
+			// Either the owner answers, or (the defect) it holds the request for a state that cannot serve it.
+			const outcome = await waitFor(
+				async () =>
+					events.find((event) => event.event === 'raw-response' && event.message.request === request) ??
+					((await ownerLoad(owner, 'bad-epoch'))?.parked > 0 && 'held'),
+				10000
+			);
+			assert.notStrictEqual(outcome, 'held', `a request with epoch ${JSON.stringify(epoch)} was held`);
+			assert.strictEqual(outcome.from, owner.threadId);
+			assert.strictEqual(outcome.message.ok, false);
+			assert.strictEqual(outcome.message.refused, 'not-owner', `epoch ${JSON.stringify(epoch)}`);
+		}
+		assert.strictEqual((await ownerLoad(owner, 'bad-epoch')).parked, 0, 'the hold is empty');
+		assert.strictEqual(backendCalls('bad-epoch:malformed').length, 0, 'neither request reached the backend');
+	});
+
 	it("applies the same clone and batching rules to the owner's own calls as to another worker's", async function () {
 		const [owner, caller] = await startWorkers(2);
 		await registerInOrder([owner, caller], 'same-rules', { maxBatchInputs: 8 });
@@ -1474,6 +1546,63 @@ describe('models.registerProcessBackend: one live backend instance per key, serv
 		);
 	});
 
+	it('disposes both the backend a factory registered and the different object it returned before a successor starts', async function () {
+		const id = 'registers-and-returns';
+		const [owner, successor] = await startWorkers(2);
+		await registerInOrder([owner, successor], id, undefined, { registersAndReturns: true, engineDispose: 'hold' });
+		// The registered backend serves; what the factory returned is held beside it.
+		assertServedBy(await command(successor, { command: 'embed', id, texts: [`${id}:a`] }), [`${id}:a`], owner.threadId);
+		await waitForStatus(successor, id, (status) => status?.state === 'ready', `${id}: not ready`);
+		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: manageThreads.restartNumber });
+
+		// Either the returned object is disposed, or (the defect) a successor runs its factory while it may be live.
+		await waitFor(() =>
+			events.some(
+				(event) =>
+					event.id === id &&
+					((event.event === 'dispose' && event.what === 'engine') ||
+						(event.event === 'factory' && event.threadId === successor.threadId))
+			)
+		);
+		assert.ok(
+			events.some(
+				(event) =>
+					event.event === 'dispose' && event.what === 'engine' && event.id === id && event.threadId === owner.threadId
+			),
+			'the object the factory returned was disposed'
+		);
+		// Asserting a non-event: give an election time to (not) happen while the returned object's dispose() is held.
+		await delay(200);
+		assert.deepStrictEqual(
+			factoryRuns(id).map((event) => event.threadId),
+			[owner.threadId],
+			'no successor runs its factory while the returned object is still disposing'
+		);
+		const draining = await statusOf(successor, id);
+		assert.deepStrictEqual([draining.owner, draining.draining], [undefined, owner.threadId]);
+		await command(owner, { command: 'release', text: `dispose-engine:${id}` });
+
+		const handedOver = await waitForStatus(
+			successor,
+			id,
+			(status) => status?.state === 'ready' && status.owner === successor.threadId,
+			`${id}: the successor never became the ready owner`
+		);
+		assert.strictEqual(handedOver.restarts, 0, 'a planned exit is not a failure');
+		assert.deepStrictEqual(
+			events
+				.filter((event) => (event.event === 'factory' || event.event === 'dispose') && event.id === id)
+				.map((event) => `${event.event}${event.what ? `:${event.what}` : ''}@${event.threadId}`),
+			[
+				`factory@${owner.threadId}`,
+				`dispose:backend@${owner.threadId}`,
+				`dispose:engine@${owner.threadId}`,
+				`factory@${successor.threadId}`,
+			],
+			'the registered backend, then the returned object, is disposed before the successor starts'
+		);
+	});
+
 	it('fails a call by name once its wait for an owner to confirm its caller runs out', async function () {
 		const [owner, bystander, caller] = await startWorkers(3);
 		await registerInOrder([owner, bystander, caller], 'never-confirmed', { ownerWaitMs: 300 });
@@ -1562,25 +1691,63 @@ describe('models.registerProcessBackend on the main thread', function () {
 		assert.strictEqual(row.success, true);
 	});
 
-	it('captures a backend the factory registers itself, as module factories do', async function () {
+	it('captures a backend the factory registers itself, as module factories do, and disposes it and the different object the factory returned', async function () {
 		setMainIsWorker(true);
-		registerProcessBackend('embedding', 'main-module', ({ kind, logicalName }) => {
-			models.registerBackend(
-				kind,
-				logicalName,
-				models.defineBackend({
-					name: 'test:module',
+		const disposed = [];
+		/** Registers its backend and returns the engine that backend wraps, each with its own dispose(). */
+		const moduleShaped =
+			(capabilities) =>
+			({ kind, logicalName }) => {
+				const backend = models.defineBackend({
+					name: `test:${logicalName}`,
 					embed: async (input) => ({ status: 'completed', output: [].concat(input).map(() => Float32Array.of(1)) }),
-				})
-			);
-			return { engine: 'not a backend' };
-		});
+				});
+				models.registerBackend(kind, logicalName, {
+					...backend,
+					capabilities: capabilities ?? backend.capabilities,
+					dispose: async () => disposed.push(`${logicalName}:backend`),
+				});
+				return {
+					engine: logicalName,
+					async dispose() {
+						disposed.push(`${logicalName}:engine`);
+						throw new Error(`could not close the engine of ${logicalName}`);
+					},
+				};
+			};
+		registerProcessBackend('embedding', 'main-module', moduleShaped());
 		const vectors = await models.embed(['a', 'b'], { model: 'main-module' });
 		assert.deepStrictEqual(
 			vectors.map((vector) => [...vector]),
 			[[1], [1]]
 		);
 		await waitFor(() => models.backendStatus('embedding', 'main-module').state === 'ready');
+		assert.deepStrictEqual(disposed, [], 'nothing is disposed while the backend serves');
+
+		// A start that fails after the factory registered its backend and returned an engine disposes
+		// both. The engine's dispose() rejects on every try, so it is tried three times and the key fails
+		// as a failed disposal, not as a start a successor may follow.
+		registerProcessBackend(
+			'embedding',
+			'main-module-fails',
+			moduleShaped(() => {
+				throw new Error('capabilities are not readable yet');
+			}),
+			{ maxRestarts: 0 }
+		);
+		const status = await waitFor(() => {
+			const current = models.backendStatus('embedding', 'main-module-fails');
+			return current?.state === 'failed' && current;
+		});
+		assert.strictEqual(status.reason, 'dispose-failed');
+		assert.strictEqual(status.draining, 0, 'the thread that may still hold the engine is named');
+		assert.match(status.error.message, /could not close the engine of main-module-fails/);
+		assert.deepStrictEqual(disposed, [
+			'main-module-fails:backend',
+			'main-module-fails:engine',
+			'main-module-fails:engine',
+			'main-module-fails:engine',
+		]);
 	});
 
 	it('bounds a call with timeoutMs and cancels it at the owner', async function () {
@@ -1648,11 +1815,13 @@ describe('models.registerProcessBackend on the main thread', function () {
 	it('refuses an option holding a function at any depth, or any other value structured clone refuses, as a call from another thread would be', async function () {
 		setMainIsWorker(true);
 		let calls = 0;
+		let received;
 		registerProcessBackend('embedding', 'main-nested', () =>
 			models.defineBackend({
 				name: 'test:nested',
-				embed: async (input) => {
+				embed: async (input, opts) => {
 					calls++;
+					received = opts;
 					return { status: 'completed', output: [].concat(input).map(() => Float32Array.of(1)) };
 				},
 			})
@@ -1668,8 +1837,14 @@ describe('models.registerProcessBackend on the main thread', function () {
 				return true;
 			});
 		assert.strictEqual(calls, 0, 'no refused call reached the backend');
-		assert.strictEqual((await models.embed('a', { model: 'main-nested', plain: { nested: [1, 'two'] } })).length, 1);
+		// What structured clone leaves out without refusing is left out, as across threads: a symbol-keyed
+		// option, and a symbol-keyed property inside one.
+		const tag = Symbol('tag');
+		const plain = { nested: [1, 'two'], [tag]: 'inner' };
+		assert.strictEqual((await models.embed('a', { model: 'main-nested', plain, [tag]: 'outer' })).length, 1);
 		assert.strictEqual(calls, 1);
+		assert.deepStrictEqual(received.plain, { nested: [1, 'two'] });
+		assert.deepStrictEqual(Object.getOwnPropertySymbols(received), []);
 	});
 
 	it('merges queued calls by value only: a Date two calls share by reference never matches, as across threads', async function () {
@@ -1714,7 +1889,7 @@ describe('models.registerProcessBackend on the main thread', function () {
 		);
 	});
 
-	it('answers a call this thread makes to itself with a copy, as across threads, so a backend that reuses its output buffer cannot change a vector it returned', async function () {
+	it('answers a call this thread makes to itself with a copy, as across threads, so a backend that reuses an ordinary output buffer cannot change a vector it returned', async function () {
 		setMainIsWorker(true);
 		const buffer = Float32Array.of(1, 2);
 		registerProcessBackend('embedding', 'main-copy', () =>
@@ -1728,6 +1903,21 @@ describe('models.registerProcessBackend on the main thread', function () {
 		// The backend overwrites its buffer for its next call, as a native embedder reusing an output buffer does.
 		buffer.fill(0);
 		assert.deepStrictEqual([...vector], [1, 2], "the caller holds a copy, never the backend's buffer");
+
+		// Structured clone shares a SharedArrayBuffer instead of copying it, here as across threads, so a
+		// vector the backend returns over one is the backend's memory.
+		const shared = new Float32Array(new SharedArrayBuffer(8));
+		shared.set([3, 4]);
+		registerProcessBackend('embedding', 'main-shared', () =>
+			models.defineBackend({
+				name: 'test:shared',
+				embed: async (input) => ({ status: 'completed', output: [].concat(input).map(() => shared) }),
+			})
+		);
+		const [view] = await models.embed('a', { model: 'main-shared' });
+		assert.deepStrictEqual([...view], [3, 4]);
+		shared.fill(0);
+		assert.deepStrictEqual([...view], [0, 0], 'memory in a SharedArrayBuffer is shared, not copied');
 	});
 
 	it("returns a split embed's partial usage once per error, to the facade's row for that attempt", async function () {
@@ -1849,12 +2039,29 @@ describe('sameValue, which decides whether queued embed requests may merge', fun
 	});
 
 	it('never matches any other object, even the same one, as two structured clones of it never would', function () {
-		for (const exotic of [new Date(0), new Map(), Float32Array.of(1), new (class Options {})(), () => {}]) {
+		for (const exotic of [new Date(0), new Map(), Float32Array.of(1), /tier/, () => {}]) {
 			assert.ok(!sameValue(exotic, exotic), `${Object.prototype.toString.call(exotic)} matched itself`);
 			assert.ok(!sameValue({ value: exotic }, { value: exotic }), `${Object.prototype.toString.call(exotic)} nested`);
 		}
 		const cyclic = {};
 		cyclic.self = cyclic;
 		assert.ok(!sameValue(cyclic, cyclic), 'a cycle is never followed to a match');
+	});
+
+	it('compares a class instance as the plain object of its own fields that structured clone makes of it', function () {
+		class Tier {
+			constructor(name) {
+				this.name = name;
+			}
+			get label() {
+				return this.name.toUpperCase();
+			}
+		}
+		const [gold, otherGold, silver] = ['gold', 'gold', 'silver'].map((name) => structuredClone(new Tier(name)));
+		assert.strictEqual(Object.getPrototypeOf(gold), Object.prototype, 'the clone dropped the prototype');
+		assert.ok(sameValue({ tier: gold }, { tier: otherGold }), 'equal own fields match');
+		assert.ok(!sameValue({ tier: gold }, { tier: silver }));
+		// Structured clone keeps a Date a Date, so it never matches, while the class instance above does.
+		assert.ok(!sameValue(structuredClone({ when: new Date(0) }), structuredClone({ when: new Date(0) })));
 	});
 });

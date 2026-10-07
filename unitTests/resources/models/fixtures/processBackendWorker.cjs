@@ -4,8 +4,10 @@
 // port mesh production workers use. It registers backends (process-wide or per thread) and calls them
 // through the models facade on command, reporting every factory run, backend call, disposal, analytics
 // row, metric and refusal to the test, tagged with the thread it ran on. Its backends can hold or reject
-// their dispose(), fail on a chosen input, keep their factory's signal and throw from a property getter,
-// and its calls can carry options that cannot cross threads or that two calls share by reference. On
+// their dispose(), fail on a chosen input, keep their factory's signal and throw from a property getter;
+// a factory can also register its backend and return a different engine object, as a module factory
+// may, whose own dispose() the test can hold or reject. Its calls can carry options that cannot cross
+// threads, that two calls share by reference, or that are class instances. On
 // SHUTDOWN it runs Harper's shutdown drains the way threadServer does, so the test sees what a real
 // worker would wait for before exiting.
 const { parentPort, threadId } = require('node:worker_threads');
@@ -39,6 +41,15 @@ const gates = new Map();
 const controllers = new Map();
 /** One Date every call made with `shareDate` holds by reference, as two calls sharing an options object would. */
 const SHARED_DATE = new Date(0);
+/** An option built from a class: its own field crosses threads, its prototype (and the getter on it) does not. */
+class Tier {
+	constructor(name) {
+		this.name = name;
+	}
+	get label() {
+		return this.name.toUpperCase();
+	}
+}
 
 /** `value` as it can be reported to the test: a value that cannot cross threads is described, not sent. */
 function reportable(value) {
@@ -98,7 +109,13 @@ function embeddingBackend(id, spec = {}) {
 		async embed(input, opts) {
 			const texts = Array.isArray(input) ? input : [input];
 			const { signal, accounting, ...rest } = opts;
-			report({ event: 'embed', id, texts, opts: reportable(rest), accounting });
+			// What a class-instance option looks like once it reaches the backend.
+			const tier = rest.tier && {
+				plain: Object.getPrototypeOf(rest.tier) === Object.prototype,
+				name: rest.tier.name,
+				label: rest.tier.label,
+			};
+			report({ event: 'embed', id, texts, opts: reportable(rest), accounting, tier });
 			for (const text of texts) {
 				// Held texts keep this call running, so later requests queue behind it.
 				if (text.startsWith('gate:') || text.startsWith('until-aborted:')) await hold(text, signal, spec.factorySignal);
@@ -130,7 +147,7 @@ function embeddingBackend(id, spec = {}) {
 		// time; 'getter-throws' replaces this method with a property that throws when read (below).
 		async dispose() {
 			disposals++;
-			report({ event: 'dispose', id });
+			report({ event: 'dispose', id, what: 'backend' });
 			if (spec.dispose === 'hold') await new Promise((resolve) => gates.set(`dispose:${id}`, resolve));
 			if (spec.dispose === 'reject' || (spec.dispose === 'reject-once' && disposals === 1))
 				throw new Error(`could not free the model of ${id}`);
@@ -181,6 +198,22 @@ function decisionBackend(id) {
 	});
 }
 
+/**
+ * An engine a factory returns beside the backend it registers, as a module factory may return the
+ * handle its backend wraps. 'hold' waits until the test releases `dispose-engine:<id>`; 'reject' rejects
+ * every time.
+ */
+function engine(id, disposal) {
+	return {
+		engine: id,
+		async dispose() {
+			report({ event: 'dispose', id, what: 'engine' });
+			if (disposal === 'hold') await new Promise((resolve) => gates.set(`dispose-engine:${id}`, resolve));
+			if (disposal === 'reject') throw new Error(`could not close the engine of ${id}`);
+		},
+	};
+}
+
 const errorReply = (error) => ({
 	ok: false,
 	error: {
@@ -206,6 +239,8 @@ const commands = {
 		failOn,
 		dispose,
 		watchFactorySignal,
+		registersAndReturns,
+		engineDispose,
 	}) {
 		const build = (factorySignal) =>
 			kind === 'generative'
@@ -238,7 +273,10 @@ const commands = {
 				if (failStart || holdStart) await new Promise((resolve) => gates.set(`start:${id}`, resolve));
 				report({ event: 'factory-settled', id, aborted: signal?.aborted === true });
 				if (failStart) throw new Error('model file is missing');
-				return build(signal);
+				if (!registersAndReturns) return build(signal);
+				// A module-shaped factory: it registers the backend and returns a different object.
+				models.registerBackend(kind, id, build(signal));
+				return engine(id, engineDispose);
 			},
 			options
 		);
@@ -249,12 +287,13 @@ const commands = {
 		setFallbackGroup('embedding', id, [fallbackId]);
 		return {};
 	},
-	async embed({ rid, id, texts, opts, tenant, shareDate, nestedFunction }) {
+	async embed({ rid, id, texts, opts, tenant, shareDate, nestedFunction, tier }) {
 		const controller = new AbortController();
 		controllers.set(rid, controller);
 		const callOpts = { ...opts, model: id, signal: controller.signal };
 		if (shareDate) callOpts.when = SHARED_DATE;
 		if (nestedFunction) callOpts.hooks = { onProgress() {} };
+		if (tier !== undefined) callOpts.tier = new Tier(tier);
 		const call = () => models.embed(texts, callOpts);
 		try {
 			const vectors = await (tenant === undefined ? call() : contextStorage.run({ user: { tenant } }, call));
