@@ -70,7 +70,7 @@ harper deploy \
 
 Applications with work that must complete, or be acknowledged outside the process, before a thread exits — buffered writes to flush, a registration to withdraw from an external service, a distributed lock to release — need a hook to do it when Harper stops or restarts. Restarts are frequent during local development, since `harper dev` restarts worker threads on every file change, and deploying with `restart=true` does the same on a running instance.
 
-Harper signals this by calling `scope.close()` on each worker thread, which emits a `'close'` event on the plugin API [`Scope`](./plugin-api.md#class-scope). Listen for it to run cleanup:
+Harper signals this by calling `scope.close()` on each worker thread that loads the application, which emits a `'close'` event on the plugin API [`Scope`](./plugin-api.md#class-scope). Listen for it to run cleanup:
 
 ```js
 export function handleApplication(scope) {
@@ -385,7 +385,7 @@ At startup or restart, an isolated application that is refused is not loaded any
 - **A new isolated application starts at the next restart.** Deploy it with `restart=true`, or restart afterward. That first restart, and any deploy that turns isolation on or off, restarts the shared workers as well as starting or stopping the dedicated one.
 - **A redeploy of an application that stays isolated restarts only its own worker.** The other applications keep running. The exception is [retrying an activation](../operations-api/operations.md#retrying-an-activation) whose release is already live, which restarts every worker.
 - **`restart_service` can target one isolated application.** `{"operation": "restart_service", "service": "http", "scope": "<application>"}` restarts only that application's worker.
-- **`drop_component` without `restart` leaves the dedicated worker running** until the next restart. With `restart=true`, a running isolated application's worker is stopped without restarting the shared workers. Dropping an already-absent application with `restart=true` can restart the shared workers, so check component files and running workers before retrying. On Pro and Fabric, drops propagate to peers by default; inspect the response's `replicated` results for peer failures.
+- **`drop_component` without `restart` leaves the dedicated worker running** until the next restart. With `restart=true`, a running isolated application's worker is stopped without restarting the shared workers. Dropping normally reclaims retained installs; inspect node logs if storage cleanup fails. Dropping an already-absent application with `restart=true` can restart the shared workers, so check component files and running workers before retrying. On Pro and Fabric, drops propagate to peers by default; inspect the response's `replicated` results for peer failures.
 - **`system_information` shows the dedicated worker.** In its `threads` list, the dedicated worker's entry carries `application: '<name>'`.
 
 Each isolated application adds a worker thread on top of `threads.count`. See [`threads.maxIsolated`](../configuration/options.md#threads) for how that affects memory.
@@ -416,7 +416,7 @@ Until that is fixed, use these manual steps for a new application:
 #### What the fork is
 
 - **A snapshot of the base, taken the first time the application loads with the key.** Harper takes a RocksDB checkpoint of the base database, which uses hard links when the fork is on the same filesystem as the base. It captures blob files separately, using hard links too; this is not an atomic snapshot of records and blobs together. Blobs still being written or reclaimed before capture can leave markers in the fork, with warnings in the log and errors when those records are read. Later base writes do not refresh the fork.
-- **Durable.** The fork survives restarts and redeploys, and is never refreshed from the base. To start again from the current base, drop the application with `restart=true` and deploy it again.
+- **Durable.** The fork survives restarts and redeploys, and is never refreshed from the base. To start again from the current base, drop the application with `restart=true`, confirm its worker has stopped and its fork directory has been removed on every node, then deploy it again. A failed restart can retain storage even after a successful drop response; reusing the name before removal reuses that fork.
 - **Stored beside the base database**, at ``<storage path>/`branches`/<application>/<database>``. With the default storage path, that is ``<rootPath>/database/`branches`/<application>/<database>``. The backticks are part of the directory name, so quote the path with single quotes in a shell, as in ``ls '<rootPath>/database/`branches`/'``; inside double quotes, the shell runs the backticks as a command.
 - **Private.** The fork is not added to the instance's list of databases, so other applications, `describe_all`, analytics, and replication do not see it.
 - **Local to each node.** In a Harper Pro cluster, each node creates its own fork from its own copy of the base when the application first loads there. Writes to a fork stay on the node that took them. The fork's path is the same on every node.
@@ -449,7 +449,7 @@ The value itself is checked when you deploy, and again when the application load
 
 #### Removing a fork
 
-`drop_component` with `restart=true` removes the application's forks once the restart has completed. A replicated drop does this on every node, each removing its own fork. If a fork cannot be removed, the drop fails with an error saying the storage was left in place.
+`drop_component` with `restart=true` removes the application's forks once the restart has completed. If the restart does not complete, the drop can report success while retaining the forks; check worker state, node logs, and the fork directory before redeploying to refresh data. A replicated drop does this on every node, each removing its own fork. If a fork cannot be removed, the drop fails with an error saying the storage was left in place.
 
 Without `restart`, the forks stay, and the response says so: `Successfully dropped: <name>. Any branched database storage this application owns was left in place; drop it again with restart: true to discard that data`. Running `drop_component` with `restart=true` again removes them. Until then, deploying an application under the same name picks up the old fork, with its data.
 
@@ -532,7 +532,7 @@ Packages a project folder as a base64-encoded `.tar` string.
 
 ### `get_components`
 
-Returns all local component files, folders, and configuration from `harper-config.yaml`.
+Returns all local component files, folders, and configuration from `harper-config.yaml`. The response includes an `entries` array; each direct child's `name` identifies a component. CI cleanup can inspect `entries[].name` to check whether the project is present on this node.
 
 ```json
 {

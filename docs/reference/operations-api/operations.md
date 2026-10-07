@@ -1654,7 +1654,7 @@ Set `scope` to an [isolated application's name](../components/applications.md#is
 
 ### `system_information`
 
-Returns system metrics including CPU, memory, disk, network, and Harper process info. Optionally filter by `attributes` array (e.g., `["cpu", "memory", "replication"]`).
+Returns system metrics including CPU, memory, disk, network, and Harper process info. Optionally filter by `attributes` array (e.g., `["cpu", "memory", "replication"]`). With `attributes: ["threads"]`, the response includes a `threads` array of workers. Each entry has a `threadId`; a dedicated isolated worker also has `application: "<name>"`. These describe the node that answers, not its peers.
 
 ```json
 { "operation": "system_information" }

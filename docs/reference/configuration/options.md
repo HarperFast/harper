@@ -170,7 +170,7 @@ tls:
 - `ciphers` — Allowed TLS cipher suites
 - `unixDomainSockets` <VersionBadge version="v5.1.0" /> — `true` makes each HTTP worker thread also listen on a Unix domain socket under `<rootPath>/sockets` for each secure port, for a proxy on the same host to forward to. [Isolated applications](../components/applications.md#isolated-applications) are reachable only this way, so they require it; _Default_: `false`
 
-With `tls` as a single object, put `unixDomainSockets: true` inside it. With an SNI certificate array, put `tls_unixDomainSockets: true` at the root of `harper-config.yaml`, alongside `tls`; placing `unixDomainSockets` inside an array entry does not enable the global setting:
+With `tls` as a single object, put `unixDomainSockets: true` inside it. With an SNI certificate array, put `tls_unixDomainSockets: true` at the root of `harper-config.yaml`, alongside `tls`; placing `unixDomainSockets` inside an array entry does not enable the global setting. On v5.3.0, a standalone `TLS_UNIXDOMAINSOCKETS=true` environment variable does not enable this SNI configuration; use the root YAML setting:
 
 ```yaml
 tls_unixDomainSockets: true
