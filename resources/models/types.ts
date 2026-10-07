@@ -166,13 +166,16 @@ export interface DefineBackendSpec {
  * Builds a process-wide backend. Runs on the owner thread only. Returns the backend, or registers it
  * under the same kind and id with `registerBackend` (a module factory's `register({ logicalName,
  * kind, config })` does), in which case that registration is captured rather than installed; any
- * other backend it registers while it runs is discarded, and is not disposed. The backend is ready
- * when the returned promise resolves, so a factory that wants ready to mean warm awaits its warmup
- * before resolving. A factory that both registers a backend and returns a different object (the
- * engine behind that backend, say) hands the owner both: the backend it returned serves if it
- * returned one, else the one it registered, and both are disposed, the registered one first, each
- * with its own tries, before the instance counts as gone. Each `dispose()` must therefore resolve
- * even after the other's has run.
+ * other backend it registers while it runs is discarded, and is not disposed. A second registration
+ * under the same kind and id throws `ModelBackendRegistrationError` rather than replace the first,
+ * and fails the start whatever the factory does with the error: the owner disposes the first, and
+ * what the factory returned, as after any failed start, even when the factory rethrows, so the
+ * factory does not dispose them itself. The backend is ready when the returned promise resolves, so
+ * a factory that wants ready to mean warm awaits its warmup before resolving. A factory that both
+ * registers a backend and returns a different object (the engine behind that backend, say) hands the
+ * owner both: the backend it returned serves if it returned one, else the one it registered, and both
+ * are disposed, the registered one first, each with its own tries, before the instance counts as
+ * gone. Each `dispose()` must therefore resolve even after the other's has run.
  *
  * At most one instance of a key is live at a time, as far as the owner can tell: before another
  * thread's factory runs, the owner awaits the backend's `dispose()`, so a backend holding a native
@@ -183,9 +186,12 @@ export interface DefineBackendSpec {
  * running calls finish. `signal` aborts only while the factory is still running, when the owner
  * releases the key, so a slow load can stop early; whatever it returns is still disposed. It never
  * aborts once the factory has returned, so a backend may keep it without its calls being stopped.
- * What the factory returns and registers is held before any of its properties is read, so one that
- * fails the start's checks (even by a getter that throws) is still disposed before another thread's
- * factory runs. A factory that throws must release what it loaded before throwing.
+ * What the factory returns and registers is held before the owner reads any of its properties, so
+ * one that fails the start's checks (even by a getter that throws) is still disposed before another
+ * thread's factory runs. `registerBackend` checks a backend before it is captured, so one it refuses
+ * (one that fails those checks, or the second registration above) was never handed over and is the
+ * factory's to release. A factory that throws for any other reason must release what it loaded
+ * before throwing.
  */
 export type ProcessBackendFactory = (context: { kind: ModelKind; logicalName: string; signal: AbortSignal }) => unknown;
 
