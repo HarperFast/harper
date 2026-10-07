@@ -186,6 +186,19 @@ describe('cherry-pick-patch.yml', function () {
 		assert.match(run.stickies.at(-1), /held for review/);
 	});
 
+	it('stays held when its merge of main discarded its own edit, even if the release has that edit', function () {
+		const PR_ONLY = { 20: 'pr-only change' };
+		fixture.prCommit({ 5: 'pr side', ...PR_ONLY }, 'PR change');
+		fixture.mainCommit({ 5: 'main side' }, 'Main change to the same line');
+		fixture.mergeMainIntoPr();
+		fixture.squashMerge();
+		fixture.onRelease((git) => git('cherry-pick', fixture.prCommits[0]));
+		const run = fixture.runJob();
+		assert.notStrictEqual(run.outputs.hold ?? '', '', run.log);
+		assert.ok(run.ran.includes('Report held for review') && !run.ran.includes('Report no-op'), run.log);
+		assert.deepStrictEqual(run.prCreates, []);
+	});
+
 	describe('a PR whose merge of main added content of its own', function () {
 		const IN_MERGE = { 12: 'added in the merge' };
 
@@ -196,15 +209,20 @@ describe('cherry-pick-patch.yml', function () {
 			fixture.squashMerge();
 		});
 
-		it('is a no-op when its commits and its merge content are both on the release branch', function () {
+		it('stays held, with no branch or PR, when its change is already on the release branch', function () {
+			// A merge that took one side outright would leave nothing in the net change to check, so
+			// "landed" cannot clear the hold.
 			fixture.onRelease((git) => {
 				fixture.writeLib(fixture.lines({ ...FIRST_FIX, ...IN_MERGE }));
 				git('commit', '-qam', 'Backport the whole change');
 			});
 			const run = fixture.runJob();
 			assert.strictEqual(run.outputs.no_op, 'true', run.log);
-			assert.ok(run.ran.includes('Report no-op'), run.log);
+			assert.match(run.outputs.hold, /^its change appears to be on it already, but merge commit/);
+			assert.ok(run.ran.includes('Report held for review') && !run.ran.includes('Report no-op'), run.log);
 			assert.deepStrictEqual(run.prCreates, []);
+			assert.deepStrictEqual(fixture.cherryPickBranches(), []);
+			assert.match(run.stickies.at(-1), /held for review/);
 		});
 
 		it('is held for review when the release branch lacks it', function () {
