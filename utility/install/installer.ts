@@ -14,7 +14,7 @@ import * as envManager from '../environment/environmentManager.ts';
 import * as hdbUtils from '../common_utils.ts';
 
 import * as hdbInfoController from '../../dataLayer/hdbInfoController.ts';
-import { packageJson } from '../packageUtils.js';
+import { packageJson, PRODUCT_NAME } from '../packageUtils.js';
 import * as hdbTerms from '../hdbTerms.ts';
 const { CONFIG_PARAMS } = hdbTerms;
 import installValidator from '../../validation/installValidator.ts';
@@ -33,10 +33,10 @@ import { resolveConfiguredPath } from '../../config/componentEnvPrepass.ts';
 const HDB_PROMPT_MSG = (msg) => chalk.magenta.bold(msg);
 const LINE_BREAK = os.EOL;
 const PROMPT_PREFIX = '';
-const INSTALL_START_MSG = 'Starting Harper install...';
-const INSTALL_COMPLETE_MSG = 'Harper installation was successful.';
-const UPGRADE_MSG = 'An out of date version of Harper is already installed.';
-const HDB_EXISTS_MSG = 'It appears that Harper is already installed. Exiting install...';
+const INSTALL_START_MSG = `Starting ${PRODUCT_NAME} install...`;
+const INSTALL_COMPLETE_MSG = `${PRODUCT_NAME} installation was successful.`;
+const UPGRADE_MSG = `An out of date version of ${PRODUCT_NAME} is already installed.`;
+const HDB_EXISTS_MSG = `It appears that ${PRODUCT_NAME} is already installed. Exiting install...`;
 const ABORT_MSG = 'Aborting install';
 const PROCESS_HOME = os.homedir();
 const DEFAULT_HDB_ROOT = path.join(PROCESS_HOME, hdbTerms.HDB_ROOT_DIR_NAME);
@@ -67,10 +67,10 @@ const DEV_MODE_CONFIG = {
 
 // Install prompts
 const INSTALL_PROMPTS = {
-	DESTINATION: 'Please enter a destination for Harper:',
+	DESTINATION: `Please enter a destination for ${PRODUCT_NAME}:`,
 	HDB_USERNAME: 'Please enter a username for the administrative user:',
 	HDB_PASS: 'Please enter a password for the administrative user:',
-	NODE_HOSTNAME: 'Please enter the hostname for the Harper instance:',
+	NODE_HOSTNAME: `Please enter the hostname for the ${PRODUCT_NAME} instance:`,
 	DEFAULTS_MODE: 'Default Config - dev (easy access/debugging) or prod (security/performance): (dev/prod)',
 };
 
@@ -592,7 +592,7 @@ function stageRocksCompression() {
 }
 
 async function createConfigFile(installParams) {
-	hdbLogger.trace('Creating Harper config file');
+	hdbLogger.trace(`Creating ${PRODUCT_NAME} config file`);
 	const args = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
 	Object.assign(args, installParams);
 
@@ -621,7 +621,7 @@ async function createConfigFile(installParams) {
  * @param errMsg
  */
 function rollbackInstall(errMsg) {
-	hdbLogger.error(`Error creating Harper config file. Rolling back install - ${errMsg}`);
+	hdbLogger.error(`Error creating ${PRODUCT_NAME} config file. Rolling back install - ${errMsg}`);
 	console.error(errMsg);
 	console.error(ABORT_MSG);
 
@@ -718,7 +718,7 @@ async function insertHdbVersionInfo() {
 	if (vers) {
 		await hdbInfoController.insertHdbInstallInfo(vers);
 	} else {
-		throw new Error('The version is missing/removed from Harper package.json');
+		throw new Error(`The version is missing/removed from ${PRODUCT_NAME} package.json`);
 	}
 }
 

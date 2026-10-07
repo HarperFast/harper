@@ -5,8 +5,9 @@ import * as util from 'util';
 import * as childProcess from 'child_process';
 const exec = util.promisify(childProcess.exec);
 import * as systemInformation from '../utility/environment/systemInformation.ts';
+import { PRODUCT_NAME } from '../utility/packageUtils.js';
 
-const STOP_MSG = 'Stopping Harper.';
+const STOP_MSG = `Stopping ${PRODUCT_NAME}.`;
 
 export default stop;
 

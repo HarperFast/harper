@@ -25,9 +25,10 @@ import { awaitRestart } from '../components/awaitRestart.ts';
 import { rmSync } from 'node:fs';
 import { getThisNodeName } from '../server/nodeName.ts';
 import { armRestartExitWatchdog } from './restartExitWatchdog.ts';
+import { PRODUCT_NAME } from '../utility/packageUtils.js';
 envMgr.initSync();
 
-const RESTART_RESPONSE = `Restarting Harper. This may take up to ${hdbTerms.RESTART_TIMEOUT_MS / 1000} seconds.`;
+const RESTART_RESPONSE = `Restarting ${PRODUCT_NAME}. This may take up to ${hdbTerms.RESTART_TIMEOUT_MS / 1000} seconds.`;
 const INVALID_SERVICE_ERR = 'Invalid service';
 const ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS = 5000;
 
@@ -124,7 +125,7 @@ async function restart(req: any) {
 
 	if (calledFromCli) {
 		const hdbPid = processMan.getHdbPid();
-		console.error(hdbPid ? 'Restarting Harper...' : 'Starting Harper...');
+		console.error(hdbPid ? `Restarting ${PRODUCT_NAME}...` : `Starting ${PRODUCT_NAME}...`);
 		require('./run').launch(true);
 		return RESTART_RESPONSE;
 	}
@@ -166,13 +167,13 @@ async function restart(req: any) {
 				if (process.env.HARPER_EXIT_ON_RESTART) {
 					// use this to exit the process so that it will be restarted by the
 					// PM/container/orchestrator.
-					hdbLogger.warn('Exiting Harper process to trigger a container restart');
+					hdbLogger.warn(`Exiting ${PRODUCT_NAME} process to trigger a container restart`);
 					process.exit(0);
 				}
 				// now launch the new process and exit this process
 				await require('./run').launch(true);
 			} catch (error) {
-				hdbLogger.fatal('Restart teardown failed; exiting Harper', error);
+				hdbLogger.fatal(`Restart teardown failed; exiting ${PRODUCT_NAME}`, error);
 				process.exit(1);
 			}
 		}, 50); // can't await this because it is going to do an exit(), but wait for 50ms so we give the HTTP thread a

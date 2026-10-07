@@ -1,5 +1,6 @@
 {
 	"name": "harper",
+	"productName": "Harper",
 	"description": "Harper is an open-source Node.js performance platform that unifies database, cache, application, and messaging layers into one in-memory process.",
 	"version": "5.3.1",
 	"license": "Apache-2.0",
