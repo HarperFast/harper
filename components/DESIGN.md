@@ -898,7 +898,13 @@ packages with a caller-created scope; nested components inherit that scope's pre
 canary refusal, restart persistence and drop cleanup for shared and isolated workers (#3071).
 Root packages returning a plugin module are refused when branched: their callbacks receive the shared
 root scope, which cannot carry the package's private databases.
+This refusal occurs at the callback handoff, after import, and leaves any prepared fork on disk.
+
+On upgrade, a package's first fork snapshots the base, including its earlier writes; that history
+cannot be separated automatically. Missing databases and unsupported engines or loader modes fail
+the application load instead of falling back to the base.
 
 A first fork runs inside the serial root load, so later root entries wait for its checkpoint.
+Canary startup deadlines also apply to this first fork.
 A fork prepared before a later load failure remains durable and is adopted on retry, as for
 directory applications; only an explicit drop removes it.

@@ -72,6 +72,7 @@ for (const isolated of [false, true]) {
 	const project = isolated ? 'pkg-isolated' : 'pkg-shared';
 	const host = `${project}.example.test`;
 	const config = { threads: { count: 1 }, ...(isolated ? { tls: { unixDomainSockets: true } } : {}) };
+	// Forks require RocksDB; this restart/UDS fixture also excludes Windows and isolated Bun workers.
 	const unsupported =
 		process.platform === 'win32' ||
 		(isolated && process.env.HARPER_RUNTIME === 'bun') ||

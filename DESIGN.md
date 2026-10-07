@@ -149,8 +149,6 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 ## components/ — deploys and the load lifecycle
 
-- [Package applications prepare branches before importing modules](components/DESIGN.md#package-applications-prepare-branches-before-importing-modules) — Package and directory loads prepare once; nested components inherit, and root plugin callbacks cannot use a private fork.
-
 - [A deploy builds off to the side, is certified, and only then goes live](components/DESIGN.md#a-deploy-builds-off-to-the-side-is-certified-and-only-then-goes-live) — A deploy builds in `.deploy-staging`, certifies that tree, then swaps live to `.deploy-aside` and the candidate in, waiting out handle holders with the old version in place; the component's root-config entry is journaled with the activation and published durably, under one lock, only after the swap commits; a deploy that restarts workers is decided by a canary worker held out of traffic until it reports its load, and a rejection restores the release it replaced or fails the component closed; the release a swap displaces goes back under its own deployment id, which `deployment_id` activates again, and activating the id already live answers without a swap.
 - [Component preparation is serialized across worker threads](components/DESIGN.md#component-preparation-is-serialized-across-worker-threads) — One component transaction at a time across workers; the lifecycle broadcast sits outside the lock; the load lock is keyed by application and plugin.
 - [Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation](components/DESIGN.md#peer-side-deploy_component-payload-read-retryable-blob-stalls-and-readablefrom-cancellation) — Retry a `BLOB_UNAVAILABLE` read only before any byte reached the consumer; use `Readable.from()` for cancellation, not a hand-rolled `ReadableStream`.
@@ -161,6 +159,8 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [Restart-free deploys require proof of runtime equivalence](components/DESIGN.md#restart-free-deploys-require-proof-of-runtime-equivalence) — A deploy stays restart-free only when declared files, the imported runtime and installed dependencies are all proven equivalent.
 - [Secret custody starts before boot-time installs](components/DESIGN.md#secret-custody-starts-before-boot-time-installs) — `startSecretCustodyOnMainThread()` runs the custody built-in ahead of `installApplications()`; the root load reuses it.
 - [Startup waits for component preparation only up to `deployment.startupInstallTimeout`](components/DESIGN.md#startup-waits-for-component-preparation-only-up-to-deploymentstartupinstalltimeout) — One stalled install cannot hold listeners closed; it finishes in the background under its lock, and lock-file transitions are read-modify-write.
+
+- [Package applications prepare branches before importing modules](components/DESIGN.md#package-applications-prepare-branches-before-importing-modules) — Package and directory loads prepare once; nested components inherit, and root plugin callbacks cannot use a private fork.
 
 ## components/mcp/
 

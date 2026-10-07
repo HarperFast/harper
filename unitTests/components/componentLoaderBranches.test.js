@@ -11,7 +11,7 @@ const { table, databases } = require('#src/resources/databases');
 const { removeBranches } = require('#src/resources/branchDatabase');
 const { scopedBindings } = require('#src/security/jsLoader');
 const { server } = require('#src/server/Server');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker, getWorkerIndex } = require('#js/server/threads/manageThreads');
 
 const BASE = 'loaderbranchbase';
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -20,8 +20,10 @@ describe('componentLoader branch scope ownership', () => {
 	let directory;
 	let resources;
 	let Source;
+	let mainWasWorker;
 
 	before(async () => {
+		mainWasWorker = getWorkerIndex() === 0;
 		setupTestDBPath();
 		setMainIsWorker(true);
 		Source = table({
@@ -31,6 +33,7 @@ describe('componentLoader branch scope ownership', () => {
 		});
 		await Source.put({ id: 'seed' });
 	});
+	after(() => setMainIsWorker(mainWasWorker));
 
 	beforeEach(async () => {
 		directory = await mkdtemp(join(tmpdir(), 'loader-branches-'));
@@ -40,7 +43,7 @@ describe('componentLoader branch scope ownership', () => {
 	afterEach(async () => {
 		await removeBranches();
 		statusInternal.componentStatusRegistry.reset();
-		await rm(directory, { recursive: true, force: true });
+		if (directory) await rm(directory, { recursive: true, force: true });
 	});
 
 	async function moduleAt(dir, config = '') {
@@ -99,13 +102,14 @@ describe('componentLoader branch scope ownership', () => {
 		assert.strictEqual(applicationScope.branches, undefined);
 	});
 
-	it('keeps the base binding for an unbranched package scope under the native loader', async () => {
-		await writeFile(join(directory, 'config.yaml'), '# no modules\n');
+	it('imports with the base binding when a supplied native scope has no branch declaration', async () => {
+		await moduleAt(directory);
 		const applicationScope = new ApplicationScope('unbranched-native', resources, server);
 		applicationScope.mode = 'native';
-		await loadComponent(directory, resources, 'test', { applicationScope });
+		const loaded = await loadComponent(directory, resources, 'test', { applicationScope });
 		assert.strictEqual(resources.size, 0, 'an absent declaration must not fail native loading');
 		assert.strictEqual(applicationScope.branches, undefined);
+		assert.ok(loaded?.databases === databases, 'the native module must import with the base databases binding');
 		assert.strictEqual(scopedBindings(applicationScope).databases, databases);
 	});
 });
