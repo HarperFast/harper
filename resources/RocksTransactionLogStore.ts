@@ -92,8 +92,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 				: options.nodeId === 0
 					? (this.logById(0) ?? this.log)
 					: this.logForOrigin(options.nodeId, options.viaNodeId !== undefined && options.viaNodeId !== options.nodeId);
-		// Every `local` entry's key was reserved against the origin-closed floor before the handle staged
-		// anything; an unreserved writer could append below an advertised floor, which nothing can repair.
+		// An unreserved writer could append below an advertised floor, which nothing can repair.
 		if (log === this.log && !isReservedForLocalAppend(options.transaction))
 			throw new Error(
 				`Transaction ${options.transaction.id} appends to the local transaction log without an origin-floor reservation`
@@ -176,12 +175,12 @@ export class RocksTransactionLogStore extends EventEmitter {
 		log.addEntry(entryBinary, options.transaction.id);
 	}
 
-	/** Whether `put` would route an entry carrying these ids to the `local` log; no side effects. */
+	/** Whether `put` would route an entry carrying these ids to `local`: `logForOrigin`'s decision, creating no log. */
 	isLocalOrigin(nodeId: number | undefined, relayed = false): boolean {
 		if (nodeId === undefined || nodeId === 0) return true;
 		if (this.logById(nodeId)) return false;
 		if (getNodeNameForId(this, nodeId, true) !== undefined) return false;
-		return !relayed && Object.values(exportIdMapping(this) ?? {}).indexOf(nodeId) < 0;
+		return !relayed;
 	}
 
 	/** A log holds one origin, which keeps `txnLogKey` unique within it; see resources/DESIGN.md. */

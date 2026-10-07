@@ -90,7 +90,10 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 				await new Promise((resolve, reject) => waiters.push({ resolve, reject }));
 			}
 		};
-		const exited = new Promise((resolve) => worker.once('exit', resolve));
+		const exited = Promise.race([
+			new Promise((resolve) => worker.once('exit', resolve)),
+			sleep(30_000).then(() => Promise.reject(new Error('the worker did not exit within 30 s'))),
+		]);
 		return { worker, next, exited };
 	}
 
@@ -151,6 +154,56 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		}
 		assert(floorDuringStall <= reservedKey, `floor ${floorDuringStall} passed the stalled key ${reservedKey}`);
 		assert.equal(entriesFor('stalled-local')[0].txnLogKey, reservedKey);
+	});
+
+	it('a commit replayed past an open iterator releases both handles', async () => {
+		// commit() with an iterator still open re-stages the writes on a fresh native handle that shares
+		// the reservation; the retained handle is released when the iterator finishes.
+		let key;
+		let iterator;
+		await transaction({}, async (txn) => {
+			iterator = Tbl.search({ conditions: [] })[Symbol.iterator]();
+			iterator.next();
+			await Tbl.put({ id: 'replayed', n: 1 });
+			key = txn.timestamp;
+		});
+		assert(key > 0, 'the write reserved a key');
+		iterator.return?.();
+		await sleep(2);
+		assert(certify() > key, 'the floor passes the key once the replay committed and the iterator closed');
+		assert.equal(entriesFor('replayed')[0].txnLogKey, key);
+	});
+
+	it('a backdated commit replayed past an open iterator still appends at its admitted key', async () => {
+		await sleep(2);
+		const floor = certify();
+		const timestamp = floor - 2000;
+		let iterator;
+		await transaction({ timestamp }, async () => {
+			iterator = Tbl.search({ conditions: [] })[Symbol.iterator]();
+			iterator.next();
+			await Tbl.put({ id: 'replayed-backdated', n: 1 });
+		});
+		iterator.return?.();
+		const [entry] = entriesFor('replayed-backdated');
+		assert.equal(entry.version, timestamp);
+		assert(entry.txnLogKey >= floor, `replay appended at ${entry.txnLogKey} below the floor ${floor}`);
+	});
+
+	it('a published message in a backdated transaction stays reachable from its record', async () => {
+		await sleep(2);
+		const floor = certify();
+		const timestamp = floor - 3000;
+		await Tbl.put({ id: 'published', n: 1 });
+		await transaction({ timestamp }, () => Tbl.publish('published', { hello: 'floor' }));
+		const [, message] = entriesFor('published');
+		assert.equal(message.type, 'message');
+		assert(message.txnLogKey >= floor, `message appended at ${message.txnLogKey} below the floor ${floor}`);
+		const history = await Tbl.getHistoryOfRecord('published');
+		assert(
+			history.some((item) => item.localTime === message.txnLogKey),
+			'the record points at the message entry by its log key'
+		);
 	});
 
 	it('a read handle promoted to a write after the floor passed its key takes a fresh key', async () => {
@@ -285,11 +338,12 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		}
 	});
 
-	it('retires the bound of a worker that exits with a reserved key', async () => {
+	it('retires the bound of a worker that exits with a reserved key, once main has seen it exit', async () => {
 		const { next, exited } = startWorker({ mode: 'exit', tableName });
 		await next('ready');
-		const { key } = await next('reserved');
+		const { key, threadId } = await next('reserved');
 		await exited;
+		retireOriginFloorSlots(threadId); // what manageThreads does on the worker's exit event
 		await sleep(2);
 		assert(certify() > key, 'a dead worker holds nothing');
 	});

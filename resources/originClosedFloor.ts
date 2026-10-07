@@ -1,6 +1,7 @@
 import { threadId } from 'node:worker_threads';
 import type { Transaction as RocksTransaction, RocksDatabase } from '@harperfast/rocksdb-js';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
+import { onMessageByType } from '../server/threads/manageThreads.js';
 
 /**
  * Origin-closed timestamp floor (harper-pro#922, item 1).
@@ -26,11 +27,14 @@ export const ORIGIN_FLOOR_TICK_MS = 5000;
 const SENTINEL_RETRIES = 8;
 const MAX_TIMESTAMP = 8.64e15;
 
+/** Main broadcasts it when a worker exits; each thread retires that worker's bounds in the stores it has open. */
+export const ORIGIN_FLOOR_RETIRE = 'origin-floor-retire';
+
 const RESERVATION = Symbol('originFloorReservation');
 const REGISTRY = Symbol('originFloorRegistry');
 
-// Positive doubles order the same as their bit patterns read as signed 64-bit integers, so a
-// compare-and-swap maximum on the bits is a maximum on the values, and +1 on the bits is nextafter.
+// Positive doubles order as their bit patterns read as signed 64-bit integers: a compare-and-swap
+// maximum on the bits is one on the values, and +1 on the bits is nextafter.
 const FLOAT_SCRATCH = new Float64Array(1);
 const BITS_SCRATCH = new BigInt64Array(FLOAT_SCRATCH.buffer);
 function toBits(value: number): bigint {
@@ -52,22 +56,27 @@ function storeMax(words: BigInt64Array, index: number, value: number): number {
 	}
 }
 
-type Reservation = { registry: ThreadRegistry; key: number; handles: number };
+type Reservation = { registry: ThreadRegistry; key: number; released: boolean };
 
-/** One thread's view of one root store's floor registry. */
+/**
+ * One thread's view of one root store's floor registry. Outstanding reservations sit in a binary
+ * min-heap by key with lazy deletion: commits settle roughly oldest-first, so the released key is
+ * usually the minimum, and a rescan there would make draining a backlog quadratic.
+ */
 class ThreadRegistry {
 	readonly words: BigInt64Array;
-	readonly slot: number;
 	readonly rootStore: RocksDatabase;
-	private readonly reserved = new Set<Reservation>();
-	private cachedMin = Infinity;
+	private slot = -1;
+	private readonly heap: Reservation[] = [];
+	private outstanding = 0;
+	private retired = false;
 
 	constructor(rootStore: RocksDatabase) {
 		this.rootStore = rootStore;
 		this.words = new BigInt64Array(rootStore.getUserSharedBuffer(BUFFER_KEY, new ArrayBuffer(BUFFER_BYTES)));
-		this.slot = this.claimSlot();
 	}
 
+	/** A slot is taken the first time this thread reserves, so readers and certifiers hold none. */
 	private claimSlot(): number {
 		const owner = BigInt(threadId + 1);
 		for (let slot = 0; slot < SLOTS; slot++) {
@@ -81,22 +90,74 @@ class ThreadRegistry {
 		throw new Error(`No origin-floor slot is free for thread ${threadId} on ${this.rootStore.path}`);
 	}
 
-	private publish(): void {
-		Atomics.store(this.words, BOUND_WORDS_OFFSET + this.slot, toBits(this.cachedMin));
+	/** The store closed on this thread: a successor registry owns the slot from here on. */
+	retire(): void {
+		this.retired = true;
+	}
+
+	private minKey(): number {
+		const heap = this.heap;
+		while (heap.length > 0 && heap[0].released) this.popMin();
+		return heap.length > 0 ? heap[0].key : Infinity;
+	}
+
+	private pushHeap(reservation: Reservation): void {
+		const heap = this.heap;
+		heap.push(reservation);
+		let index = heap.length - 1;
+		while (index > 0) {
+			const parent = (index - 1) >> 1;
+			if (heap[parent].key <= heap[index].key) break;
+			[heap[parent], heap[index]] = [heap[index], heap[parent]];
+			index = parent;
+		}
+	}
+
+	private popMin(): void {
+		const heap = this.heap;
+		const last = heap.pop()!;
+		if (heap.length === 0) return;
+		heap[0] = last;
+		let index = 0;
+		for (;;) {
+			const left = 2 * index + 1;
+			const right = left + 1;
+			let smallest = index;
+			if (left < heap.length && heap[left].key < heap[smallest].key) smallest = left;
+			if (right < heap.length && heap[right].key < heap[smallest].key) smallest = right;
+			if (smallest === index) break;
+			[heap[smallest], heap[index]] = [heap[index], heap[smallest]];
+			index = smallest;
+		}
+	}
+
+	private publish(bound: number): void {
+		if (!this.retired) Atomics.store(this.words, BOUND_WORDS_OFFSET + this.slot, toBits(bound));
+	}
+
+	/**
+	 * Admit a natively minted key: it must beat the ratchet, the highest native key this process has
+	 * issued through here or JS-issued above it, and it raises the ratchet to itself. Every native key
+	 * passes this one word, so a JS-issued key can never be repeated by a native one, and a stale
+	 * ratchet step can never repeat a native key another thread admitted in the meantime.
+	 */
+	private admitNative(bits: bigint): boolean {
+		for (;;) {
+			const ratchet = Atomics.load(this.words, WORD_RATCHET);
+			if (bits <= ratchet) return false;
+			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, bits) === ratchet) return true;
+		}
 	}
 
 	/**
 	 * A unique key above every clock sample so far: the native clock's next value, or, while that
 	 * clock is still behind the ratchet (the recovered floor after a restart), the ratchet's next ulp.
-	 * The native clock only ratchets forward, so once it passes the ratchet no JS-issued key can be
-	 * repeated by it.
 	 */
 	freshKey(): number {
 		const minted = this.rootStore.getMonotonicTimestamp();
-		const mintedBits = toBits(minted);
+		if (this.admitNative(toBits(minted))) return minted;
 		for (;;) {
 			const ratchet = Atomics.load(this.words, WORD_RATCHET);
-			if (mintedBits > ratchet) return minted;
 			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, ratchet + 1n) === ratchet)
 				return fromBits(ratchet + 1n);
 		}
@@ -104,35 +165,35 @@ class ThreadRegistry {
 
 	reserve(handle: RocksTransaction, explicit: number | undefined): number {
 		const words = this.words;
-		Atomics.store(words, BOUND_WORDS_OFFSET + this.slot, 0n);
+		if (this.slot < 0) this.slot = this.claimSlot();
+		this.publish(0);
 		try {
 			const current = handle.getTimestamp();
 			const requested = explicit ?? current;
 			const bits = toBits(requested);
-			const key =
-				bits >= Atomics.load(words, WORD_PROPOSED) && bits > Atomics.load(words, WORD_RATCHET)
-					? requested
-					: this.freshKey();
+			// An explicit value never moves the ratchet (one far in the future would pin every later key)
+			// and may repeat a key already issued, as a re-delivery does; a minted key may do neither.
+			const admissible =
+				bits >= Atomics.load(words, WORD_PROPOSED) &&
+				(explicit !== undefined ? bits > Atomics.load(words, WORD_RATCHET) : this.admitNative(bits));
+			const key = admissible ? requested : this.freshKey();
 			if (key !== current) handle.setTimestamp(key);
-			const reservation: Reservation = { registry: this, key, handles: 1 };
+			const reservation: Reservation = { registry: this, key, released: false };
 			(handle as any)[RESERVATION] = reservation;
-			this.reserved.add(reservation);
-			if (key < this.cachedMin) this.cachedMin = key;
+			this.pushHeap(reservation);
+			this.outstanding++;
 			return key;
 		} finally {
-			this.publish();
+			this.publish(this.minKey());
 		}
 	}
 
 	release(reservation: Reservation): void {
-		if (--reservation.handles > 0) return;
-		this.reserved.delete(reservation);
-		if (reservation.key === this.cachedMin) {
-			let min = Infinity;
-			for (const other of this.reserved) if (other.key < min) min = other.key;
-			this.cachedMin = min;
-		}
-		this.publish();
+		if (reservation.released) return;
+		reservation.released = true;
+		this.outstanding--;
+		if (this.outstanding === 0) this.heap.length = 0;
+		this.publish(this.minKey());
 	}
 
 	holders(): Array<{ threadId: number; bound: number }> {
@@ -177,10 +238,9 @@ function assertValidTimestamp(value: number): void {
 }
 
 /**
- * Reserve the key `handle` will append to the `local` log with, before its first staged write. The
- * key — `explicit` (a context or lock timestamp) or else the handle's own minted one — is kept when it
- * is at or above the certifier's admission bound and above every key issued; otherwise a fresh unique
- * key is minted and installed on the handle. Returns the key the handle now carries.
+ * Reserve the key `handle` appends to the `local` log with, before its first staged write: `explicit`
+ * (a context or lock timestamp) or the handle's own minted key when admissible, else a fresh one
+ * installed on the handle. Returns the key the handle now carries.
  */
 export function reserveLocalKey(rootStore: RocksDatabase, handle: RocksTransaction, explicit?: number): number {
 	const existing: Reservation | undefined = (handle as any)[RESERVATION];
@@ -189,11 +249,16 @@ export function reserveLocalKey(rootStore: RocksDatabase, handle: RocksTransacti
 	return registryFor(rootStore).reserve(handle, explicit);
 }
 
-/** A second native handle that commits under a reserved key (a retry replay) shares the reservation. */
-export function shareLocalKey(from: RocksTransaction, to: RocksTransaction): void {
+/**
+ * The handle that re-stages a reserved handle's writes (a replay past an open iterator) takes over
+ * the reservation and its admitted key, which can sit above the explicit timestamp the caller
+ * installed on it; the retained handle's own batch is never appended, so it holds nothing further.
+ */
+export function transferLocalKey(from: RocksTransaction, to: RocksTransaction): void {
 	const reservation: Reservation | undefined = (from as any)[RESERVATION];
 	if (!reservation || (to as any)[RESERVATION]) return;
-	reservation.handles++;
+	if (to.getTimestamp() !== reservation.key) to.setTimestamp(reservation.key);
+	(from as any)[RESERVATION] = undefined;
 	(to as any)[RESERVATION] = reservation;
 }
 
@@ -213,7 +278,7 @@ export function isReservedForLocalAppend(handle: RocksTransaction): boolean {
 	return (handle as any)[RESERVATION] !== undefined;
 }
 
-/** Raise the issuance bound: the recovered floor at open, or a key the replay tail found in `local`. */
+/** Raise the issuance bound to the recovered floor at open. */
 export function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void {
 	if (!(Number.isFinite(floor) && floor > 0) || typeof rootStore?.getUserSharedBuffer !== 'function') return;
 	const words = registryFor(rootStore).words;
@@ -223,15 +288,16 @@ export function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number
 
 /** The persisted floor read at open is the advertised floor until the certifier advances it. */
 export function publishOriginFloor(rootStore: RocksDatabase, floor: number): void {
-	if (!(Number.isFinite(floor) && floor > 0) || typeof rootStore?.getUserSharedBuffer !== 'function') return;
+	if (typeof rootStore?.getUserSharedBuffer !== 'function') return;
+	registryFor(rootStore); // every opener can retire a dead thread's bounds, floor or no floor
+	if (!(Number.isFinite(floor) && floor > 0)) return;
 	raiseOriginFloorIssuance(rootStore, floor);
 	storeMax(registryFor(rootStore).words, WORD_PUBLISHED, floor);
 }
 
 /**
- * One certification round. The clock is sampled before the bounds are read, and the admission bound
- * is raised before as well, so a key minted or adopted after the read is above the candidate. Returns
- * the candidate when it advances the floor; the caller persists it and then publishes it.
+ * One certification round: the clock sample and the admission bound come before the bounds are read,
+ * so a key minted or adopted after the read is above the candidate. The caller persists, then publishes.
  */
 export function certifyOriginFloor(rootStore: RocksDatabase): number | undefined {
 	const registry = registryFor(rootStore);
@@ -256,15 +322,20 @@ export function getOriginClosedFloor(
 	return { floor, lagMs: Date.now() - floor, holders: registry.holders() };
 }
 
-/** The store is closing on this thread: its buffer dies with the column family, so stop tracking it. */
+/** The buffer dies with the column family, so a closing store leaves the directory. */
 export function forgetOriginFloorRegistry(rootStore: RocksDatabase): void {
 	const registry: ThreadRegistry | undefined = (rootStore as any)?.[REGISTRY];
 	if (!registry) return;
+	registry.retire();
 	registries.delete(registry);
 	(rootStore as any)[REGISTRY] = undefined;
 }
 
-/** Retire every bound a thread that no longer runs may still hold; its handles are closed natively. */
+/**
+ * Retire every bound a thread that no longer runs may still hold. Only after the worker's native env
+ * teardown, which closes its handles with their commits drained (main's `worker.on('exit')`): the
+ * worker's own exit event fires before that, while a queued commit can still append.
+ */
 export function retireOriginFloorSlots(exitedThreadId: number): void {
 	const owner = BigInt(exitedThreadId + 1);
 	for (const registry of registries) {
@@ -277,4 +348,4 @@ export function retireOriginFloorSlots(exitedThreadId: number): void {
 	}
 }
 
-process.on('exit', () => retireOriginFloorSlots(threadId));
+onMessageByType(ORIGIN_FLOOR_RETIRE, (message: { threadId: number }) => retireOriginFloorSlots(message.threadId));

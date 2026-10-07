@@ -16,7 +16,7 @@ import { convertToMS } from '../utility/common_utils.ts';
 import { settleBeforeDeadline, when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
-import { releaseLocalKey, reserveLocalKey, shareLocalKey } from './originClosedFloor.ts';
+import { releaseLocalKey, reserveLocalKey, transferLocalKey } from './originClosedFloor.ts';
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
@@ -1503,12 +1503,9 @@ export class DatabaseTransaction implements Transaction {
 			// at the retry sites in commit(); this is the replay-path equivalent.
 			(transaction as RocksTransactionWithRetry).isRetry = true;
 		} else if (!remoteOrigin) {
-			// Before the first staged write (rocksdb-js freezes the timestamp at staging): the key this
-			// handle appends to the `local` log with is reserved against the origin-closed floor. A key
-			// below the floor's admission bound — a read handle's key minted long before its first write,
-			// a lock stamp as old as its lease, an explicit timestamp in the past — is replaced on the
-			// handle by a fresh one; `txnTime` keeps the explicit value, which stays the record version,
-			// and the entry carries both clocks as an applied write does.
+			// Before the first staged write, which freezes the native timestamp. A key below the floor's
+			// admission bound is replaced on the handle only: `txnTime` keeps an explicit value as the
+			// record version, and the entry then carries both clocks as an applied write does.
 			reserveLocalKey(operation.store.rootStore, transaction, txnTime || undefined);
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
@@ -1962,7 +1959,7 @@ export class DatabaseTransaction implements Transaction {
 								{ coordinatedRetry: true }
 							);
 							if (this.timestamp) replayTransaction.setTimestamp(this.timestamp);
-							shareLocalKey(transaction, replayTransaction);
+							transferLocalKey(transaction, replayTransaction);
 							this.retries++; // a replay round: commit handlers re-base on the reloaded entries
 							try {
 								for (const operation of this.writes) {
@@ -2102,7 +2099,6 @@ export class DatabaseTransaction implements Transaction {
 								}
 								return this.commit({ ...options, transaction });
 							}
-							// The batch is appended: the floor may pass this key now.
 							releaseLocalKey(transaction);
 							// onCommit may be async (e.g. RocksTransactionLogStore emits 'aftercommit'). Surface a
 							// rejection — or a synchronous throw — via logging rather than failing the commit, since

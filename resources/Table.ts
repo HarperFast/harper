@@ -4727,8 +4727,7 @@ export function makeTable(options): TableResourceClass {
 					let omitLocalRecord = false;
 					const txnLogKey =
 						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
-					// Where this write's entry is appended: the handle's key, which the origin-closed floor may have
-					// moved above an explicit `txnTime`; identity and ordering above keep using `txnLogKey`.
+					// The handle's key, which the origin-closed floor may have moved above an explicit `txnTime`.
 					const appendedLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnLogKey) : txnLogKey;
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
@@ -7341,6 +7340,7 @@ export function makeTable(options): TableResourceClass {
 						scheduleCleanup();
 					}
 					logger.trace?.(`Publishing message to id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
+					const appendedLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
 					// always audit this, but don't change existing version
 					// TODO: Use direct writes in the future (copying binary data is hard because it invalidates the cache)
 					return updateRecord(
@@ -7359,6 +7359,8 @@ export function makeTable(options): TableResourceClass {
 							transaction,
 							tableToTrack: tableName,
 							auditLocalOnly: options?.localOnly,
+							additionalAuditRefs:
+								appendedLogKey !== txnTime ? [{ version: appendedLogKey, nodeId: options?.nodeId }] : undefined,
 						},
 						'message',
 						false,

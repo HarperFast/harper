@@ -57,7 +57,7 @@ async function run() {
 	} else if (mode === 'exit') {
 		// Reserve, then die with the handle open: the exit hook must retire this thread's bound.
 		Transaction.prototype.commit = function () {
-			parentPort.postMessage({ type: 'reserved', key: this.getTimestamp() });
+			parentPort.postMessage({ type: 'reserved', key: this.getTimestamp(), threadId });
 			process.exit(0);
 		};
 		await transaction({}, () => Tbl.put({ id: 'dying', n: 1 }));
