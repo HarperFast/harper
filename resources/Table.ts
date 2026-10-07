@@ -4727,7 +4727,8 @@ export function makeTable(options): TableResourceClass {
 					let omitLocalRecord = false;
 					const txnLogKey =
 						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
-					// The handle's key, which the origin-closed floor may have moved above an explicit `txnTime`.
+					// The handle's key, which the origin-closed floor may have moved above an explicit `txnTime`:
+					// this write's identity in the log, while the dedup lookups below stay on the origin value.
 					const appendedLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnLogKey) : txnLogKey;
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
@@ -4793,10 +4794,10 @@ export function makeTable(options): TableResourceClass {
 							if (
 								existingEntry.additionalAuditRefs?.some(
 									(ref) =>
-										ref.version === txnLogKey &&
+										ref.version === appendedLogKey &&
 										precedesExistingVersion(
 											txnTime,
-											{ version: txnTime, localTime: txnLogKey, key: id, nodeId: ref.nodeId },
+											{ version: txnTime, localTime: appendedLogKey, key: id, nodeId: ref.nodeId },
 											options?.nodeId
 										) === 0
 								)
@@ -4991,10 +4992,10 @@ export function makeTable(options): TableResourceClass {
 										isRocksDB &&
 										!replaying &&
 										!stagedOwnAuditEntry &&
-										localTime === txnLogKey &&
+										localTime === appendedLogKey &&
 										precedesExistingVersion(
 											txnTime,
-											{ version: txnTime, localTime: txnLogKey, key: id, nodeId: auditRecord.nodeId },
+											{ version: txnTime, localTime: appendedLogKey, key: id, nodeId: auditRecord.nodeId },
 											options?.nodeId
 										) === 0
 									) {
@@ -5010,10 +5011,10 @@ export function makeTable(options): TableResourceClass {
 												options?.nodeId
 											);
 											if (precedesExisting === 0) {
-												if (isRocksDB && localTime !== txnLogKey) {
+												if (isRocksDB && localTime !== appendedLogKey) {
 													// Same origin and record version, but a distinct write. Its per-origin log key
 													// orders the otherwise non-unique record clock without comparing keys across origins.
-													precedesExisting = txnLogKey > localTime ? 1 : -1;
+													precedesExisting = appendedLogKey > localTime ? 1 : -1;
 												} else if (replaying || stagedOwnAuditEntry) {
 													// The log entry being replayed (or staged by this write's failed attempt) is
 													// the write itself, not proof that its primary-store mutation committed.

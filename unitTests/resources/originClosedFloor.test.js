@@ -156,9 +156,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		assert.equal(entriesFor('stalled-local')[0].txnLogKey, reservedKey);
 	});
 
-	it('a commit replayed past an open iterator releases both handles', async () => {
-		// commit() with an iterator still open re-stages the writes on a fresh native handle that shares
-		// the reservation; the retained handle is released when the iterator finishes.
+	it('a commit replayed past an open iterator hands the reservation to the replay handle', async () => {
 		let key;
 		let iterator;
 		await transaction({}, async (txn) => {
@@ -204,6 +202,18 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			history.some((item) => item.localTime === message.txnLogKey),
 			'the record points at the message entry by its log key'
 		);
+	});
+
+	it('two local writes sharing an explicit version below the floor are ordered by their log keys', async () => {
+		await sleep(2);
+		const floor = certify();
+		const version = floor - 4000;
+		await transaction({ timestamp: version }, () => Tbl.put({ id: 'same-version', n: 1 }));
+		await transaction({ timestamp: version }, () => Tbl.put({ id: 'same-version', n: 2 }));
+		assert.equal(Tbl.primaryStore.getEntry('same-version').value.n, 2, 'the later appended write wins the tie');
+		const [first, second] = entriesFor('same-version');
+		assert(second.txnLogKey > first.txnLogKey);
+		assert.equal(second.version, version);
 	});
 
 	it('a read handle promoted to a write after the floor passed its key takes a fresh key', async () => {

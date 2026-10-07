@@ -30,6 +30,7 @@ const MAX_TIMESTAMP = 8.64e15;
 /** Main broadcasts it when a worker exits; each thread retires that worker's bounds in the stores it has open. */
 export const ORIGIN_FLOOR_RETIRE = 'origin-floor-retire';
 
+const RETIRING = -1n;
 const RESERVATION = Symbol('originFloorReservation');
 const REGISTRY = Symbol('originFloorRegistry');
 
@@ -70,6 +71,7 @@ class ThreadRegistry {
 	private readonly heap: Reservation[] = [];
 	private outstanding = 0;
 	private retired = false;
+	private released = 0;
 
 	constructor(rootStore: RocksDatabase) {
 		this.rootStore = rootStore;
@@ -97,8 +99,19 @@ class ThreadRegistry {
 
 	private minKey(): number {
 		const heap = this.heap;
-		while (heap.length > 0 && heap[0].released) this.popMin();
+		while (heap.length > 0 && heap[0].released) {
+			this.popMin();
+			this.released--;
+		}
 		return heap.length > 0 ? heap[0].key : Infinity;
+	}
+
+	/** Released entries behind a long-lived minimum are dropped once they outnumber the live ones. */
+	private compact(): void {
+		const live = this.heap.filter((reservation) => !reservation.released);
+		this.heap.length = 0;
+		for (const reservation of live) this.pushHeap(reservation);
+		this.released = 0;
 	}
 
 	private pushHeap(reservation: Reservation): void {
@@ -192,7 +205,11 @@ class ThreadRegistry {
 		if (reservation.released) return;
 		reservation.released = true;
 		this.outstanding--;
-		if (this.outstanding === 0) this.heap.length = 0;
+		this.released++;
+		if (this.outstanding === 0) {
+			this.heap.length = 0;
+			this.released = 0;
+		} else if (this.released > 64 && this.released > this.outstanding) this.compact();
 		this.publish(this.minKey());
 	}
 
@@ -341,7 +358,9 @@ export function retireOriginFloorSlots(exitedThreadId: number): void {
 	for (const registry of registries) {
 		for (let slot = 0; slot < SLOTS; slot++) {
 			const index = THREAD_WORDS_OFFSET + slot;
-			if (Atomics.load(registry.words, index) !== owner) continue;
+			// Every thread receives the retirement; the one that moves the owner to RETIRING does it, and
+			// nobody can claim the slot until that thread has cleared the bound and freed it.
+			if (Atomics.compareExchange(registry.words, index, owner, RETIRING) !== owner) continue;
 			Atomics.store(registry.words, BOUND_WORDS_OFFSET + slot, INFINITY_BITS);
 			Atomics.store(registry.words, index, 0n);
 		}
