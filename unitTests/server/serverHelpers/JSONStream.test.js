@@ -88,7 +88,7 @@ describe('Test JSONStream module ', () => {
 						next() {
 							outerCalls++;
 							if (outerCalls === 1) return { done: false, value: inner };
-							return new Promise(() => {}); // never resolves: outer stays open until destroy()
+							return new Promise(() => {}); // outer stays open until destroy()
 						},
 						return() {
 							outerReturnCalled = true;
@@ -104,6 +104,7 @@ describe('Test JSONStream module ', () => {
 				// nothing else keeps the event loop alive while outer's next() is stuck on a promise
 				// that never resolves, so this timer must stay ref'd or Node exits before it can fire
 				const timer = setTimeout(() => {
+					stream.destroy();
 					reject(new Error(`timed out waiting for ${JSON.stringify(EXPECTED_PREFIX)}, got ${JSON.stringify(out)}`));
 				}, 2000);
 				const settle = (fn) => {
@@ -111,6 +112,7 @@ describe('Test JSONStream module ', () => {
 						fn();
 					} catch (error) {
 						clearTimeout(timer);
+						stream.destroy();
 						reject(error);
 					}
 				};
