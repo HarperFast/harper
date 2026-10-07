@@ -503,6 +503,10 @@ mirrors loader behaviors that must stay in sync if the loader changes: config fi
 (`..` and absolute patterns rejected). Known limitation: a `componentsRoot` override that itself
 arrives via env var cannot redirect the scan.
 
+## Built-in environment entries are validated before runtime use (`config/configUtils.ts`)
+
+[harper#2028](https://github.com/HarperFast/harper/issues/2028) found that a bare built-in name reached runtime consumers without a package identifier. Every reader goes through `getEnvBuiltInComponents()`, which warns and skips incomplete entries before runtime loading or config backfill can use them. It trims the fields around the first `=` and keeps the rest of the package identifier intact.
+
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 
 Packaging uses `tar-fs.pack(dir, { dereference: true })` by default (`skip_symlinks` off).
