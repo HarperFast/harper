@@ -165,17 +165,28 @@ export interface DefineBackendSpec {
 /**
  * Builds a process-wide backend. Runs on the owner thread only. Returns the backend, or registers it
  * under the same kind and id with `registerBackend` (a module factory's `register({ logicalName,
- * kind, config })` does), in which case that registration is captured rather than installed; any
- * other backend it registers while it runs is discarded, and is not disposed. A second registration
- * under the same kind and id throws `ModelBackendRegistrationError` rather than replace the first,
- * and fails the start whatever the factory does with the error: the owner disposes the first, and
- * what the factory returned, as after any failed start, even when the factory rethrows, so the
- * factory does not dispose them itself. The backend is ready when the returned promise resolves, so
- * a factory that wants ready to mean warm awaits its warmup before resolving. A factory that both
- * registers a backend and returns a different object (the engine behind that backend, say) hands the
- * owner both: the backend it returned serves if it returned one, else the one it registered, and both
- * are disposed, the registered one first, each with its own tries, before the instance counts as
- * gone. Each `dispose()` must therefore resolve even after the other's has run.
+ * kind, config })` does), in which case that registration is captured rather than installed. A
+ * second registration under the same kind and id throws `ModelBackendRegistrationError` rather than
+ * replace the first, and fails the start whatever the factory does with the error. The backend is
+ * ready when the returned promise resolves, so a factory that wants ready to mean warm awaits its
+ * warmup before resolving. A factory that both registers a backend and returns a different object
+ * (the engine behind that backend, say) hands the owner both: the backend it returned serves if it
+ * returned one, else the one it registered, and together they are the instance, disposed, the
+ * registered one first, each with its own tries, before the instance counts as gone. Each
+ * `dispose()` must therefore resolve even after the other's has run.
+ *
+ * The owner owns every object the factory hands over from the moment it is handed over, so the
+ * factory never disposes one itself: each backend it registers while it runs, under any key, before
+ * `registerBackend` checks it, so one that is refused (as invalid, or as the second registration
+ * above) too, and what it returns, before the owner awaits it or reads any of its properties. A
+ * start that fails for any reason, the factory's own error included, disposes all of them before
+ * another thread's factory runs. A start that succeeds keeps the instance and disposes the rest (a
+ * backend registered under another key, which is never installed, or an invalid one whose refusal
+ * the factory caught) before it is reported ready, and fails if one cannot be disposed. What a
+ * factory that throws built and never handed over is its own to release before throwing. A
+ * registration made after the factory has settled, by work it left running, is not captured: it is
+ * installed in the owner thread's registry, as `registerBackend` does anywhere, and the owner never
+ * disposes it, so a factory registers before its promise resolves.
  *
  * At most one instance of a key is live at a time, as far as the owner can tell: before another
  * thread's factory runs, the owner awaits the backend's `dispose()`, so a backend holding a native
@@ -186,12 +197,6 @@ export interface DefineBackendSpec {
  * running calls finish. `signal` aborts only while the factory is still running, when the owner
  * releases the key, so a slow load can stop early; whatever it returns is still disposed. It never
  * aborts once the factory has returned, so a backend may keep it without its calls being stopped.
- * What the factory returns and registers is held before the owner reads any of its properties, so
- * one that fails the start's checks (even by a getter that throws) is still disposed before another
- * thread's factory runs. `registerBackend` checks a backend before it is captured, so one it refuses
- * (one that fails those checks, or the second registration above) was never handed over and is the
- * factory's to release. A factory that throws for any other reason must release what it loaded
- * before throwing.
  */
 export type ProcessBackendFactory = (context: { kind: ModelKind; logicalName: string; signal: AbortSignal }) => unknown;
 
