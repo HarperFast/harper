@@ -424,10 +424,12 @@ Until that is fixed, use these manual steps for a new application:
 
 Import `databases` from `harper`, and each branched name on it resolves to the fork. `tables` from `harper` is a shortcut for the default database, `data`, so it reaches a fork only when `data` itself is branched; for any other branched database, go through `databases`. The bare `databases` and `tables` globals are shared by every application in the thread, so code that uses them reads and writes the base without any warning ([harper#3053](https://github.com/HarperFast/harper/issues/3053)).
 
+With `branchedDatabases: [inventory]`, this is the fork's `Product` table:
+
 ```js
 import { databases } from 'harper';
 
-const { Product } = databases.inventory; // the fork, when `inventory` is branched
+const { Product } = databases.inventory;
 ```
 
 #### Requirements and failure modes
