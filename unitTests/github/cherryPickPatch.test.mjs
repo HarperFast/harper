@@ -183,6 +183,9 @@ describe('cherry-pick-patch.yml', function () {
 		const run = fixture.runJob();
 		assert.notStrictEqual(run.outputs.no_op, 'true', run.log);
 		assert.ok(run.ran.includes('Report held for review'), run.log);
+		// The lone fallback commit cherry-picks as a no-op, so this branch gets no new commits.
+		assert.deepStrictEqual(run.prCreates, []);
+		assert.deepStrictEqual(fixture.cherryPickBranches(), []);
 		assert.match(run.stickies.at(-1), /held for review/);
 	});
 
