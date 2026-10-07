@@ -144,13 +144,7 @@ export class Models implements ModelsContract {
 		return defineBackend(spec);
 	}
 
-	/**
-	 * Register a backend shared by the process instead of one per thread: every thread that loads the
-	 * component calls this where it would call `registerBackend`, `factory` runs on one owner thread,
-	 * one instance of the key is live at a time within the scope resources/models/DESIGN.md states, and
-	 * each thread gets a proxy that forwards its calls to the owner. For in-process models, where a copy
-	 * per worker means a model, a GPU context and a warmup per worker. See `processBackend.ts`.
-	 */
+	/** Register a process-wide backend; see resources/models/DESIGN.md. */
 	registerProcessBackend(
 		kind: ModelKind,
 		id: string,
@@ -160,11 +154,7 @@ export class Models implements ModelsContract {
 		registerProcessBackendImpl(kind, id, factory, options);
 	}
 
-	/**
-	 * Readiness of the backend `kind`/`id` resolves to on this thread: a per-thread backend is ready
-	 * once registered; a process-wide one reports the state the main thread holds, as last pushed to
-	 * this thread, so the threads' answers converge. Undefined when nothing is registered.
-	 */
+	/** Read this thread's backend status; see resources/models/DESIGN.md, “State”. */
 	backendStatus(kind: ModelKind, id: string): BackendStatus | undefined {
 		return backendStatus(kind, id);
 	}
@@ -222,8 +212,6 @@ export class Models implements ModelsContract {
 				this.#record(backend, 'embed', opts.model, accounting, undefined, result, attemptStart);
 				return { vectors: result.output, usage: result.usage };
 			} catch (err) {
-				// A process-wide backend that split this call into parts reports what the parts that completed
-				// used on its error; this attempt's row bills it, once, and the next candidate bills its own.
 				this.#recordFailure(
 					backend,
 					'embed',
@@ -713,8 +701,7 @@ function isChoiceScoringUnsupported(err: unknown): boolean {
  * Tokens a declined scoring call consumed (`ChoiceScoringUnsupportedError.usage`), finite counts
  * only: a completion that came back without log-probabilities was billed, so they land on that
  * attempt's failure row and in the token metric while the call-count metric stays a count of
- * successes. Beyond this, only an `embed` failure row carries usage: what a process-wide backend's
- * split call used before a part failed (`takePartialUsage`, read once per error).
+ * successes.
  */
 function usageFromError(err: unknown): TokenUsage | undefined {
 	if (!isChoiceScoringUnsupported(err)) return undefined;

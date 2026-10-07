@@ -32,19 +32,14 @@ export interface Models {
 	registerBackend(kind: ModelKind, id: string, backend: ModelBackend): void;
 	/** Build a `ModelBackend` from a spec; pair with `registerBackend`. See #1325. */
 	defineBackend(spec: DefineBackendSpec): ModelBackend;
-	/**
-	 * Register a backend shared by the process: `factory` runs on one owner thread, one instance per
-	 * key is live at a time for every object handed over during a run until the run is sealed (see
-	 * `ProcessBackendFactory`), and every thread that registers gets a proxy that forwards calls to it.
-	 * Opt-in; `registerBackend` stays per thread.
-	 */
+	/** Opt-in process-wide backend registration. See resources/models/DESIGN.md. */
 	registerProcessBackend(
 		kind: ModelKind,
 		id: string,
 		factory: ProcessBackendFactory,
 		options?: ProcessBackendOptions
 	): void;
-	/** Readiness of the backend registered under `kind`/`id` on this thread, or undefined when none is. */
+	/** Backend status; see resources/models/DESIGN.md, “State”. */
 	backendStatus(kind: ModelKind, id: string): BackendStatus | undefined;
 	/** Replace the model selection policy with a custom router. See #1326. */
 	registerRouter(router: ModelRouter): void;
@@ -163,97 +158,29 @@ export interface DefineBackendSpec {
 	maxScoredChoices?: number;
 }
 
-/**
- * Builds a process-wide backend. Runs on the owner thread only. Returns the backend, or registers it
- * under the same kind and id with `registerBackend` (a module factory's `register({ logicalName,
- * kind, config })` does), in which case that registration is captured rather than installed. A
- * second registration under the same kind and id throws `ModelBackendRegistrationError` rather than
- * replace the first, and fails the start whatever the factory does with the error. The backend is
- * reported ready only when main accepts the owner's valid `STARTED` report, after the factory settles
- * and the owner validates its backend and handles extra objects. A factory that wants ready to mean
- * warm awaits its warmup before returning. A factory that both registers a backend and returns a
- * different object
- * (the engine behind that backend, say) hands the owner both: the backend it returned serves if it
- * returned one, else the one it registered, and together they are the instance. The owner tries the
- * registered one's `dispose()` first, so each `dispose()` must resolve even after the other's has run.
- *
- * The owner owns every object the factory hands over from the moment it is handed over, so the
- * factory never disposes one itself: each backend it registers while it runs, under any key, before
- * `registerBackend` checks it, so one that is refused (as invalid, or as the second registration
- * above) too, and what it returns, before the owner awaits it or reads any of its properties. An
- * async factory returns its own promise, which reads the `then` of what the factory returns before
- * the owner can, so an object whose `then` throws there reaches the owner only as that promise's
- * rejection: it is the factory's to free, or to register before returning, as is anything a factory
- * that throws built and never handed over. A registration under the key outside the start, such as
- * one that work the factory left running makes after it settles, is never installed over the key's
- * proxy, on any thread that registered the key; a warning names the key, and `registerBackend` does
- * not throw, even for a backend it would otherwise refuse. A factory should therefore await any work
- * that can build or register a backend before its promise resolves.
- *
- * A backend holding a native model or a GPU context should free it in `dispose()`, which the owner tries up
- * to three times in all; a backend without `dispose()` is taken to hold nothing that its finished
- * calls and its thread's exit do not release. When the owner tries each object's `dispose()`, which
- * objects the one-live-instance guarantee covers, and what main does meanwhile, on shutdown and when
- * every try rejects: resources/models/DESIGN.md. `signal` aborts only while the factory is still
- * running, when the owner releases the key, so a slow load can stop early; the owner still holds what
- * it returns. It never aborts once the factory has returned, so a backend may keep it without its
- * calls being stopped.
- */
+/** Factory contract: see resources/models/DESIGN.md, “One live instance”. */
 export type ProcessBackendFactory = (context: { kind: ModelKind; logicalName: string; signal: AbortSignal }) => unknown;
 
 export interface ProcessBackendOptions {
-	/** Backend calls the owner runs at once. Default 1, which suits one native model context. */
+	/** Concurrent backend calls. Default 1. */
 	concurrency?: number;
-	/**
-	 * Requests the owner queues beyond `concurrency`, and calls a thread lets wait for an owner to be
-	 * named, before refusing with `ModelBackendBusyError`. Default 256.
-	 */
+	/** Queue and caller wait limit. Default 256. */
 	maxPending?: number;
-	/**
-	 * Embedding only: the most inputs one backend `embed` call carries. Queued `embed` requests whose
-	 * options and accounting, as the owner receives them after structured clone, are equal as
-	 * primitives, arrays and plain objects are merged into one call of at most this many inputs, and
-	 * the vectors and usage are split back per request. A class instance arrives as a plain object of
-	 * its own fields, so two with equal fields merge; an object the clone keeps as its own type, such as
-	 * a Date or a typed array, never matches. A request with more inputs runs alone as
-	 * consecutive calls of at most this many; if a later one fails, the error carries the usage of
-	 * those that completed, which the caller's row bills. Default none: no merging and no splitting.
-	 */
+	/** Embedding batch input limit. Unset by default. See resources/models/DESIGN.md, “Load”. */
 	maxBatchInputs?: number;
-	/**
-	 * Restarts charged for unplanned owner losses (exit or failed start) per worker generation; a loss
-	 * with none left fails the key. Default 1.
-	 */
+	/** Unplanned owner losses allowed per worker generation. Default 1. */
 	maxRestarts?: number;
-	/**
-	 * How long one call waits in all for an owner to be named before it fails with
-	 * `ModelBackendUnavailableError`, reason `no-owner` (a call to a `failed` key does not wait), and
-	 * for an owner that has not yet seen this thread admitted to confirm it (reason `not-owner`).
-	 * Default 30000.
-	 */
+	/** Caller wait limit in milliseconds. Default 30000. */
 	ownerWaitMs?: number;
-	/** Caller-side bound on one call, waiting and queueing included; on expiry the call is cancelled at the owner. Default none. */
+	/** Caller-side timeout in milliseconds. Unset by default. */
 	timeoutMs?: number;
 }
 
-/**
- * Why a call to a process-wide backend found no owner to serve it. `moved`: the thread it reached
- * had released the backend or was no longer its owner, and refused the call unstarted; the proxy
- * may attempt to route the call again within its limits; a caller sees `moved` only after the move limit. A backend's
- * own error is never taken for a move, whatever its name. `no-owner`: no owner was named within
- * `ownerWaitMs`. `not-owner`: the thread it reached does not serve the key to this caller, or had not
- * confirmed that main admitted it within `ownerWaitMs`. `dispose-failed` (in `backendStatus` only):
- * an instance's `dispose()` rejected on every try, so it may still be live, and calls fail with
- * `failed`; when service resumes: resources/models/DESIGN.md, "Handover and election".
- */
+/** Reasons reported by process-wide backend calls or status; see resources/models/DESIGN.md. */
 export type ModelBackendUnavailableReason =
 	'owner-exited' | 'start-failed' | 'failed' | 'no-owner' | 'moved' | 'not-owner' | 'timeout' | 'dispose-failed';
 
-/**
- * Readiness of a registered backend. A per-thread backend is ready once registered. A process-wide
- * backend reports the state the main thread holds for it, as last pushed to this thread: the views
- * converge, but one can trail main's state by the push in flight.
- */
+/** Status contract: see resources/models/DESIGN.md, “State”. */
 export type BackendStatus =
 	| { scope: 'thread'; state: 'ready' }
 	| {
@@ -261,22 +188,15 @@ export type BackendStatus =
 			state: 'starting' | 'ready' | 'failed';
 			/** The owner thread's id, while one is elected. */
 			owner?: number;
-			/**
-			 * A thread whose run may still hold the backend: a released owner whose run has not reported
-			 * its disposal, or a thread whose `dispose()` failed. What sets and clears it, and what it
-			 * holds up: resources/models/DESIGN.md, "Handover and election".
-			 */
+			/** Thread held as draining; see resources/models/DESIGN.md, “Handover and election”. */
 			draining?: number;
 			restarts: number;
 			maxRestarts: number;
 			/** The worker generation (restart number) the restart budget belongs to. */
 			generation?: number;
-			/**
-			 * Why the last owner was lost, or `no-owner` when main's last election found no claimant that
-			 * may own the backend (when main elects: resources/models/DESIGN.md, "Handover and election").
-			 */
+			/** Last loss or election reason; see resources/models/DESIGN.md. */
 			reason?: ModelBackendUnavailableReason;
-			/** The last loss's error, for operators; never attached to a caller's error. */
+			/** Diagnostic error; see resources/models/DESIGN.md, “Failure”. */
 			error?: { name: string; message: string };
 	  };
 

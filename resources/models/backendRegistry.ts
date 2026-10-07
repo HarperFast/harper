@@ -9,23 +9,7 @@ import type {
 	ToolCall,
 } from './types.ts';
 
-/**
- * Process-wide model backend registry.
- *
- * Stores logical-name → backend-instance mappings for embedding and
- * generative kinds. Boot wiring populates the registry via
- * `setEmbedding(...)` / `setGenerative(...)`; the `Models` facade reads it
- * via `resolveEmbedding(...)` / `resolveGenerative(...)`.
- *
- * Components and apps register their own backends — including in-process /
- * non-HTTP ones — through the public `registerBackend(...)` / `defineBackend(...)`
- * pair (#1325), the same primitive the built-in backends use internally.
- *
- * Module-scope state is intentional — one registry per Harper process,
- * mirroring `contextStorage` at `resources/transaction.ts:6`. Translating
- * a YAML `models:` config block into registry entries (the bootstrapper
- * step) lands in Phase 2 alongside the first real backend.
- */
+/** Per-thread model backend registry. */
 
 const registries: Record<ModelKind, Map<string, ModelBackend>> = {
 	embedding: new Map(),
@@ -44,19 +28,11 @@ interface CaptureSlot {
 	kind: ModelKind;
 	logicalName: string;
 	backend?: ModelBackend;
-	/** Deferred with the primary, so no request observes a new helper next to an old primary. */
 	extras: CapturedInstall[];
-	/** Async work spawned by a factory retains the ALS context past construction; once construction
-	 * ends the scope deactivates, so a later registration is not captured: it is handled as any
-	 * registration outside a capture, installed, or diverted under a key `guardInstalled` keeps. */
 	active: boolean;
-	/** Refuse a second registration under the slot's own key (`constructBackend`'s `exclusive`). */
 	exclusive: boolean;
-	/** That refusal, kept so it fails the construction whatever the registering code does with it. */
 	refused?: ModelBackendRegistrationError;
-	/** `constructBackend`'s `hold`: given each object registered in the scope before it is checked or refused. */
 	hold?: (handed: object) => void;
-	/** What `hold` has been given, so it is given each object once. */
 	handed: Set<unknown>;
 }
 
@@ -81,11 +57,6 @@ export function getBackendSource(backend: ModelBackend): string | undefined {
 // concurrent constructions.
 const captureScope = new AsyncLocalStorage<CaptureSlot>();
 
-/**
- * Give `value` to the active capture's `hold`, if it has one and has not been given `value` yet, before
- * anything checks or refuses it, so the capturing caller owns it whatever happens next. Reads nothing
- * of `value`.
- */
 function handOver(slot: CaptureSlot | undefined, value: unknown): void {
 	if (!slot?.active || !slot.hold || slot.handed.has(value)) return;
 	if ((typeof value === 'object' && value !== null) || typeof value === 'function') {
@@ -94,24 +65,13 @@ function handOver(slot: CaptureSlot | undefined, value: unknown): void {
 	}
 }
 
-/**
- * Backends a registration outside a capture must not replace, each with what it hands such a
- * registration to instead: a process-wide backend's proxy, and its key's disposal.
- */
 const guards = new WeakMap<ModelBackend, (late: unknown) => void>();
 
-/**
- * Keep `backend`, while it is the one installed under its kind and logical name, from being replaced by
- * a registration made outside a capture (`registerBackend`, `setEmbedding`, `setGenerative`,
- * `setDecision`): a different object registered there is passed to `divert` instead of installed, and
- * the registration returns without throwing, even for an object `registerBackend` would refuse.
- * Registering `backend` itself again installs it as before. `divert` must not throw.
- */
+/** Guard contract: see resources/models/DESIGN.md. */
 export function guardInstalled(backend: ModelBackend, divert: (late: unknown) => void): void {
 	guards.set(backend, divert);
 }
 
-/** Pass `backend` to the guard of what is installed under `kind.logicalName`, if any. Returns whether it did. */
 function diverted(kind: ModelKind, logicalName: string, backend: unknown): boolean {
 	if (!Object.hasOwn(registries, kind)) return false;
 	const current = registries[kind].get(logicalName);
@@ -140,35 +100,19 @@ function install(kind: ModelKind, logicalName: string, backend: ModelBackend): v
 	registries[kind].set(logicalName, backend);
 }
 
-/** Map `logicalName` to a backend for embedding calls. Re-set replaces, except a backend `guardInstalled` keeps. */
 export function setEmbedding(logicalName: string, backend: ModelBackend): void {
 	install('embedding', logicalName, backend);
 }
 
-/** Map `logicalName` to a backend for generative calls. Re-set replaces, except a backend `guardInstalled` keeps. */
 export function setGenerative(logicalName: string, backend: ModelBackend): void {
 	install('generative', logicalName, backend);
 }
 
-/** Map `logicalName` to a backend for decide calls. Re-set replaces, except a backend `guardInstalled` keeps. */
 export function setDecision(logicalName: string, backend: ModelBackend): void {
 	install('decision', logicalName, backend);
 }
 
-/**
- * Build a backend through its normal registration path but return it instead of installing it, so a
- * config reload can install it conditionally. A scratch logical name would be briefly visible
- * through `listBackends`, which backs the public `GET /v1/models`.
- *
- * Two options are for a caller that attempts disposal of what it captured. `hold` is given each
- * object that
- * `register` registers, under any key, once, as it is handed over: before `registerBackend` checks it
- * and before any refusal, and even when `register` then throws, so the caller owns each one whatever
- * happens to it next, and can try its `dispose()`. With `exclusive`, a second registration under
- * `kind.logicalName` throws `ModelBackendRegistrationError` instead of replacing the first, so one
- * registration is the key's. That refusal is returned as `refused`, beside what was captured, whatever
- * `register` does with it, even rethrowing it, so the construction fails even when `register` catches it.
- */
+/** Construction capture contract: see resources/models/DESIGN.md. */
 export async function constructBackend(
 	kind: ModelKind,
 	logicalName: string,
@@ -268,35 +212,10 @@ export function resolveDecision(logicalName: string = 'default'): ModelBackend {
 	return backend;
 }
 
-/**
- * Public registration API (#1325).
- *
- * The supported way for a component or app to add a backend — including
- * in-process / non-HTTP ones — under a logical id. Call it during component
- * load (e.g. `handleApplication`); the registry is process-wide, so each worker
- * thread that loads the component registers its own instance, matching how the
- * config-driven built-ins populate per process. A backend that should have one live
- * instance per key in the process (an in-process model) registers through
- * `registerProcessBackend` (`processBackend.ts`) instead, within the scope
- * resources/models/DESIGN.md states. Under a key this thread registered that way, a
- * registration outside that backend's factory is not installed over its proxy, and the
- * call does not throw: it goes, with a warning, to that backend, which tries to
- * dispose it (when: `divertLate`).
- *
- * `id` is the logical name callers select with `opts.model` (e.g.
- * `models.embed(text, { model: 'local:bge-small' })`). A provider-namespaced id
- * (`local:bge-small`, `openai:gpt-4o`) avoids collisions when multiple plugins
- * register — convention, not enforced.
- *
- * A hand-rolled backend's `capabilities()` must agree with the methods it
- * implements (the `generate` / `stream` paths gate on it); `defineBackend`
- * derives them for you, so prefer it.
- */
+/** Register a per-thread backend under the logical name selected by `opts.model`. See #1325. */
 export function registerBackend(kind: ModelKind, id: string, backend: ModelBackend): void {
 	const slot = captureScope.getStore();
-	// Inside a capture with `hold`, the backend is the capturing caller's before it is checked.
 	handOver(slot, backend);
-	// Under a guarded key, outside a capture, it goes to the guard before it is checked, so this never throws.
 	if (!slot?.active && diverted(kind, id, backend)) return;
 	assertBackendForKind(kind, id, backend);
 	if (kind === 'embedding') setEmbedding(id, backend);

@@ -1367,8 +1367,6 @@ function startWorker(path, options = {}, startOptions = {}) {
 	worker.name = options.name;
 	worker.workerIndex = options.workerIndex;
 	worker.application = options.application; // the isolated application this worker is dedicated to, if any
-	// The generation it was started in (its workerData.restartNumber), so main can take a message's
-	// generation from the worker it came from rather than from the message.
 	worker.restartNumber = restartNumber;
 	if (certify) holdStart(worker, gated, startOptions);
 	else if (options.name === hdbTerms.THREAD_TYPES.HTTP) admitOnReport(worker, startOptions);

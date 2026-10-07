@@ -158,8 +158,6 @@ describe('registerBackend', () => {
 		assert.throws(() => registerBackend('embedding', 'x', { embed: async () => ({}) }), ModelBackendRegistrationError);
 	});
 
-	// registerProcessBackend shares these checks (assertKindAndId, assertBackendForKind); their text is
-	// what a component author reads, so it is pinned here.
 	it('names each refusal with the same message, kind and id checks first', () => {
 		const refusal = (kind, id, backend) => {
 			try {
@@ -333,7 +331,6 @@ describe('registerBackend', () => {
 			assert.equal(getBackend('embedding', 'two'), undefined);
 		});
 
-		/** A backend `registerBackend` accepts for the embedding kind. */
 		const embedder = (name) => ({ ...fakeBackend(name), embed: async () => ({ status: 'completed', output: [] }) });
 
 		it('keeps the last of two registrations under the key when not exclusive, as config reload relies on', async () => {
@@ -365,7 +362,6 @@ describe('registerBackend', () => {
 						() => registerBackend('embedding', 'default', second),
 						/a second registration under the same key is refused/
 					);
-					// Registering the first again is refused too (the refusal propagates), and it is not handed over twice.
 					registerBackend('embedding', 'default', first);
 				},
 				{ exclusive: true, hold: (handed) => held.push(handed) }
@@ -375,7 +371,6 @@ describe('registerBackend', () => {
 			assert.ok(refused instanceof ModelBackendRegistrationError);
 			assert.deepStrictEqual(held, [first, invalid, helper, second], 'each in the order handed over, once');
 
-			// A construction that throws for its own reasons still handed over what it registered first.
 			const before = [];
 			await assert.rejects(
 				constructBackend(
@@ -411,12 +406,10 @@ describe('registerBackend', () => {
 				'and every other registration under its key was diverted'
 			);
 
-			// A capture is not a registration over it: what is registered there is captured as before.
 			const { backend } = await constructBackend('embedding', 'default', () =>
 				registerBackend('embedding', 'default', late)
 			);
 			assert.equal(backend, late);
-			// Other keys are unguarded.
 			registerBackend('embedding', 'other', late);
 			assert.equal(getBackend('embedding', 'other'), late);
 			assert.equal(diverted.length, 3);

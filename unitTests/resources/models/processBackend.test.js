@@ -3,7 +3,6 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
-// Prime Harper's module graph in the same order the other models unit tests do (see Models.test.js).
 require('#src/resources/databases');
 const manageThreads = require('#js/server/threads/manageThreads');
 const { startWorker, onMessageByType, getWorkerIndex, setMainIsWorker } = manageThreads;
@@ -23,12 +22,9 @@ const {
 } = require('#src/resources/models/processBackend');
 const { waitFor } = require('../../waitFor');
 
-// Workers are started through manageThreads' startWorker, so they reach each other and the main
-// thread (this mocha process, the coordinator) over the same port mesh production workers use.
 const FIXTURE = path.join(__dirname, 'fixtures', 'processBackendWorker.cjs');
 const WORKER_NAME = 'models-process-backend-test';
 const COMMAND_TIMEOUT_MS = 20000;
-// The protocol's message types, for the hand-built messages a misbehaving thread could send.
 const CLAIM = 'models-process-backend-claim';
 const STATE = 'models-process-backend-state';
 const REQUEST = 'models-process-backend-request';
@@ -42,8 +38,6 @@ let nextCommand = 1;
 onMessageByType('process-backend-test-event', (message) => events.push(message));
 onMessageByType('process-backend-test-reply', (message) => replies.get(message.rid)?.(message));
 onMessageByType('process-backend-test-ready', (message) => readiness.get(message.threadId)?.());
-
-/** The fixture's fingerprint of a text, as a vector's first element carries it. */
 function fingerprint(text) {
 	let hash = 7;
 	for (let i = 0; i < text.length; i++) hash = (hash * 31 + text.charCodeAt(i)) % 16777216;
@@ -66,8 +60,6 @@ function startFixtureWorker(started, options = {}) {
 		});
 	});
 }
-
-/** Send a fixture command and resolve with its reply; `rid` identifies an embed to a later abort. */
 function command(worker, body) {
 	const rid = nextCommand++;
 	const reply = new Promise((resolve, reject) => {
@@ -93,8 +85,6 @@ const statusOf = async (worker, id, kind) => (await command(worker, { command: '
 const ownerLoad = async (worker, id) => (await command(worker, { command: 'load', id })).load;
 const rawResponse = (request) =>
 	waitFor(() => events.find((event) => event.event === 'raw-response' && event.message.request === request), 10000);
-
-/** Wait until `worker` reports `id` in a state matching `predicate`, and return that status. */
 function waitForStatus(worker, id, predicate, description, kind) {
 	let last;
 	return waitFor(
@@ -113,8 +103,6 @@ function assertServedBy(reply, texts, ownerThreadId) {
 		texts.map((text) => [fingerprint(text), ownerThreadId])
 	);
 }
-
-/** A hand-built request, as a thread holding the `threads` global could send one. */
 function rawRequest(id, origin, request, overrides = {}) {
 	return {
 		type: REQUEST,
@@ -149,8 +137,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		for (let i = 0; i < count; i++) started.push(await startFixtureWorker(workers));
 		return started;
 	}
-
-	/** Start a worker in worker generation `generation`, as `restartWorkers` would after a deploy. */
 	async function startWorkerInGeneration(generation) {
 		const saved = manageThreads.restartNumber;
 		manageThreads.restartNumber = generation;
@@ -160,8 +146,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			manageThreads.restartNumber = saved;
 		}
 	}
-
-	/** Register `id` on each worker in turn, waiting until each one sees the owner main elected. */
 	async function registerInOrder(list, id, options, extra = {}) {
 		for (const worker of list) {
 			await command(worker, { command: 'register', id, options, ...extra });
@@ -174,8 +158,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			);
 		}
 	}
-
-	/** Hold the owner's execution slot with a call gated on `gate:<tag>`, so later requests queue behind it. */
 	function occupy(owner, id, tag = id) {
 		return command(owner, { command: 'embed', id, texts: [`gate:${tag}`] });
 	}
@@ -198,7 +180,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			'the factory ran once, on the owner'
 		);
 		assert.ok(backendCalls('one-owner:').every((event) => event.threadId === first.threadId));
-		// Readiness is pushed by main once the owner reports, so it can trail the first answered call.
 		const ready = await waitForStatus(
 			second,
 			'one-owner',
@@ -274,7 +255,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 				const texts = [`batched:${worker.threadId}:${i}`];
 				sent.push({ texts, reply: command(worker, { command: 'embed', id: 'batched', texts }) });
 			}
-		// Every request is queued behind the held call before it is let go.
 		await waitFor(async () => (await ownerLoad(owner, 'batched'))?.queued === 12, 10000);
 		await command(owner, { command: 'release', text: 'gate:batched' });
 
@@ -293,7 +273,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		await registerInOrder([owner, ...callers], 'exact', { maxBatchInputs: 8 });
 		const gate = occupy(owner, 'exact');
 		await waitingOn('gate:exact');
-		// JSON writes NaN as null, so a JSON key would have merged the first two.
 		const nan = command(callers[0], { command: 'embed', id: 'exact', texts: ['exact:nan'], opts: { variant: NaN } });
 		const nil = command(callers[1], { command: 'embed', id: 'exact', texts: ['exact:null'], opts: { variant: null } });
 		const tenant = command(callers[2], {
@@ -328,7 +307,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		await registerInOrder([owner, ...callers], 'class-options', { maxBatchInputs: 8 });
 		const gate = occupy(owner, 'class-options');
 		await waitingOn('gate:class-options');
-		// Each worker builds the option from its own Tier class; only the instance's own fields cross threads.
 		const sent = [
 			[callers[0], 'class-options:gold-a', 'gold'],
 			[callers[1], 'class-options:gold-b', 'gold'],
@@ -376,7 +354,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		const [owner, a, b, c] = await startWorkers(4);
 		await registerInOrder([owner, a, b, c], 'merged-cancel', { maxBatchInputs: 8 });
 
-		// One member cancels: the merged call keeps running for the others.
 		let gate = occupy(owner, 'merged-cancel');
 		await waitingOn('gate:merged-cancel');
 		const holder = command(a, { command: 'embed', id: 'merged-cancel', texts: ['gate:merged-cancel:one'] });
@@ -384,7 +361,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		const stayer = command(c, { command: 'embed', id: 'merged-cancel', texts: ['merged-cancel:stayer'] });
 		const dropped = command(b, { command: 'embed', id: 'merged-cancel', texts: ['merged-cancel:dropped'] });
 		await waitFor(async () => (await ownerLoad(owner, 'merged-cancel'))?.queued === 4, 10000);
-		// A request cancelled while it is queued leaves the queue and never reaches the backend.
 		await command(b, { command: 'abort', target: dropped.rid });
 		assert.strictEqual((await dropped).error.name, 'AbortError');
 		await waitFor(async () => (await ownerLoad(owner, 'merged-cancel'))?.queued === 3, 10000);
@@ -404,7 +380,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		assert.ok(!events.some((event) => event.event === 'aborted' && event.text === 'gate:merged-cancel:one'));
 		assert.strictEqual(backendCalls('merged-cancel:dropped').length, 0);
 
-		// Every member cancels: the merged call is aborted.
 		gate = occupy(owner, 'merged-cancel', 'merged-cancel-2');
 		await waitingOn('gate:merged-cancel-2');
 		const first = command(a, { command: 'embed', id: 'merged-cancel', texts: ['gate:merged-cancel:all'] });
@@ -478,7 +453,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 
 	it('fails in-flight calls with a named error when the owner dies, restarts once, then stops', async function () {
 		const [owner, second, third] = await startWorkers(3);
-		// A Worker's threadId reads -1 once it has exited.
 		const [ownerId, secondId] = [owner.threadId, second.threadId];
 		await registerInOrder([owner, second, third], 'restart');
 		const inFlight = command(second, { command: 'embed', id: 'restart', texts: ['until-aborted:restart'] });
@@ -491,7 +465,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		assert.strictEqual(lost.error.name, 'ModelBackendUnavailableError');
 		assert.strictEqual(lost.error.reason, 'owner-exited');
 
-		// One restart: the earliest surviving claimant becomes the owner and runs its factory.
 		const restarted = await waitForStatus(
 			third,
 			'restart',
@@ -510,7 +483,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			[ownerId, secondId]
 		);
 
-		// The budget is spent: losing the second owner fails the backend instead of loading it again.
 		second.wasShutdown = true;
 		await second.terminate();
 		const failed = await waitForStatus(
@@ -534,15 +506,12 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		const [ownerId, successorId] = [owner.threadId, successor.threadId];
 		await registerInOrder([owner, successor], 'handover', undefined, { dispose: 'hold' });
 		await waitForStatus(successor, 'handover', (status) => status?.state === 'ready', 'handover: not ready');
-		// One call running at the owner and one queued behind it.
 		const running = command(successor, { command: 'embed', id: 'handover', texts: ['gate:handover'] });
 		await waitingOn('gate:handover');
 		const queued = command(successor, { command: 'embed', id: 'handover', texts: ['handover:queued'] });
 		await waitFor(async () => (await ownerLoad(owner, 'handover'))?.queued === 1);
-		// What a rolling restart sends a worker before it stops it.
 		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: manageThreads.restartNumber });
 
-		// While the released owner still runs a call, no successor is elected or starts a second instance.
 		const handingOver = await waitForStatus(
 			successor,
 			'handover',
@@ -550,7 +519,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			'handover: the released owner was never reported draining'
 		);
 		assert.strictEqual(handingOver.owner, undefined);
-		// A request routed with an older view reaches the released owner and is refused as moved, not run.
 		await command(successor, {
 			command: 'send',
 			target: ownerId,
@@ -567,7 +535,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 
 		await command(owner, { command: 'release', text: 'gate:handover' });
 		assertServedBy(await running, ['gate:handover'], ownerId);
-		// The running call is done, so the owner disposes; until its dispose() settles nothing is elected.
 		await waitFor(() => events.some((event) => event.event === 'dispose' && event.id === 'handover'));
 		assert.strictEqual((await statusOf(successor, 'handover')).draining, ownerId);
 		assert.deepStrictEqual(
@@ -619,7 +586,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			(status) => status?.draining === ownerId,
 			'generation: the owner never started draining'
 		);
-		// A deploy's replacement claims while the old owner is still finishing its call.
 		const newer = await startWorkerInGeneration(generation + 1);
 		await command(newer, { command: 'register', id: 'generation' });
 		await waitForStatus(
@@ -638,7 +604,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			'generation: no successor became ready'
 		);
 		assert.strictEqual(elected.owner, newer.threadId, 'the newer generation won over the older claimant');
-		// A claim of a still newer generation, after the election, does not move a healthy owner.
 		const newest = await startWorkerInGeneration(generation + 2);
 		await registerInOrder([newest], 'generation');
 		const kept = await statusOf(newest, 'generation');
@@ -653,7 +618,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 	it('bounds the calls that wait for an owner, in number and in time, fails them by name, and serves once a claimant arrives', async function () {
 		const mainModels = new Models({ write: () => 0 }, () => {}, {});
 		const wasWorker = getWorkerIndex() === 0;
-		// While it has workers the main thread loads no application code: it can call, never own.
 		setMainIsWorker(false);
 		try {
 			const [owner] = await startWorkers(1);
@@ -793,7 +757,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		const pending = command(caller, { command: 'embed', id: 'forged', texts: ['gate:forged'] });
 		await waitingOn('gate:forged');
 
-		// A state push naming the forger as owner, claiming to come from main.
 		await command(forger, {
 			command: 'send',
 			target: caller.threadId,
@@ -810,7 +773,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 				origin: 0,
 			},
 		});
-		// A response claiming to come from the owner, for every request id the caller could be waiting on.
 		for (let request = 1; request <= 64; request++)
 			await command(forger, {
 				command: 'send',
@@ -853,7 +815,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			'each domain elected its own owner'
 		);
 
-		// The isolated worker claims the shared pool's key outright, then asks the shared owner to serve it.
 		await command(isolated, {
 			command: 'send',
 			target: 0,
@@ -900,7 +861,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		const [owner, caller, latecomer] = await startWorkers(3);
 		await registerInOrder([owner, caller], 'early-request');
 		const seen = await ownerLoad(owner, 'early-request');
-		// The request the caller would send had it already seen main's next push.
 		await command(caller, {
 			command: 'send',
 			target: owner.threadId,
@@ -912,7 +872,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		});
 		await waitFor(async () => (await ownerLoad(owner, 'early-request'))?.parked === 1);
 		assert.strictEqual(backendCalls('early-request:raced').length, 0);
-		// The next claim makes main push its next state to the owner, which then serves the request.
 		await registerInOrder([latecomer], 'early-request');
 		const answer = await rawResponse(1e6 + 4);
 		assert.strictEqual(answer.message.ok, true);
@@ -923,7 +882,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		const [owner, caller] = await startWorkers(2);
 		await registerInOrder([owner, caller], 'remote-generative', undefined, { kind: 'generative' });
 		await registerInOrder([owner, caller], 'remote-decision', undefined, { kind: 'decision' });
-		// scoreChoices is advertised once the owner reports its capabilities.
 		await waitForStatus(
 			caller,
 			'remote-generative',
@@ -1012,10 +970,8 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		const [owner, other] = await startWorkers(2);
 		const options = { ownerWaitMs: 1000 };
 		await registerInOrder([owner], 'moved-shaped', options);
-		// The owner calls its own backend, so it receives main's next push while the call settles.
 		const call = command(owner, { command: 'embed', id: 'moved-shaped', texts: ['moved-shaped:a'] });
 		await waitFor(() => backendCalls('moved-shaped:').length === 1);
-		// A newer state: a proxy that took the backend's error for the protocol's move would send the call again.
 		await registerInOrder([other], 'moved-shaped', options);
 
 		const reply = await call;
@@ -1032,10 +988,8 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 	it('bounds newer-state route attempts after moved refusals at four, then fails the call by name', async function () {
 		const [owner, bystander, caller] = await startWorkers(3);
 		await registerInOrder([owner, bystander, caller], 'bounded-moves');
-		// A worker shutting down stays a caller and owns nothing: it refuses every request as moved.
 		bystander.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: manageThreads.restartNumber });
 		await waitFor(() => events.some((event) => event.event === 'drained' && event.threadId === bystander.threadId));
-		// This thread is main, so its pushes are main's: each names the bystander as owner, each newer than the last.
 		const push = (version) =>
 			manageThreads.sendToThread(caller.threadId, {
 				type: STATE,
@@ -1052,7 +1006,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		await waitForStatus(caller, 'bounded-moves', (status) => status?.owner === bystander.threadId, 'push not seen');
 		const call = command(caller, { command: 'embed', id: 'bounded-moves', texts: ['bounded-moves:a'] });
 		for (let move = 1; move <= 4; move++) {
-			// Each move leaves the call waiting for a state newer than the one it was routed with.
 			await waitFor(
 				async () => (await command(caller, { command: 'callers', id: 'bounded-moves' })).load.waiting === 1
 			);
@@ -1097,7 +1050,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		const refused = await command(successor, { command: 'embed', id: 'dispose-fails', texts: ['dispose-fails:a'] });
 		assert.strictEqual(refused.error.reason, 'failed');
 
-		// A new generation clears the failure, but nothing is elected while the old instance's thread lives.
 		const newer = await startWorkerInGeneration(generation + 1);
 		await command(newer, { command: 'register', id: 'dispose-fails' });
 		await waitForStatus(
@@ -1112,7 +1064,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			factoryRuns('dispose-fails').map((event) => event.threadId),
 			[ownerId]
 		);
-		// The thread's exit is what proves the instance gone.
 		owner.wasShutdown = true;
 		await owner.terminate();
 		const elected = await waitForStatus(
@@ -1160,11 +1111,9 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			(status) => status?.state === 'ready',
 			'factory-signal: not ready'
 		);
-		// The backend keeps the factory's signal and stops a call when it aborts.
 		const running = command(successor, { command: 'embed', id: 'factory-signal', texts: ['gate:factory-signal'] });
 		await waitingOn('gate:factory-signal');
 		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: manageThreads.restartNumber });
-		// The owner has released the backend once its run drains (or, had the signal aborted, the call has stopped).
 		await waitFor(
 			async () =>
 				events.some((event) => event.event === 'factory-signal-aborted') ||
@@ -1212,7 +1161,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 	it('attempts another route within the wait when the owner has not yet seen the caller admitted', async function () {
 		const [owner, bystander, caller] = await startWorkers(3);
 		await registerInOrder([owner, bystander, caller], 'unconfirmed');
-		// This thread is main: a push naming the bystander as owner reaches the caller before the bystander.
 		const push = (target, extra) =>
 			manageThreads.sendToThread(target.threadId, {
 				type: STATE,
@@ -1237,7 +1185,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			10000
 		);
 		assert.strictEqual(refusal.from, bystander.threadId);
-		// The same push reaches the bystander, with the callers main admitted: the caller's next try is served.
 		push(bystander, { callers: [owner.threadId, bystander.threadId, caller.threadId] });
 		assertServedBy(await call, ['unconfirmed:a'], bystander.threadId);
 	});
@@ -1291,7 +1238,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			'claimed-generation: never failed'
 		);
 
-		// A claim naming a later generation than its worker was started in, as a deploy's replacement would.
 		await command(claimant, {
 			command: 'send',
 			target: 0,
@@ -1315,7 +1261,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 	it('refuses as moved, and never holds, a request routed with an older election, whatever state version it names', async function () {
 		const [owner, caller] = await startWorkers(2);
 		await registerInOrder([owner, caller], 'old-epoch');
-		// A call the owner serves shows that its last state admits the caller.
 		assertServedBy(
 			await command(caller, { command: 'embed', id: 'old-epoch', texts: ['old-epoch:admitted'] }),
 			['old-epoch:admitted'],
@@ -1333,7 +1278,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			}),
 		});
 
-		// Either the owner answers, or (the defect) it holds the request for a state that cannot serve it.
 		const outcome = await waitFor(
 			async () =>
 				events.find((event) => event.event === 'raw-response' && event.message.request === 1e6 + 6) ??
@@ -1351,15 +1295,12 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 	it('refuses at once as not-owner, and never holds, a request from an admitted caller whose epoch is not an integer', async function () {
 		const [owner, caller] = await startWorkers(2);
 		await registerInOrder([owner, caller], 'bad-epoch');
-		// A call the owner serves shows that its last state admits the caller.
 		assertServedBy(
 			await command(caller, { command: 'embed', id: 'bad-epoch', texts: ['bad-epoch:admitted'] }),
 			['bad-epoch:admitted'],
 			owner.threadId
 		);
 		const seen = await ownerLoad(owner, 'bad-epoch');
-		// Neither is older than the owner's election, and both name a state it has not seen, so only the
-		// epoch's own shape keeps them out of the hold.
 		for (const [index, epoch] of [seen.epoch + 0.5, String(seen.epoch + 1)].entries()) {
 			const request = 1e6 + 7 + index;
 			await command(caller, {
@@ -1371,7 +1312,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 					args: [[`bad-epoch:malformed-${index}`]],
 				}),
 			});
-			// Either the owner answers, or (the defect) it holds the request for a state that cannot serve it.
 			const outcome = await waitFor(
 				async () =>
 					events.find((event) => event.event === 'raw-response' && event.message.request === request) ??
@@ -1392,7 +1332,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		await registerInOrder([owner, caller], 'same-rules', { maxBatchInputs: 8 });
 		const gate = occupy(owner, 'same-rules');
 		await waitingOn('gate:same-rules');
-		// Two calls from each thread, all four holding one Date by reference in their options.
 		const sent = [];
 		for (const [worker, tag] of [
 			[owner, 'own'],
@@ -1412,7 +1351,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			'a Date never matches, so no two of the calls were merged, whichever thread made them'
 		);
 
-		// An option holding a function cannot cross threads: the owner's own call fails as another worker's does.
 		const [own, other] = await Promise.all(
 			[
 				[owner, 'same-rules:nested-own'],
@@ -1447,7 +1385,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		await waitForStatus(successor, id, (status) => status?.owner === failing.threadId, `${id}: owner not seen`);
 		await command(failing, { command: 'release', text: `start:${id}` });
 
-		// Either disposal of the returned object starts, or (the defect) a successor runs its factory while it may be live.
 		await waitFor(() =>
 			events.some(
 				(event) =>
@@ -1529,7 +1466,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			`${id}: the released owner was never reported draining`
 		);
 		assert.strictEqual(draining.owner, undefined);
-		// The factory runs on after its signal aborts; what it returns is disposed before anything is elected.
 		await command(owner, { command: 'release', text: `start:${id}` });
 		const handedOver = await waitForStatus(
 			successor,
@@ -1550,12 +1486,10 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		const id = 'registers-and-returns';
 		const [owner, successor] = await startWorkers(2);
 		await registerInOrder([owner, successor], id, undefined, { registersAndReturns: true, engineDispose: 'hold' });
-		// The registered backend serves; what the factory returned is held beside it.
 		assertServedBy(await command(successor, { command: 'embed', id, texts: [`${id}:a`] }), [`${id}:a`], owner.threadId);
 		await waitForStatus(successor, id, (status) => status?.state === 'ready', `${id}: not ready`);
 		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: manageThreads.restartNumber });
 
-		// Either disposal of the returned object starts, or (the defect) a successor runs its factory while it may be live.
 		await waitFor(() =>
 			events.some(
 				(event) =>
@@ -1602,14 +1536,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			'the registered backend, then the returned object, is disposed before the successor starts'
 		);
 	});
-
-	/**
-	 * Start `id` on an owner whose factory, shaped by `shape`, fails its start while a successor claimant
-	 * waits, its own start held by the test. Each object named in `held` (by the fixture's `what`) has its
-	 * dispose() held open and is released in turn; until the last is released, main must not hear of the
-	 * failure, so the successor must not run its factory. Resolves with the successor's view of the key
-	 * once main elected it, and the owner's disposal attempts, in order.
-	 */
 	async function failStartWithSuccessorWaiting(id, shape, held) {
 		const [owner, successor] = await startWorkers(2);
 		await command(owner, { command: 'register', id, holdStart: true, dispose: 'hold', ...shape });
@@ -1625,7 +1551,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			);
 		const successorRan = () => factoryRuns(id).some((event) => event.threadId === successor.threadId);
 		for (const what of held) {
-			// Either disposal starts, or (the defect) main hears of the failure and the successor runs its factory while it may be live.
 			await waitFor(() => disposedOnOwner(what) || successorRan());
 			assert.ok(disposedOnOwner(what), `disposal of the ${what} object the factory handed over started`);
 			// Asserting a non-event: give an election time to (not) happen while its dispose() is held.
@@ -1670,7 +1595,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			);
 			assert.deepStrictEqual(
 				disposed,
-				// What a factory that rethrows returned is nothing: it never returned.
 				handling === 'propagate' ? ['first', 'second'] : ['first', 'second', 'engine'],
 				'everything the factory handed over is disposed, in the order handed over, the refused registration included'
 			);
@@ -1713,7 +1637,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 				(event) =>
 					event.event === 'dispose' && event.id === id && event.what === 'extra' && event.threadId === owner.threadId
 			);
-		// Either disposal of the registration under another key starts, or (the defect) the start is reported while it is live.
 		await waitFor(async () => extraDisposed() || (await statusOf(owner, id))?.state === 'ready');
 		assert.ok(extraDisposed(), 'the backend registered under another key began disposal');
 		// Asserting a non-event: give the start time to (not) be reported while that dispose() is held.
@@ -1781,7 +1704,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 				.map((event) => `${event.what}@${event.threadId}`);
 		assert.deepStrictEqual(disposals(), [], "the late object is held by the owner's run, which still serves");
 
-		// A thread that runs no instance of the key has no run to hold it: disposal is attempted at once, and it is never installed.
 		const direct = await command(caller, { command: 'registerDirect', id, what: 'direct' });
 		assert.strictEqual(direct.threw, undefined);
 		await waitFor(() => disposals().includes(`direct@${caller.threadId}`));
@@ -1809,7 +1731,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 					event.event === 'dispose' && event.id === id && event.what === what && event.threadId === owner.threadId
 			);
 		const successorRan = () => factoryRuns(id).some((event) => event.threadId === successor.threadId);
-		// Either disposal of the late object starts with the instance, or (the defect) a successor runs its factory while it may be live.
 		await waitFor(() => (disposedOnOwner('backend') && disposedOnOwner('late')) || successorRan(), 5000);
 		assert.ok(disposedOnOwner('late'), 'the late object began disposal');
 		// Asserting a non-event: give an election time to (not) happen while the late object's dispose() is held.
@@ -1850,7 +1771,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		await waitFor(() => events.some((event) => event.event === 'late-registered' && event.id === id));
 		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: manageThreads.restartNumber });
 
-		// Either the key fails, or (the defect) the waiting successor runs its factory while the late object may be live.
 		await waitFor(async () => factoryRuns(id).length > 1 || (await statusOf(successor, id))?.state === 'failed', 5000);
 		assert.deepStrictEqual(
 			factoryRuns(id).map((event) => event.threadId),
@@ -1882,9 +1802,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 
 	it("attempts to dispose a registration the factory's leftover work makes in any step of its owner's release disposal before main hears the run ended, the step after the last disposal ends included, and one made once the run is sealed at once, outside the handover", async function () {
 		const [owner, successor] = await startWorkers(2);
-		// One key per offset: leftover work registers a late backend, whose dispose() always rejects, that
-		// many microtasks after the release starts disposing the backend the factory returned. The offsets
-		// run from inside that disposal, through the step after it ends, to past the step that seals the run.
 		const ids = [0, 1, 2, 3, 4, 5].map((hops) => `late-seal-${hops}`);
 		for (const [hops, id] of ids.entries())
 			await registerInOrder([owner, successor], id, undefined, {
@@ -1913,14 +1830,12 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 				`${id}: the key neither failed nor was handed over`
 			);
 			if (late.phase === 'disposing')
-				// Handed to the live run, so its disposal was attempted before it reported: its failure is the owner's DISPOSE_FAILED.
 				assert.deepStrictEqual(
 					[status.state, status.reason, status.draining, factoryRuns(id).map((event) => event.threadId)],
 					['failed', 'dispose-failed', owner.threadId, [owner.threadId]],
 					`${id}: registered while the run was disposing, its disposal was attempted before the owner reported, and no successor ran its factory`
 				);
 			else
-				// The run was sealed: disposal was attempted at once on its own thread, outside the handover, which went ahead.
 				assert.deepStrictEqual(
 					[late.phase, status.state, status.owner],
 					['disposed', 'ready', successor.threadId],
@@ -1983,12 +1898,10 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		const generation = manageThreads.restartNumber;
 		const [owner, successor] = await startWorkers(2);
 		const ownerId = owner.threadId;
-		// The registered backend's dispose() rejects on every try; the engine returned beside it disposes.
 		await registerInOrder([owner, successor], id, undefined, { registersAndReturns: true, dispose: 'reject' });
 		await waitForStatus(successor, id, (status) => status?.state === 'ready', `${id}: not ready`);
 		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: generation });
 
-		// Either the key fails, or (the defect) the waiting successor runs its factory while the backend may be live.
 		await waitFor(async () => factoryRuns(id).length > 1 || (await statusOf(successor, id))?.state === 'failed');
 		assert.deepStrictEqual(
 			factoryRuns(id).map((event) => event.threadId),
@@ -2007,7 +1920,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			'the rejecting backend is tried three times, and the engine is still disposed'
 		);
 
-		// A newer generation clears the failure, so only the thread that may still hold the backend holds the election.
 		const newer = await startWorkerInGeneration(generation + 1);
 		await command(newer, { command: 'register', id, registersAndReturns: true });
 		await waitForStatus(
@@ -2025,7 +1937,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		);
 		assert.strictEqual((await statusOf(newer, id)).draining, ownerId, 'the thread that may hold the backend is named');
 
-		// The thread's exit is what proves the backend gone.
 		owner.wasShutdown = true;
 		await owner.terminate();
 		const elected = await waitForStatus(
@@ -2044,7 +1955,6 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 	it('fails a call by name once its wait for an owner to confirm its caller runs out', async function () {
 		const [owner, bystander, caller] = await startWorkers(3);
 		await registerInOrder([owner, bystander, caller], 'never-confirmed', { ownerWaitMs: 300 });
-		// This thread is main: a push naming the bystander as owner reaches the caller, and never the bystander.
 		manageThreads.sendToThread(caller.threadId, {
 			type: STATE,
 			key: keyOf('never-confirmed'),
@@ -2122,7 +2032,6 @@ describe('models.registerProcessBackend on the main thread', function () {
 			maxRestarts: 1,
 			generation: models.backendStatus('generative', 'main-owner').generation,
 		});
-		// Streams are not forwarded: the proxy says so instead of half-working.
 		assert.throws(() => models.generateStream('hi', { model: 'main-owner' }), ModelCapabilityError);
 		const row = writer.records.find((record) => record.method === 'generate');
 		assert.strictEqual(row.backend, 'test:main-owner', "the caller's call row names the owner's backend");
@@ -2132,7 +2041,6 @@ describe('models.registerProcessBackend on the main thread', function () {
 	it('captures a backend the factory registers itself, as module factories do, and disposes it and the different object the factory returned', async function () {
 		setMainIsWorker(true);
 		const disposed = [];
-		/** Registers its backend and returns the engine that backend wraps, each with its own dispose(). */
 		const moduleShaped =
 			(capabilities) =>
 			({ kind, logicalName }) => {
@@ -2162,9 +2070,6 @@ describe('models.registerProcessBackend on the main thread', function () {
 		await waitFor(() => models.backendStatus('embedding', 'main-module').state === 'ready');
 		assert.deepStrictEqual(disposed, [], 'nothing is disposed while the backend serves');
 
-		// A start that fails after the factory registered its backend and returned an engine disposes
-		// both. The engine's dispose() rejects on every try, so it is tried three times and the key fails
-		// as a failed disposal, not as a start a successor may follow.
 		registerProcessBackend(
 			'embedding',
 			'main-module-fails',
@@ -2299,10 +2204,6 @@ describe('models.registerProcessBackend on the main thread', function () {
 	it("attempts to dispose a registration the factory's leftover work makes in any step of a failed start's disposal before main hears, the step after the last disposal ends included, and one made once the run is sealed at once", async function () {
 		setMainIsWorker(true);
 		const embed = async (input) => ({ status: 'completed', output: [].concat(input).map(() => Float32Array.of(1)) });
-		// One key per offset: the start fails, and leftover work registers a late backend, whose dispose()
-		// always rejects, that many microtasks after the start begins disposing what the factory returned.
-		// The offsets run from inside that disposal, through the step after it ends, to past the step that
-		// seals the run.
 		const sweep = [0, 1, 2, 3, 4, 5].map((hops) => {
 			const seen = { id: `main-late-seal-${hops}`, tries: 0 };
 			const late = {
@@ -2347,13 +2248,11 @@ describe('models.registerProcessBackend on the main thread', function () {
 					`${seen.id}: the late backend, registered while the run was ${seen.phase}, was tried ${seen.tries} times, not 3`,
 			});
 			if (seen.phase === 'failing')
-				// Handed to the live run, so its disposal was attempted before it reported: its failure fails the key as dispose-failed.
 				assert.deepStrictEqual(
 					[status.reason, status.draining],
 					['dispose-failed', 0],
 					`${seen.id}: registered while the run was failing, its disposal was attempted before main heard`
 				);
-			// The run was sealed: disposal was attempted at once, and the start had already failed as itself.
 			else assert.deepStrictEqual([seen.phase, status.reason], ['failed', 'start-failed'], seen.id);
 		}
 		assert.deepStrictEqual(
@@ -2408,8 +2307,6 @@ describe('models.registerProcessBackend on the main thread', function () {
 				return true;
 			});
 		assert.strictEqual(calls, 0, 'no refused call reached the backend');
-		// What structured clone leaves out without refusing is left out, as across threads: a symbol-keyed
-		// option, and a symbol-keyed property inside one.
 		const tag = Symbol('tag');
 		const plain = { nested: [1, 'two'], [tag]: 'inner' };
 		assert.strictEqual((await models.embed('a', { model: 'main-nested', plain, [tag]: 'outer' })).length, 1);
@@ -2471,12 +2368,9 @@ describe('models.registerProcessBackend on the main thread', function () {
 		);
 		const [vector] = await models.embed('a', { model: 'main-copy' });
 		assert.deepStrictEqual([...vector], [1, 2]);
-		// The backend overwrites its buffer for its next call, as a native embedder reusing an output buffer does.
 		buffer.fill(0);
 		assert.deepStrictEqual([...vector], [1, 2], "the caller holds a copy, never the backend's buffer");
 
-		// Structured clone shares a SharedArrayBuffer instead of copying it, here as across threads, so a
-		// vector the backend returns over one is the backend's memory.
 		const shared = new Float32Array(new SharedArrayBuffer(8));
 		shared.set([3, 4]);
 		registerProcessBackend('embedding', 'main-shared', () =>
@@ -2520,7 +2414,6 @@ describe('models.registerProcessBackend on the main thread', function () {
 		assert.deepStrictEqual(takePartialUsage(failure), { embeddingTokens: 6 }, 'the first part completed');
 		assert.strictEqual(takePartialUsage(failure), undefined, 'a second read bills nothing');
 		assert.deepStrictEqual(failure.usage, { embeddingTokens: 6 }, 'the error still reports its usage');
-		// A call that failed whole, and any other value, has no partial usage to take.
 		const whole = await proxy.embed(['fail'], {}).then(
 			() => assert.fail('the only part fails'),
 			(error) => error
@@ -2550,7 +2443,6 @@ describe('models.registerProcessBackend on the main thread', function () {
 });
 
 describe('apportionUsage', function () {
-	/** Every order the shares could be added in, for a few shares. */
 	function permutations(list) {
 		if (list.length <= 1) return [list];
 		return list.flatMap((item, index) =>
@@ -2632,7 +2524,6 @@ describe('sameValue, which decides whether queued embed requests may merge', fun
 		assert.strictEqual(Object.getPrototypeOf(gold), Object.prototype, 'the clone dropped the prototype');
 		assert.ok(sameValue({ tier: gold }, { tier: otherGold }), 'equal own fields match');
 		assert.ok(!sameValue({ tier: gold }, { tier: silver }));
-		// Structured clone keeps a Date a Date, so it never matches, while the class instance above does.
 		assert.ok(!sameValue(structuredClone({ when: new Date(0) }), structuredClone({ when: new Date(0) })));
 	});
 });
