@@ -141,10 +141,11 @@ export class Models implements ModelsContract {
 	}
 
 	/**
-	 * Register a backend once per process instead of once per thread: every thread that loads the
+	 * Register a backend shared by the process instead of one per thread: every thread that loads the
 	 * component calls this where it would call `registerBackend`, `factory` runs on one owner thread,
-	 * and each thread gets a proxy that forwards its calls there. For in-process models, where a copy
-	 * per worker means a model, a GPU context and a warmup per worker. See `processBackend.ts`.
+	 * at most one instance of the key is live at a time, and each thread gets a proxy that forwards
+	 * its calls to the owner. For in-process models, where a copy per worker means a model, a GPU
+	 * context and a warmup per worker. See `processBackend.ts`.
 	 */
 	registerProcessBackend(
 		kind: ModelKind,
@@ -157,8 +158,8 @@ export class Models implements ModelsContract {
 
 	/**
 	 * Readiness of the backend `kind`/`id` resolves to on this thread: a per-thread backend is ready
-	 * once registered; a process-wide one reports the state the main thread holds, the same on every
-	 * thread. Undefined when nothing is registered.
+	 * once registered; a process-wide one reports the state the main thread holds, as last pushed to
+	 * this thread, so the threads' answers converge. Undefined when nothing is registered.
 	 */
 	backendStatus(kind: ModelKind, id: string): BackendStatus | undefined {
 		return backendStatus(kind, id);

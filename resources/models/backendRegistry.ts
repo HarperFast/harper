@@ -197,9 +197,9 @@ export function resolveDecision(logicalName: string = 'default'): ModelBackend {
  * in-process / non-HTTP ones — under a logical id. Call it during component
  * load (e.g. `handleApplication`); the registry is process-wide, so each worker
  * thread that loads the component registers its own instance, matching how the
- * config-driven built-ins populate per process. A backend that must exist once per
- * process (an in-process model) registers through `registerProcessBackend`
- * (`processBackend.ts`) instead.
+ * config-driven built-ins populate per process. A backend that should have one live
+ * instance in the process at a time (an in-process model) registers through
+ * `registerProcessBackend` (`processBackend.ts`) instead.
  *
  * `id` is the logical name callers select with `opts.model` (e.g.
  * `models.embed(text, { model: 'local:bge-small' })`). A provider-namespaced id

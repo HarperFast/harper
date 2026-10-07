@@ -33,8 +33,9 @@ export interface Models {
 	/** Build a `ModelBackend` from a spec; pair with `registerBackend`. See #1325. */
 	defineBackend(spec: DefineBackendSpec): ModelBackend;
 	/**
-	 * Register a backend once per process: `factory` runs on one owner thread and every thread that
-	 * registers gets a proxy that forwards calls to it. Opt-in; `registerBackend` stays per thread.
+	 * Register a backend shared by the process: `factory` runs on one owner thread, at most one
+	 * instance per key is live at a time, and every thread that registers gets a proxy that forwards
+	 * calls to it. Opt-in; `registerBackend` stays per thread.
 	 */
 	registerProcessBackend(
 		kind: ModelKind,
@@ -164,34 +165,59 @@ export interface DefineBackendSpec {
 /**
  * Builds a process-wide backend. Runs on the owner thread only. Returns the backend, or registers it
  * under the same kind and id with `registerBackend` (a module factory's `register({ logicalName,
- * kind, config })` does), in which case the registration is captured rather than installed. The
- * backend is ready when the returned promise resolves, so a factory that wants ready to mean warm
- * awaits its warmup before resolving.
+ * kind, config })` does), in which case that registration is captured rather than installed; any
+ * other backend it registers while it runs is discarded. The backend is ready when the returned
+ * promise resolves, so a factory that wants ready to mean warm awaits its warmup before resolving.
+ *
+ * At most one instance of a key is live at a time: before another thread's factory runs, the owner
+ * awaits the backend's `dispose()`, when it has one, so a backend holding a native model or a GPU
+ * context frees it there. `signal` aborts when the owner releases the key while the factory is still
+ * running, so a slow load can stop early; whatever it returns is still disposed. A factory that
+ * throws must release what it loaded before throwing.
  */
-export type ProcessBackendFactory = (context: { kind: ModelKind; logicalName: string }) => unknown;
+export type ProcessBackendFactory = (context: { kind: ModelKind; logicalName: string; signal: AbortSignal }) => unknown;
 
 export interface ProcessBackendOptions {
 	/** Backend calls the owner runs at once. Default 1, which suits one native model context. */
 	concurrency?: number;
-	/** Requests the owner queues beyond `concurrency` before refusing with `ModelBackendBusyError`. Default 256. */
+	/**
+	 * Requests the owner queues beyond `concurrency`, and calls a thread lets wait for an owner to be
+	 * named, before refusing with `ModelBackendBusyError`. Default 256.
+	 */
 	maxPending?: number;
 	/**
-	 * Embedding only: queued `embed` requests with identical options are merged into one backend call
-	 * of at most this many inputs, and the vectors and usage are split back per request. Default 1 (off).
+	 * Embedding only: the most inputs one backend `embed` call carries. Queued `embed` requests whose
+	 * options and accounting are the same value for value are merged into one call of at most this
+	 * many inputs, and the vectors and usage are split back per request; a request with more inputs
+	 * runs alone as consecutive calls of at most this many. Default none: no merging and no splitting.
 	 */
 	maxBatchInputs?: number;
 	/** Unplanned owner losses (exit or failed start) restarted per worker generation. Default 1. */
 	maxRestarts?: number;
-	/** Caller-side bound on one call, queueing included; on expiry the call is cancelled at the owner. Default none. */
+	/**
+	 * How long one call waits in all for an owner to be named (none is eligible, or a released owner
+	 * is still finishing its calls) before it fails with `ModelBackendUnavailableError`, reason
+	 * `no-owner`. Default 30000.
+	 */
+	ownerWaitMs?: number;
+	/** Caller-side bound on one call, waiting and queueing included; on expiry the call is cancelled at the owner. Default none. */
 	timeoutMs?: number;
 }
 
-/** Why a call to a process-wide backend found no owner to serve it. */
-export type ModelBackendUnavailableReason = 'owner-exited' | 'start-failed' | 'failed' | 'not-owner' | 'timeout';
+/**
+ * Why a call to a process-wide backend found no owner to serve it. `moved`: the thread it reached
+ * had released the backend or was no longer its owner, and never started the call; the proxy follows
+ * the backend to its next owner, so a caller sees it only after repeated moves. `no-owner`: no owner
+ * was named within `ownerWaitMs`. `not-owner`: the thread it reached does not serve the key to this
+ * caller.
+ */
+export type ModelBackendUnavailableReason =
+	'owner-exited' | 'start-failed' | 'failed' | 'no-owner' | 'moved' | 'not-owner' | 'timeout';
 
 /**
  * Readiness of a registered backend. A per-thread backend is ready once registered. A process-wide
- * backend reports the one state the main thread holds for it, so every thread answers alike.
+ * backend reports the state the main thread holds for it, as last pushed to this thread: the views
+ * converge, but one can trail main's state by the push in flight.
  */
 export type BackendStatus =
 	| { scope: 'thread'; state: 'ready' }
@@ -200,13 +226,15 @@ export type BackendStatus =
 			state: 'starting' | 'ready' | 'failed';
 			/** The owner thread's id, while one is elected. */
 			owner?: number;
+			/** A released owner still finishing its calls; the next owner is elected once its instance is disposed. */
+			draining?: number;
 			restarts: number;
 			maxRestarts: number;
 			/** The worker generation (restart number) the restart budget belongs to. */
 			generation?: number;
-			/** Why the last owner was lost, after a loss. */
+			/** Why the last owner was lost, or `no-owner` while no claimant may own the backend. */
 			reason?: ModelBackendUnavailableReason;
-			/** The last loss's error, for operators; never sent to a caller as its message. */
+			/** The last loss's error, for operators; never attached to a caller's error. */
 			error?: { name: string; message: string };
 	  };
 
