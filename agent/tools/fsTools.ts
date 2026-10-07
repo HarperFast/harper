@@ -364,7 +364,8 @@ async function walk(root: string, realKeyDirs: string[], visit: (file: string) =
 	// Resolve the scope root once via realpath so the per-entry symlink check below has a
 	// stable comparison anchor; otherwise a symlink in the root itself could shift the anchor.
 	const realRoot = await safeRealPath(root);
-	const stack: string[] = [root];
+	// Only real paths go on the stack, so a regular file's path below is already its real path.
+	const stack: string[] = [realRoot];
 	while (stack.length) {
 		const dir = stack.pop()!;
 		let entries;
@@ -381,11 +382,10 @@ async function walk(root: string, realKeyDirs: string[], visit: (file: string) =
 				// Without this, `componentsRoot/escape -> /etc` would let grep walk into /etc.
 				const realFull = await safeRealPath(full);
 				if (!isInside(realFull, realRoot) || inKeyDir(realKeyDirs, realFull)) continue;
-				stack.push(full);
+				stack.push(realFull);
 			} else if (entry.isFile()) {
-				if (KEY_FILE_NAME.test(entry.name)) continue;
-				const realFull = await safeRealPath(full);
-				if (!isInside(realFull, realRoot) || inKeyDir(realKeyDirs, realFull)) continue;
+				// A Dirent is never a followed link, so `isFile()` excludes symlinks and `full` needs no realpath.
+				if (KEY_FILE_NAME.test(entry.name) || inKeyDir(realKeyDirs, full)) continue;
 				const proceed = await visit(full);
 				if (proceed === false) return;
 			}
