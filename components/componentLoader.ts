@@ -809,7 +809,7 @@ export interface LoadComponentOptions {
 	autoReload?: boolean;
 	providedLoadedComponents?: Map<any, any>;
 	appName?: string;
-	/** Databases this application forks, from its root-config entry (see `rootConfigBranchedDatabases`). */
+	/** Passed only on an application's own load; nested components inherit its scope's branches. */
 	branchedDatabases?: string[] | true;
 	collectLoadedModules?: Set<any>;
 	// Routing the operator declared for this application in the root config (`host`/`urlPath` on
@@ -882,9 +882,8 @@ export async function loadComponent(
 			harperLogger.error?.(misplaced);
 			throw new Error(misplaced);
 		}
-		// Only on the application's own load: nested components share its scope and its branches, and
-		// re-preparing per component would key a second branch off the same application name.
-		if (!isRoot && !options.applicationScope && options.branchedDatabases !== undefined) {
+		// Only application loads receive this declaration, including packages with a pre-created scope.
+		if (!isRoot && options.branchedDatabases !== undefined) {
 			// The loader's own application identity, not the directory's basename: a branch path is
 			// keyed by this, and two components can share a basename (a nested one and a top-level one)
 			// while being different applications that must not share a fork each believes is private.
@@ -1040,6 +1039,7 @@ export async function loadComponent(
 								applicationScope: subApplicationScope,
 								autoReload: false,
 								appName: appName || componentName,
+								branchedDatabases: isRoot ? rootConfigBranchedDatabases(componentName) : undefined,
 								collectLoadedModules,
 								// `host`/`urlPath` on this entry route the component being loaded. For an
 								// application (no plugin module of its own) that entry is the only place an
@@ -1074,6 +1074,12 @@ export async function loadComponent(
 						componentLifecycle.loaded(componentStatusName, `Application component '${componentStatusName}' processed`);
 					}
 					continue;
+				}
+				if (isRoot && subApplicationScope.branches?.size) {
+					throw new Error(
+						`Package '${componentName}' declares branchedDatabases but exports a plugin module; ` +
+							`root plugin callbacks receive the shared root scope and cannot use an application's private databases`
+					);
 				}
 
 				// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure module loader
