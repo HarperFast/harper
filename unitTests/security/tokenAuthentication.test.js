@@ -243,11 +243,7 @@ describe('test getJWTRSAKeys function', () => {
 
 		assert.deepStrictEqual(results, new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
 
-		// path_join_spy spies the process-global path.join, not a reference scoped to this module
-		// under test, so an unrelated path.join call elsewhere during a full suite run can trip a
-		// callCount === 0 assertion on it. fs_readfile_spy is process-global too, but fs-extra's
-		// readFile is far less ubiquitously called than path.join, so it carries much less of that
-		// cross-talk risk for this invariant (no disk I/O on the cached path).
+		// Cache hit: no key files are read, so no path is built either.
 		assert(fs_readfile_spy.callCount === 0);
 
 		rw_rsa_keys();
