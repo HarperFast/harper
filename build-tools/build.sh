@@ -14,20 +14,6 @@ echo -e "\n📦 Building project"
 rm -rf dist
 npm run build
 
-<<<<<<< HEAD
-echo -e "\n📦 Creating shrinkwrap"
-npm shrinkwrap
-
-echo -e "\n📦 Pruning devDependencies from shrinkwrap"
-node build-tools/prune-shrinkwrap-dev.mjs npm-shrinkwrap.json
-
-# Order is load-bearing: the react-native prune walks production edges only, so it must
-# see a shrinkwrap whose dev entries are already gone or it will refuse to write.
-echo -e "\n📦 Pruning react-native tree from shrinkwrap"
-node build-tools/prune-shrinkwrap-react-native.mjs npm-shrinkwrap.json
-
-=======
->>>>>>> c328f6f18 (Publish a portable locked JavaScript dependency bundle)
 ./build-tools/build-studio.sh
 
 echo -e "\n📦 Preparing portable dependency bundle"
