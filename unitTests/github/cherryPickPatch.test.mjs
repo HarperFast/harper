@@ -22,6 +22,12 @@ const GIT_HAS_TREE_MERGE = (() => {
 		.map(Number);
 	return major > 2 || (major === 2 && minor >= 45);
 })();
+// CI must exercise the guard; a developer's older git only skips it.
+function requireTreeMerge() {
+	if (GIT_HAS_TREE_MERGE) return;
+	if (process.env.CI) throw new Error('change-landed.sh needs git 2.45 or newer');
+	this.skip();
+}
 // The second commit rewrites the line the first one changed, so replaying the first onto a release
 // that already has both conflicts instead of applying empty.
 const FIRST_FIX = { 5: 'first fix' };
@@ -30,9 +36,7 @@ const SECOND_FIX = { 5: 'second fix', 6: 'second fix, continued' };
 describe('cherry-pick-patch.yml', function () {
 	let fixture;
 
-	before(function () {
-		if (!GIT_HAS_TREE_MERGE) this.skip();
-	});
+	before(requireTreeMerge);
 
 	beforeEach(function () {
 		fixture = createFixture();
@@ -224,9 +228,7 @@ describe('change-landed.sh', function () {
 			timeout: DEADLINE,
 		});
 
-	before(function () {
-		if (!GIT_HAS_TREE_MERGE) this.skip();
-	});
+	before(requireTreeMerge);
 
 	beforeEach(function () {
 		dir = mkdtempSync(join(tmpdir(), 'change-landed-'));
