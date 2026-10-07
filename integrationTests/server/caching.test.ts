@@ -9,5 +9,5 @@
 import { test } from 'node:test';
 
 test.todo(
-	'replicationSource: true — sourcedFrom fetches on replica node, not origin (needs a 2-node cluster harness, #1189)'
+	'replicationSource: true — sourcedFrom fetches on replica node, not origin (needs a 2-node cluster harness; originally scoped in #1189, closed without this case)'
 );

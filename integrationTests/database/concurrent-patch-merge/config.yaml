@@ -1,6 +1,4 @@
 # QA-328 — concurrent PATCH field-level merge correctness
-# No custom resource logic needed — REST exposes GET/PUT/PATCH/DELETE on the
-# @export table automatically; tests drive those endpoints directly via fetch().
 graphqlSchema:
   files: '*.graphql'
 rest: true
