@@ -62,7 +62,8 @@ threads:
 ```
 
 - `count` — Number of worker threads; _Default_: CPU count minus one
-- `maxHeapMemory` — Heap limit per thread (MB)
+- `maxHeapMemory` — Heap limit per thread (MB). When unset, each thread's limit is derived from available memory and the number of HTTP worker threads, including isolated applications' threads
+- `maxIsolated` <VersionBadge version="v5.3.0" /> — How many [isolated applications](../components/applications.md#isolated-applications) may each run in a dedicated worker thread; _Default_: `8`. An isolated application past this limit is not loaded anywhere, and a `deploy_component` that would exceed it is refused with a `409`. `0` admits none. Dedicated threads are added to `count`, not taken from it, so a node runs up to `count` + `maxIsolated` HTTP worker threads, and each one lowers the default heap limit of every thread when `maxHeapMemory` is unset
 - `heapSnapshotNearLimit` — Write a `.heapsnapshot` file when a thread nears its heap limit (loadable in Chrome DevTools Memory tab); _Default_: `false`. See [Worker Thread Debugging](./debugging.md#heap-snapshots-near-the-limit)
 - `debug` — Enable Node.js inspector; sub-options: `port`, `startingPort`, `host`, `waitForDebugger`. See [Worker Thread Debugging](./debugging.md)
 - `preload` <VersionBadge version="v5.2.0" /> — Module, or list of modules, to load via Node's `--import` before any Harper or application module on each worker thread. Intended for instrumentation and APM agents. Worker threads only (not under Bun).
@@ -167,6 +168,7 @@ tls:
 - `certificateAuthority` — Path to CA file; _Default_: `<rootPath>/keys/ca.pem`
 - `privateKey` — Path to private key; _Default_: `<rootPath>/keys/privateKey.pem`
 - `ciphers` — Allowed TLS cipher suites
+- `unixDomainSockets` — `true` makes each HTTP worker thread also listen on a Unix domain socket under `<rootPath>/sockets` for each secure port, for a proxy on the same host to forward to. [Isolated applications](../components/applications.md#isolated-applications) are reachable only this way, so they require it; _Default_: `false`
 
 ---
 

@@ -310,6 +310,140 @@ Harper generates a `package.json` and installs all components into `<componentsR
 
 > Use `harper get_configuration` to find the `rootPath` and `componentsRoot` values on your instance.
 
+## Isolated Applications and Branched Databases
+
+<VersionBadge version="v5.3.0" />
+
+Two keys on an application's root-config entry run it apart from the other applications on the instance:
+
+- **`isolated: true`** runs the application in a worker thread of its own.
+- **`branchedDatabases`** gives the application a private fork of one or more databases.
+
+```yaml
+# <rootPath>/harper-config.yaml
+shop-preview:
+  package: my-org/shop#3f9c2e1
+  host: preview.shop.example.com
+  isolated: true
+```
+
+Like `host` and `urlPath`, these keys say how one deployment of the application runs, so they belong on its entry in the root config and not in the application's own `config.yaml`. An application that declares `branchedDatabases` in its own `config.yaml` fails to load, with an error saying the key belongs in the root config entry.
+
+### Setting them when you deploy
+
+A `package` deploy, including `harper deploy by_ref=true`, builds the component's root-config entry from the request, so it can set `host`, `urlPath`, `isolated`, and `branchedDatabases` in the same call. The CLI parses `isolated=true` as a boolean and `branchedDatabases='["data"]'` as a list:
+
+```sh
+harper deploy project=shop-preview by_ref=true \
+  host=preview.shop.example.com isolated=true restart=true
+```
+
+- A later `package` deploy that omits `isolated` keeps the current setting, and `isolated=false` removes it.
+- A payload deploy (from a directory, or with `payload`) refuses `isolated` with a `400`: `'isolated' is only supported for package deployments; set it on the application's root config entry instead`. It also refuses `host` and `urlPath`. A payload deploy keeps the keys already on the entry.
+- On v5.3.0 and v5.3.1, neither kind of deploy can give an application a fork. A `package` deploy writes `branchedDatabases` into the entry, but the application ignores it when it loads ([harper#3071](https://github.com/HarperFast/harper/issues/3071)). A payload deploy accepts `branchedDatabases` and drops it ([harper#3044](https://github.com/HarperFast/harper/issues/3044)). See [Branched databases](#branched-databases) for what does work.
+
+[How a deploy updates the root config](../operations-api/operations.md#how-a-deploy-updates-the-root-config) has the full rules for the entry.
+
+### Isolated applications
+
+By default, every worker thread loads every application. An application whose entry sets `isolated: true` is loaded by one dedicated worker thread instead, that thread loads no other application, and no other thread loads it. Its module state, its globals, and its thread's copy of `process.env` are not shared with another application, and a deploy that restarts it restarts only its own thread.
+
+Isolation is about the thread, not the data. The application still reads and writes the same databases as everything else on the instance, unless it also declares [`branchedDatabases`](#branched-databases). Users, roles, and sessions stay instance-wide.
+
+#### Reaching an isolated application
+
+The dedicated worker does not listen on Harper's HTTP or MQTT ports. A request to those ports never reaches the application, even one addressed to its `host`: the shared workers answer it, and they do not load the application. The worker listens only on Unix domain sockets of its own, one for each secure port:
+
+```
+<rootPath>/sockets/app-<application>-<port>.sock
+```
+
+In the socket name, every character of the application name outside `A–Z`, `a–z`, `0–9`, `.` and `_` is percent-encoded, so `shop-preview` becomes `app-shop%2Dpreview-<port>.sock`. The socket serves plain HTTP. A `.yaml` file beside it names the application, its `host`, and the TLS certificates, so that a proxy in front can terminate TLS and send each host to the right socket.
+
+- **On Harper Fabric**, the platform's proxy routes the application's `host` to its socket, by TLS SNI. It does so only for a host name the cluster claims as a [custom domain](/fabric/custom-domains).
+- **On a self-managed instance**, Harper does not route to the socket. Run a proxy that terminates TLS and forwards the application's host name to its socket.
+
+**Give every isolated application its own `host`, used by no other application.** The proxy picks a socket by host name alone. An isolated application with no `host`, or with a host it shares with another application split by `urlPath`, loads and reports healthy, but no request reaches it. Harper does not refuse these configurations yet ([harper#2757](https://github.com/HarperFast/harper/issues/2757)).
+
+#### Requirements and refusals
+
+Harper never loads an isolated application in the shared workers. It refuses the application when the instance cannot give it a reachable worker of its own:
+
+- `threads.count` is `0`, so there is no worker thread to dedicate.
+- No `http.securePort` is configured.
+- [`tls.unixDomainSockets`](../configuration/options.md#tls) is not enabled.
+- The instance runs on Windows.
+- The socket path would be longer than the platform allows.
+- [`threads.maxIsolated`](../configuration/options.md#threads) isolated applications are already running (default `8`).
+
+The node that receives a `deploy_component` checks these before it deploys, and answers `409` with the reason, such as `Cannot deploy 'shop-preview' as an isolated application: the instance already runs 8 isolated application(s) (threads.maxIsolated)`. It answers `503` if it cannot read which isolated applications are running. The other nodes of a replicated deploy do not check: they record the entry, and a node that cannot run the application reports it as failed in [`get_status`](../operations-api/operations.md#set_status--get_status--clear_status) instead.
+
+At startup or restart, an isolated application that is refused is not loaded anywhere. Harper logs `Application '<name>' is isolated but gets no dedicated worker: <reason>; it is not loaded anywhere`.
+
+#### Restarting and dropping
+
+- **A new isolated application starts at the next restart.** Deploy it with `restart=true`, or restart afterward. That first restart, and any deploy that turns isolation on or off, restarts the shared workers as well as starting or stopping the dedicated one.
+- **A redeploy of an application that stays isolated restarts only its own worker.** The other applications keep running.
+- **`restart_service` can target one isolated application.** `{"operation": "restart_service", "service": "http", "scope": "<application>"}` restarts only that application's worker.
+- **`drop_component` without `restart` leaves the dedicated worker running** until the next restart. With `restart=true`, its worker is stopped.
+- **`system_information` shows the dedicated worker.** In its `threads` list, the dedicated worker's entry carries `application: '<name>'`.
+
+Each isolated application adds a worker thread on top of `threads.count`. See [`threads.maxIsolated`](../configuration/options.md#threads) for how that affects memory.
+
+### Branched databases
+
+`branchedDatabases` gives an application a private, durable fork of the databases it names. The application addresses them by their usual names. Its reads and writes go to its fork, and every other application keeps using the base database.
+
+```yaml
+# <rootPath>/harper-config.yaml
+shop-preview:
+  branchedDatabases: [data]
+```
+
+The value is a list of database names, or `true` for every database except `system` that exists when the application loads. A database created later is not branched.
+
+:::warning Known issue in v5.3.0 and v5.3.1
+`branchedDatabases` takes effect only on an entry without `package`. That is an application in the components root, such as one deployed with a payload. On an entry that has `package` (which every `package` and `by_ref` deploy writes), it is ignored. The application then runs on the base databases, and no error is reported ([harper#3071](https://github.com/HarperFast/harper/issues/3071)). Until that is fixed, deploy the application with a payload, add `branchedDatabases` to its root-config entry by hand, and restart. Then check that ``<rootPath>/database/`branches`/<application>`` exists before you write through the application.
+:::
+
+#### What the fork is
+
+- **A snapshot of the base, taken the first time the application loads with the key.** Harper takes a RocksDB checkpoint of the base database, which uses hard links when the fork is on the same filesystem as the base. Blob files are hard-linked too. Writes to the base after that point do not reach the fork.
+- **Durable.** The fork survives restarts and redeploys, and is never refreshed from the base. To start again from the current base, drop the application with `restart=true` and deploy it again.
+- **Stored beside the base database**, at ``<storage path>/`branches`/<application>/<database>``. With the default storage path, that is ``<rootPath>/database/`branches`/<application>/<database>``.
+- **Private.** The fork is not added to the instance's list of databases, so other applications, `describe_all`, analytics, and replication do not see it.
+- **Local to each node.** In a Harper Pro cluster, each node creates its own fork from its own copy of the base when the application first loads there. Writes to a fork stay on the node that took them. The fork's path is the same on every node.
+- **Owns its tables.** A table the application declares in a branched database, through a schema's `@table`, `ensureTable`, or `defineTable`, is created in the fork.
+
+#### Reaching the fork from code
+
+Import `databases` and `tables` from `harper`. Those imports resolve branched names to the fork, and `tables` follows the fork of the default database, `data`. The bare `databases` and `tables` globals are shared by every application in the thread, so code that uses them reads and writes the base without any warning ([harper#3053](https://github.com/HarperFast/harper/issues/3053)).
+
+```js
+import { databases, tables } from 'harper';
+
+const { Product } = tables; // the fork's Product table when `data` is branched
+```
+
+#### Requirements and failure modes
+
+Harper never falls back to the base. An application whose fork cannot be created fails to load instead, with an error that names the reason:
+
+- [`storage.engine`](../configuration/options.md#storage) is `lmdb`. Branching requires RocksDB.
+- [`applications.moduleLoader`](../configuration/options.md#applications) is `native`, which cannot give the application its own `databases`.
+- A named database does not exist when the application loads.
+- `storage.blobPaths` is configured as an empty list, which leaves the fork nowhere to keep blobs.
+- `<length of application name>_<application>__<database>` is longer than 250 characters.
+- An existing fork directory is damaged. Harper refuses to serve it or rebuild it, since rebuilding would discard the fork's data. Delete the directory to have it recreated from the base.
+
+The value itself is checked when you deploy, and again when the application loads. It must be `true` or a list of distinct database names. `system` cannot be branched, and a name cannot contain `/` or `\` or be `.` or `..`. A `deploy_component` that breaks these rules is refused with a `400`.
+
+#### Removing a fork
+
+`drop_component` with `restart=true` removes the application's forks once the restart has completed. A replicated drop does this on every node, each removing its own fork. If a fork cannot be removed, the drop fails with an error saying the storage was left in place.
+
+Without `restart`, the forks stay, and the response says so: `Successfully dropped: <name>. Any branched database storage this application owns was left in place; drop it again with restart: true to discard that data`. Running `drop_component` with `restart=true` again removes them. Until then, deploying an application under the same name picks up the old fork, with its data.
+
 ## Operations API
 
 Component operations require `super_user`, unless a role's [`operations` allowlist](../users-and-roles/overview.md#operation-permissions) lists them, which is how a deploy-only CI role gets `deploy_component`. A few cannot be granted that way, such as `get_deployment_payload`, and a deploy that passes a literal `token` in `credentials` still needs `super_user`.
