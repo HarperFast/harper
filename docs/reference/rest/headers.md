@@ -94,7 +94,7 @@ If the record has not changed, Harper returns `304 Not Modified` with no body. T
 
 ### Accept-Encoding
 
-Harper supports standard HTTP compression. Including this header enables compressed responses:
+When response compression is enabled with [`http.compressionThreshold`](../http/configuration.md#httpcompressionthreshold) (it is off by default), Harper Brotli-compresses responses for clients that include `br` in this header. Brotli is the only encoding Harper applies, so a client that accepts only `gzip` receives an uncompressed body:
 
 ```http
 Accept-Encoding: gzip, br

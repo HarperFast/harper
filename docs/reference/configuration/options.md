@@ -34,7 +34,7 @@ http:
 ```
 
 - `sessionAffinity` — Route requests from same client to same worker thread (`ip` or header name)
-- `compressionThreshold` — Response size threshold for Brotli compression; _Default_: `1200` (bytes)
+- `compressionThreshold` — Response size threshold (bytes) for Brotli compression; `0` disables compression; _Default_: `0`
 - `cors` — Enable CORS; _Default_: `true`
 - `corsAccessList` — Allowed domains for CORS requests
 - `corsAccessControlAllowHeaders` — `Access-Control-Allow-Headers` value for OPTIONS preflight
