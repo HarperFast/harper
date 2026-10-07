@@ -79,6 +79,7 @@ import {
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
+import { isDedicatedPoolWorker } from '../server/threads/workerPools.ts';
 import {
 	databases,
 	table,
@@ -1005,6 +1006,11 @@ interface TableResourceClass {
 	updatedAttributes(): void;
 	setComputedAttribute(attribute_name: any, resolver: any): void;
 	/**
+	 * Indexed computed attributes whose resolver this thread does not have: one an application assigns
+	 * with `setComputedAttribute` exists only on threads that ran the application.
+	 */
+	unresolvedComputedIndexes(): string[];
+	/**
 	 * Override the default embedder for an `@embed` attribute. Return the vector to
 	 * store at `attribute_name`. The embedder receives the write payload (the fields
 	 * present in the PUT/PATCH body), not the post-merge record, so multi-field
@@ -1428,6 +1434,7 @@ export function makeTable(options): TableResourceClass {
 	// set on the first expiring write so the unscheduled-expiration warning is evaluated at most once per table
 	let expirationWarningChecked = false;
 	let propertyResolvers: any;
+	const warnedUnresolvedComputed = new Set<string>();
 	let hasRelationships = false;
 	// Attribute names surfaced by the struct `toJSON` on the default (no-select) read: everything that is
 	// @enumerable, PLUS @computed attributes whose declared type is NOT a table type (scalars/objects/arrays
@@ -8087,13 +8094,19 @@ export function makeTable(options): TableResourceClass {
 						const value = typeof computed.from === 'string' ? object[computed.from] : object;
 						const userResolver = this.userResolvers[attribute.name];
 						if (userResolver) return userResolver(value, context, entry);
-						else {
-							logger.warn?.(
-								`Computed attribute "${attribute.name}" does not have a function assigned to it. Please use setComputedAttribute('${attribute.name}', resolver) to assign a resolver function.`
+						// a pool worker would otherwise maintain this index with undefined values, silently
+						if (indices[attribute.name] && isDedicatedPoolWorker())
+							throw new Error(
+								`Computed index "${attribute.name}" of table "${tableName}" is resolved by application code, which this replication worker does not run`
 							);
-							// silence future warnings but just returning undefined
-							this.userResolvers[attribute.name] = () => {};
-						}
+						if (warnedUnresolvedComputed.has(attribute.name)) return;
+						logger.warn?.(
+							`Computed attribute "${attribute.name}" does not have a function assigned to it. Please use setComputedAttribute('${attribute.name}', resolver) to assign a resolver function.`
+						);
+						// silence future warnings but just returning undefined; a pool worker caches nothing, so that the
+						// throw above still applies if the attribute is indexed later
+						if (isDedicatedPoolWorker()) warnedUnresolvedComputed.add(attribute.name);
+						else this.userResolvers[attribute.name] = Object.assign(() => {}, { unresolved: true });
 					};
 					attribute.resolve.directReturn = true;
 				} else if (indices[attribute.name]?.customIndex?.propertyResolver) {
@@ -8163,6 +8176,15 @@ export function makeTable(options): TableResourceClass {
 			primaryStore.encoder.surfacedToJSON = primaryStore.encoder.structPrototype.toJSON;
 		}
 		// #section: computed-history
+		static unresolvedComputedIndexes(): string[] {
+			const unresolved = [];
+			for (const attribute of attributes) {
+				if (!attribute.computed || !indices[attribute.name]) continue;
+				const resolver = this.userResolvers[attribute.name];
+				if (!resolver || resolver.unresolved) unresolved.push(attribute.name);
+			}
+			return unresolved;
+		}
 		static setComputedAttribute(attribute_name, resolver) {
 			const attribute = findAttribute(attributes, attribute_name);
 			if (!attribute) {

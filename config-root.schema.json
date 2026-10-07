@@ -249,6 +249,11 @@
 				},
 				"port": { "type": "integer", "description": "Replication insecure port." },
 				"securePort": { "type": "integer", "description": "Replication secure port. Default: 9933" },
+				"threads": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Dedicated replication worker threads. When above 0, replication (the replication port's listener and outbound subscriptions) runs on these workers, which load no application code, instead of the HTTP workers. Requires replication.port or replication.securePort distinct from the HTTP and operations API ports. Changing it requires a full restart. Default: 0"
+				},
 				"enableRootCAs": {
 					"type": "boolean",
 					"description": "Verify certificates against Node.js bundled CA store. Default: true"
