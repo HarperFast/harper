@@ -47,7 +47,7 @@ import {
 	type WriteGeneration,
 	type Transaction as DatabaseTransactionRecord,
 } from './DatabaseTransaction.ts';
-import { releaseLocalKey, reserveLocalKey } from './originClosedFloor.ts';
+import { releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
 import {
 	acquireRecordKey,
 	lockAttemptKey,
@@ -3772,7 +3772,9 @@ export function makeTable(options): TableResourceClass {
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				reloadCommitBase: true,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
-					const txnLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
+					const txnLogKey = isRocksDB
+						? (reservedLocalKey(transaction) ?? transaction?.getTimestamp?.() ?? txnTime)
+						: txnTime;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
 						write.skipped = true;
@@ -3838,7 +3840,9 @@ export function makeTable(options): TableResourceClass {
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
 						: undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
-					const txnLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
+					const txnLogKey = isRocksDB
+						? (reservedLocalKey(transaction) ?? transaction?.getTimestamp?.() ?? txnTime)
+						: txnTime;
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) return;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
@@ -4726,7 +4730,9 @@ export function makeTable(options): TableResourceClass {
 					write.stagedIn = undefined; // nothing may pin this write's transaction past its commit
 					let omitLocalRecord = false;
 					// The handle's key, which the origin-closed floor may have moved above an explicit `txnTime`.
-					const appendedLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
+					const appendedLogKey = isRocksDB
+						? (reservedLocalKey(transaction) ?? transaction?.getTimestamp?.() ?? txnTime)
+						: txnTime;
 					const txnLogKey = options?.version != null ? appendedLogKey : txnTime;
 					// What a re-delivery of this write carries: the origin's log key for an apply (the context's
 					// timestamp, even when the floor moved this handle's key), the explicit value otherwise.
@@ -5524,7 +5530,9 @@ export function makeTable(options): TableResourceClass {
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
 					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
-					const txnLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
+					const txnLogKey = isRocksDB
+						? (reservedLocalKey(transaction) ?? transaction?.getTimestamp?.() ?? txnTime)
+						: txnTime;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
@@ -7358,7 +7366,9 @@ export function makeTable(options): TableResourceClass {
 						scheduleCleanup();
 					}
 					logger.trace?.(`Publishing message to id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
-					const appendedLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
+					const appendedLogKey = isRocksDB
+						? (reservedLocalKey(transaction) ?? transaction?.getTimestamp?.() ?? txnTime)
+						: txnTime;
 					// always audit this, but don't change existing version
 					// TODO: Use direct writes in the future (copying binary data is hard because it invalidates the cache)
 					return updateRecord(

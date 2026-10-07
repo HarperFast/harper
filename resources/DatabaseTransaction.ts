@@ -1550,11 +1550,22 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (!operation.saved) {
 			// immediately execute in this transaction
-			const validated = validateWrite(operation, writeVersion, this);
+			let validated;
+			try {
+				validated = validateWrite(operation, writeVersion, this);
+			} catch (error) {
+				// A handle created for an immediate commit is owned by nobody else: release it, and the
+				// floor reservation it carries, rather than leak both.
+				if (immediateCommit)
+					abortNativeTransaction(transaction, 'aborting an immediate transaction whose write failed validation');
+				throw error;
+			}
 			if ((validated as any) === false) {
 				operation.saved = true;
 				operation.commit = () => {}; // noop if we try again
 				closeWriteInstance(operation);
+				if (immediateCommit)
+					abortNativeTransaction(transaction, 'aborting an immediate transaction with nothing to write');
 				return;
 			}
 			operation.saved = true;

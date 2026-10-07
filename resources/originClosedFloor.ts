@@ -328,6 +328,11 @@ export function isReservedForLocalAppend(handle: RocksTransaction): boolean {
 	return (handle as any)[RESERVATION] !== undefined;
 }
 
+/** The key a reserved handle appends with, without a native call; undefined for an unreserved handle. */
+export function reservedLocalKey(handle: RocksTransaction | undefined): number | undefined {
+	return handle && (handle as any)[RESERVATION]?.key;
+}
+
 function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void {
 	const words = registryFor(rootStore).words;
 	storeMax(words, WORD_RATCHET, floor);
