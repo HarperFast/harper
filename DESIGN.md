@@ -108,6 +108,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [No-match is a separate score, never a value](resources/models/DESIGN.md#no-match-is-a-separate-score-never-a-value) — An opted-in leaf gets a no-match score beside the unchanged distribution; no sentinel, capability-gated per candidate, dropped where not asked for.
 - [A `@decide` decision is recorded only when the record can reach it](resources/models/DESIGN.md#a-decide-decision-is-recorded-only-when-the-record-can-reach-it) — A directive records its decision only with a `decision` attribute, which is server-owned; association is bounded, and read-only nodes run no model hook and stage no cache fill.
 - [A fitted calibration never crosses a score source, and never waits on storage or fails a call](resources/models/DESIGN.md#a-fitted-calibration-never-crosses-a-score-source-and-never-waits-on-storage-or-fails-a-call) — Populations are keyed by served-entry fingerprints and signatures; the decide path reads a cache only and fails open; immutable versions are ranked by the evidence they saw; the job is internal to the scheduler.
+- [A process-wide backend has one owner and no per-thread fallback](resources/models/DESIGN.md#a-process-wide-backend-has-one-owner-and-no-per-thread-fallback) — Main elects one worker to run the factory; calls to a lost owner fail by name and are not retried; restarts are bounded per worker generation.
 
 ## server/ — HTTP stacks, threads, operation dispatch
 
