@@ -19,6 +19,14 @@ function modeOf(filePath) {
 	return fs.statSync(filePath).mode & 0o777;
 }
 
+// Real containment, not a string-prefix match: `startsWith` alone would admit a sibling like
+// `<root>-evil`.
+function isWithinTestRoot(candidatePath) {
+	const resolved = path.resolve(candidatePath);
+	const root = path.resolve(testUtils.ENV_DIR_PATH);
+	return resolved === root || resolved.startsWith(root + path.sep);
+}
+
 function makeSecureServer() {
 	return { secureContexts: new Map() };
 }
@@ -40,13 +48,16 @@ describe('UDS mirror directory and metadata publication', () => {
 		let SOCKETS_DIR;
 
 		beforeEach(() => {
-			SOCKETS_DIR = path.join(env.getHdbBasePath(), 'sockets');
-			assert.ok(SOCKETS_DIR.startsWith(testUtils.ENV_DIR_PATH), `${SOCKETS_DIR} is outside the test root`);
+			const dir = path.join(env.getHdbBasePath(), 'sockets');
+			assert.ok(isWithinTestRoot(dir), `${dir} is outside the test root`);
+			// Only armed for cleanup once the containment check above has passed, so a failed
+			// assertion here leaves nothing for afterEach to delete.
+			SOCKETS_DIR = dir;
 			fs.rmSync(SOCKETS_DIR, { recursive: true, force: true });
 		});
 
 		afterEach(() => {
-			if (SOCKETS_DIR) fs.rmSync(SOCKETS_DIR, { recursive: true, force: true });
+			if (SOCKETS_DIR && isWithinTestRoot(SOCKETS_DIR)) fs.rmSync(SOCKETS_DIR, { recursive: true, force: true });
 		});
 
 		posixIt('creates a missing directory with mode 0700', () => {
