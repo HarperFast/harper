@@ -406,7 +406,7 @@ The value is a list of database names, or `true` for every database except `syst
 Until that is fixed, use these manual steps for a new application:
 
 1. Deploy it with a payload, without `restart`.
-2. Add `branchedDatabases` to its entry in `harper-config.yaml` **on every node**. The root config is per node, and a node without the key runs the application on the base, whose writes replicate to the whole cluster.
+2. Add `branchedDatabases` to its entry in `harper-config.yaml` **on every node**. The root config is per node. A node without this key runs the application on the base database. Writes made on that node replicate to the whole cluster.
 3. Restart each node.
 4. On each node, confirm the application's fork directory exists before you write through the application.
    :::
@@ -422,7 +422,7 @@ Until that is fixed, use these manual steps for a new application:
 
 #### Reaching the fork from code
 
-Import `databases` from `harper`, and each branched name on it resolves to the fork. `tables` from `harper` is a shortcut for the default database, `data`, so it reaches a fork only when `data` itself is branched; for any other branched database, go through `databases`. The bare `databases` and `tables` globals are shared by every application in the thread, so code that uses them reads and writes the base without any warning ([harper#3053](https://github.com/HarperFast/harper/issues/3053)).
+Import `databases` from `harper`, and each branched name on it resolves to the fork. `tables` from `harper` is a shortcut for the default database, `data`, so it reaches a fork only when `data` itself is branched; for any other branched database, go through `databases`. The bare `databases` and `tables` globals are shared by every application in the thread. Code that uses them reads and writes the base database without any warning ([harper#3053](https://github.com/HarperFast/harper/issues/3053)).
 
 With `branchedDatabases: [inventory]`, this is the fork's `Product` table:
 
