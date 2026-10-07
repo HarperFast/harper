@@ -45,6 +45,7 @@ const CANCEL = 'models-process-backend-cancel';
 const MAIN_THREAD_ID = 0;
 
 const DEFAULTS = { concurrency: 1, maxPending: 256, maxRestarts: 1, ownerWaitMs: 30_000 };
+/** How many newer states one call may route to after `moved` refusals before it fails as `moved`. */
 const MAX_REROUTES = 4;
 const MAX_UNCONFIRMED_PAUSE_MS = 50;
 const DISPOSE_ATTEMPTS = 3;
