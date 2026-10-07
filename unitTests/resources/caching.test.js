@@ -778,7 +778,7 @@ describe('Caching', () => {
 		// takes the plain removal branch rather than updateRecord. Index entries are read raw: search() drops an
 		// index entry whose record is gone, so it cannot see a dangling one.
 		this.timeout(20000);
-		const BLOB_IDS = 710; // ids from here on are cached with a file-backed blob
+		const FIRST_BLOB_ID = 710;
 		let UnauditedIndexedTable;
 		let sourceReportsMissing = false;
 		before(function () {
@@ -792,7 +792,7 @@ describe('Caching', () => {
 				get(id) {
 					if (sourceReportsMissing) return undefined;
 					const record = { id, name: 'unaudited ' + id };
-					if (id >= BLOB_IDS) record.payload = createBlob(randomBytes(25000));
+					if (id >= FIRST_BLOB_ID) record.payload = createBlob(randomBytes(25000));
 					return record;
 				},
 			});
@@ -894,8 +894,8 @@ describe('Caching', () => {
 		});
 
 		it('deletes the blob files of a removed record only once the removal commits', async function () {
-			const failedId = BLOB_IDS;
-			const removedId = BLOB_IDS + 1;
+			const failedId = FIRST_BLOB_ID;
+			const removedId = FIRST_BLOB_ID + 1;
 			setDeletionDelay(0);
 			try {
 				await cacheThenExpire(failedId);
@@ -914,6 +914,37 @@ describe('Caching', () => {
 				await delay(50);
 				assert.notEqual(UnauditedIndexedTable.primaryStore.getSync(failedId), undefined);
 				assert(existsSync(failedPath), 'a failed removal deleted the blob file of the record it left in place');
+			} finally {
+				setDeletionDelay(undefined);
+			}
+		});
+
+		it('keeps a blob file that a write committed after the removal references again', async function () {
+			const id = FIRST_BLOB_ID + 2;
+			const removedId = FIRST_BLOB_ID + 3;
+			setDeletionDelay(0);
+			try {
+				await cacheThenExpire(id);
+				await cacheThenExpire(removedId);
+				const { payload } = UnauditedIndexedTable.primaryStore.getSync(id);
+				const payloadPath = getFilePathForBlob(payload);
+				const removedPath = getFilePathForBlob(UnauditedIndexedTable.primaryStore.getSync(removedId).payload);
+				await missAndSettle(id, async (commit) => {
+					const committed = await commit();
+					const context = {};
+					await transaction(context, () =>
+						UnauditedIndexedTable.put(id, { id, name: 'replacement ' + id, payload }, context)
+					);
+					return committed;
+				});
+				await missAndSettle(removedId);
+				await waitFor(() => !existsSync(removedPath), {
+					timeout: 5000,
+					message: "the removed record's blob file was never deleted",
+				});
+				await delay(50);
+				assert.equal(UnauditedIndexedTable.primaryStore.getSync(id)?.name, 'replacement ' + id);
+				assert(existsSync(payloadPath), 'the removal deleted a blob file the replacement record references');
 			} finally {
 				setDeletionDelay(undefined);
 			}

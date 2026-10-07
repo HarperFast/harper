@@ -189,7 +189,13 @@ import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { commutativeOpsOf, rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
-import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
+import {
+	Blob,
+	collectRetainedFileIds,
+	deleteBlobsInObject,
+	findBlobsInObject,
+	startPreCommitBlobsForRecord,
+} from './blob.ts';
 import {
 	onStorageReclamation,
 	removeStorageReclamation,
@@ -9671,13 +9677,12 @@ export function makeTable(options): TableResourceClass {
 									Boolean(invalidated)
 								);
 							} else if (isRocksDB) {
-								// Staged with the index removal above. Not removeEntry: it would queue the blob files for
-								// deletion now, before this transaction commits; they are deleted once the commit lands.
+								// not removeEntry, which would queue the blob files for deletion before this commit lands
 								primaryStore.remove(id, { transaction });
 								if (existingEntry.value && existingEntry.metadataFlags & HAS_BLOBS)
 									removedRecordWithBlobs = existingEntry.value;
 							} else {
-								// LMDB: joins the enclosing conditional batch, and its promise gates the blob deletion
+								// joins LMDB's conditional batch; its promise gates the blob deletion
 								removeEntry(primaryStore, existingEntry, existingVersion);
 							}
 						}
@@ -9717,7 +9722,8 @@ export function makeTable(options): TableResourceClass {
 					primaryStore.unlock(id);
 					if (removedRecordWithBlobs) {
 						try {
-							deleteBlobsInObject(removedRecordWithBlobs);
+							// a write committed since the removal may reference the same files again
+							deleteBlobsInObject(removedRecordWithBlobs, collectRetainedFileIds(primaryStore.getEntry(id)?.value));
 						} catch (error) {
 							logger.warn?.(`Error deleting blobs of record ${id} removed from ${tableName}`, error);
 						}
