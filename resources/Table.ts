@@ -9340,6 +9340,7 @@ export function makeTable(options): TableResourceClass {
 			// we don't want to wait for the transaction because we want to return as fast as possible
 			// and let the transaction commit in the background
 			let resolved;
+			let removedRecordWithBlobs;
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
 				let updatedRecord, assignCreatedTime, sourceVersion;
@@ -9537,6 +9538,7 @@ export function makeTable(options): TableResourceClass {
 					nodeName: 'source',
 					commit: (_txnTime, existingEntry, _retry, transaction: any) => {
 						sourceWrite.skipped = false; // reset on each retry; cleanup happens after commit if still true
+						removedRecordWithBlobs = undefined;
 						const racedVersion = existingEntry?.version;
 						// A first fill may replace a record that raced it only when its candidate version strictly
 						// orders after that record. The comparison has to be replica-independent, so a tie leaves the
@@ -9668,7 +9670,14 @@ export function makeTable(options): TableResourceClass {
 									'delete',
 									Boolean(invalidated)
 								);
+							} else if (isRocksDB) {
+								// Staged with the index removal above. Not removeEntry: it would queue the blob files for
+								// deletion now, before this transaction commits; they are deleted once the commit lands.
+								primaryStore.remove(id, { transaction });
+								if (existingEntry.value && existingEntry.metadataFlags & HAS_BLOBS)
+									removedRecordWithBlobs = existingEntry.value;
 							} else {
+								// LMDB: joins the enclosing conditional batch, and its promise gates the blob deletion
 								removeEntry(primaryStore, existingEntry, existingVersion);
 							}
 						}
@@ -9706,6 +9715,13 @@ export function makeTable(options): TableResourceClass {
 				commitPromise,
 				() => {
 					primaryStore.unlock(id);
+					if (removedRecordWithBlobs) {
+						try {
+							deleteBlobsInObject(removedRecordWithBlobs);
+						} catch (error) {
+							logger.warn?.(`Error deleting blobs of record ${id} removed from ${tableName}`, error);
+						}
+					}
 				},
 				(error) => {
 					primaryStore.unlock(id);

@@ -11,6 +11,9 @@ const { INVALIDATED } = require('#src/resources/Table');
 const { exportIdMapping } = require('#src/resources/nodeIdMapping');
 const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor.js');
+const { existsSync } = require('node:fs');
+const { randomBytes } = require('node:crypto');
+const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
 
 describe('Caching', () => {
 	let CachingTable,
@@ -768,6 +771,153 @@ describe('Caching', () => {
 			indexed.map((record) => record.id),
 			[id]
 		);
+	});
+
+	describe('source miss on an unaudited indexed table', function () {
+		// audit: false and a source without subscribe() (which would turn trackDeletes on), so a source miss
+		// takes the plain removal branch rather than updateRecord. Index entries are read raw: search() drops an
+		// index entry whose record is gone, so it cannot see a dangling one.
+		this.timeout(20000);
+		const BLOB_IDS = 710; // ids from here on are cached with a file-backed blob
+		let UnauditedIndexedTable;
+		let sourceReportsMissing = false;
+		before(function () {
+			UnauditedIndexedTable = table({
+				table: 'UnauditedIndexedCachingTable',
+				database: 'test',
+				audit: false,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'payload' }],
+			});
+			UnauditedIndexedTable.sourcedFrom({
+				get(id) {
+					if (sourceReportsMissing) return undefined;
+					const record = { id, name: 'unaudited ' + id };
+					if (id >= BLOB_IDS) record.payload = createBlob(randomBytes(25000));
+					return record;
+				},
+			});
+			// expire almost immediately so the next get() revalidates, but never become evictable mid-test
+			UnauditedIndexedTable.setTTLExpiration({ expiration: 0.005, eviction: 3600 });
+		});
+		const indexEntries = (name) => UnauditedIndexedTable.indices.name.getValuesCount(name);
+
+		async function cacheThenExpire(id) {
+			await UnauditedIndexedTable.get(id);
+			await waitFor(
+				() =>
+					UnauditedIndexedTable.primaryStore.getSync(id) !== undefined &&
+					!UnauditedIndexedTable.primaryStore.hasLock(id)
+			);
+			assert.equal(indexEntries('unaudited ' + id), 1);
+			await delay(10);
+		}
+
+		// Runs onFillCommit(commit) in place of the native commit of the source-miss fill of `id`. The last
+		// transactional read of the record before that commit is the fill's own re-read, right before its commit
+		// callback runs, which identifies the fill's native transaction. Commits started before it are collected,
+		// so a removal that escaped the fill transaction can be awaited.
+		function interceptFillCommit(id, onFillCommit) {
+			const { Transaction } = require('@harperfast/rocksdb-js');
+			const originalCommit = Transaction.prototype.commit;
+			const { primaryStore } = UnauditedIndexedTable;
+			const originalGetEntry = primaryStore.getEntry;
+			const interception = { fired: false, otherCommits: [] };
+			let fillTransaction;
+			primaryStore.getEntry = function (key, options) {
+				if (!interception.fired && key === id && options?.transaction) fillTransaction = options.transaction;
+				return originalGetEntry.call(this, key, options);
+			};
+			Transaction.prototype.commit = function (...args) {
+				if (!interception.fired && this === fillTransaction) {
+					interception.fired = true;
+					return onFillCommit(() => originalCommit.apply(this, args));
+				}
+				const commit = originalCommit.apply(this, args);
+				if (!interception.fired) interception.otherCommits.push(commit);
+				return commit;
+			};
+			interception.restore = () => {
+				Transaction.prototype.commit = originalCommit;
+				primaryStore.getEntry = originalGetEntry;
+			};
+			return interception;
+		}
+		const failCommit = () => {
+			const error = new Error('injected source-miss commit failure');
+			error.code = 'ERR_INJECTED_COMMIT_FAILURE';
+			return Promise.reject(error);
+		};
+
+		async function missAndSettle(id, onFillCommit) {
+			const interception = onFillCommit && interceptFillCommit(id, onFillCommit);
+			try {
+				sourceReportsMissing = true;
+				assert.equal(await UnauditedIndexedTable.get(id), undefined);
+				await waitFor(() => (!interception || interception.fired) && !UnauditedIndexedTable.primaryStore.hasLock(id), {
+					message: 'the source-miss fill never committed',
+				});
+			} finally {
+				sourceReportsMissing = false;
+				interception?.restore();
+			}
+			if (interception) await Promise.allSettled(interception.otherCommits);
+		}
+
+		it('removes the record and its index entry when the source reports it missing', async function () {
+			const id = 701;
+			await cacheThenExpire(id);
+			await missAndSettle(id);
+			assert.equal(UnauditedIndexedTable.primaryStore.getSync(id), undefined);
+			assert.equal(indexEntries('unaudited ' + id), 0);
+		});
+
+		it('keeps the record and its index entry together when the source-miss commit fails', async function () {
+			const id = 702;
+			await cacheThenExpire(id);
+			await missAndSettle(id, failCommit);
+			assert.notEqual(UnauditedIndexedTable.primaryStore.getSync(id), undefined, 'record removed by a failed commit');
+			assert.equal(indexEntries('unaudited ' + id), 1);
+		});
+
+		it('does not remove a write that lands between staging the removal and committing it', async function () {
+			const id = 703;
+			await cacheThenExpire(id);
+			await missAndSettle(id, async (commit) => {
+				// its own transaction: this runs inside the fill's async context, which a bare put would join
+				const context = {};
+				await transaction(context, () => UnauditedIndexedTable.put(id, { id, name: 'replacement ' + id }, context));
+				return commit();
+			});
+			assert.equal(UnauditedIndexedTable.primaryStore.getSync(id)?.name, 'replacement ' + id);
+			assert.equal(indexEntries('replacement ' + id), 1);
+			assert.equal(indexEntries('unaudited ' + id), 0);
+		});
+
+		it('deletes the blob files of a removed record only once the removal commits', async function () {
+			const failedId = BLOB_IDS;
+			const removedId = BLOB_IDS + 1;
+			setDeletionDelay(0);
+			try {
+				await cacheThenExpire(failedId);
+				await cacheThenExpire(removedId);
+				const blobPath = (id) => getFilePathForBlob(UnauditedIndexedTable.primaryStore.getSync(id).payload);
+				const failedPath = blobPath(failedId);
+				const removedPath = blobPath(removedId);
+				assert(existsSync(failedPath) && existsSync(removedPath));
+				await missAndSettle(failedId, failCommit);
+				await missAndSettle(removedId);
+				// reclamation runs in queue order, so a deletion queued by the failed removal would have run by now
+				await waitFor(() => !existsSync(removedPath), {
+					timeout: 5000,
+					message: "the removed record's blob file was never deleted",
+				});
+				await delay(50);
+				assert.notEqual(UnauditedIndexedTable.primaryStore.getSync(failedId), undefined);
+				assert(existsSync(failedPath), 'a failed removal deleted the blob file of the record it left in place');
+			} finally {
+				setDeletionDelay(undefined);
+			}
+		});
 	});
 
 	it('caps a source-reported version ahead of local time so later local writes still land', async function () {
