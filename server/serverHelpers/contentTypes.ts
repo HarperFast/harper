@@ -17,7 +17,7 @@ import {
 import { Blob } from '../../resources/blob.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
-import { parseMultipartRequest } from './multipartParser.ts';
+import { parseMultipartRequest, releaseUnreadUpload } from './multipartParser.ts';
 const SERIALIZATION_BIGINT = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
 const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
 const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
@@ -309,6 +309,7 @@ export function registerContentHandlers(app) {
 	app.addContentTypeParser(/^multipart\/form-data/, (req, payload, done) => {
 		parseMultipartRequest(req, payload, done);
 	});
+	app.addHook('onResponse', releaseUnreadUpload);
 }
 
 const registerFastifySerializers = fp(
