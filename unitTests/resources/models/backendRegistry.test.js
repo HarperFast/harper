@@ -332,6 +332,66 @@ describe('registerBackend', () => {
 			assert.equal(getBackend('embedding', 'two'), undefined);
 		});
 
+		/** A backend `registerBackend` accepts for the embedding kind. */
+		const embedder = (name) => ({ ...fakeBackend(name), embed: async () => ({ status: 'completed', output: [] }) });
+
+		it('keeps the last of two registrations under the key when not exclusive, as config reload relies on', async () => {
+			const first = embedder('first');
+			const second = embedder('second');
+			const { backend, refused } = await constructBackend('embedding', 'default', () => {
+				registerBackend('embedding', 'default', first);
+				registerBackend('embedding', 'default', second);
+			});
+
+			assert.equal(backend, second, 'the second registration replaced the first');
+			assert.equal(refused, undefined, 'nothing was refused');
+		});
+
+		it('gives hold every object registered while constructing, once each, before it is checked or refused, even when the construction then throws', async () => {
+			const first = embedder('first');
+			const invalid = { name: 'no capabilities' };
+			const helper = embedder('helper');
+			const second = embedder('second');
+			const held = [];
+			const { backend, extras, refused } = await constructBackend(
+				'embedding',
+				'default',
+				() => {
+					registerBackend('embedding', 'default', first);
+					assert.throws(() => registerBackend('embedding', 'default', invalid), ModelBackendRegistrationError);
+					setEmbedding('default-helper', helper);
+					assert.throws(
+						() => registerBackend('embedding', 'default', second),
+						/a second registration under the same key is refused/
+					);
+					// Registering the first again is refused too (the refusal propagates), and it is not handed over twice.
+					registerBackend('embedding', 'default', first);
+				},
+				{ exclusive: true, hold: (handed) => held.push(handed) }
+			);
+			assert.equal(backend, first);
+			assert.deepEqual(extras, [{ kind: 'embedding', logicalName: 'default-helper', backend: helper }]);
+			assert.ok(refused instanceof ModelBackendRegistrationError);
+			assert.deepStrictEqual(held, [first, invalid, helper, second], 'each in the order handed over, once');
+
+			// A construction that throws for its own reasons still handed over what it registered first.
+			const before = [];
+			await assert.rejects(
+				constructBackend(
+					'embedding',
+					'default',
+					() => {
+						registerBackend('embedding', 'default', first);
+						throw new Error('factory blew up');
+					},
+					{ exclusive: true, hold: (handed) => before.push(handed) }
+				),
+				/factory blew up/
+			);
+			assert.deepStrictEqual(before, [first]);
+			assert.equal(getBackend('embedding', 'default'), undefined, 'and nothing was installed');
+		});
+
 		it('removes an entry only while it is still the expected instance', () => {
 			const mine = fakeBackend('mine');
 			setEmbedding('default', mine);

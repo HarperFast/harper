@@ -6,8 +6,10 @@
 // row, metric and refusal to the test, tagged with the thread it ran on. Its backends can hold or reject
 // their dispose(), fail on a chosen input, keep their factory's signal and throw from a property getter;
 // a factory can also register its backend and return a different engine object, as a module factory
-// may, whose own dispose() the test can hold or reject, or register a second backend under its key. Its calls can carry options that cannot cross
-// threads, that two calls share by reference, or that are class instances. On
+// may, whose own dispose() the test can hold or reject; register a second backend under its key, or an
+// invalid one after a valid one; register a backend and then throw; or register a backend under another
+// key beside the one it returns. Its calls can carry options that cannot cross threads, that two calls
+// share by reference, or that are class instances. On
 // SHUTDOWN it runs Harper's shutdown drains the way threadServer does, so the test sees what a real
 // worker would wait for before exiting.
 const { parentPort, threadId } = require('node:worker_threads');
@@ -143,12 +145,14 @@ function embeddingBackend(id, spec = {}) {
 				usage: spec.usage ?? { embeddingTokens: texts.length * 3 },
 			};
 		},
-		// 'hold' waits until the test releases `dispose:<id>`; 'reject' rejects every time, 'reject-once' the first
-		// time; 'getter-throws' replaces this method with a property that throws when read (below).
+		// 'hold' waits until the test releases `dispose:<id>` (`dispose:<id>:<what>` for a backend a factory
+		// registers beside others); 'reject' rejects every time, 'reject-once' the first time; 'getter-throws'
+		// replaces this method with a property that throws when read (below).
 		async dispose() {
 			disposals++;
 			report({ event: 'dispose', id, what: spec.what ?? 'backend' });
-			if (spec.dispose === 'hold') await new Promise((resolve) => gates.set(`dispose:${id}`, resolve));
+			const gate = spec.what === undefined ? `dispose:${id}` : `dispose:${id}:${spec.what}`;
+			if (spec.dispose === 'hold') await new Promise((resolve) => gates.set(gate, resolve));
 			if (spec.dispose === 'reject' || (spec.dispose === 'reject-once' && disposals === 1))
 				throw new Error(`could not free the model of ${id}`);
 		},
@@ -241,9 +245,12 @@ const commands = {
 		watchFactorySignal,
 		registersAndReturns,
 		registersTwice,
+		registersInvalid,
+		registersThenThrows,
+		registersExtra,
 		engineDispose,
 	}) {
-		const build = (factorySignal, what) =>
+		const build = (factorySignal, what, disposal = dispose) =>
 			kind === 'generative'
 				? generativeBackend(id)
 				: kind === 'decision'
@@ -252,10 +259,16 @@ const commands = {
 							capabilities,
 							usage,
 							failOn,
-							dispose,
+							dispose: disposal,
 							factorySignal: watchFactorySignal ? factorySignal : undefined,
 							what,
 						});
+		/** An embedding backend without embed(), which registerBackend refuses, that can still be disposed. */
+		const invalid = () => {
+			const backend = embeddingBackend(id, { dispose, what: 'invalid' });
+			delete backend.embed;
+			return backend;
+		};
 		if (scope === 'thread') {
 			report({ event: 'factory', id });
 			models.registerBackend(kind, id, build());
@@ -286,6 +299,26 @@ const commands = {
 						if (registersTwice === 'propagate') throw error;
 					}
 					return engine(id, engineDispose);
+				}
+				if (registersInvalid) {
+					// Registers a valid backend, then one registerBackend refuses as invalid, and rethrows that refusal.
+					models.registerBackend(kind, id, build(signal, 'first'));
+					try {
+						models.registerBackend(kind, id, invalid());
+					} catch (error) {
+						report({ event: 'registration-refused', id, name: error?.name, message: error?.message });
+						throw error;
+					}
+				}
+				if (registersThenThrows) {
+					models.registerBackend(kind, id, build(signal, 'registered'));
+					throw new Error('the model file is corrupt');
+				}
+				if (registersExtra) {
+					// A backend under another key, whose dispose() follows `dispose`, beside the one the factory
+					// returns, whose dispose() resolves at once.
+					models.registerBackend(kind, `${id}-extra`, build(signal, 'extra'));
+					return build(signal, undefined, null);
 				}
 				if (!registersAndReturns) return build(signal);
 				// A module-shaped factory: it registers the backend and returns a different object.
