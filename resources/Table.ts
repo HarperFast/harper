@@ -4727,8 +4727,7 @@ export function makeTable(options): TableResourceClass {
 					let omitLocalRecord = false;
 					const txnLogKey =
 						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
-					// The handle's key, which the origin-closed floor may have moved above an explicit `txnTime`:
-					// this write's identity in the log. The re-delivery dedup lookups below keep `txnLogKey`.
+					// The handle's key, which the origin-closed floor may have moved above an explicit `txnTime`.
 					const appendedLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnLogKey) : txnLogKey;
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
@@ -4860,6 +4859,7 @@ export function makeTable(options): TableResourceClass {
 								if (
 									priorAudit &&
 									priorAudit.txnLogKey === txnLogKey &&
+									priorAudit.version === (options?.version ?? txnTime) &&
 									precedesExistingVersion(
 										txnTime,
 										{ version: txnTime, localTime: txnLogKey, key: id, nodeId: priorAudit.nodeId },
@@ -4965,6 +4965,7 @@ export function makeTable(options): TableResourceClass {
 								return (
 									duplicate &&
 									duplicate.txnLogKey === txnLogKey &&
+									duplicate.version === (options?.version ?? txnTime) &&
 									precedesExistingVersion(
 										txnTime,
 										{ version: txnTime, localTime: txnLogKey, key: id, nodeId: duplicate.nodeId },

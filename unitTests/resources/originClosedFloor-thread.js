@@ -34,8 +34,6 @@ async function run() {
 		await transaction({}, () => Tbl.put({ id: 'held', n: 1 }));
 		parentPort.postMessage({ type: 'committed' });
 	} else if (mode === 'writer') {
-		// Each commit records the floor count main had published before it was submitted; the test
-		// checks that no key falls below any of those floors.
 		const results = [];
 		const nativeCommit = Transaction.prototype.commit;
 		let epochBefore = 0;

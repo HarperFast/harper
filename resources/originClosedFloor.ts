@@ -14,14 +14,15 @@ import { onMessageByType } from '../server/threads/manageThreads.js';
  * clock step. Design: resources/DESIGN.md "Origin-closed timestamp floor".
  */
 
-const SLOTS = 256;
+const SLOTS = 1024;
 // One bound word per 64-byte line: writers on neighbouring slots must not bounce a line between cores.
 const BOUND_STRIDE = 8;
 const WORD_PROPOSED = 0;
 const WORD_PUBLISHED = 1;
 const WORD_RATCHET = 2;
-// Non-zero while a key may have been issued from the ratchet rather than the native clock (the clock
-// was behind the recovered floor); native keys then pass through the ratchet word too.
+// Non-zero once a key may have been issued from the ratchet rather than the native clock (the clock
+// was behind the recovered floor); native keys then pass through the ratchet word for the rest of
+// the process, since any later hand-back to load-only admission races a fallback still in flight.
 const WORD_STRICT = 3;
 const HEADER_WORDS = 4;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
@@ -36,6 +37,7 @@ const MAX_TIMESTAMP = 8.64e15;
 /** Main broadcasts it when a worker exits; each thread retires that worker's bounds in the stores it has open. */
 export const ORIGIN_FLOOR_RETIRE = 'origin-floor-retire';
 
+const RETIRED_BIT = 1n << 40n;
 const RESERVATION = Symbol('originFloorReservation');
 const REGISTRY = Symbol('originFloorRegistry');
 
@@ -97,10 +99,25 @@ class ThreadRegistry {
 		throw new Error(`No origin-floor slot is free for thread ${threadId} on ${this.rootStore.path}`);
 	}
 
-	/** The store closed on this thread; a successor on it claims the slot anew. */
+	/**
+	 * The store closed on this thread. The slot stays this registry's until its last reservation is
+	 * released, flagged so a successor registry on the thread claims a fresh one.
+	 */
 	retire(): void {
-		if (!this.retired && this.slot >= 0 && this.outstanding === 0) this.publish(Infinity);
+		if (this.retired) return;
 		this.retired = true;
+		if (this.slot < 0) return;
+		if (this.outstanding === 0) this.free();
+		else {
+			const owner = BigInt(threadId + 1);
+			Atomics.compareExchange(this.words, THREAD_WORDS_OFFSET + this.slot, owner, owner | RETIRED_BIT);
+		}
+	}
+
+	private free(): void {
+		Atomics.store(this.words, boundIndex(this.slot), INFINITY_BITS);
+		Atomics.store(this.words, THREAD_WORDS_OFFSET + this.slot, 0n);
+		this.slot = -1;
 	}
 
 	private minKey(): number {
@@ -150,7 +167,7 @@ class ThreadRegistry {
 	}
 
 	private publish(bound: number): void {
-		if (!this.retired) Atomics.store(this.words, boundIndex(this.slot), toBits(bound));
+		if (this.slot >= 0) Atomics.store(this.words, boundIndex(this.slot), toBits(bound));
 	}
 
 	/**
@@ -158,7 +175,7 @@ class ThreadRegistry {
 	 * ratchet is the recovered floor and native keys are unique by the native clock. Once a key has
 	 * been issued from the ratchet instead (`WORD_STRICT`), a native key also raises the ratchet to
 	 * itself by compare-and-swap, so a stale ratchet step cannot repeat a native key another thread
-	 * admitted meanwhile; the certifier lifts strict mode once the clock is past every issued key.
+	 * admitted meanwhile.
 	 */
 	private admitNative(bits: bigint): boolean {
 		for (;;) {
@@ -174,15 +191,13 @@ class ThreadRegistry {
 	 * clock is still behind the ratchet (the recovered floor after a restart), the ratchet's next ulp.
 	 */
 	freshKey(): number {
+		Atomics.store(this.words, WORD_STRICT, 1n);
 		for (;;) {
 			const minted = this.rootStore.getMonotonicTimestamp();
 			if (this.admitNative(toBits(minted))) return minted;
-			Atomics.store(this.words, WORD_STRICT, 1n);
 			const ratchet = Atomics.load(this.words, WORD_RATCHET);
-			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, ratchet + 1n) !== ratchet) continue;
-			// Strict mode lifted under this step: the clock is past the ratchet, so a native key may have
-			// been admitted without raising it; mint natively instead.
-			if (Atomics.load(this.words, WORD_STRICT) !== 0n) return fromBits(ratchet + 1n);
+			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, ratchet + 1n) === ratchet)
+				return fromBits(ratchet + 1n);
 		}
 	}
 
@@ -219,6 +234,7 @@ class ThreadRegistry {
 		if (this.outstanding === 0) {
 			this.heap.length = 0;
 			this.released = 0;
+			if (this.retired) return this.free();
 		} else if (this.released > 64 && this.released > this.outstanding) this.compact();
 		this.publish(this.minKey());
 	}
@@ -330,10 +346,7 @@ export function publishOriginFloor(rootStore: RocksDatabase, floor: number): voi
 export function certifyOriginFloor(rootStore: RocksDatabase): number | undefined {
 	const registry = registryFor(rootStore);
 	const words = registry.words;
-	const minted = rootStore.getMonotonicTimestamp();
-	const ratchet = Atomics.load(words, WORD_RATCHET);
-	if (Atomics.load(words, WORD_STRICT) !== 0n && toBits(minted) > ratchet) Atomics.store(words, WORD_STRICT, 0n);
-	const sample = Math.max(minted, fromBits(ratchet));
+	const sample = Math.max(rootStore.getMonotonicTimestamp(), fromBits(Atomics.load(words, WORD_RATCHET)));
 	storeMax(words, WORD_PROPOSED, sample);
 	let bound = 0;
 	for (let attempt = 0; attempt < SENTINEL_RETRIES && bound === 0; attempt++) bound = registry.minBound();
@@ -353,7 +366,7 @@ export function getOriginClosedFloor(
 	return { floor, lagMs: Date.now() - floor, holders: registry.holders() };
 }
 
-/** The buffer dies with the column family; a closing store's registry stops publishing and is no longer retired through. */
+/** The buffer dies with the column family; this thread's registry for the store is retired. */
 export function forgetOriginFloorRegistry(rootStore: RocksDatabase): void {
 	const registry: ThreadRegistry | undefined = (rootStore as any)?.[REGISTRY];
 	if (!registry) return;
@@ -372,8 +385,11 @@ export function forgetOriginFloorRegistry(rootStore: RocksDatabase): void {
 export function retireOriginFloorSlots(exitedThreadId: number): void {
 	const owner = BigInt(exitedThreadId + 1);
 	for (const registry of registries) {
-		for (let slot = 0; slot < SLOTS; slot++)
-			Atomics.compareExchange(registry.words, THREAD_WORDS_OFFSET + slot, owner, 0n);
+		for (let slot = 0; slot < SLOTS; slot++) {
+			const index = THREAD_WORDS_OFFSET + slot;
+			if (Atomics.compareExchange(registry.words, index, owner, 0n) === owner) continue;
+			Atomics.compareExchange(registry.words, index, owner | RETIRED_BIT, 0n);
+		}
 	}
 }
 

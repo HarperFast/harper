@@ -20,11 +20,6 @@ const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
-/**
- * harper-pro#922, item 1: no transaction can append to this node's `local` transaction log with a
- * key below the certified floor. Every test drives real Table writes and reads the keys back from
- * the log; the worker threads in originClosedFloor-thread.js stall or kill a reserved commit.
- */
 describe('origin-closed timestamp floor (harper-pro#922)', function () {
 	this.timeout(60_000);
 	let Tbl, rootStore, auditStore;
@@ -51,7 +46,6 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		workers.clear();
 	});
 
-	/** One certifier round as the maintenance worker runs it: certify, persist, then publish. */
 	function certify() {
 		const floor = certifyOriginFloor(rootStore);
 		if (floor !== undefined) {
@@ -61,7 +55,6 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		return getOriginClosedFloor(rootStore)?.floor ?? 0;
 	}
 
-	/** This table's entries in the given log (0 = `local`), oldest first. */
 	function entriesFor(id, nodeId = 0) {
 		const entries = [];
 		for (const auditRecord of auditStore.getRange({ start: 1, log: nodeId })) {
