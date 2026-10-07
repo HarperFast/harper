@@ -32,6 +32,18 @@ export interface Models {
 	registerBackend(kind: ModelKind, id: string, backend: ModelBackend): void;
 	/** Build a `ModelBackend` from a spec; pair with `registerBackend`. See #1325. */
 	defineBackend(spec: DefineBackendSpec): ModelBackend;
+	/**
+	 * Register a backend once per process: `factory` runs on one owner thread and every thread that
+	 * registers gets a proxy that forwards calls to it. Opt-in; `registerBackend` stays per thread.
+	 */
+	registerProcessBackend(
+		kind: ModelKind,
+		id: string,
+		factory: ProcessBackendFactory,
+		options?: ProcessBackendOptions
+	): void;
+	/** Readiness of the backend registered under `kind`/`id` on this thread, or undefined when none is. */
+	backendStatus(kind: ModelKind, id: string): BackendStatus | undefined;
 	/** Replace the model selection policy with a custom router. See #1326. */
 	registerRouter(router: ModelRouter): void;
 }
@@ -148,6 +160,55 @@ export interface DefineBackendSpec {
 	/** The most choices one `scoreChoices` call accepts, a positive integer. Default: no limit. */
 	maxScoredChoices?: number;
 }
+
+/**
+ * Builds a process-wide backend. Runs on the owner thread only. Returns the backend, or registers it
+ * under the same kind and id with `registerBackend` (a module factory's `register({ logicalName,
+ * kind, config })` does), in which case the registration is captured rather than installed. The
+ * backend is ready when the returned promise resolves, so a factory that wants ready to mean warm
+ * awaits its warmup before resolving.
+ */
+export type ProcessBackendFactory = (context: { kind: ModelKind; logicalName: string }) => unknown;
+
+export interface ProcessBackendOptions {
+	/** Backend calls the owner runs at once. Default 1, which suits one native model context. */
+	concurrency?: number;
+	/** Requests the owner queues beyond `concurrency` before refusing with `ModelBackendBusyError`. Default 256. */
+	maxPending?: number;
+	/**
+	 * Embedding only: queued `embed` requests with identical options are merged into one backend call
+	 * of at most this many inputs, and the vectors and usage are split back per request. Default 1 (off).
+	 */
+	maxBatchInputs?: number;
+	/** Unplanned owner losses (exit or failed start) restarted per worker generation. Default 1. */
+	maxRestarts?: number;
+	/** Caller-side bound on one call, queueing included; on expiry the call is cancelled at the owner. Default none. */
+	timeoutMs?: number;
+}
+
+/** Why a call to a process-wide backend found no owner to serve it. */
+export type ModelBackendUnavailableReason = 'owner-exited' | 'start-failed' | 'failed' | 'not-owner' | 'timeout';
+
+/**
+ * Readiness of a registered backend. A per-thread backend is ready once registered. A process-wide
+ * backend reports the one state the main thread holds for it, so every thread answers alike.
+ */
+export type BackendStatus =
+	| { scope: 'thread'; state: 'ready' }
+	| {
+			scope: 'process';
+			state: 'starting' | 'ready' | 'failed';
+			/** The owner thread's id, while one is elected. */
+			owner?: number;
+			restarts: number;
+			maxRestarts: number;
+			/** The worker generation (restart number) the restart budget belongs to. */
+			generation?: number;
+			/** Why the last owner was lost, after a loss. */
+			reason?: ModelBackendUnavailableReason;
+			/** The last loss's error, for operators; never sent to a caller as its message. */
+			error?: { name: string; message: string };
+	  };
 
 export type EmbedOpts = {
 	model?: string;

@@ -23,6 +23,7 @@ import { populationKey, populationRank } from './calibration.ts';
 import { safeErrorMessage } from '../scheduler/engine.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { getRouter, registerRouter as registerRouterImpl } from './routing.ts';
+import { backendStatus, registerProcessBackend as registerProcessBackendImpl } from './processBackend.ts';
 import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelCallRecord } from './analyticsTable.ts';
 import { recordAction } from '../analytics/write.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
@@ -51,6 +52,7 @@ import {
 } from './decisionStore.ts';
 import type {
 	AccountingContext,
+	BackendStatus,
 	ModelCapabilities,
 	BackendOpts,
 	Capability,
@@ -74,6 +76,8 @@ import type {
 	ModelRouter,
 	ModelCallResult,
 	Models as ModelsContract,
+	ProcessBackendFactory,
+	ProcessBackendOptions,
 	ScoreChoicesOpts,
 	OutcomeReport,
 	TokenUsage,
@@ -134,6 +138,30 @@ export class Models implements ModelsContract {
 	 */
 	defineBackend(spec: DefineBackendSpec): ModelBackend {
 		return defineBackend(spec);
+	}
+
+	/**
+	 * Register a backend once per process instead of once per thread: every thread that loads the
+	 * component calls this where it would call `registerBackend`, `factory` runs on one owner thread,
+	 * and each thread gets a proxy that forwards its calls there. For in-process models, where a copy
+	 * per worker means a model, a GPU context and a warmup per worker. See `processBackend.ts`.
+	 */
+	registerProcessBackend(
+		kind: ModelKind,
+		id: string,
+		factory: ProcessBackendFactory,
+		options?: ProcessBackendOptions
+	): void {
+		registerProcessBackendImpl(kind, id, factory, options);
+	}
+
+	/**
+	 * Readiness of the backend `kind`/`id` resolves to on this thread: a per-thread backend is ready
+	 * once registered; a process-wide one reports the state the main thread holds, the same on every
+	 * thread. Undefined when nothing is registered.
+	 */
+	backendStatus(kind: ModelKind, id: string): BackendStatus | undefined {
+		return backendStatus(kind, id);
 	}
 
 	/**
@@ -871,6 +899,8 @@ function classifyError(err: unknown): string {
 		if (e.name === 'ChoiceScoringUnsupportedError') return 'scoring_unsupported';
 		if (e.name === 'ModelBackendNotFoundError') return 'backend_not_found';
 		if (e.name === 'ModelPendingNotSupportedError') return 'pending_unsupported';
+		if (e.name === 'ModelBackendUnavailableError') return 'backend_unavailable';
+		if (e.name === 'ModelBackendBusyError') return 'backend_busy';
 	}
 	return 'backend_error';
 }

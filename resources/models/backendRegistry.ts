@@ -197,7 +197,9 @@ export function resolveDecision(logicalName: string = 'default'): ModelBackend {
  * in-process / non-HTTP ones — under a logical id. Call it during component
  * load (e.g. `handleApplication`); the registry is process-wide, so each worker
  * thread that loads the component registers its own instance, matching how the
- * config-driven built-ins populate per process.
+ * config-driven built-ins populate per process. A backend that must exist once per
+ * process (an in-process model) registers through `registerProcessBackend`
+ * (`processBackend.ts`) instead.
  *
  * `id` is the logical name callers select with `opts.model` (e.g.
  * `models.embed(text, { model: 'local:bge-small' })`). A provider-namespaced id
@@ -209,12 +211,15 @@ export function resolveDecision(logicalName: string = 'default'): ModelBackend {
  * derives them for you, so prefer it.
  */
 export function registerBackend(kind: ModelKind, id: string, backend: ModelBackend): void {
-	if (kind !== 'embedding' && kind !== 'generative' && kind !== 'decision')
-		throw new ModelBackendRegistrationError(
-			`kind must be 'embedding', 'generative' or 'decision', got '${String(kind)}'`
-		);
-	if (typeof id !== 'string' || id.length === 0)
-		throw new ModelBackendRegistrationError('backend id must be a non-empty string');
+	assertBackendForKind(kind, id, backend);
+	if (kind === 'embedding') setEmbedding(id, backend);
+	else if (kind === 'decision') setDecision(id, backend);
+	else setGenerative(id, backend);
+}
+
+/** Throw `ModelBackendRegistrationError` unless `kind` and `id` are valid and `backend` can serve `kind`. */
+export function assertBackendForKind(kind: ModelKind, id: string, backend: ModelBackend): void {
+	assertKindAndId(kind, id);
 	if (
 		!backend ||
 		typeof backend.capabilities !== 'function' ||
@@ -225,18 +230,22 @@ export function registerBackend(kind: ModelKind, id: string, backend: ModelBacke
 	if (kind === 'embedding') {
 		if (typeof backend.embed !== 'function')
 			throw new ModelBackendRegistrationError(`embedding backend '${id}' must implement embed()`);
-		setEmbedding(id, backend);
 	} else if (kind === 'decision') {
 		if (typeof backend.decide !== 'function')
 			throw new ModelBackendRegistrationError(`decision backend '${id}' must implement decide()`);
-		setDecision(id, backend);
-	} else {
-		if (typeof backend.generate !== 'function' && typeof backend.generateStream !== 'function')
-			throw new ModelBackendRegistrationError(
-				`generative backend '${id}' must implement generate() or generateStream()`
-			);
-		setGenerative(id, backend);
+	} else if (typeof backend.generate !== 'function' && typeof backend.generateStream !== 'function') {
+		throw new ModelBackendRegistrationError(`generative backend '${id}' must implement generate() or generateStream()`);
 	}
+}
+
+/** Throw `ModelBackendRegistrationError` unless `kind` is a registry kind and `id` a non-empty string. */
+export function assertKindAndId(kind: ModelKind, id: string): void {
+	if (kind !== 'embedding' && kind !== 'generative' && kind !== 'decision')
+		throw new ModelBackendRegistrationError(
+			`kind must be 'embedding', 'generative' or 'decision', got '${String(kind)}'`
+		);
+	if (typeof id !== 'string' || id.length === 0)
+		throw new ModelBackendRegistrationError('backend id must be a non-empty string');
 }
 
 /**
