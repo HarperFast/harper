@@ -95,11 +95,11 @@ suite('MCP v1 application profile + operations error framing (#1317)', (ctx: Con
 		const { tools } = await client.listTools();
 		const names = tools.map((t) => t.name);
 		ok(
-			names.some((n) => /^create_/.test(n)),
+			names.some((n) => n.startsWith('create_')),
 			`expected a create_* tool, got: ${names.join(', ')}`
 		);
 		ok(
-			names.some((n) => /^get_/.test(n)),
+			names.some((n) => n.startsWith('get_')),
 			`expected a get_* tool, got: ${names.join(', ')}`
 		);
 		await transport.close();

@@ -533,7 +533,9 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 	function makeThrowingTable(error) {
 		const table = makeMockTable({ primaryKey: 'id', attributes: [{ name: 'id', indexed: true }], rows: [] });
 		table.search = async function* () {
-			throw error;
+			// Rejects on the first next() (consumption time), not on calling search() — matches
+			// how a real capability/index error surfaces, and keeps this a generator for require-yield.
+			yield Promise.reject(error);
 		};
 		binder._setDatabasesLoader(() => ({ dev: { user: table } }));
 	}
