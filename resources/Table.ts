@@ -1608,6 +1608,25 @@ export function makeTable(options): TableResourceClass {
 		}
 		return { txnLogKey: version, nodeId };
 	}
+	/**
+	 * Whether a ref equal to the identity a re-delivery carries is that write's receipt: the ref the
+	 * origin-closed floor left for a rekeyed write (no entry at the key), or an audit head whose entry
+	 * is the same write. The protected first ref is the record's audit head; when its entry is gone it
+	 * is evidence of nothing unless the record still sits at the incoming version.
+	 */
+	function receivedIdentityRefIsReceipt(
+		auditStore: any,
+		tableId: number,
+		id: Id,
+		ref: { version: number; nodeId?: number },
+		index: number,
+		version: number,
+		headVersion: number
+	): boolean {
+		const entry = auditStore.get(ref.version, tableId, id, ref.nodeId);
+		if (entry !== undefined) return entry.version === version;
+		return index > 0 || headVersion === version;
+	}
 	// Teardown rejects every producer; source/replay paths only bypass derived-index lag shedding.
 	function assertDerivedIndexAdmission(options: any, transaction: any) {
 		if (databaseDropPrepared(tableRootPath) || databaseCommitsSuspended(tableRootStore))
@@ -4740,13 +4759,7 @@ export function makeTable(options): TableResourceClass {
 					// What a re-delivery of this write carries: the origin's log key for an apply (the context's
 					// timestamp, even when the floor moved this handle's key), the explicit value otherwise.
 					const receivedLogKey = options?.version != null ? ((context as any)?.timestamp ?? txnLogKey) : txnTime;
-					// A ref equal to the received identity is a receipt the floor left for a rekeyed write when no
-					// entry sits at that key, or an audit head whose entry is this same write; a head of a distinct
-					// write that merely shares the number is neither.
-					const isReceivedIdentityRef = (ref: { version: number; nodeId?: number }, key: number) => {
-						const entry = auditStore.get(key, tableId, id, ref.nodeId);
-						return entry === undefined || entry.version === (options?.version ?? txnTime);
-					};
+
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
@@ -4810,9 +4823,18 @@ export function makeTable(options): TableResourceClass {
 							// options?.nodeId resolves to the same 0 the ref stored).
 							if (
 								existingEntry.additionalAuditRefs?.some(
-									(ref) =>
+									(ref, index) =>
 										(ref.version === appendedLogKey ||
-											(ref.version === receivedLogKey && isReceivedIdentityRef(ref, receivedLogKey))) &&
+											(ref.version === receivedLogKey &&
+												receivedIdentityRefIsReceipt(
+													auditStore,
+													tableId,
+													id,
+													ref,
+													index,
+													options?.version ?? txnTime,
+													existingEntry.version
+												))) &&
 										precedesExistingVersion(
 											txnTime,
 											{ version: txnTime, localTime: appendedLogKey, key: id, nodeId: ref.nodeId },
