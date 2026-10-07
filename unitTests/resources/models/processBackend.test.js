@@ -133,7 +133,7 @@ function rawRequest(id, origin, request, overrides = {}) {
 	};
 }
 
-describe('models.registerProcessBackend: one live backend instance per key, served to every worker thread', function () {
+describe('models.registerProcessBackend: one live backend instance per key for what its runs are handed, served to every worker thread', function () {
 	let workers = [];
 
 	afterEach(async function () {
@@ -1880,6 +1880,60 @@ describe('models.registerProcessBackend: one live backend instance per key, serv
 		);
 	});
 
+	it("disposes a registration the factory's leftover work makes in any step of its owner's release disposal before main hears the run ended, the step after the last disposal ends included, and one made once the run is sealed at once, outside the handover", async function () {
+		const [owner, successor] = await startWorkers(2);
+		// One key per offset: leftover work registers a late backend, whose dispose() always rejects, that
+		// many microtasks after the release starts disposing the backend the factory returned. The offsets
+		// run from inside that disposal, through the step after it ends, to past the step that seals the run.
+		const ids = [0, 1, 2, 3, 4, 5].map((hops) => `late-seal-${hops}`);
+		for (const [hops, id] of ids.entries())
+			await registerInOrder([owner, successor], id, undefined, {
+				registersLate: 'on-dispose',
+				lateHops: hops,
+				lateDispose: 'reject',
+			});
+		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: manageThreads.restartNumber });
+
+		const lateTries = (id) =>
+			events.filter((event) => event.event === 'dispose' && event.id === id && event.what === 'late').length;
+		const phases = new Set();
+		for (const id of ids) {
+			const late = await waitFor(() => events.find((event) => event.event === 'late-registered' && event.id === id));
+			phases.add(late.phase);
+			await waitFor(() => lateTries(id) === 3, {
+				timeout: 5000,
+				message: () =>
+					`${id}: the late backend, registered while the owner's run was ${late.phase}, was tried ${lateTries(id)} times, not 3`,
+			});
+			const status = await waitForStatus(
+				successor,
+				id,
+				(current) =>
+					current?.state === 'failed' || (current?.state === 'ready' && current.owner === successor.threadId),
+				`${id}: the key neither failed nor was handed over`
+			);
+			if (late.phase === 'disposing')
+				// Handed to the live run, so disposed before it reported: its failure is the owner's DISPOSE_FAILED.
+				assert.deepStrictEqual(
+					[status.state, status.reason, status.draining, factoryRuns(id).map((event) => event.threadId)],
+					['failed', 'dispose-failed', owner.threadId, [owner.threadId]],
+					`${id}: registered while the run was disposing, it was disposed before the owner reported, and no successor ran its factory`
+				);
+			else
+				// The run was sealed: disposed at once on its own thread, outside the handover, which went ahead.
+				assert.deepStrictEqual(
+					[late.phase, status.state, status.owner],
+					['disposed', 'ready', successor.threadId],
+					`${id}: registered once the run was sealed, it was disposed at once and the successor took over`
+				);
+		}
+		assert.deepStrictEqual(
+			[...phases].sort(),
+			['disposed', 'disposing'],
+			'the offsets cross the step that seals the run'
+		);
+	});
+
 	it("leaves the backend the start chose alone when the factory's leftover async work registers it again: calls keep reaching it, and it is disposed once, at handover", async function () {
 		const id = 'registers-late-self';
 		const [owner, successor] = await startWorkers(2);
@@ -2240,6 +2294,73 @@ describe('models.registerProcessBackend on the main thread', function () {
 		assert.match(status.error.message, /could not free the helper/);
 		assert.deepStrictEqual(disposed, ['helper', 'helper', 'helper', 'backend']);
 		assert.strictEqual(getBackend('embedding', 'main-extra-stuck-helper'), undefined, 'the helper was never installed');
+	});
+
+	it("disposes a registration the factory's leftover work makes in any step of a failed start's disposal before main hears, the step after the last disposal ends included, and one made once the run is sealed at once", async function () {
+		setMainIsWorker(true);
+		const embed = async (input) => ({ status: 'completed', output: [].concat(input).map(() => Float32Array.of(1)) });
+		// One key per offset: the start fails, and leftover work registers a late backend, whose dispose()
+		// always rejects, that many microtasks after the start begins disposing what the factory returned.
+		// The offsets run from inside that disposal, through the step after it ends, to past the step that
+		// seals the run.
+		const sweep = [0, 1, 2, 3, 4, 5].map((hops) => {
+			const seen = { id: `main-late-seal-${hops}`, tries: 0 };
+			const late = {
+				...models.defineBackend({ name: 'test:late', embed }),
+				async dispose() {
+					seen.tries++;
+					throw new Error(`could not free the late backend of ${seen.id}`);
+				},
+			};
+			registerProcessBackend(
+				'embedding',
+				seen.id,
+				({ kind, logicalName }) => ({
+					...models.defineBackend({ name: 'test:late-seal', embed }),
+					capabilities() {
+						throw new Error('capabilities are not readable yet');
+					},
+					dispose() {
+						const disposed = Promise.resolve();
+						let leftover = disposed;
+						for (let hop = 0; hop < hops; hop++) leftover = leftover.then(() => undefined);
+						void leftover.then(() => {
+							seen.phase = localOwnerLoad(kind, logicalName)?.phase;
+							models.registerBackend(kind, logicalName, late);
+						});
+						return disposed;
+					},
+				}),
+				{ maxRestarts: 0 }
+			);
+			return seen;
+		});
+
+		for (const seen of sweep) {
+			const status = await waitFor(() => {
+				const current = models.backendStatus('embedding', seen.id);
+				return current?.state === 'failed' && current;
+			});
+			await waitFor(() => seen.tries === 3, {
+				timeout: 5000,
+				message: () =>
+					`${seen.id}: the late backend, registered while the run was ${seen.phase}, was tried ${seen.tries} times, not 3`,
+			});
+			if (seen.phase === 'failing')
+				// Handed to the live run, so disposed before it reported: its failure fails the key as dispose-failed.
+				assert.deepStrictEqual(
+					[status.reason, status.draining],
+					['dispose-failed', 0],
+					`${seen.id}: registered while the run was failing, it was disposed before main heard`
+				);
+			// The run was sealed: disposed at once, and the start had already failed as itself.
+			else assert.deepStrictEqual([seen.phase, status.reason], ['failed', 'start-failed'], seen.id);
+		}
+		assert.deepStrictEqual(
+			[...new Set(sweep.map((seen) => seen.phase))].sort(),
+			['failed', 'failing'],
+			'the offsets cross the step that seals the run'
+		);
 	});
 
 	it('refuses an option that is a function instead of dropping it, since it cannot reach the owner', async function () {

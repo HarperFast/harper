@@ -9,8 +9,9 @@
 // may, whose own dispose() the test can hold or reject; register a second backend under its key, or an
 // invalid one after a valid one; register a backend and then throw; or register a backend under another
 // key beside the one it returns, or leave async work running that registers under its key once the test
-// releases it, either another backend, whose dispose() the test can hold or reject, or the very one it
-// returned. A thread can also register a backend under a key directly, as code outside any factory
+// releases it, or a chosen number of microtasks after the backend it returned starts disposing, either
+// another backend, whose dispose() the test can hold or reject, or the very one it returned. A thread
+// can also register a backend under a key directly, as code outside any factory
 // would. Its calls can carry options that cannot cross threads, that two calls
 // share by reference, or that are class instances. On
 // SHUTDOWN it runs Harper's shutdown drains the way threadServer does, so the test sees what a real
@@ -252,6 +253,7 @@ const commands = {
 		registersThenThrows,
 		registersExtra,
 		registersLate,
+		lateHops,
 		lateDispose,
 		engineDispose,
 	}) {
@@ -320,11 +322,24 @@ const commands = {
 					throw new Error('the model file is corrupt');
 				}
 				if (registersLate) {
-					// Leaves async work running that, once the test releases `late:<id>`, registers under the key
-					// after the start it belonged to has ended: another backend, whose dispose() follows
-					// `lateDispose`, or with 'returned' the backend the factory returned.
+					// Leaves async work running that registers under the key after the start it belonged to has
+					// ended, once the test releases `late:<id>`, or with 'on-dispose' once the returned backend's
+					// dispose() is called and `lateHops` more microtasks have run: another backend, whose
+					// dispose() follows `lateDispose`, or with 'returned' the backend the factory returned. It
+					// reports the phase this thread's run of the key was in when it registered.
 					const returned = build(signal, undefined, null);
-					void new Promise((resolve) => gates.set(`late:${id}`, resolve)).then(() => {
+					let resume;
+					let leftover = new Promise((resolve) => (resume = resolve));
+					if (registersLate === 'on-dispose') {
+						const dispose = returned.dispose;
+						returned.dispose = function () {
+							resume();
+							return dispose.call(this);
+						};
+					} else gates.set(`late:${id}`, resume);
+					for (let hop = 0; hop < (lateHops ?? 0); hop++) leftover = leftover.then(() => undefined);
+					void leftover.then(() => {
+						const phase = processBackend.ownerLoad(kind, id)?.phase;
 						let threw;
 						try {
 							models.registerBackend(
@@ -335,7 +350,7 @@ const commands = {
 						} catch (error) {
 							threw = { name: error?.name, message: error?.message };
 						}
-						report({ event: 'late-registered', id, threw });
+						report({ event: 'late-registered', id, threw, phase });
 					});
 					return returned;
 				}
