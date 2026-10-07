@@ -56,11 +56,10 @@ describe('Test JSONStream module ', () => {
 		});
 	});
 	describe('Failed iterator bookkeeping', function () {
-		// `activeIterators` is normally a LIFO stack (depth-first traversal pushes and pops in
-		// order), which is why the old indexOf(iterator)-after-reassignment bug went unnoticed:
-		// the failed entry was always last anyway. `sibling` is injected directly to put a
-		// second, unrelated entry on the list, exercising the one case where lookup-by-identity
-		// (vs. lookup-by-position) actually matters.
+		// `activeIterators` behaves as a LIFO stack under normal depth-first traversal, so the
+		// failed entry is always last anyway. `sibling` is injected directly to put a second,
+		// unrelated entry on the list, exercising the one case where removal has to go by
+		// identity rather than position.
 		const EXPECTED_PREFIX = '[[{"error":"Error: inner failure"}]';
 
 		function runNestedFailureCase(buildInner) {
@@ -102,10 +101,13 @@ describe('Test JSONStream module ', () => {
 			stream = streamAsJSON(outer);
 			return new Promise((resolve, reject) => {
 				let out = '';
+				// outer's pending promise is the only thing keeping this stream (and this test) alive;
+				// this timer must NOT be unref()'d, or Node exits before it ever fires, silently
+				// turning a serialization regression into an unattributed whole-run failure instead
+				// of a failure of this test
 				const timer = setTimeout(() => {
 					reject(new Error(`timed out waiting for ${JSON.stringify(EXPECTED_PREFIX)}, got ${JSON.stringify(out)}`));
 				}, 2000);
-				timer.unref();
 				const settle = (fn) => {
 					try {
 						fn();
