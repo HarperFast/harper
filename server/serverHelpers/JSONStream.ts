@@ -41,6 +41,7 @@ class JSONStream extends Readable {
 				let first = true;
 				if ((hasAsyncIterator || hasIterator) && !(object instanceof Array)) {
 					let iterator = hasAsyncIterator ? object[Symbol.asyncIterator]() : object[Symbol.iterator]();
+					const originalIterator = iterator;
 					this.activeIterators.push(iterator);
 					let iteratorResult;
 					while (true) {
@@ -72,7 +73,11 @@ class JSONStream extends Readable {
 							};
 						}
 						if (iteratorResult.done) {
-							this.activeIterators.splice(this.activeIterators.indexOf(iterator), 1);
+							// remove by the original iterator reference: on error `iterator` is replaced with a
+							// stub (above), so looking it up post-replacement would miss the tracked entry and
+							// splice(-1, 1) would evict whatever else happens to be last in the list instead
+							const activeIndex = this.activeIterators.indexOf(originalIterator);
+							if (activeIndex >= 0) this.activeIterators.splice(activeIndex, 1);
 							yield ']';
 							return;
 						} else {
