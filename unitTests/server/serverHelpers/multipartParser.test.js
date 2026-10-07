@@ -374,6 +374,23 @@ describe('multipartParser – an upload its response left unread', () => {
 		await waitFor(() => raw.readableEnded, 5000);
 	});
 
+	it('discards the rest of an unexpected-name part without parsing it, once its refusal is sent', async () => {
+		const request = { headers: { 'content-type': CONTENT_TYPE } };
+		const raw = new PassThrough();
+		raw.write(partHead('other'));
+		raw.write(CHUNK);
+		await assert.rejects(
+			new Promise((resolve, reject) =>
+				parseMultipartRequest(request, raw, (error, parsedBody) => (error ? reject(error) : resolve(parsedBody)))
+			),
+			{ statusCode: 400 }
+		);
+		await respond(request);
+		assert.strictEqual(raw.listenerCount('data'), 0, 'busboy no longer reads the request');
+		raw.end(CHUNK);
+		await waitFor(() => raw.readableEnded, 5000);
+	});
+
 	it('discards the rest of a body whose framing breaks after an unexpected-name part was refused', async () => {
 		const { request, raw, parsed } = start({ fileName: 'other', tail: malformedTail + 'x'.repeat(256 * 1024) });
 		await assert.rejects(parsed, { statusCode: 400 });
