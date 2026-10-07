@@ -6,7 +6,7 @@
 // row, metric and refusal to the test, tagged with the thread it ran on. Its backends can hold or reject
 // their dispose(), fail on a chosen input, keep their factory's signal and throw from a property getter;
 // a factory can also register its backend and return a different engine object, as a module factory
-// may, whose own dispose() the test can hold or reject. Its calls can carry options that cannot cross
+// may, whose own dispose() the test can hold or reject, or register a second backend under its key. Its calls can carry options that cannot cross
 // threads, that two calls share by reference, or that are class instances. On
 // SHUTDOWN it runs Harper's shutdown drains the way threadServer does, so the test sees what a real
 // worker would wait for before exiting.
@@ -147,7 +147,7 @@ function embeddingBackend(id, spec = {}) {
 		// time; 'getter-throws' replaces this method with a property that throws when read (below).
 		async dispose() {
 			disposals++;
-			report({ event: 'dispose', id, what: 'backend' });
+			report({ event: 'dispose', id, what: spec.what ?? 'backend' });
 			if (spec.dispose === 'hold') await new Promise((resolve) => gates.set(`dispose:${id}`, resolve));
 			if (spec.dispose === 'reject' || (spec.dispose === 'reject-once' && disposals === 1))
 				throw new Error(`could not free the model of ${id}`);
@@ -240,9 +240,10 @@ const commands = {
 		dispose,
 		watchFactorySignal,
 		registersAndReturns,
+		registersTwice,
 		engineDispose,
 	}) {
-		const build = (factorySignal) =>
+		const build = (factorySignal, what) =>
 			kind === 'generative'
 				? generativeBackend(id)
 				: kind === 'decision'
@@ -253,6 +254,7 @@ const commands = {
 							failOn,
 							dispose,
 							factorySignal: watchFactorySignal ? factorySignal : undefined,
+							what,
 						});
 		if (scope === 'thread') {
 			report({ event: 'factory', id });
@@ -273,6 +275,18 @@ const commands = {
 				if (failStart || holdStart) await new Promise((resolve) => gates.set(`start:${id}`, resolve));
 				report({ event: 'factory-settled', id, aborted: signal?.aborted === true });
 				if (failStart) throw new Error('model file is missing');
+				if (registersTwice) {
+					// Registers a backend, then a second one under the same key. 'propagate' rethrows the refusal;
+					// 'catch' swallows it and returns an engine beside the first, as if nothing had happened.
+					models.registerBackend(kind, id, build(signal, 'first'));
+					try {
+						models.registerBackend(kind, id, build(signal, 'second'));
+					} catch (error) {
+						report({ event: 'registration-refused', id, name: error?.name, message: error?.message });
+						if (registersTwice === 'propagate') throw error;
+					}
+					return engine(id, engineDispose);
+				}
 				if (!registersAndReturns) return build(signal);
 				// A module-shaped factory: it registers the backend and returns a different object.
 				models.registerBackend(kind, id, build(signal));

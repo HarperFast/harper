@@ -1603,6 +1603,111 @@ describe('models.registerProcessBackend: one live backend instance per key, serv
 		);
 	});
 
+	for (const handling of ['propagate', 'catch'])
+		it(`refuses a second registration under the key and fails the start, disposing the first and what the factory returned before main hears, when the factory ${handling === 'propagate' ? 'rethrows' : 'catches'} the refusal`, async function () {
+			const id = `registers-twice-${handling}`;
+			const [owner] = await startWorkers(1);
+			await command(owner, {
+				command: 'register',
+				id,
+				registersTwice: handling,
+				dispose: 'hold',
+				options: { maxRestarts: 0 },
+			});
+			const firstDisposed = () =>
+				events.some(
+					(event) =>
+						event.event === 'dispose' && event.id === id && event.what === 'first' && event.threadId === owner.threadId
+				);
+			// Either the first registration is disposed, or (the defect) the second replaced it and the start succeeded.
+			await waitFor(async () => firstDisposed() || (await statusOf(owner, id))?.state === 'ready');
+			assert.ok(firstDisposed(), 'the first backend the factory registered was disposed');
+			const refusal = events.find((event) => event.event === 'registration-refused' && event.id === id);
+			assert.strictEqual(refusal?.name, 'ModelBackendRegistrationError');
+			// Main hears of the failed start only once the first registration's dispose() has resolved.
+			await delay(100);
+			assert.notStrictEqual(
+				(await statusOf(owner, id))?.state,
+				'failed',
+				'main heard of the failure while the first registration was still disposing'
+			);
+			await command(owner, { command: 'release', text: `dispose:${id}` });
+
+			const failed = await waitForStatus(owner, id, (status) => status?.state === 'failed', `${id}: never failed`);
+			assert.strictEqual(failed.reason, 'start-failed');
+			assert.strictEqual(failed.error.name, 'ModelBackendRegistrationError');
+			assert.strictEqual(failed.error.message, refusal.message);
+			assert.match(failed.error.message, /a second registration under the same key is refused/);
+			assert.deepStrictEqual(
+				events.filter((event) => event.event === 'dispose' && event.id === id).map((event) => event.what),
+				handling === 'propagate' ? ['first'] : ['first', 'engine'],
+				'what the factory handed over is disposed, the registration first; the refused second never was handed over'
+			);
+		});
+
+	it("still disposes the other object when one of the two a factory handed over keeps rejecting dispose(), fails the key, and runs no successor's factory while that thread lives", async function () {
+		const id = 'two-objects-dispose-fails';
+		const generation = manageThreads.restartNumber;
+		const [owner, successor] = await startWorkers(2);
+		const ownerId = owner.threadId;
+		// The registered backend's dispose() rejects on every try; the engine returned beside it disposes.
+		await registerInOrder([owner, successor], id, undefined, { registersAndReturns: true, dispose: 'reject' });
+		await waitForStatus(successor, id, (status) => status?.state === 'ready', `${id}: not ready`);
+		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: generation });
+
+		// Either the key fails, or (the defect) the waiting successor runs its factory while the backend may be live.
+		await waitFor(async () => factoryRuns(id).length > 1 || (await statusOf(successor, id))?.state === 'failed');
+		assert.deepStrictEqual(
+			factoryRuns(id).map((event) => event.threadId),
+			[ownerId],
+			'the waiting successor did not run its factory'
+		);
+		const failed = await statusOf(successor, id);
+		assert.strictEqual(failed.reason, 'dispose-failed', 'the owner reported DISPOSE_FAILED');
+		assert.strictEqual(failed.owner, undefined);
+		assert.match(failed.error.message, new RegExp(`could not free the model of ${id}`));
+		assert.deepStrictEqual(
+			events
+				.filter((event) => event.event === 'dispose' && event.id === id)
+				.map((event) => `${event.what}@${event.threadId}`),
+			[`backend@${ownerId}`, `backend@${ownerId}`, `backend@${ownerId}`, `engine@${ownerId}`],
+			'the rejecting backend is tried three times, and the engine is still disposed'
+		);
+
+		// A newer generation clears the failure, so only the thread that may still hold the backend holds the election.
+		const newer = await startWorkerInGeneration(generation + 1);
+		await command(newer, { command: 'register', id, registersAndReturns: true });
+		await waitForStatus(
+			newer,
+			id,
+			(status) => status?.generation === generation + 1,
+			`${id}: the newer claim never reached main`
+		);
+		// Asserting a non-event: give an election time to (not) happen while the owner's thread lives.
+		await delay(200);
+		assert.deepStrictEqual(
+			factoryRuns(id).map((event) => event.threadId),
+			[ownerId],
+			'no successor runs its factory while the thread that may hold the backend lives'
+		);
+		assert.strictEqual((await statusOf(newer, id)).draining, ownerId, 'the thread that may hold the backend is named');
+
+		// The thread's exit is what proves the backend gone.
+		owner.wasShutdown = true;
+		await owner.terminate();
+		const elected = await waitForStatus(
+			newer,
+			id,
+			(status) => status?.state === 'ready',
+			`${id}: no owner after the thread exited`
+		);
+		assert.strictEqual(elected.owner, newer.threadId);
+		assert.deepStrictEqual(
+			factoryRuns(id).map((event) => event.threadId),
+			[ownerId, newer.threadId]
+		);
+	});
+
 	it('fails a call by name once its wait for an owner to confirm its caller runs out', async function () {
 		const [owner, bystander, caller] = await startWorkers(3);
 		await registerInOrder([owner, bystander, caller], 'never-confirmed', { ownerWaitMs: 300 });
