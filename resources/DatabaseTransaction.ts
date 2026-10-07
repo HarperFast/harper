@@ -1579,6 +1579,9 @@ export class DatabaseTransaction implements Transaction {
 		let completion: Promise<void>;
 		try {
 			completion = operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>;
+		} catch (error) {
+			if (immediateCommit) abortNativeTransaction(transaction, 'aborting an immediate transaction whose write threw');
+			throw error;
 		} finally {
 			closeWriteInstance(operation);
 		}

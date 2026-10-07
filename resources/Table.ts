@@ -4304,7 +4304,11 @@ export function makeTable(options): TableResourceClass {
 						if (link.writes.length === 0 && link.readTxnsUsed <= 1) {
 							link.releaseReadTxn();
 							link.snapshotFree = true;
-						} else if (link.timestamp) link.transaction.setTimestamp(link.timestamp);
+						} else if (link.timestamp && reservedLocalKey(link.transaction) === undefined) {
+							// A handle already reserved against the origin-closed floor keeps its admitted key; the
+							// stamp still becomes the record version through `link.timestamp`.
+							link.transaction.setTimestamp(link.timestamp);
+						}
 					}
 				}
 				// ImmediateTransaction: no clock pinning in lock(); save() stamps each write
