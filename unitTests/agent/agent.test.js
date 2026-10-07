@@ -103,7 +103,7 @@ describe('agent/agent resolveAgentIdentity', () => {
 describe('agent/agent resolveScopes (harper#3041)', () => {
 	let root;
 	beforeEach(() => {
-		root = realpathSync(mkdtempSync(join(tmpdir(), 'agent-scopes-')));
+		root = realpathSync.native(mkdtempSync(join(tmpdir(), 'agent-scopes-')));
 		writeFileSync(join(root, 'harper-config.yaml'), 'http: {}\n');
 		mkdirSync(join(root, 'components'));
 		mkdirSync(join(root, 'etc'));
@@ -156,7 +156,7 @@ describe('agent/agent resolveScopes (harper#3041)', () => {
 	it('admits a symlinked config file as its target, and the tools read it through those scopes', async () => {
 		const realConfig = join(mkdtempSync(join(tmpdir(), 'agent-scopes-cfg-')), 'harper-config.yaml');
 		writeFileSync(realConfig, 'http: {}\n');
-		const linkedRoot = realpathSync(mkdtempSync(join(tmpdir(), 'agent-scopes-linkcfg-')));
+		const linkedRoot = realpathSync.native(mkdtempSync(join(tmpdir(), 'agent-scopes-linkcfg-')));
 		try {
 			symlinkSync(realConfig, join(linkedRoot, 'harper-config.yaml'), 'file');
 		} catch (err) {
@@ -164,7 +164,7 @@ describe('agent/agent resolveScopes (harper#3041)', () => {
 			throw err;
 		}
 		const scopes = scopesFor({}, linkedRoot);
-		assert.equal(join(scopes.configDir, scopes.configFile), realpathSync(realConfig));
+		assert.equal(join(scopes.configDir, scopes.configFile), realpathSync.native(realConfig));
 		const ctx = { sessionId: 's', scopes };
 		const { content } = await readFileTool.handler({ root: 'config' }, ctx);
 		assert.equal(content, 'http: {}\n');

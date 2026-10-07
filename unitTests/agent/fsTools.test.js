@@ -150,7 +150,7 @@ describe('agent/fsTools key material and the single-file config scope (harper#30
 
 	// The default-install layout: the config file sits in rootPath beside keys/, ssh/ and database/.
 	beforeEach(() => {
-		root = realpathSync(mkdtempSync(join(tmpdir(), 'agent-root-')));
+		root = realpathSync.native(mkdtempSync(join(tmpdir(), 'agent-root-')));
 		writeFileSync(join(root, 'harper-config.yaml'), 'http:\n  port: 9926\n');
 		mkdirSync(join(root, 'keys'));
 		writeFileSync(join(root, 'keys', 'privateKey.pem'), PEM);
