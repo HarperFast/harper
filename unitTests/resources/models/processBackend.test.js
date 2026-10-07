@@ -1880,7 +1880,7 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		);
 	});
 
-	it("disposes a registration the factory's leftover work makes in any step of its owner's release disposal before main hears the run ended, the step after the last disposal ends included, and one made once the run is sealed at once, outside the handover", async function () {
+	it("attempts to dispose a registration the factory's leftover work makes in any step of its owner's release disposal before main hears the run ended, the step after the last disposal ends included, and one made once the run is sealed at once, outside the handover", async function () {
 		const [owner, successor] = await startWorkers(2);
 		// One key per offset: leftover work registers a late backend, whose dispose() always rejects, that
 		// many microtasks after the release starts disposing the backend the factory returned. The offsets
@@ -1913,11 +1913,11 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 				`${id}: the key neither failed nor was handed over`
 			);
 			if (late.phase === 'disposing')
-				// Handed to the live run, so disposed before it reported: its failure is the owner's DISPOSE_FAILED.
+				// Handed to the live run, so its disposal was attempted before it reported: its failure is the owner's DISPOSE_FAILED.
 				assert.deepStrictEqual(
 					[status.state, status.reason, status.draining, factoryRuns(id).map((event) => event.threadId)],
 					['failed', 'dispose-failed', owner.threadId, [owner.threadId]],
-					`${id}: registered while the run was disposing, it was disposed before the owner reported, and no successor ran its factory`
+					`${id}: registered while the run was disposing, its disposal was attempted before the owner reported, and no successor ran its factory`
 				);
 			else
 				// The run was sealed: disposed at once on its own thread, outside the handover, which went ahead.
@@ -2296,7 +2296,7 @@ describe('models.registerProcessBackend on the main thread', function () {
 		assert.strictEqual(getBackend('embedding', 'main-extra-stuck-helper'), undefined, 'the helper was never installed');
 	});
 
-	it("disposes a registration the factory's leftover work makes in any step of a failed start's disposal before main hears, the step after the last disposal ends included, and one made once the run is sealed at once", async function () {
+	it("attempts to dispose a registration the factory's leftover work makes in any step of a failed start's disposal before main hears, the step after the last disposal ends included, and one made once the run is sealed at once", async function () {
 		setMainIsWorker(true);
 		const embed = async (input) => ({ status: 'completed', output: [].concat(input).map(() => Float32Array.of(1)) });
 		// One key per offset: the start fails, and leftover work registers a late backend, whose dispose()
@@ -2347,11 +2347,11 @@ describe('models.registerProcessBackend on the main thread', function () {
 					`${seen.id}: the late backend, registered while the run was ${seen.phase}, was tried ${seen.tries} times, not 3`,
 			});
 			if (seen.phase === 'failing')
-				// Handed to the live run, so disposed before it reported: its failure fails the key as dispose-failed.
+				// Handed to the live run, so its disposal was attempted before it reported: its failure fails the key as dispose-failed.
 				assert.deepStrictEqual(
 					[status.reason, status.draining],
 					['dispose-failed', 0],
-					`${seen.id}: registered while the run was failing, it was disposed before main heard`
+					`${seen.id}: registered while the run was failing, its disposal was attempted before main heard`
 				);
 			// The run was sealed: disposed at once, and the start had already failed as itself.
 			else assert.deepStrictEqual([seen.phase, status.reason], ['failed', 'start-failed'], seen.id);

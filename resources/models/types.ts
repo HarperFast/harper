@@ -237,7 +237,7 @@ export interface ProcessBackendOptions {
 /**
  * Why a call to a process-wide backend found no owner to serve it. `moved`: the thread it reached
  * had released the backend or was no longer its owner, and refused the call unstarted; the proxy
- * follows the backend to its next owner, so a caller sees it only after repeated moves. A backend's
+ * attempts to route the call again within its limits, so a caller sees it only after repeated moves. A backend's
  * own error is never taken for a move, whatever its name. `no-owner`: no owner was named within
  * `ownerWaitMs`. `not-owner`: the thread it reached does not serve the key to this caller, or had not
  * confirmed that main admitted it within `ownerWaitMs`. `dispose-failed` (in `backendStatus` only):

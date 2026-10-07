@@ -120,8 +120,8 @@ type WireError = {
 };
 /**
  * Why an owner refused a request it never started. Only its admission path sends one, never a call
- * that reached the backend. `moved`: it had released the backend or no longer owns it, so the call
- * follows the backend to a newer state. `unconfirmed`: the request names a state the owner has not
+ * that reached the backend. `moved`: it had released the backend or no longer owns it; the proxy
+ * attempts to route the unstarted call again, within its limits. `unconfirmed`: the request names a state the owner has not
  * seen, from a thread its last state does not admit, so the call is sent again shortly. `busy`,
  * `not-owner` and `start-failed` fail the call.
  */
@@ -871,7 +871,7 @@ function divertLate(slot: Slot, late: unknown): void {
 			return;
 		}
 		log.warn?.(
-			`models: '${kind}.${logicalName}' is a process-wide backend on this thread; a registration under it outside its factory's start is not installed over its proxy, and is disposed when this thread's run of it ends`
+			`models: '${kind}.${logicalName}' is a process-wide backend on this thread; a registration under it outside its factory's start is not installed over its proxy; its disposal is attempted when this thread's run of it ends`
 		);
 		run.held.push(late as Disposable);
 		return;
