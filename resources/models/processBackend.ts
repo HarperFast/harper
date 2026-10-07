@@ -1,17 +1,13 @@
 /**
  * Process-wide model backends (`models.registerProcessBackend`): a backend built by one owner thread
- * per key and served to every thread that registered the key. One live instance per key holds for
- * every object handed over during a run until the run is sealed; an object registered under the key
- * on a thread with no live run of it, such as one a factory's leftover code registers after its run is
- * sealed, is disposed at once on that thread, outside election, and can coexist with another thread's
- * instance until its disposal completes, or indefinitely when its `dispose()` hangs or keeps rejecting
- * (a disposal that keeps rejecting is logged) (`divertLate`, `disposeInstance`).
+ * per key and served to every thread that registered the key, one live instance per key at a time
+ * within the scope resources/models/DESIGN.md states.
  *
  * The registry in `backendRegistry.ts` is per thread, so a component that registers an in-process
  * backend builds one per worker: one model, one GPU context and one warmup each. Here every
  * registering thread installs a proxy in its own registry and claims the key from the main thread.
- * Main elects one claimant as owner, only the owner runs the factory, and the proxies forward calls
- * to it over the thread port mesh. See resources/models/DESIGN.md.
+ * Main elects the owner among the claimants, only the owner runs the factory, and the proxies forward
+ * calls to it over the thread port mesh. See resources/models/DESIGN.md.
  *
  *  - Control plane, worker ⇄ main: CLAIM, RELEASE, STARTED, START_FAILED, DISPOSED and
  *    DISPOSE_FAILED in; STATE out to the claimants. Main holds the only copy of the state and pushes
@@ -444,8 +440,8 @@ function onRelease(message: { key: string; live: boolean }, sender: number): voi
 	// A thread shutting down stays a caller until it exits, but is never elected again.
 	claimant.eligible = false;
 	if (entry.owner === sender) {
-		// A planned exit: the budget is not charged. A live run holds the election as `draining` until
-		// onDisposed or onCoordinatedThreadExit clears it (DESIGN.md, "Handover and election").
+		// A planned exit: the budget is not charged. A live run is held as `draining` (DESIGN.md,
+		// "Handover and election").
 		entry.owner = undefined;
 		entry.name = undefined;
 		entry.capabilities = undefined;
@@ -466,11 +462,9 @@ function onDisposed(message: { key: string }, sender: number): void {
 }
 
 /**
- * The owner's `dispose()` rejected on every try, so its instance may still be live. Main holds that
- * thread as `draining` and fails the key, so its calls fail at once instead of waiting for an owner.
- * Its exit alone does not restore service: an owner can be elected only once it has exited and a
- * newer generation has claimed (DESIGN.md, "Handover and election"). The error is for operators, in
- * `backendStatus`.
+ * A disposal on the owner or the `draining` thread did not resolve, so what it held may still be live:
+ * hold that thread as `draining` and fail the key, with the error for operators in `backendStatus`.
+ * When service resumes: DESIGN.md, "Handover and election".
  */
 function onDisposeFailed(message: { key: string; error: { name: string; message: string } }, sender: number): void {
 	if (!isMainThread) return;
@@ -524,8 +518,8 @@ function onCoordinatedThreadExit(deadThreadId: number): void {
 	for (const entry of entries.values()) {
 		entry.claimants.delete(deadThreadId);
 		if (entry.draining === deadThreadId) {
-			// What its run held ended with the thread, so `draining` clears, uncharged; `elect` still
-			// chooses nothing while the key is failed (DESIGN.md, "Handover and election").
+			// The thread is gone, and what its run held with it: clear `draining`, uncharged, and run
+			// `elect` (DESIGN.md, "Handover and election").
 			entry.draining = undefined;
 			elect(entry);
 			publish(entry);
@@ -541,8 +535,9 @@ function onCoordinatedThreadExit(deadThreadId: number): void {
 }
 
 /**
- * An unplanned loss: restart on another claimant (this one, if it is the only one left) while the
- * generation's budget lasts, else fail until the next generation. Never a per-thread fallback.
+ * An unplanned loss: while the generation's budget lasts, charge one restart and run `elect`, which
+ * avoids `lost` unless no other claimant is eligible and may choose nobody; else fail the key until
+ * the next generation. Never a per-thread fallback.
  */
 function loseOwner(
 	entry: Entry,
@@ -660,22 +655,22 @@ interface OwnerRun {
 	/** The backend this run serves with. */
 	backend?: ProcessModelBackend;
 	/**
-	 * What the run owns. While the factory runs, each object it hands over is added here the moment it
-	 * is handed over, before anything checks or refuses it: every object it registers, under any key,
-	 * whether `registerBackend` accepts it or not, and what it returns. A failed start disposes all of
-	 * them. A start that succeeds disposes all but the instance, which then stays here until the run
-	 * ends: the backend it registered under the key, and what it returned when that is a different
-	 * object, so a module factory that registers its backend and returns the engine behind it frees both.
-	 * A registration under the key outside the factory's capture while the run is live is added too
-	 * (`divertLate`), and disposed with the rest. Each object stays here until its disposal ends, so an
-	 * object found here is the run's, and is never added twice.
+	 * What the run owns, in the order handed over: while the factory runs, each object it hands over,
+	 * added the moment it is handed over, before anything checks or refuses it (every object it
+	 * registers, under any key, whether `registerBackend` accepts it or not, and what it returns); and a
+	 * registration under the key that `divertLate` gives a live run. Each stays here until its disposal
+	 * ends, so an object found here is the run's, and is never added twice. Which ones a run keeps, and
+	 * when it tries to dispose them: `startBackend`, `disposeInstance`.
 	 */
 	held: Disposable[];
 	/** The backend's name and capabilities, read and checked for cloning once, when it started. */
 	started?: { name: string; capabilities: ModelCapabilities };
 	/** The factory has returned or thrown. */
 	factorySettled: boolean;
-	/** The start has ended: the factory has settled, and what the run does not keep of it is disposed. */
+	/**
+	 * The start has ended, either way: the factory has settled, and a start that succeeded has disposed
+	 * what it does not keep.
+	 */
 	settled: boolean;
 	/**
 	 * Aborted when the run is released while its factory is still running, so a slow load can stop
@@ -801,12 +796,12 @@ function resolveOptions(kind: ModelKind, options: ProcessBackendOptions | undefi
 }
 
 /**
- * Register `kind`/`id` for the whole process, with one live instance at a time within the scope the
- * module header states. Every thread that loads the component calls this where it would call
- * `registerBackend`; `factory` runs on the elected owner only, and each thread's registry gets a proxy
- * that forwards `embed`, `generate`, `decide` and `scoreChoices` to the owner. Calling it again on a
- * thread updates the factory and options a later start uses and claims again (as a caller only, once
- * the thread is shutting down); a started owner keeps the backend it built.
+ * Register `kind`/`id` for the whole process, with one live instance at a time within the scope
+ * resources/models/DESIGN.md states. Every thread that loads the component calls this where it would
+ * call `registerBackend`; `factory` runs on the elected owner only, and each thread's registry gets a
+ * proxy that forwards `embed`, `generate`, `decide` and `scoreChoices` to the owner. Calling it again
+ * on a thread updates the factory and options a later start uses and claims again (as a caller only,
+ * once the thread is shutting down); a started owner keeps the backend it built.
  */
 export function registerProcessBackend(
 	kind: ModelKind,
@@ -859,15 +854,10 @@ const divertedLate = new Set<unknown>();
 /**
  * A registration under `slot`'s key outside its owner's capture, such as one the factory's leftover
  * async work makes after the start: it is never installed over the proxy, which keeps routing to the
- * owner. While this thread holds a live run of the key, the run owns it as it owns its instance: it is
- * added to what the run holds and disposed by the time main hears the run has ended, so a disposal
- * that keeps failing is reported as `DISPOSE_FAILED` and no successor starts while it may be live. A
- * ready run does not dispose it sooner, since it may share what the instance is serving with. An
- * object the run already holds, such as its own backend or what its factory returned registered
- * again, is left as it is. A run is live until it is sealed (`disposeInstance`). With no live run on
- * this thread, it is disposed at once, with the usual tries, outside any election: it can be live beside
- * another thread's instance until that disposal ends, indefinitely if its `dispose()` hangs or keeps
- * rejecting, and a disposal that keeps rejecting is logged.
+ * owner. While this thread's run of the key is live (`isLive`), it joins what the run holds, unless the
+ * run already holds it, when it is left as it is. Otherwise this thread tries to dispose it at once,
+ * outside any election, and logs a disposal that keeps rejecting. What that means for the one-instance
+ * guarantee: resources/models/DESIGN.md.
  */
 function divertLate(slot: Slot, late: unknown): void {
 	const { kind, logicalName } = slot;
@@ -1239,7 +1229,7 @@ function startOwner(slot: Slot, epoch: number): void {
 		if (current.phase === 'ready') reportStarted(slot, current);
 		return;
 	}
-	// A run that is releasing or failing still holds its instance; main does not elect such a thread.
+	// A run that is releasing or failing still holds its instance; never start a second beside it.
 	if (current && isLive(current)) return;
 	const run: OwnerRun = {
 		epoch,
@@ -1268,7 +1258,8 @@ function isModelBackend(value: unknown): value is ModelBackend {
 async function startBackend(slot: Slot, run: OwnerRun): Promise<void> {
 	const { kind, logicalName } = slot;
 	// The run owns each object the factory hands over from the moment it is handed over, so whatever
-	// fails after that (a check, a refusal, the factory itself) disposes it with the rest.
+	// fails after that (a check, a refusal, the factory itself), `failRun` tries to dispose it with
+	// the rest.
 	const hold = (handed: unknown) => {
 		const object = (typeof handed === 'object' && handed !== null) || typeof handed === 'function';
 		if (object && !run.held.includes(handed as Disposable)) run.held.push(handed as Disposable);
@@ -1308,8 +1299,8 @@ async function startBackend(slot: Slot, run: OwnerRun): Promise<void> {
 		run.started = structuredClone({ name: backend.name, capabilities: { ...backend.capabilities() } });
 		// The run keeps its instance: the registration under the key and what the factory returned.
 		// Anything else it handed over (a backend under another key, one `registerBackend` refused as
-		// invalid and the factory caught) is disposed before the start is reported, as a failed start's
-		// would be; one that cannot be fails the start.
+		// invalid and the factory caught) is tried for disposal before the start is reported; one whose
+		// disposal does not resolve fails the start.
 		const instance = [constructed.backend, returned];
 		for (const extra of constructed.extras)
 			log.warn?.(
@@ -1327,7 +1318,7 @@ async function startBackend(slot: Slot, run: OwnerRun): Promise<void> {
 		return failRun(slot, run, error, undisposed);
 	}
 	run.settled = true;
-	// Released while it was starting: nothing ran, so the instance is disposed at once.
+	// Released while it was starting: nothing ran, so drain now.
 	if (run.phase === 'draining') return finishDrain(slot, run);
 	run.phase = 'ready';
 	try {
@@ -1340,10 +1331,10 @@ async function startBackend(slot: Slot, run: OwnerRun): Promise<void> {
 
 /**
  * A failed start: fail the calls waiting on this run, try to dispose everything the run holds, and
- * only then tell main: START_FAILED, or DISPOSED for a released run, once all of it is disposed, else
- * DISPOSE_FAILED, which holds the election (DESIGN.md, "Handover and election"). `earlier` is a
- * disposal the start already tried and could not complete, so main hears that something may be live
- * even when everything still held disposes.
+ * only then tell main: DISPOSE_FAILED if a disposal (one of these, or `earlier`) did not resolve, else
+ * DISPOSED for a released run and START_FAILED otherwise. What main does with each: DESIGN.md,
+ * "Handover and election". `earlier` is a disposal the start already tried and could not complete, so
+ * main hears that something may be live even when everything still held disposes.
  */
 async function failRun(slot: Slot, run: OwnerRun, error: unknown, earlier?: { error: unknown }): Promise<void> {
 	const { kind, logicalName } = slot;
@@ -1362,7 +1353,7 @@ async function failRun(slot: Slot, run: OwnerRun, error: unknown, earlier?: { er
 		return;
 	}
 	if (slot.released) {
-		// Main holds this released run as draining; the instance is gone either way.
+		// Released: report the disposal rather than a failed start.
 		send(MAIN_THREAD_ID, { type: DISPOSED, key: slot.key, origin: threadId, epoch: run.epoch } as { type: string });
 		run.markDisposed?.();
 		return;
@@ -1396,7 +1387,7 @@ function reportStarted(slot: Slot, run: OwnerRun): void {
  * An object can still be handed over after this finds `held` empty and before its caller resumes, so
  * its callers (`failRun`, `finishDrain`) call it again until `held` is empty, then seal the run (leave
  * the live phases) and report in that same synchronous step. An object handed over before then is
- * disposed before main hears, and one handed over after finds no live run (`divertLate`).
+ * tried before main hears, and one handed over after finds no live run (`divertLate`).
  */
 async function disposeInstance(slot: Slot, run: OwnerRun): Promise<{ error: unknown } | undefined> {
 	run.backend = undefined;
@@ -1435,7 +1426,7 @@ async function disposeOne(slot: Slot, held: Disposable): Promise<{ error: unknow
 	return { error: failure };
 }
 
-/** Tell main this thread's instance of the key may still be live, so it elects no successor while the thread lives. */
+/** Tell main this thread's instance of the key may still be live (DESIGN.md, "Handover and election"). */
 function reportDisposeFailed(slot: Slot, error: unknown): void {
 	send(MAIN_THREAD_ID, {
 		type: DISPOSE_FAILED,
@@ -1446,11 +1437,10 @@ function reportDisposeFailed(slot: Slot, error: unknown): void {
 }
 
 /**
- * Stop a released run accepting work: what has not started follows the backend to the next owner
- * (`moved`), and running calls are left to run; once none is running and the start has settled, the
- * instance is disposed and main told (`finishDrain`). Resolves once main has been told how disposal
- * ended. Nothing here bounds the wait; Harper's shutdown drain does (DESIGN.md, "Handover and
- * election").
+ * Stop a released run accepting work: refuse its queued requests `moved`, abort the factory's `signal`
+ * if the factory is still running, and leave running calls to run. Once none is running and the start
+ * has settled, `finishDrain` tries to dispose what the run holds and tells main how that ended.
+ * Resolves once main has been told. Nothing here sets a deadline (DESIGN.md, "Handover and election").
  */
 function beginDrain(slot: Slot, run: OwnerRun): Promise<void> {
 	run.disposed ??= new Promise((resolve) => (run.markDisposed = resolve));
@@ -1462,7 +1452,7 @@ function beginDrain(slot: Slot, run: OwnerRun): Promise<void> {
 		for (const queued of run.queue.splice(0)) refuse(queued, 'moved');
 		maybeFinishDrain(slot, run);
 	}
-	// A failing run reports its own disposal once its instance is gone (failRun).
+	// A failing run reports for itself once its disposal has ended (`failRun`).
 	return run.disposed;
 }
 
@@ -1976,11 +1966,9 @@ onThreadExit((deadThreadId: number) => {
 });
 
 if (!isMainThread) {
-	// A worker told to shut down hands its claims back first and drains the run it owns (`beginDrain`).
-	// Harper's shutdown drain (threadServer) waits for that run's disposal, up to its ceiling, before the
-	// worker closes its servers and exits; past the ceiling it exits with whatever is still pending. What
-	// main does with the release, the report and the exit: resources/models/DESIGN.md, "Handover and
-	// election".
+	// A worker told to shut down hands its claims back and drains the run it owns (`releaseAll`),
+	// registered as a Harper shutdown drain, which threadServer waits for only until its deadline
+	// (resources/models/DESIGN.md, "Handover and election").
 	registerShutdownDrain({
 		hasWork() {
 			for (const slot of slots.values()) if (slot.run && isLive(slot.run)) return true;

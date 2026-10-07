@@ -275,13 +275,12 @@ export function resolveDecision(logicalName: string = 'default'): ModelBackend {
  * load (e.g. `handleApplication`); the registry is process-wide, so each worker
  * thread that loads the component registers its own instance, matching how the
  * config-driven built-ins populate per process. A backend that should have one live
- * instance in the process for everything handed to its owner's run (an in-process
- * model) registers through `registerProcessBackend` (`processBackend.ts`) instead; a
- * registration on a thread with no live run of it is outside that guarantee (see that
- * module's header). Under a key this thread
- * registered that way, a registration outside that backend's factory is not installed
- * over its proxy, and the call does not throw: with a warning, it is disposed when this
- * thread's run of that backend ends, or at once when this thread has no live run of it.
+ * instance per key in the process (an in-process model) registers through
+ * `registerProcessBackend` (`processBackend.ts`) instead, within the scope
+ * resources/models/DESIGN.md states. Under a key this thread registered that way, a
+ * registration outside that backend's factory is not installed over its proxy, and the
+ * call does not throw: it goes, with a warning, to that backend, which tries to
+ * dispose it (when: `divertLate`).
  *
  * `id` is the logical name callers select with `opts.model` (e.g.
  * `models.embed(text, { model: 'local:bge-small' })`). A provider-namespaced id

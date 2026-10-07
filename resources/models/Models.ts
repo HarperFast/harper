@@ -147,10 +147,9 @@ export class Models implements ModelsContract {
 	/**
 	 * Register a backend shared by the process instead of one per thread: every thread that loads the
 	 * component calls this where it would call `registerBackend`, `factory` runs on one owner thread,
-	 * one instance of the key is live at a time for every object handed over during a run until the
-	 * run is sealed (see `ProcessBackendFactory`), and each thread gets a proxy that forwards its calls
-	 * to the owner. For in-process models, where a copy per worker means a model, a GPU context and a
-	 * warmup per worker. See `processBackend.ts`.
+	 * one instance of the key is live at a time within the scope resources/models/DESIGN.md states, and
+	 * each thread gets a proxy that forwards its calls to the owner. For in-process models, where a copy
+	 * per worker means a model, a GPU context and a warmup per worker. See `processBackend.ts`.
 	 */
 	registerProcessBackend(
 		kind: ModelKind,
