@@ -35,7 +35,6 @@ export const ORIGIN_FLOOR_TICK_MS = 5000;
 const SENTINEL_RETRIES = 8;
 const MAX_TIMESTAMP = 8.64e15;
 
-/** Main broadcasts it when a worker exits; each thread retires that worker's bounds in the stores it has open. */
 export const ORIGIN_FLOOR_RETIRE = 'origin-floor-retire';
 
 const RETIRED_BIT = 1n << 40n;
@@ -106,7 +105,7 @@ class ThreadRegistry {
 	retire(): void {
 		if (this.retired) return;
 		this.retired = true;
-		if (this.slot < 0) return;
+		if (this.slot < 0) return registries.delete(this) && undefined;
 		if (this.outstanding === 0) this.free();
 		else {
 			const owner = BigInt(threadId + 1);
@@ -118,6 +117,7 @@ class ThreadRegistry {
 		Atomics.store(this.words, boundIndex(this.slot), INFINITY_BITS);
 		Atomics.store(this.words, THREAD_WORDS_OFFSET + this.slot, 0n);
 		this.slot = -1;
+		if (this.retired) registries.delete(this);
 	}
 
 	private minKey(): number {
@@ -378,8 +378,7 @@ export function getOriginClosedFloor(
 export function forgetOriginFloorRegistry(rootStore: RocksDatabase): void {
 	const registry: ThreadRegistry | undefined = (rootStore as any)?.[REGISTRY];
 	if (!registry) return;
-	registry.retire();
-	registries.delete(registry);
+	registry.retire(); // leaves the retirement scan once its last reservation has freed its slot
 	(rootStore as any)[REGISTRY] = undefined;
 }
 

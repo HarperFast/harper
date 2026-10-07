@@ -3792,7 +3792,7 @@ export function makeTable(options): TableResourceClass {
 				reloadCommitBase: true,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					const txnLogKey = isRocksDB
-						? (reservedLocalKey(transaction) ?? transaction?.getTimestamp?.() ?? txnTime)
+						? (reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime)
 						: txnTime;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
@@ -3860,7 +3860,7 @@ export function makeTable(options): TableResourceClass {
 						: undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					const txnLogKey = isRocksDB
-						? (reservedLocalKey(transaction) ?? transaction?.getTimestamp?.() ?? txnTime)
+						? (reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime)
 						: txnTime;
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) return;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
@@ -4751,9 +4751,9 @@ export function makeTable(options): TableResourceClass {
 					this.#savingOperation = null;
 					write.stagedIn = undefined; // nothing may pin this write's transaction past its commit
 					let omitLocalRecord = false;
-					// The handle's key, which the origin-closed floor may have moved above an explicit `txnTime`.
+					// A reserved handle's admitted key; an unreserved one is a remote apply keyed by its context.
 					const appendedLogKey = isRocksDB
-						? (reservedLocalKey(transaction) ?? transaction?.getTimestamp?.() ?? txnTime)
+						? (reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime)
 						: txnTime;
 					const txnLogKey = options?.version != null ? appendedLogKey : txnTime;
 					// What a re-delivery of this write carries: the origin's log key for an apply (the context's
@@ -5564,7 +5564,7 @@ export function makeTable(options): TableResourceClass {
 					const priorStaged = priorStagedOp?.stagedEntry;
 					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
 					const txnLogKey = isRocksDB
-						? (reservedLocalKey(transaction) ?? transaction?.getTimestamp?.() ?? txnTime)
+						? (reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime)
 						: txnTime;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
@@ -7401,7 +7401,7 @@ export function makeTable(options): TableResourceClass {
 					logger.trace?.(`Publishing message to id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 					// Only a reserved (local) handle can carry a key the floor moved; a remote apply publishes
 					// under the origin key it installed, so it needs neither a pointer nor a native read.
-					const appendedLogKey = reservedLocalKey(transaction) ?? txnTime;
+					const appendedLogKey = reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime;
 					// always audit this, but don't change existing version
 					// TODO: Use direct writes in the future (copying binary data is hard because it invalidates the cache)
 					return updateRecord(

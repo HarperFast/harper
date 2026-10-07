@@ -400,7 +400,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		assert(certify() > key, 'the terminated worker holds nothing once retired');
 	});
 
-	it('after a restart behind the persisted floor every key is unique and at or above it', async () => {
+	it('issuance behind a persisted floor (simulated in-process) yields unique keys at or above it', async () => {
 		// Far enough ahead that the writes below run behind it, close enough that the shared test
 		// database is back on the clock before the next file (the ratchet is process-wide state).
 		const persisted = rootStore.getMonotonicTimestamp() + 250;

@@ -1544,22 +1544,25 @@ export class DatabaseTransaction implements Transaction {
 			!this.snapshotFree &&
 			!(transaction as any).snapshotDisabled &&
 			!this.isReplay;
+		// A handle created for an immediate commit is owned by nobody else: a throw anywhere before its
+		// commit is submitted must release it, and the floor reservation it carries, rather than leak both.
+		const abortImmediateOnThrow = <T>(step: () => T): T => {
+			try {
+				return step();
+			} catch (error) {
+				if (immediateCommit) abortNativeTransaction(transaction, 'aborting an immediate transaction whose write threw');
+				throw error;
+			}
+		};
 		if (!reusesBaseRead && (reloadEntry || operation.entry === undefined || reloadsCommitBase)) {
 			const uncachedRead = !!operation.reloadCommitBase || reloadEntry || this.isReplay;
-			operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead });
+			operation.entry = abortImmediateOnThrow(() =>
+				operation.store.getEntry(operation.key, { transaction, uncachedRead })
+			);
 		}
 		if (!operation.saved) {
 			// immediately execute in this transaction
-			let validated;
-			try {
-				validated = validateWrite(operation, writeVersion, this);
-			} catch (error) {
-				// A handle created for an immediate commit is owned by nobody else: release it, and the
-				// floor reservation it carries, rather than leak both.
-				if (immediateCommit)
-					abortNativeTransaction(transaction, 'aborting an immediate transaction whose write failed validation');
-				throw error;
-			}
+			const validated = abortImmediateOnThrow(() => validateWrite(operation, writeVersion, this));
 			if ((validated as any) === false) {
 				operation.saved = true;
 				operation.commit = () => {}; // noop if we try again
@@ -1569,19 +1572,18 @@ export class DatabaseTransaction implements Transaction {
 				return;
 			}
 			operation.saved = true;
-			let result: Promise<void> = operation.before?.() as Promise<void>;
+			let result: Promise<void> = abortImmediateOnThrow(() => operation.before?.() as Promise<void>);
 			if (result?.then) this.stageCompletion(result);
-			result = operation.beforeIntermediate?.() as Promise<void>;
+			result = abortImmediateOnThrow(() => operation.beforeIntermediate?.() as Promise<void>);
 			if (result?.then) this.stageCompletion(result);
 		}
 		if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 		if (operation.trackRecordVersion) operation.recordVersionApplied = false;
 		let completion: Promise<void>;
 		try {
-			completion = operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>;
-		} catch (error) {
-			if (immediateCommit) abortNativeTransaction(transaction, 'aborting an immediate transaction whose write threw');
-			throw error;
+			completion = abortImmediateOnThrow(
+				() => operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>
+			);
 		} finally {
 			closeWriteInstance(operation);
 		}
