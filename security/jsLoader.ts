@@ -290,7 +290,7 @@ function resolveModule(specifier: string, referrer: string, scope: ApplicationSc
 			const referrerDir = resolveReferrer.startsWith('file:')
 				? dirname(fileURLToPath(resolveReferrer))
 				: dirname(resolveReferrer);
-			const esmResolved = resolveESMPackageExports(specifier, referrerDir, (err as any)?.code === 'MODULE_NOT_FOUND');
+			const esmResolved = resolveESMPackageExports(specifier, referrerDir, errorCode === 'MODULE_NOT_FOUND');
 			if (esmResolved) {
 				scope.recordLoadedModule?.(esmResolved.packageJsonUrl, esmResolved.packageJsonSource);
 				scope.recordLoadedModule?.(esmResolved.resolvedUrl, readFileSync(new URL(esmResolved.resolvedUrl)));

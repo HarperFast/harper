@@ -57,8 +57,11 @@ for (const lockdown of ['freeze-after-load', 'ses'] as const) {
 		});
 
 		after(async () => {
-			await teardownHarper(ctx);
-			await rm(fixtureParent, { recursive: true, force: true });
+			try {
+				await teardownHarper(ctx);
+			} finally {
+				if (fixtureParent) await rm(fixtureParent, { recursive: true, force: true });
+			}
 		});
 
 		test('serves a resource that imports the dependency', async () => {
