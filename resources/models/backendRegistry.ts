@@ -49,6 +49,10 @@ interface CaptureSlot {
 	/** Async work spawned by a factory retains the ALS context past construction; once construction
 	 * ends the scope deactivates so a late same-slot registration installs normally. */
 	active: boolean;
+	/** Refuse a second registration under the slot's own key (`constructBackend`'s `exclusive`). */
+	exclusive: boolean;
+	/** That refusal, kept so it fails the construction whatever the registering code does with it. */
+	refused?: ModelBackendRegistrationError;
 }
 
 const sources = new WeakMap<ModelBackend, string>();
@@ -75,8 +79,14 @@ const captureScope = new AsyncLocalStorage<CaptureSlot>();
 function install(kind: ModelKind, logicalName: string, backend: ModelBackend): void {
 	const slot = captureScope.getStore();
 	if (slot?.active) {
-		if (slot.kind === kind && slot.logicalName === logicalName) slot.backend = backend;
-		else slot.extras.push({ kind, logicalName, backend });
+		if (slot.kind !== kind || slot.logicalName !== logicalName) slot.extras.push({ kind, logicalName, backend });
+		else if (!slot.exclusive || slot.backend === undefined) slot.backend = backend;
+		else {
+			slot.refused ??= new ModelBackendRegistrationError(
+				`'${kind}.${logicalName}' is already registered by the code constructing it; a second registration under the same key is refused`
+			);
+			throw slot.refused;
+		}
 		return;
 	}
 	registries[kind].set(logicalName, backend);
@@ -101,21 +111,29 @@ export function setDecision(logicalName: string, backend: ModelBackend): void {
  * Build a backend through its normal registration path but return it instead of installing it, so a
  * config reload can install it conditionally. A scratch logical name would be briefly visible
  * through `listBackends`, which backs the public `GET /v1/models`.
+ *
+ * With `exclusive`, for a caller that must dispose what it captured, a second registration under
+ * `kind.logicalName` throws `ModelBackendRegistrationError` instead of replacing the first, which
+ * would be lost. That refusal is returned as `refused`, beside what was captured, whatever `register`
+ * does with it, even rethrowing it, so the caller can fail and still dispose what was handed over.
  */
 export async function constructBackend(
 	kind: ModelKind,
 	logicalName: string,
-	register: () => void | Promise<void>
-): Promise<{ backend?: ModelBackend; extras: CapturedInstall[] }> {
-	const slot: CaptureSlot = { kind, logicalName, extras: [], active: true };
+	register: () => void | Promise<void>,
+	options: { exclusive?: boolean } = {}
+): Promise<{ backend?: ModelBackend; extras: CapturedInstall[]; refused?: ModelBackendRegistrationError }> {
+	const slot: CaptureSlot = { kind, logicalName, extras: [], active: true, exclusive: options.exclusive === true };
 	try {
 		await captureScope.run(slot, async () => {
 			await register();
 		});
+	} catch (error) {
+		if (!slot.refused) throw error;
 	} finally {
 		slot.active = false;
 	}
-	return { backend: slot.backend, extras: slot.extras };
+	return { backend: slot.backend, extras: slot.extras, refused: slot.refused };
 }
 
 /**

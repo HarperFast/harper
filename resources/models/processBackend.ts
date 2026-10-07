@@ -651,9 +651,10 @@ interface OwnerRun {
 	/** The backend this run serves with. */
 	backend?: ProcessModelBackend;
 	/**
-	 * Everything the factory handed over: the backend it registered under the key, then what it
-	 * returned when that is a different object. Each is disposed before the run counts as gone, so a
-	 * module factory that registers its backend and returns the engine behind it frees both.
+	 * Everything the factory handed over: the backend it registered under the key (a second
+	 * registration there is refused), then what it returned when that is a different object. Each is
+	 * disposed before the run counts as gone, so a module factory that registers its backend and
+	 * returns the engine behind it frees both.
 	 */
 	held: Disposable[];
 	/** The backend's name and capabilities, read and checked for cloning once, when it started. */
@@ -1201,16 +1202,26 @@ async function startBackend(slot: Slot, run: OwnerRun): Promise<void> {
 	try {
 		let returned: unknown;
 		// A factory that registers its own backend (a module factory's `register()`) has that
-		// registration captured, not installed: this thread's registry keeps the proxy. Any other
-		// backend it registers while starting is discarded.
-		const constructed = await constructBackend(kind, logicalName, async () => {
-			returned = await slot.factory({ kind, logicalName, signal: run.factoryAbort.signal });
-		});
-		// Everything the factory handed over is held before any of its properties is read, so a check
-		// below that fails, even a getter that throws, still disposes all of it before main hears of the
-		// failure: the backend it registered, and what it returned when that is a different object.
+		// registration captured, not installed: this thread's registry keeps the proxy. A second
+		// registration under the key is refused, since the first would be lost undisposed, and fails the
+		// start whatever the factory does with the refusal. Any other backend it registers while starting
+		// is discarded.
+		const constructed = await constructBackend(
+			kind,
+			logicalName,
+			async () => {
+				returned = await slot.factory({ kind, logicalName, signal: run.factoryAbort.signal });
+			},
+			{ exclusive: true }
+		);
+		// Everything the factory handed over is held before the owner reads any of its properties, so a
+		// check below that fails, even a getter that throws, still disposes all of it before main hears
+		// of the failure: the backend it registered, and what it returned when that is a different
+		// object. `registerBackend` checks a backend before capturing it, so one it refuses was never
+		// handed over and stays the factory's to free.
 		for (const handed of [constructed.backend, returned])
 			if (typeof handed === 'object' && handed !== null && !run.held.includes(handed)) run.held.push(handed);
+		if (constructed.refused) throw constructed.refused;
 		for (const extra of constructed.extras)
 			log.warn?.(
 				`models: process-wide backend '${kind}.${logicalName}' registered '${extra.kind}.${extra.logicalName}' while starting; it is discarded and only its own registration is kept`
