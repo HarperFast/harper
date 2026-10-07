@@ -390,11 +390,15 @@ jobs:
           CONFLICTS=$("$RUNNER_TEMP/apply-picks.sh" "$PICK_FLAGS" "$PICK_SHAS")
           echo "conflicts=$CONFLICTS" >> "$GITHUB_OUTPUT"
 
-          if [ -z "$CONFLICTS" ] && [ -z "$HOLD" ] && [ -z "$(git rev-list "origin/${RELEASE_BRANCH}..HEAD")" ]; then
-            echo "Nothing to land on $RELEASE_BRANCH — every commit was already present"
-            echo "no_op=true" >> "$GITHUB_OUTPUT"
-            # An earlier run may have pushed a branch that is now redundant.
+          if [ -z "$CONFLICTS" ] && [ -z "$(git rev-list "origin/${RELEASE_BRANCH}..HEAD")" ]; then
+            # Nothing landed on this branch, so there is nothing to push a
+            # human could review either — a hold does not change that. An
+            # earlier run may have pushed a branch that is now redundant.
             git push origin --delete "$BRANCH" 2>/dev/null || true
+            if [ -z "$HOLD" ]; then
+              echo "Nothing to land on $RELEASE_BRANCH — every commit was already present"
+              echo "no_op=true" >> "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
 
