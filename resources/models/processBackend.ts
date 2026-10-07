@@ -444,9 +444,10 @@ function onRelease(message: { key: string; live: boolean }, sender: number): voi
 	claimant.eligible = false;
 	if (entry.owner === sender) {
 		// A planned exit: the budget is not charged, and the next owner is elected only once the
-		// released run has disposed everything it was handed, so no object handed to that run is live
-		// alongside the next owner's instance (a registration on a thread with no live run is outside
-		// election; see the module header).
+		// released run has disposed everything it was handed, or its thread has exited and its objects
+		// ended with it (onCoordinatedThreadExit), so no object handed to that run is live alongside the
+		// next owner's instance (a registration on a thread with no live run is outside election; see
+		// the module header).
 		entry.owner = undefined;
 		entry.name = undefined;
 		entry.capabilities = undefined;
