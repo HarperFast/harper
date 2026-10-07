@@ -197,16 +197,47 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		);
 	});
 
-	it('two local writes sharing an explicit version below the floor are ordered by their log keys', async () => {
+	it('a second write at an existing version below the floor is still its re-delivery', async () => {
 		await sleep(2);
 		const floor = certify();
 		const version = floor - 4000;
 		await transaction({ timestamp: version }, () => Tbl.put({ id: 'same-version', n: 1 }));
 		await transaction({ timestamp: version }, () => Tbl.put({ id: 'same-version', n: 2 }));
-		assert.equal(Tbl.primaryStore.getEntry('same-version').value.n, 2, 'the later appended write wins the tie');
-		const [first, second] = entriesFor('same-version');
-		assert(second.txnLogKey > first.txnLogKey);
-		assert.equal(second.version, version);
+		assert.equal(
+			Tbl.primaryStore.getEntry('same-version').value.n,
+			1,
+			'an equal version from the same origin is a duplicate, as before the floor'
+		);
+		assert.equal(entriesFor('same-version').length, 1);
+	});
+
+	it('a re-delivered increment below the floor applies once although its first delivery was rekeyed', async () => {
+		await sleep(2);
+		const floor = certify();
+		await transaction({ timestamp: floor - 10_000 }, () => Tbl.put({ id: 'counter', n: 0 }));
+		const version = floor - 6000;
+		const deliver = () =>
+			transaction({ source: {}, sourceApply: true, timestamp: version }, () =>
+				Tbl.patch('counter', { n: { __op__: 'add', value: 1 } })
+			);
+		await deliver();
+		assert.equal((await Tbl.get('counter')).n, 1);
+		const [, first] = entriesFor('counter');
+		assert(first.txnLogKey >= floor && first.version === version, 'the first delivery was rekeyed above the floor');
+		await deliver();
+		assert.equal((await Tbl.get('counter')).n, 1, 'the re-delivery of a rekeyed apply is not applied twice');
+		assert.equal(entriesFor('counter').length, 2);
+	});
+
+	it('a worker that dies with its commit in the native lane still appends, and is retired after', async () => {
+		const { next, exited } = startWorker({ mode: 'exit-after-submit', tableName });
+		await next('ready');
+		const { key, threadId } = await next('reserved');
+		await exited;
+		retireOriginFloorSlots(threadId);
+		assert.equal(entriesFor('dying-submitted')[0]?.txnLogKey, key, 'teardown drained the submitted commit');
+		await sleep(2);
+		assert(certify() > key);
 	});
 
 	it('a read handle promoted to a write after the floor passed its key takes a fresh key', async () => {

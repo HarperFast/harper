@@ -6,8 +6,6 @@ const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { Transaction } = require('@harperfast/rocksdb-js');
 
-// gate (main -> here): Int32 the worker waits on before it lets a native commit proceed.
-// epoch (main -> here): the number of floors main has published; a writer reads it before each commit.
 const { mode, gate, epoch, tableName, writes } = workerData ?? {};
 if (mode) run().catch((error) => parentPort.postMessage({ type: 'error', message: error.stack }));
 
@@ -22,8 +20,6 @@ async function run() {
 	});
 	parentPort.postMessage({ type: 'ready', threadId });
 	if (mode === 'hold') {
-		// Reserve a key, then stall the native commit until main opens the gate, as a commit-lane
-		// write stall would. The reservation must hold the floor for the whole stall.
 		const nativeCommit = Transaction.prototype.commit;
 		Transaction.prototype.commit = function () {
 			parentPort.postMessage({ type: 'reserved', key: this.getTimestamp() });
@@ -58,6 +54,16 @@ async function run() {
 			process.exit(0);
 		};
 		await transaction({}, () => Tbl.put({ id: 'dying', n: 1 }));
+	} else if (mode === 'exit-after-submit') {
+		// The commit is in the native lane when the thread dies; env teardown drains it.
+		const nativeCommit = Transaction.prototype.commit;
+		Transaction.prototype.commit = function () {
+			const committing = nativeCommit.call(this);
+			parentPort.postMessage({ type: 'reserved', key: this.getTimestamp(), threadId });
+			process.exit(0);
+			return committing;
+		};
+		await transaction({}, () => Tbl.put({ id: 'dying-submitted', n: 1 }));
 	} else if (mode === 'park') {
 		Transaction.prototype.commit = function () {
 			parentPort.postMessage({ type: 'reserved', key: this.getTimestamp(), threadId });

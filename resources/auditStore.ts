@@ -18,6 +18,7 @@ import {
 	ORIGIN_FLOOR_TICK_MS,
 	certifyOriginFloor,
 	forgetOriginFloorRegistry,
+	isValidFloor,
 	publishOriginFloor,
 } from './originClosedFloor.ts';
 import { isReadOnlyMode, openRocksDatabase } from './databases.ts';
@@ -935,12 +936,11 @@ export function getAuditFloor(auditStore: any): number {
 
 export function readOriginClosedFloor(auditStore: any): number {
 	const floor = decodeAuditFloor(auditStore.getBinary(ORIGIN_CLOSED_FLOOR_KEY));
-	return Number.isFinite(floor) && floor > 0 ? floor : 0;
+	return isValidFloor(floor) ? floor : 0;
 }
 
-/** Raise the persisted origin-closed floor; a concurrent certifier's higher value is kept. */
 export function persistOriginClosedFloor(auditStore: any, floor: number): void {
-	if (!(Number.isFinite(floor) && floor > 0)) throw new Error(`Invalid origin-closed floor: ${String(floor)}`);
+	if (!isValidFloor(floor)) throw new Error(`Invalid origin-closed floor: ${String(floor)}`);
 	commitAuditMetadata(
 		auditStore,
 		(read) => {

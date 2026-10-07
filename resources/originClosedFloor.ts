@@ -85,7 +85,6 @@ class ThreadRegistry {
 		this.words = new BigInt64Array(rootStore.getUserSharedBuffer(BUFFER_KEY, new ArrayBuffer(BUFFER_BYTES)));
 	}
 
-	/** A slot is taken the first time this thread reserves, so readers and certifiers hold none. */
 	private claimSlot(): number {
 		const owner = BigInt(threadId + 1);
 		for (let slot = 0; slot < SLOTS; slot++) {
@@ -191,10 +190,14 @@ class ThreadRegistry {
 	 * clock is still behind the ratchet (the recovered floor after a restart), the ratchet's next ulp.
 	 */
 	freshKey(): number {
+		const minted = this.rootStore.getMonotonicTimestamp();
+		if (this.admitNative(toBits(minted))) return minted;
+		// Behind the ratchet: from here on native keys go through it too, and a sample taken after that
+		// switch is ordered against every admission that saw the old mode.
 		Atomics.store(this.words, WORD_STRICT, 1n);
 		for (;;) {
-			const minted = this.rootStore.getMonotonicTimestamp();
-			if (this.admitNative(toBits(minted))) return minted;
+			const again = this.rootStore.getMonotonicTimestamp();
+			if (this.admitNative(toBits(again))) return again;
 			const ratchet = Atomics.load(this.words, WORD_RATCHET);
 			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, ratchet + 1n) === ratchet)
 				return fromBits(ratchet + 1n);
@@ -250,7 +253,6 @@ class ThreadRegistry {
 		return result;
 	}
 
-	/** The lowest published bound, 0 while any thread is mid-reservation. */
 	minBound(): number {
 		let min = Infinity;
 		for (let slot = 0; slot < SLOTS; slot++) {
@@ -273,6 +275,11 @@ function registryFor(rootStore: RocksDatabase): ThreadRegistry {
 		registries.add(registry);
 	}
 	return registry;
+}
+
+/** The native timestamp domain: a floor outside it would seed keys `setTimestamp` rejects. */
+export function isValidFloor(value: unknown): value is number {
+	return typeof value === 'number' && Number.isFinite(value) && value > 0 && value < MAX_TIMESTAMP;
 }
 
 function assertValidTimestamp(value: number): void {
@@ -305,7 +312,6 @@ export function transferLocalKey(from: RocksTransaction, to: RocksTransaction): 
 	(to as any)[RESERVATION] = reservation;
 }
 
-/** Idempotent and never throws: a release runs on every terminal path of a handle. */
 export function releaseLocalKey(handle: RocksTransaction | null | undefined): void {
 	const reservation: Reservation | undefined = handle && (handle as any)[RESERVATION];
 	if (!reservation) return;
@@ -322,7 +328,7 @@ export function isReservedForLocalAppend(handle: RocksTransaction): boolean {
 }
 
 export function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void {
-	if (!(Number.isFinite(floor) && floor > 0) || typeof rootStore?.getUserSharedBuffer !== 'function') return;
+	if (!isValidFloor(floor) || typeof rootStore?.getUserSharedBuffer !== 'function') return;
 	const words = registryFor(rootStore).words;
 	storeMax(words, WORD_RATCHET, floor);
 	storeMax(words, WORD_PROPOSED, floor);
@@ -333,7 +339,7 @@ export function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number
 export function publishOriginFloor(rootStore: RocksDatabase, floor: number): void {
 	if (typeof rootStore?.getUserSharedBuffer !== 'function') return;
 	registryFor(rootStore); // every opener can retire a dead thread's bounds, floor or no floor
-	if (!(Number.isFinite(floor) && floor > 0)) return;
+	if (!isValidFloor(floor)) return;
 	raiseOriginFloorIssuance(rootStore, floor);
 	storeMax(registryFor(rootStore).words, WORD_PUBLISHED, floor);
 }
@@ -365,7 +371,6 @@ export function getOriginClosedFloor(
 	return { floor, lagMs: Date.now() - floor, holders: registry.holders() };
 }
 
-/** The buffer dies with the column family; this thread's registry for the store is retired. */
 export function forgetOriginFloorRegistry(rootStore: RocksDatabase): void {
 	const registry: ThreadRegistry | undefined = (rootStore as any)?.[REGISTRY];
 	if (!registry) return;

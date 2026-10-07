@@ -5015,9 +5015,11 @@ export function makeTable(options): TableResourceClass {
 												options?.nodeId
 											);
 											if (precedesExisting === 0) {
-												if (isRocksDB && localTime !== appendedLogKey) {
+												if (isRocksDB && localTime !== appendedLogKey && receivedLogKey === appendedLogKey) {
 													// Same origin and record version, but a distinct write. Its per-origin log key
 													// orders the otherwise non-unique record clock without comparing keys across origins.
+													// Not for a write the floor rekeyed: its received identity is no longer addressable,
+													// so an equal version from the same origin is its re-delivery, as it was before.
 													precedesExisting = appendedLogKey > localTime ? 1 : -1;
 												} else if (replaying || stagedOwnAuditEntry) {
 													// The log entry being replayed (or staged by this write's failed attempt) is
