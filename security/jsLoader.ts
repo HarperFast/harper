@@ -251,10 +251,7 @@ function resolveESMPackageExports(
 	}
 }
 
-/**
- * Resolve a module specifier to an absolute URL. Shared by the VM and compartment loaders so a dependency
- * that resolves under one resolves under the other.
- */
+// Shared by the VM loader and the compartment resolveHook, so both modes resolve a dependency the same way
 function resolveModule(specifier: string, referrer: string, scope: ApplicationScope): string {
 	if (HARPER_MODULE_IDS.has(specifier)) {
 		return 'harper'; // resolve any harper package as an alias to a single synthetic module
@@ -714,11 +711,8 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	return entryModule.namespace;
 }
 
-/**
- * Install SES's globals (lockdown, harden, Compartment). These are the ESM shims `ses/index.js` composes, in its
- * order: `ses`'s CommonJS bundle fails its own strict-mode check on Bun, which drops function-level
- * 'use strict' directives in CommonJS files.
- */
+// The ESM shims ses/index.js composes, in its order: ses's CommonJS bundle fails its own strict-mode check on Bun,
+// which drops function-level 'use strict' in CommonJS
 function loadSES(): void {
 	require('ses/lockdown-shim.js');
 	require('ses/compartment-shim.js');

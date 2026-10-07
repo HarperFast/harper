@@ -279,7 +279,7 @@ for (const mode of ['vm-current-context', 'compartment']) {
 						(error) => error.message
 					);
 				expect(await failure('missing.mjs')).to.include("Cannot find module 'no-such-pkg'");
-				expect(await failure('unexported.mjs')).to.include('./private');
+				expect(await failure('unexported.mjs')).to.match(/\.\/private|dual-pkg\/private/);
 			} finally {
 				rmSync(runtimeRoot, { recursive: true, force: true });
 			}

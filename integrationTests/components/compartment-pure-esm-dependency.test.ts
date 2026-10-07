@@ -65,9 +65,15 @@ for (const lockdown of ['freeze-after-load', 'ses'] as const) {
 			const deadline = Date.now() + 30_000;
 			let status = 0;
 			while (Date.now() < deadline) {
-				const response = await fetch(`${ctx.harper.httpURL}/PureESMProbe`, {
-					headers: { Authorization: authHeader(ctx) },
-				});
+				let response: Response;
+				try {
+					response = await fetch(`${ctx.harper.httpURL}/PureESMProbe`, {
+						headers: { Authorization: authHeader(ctx) },
+					});
+				} catch {
+					await sleep(250);
+					continue;
+				}
 				status = response.status;
 				if (status === 200) {
 					const body = (await response.json()) as { value: string; frozenAtLoad: boolean };
