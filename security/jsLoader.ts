@@ -65,7 +65,7 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 	if (!lockedDown && APPLICATIONS_LOCKDOWN && APPLICATIONS_LOCKDOWN !== 'none') {
 		lockedDown = true;
 		if (APPLICATIONS_LOCKDOWN === 'ses') {
-			require('ses'); // load the lockdown function
+			loadSES();
 			lockdown({
 				domainTaming: 'unsafe',
 				consoleTaming: 'unsafe',
@@ -251,6 +251,60 @@ function resolveESMPackageExports(
 	}
 }
 
+/**
+ * Resolve a module specifier to an absolute URL. Shared by the VM and compartment loaders so a dependency
+ * that resolves under one resolves under the other.
+ */
+function resolveModule(specifier: string, referrer: string, scope: ApplicationScope): string {
+	if (HARPER_MODULE_IDS.has(specifier)) {
+		return 'harper'; // resolve any harper package as an alias to a single synthetic module
+	}
+	const parts = specifier.split('/');
+	if (parts[0] === 'harper') {
+		// block harper/* for now (reserving for potential future use)
+		throw new Error(`Module ${specifier} is not allowed, may only access the 'harper' module`);
+	}
+	if (parts[0] === 'file:') {
+		return specifier;
+	}
+	let resolveReferrer = referrer;
+	if (referrer.startsWith('file:')) {
+		try {
+			resolveReferrer = pathToFileURL(realpathSync(fileURLToPath(referrer))).toString();
+		} catch {}
+	}
+	try {
+		const resolved = createRequire(resolveReferrer).resolve(specifier);
+		if (isAbsolute(resolved)) {
+			const resolvedUrl = pathToFileURL(resolved).toString();
+			scope.recordModuleResolution?.(specifier, resolveReferrer, resolvedUrl);
+			return resolvedUrl;
+		}
+		return resolved;
+	} catch (err) {
+		const errorCode = (err as { code?: string })?.code;
+		const isBarePackage = !specifier.startsWith('.') && !isAbsolute(specifier) && !specifier.includes(':');
+		if (
+			isBarePackage &&
+			(errorCode === 'ERR_PACKAGE_PATH_NOT_EXPORTED' || (process.versions.bun && errorCode === 'MODULE_NOT_FOUND'))
+		) {
+			// Pure-ESM package: CJS resolver cannot match an exports map that only has
+			// "import" conditions (no "require"). Resolve the entry file by walking
+			// the filesystem and evaluating the exports map with ESM import conditions.
+			const referrerDir = resolveReferrer.startsWith('file:')
+				? dirname(fileURLToPath(resolveReferrer))
+				: dirname(resolveReferrer);
+			const esmResolved = resolveESMPackageExports(specifier, referrerDir, (err as any)?.code === 'MODULE_NOT_FOUND');
+			if (esmResolved) {
+				scope.recordLoadedModule?.(esmResolved.packageJsonUrl, esmResolved.packageJsonSource);
+				scope.recordLoadedModule?.(esmResolved.resolvedUrl, readFileSync(new URL(esmResolved.resolvedUrl)));
+				return esmResolved.resolvedUrl;
+			}
+		}
+		throw err;
+	}
+}
+
 function normalizeImportedModule(importedModule: any): any {
 	const cjsModule = importedModule['module.exports'];
 	if (cjsModule) {
@@ -301,59 +355,6 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	const { moduleCache, linkingPromises, cjsCache, contextObject, context } = moduleCaches;
 
 	/**
-	 * Resolve module specifier to absolute URL
-	 */
-	function resolveModule(specifier: string, referrer: string): string {
-		if (HARPER_MODULE_IDS.has(specifier)) {
-			return 'harper'; // resolve any harper package as an alias to a single synthetic module
-		}
-		const parts = specifier.split('/');
-		if (parts[0] === 'harper') {
-			// block harper/* for now (reserving for potential future use)
-			throw new Error(`Module ${specifier} is not allowed, may only access the 'harper' module`);
-		}
-		if (parts[0] === 'file:') {
-			return specifier;
-		}
-		let resolveReferrer = referrer;
-		if (referrer.startsWith('file:')) {
-			try {
-				resolveReferrer = pathToFileURL(realpathSync(fileURLToPath(referrer))).toString();
-			} catch {}
-		}
-		try {
-			const resolved = createRequire(resolveReferrer).resolve(specifier);
-			if (isAbsolute(resolved)) {
-				const resolvedUrl = pathToFileURL(resolved).toString();
-				scope.recordModuleResolution?.(specifier, resolveReferrer, resolvedUrl);
-				return resolvedUrl;
-			}
-			return resolved;
-		} catch (err) {
-			const errorCode = (err as { code?: string })?.code;
-			const isBarePackage = !specifier.startsWith('.') && !isAbsolute(specifier) && !specifier.includes(':');
-			if (
-				isBarePackage &&
-				(errorCode === 'ERR_PACKAGE_PATH_NOT_EXPORTED' || (process.versions.bun && errorCode === 'MODULE_NOT_FOUND'))
-			) {
-				// Pure-ESM package: CJS resolver cannot match an exports map that only has
-				// "import" conditions (no "require"). Resolve the entry file by walking
-				// the filesystem and evaluating the exports map with ESM import conditions.
-				const referrerDir = resolveReferrer.startsWith('file:')
-					? dirname(fileURLToPath(resolveReferrer))
-					: dirname(resolveReferrer);
-				const esmResolved = resolveESMPackageExports(specifier, referrerDir, (err as any)?.code === 'MODULE_NOT_FOUND');
-				if (esmResolved) {
-					scope.recordLoadedModule?.(esmResolved.packageJsonUrl, esmResolved.packageJsonSource);
-					scope.recordLoadedModule?.(esmResolved.resolvedUrl, readFileSync(new URL(esmResolved.resolvedUrl)));
-					return esmResolved.resolvedUrl;
-				}
-			}
-			throw err;
-		}
-	}
-
-	/**
 	 * Load a CommonJS module in our context (private or current)
 	 */
 	function loadCJS(url: string, source: string): { exports: any } {
@@ -380,7 +381,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		const require = createRequire(requireUrl);
 
 		const cjsRequire = (spec: string) => {
-			const resolvedUrl = resolveModule(spec, url);
+			const resolvedUrl = resolveModule(spec, url, scope);
 			if (resolvedUrl === 'harper') {
 				return getHarperExports(scope);
 			}
@@ -398,7 +399,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			return require(resolvedUrl);
 		};
 		cjsRequire.resolve = (spec: string) => {
-			const resolvedUrl = resolveModule(spec, url);
+			const resolvedUrl = resolveModule(spec, url, scope);
 			if (resolvedUrl.startsWith('file://')) return fileURLToPath(resolvedUrl);
 			return resolvedUrl;
 		};
@@ -412,7 +413,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		const runOptions = {
 			filename: url,
 			async importModuleDynamically(specifier: string, script) {
-				const resolvedUrl = resolveModule(specifier, script?.sourceURL ?? url);
+				const resolvedUrl = resolveModule(specifier, script?.sourceURL ?? url, scope);
 				const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
 				const dynamicModule = await loadModuleWithCache(resolvedUrl, useApplicationLoader);
 				return dynamicModule;
@@ -546,7 +547,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	 * to return modules synchronously.
 	 */
 	function linker(specifier: string, referencingModule: SourceTextModule | SyntheticModule) {
-		const resolvedUrl = resolveModule(specifier, referencingModule.identifier);
+		const resolvedUrl = resolveModule(specifier, referencingModule.identifier, scope);
 		const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
 		return getOrCreateModule(resolvedUrl, useApplicationLoader);
 	}
@@ -663,10 +664,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 						meta.filename = fileURLToPath(url);
 						meta.dirname = dirname(meta.filename);
 					}
-					meta.resolve = (specifier: string) => resolveModule(specifier, url);
+					meta.resolve = (specifier: string) => resolveModule(specifier, url, scope);
 				},
 				importModuleDynamically(specifier: string) {
-					const resolvedUrl = resolveModule(specifier, url);
+					const resolvedUrl = resolveModule(specifier, url, scope);
 					const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
 					return loadModuleWithCache(resolvedUrl, useApplicationLoader);
 				},
@@ -713,9 +714,21 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	return entryModule.namespace;
 }
 
+/**
+ * Install SES's globals (lockdown, harden, Compartment). These are the ESM shims `ses/index.js` composes, in its
+ * order: `ses`'s CommonJS bundle fails its own strict-mode check on Bun, which drops function-level
+ * 'use strict' directives in CommonJS files.
+ */
+function loadSES(): void {
+	require('ses/lockdown-shim.js');
+	require('ses/compartment-shim.js');
+	require('ses/assert-shim.js');
+	require('ses/console-shim.js');
+}
+
 async function getCompartment(scope: ApplicationScope, globals) {
 	const { StaticModuleRecord } = await import('@endo/static-module-record');
-	require('ses');
+	loadSES();
 	const compartment: any = new (Compartment as any)(
 		globals,
 		{
@@ -723,24 +736,7 @@ async function getCompartment(scope: ApplicationScope, globals) {
 		},
 		{
 			name: 'harper-app',
-			resolveHook(moduleSpecifier, moduleReferrer) {
-				if (HARPER_MODULE_IDS.has(moduleSpecifier)) {
-					return 'harper'; // resolve any harper package as an alias to a single synthetic module
-				}
-				const parts = moduleSpecifier.split('/');
-				if (parts[0] === 'harper') {
-					// block harper/* for now (reserving for potential future use)
-					throw new Error(`Module ${moduleSpecifier} is not allowed, may only access the 'harper' module`);
-				}
-
-				const resolved = createRequire(moduleReferrer).resolve(moduleSpecifier);
-				if (isAbsolute(resolved)) {
-					const resolvedURL = pathToFileURL(resolved).toString();
-					scope.recordModuleResolution?.(moduleSpecifier, moduleReferrer, resolvedURL);
-					return resolvedURL;
-				}
-				return moduleSpecifier;
-			},
+			resolveHook: (moduleSpecifier, moduleReferrer) => resolveModule(moduleSpecifier, moduleReferrer, scope),
 			importHook: async (moduleSpecifier) => {
 				if (moduleSpecifier === 'harper') {
 					const harperExports = getHarperExports(scope);

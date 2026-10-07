@@ -203,54 +203,89 @@ describe('symlinked module resolution', () => {
 	});
 });
 
-describe('pure-ESM package resolution', () => {
-	// Regression test for https://github.com/HarperFast/harper/issues/826
-	// Pure-ESM packages have an exports map with only "import" conditions and no "require".
-	// createRequire().resolve() (CJS resolver) throws ERR_PACKAGE_PATH_NOT_EXPORTED for these;
-	// the fallback walks the package exports map using ESM conditions.
-	it('should import a pure-ESM package (exports map with only "import" conditions, no "require")', async () => {
-		const runtimeRoot = join(__dirname, 'fixtures', 'esm-only-test');
-		const resolutions = [];
-		const loadedModules = [];
-		const result = await scopedImport(join(runtimeRoot, 'uses-pure-esm-pkg.mjs'), {
-			...vmScope(),
-			runtimeRoot,
-			recordModuleResolution: (specifier) => resolutions.push(specifier),
-			recordLoadedModule: (url) => loadedModules.push(url),
+for (const mode of ['vm-current-context', 'compartment']) {
+	describe(`pure-ESM package resolution (${mode})`, () => {
+		// Regression test for https://github.com/HarperFast/harper/issues/826
+		// Pure-ESM packages have an exports map with only "import" conditions and no "require".
+		// createRequire().resolve() (CJS resolver) throws ERR_PACKAGE_PATH_NOT_EXPORTED for these on Node and
+		// MODULE_NOT_FOUND on Bun; both loaders then resolve the entry from the package's exports map.
+		const loaderScope = (runtimeRoot) => ({ mode, runtimeRoot, resources: {} });
+
+		it('should import a pure-ESM package (exports map with only "import" conditions, no "require")', async () => {
+			const runtimeRoot = join(__dirname, 'fixtures', 'esm-only-test');
+			const resolutions = [];
+			const loadedModules = [];
+			const result = await scopedImport(join(runtimeRoot, 'uses-pure-esm-pkg.mjs'), {
+				...loaderScope(runtimeRoot),
+				recordModuleResolution: (specifier) => resolutions.push(specifier),
+				recordLoadedModule: (url) => loadedModules.push(url),
+			});
+			expect(result.value).to.equal('esm-only');
+			expect(resolutions).not.to.include('pure-esm-pkg');
+			expect(loadedModules.some((url) => url.endsWith('/pure-esm-pkg/package.json'))).to.equal(true);
+			expect(loadedModules.some((url) => url.endsWith('/pure-esm-pkg/index.js'))).to.equal(true);
 		});
-		expect(result.value).to.equal('esm-only');
-		expect(resolutions).not.to.include('pure-esm-pkg');
-		expect(loadedModules.some((url) => url.endsWith('/pure-esm-pkg/package.json'))).to.equal(true);
-		expect(loadedModules.some((url) => url.endsWith('/pure-esm-pkg/index.js'))).to.equal(true);
-	});
 
-	it('uses the ESM fallback for Bun MODULE_NOT_FOUND errors from bare packages', async () => {
-		const runtimeRoot = mkdtempSync(join(tmpdir(), 'harper-js-loader-bun-esm-'));
-		const packageRoot = join(runtimeRoot, 'node_modules', 'bun-esm-only-pkg');
-		const originalBun = Object.getOwnPropertyDescriptor(process.versions, 'bun');
-		try {
-			mkdirSync(packageRoot, { recursive: true });
-			writeFileSync(
-				join(packageRoot, 'package.json'),
-				JSON.stringify({
-					name: 'bun-esm-only-pkg',
-					type: 'module',
-					exports: { '.': { import: './index.mjs', require: './missing.cjs' } },
-				})
-			);
-			writeFileSync(join(packageRoot, 'index.mjs'), "export const value = 'bun-esm-only';\n");
-			writeFileSync(join(runtimeRoot, 'entry.mjs'), "export { value } from 'bun-esm-only-pkg';\n");
-			Object.defineProperty(process.versions, 'bun', { configurable: true, value: 'test' });
+		it('uses the ESM fallback for Bun MODULE_NOT_FOUND errors from bare packages', async () => {
+			const runtimeRoot = mkdtempSync(join(tmpdir(), 'harper-js-loader-bun-esm-'));
+			const packageRoot = join(runtimeRoot, 'node_modules', 'bun-esm-only-pkg');
+			const originalBun = Object.getOwnPropertyDescriptor(process.versions, 'bun');
+			try {
+				mkdirSync(packageRoot, { recursive: true });
+				writeFileSync(
+					join(packageRoot, 'package.json'),
+					JSON.stringify({
+						name: 'bun-esm-only-pkg',
+						type: 'module',
+						exports: { '.': { import: './index.mjs', require: './missing.cjs' } },
+					})
+				);
+				writeFileSync(join(packageRoot, 'index.mjs'), "export const value = 'bun-esm-only';\n");
+				writeFileSync(join(runtimeRoot, 'entry.mjs'), "export { value } from 'bun-esm-only-pkg';\n");
+				Object.defineProperty(process.versions, 'bun', { configurable: true, value: 'test' });
 
-			const result = await scopedImport(join(runtimeRoot, 'entry.mjs'), { ...vmScope(), runtimeRoot });
-			expect(result.value).to.equal('bun-esm-only');
-		} finally {
-			if (originalBun) Object.defineProperty(process.versions, 'bun', originalBun);
-			else delete process.versions.bun;
-			rmSync(runtimeRoot, { recursive: true, force: true });
-		}
+				const result = await scopedImport(join(runtimeRoot, 'entry.mjs'), loaderScope(runtimeRoot));
+				expect(result.value).to.equal('bun-esm-only');
+			} finally {
+				if (originalBun) Object.defineProperty(process.versions, 'bun', originalBun);
+				else delete process.versions.bun;
+				rmSync(runtimeRoot, { recursive: true, force: true });
+			}
+		});
+
+		it('keeps the require target of a dual package and surfaces resolution errors', async () => {
+			const runtimeRoot = mkdtempSync(join(tmpdir(), 'harper-js-loader-dual-'));
+			const packageRoot = join(runtimeRoot, 'node_modules', 'dual-pkg');
+			try {
+				mkdirSync(packageRoot, { recursive: true });
+				writeFileSync(
+					join(packageRoot, 'package.json'),
+					JSON.stringify({
+						name: 'dual-pkg',
+						exports: { '.': { import: './index.mjs', require: './index.cjs' } },
+					})
+				);
+				writeFileSync(join(packageRoot, 'index.mjs'), "export const target = 'import';\n");
+				writeFileSync(join(packageRoot, 'index.cjs'), "exports.target = 'require';\n");
+				writeFileSync(join(runtimeRoot, 'dual.mjs'), "export { target } from 'dual-pkg';\n");
+				writeFileSync(join(runtimeRoot, 'missing.mjs'), "export * from 'no-such-pkg';\n");
+				writeFileSync(join(runtimeRoot, 'unexported.mjs'), "export * from 'dual-pkg/private';\n");
+
+				const result = await scopedImport(join(runtimeRoot, 'dual.mjs'), loaderScope(runtimeRoot));
+				expect(result.target).to.equal('require');
+				const failure = (file) =>
+					scopedImport(join(runtimeRoot, file), loaderScope(runtimeRoot)).then(
+						() => expect.fail(`${file} should not load`),
+						(error) => error.message
+					);
+				expect(await failure('missing.mjs')).to.include("Cannot find module 'no-such-pkg'");
+				expect(await failure('unexported.mjs')).to.include('./private');
+			} finally {
+				rmSync(runtimeRoot, { recursive: true, force: true });
+			}
+		});
 	});
-});
+}
 
 describe('native addon delegation', () => {
 	let runtimeRoot;
