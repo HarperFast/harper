@@ -4,7 +4,8 @@
  * every object handed over during a run until the run is sealed; an object registered under the key
  * on a thread with no live run of it, such as one a factory's leftover code registers after its run is
  * sealed, is disposed at once on that thread, outside election, and can coexist with another thread's
- * instance until its disposal completes (`divertLate`, `disposeInstance`).
+ * instance until its disposal completes, or indefinitely when its `dispose()` hangs or keeps rejecting
+ * (a disposal that keeps rejecting is logged) (`divertLate`, `disposeInstance`).
  *
  * The registry in `backendRegistry.ts` is per thread, so a component that registers an in-process
  * backend builds one per worker: one model, one GPU context and one warmup each. Here every
@@ -443,7 +444,9 @@ function onRelease(message: { key: string; live: boolean }, sender: number): voi
 	claimant.eligible = false;
 	if (entry.owner === sender) {
 		// A planned exit: the budget is not charged, and the next owner is elected only once the
-		// released instance is gone, so two instances of the key are never live at once.
+		// released run has disposed everything it was handed, so no object handed to that run is live
+		// alongside the next owner's instance (a registration on a thread with no live run is outside
+		// election; see the module header).
 		entry.owner = undefined;
 		entry.name = undefined;
 		entry.capabilities = undefined;
@@ -1336,7 +1339,9 @@ async function startBackend(slot: Slot, run: OwnerRun): Promise<void> {
 
 /**
  * A failed start: fail the calls waiting on this run, dispose everything the run holds, and only then
- * tell main, which may elect another owner, so the failure never leaves two instances. `earlier` is a
+ * tell main, which may elect another owner, so no object handed to this run is live alongside a
+ * successor's instance (a registration on a thread with no live run is outside election; see the
+ * module header). `earlier` is a
  * disposal the start already tried and could not complete, so main hears that something may be live
  * even when everything still held disposes.
  */
