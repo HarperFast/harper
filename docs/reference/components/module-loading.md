@@ -51,7 +51,7 @@ The `moduleLoader` change matters most: on v5.0.x an application runs under `vm`
 | `native`                       | Shared       | Shared with Harper | Harper's       | No                                       | No                          |
 | `compartment`                  | Per app\*    | SES-managed        | Custom per app | Yes                                      | No                          |
 
-\* Applies to modules the application loader handles. Dependencies routed to the native loader share Node's process-wide cache — see [Dependency Loading](#dependency-loading).
+\* Applies to modules the application loader handles. Dependencies routed to the native loader share Node's module cache within the same worker; different workers have separate caches — see [Dependency Loading](#dependency-loading).
 
 ### `vm-current-context` (default)
 
