@@ -1177,37 +1177,104 @@ describe('Audit log', () => {
 
 		assert(true, 'Should complete successfully after adding and removing logs');
 	});
-	it('re-admits an excluded log at its startByLog position once addLog is called (harper-pro#989)', async function () {
-		if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
-		const auditStore = AuditedTable.auditStore;
-		const peerName = 'addlog-peer-' + Date.now();
-		const peerNodeId = auditStore.ensureLogExists(peerName);
-		const base = Date.now() - 10000;
-		for (const [id, time] of [
-			['addlog-old', base],
-			['addlog-new', base + 5000],
-		]) {
-			const context = { source: {}, sourceApply: true, timestamp: time };
-			await transaction(context, async () => {
-				const resource = await AuditedTable.getResource(id, context);
-				return resource._writeUpdate(id, { name: id }, true, {
-					isNotification: true,
-					nodeId: peerNodeId,
-					version: time,
+	describe('re-admitting an excluded log with addLog (harper-pro#989)', () => {
+		// Writes the way the replication apply loop does, into `logName`'s own log under the given keys.
+		async function writeToLog(logName, records) {
+			const nodeId = AuditedTable.auditStore.ensureLogExists(logName);
+			for (const [id, time] of records) {
+				const context = { source: {}, sourceApply: true, timestamp: time };
+				await transaction(context, async () => {
+					const resource = await AuditedTable.getResource(id, context);
+					return resource._writeUpdate(id, { name: id }, true, { isNotification: true, nodeId, version: time });
 				});
-			});
+			}
 		}
-		const startByLog = new Map([['local', Date.now()]]);
-		const iterable = auditStore.getRange({ start: Date.now(), excludeLogs: [peerName], startByLog, snapshot: false });
-		const peerIdsRead = () => {
-			const ids = [];
-			for (const entry of iterable) if (String(entry.recordId).startsWith('addlog-')) ids.push(entry.recordId);
-			return ids;
-		};
-		assert.deepEqual(peerIdsRead(), []);
-		startByLog.set(peerName, base + 1);
-		iterable.addLog(peerName);
-		assert.deepEqual(peerIdsRead(), ['addlog-new']);
+		const idsWith = (prefix, entries) =>
+			entries.map((entry) => entry.recordId).filter((id) => String(id).startsWith(prefix));
+
+		it('starts it at its startByLog position, even when the caller already edited excludeLogs', async function () {
+			if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+			const peerName = 'addlog-peer-' + Date.now();
+			const base = Date.now() - 10000;
+			await writeToLog(peerName, [
+				['addlog-old', base],
+				['addlog-new', base + 5000],
+			]);
+			const excludeLogs = [peerName];
+			const startByLog = new Map([['local', Date.now()]]);
+			const iterable = AuditedTable.auditStore.getRange({
+				start: Date.now(),
+				excludeLogs,
+				startByLog,
+				snapshot: false,
+			});
+			assert.deepEqual(idsWith('addlog-', [...iterable]), []);
+			startByLog.set(peerName, base + 1);
+			excludeLogs.splice(0); // the replication caller removes the exclusion itself before addLog
+			iterable.addLog(peerName);
+			assert.deepEqual(idsWith('addlog-', [...iterable]), ['addlog-new']);
+		});
+
+		it('admits it while another log still has unread entries', async function () {
+			if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+			const stamp = Date.now();
+			const peerName = 'admit-peer-' + stamp;
+			const busyName = 'admit-busy-' + stamp;
+			const base = stamp - 10000;
+			await writeToLog(peerName, [['admit-peer-row', base]]);
+			await writeToLog(busyName, [
+				['admit-busy-0', base + 1000],
+				['admit-busy-1', base + 2000],
+				['admit-busy-2', base + 3000],
+			]);
+			const startByLog = new Map([
+				['local', stamp],
+				[busyName, base],
+			]);
+			const iterable = AuditedTable.auditStore.getRange({
+				start: stamp,
+				excludeLogs: [peerName],
+				startByLog,
+				snapshot: false,
+			});
+			const iterator = iterable[Symbol.iterator]();
+			const read = [];
+			for (let result = iterator.next(); !result.done; result = iterator.next()) {
+				read.push(result.value);
+				if (result.value.recordId === 'admit-busy-0') {
+					startByLog.set(peerName, base - 1);
+					iterable.addLog(peerName);
+				}
+			}
+			// merged in at the next pull, ahead of the busy log's later keys, not after it drains
+			assert.deepEqual(idsWith('admit-', read), ['admit-busy-0', 'admit-peer-row', 'admit-busy-1', 'admit-busy-2']);
+		});
+
+		it('validates its exact start again after removeLog and addLog', async function () {
+			if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+			const peerName = 'readmit-peer-' + Date.now();
+			const base = Date.now() - 10000;
+			await writeToLog(peerName, [
+				['readmit-10', base],
+				['readmit-20', base + 1000],
+				['readmit-30', base + 2000],
+			]);
+			const startByLog = new Map([[peerName, base]]);
+			const iterable = AuditedTable.auditStore.getRange({
+				start: base,
+				exactStart: true,
+				exclusiveStart: true,
+				resumeAfterExactStart: true,
+				startByLog,
+				excludeLogs: [],
+				snapshot: false,
+			});
+			assert.deepEqual(idsWith('readmit-', [...iterable]), ['readmit-20', 'readmit-30']);
+			iterable.removeLog(peerName);
+			startByLog.set(peerName, base + 1000);
+			iterable.addLog(peerName);
+			assert.deepEqual(idsWith('readmit-', [...iterable]), ['readmit-30']);
+		});
 	});
 	// A corrupt audit entry must surface as a skip-eligible sentinel record rather than
 	// throwing through the for-of consumer — otherwise the throw escapes in an async context

@@ -202,6 +202,47 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 		}
 	});
 
+	it('repairs a scalar whose write failed, on a repeat frame whose origin cursors did not change', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		const endTxn = (localTime) => {
+			const event = { type: 'end_txn', localTime, timestamp: localTime, remoteNodeIds: [45] };
+			event.onCommit = () => {
+				event.originCursors = [[7, now - 5]];
+			};
+			return event;
+		};
+		const ReplicatedTable = makeReplicatedTable(
+			'SeqCursorRepairTable',
+			[
+				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
+				endTxn(now),
+				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now + 1 },
+				endTxn(now + 1),
+				{ type: 'put', id: 3, value: { id: 3, name: 'third' }, timestamp: now + 1 },
+				endTxn(now + 1),
+			],
+			held
+		);
+		let staged = 0;
+		const spy = spyOnCursorWrites(ReplicatedTable, (transaction) => {
+			if (++staged !== 2) return;
+			transaction.commit = () =>
+				Promise.reject(Object.assign(new Error('forced cursor commit failure'), { code: 'ERR_BUSY' }));
+		});
+		try {
+			await waitFor(() => readCursor(ReplicatedTable, 45)?.seqId === now + 1, {
+				timeout: 5000,
+				message: 'the repeat frame repaired the scalar',
+			});
+			assert.equal(staged, 3);
+		} finally {
+			spy.restore();
+			release();
+		}
+	});
+
 	it('continues replication after teardown denies a cursor commit', async function () {
 		let release;
 		const held = new Promise((resolve) => (release = resolve));

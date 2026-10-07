@@ -2110,7 +2110,6 @@ export function makeTable(options): TableResourceClass {
 										if (event.remoteNodeIds?.length > 0) {
 											updateRecordedSequenceId = () => {
 												const originCursors: [number, number][] | undefined = event.originCursors;
-												if (!advancesSequence && !(originCursors?.length > 0)) return;
 												// the key for tracking the sequence ids and txn times received from this node
 												const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
 												// getSync (not get): dbisDb is the raw __dbis__ store, so on RocksDB get() returns a
@@ -2261,7 +2260,8 @@ export function makeTable(options): TableResourceClass {
 									}
 									// Only reached when the commit succeeded; a failure propagates to the handler's catch
 									// and the sequence id is intentionally not advanced past the unapplied write.
-									if (updateRecordedSequenceId) await updateRecordedSequenceId();
+									if (updateRecordedSequenceId && (advancesSequence || event.originCursors?.length > 0))
+										await updateRecordedSequenceId();
 									continue;
 								}
 								if (txnInProgress) {
