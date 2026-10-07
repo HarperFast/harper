@@ -175,7 +175,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 		log.addEntry(entryBinary, options.transaction.id);
 	}
 
-	/** `logForOrigin`'s routing decision, without creating a log. */
 	isLocalOrigin(nodeId: number | undefined, relayed = false): boolean {
 		if (nodeId === undefined || nodeId === 0) return true;
 		if (this.logById(nodeId)) return false;

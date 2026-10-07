@@ -53,14 +53,12 @@ async function run() {
 		Transaction.prototype.commit = nativeCommit;
 		parentPort.postMessage({ type: 'done', results });
 	} else if (mode === 'exit') {
-		// Reserve, then die with the handle open: the exit hook must retire this thread's bound.
 		Transaction.prototype.commit = function () {
 			parentPort.postMessage({ type: 'reserved', key: this.getTimestamp(), threadId });
 			process.exit(0);
 		};
 		await transaction({}, () => Tbl.put({ id: 'dying', n: 1 }));
 	} else if (mode === 'park') {
-		// Reserve, then block forever: main terminates this worker and retires its slot itself.
 		Transaction.prototype.commit = function () {
 			parentPort.postMessage({ type: 'reserved', key: this.getTimestamp(), threadId });
 			Atomics.wait(gate, 0, 0);

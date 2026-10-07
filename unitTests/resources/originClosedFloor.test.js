@@ -261,7 +261,6 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		const [remote] = entriesFor('from-peer', peerId);
 		assert.equal(remote.txnLogKey, remoteKey, "the origin's key is kept below this node's floor");
 		assert.equal(entriesFor('from-peer', 0).length, 0, 'nothing was appended to local');
-		// an id no name is mapped to resolves to `local`, so it is reserved like a local write
 		const unnamedKey = floor - 4000;
 		await applyFrom('from-unnamed', 999, unnamedKey);
 		const [local] = entriesFor('from-unnamed', 0);
@@ -346,7 +345,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		await next('ready');
 		const { key, threadId } = await next('reserved');
 		await exited;
-		retireOriginFloorSlots(threadId); // what manageThreads does on the worker's exit event
+		retireOriginFloorSlots(threadId);
 		await sleep(2);
 		assert(certify() > key, 'a dead worker holds nothing');
 	});
@@ -370,7 +369,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		// database is back on the clock before the next file (the ratchet is process-wide state).
 		const persisted = rootStore.getMonotonicTimestamp() + 250;
 		persistOriginClosedFloor(auditStore, persisted);
-		publishOriginFloor(rootStore, readOriginClosedFloor(auditStore)); // what openAuditStore does
+		publishOriginFloor(rootStore, readOriginClosedFloor(auditStore));
 		assert.equal(getOriginClosedFloor(rootStore).floor, persisted);
 		const epoch = new Int32Array(new SharedArrayBuffer(4));
 		const { next } = startWorker({ mode: 'writer', epoch, tableName, writes: 40 });

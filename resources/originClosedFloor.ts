@@ -245,7 +245,7 @@ class ThreadRegistry {
 			const owner = Atomics.load(this.words, THREAD_WORDS_OFFSET + slot);
 			if (owner === 0n) continue;
 			const bound = fromBits(Atomics.load(this.words, boundIndex(slot)));
-			if (bound !== Infinity) result.push({ threadId: Number(owner) - 1, bound });
+			if (bound !== Infinity) result.push({ threadId: Number(owner & ~RETIRED_BIT) - 1, bound });
 		}
 		return result;
 	}
@@ -330,7 +330,6 @@ export function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number
 	if (rootStore.getMonotonicTimestamp() <= floor) Atomics.store(words, WORD_STRICT, 1n);
 }
 
-/** The persisted floor read at open is the advertised floor until the certifier advances it. */
 export function publishOriginFloor(rootStore: RocksDatabase, floor: number): void {
 	if (typeof rootStore?.getUserSharedBuffer !== 'function') return;
 	registryFor(rootStore); // every opener can retire a dead thread's bounds, floor or no floor

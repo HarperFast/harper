@@ -325,7 +325,6 @@ export function getOutstandingCommits(): { count: number; oldestAgeMs: number | 
 // about the caller's pattern, not the individual commit.
 let replayedWritesWarned = false;
 
-/** A write carrying a named remote origin goes to that origin's log, never `local` (see `put`). */
 function writesRemoteOrigin(operation: TransactionWrite): boolean {
 	if (operation.nodeId === undefined) return false;
 	const auditStore: any = operation.store.rootStore?.auditStore;

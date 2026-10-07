@@ -4729,6 +4729,9 @@ export function makeTable(options): TableResourceClass {
 						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
 					// The handle's key, which the origin-closed floor may have moved above an explicit `txnTime`.
 					const appendedLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnLogKey) : txnLogKey;
+					// What a re-delivery of this write carries: the origin's log key for an apply (the context's
+					// timestamp, even when the floor moved this handle's key), the explicit value otherwise.
+					const receivedLogKey = options?.version != null ? ((context as any)?.timestamp ?? txnLogKey) : txnTime;
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
@@ -4854,11 +4857,11 @@ export function makeTable(options): TableResourceClass {
 							// would find it and skip the write as "already applied" when the record was never committed.
 							// A recommit of the same transaction survived that skip only because the old write batch
 							// still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
-							if (isRocksDB && !replaying && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(txnLogKey)) {
-								const priorAudit = auditStore.get(txnLogKey, tableId, id, options?.nodeId);
+							if (isRocksDB && !replaying && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(receivedLogKey)) {
+								const priorAudit = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
 								if (
 									priorAudit &&
-									priorAudit.txnLogKey === txnLogKey &&
+									priorAudit.txnLogKey === receivedLogKey &&
 									priorAudit.version === (options?.version ?? txnTime) &&
 									precedesExistingVersion(
 										txnTime,
@@ -4960,11 +4963,11 @@ export function makeTable(options): TableResourceClass {
 							// never committed (see the up-front keyed dedup above).
 							const isReDeliveredDuplicate = () => {
 								if (replaying || stagedOwnAuditEntry) return false;
-								if (!dedupVersionCouldBeRetained(txnLogKey)) return false; // pre-retention log key — skip the end-of-log scan (best-effort; see above)
-								const duplicate = auditStore.get(txnLogKey, tableId, id, options?.nodeId);
+								if (!dedupVersionCouldBeRetained(receivedLogKey)) return false; // pre-retention log key — skip the end-of-log scan (best-effort; see above)
+								const duplicate = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
 								return (
 									duplicate &&
-									duplicate.txnLogKey === txnLogKey &&
+									duplicate.txnLogKey === receivedLogKey &&
 									duplicate.version === (options?.version ?? txnTime) &&
 									precedesExistingVersion(
 										txnTime,

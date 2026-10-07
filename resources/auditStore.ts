@@ -933,7 +933,6 @@ export function getAuditFloor(auditStore: any): number {
 	return decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_KEY));
 }
 
-/** The persisted origin-closed floor, or 0 when none (or an unreadable record) exists. */
 export function readOriginClosedFloor(auditStore: any): number {
 	const floor = decodeAuditFloor(auditStore.getBinary(ORIGIN_CLOSED_FLOOR_KEY));
 	return Number.isFinite(floor) && floor > 0 ? floor : 0;
