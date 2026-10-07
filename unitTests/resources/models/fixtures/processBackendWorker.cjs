@@ -1,20 +1,37 @@
 'use strict';
 
 // Worker for processBackend.test.js, started through manageThreads' startWorker so it joins the same
-// port mesh production workers use. It registers an embedding backend (process-wide or per thread)
-// and embeds through the models facade on command, reporting every factory run and backend call
-// to the test, tagged with the thread it ran on.
+// port mesh production workers use. It registers backends (process-wide or per thread) and calls them
+// through the models facade on command, reporting every factory run, backend call, disposal, analytics
+// row and metric to the test, tagged with the thread it ran on. On SHUTDOWN it runs Harper's shutdown
+// drains the way threadServer does, so the test sees what a real worker would wait for before exiting.
 const { parentPort, threadId } = require('node:worker_threads');
+const { getEventListeners } = require('node:events');
 // Prime Harper's module graph in the order the other models tests do (see Models.test.js).
 require('#src/resources/databases');
-const { onMessageByType } = require('#js/server/threads/manageThreads');
+const manageThreads = require('#js/server/threads/manageThreads');
+const { onMessageByType } = manageThreads;
+const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
+const { runShutdownDrains, shutdownDrainsHaveWork } = require('#src/components/shutdownDrain');
+const { contextStorage } = require('#src/resources/transaction');
+const { setFallbackGroup } = require('#src/resources/models/routing');
+const { allowedValues } = require('#src/resources/models/decision');
 const { Models } = require('#src/resources/models/Models');
-const { ownerLoad } = require('#src/resources/models/processBackend');
+const processBackend = require('#src/resources/models/processBackend');
 
-// No analytics: the facade writes its call rows to this writer and its metrics nowhere.
-const models = new Models({ write: () => 0 }, () => {}, {});
 const report = (event) => parentPort.postMessage({ type: 'process-backend-test-event', threadId, ...event });
 const reply = (rid, body) => parentPort.postMessage({ type: 'process-backend-test-reply', rid, threadId, ...body });
+// The facade writes its call rows and metrics here, so the test can total what callers billed.
+const models = new Models(
+	{
+		write(record) {
+			report({ event: 'row', record });
+			return 0;
+		},
+	},
+	(value, metric, path) => report({ event: 'metric', value, metric, path }),
+	{}
+);
 const gates = new Map();
 const controllers = new Map();
 
@@ -25,71 +42,169 @@ function fingerprint(text) {
 	return hash;
 }
 
-function testBackend(name) {
-	return models.defineBackend({
-		name,
+/** Held until the test releases `text`, or until the call's signal aborts. */
+function hold(text, signal) {
+	return new Promise((resolve, reject) => {
+		report({ event: 'waiting', text });
+		gates.set(text, resolve);
+		signal?.addEventListener(
+			'abort',
+			() => {
+				gates.delete(text);
+				report({ event: 'aborted', text });
+				reject(signal.reason);
+			},
+			{ once: true }
+		);
+	});
+}
+
+function embeddingBackend(id, spec = {}) {
+	return {
+		name: `test:${id}`,
+		capabilities() {
+			if (spec.capabilities === 'throw') throw new Error('capabilities are not readable yet');
+			const capabilities = { embed: true, generate: false, stream: false, tools: false, adapters: false };
+			if (spec.capabilities === 'uncloneable') capabilities.describe = () => 'a function cannot cross threads';
+			return capabilities;
+		},
 		async embed(input, opts) {
 			const texts = Array.isArray(input) ? input : [input];
-			report({ event: 'embed', texts });
+			const { signal, accounting, ...rest } = opts;
+			report({ event: 'embed', id, texts, opts: rest, accounting });
 			for (const text of texts) {
-				// Held until the test releases it, so later requests queue behind this call.
-				if (text.startsWith('gate:')) await new Promise((resolve) => gates.set(text, resolve));
-				// Runs until its signal aborts, so the test can see a caller's cancel reach the owner.
-				if (text.startsWith('until-aborted:'))
-					await new Promise((resolve, reject) => {
-						report({ event: 'waiting', text });
-						opts.signal.addEventListener(
-							'abort',
-							() => {
-								report({ event: 'aborted', text });
-								reject(opts.signal.reason);
-							},
-							{ once: true }
-						);
+				// Held texts keep this call running, so later requests queue behind it.
+				if (text.startsWith('gate:') || text.startsWith('until-aborted:')) await hold(text, signal);
+				if (text.startsWith('error:')) {
+					const [, status, code] = text.split(':');
+					throw Object.assign(new Error(`provider refused ${text}`), {
+						name: 'ProviderError',
+						statusCode: Number(status),
+						code,
 					});
+				}
 			}
 			return {
 				status: 'completed',
 				output: texts.map((text) => Float32Array.from([fingerprint(text), threadId])),
-				usage: { embeddingTokens: texts.length * 3 },
+				usage: spec.usage ?? { embeddingTokens: texts.length * 3 },
 			};
 		},
+		dispose() {
+			report({ event: 'dispose', id });
+		},
+	};
+}
+
+function generativeBackend(id) {
+	return models.defineBackend({
+		name: `test:${id}`,
+		generate: async (input) => ({
+			status: 'completed',
+			output: { content: `${threadId}:${input}`, finishReason: 'stop' },
+			usage: { promptTokens: 2, completionTokens: 1 },
+		}),
+		scoreChoices: async (_input, choices) => ({
+			status: 'completed',
+			output: { logLikelihoods: choices.map((_choice, index) => -index - threadId / 1000) },
+		}),
 	});
 }
 
+function decisionBackend(id) {
+	return models.defineBackend({
+		name: `test:${id}`,
+		decide: async (_state, schema) => ({
+			status: 'completed',
+			output: {
+				distribution: allowedValues(schema).map((value, index) => ({ value, probability: index === 0 ? 1 : 0 })),
+			},
+		}),
+	});
+}
+
+const errorReply = (error) => ({
+	ok: false,
+	error: {
+		name: error?.name,
+		reason: error?.reason,
+		message: error?.message,
+		statusCode: error?.statusCode,
+		code: error?.code,
+		cause: error?.cause && { name: error.cause.name, message: error.cause.message },
+	},
+});
+
 const commands = {
-	register({ id, scope, options, failStart }) {
+	register({ id, kind = 'embedding', scope, options, failStart, holdStart, capabilities, usage }) {
+		const build = () =>
+			kind === 'generative'
+				? generativeBackend(id)
+				: kind === 'decision'
+					? decisionBackend(id)
+					: embeddingBackend(id, { capabilities, usage });
 		if (scope === 'thread') {
 			report({ event: 'factory', id });
-			models.registerBackend('embedding', id, testBackend(`test:${id}`));
+			models.registerBackend(kind, id, build());
 			return {};
 		}
 		models.registerProcessBackend(
-			'embedding',
+			kind,
 			id,
-			async () => {
+			async ({ signal } = {}) => {
 				report({ event: 'factory', id });
-				if (failStart) {
-					// Fails when the test releases it, so the test can line up the other claimants first.
-					await new Promise((resolve) => gates.set(`start:${id}`, resolve));
-					throw new Error('model file is missing');
-				}
-				return testBackend(`test:${id}`);
+				// Held until the test releases it, so the test can line up claimants and calls first.
+				if (failStart || holdStart) await new Promise((resolve) => gates.set(`start:${id}`, resolve));
+				report({ event: 'factory-settled', id, aborted: signal?.aborted === true });
+				if (failStart) throw new Error('model file is missing');
+				return build();
 			},
 			options
 		);
 		return {};
 	},
-	async embed({ rid, id, texts }) {
+	fallback({ id, fallbackId }) {
+		models.registerBackend('embedding', fallbackId, embeddingBackend(fallbackId));
+		setFallbackGroup('embedding', id, [fallbackId]);
+		return {};
+	},
+	async embed({ rid, id, texts, opts, tenant }) {
 		const controller = new AbortController();
 		controllers.set(rid, controller);
+		const call = () => models.embed(texts, { ...opts, model: id, signal: controller.signal });
 		try {
-			const vectors = await models.embed(texts, { model: id, signal: controller.signal });
-			return { ok: true, vectors: vectors.map((vector) => [...vector]) };
+			const vectors = await (tenant === undefined ? call() : contextStorage.run({ user: { tenant } }, call));
+			return {
+				ok: true,
+				vectors: vectors.map((vector) => [...vector]),
+				listeners: getEventListeners(controller.signal, 'abort').length,
+			};
 		} catch (error) {
-			return { ok: false, error: { name: error?.name, reason: error?.reason, message: error?.message } };
+			return { ...errorReply(error), listeners: getEventListeners(controller.signal, 'abort').length };
 		} finally {
 			controllers.delete(rid);
+		}
+	},
+	async generate({ id, input }) {
+		try {
+			return { ok: true, result: await models.generate(input, { model: id }) };
+		} catch (error) {
+			return errorReply(error);
+		}
+	},
+	async scoreChoices({ id, input, choices }) {
+		try {
+			return { ok: true, result: await models.scoreChoices(input, choices, { model: id }) };
+		} catch (error) {
+			return errorReply(error);
+		}
+	},
+	async decide({ id, state, schema }) {
+		try {
+			const decision = await models.decide(state, schema, { model: id });
+			return { ok: true, value: decision.value };
+		} catch (error) {
+			return errorReply(error);
 		}
 	},
 	abort({ target }) {
@@ -100,13 +215,31 @@ const commands = {
 		gates.get(text)?.();
 		return { released: gates.delete(text) };
 	},
-	status({ id }) {
-		return { status: models.backendStatus('embedding', id) };
+	status({ id, kind = 'embedding' }) {
+		return { status: models.backendStatus(kind, id) };
 	},
 	load({ id }) {
-		return { load: ownerLoad('embedding', id) };
+		return { load: processBackend.ownerLoad('embedding', id) };
+	},
+	callers({ id }) {
+		return { load: processBackend.callerLoad('embedding', id) };
+	},
+	// Hand-built protocol messages, as any code holding the `threads` global could send them.
+	send({ target, message }) {
+		return { sent: manageThreads.sendToThread(target, message) };
 	},
 };
+
+// Responses to hand-built requests (their ids start at 1e6), reported with the port they came over.
+onMessageByType('models-process-backend-response', (message, port) => {
+	if (message.request >= 1e6) report({ event: 'raw-response', from: port?.threadId, message });
+});
+
+// What threadServer does on SHUTDOWN before it closes servers and exits.
+onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, () => {
+	const hadWork = shutdownDrainsHaveWork();
+	runShutdownDrains(Date.now() + 15000).then(() => report({ event: 'drained', hadWork }));
+});
 
 onMessageByType('process-backend-test-command', async (message) => {
 	try {

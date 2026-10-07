@@ -2,6 +2,7 @@
 
 const assert = require('node:assert');
 const path = require('node:path');
+const { setTimeout: delay } = require('node:timers/promises');
 // Prime Harper's module graph in the same order the other models unit tests do (see Models.test.js).
 require('#src/resources/databases');
 const manageThreads = require('#js/server/threads/manageThreads');
@@ -11,6 +12,9 @@ const { Models, ModelCapabilityError } = require('#src/resources/models/Models')
 const { ModelBackendRegistrationError } = require('#src/resources/models/backendRegistry');
 const {
 	apportionUsage,
+	backendStatus,
+	callerLoad,
+	ModelBackendBusyError,
 	ModelBackendUnavailableError,
 	registerProcessBackend,
 } = require('#src/resources/models/processBackend');
@@ -21,6 +25,12 @@ const { waitFor } = require('../../waitFor');
 const FIXTURE = path.join(__dirname, 'fixtures', 'processBackendWorker.cjs');
 const WORKER_NAME = 'models-process-backend-test';
 const COMMAND_TIMEOUT_MS = 20000;
+// The protocol's message types, for the hand-built messages a misbehaving thread could send.
+const CLAIM = 'models-process-backend-claim';
+const STATE = 'models-process-backend-state';
+const REQUEST = 'models-process-backend-request';
+const RESPONSE = 'models-process-backend-response';
+const keyOf = (id, domain = '') => JSON.stringify([domain, 'embedding', id]);
 
 const events = [];
 const replies = new Map();
@@ -37,12 +47,13 @@ function fingerprint(text) {
 	return hash;
 }
 
-function startFixtureWorker(started) {
+function startFixtureWorker(started, options = {}) {
 	return new Promise((resolve, reject) => {
 		startWorker(FIXTURE, {
 			name: WORKER_NAME,
 			workerIndex: started.length,
 			autoRestart: false,
+			...options,
 			onStarted(worker) {
 				started.push(worker);
 				readiness.set(worker.threadId, () => resolve(worker));
@@ -74,14 +85,18 @@ function command(worker, body) {
 const factoryRuns = (id) => events.filter((event) => event.event === 'factory' && event.id === id);
 const backendCalls = (prefix) =>
 	events.filter((event) => event.event === 'embed' && event.texts.some((text) => text.startsWith(prefix)));
-const statusOf = async (worker, id) => (await command(worker, { command: 'status', id })).status;
+const waitingOn = (text) => waitFor(() => events.some((event) => event.event === 'waiting' && event.text === text));
+const statusOf = async (worker, id, kind) => (await command(worker, { command: 'status', id, kind })).status;
+const ownerLoad = async (worker, id) => (await command(worker, { command: 'load', id })).load;
+const rawResponse = (request) =>
+	waitFor(() => events.find((event) => event.event === 'raw-response' && event.message.request === request), 10000);
 
 /** Wait until `worker` reports `id` in a state matching `predicate`, and return that status. */
-function waitForStatus(worker, id, predicate, description) {
+function waitForStatus(worker, id, predicate, description, kind) {
 	let last;
 	return waitFor(
 		async () => {
-			last = await statusOf(worker, id);
+			last = await statusOf(worker, id, kind);
 			return predicate(last) && last;
 		},
 		{ timeout: 10000, message: () => `${description}; last status ${JSON.stringify(last)}` }
@@ -96,7 +111,26 @@ function assertServedBy(reply, texts, ownerThreadId) {
 	);
 }
 
-describe('models.registerProcessBackend: one backend per process, served to every worker thread', function () {
+/** A hand-built request, as a thread holding the `threads` global could send one. */
+function rawRequest(id, origin, request, overrides = {}) {
+	return {
+		type: REQUEST,
+		key: keyOf(id),
+		kind: 'embedding',
+		logicalName: id,
+		request,
+		origin,
+		version: 0,
+		epoch: 1,
+		method: 'embed',
+		args: [[`${id}:raw`]],
+		opts: {},
+		accounting: {},
+		...overrides,
+	};
+}
+
+describe('models.registerProcessBackend: one live backend instance per key, served to every worker thread', function () {
 	let workers = [];
 
 	afterEach(async function () {
@@ -108,24 +142,42 @@ describe('models.registerProcessBackend: one backend per process, served to ever
 	});
 
 	async function startWorkers(count) {
-		for (let i = 0; i < count; i++) await startFixtureWorker(workers);
-		return workers;
+		const started = [];
+		for (let i = 0; i < count; i++) started.push(await startFixtureWorker(workers));
+		return started;
+	}
+
+	/** Start a worker in worker generation `generation`, as `restartWorkers` would after a deploy. */
+	async function startWorkerInGeneration(generation) {
+		const saved = manageThreads.restartNumber;
+		manageThreads.restartNumber = generation;
+		try {
+			return await startFixtureWorker(workers);
+		} finally {
+			manageThreads.restartNumber = saved;
+		}
 	}
 
 	/** Register `id` on each worker in turn, waiting until each one sees the owner main elected. */
-	async function registerInOrder(list, id, options) {
+	async function registerInOrder(list, id, options, extra = {}) {
 		for (const worker of list) {
-			await command(worker, { command: 'register', id, options });
+			await command(worker, { command: 'register', id, options, ...extra });
 			await waitForStatus(
 				worker,
 				id,
 				(status) => status?.owner !== undefined,
-				`${id}: no owner reached ${worker.threadId}`
+				`${id}: no owner reached ${worker.threadId}`,
+				extra.kind
 			);
 		}
 	}
 
-	it('serves two workers from one owner whose factory and model load run exactly once', async function () {
+	/** Hold the owner's execution slot with a call gated on `gate:<tag>`, so later requests queue behind it. */
+	function occupy(owner, id, tag = id) {
+		return command(owner, { command: 'embed', id, texts: [`gate:${tag}`] });
+	}
+
+	it('serves two workers from one owner whose factory runs exactly once', async function () {
 		const [first, second] = await startWorkers(2);
 		await registerInOrder([first, second], 'one-owner');
 		const fromFirst = await command(first, { command: 'embed', id: 'one-owner', texts: ['one-owner:a'] });
@@ -158,26 +210,27 @@ describe('models.registerProcessBackend: one backend per process, served to ever
 			maxRestarts: 1,
 			generation: ready.generation,
 		});
-		assert.deepStrictEqual(await statusOf(first, 'one-owner'), ready, 'every worker reports the same state');
+		assert.deepStrictEqual(await statusOf(first, 'one-owner'), ready, 'the views converge on the state main holds');
 	});
 
 	it("aborts the owner's backend call when the calling worker aborts", async function () {
 		const [owner, caller] = await startWorkers(2);
 		await registerInOrder([owner, caller], 'cancel');
 		const call = command(caller, { command: 'embed', id: 'cancel', texts: ['until-aborted:cancel'] });
-		await waitFor(() => events.some((event) => event.event === 'waiting' && event.text === 'until-aborted:cancel'));
+		await waitingOn('until-aborted:cancel');
 		await command(caller, { command: 'abort', target: call.rid });
 
 		const reply = await call;
 		assert.strictEqual(reply.ok, false);
 		assert.strictEqual(reply.error.name, 'AbortError');
+		assert.strictEqual(reply.listeners, 0, "the proxy removed its listener from the caller's signal");
 		const aborted = await waitFor(() =>
 			events.find((event) => event.event === 'aborted' && event.text === 'until-aborted:cancel')
 		);
 		assert.strictEqual(aborted.threadId, owner.threadId, "the abort reached the owner's backend call");
 	});
 
-	it('answers concurrent requests from several workers, each with its own result', async function () {
+	it('answers concurrent requests from several workers, each with its own result, and leaves nothing behind', async function () {
 		const list = await startWorkers(3);
 		await registerInOrder(list, 'concurrent');
 		const sent = [];
@@ -189,15 +242,29 @@ describe('models.registerProcessBackend: one backend per process, served to ever
 						: [`concurrent:${worker.threadId}:${i}`];
 				sent.push({ texts, reply: command(worker, { command: 'embed', id: 'concurrent', texts }) });
 			}
-		for (const { texts, reply } of sent) assertServedBy(await reply, texts, list[0].threadId);
+		for (const { texts, reply } of sent) {
+			const answered = await reply;
+			assertServedBy(answered, texts, list[0].threadId);
+			assert.strictEqual(answered.listeners, 0, "no listener is left on the caller's signal");
+		}
 		assert.strictEqual(factoryRuns('concurrent').length, 1);
+		const load = await ownerLoad(list[0], 'concurrent');
+		assert.deepStrictEqual(
+			{ queued: load.queued, active: load.active, parked: load.parked, phase: load.phase },
+			{ queued: 0, active: 0, parked: 0, phase: 'ready' }
+		);
+		for (const worker of list)
+			assert.deepStrictEqual((await command(worker, { command: 'callers', id: 'concurrent' })).load, {
+				waiting: 0,
+				inFlight: 0,
+			});
 	});
 
 	it('merges queued embed requests into one backend call when maxBatchInputs allows', async function () {
 		const [owner, ...callers] = await startWorkers(3);
 		await registerInOrder([owner, ...callers], 'batched', { maxBatchInputs: 8 });
-		const gate = command(owner, { command: 'embed', id: 'batched', texts: ['gate:batched'] });
-		await waitFor(() => backendCalls('gate:batched').length === 1);
+		const gate = occupy(owner, 'batched');
+		await waitingOn('gate:batched');
 		const sent = [];
 		for (const worker of callers)
 			for (let i = 0; i < 6; i++) {
@@ -205,7 +272,7 @@ describe('models.registerProcessBackend: one backend per process, served to ever
 				sent.push({ texts, reply: command(worker, { command: 'embed', id: 'batched', texts }) });
 			}
 		// Every request is queued behind the held call before it is let go.
-		await waitFor(async () => (await command(owner, { command: 'load', id: 'batched' })).load?.queued === 12, 10000);
+		await waitFor(async () => (await ownerLoad(owner, 'batched'))?.queued === 12, 10000);
 		await command(owner, { command: 'release', text: 'gate:batched' });
 
 		assertServedBy(await gate, ['gate:batched'], owner.threadId);
@@ -218,13 +285,152 @@ describe('models.registerProcessBackend: one backend per process, served to ever
 		);
 	});
 
+	it('merges only requests whose options and accounting are the same, value for value', async function () {
+		const [owner, ...callers] = await startWorkers(4);
+		await registerInOrder([owner, ...callers], 'exact', { maxBatchInputs: 8 });
+		const gate = occupy(owner, 'exact');
+		await waitingOn('gate:exact');
+		// JSON writes NaN as null, so a JSON key would have merged the first two.
+		const nan = command(callers[0], { command: 'embed', id: 'exact', texts: ['exact:nan'], opts: { variant: NaN } });
+		const nil = command(callers[1], { command: 'embed', id: 'exact', texts: ['exact:null'], opts: { variant: null } });
+		const tenant = command(callers[2], {
+			command: 'embed',
+			id: 'exact',
+			texts: ['exact:tenant'],
+			opts: { variant: null },
+			tenant: 'other-tenant',
+		});
+		await waitFor(async () => (await ownerLoad(owner, 'exact'))?.queued === 3, 10000);
+		await command(owner, { command: 'release', text: 'gate:exact' });
+
+		await gate;
+		assertServedBy(await nan, ['exact:nan'], owner.threadId);
+		assertServedBy(await nil, ['exact:null'], owner.threadId);
+		assertServedBy(await tenant, ['exact:tenant'], owner.threadId);
+		const calls = backendCalls('exact:');
+		assert.deepStrictEqual(
+			calls.map((event) => event.texts).sort(),
+			[['exact:nan'], ['exact:null'], ['exact:tenant']],
+			'no two of the three requests share their options and accounting, so none was merged'
+		);
+		const callFor = (text) => calls.find((event) => event.texts.includes(text));
+		assert.ok(Number.isNaN(callFor('exact:nan').opts.variant), 'each call ran with its own options');
+		assert.strictEqual(callFor('exact:null').opts.variant, null);
+		assert.strictEqual(callFor('exact:null').accounting.tenantId, undefined);
+		assert.strictEqual(callFor('exact:tenant').accounting.tenantId, 'other-tenant');
+	});
+
+	it('splits a request larger than maxBatchInputs into backend calls of at most that many inputs', async function () {
+		const [owner, caller] = await startWorkers(2);
+		await registerInOrder([owner, caller], 'split', { maxBatchInputs: 4 });
+		const texts = Array.from({ length: 10 }, (_, index) => `split:${index}`);
+		assertServedBy(await command(caller, { command: 'embed', id: 'split', texts }), texts, owner.threadId);
+
+		assert.deepStrictEqual(
+			backendCalls('split:').map((event) => event.texts.length),
+			[4, 4, 2]
+		);
+		const row = events.find(
+			(event) => event.event === 'row' && event.threadId === caller.threadId && event.record.backend === 'test:split'
+		);
+		assert.strictEqual(row.record.embedding_tokens, 30, "the caller's row sums the usage of every part");
+	});
+
+	it('cancels a merged call only when every request in it is cancelled, and drops a cancelled queued request', async function () {
+		const [owner, a, b, c] = await startWorkers(4);
+		await registerInOrder([owner, a, b, c], 'merged-cancel', { maxBatchInputs: 8 });
+
+		// One member cancels: the merged call keeps running for the others.
+		let gate = occupy(owner, 'merged-cancel');
+		await waitingOn('gate:merged-cancel');
+		const holder = command(a, { command: 'embed', id: 'merged-cancel', texts: ['gate:merged-cancel:one'] });
+		const quitter = command(b, { command: 'embed', id: 'merged-cancel', texts: ['merged-cancel:quitter'] });
+		const stayer = command(c, { command: 'embed', id: 'merged-cancel', texts: ['merged-cancel:stayer'] });
+		const dropped = command(b, { command: 'embed', id: 'merged-cancel', texts: ['merged-cancel:dropped'] });
+		await waitFor(async () => (await ownerLoad(owner, 'merged-cancel'))?.queued === 4, 10000);
+		// A request cancelled while it is queued leaves the queue and never reaches the backend.
+		await command(b, { command: 'abort', target: dropped.rid });
+		assert.strictEqual((await dropped).error.name, 'AbortError');
+		await waitFor(async () => (await ownerLoad(owner, 'merged-cancel'))?.queued === 3, 10000);
+		await command(owner, { command: 'release', text: 'gate:merged-cancel' });
+		await gate;
+		await waitingOn('gate:merged-cancel:one');
+		await command(b, { command: 'abort', target: quitter.rid });
+		assert.strictEqual((await quitter).error.name, 'AbortError');
+		await command(owner, { command: 'release', text: 'gate:merged-cancel:one' });
+		assertServedBy(await holder, ['gate:merged-cancel:one'], owner.threadId);
+		assertServedBy(await stayer, ['merged-cancel:stayer'], owner.threadId);
+		assert.deepStrictEqual(
+			backendCalls('gate:merged-cancel:one').map((event) => [...event.texts].sort()),
+			[['gate:merged-cancel:one', 'merged-cancel:quitter', 'merged-cancel:stayer']],
+			'the three queued requests ran as one call'
+		);
+		assert.ok(!events.some((event) => event.event === 'aborted' && event.text === 'gate:merged-cancel:one'));
+		assert.strictEqual(backendCalls('merged-cancel:dropped').length, 0);
+
+		// Every member cancels: the merged call is aborted.
+		gate = occupy(owner, 'merged-cancel', 'merged-cancel-2');
+		await waitingOn('gate:merged-cancel-2');
+		const first = command(a, { command: 'embed', id: 'merged-cancel', texts: ['gate:merged-cancel:all'] });
+		const second = command(c, { command: 'embed', id: 'merged-cancel', texts: ['merged-cancel:all'] });
+		await waitFor(async () => (await ownerLoad(owner, 'merged-cancel'))?.queued === 2, 10000);
+		await command(owner, { command: 'release', text: 'gate:merged-cancel-2' });
+		await gate;
+		await waitingOn('gate:merged-cancel:all');
+		await command(a, { command: 'abort', target: first.rid });
+		await command(c, { command: 'abort', target: second.rid });
+		assert.strictEqual((await first).error.name, 'AbortError');
+		assert.strictEqual((await second).error.name, 'AbortError');
+		const aborted = await waitFor(() =>
+			events.find((event) => event.event === 'aborted' && event.text === 'gate:merged-cancel:all')
+		);
+		assert.strictEqual(aborted.threadId, owner.threadId);
+	});
+
+	it("bills a merged call once: the callers' rows sum exactly to the usage the backend reported", async function () {
+		const [owner, ...callers] = await startWorkers(4);
+		const usage = { embeddingTokens: 10.5, gpuMs: 7.3, latencyMs: 40 };
+		await registerInOrder([owner, ...callers], 'usage', { maxBatchInputs: 8 }, { usage });
+		const gate = occupy(owner, 'usage');
+		await waitingOn('gate:usage');
+		const sent = callers.map((worker) => {
+			const texts = [`usage:${worker.threadId}`];
+			return { texts, reply: command(worker, { command: 'embed', id: 'usage', texts }) };
+		});
+		await waitFor(async () => (await ownerLoad(owner, 'usage'))?.queued === 3, 10000);
+		await command(owner, { command: 'release', text: 'gate:usage' });
+		await gate;
+		for (const { texts, reply } of sent) assertServedBy(await reply, texts, owner.threadId);
+
+		assert.deepStrictEqual(
+			backendCalls('usage:').map((event) => event.texts.length),
+			[3],
+			'the three requests ran as one call'
+		);
+		const callerIds = callers.map((worker) => worker.threadId);
+		const rows = events.filter(
+			(event) => event.event === 'row' && callerIds.includes(event.threadId) && event.record.backend === 'test:usage'
+		);
+		assert.strictEqual(rows.length, 3);
+		const total = (field) => rows.reduce((sum, event) => sum + event.record[field], 0);
+		assert.strictEqual(total('embedding_tokens'), usage.embeddingTokens);
+		assert.strictEqual(total('gpu_ms'), usage.gpuMs);
+		const tokens = events.filter(
+			(event) => event.event === 'metric' && callerIds.includes(event.threadId) && event.metric === 'model-embed-tokens'
+		);
+		assert.strictEqual(
+			tokens.reduce((sum, event) => sum + event.value, 0),
+			usage.embeddingTokens
+		);
+	});
+
 	it('refuses a request past maxPending with ModelBackendBusyError instead of queueing it', async function () {
 		const [owner, caller] = await startWorkers(2);
 		await registerInOrder([owner, caller], 'busy', { maxPending: 1 });
-		const held = command(owner, { command: 'embed', id: 'busy', texts: ['gate:busy'] });
-		await waitFor(() => backendCalls('gate:busy').length === 1);
+		const held = occupy(owner, 'busy');
+		await waitingOn('gate:busy');
 		const queued = command(caller, { command: 'embed', id: 'busy', texts: ['busy:queued'] });
-		await waitFor(async () => (await command(owner, { command: 'load', id: 'busy' })).load?.queued === 1);
+		await waitFor(async () => (await ownerLoad(owner, 'busy'))?.queued === 1);
 
 		const refused = await command(caller, { command: 'embed', id: 'busy', texts: ['busy:refused'] });
 		assert.strictEqual(refused.ok, false);
@@ -240,7 +446,7 @@ describe('models.registerProcessBackend: one backend per process, served to ever
 		const [ownerId, secondId] = [owner.threadId, second.threadId];
 		await registerInOrder([owner, second, third], 'restart');
 		const inFlight = command(second, { command: 'embed', id: 'restart', texts: ['until-aborted:restart'] });
-		await waitFor(() => events.some((event) => event.event === 'waiting' && event.text === 'until-aborted:restart'));
+		await waitingOn('until-aborted:restart');
 		owner.wasShutdown = true;
 		await owner.terminate();
 
@@ -283,36 +489,170 @@ describe('models.registerProcessBackend: one backend per process, served to ever
 		assert.strictEqual(refused.ok, false);
 		assert.strictEqual(refused.error.name, 'ModelBackendUnavailableError');
 		assert.strictEqual(refused.error.reason, 'failed');
+		assert.strictEqual(refused.error.cause, undefined, "the loss's error stays in backendStatus");
 		assert.strictEqual(factoryRuns('restart').length, 2, 'no thread fell back to loading its own copy');
 	});
 
-	it('hands ownership over without spending the restart budget when the owner is told to shut down', async function () {
+	it('hands over one live instance at a time: the released owner finishes its running call, re-routes the rest and disposes before the successor starts', async function () {
 		const [owner, successor] = await startWorkers(2);
-		const ownerId = owner.threadId;
+		const [ownerId, successorId] = [owner.threadId, successor.threadId];
 		await registerInOrder([owner, successor], 'handover');
 		await waitForStatus(successor, 'handover', (status) => status?.state === 'ready', 'handover: not ready');
+		// One call running at the owner and one queued behind it.
+		const running = command(successor, { command: 'embed', id: 'handover', texts: ['gate:handover'] });
+		await waitingOn('gate:handover');
+		const queued = command(successor, { command: 'embed', id: 'handover', texts: ['handover:queued'] });
+		await waitFor(async () => (await ownerLoad(owner, 'handover'))?.queued === 1);
 		// What a rolling restart sends a worker before it stops it.
 		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: manageThreads.restartNumber });
 
+		// While the released owner still runs a call, no successor is elected or starts a second instance.
+		const handingOver = await waitForStatus(
+			successor,
+			'handover',
+			(status) => status?.draining === ownerId,
+			'handover: the released owner was never reported draining'
+		);
+		assert.strictEqual(handingOver.owner, undefined);
+		// A request routed with an older view reaches the released owner and is refused as moved, not run.
+		await command(successor, {
+			command: 'send',
+			target: ownerId,
+			message: rawRequest('handover', successorId, 1e6 + 1, { args: [['handover:stale']] }),
+		});
+		const stale = await rawResponse(1e6 + 1);
+		assert.strictEqual(stale.from, ownerId);
+		assert.strictEqual(stale.message.ok, false);
+		assert.strictEqual(stale.message.error.reason, 'moved');
+		assert.deepStrictEqual(
+			factoryRuns('handover').map((event) => event.threadId),
+			[ownerId]
+		);
+
+		await command(owner, { command: 'release', text: 'gate:handover' });
+		assertServedBy(await running, ['gate:handover'], ownerId);
+		assertServedBy(await queued, ['handover:queued'], successorId);
+		const drained = await waitFor(() =>
+			events.find((event) => event.event === 'drained' && event.threadId === ownerId)
+		);
+		assert.strictEqual(drained.hadWork, true, "the owner's instance held Harper's shutdown drain open");
 		const handedOver = await waitForStatus(
 			successor,
 			'handover',
-			(status) => status?.state === 'ready' && status.owner === successor.threadId,
+			(status) => status?.state === 'ready' && status.owner === successorId,
 			'handover: the successor never became the ready owner'
 		);
 		assert.strictEqual(handedOver.restarts, 0, 'a planned exit is not a failure');
+		assert.deepStrictEqual(
+			events
+				.filter((event) => (event.event === 'factory' || event.event === 'dispose') && event.id === 'handover')
+				.map((event) => `${event.event}@${event.threadId}`),
+			[`factory@${ownerId}`, `dispose@${ownerId}`, `factory@${successorId}`],
+			'the old instance was disposed before the successor ran its factory'
+		);
+		assert.strictEqual(backendCalls('handover:stale').length, 0);
 		owner.wasShutdown = true;
 		await owner.terminate();
 		assertServedBy(
 			await command(successor, { command: 'embed', id: 'handover', texts: ['handover:after'] }),
 			['handover:after'],
-			successor.threadId
+			successorId
 		);
+	});
+
+	it('elects the newest generation present when the released instance is gone, and never preempts the owner it elected', async function () {
+		const generation = manageThreads.restartNumber;
+		const [owner, sameGeneration] = await startWorkers(2);
+		const ownerId = owner.threadId;
+		await registerInOrder([owner, sameGeneration], 'generation');
+		const held = occupy(owner, 'generation');
+		await waitingOn('gate:generation');
+		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: generation });
+		await waitForStatus(
+			sameGeneration,
+			'generation',
+			(status) => status?.draining === ownerId,
+			'generation: the owner never started draining'
+		);
+		// A deploy's replacement claims while the old owner is still finishing its call.
+		const newer = await startWorkerInGeneration(generation + 1);
+		await command(newer, { command: 'register', id: 'generation' });
+		await waitForStatus(
+			newer,
+			'generation',
+			(status) => status?.draining === ownerId && status.generation === generation + 1,
+			'generation: the newer claim never reached main'
+		);
+		await command(owner, { command: 'release', text: 'gate:generation' });
+		await held;
+
+		const elected = await waitForStatus(
+			sameGeneration,
+			'generation',
+			(status) => status?.state === 'ready',
+			'generation: no successor became ready'
+		);
+		assert.strictEqual(elected.owner, newer.threadId, 'the newer generation won over the older claimant');
+		// A claim of a still newer generation, after the election, does not move a healthy owner.
+		const newest = await startWorkerInGeneration(generation + 2);
+		await registerInOrder([newest], 'generation');
+		const kept = await statusOf(newest, 'generation');
+		assert.strictEqual(kept.owner, newer.threadId);
+		assert.strictEqual(kept.generation, generation + 2);
 		assert.deepStrictEqual(
-			factoryRuns('handover').map((event) => event.threadId),
-			[ownerId, successor.threadId]
+			factoryRuns('generation').map((event) => event.threadId),
+			[ownerId, newer.threadId]
 		);
-		assert.strictEqual((await statusOf(successor, 'handover')).restarts, 0);
+	});
+
+	it('bounds the calls that wait for an owner, in number and in time, fails them by name, and serves once a claimant arrives', async function () {
+		const mainModels = new Models({ write: () => 0 }, () => {}, {});
+		const wasWorker = getWorkerIndex() === 0;
+		// While it has workers the main thread loads no application code: it can call, never own.
+		setMainIsWorker(false);
+		try {
+			const [owner] = await startWorkers(1);
+			const options = { ownerWaitMs: 300, maxPending: 2 };
+			await registerInOrder([owner], 'unowned', options);
+			registerProcessBackend(
+				'embedding',
+				'unowned',
+				() => assert.fail('the main thread never runs the factory'),
+				options
+			);
+			await waitFor(() => backendStatus('embedding', 'unowned')?.state === 'ready', 10000);
+			owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: manageThreads.restartNumber });
+			await waitFor(
+				() => events.some((event) => event.event === 'drained' && event.threadId === owner.threadId),
+				10000
+			);
+			const unowned = await waitFor(() => {
+				const status = backendStatus('embedding', 'unowned');
+				return status?.reason === 'no-owner' && status.draining === undefined && status;
+			}, 10000);
+			assert.strictEqual(unowned.owner, undefined);
+
+			const waiting = ['unowned:1', 'unowned:2'].map((text) =>
+				mainModels.embed(text, { model: 'unowned' }).then(
+					() => assert.fail('no owner, so no answer'),
+					(error) => error
+				)
+			);
+			await waitFor(() => callerLoad('embedding', 'unowned').waiting === 2);
+			await assert.rejects(mainModels.embed('unowned:3', { model: 'unowned' }), ModelBackendBusyError);
+			for (const error of await Promise.all(waiting)) {
+				assert.ok(error instanceof ModelBackendUnavailableError, String(error));
+				assert.strictEqual(error.reason, 'no-owner');
+			}
+			assert.deepStrictEqual(callerLoad('embedding', 'unowned'), { waiting: 0, inFlight: 0 });
+
+			const [replacement] = await startWorkers(1);
+			await registerInOrder([replacement], 'unowned', options);
+			const [vector] = await mainModels.embed('unowned:after', { model: 'unowned' });
+			assert.deepStrictEqual([...vector], [fingerprint('unowned:after'), replacement.threadId]);
+		} finally {
+			setMainIsWorker(wasWorker);
+		}
 	});
 
 	it('restarts a failed start on another worker and fails the requests that waited on it', async function () {
@@ -327,13 +667,14 @@ describe('models.registerProcessBackend: one backend per process, served to ever
 			'start-failure: owner not seen'
 		);
 		const waiting = command(healthy, { command: 'embed', id: 'start-failure', texts: ['start-failure:early'] });
-		await waitFor(async () => (await command(failing, { command: 'load', id: 'start-failure' })).load?.queued === 1);
+		await waitFor(async () => (await ownerLoad(failing, 'start-failure'))?.queued === 1);
 		await command(failing, { command: 'release', text: 'start:start-failure' });
 
 		const early = await waiting;
 		assert.strictEqual(early.ok, false);
 		assert.strictEqual(early.error.name, 'ModelBackendUnavailableError');
 		assert.strictEqual(early.error.reason, 'start-failed');
+		assert.ok(!early.error.message.includes('model file is missing'), "the factory's error is not the caller's");
 		const status = await waitForStatus(
 			failing,
 			'start-failure',
@@ -348,6 +689,35 @@ describe('models.registerProcessBackend: one backend per process, served to ever
 			healthy.threadId
 		);
 	});
+
+	for (const [mode, description, pattern] of [
+		['throw', 'throws', /capabilities are not readable yet/],
+		['uncloneable', 'returns a value that cannot cross threads', /could not be cloned|clone/i],
+	])
+		it(`fails the start, and the calls that waited on it, when the backend's capabilities() ${description}`, async function () {
+			const id = `capabilities-${mode}`;
+			const [failing, caller] = await startWorkers(2);
+			const options = { maxRestarts: 0 };
+			await command(failing, { command: 'register', id, holdStart: true, capabilities: mode, options });
+			await waitFor(() => factoryRuns(id).length === 1);
+			await command(caller, { command: 'register', id, capabilities: mode, options });
+			await waitForStatus(caller, id, (status) => status?.owner === failing.threadId, `${id}: owner not seen`);
+			const waiting = command(caller, { command: 'embed', id, texts: [`${id}:early`] });
+			await waitFor(async () => (await ownerLoad(failing, id))?.queued === 1);
+			await command(failing, { command: 'release', text: `start:${id}` });
+
+			const early = await waiting;
+			assert.strictEqual(early.ok, false);
+			assert.strictEqual(early.error.name, 'ModelBackendUnavailableError');
+			assert.strictEqual(early.error.reason, 'start-failed');
+			const failed = await waitForStatus(caller, id, (status) => status?.state === 'failed', `${id}: never failed`);
+			assert.strictEqual(failed.reason, 'start-failed');
+			assert.match(failed.error.message, pattern);
+			assert.ok(
+				events.some((event) => event.event === 'dispose' && event.id === id && event.threadId === failing.threadId),
+				'the instance the factory built was disposed'
+			);
+		});
 
 	it('leaves registerBackend per thread: each worker builds and serves its own backend', async function () {
 		const [first, second] = await startWorkers(2);
@@ -369,6 +739,228 @@ describe('models.registerProcessBackend: one backend per process, served to ever
 			[first.threadId, second.threadId]
 		);
 		assert.deepStrictEqual(await statusOf(second, 'per-thread'), { scope: 'thread', state: 'ready' });
+	});
+
+	it('identifies every sender by the port its message came over: a forged state push or response is ignored', async function () {
+		const [owner, caller, forger] = await startWorkers(3);
+		await registerInOrder([owner, caller, forger], 'forged');
+		await waitForStatus(caller, 'forged', (status) => status?.state === 'ready', 'forged: not ready');
+		const pending = command(caller, { command: 'embed', id: 'forged', texts: ['gate:forged'] });
+		await waitingOn('gate:forged');
+
+		// A state push naming the forger as owner, claiming to come from main.
+		await command(forger, {
+			command: 'send',
+			target: caller.threadId,
+			message: {
+				type: STATE,
+				key: keyOf('forged'),
+				version: 1e9,
+				epoch: 1e9,
+				state: 'ready',
+				owner: forger.threadId,
+				restarts: 0,
+				maxRestarts: 1,
+				generation: 1,
+				origin: 0,
+			},
+		});
+		// A response claiming to come from the owner, for every request id the caller could be waiting on.
+		for (let request = 1; request <= 64; request++)
+			await command(forger, {
+				command: 'send',
+				target: caller.threadId,
+				message: {
+					type: RESPONSE,
+					request,
+					origin: owner.threadId,
+					ok: true,
+					result: { status: 'completed', output: [Float32Array.of(-1, -1)] },
+				},
+			});
+		// Asserting a non-event: give the forged messages time to be (not) acted on.
+		await delay(200);
+		assert.strictEqual((await statusOf(caller, 'forged')).owner, owner.threadId);
+		await command(owner, { command: 'release', text: 'gate:forged' });
+		assertServedBy(await pending, ['gate:forged'], owner.threadId);
+	});
+
+	it("keeps an isolated application's backends apart from the shared pool's, whatever its messages claim", async function () {
+		const [shared] = await startWorkers(1);
+		const isolated = await startFixtureWorker(workers, { application: 'isolated-app' });
+		await registerInOrder([shared], 'domain');
+		await registerInOrder([isolated], 'domain');
+		assertServedBy(
+			await command(shared, { command: 'embed', id: 'domain', texts: ['domain:shared'] }),
+			['domain:shared'],
+			shared.threadId
+		);
+		assertServedBy(
+			await command(isolated, { command: 'embed', id: 'domain', texts: ['domain:isolated'] }),
+			['domain:isolated'],
+			isolated.threadId
+		);
+		assert.deepStrictEqual(
+			factoryRuns('domain')
+				.map((event) => event.threadId)
+				.sort(),
+			[shared.threadId, isolated.threadId].sort(),
+			'each domain elected its own owner'
+		);
+
+		// The isolated worker claims the shared pool's key outright, then asks the shared owner to serve it.
+		await command(isolated, {
+			command: 'send',
+			target: 0,
+			message: {
+				type: CLAIM,
+				key: keyOf('domain'),
+				origin: isolated.threadId,
+				generation: 1,
+				eligible: true,
+				options: { concurrency: 1, maxPending: 256, maxRestarts: 1, ownerWaitMs: 30000 },
+			},
+		});
+		await delay(100);
+		await command(isolated, {
+			command: 'send',
+			target: shared.threadId,
+			message: rawRequest('domain', isolated.threadId, 1e6 + 2, { args: [['domain:intruder']] }),
+		});
+		const answer = await rawResponse(1e6 + 2);
+		assert.strictEqual(answer.message.ok, false);
+		assert.strictEqual(answer.message.error.reason, 'not-owner');
+		assert.strictEqual(backendCalls('domain:intruder').length, 0);
+	});
+
+	it('starts a factory only on an election from main, never on a request that names one', async function () {
+		const [owner, bystander, caller] = await startWorkers(3);
+		await registerInOrder([owner, bystander, caller], 'elected');
+		await command(caller, {
+			command: 'send',
+			target: bystander.threadId,
+			message: rawRequest('elected', caller.threadId, 1e6 + 3, { epoch: 1e6 }),
+		});
+		const answer = await rawResponse(1e6 + 3);
+		assert.strictEqual(answer.from, bystander.threadId);
+		assert.strictEqual(answer.message.ok, false);
+		assert.strictEqual(answer.message.error.reason, 'moved');
+		assert.deepStrictEqual(
+			factoryRuns('elected').map((event) => event.threadId),
+			[owner.threadId]
+		);
+	});
+
+	it("holds a request that names a state the owner has not seen yet until main's push arrives", async function () {
+		const [owner, caller, latecomer] = await startWorkers(3);
+		await registerInOrder([owner, caller], 'early-request');
+		const seen = await ownerLoad(owner, 'early-request');
+		// The request the caller would send had it already seen main's next push.
+		await command(caller, {
+			command: 'send',
+			target: owner.threadId,
+			message: rawRequest('early-request', caller.threadId, 1e6 + 4, {
+				version: seen.version + 1,
+				epoch: seen.epoch,
+				args: [['early-request:raced']],
+			}),
+		});
+		await waitFor(async () => (await ownerLoad(owner, 'early-request'))?.parked === 1);
+		assert.strictEqual(backendCalls('early-request:raced').length, 0);
+		// The next claim makes main push its next state to the owner, which then serves the request.
+		await registerInOrder([latecomer], 'early-request');
+		const answer = await rawResponse(1e6 + 4);
+		assert.strictEqual(answer.message.ok, true);
+		assert.deepStrictEqual([...answer.message.result.output[0]], [fingerprint('early-request:raced'), owner.threadId]);
+	});
+
+	it('forwards generate, scoreChoices and decide from worker to worker', async function () {
+		const [owner, caller] = await startWorkers(2);
+		await registerInOrder([owner, caller], 'remote-generative', undefined, { kind: 'generative' });
+		await registerInOrder([owner, caller], 'remote-decision', undefined, { kind: 'decision' });
+		// scoreChoices is advertised once the owner reports its capabilities.
+		await waitForStatus(
+			caller,
+			'remote-generative',
+			(status) => status?.state === 'ready',
+			'remote-generative: not ready',
+			'generative'
+		);
+
+		const generated = await command(caller, { command: 'generate', id: 'remote-generative', input: 'hello' });
+		assert.ok(generated.ok, JSON.stringify(generated.error));
+		assert.strictEqual(generated.result.content, `${owner.threadId}:hello`);
+		const scored = await command(caller, {
+			command: 'scoreChoices',
+			id: 'remote-generative',
+			input: 'pick',
+			choices: ['a', 'b'],
+		});
+		assert.ok(scored.ok, JSON.stringify(scored.error));
+		assert.deepStrictEqual(scored.result.logLikelihoods, [-owner.threadId / 1000, -1 - owner.threadId / 1000]);
+		const decided = await command(caller, {
+			command: 'decide',
+			id: 'remote-decision',
+			state: 'state',
+			schema: { enum: ['first', 'second'] },
+		});
+		assert.ok(decided.ok, JSON.stringify(decided.error));
+		assert.strictEqual(decided.value, 'first');
+	});
+
+	it("rebuilds a backend's error on the caller with its name, status code and code", async function () {
+		const [owner, caller] = await startWorkers(2);
+		await registerInOrder([owner, caller], 'errors');
+		const reply = await command(caller, { command: 'embed', id: 'errors', texts: ['error:429:rate_limited'] });
+		assert.strictEqual(reply.ok, false);
+		assert.deepStrictEqual(
+			{
+				name: reply.error.name,
+				message: reply.error.message,
+				statusCode: reply.error.statusCode,
+				code: reply.error.code,
+			},
+			{
+				name: 'ProviderError',
+				message: 'provider refused error:429:rate_limited',
+				statusCode: 429,
+				code: 'rate_limited',
+			}
+		);
+	});
+
+	it('falls back to a configured fallback group member when the process-wide backend has failed', async function () {
+		const [owner, caller] = await startWorkers(2);
+		const options = { maxRestarts: 0 };
+		await command(owner, { command: 'register', id: 'with-fallback', failStart: true, options });
+		await waitFor(() => factoryRuns('with-fallback').length === 1);
+		await command(caller, { command: 'register', id: 'with-fallback', options });
+		await command(caller, { command: 'fallback', id: 'with-fallback', fallbackId: 'fallback-member' });
+		await command(owner, { command: 'release', text: 'start:with-fallback' });
+		await waitForStatus(caller, 'with-fallback', (status) => status?.state === 'failed', 'with-fallback: not failed');
+
+		assertServedBy(
+			await command(caller, { command: 'embed', id: 'with-fallback', texts: ['with-fallback:a'] }),
+			['with-fallback:a'],
+			caller.threadId
+		);
+		const rows = events
+			.filter(
+				(event) => event.event === 'row' && event.threadId === caller.threadId && event.record.model === 'with-fallback'
+			)
+			.map((event) => [event.record.backend, event.record.success, event.record.error_code]);
+		assert.deepStrictEqual(rows, [
+			['process:with-fallback', false, 'backend_unavailable'],
+			['test:fallback-member', true, undefined],
+		]);
+	});
+
+	it("keeps the first claim's restart budget when claims of one generation disagree", async function () {
+		const [first, second] = await startWorkers(2);
+		await registerInOrder([first], 'divergent', { maxRestarts: 1 });
+		await registerInOrder([second], 'divergent', { maxRestarts: 3 });
+		assert.strictEqual((await statusOf(second, 'divergent')).maxRestarts, 1);
+		assert.strictEqual((await statusOf(first, 'divergent')).maxRestarts, 1);
 	});
 });
 
@@ -477,6 +1069,7 @@ describe('models.registerProcessBackend on the main thread', function () {
 		await assert.rejects(models.embed('a', { model: 'main-empty' }), (error) => {
 			assert.ok(error instanceof ModelBackendUnavailableError);
 			assert.ok(['start-failed', 'failed'].includes(error.reason), error.reason);
+			assert.strictEqual(error.cause, undefined);
 			return true;
 		});
 		const status = await waitFor(() => {
@@ -498,22 +1091,58 @@ describe('models.registerProcessBackend on the main thread', function () {
 			() => registerProcessBackend('generative', 'bad', () => undefined, { maxBatchInputs: 4 }),
 			/embedding backends only/
 		);
+		assert.throws(
+			() => registerProcessBackend('embedding', 'bad', () => undefined, { ownerWaitMs: 0 }),
+			ModelBackendRegistrationError
+		);
 		assert.strictEqual(models.backendStatus('embedding', 'bad'), undefined, 'a refused registration installs nothing');
 	});
 });
 
 describe('apportionUsage', function () {
-	it('splits a merged call into whole token counts that sum to the reported total', function () {
-		const shares = apportionUsage({ embeddingTokens: 10, latencyMs: 40, gpuMs: 6 }, [1, 1, 1]);
+	/** Every order the shares could be added in, for a few shares. */
+	function permutations(list) {
+		if (list.length <= 1) return [list];
+		return list.flatMap((item, index) =>
+			permutations([...list.slice(0, index), ...list.slice(index + 1)]).map((rest) => [item, ...rest])
+		);
+	}
+
+	it('splits whole token counts by largest remainder', function () {
+		const shares = apportionUsage({ embeddingTokens: 10, latencyMs: 40 }, [1, 1, 1]);
 		assert.deepStrictEqual(
 			shares.map((share) => share.embeddingTokens),
 			[4, 3, 3]
 		);
-		assert.ok(shares.every((share) => share.latencyMs === 40));
-		assert.strictEqual(
-			shares.reduce((sum, share) => sum + share.gpuMs, 0),
-			6
+		assert.ok(
+			shares.every((share) => share.latencyMs === 40),
+			'latency is the merged call’s for every member'
 		);
 		assert.deepStrictEqual(apportionUsage(undefined, [2, 1]), [undefined, undefined]);
+	});
+
+	it('makes the shares sum exactly to the reported value, in any order, when the value is fractional', function () {
+		for (const [value, counts] of [
+			[10.5, [1, 1, 1]],
+			[7.3, [3, 1, 2]],
+			[0.1, [1, 1]],
+			[1234567.890123, [5, 7, 11, 13]],
+		]) {
+			const shares = apportionUsage({ promptTokens: value, gpuMs: value }, counts);
+			for (const field of ['promptTokens', 'gpuMs'])
+				for (const order of permutations(shares.map((share) => share[field])))
+					assert.strictEqual(
+						order.reduce((sum, part) => sum + part, 0),
+						value,
+						`${field} ${value} over ${counts}`
+					);
+		}
+	});
+
+	it('attributes a negative count whole to the first member rather than splitting it', function () {
+		assert.deepStrictEqual(
+			apportionUsage({ completionTokens: -2 }, [1, 1]).map((share) => share.completionTokens),
+			[-2, 0]
+		);
 	});
 });
