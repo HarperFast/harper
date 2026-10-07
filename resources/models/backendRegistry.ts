@@ -47,7 +47,8 @@ interface CaptureSlot {
 	/** Deferred with the primary, so no request observes a new helper next to an old primary. */
 	extras: CapturedInstall[];
 	/** Async work spawned by a factory retains the ALS context past construction; once construction
-	 * ends the scope deactivates so a late same-slot registration installs normally. */
+	 * ends the scope deactivates, so a later registration is not captured: it is handled as any
+	 * registration outside a capture, installed, or diverted under a key `guardInstalled` keeps. */
 	active: boolean;
 	/** Refuse a second registration under the slot's own key (`constructBackend`'s `exclusive`). */
 	exclusive: boolean;
@@ -277,7 +278,8 @@ export function resolveDecision(logicalName: string = 'default'): ModelBackend {
  * instance in the process at a time (an in-process model) registers through
  * `registerProcessBackend` (`processBackend.ts`) instead. Under a key this thread
  * registered that way, a registration outside that backend's factory is not installed
- * over its proxy: it is disposed, with a warning, and the call does not throw.
+ * over its proxy, and the call does not throw: with a warning, it is disposed when this
+ * thread's run of that backend ends, or at once when this thread runs none.
  *
  * `id` is the logical name callers select with `opts.model` (e.g.
  * `models.embed(text, { model: 'local:bge-small' })`). A provider-namespaced id

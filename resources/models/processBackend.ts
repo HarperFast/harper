@@ -658,6 +658,9 @@ interface OwnerRun {
 	 * them. A start that succeeds disposes all but the instance, which then stays here until the run
 	 * ends: the backend it registered under the key, and what it returned when that is a different
 	 * object, so a module factory that registers its backend and returns the engine behind it frees both.
+	 * A registration under the key outside the factory's capture while the run is live is added too
+	 * (`divertLate`), and disposed with the rest. Each object stays here until its disposal ends, so an
+	 * object found here is the run's, and is never added twice.
 	 */
 	held: Disposable[];
 	/** The backend's name and capabilities, read and checked for cloning once, when it started. */
@@ -842,20 +845,41 @@ export function registerProcessBackend(
 	if (!sent) log.warn?.(`models: could not reach the main thread to register process-wide backend '${kind}.${id}'`);
 }
 
-/** Objects registered over a process-wide key's proxy, held until their disposal ends. */
+/** Objects registered over a process-wide key's proxy with no live run to hold them, kept until their disposal ends. */
 const divertedLate = new Set<unknown>();
 
 /**
  * A registration under `slot`'s key outside its owner's capture, such as one the factory's leftover
  * async work makes after the start: it is never installed over the proxy, which keeps routing to the
- * owner, and is disposed at once, with the usual tries. It is not part of any run's instance, so a
- * disposal that keeps failing is logged, not reported to main, and elects nobody.
+ * owner. While this thread holds a live run of the key, the run owns it as it owns its instance: it is
+ * added to what the run holds and disposed by the time main hears the run has ended, so a disposal
+ * that keeps failing is reported as `DISPOSE_FAILED` and no successor starts while it may be live. A
+ * ready run does not dispose it sooner, since it may share what the instance is serving with. An
+ * object the run already holds, such as its own backend or what its factory returned registered
+ * again, is left as it is. With no live run on this thread, it is disposed at once, with the usual
+ * tries, and a disposal that keeps failing is logged.
  */
 function divertLate(slot: Slot, late: unknown): void {
+	const { kind, logicalName } = slot;
+	const object = (typeof late === 'object' && late !== null) || typeof late === 'function';
+	const run = slot.run;
+	if (object && run && isLive(run)) {
+		if (run.held.includes(late as Disposable)) {
+			log.debug?.(
+				`models: an object process-wide backend '${kind}.${logicalName}' already holds was registered under it again; it is left as it is`
+			);
+			return;
+		}
+		log.warn?.(
+			`models: '${kind}.${logicalName}' is a process-wide backend on this thread; a registration under it outside its factory's start is not installed over its proxy, and is disposed when this thread's run of it ends`
+		);
+		run.held.push(late as Disposable);
+		return;
+	}
 	log.warn?.(
-		`models: '${slot.kind}.${slot.logicalName}' is a process-wide backend on this thread; a registration under it outside its factory's start is not installed over its proxy, and is disposed`
+		`models: '${kind}.${logicalName}' is a process-wide backend on this thread; a registration under it outside its factory's start is not installed over its proxy, and is disposed`
 	);
-	if (((typeof late !== 'object' || late === null) && typeof late !== 'function') || divertedLate.has(late)) return;
+	if (!object || divertedLate.has(late)) return;
 	divertedLate.add(late);
 	void disposeOne(slot, late as Disposable)
 		.then((undisposed) => {
@@ -1251,7 +1275,9 @@ async function startBackend(slot: Slot, run: OwnerRun): Promise<void> {
 			logicalName,
 			async () => {
 				const result = slot.factory({ kind, logicalName, signal: run.factoryAbort.signal });
-				// Held before it is awaited, since awaiting reads its `then`, which may throw.
+				// Held before it is awaited, since awaiting reads its `then`, which may throw. An async factory
+				// returns its own Promise, which reads the `then` of what the factory returns before the owner
+				// can, so an object that throws there never reaches the owner: it is the factory's to free.
 				hold(result);
 				returned = await result;
 				hold(returned);
@@ -1275,13 +1301,15 @@ async function startBackend(slot: Slot, run: OwnerRun): Promise<void> {
 		// invalid and the factory caught) is disposed before the start is reported, as a failed start's
 		// would be; one that cannot be fails the start.
 		const instance = [constructed.backend, returned];
-		const others = run.held.filter((handed) => !instance.includes(handed));
-		run.held = run.held.filter((handed) => instance.includes(handed));
 		for (const extra of constructed.extras)
 			log.warn?.(
 				`models: process-wide backend '${kind}.${logicalName}' registered '${extra.kind}.${extra.logicalName}' while starting; it is not installed, and is disposed unless the factory also returned it`
 			);
-		for (const other of others) undisposed = (await disposeOne(slot, other)) ?? undisposed;
+		// Each stays held until its disposal ends, so a registration of it meanwhile is the run's (`divertLate`).
+		for (const other of run.held.filter((handed) => !instance.includes(handed))) {
+			undisposed = (await disposeOne(slot, other)) ?? undisposed;
+			run.held = run.held.filter((handed) => handed !== other);
+		}
 		if (undisposed) throw undisposed.error;
 	} catch (error) {
 		run.factorySettled = true;
@@ -1345,14 +1373,19 @@ function reportStarted(slot: Slot, run: OwnerRun): void {
 
 /**
  * Dispose everything the run holds (`held`), in the order it was handed over: the instance, or after a
- * failed start everything the factory handed over. Resolves to undefined once each one is disposed, or
- * to an error when one could not be: the instance may still be live. Every one is tried, whatever
- * happened to the others.
+ * failed start everything the factory handed over, and any registration under the key `divertLate`
+ * gave it, one handed over while this runs included. Resolves to undefined once each one is disposed,
+ * or to an error when one could not be: the instance may still be live. Every one is tried, whatever
+ * happened to the others, and each stays held until its own disposal ends.
  */
 async function disposeInstance(slot: Slot, run: OwnerRun): Promise<{ error: unknown } | undefined> {
 	run.backend = undefined;
 	let undisposed: { error: unknown } | undefined;
-	for (const held of run.held.splice(0)) undisposed = (await disposeOne(slot, held)) ?? undisposed;
+	while (run.held.length > 0) {
+		const held = run.held[0];
+		undisposed = (await disposeOne(slot, held)) ?? undisposed;
+		run.held = run.held.filter((handed) => handed !== held);
+	}
 	return undisposed;
 }
 
