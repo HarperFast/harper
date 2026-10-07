@@ -96,21 +96,15 @@ jobs:
             echo "which harper -> $resolved"
           '
 
-      # Proves the shrinkwrap was actually honored, not just present -- the other checks
-      # here would stay green even if the Dockerfile reverted to `npm install --global
-      # <tarball>` and started re-resolving the tree fresh again (#1960). Compares against
-      # npm-shrinkwrap.packed.json (frozen pre-install by the Dockerfile), not the live
-      # npm-shrinkwrap.json -- npm rewrites the live file to match whatever it installs, so
-      # comparing against it would just compare npm's output to itself.
-      - name: Installed dependency versions match the packed shrinkwrap
+      - name: Installed bundle and native roots match the release lock
         run: |
           docker run --rm \
-            -v "${{ github.workspace }}/build-tools/check-shrinkwrap-pins.mjs:/tmp/check-shrinkwrap-pins.mjs:ro" \
+            -v "${{ github.workspace }}/build-tools:/tmp/build-tools:ro" \
+            -v "${{ github.workspace }}/package-lock.json:/tmp/package-lock.json:ro" \
             --entrypoint sh harperfast/harper:smoke-test -c '
             set -e
             pkgRoot=$(npm root -g)/harper
-            test -f "$pkgRoot/npm-shrinkwrap.packed.json" || { echo "::error::npm-shrinkwrap.packed.json is missing from the installed package"; exit 1; }
-            node /tmp/check-shrinkwrap-pins.mjs "$pkgRoot"
+            node /tmp/build-tools/bundleDependencies.ts installed "$pkgRoot" /tmp/package-lock.json
           '
 
       - name: Container boots and serves the Operations API (default runtime)

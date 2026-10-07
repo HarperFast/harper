@@ -1,83 +1,28 @@
 # build-tools/ — Design notes
 
-Packaging and the published artifacts (npm tarball, shrinkwrap, Docker image).
+Packaging and the published artifacts (npm dependency bundle, Docker image).
 
-**Read this when:** touching the shrinkwrap scripts, `build.sh` or the `Dockerfile`.
+**Read this when:** touching dependency bundling, `build.sh` or the `Dockerfile`.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
-## The published shrinkwrap governs registry installs but not tarball installs (`build-tools/`)
+## Release dependencies are bundled without host binaries (`bundleDependencies.ts`)
 
-npm decides whether to honor a dependency's bundled `npm-shrinkwrap.json` from the `_hasShrinkwrap`
-flag in the **registry packument**, metadata the registry sets at publish time — not by looking
-inside the tarball. So `npm install harper` from the registry installs exactly the tree the
-shrinkwrap describes, including honoring _omissions_ (it will not re-resolve an optional dependency
-that has been pruned out). But `npm install ./harper-*.tgz` has no packument, so npm never learns the
-shrinkwrap exists and re-resolves the whole tree from `package.json`. Verified on one published
-5.1.23 artifact: via the registry it honored the pin (fastify 5.8.5), from the tarball it resolved
-fresh (fastify 5.10.0, then-latest).
+`build.sh` installs the repository lock with `npm ci`, builds Harper and Studio, and stages npm's own source-file selection. Only the staged manifest declares `bundleDependencies`; a root `npm pack` remains a source package and cannot capture the development dependency tree. `prepareBundle` copies the locked, production-reachable JavaScript closure at its original nested/hoisted paths, leaving development-only entries behind. Existing destinations must carry this preparer's ownership marker before they can be cleared. npm 10/11's array and npm 12's name-keyed pack output are both accepted. `checkBundle` validates both the stage and the extracted final archive against the checkout's lock, including copied dependency declarations and peer optionality. The tarball moves from staging to its release filename only after validation; rebuilding removes an older release archive first. `bundleDependencies.test.mjs` covers a real pack → consumer install → offline `npm ci`, nested copies, native rejection and deliberate version/declaration corruption.
 
-Three consequences worth knowing before touching packaging:
+Native-containing roots remain ordinary dependencies with exact versions from the lock in the release manifest. Rewriting a non-registry source spec is rejected rather than changing the package's provenance. This includes JavaScript wrappers (`msgpackr`, `cbor-x`, `structon`) and the Bare-runtime optional trees of `tar-fs` and `tar-stream`. `ws` also stays external with its optional native `bufferutil` accelerator so consumers can override the transport independently; optional-only peers are not followed by the bundle planner. Shared direct packages (`@harperfast/extended-iterable`, `ordered-binary`, `weak-lru-cache`) also stay unbundled. The locked storage engines must still declare every module in the alignment contract; declaration changes fail packaging and require updating that contract. Installation checks compare the resolution paths of the storage engines' shared iterables/encoder modules with Harper's, including a consumer layout where npm hoists native roots out of Harper's directory. Negative fixtures reject nested and linked private encoder copies. `SKIP` itself is already a global Symbol; duplicate module copies do not create distinct sentinels.
 
-- `overrides` in harper's `package.json` are **root-only** and do nothing for anyone installing
-  harper. The shrinkwrap is the only lever that reaches consumers, which is why the react-native
-  prune lives in `build-tools/prune-shrinkwrap-react-native.mjs` rather than in `overrides` (#1937).
-- The published shrinkwrap is deliberately _not_ what `npm shrinkwrap` produced — `build.sh`
-  post-processes it (dev prune #1783, optional subtree prune #1937 and the #3006 follow-up) to enforce that it describes only the
-  production tree a consumer installs. Anything added there must keep it internally consistent; a
-  pruned entry that something still requires would ship a broken tree to every consumer.
-- The Dockerfile extracts the local tarball into a project directory and runs `npm install` there
-  (rather than `npm install --global <tarball>`), so it reads `npm-shrinkwrap.json` off disk like any
-  checked-out project and gets version pinning (#1960). It does **not** get the omission half: `npm
-install` (unlike a registry install of harper as _someone else's_ dependency) reconciles the local
-  project's own `package.json` against the lockfile, and the packed `package.json` prunes nothing —
-  only the shrinkwrap does. `alasql`'s packed manifest still declares the react-native-fs optional
-  edge, so plain `npm install` silently re-adds that whole pruned subtree to satisfy it. Closing that
-  gap needs `npm ci` against a package.json where `alasql`'s own packed manifest has also had the edge
-  removed — a bigger change to the published tarball than this dance, and not yet done. The Dockerfile
-  does strip `devDependencies` from its _own extracted copy_ of `package.json` before installing (not
-  the published tarball — registry consumers never see this) — not for `npm ci`'s sake, but because
-  without it `npm install` still resolves dev edges to compute the ideal tree even under `--omit=dev`,
-  which could silently lift a _production_ package that a devDependency also happens to want above its
-  shrinkwrap pin. Confirmed empirically before landing: a hoisted production package's installed
-  version tracked a devDependency's looser range instead of the shrinkwrap pin without this strip.
-- Pinning inverts the old incident-remediation path, worth knowing before reaching for it: before
-  #1960, rebuilding the image picked up any newer in-range dependency automatically, which is how a
-  bad pin got fixed in production by "refresh/rebuild the image" alone. After #1960, the _pinned_ part
-  of the tree is frozen to the shrinkwrap, so a remediation of that shape now needs a lock bump and a
-  re-release — a rebuild alone reproduces the same tree, bug included. This does **not** apply to the
-  react-native residual two bullets up: that subtree is still re-resolved fresh on every build, so a
-  bug specific to it (not that anyone should want one there) actually would clear on a rebuild.
+The same helper supports harper-pro’s `re2` and `@datadog/pprof` native roots as ordinary exact-pinned dependencies. Neither is present in core’s lock, so these exclusions do not change core’s bundle. New pro-only native roots require an explicit policy update here rather than a separate copier or CLI policy parameter.
 
-## Optional UTF-8 peers must not retain an unused native addon
+The bundle must be closed over declared dependencies and optional dependencies, including foreign-platform lock records. Optional-only peers remain externally supplied, even when the development lock contains them, as with `node-fetch`'s optional `encoding` peer. Required type-package dependencies still belong to the closure. Native selectors, install-phase lifecycle hooks, Bare addons, `binding.gyp`, native file extensions and ELF/Mach-O/PE signatures fail preparation or archive inspection. PE detection follows the executable header, so text beginning with `MZ` is permitted. A new native transitive therefore fails packaging instead of silently shipping a host binary. Add its containing root to the unbundled policy deliberately.
 
-Following [#3006](https://github.com/HarperFast/harper/pull/3006), after dev pruning, `prune-shrinkwrap-react-native.mjs` also severs `utf-8-validate` peers explicitly marked optional, unless the same consumer declares a dependency or optional dependency on it. Every supported Node version provides `buffer.isUtf8`, which `ws` uses before considering this addon. npm can hoist a copy produced by the dev framework's Harper peer into a production-reachable location: removing Harper's own declaration alone leaves it in the published shrinkwrap through `ws`'s optional peer. The existing reachability comparison removes only the addon and children exclusive to severed edges. Explicit dependencies, optional dependencies, required peers and shared children remain, including `bufferutil`'s `node-gyp-build`. Every non-severed edge of a surviving reachable package is traversed, so its target survives; severed edges are optional and may remain unresolved. The backstop checks required `dependencies` on leftover entries the root walk never visits. Real subprocess tests in `unitTests/buildTools/pruneShrinkwrapReactNative.test.js` enforce removal and preservation, including nested copies and the real production lock. Each rule reports its own removal count; retire the UTF-8 rule after updating the dev Harper peer to a release without the addon, once the full lock has neither an explicit producer nor an installed addon entry. A stale optional-peer-only entry still needs pruning even after its producer is gone. This guarantee applies to registry installs honoring the published shrinkwrap; tarball installs may re-resolve dependencies as described above.
+Copied manifests omit only unused optional `react-native-fs` edges and optional-peer-only `utf-8-validate` references. Explicit producers are preserved and can fail the native guard. Shared children survive because reachability is computed after cutting those declarations. This replaces shrinkwrap pruning: the omitted edges are absent from the bundled manifests themselves, so npm does not reintroduce the React Native tree. Retire the React Native rule when AlaSQL stops declaring that optional dependency.
 
-## The image's shrinkwrap check must prove it could fail (`build-tools/check-shrinkwrap-pins.mjs`)
+The Docker image uses a normal global tarball install. Bundled JavaScript versions stay fixed on npm 10, 11 and 12, but **the unbundled native subtrees and externally supplied peers can still resolve ranged transitives**; exact root pins do not make the entire image reproducible. A consumer's conflicting dependencies/overrides can also split shared unbundled modules, which the installation checker reports. Bundled CVE fixes require a Harper lock update and release; rebuilding an unchanged tarball keeps the same JavaScript bytes. Bundles are not deduplicated with the consumer's packages.
 
-`docker-smoke.yml` runs this against the built image. Matching pins prove nothing where an unpinned
-install would resolve the same versions, so the check also resolves the same `package.json` fresh
-(lock-only, no shrinkwrap) and fails unless at least one checked edge differs there. That
-requirement is why the check walks the whole packed tree, not a few named packages:
-
-- **Direct dependencies cannot carry the proof.** Renovate's weekly non-major group moves every
-  ranged direct dependency to its newest release that is at least 7 days old. The former
-  hand-picked canaries went vacuous three times. On 2026-09-28, 27 of 28 ranged direct dependencies
-  were at the newest version their range allowed. Transitive pins lag because renovate's
-  `lockFileMaintenance` is off. If it is turned on, expect this check to fail right after each
-  full refresh, until some pinned package publishes again.
-- **Edges, not locations.** Each packed dependency edge is resolved node_modules-style in the packed
-  map and in the installed tree. npm re-hoisting a pinned package to another path is not drift.
-- **The exemption comes only from optional edges to `react-native-fs`**, the severed edge
-  that the image re-adds (today only alasql declares one).
-  The image re-adds that subtree (previous note), and it lifts shared pins such as the `@babel/*`
-  packages `@endo/static-module-record` uses. Edges into that subtree, and the packed edges of a
-  pinned package it lifted, are not pin-checked; a lifted shared pin prints a `::warning::`. A
-  required edge the install resolved without a packed pin fails the check wherever it points:
-  seeding the exemption from "anything unpinned" would exempt exactly the regression the check
-  exists to catch. The exempt set becomes empty once alasql drops the optional edge.
+The PR-gated consumer matrix installs the Linux-produced archive on Linux/npm 10, 11 and 12 and Windows/npm 11, runs consumer `npm ci`, verifies the bundle and module resolution, opens both engines and checks filtering, then tests a global install. Docker smoke repeats the installed-version/resolution checks against the source lock on the image's platform; nightly downstream application tests use the same artifact.
 
 ## The published image runs `tini -g` as PID 1, not Harper (`Dockerfile`)
 
