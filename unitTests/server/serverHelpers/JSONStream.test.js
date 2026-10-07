@@ -56,10 +56,13 @@ describe('Test JSONStream module ', () => {
 		});
 	});
 	describe('Failed iterator bookkeeping', function () {
-		// outer's next() never resolves after its first call, so the stream stays open until an
-		// explicit destroy() -- that's what has to close outer, not stream end. buildInner also
-		// activates `sibling` when inner fails, standing in for another iterator concurrently
-		// tracked in activeIterators (e.g. a sibling nested iterable elsewhere in the response).
+		// `activeIterators` is normally a LIFO stack (depth-first traversal pushes and pops in
+		// order), which is why the old indexOf(iterator)-after-reassignment bug went unnoticed:
+		// the failed entry was always last anyway. `sibling` is injected directly to put a
+		// second, unrelated entry on the list, exercising the one case where lookup-by-identity
+		// (vs. lookup-by-position) actually matters.
+		const EXPECTED_PREFIX = '[[{"error":"Error: inner failure"}]';
+
 		function runNestedFailureCase(buildInner) {
 			let innerReturnCalled = false;
 			let siblingReturnCalled = false;
@@ -86,7 +89,7 @@ describe('Test JSONStream module ', () => {
 						next() {
 							outerCalls++;
 							if (outerCalls === 1) return { done: false, value: inner };
-							return new Promise(() => {}); // outer stays active until destroy()
+							return new Promise(() => {}); // never resolves: outer stays open until destroy()
 						},
 						return() {
 							outerReturnCalled = true;
@@ -99,16 +102,38 @@ describe('Test JSONStream module ', () => {
 			stream = streamAsJSON(outer);
 			return new Promise((resolve, reject) => {
 				let out = '';
-				stream.on('error', reject);
+				const timer = setTimeout(() => {
+					reject(new Error(`timed out waiting for ${JSON.stringify(EXPECTED_PREFIX)}, got ${JSON.stringify(out)}`));
+				}, 2000);
+				timer.unref();
+				const settle = (fn) => {
+					try {
+						fn();
+					} catch (error) {
+						clearTimeout(timer);
+						reject(error);
+					}
+				};
+				stream.on('error', (error) => {
+					clearTimeout(timer);
+					reject(error);
+				});
 				stream.on('data', (chunk) => {
 					out += chunk;
-					if (!out.includes('inner failure')) return;
-					assert.strictEqual(stream.activeIterators.length, 2, 'outer and sibling remain tracked; inner must be gone');
-					assert.ok(stream.activeIterators.includes(sibling));
-					stream.destroy();
+					if (out !== EXPECTED_PREFIX) return;
+					settle(() => {
+						assert.strictEqual(
+							stream.activeIterators.length,
+							2,
+							'outer and sibling remain tracked; inner must be gone'
+						);
+						assert.ok(stream.activeIterators.includes(sibling));
+						stream.destroy();
+					});
 				});
 				stream.on('close', () => {
-					try {
+					clearTimeout(timer);
+					settle(() => {
 						assert.strictEqual(outerReturnCalled, true, 'outer must still get return() on destroy');
 						assert.strictEqual(
 							siblingReturnCalled,
@@ -117,9 +142,7 @@ describe('Test JSONStream module ', () => {
 						);
 						assert.strictEqual(innerReturnCalled, false, 'the already-failed iterator must not be returned again');
 						resolve();
-					} catch (error) {
-						reject(error);
-					}
+					});
 				});
 			});
 		}
