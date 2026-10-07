@@ -22,7 +22,6 @@ const GIT_HAS_TREE_MERGE = (() => {
 		.map(Number);
 	return major > 2 || (major === 2 && minor >= 45);
 })();
-// CI must exercise the guard; a developer's older git only skips it.
 function requireTreeMerge() {
 	if (GIT_HAS_TREE_MERGE) return;
 	if (process.env.CI) throw new Error('change-landed.sh needs git 2.45 or newer');
@@ -184,6 +183,21 @@ describe('cherry-pick-patch.yml', function () {
 		assert.notStrictEqual(run.outputs.no_op, 'true', run.log);
 		assert.ok(run.ran.includes('Report held for review'), run.log);
 		assert.match(run.stickies.at(-1), /held for review/);
+	});
+
+	it('picks a later commit that undoes an earlier one the release branch already has', function () {
+		// The net change never mentions line 10, but the release holds the first commit's edit to it.
+		const FINAL = { 20: 'final' };
+		fixture.prCommit({ 10: 'temporary' }, 'Temporary change');
+		fixture.prCommit({ 10: 'line 10', ...FINAL }, 'Undo it and finish');
+		fixture.squashMerge();
+		fixture.onRelease((git) => {
+			fixture.writeLib(fixture.lines({ 10: 'temporary', ...FINAL }));
+			git('commit', '-qam', 'Backport the first commit and the final line');
+		});
+		const run = fixture.runJob();
+		assert.notStrictEqual(run.outputs.no_op, 'true', run.log);
+		assert.strictEqual(fixture.releaseFile(), fixture.lines(FINAL), run.log);
 	});
 
 	it('stays held when its merge of main discarded its own edit, even if the release has that edit', function () {
