@@ -9,7 +9,9 @@
 // may, whose own dispose() the test can hold or reject; register a second backend under its key, or an
 // invalid one after a valid one; register a backend and then throw; or register a backend under another
 // key beside the one it returns, or leave async work running that registers under its key once the test
-// releases it. Its calls can carry options that cannot cross threads, that two calls
+// releases it, either another backend, whose dispose() the test can hold or reject, or the very one it
+// returned. A thread can also register a backend under a key directly, as code outside any factory
+// would. Its calls can carry options that cannot cross threads, that two calls
 // share by reference, or that are class instances. On
 // SHUTDOWN it runs Harper's shutdown drains the way threadServer does, so the test sees what a real
 // worker would wait for before exiting.
@@ -250,6 +252,7 @@ const commands = {
 		registersThenThrows,
 		registersExtra,
 		registersLate,
+		lateDispose,
 		engineDispose,
 	}) {
 		const build = (factorySignal, what, disposal = dispose) =>
@@ -317,18 +320,24 @@ const commands = {
 					throw new Error('the model file is corrupt');
 				}
 				if (registersLate) {
-					// Leaves async work running that, once the test releases `late:<id>`, registers another backend
-					// under the key, after the start it belonged to has ended.
+					// Leaves async work running that, once the test releases `late:<id>`, registers under the key
+					// after the start it belonged to has ended: another backend, whose dispose() follows
+					// `lateDispose`, or with 'returned' the backend the factory returned.
+					const returned = build(signal, undefined, null);
 					void new Promise((resolve) => gates.set(`late:${id}`, resolve)).then(() => {
 						let threw;
 						try {
-							models.registerBackend(kind, id, build(signal, 'late', null));
+							models.registerBackend(
+								kind,
+								id,
+								registersLate === 'returned' ? returned : build(signal, 'late', lateDispose ?? null)
+							);
 						} catch (error) {
 							threw = { name: error?.name, message: error?.message };
 						}
 						report({ event: 'late-registered', id, threw });
 					});
-					return build(signal, undefined, null);
+					return returned;
 				}
 				if (registersExtra) {
 					// A backend under another key, whose dispose() follows `dispose`, beside the one the factory
@@ -344,6 +353,15 @@ const commands = {
 			options
 		);
 		return {};
+	},
+	/** Register a backend under `id` from no factory, as other code on the thread would. */
+	registerDirect({ id, what }) {
+		try {
+			models.registerBackend('embedding', id, embeddingBackend(id, { what }));
+			return {};
+		} catch (error) {
+			return { threw: { name: error?.name, message: error?.message } };
+		}
 	},
 	fallback({ id, fallbackId }) {
 		models.registerBackend('embedding', fallbackId, embeddingBackend(fallbackId));
