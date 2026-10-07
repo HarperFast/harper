@@ -344,6 +344,19 @@ describe('change-landed.sh', function () {
 		assert.strictEqual(withCommit.status, 0, withCommit.stdout + withCommit.stderr);
 	});
 
+	it('cannot tell when a picked commit changes merge attributes', function () {
+		const base = git('rev-parse', 'HEAD');
+		writeFileSync(join(dir, '.gitattributes'), 'text.txt merge=union\n');
+		git('add', '.gitattributes');
+		git('commit', '-qm', 'Merge attributes');
+		const commit = git('rev-parse', 'HEAD');
+		git('checkout', '-qb', 'target', base);
+		git('cherry-pick', commit);
+		const result = landed('target', base, commit);
+		assert.strictEqual(result.status, 2, result.stdout + result.stderr);
+		assert.match(result.stdout, /^::warning::/m);
+	});
+
 	it('reports a check that cannot run with a warning and exit 2', function () {
 		const result = landed('refs/heads/no-such-branch', 'HEAD', 'HEAD');
 		assert.strictEqual(result.status, 2, result.stderr);
