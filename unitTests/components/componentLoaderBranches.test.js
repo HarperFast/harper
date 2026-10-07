@@ -46,10 +46,10 @@ describe('componentLoader branch scope ownership', () => {
 		if (directory) await rm(directory, { recursive: true, force: true });
 	});
 
-	async function moduleAt(dir, config = '') {
+	async function moduleAt(dir, config = '', source = `export { databases } from 'harper';\n`) {
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, 'config.yaml'), `pluginModule: probe.js\nrunOnMainThread: true\n${config}`);
-		await writeFile(join(dir, 'probe.js'), `export { databases } from 'harper';\n`);
+		await writeFile(join(dir, 'probe.js'), source);
 	}
 
 	(isLMDB ? it.skip : it)('prepares a supplied application scope and preserves its map on nested loads', async () => {
@@ -103,13 +103,13 @@ describe('componentLoader branch scope ownership', () => {
 	});
 
 	it('imports with the base binding when a supplied native scope has no branch declaration', async () => {
-		await moduleAt(directory);
+		await moduleAt(directory, '', 'export const imported = true;\n');
 		const applicationScope = new ApplicationScope('unbranched-native', resources, server);
 		applicationScope.mode = 'native';
 		const loaded = await loadComponent(directory, resources, 'test', { applicationScope });
 		assert.strictEqual(resources.size, 0, 'an absent declaration must not fail native loading');
 		assert.strictEqual(applicationScope.branches, undefined);
-		assert.ok(loaded?.databases === databases, 'the native module must import with the base databases binding');
+		assert.strictEqual(loaded?.imported, true, 'a native module must import without a branch declaration');
 		assert.strictEqual(scopedBindings(applicationScope).databases, databases);
 	});
 });

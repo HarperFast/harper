@@ -164,7 +164,6 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [Restart-free deploys require proof of runtime equivalence](components/DESIGN.md#restart-free-deploys-require-proof-of-runtime-equivalence) — A deploy stays restart-free only when declared files, the imported runtime and installed dependencies are all proven equivalent.
 - [Secret custody starts before boot-time installs](components/DESIGN.md#secret-custody-starts-before-boot-time-installs) — `startSecretCustodyOnMainThread()` runs the custody built-in ahead of `installApplications()`; the root load reuses it.
 - [Startup waits for component preparation only up to `deployment.startupInstallTimeout`](components/DESIGN.md#startup-waits-for-component-preparation-only-up-to-deploymentstartupinstalltimeout) — One stalled install cannot hold listeners closed; it finishes in the background under its lock, and lock-file transitions are read-modify-write.
-
 - [Package applications prepare branches before importing modules](components/DESIGN.md#package-applications-prepare-branches-before-importing-modules) — Package and directory loads prepare once; nested components inherit, and root plugin callbacks cannot use a private fork.
 
 ## components/mcp/
