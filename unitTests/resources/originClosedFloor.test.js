@@ -214,21 +214,21 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 	it('a re-delivered increment below the floor applies once although its first delivery was rekeyed', async () => {
 		await sleep(2);
 		const floor = certify();
-		await transaction({ timestamp: floor - 10_000 }, () => Tbl.put({ id: 'counter', n: 0 }));
+		await transaction({ timestamp: floor - 10_000 }, () => Tbl.put({ id: 'floor-counter', n: 0 }));
 		const version = floor - 6000;
 		const deliver = () =>
 			transaction({ source: {}, sourceApply: true, timestamp: version }, () =>
-				Tbl.patch('counter', { n: { __op__: 'add', value: 1 } })
+				Tbl.patch('floor-counter', { n: { __op__: 'add', value: 1 } })
 			);
 		await deliver();
-		assert.equal((await Tbl.get('counter')).n, 1);
-		const [, first] = entriesFor('counter');
+		assert.equal((await Tbl.get('floor-counter')).n, 1);
+		const [, first] = entriesFor('floor-counter');
 		assert(first.txnLogKey >= floor && first.version === version, 'the first delivery was rekeyed above the floor');
 		await deliver();
-		assert.equal((await Tbl.get('counter')).n, 1, 'the re-delivery of a rekeyed apply is not applied twice');
-		assert.equal(entriesFor('counter').length, 2);
+		assert.equal((await Tbl.get('floor-counter')).n, 1, 'the re-delivery of a rekeyed apply is not applied twice');
+		assert.equal(entriesFor('floor-counter').length, 2);
 		assert(
-			Tbl.primaryStore.getEntry('counter').additionalAuditRefs?.some((ref) => ref.version === version),
+			Tbl.primaryStore.getEntry('floor-counter').additionalAuditRefs?.some((ref) => ref.version === version),
 			'the record keeps the received identity a re-delivery carries'
 		);
 	});
