@@ -184,9 +184,11 @@ export interface DefineBackendSpec {
  * backend registered under another key, which is never installed, or an invalid one whose refusal
  * the factory caught) before it is reported ready, and fails if one cannot be disposed. What a
  * factory that throws built and never handed over is its own to release before throwing. A
- * registration made after the factory has settled, by work it left running, is not captured: it is
- * installed in the owner thread's registry, as `registerBackend` does anywhere, and the owner never
- * disposes it, so a factory registers before its promise resolves.
+ * registration under the key outside the start, such as one that work the factory left running makes
+ * after it settles, is never installed over the key's proxy, on any thread that registered the key: it
+ * is disposed at once, with the usual tries, a warning names the key, and `registerBackend` does not
+ * throw, even for a backend it would otherwise refuse. So a factory registers before its promise
+ * resolves.
  *
  * At most one instance of a key is live at a time, as far as the owner can tell: before another
  * thread's factory runs, the owner awaits the backend's `dispose()`, so a backend holding a native
