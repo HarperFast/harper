@@ -200,6 +200,21 @@ describe('cherry-pick-patch.yml', function () {
 		assert.strictEqual(fixture.releaseFile(), fixture.lines(FINAL), run.log);
 	});
 
+	it('still opens the conflict PR when the release has its own version of a commit the PR later undoes', function () {
+		const FINAL = { 20: 'final' };
+		fixture.prCommit({ 10: 'temporary' }, 'Temporary change');
+		fixture.prCommit({ 10: 'line 10', ...FINAL }, 'Undo it and finish');
+		fixture.squashMerge();
+		fixture.onRelease((git) => {
+			fixture.writeLib(fixture.lines({ 10: 'temporary, adapted', ...FINAL }));
+			git('commit', '-qam', 'Backport an adapted first commit and the final line');
+		});
+		const run = fixture.runJob();
+		assert.notStrictEqual(run.outputs.no_op, 'true', run.log);
+		assert.notStrictEqual(run.outputs.conflicts, '', run.log);
+		assert.strictEqual(run.prCreates.length, 1, run.log);
+	});
+
 	it('stays held when its merge of main discarded its own edit, even if the release has that edit', function () {
 		const PR_ONLY = { 20: 'pr-only change' };
 		fixture.prCommit({ 5: 'pr side', ...PR_ONLY }, 'PR change');
