@@ -447,7 +447,7 @@ function resolveExplicitRef(ref: string, repo: string): string {
 // head — a real commit on a real branch — so deploy that instead, from the head repo, which for a fork
 // isn't GITHUB_REPOSITORY. See the pull_request section of GitHub's events-that-trigger-workflows docs.
 function resolveActionsPullRequestHead(): { repo: string; committish: string } | undefined {
-	if (!/^refs\/pull\//.test(process.env.GITHUB_REF ?? '')) return undefined;
+	if (!(process.env.GITHUB_REF ?? '').startsWith('refs/pull/')) return undefined;
 	const eventPath = process.env.GITHUB_EVENT_PATH;
 	let head: any;
 	try {
