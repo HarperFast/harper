@@ -801,8 +801,7 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 		return null;
 	}
 
-	// Ahead of the structure-user and allowlist grants below: these fields set a write's residency and
-	// make its commit wait on peer confirmation, so no non-super-user role may supply them.
+	// Ahead of the structure-user and allowlist grants below, which would otherwise admit them.
 	if (!isSuperUser && (requestJson.replicateTo != undefined || requestJson.replicatedConfirmation != undefined)) {
 		return permsResponse.handleUnauthorizedItem(
 			'Can not specify replicateTo or replicatedConfirmation without super user permissions'

@@ -82,7 +82,6 @@ describe('X-Replicate-To is honored only for a super user (harper#2898)', () => 
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 		});
-		// application endpoints open to anonymous callers that write to the table on their behalf
 		class Signup extends Resource {
 			static loadAsInstance = false;
 			async post(target) {
@@ -173,8 +172,8 @@ describe('X-Replicate-To is honored only for a super user (harper#2898)', () => 
 		);
 		assert.strictEqual(response.status, 200);
 		assert.strictEqual((await Accounts.get('admin')).name, 'created');
-		// LMDB never reaches the hook: transaction.ts sets the count on the generic root transaction and
-		// the LMDB child the write lands in does not inherit it (pre-existing, not specific to REST).
+		// LMDB: transaction.ts sets the count on the generic root transaction, and the LMDB child the
+		// write lands in does not inherit it, so the hook is never called.
 		if (!isLMDB) assert.deepStrictEqual(confirmations, [1]);
 	});
 
