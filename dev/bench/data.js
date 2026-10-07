@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791278422437,
+  "lastUpdate": 1791358514636,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -7178,6 +7178,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 982.71,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f7b7669812179e9ba2288e8890e9cf4c2a3e891c",
+          "message": "Record per-origin resume cursors in a replication source's seq row, and re-admit a log live with addLog (#3080)\n\n* Record a replication source's per-origin cursors in its seq row\n\nA replicated end_txn can now carry `originCursors: [nodeId, originLogKey][]`, the highest origin log\nkey the source has durably applied for each origin. The apply loop merges them, keeping the max, into\nthe connection's `[seq, peer]` row as `nodes[].originLogKey`, including when `localTime` did not move.\nThe source fills the array from onCommit, after the loop decides whether to record, so a source that\nreports origin progress declares the array up front.\n\nThis is the receiver half of harper-pro's per-origin cursor vector (harper-pro#989, W4\nharper-pro#434). Before it, the row tracked only the direct peer and listed proxied nodes, so a\nremoved or relayed origin had no cursor and every resubscribe replayed its log from 0.\n\nRefs HarperFast/harper-pro#989\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_012bLQzwWfPVJaF1PzfyxTD7\nDispatch-Task: harper-pro-989\n\n* Record origin cursors a source attaches from onCommit, and skip a write that changes nothing\n\nThe apply loop decided whether to record before awaiting onCommit, so cursors a source attached\nthere were dropped whenever localTime repeated, which is the multi-origin catch-up case. It now\nprepares the update whenever the end_txn has an onCommit, and writes only when the sequence\nadvanced or an origin key rose. The scalar is max(existing, localTime) on both paths, which also\nrepairs one whose previous write failed.\n\nRefs HarperFast/harper-pro#989\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_012bLQzwWfPVJaF1PzfyxTD7\nDispatch-Task: harper-pro-989\n\n* Re-admit an excluded log when addLog is called, and repair a seq row whose scalar write failed\n\naddLog only removed the name from excludeLogs, and the aggregate re-read its log list only when the\nstore gained a new log, so a re-included origin (an includeNodes update after remove_node) stayed\nunread until the subscription was rebuilt. addLog now forces the next membership refresh, which\nstarts the log at its startByLog position.\n\nThe seq-row update also writes when the scalar would rise above the persisted one, which repairs a\nrow whose earlier write failed after the stream cache moved, and skips the origin loop for a source\nthat sends no cursors.\n\nRefs HarperFast/harper-pro#989\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_012bLQzwWfPVJaF1PzfyxTD7\nDispatch-Task: harper-pro-989\n\n* Admit a re-included log at the next pull, even mid-backlog, and record cursors only for frames with progress\n\nReview round 3 fixes:\n\n- The aggregate admitted a log re-included with addLog only once every other log had drained, so a\n  sustained backlog elsewhere starved it. It now joins at the next pull, appending its first entry\n  without re-pulling entries already queued.\n- addLog signals the refresh even when the caller already removed the name from excludeLogs, as\n  replication's includeNodes handler does.\n- removeLog clears the log's exact-start state, so a re-added log validates its new boundary again.\n- The apply loop calls the seq-row update only when the sequence advanced or the frame carries\n  origin cursors, so a stalled frame with a plain onCommit costs nothing extra.\n- resources/DESIGN.md states that a source sending origin cursors must tag its stream and pass\n  onFailure, and a test covers repairing a scalar whose write failed.\n\nRefs HarperFast/harper-pro#989\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_012bLQzwWfPVJaF1PzfyxTD7\nDispatch-Task: harper-pro-989\n\n* Admit a re-included log only at a transaction boundary, and clear exact-start state on any removal\n\nReview round 4 fixes: admitting a log while the aggregate was partway through a multi-entry\ntransaction could interleave the admitted log's earlier-keyed entries into that transaction, so\nadmission now waits for the entry that ends it. A log dropped by a membership refresh, not only by\nremoveLog, clears its exact-start state, so its next iterator validates its own boundary.\n\nRefs HarperFast/harper-pro#989\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_012bLQzwWfPVJaF1PzfyxTD7\nDispatch-Task: harper-pro-989\n\n* Record a source's sequence id from one updater per subscription, decided after onCommit\n\nThe end_txn branch built an updater closure for every frame that might record (advancing,\ncarrying cursors, or carrying an onCommit), before onCommit could attach cursors. It now\ndecides after onCommit, and calls one updater defined per subscription, so no end_txn\nallocates one.\n\nDispatch-Task: harper-pro-989\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_012bLQzwWfPVJaF1PzfyxTD7\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-07T03:18:50Z",
+          "url": "https://github.com/HarperFast/harper/commit/f7b7669812179e9ba2288e8890e9cf4c2a3e891c"
+        },
+        "date": 1791358512305,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 5798.75,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 7914.83,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 7874.37,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 5967.9,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4256.07,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 7649.37,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 946.1,
             "unit": "ops/sec"
           }
         ]
