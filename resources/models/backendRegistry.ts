@@ -160,10 +160,11 @@ export function setDecision(logicalName: string, backend: ModelBackend): void {
  * config reload can install it conditionally. A scratch logical name would be briefly visible
  * through `listBackends`, which backs the public `GET /v1/models`.
  *
- * Two options are for a caller that disposes what it captured. `hold` is given each object that
+ * Two options are for a caller that attempts disposal of what it captured. `hold` is given each
+ * object that
  * `register` registers, under any key, once, as it is handed over: before `registerBackend` checks it
  * and before any refusal, and even when `register` then throws, so the caller owns each one whatever
- * happens to it next, and can dispose it. With `exclusive`, a second registration under
+ * happens to it next, and can try its `dispose()`. With `exclusive`, a second registration under
  * `kind.logicalName` throws `ModelBackendRegistrationError` instead of replacing the first, so one
  * registration is the key's. That refusal is returned as `refused`, beside what was captured, whatever
  * `register` does with it, even rethrowing it, so the construction fails even when `register` catches it.

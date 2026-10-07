@@ -169,8 +169,10 @@ export interface DefineBackendSpec {
  * kind, config })` does), in which case that registration is captured rather than installed. A
  * second registration under the same kind and id throws `ModelBackendRegistrationError` rather than
  * replace the first, and fails the start whatever the factory does with the error. The backend is
- * ready when the returned promise resolves, so a factory that wants ready to mean warm awaits its
- * warmup before resolving. A factory that both registers a backend and returns a different object
+ * reported ready only when main accepts the owner's valid `STARTED` report, after the factory settles
+ * and the owner validates its backend and handles extra objects. A factory that wants ready to mean
+ * warm awaits its warmup before returning. A factory that both registers a backend and returns a
+ * different object
  * (the engine behind that backend, say) hands the owner both: the backend it returned serves if it
  * returned one, else the one it registered, and together they are the instance. The owner tries the
  * registered one's `dispose()` first, so each `dispose()` must resolve even after the other's has run.
@@ -188,7 +190,7 @@ export interface DefineBackendSpec {
  * not throw, even for a backend it would otherwise refuse. A factory should therefore await any work
  * that can build or register a backend before its promise resolves.
  *
- * A backend holding a native model or a GPU context frees it in `dispose()`, which the owner tries up
+ * A backend holding a native model or a GPU context should free it in `dispose()`, which the owner tries up
  * to three times in all; a backend without `dispose()` is taken to hold nothing that its finished
  * calls and its thread's exit do not release. When the owner tries each object's `dispose()`, which
  * objects the one-live-instance guarantee covers, and what main does meanwhile, on shutdown and when
@@ -237,7 +239,7 @@ export interface ProcessBackendOptions {
 /**
  * Why a call to a process-wide backend found no owner to serve it. `moved`: the thread it reached
  * had released the backend or was no longer its owner, and refused the call unstarted; the proxy
- * attempts to route the call again within its limits, so a caller sees it only after repeated moves. A backend's
+ * may attempt to route the call again within its limits; a caller sees `moved` only after the move limit. A backend's
  * own error is never taken for a move, whatever its name. `no-owner`: no owner was named within
  * `ownerWaitMs`. `not-owner`: the thread it reached does not serve the key to this caller, or had not
  * confirmed that main admitted it within `ownerWaitMs`. `dispose-failed` (in `backendStatus` only):

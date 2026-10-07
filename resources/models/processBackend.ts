@@ -75,9 +75,9 @@ const CANCEL = 'models-process-backend-cancel';
 const MAIN_THREAD_ID = 0;
 
 const DEFAULTS = { concurrency: 1, maxPending: 256, maxRestarts: 1, ownerWaitMs: 30_000 };
-/** How many times one call follows the backend after an owner refuses it as `moved`, each time to a newer state. */
+/** How many newer states one call may route to after `moved` refusals. */
 const MAX_REROUTES = 4;
-/** The longest pause before a call refused as `unconfirmed` is sent again; the pauses double up to it. */
+/** The longest pause before another route attempt after `unconfirmed`; the pauses double up to it. */
 const MAX_UNCONFIRMED_PAUSE_MS = 50;
 /** Tries of a backend's `dispose()` before its instance is reported as possibly still live. */
 const DISPOSE_ATTEMPTS = 3;
@@ -121,8 +121,9 @@ type WireError = {
 /**
  * Why an owner refused a request it never started. Only its admission path sends one, never a call
  * that reached the backend. `moved`: it had released the backend or no longer owns it; the proxy
- * attempts to route the unstarted call again, within its limits. `unconfirmed`: the request names a state the owner has not
- * seen, from a thread its last state does not admit, so the call is sent again shortly. `busy`,
+ * may attempt to route the unstarted call again, within its limits. `unconfirmed`: the request names a
+ * state the owner has not seen, from a thread its last state does not admit; the proxy may try that
+ * route again after a short pause while its wait permits. `busy`,
  * `not-owner` and `start-failed` fail the call.
  */
 type Refusal = 'moved' | 'unconfirmed' | 'busy' | 'not-owner' | 'start-failed';
@@ -135,7 +136,7 @@ class Redirect {
 }
 /** What an owner serves with: the backend a factory built, which may free its resources in `dispose()`. */
 type ProcessModelBackend = ModelBackend & { dispose?(): unknown };
-/** Something a factory handed its owner that may hold the instance: disposed, if it can be, before the run is gone. */
+/** Something a factory handed its owner that may hold the instance; its disposal is attempted before the run ends. */
 type Disposable = { dispose?(): unknown };
 
 interface StateMessage {
@@ -871,13 +872,13 @@ function divertLate(slot: Slot, late: unknown): void {
 			return;
 		}
 		log.warn?.(
-			`models: '${kind}.${logicalName}' is a process-wide backend on this thread; a registration under it outside its factory's start is not installed over its proxy; its disposal is attempted when this thread's run of it ends`
+			`models: '${kind}.${logicalName}' is a process-wide backend on this thread; a registration under it outside its factory's start is not installed over its proxy; its disposal is attempted when this thread's run of it ends; if every try rejects, the key fails`
 		);
 		run.held.push(late as Disposable);
 		return;
 	}
 	log.warn?.(
-		`models: '${kind}.${logicalName}' is a process-wide backend on this thread; a registration under it outside its factory's start is not installed over its proxy, and is disposed`
+		`models: '${kind}.${logicalName}' is a process-wide backend on this thread; a registration under it outside its factory's start is not installed over its proxy; its disposal is attempted at once outside the run; a failed disposal is logged and does not hold election`
 	);
 	if (!object || divertedLate.has(late)) return;
 	divertedLate.add(late);
@@ -1099,14 +1100,13 @@ async function invoke<T>(
 		// settles with its result or its error, whatever that error is named, and is never sent again.
 		if (!(outcome instanceof Redirect)) return outcome;
 		if (outcome.refusal === 'moved') {
-			// The owner had released the backend, or no longer owns it: the call follows the backend to
-			// the owner of a newer state.
+			// The owner released the backend or no longer owns it. Try a newer state within the move limit.
 			if (moves++ >= MAX_REROUTES) throw new ModelBackendUnavailableError(kind, logicalName, 'moved');
 			after = route.version;
 			continue;
 		}
 		// The owner had not yet seen the state that admitted this thread; main's push to it is in flight,
-		// so the same route is tried again after a short pause, within the call's wait for an owner.
+		// so the proxy may try the route again after a short pause while its wait permits.
 		wait.until ??= Date.now() + slot.options.ownerWaitMs;
 		const timedOut = deadline !== undefined && deadline <= wait.until;
 		const until = timedOut ? deadline : wait.until;
@@ -1300,11 +1300,11 @@ async function startBackend(slot: Slot, run: OwnerRun): Promise<void> {
 		// The run keeps its instance: the registration under the key and what the factory returned.
 		// Anything else it handed over (a backend under another key, one `registerBackend` refused as
 		// invalid and the factory caught) is tried for disposal before the start is reported; one whose
-		// disposal does not resolve fails the start.
+		// disposal rejects on every try fails the start.
 		const instance = [constructed.backend, returned];
 		for (const extra of constructed.extras)
 			log.warn?.(
-				`models: process-wide backend '${kind}.${logicalName}' registered '${extra.kind}.${extra.logicalName}' while starting; it is not installed, and is disposed unless the factory also returned it`
+				`models: process-wide backend '${kind}.${logicalName}' registered '${extra.kind}.${extra.logicalName}' while starting; it is not installed, and its disposal is attempted before start unless the factory also returned it; if every try rejects, the start fails`
 			);
 		// Each stays held until its disposal ends, so a registration of it meanwhile is the run's (`divertLate`).
 		for (const other of run.held.filter((handed) => !instance.includes(handed))) {
@@ -1536,13 +1536,13 @@ function onRequest(message: RequestMessage, sender: number): void {
  * thread has seen is refused `moved` first, whatever version it names, so it is never held. Main's
  * admitted callers are checked before a request is held, so a thread main never admitted cannot
  * occupy the hold whatever version it names. A thread main admitted after this thread's last state is
- * refused `unconfirmed` and tries again.
+ * refused `unconfirmed`; the proxy may try again while its wait permits.
  */
 function admit(slot: Slot, queued: Queued): void {
 	const { kind, logicalName } = slot;
 	const view = slot.view;
 	// Main's epoch never falls as its version rises, so no state this thread will see serves an older
-	// election: the caller follows the backend to the owner of a newer state.
+	// election: refuse it so the proxy can attempt a newer state within its limits.
 	if (view !== undefined && queued.epoch < view.epoch) return refuse(queued, 'moved');
 	// Only a thread main admitted for this key may call it, which holds an application's domain here.
 	const admitted = queued.origin === threadId || view?.callers?.includes(queued.origin) === true;
@@ -1554,7 +1554,7 @@ function admit(slot: Slot, queued: Queued): void {
 	}
 	const run = slot.run;
 	// Released, or not the owner of the election the request was routed with: the request never ran,
-	// and the caller follows the backend to the owner of a newer state.
+	// and the proxy may attempt a newer state within its limits.
 	if (
 		slot.released ||
 		view?.owner !== threadId ||

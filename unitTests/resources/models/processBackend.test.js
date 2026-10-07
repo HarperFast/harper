@@ -529,7 +529,7 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		assert.strictEqual(factoryRuns('restart').length, 2, 'no thread fell back to loading its own copy');
 	});
 
-	it('hands over one live instance at a time: the released owner finishes its running call, re-routes the rest and disposes before the successor starts', async function () {
+	it('hands over one live instance at a time: the released owner finishes its running call, the proxy attempts to reroute queued work, and disposal precedes the successor', async function () {
 		const [owner, successor] = await startWorkers(2);
 		const [ownerId, successorId] = [owner.threadId, successor.threadId];
 		await registerInOrder([owner, successor], 'handover', undefined, { dispose: 'hold' });
@@ -1029,7 +1029,7 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		);
 	});
 
-	it("follows a move the owner's admission path sends at most four times, then fails the call by name", async function () {
+	it('bounds newer-state route attempts after moved refusals at four, then fails the call by name', async function () {
 		const [owner, bystander, caller] = await startWorkers(3);
 		await registerInOrder([owner, bystander, caller], 'bounded-moves');
 		// A worker shutting down stays a caller and owns nothing: it refuses every request as moved.
@@ -1209,7 +1209,7 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		assert.strictEqual(backendCalls('admission:intruder').length, 0);
 	});
 
-	it('sends a call again shortly when the owner it reached has not yet seen the state that admitted its caller', async function () {
+	it('attempts another route within the wait when the owner has not yet seen the caller admitted', async function () {
 		const [owner, bystander, caller] = await startWorkers(3);
 		await registerInOrder([owner, bystander, caller], 'unconfirmed');
 		// This thread is main: a push naming the bystander as owner reaches the caller before the bystander.
@@ -1432,7 +1432,7 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		assert.strictEqual(backendCalls('same-rules:nested').length, 0, 'neither call reached the backend');
 	});
 
-	it('disposes what a factory returned before reading any of its properties, so a getter that throws frees it before a successor starts', async function () {
+	it('holds what a factory returned before reading its properties and disposes it after a getter throws, before a successor starts', async function () {
 		const id = 'getter-throws';
 		const [failing, successor] = await startWorkers(2);
 		await command(failing, {
@@ -1447,7 +1447,7 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		await waitForStatus(successor, id, (status) => status?.owner === failing.threadId, `${id}: owner not seen`);
 		await command(failing, { command: 'release', text: `start:${id}` });
 
-		// Either the returned object is disposed, or (the defect) a successor runs its factory while it may be live.
+		// Either disposal of the returned object starts, or (the defect) a successor runs its factory while it may be live.
 		await waitFor(() =>
 			events.some(
 				(event) =>
@@ -1457,7 +1457,7 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		);
 		assert.ok(
 			events.some((event) => event.event === 'dispose' && event.id === id && event.threadId === failing.threadId),
-			'the object the factory returned was disposed'
+			'the object the factory returned began disposal'
 		);
 		// Asserting a non-event: give an election time to (not) happen while dispose() is held.
 		await delay(200);
@@ -1555,7 +1555,7 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		await waitForStatus(successor, id, (status) => status?.state === 'ready', `${id}: not ready`);
 		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: manageThreads.restartNumber });
 
-		// Either the returned object is disposed, or (the defect) a successor runs its factory while it may be live.
+		// Either disposal of the returned object starts, or (the defect) a successor runs its factory while it may be live.
 		await waitFor(() =>
 			events.some(
 				(event) =>
@@ -1569,7 +1569,7 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 				(event) =>
 					event.event === 'dispose' && event.what === 'engine' && event.id === id && event.threadId === owner.threadId
 			),
-			'the object the factory returned was disposed'
+			'the object the factory returned began disposal'
 		);
 		// Asserting a non-event: give an election time to (not) happen while the returned object's dispose() is held.
 		await delay(200);
@@ -1608,7 +1608,7 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 	 * waits, its own start held by the test. Each object named in `held` (by the fixture's `what`) has its
 	 * dispose() held open and is released in turn; until the last is released, main must not hear of the
 	 * failure, so the successor must not run its factory. Resolves with the successor's view of the key
-	 * once main elected it, and what the owner disposed, in order.
+	 * once main elected it, and the owner's disposal attempts, in order.
 	 */
 	async function failStartWithSuccessorWaiting(id, shape, held) {
 		const [owner, successor] = await startWorkers(2);
@@ -1625,9 +1625,9 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 			);
 		const successorRan = () => factoryRuns(id).some((event) => event.threadId === successor.threadId);
 		for (const what of held) {
-			// Either it is disposed, or (the defect) main hears of the failure and the successor runs its factory while it may be live.
+			// Either disposal starts, or (the defect) main hears of the failure and the successor runs its factory while it may be live.
 			await waitFor(() => disposedOnOwner(what) || successorRan());
-			assert.ok(disposedOnOwner(what), `the ${what} object the factory handed over was disposed`);
+			assert.ok(disposedOnOwner(what), `disposal of the ${what} object the factory handed over started`);
 			// Asserting a non-event: give an election time to (not) happen while its dispose() is held.
 			await delay(200);
 			assert.ok(!successorRan(), `no successor runs its factory while the ${what} object is still disposing`);
@@ -1713,9 +1713,9 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 				(event) =>
 					event.event === 'dispose' && event.id === id && event.what === 'extra' && event.threadId === owner.threadId
 			);
-		// Either the registration under another key is disposed, or (the defect) the start is reported while it is live.
+		// Either disposal of the registration under another key starts, or (the defect) the start is reported while it is live.
 		await waitFor(async () => extraDisposed() || (await statusOf(owner, id))?.state === 'ready');
-		assert.ok(extraDisposed(), 'the backend registered under another key was disposed');
+		assert.ok(extraDisposed(), 'the backend registered under another key began disposal');
 		// Asserting a non-event: give the start time to (not) be reported while that dispose() is held.
 		await delay(200);
 		assert.strictEqual((await statusOf(owner, id)).state, 'starting', 'the start waits for that disposal');
@@ -1732,7 +1732,7 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 		assert.strictEqual(await statusOf(owner, `${id}-extra`), undefined, 'and it was never installed');
 	});
 
-	it("never installs a registration the factory's leftover async work makes under the key after the start over the proxy: the owner's run holds it undisposed while calls still reach the backend the start chose, nothing is elected, and on a thread with no run it is disposed at once", async function () {
+	it("never installs a registration the factory's leftover async work makes under the key after the start over the proxy: the owner's run holds it undisposed while calls still reach the backend the start chose, nothing is elected, and on a thread with no run its disposal is attempted at once", async function () {
 		const id = 'registers-late';
 		const [owner, caller] = await startWorkers(2);
 		await registerInOrder([owner, caller], id, undefined, { registersLate: true });
@@ -1781,7 +1781,7 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 				.map((event) => `${event.what}@${event.threadId}`);
 		assert.deepStrictEqual(disposals(), [], "the late object is held by the owner's run, which still serves");
 
-		// A thread that runs no instance of the key has no run to hold it: it is disposed at once, and never installed.
+		// A thread that runs no instance of the key has no run to hold it: disposal is attempted at once, and it is never installed.
 		const direct = await command(caller, { command: 'registerDirect', id, what: 'direct' });
 		assert.strictEqual(direct.threw, undefined);
 		await waitFor(() => disposals().includes(`direct@${caller.threadId}`));
@@ -1809,9 +1809,9 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 					event.event === 'dispose' && event.id === id && event.what === what && event.threadId === owner.threadId
 			);
 		const successorRan = () => factoryRuns(id).some((event) => event.threadId === successor.threadId);
-		// Either the late object is disposed with the instance, or (the defect) a successor runs its factory while it may be live.
+		// Either disposal of the late object starts with the instance, or (the defect) a successor runs its factory while it may be live.
 		await waitFor(() => (disposedOnOwner('backend') && disposedOnOwner('late')) || successorRan(), 5000);
-		assert.ok(disposedOnOwner('late'), 'the late object was disposed');
+		assert.ok(disposedOnOwner('late'), 'the late object began disposal');
 		// Asserting a non-event: give an election time to (not) happen while the late object's dispose() is held.
 		await delay(200);
 		assert.ok(!successorRan(), 'no successor runs its factory while the late object is still disposing');
@@ -1920,11 +1920,11 @@ describe('models.registerProcessBackend: one live backend instance per key for w
 					`${id}: registered while the run was disposing, its disposal was attempted before the owner reported, and no successor ran its factory`
 				);
 			else
-				// The run was sealed: disposed at once on its own thread, outside the handover, which went ahead.
+				// The run was sealed: disposal was attempted at once on its own thread, outside the handover, which went ahead.
 				assert.deepStrictEqual(
 					[late.phase, status.state, status.owner],
 					['disposed', 'ready', successor.threadId],
-					`${id}: registered once the run was sealed, it was disposed at once and the successor took over`
+					`${id}: registered once the run was sealed, its disposal was attempted at once and the successor took over`
 				);
 		}
 		assert.deepStrictEqual(
@@ -2353,7 +2353,7 @@ describe('models.registerProcessBackend on the main thread', function () {
 					['dispose-failed', 0],
 					`${seen.id}: registered while the run was failing, its disposal was attempted before main heard`
 				);
-			// The run was sealed: disposed at once, and the start had already failed as itself.
+			// The run was sealed: disposal was attempted at once, and the start had already failed as itself.
 			else assert.deepStrictEqual([seen.phase, status.reason], ['failed', 'start-failed'], seen.id);
 		}
 		assert.deepStrictEqual(

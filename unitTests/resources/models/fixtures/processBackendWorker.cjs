@@ -2,7 +2,7 @@
 
 // Worker for processBackend.test.js, started through manageThreads' startWorker so it joins the same
 // port mesh production workers use. It registers backends (process-wide or per thread) and calls them
-// through the models facade on command, reporting every factory run, backend call, disposal, analytics
+// through the models facade on command, reporting every factory run, backend call, dispose attempt, analytics
 // row, metric and refusal to the test, tagged with the thread it ran on. Its backends can hold or reject
 // their dispose(), fail on a chosen input, keep their factory's signal and throw from a property getter;
 // a factory can also register its backend and return a different engine object, as a module factory
