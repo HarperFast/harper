@@ -169,11 +169,16 @@ export interface DefineBackendSpec {
  * other backend it registers while it runs is discarded. The backend is ready when the returned
  * promise resolves, so a factory that wants ready to mean warm awaits its warmup before resolving.
  *
- * At most one instance of a key is live at a time: before another thread's factory runs, the owner
- * awaits the backend's `dispose()`, when it has one, so a backend holding a native model or a GPU
- * context frees it there. `signal` aborts when the owner releases the key while the factory is still
- * running, so a slow load can stop early; whatever it returns is still disposed. A factory that
- * throws must release what it loaded before throwing.
+ * At most one instance of a key is live at a time, as far as the owner can tell: before another
+ * thread's factory runs, the owner awaits the backend's `dispose()`, so a backend holding a native
+ * model or a GPU context frees it there. A `dispose()` that rejects is tried up to three times in
+ * all; if every try rejects, the key fails until the next worker generation and no other thread
+ * runs its factory while the owner's thread lives. A backend without `dispose()` is taken to hold
+ * nothing that its finished calls and its thread's exit do not release: it counts as gone once its
+ * running calls finish. `signal` aborts only while the factory is still running, when the owner
+ * releases the key, so a slow load can stop early; whatever it returns is still disposed. It never
+ * aborts once the factory has returned, so a backend may keep it without its calls being stopped. A
+ * factory that throws must release what it loaded before throwing.
  */
 export type ProcessBackendFactory = (context: { kind: ModelKind; logicalName: string; signal: AbortSignal }) => unknown;
 
@@ -187,9 +192,11 @@ export interface ProcessBackendOptions {
 	maxPending?: number;
 	/**
 	 * Embedding only: the most inputs one backend `embed` call carries. Queued `embed` requests whose
-	 * options and accounting are the same value for value are merged into one call of at most this
-	 * many inputs, and the vectors and usage are split back per request; a request with more inputs
-	 * runs alone as consecutive calls of at most this many. Default none: no merging and no splitting.
+	 * options and accounting are equal as primitives, arrays and plain objects (any other object, such
+	 * as a Date or a typed array, never matches) are merged into one call of at most this many inputs,
+	 * and the vectors and usage are split back per request. A request with more inputs runs alone as
+	 * consecutive calls of at most this many; if a later one fails, the error carries the usage of
+	 * those that completed, which the caller's row bills. Default none: no merging and no splitting.
 	 */
 	maxBatchInputs?: number;
 	/** Unplanned owner losses (exit or failed start) restarted per worker generation. Default 1. */
@@ -197,7 +204,8 @@ export interface ProcessBackendOptions {
 	/**
 	 * How long one call waits in all for an owner to be named (none is eligible, or a released owner
 	 * is still finishing its calls) before it fails with `ModelBackendUnavailableError`, reason
-	 * `no-owner`. Default 30000.
+	 * `no-owner`, and for an owner that has not yet seen this thread admitted to confirm it (reason
+	 * `not-owner`). Default 30000.
 	 */
 	ownerWaitMs?: number;
 	/** Caller-side bound on one call, waiting and queueing included; on expiry the call is cancelled at the owner. Default none. */
@@ -206,13 +214,16 @@ export interface ProcessBackendOptions {
 
 /**
  * Why a call to a process-wide backend found no owner to serve it. `moved`: the thread it reached
- * had released the backend or was no longer its owner, and never started the call; the proxy follows
- * the backend to its next owner, so a caller sees it only after repeated moves. `no-owner`: no owner
- * was named within `ownerWaitMs`. `not-owner`: the thread it reached does not serve the key to this
- * caller.
+ * had released the backend or was no longer its owner, and refused the call unstarted; the proxy
+ * follows the backend to its next owner, so a caller sees it only after repeated moves. A backend's
+ * own error is never taken for a move, whatever its name. `no-owner`: no owner was named within
+ * `ownerWaitMs`. `not-owner`: the thread it reached does not serve the key to this caller, or had not
+ * confirmed that main admitted it within `ownerWaitMs`. `dispose-failed` (in `backendStatus` only):
+ * an instance's `dispose()` rejected on every try, so it may still be live; no owner is elected
+ * while its thread lives, and calls fail with `failed` until the next generation.
  */
 export type ModelBackendUnavailableReason =
-	'owner-exited' | 'start-failed' | 'failed' | 'no-owner' | 'moved' | 'not-owner' | 'timeout';
+	'owner-exited' | 'start-failed' | 'failed' | 'no-owner' | 'moved' | 'not-owner' | 'timeout' | 'dispose-failed';
 
 /**
  * Readiness of a registered backend. A per-thread backend is ready once registered. A process-wide
@@ -226,13 +237,20 @@ export type BackendStatus =
 			state: 'starting' | 'ready' | 'failed';
 			/** The owner thread's id, while one is elected. */
 			owner?: number;
-			/** A released owner still finishing its calls; the next owner is elected once its instance is disposed. */
+			/**
+			 * A released owner still finishing its calls, or a thread whose `dispose()` failed; the next
+			 * owner is elected once its instance is disposed or, after a failed `dispose()`, once its
+			 * thread exits.
+			 */
 			draining?: number;
 			restarts: number;
 			maxRestarts: number;
 			/** The worker generation (restart number) the restart budget belongs to. */
 			generation?: number;
-			/** Why the last owner was lost, or `no-owner` while no claimant may own the backend. */
+			/**
+			 * Why the last owner was lost, or `no-owner` while no claimant may own the backend and no
+			 * released owner is draining (a draining one is named in `draining` instead).
+			 */
 			reason?: ModelBackendUnavailableReason;
 			/** The last loss's error, for operators; never attached to a caller's error. */
 			error?: { name: string; message: string };

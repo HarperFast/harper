@@ -23,7 +23,11 @@ import { populationKey, populationRank } from './calibration.ts';
 import { safeErrorMessage } from '../scheduler/engine.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { getRouter, registerRouter as registerRouterImpl } from './routing.ts';
-import { backendStatus, registerProcessBackend as registerProcessBackendImpl } from './processBackend.ts';
+import {
+	backendStatus,
+	registerProcessBackend as registerProcessBackendImpl,
+	takePartialUsage,
+} from './processBackend.ts';
 import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelCallRecord } from './analyticsTable.ts';
 import { recordAction } from '../analytics/write.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
@@ -218,7 +222,18 @@ export class Models implements ModelsContract {
 				this.#record(backend, 'embed', opts.model, accounting, undefined, result, attemptStart);
 				return { vectors: result.output, usage: result.usage };
 			} catch (err) {
-				this.#recordFailure(backend, 'embed', opts.model, accounting, undefined, attemptStart, err);
+				// A process-wide backend that split this call into parts reports what the parts that completed
+				// used on its error; this attempt's row bills it, once, and the next candidate bills its own.
+				this.#recordFailure(
+					backend,
+					'embed',
+					opts.model,
+					accounting,
+					undefined,
+					attemptStart,
+					err,
+					takePartialUsage(err)
+				);
 				if (!hasError) {
 					firstError = err;
 					hasError = true;
@@ -698,7 +713,8 @@ function isChoiceScoringUnsupported(err: unknown): boolean {
  * Tokens a declined scoring call consumed (`ChoiceScoringUnsupportedError.usage`), finite counts
  * only: a completion that came back without log-probabilities was billed, so they land on that
  * attempt's failure row and in the token metric while the call-count metric stays a count of
- * successes. No other error's `usage` is read, and no other method's failure row carries usage.
+ * successes. Beyond this, only an `embed` failure row carries usage: what a process-wide backend's
+ * split call used before a part failed (`takePartialUsage`, read once per error).
  */
 function usageFromError(err: unknown): TokenUsage | undefined {
 	if (!isChoiceScoringUnsupported(err)) return undefined;

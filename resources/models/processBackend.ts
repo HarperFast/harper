@@ -9,16 +9,19 @@
  * Main elects one claimant as owner, only the owner runs the factory, and the proxies forward calls
  * to it over the thread port mesh. See resources/models/DESIGN.md.
  *
- *  - Control plane, worker ⇄ main: CLAIM, RELEASE, STARTED, START_FAILED and DISPOSED in; STATE out
- *    to the claimants. Main holds the only copy of the state and pushes each change, so the threads'
- *    views converge on it; a thread's view can trail it by the push in flight.
+ *  - Control plane, worker ⇄ main: CLAIM, RELEASE, STARTED, START_FAILED, DISPOSED and
+ *    DISPOSE_FAILED in; STATE out to the claimants. Main holds the only copy of the state and pushes
+ *    each change, so the threads' views converge on it; a thread's view can trail it by the push in
+ *    flight.
  *  - Data plane, caller ⇄ owner, sibling to sibling and never through main: REQUEST and CANCEL in,
- *    RESPONSE out.
+ *    RESPONSE out. A RESPONSE carries a result, the error a backend threw, or a refusal the owner's
+ *    admission path sent for a request it never started; only a refusal can send a call again.
  *
  * A handler knows its sender by the port the message arrived on (manageThreads sets a port's thread
  * id when it connects it), never by a field the sender wrote, and drops a message whose `origin`
  * names another thread. Only main's pushes change a thread's view and only main elects: a request
- * names the state it was routed with, and an owner holds it until it has seen that state.
+ * names the state it was routed with, and an owner holds a request from a thread main admitted until
+ * it has seen that state, and refuses any other at once.
  *
  * Main coordinates because it is never restarted and sees every worker exit. A worker owns because,
  * while there are workers, main loads no application code and the factory is application code. With
@@ -63,6 +66,7 @@ const RELEASE = 'models-process-backend-release';
 const STARTED = 'models-process-backend-started';
 const START_FAILED = 'models-process-backend-start-failed';
 const DISPOSED = 'models-process-backend-disposed';
+const DISPOSE_FAILED = 'models-process-backend-dispose-failed';
 const STATE = 'models-process-backend-state';
 const REQUEST = 'models-process-backend-request';
 const RESPONSE = 'models-process-backend-response';
@@ -70,8 +74,14 @@ const CANCEL = 'models-process-backend-cancel';
 const MAIN_THREAD_ID = 0;
 
 const DEFAULTS = { concurrency: 1, maxPending: 256, maxRestarts: 1, ownerWaitMs: 30_000 };
-/** How many times one call follows the backend after an owner answers `moved`, each time to a newer state. */
+/** How many times one call follows the backend after an owner refuses it as `moved`, each time to a newer state. */
 const MAX_REROUTES = 4;
+/** The longest pause before a call refused as `unconfirmed` is sent again; the pauses double up to it. */
+const MAX_UNCONFIRMED_PAUSE_MS = 50;
+/** Tries of a backend's `dispose()` before its instance is reported as possibly still live. */
+const DISPOSE_ATTEMPTS = 3;
+/** The pause before the next try of a rejected `dispose()`, multiplied by the tries so far. */
+const DISPOSE_RETRY_MS = 100;
 
 type Method = 'embed' | 'generate' | 'decide' | 'scoreChoices';
 /** The methods each kind's proxy forwards; an owner runs no other method a request names. */
@@ -95,14 +105,32 @@ interface ResolvedOptions {
 	maxBatchInputs?: number;
 	timeoutMs?: number;
 }
+/** An error a backend threw (or a call it ran failed with), as it crosses threads. */
 type WireError = {
 	name: string;
 	message: string;
 	statusCode?: number;
 	code?: string | number;
-	reason?: ModelBackendUnavailableReason;
+	reason?: string;
 	usage?: TokenUsage;
+	/** `usage` is what the completed parts of a split `embed` consumed before a later part failed. */
+	partial?: true;
 };
+/**
+ * Why an owner refused a request it never started. Only its admission path sends one, never a call
+ * that reached the backend. `moved`: it had released the backend or no longer owns it, so the call
+ * follows the backend to a newer state. `unconfirmed`: the request names a state the owner has not
+ * seen, from a thread its last state does not admit, so the call is sent again shortly. `busy`,
+ * `not-owner` and `start-failed` fail the call.
+ */
+type Refusal = 'moved' | 'unconfirmed' | 'busy' | 'not-owner' | 'start-failed';
+/** A call an owner refused unstarted and the proxy may send again: never a result, never an error. */
+class Redirect {
+	readonly refusal: 'moved' | 'unconfirmed';
+	constructor(refusal: 'moved' | 'unconfirmed') {
+		this.refusal = refusal;
+	}
+}
 /** What an owner holds: the backend a factory built, which may free its resources in `dispose()`. */
 type ProcessModelBackend = ModelBackend & { dispose?(): unknown };
 
@@ -245,9 +273,9 @@ function currentGeneration(): number {
 }
 
 /**
- * Whether two structured-cloned values are the same value for value: primitives by `Object.is`,
- * arrays and plain objects field by field. Anything else (a Date, a Map, a typed array) never
- * compares equal, so it is never merged with another call.
+ * Whether two structured-cloned values are equal as primitives (by `Object.is`), arrays and plain
+ * objects, field by field. Any other object (a Date, a Map, a typed array) never compares equal, even
+ * to an identical one, so a request whose options or accounting hold one is never merged.
  */
 function sameValue(a: unknown, b: unknown, depth = 0): boolean {
 	if (Object.is(a, b)) return true;
@@ -271,9 +299,13 @@ function sameValue(a: unknown, b: unknown, depth = 0): boolean {
 // Coordinator (main thread).
 
 interface Claimant {
+	/** The generation main started the claimant's worker in (`senderGeneration`), never one its claim names. */
 	generation: number;
 	seq: number;
-	/** False for main while it has workers, and for a thread that released its claims to shut down. */
+	/**
+	 * False for main while it has workers, and for a thread that released its claims to shut down. The
+	 * claimant states it: a thread can make only itself eligible or not, and main states its own.
+	 */
 	eligible: boolean;
 }
 
@@ -282,7 +314,10 @@ interface Entry {
 	/** Every thread main admitted for the key: the ones that may call its owner. */
 	claimants: Map<number, Claimant>;
 	owner?: number;
-	/** A released owner whose instance is still live; nothing is elected until it reports DISPOSED or exits. */
+	/**
+	 * A released owner whose instance may still be live; nothing is elected until it reports DISPOSED
+	 * or exits. A thread whose `dispose()` failed stays here until it exits.
+	 */
 	draining?: number;
 	epoch: number;
 	version: number;
@@ -304,8 +339,18 @@ interface Entry {
 const entries = new Map<string, Entry>();
 let claimSequence = 0;
 
+/**
+ * The worker generation main started the sender's worker in (manageThreads stamps it on the worker);
+ * main's own claim is in main's current generation. A claim cannot name its generation, so it cannot
+ * win an election over newer workers or clear a failure by claiming to be a deploy's replacement.
+ */
+function senderGeneration(port: unknown): number {
+	const stamped = port === undefined ? currentGeneration() : (port as { restartNumber?: unknown }).restartNumber;
+	return Number.isSafeInteger(stamped) ? (stamped as number) : 1;
+}
+
 function onClaim(
-	message: { key: string; generation: number; eligible: boolean; options: ResolvedOptions },
+	message: { key: string; eligible: boolean; options: ResolvedOptions },
 	sender: number,
 	port?: unknown
 ): void {
@@ -323,8 +368,11 @@ function onClaim(
 	// a dead thread from ever being elected.
 	if (sender !== threadId && hasThreadExited(sender)) return;
 	const options = message.options;
-	if (!options || typeof options !== 'object' || !Number.isSafeInteger(options.maxRestarts)) return;
-	const generation = Number.isSafeInteger(message.generation) ? message.generation : 1;
+	if (!options || typeof options !== 'object' || !Number.isSafeInteger(options.maxRestarts)) {
+		log.warn?.(`models: ignored thread ${sender}'s claim of process-wide backend ${key}, whose options are malformed`);
+		return;
+	}
+	const generation = senderGeneration(port);
 	let entry = entries.get(key);
 	let changed = false;
 	if (!entry) {
@@ -396,6 +444,29 @@ function onDisposed(message: { key: string }, sender: number): void {
 	if (!entry || entry.draining !== sender) return;
 	entry.draining = undefined;
 	elect(entry);
+	publish(entry);
+}
+
+/**
+ * The owner's `dispose()` rejected on every try, so its instance may still be live. Main keeps that
+ * thread as `draining`, so nothing is elected until the thread exits, and fails the key until the
+ * next generation, so its calls fail at once instead of waiting for an owner. The error is for
+ * operators, in `backendStatus`.
+ */
+function onDisposeFailed(message: { key: string; error: { name: string; message: string } }, sender: number): void {
+	if (!isMainThread) return;
+	const entry = entries.get(message.key);
+	if (!entry || (entry.owner !== sender && entry.draining !== sender)) return;
+	entry.owner = undefined;
+	entry.name = undefined;
+	entry.capabilities = undefined;
+	entry.draining = sender;
+	entry.state = 'failed';
+	entry.reason = 'dispose-failed';
+	entry.error = { name: String(message.error?.name), message: String(message.error?.message) };
+	log.error?.(
+		`models: process-wide backend ${entry.key} could not dispose its instance on thread ${sender}; no owner is elected while that thread lives, and its calls fail until the next generation`
+	);
 	publish(entry);
 }
 
@@ -481,9 +552,10 @@ function loseOwner(
 }
 
 /**
- * Elect an eligible claimant when there is no owner and no released instance is still live: newest
- * generation first, then the earliest claim; `avoid` (the owner just lost) only if nobody else is
- * left. With nobody eligible the key is marked `no-owner`. Returns whether the state changed.
+ * Elect an eligible claimant when there is no owner and no released instance may still be live:
+ * newest generation first, then the earliest claim; `avoid` (the owner just lost) only if nobody else
+ * is left. With nobody eligible the key is marked `no-owner` (never while a thread drains). Returns
+ * whether the state changed.
  */
 function elect(entry: Entry, avoid?: number): boolean {
 	if (entry.owner !== undefined || entry.draining !== undefined || entry.state === 'failed') return false;
@@ -570,12 +642,15 @@ interface OwnerRun {
 	started?: { name: string; capabilities: ModelCapabilities };
 	/** The factory has returned or thrown. */
 	settled: boolean;
-	/** Aborted when the run is released, so a factory still loading can stop early. */
+	/**
+	 * Aborted when the run is released while its factory is still running, so a slow load can stop
+	 * early. Never once the factory has settled: a backend that keeps the signal is not stopped mid-call.
+	 */
 	factoryAbort: AbortController;
 	queue: Queued[];
 	active: number;
 	running: Map<string, Running>;
-	/** Resolves once a released run's instance is disposed and main is told. */
+	/** Resolves once a released run's disposal has ended, either way, and main is told how. */
 	disposed?: Promise<void>;
 	markDisposed?: () => void;
 }
@@ -603,7 +678,7 @@ interface PendingCall {
 	owner: number;
 	kind: ModelKind;
 	logicalName: string;
-	finish(error: unknown, result?: ModelCallResult<unknown>): void;
+	finish(error: unknown, result?: ModelCallResult<unknown> | Redirect): void;
 }
 
 const slots = new Map<string, Slot>();
@@ -733,7 +808,6 @@ export function registerProcessBackend(
 		type: CLAIM,
 		key,
 		origin: threadId,
-		generation: currentGeneration(),
 		options: resolved,
 		// Main runs no application code while it has workers; it is eligible only as the lone worker.
 		// A thread that is shutting down still claims, to stay a caller, but is never eligible.
@@ -818,10 +892,19 @@ function wake(slot: Slot): void {
 /** Loop-level options: the `toolMode: 'auto'` loop runs on the caller and never hands these to a backend. */
 const CALLER_ONLY_OPTIONS = new Set(['signal', 'accounting', 'toolHandlers', 'conversation']);
 
-function sendableOptions(opts: Record<string, unknown>): Record<string, unknown> {
+/**
+ * The options the owner's backend gets: all but the loop-level ones. An option that is a function
+ * cannot reach another thread, so it fails the call rather than being dropped, as one nested in an
+ * option's value fails structured clone.
+ */
+function sendableOptions(opts: Record<string, unknown>, describe: () => string): Record<string, unknown> {
 	const sendable: Record<string, unknown> = {};
 	for (const [field, value] of Object.entries(opts)) {
-		if (CALLER_ONLY_OPTIONS.has(field) || typeof value === 'function') continue;
+		if (CALLER_ONLY_OPTIONS.has(field)) continue;
+		if (typeof value === 'function')
+			throw new ServerError(
+				`${describe()} could not be sent to its owner thread: option '${field}' is a function, which cannot cross threads`
+			);
 		sendable[field] = value;
 	}
 	return sendable;
@@ -835,7 +918,7 @@ interface Route {
 
 /**
  * The owner to send to, waiting for main to name one (newer than the state `after`, when the last
- * owner answered `moved`). The wait is bounded: past `maxPending` waiting calls a call is refused as
+ * owner refused the call as `moved`). The wait is bounded: past `maxPending` waiting calls a call is refused as
  * busy, and a call that waits `ownerWaitMs` in all fails with `no-owner` (or `timeout`, if the
  * call's own `timeoutMs` ends first). Rejects at once once the backend has failed.
  */
@@ -887,29 +970,59 @@ async function routeTo(
 	}
 }
 
+/** Resolve after `ms`, or reject with the signal's reason when the caller aborts first. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(signal!.reason);
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener('abort', onAbort);
+			resolve();
+		}, ms);
+		signal?.addEventListener('abort', onAbort, { once: true });
+	});
+}
+
 async function invoke<T>(
 	slot: Slot,
 	method: Method,
 	args: unknown[],
 	opts: BackendOpts<Record<string, unknown>>
 ): Promise<ModelCallResult<T>> {
+	const { kind, logicalName } = slot;
 	const signal = opts?.signal as AbortSignal | undefined;
 	signal?.throwIfAborted();
+	const sendable = sendableOptions(
+		opts ?? {},
+		() => `A '${method}' call to process-wide backend '${kind}.${logicalName}'`
+	);
 	const deadline = slot.options.timeoutMs === undefined ? undefined : Date.now() + slot.options.timeoutMs;
 	const wait: { until?: number } = {};
 	let after: number | undefined;
-	for (let reroutes = 0; ; reroutes++) {
+	for (let moves = 0, unconfirmed = 0; ;) {
 		const route = await routeTo(slot, signal, deadline, wait, after);
 		signal?.throwIfAborted();
-		try {
-			return await callOwner<T>(slot, route, method, args, opts, signal, deadline);
-		} catch (error) {
-			// The owner had released the backend, or was no longer its owner, and never started the call,
-			// so the call follows the backend to the owner of a newer state.
-			if (!(error instanceof ModelBackendUnavailableError) || error.reason !== 'moved' || reroutes >= MAX_REROUTES)
-				throw error;
+		const outcome = await callOwner<T>(slot, route, method, args, sendable, opts?.accounting, signal, deadline);
+		// Only a refusal from the owner's admission path is a Redirect: a call that reached the backend
+		// settles with its result or its error, whatever that error is named, and is never sent again.
+		if (!(outcome instanceof Redirect)) return outcome;
+		if (outcome.refusal === 'moved') {
+			// The owner had released the backend, or no longer owns it: the call follows the backend to
+			// the owner of a newer state.
+			if (moves++ >= MAX_REROUTES) throw new ModelBackendUnavailableError(kind, logicalName, 'moved');
 			after = route.version;
+			continue;
 		}
+		// The owner had not yet seen the state that admitted this thread; main's push to it is in flight,
+		// so the same route is tried again after a short pause, within the call's wait for an owner.
+		wait.until ??= Date.now() + slot.options.ownerWaitMs;
+		const timedOut = deadline !== undefined && deadline <= wait.until;
+		const until = timedOut ? deadline : wait.until;
+		if (Date.now() >= until)
+			throw new ModelBackendUnavailableError(kind, logicalName, timedOut ? 'timeout' : 'not-owner');
+		await pause(Math.min(2 ** unconfirmed++, MAX_UNCONFIRMED_PAUSE_MS, until - Date.now()), signal);
 	}
 }
 
@@ -918,10 +1031,11 @@ function callOwner<T>(
 	route: Route,
 	method: Method,
 	args: unknown[],
-	opts: BackendOpts<Record<string, unknown>>,
+	opts: Record<string, unknown>,
+	accounting: unknown,
 	signal: AbortSignal | undefined,
 	deadline: number | undefined
-): Promise<ModelCallResult<T>> {
+): Promise<ModelCallResult<T> | Redirect> {
 	const request = nextRequest++;
 	const { kind, logicalName } = slot;
 	const { owner } = route;
@@ -936,13 +1050,13 @@ function callOwner<T>(
 		epoch: route.epoch,
 		method,
 		args,
-		opts: sendableOptions(opts ?? {}),
-		accounting: opts?.accounting,
+		opts,
+		accounting,
 	};
 	return new Promise((resolve, reject) => {
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const onAbort = () => finish(signal!.reason, undefined, true);
-		const finish = (error: unknown, result?: ModelCallResult<T>, cancel = false) => {
+		const finish = (error: unknown, result?: ModelCallResult<T> | Redirect, cancel = false) => {
 			if (!pendingCalls.delete(request)) return;
 			signal?.removeEventListener('abort', onAbort);
 			if (timer) clearTimeout(timer);
@@ -982,16 +1096,32 @@ function callOwner<T>(
 }
 
 function onResponse(
-	message: { request: number; ok: boolean; name?: string; result?: ModelCallResult<unknown>; error?: WireError },
+	message: {
+		request: number;
+		ok: boolean;
+		name?: string;
+		result?: ModelCallResult<unknown>;
+		error?: WireError;
+		refused?: unknown;
+	},
 	sender: number
 ): void {
 	const pending = pendingCalls.get(message.request);
 	// Only the thread the request was sent to may settle it.
 	if (!pending || pending.owner !== sender) return;
+	const { kind, logicalName } = pending;
 	const slot = slots.get(pending.key);
 	if (slot && typeof message.name === 'string') slot.servedName = message.name;
-	if (message.ok) pending.finish(undefined, message.result);
-	else pending.finish(fromWireError(message.error, pending.kind, pending.logicalName));
+	if (message.ok === true) return pending.finish(undefined, message.result);
+	if (message.refused === undefined) return pending.finish(fromWireError(message.error));
+	// A refusal is the owner's word that the call never started; only a refusal may send it again.
+	const refused = message.refused;
+	if (refused === 'moved' || refused === 'unconfirmed') pending.finish(undefined, new Redirect(refused));
+	else if (refused === 'busy') pending.finish(new ModelBackendBusyError(kind, logicalName));
+	else
+		pending.finish(
+			new ModelBackendUnavailableError(kind, logicalName, refused === 'start-failed' ? 'start-failed' : 'not-owner')
+		);
 }
 
 // Owner side ----------------------------------------------------------------------------------
@@ -1082,10 +1212,14 @@ async function failRun(slot: Slot, run: OwnerRun, error: unknown): Promise<void>
 	const { kind, logicalName } = slot;
 	run.phase = 'failing';
 	log.error?.(`models: process-wide backend '${kind}.${logicalName}' failed to start on thread ${threadId}`, error);
-	const unavailable = toWireError(new ModelBackendUnavailableError(kind, logicalName, 'start-failed'));
-	for (const queued of run.queue.splice(0)) respond(queued, { ok: false, error: unavailable });
-	await disposeBackend(slot, run);
+	for (const queued of run.queue.splice(0)) refuse(queued, 'start-failed');
+	const undisposed = await disposeBackend(slot, run);
 	run.phase = 'failed';
+	if (undisposed) {
+		reportDisposeFailed(slot, undisposed.error);
+		run.markDisposed?.();
+		return;
+	}
 	if (slot.released) {
 		// Main holds this released run as draining; the instance is gone either way.
 		send(MAIN_THREAD_ID, { type: DISPOSED, key: slot.key, origin: threadId, epoch: run.epoch } as { type: string });
@@ -1111,29 +1245,55 @@ function reportStarted(slot: Slot, run: OwnerRun): void {
 	} as { type: string });
 }
 
-async function disposeBackend(slot: Slot, run: OwnerRun): Promise<void> {
+/**
+ * Dispose the run's instance: try its `dispose()` up to `DISPOSE_ATTEMPTS` times, pausing between
+ * tries. Resolves to undefined once a try resolves, or at once for a backend without `dispose()`,
+ * which is taken to hold nothing its finished calls and its thread's exit do not release. Resolves to
+ * the last error when every try rejects: the instance may still be live.
+ */
+async function disposeBackend(slot: Slot, run: OwnerRun): Promise<{ error: unknown } | undefined> {
 	const backend = run.backend;
 	run.backend = undefined;
-	if (typeof backend?.dispose !== 'function') return;
-	try {
-		await backend.dispose();
-	} catch (error) {
-		log.error?.(`models: disposing process-wide backend '${slot.kind}.${slot.logicalName}' failed`, error);
+	if (typeof backend?.dispose !== 'function') return undefined;
+	let failure: unknown;
+	for (let attempt = 1; attempt <= DISPOSE_ATTEMPTS; attempt++) {
+		try {
+			await backend.dispose();
+			return undefined;
+		} catch (error) {
+			failure = error;
+			log.error?.(
+				`models: disposing process-wide backend '${slot.kind}.${slot.logicalName}' failed (try ${attempt} of ${DISPOSE_ATTEMPTS})`,
+				error
+			);
+		}
+		if (attempt < DISPOSE_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, DISPOSE_RETRY_MS * attempt));
 	}
+	return { error: failure };
+}
+
+/** Tell main this thread's instance of the key may still be live, so it elects no successor while the thread lives. */
+function reportDisposeFailed(slot: Slot, error: unknown): void {
+	send(MAIN_THREAD_ID, {
+		type: DISPOSE_FAILED,
+		key: slot.key,
+		origin: threadId,
+		error: { name: errorName(error), message: errorMessage(error) },
+	} as { type: string });
 }
 
 /**
  * Stop a released run accepting work: what has not started follows the backend to the next owner
  * (`moved`), running calls finish, and then the instance is disposed and main told. Resolves once
- * main has been told.
+ * main has been told how disposal ended.
  */
 function beginDrain(slot: Slot, run: OwnerRun): Promise<void> {
 	run.disposed ??= new Promise((resolve) => (run.markDisposed = resolve));
 	if (run.phase === 'starting' || run.phase === 'ready') {
 		run.phase = 'draining';
-		run.factoryAbort.abort(new ModelBackendUnavailableError(slot.kind, slot.logicalName, 'moved'));
-		const moved = toWireError(new ModelBackendUnavailableError(slot.kind, slot.logicalName, 'moved'));
-		for (const queued of run.queue.splice(0)) respond(queued, { ok: false, error: moved });
+		// Only a factory still running is told to stop; a ready backend's calls run to the end.
+		if (!run.settled) run.factoryAbort.abort(new ModelBackendUnavailableError(slot.kind, slot.logicalName, 'moved'));
+		for (const queued of run.queue.splice(0)) refuse(queued, 'moved');
 		maybeFinishDrain(slot, run);
 	}
 	// A failing run reports its own disposal once its instance is gone (failRun).
@@ -1147,15 +1307,20 @@ function maybeFinishDrain(slot: Slot, run: OwnerRun): void {
 async function finishDrain(slot: Slot, run: OwnerRun): Promise<void> {
 	if (run.phase !== 'draining') return;
 	run.phase = 'disposing';
-	await disposeBackend(slot, run);
-	run.phase = 'disposed';
-	send(MAIN_THREAD_ID, { type: DISPOSED, key: slot.key, origin: threadId, epoch: run.epoch } as { type: string });
+	const undisposed = await disposeBackend(slot, run);
+	if (undisposed) {
+		run.phase = 'failed';
+		reportDisposeFailed(slot, undisposed.error);
+	} else {
+		run.phase = 'disposed';
+		send(MAIN_THREAD_ID, { type: DISPOSED, key: slot.key, origin: threadId, epoch: run.epoch } as { type: string });
+	}
 	run.markDisposed?.();
 }
 
 /**
  * Hand back every claim this thread holds, because it is shutting down, and drain what it owns.
- * Resolves once every instance it held is disposed.
+ * Resolves once disposal of every instance it held has ended.
  */
 function releaseAll(): Promise<void> {
 	shuttingDown = true;
@@ -1166,8 +1331,7 @@ function releaseAll(): Promise<void> {
 			const run = slot.run;
 			const live = run !== undefined && isLive(run);
 			send(MAIN_THREAD_ID, { type: RELEASE, key: slot.key, origin: threadId, live } as { type: string });
-			const moved = toWireError(new ModelBackendUnavailableError(slot.kind, slot.logicalName, 'moved'));
-			for (const queued of slot.parked.splice(0)) respond(queued, { ok: false, error: moved });
+			for (const queued of slot.parked.splice(0)) refuse(queued, 'moved');
 			if (run && live) beginDrain(slot, run);
 		}
 		if (slot.run?.disposed) disposals.push(slot.run.disposed);
@@ -1201,42 +1365,45 @@ function onRequest(message: RequestMessage, sender: number): void {
 		typeof message.opts !== 'object' ||
 		message.opts === null
 	)
-		return respond(queued, {
-			ok: false,
-			error: toWireError(
-				new ModelBackendUnavailableError(
-					slot?.kind ?? 'embedding',
-					slot?.logicalName ?? String(message.logicalName),
-					'not-owner'
-				)
-			),
-		});
+		return refuse(queued, 'not-owner');
 	admit(slot, queued);
 }
 
-/** Queue a request this thread may serve now, hold one routed with a state it has not seen, refuse the rest. */
+/**
+ * Queue a request this thread may serve now, hold one from an admitted thread routed with a state it
+ * has not seen, and refuse the rest unstarted. Main's admitted callers are checked before a request
+ * is held, so a thread main never admitted cannot occupy the hold whatever version it names. A
+ * thread main admitted after this thread's last state is refused `unconfirmed` and tries again.
+ */
 function admit(slot: Slot, queued: Queued): void {
 	const { kind, logicalName } = slot;
-	const refuse = (error: Error) => respond(queued, { ok: false, error: toWireError(error) });
 	const view = slot.view;
+	// Only a thread main admitted for this key may call it, which holds an application's domain here.
+	const admitted = queued.origin === threadId || view?.callers?.includes(queued.origin) === true;
 	if (!slot.released && (view === undefined || view.version < queued.version)) {
-		if (slot.parked.length >= slot.options.maxPending) return refuse(new ModelBackendBusyError(kind, logicalName));
+		if (!admitted) return refuse(queued, 'unconfirmed');
+		if (slot.parked.length >= slot.options.maxPending) return refuse(queued, 'busy');
 		slot.parked.push(queued);
 		return;
 	}
 	const run = slot.run;
-	// Released, or not the owner of the state the request was routed with or of any newer one: the
-	// request never ran, and the caller follows the backend to its owner.
-	if (slot.released || view?.owner !== threadId || !run || run.phase === 'draining' || run.phase === 'disposing')
-		return refuse(new ModelBackendUnavailableError(kind, logicalName, 'moved'));
-	if (run.phase !== 'starting' && run.phase !== 'ready')
-		return refuse(new ModelBackendUnavailableError(kind, logicalName, 'start-failed'));
-	// Only a thread main admitted for this key may call it, which holds an application's domain here.
-	if (queued.origin !== threadId && !view.callers?.includes(queued.origin)) {
+	// Released, or not the owner of the election the request was routed with: the request never ran,
+	// and the caller follows the backend to the owner of a newer state.
+	if (
+		slot.released ||
+		view?.owner !== threadId ||
+		queued.epoch !== view.epoch ||
+		!run ||
+		run.phase === 'draining' ||
+		run.phase === 'disposing'
+	)
+		return refuse(queued, 'moved');
+	if (run.phase !== 'starting' && run.phase !== 'ready') return refuse(queued, 'start-failed');
+	if (!admitted) {
 		log.warn?.(
 			`models: refused a call to process-wide backend '${kind}.${logicalName}' from thread ${queued.origin}, which never registered it`
 		);
-		return refuse(new ModelBackendUnavailableError(kind, logicalName, 'not-owner'));
+		return refuse(queued, 'not-owner');
 	}
 	if (queued.method === 'embed' && Array.isArray(queued.args[0])) queued.inputs = queued.args[0].length;
 	run.queue.push(queued);
@@ -1244,7 +1411,7 @@ function admit(slot: Slot, queued: Queued): void {
 	// What pump could not start waits; past maxPending the newest request is refused, not queued.
 	if (run.queue.length > slot.options.maxPending && run.queue[run.queue.length - 1] === queued) {
 		run.queue.pop();
-		refuse(new ModelBackendBusyError(kind, logicalName));
+		refuse(queued, 'busy');
 	}
 }
 
@@ -1288,8 +1455,8 @@ function pump(slot: Slot, run: OwnerRun): void {
 }
 
 /**
- * The next request, merged with queued `embed` requests whose options and accounting are the same
- * value for value, up to `maxBatchInputs` inputs. Requests that cannot join keep their places.
+ * The next request, merged with queued `embed` requests whose options and accounting are equal by
+ * `sameValue`, up to `maxBatchInputs` inputs. Requests that cannot join keep their places.
  */
 function takeBatch(slot: Slot, run: OwnerRun): Queued[] {
 	const first = run.queue.shift()!;
@@ -1328,7 +1495,21 @@ function vectorCountError(backend: ModelBackend, vectors: unknown, inputs: numbe
 	);
 }
 
-/** One request with more inputs than `maxBatchInputs`, run as consecutive calls of at most that many. */
+/** A split `embed` failed after parts of it completed: the failure, and what the completed parts used. */
+class PartialFailure {
+	readonly error: unknown;
+	readonly usage: TokenUsage;
+	constructor(error: unknown, usage: TokenUsage) {
+		this.error = error;
+		this.usage = usage;
+	}
+}
+
+/**
+ * One request with more inputs than `maxBatchInputs`, run as consecutive calls of at most that many.
+ * When a part fails after others completed, it throws a PartialFailure carrying their usage, so the
+ * caller's row bills what the backend did.
+ */
 async function embedInParts(
 	backend: ModelBackend,
 	inputs: string[],
@@ -1338,18 +1519,23 @@ async function embedInParts(
 ): Promise<ModelCallResult<unknown[]>> {
 	const output: unknown[] = [];
 	let usage: TokenUsage | undefined;
-	for (let offset = 0; offset < inputs.length; offset += limit) {
-		signal.throwIfAborted();
-		const part = inputs.slice(offset, offset + limit);
-		const result = await callBackend(backend, 'embed', [part], opts);
-		if (result?.status !== 'completed')
-			throw new ServerError(
-				`Backend '${backend.name}' answered part of an embed request split at maxBatchInputs with a '${String(result?.status)}' result`
-			);
-		if (!Array.isArray(result.output) || result.output.length !== part.length)
-			throw vectorCountError(backend, result.output, part.length);
-		output.push(...result.output);
-		usage = addUsage(usage, result.usage);
+	try {
+		for (let offset = 0; offset < inputs.length; offset += limit) {
+			signal.throwIfAborted();
+			const part = inputs.slice(offset, offset + limit);
+			const result = await callBackend(backend, 'embed', [part], opts);
+			if (result?.status !== 'completed')
+				throw new ServerError(
+					`Backend '${backend.name}' answered part of an embed request split at maxBatchInputs with a '${String(result?.status)}' result`
+				);
+			// A part that completed was done, even if its vectors are then refused.
+			usage = addUsage(usage, result.usage);
+			if (!Array.isArray(result.output) || result.output.length !== part.length)
+				throw vectorCountError(backend, result.output, part.length);
+			output.push(...result.output);
+		}
+	} catch (error) {
+		throw usage ? new PartialFailure(error, usage) : error;
 	}
 	return { status: 'completed', output, ...(usage && { usage }) };
 }
@@ -1411,7 +1597,11 @@ async function execute(slot: Slot, run: OwnerRun, batch: Queued[]): Promise<void
 			);
 		});
 	} catch (error) {
-		const wire = toWireError(error);
+		const wire = toWireError(error instanceof PartialFailure ? error.error : error);
+		if (error instanceof PartialFailure) {
+			wire.usage = finiteUsage(error.usage);
+			wire.partial = true;
+		}
 		for (const queued of batch) respond(queued, { ok: false, name, error: wire }, running);
 	} finally {
 		for (const queued of batch) run.running.delete(requestKey(queued.origin, queued.request));
@@ -1474,7 +1664,18 @@ function splitExactly(value: number, counts: number[], total: number): number[] 
 	return parts;
 }
 
-/** Answer `to`, unless its caller cancelled it and so has already settled. */
+/**
+ * Refuse `to` unstarted. Only admission, a drain and a failed start call this, each for a request
+ * that never reached the backend; the caller's proxy may send it again on `moved` or `unconfirmed`,
+ * and on nothing else. `execute`, which runs the backend, answers only through `respond`.
+ */
+function refuse(to: { origin: number; request: number }, refusal: Refusal): void {
+	send(to.origin, { type: RESPONSE, request: to.request, origin: threadId, ok: false, refused: refusal } as {
+		type: string;
+	});
+}
+
+/** Answer `to` with what the backend did, unless its caller cancelled it and so has already settled. */
 function respond(
 	to: { origin: number; request: number },
 	payload: { ok: boolean; name?: string; result?: ModelCallResult<unknown>; error?: WireError },
@@ -1500,8 +1701,9 @@ function respond(
 	}
 }
 
-// Errors cross the thread boundary by name, so the facade classifies and falls back on them exactly
-// as it does for a local backend.
+// A backend's errors cross the thread boundary by name, so the facade classifies and falls back on
+// them exactly as it does for a local backend. They are rebuilt as plain errors of that name: the
+// proxy's own error classes are only for what the proxy and the protocol decide.
 
 function errorName(error: unknown): string {
 	return typeof (error as Error)?.name === 'string' ? (error as Error).name : 'Error';
@@ -1517,30 +1719,46 @@ function toWireError(error: unknown): WireError {
 	const fields = error as { statusCode?: unknown; code?: unknown; reason?: unknown; usage?: unknown };
 	if (typeof fields.statusCode === 'number') wire.statusCode = fields.statusCode;
 	if (typeof fields.code === 'string' || typeof fields.code === 'number') wire.code = fields.code;
-	if (wire.name === 'ModelBackendUnavailableError' && typeof fields.reason === 'string')
-		wire.reason = fields.reason as ModelBackendUnavailableReason;
-	if (fields.usage && typeof fields.usage === 'object') {
-		const usage: TokenUsage = {};
-		for (const [field, value] of Object.entries(fields.usage))
-			if (typeof value === 'number' && Number.isFinite(value)) usage[field as keyof TokenUsage] = value;
-		wire.usage = usage;
-	}
+	if (wire.name === 'ModelBackendUnavailableError' && typeof fields.reason === 'string') wire.reason = fields.reason;
+	if (fields.usage && typeof fields.usage === 'object') wire.usage = finiteUsage(fields.usage);
 	return wire;
 }
 
-function fromWireError(wire: WireError | undefined, kind: ModelKind, logicalName: string): Error {
-	if (wire?.name === 'ModelBackendUnavailableError')
-		return new ModelBackendUnavailableError(kind, logicalName, wire.reason ?? 'not-owner');
-	if (wire?.name === 'ModelBackendBusyError') return new ModelBackendBusyError(kind, logicalName);
+/** A usage's finite numeric fields, as a plain object that crosses threads. */
+function finiteUsage(reported: object): TokenUsage {
+	const usage: TokenUsage = {};
+	for (const [field, value] of Object.entries(reported))
+		if (typeof value === 'number' && Number.isFinite(value)) usage[field as keyof TokenUsage] = value;
+	return usage;
+}
+
+/** Caller-side errors whose `usage` is a split embed's completed parts, not yet billed by the facade. */
+const partialUsage = new WeakSet<object>();
+
+function fromWireError(wire: WireError | undefined): Error {
 	const status = wire?.statusCode;
-	const error: Error & { code?: unknown; usage?: TokenUsage } =
+	const error: Error & { code?: unknown; reason?: string; usage?: TokenUsage } =
 		typeof status === 'number' && status >= 400 && status < 500
 			? new ClientError(wire!.message, status)
 			: new ServerError(wire?.message ?? 'Unknown error', status);
 	error.name = wire?.name || 'Error';
 	if (wire?.code !== undefined) error.code = wire.code;
-	if (wire?.usage) error.usage = wire.usage;
+	if (wire?.reason !== undefined) error.reason = wire.reason;
+	if (wire?.usage) {
+		error.usage = wire.usage;
+		if (wire.partial === true) partialUsage.add(error);
+	}
 	return error;
+}
+
+/**
+ * The usage a process-wide backend's split `embed` consumed in the parts that completed before a later
+ * part failed, from the error the call rejected with (its `usage`). It is returned once per error, to
+ * the facade's row for that attempt, so an error that travels on is never billed twice.
+ */
+export function takePartialUsage(error: unknown): TokenUsage | undefined {
+	if (typeof error !== 'object' || error === null || !partialUsage.delete(error)) return undefined;
+	return (error as { usage?: TokenUsage }).usage;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1552,6 +1770,7 @@ listen(RELEASE, onRelease);
 listen(STARTED, onStarted);
 listen(START_FAILED, onStartFailed);
 listen(DISPOSED, onDisposed);
+listen(DISPOSE_FAILED, onDisposeFailed);
 listen(STATE, onState);
 listen(REQUEST, onRequest);
 listen(RESPONSE, onResponse);
