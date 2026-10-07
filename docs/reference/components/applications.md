@@ -340,13 +340,13 @@ harper deploy project=shop-preview by_ref=true \
 
 - A later `package` deploy that omits `isolated` keeps the current setting, and `isolated=false` removes it.
 - A payload deploy (from a directory, or with `payload`) refuses `isolated` with a `400`: `'isolated' is only supported for package deployments; set it on the application's root config entry instead`. It also refuses `host` and `urlPath`. A payload deploy keeps the keys already on the entry.
-- On v5.3.0 and v5.3.1, neither kind of deploy can give an application a fork. A `package` deploy writes `branchedDatabases` into the entry, but the application ignores it when it loads ([harper#3071](https://github.com/HarperFast/harper/issues/3071)). A payload deploy accepts `branchedDatabases` and drops it ([harper#3044](https://github.com/HarperFast/harper/issues/3044)). See [Branched databases](#branched-databases) for what does work.
+- On v5.3.0 and v5.3.1, no deploy request gives an application a fork. A `package` deploy writes `branchedDatabases` into the entry, but the application ignores it when it loads ([harper#3071](https://github.com/HarperFast/harper/issues/3071)). A payload deploy accepts `branchedDatabases` and drops it ([harper#3044](https://github.com/HarperFast/harper/issues/3044)). The manual steps under [Branched databases](#branched-databases) do work.
 
 [How a deploy updates the root config](../operations-api/operations.md#how-a-deploy-updates-the-root-config) has the full rules for the entry.
 
 ### Isolated applications
 
-By default, every worker thread loads every application. An application whose entry sets `isolated: true` is loaded by one dedicated worker thread instead, that thread loads no other application, and no other thread loads it. Its module state, its globals, and its thread's copy of `process.env` are not shared with another application, and a deploy that restarts it restarts only its own thread.
+By default, every worker thread loads every application. An application whose entry sets `isolated: true` is loaded by one dedicated worker thread instead, that thread loads no other application, and no other thread loads it. Its module state, its globals, and its thread's copy of `process.env` are not shared with another application, and a redeploy that keeps it isolated restarts only its own thread.
 
 Isolation is about the thread, not the data. The application still reads and writes the same databases as everything else on the instance, unless it also declares [`branchedDatabases`](#branched-databases). Users, roles, and sessions stay instance-wide.
 
@@ -358,12 +358,10 @@ The dedicated worker does not listen on Harper's HTTP or MQTT ports. A request t
 <rootPath>/sockets/app-<application>-<port>.sock
 ```
 
-In the socket name, every character of the application name outside `A–Z`, `a–z`, `0–9`, `.` and `_` is percent-encoded, so `shop-preview` becomes `app-shop%2Dpreview-<port>.sock`. The socket serves plain HTTP. A `.yaml` file beside it names the application, its `host`, and the TLS certificates, so that a proxy in front can terminate TLS and send each host to the right socket.
+In the socket name, every character of the application name outside `A–Z`, `a–z`, `0–9`, `.` and `_` is percent-encoded, so `shop-preview` becomes `app-shop%2Dpreview-<port>.sock`. The proxy in front terminates TLS. The socket for `http.securePort` serves plain HTTP, and the socket for the MQTT secure port serves MQTT. A `.yaml` file beside each socket names the application, its `host`, and the TLS certificates the proxy needs.
 
-- **On Harper Fabric**, the platform's proxy routes the application's `host` to its socket, by TLS SNI. It does so only for a host name the cluster claims as a [custom domain](/fabric/custom-domains).
-- **On a self-managed instance**, Harper does not route to the socket. Run a proxy that terminates TLS and forwards the application's host name to its socket.
-
-**Give every isolated application its own `host`, used by no other application.** The proxy picks a socket by host name alone. An isolated application with no `host`, or with a host it shares with another application split by `urlPath`, loads and reports healthy, but no request reaches it. Harper does not refuse these configurations yet ([harper#2757](https://github.com/HarperFast/harper/issues/2757)).
+- **On Harper Fabric**, the platform's proxy routes the application's `host` to its socket, by TLS SNI. It does so only for a host name the cluster claims as a [custom domain](/fabric/custom-domains). Because it picks the socket by host name alone, give each isolated application its own `host`, used by no other application. An isolated application with no `host`, or with a host it shares with another application split by `urlPath`, loads and reports healthy, but no request reaches it. Harper does not refuse these configurations yet ([harper#2757](https://github.com/HarperFast/harper/issues/2757)).
+- **On a self-managed instance**, Harper does not route to the socket. Run a proxy that terminates TLS and forwards the application's requests to its socket, by host name or however your proxy routes.
 
 #### Requirements and refusals
 
@@ -383,7 +381,7 @@ At startup or restart, an isolated application that is refused is not loaded any
 #### Restarting and dropping
 
 - **A new isolated application starts at the next restart.** Deploy it with `restart=true`, or restart afterward. That first restart, and any deploy that turns isolation on or off, restarts the shared workers as well as starting or stopping the dedicated one.
-- **A redeploy of an application that stays isolated restarts only its own worker.** The other applications keep running.
+- **A redeploy of an application that stays isolated restarts only its own worker.** The other applications keep running. The exception is [retrying an activation](../operations-api/operations.md#retrying-an-activation) whose release is already live, which restarts every worker.
 - **`restart_service` can target one isolated application.** `{"operation": "restart_service", "service": "http", "scope": "<application>"}` restarts only that application's worker.
 - **`drop_component` without `restart` leaves the dedicated worker running** until the next restart. With `restart=true`, its worker is stopped.
 - **`system_information` shows the dedicated worker.** In its `threads` list, the dedicated worker's entry carries `application: '<name>'`.
@@ -403,26 +401,33 @@ shop-preview:
 The value is a list of database names, or `true` for every database except `system` that exists when the application loads. A database created later is not branched.
 
 :::warning Known issue in v5.3.0 and v5.3.1
-`branchedDatabases` takes effect only on an entry without `package`. That is an application in the components root, such as one deployed with a payload. On an entry that has `package` (which every `package` and `by_ref` deploy writes), it is ignored. The application then runs on the base databases, and no error is reported ([harper#3071](https://github.com/HarperFast/harper/issues/3071)). Until that is fixed, deploy the application with a payload, add `branchedDatabases` to its root-config entry by hand, and restart. Then check that ``<rootPath>/database/`branches`/<application>`` exists before you write through the application.
-:::
+`branchedDatabases` takes effect only on an entry without `package`. That is an application in the components root, such as one deployed with a payload. On an entry that has `package` (which every `package` and `by_ref` deploy writes), it is ignored. The application then runs on the base databases, and no error is reported ([harper#3071](https://github.com/HarperFast/harper/issues/3071)).
+
+Until that is fixed, use these manual steps for a new application:
+
+1. Deploy it with a payload, without `restart`.
+2. Add `branchedDatabases` to its entry in `harper-config.yaml` **on every node**. The root config is per node, and a node without the key runs the application on the base, whose writes replicate to the whole cluster.
+3. Restart each node.
+4. On each node, confirm the application's fork directory exists before you write through the application.
+   :::
 
 #### What the fork is
 
 - **A snapshot of the base, taken the first time the application loads with the key.** Harper takes a RocksDB checkpoint of the base database, which uses hard links when the fork is on the same filesystem as the base. Blob files are hard-linked too. Writes to the base after that point do not reach the fork.
 - **Durable.** The fork survives restarts and redeploys, and is never refreshed from the base. To start again from the current base, drop the application with `restart=true` and deploy it again.
-- **Stored beside the base database**, at ``<storage path>/`branches`/<application>/<database>``. With the default storage path, that is ``<rootPath>/database/`branches`/<application>/<database>``.
+- **Stored beside the base database**, at ``<storage path>/`branches`/<application>/<database>``. With the default storage path, that is ``<rootPath>/database/`branches`/<application>/<database>``. The backticks are part of the directory name, so quote the path with single quotes in a shell, as in ``ls '<rootPath>/database/`branches`/'``; inside double quotes, the shell runs the backticks as a command.
 - **Private.** The fork is not added to the instance's list of databases, so other applications, `describe_all`, analytics, and replication do not see it.
 - **Local to each node.** In a Harper Pro cluster, each node creates its own fork from its own copy of the base when the application first loads there. Writes to a fork stay on the node that took them. The fork's path is the same on every node.
 - **Owns its tables.** A table the application declares in a branched database, through a schema's `@table`, `ensureTable`, or `defineTable`, is created in the fork.
 
 #### Reaching the fork from code
 
-Import `databases` and `tables` from `harper`. Those imports resolve branched names to the fork, and `tables` follows the fork of the default database, `data`. The bare `databases` and `tables` globals are shared by every application in the thread, so code that uses them reads and writes the base without any warning ([harper#3053](https://github.com/HarperFast/harper/issues/3053)).
+Import `databases` from `harper`, and each branched name on it resolves to the fork. `tables` from `harper` is a shortcut for the default database, `data`, so it reaches a fork only when `data` itself is branched; for any other branched database, go through `databases`. The bare `databases` and `tables` globals are shared by every application in the thread, so code that uses them reads and writes the base without any warning ([harper#3053](https://github.com/HarperFast/harper/issues/3053)).
 
 ```js
-import { databases, tables } from 'harper';
+import { databases } from 'harper';
 
-const { Product } = tables; // the fork's Product table when `data` is branched
+const { Product } = databases.inventory; // the fork, when `inventory` is branched
 ```
 
 #### Requirements and failure modes
