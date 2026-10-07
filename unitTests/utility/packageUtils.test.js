@@ -75,9 +75,6 @@ describe('packageUtils', () => {
 			assert.equal(packageUtils.PRODUCT_NAME, 'Harper');
 		});
 
-		// Each case lays out real package directories around a copy of packageUtils.js and loads it
-		// in a fresh process from an unrelated cwd, so the name comes from the manifest the module
-		// actually resolves, not from this test's own package.
 		function productNameFor(manifests, modulePath) {
 			const tmpDir = mkdtempSync(join(os.tmpdir(), 'harper-product-name-test-'));
 			try {
@@ -93,7 +90,7 @@ describe('packageUtils', () => {
 					{ encoding: 'utf8', cwd: os.tmpdir() }
 				).trim();
 			} finally {
-				rmSync(tmpDir, { recursive: true, force: true });
+				rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5 });
 			}
 		}
 
