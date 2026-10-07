@@ -108,9 +108,8 @@ interface RawUpload {
 	statuses: string[];
 }
 
-// Node's own client stops writing after an early complete answer, so this uses a raw socket. It sends the rest of
-// the upload only once `answered` holds, then a second request: a server that answers only after the whole upload,
-// or stops reading once it has answered, never finishes both.
+// Node's own client stops writing after an early complete answer, so this uses a raw socket. The rest of the upload
+// waits for the answer, since a check made when the upload finishes races a server that drains it quickly.
 function uploadOnRawSocket(
 	ctx: ContextWithHarper,
 	fields: Record<string, unknown>,
@@ -167,6 +166,7 @@ function uploadOnRawSocket(
 					if (stage === 'sending the first megabyte' && sent >= 1024 * 1024) {
 						stage = 'waiting for the answer';
 						await answer;
+						if (socket.destroyed) return;
 						stage = 'sending the rest of the upload';
 					}
 					const frame = Buffer.concat([Buffer.from(`${part.length.toString(16)}\r\n`), part, Buffer.from('\r\n')]);

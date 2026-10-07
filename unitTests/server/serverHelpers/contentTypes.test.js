@@ -624,8 +624,8 @@ describe('contentTypes – a multipart upload its route answers without reading'
 		for (let sent = 0; sent < fileBytes; sent += CHUNK.length) yield CHUNK;
 	}
 
-	// Node's own client stops writing after an early complete answer, so these use raw sockets. This one sends the
-	// rest of the upload only once the route has answered, then a second request on the same connection.
+	// Node's own client stops writing after an early complete answer, so these use raw sockets. The rest of this
+	// upload waits for the answer, since a check made when the upload finishes races a server that drains it quickly.
 	function uploadOnRawSocket(path, { fileBytes = 16 * 1024 * 1024, next = '/health', deadlineMs = 10_000 } = {}) {
 		const multipart = buildMultipartBody(
 			{ operation: 'deploy_component' },
@@ -674,6 +674,7 @@ describe('contentTypes – a multipart upload its route answers without reading'
 						if (stage === 'sending the first megabyte' && sent >= 1024 * 1024) {
 							stage = 'waiting for the answer';
 							await answer;
+							if (socket.destroyed) return;
 							stage = 'sending the rest of the upload';
 						}
 						const frame = Buffer.concat([Buffer.from(`${chunk.length.toString(16)}\r\n`), chunk, Buffer.from('\r\n')]);
