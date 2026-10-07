@@ -14,7 +14,9 @@ import { onMessageByType } from '../server/threads/manageThreads.js';
  * clock step. Design: resources/DESIGN.md "Origin-closed timestamp floor".
  */
 
-const SLOTS = 1024;
+const SLOTS = 256;
+// One bound word per 64-byte line: writers on neighbouring slots must not bounce a line between cores.
+const BOUND_STRIDE = 8;
 const WORD_PROPOSED = 0;
 const WORD_PUBLISHED = 1;
 const WORD_RATCHET = 2;
@@ -24,7 +26,8 @@ const WORD_STRICT = 3;
 const HEADER_WORDS = 4;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
 const BOUND_WORDS_OFFSET = HEADER_WORDS + SLOTS;
-const BUFFER_BYTES = (HEADER_WORDS + 2 * SLOTS) * 8;
+const BUFFER_BYTES = (HEADER_WORDS + SLOTS + SLOTS * BOUND_STRIDE) * 8;
+const boundIndex = (slot: number) => BOUND_WORDS_OFFSET + slot * BOUND_STRIDE;
 const BUFFER_KEY = 'origin-closed-floor';
 export const ORIGIN_FLOOR_TICK_MS = 5000;
 const SENTINEL_RETRIES = 8;
@@ -33,7 +36,6 @@ const MAX_TIMESTAMP = 8.64e15;
 /** Main broadcasts it when a worker exits; each thread retires that worker's bounds in the stores it has open. */
 export const ORIGIN_FLOOR_RETIRE = 'origin-floor-retire';
 
-const RETIRING = -1n;
 const RESERVATION = Symbol('originFloorReservation');
 const REGISTRY = Symbol('originFloorRegistry');
 
@@ -88,7 +90,7 @@ class ThreadRegistry {
 			const index = THREAD_WORDS_OFFSET + slot;
 			if (Atomics.load(this.words, index) === owner) return slot;
 			if (Atomics.compareExchange(this.words, index, 0n, owner) === 0n) {
-				Atomics.store(this.words, BOUND_WORDS_OFFSET + slot, INFINITY_BITS);
+				Atomics.store(this.words, boundIndex(slot), INFINITY_BITS);
 				return slot;
 			}
 		}
@@ -110,7 +112,6 @@ class ThreadRegistry {
 		return heap.length > 0 ? heap[0].key : Infinity;
 	}
 
-	/** Released entries behind a long-lived minimum are dropped once they outnumber the live ones. */
 	private compact(): void {
 		const live = this.heap.filter((reservation) => !reservation.released);
 		this.heap.length = 0;
@@ -149,7 +150,7 @@ class ThreadRegistry {
 	}
 
 	private publish(bound: number): void {
-		if (!this.retired) Atomics.store(this.words, BOUND_WORDS_OFFSET + this.slot, toBits(bound));
+		if (!this.retired) Atomics.store(this.words, boundIndex(this.slot), toBits(bound));
 	}
 
 	/**
@@ -227,7 +228,7 @@ class ThreadRegistry {
 		for (let slot = 0; slot < SLOTS; slot++) {
 			const owner = Atomics.load(this.words, THREAD_WORDS_OFFSET + slot);
 			if (owner === 0n) continue;
-			const bound = fromBits(Atomics.load(this.words, BOUND_WORDS_OFFSET + slot));
+			const bound = fromBits(Atomics.load(this.words, boundIndex(slot)));
 			if (bound !== Infinity) result.push({ threadId: Number(owner) - 1, bound });
 		}
 		return result;
@@ -238,7 +239,7 @@ class ThreadRegistry {
 		let min = Infinity;
 		for (let slot = 0; slot < SLOTS; slot++) {
 			if (Atomics.load(this.words, THREAD_WORDS_OFFSET + slot) === 0n) continue;
-			const bits = Atomics.load(this.words, BOUND_WORDS_OFFSET + slot);
+			const bits = Atomics.load(this.words, boundIndex(slot));
 			if (bits === 0n) return 0;
 			const bound = fromBits(bits);
 			if (bound < min) min = bound;
@@ -304,12 +305,13 @@ export function isReservedForLocalAppend(handle: RocksTransaction): boolean {
 	return (handle as any)[RESERVATION] !== undefined;
 }
 
-/** Raise the issuance bound to the recovered floor at open. */
 export function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void {
 	if (!(Number.isFinite(floor) && floor > 0) || typeof rootStore?.getUserSharedBuffer !== 'function') return;
 	const words = registryFor(rootStore).words;
 	storeMax(words, WORD_RATCHET, floor);
 	storeMax(words, WORD_PROPOSED, floor);
+	// Keys will be issued from the ratchet until the clock passes it: native keys go through it from now.
+	if (rootStore.getMonotonicTimestamp() <= floor) Atomics.store(words, WORD_STRICT, 1n);
 }
 
 /** The persisted floor read at open is the advertised floor until the certifier advances it. */
@@ -351,7 +353,7 @@ export function getOriginClosedFloor(
 	return { floor, lagMs: Date.now() - floor, holders: registry.holders() };
 }
 
-/** The buffer dies with the column family, so a closing store leaves the directory. */
+/** The buffer dies with the column family; a closing store's registry stops publishing and is no longer retired through. */
 export function forgetOriginFloorRegistry(rootStore: RocksDatabase): void {
 	const registry: ThreadRegistry | undefined = (rootStore as any)?.[REGISTRY];
 	if (!registry) return;
@@ -361,21 +363,17 @@ export function forgetOriginFloorRegistry(rootStore: RocksDatabase): void {
 }
 
 /**
- * Only after the worker's native env teardown, which closes its handles with their commits drained
- * (main's `worker.on('exit')`): the worker's own exit event fires before that, while a queued commit
- * can still append.
+ * Free a dead thread's slots. Called only after the worker's native env teardown, which closes its
+ * handles with their commits drained (main's `worker.on('exit')`); the worker's own exit event fires
+ * before that, while a queued commit can still append. One compare-and-swap per slot: an unowned
+ * slot's bound is never read, and a claimer writes its own bound after it owns the slot, so there is
+ * no window in which a stale store could erase a successor's bound.
  */
 export function retireOriginFloorSlots(exitedThreadId: number): void {
 	const owner = BigInt(exitedThreadId + 1);
 	for (const registry of registries) {
-		for (let slot = 0; slot < SLOTS; slot++) {
-			const index = THREAD_WORDS_OFFSET + slot;
-			// Every thread receives the retirement; the one that moves the owner to RETIRING does it, and
-			// nobody can claim the slot until that thread has cleared the bound and freed it.
-			if (Atomics.compareExchange(registry.words, index, owner, RETIRING) !== owner) continue;
-			Atomics.store(registry.words, BOUND_WORDS_OFFSET + slot, INFINITY_BITS);
-			Atomics.store(registry.words, index, 0n);
-		}
+		for (let slot = 0; slot < SLOTS; slot++)
+			Atomics.compareExchange(registry.words, THREAD_WORDS_OFFSET + slot, owner, 0n);
 	}
 }
 
