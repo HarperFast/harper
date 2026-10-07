@@ -114,7 +114,7 @@ describe('Benchmark: origin-closed floor write overhead', function () {
 		const roundStart = performance.now();
 		for (let n = 0; n < rounds; n++) {
 			const certified = floor.certifyOriginFloor(rootStore);
-			if (certified !== undefined) {
+			if (certified) {
 				persistOriginClosedFloor(auditStore, certified);
 				floor.publishOriginFloor(rootStore, certified);
 			}

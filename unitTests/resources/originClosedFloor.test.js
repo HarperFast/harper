@@ -47,8 +47,9 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 	});
 
 	function certify() {
-		const floor = certifyOriginFloor(rootStore);
-		if (floor !== undefined) {
+		let floor = certifyOriginFloor(rootStore);
+		for (let retry = 0; floor === null && retry < 100; retry++) floor = certifyOriginFloor(rootStore);
+		if (floor) {
 			persistOriginClosedFloor(auditStore, floor);
 			publishOriginFloor(rootStore, floor);
 		}

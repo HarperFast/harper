@@ -3992,7 +3992,6 @@ export function makeTable(options): TableResourceClass {
 					commitTrackedRocksTransaction(transaction as RocksTransaction, primaryStore).catch((error) => {
 						// The commit failed, so the read-snapshot/transaction handle is still open — release it, as the
 						// batched-eviction path does on its own commit failures. committed===true skips the finally abort.
-						releaseLocalKey(transaction as RocksTransaction);
 						try {
 							(transaction as any).abort();
 						} catch {}
@@ -4737,6 +4736,13 @@ export function makeTable(options): TableResourceClass {
 					// What a re-delivery of this write carries: the origin's log key for an apply (the context's
 					// timestamp, even when the floor moved this handle's key), the explicit value otherwise.
 					const receivedLogKey = options?.version != null ? ((context as any)?.timestamp ?? txnLogKey) : txnTime;
+					// A ref equal to the received identity is a receipt the floor left for a rekeyed write when no
+					// entry sits at that key, or an audit head whose entry is this same write; a head of a distinct
+					// write that merely shares the number is neither.
+					const isReceivedIdentityRef = (ref: { version: number; nodeId?: number }, key: number) => {
+						const entry = auditStore.get(key, tableId, id, ref.nodeId);
+						return entry === undefined || entry.version === (options?.version ?? txnTime);
+					};
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
@@ -4801,7 +4807,8 @@ export function makeTable(options): TableResourceClass {
 							if (
 								existingEntry.additionalAuditRefs?.some(
 									(ref) =>
-										(ref.version === appendedLogKey || ref.version === receivedLogKey) &&
+										(ref.version === appendedLogKey ||
+											(ref.version === receivedLogKey && isReceivedIdentityRef(ref, receivedLogKey))) &&
 										precedesExistingVersion(
 											txnTime,
 											{ version: txnTime, localTime: appendedLogKey, key: id, nodeId: ref.nodeId },
@@ -7366,9 +7373,9 @@ export function makeTable(options): TableResourceClass {
 						scheduleCleanup();
 					}
 					logger.trace?.(`Publishing message to id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
-					const appendedLogKey = isRocksDB
-						? (reservedLocalKey(transaction) ?? transaction?.getTimestamp?.() ?? txnTime)
-						: txnTime;
+					// Only a reserved (local) handle can carry a key the floor moved; a remote apply publishes
+					// under the origin key it installed, so it needs neither a pointer nor a native read.
+					const appendedLogKey = reservedLocalKey(transaction) ?? txnTime;
 					// always audit this, but don't change existing version
 					// TODO: Use direct writes in the future (copying binary data is hard because it invalidates the cache)
 					return updateRecord(
@@ -9777,7 +9784,6 @@ export function makeTable(options): TableResourceClass {
 					await commitTrackedRocksTransaction(transaction, primaryStore);
 					return;
 				} catch (error: any) {
-					releaseLocalKey(transaction);
 					try {
 						transaction.abort();
 					} catch {}

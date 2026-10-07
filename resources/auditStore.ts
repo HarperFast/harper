@@ -442,6 +442,7 @@ export function openAuditStore(rootStore) {
 	auditStore.stopAuditCleanup = function (): Promise<void> {
 		cleanupStopped = true;
 		clearInterval(originFloorTimer);
+		clearTimeout(floorRetry);
 		if (isRocksAuditStore) forgetOriginFloorRegistry(rootStore);
 		clearTimeout(pendingCleanup);
 		pendingCleanup = null;
@@ -450,14 +451,20 @@ export function openAuditStore(rootStore) {
 		return lastCleanupResolution ?? Promise.resolve();
 	};
 	let originFloorTimer: ReturnType<typeof setInterval> | undefined;
+	let floorRetry: ReturnType<typeof setTimeout> | undefined;
 	if (ownsStoreMaintenance(rootStore.path)) {
 		scheduleAuditCleanup();
 		if (isRocksAuditStore && !isReadOnlyMode()) {
 			let floorErrorLoggedAt = 0;
-			originFloorTimer = setInterval(() => {
+			const certify = () => {
 				if (storeClosing()) return;
 				try {
 					const floor = certifyOriginFloor(rootStore);
+					if (floor === null) {
+						clearTimeout(floorRetry);
+						floorRetry = setTimeout(certify, 50).unref();
+						return;
+					}
 					if (floor === undefined) return;
 					persistOriginClosedFloor(auditStore, floor);
 					publishOriginFloor(rootStore, floor);
@@ -468,7 +475,8 @@ export function openAuditStore(rootStore) {
 						warnContained('Error certifying the origin-closed floor', error);
 					}
 				}
-			}, ORIGIN_FLOOR_TICK_MS).unref();
+			};
+			originFloorTimer = setInterval(certify, ORIGIN_FLOOR_TICK_MS).unref();
 		}
 	}
 	if (getWorkerIndex() === 0 && !timestampErrored) {

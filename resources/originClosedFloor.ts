@@ -328,7 +328,6 @@ export function isReservedForLocalAppend(handle: RocksTransaction): boolean {
 	return (handle as any)[RESERVATION] !== undefined;
 }
 
-/** The key a reserved handle appends with, without a native call; undefined for an unreserved handle. */
 export function reservedLocalKey(handle: RocksTransaction | undefined): number | undefined {
 	return handle && (handle as any)[RESERVATION]?.key;
 }
@@ -337,7 +336,6 @@ function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void
 	const words = registryFor(rootStore).words;
 	storeMax(words, WORD_RATCHET, floor);
 	storeMax(words, WORD_PROPOSED, floor);
-	// A clock behind the recovered floor issues keys from the ratchet until it passes.
 	if (rootStore.getMonotonicTimestamp() <= floor) Atomics.store(words, WORD_STRICT, 1n);
 }
 
@@ -353,14 +351,15 @@ export function publishOriginFloor(rootStore: RocksDatabase, floor: number): voi
  * One certification round: the clock sample and the admission bound come before the bounds are read,
  * so a key minted or adopted after the read is above the candidate. The caller persists, then publishes.
  */
-export function certifyOriginFloor(rootStore: RocksDatabase): number | undefined {
+/** `null`: a thread was mid-reservation on every read; the caller retries after a yield, not a tick. */
+export function certifyOriginFloor(rootStore: RocksDatabase): number | null | undefined {
 	const registry = registryFor(rootStore);
 	const words = registry.words;
 	const sample = Math.max(rootStore.getMonotonicTimestamp(), fromBits(Atomics.load(words, WORD_RATCHET)));
 	storeMax(words, WORD_PROPOSED, sample);
 	let bound = 0;
 	for (let attempt = 0; attempt < SENTINEL_RETRIES && bound === 0; attempt++) bound = registry.minBound();
-	if (bound === 0) return;
+	if (bound === 0) return null;
 	const candidate = Math.min(sample, bound);
 	if (toBits(candidate) <= Atomics.load(words, WORD_PUBLISHED)) return;
 	return candidate;
