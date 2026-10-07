@@ -348,6 +348,8 @@ harper deploy project=shop-preview by_ref=true \
 
 By default, every worker thread loads every application. An application whose entry sets `isolated: true` is loaded by one dedicated worker thread instead, that thread loads no other application, and no other thread loads it. Its module state, its globals, and its thread's copy of `process.env` are not shared with another application, and a redeploy that keeps it isolated restarts only its own thread.
 
+Its REST export registry also belongs to that worker: exports registered by an isolated application are not registered in the shared workers. See [Deploying from CI](/learn/developers/deploying-from-ci#per-pr-previews-with-shared-databases) for isolated deployments and a preview workflow.
+
 Isolation is about the thread, not the data. The application still reads and writes the same databases as everything else on the instance, unless it also declares [`branchedDatabases`](#branched-databases). Users, roles, and sessions stay instance-wide.
 
 #### Reaching an isolated application
@@ -383,7 +385,7 @@ At startup or restart, an isolated application that is refused is not loaded any
 - **A new isolated application starts at the next restart.** Deploy it with `restart=true`, or restart afterward. That first restart, and any deploy that turns isolation on or off, restarts the shared workers as well as starting or stopping the dedicated one.
 - **A redeploy of an application that stays isolated restarts only its own worker.** The other applications keep running. The exception is [retrying an activation](../operations-api/operations.md#retrying-an-activation) whose release is already live, which restarts every worker.
 - **`restart_service` can target one isolated application.** `{"operation": "restart_service", "service": "http", "scope": "<application>"}` restarts only that application's worker.
-- **`drop_component` without `restart` leaves the dedicated worker running** until the next restart. With `restart=true`, its worker is stopped.
+- **`drop_component` without `restart` leaves the dedicated worker running** until the next restart. With `restart=true`, a running isolated application's worker is stopped without restarting the shared workers. Dropping an already-absent application with `restart=true` can restart the shared workers, so check component files and running workers before retrying. On Pro and Fabric, drops propagate to peers by default; inspect the response's `replicated` results for peer failures.
 - **`system_information` shows the dedicated worker.** In its `threads` list, the dedicated worker's entry carries `application: '<name>'`.
 
 Each isolated application adds a worker thread on top of `threads.count`. See [`threads.maxIsolated`](../configuration/options.md#threads) for how that affects memory.
@@ -413,7 +415,7 @@ Until that is fixed, use these manual steps for a new application:
 
 #### What the fork is
 
-- **A snapshot of the base, taken the first time the application loads with the key.** Harper takes a RocksDB checkpoint of the base database, which uses hard links when the fork is on the same filesystem as the base. Blob files are hard-linked too. Writes to the base after that point do not reach the fork.
+- **A snapshot of the base, taken the first time the application loads with the key.** Harper takes a RocksDB checkpoint of the base database, which uses hard links when the fork is on the same filesystem as the base. It captures blob files separately, using hard links too; this is not an atomic snapshot of records and blobs together. Blobs still being written or reclaimed before capture can leave markers in the fork, with warnings in the log and errors when those records are read. Later base writes do not refresh the fork.
 - **Durable.** The fork survives restarts and redeploys, and is never refreshed from the base. To start again from the current base, drop the application with `restart=true` and deploy it again.
 - **Stored beside the base database**, at ``<storage path>/`branches`/<application>/<database>``. With the default storage path, that is ``<rootPath>/database/`branches`/<application>/<database>``. The backticks are part of the directory name, so quote the path with single quotes in a shell, as in ``ls '<rootPath>/database/`branches`/'``; inside double quotes, the shell runs the backticks as a command.
 - **Private.** The fork is not added to the instance's list of databases, so other applications, `describe_all`, analytics, and replication do not see it.
@@ -503,8 +505,8 @@ Deletes a component project or a specific file within it.
 
 - `project` _(required)_ — Project name
 - `file` _(optional)_ — Path relative to project folder. If omitted, deletes the entire project
-- `replicated` _(optional)_ — Replicate deletion to all cluster nodes
-- `restart` _(optional)_ — Restart Harper after dropping
+- `replicated` _(optional)_ — On Harper Pro and Fabric, deletion goes to every cluster node unless this is `false`. Inspect the response's `replicated` results for peer failures
+- `restart` _(optional)_ — `true` waits for a restart after dropping. A running isolated application stops only its own worker; an already-absent application can restart shared workers
 
 ```json
 {
