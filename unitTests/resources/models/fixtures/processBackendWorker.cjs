@@ -4,9 +4,10 @@
 // port mesh production workers use. It registers backends (process-wide or per thread) and calls them
 // through the models facade on command, reporting every factory run, backend call, disposal, analytics
 // row, metric and refusal to the test, tagged with the thread it ran on. Its backends can hold or reject
-// their dispose(), fail on a chosen input, and keep their factory's signal. On SHUTDOWN it runs Harper's
-// shutdown drains the way threadServer does, so the test sees what a real worker would wait for before
-// exiting.
+// their dispose(), fail on a chosen input, keep their factory's signal and throw from a property getter,
+// and its calls can carry options that cannot cross threads or that two calls share by reference. On
+// SHUTDOWN it runs Harper's shutdown drains the way threadServer does, so the test sees what a real
+// worker would wait for before exiting.
 const { parentPort, threadId } = require('node:worker_threads');
 const { getEventListeners } = require('node:events');
 // Prime Harper's module graph in the order the other models tests do (see Models.test.js).
@@ -36,6 +37,17 @@ const models = new Models(
 );
 const gates = new Map();
 const controllers = new Map();
+/** One Date every call made with `shareDate` holds by reference, as two calls sharing an options object would. */
+const SHARED_DATE = new Date(0);
+
+/** `value` as it can be reported to the test: a value that cannot cross threads is described, not sent. */
+function reportable(value) {
+	try {
+		return structuredClone(value);
+	} catch {
+		return { uncloneable: Object.keys(value) };
+	}
+}
 
 /** A float32-exact fingerprint of `text`, so the test can tell which request a vector answers. */
 function fingerprint(text) {
@@ -75,7 +87,7 @@ function hold(text, signal, factorySignal) {
 
 function embeddingBackend(id, spec = {}) {
 	let disposals = 0;
-	return {
+	const backend = {
 		name: `test:${id}`,
 		capabilities() {
 			if (spec.capabilities === 'throw') throw new Error('capabilities are not readable yet');
@@ -86,7 +98,7 @@ function embeddingBackend(id, spec = {}) {
 		async embed(input, opts) {
 			const texts = Array.isArray(input) ? input : [input];
 			const { signal, accounting, ...rest } = opts;
-			report({ event: 'embed', id, texts, opts: rest, accounting });
+			report({ event: 'embed', id, texts, opts: reportable(rest), accounting });
 			for (const text of texts) {
 				// Held texts keep this call running, so later requests queue behind it.
 				if (text.startsWith('gate:') || text.startsWith('until-aborted:')) await hold(text, signal, spec.factorySignal);
@@ -114,7 +126,8 @@ function embeddingBackend(id, spec = {}) {
 				usage: spec.usage ?? { embeddingTokens: texts.length * 3 },
 			};
 		},
-		// 'hold' waits until the test releases `dispose:<id>`; 'reject' rejects every time, 'reject-once' the first time.
+		// 'hold' waits until the test releases `dispose:<id>`; 'reject' rejects every time, 'reject-once' the first
+		// time; 'getter-throws' replaces this method with a property that throws when read (below).
 		async dispose() {
 			disposals++;
 			report({ event: 'dispose', id });
@@ -123,6 +136,22 @@ function embeddingBackend(id, spec = {}) {
 				throw new Error(`could not free the model of ${id}`);
 		},
 	};
+	// A backend whose `capabilities` cannot even be read: the getter throws before any method is reached.
+	if (spec.capabilities === 'getter-throws')
+		Object.defineProperty(backend, 'capabilities', {
+			get() {
+				throw new Error('the capabilities property is not readable yet');
+			},
+		});
+	// A backend whose `dispose` cannot be read, so no try to dispose it can succeed.
+	if (spec.dispose === 'getter-throws')
+		Object.defineProperty(backend, 'dispose', {
+			get() {
+				report({ event: 'dispose-read', id });
+				throw new Error(`the dispose property of ${id} is not readable`);
+			},
+		});
+	return backend;
 }
 
 function generativeBackend(id) {
@@ -200,6 +229,11 @@ const commands = {
 			id,
 			async ({ signal } = {}) => {
 				report({ event: 'factory', id });
+				signal?.addEventListener(
+					'abort',
+					() => report({ event: 'factory-aborted', id, name: signal.reason?.name, reason: signal.reason?.reason }),
+					{ once: true }
+				);
 				// Held until the test releases it, so the test can line up claimants and calls first.
 				if (failStart || holdStart) await new Promise((resolve) => gates.set(`start:${id}`, resolve));
 				report({ event: 'factory-settled', id, aborted: signal?.aborted === true });
@@ -215,10 +249,13 @@ const commands = {
 		setFallbackGroup('embedding', id, [fallbackId]);
 		return {};
 	},
-	async embed({ rid, id, texts, opts, tenant }) {
+	async embed({ rid, id, texts, opts, tenant, shareDate, nestedFunction }) {
 		const controller = new AbortController();
 		controllers.set(rid, controller);
-		const call = () => models.embed(texts, { ...opts, model: id, signal: controller.signal });
+		const callOpts = { ...opts, model: id, signal: controller.signal };
+		if (shareDate) callOpts.when = SHARED_DATE;
+		if (nestedFunction) callOpts.hooks = { onProgress() {} };
+		const call = () => models.embed(texts, callOpts);
 		try {
 			const vectors = await (tenant === undefined ? call() : contextStorage.run({ user: { tenant } }, call));
 			return {

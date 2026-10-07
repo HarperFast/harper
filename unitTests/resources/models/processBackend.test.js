@@ -9,14 +9,17 @@ const manageThreads = require('#js/server/threads/manageThreads');
 const { startWorker, onMessageByType, getWorkerIndex, setMainIsWorker } = manageThreads;
 const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
 const { Models, ModelCapabilityError } = require('#src/resources/models/Models');
-const { ModelBackendRegistrationError } = require('#src/resources/models/backendRegistry');
+const { getBackend, ModelBackendRegistrationError } = require('#src/resources/models/backendRegistry');
 const {
 	apportionUsage,
 	backendStatus,
 	callerLoad,
 	ModelBackendBusyError,
 	ModelBackendUnavailableError,
+	ownerLoad: localOwnerLoad,
 	registerProcessBackend,
+	sameValue,
+	takePartialUsage,
 } = require('#src/resources/models/processBackend');
 const { waitFor } = require('../../waitFor');
 
@@ -1275,6 +1278,235 @@ describe('models.registerProcessBackend: one live backend instance per key, serv
 		assert.strictEqual(kept.generation, failed.generation);
 		assert.strictEqual(factoryRuns('claimed-generation').length, 1);
 	});
+
+	it('refuses as moved, and never holds, a request routed with an older election, whatever state version it names', async function () {
+		const [owner, caller] = await startWorkers(2);
+		await registerInOrder([owner, caller], 'old-epoch');
+		// A call the owner serves shows that its last state admits the caller.
+		assertServedBy(
+			await command(caller, { command: 'embed', id: 'old-epoch', texts: ['old-epoch:admitted'] }),
+			['old-epoch:admitted'],
+			owner.threadId
+		);
+		const seen = await ownerLoad(owner, 'old-epoch');
+		assert.ok(seen.epoch >= 1, `an election precedes the owner's view (epoch ${seen.epoch})`);
+		await command(caller, {
+			command: 'send',
+			target: owner.threadId,
+			message: rawRequest('old-epoch', caller.threadId, 1e6 + 6, {
+				version: seen.version + 1,
+				epoch: seen.epoch - 1,
+				args: [['old-epoch:stale']],
+			}),
+		});
+
+		// Either the owner answers, or (the defect) it holds the request for a state that cannot serve it.
+		const outcome = await waitFor(
+			async () =>
+				events.find((event) => event.event === 'raw-response' && event.message.request === 1e6 + 6) ??
+				((await ownerLoad(owner, 'old-epoch'))?.parked > 0 && 'held'),
+			10000
+		);
+		assert.notStrictEqual(outcome, 'held', 'a request from an older election was held');
+		assert.strictEqual(outcome.from, owner.threadId);
+		assert.strictEqual(outcome.message.ok, false);
+		assert.strictEqual(outcome.message.refused, 'moved');
+		assert.strictEqual((await ownerLoad(owner, 'old-epoch')).parked, 0, 'the hold is empty');
+		assert.strictEqual(backendCalls('old-epoch:stale').length, 0);
+	});
+
+	it("applies the same clone and batching rules to the owner's own calls as to another worker's", async function () {
+		const [owner, caller] = await startWorkers(2);
+		await registerInOrder([owner, caller], 'same-rules', { maxBatchInputs: 8 });
+		const gate = occupy(owner, 'same-rules');
+		await waitingOn('gate:same-rules');
+		// Two calls from each thread, all four holding one Date by reference in their options.
+		const sent = [];
+		for (const [worker, tag] of [
+			[owner, 'own'],
+			[caller, 'other'],
+		])
+			for (const index of [1, 2]) {
+				const texts = [`same-rules:${tag}:${index}`];
+				sent.push({ texts, reply: command(worker, { command: 'embed', id: 'same-rules', texts, shareDate: true }) });
+			}
+		await waitFor(async () => (await ownerLoad(owner, 'same-rules'))?.queued === 4, 10000);
+		await command(owner, { command: 'release', text: 'gate:same-rules' });
+		await gate;
+		for (const { texts, reply } of sent) assertServedBy(await reply, texts, owner.threadId);
+		assert.deepStrictEqual(
+			backendCalls('same-rules:').map((event) => event.texts.length),
+			[1, 1, 1, 1],
+			'a Date never matches, so no two of the calls were merged, whichever thread made them'
+		);
+
+		// An option holding a function cannot cross threads: the owner's own call fails as another worker's does.
+		const [own, other] = await Promise.all(
+			[
+				[owner, 'same-rules:nested-own'],
+				[caller, 'same-rules:nested-other'],
+			].map(([worker, text]) =>
+				command(worker, { command: 'embed', id: 'same-rules', texts: [text], nestedFunction: true })
+			)
+		);
+		for (const reply of [own, other]) {
+			assert.strictEqual(reply.ok, false, 'the call was refused');
+			assert.match(reply.error.message, /option 'hooks' cannot cross threads/);
+		}
+		assert.deepStrictEqual(
+			{ name: own.error.name, message: own.error.message },
+			{ name: other.error.name, message: other.error.message }
+		);
+		assert.strictEqual(backendCalls('same-rules:nested').length, 0, 'neither call reached the backend');
+	});
+
+	it('disposes what a factory returned before reading any of its properties, so a getter that throws frees it before a successor starts', async function () {
+		const id = 'getter-throws';
+		const [failing, successor] = await startWorkers(2);
+		await command(failing, {
+			command: 'register',
+			id,
+			holdStart: true,
+			capabilities: 'getter-throws',
+			dispose: 'hold',
+		});
+		await waitFor(() => factoryRuns(id).length === 1);
+		await command(successor, { command: 'register', id });
+		await waitForStatus(successor, id, (status) => status?.owner === failing.threadId, `${id}: owner not seen`);
+		await command(failing, { command: 'release', text: `start:${id}` });
+
+		// Either the returned object is disposed, or (the defect) a successor runs its factory while it may be live.
+		await waitFor(() =>
+			events.some(
+				(event) =>
+					event.id === id &&
+					(event.event === 'dispose' || (event.event === 'factory' && event.threadId === successor.threadId))
+			)
+		);
+		assert.ok(
+			events.some((event) => event.event === 'dispose' && event.id === id && event.threadId === failing.threadId),
+			'the object the factory returned was disposed'
+		);
+		// Asserting a non-event: give an election time to (not) happen while dispose() is held.
+		await delay(200);
+		assert.deepStrictEqual(
+			factoryRuns(id).map((event) => event.threadId),
+			[failing.threadId],
+			'no successor runs its factory while the failed start is still disposing'
+		);
+		await command(failing, { command: 'release', text: `dispose:${id}` });
+
+		const restarted = await waitForStatus(
+			successor,
+			id,
+			(status) => status?.state === 'ready' && status.owner === successor.threadId,
+			`${id}: no successor became ready`
+		);
+		assert.strictEqual(restarted.restarts, 1, 'the failed start used the restart budget');
+		assert.deepStrictEqual(
+			events
+				.filter((event) => (event.event === 'factory' || event.event === 'dispose') && event.id === id)
+				.map((event) => `${event.event}@${event.threadId}`),
+			[`factory@${failing.threadId}`, `dispose@${failing.threadId}`, `factory@${successor.threadId}`]
+		);
+	});
+
+	it('counts a dispose property that throws when read as a rejected dispose(): tried three times, then the key fails and nothing is elected while its thread lives', async function () {
+		const id = 'dispose-getter';
+		const [owner, successor] = await startWorkers(2);
+		await registerInOrder([owner, successor], id, undefined, { dispose: 'getter-throws' });
+		await waitForStatus(successor, id, (status) => status?.state === 'ready', `${id}: not ready`);
+		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: manageThreads.restartNumber });
+
+		const failed = await waitForStatus(
+			successor,
+			id,
+			(status) => status?.state === 'failed',
+			`${id}: an unreadable dispose never failed the key`
+		);
+		assert.strictEqual(failed.reason, 'dispose-failed');
+		assert.strictEqual(failed.draining, owner.threadId, 'the thread that may still hold the instance is named');
+		assert.match(failed.error.message, /the dispose property of dispose-getter is not readable/);
+		assert.strictEqual(
+			events.filter((event) => event.event === 'dispose-read' && event.id === id).length,
+			3,
+			'dispose was read on each of three tries'
+		);
+		assert.deepStrictEqual(
+			factoryRuns(id).map((event) => event.threadId),
+			[owner.threadId]
+		);
+	});
+
+	it("aborts a factory's signal when its owner is released while it still runs, and disposes what it returns before a successor starts", async function () {
+		const id = 'pending-factory';
+		const [owner, successor] = await startWorkers(2);
+		await command(owner, { command: 'register', id, holdStart: true });
+		await waitFor(() => factoryRuns(id).length === 1);
+		await command(successor, { command: 'register', id });
+		await waitForStatus(successor, id, (status) => status?.owner === owner.threadId, `${id}: owner not seen`);
+		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: manageThreads.restartNumber });
+
+		const aborted = await waitFor(() => events.find((event) => event.event === 'factory-aborted' && event.id === id));
+		assert.strictEqual(aborted.threadId, owner.threadId);
+		assert.deepStrictEqual([aborted.name, aborted.reason], ['ModelBackendUnavailableError', 'moved']);
+		const draining = await waitForStatus(
+			successor,
+			id,
+			(status) => status?.draining === owner.threadId,
+			`${id}: the released owner was never reported draining`
+		);
+		assert.strictEqual(draining.owner, undefined);
+		// The factory runs on after its signal aborts; what it returns is disposed before anything is elected.
+		await command(owner, { command: 'release', text: `start:${id}` });
+		const handedOver = await waitForStatus(
+			successor,
+			id,
+			(status) => status?.state === 'ready' && status.owner === successor.threadId,
+			`${id}: the successor never became the ready owner`
+		);
+		assert.strictEqual(handedOver.restarts, 0, 'a planned exit is not a failure');
+		assert.deepStrictEqual(
+			events
+				.filter((event) => (event.event === 'factory' || event.event === 'dispose') && event.id === id)
+				.map((event) => `${event.event}@${event.threadId}`),
+			[`factory@${owner.threadId}`, `dispose@${owner.threadId}`, `factory@${successor.threadId}`]
+		);
+	});
+
+	it('fails a call by name once its wait for an owner to confirm its caller runs out', async function () {
+		const [owner, bystander, caller] = await startWorkers(3);
+		await registerInOrder([owner, bystander, caller], 'never-confirmed', { ownerWaitMs: 300 });
+		// This thread is main: a push naming the bystander as owner reaches the caller, and never the bystander.
+		manageThreads.sendToThread(caller.threadId, {
+			type: STATE,
+			key: keyOf('never-confirmed'),
+			version: 1e6,
+			epoch: 1e6,
+			state: 'ready',
+			owner: bystander.threadId,
+			restarts: 0,
+			maxRestarts: 1,
+			generation: 1,
+		});
+		await waitForStatus(caller, 'never-confirmed', (status) => status?.owner === bystander.threadId, 'push not seen');
+		const started = Date.now();
+		const reply = await command(caller, { command: 'embed', id: 'never-confirmed', texts: ['never-confirmed:a'] });
+
+		assert.strictEqual(reply.ok, false);
+		assert.strictEqual(reply.error.name, 'ModelBackendUnavailableError');
+		assert.strictEqual(reply.error.reason, 'not-owner');
+		assert.ok(Date.now() - started >= 300, 'the call waited out ownerWaitMs');
+		const refusals = events.filter(
+			(event) =>
+				event.event === 'refused' &&
+				event.threadId === caller.threadId &&
+				event.from === bystander.threadId &&
+				event.refused === 'unconfirmed'
+		);
+		assert.ok(refusals.length >= 2, `the call was sent again before it failed (${refusals.length} refusals)`);
+		assert.strictEqual(backendCalls('never-confirmed:').length, 0);
+	});
 });
 
 describe('models.registerProcessBackend on the main thread', function () {
@@ -1413,6 +1645,130 @@ describe('models.registerProcessBackend on the main thread', function () {
 		assert.strictEqual((await models.embed('a', { model: 'main-options' })).length, 1);
 	});
 
+	it('refuses an option holding a function at any depth, or any other value structured clone refuses, as a call from another thread would be', async function () {
+		setMainIsWorker(true);
+		let calls = 0;
+		registerProcessBackend('embedding', 'main-nested', () =>
+			models.defineBackend({
+				name: 'test:nested',
+				embed: async (input) => {
+					calls++;
+					return { status: 'completed', output: [].concat(input).map(() => Float32Array.of(1)) };
+				},
+			})
+		);
+		for (const [field, value] of [
+			['hooks', { onProgress: () => {} }],
+			['steps', [{ run() {} }]],
+			['handle', { cache: new WeakMap() }],
+			['tag', Symbol('tag')],
+		])
+			await assert.rejects(models.embed('a', { model: 'main-nested', [field]: value }), (error) => {
+				assert.match(error.message, new RegExp(`option '${field}' cannot cross threads`));
+				return true;
+			});
+		assert.strictEqual(calls, 0, 'no refused call reached the backend');
+		assert.strictEqual((await models.embed('a', { model: 'main-nested', plain: { nested: [1, 'two'] } })).length, 1);
+		assert.strictEqual(calls, 1);
+	});
+
+	it('merges queued calls by value only: a Date two calls share by reference never matches, as across threads', async function () {
+		setMainIsWorker(true);
+		const ran = [];
+		let releaseGate;
+		const gate = new Promise((resolve) => (releaseGate = resolve));
+		registerProcessBackend(
+			'embedding',
+			'main-batched',
+			() =>
+				models.defineBackend({
+					name: 'test:batched',
+					embed: async (input) => {
+						const texts = [].concat(input);
+						ran.push(texts);
+						if (texts.includes('gate')) await gate;
+						return { status: 'completed', output: texts.map(() => Float32Array.of(1)) };
+					},
+				}),
+			{ maxBatchInputs: 8 }
+		);
+		const held = models.embed('gate', { model: 'main-batched' });
+		await waitFor(() => ran.length === 1);
+		const when = new Date(0);
+		const tier = { name: 'shared' };
+		const queued = [
+			models.embed('date-1', { model: 'main-batched', when }),
+			models.embed('date-2', { model: 'main-batched', when }),
+			models.embed('plain-1', { model: 'main-batched', tier }),
+			models.embed('plain-2', { model: 'main-batched', tier }),
+		];
+		await waitFor(() => localOwnerLoad('embedding', 'main-batched')?.queued === 4);
+		releaseGate();
+		await held;
+		for (const vectors of await Promise.all(queued)) assert.strictEqual(vectors.length, 1);
+
+		assert.deepStrictEqual(
+			ran,
+			[['gate'], ['date-1'], ['date-2'], ['plain-1', 'plain-2']],
+			'the calls sharing a Date ran apart; the calls sharing an equal plain object were merged'
+		);
+	});
+
+	it('answers a call this thread makes to itself with a copy, as across threads, so a backend that reuses its output buffer cannot change a vector it returned', async function () {
+		setMainIsWorker(true);
+		const buffer = Float32Array.of(1, 2);
+		registerProcessBackend('embedding', 'main-copy', () =>
+			models.defineBackend({
+				name: 'test:copy',
+				embed: async (input) => ({ status: 'completed', output: [].concat(input).map(() => buffer) }),
+			})
+		);
+		const [vector] = await models.embed('a', { model: 'main-copy' });
+		assert.deepStrictEqual([...vector], [1, 2]);
+		// The backend overwrites its buffer for its next call, as a native embedder reusing an output buffer does.
+		buffer.fill(0);
+		assert.deepStrictEqual([...vector], [1, 2], "the caller holds a copy, never the backend's buffer");
+	});
+
+	it("returns a split embed's partial usage once per error, to the facade's row for that attempt", async function () {
+		setMainIsWorker(true);
+		registerProcessBackend(
+			'embedding',
+			'main-partial',
+			() =>
+				models.defineBackend({
+					name: 'test:partial',
+					embed: async (input) => {
+						const texts = [].concat(input);
+						if (texts.includes('fail')) throw Object.assign(new Error('provider refused'), { name: 'ProviderError' });
+						return {
+							status: 'completed',
+							output: texts.map(() => Float32Array.of(1)),
+							usage: { embeddingTokens: texts.length * 3 },
+						};
+					},
+				}),
+			{ maxBatchInputs: 2 }
+		);
+		const proxy = getBackend('embedding', 'main-partial');
+		const failure = await proxy.embed(['a', 'b', 'fail'], {}).then(
+			() => assert.fail('the last part fails'),
+			(error) => error
+		);
+		assert.strictEqual(failure.name, 'ProviderError');
+		assert.deepStrictEqual(takePartialUsage(failure), { embeddingTokens: 6 }, 'the first part completed');
+		assert.strictEqual(takePartialUsage(failure), undefined, 'a second read bills nothing');
+		assert.deepStrictEqual(failure.usage, { embeddingTokens: 6 }, 'the error still reports its usage');
+		// A call that failed whole, and any other value, has no partial usage to take.
+		const whole = await proxy.embed(['fail'], {}).then(
+			() => assert.fail('the only part fails'),
+			(error) => error
+		);
+		assert.strictEqual(takePartialUsage(whole), undefined);
+		assert.strictEqual(takePartialUsage(new Error('unrelated')), undefined);
+		assert.strictEqual(takePartialUsage(undefined), undefined);
+	});
+
 	it('rejects invalid registrations up front', function () {
 		assert.throws(() => registerProcessBackend('embedding', 'bad', 'not a function'), ModelBackendRegistrationError);
 		assert.throws(() => registerProcessBackend('embedding', '', () => undefined), ModelBackendRegistrationError);
@@ -1477,5 +1833,28 @@ describe('apportionUsage', function () {
 			apportionUsage({ completionTokens: -2 }, [1, 1]).map((share) => share.completionTokens),
 			[-2, 0]
 		);
+	});
+});
+
+describe('sameValue, which decides whether queued embed requests may merge', function () {
+	it('compares primitives, arrays and plain objects by value', function () {
+		assert.ok(sameValue(NaN, NaN));
+		assert.ok(!sameValue(0, -0), 'Object.is tells -0 from 0');
+		assert.ok(!sameValue(null, undefined));
+		assert.ok(sameValue({ a: [1, { b: 'c' }] }, { a: [1, { b: 'c' }] }));
+		assert.ok(!sameValue({ a: 1 }, { a: 1, b: undefined }));
+		assert.ok(!sameValue([1, 2], { 0: 1, 1: 2, length: 2 }));
+		const shared = { tier: ['x'] };
+		assert.ok(sameValue({ shared }, { shared }), 'a plain object shared by reference is equal by value');
+	});
+
+	it('never matches any other object, even the same one, as two structured clones of it never would', function () {
+		for (const exotic of [new Date(0), new Map(), Float32Array.of(1), new (class Options {})(), () => {}]) {
+			assert.ok(!sameValue(exotic, exotic), `${Object.prototype.toString.call(exotic)} matched itself`);
+			assert.ok(!sameValue({ value: exotic }, { value: exotic }), `${Object.prototype.toString.call(exotic)} nested`);
+		}
+		const cyclic = {};
+		cyclic.self = cyclic;
+		assert.ok(!sameValue(cyclic, cyclic), 'a cycle is never followed to a match');
 	});
 });
