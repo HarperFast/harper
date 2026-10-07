@@ -157,6 +157,41 @@ describe('registerBackend', () => {
 		assert.throws(() => registerBackend('embedding', 'x', { embed: async () => ({}) }), ModelBackendRegistrationError);
 	});
 
+	// registerProcessBackend shares these checks (assertKindAndId, assertBackendForKind); their text is
+	// what a component author reads, so it is pinned here.
+	it('names each refusal with the same message, kind and id checks first', () => {
+		const refusal = (kind, id, backend) => {
+			try {
+				registerBackend(kind, id, backend);
+			} catch (error) {
+				assert.ok(error instanceof ModelBackendRegistrationError);
+				return error.message;
+			}
+			assert.fail('the registration was accepted');
+		};
+		assert.strictEqual(
+			refusal('bogus', '', undefined),
+			"kind must be 'embedding', 'generative' or 'decision', got 'bogus'"
+		);
+		assert.strictEqual(refusal('embedding', '', undefined), 'backend id must be a non-empty string');
+		assert.strictEqual(
+			refusal('embedding', 'x', { embed: async () => ({}) }),
+			"backend 'x' must be a ModelBackend with a name and capabilities()"
+		);
+		assert.strictEqual(
+			refusal('embedding', 'x', defineBackend({ name: 'g-only', ...generateSpec })),
+			"embedding backend 'x' must implement embed()"
+		);
+		assert.strictEqual(
+			refusal('decision', 'x', defineBackend({ name: 'e-only', ...embedSpec })),
+			"decision backend 'x' must implement decide()"
+		);
+		assert.strictEqual(
+			refusal('generative', 'x', defineBackend({ name: 'e-only', ...embedSpec })),
+			"generative backend 'x' must implement generate() or generateStream()"
+		);
+	});
+
 	// Config hot reload depends on these (#2344): build what boot would have built, then install it
 	// only if nothing else claimed the slot meanwhile.
 	describe('conditional replacement (#2344)', () => {
