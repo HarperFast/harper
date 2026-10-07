@@ -18,7 +18,6 @@ could_not_run() {
 	exit 2
 }
 
-# Exits 1 unless merging <from>..<to> into TARGET is clean and changes nothing.
 require_landed() {
 	local merged status
 	merged=$(git merge-tree --write-tree --merge-base="$1" "$TARGET" "$2")

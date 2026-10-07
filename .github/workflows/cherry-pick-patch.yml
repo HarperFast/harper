@@ -358,25 +358,31 @@ jobs:
             fi
           fi
 
+          if [ -n "$EXCLUDED_MERGES" ]; then
+            HOLD=$(printf 'merge commit(s) `%s` resolved content of their own and cannot be replayed' "$EXCLUDED_MERGES")
+          fi
+
           # ── Create / reset cherry-pick branch off release branch ────────
           git checkout -B "$BRANCH" "origin/$RELEASE_BRANCH"
 
           # ── Skip a change the release branch already has ────────────────
           #
           # Replaying a landed change commit by commit conflicts: each
-          # intermediate commit meets its own final content.
+          # intermediate commit meets its own final content. A hold still
+          # stands: a resolution that took one side outright leaves nothing in
+          # the net change for the check to find.
           # shellcheck disable=SC2086
           if [ -n "$CHANGE_HEAD" ] && "$RUNNER_TEMP/change-landed.sh" "origin/$RELEASE_BRANCH" "$CHANGE_BASE" "$CHANGE_HEAD" $PICK_SHAS; then
             echo "The change from PR #$PR_NUMBER is already on $RELEASE_BRANCH — nothing to pick"
+            if [ -n "$HOLD" ]; then
+              echo "hold=its change appears to be on it already, but $HOLD" >> "$GITHUB_OUTPUT"
+            fi
             echo "no_op=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           echo "pick_flags=$PICK_FLAGS" >> "$GITHUB_OUTPUT"
           echo "pick_shas=$PICK_SHAS" >> "$GITHUB_OUTPUT"
-          if [ -n "$EXCLUDED_MERGES" ]; then
-            HOLD=$(printf 'merge commit(s) `%s` resolved content of their own and cannot be replayed' "$EXCLUDED_MERGES")
-          fi
           echo "excluded_merges=$EXCLUDED_MERGES" >> "$GITHUB_OUTPUT"
           echo "hold=$HOLD" >> "$GITHUB_OUTPUT"
 
