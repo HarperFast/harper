@@ -178,17 +178,22 @@ export interface DefineBackendSpec {
  * The owner owns every object the factory hands over from the moment it is handed over, so the
  * factory never disposes one itself: each backend it registers while it runs, under any key, before
  * `registerBackend` checks it, so one that is refused (as invalid, or as the second registration
- * above) too, and what it returns, before the owner awaits it or reads any of its properties. A
- * start that fails for any reason, the factory's own error included, disposes all of them before
- * another thread's factory runs. A start that succeeds keeps the instance and disposes the rest (a
+ * above) too, and what it returns, before the owner awaits it or reads any of its properties. An
+ * async factory returns its own promise, which reads the `then` of what the factory returns before
+ * the owner can, so an object whose `then` throws there reaches the owner only as that promise's
+ * rejection: it is the factory's to free, or to register before returning. A start that fails for
+ * any reason, the factory's own error included, disposes all of them before another thread's factory
+ * runs. A start that succeeds keeps the instance and disposes the rest (a
  * backend registered under another key, which is never installed, or an invalid one whose refusal
  * the factory caught) before it is reported ready, and fails if one cannot be disposed. What a
  * factory that throws built and never handed over is its own to release before throwing. A
  * registration under the key outside the start, such as one that work the factory left running makes
- * after it settles, is never installed over the key's proxy, on any thread that registered the key: it
- * is disposed at once, with the usual tries, a warning names the key, and `registerBackend` does not
- * throw, even for a backend it would otherwise refuse. So a factory registers before its promise
- * resolves.
+ * after it settles, is never installed over the key's proxy, on any thread that registered the key; a
+ * warning names the key, and `registerBackend` does not throw, even for a backend it would otherwise
+ * refuse. On a thread whose run of the key is live, that run owns it as it owns the instance and
+ * disposes it before it reports the run ended, so no other thread's factory runs while it may be live;
+ * one the run already holds (its own backend registered again) is left as it is. On any other thread
+ * it is disposed at once, with the usual tries. So a factory registers before its promise resolves.
  *
  * At most one instance of a key is live at a time, as far as the owner can tell: before another
  * thread's factory runs, the owner awaits the backend's `dispose()`, so a backend holding a native
