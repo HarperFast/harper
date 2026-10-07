@@ -18,6 +18,9 @@ const SLOTS = 1024;
 const WORD_PROPOSED = 0;
 const WORD_PUBLISHED = 1;
 const WORD_RATCHET = 2;
+// Non-zero while a key may have been issued from the ratchet rather than the native clock (the clock
+// was behind the recovered floor); native keys then pass through the ratchet word too.
+const WORD_STRICT = 3;
 const HEADER_WORDS = 4;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
 const BOUND_WORDS_OFFSET = HEADER_WORDS + SLOTS;
@@ -92,8 +95,9 @@ class ThreadRegistry {
 		throw new Error(`No origin-floor slot is free for thread ${threadId} on ${this.rootStore.path}`);
 	}
 
-	/** The store closed on this thread: a successor registry owns the slot from here on. */
+	/** The store closed on this thread; a successor on it claims the slot anew. */
 	retire(): void {
+		if (!this.retired && this.slot >= 0 && this.outstanding === 0) this.publish(Infinity);
 		this.retired = true;
 	}
 
@@ -149,15 +153,17 @@ class ThreadRegistry {
 	}
 
 	/**
-	 * Admit a natively minted key: it must beat the ratchet, the highest native key this process has
-	 * issued through here or JS-issued above it, and it raises the ratchet to itself. Every native key
-	 * passes this one word, so a JS-issued key can never be repeated by a native one, and a stale
-	 * ratchet step can never repeat a native key another thread admitted in the meantime.
+	 * Admit a natively minted key: it must beat the ratchet. Ordinarily that is one load, since the
+	 * ratchet is the recovered floor and native keys are unique by the native clock. Once a key has
+	 * been issued from the ratchet instead (`WORD_STRICT`), a native key also raises the ratchet to
+	 * itself by compare-and-swap, so a stale ratchet step cannot repeat a native key another thread
+	 * admitted meanwhile; the certifier lifts strict mode once the clock is past every issued key.
 	 */
 	private admitNative(bits: bigint): boolean {
 		for (;;) {
 			const ratchet = Atomics.load(this.words, WORD_RATCHET);
 			if (bits <= ratchet) return false;
+			if (Atomics.load(this.words, WORD_STRICT) === 0n) return true;
 			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, bits) === ratchet) return true;
 		}
 	}
@@ -167,12 +173,15 @@ class ThreadRegistry {
 	 * clock is still behind the ratchet (the recovered floor after a restart), the ratchet's next ulp.
 	 */
 	freshKey(): number {
-		const minted = this.rootStore.getMonotonicTimestamp();
-		if (this.admitNative(toBits(minted))) return minted;
 		for (;;) {
+			const minted = this.rootStore.getMonotonicTimestamp();
+			if (this.admitNative(toBits(minted))) return minted;
+			Atomics.store(this.words, WORD_STRICT, 1n);
 			const ratchet = Atomics.load(this.words, WORD_RATCHET);
-			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, ratchet + 1n) === ratchet)
-				return fromBits(ratchet + 1n);
+			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, ratchet + 1n) !== ratchet) continue;
+			// Strict mode lifted under this step: the clock is past the ratchet, so a native key may have
+			// been admitted without raising it; mint natively instead.
+			if (Atomics.load(this.words, WORD_STRICT) !== 0n) return fromBits(ratchet + 1n);
 		}
 	}
 
@@ -319,7 +328,10 @@ export function publishOriginFloor(rootStore: RocksDatabase, floor: number): voi
 export function certifyOriginFloor(rootStore: RocksDatabase): number | undefined {
 	const registry = registryFor(rootStore);
 	const words = registry.words;
-	const sample = Math.max(rootStore.getMonotonicTimestamp(), fromBits(Atomics.load(words, WORD_RATCHET)));
+	const minted = rootStore.getMonotonicTimestamp();
+	const ratchet = Atomics.load(words, WORD_RATCHET);
+	if (Atomics.load(words, WORD_STRICT) !== 0n && toBits(minted) > ratchet) Atomics.store(words, WORD_STRICT, 0n);
+	const sample = Math.max(minted, fromBits(ratchet));
 	storeMax(words, WORD_PROPOSED, sample);
 	let bound = 0;
 	for (let attempt = 0; attempt < SENTINEL_RETRIES && bound === 0; attempt++) bound = registry.minBound();
@@ -349,9 +361,9 @@ export function forgetOriginFloorRegistry(rootStore: RocksDatabase): void {
 }
 
 /**
- * Retire every bound a thread that no longer runs may still hold. Only after the worker's native env
- * teardown, which closes its handles with their commits drained (main's `worker.on('exit')`): the
- * worker's own exit event fires before that, while a queued commit can still append.
+ * Only after the worker's native env teardown, which closes its handles with their commits drained
+ * (main's `worker.on('exit')`): the worker's own exit event fires before that, while a queued commit
+ * can still append.
  */
 export function retireOriginFloorSlots(exitedThreadId: number): void {
 	const owner = BigInt(exitedThreadId + 1);
