@@ -512,10 +512,10 @@ jobs:
               --base "$RELEASE_BRANCH" --head "$BRANCH" --json number --jq '.[0].number' 2>/dev/null || true)
             if [ -n "$STALE_PR" ] && [ "$STALE_PR" != "null" ]; then
               gh pr close "$STALE_PR" --repo "$GITHUB_REPOSITORY" \
-                --comment "Superseded: PR #${PR_NUMBER} no longer produces any commits to cherry-pick onto \`${RELEASE_BRANCH}\`." >/dev/null || true
+                --comment "Superseded: PR #${PR_NUMBER} has nothing left to cherry-pick onto \`${RELEASE_BRANCH}\`." >/dev/null || true
             fi
             git push origin --delete "$BRANCH" 2>/dev/null || true
-            BODY=$(printf '%s\n## Release cherry-pick `%s`: held for review\n\nNothing could be cherry-picked onto `%s`: %s.\n\n`%s` was **not** updated. Apply this change by hand if it belongs on that line.\n' \
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: held for review\n\nNothing could be cherry-picked onto `%s`: %s.\n\n`%s` was **not** updated. Check it, and apply this change by hand if any of it is missing and belongs on that line.\n' \
               "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$HOLD" "$RELEASE_BRANCH")
             node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
             exit 0
