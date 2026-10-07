@@ -196,8 +196,8 @@ export class ModelBackendBusyError extends ServerError {
 
 // ---------------------------------------------------------------------------------------------
 // Messaging. A thread can be its own owner or coordinator (main with no workers, or a worker that
-// owns the backend it calls), so a send to this thread is delivered to the local handler, on a
-// later turn as a port would deliver it.
+// owns the backend it calls), so a send to this thread is delivered to the local handler, cloned now
+// and handled on a later turn as a port would clone and deliver it.
 
 type Handler = (message: any, sender: number, port?: unknown) => void;
 const localHandlers = new Map<string, Handler>();
@@ -226,9 +226,13 @@ function listen(type: string, handler: Handler): void {
 function send(target: number, message: { type: string }): boolean {
 	if (target === threadId) {
 		const handler = localHandlers.get(message.type);
+		// A structured clone, as postMessage takes, so a call this thread makes to itself is refused,
+		// copied and compared exactly as one from another thread is: a value that cannot cross threads
+		// throws here, and the handler never shares an object with the sender.
+		const delivered = structuredClone(message);
 		setImmediate(() => {
 			try {
-				handler?.(message, threadId);
+				handler?.(delivered, threadId);
 			} catch (error) {
 				// The same containment notifyMessageListeners gives a handler a port delivers to.
 				log.error?.(`models: handling '${message.type}' failed`, error);
@@ -275,10 +279,13 @@ function currentGeneration(): number {
 /**
  * Whether two structured-cloned values are equal as primitives (by `Object.is`), arrays and plain
  * objects, field by field. Any other object (a Date, a Map, a typed array) never compares equal, even
- * to an identical one, so a request whose options or accounting hold one is never merged.
+ * to itself, so a request whose options or accounting hold one is never merged. Objects are compared
+ * by value only, never by identity: two clones never share one, so identity would merge only calls a
+ * thread made to itself.
  */
-function sameValue(a: unknown, b: unknown, depth = 0): boolean {
-	if (Object.is(a, b)) return true;
+export function sameValue(a: unknown, b: unknown, depth = 0): boolean {
+	const isObject = (value: unknown) => typeof value === 'function' || (typeof value === 'object' && value !== null);
+	if (!isObject(a) && !isObject(b)) return Object.is(a, b);
 	if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null || depth > 32) return false;
 	if (Array.isArray(a) || Array.isArray(b)) {
 		if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
@@ -889,13 +896,19 @@ function wake(slot: Slot): void {
 
 // Caller side ---------------------------------------------------------------------------------
 
-/** Loop-level options: the `toolMode: 'auto'` loop runs on the caller and never hands these to a backend. */
+/**
+ * Options a request does not carry as options. The caller's `signal` stays with the caller, which sends
+ * a cancel when it aborts. `accounting` is the request's own field, which the owner hands its backend
+ * as `opts.accounting`. `toolHandlers` and `conversation` belong to the `toolMode: 'auto'` loop, which
+ * runs on the caller.
+ */
 const CALLER_ONLY_OPTIONS = new Set(['signal', 'accounting', 'toolHandlers', 'conversation']);
 
 /**
- * The options the owner's backend gets: all but the loop-level ones. An option that is a function
- * cannot reach another thread, so it fails the call rather than being dropped, as one nested in an
- * option's value fails structured clone.
+ * The options the owner's backend gets: all but the ones above. One that structured clone refuses (a
+ * function at any depth, a symbol, a WeakMap) fails the call before it waits for an owner, naming
+ * the option, rather than being dropped; the same check holds whether the owner is another thread or
+ * this one.
  */
 function sendableOptions(opts: Record<string, unknown>, describe: () => string): Record<string, unknown> {
 	const sendable: Record<string, unknown> = {};
@@ -905,6 +918,13 @@ function sendableOptions(opts: Record<string, unknown>, describe: () => string):
 			throw new ServerError(
 				`${describe()} could not be sent to its owner thread: option '${field}' is a function, which cannot cross threads`
 			);
+		try {
+			structuredClone(value);
+		} catch (error) {
+			throw new ServerError(
+				`${describe()} could not be sent to its owner thread: option '${field}' cannot cross threads (${errorMessage(error)})`
+			);
+		}
 		sendable[field] = value;
 	}
 	return sendable;
@@ -1173,17 +1193,20 @@ async function startBackend(slot: Slot, run: OwnerRun): Promise<void> {
 		const constructed = await constructBackend(kind, logicalName, async () => {
 			returned = await slot.factory({ kind, logicalName, signal: run.factoryAbort.signal });
 		});
+		// What the factory returned is held before any of its properties is read, so a check below that
+		// fails, even a getter that throws, still disposes it before main hears of the failure.
+		if (typeof returned === 'object' && returned !== null) run.backend = returned as ProcessModelBackend;
 		for (const extra of constructed.extras)
 			log.warn?.(
 				`models: process-wide backend '${kind}.${logicalName}' registered '${extra.kind}.${extra.logicalName}' while starting; it is discarded and only its own registration is kept`
 			);
 		const backend = (isModelBackend(returned) ? returned : constructed.backend) as ProcessModelBackend | undefined;
-		// Held from here, so a failure below still disposes what the factory built.
-		run.backend = backend;
 		if (!backend)
 			throw new ModelBackendRegistrationError(
 				`the factory for process-wide backend '${logicalName}' neither returned a backend nor registered one`
 			);
+		// The backend it registered, when what it returned is not one.
+		run.backend = backend;
 		assertBackendForKind(kind, logicalName, backend);
 		// Read inside the start, so a capabilities() that throws, or that returns something that
 		// cannot cross threads, is a failed start rather than a run that never reports.
@@ -1249,16 +1272,19 @@ function reportStarted(slot: Slot, run: OwnerRun): void {
  * Dispose the run's instance: try its `dispose()` up to `DISPOSE_ATTEMPTS` times, pausing between
  * tries. Resolves to undefined once a try resolves, or at once for a backend without `dispose()`,
  * which is taken to hold nothing its finished calls and its thread's exit do not release. Resolves to
- * the last error when every try rejects: the instance may still be live.
+ * the last error when every try rejects: the instance may still be live. A `dispose` property that
+ * throws when read counts as a try that rejected.
  */
 async function disposeBackend(slot: Slot, run: OwnerRun): Promise<{ error: unknown } | undefined> {
 	const backend = run.backend;
 	run.backend = undefined;
-	if (typeof backend?.dispose !== 'function') return undefined;
+	if (!backend) return undefined;
 	let failure: unknown;
 	for (let attempt = 1; attempt <= DISPOSE_ATTEMPTS; attempt++) {
 		try {
-			await backend.dispose();
+			const dispose = backend.dispose;
+			if (typeof dispose !== 'function') return undefined;
+			await dispose.call(backend);
 			return undefined;
 		} catch (error) {
 			failure = error;
@@ -1360,6 +1386,7 @@ function onRequest(message: RequestMessage, sender: number): void {
 	if (
 		!slot ||
 		!Number.isSafeInteger(message.version) ||
+		!Number.isSafeInteger(message.epoch) ||
 		!METHODS[slot.kind].includes(message.method) ||
 		!Array.isArray(message.args) ||
 		typeof message.opts !== 'object' ||
@@ -1371,13 +1398,18 @@ function onRequest(message: RequestMessage, sender: number): void {
 
 /**
  * Queue a request this thread may serve now, hold one from an admitted thread routed with a state it
- * has not seen, and refuse the rest unstarted. Main's admitted callers are checked before a request
- * is held, so a thread main never admitted cannot occupy the hold whatever version it names. A
- * thread main admitted after this thread's last state is refused `unconfirmed` and tries again.
+ * has not seen, and refuse the rest unstarted. A request routed with an older election than this
+ * thread has seen is refused `moved` first, whatever version it names, so it is never held. Main's
+ * admitted callers are checked before a request is held, so a thread main never admitted cannot
+ * occupy the hold whatever version it names. A thread main admitted after this thread's last state is
+ * refused `unconfirmed` and tries again.
  */
 function admit(slot: Slot, queued: Queued): void {
 	const { kind, logicalName } = slot;
 	const view = slot.view;
+	// Main's epoch never falls as its version rises, so no state this thread will see serves an older
+	// election: the caller follows the backend to the owner of a newer state.
+	if (view !== undefined && queued.epoch < view.epoch) return refuse(queued, 'moved');
 	// Only a thread main admitted for this key may call it, which holds an application's domain here.
 	const admitted = queued.origin === threadId || view?.callers?.includes(queued.origin) === true;
 	if (!slot.released && (view === undefined || view.version < queued.version)) {

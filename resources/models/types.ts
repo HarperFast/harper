@@ -177,8 +177,10 @@ export interface DefineBackendSpec {
  * nothing that its finished calls and its thread's exit do not release: it counts as gone once its
  * running calls finish. `signal` aborts only while the factory is still running, when the owner
  * releases the key, so a slow load can stop early; whatever it returns is still disposed. It never
- * aborts once the factory has returned, so a backend may keep it without its calls being stopped. A
- * factory that throws must release what it loaded before throwing.
+ * aborts once the factory has returned, so a backend may keep it without its calls being stopped.
+ * What the factory returns is held before any of its properties is read, so one that fails the
+ * start's checks (even by a getter that throws) is still disposed before another thread's factory
+ * runs. A factory that throws must release what it loaded before throwing.
  */
 export type ProcessBackendFactory = (context: { kind: ModelKind; logicalName: string; signal: AbortSignal }) => unknown;
 
