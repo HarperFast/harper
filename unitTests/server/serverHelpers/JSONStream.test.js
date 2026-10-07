@@ -56,14 +56,14 @@ describe('Test JSONStream module ', () => {
 		});
 	});
 	describe('Failed iterator bookkeeping', function () {
-		it('removes the failed iterator by reference, not by its position in activeIterators, when a nested iterator throws', async function () {
-			// outer yields a single nested iterable (inner) whose next() throws. While handling
-			// that failure, another, unrelated iterator (sibling) becomes concurrently active --
-			// e.g. a sibling nested iterable tracked elsewhere in the same response. The failed
-			// iterator must be the one removed from activeIterators, and the still-active sibling
-			// must be left alone (and still get return() called on it when the stream is destroyed).
+		// outer's next() never resolves after its first call, so the stream stays open until an
+		// explicit destroy() -- that's what has to close outer, not stream end. buildInner also
+		// activates `sibling` when inner fails, standing in for another iterator concurrently
+		// tracked in activeIterators (e.g. a sibling nested iterable elsewhere in the response).
+		function runNestedFailureCase(buildInner) {
 			let innerReturnCalled = false;
 			let siblingReturnCalled = false;
+			let outerReturnCalled = false;
 			let stream;
 
 			const sibling = {
@@ -73,31 +73,23 @@ describe('Test JSONStream module ', () => {
 					return { done: true };
 				},
 			};
+			const activateSibling = () => stream.activeIterators.push(sibling);
 
-			const inner = {
-				[Symbol.iterator]() {
-					return {
-						next() {
-							stream.activeIterators.push(sibling);
-							throw new Error('inner failure');
-						},
-						return() {
-							innerReturnCalled = true;
-							return { done: true };
-						},
-					};
-				},
-			};
+			const inner = buildInner(activateSibling, () => {
+				innerReturnCalled = true;
+			});
 
+			let outerCalls = 0;
 			const outer = {
 				[Symbol.iterator]() {
-					let yielded = false;
 					return {
 						next() {
-							if (!yielded) {
-								yielded = true;
-								return { done: false, value: inner };
-							}
+							outerCalls++;
+							if (outerCalls === 1) return { done: false, value: inner };
+							return new Promise(() => {}); // outer stays active until destroy()
+						},
+						return() {
+							outerReturnCalled = true;
 							return { done: true };
 						},
 					};
@@ -105,15 +97,59 @@ describe('Test JSONStream module ', () => {
 			};
 
 			stream = streamAsJSON(outer);
-			let result = await streamToJSON(stream);
-			assert.deepStrictEqual(result, [[{ error: 'Error: inner failure' }]]);
+			return new Promise((resolve, reject) => {
+				let out = '';
+				stream.on('error', reject);
+				stream.on('data', (chunk) => {
+					out += chunk;
+					if (!out.includes('inner failure')) return;
+					assert.strictEqual(stream.activeIterators.length, 2, 'outer and sibling remain tracked; inner must be gone');
+					assert.ok(stream.activeIterators.includes(sibling));
+					stream.destroy();
+				});
+				stream.on('close', () => {
+					try {
+						assert.strictEqual(outerReturnCalled, true, 'outer must still get return() on destroy');
+						assert.strictEqual(
+							siblingReturnCalled,
+							true,
+							'the unrelated active iterator must still get return() on destroy'
+						);
+						assert.strictEqual(innerReturnCalled, false, 'the already-failed iterator must not be returned again');
+						resolve();
+					} catch (error) {
+						reject(error);
+					}
+				});
+			});
+		}
 
-			// the failed iterator must be gone, and the unrelated active one must remain tracked
-			assert.deepStrictEqual(stream.activeIterators, [sibling]);
+		it('removes the failed iterator by reference, not by its position in activeIterators, when a nested sync iterator throws', function () {
+			return runNestedFailureCase((activateSibling, markInnerReturned) => ({
+				[Symbol.iterator]() {
+					return {
+						next() {
+							activateSibling();
+							throw new Error('inner failure');
+						},
+						return: markInnerReturned,
+					};
+				},
+			}));
+		});
 
-			stream.destroy();
-			assert.strictEqual(siblingReturnCalled, true, 'the still-active sibling must get return() on destroy');
-			assert.strictEqual(innerReturnCalled, false, 'the already-failed iterator must not be returned again');
+		it('removes the failed iterator by reference, not by its position in activeIterators, when a nested async iterator rejects', function () {
+			return runNestedFailureCase((activateSibling, markInnerReturned) => ({
+				[Symbol.asyncIterator]() {
+					return {
+						next() {
+							activateSibling();
+							return Promise.reject(new Error('inner failure'));
+						},
+						return: markInnerReturned,
+					};
+				},
+			}));
 		});
 	});
 });

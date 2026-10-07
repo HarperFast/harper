@@ -73,9 +73,7 @@ class JSONStream extends Readable {
 							};
 						}
 						if (iteratorResult.done) {
-							// remove by the original iterator reference: on error `iterator` is replaced with a
-							// stub (above), so looking it up post-replacement would miss the tracked entry and
-							// splice(-1, 1) would evict whatever else happens to be last in the list instead
+							// `iterator` may now be the error stub above, not what was pushed
 							const activeIndex = this.activeIterators.indexOf(originalIterator);
 							if (activeIndex >= 0) this.activeIterators.splice(activeIndex, 1);
 							yield ']';
