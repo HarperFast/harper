@@ -95,7 +95,8 @@ type State = 'starting' | 'ready' | 'failed';
 /**
  * An owner run's lifecycle. It holds a live instance (or a factory that may still produce one) from
  * `starting` until it reaches `failed` or `disposed`; `draining` and `disposing` follow a release,
- * `failing` a failed start.
+ * `failing` a failed start. It is sealed when it reaches either: in the step that finds nothing left
+ * to dispose, which is the step that reports to main, and it holds nothing from then on.
  */
 type RunPhase = 'starting' | 'ready' | 'draining' | 'disposing' | 'failing' | 'failed' | 'disposed';
 interface ResolvedOptions {
@@ -856,8 +857,10 @@ const divertedLate = new Set<unknown>();
  * that keeps failing is reported as `DISPOSE_FAILED` and no successor starts while it may be live. A
  * ready run does not dispose it sooner, since it may share what the instance is serving with. An
  * object the run already holds, such as its own backend or what its factory returned registered
- * again, is left as it is. With no live run on this thread, it is disposed at once, with the usual
- * tries, and a disposal that keeps failing is logged.
+ * again, is left as it is. A run is live until it is sealed (`disposeInstance`). With no live run on
+ * this thread, it is disposed at once, with the usual tries, outside any election: it can be live beside
+ * another thread's instance until that disposal ends, indefinitely if its `dispose()` hangs or keeps
+ * rejecting, and a disposal that keeps rejecting is logged.
  */
 function divertLate(slot: Slot, late: unknown): void {
 	const { kind, logicalName } = slot;
@@ -1339,7 +1342,11 @@ async function failRun(slot: Slot, run: OwnerRun, error: unknown, earlier?: { er
 	run.phase = 'failing';
 	log.error?.(`models: process-wide backend '${kind}.${logicalName}' failed to start on thread ${threadId}`, error);
 	for (const queued of run.queue.splice(0)) refuse(queued, 'start-failed');
-	const undisposed = (await disposeInstance(slot, run)) ?? earlier;
+	let undisposed = earlier;
+	do {
+		undisposed = (await disposeInstance(slot, run)) ?? undisposed;
+	} while (run.held.length > 0);
+	// The check above, the seal and the report below are one synchronous step (`disposeInstance`).
 	run.phase = 'failed';
 	if (undisposed) {
 		reportDisposeFailed(slot, undisposed.error);
@@ -1377,6 +1384,11 @@ function reportStarted(slot: Slot, run: OwnerRun): void {
  * gave it, one handed over while this runs included. Resolves to undefined once each one is disposed,
  * or to an error when one could not be: the instance may still be live. Every one is tried, whatever
  * happened to the others, and each stays held until its own disposal ends.
+ *
+ * An object can still be handed over after this finds `held` empty and before its caller resumes, so
+ * its callers (`failRun`, `finishDrain`) call it again until `held` is empty, then seal the run (leave
+ * the live phases) and report in that same synchronous step. An object handed over before then is
+ * disposed before main hears, and one handed over after finds no live run (`divertLate`).
  */
 async function disposeInstance(slot: Slot, run: OwnerRun): Promise<{ error: unknown } | undefined> {
 	run.backend = undefined;
@@ -1451,7 +1463,11 @@ function maybeFinishDrain(slot: Slot, run: OwnerRun): void {
 async function finishDrain(slot: Slot, run: OwnerRun): Promise<void> {
 	if (run.phase !== 'draining') return;
 	run.phase = 'disposing';
-	const undisposed = await disposeInstance(slot, run);
+	let undisposed: { error: unknown } | undefined;
+	do {
+		undisposed = (await disposeInstance(slot, run)) ?? undisposed;
+	} while (run.held.length > 0);
+	// The check above, the seal and the report below are one synchronous step (`disposeInstance`).
 	if (undisposed) {
 		run.phase = 'failed';
 		reportDisposeFailed(slot, undisposed.error);
