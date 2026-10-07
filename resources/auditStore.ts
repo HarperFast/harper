@@ -14,6 +14,13 @@ import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { asBinary } from 'lmdb';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { endSubscriptionsFromEarlierHandles } from './transactionBroadcast.ts';
+import {
+	ORIGIN_FLOOR_TICK_MS,
+	certifyOriginFloor,
+	forgetOriginFloorRegistry,
+	isValidFloor,
+	publishOriginFloor,
+} from './originClosedFloor.ts';
 import { isReadOnlyMode, openRocksDatabase } from './databases.ts';
 
 /**
@@ -170,6 +177,12 @@ const GENERATION_RECORD_BYTES = GENERATION_ID_BYTES + 8;
  * must not be absorbed by the floor's unknown sentinel, and doing either to the floor changes merges.
  */
 const AUDIT_RESUME_FLOOR_KEY = Symbol.for('audit-resume-floor');
+/**
+ * The origin-closed floor this node last certified for its `local` log, encoded like the audit floor:
+ * no transaction can append there with a lower key (harper-pro#922). Written before it is advertised,
+ * and read at open to bound every key issued afterwards. RocksDB only.
+ */
+const ORIGIN_CLOSED_FLOOR_KEY = Symbol.for('origin-closed-floor');
 
 function isRocksStore(store: any): boolean {
 	return store instanceof RocksTransactionLogStore || store instanceof RocksDatabase;
@@ -214,6 +227,7 @@ export function openAuditStore(rootStore) {
 	auditStore.rootStore = rootStore;
 	establishAuditFloor(auditStore);
 	establishDatabaseGeneration(auditStore);
+	if (isRocksStore(auditStore)) publishOriginFloor(rootStore, readOriginClosedFloor(auditStore));
 	endSubscriptionsFromEarlierHandles(auditStore, isRocksStore(auditStore));
 	auditStore.tableStores = [];
 	const deleteCallbacks = [];
@@ -427,14 +441,43 @@ export function openAuditStore(rootStore) {
 	 */
 	auditStore.stopAuditCleanup = function (): Promise<void> {
 		cleanupStopped = true;
+		clearInterval(originFloorTimer);
+		clearTimeout(floorRetry);
+		if (isRocksAuditStore) forgetOriginFloorRegistry(rootStore);
 		clearTimeout(pendingCleanup);
 		pendingCleanup = null;
 		pendingCleanupResolve?.();
 		pendingCleanupResolve = null;
 		return lastCleanupResolution ?? Promise.resolve();
 	};
+	let originFloorTimer: ReturnType<typeof setInterval> | undefined;
+	let floorRetry: ReturnType<typeof setTimeout> | undefined;
 	if (ownsStoreMaintenance(rootStore.path)) {
 		scheduleAuditCleanup();
+		if (isRocksAuditStore && !isReadOnlyMode()) {
+			let floorErrorLoggedAt = 0;
+			const certify = () => {
+				if (storeClosing()) return;
+				try {
+					const floor = certifyOriginFloor(rootStore);
+					if (floor === null) {
+						clearTimeout(floorRetry);
+						floorRetry = setTimeout(certify, 50).unref();
+						return;
+					}
+					if (floor === undefined) return;
+					persistOriginClosedFloor(auditStore, floor);
+					publishOriginFloor(rootStore, floor);
+				} catch (error) {
+					// The last persisted floor stays advertised; a stuck floor is reported through its lag.
+					if (Date.now() - floorErrorLoggedAt > 60_000) {
+						floorErrorLoggedAt = Date.now();
+						warnContained('Error certifying the origin-closed floor', error);
+					}
+				}
+			};
+			originFloorTimer = setInterval(certify, ORIGIN_FLOOR_TICK_MS).unref();
+		}
 	}
 	if (getWorkerIndex() === 0 && !timestampErrored) {
 		// make sure the timestamp is valid
@@ -897,6 +940,24 @@ export function establishAuditFloor(auditStore: any): void {
  */
 export function getAuditFloor(auditStore: any): number {
 	return decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_KEY));
+}
+
+export function readOriginClosedFloor(auditStore: any): number {
+	const floor = decodeAuditFloor(auditStore.getBinary(ORIGIN_CLOSED_FLOOR_KEY));
+	return isValidFloor(floor) ? floor : 0;
+}
+
+export function persistOriginClosedFloor(auditStore: any, floor: number): void {
+	if (!isValidFloor(floor)) throw new Error(`Invalid origin-closed floor: ${String(floor)}`);
+	commitAuditMetadata(
+		auditStore,
+		(read) => {
+			const stored = decodeAuditFloor(read(ORIGIN_CLOSED_FLOOR_KEY));
+			if (Number.isFinite(stored) && stored >= floor) return undefined;
+			return [[ORIGIN_CLOSED_FLOOR_KEY, encodeAuditFloor(floor)]];
+		},
+		'origin-closed floor'
+	);
 }
 
 export interface DatabaseGeneration {

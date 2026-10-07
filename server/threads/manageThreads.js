@@ -1341,8 +1341,14 @@ function startWorker(path, options = {}, startOptions = {}) {
 		// way)
 		harperLogger.error(`Worker index ${options.workerIndex} error:`, error);
 	});
+	const exitedThreadId = worker.threadId;
 	worker.on('exit', (_code) => {
 		workers.splice(workers.indexOf(worker), 1);
+		// Its native handles are closed by now, so the origin-floor bounds it published are stale; every
+		// thread retires them for the databases it has open, since this one need not have them all.
+		const { ORIGIN_FLOOR_RETIRE, retireOriginFloorSlots } = require('../../resources/originClosedFloor.ts');
+		retireOriginFloorSlots(exitedThreadId);
+		broadcast({ type: ORIGIN_FLOOR_RETIRE, threadId: exitedThreadId });
 		if (
 			!processShuttingDown &&
 			!worker.wasShutdown &&

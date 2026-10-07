@@ -1,4 +1,5 @@
 import { TransactionLog, RocksDatabase, shutdown, type TransactionEntry } from '@harperfast/rocksdb-js';
+import { isReservedForLocalAppend } from './originClosedFloor.ts';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { exportIdMapping, getIdOfRemoteNode, getNodeNameForId } from './nodeIdMapping.ts';
 import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
@@ -91,6 +92,11 @@ export class RocksTransactionLogStore extends EventEmitter {
 				: options.nodeId === 0
 					? (this.logById(0) ?? this.log)
 					: this.logForOrigin(options.nodeId, options.viaNodeId !== undefined && options.viaNodeId !== options.nodeId);
+		// An unreserved writer could append below an advertised floor, which nothing can repair.
+		if (log === this.log && !isReservedForLocalAppend(options.transaction))
+			throw new Error(
+				`Transaction ${options.transaction.id} appends to the local transaction log without an origin-floor reservation`
+			);
 		let entryBinary: Uint8Array;
 		if (auditRecord instanceof Uint8Array) entryBinary = auditRecord;
 		else {
@@ -167,6 +173,13 @@ export class RocksTransactionLogStore extends EventEmitter {
 			};
 		}
 		log.addEntry(entryBinary, options.transaction.id);
+	}
+
+	isLocalOrigin(nodeId: number | undefined, relayed = false): boolean {
+		if (nodeId === undefined || nodeId === 0) return true;
+		if (this.logById(nodeId)) return false;
+		if (getNodeNameForId(this, nodeId, true) !== undefined) return false;
+		return !relayed;
 	}
 
 	/** A log holds one origin, which keeps `txnLogKey` unique within it; see resources/DESIGN.md. */

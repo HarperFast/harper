@@ -23,6 +23,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - ["Where is X" cheat sheet](resources/DESIGN.md#where-is-x-cheat-sheet) — Symbol lookup for the read/write path, audit, subscriptions and schema.
 - [Full-text declarations and reader snapshots](resources/DESIGN.md#full-text-declarations-and-reader-snapshots) — Declaration names stay separate from stored attributes; a query retains one native reader across every page.
 - [Database generation and resumable positions](resources/DESIGN.md#database-generation-and-resumable-positions) — Every copy path stamps a new generation before the copy is readable; a position resumes only if it names it and sits at or above its resume floor.
+- [Origin-closed timestamp floor](resources/DESIGN.md#origin-closed-timestamp-floor) — Every key appended to the `local` log is reserved on its thread first; a certifier publishes a persisted floor no later transaction can append below, held by stalled commits and ratcheted across a restart.
 - [Path routing & parameterised routes](resources/DESIGN.md#path-routing--parameterised-routes) — How resource paths and route parameters resolve.
 - [Persisted relationship catalog](resources/DESIGN.md#persisted-relationship-catalog) — Where relationship definitions are stored and rebuilt.
 - [Typed, discoverable resources (code-first schema + request contract)](resources/DESIGN.md#typed-discoverable-resources-code-first-schema--request-contract) — Declaring schema and request contracts from code.
