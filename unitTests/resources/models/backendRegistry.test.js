@@ -15,6 +15,7 @@ const {
 	replaceIfCurrent,
 	removeIfCurrent,
 	constructBackend,
+	guardInstalled,
 } = require('#src/resources/models/backendRegistry');
 
 function fakeBackend(name) {
@@ -390,6 +391,35 @@ describe('registerBackend', () => {
 			);
 			assert.deepStrictEqual(before, [first]);
 			assert.equal(getBackend('embedding', 'default'), undefined, 'and nothing was installed');
+		});
+
+		it('diverts a registration over a guarded backend outside a capture instead of installing it, and never throws for it', async () => {
+			const guarded = embedder('guarded');
+			const diverted = [];
+			setEmbedding('default', guarded);
+			guardInstalled(guarded, (late) => diverted.push(late));
+			const late = embedder('late');
+			const invalid = { name: 'no capabilities' };
+			registerBackend('embedding', 'default', late);
+			registerBackend('embedding', 'default', invalid);
+			setEmbedding('default', late);
+			registerBackend('embedding', 'default', guarded);
+			assert.equal(getBackend('embedding', 'default'), guarded, 'the guarded backend stays installed');
+			assert.deepStrictEqual(
+				diverted,
+				[late, invalid, late],
+				'and every other registration under its key was diverted'
+			);
+
+			// A capture is not a registration over it: what is registered there is captured as before.
+			const { backend } = await constructBackend('embedding', 'default', () =>
+				registerBackend('embedding', 'default', late)
+			);
+			assert.equal(backend, late);
+			// Other keys are unguarded.
+			registerBackend('embedding', 'other', late);
+			assert.equal(getBackend('embedding', 'other'), late);
+			assert.equal(diverted.length, 3);
 		});
 
 		it('removes an entry only while it is still the expected instance', () => {

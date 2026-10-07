@@ -1732,6 +1732,63 @@ describe('models.registerProcessBackend: one live backend instance per key, serv
 		assert.strictEqual(await statusOf(owner, `${id}-extra`), undefined, 'and it was never installed');
 	});
 
+	it("never installs a registration the factory's leftover async work makes under the key after the start over the proxy: it is disposed, calls still reach the owner's backend, and nothing is elected", async function () {
+		const id = 'registers-late';
+		const [owner, caller] = await startWorkers(2);
+		await registerInOrder([owner, caller], id, undefined, { registersLate: true });
+		await waitForStatus(caller, id, (status) => status?.state === 'ready', `${id}: not ready`);
+		await command(owner, { command: 'release', text: `late:${id}` });
+		const late = await waitFor(() => events.find((event) => event.event === 'late-registered' && event.id === id));
+		assert.strictEqual(late.threadId, owner.threadId);
+
+		const lateDisposed = () =>
+			events.some(
+				(event) =>
+					event.event === 'dispose' && event.id === id && event.what === 'late' && event.threadId === owner.threadId
+			);
+		// Either the late registration is disposed, or (the defect) it was installed over the proxy and lives on.
+		const disposed = await waitFor(lateDisposed, 3000).then(
+			() => true,
+			() => false
+		);
+		const fromOwner = await command(owner, { command: 'embed', id, texts: [`${id}:owner`] });
+		const fromCaller = await command(caller, { command: 'embed', id, texts: [`${id}:caller`] });
+		const servedBy = (text) => backendCalls(text).map((event) => `${event.what}@${event.threadId}`);
+		assert.deepStrictEqual(
+			{
+				threw: late.threw,
+				scope: (await statusOf(owner, id))?.scope,
+				disposed,
+				owner: servedBy(`${id}:owner`),
+				caller: servedBy(`${id}:caller`),
+			},
+			{
+				threw: undefined,
+				scope: 'process',
+				disposed: true,
+				owner: [`backend@${owner.threadId}`],
+				caller: [`backend@${owner.threadId}`],
+			},
+			'the registration did not throw, the proxy stayed installed, the late object was disposed, and every call reached the backend the start chose'
+		);
+		assertServedBy(fromOwner, [`${id}:owner`], owner.threadId);
+		assertServedBy(fromCaller, [`${id}:caller`], owner.threadId);
+
+		// Asserting a non-event: give an election time to (not) happen.
+		await delay(200);
+		const status = await statusOf(caller, id);
+		assert.deepStrictEqual(
+			[status.state, status.owner, status.restarts],
+			['ready', owner.threadId, 0],
+			'the owner is unchanged and nothing restarted'
+		);
+		assert.deepStrictEqual(
+			factoryRuns(id).map((event) => event.threadId),
+			[owner.threadId],
+			'no factory ran again'
+		);
+	});
+
 	it("still disposes the other object when one of the two a factory handed over keeps rejecting dispose(), fails the key, and runs no successor's factory while that thread lives", async function () {
 		const id = 'two-objects-dispose-fails';
 		const generation = manageThreads.restartNumber;

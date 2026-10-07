@@ -8,7 +8,8 @@
 // a factory can also register its backend and return a different engine object, as a module factory
 // may, whose own dispose() the test can hold or reject; register a second backend under its key, or an
 // invalid one after a valid one; register a backend and then throw; or register a backend under another
-// key beside the one it returns. Its calls can carry options that cannot cross threads, that two calls
+// key beside the one it returns, or leave async work running that registers under its key once the test
+// releases it. Its calls can carry options that cannot cross threads, that two calls
 // share by reference, or that are class instances. On
 // SHUTDOWN it runs Harper's shutdown drains the way threadServer does, so the test sees what a real
 // worker would wait for before exiting.
@@ -117,7 +118,7 @@ function embeddingBackend(id, spec = {}) {
 				name: rest.tier.name,
 				label: rest.tier.label,
 			};
-			report({ event: 'embed', id, texts, opts: reportable(rest), accounting, tier });
+			report({ event: 'embed', id, what: spec.what ?? 'backend', texts, opts: reportable(rest), accounting, tier });
 			for (const text of texts) {
 				// Held texts keep this call running, so later requests queue behind it.
 				if (text.startsWith('gate:') || text.startsWith('until-aborted:')) await hold(text, signal, spec.factorySignal);
@@ -248,6 +249,7 @@ const commands = {
 		registersInvalid,
 		registersThenThrows,
 		registersExtra,
+		registersLate,
 		engineDispose,
 	}) {
 		const build = (factorySignal, what, disposal = dispose) =>
@@ -313,6 +315,20 @@ const commands = {
 				if (registersThenThrows) {
 					models.registerBackend(kind, id, build(signal, 'registered'));
 					throw new Error('the model file is corrupt');
+				}
+				if (registersLate) {
+					// Leaves async work running that, once the test releases `late:<id>`, registers another backend
+					// under the key, after the start it belonged to has ended.
+					void new Promise((resolve) => gates.set(`late:${id}`, resolve)).then(() => {
+						let threw;
+						try {
+							models.registerBackend(kind, id, build(signal, 'late', null));
+						} catch (error) {
+							threw = { name: error?.name, message: error?.message };
+						}
+						report({ event: 'late-registered', id, threw });
+					});
+					return build(signal, undefined, null);
 				}
 				if (registersExtra) {
 					// A backend under another key, whose dispose() follows `dispose`, beside the one the factory
