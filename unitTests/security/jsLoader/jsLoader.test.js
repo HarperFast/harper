@@ -1,6 +1,6 @@
 'use strict';
 
-const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { dirname, join } = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -203,8 +203,23 @@ describe('symlinked module resolution', () => {
 	});
 
 	it('should resolve relative ESM import through a symlinked module in a compartment', async () => {
-		const result = await scopedImport(join(SYMLINK_FIXTURE, 'index.mjs'), { mode: 'compartment', resources: {} });
-		expect(result.cached).to.equal('hit');
+		// Outside node_modules, so the compartment evaluates the entry itself and resolves '../cache.mjs' via resolveHook
+		const runtimeRoot = mkdtempSync(join(tmpdir(), 'harper-js-loader-symlink-'));
+		try {
+			mkdirSync(join(runtimeRoot, 'real', 'sub'), { recursive: true });
+			mkdirSync(join(runtimeRoot, 'app'));
+			writeFileSync(join(runtimeRoot, 'real', 'cache.mjs'), "export const cached = 'hit';\n");
+			writeFileSync(join(runtimeRoot, 'real', 'sub', 'index.mjs'), "export { cached } from '../cache.mjs';\n");
+			symlinkSync(join(runtimeRoot, 'real', 'sub', 'index.mjs'), join(runtimeRoot, 'app', 'link.mjs'));
+			const result = await scopedImport(join(runtimeRoot, 'app', 'link.mjs'), {
+				mode: 'compartment',
+				runtimeRoot,
+				resources: {},
+			});
+			expect(result.cached).to.equal('hit');
+		} finally {
+			rmSync(runtimeRoot, { recursive: true, force: true });
+		}
 	});
 });
 
