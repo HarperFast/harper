@@ -477,7 +477,6 @@ if (command === 'api' && /^repos\\/[^/]+\\/[^/]+\\/pulls\\/\\d+$/.test(sub) && a
 			mainState = { ...mainState, ...overrides };
 			commitLib(mainState, message);
 		},
-		// Records the merge with `extra` edited in by hand, the way an author's own resolution would be.
 		mergeMainIntoPr(extra = {}) {
 			featureState = { ...featureState, ...mainState, ...extra };
 			onBranch('feature', () => {
