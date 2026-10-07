@@ -105,14 +105,16 @@ function sseErrors(body: string): Array<{ message?: string; code?: number }> {
 
 interface RawUpload {
 	response: string;
-	receivedWhenUploadEnded: string;
 	statuses: string[];
 }
 
-// Node's own client stops writing after an early complete answer, so this uses a raw socket.
+// Node's own client stops writing after an early complete answer, so this uses a raw socket. It sends the rest of
+// the upload only once `answered` holds, then a second request: a server that answers only after the whole upload,
+// or stops reading once it has answered, never finishes both.
 function uploadOnRawSocket(
 	ctx: ContextWithHarper,
 	fields: Record<string, unknown>,
+	answered: (response: string) => boolean,
 	{ sse = false, fileBytes = 16 * 1024 * 1024, deadlineMs = 30_000 } = {}
 ): Promise<RawUpload> {
 	const url = new URL(ctx.harper.operationsAPIURL);
@@ -130,27 +132,27 @@ function uploadOnRawSocket(
 	return new Promise((resolve, reject) => {
 		const socket = connect(Number(url.port), url.hostname);
 		let response = '';
-		let receivedWhenUploadEnded: string | undefined;
+		let stage = 'sending the first megabyte';
+		let settled = false;
+		let onAnswer!: () => void;
+		const answer = new Promise<void>((resolveAnswer) => (onAnswer = () => resolveAnswer()));
 		const statuses = () => response.match(/HTTP\/1\.1 \d{3}/g) ?? [];
 		const finish = (error?: Error) => {
+			if (settled) return;
+			settled = true;
 			clearTimeout(deadline);
 			socket.destroy();
 			if (error) reject(error);
-			else resolve({ response, receivedWhenUploadEnded: receivedWhenUploadEnded ?? '', statuses: statuses() });
+			else resolve({ response, statuses: statuses() });
 		};
-		const deadline = setTimeout(
-			() =>
-				finish(
-					new Error(
-						`upload or follow-up request unfinished after ${deadlineMs}ms (upload ${receivedWhenUploadEnded === undefined ? 'still sending' : 'sent'}); received: ${response.slice(0, 300)}`
-					)
-				),
-			deadlineMs
-		);
+		const unfinished = (why: string) => new Error(`${why} while ${stage}; received: ${response.slice(0, 300)}`);
+		const deadline = setTimeout(() => finish(unfinished(`unfinished after ${deadlineMs}ms`)), deadlineMs);
 		socket.on('error', finish);
+		socket.on('close', () => finish(unfinished('the connection closed')));
 		socket.on('data', (data) => {
 			response += data;
-			if (receivedWhenUploadEnded !== undefined && statuses().length >= 2) finish();
+			if (answered(response)) onAnswer();
+			if (stage === 'waiting for the second answer' && statuses().length >= 2) finish();
 		});
 		socket.once('connect', async () => {
 			try {
@@ -159,15 +161,22 @@ function uploadOnRawSocket(
 						(sse ? 'Accept: text/event-stream\r\n' : '') +
 						'Transfer-Encoding: chunked\r\n\r\n'
 				);
+				let sent = 0;
 				for await (const part of multipart.stream) {
 					if (socket.destroyed) return;
+					if (stage === 'sending the first megabyte' && sent >= 1024 * 1024) {
+						stage = 'waiting for the answer';
+						await answer;
+						stage = 'sending the rest of the upload';
+					}
 					const frame = Buffer.concat([Buffer.from(`${part.length.toString(16)}\r\n`), part, Buffer.from('\r\n')]);
 					if (!socket.write(frame)) await new Promise((resume) => socket.once('drain', resume));
+					sent += part.length;
 				}
 				if (socket.destroyed) return;
 				socket.write('0\r\n\r\n', (error) => {
 					if (error || socket.destroyed) return;
-					receivedWhenUploadEnded = response;
+					stage = 'waiting for the second answer';
 					socket.write(`GET /health HTTP/1.1\r\nHost: ${url.host}\r\n\r\n`);
 				});
 			} catch (error) {
@@ -279,7 +288,7 @@ suite('Multipart streaming deploy_component', (ctx: ContextWithHarper) => {
 			`reads the rest of the upload of ${description}, then serves the next request on that connection`,
 			{ skip },
 			async () => {
-				const upload = await uploadOnRawSocket(ctx, fields, { sse });
+				const upload = await uploadOnRawSocket(ctx, fields, (response) => response.includes(message), { sse });
 				const body = firstResponseBody(upload.response);
 				if (sse) {
 					const [error] = sseErrors(body);
@@ -288,10 +297,6 @@ suite('Multipart streaming deploy_component', (ctx: ContextWithHarper) => {
 				} else {
 					ok(JSON.parse(body).error.includes(message), body);
 				}
-				ok(
-					upload.receivedWhenUploadEnded.includes(message),
-					'the answer arrived while the upload was still being sent'
-				);
 				deepStrictEqual(upload.statuses, [status, 'HTTP/1.1 200']);
 			}
 		);

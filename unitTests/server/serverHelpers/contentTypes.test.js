@@ -624,7 +624,8 @@ describe('contentTypes – a multipart upload its route answers without reading'
 		for (let sent = 0; sent < fileBytes; sent += CHUNK.length) yield CHUNK;
 	}
 
-	// Node's own client stops writing after an early complete answer, so these use raw sockets.
+	// Node's own client stops writing after an early complete answer, so these use raw sockets. This one sends the
+	// rest of the upload only once the route has answered, then a second request on the same connection.
 	function uploadOnRawSocket(path, { fileBytes = 16 * 1024 * 1024, next = '/health', deadlineMs = 10_000 } = {}) {
 		const multipart = buildMultipartBody(
 			{ operation: 'deploy_component' },
@@ -633,27 +634,32 @@ describe('contentTypes – a multipart upload its route answers without reading'
 		return new Promise((resolve, reject) => {
 			const socket = net.connect(port, '127.0.0.1');
 			let received = '';
-			let uploadEnded = false;
+			let stage = 'sending the first megabyte';
 			let uploadEndedAt;
-			let answeredBeforeUploadEnded = false;
+			let onAnswer;
+			const answer = new Promise((resolveAnswer) => (onAnswer = resolveAnswer));
 			const fail = (error) => {
 				clearTimeout(deadline);
 				socket.destroy();
 				reject(error);
 			};
 			const deadline = setTimeout(
-				() => fail(new Error(`${path}: upload or second answer not finished within ${deadlineMs}ms`)),
+				() => fail(new Error(`${path}: unfinished after ${deadlineMs}ms, ${stage}`)),
 				deadlineMs
 			);
 			const statuses = () => received.match(/HTTP\/1\.1 \d{3}/g) ?? [];
 			socket.on('error', fail);
 			socket.on('data', (data) => {
-				if (!received && !uploadEnded) answeredBeforeUploadEnded = true;
 				received += data;
-				if (uploadEnded && statuses().length >= 2 && received.endsWith(next === '/slow' ? 'slow' : 'ok')) {
+				if (received.includes('{"ok":true}')) onAnswer();
+				if (
+					uploadEndedAt !== undefined &&
+					statuses().length >= 2 &&
+					received.endsWith(next === '/slow' ? 'slow' : 'ok')
+				) {
 					clearTimeout(deadline);
 					socket.destroy();
-					resolve({ statuses: statuses(), answeredBeforeUploadEnded, nextAnsweredAfterMs: Date.now() - uploadEndedAt });
+					resolve({ statuses: statuses(), nextAnsweredAfterMs: Date.now() - uploadEndedAt });
 				}
 			});
 			socket.once('connect', async () => {
@@ -662,15 +668,22 @@ describe('contentTypes – a multipart upload its route answers without reading'
 						`POST ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: ${multipart.contentType}\r\n` +
 							'Transfer-Encoding: chunked\r\n\r\n'
 					);
+					let sent = 0;
 					for await (const chunk of multipart.stream) {
 						if (socket.destroyed) return;
+						if (stage === 'sending the first megabyte' && sent >= 1024 * 1024) {
+							stage = 'waiting for the answer';
+							await answer;
+							stage = 'sending the rest of the upload';
+						}
 						const frame = Buffer.concat([Buffer.from(`${chunk.length.toString(16)}\r\n`), chunk, Buffer.from('\r\n')]);
 						if (!socket.write(frame)) await new Promise((resume) => socket.once('drain', resume));
+						sent += chunk.length;
 					}
 					if (socket.destroyed) return;
 					socket.write('0\r\n\r\n', (error) => {
 						if (error || socket.destroyed) return;
-						uploadEnded = true;
+						stage = `waiting for the answer to ${next}`;
 						uploadEndedAt = Date.now();
 						socket.write(`GET ${next} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n`);
 					});
@@ -713,8 +726,7 @@ describe('contentTypes – a multipart upload its route answers without reading'
 
 	it('reads the rest of an upload the route never read, so the request ends and the socket serves another', async function () {
 		this.timeout(20_000);
-		const { statuses, answeredBeforeUploadEnded } = await uploadOnRawSocket('/ignore');
-		assert.ok(answeredBeforeUploadEnded, 'the route answered while the upload was still arriving');
+		const { statuses } = await uploadOnRawSocket('/ignore');
 		assert.deepStrictEqual(statuses, ['HTTP/1.1 200', 'HTTP/1.1 200']);
 	});
 
