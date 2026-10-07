@@ -4725,10 +4725,9 @@ export function makeTable(options): TableResourceClass {
 					this.#savingOperation = null;
 					write.stagedIn = undefined; // nothing may pin this write's transaction past its commit
 					let omitLocalRecord = false;
-					const txnLogKey =
-						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
 					// The handle's key, which the origin-closed floor may have moved above an explicit `txnTime`.
-					const appendedLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnLogKey) : txnLogKey;
+					const appendedLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
+					const txnLogKey = options?.version != null ? appendedLogKey : txnTime;
 					// What a re-delivery of this write carries: the origin's log key for an apply (the context's
 					// timestamp, even when the floor moved this handle's key), the explicit value otherwise.
 					const receivedLogKey = options?.version != null ? ((context as any)?.timestamp ?? txnLogKey) : txnTime;
@@ -4796,7 +4795,7 @@ export function makeTable(options): TableResourceClass {
 							if (
 								existingEntry.additionalAuditRefs?.some(
 									(ref) =>
-										ref.version === appendedLogKey &&
+										(ref.version === appendedLogKey || ref.version === receivedLogKey) &&
 										precedesExistingVersion(
 											txnTime,
 											{ version: txnTime, localTime: appendedLogKey, key: id, nodeId: ref.nodeId },
@@ -5321,6 +5320,18 @@ export function makeTable(options): TableResourceClass {
 						if (headIndex > 0) additionalAuditRefs.unshift(additionalAuditRefs.splice(headIndex, 1)[0]);
 						else if (headIndex < 0) additionalAuditRefs.unshift({ version: appendedLogKey, nodeId: options?.nodeId });
 					}
+					// An apply the floor rekeyed keeps its received identity on the record too, so a re-delivery
+					// matches it without a walk that may stop short; readers tolerate a ref with no entry.
+					if (
+						isRocksDB &&
+						audit &&
+						!isCopyApply &&
+						receivedLogKey !== appendedLogKey &&
+						!additionalAuditRefs.some(
+							(ref) => ref.version === receivedLogKey && (ref.nodeId ?? 0) === (options?.nodeId ?? 0)
+						)
+					)
+						additionalAuditRefs.push({ version: receivedLogKey, nodeId: options?.nodeId });
 					writeCommit(true);
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					if (expiresAt >= 0) {

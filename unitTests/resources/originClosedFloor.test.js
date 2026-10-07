@@ -227,6 +227,10 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		await deliver();
 		assert.equal((await Tbl.get('counter')).n, 1, 'the re-delivery of a rekeyed apply is not applied twice');
 		assert.equal(entriesFor('counter').length, 2);
+		assert(
+			Tbl.primaryStore.getEntry('counter').additionalAuditRefs?.some((ref) => ref.version === version),
+			'the record keeps the received identity a re-delivery carries'
+		);
 	});
 
 	it('a worker that dies with its commit in the native lane still appends, and is retired after', async () => {

@@ -6,12 +6,13 @@ import { onMessageByType } from '../server/threads/manageThreads.js';
 /**
  * Origin-closed timestamp floor (harper-pro#922, item 1).
  *
- * Every key that reaches this node's `local` transaction log is reserved on its thread before it is
- * minted or adopted. Each thread publishes, in a per-root-store shared buffer, a lower bound on every
- * key it may still append; a certifier publishes `F ≤ min(a clock sample taken first, every thread's
- * bound)`, so no transaction can later append below `F`. Persisted before it is advertised; the
- * issuance ratchet keeps keys unique and at or above the recovered floor after a restart or a backward
- * clock step. Design: resources/DESIGN.md "Origin-closed timestamp floor".
+ * Every key that reaches this node's `local` transaction log is reserved on its thread before the
+ * handle stages its first write, which is when rocksdb-js freezes it. Each thread publishes, in a
+ * per-root-store shared buffer, a lower bound on every key it may still append; a certifier
+ * publishes `F ≤ min(a clock sample taken first, every thread's bound)`, so no transaction can later
+ * append below `F`. Persisted before it is advertised; the issuance ratchet keeps keys unique and at
+ * or above the recovered floor after a restart behind it. Design: resources/DESIGN.md
+ * "Origin-closed timestamp floor".
  */
 
 const SLOTS = 1024;
@@ -327,12 +328,11 @@ export function isReservedForLocalAppend(handle: RocksTransaction): boolean {
 	return (handle as any)[RESERVATION] !== undefined;
 }
 
-export function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void {
-	if (!isValidFloor(floor) || typeof rootStore?.getUserSharedBuffer !== 'function') return;
+function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void {
 	const words = registryFor(rootStore).words;
 	storeMax(words, WORD_RATCHET, floor);
 	storeMax(words, WORD_PROPOSED, floor);
-	// Keys will be issued from the ratchet until the clock passes it: native keys go through it from now.
+	// A clock behind the recovered floor issues keys from the ratchet until it passes.
 	if (rootStore.getMonotonicTimestamp() <= floor) Atomics.store(words, WORD_STRICT, 1n);
 }
 
