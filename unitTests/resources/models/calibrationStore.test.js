@@ -75,8 +75,8 @@ function truthReport(i) {
 }
 
 /**
- * Record `count` decisions starting at case `from`, each with its truth. Decisions are made one at a time, so
- * their order is case order; each outcome commits alongside the next decision rather than in a commit of its own.
+ * Record `count` decisions starting at case `from`, each with its truth. Decisions stay one at a time: discovery
+ * reads their order. Outcomes are not awaited in between, so the two can share a commit.
  */
 async function recordCases(models, from, count, opts = {}, { schema = SCHEMA, outcomeOf = truthReport } = {}) {
 	const ids = [];
@@ -86,11 +86,11 @@ async function recordCases(models, from, count, opts = {}, { schema = SCHEMA, ou
 			const { id } = await models.decide(`case-${i}`, schema, { persist: true, ...opts });
 			ids.push(id);
 			const outcome = models.recordOutcome(id, outcomeOf(i));
-			outcome.catch(() => {}); // surfaced by Promise.all below; an early rejection is not unhandled
+			outcome.catch(() => {});
 			recorded.push(outcome);
 		}
 	} finally {
-		// a failed decision still waits out the outcomes already started, so none commits into the next test
+		// none may commit into the next test
 		await Promise.allSettled(recorded);
 	}
 	await Promise.all(recorded);
