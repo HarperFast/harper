@@ -1975,8 +1975,9 @@ onThreadExit((deadThreadId: number) => {
 
 if (!isMainThread) {
 	// A worker told to shut down hands its claims back first. An instance it owns stops taking new
-	// work, finishes what is running and is disposed before main elects the next owner, and Harper's
-	// shutdown drain (threadServer) waits for that before the worker closes its servers and exits.
+	// work, finishes what is running and is disposed; main elects the next owner once that disposal
+	// is reported or once this thread exits (its objects end with it), and Harper's shutdown drain
+	// (threadServer) waits for the disposal before the worker closes its servers and exits.
 	registerShutdownDrain({
 		hasWork() {
 			for (const slot of slots.values()) if (slot.run && isLive(slot.run)) return true;

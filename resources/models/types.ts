@@ -274,8 +274,9 @@ export type BackendStatus =
 			owner?: number;
 			/**
 			 * A released owner still finishing its calls, or a thread whose `dispose()` failed; the next
-			 * owner is elected once its instance is disposed or, after a failed `dispose()`, once its
-			 * thread exits.
+			 * owner is elected once its instance's disposal is reported or once its thread exits (its
+			 * objects end with it), whichever comes first; a failed `dispose()` blocks election until
+			 * that thread exits.
 			 */
 			draining?: number;
 			restarts: number;
