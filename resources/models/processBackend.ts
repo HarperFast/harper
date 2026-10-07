@@ -39,6 +39,7 @@ import {
 	assertKindAndId,
 	constructBackend,
 	getBackend,
+	guardInstalled,
 	ModelBackendRegistrationError,
 	registerBackend,
 } from './backendRegistry.ts';
@@ -824,6 +825,8 @@ export function registerProcessBackend(
 			parked: [],
 		} as Slot;
 		slot.proxy = makeProxy(slot);
+		const created = slot;
+		guardInstalled(slot.proxy, (late) => divertLate(created, late));
 		slots.set(key, slot);
 	}
 	registerBackend(kind, id, slot.proxy);
@@ -837,6 +840,32 @@ export function registerProcessBackend(
 		eligible: !slot.released && (!isMainThread || getWorkerIndex() === 0),
 	} as { type: string });
 	if (!sent) log.warn?.(`models: could not reach the main thread to register process-wide backend '${kind}.${id}'`);
+}
+
+/** Objects registered over a process-wide key's proxy, held until their disposal ends. */
+const divertedLate = new Set<unknown>();
+
+/**
+ * A registration under `slot`'s key outside its owner's capture, such as one the factory's leftover
+ * async work makes after the start: it is never installed over the proxy, which keeps routing to the
+ * owner, and is disposed at once, with the usual tries. It is not part of any run's instance, so a
+ * disposal that keeps failing is logged, not reported to main, and elects nobody.
+ */
+function divertLate(slot: Slot, late: unknown): void {
+	log.warn?.(
+		`models: '${slot.kind}.${slot.logicalName}' is a process-wide backend on this thread; a registration under it outside its factory's start is not installed over its proxy, and is disposed`
+	);
+	if (((typeof late !== 'object' || late === null) && typeof late !== 'function') || divertedLate.has(late)) return;
+	divertedLate.add(late);
+	void disposeOne(slot, late as Disposable)
+		.then((undisposed) => {
+			if (undisposed)
+				log.error?.(
+					`models: a registration under process-wide backend '${slot.kind}.${slot.logicalName}' that was not installed could not be disposed, and may still be live`
+				);
+		})
+		.catch(() => undefined)
+		.finally(() => divertedLate.delete(late));
 }
 
 /** The status of the backend this thread resolves for `kind`/`id`. */

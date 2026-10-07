@@ -93,6 +93,34 @@ function handOver(slot: CaptureSlot | undefined, value: unknown): void {
 	}
 }
 
+/**
+ * Backends a registration outside a capture must not replace, each with what it hands such a
+ * registration to instead: a process-wide backend's proxy, and its key's disposal.
+ */
+const guards = new WeakMap<ModelBackend, (late: unknown) => void>();
+
+/**
+ * Keep `backend`, while it is the one installed under its kind and logical name, from being replaced by
+ * a registration made outside a capture (`registerBackend`, `setEmbedding`, `setGenerative`,
+ * `setDecision`): a different object registered there is passed to `divert` instead of installed, and
+ * the registration returns without throwing, even for an object `registerBackend` would refuse.
+ * Registering `backend` itself again installs it as before. `divert` must not throw.
+ */
+export function guardInstalled(backend: ModelBackend, divert: (late: unknown) => void): void {
+	guards.set(backend, divert);
+}
+
+/** Pass `backend` to the guard of what is installed under `kind.logicalName`, if any. Returns whether it did. */
+function diverted(kind: ModelKind, logicalName: string, backend: unknown): boolean {
+	if (!Object.hasOwn(registries, kind)) return false;
+	const current = registries[kind].get(logicalName);
+	if (current === undefined || current === backend) return false;
+	const divert = guards.get(current);
+	if (!divert) return false;
+	divert(backend);
+	return true;
+}
+
 function install(kind: ModelKind, logicalName: string, backend: ModelBackend): void {
 	const slot = captureScope.getStore();
 	if (slot?.active) {
@@ -107,20 +135,21 @@ function install(kind: ModelKind, logicalName: string, backend: ModelBackend): v
 		}
 		return;
 	}
+	if (diverted(kind, logicalName, backend)) return;
 	registries[kind].set(logicalName, backend);
 }
 
-/** Map `logicalName` to a backend for embedding calls. Re-set replaces. */
+/** Map `logicalName` to a backend for embedding calls. Re-set replaces, except a backend `guardInstalled` keeps. */
 export function setEmbedding(logicalName: string, backend: ModelBackend): void {
 	install('embedding', logicalName, backend);
 }
 
-/** Map `logicalName` to a backend for generative calls. Re-set replaces. */
+/** Map `logicalName` to a backend for generative calls. Re-set replaces, except a backend `guardInstalled` keeps. */
 export function setGenerative(logicalName: string, backend: ModelBackend): void {
 	install('generative', logicalName, backend);
 }
 
-/** Map `logicalName` to a backend for decide calls. Re-set replaces. */
+/** Map `logicalName` to a backend for decide calls. Re-set replaces, except a backend `guardInstalled` keeps. */
 export function setDecision(logicalName: string, backend: ModelBackend): void {
 	install('decision', logicalName, backend);
 }
@@ -246,7 +275,9 @@ export function resolveDecision(logicalName: string = 'default'): ModelBackend {
  * thread that loads the component registers its own instance, matching how the
  * config-driven built-ins populate per process. A backend that should have one live
  * instance in the process at a time (an in-process model) registers through
- * `registerProcessBackend` (`processBackend.ts`) instead.
+ * `registerProcessBackend` (`processBackend.ts`) instead. Under a key this thread
+ * registered that way, a registration outside that backend's factory is not installed
+ * over its proxy: it is disposed, with a warning, and the call does not throw.
  *
  * `id` is the logical name callers select with `opts.model` (e.g.
  * `models.embed(text, { model: 'local:bge-small' })`). A provider-namespaced id
@@ -258,8 +289,11 @@ export function resolveDecision(logicalName: string = 'default'): ModelBackend {
  * derives them for you, so prefer it.
  */
 export function registerBackend(kind: ModelKind, id: string, backend: ModelBackend): void {
+	const slot = captureScope.getStore();
 	// Inside a capture with `hold`, the backend is the capturing caller's before it is checked.
-	handOver(captureScope.getStore(), backend);
+	handOver(slot, backend);
+	// Under a guarded key, outside a capture, it goes to the guard before it is checked, so this never throws.
+	if (!slot?.active && diverted(kind, id, backend)) return;
 	assertBackendForKind(kind, id, backend);
 	if (kind === 'embedding') setEmbedding(id, backend);
 	else if (kind === 'decision') setDecision(id, backend);
