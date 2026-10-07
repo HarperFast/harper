@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Start a Harper container and wait for its Operations API to answer on :9925.
-#
 # Usage: docker-smoke-boot.sh <image> <container-name> [harper-runtime]
 set -e
 
