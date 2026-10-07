@@ -170,7 +170,7 @@ export interface ProcessBackendOptions {
 	maxBatchInputs?: number;
 	/** Unplanned owner losses allowed per worker generation. Default 1. */
 	maxRestarts?: number;
-	/** Caller wait limit in milliseconds. Default 30000. */
+	/** Caller-side timer for waiting for an owner, in milliseconds. Default 30000. */
 	ownerWaitMs?: number;
 	/** Caller-side timeout in milliseconds. Unset by default. */
 	timeoutMs?: number;
