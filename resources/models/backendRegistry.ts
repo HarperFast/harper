@@ -279,7 +279,7 @@ export function resolveDecision(logicalName: string = 'default'): ModelBackend {
  * `registerProcessBackend` (`processBackend.ts`) instead. Under a key this thread
  * registered that way, a registration outside that backend's factory is not installed
  * over its proxy, and the call does not throw: with a warning, it is disposed when this
- * thread's run of that backend ends, or at once when this thread runs none.
+ * thread's run of that backend ends, or at once when this thread has no live run of it.
  *
  * `id` is the logical name callers select with `opts.model` (e.g.
  * `models.embed(text, { model: 'local:bge-small' })`). A provider-namespaced id

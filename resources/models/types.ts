@@ -33,9 +33,10 @@ export interface Models {
 	/** Build a `ModelBackend` from a spec; pair with `registerBackend`. See #1325. */
 	defineBackend(spec: DefineBackendSpec): ModelBackend;
 	/**
-	 * Register a backend shared by the process: `factory` runs on one owner thread, at most one
-	 * instance per key is live at a time, and every thread that registers gets a proxy that forwards
-	 * calls to it. Opt-in; `registerBackend` stays per thread.
+	 * Register a backend shared by the process: `factory` runs on one owner thread, one instance per
+	 * key is live at a time for every object handed over during a run until the run is sealed (see
+	 * `ProcessBackendFactory`), and every thread that registers gets a proxy that forwards calls to it.
+	 * Opt-in; `registerBackend` stays per thread.
 	 */
 	registerProcessBackend(
 		kind: ModelKind,
@@ -192,18 +193,25 @@ export interface DefineBackendSpec {
  * warning names the key, and `registerBackend` does not throw, even for a backend it would otherwise
  * refuse. On a thread whose run of the key is live, that run owns it as it owns the instance and
  * disposes it before it reports the run ended, so no other thread's factory runs while it may be live;
- * one the run already holds (its own backend registered again) is left as it is. On any other thread
- * it is disposed at once, with the usual tries. So a factory registers before its promise resolves.
+ * one the run already holds (its own backend registered again) is left as it is. A run is live until
+ * it is sealed, in the step that finds nothing left to dispose and reports the run ended. On any other
+ * thread it is disposed at once, with the usual tries. So a factory awaits any work that can build or
+ * register a backend before its promise resolves.
  *
- * At most one instance of a key is live at a time, as far as the owner can tell: before another
- * thread's factory runs, the owner awaits the backend's `dispose()`, so a backend holding a native
- * model or a GPU context frees it there. A `dispose()` that rejects is tried up to three times in
- * all; if every try rejects, the key fails until the next worker generation and no other thread
- * runs its factory while the owner's thread lives. A backend without `dispose()` is taken to hold
- * nothing that its finished calls and its thread's exit do not release: it counts as gone once its
- * running calls finish. `signal` aborts only while the factory is still running, when the owner
- * releases the key, so a slow load can stop early; whatever it returns is still disposed. It never
- * aborts once the factory has returned, so a backend may keep it without its calls being stopped.
+ * One live instance per key holds for every object handed over during a run until the run is
+ * sealed; an object registered under the key on a thread with no live run of it, such as one a
+ * factory's leftover code registers after its run is sealed, is disposed at once on that thread,
+ * outside election, and can coexist with another thread's instance until its disposal completes,
+ * indefinitely if its `dispose()` hangs or keeps rejecting (a disposal that keeps rejecting is
+ * logged). Within that scope, as far as the owner can tell, it awaits the backend's `dispose()`
+ * before another thread's factory runs, so a backend holding a native model or a GPU context frees
+ * it there. A `dispose()` that rejects is tried up to three times in all; if every try rejects, the
+ * key fails until the next worker generation and no other thread runs its factory while the owner's
+ * thread lives. A backend without `dispose()` is taken to hold nothing that its finished calls and
+ * its thread's exit do not release: it counts as gone once its running calls finish. `signal`
+ * aborts only while the factory is still running, when the owner releases the key, so a slow load
+ * can stop early; whatever it returns is still disposed. It never aborts once the factory has
+ * returned, so a backend may keep it without its calls being stopped.
  */
 export type ProcessBackendFactory = (context: { kind: ModelKind; logicalName: string; signal: AbortSignal }) => unknown;
 

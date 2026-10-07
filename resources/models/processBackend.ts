@@ -1,7 +1,10 @@
 /**
- * Process-wide model backends (`models.registerProcessBackend`): at most one live backend instance
- * per key at a time in a Harper process, built by one owner thread and served to every thread that
- * registered the key.
+ * Process-wide model backends (`models.registerProcessBackend`): a backend built by one owner thread
+ * per key and served to every thread that registered the key. One live instance per key holds for
+ * every object handed over during a run until the run is sealed; an object registered under the key
+ * on a thread with no live run of it, such as one a factory's leftover code registers after its run is
+ * sealed, is disposed at once on that thread, outside election, and can coexist with another thread's
+ * instance until its disposal completes (`divertLate`, `disposeInstance`).
  *
  * The registry in `backendRegistry.ts` is per thread, so a component that registers an in-process
  * backend builds one per worker: one model, one GPU context and one warmup each. Here every
@@ -794,12 +797,12 @@ function resolveOptions(kind: ModelKind, options: ProcessBackendOptions | undefi
 }
 
 /**
- * Register `kind`/`id` for the whole process, with at most one live instance at a time. Every thread
- * that loads the component calls this where it would call `registerBackend`; `factory` runs on the
- * elected owner only, and each thread's registry gets a proxy that forwards `embed`, `generate`,
- * `decide` and `scoreChoices` to the owner. Calling it again on a thread updates the factory and
- * options a later start uses and claims again (as a caller only, once the thread is shutting down);
- * a started owner keeps the backend it built.
+ * Register `kind`/`id` for the whole process, with one live instance at a time within the scope the
+ * module header states. Every thread that loads the component calls this where it would call
+ * `registerBackend`; `factory` runs on the elected owner only, and each thread's registry gets a proxy
+ * that forwards `embed`, `generate`, `decide` and `scoreChoices` to the owner. Calling it again on a
+ * thread updates the factory and options a later start uses and claims again (as a caller only, once
+ * the thread is shutting down); a started owner keeps the backend it built.
  */
 export function registerProcessBackend(
 	kind: ModelKind,
