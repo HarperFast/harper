@@ -183,11 +183,11 @@ export interface DefineBackendSpec {
  * async factory returns its own promise, which reads the `then` of what the factory returns before
  * the owner can, so an object whose `then` throws there reaches the owner only as that promise's
  * rejection: it is the factory's to free, or to register before returning. A start that fails for
- * any reason, the factory's own error included, disposes all of them before another thread's factory
- * runs. A start that succeeds keeps the instance and disposes the rest (a
- * backend registered under another key, which is never installed, or an invalid one whose refusal
- * the factory caught) before it is reported ready, and fails if one cannot be disposed. What a
- * factory that throws built and never handed over is its own to release before throwing. A
+ * any reason, the factory's own error included, tries to dispose all of them before the owner reports
+ * the failure. A start that succeeds keeps the instance and disposes the rest (a backend registered
+ * under another key, which is never installed, or an invalid one whose refusal the factory caught)
+ * before it is reported ready, and fails if one cannot be disposed. What a factory that throws built
+ * and never handed over is its own to release before throwing. A
  * registration under the key outside the start, such as one that work the factory left running makes
  * after it settles, is never installed over the key's proxy, on any thread that registered the key; a
  * warning names the key, and `registerBackend` does not throw, even for a backend it would otherwise
@@ -203,12 +203,15 @@ export interface DefineBackendSpec {
  * factory's leftover code registers after its run is sealed, is disposed at once on that thread,
  * outside election, and can coexist with another thread's instance until its disposal completes,
  * indefinitely if its `dispose()` hangs or keeps rejecting (a disposal that keeps rejecting is
- * logged). Within that scope, as far as the owner can tell, it awaits the backend's `dispose()`
- * before another thread's factory runs, so a backend holding a native model or a GPU context frees
- * it there. A `dispose()` that rejects is tried up to three times in all; if every try rejects, the
- * key fails until the next worker generation and no other thread runs its factory while the owner's
- * thread lives. A backend without `dispose()` is taken to hold nothing that its finished calls and
- * its thread's exit do not release: it counts as gone once its running calls finish. `signal`
+ * logged). Within that scope, another thread's factory runs only after this run has reported every
+ * `dispose()` resolved, or after this thread has exited, so a backend holding a native model or a GPU
+ * context frees it in `dispose()`. When the owner releases the key because its worker is shutting
+ * down, its running calls and its `dispose()` get as long as Harper's shutdown drain allows, up to
+ * its ceiling; past that the worker exits, which ends them. A `dispose()` that rejects is tried up to
+ * three times in all; if every try rejects, the key fails, and no other thread runs its factory until
+ * the owner's thread has exited and a newer worker generation has claimed the key. A backend without
+ * `dispose()` is taken to hold nothing that its finished calls and its thread's exit do not release:
+ * it counts as gone once its running calls finish. `signal`
  * aborts only while the factory is still running, when the owner releases the key, so a slow load
  * can stop early; whatever it returns is still disposed. It never aborts once the factory has
  * returned, so a backend may keep it without its calls being stopped.
@@ -237,8 +240,8 @@ export interface ProcessBackendOptions {
 	/** Unplanned owner losses (exit or failed start) restarted per worker generation. Default 1. */
 	maxRestarts?: number;
 	/**
-	 * How long one call waits in all for an owner to be named (none is eligible, or a released owner
-	 * is still finishing its calls) before it fails with `ModelBackendUnavailableError`, reason
+	 * How long one call waits in all for an owner to be named (none is eligible, or `backendStatus`
+	 * names a `draining` thread) before it fails with `ModelBackendUnavailableError`, reason
 	 * `no-owner`, and for an owner that has not yet seen this thread admitted to confirm it (reason
 	 * `not-owner`). Default 30000.
 	 */
@@ -254,8 +257,8 @@ export interface ProcessBackendOptions {
  * own error is never taken for a move, whatever its name. `no-owner`: no owner was named within
  * `ownerWaitMs`. `not-owner`: the thread it reached does not serve the key to this caller, or had not
  * confirmed that main admitted it within `ownerWaitMs`. `dispose-failed` (in `backendStatus` only):
- * an instance's `dispose()` rejected on every try, so it may still be live; no owner is elected
- * while its thread lives, and calls fail with `failed` until the next generation.
+ * an instance's `dispose()` rejected on every try, so it may still be live; calls fail with `failed`
+ * until a newer generation claims, and no owner is elected until its thread has also exited.
  */
 export type ModelBackendUnavailableReason =
 	'owner-exited' | 'start-failed' | 'failed' | 'no-owner' | 'moved' | 'not-owner' | 'timeout' | 'dispose-failed';
@@ -273,10 +276,11 @@ export type BackendStatus =
 			/** The owner thread's id, while one is elected. */
 			owner?: number;
 			/**
-			 * A released owner still finishing its calls, or a thread whose `dispose()` failed; the next
-			 * owner is elected once its instance's disposal is reported or once its thread exits (its
-			 * objects end with it), whichever comes first; a failed `dispose()` blocks election until
-			 * that thread exits.
+			 * A thread whose run may still hold the backend: a released owner that has not reported its
+			 * disposal, or a thread whose `dispose()` failed. No owner is elected while it is set. It
+			 * clears when that thread reports its disposal or exits; after a failed `dispose()` the key
+			 * also stays `failed` until a newer generation claims. See resources/models/DESIGN.md,
+			 * "Handover and election".
 			 */
 			draining?: number;
 			restarts: number;
@@ -284,8 +288,8 @@ export type BackendStatus =
 			/** The worker generation (restart number) the restart budget belongs to. */
 			generation?: number;
 			/**
-			 * Why the last owner was lost, or `no-owner` while no claimant may own the backend and no
-			 * released owner is draining (a draining one is named in `draining` instead).
+			 * Why the last owner was lost, or `no-owner` when main's last election found no claimant that
+			 * may own the backend (none runs while a thread is `draining` or the key is `failed`).
 			 */
 			reason?: ModelBackendUnavailableReason;
 			/** The last loss's error, for operators; never attached to a caller's error. */

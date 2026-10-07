@@ -332,8 +332,9 @@ interface Entry {
 	claimants: Map<number, Claimant>;
 	owner?: number;
 	/**
-	 * A released owner whose instance may still be live; nothing is elected until it reports DISPOSED
-	 * or exits. A thread whose `dispose()` failed stays here until it exits.
+	 * A thread whose run may still hold objects it was handed: an owner that released a live run, or
+	 * one that reported DISPOSE_FAILED. `elect` chooses no owner while it is set. What sets and clears
+	 * it is in resources/models/DESIGN.md, "Handover and election".
 	 */
 	draining?: number;
 	epoch: number;
@@ -443,11 +444,8 @@ function onRelease(message: { key: string; live: boolean }, sender: number): voi
 	// A thread shutting down stays a caller until it exits, but is never elected again.
 	claimant.eligible = false;
 	if (entry.owner === sender) {
-		// A planned exit: the budget is not charged, and the next owner is elected only once the
-		// released run has disposed everything it was handed, or its thread has exited and its objects
-		// ended with it (onCoordinatedThreadExit), so no object handed to that run is live alongside the
-		// next owner's instance (a registration on a thread with no live run is outside election; see
-		// the module header).
+		// A planned exit: the budget is not charged. A live run holds the election as `draining` until
+		// onDisposed or onCoordinatedThreadExit clears it (DESIGN.md, "Handover and election").
 		entry.owner = undefined;
 		entry.name = undefined;
 		entry.capabilities = undefined;
@@ -468,10 +466,11 @@ function onDisposed(message: { key: string }, sender: number): void {
 }
 
 /**
- * The owner's `dispose()` rejected on every try, so its instance may still be live. Main keeps that
- * thread as `draining`, so nothing is elected until the thread exits, and fails the key until the
- * next generation, so its calls fail at once instead of waiting for an owner. The error is for
- * operators, in `backendStatus`.
+ * The owner's `dispose()` rejected on every try, so its instance may still be live. Main holds that
+ * thread as `draining` and fails the key, so its calls fail at once instead of waiting for an owner.
+ * Its exit alone does not restore service: an owner can be elected only once it has exited and a
+ * newer generation has claimed (DESIGN.md, "Handover and election"). The error is for operators, in
+ * `backendStatus`.
  */
 function onDisposeFailed(message: { key: string; error: { name: string; message: string } }, sender: number): void {
 	if (!isMainThread) return;
@@ -525,7 +524,8 @@ function onCoordinatedThreadExit(deadThreadId: number): void {
 	for (const entry of entries.values()) {
 		entry.claimants.delete(deadThreadId);
 		if (entry.draining === deadThreadId) {
-			// The released instance died with its thread; the handover was planned, so it is not charged.
+			// What its run held ended with the thread, so `draining` clears, uncharged; `elect` still
+			// chooses nothing while the key is failed (DESIGN.md, "Handover and election").
 			entry.draining = undefined;
 			elect(entry);
 			publish(entry);
@@ -572,10 +572,10 @@ function loseOwner(
 }
 
 /**
- * Elect an eligible claimant when there is no owner and no released instance may still be live:
- * newest generation first, then the earliest claim; `avoid` (the owner just lost) only if nobody else
- * is left. With nobody eligible the key is marked `no-owner` (never while a thread drains). Returns
- * whether the state changed.
+ * Elect an eligible claimant when no owner is set, no thread is `draining` and the key is not
+ * `failed`: newest generation first, then the earliest claim; `avoid` (the owner just lost) only if
+ * nobody else is left. With those gates open and nobody eligible the key is marked `no-owner`. Returns
+ * whether the state changed. Which events run it: DESIGN.md, "Handover and election".
  */
 function elect(entry: Entry, avoid?: number): boolean {
 	if (entry.owner !== undefined || entry.draining !== undefined || entry.state === 'failed') return false;
@@ -1339,10 +1339,9 @@ async function startBackend(slot: Slot, run: OwnerRun): Promise<void> {
 }
 
 /**
- * A failed start: fail the calls waiting on this run, dispose everything the run holds, and only then
- * tell main, which may elect another owner, so no object handed to this run is live alongside a
- * successor's instance (a registration on a thread with no live run is outside election; see the
- * module header). `earlier` is a
+ * A failed start: fail the calls waiting on this run, try to dispose everything the run holds, and
+ * only then tell main: START_FAILED, or DISPOSED for a released run, once all of it is disposed, else
+ * DISPOSE_FAILED, which holds the election (DESIGN.md, "Handover and election"). `earlier` is a
  * disposal the start already tried and could not complete, so main hears that something may be live
  * even when everything still held disposes.
  */
@@ -1448,8 +1447,10 @@ function reportDisposeFailed(slot: Slot, error: unknown): void {
 
 /**
  * Stop a released run accepting work: what has not started follows the backend to the next owner
- * (`moved`), running calls finish, and then the instance is disposed and main told. Resolves once
- * main has been told how disposal ended.
+ * (`moved`), and running calls are left to run; once none is running and the start has settled, the
+ * instance is disposed and main told (`finishDrain`). Resolves once main has been told how disposal
+ * ended. Nothing here bounds the wait; Harper's shutdown drain does (DESIGN.md, "Handover and
+ * election").
  */
 function beginDrain(slot: Slot, run: OwnerRun): Promise<void> {
 	run.disposed ??= new Promise((resolve) => (run.markDisposed = resolve));
@@ -1958,7 +1959,8 @@ onThreadExit((deadThreadId: number) => {
 		if (pending.owner === deadThreadId)
 			pending.finish(new ModelBackendUnavailableError(pending.kind, pending.logicalName, 'owner-exited'));
 	for (const slot of slots.values()) {
-		// New calls wait for main's next election instead of being sent to the dead owner.
+		// New calls wait for main's next state (or fail at once while the key is failed) instead of
+		// being sent to the dead owner.
 		if (slot.view?.owner === deadThreadId) {
 			slot.view = { ...slot.view, owner: undefined, state: slot.view.state === 'failed' ? 'failed' : 'starting' };
 			slot.capabilities = BASE_CAPABILITIES[slot.kind];
@@ -1974,10 +1976,11 @@ onThreadExit((deadThreadId: number) => {
 });
 
 if (!isMainThread) {
-	// A worker told to shut down hands its claims back first. An instance it owns stops taking new
-	// work, finishes what is running and is disposed; main elects the next owner once that disposal
-	// is reported or once this thread exits (its objects end with it), and Harper's shutdown drain
-	// (threadServer) waits for the disposal before the worker closes its servers and exits.
+	// A worker told to shut down hands its claims back first and drains the run it owns (`beginDrain`).
+	// Harper's shutdown drain (threadServer) waits for that run's disposal, up to its ceiling, before the
+	// worker closes its servers and exits; past the ceiling it exits with whatever is still pending. What
+	// main does with the release, the report and the exit: resources/models/DESIGN.md, "Handover and
+	// election".
 	registerShutdownDrain({
 		hasWork() {
 			for (const slot of slots.values()) if (slot.run && isLive(slot.run)) return true;
