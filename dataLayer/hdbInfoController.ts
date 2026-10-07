@@ -279,7 +279,7 @@ function checkIfInstallIsSupported(dataVNum) {
 		`please contact ${hdbTerms.HDB_SUPPORT_ADDRESS}`;
 
 	if (!tableLoader.databases.system) {
-		const loadErrMsg = 'The system database failed to load. Harper cannot start.';
+		const loadErrMsg = `The system database failed to load. ${PRODUCT_NAME} cannot start.`;
 		console.log(loadErrMsg);
 		throw new Error(loadErrMsg);
 	}
