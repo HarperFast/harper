@@ -6,26 +6,27 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 
-// Runs the shipped cherry-pick job's `run:` steps against a local origin, with `gh` and the
-// sticky-comment helper stubbed, so a test sees exactly the branches and PRs a real run makes.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const job = parse(readFileSync(join(root, '.github/workflows/cherry-pick-patch.yml'), 'utf8')).jobs['cherry-pick'];
 const changeLanded = join(root, '.github/scripts/change-landed.sh');
 const RELEASE = 'v5.3';
 const PR_NUMBER = '7';
 const DEADLINE = 60_000;
-// change-landed.sh merges trees with an explicit merge base, which git supports from 2.45.
-const GIT_HAS_TREE_MERGE = (() => {
-	const [major, minor] = /(\d+)\.(\d+)/
-		.exec(execFileSync('git', ['--version'], { encoding: 'utf8' }))
-		.slice(1)
-		.map(Number);
-	return major > 2 || (major === 2 && minor >= 45);
-})();
-function requireTreeMerge() {
-	if (GIT_HAS_TREE_MERGE) return;
-	if (process.env.CI) throw new Error('change-landed.sh needs git 2.45 or newer');
-	this.skip();
+function gitHasTreeMerge() {
+	const { stdout = '' } = spawnSync('git', ['--version'], { encoding: 'utf8' });
+	const [, major, minor] = /(\d+)\.(\d+)/.exec(stdout) ?? [];
+	return Number(major) > 2 || (Number(major) === 2 && Number(minor) >= 45);
+}
+// Skips where a prerequisite is missing; under CI a skip would hide the guard going untested.
+function requirePrerequisites({ jq = false } = {}) {
+	return function () {
+		const missing = [];
+		if (!gitHasTreeMerge()) missing.push('git 2.45 or newer');
+		if (jq && spawnSync('jq', ['--version']).status !== 0) missing.push('jq');
+		if (missing.length === 0) return;
+		if (process.env.CI) throw new Error(`cherry-pick tests need ${missing.join(' and ')}`);
+		this.skip();
+	};
 }
 // The second commit rewrites the line the first one changed, so replaying the first onto a release
 // that already has both conflicts instead of applying empty.
@@ -35,7 +36,7 @@ const SECOND_FIX = { 5: 'second fix', 6: 'second fix, continued' };
 describe('cherry-pick-patch.yml', function () {
 	let fixture;
 
-	before(requireTreeMerge);
+	before(requirePrerequisites({ jq: true }));
 
 	beforeEach(function () {
 		fixture = createFixture();
@@ -275,7 +276,7 @@ describe('change-landed.sh', function () {
 			timeout: DEADLINE,
 		});
 
-	before(requireTreeMerge);
+	before(requirePrerequisites());
 
 	beforeEach(function () {
 		dir = mkdtempSync(join(tmpdir(), 'change-landed-'));
@@ -434,7 +435,6 @@ if (command === 'api' && /^repos\\/[^/]+\\/[^/]+\\/pulls\\/\\d+$/.test(sub) && a
 	seedGit('add', 'lib.txt');
 	seedGit('commit', '-qm', 'Base');
 	seedGit('branch', RELEASE);
-	// main moves on after the release cut, away from the lines the PRs touch
 	let mainState = { 35: 'main-only change' };
 	commitLib(mainState, 'Main-only change');
 	seedGit('branch', 'feature');
