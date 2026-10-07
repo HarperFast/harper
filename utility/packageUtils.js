@@ -46,11 +46,8 @@ const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
  */
 const PACKAGE_ROOT = realpathSync(dirname(packageJsonPath));
 
-/**
- * The product name for local CLI, installer, and lifecycle messages, taken from the running
- * package's `productName`. A distribution that embeds this core (Harper Pro, whose root
- * package.json is the one found above) is branded without rewriting these messages.
- */
+// Embedding distributions (Harper Pro, whose root package.json is the one found above when core
+// runs compiled under its dist/core) brand local messages by setting productName.
 const PRODUCT_NAME = packageJson.productName || 'Harper';
 
 module.exports = { packageJson, PACKAGE_ROOT, PRODUCT_NAME };

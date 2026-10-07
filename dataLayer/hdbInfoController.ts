@@ -16,7 +16,7 @@ import * as BinObjects from '../bin/BinObjects.ts';
 import * as DataLayerObjects from './DataLayerObjects.ts';
 import { UpgradeObject } from '../upgrade/UpgradeObjects.ts';
 import { forceDowngradePrompt } from '../upgrade/upgradePrompt.ts';
-import { packageJson } from '../utility/packageUtils.js';
+import { packageJson, PRODUCT_NAME } from '../utility/packageUtils.js';
 import log from '../utility/logging/harper_logger.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as globalSchema from '../utility/globalSchema.ts';
@@ -231,8 +231,8 @@ export async function getVersionUpdateInfo() {
 						await insertHdbUpgradeInfo(upgradeVersion.toString());
 						log.notify(`Downgrade confirmed; data version recorded as ${upgradeVersion}.`);
 					} else {
-						console.log('Cancelled downgrade, closing Harper');
-						log.notify('Cancelled downgrade, closing Harper');
+						console.log(`Cancelled downgrade, closing ${PRODUCT_NAME}`);
+						log.notify(`Cancelled downgrade, closing ${PRODUCT_NAME}`);
 						process.exit(0);
 					}
 				}
@@ -258,7 +258,7 @@ export async function getVersionUpdateInfo() {
 		// If we get here they are running on an upgraded version that doesn't require any upgrade directives
 		if (hdbUtils.compareVersions(newUpgradeObj.data_version.toString(), newUpgradeObj.upgrade_version.toString()) < 0) {
 			await insertHdbUpgradeInfo(newUpgradeObj.upgrade_version);
-			log.notify(`Harper running on upgraded version: ${newUpgradeObj.upgrade_version}`);
+			log.notify(`${PRODUCT_NAME} running on upgraded version: ${newUpgradeObj.upgrade_version}`);
 		}
 	} catch (err) {
 		log.fatal('Error while trying to evaluate the state of hdb data and the installed hdb version');
