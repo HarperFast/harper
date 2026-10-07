@@ -53,6 +53,10 @@ interface CaptureSlot {
 	exclusive: boolean;
 	/** That refusal, kept so it fails the construction whatever the registering code does with it. */
 	refused?: ModelBackendRegistrationError;
+	/** `constructBackend`'s `hold`: given each object registered in the scope before it is checked or refused. */
+	hold?: (handed: object) => void;
+	/** What `hold` has been given, so it is given each object once. */
+	handed: Set<unknown>;
 }
 
 const sources = new WeakMap<ModelBackend, string>();
@@ -76,9 +80,23 @@ export function getBackendSource(backend: ModelBackend): string | undefined {
 // concurrent constructions.
 const captureScope = new AsyncLocalStorage<CaptureSlot>();
 
+/**
+ * Give `value` to the active capture's `hold`, if it has one and has not been given `value` yet, before
+ * anything checks or refuses it, so the capturing caller owns it whatever happens next. Reads nothing
+ * of `value`.
+ */
+function handOver(slot: CaptureSlot | undefined, value: unknown): void {
+	if (!slot?.active || !slot.hold || slot.handed.has(value)) return;
+	if ((typeof value === 'object' && value !== null) || typeof value === 'function') {
+		slot.handed.add(value);
+		slot.hold(value);
+	}
+}
+
 function install(kind: ModelKind, logicalName: string, backend: ModelBackend): void {
 	const slot = captureScope.getStore();
 	if (slot?.active) {
+		handOver(slot, backend);
 		if (slot.kind !== kind || slot.logicalName !== logicalName) slot.extras.push({ kind, logicalName, backend });
 		else if (!slot.exclusive || slot.backend === undefined) slot.backend = backend;
 		else {
@@ -112,18 +130,29 @@ export function setDecision(logicalName: string, backend: ModelBackend): void {
  * config reload can install it conditionally. A scratch logical name would be briefly visible
  * through `listBackends`, which backs the public `GET /v1/models`.
  *
- * With `exclusive`, for a caller that must dispose what it captured, a second registration under
- * `kind.logicalName` throws `ModelBackendRegistrationError` instead of replacing the first, which
- * would be lost. That refusal is returned as `refused`, beside what was captured, whatever `register`
- * does with it, even rethrowing it, so the caller can fail and still dispose what was handed over.
+ * Two options are for a caller that disposes what it captured. `hold` is given each object that
+ * `register` registers, under any key, once, as it is handed over: before `registerBackend` checks it
+ * and before any refusal, and even when `register` then throws, so the caller owns each one whatever
+ * happens to it next, and can dispose it. With `exclusive`, a second registration under
+ * `kind.logicalName` throws `ModelBackendRegistrationError` instead of replacing the first, so one
+ * registration is the key's. That refusal is returned as `refused`, beside what was captured, whatever
+ * `register` does with it, even rethrowing it, so the construction fails even when `register` catches it.
  */
 export async function constructBackend(
 	kind: ModelKind,
 	logicalName: string,
 	register: () => void | Promise<void>,
-	options: { exclusive?: boolean } = {}
+	options: { exclusive?: boolean; hold?: (handed: object) => void } = {}
 ): Promise<{ backend?: ModelBackend; extras: CapturedInstall[]; refused?: ModelBackendRegistrationError }> {
-	const slot: CaptureSlot = { kind, logicalName, extras: [], active: true, exclusive: options.exclusive === true };
+	const slot: CaptureSlot = {
+		kind,
+		logicalName,
+		extras: [],
+		active: true,
+		exclusive: options.exclusive === true,
+		hold: options.hold,
+		handed: new Set(),
+	};
 	try {
 		await captureScope.run(slot, async () => {
 			await register();
@@ -229,6 +258,8 @@ export function resolveDecision(logicalName: string = 'default'): ModelBackend {
  * derives them for you, so prefer it.
  */
 export function registerBackend(kind: ModelKind, id: string, backend: ModelBackend): void {
+	// Inside a capture with `hold`, the backend is the capturing caller's before it is checked.
+	handOver(captureScope.getStore(), backend);
 	assertBackendForKind(kind, id, backend);
 	if (kind === 'embedding') setEmbedding(id, backend);
 	else if (kind === 'decision') setDecision(id, backend);
