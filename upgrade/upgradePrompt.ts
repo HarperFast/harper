@@ -87,7 +87,7 @@ export async function upgradeCertsPrompt() {
 	const upgradeCertMessage =
 		`${os.EOL}` +
 		chalk.bold.green(
-			`We now require a Certifacte Authority certificate. ${PRODUCT_NAME} can generate all new certificates for you (your existing certificates will be backed up) ` +
+			`We now require a Certificate Authority certificate. ${PRODUCT_NAME} can generate all new certificates for you (your existing certificates will be backed up) ` +
 				'or you can keep any existing certificates and add your own CA certificate. To add your own CA certificate set the <certificateAuthority> ' +
 				'parameter in harperdb-config.yaml'
 		);
