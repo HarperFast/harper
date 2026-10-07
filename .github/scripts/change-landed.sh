@@ -6,6 +6,11 @@
 # would land something, 2 when the check cannot tell; callers pick on either.
 set -u
 
+if [ "$#" -lt 4 ]; then
+	echo "::warning::change-landed.sh needs a target, base, head and at least one commit, so the commits will be picked"
+	exit 2
+fi
+
 TARGET="$1"
 BASE="$2"
 HEAD="$3"
@@ -16,7 +21,6 @@ could_not_run() {
 	exit 2
 }
 
-[ "$#" -gt 0 ] || could_not_run "no commits given"
 TARGET_TREE=$(git rev-parse --verify --quiet "$TARGET^{tree}") || could_not_run "$TARGET does not resolve"
 
 REPLAYED="$TARGET"
