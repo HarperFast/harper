@@ -166,8 +166,13 @@ export interface DefineBackendSpec {
  * Builds a process-wide backend. Runs on the owner thread only. Returns the backend, or registers it
  * under the same kind and id with `registerBackend` (a module factory's `register({ logicalName,
  * kind, config })` does), in which case that registration is captured rather than installed; any
- * other backend it registers while it runs is discarded. The backend is ready when the returned
- * promise resolves, so a factory that wants ready to mean warm awaits its warmup before resolving.
+ * other backend it registers while it runs is discarded, and is not disposed. The backend is ready
+ * when the returned promise resolves, so a factory that wants ready to mean warm awaits its warmup
+ * before resolving. A factory that both registers a backend and returns a different object (the
+ * engine behind that backend, say) hands the owner both: the backend it returned serves if it
+ * returned one, else the one it registered, and both are disposed, the registered one first, each
+ * with its own tries, before the instance counts as gone. Each `dispose()` must therefore resolve
+ * even after the other's has run.
  *
  * At most one instance of a key is live at a time, as far as the owner can tell: before another
  * thread's factory runs, the owner awaits the backend's `dispose()`, so a backend holding a native
@@ -178,9 +183,9 @@ export interface DefineBackendSpec {
  * running calls finish. `signal` aborts only while the factory is still running, when the owner
  * releases the key, so a slow load can stop early; whatever it returns is still disposed. It never
  * aborts once the factory has returned, so a backend may keep it without its calls being stopped.
- * What the factory returns is held before any of its properties is read, so one that fails the
- * start's checks (even by a getter that throws) is still disposed before another thread's factory
- * runs. A factory that throws must release what it loaded before throwing.
+ * What the factory returns and registers is held before any of its properties is read, so one that
+ * fails the start's checks (even by a getter that throws) is still disposed before another thread's
+ * factory runs. A factory that throws must release what it loaded before throwing.
  */
 export type ProcessBackendFactory = (context: { kind: ModelKind; logicalName: string; signal: AbortSignal }) => unknown;
 
@@ -194,9 +199,11 @@ export interface ProcessBackendOptions {
 	maxPending?: number;
 	/**
 	 * Embedding only: the most inputs one backend `embed` call carries. Queued `embed` requests whose
-	 * options and accounting are equal as primitives, arrays and plain objects (any other object, such
-	 * as a Date or a typed array, never matches) are merged into one call of at most this many inputs,
-	 * and the vectors and usage are split back per request. A request with more inputs runs alone as
+	 * options and accounting, as the owner receives them after structured clone, are equal as
+	 * primitives, arrays and plain objects are merged into one call of at most this many inputs, and
+	 * the vectors and usage are split back per request. A class instance arrives as a plain object of
+	 * its own fields, so two with equal fields merge; an object the clone keeps as its own type, such as
+	 * a Date or a typed array, never matches. A request with more inputs runs alone as
 	 * consecutive calls of at most this many; if a later one fails, the error carries the usage of
 	 * those that completed, which the caller's row bills. Default none: no merging and no splitting.
 	 */

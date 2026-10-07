@@ -131,8 +131,10 @@ class Redirect {
 		this.refusal = refusal;
 	}
 }
-/** What an owner holds: the backend a factory built, which may free its resources in `dispose()`. */
+/** What an owner serves with: the backend a factory built, which may free its resources in `dispose()`. */
 type ProcessModelBackend = ModelBackend & { dispose?(): unknown };
+/** Something a factory handed its owner that may hold the instance: disposed, if it can be, before the run is gone. */
+type Disposable = { dispose?(): unknown };
 
 interface StateMessage {
 	type: typeof STATE;
@@ -278,10 +280,12 @@ function currentGeneration(): number {
 
 /**
  * Whether two structured-cloned values are equal as primitives (by `Object.is`), arrays and plain
- * objects, field by field. Any other object (a Date, a Map, a typed array) never compares equal, even
- * to itself, so a request whose options or accounting hold one is never merged. Objects are compared
- * by value only, never by identity: two clones never share one, so identity would merge only calls a
- * thread made to itself.
+ * objects, field by field. It sees requests as the owner received them, after the clone: a class
+ * instance has become a plain object of its own enumerable fields, its prototype dropped, and compares
+ * as one, which is also all its backend would get unmerged. An object the clone keeps as its own type
+ * (a Date, a Map, a RegExp, a typed array) never compares equal, even to itself, so a request whose
+ * options or accounting hold one is never merged. Objects are compared by value only, never by
+ * identity: two clones never share one, so identity would merge only calls a thread made to itself.
  */
 export function sameValue(a: unknown, b: unknown, depth = 0): boolean {
 	const isObject = (value: unknown) => typeof value === 'function' || (typeof value === 'object' && value !== null);
@@ -644,7 +648,14 @@ interface Slot {
 interface OwnerRun {
 	epoch: number;
 	phase: RunPhase;
+	/** The backend this run serves with. */
 	backend?: ProcessModelBackend;
+	/**
+	 * Everything the factory handed over: the backend it registered under the key, then what it
+	 * returned when that is a different object. Each is disposed before the run counts as gone, so a
+	 * module factory that registers its backend and returns the engine behind it frees both.
+	 */
+	held: Disposable[];
 	/** The backend's name and capabilities, read and checked for cloning once, when it started. */
 	started?: { name: string; capabilities: ModelCapabilities };
 	/** The factory has returned or thrown. */
@@ -905,10 +916,11 @@ function wake(slot: Slot): void {
 const CALLER_ONLY_OPTIONS = new Set(['signal', 'accounting', 'toolHandlers', 'conversation']);
 
 /**
- * The options the owner's backend gets: all but the ones above. One that structured clone refuses (a
- * function at any depth, a symbol, a WeakMap) fails the call before it waits for an owner, naming
- * the option, rather than being dropped; the same check holds whether the owner is another thread or
- * this one.
+ * The options the owner's backend gets: all but the ones above. One whose value structured clone
+ * refuses (a function at any depth, a symbol, a WeakMap) fails the call before it waits for an owner,
+ * naming the option, rather than being dropped; the same check holds whether the owner is another
+ * thread or this one. What the clone leaves out without refusing (a symbol-keyed option or property,
+ * a non-enumerable one, a class instance's prototype) is left out, as it is across threads.
  */
 function sendableOptions(opts: Record<string, unknown>, describe: () => string): Record<string, unknown> {
 	const sendable: Record<string, unknown> = {};
@@ -1166,6 +1178,7 @@ function startOwner(slot: Slot, epoch: number): void {
 		phase: 'starting',
 		settled: false,
 		factoryAbort: new AbortController(),
+		held: [],
 		queue: [],
 		active: 0,
 		running: new Map(),
@@ -1193,9 +1206,11 @@ async function startBackend(slot: Slot, run: OwnerRun): Promise<void> {
 		const constructed = await constructBackend(kind, logicalName, async () => {
 			returned = await slot.factory({ kind, logicalName, signal: run.factoryAbort.signal });
 		});
-		// What the factory returned is held before any of its properties is read, so a check below that
-		// fails, even a getter that throws, still disposes it before main hears of the failure.
-		if (typeof returned === 'object' && returned !== null) run.backend = returned as ProcessModelBackend;
+		// Everything the factory handed over is held before any of its properties is read, so a check
+		// below that fails, even a getter that throws, still disposes all of it before main hears of the
+		// failure: the backend it registered, and what it returned when that is a different object.
+		for (const handed of [constructed.backend, returned])
+			if (typeof handed === 'object' && handed !== null && !run.held.includes(handed)) run.held.push(handed);
 		for (const extra of constructed.extras)
 			log.warn?.(
 				`models: process-wide backend '${kind}.${logicalName}' registered '${extra.kind}.${extra.logicalName}' while starting; it is discarded and only its own registration is kept`
@@ -1205,7 +1220,6 @@ async function startBackend(slot: Slot, run: OwnerRun): Promise<void> {
 			throw new ModelBackendRegistrationError(
 				`the factory for process-wide backend '${logicalName}' neither returned a backend nor registered one`
 			);
-		// The backend it registered, when what it returned is not one.
 		run.backend = backend;
 		assertBackendForKind(kind, logicalName, backend);
 		// Read inside the start, so a capabilities() that throws, or that returns something that
@@ -1236,7 +1250,7 @@ async function failRun(slot: Slot, run: OwnerRun, error: unknown): Promise<void>
 	run.phase = 'failing';
 	log.error?.(`models: process-wide backend '${kind}.${logicalName}' failed to start on thread ${threadId}`, error);
 	for (const queued of run.queue.splice(0)) refuse(queued, 'start-failed');
-	const undisposed = await disposeBackend(slot, run);
+	const undisposed = await disposeInstance(slot, run);
 	run.phase = 'failed';
 	if (undisposed) {
 		reportDisposeFailed(slot, undisposed.error);
@@ -1269,22 +1283,30 @@ function reportStarted(slot: Slot, run: OwnerRun): void {
 }
 
 /**
- * Dispose the run's instance: try its `dispose()` up to `DISPOSE_ATTEMPTS` times, pausing between
- * tries. Resolves to undefined once a try resolves, or at once for a backend without `dispose()`,
- * which is taken to hold nothing its finished calls and its thread's exit do not release. Resolves to
- * the last error when every try rejects: the instance may still be live. A `dispose` property that
- * throws when read counts as a try that rejected.
+ * Dispose the run's instance: everything the factory handed over (`held`), in turn. Resolves to
+ * undefined once each one is disposed, or to an error when one could not be: the instance may still
+ * be live. Every one is tried, whatever happened to the others.
  */
-async function disposeBackend(slot: Slot, run: OwnerRun): Promise<{ error: unknown } | undefined> {
-	const backend = run.backend;
+async function disposeInstance(slot: Slot, run: OwnerRun): Promise<{ error: unknown } | undefined> {
 	run.backend = undefined;
-	if (!backend) return undefined;
+	let undisposed: { error: unknown } | undefined;
+	for (const held of run.held.splice(0)) undisposed = (await disposeOne(slot, held)) ?? undisposed;
+	return undisposed;
+}
+
+/**
+ * Try `held`'s `dispose()` up to `DISPOSE_ATTEMPTS` times, pausing between tries. Resolves to
+ * undefined once a try resolves, or at once for an object without `dispose()`, which is taken to hold
+ * nothing its finished calls and its thread's exit do not release. Resolves to the last error when
+ * every try rejects. A `dispose` property that throws when read counts as a try that rejected.
+ */
+async function disposeOne(slot: Slot, held: Disposable): Promise<{ error: unknown } | undefined> {
 	let failure: unknown;
 	for (let attempt = 1; attempt <= DISPOSE_ATTEMPTS; attempt++) {
 		try {
-			const dispose = backend.dispose;
+			const dispose = held.dispose;
 			if (typeof dispose !== 'function') return undefined;
-			await dispose.call(backend);
+			await dispose.call(held);
 			return undefined;
 		} catch (error) {
 			failure = error;
@@ -1333,7 +1355,7 @@ function maybeFinishDrain(slot: Slot, run: OwnerRun): void {
 async function finishDrain(slot: Slot, run: OwnerRun): Promise<void> {
 	if (run.phase !== 'draining') return;
 	run.phase = 'disposing';
-	const undisposed = await disposeBackend(slot, run);
+	const undisposed = await disposeInstance(slot, run);
 	if (undisposed) {
 		run.phase = 'failed';
 		reportDisposeFailed(slot, undisposed.error);
