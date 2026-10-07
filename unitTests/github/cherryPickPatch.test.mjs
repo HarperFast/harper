@@ -14,13 +14,25 @@ const changeLanded = join(root, '.github/scripts/change-landed.sh');
 const RELEASE = 'v5.3';
 const PR_NUMBER = '7';
 const DEADLINE = 60_000;
-// #3038's shape: the second commit rewrites the line the first one changed, so replaying the first
-// onto a release that already has both conflicts instead of applying empty.
+// change-landed.sh merges trees with an explicit merge base, which git supports from 2.45.
+const GIT_HAS_TREE_MERGE = (() => {
+	const [major, minor] = /(\d+)\.(\d+)/
+		.exec(execFileSync('git', ['--version'], { encoding: 'utf8' }))
+		.slice(1)
+		.map(Number);
+	return major > 2 || (major === 2 && minor >= 45);
+})();
+// The second commit rewrites the line the first one changed, so replaying the first onto a release
+// that already has both conflicts instead of applying empty.
 const FIRST_FIX = { 5: 'first fix' };
 const SECOND_FIX = { 5: 'second fix', 6: 'second fix, continued' };
 
 describe('cherry-pick-patch.yml', function () {
 	let fixture;
+
+	before(function () {
+		if (!GIT_HAS_TREE_MERGE) this.skip();
+	});
 
 	beforeEach(function () {
 		fixture = createFixture();
@@ -47,8 +59,8 @@ describe('cherry-pick-patch.yml', function () {
 	});
 
 	it('makes a second run for a landed change a no-op, and closes the conflict PR an earlier run left', function () {
-		// #3067: one milestone change fires `demilestoned` and `milestoned`; the first run landed
-		// the PR's commits and the second re-picked them onto the advanced release tip.
+		// One milestone change fires `demilestoned` and `milestoned`: the first run lands the PR's
+		// commits and the second replays them onto the release tip the first one advanced.
 		incidentPr();
 		fixture.runJob();
 		const landedTip = fixture.releaseTip();
@@ -136,6 +148,24 @@ describe('cherry-pick-patch.yml', function () {
 		assert.notStrictEqual(run.outputs.conflicts, '', run.log);
 	});
 
+	it('picks a commit whose content main absorbed from another PR before this one merged main', function () {
+		// After the merge of main, the net change since the merge base is only the second commit, and
+		// the release already has that much.
+		const PR_ONLY = { 20: 'pr-only change' };
+		fixture.prCommit(FIRST_FIX, 'First fix');
+		fixture.prCommit(PR_ONLY, 'PR-only change');
+		fixture.mainCommit(FIRST_FIX, 'The same fix, landed on main by another PR');
+		fixture.mergeMainIntoPr();
+		fixture.squashMerge();
+		fixture.onRelease((git) => {
+			fixture.writeLib(fixture.lines(PR_ONLY));
+			git('commit', '-qam', 'Backport the PR-only change');
+		});
+		const run = fixture.runJob();
+		assert.notStrictEqual(run.outputs.no_op, 'true', run.log);
+		assert.strictEqual(fixture.releaseFile(), fixture.lines({ ...FIRST_FIX, ...PR_ONLY }), run.log);
+	});
+
 	it('holds a lone fallback merge commit even when the release branch has that commit', function () {
 		// The PR head reached main directly, so the API's merge SHA is just its last commit. The
 		// release has that commit but not the one before it; only a human can tell it is incomplete.
@@ -152,20 +182,20 @@ describe('cherry-pick-patch.yml', function () {
 		assert.match(run.stickies.at(-1), /held for review/);
 	});
 
-	describe('a PR whose merge of main resolved content of its own', function () {
-		const RESOLVED = { 5: 'resolved' };
+	describe('a PR whose merge of main added content of its own', function () {
+		const IN_MERGE = { 12: 'added in the merge' };
 
 		beforeEach(function () {
 			fixture.prCommit(FIRST_FIX, 'First fix');
-			fixture.mainCommit({ 5: 'main edit' }, 'Main edit');
-			fixture.mergeMainIntoPr(RESOLVED);
+			fixture.mainCommit({ 30: 'main edit' }, 'Main edit');
+			fixture.mergeMainIntoPr(IN_MERGE);
 			fixture.squashMerge();
 		});
 
-		it('is a no-op when its whole net change, resolution included, is on the release branch', function () {
+		it('is a no-op when its commits and its merge content are both on the release branch', function () {
 			fixture.onRelease((git) => {
-				fixture.writeLib(fixture.lines(RESOLVED));
-				git('commit', '-qam', 'Backport the resolved change');
+				fixture.writeLib(fixture.lines({ ...FIRST_FIX, ...IN_MERGE }));
+				git('commit', '-qam', 'Backport the whole change');
 			});
 			const run = fixture.runJob();
 			assert.strictEqual(run.outputs.no_op, 'true', run.log);
@@ -186,8 +216,17 @@ describe('change-landed.sh', function () {
 	let dir;
 	let env;
 	const git = (...args) => execFileSync('git', args, { cwd: dir, env, encoding: 'utf8', timeout: DEADLINE }).trim();
-	const landed = (target, base, head) =>
-		spawnSync('bash', [changeLanded, target, base, head], { cwd: dir, env, encoding: 'utf8', timeout: DEADLINE });
+	const landed = (target, base, head, commits = [head]) =>
+		spawnSync('bash', [changeLanded, target, base, head, ...commits], {
+			cwd: dir,
+			env,
+			encoding: 'utf8',
+			timeout: DEADLINE,
+		});
+
+	before(function () {
+		if (!GIT_HAS_TREE_MERGE) this.skip();
+	});
 
 	beforeEach(function () {
 		dir = mkdtempSync(join(tmpdir(), 'change-landed-'));
@@ -242,6 +281,19 @@ describe('change-landed.sh', function () {
 			assert.strictEqual(withChange.status, 0, withChange.stdout + withChange.stderr);
 		});
 	}
+
+	it('does not take an empty net change as proof that its commits landed', function () {
+		const base = git('rev-parse', 'HEAD');
+		changes['a new file']();
+		git('commit', '-qm', 'New file');
+		const commit = git('rev-parse', 'HEAD');
+		git('checkout', '-qb', 'target', base);
+		const without = landed('target', commit, commit, [commit]);
+		assert.strictEqual(without.status, 1, without.stdout + without.stderr);
+		git('cherry-pick', commit);
+		const withCommit = landed('target', commit, commit, [commit]);
+		assert.strictEqual(withCommit.status, 0, withCommit.stdout + withCommit.stderr);
+	});
 
 	it('reports a check that cannot run with a warning and exit 2', function () {
 		const result = landed('refs/heads/no-such-branch', 'HEAD', 'HEAD');
@@ -363,12 +415,13 @@ if (command === 'api' && /^repos\\/[^/]+\\/[^/]+\\/pulls\\/\\d+$/.test(sub) && a
 			mainState = { ...mainState, ...overrides };
 			commitLib(mainState, message);
 		},
-		mergeMainIntoPr(resolution) {
-			featureState = { ...mainState, ...resolution };
+		// Records the merge with `extra` edited in by hand, the way an author's own resolution would be.
+		mergeMainIntoPr(extra = {}) {
+			featureState = { ...featureState, ...mainState, ...extra };
 			onBranch('feature', () => {
-				spawnSync('git', ['merge', '-q', 'main'], { cwd: seed, env, timeout: DEADLINE });
+				spawnSync('git', ['merge', '-q', '--no-commit', '--no-ff', 'main'], { cwd: seed, env, timeout: DEADLINE });
 				writeLib(lines(featureState));
-				seedGit('commit', '-qam', 'Merge main, resolving the conflict by hand');
+				seedGit('commit', '-qam', 'Merge main');
 			});
 		},
 		squashMerge() {

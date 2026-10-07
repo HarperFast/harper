@@ -363,10 +363,10 @@ jobs:
 
           # ── Skip a change the release branch already has ────────────────
           #
-          # Replaying it commit by commit conflicts: each intermediate commit
-          # meets its own final content. One pick of the whole net change comes
-          # out empty instead, the test apply-picks.sh applies to each commit.
-          if [ -n "$CHANGE_HEAD" ] && "$RUNNER_TEMP/change-landed.sh" "origin/$RELEASE_BRANCH" "$CHANGE_BASE" "$CHANGE_HEAD"; then
+          # Replaying a landed change commit by commit conflicts: each
+          # intermediate commit meets its own final content.
+          # shellcheck disable=SC2086
+          if [ -n "$CHANGE_HEAD" ] && "$RUNNER_TEMP/change-landed.sh" "origin/$RELEASE_BRANCH" "$CHANGE_BASE" "$CHANGE_HEAD" $PICK_SHAS; then
             echo "The change from PR #$PR_NUMBER is already on $RELEASE_BRANCH — nothing to pick"
             echo "no_op=true" >> "$GITHUB_OUTPUT"
             exit 0

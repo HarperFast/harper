@@ -14,7 +14,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 - [The lock file must pass `npm ci` under npm 10 and npm 11 (`workflows/lockfile-npm-compat.yml`)](.github/DESIGN.md#the-lock-file-must-pass-npm-ci-under-npm-10-and-npm-11-workflowslockfile-npm-compatyml) — npm 11 writes the lock but accepts some that npm 10's `npm ci` rejects; fix the conflict at its source, never by regenerating with npm 10.
 - [A release copies to Docker Hub only the image it booted (`workflows/docker-smoke.yml`, `workflows/publish-docker.yaml`)](.github/DESIGN.md#a-release-copies-to-docker-hub-only-the-image-it-booted-workflowsdocker-smokeyml-workflowspublish-dockeryaml) — The release builds once into a runner-local registry, smoke-tests that digest and copies the same index to Docker Hub; never a rebuild.
-- [A release cherry-pick skips a change its branch already has (`workflows/cherry-pick-patch.yml`, `scripts/change-landed.sh`)](.github/DESIGN.md#a-release-cherry-pick-skips-a-change-its-branch-already-has-workflowscherry-pick-patchyml-scriptschange-landedsh) — skip only when one pick of the PR's whole net change would be empty; replaying a landed PR commit by commit conflicts instead.
+- [A release cherry-pick skips a change its branch already has (`workflows/cherry-pick-patch.yml`, `scripts/change-landed.sh`)](.github/DESIGN.md#a-release-cherry-pick-skips-a-change-its-branch-already-has-workflowscherry-pick-patchyml-scriptschange-landedsh) — skip only when the PR's net change and its replayed commits both merge into the release without changing it; replaying a landed PR commit by commit conflicts instead.
 
 ## resources/ — records, transactions, tables, blobs, audit
 
