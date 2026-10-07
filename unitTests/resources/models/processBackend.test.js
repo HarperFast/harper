@@ -496,7 +496,7 @@ describe('models.registerProcessBackend: one live backend instance per key, serv
 	it('hands over one live instance at a time: the released owner finishes its running call, re-routes the rest and disposes before the successor starts', async function () {
 		const [owner, successor] = await startWorkers(2);
 		const [ownerId, successorId] = [owner.threadId, successor.threadId];
-		await registerInOrder([owner, successor], 'handover');
+		await registerInOrder([owner, successor], 'handover', undefined, { dispose: 'hold' });
 		await waitForStatus(successor, 'handover', (status) => status?.state === 'ready', 'handover: not ready');
 		// One call running at the owner and one queued behind it.
 		const running = command(successor, { command: 'embed', id: 'handover', texts: ['gate:handover'] });
@@ -523,7 +523,7 @@ describe('models.registerProcessBackend: one live backend instance per key, serv
 		const stale = await rawResponse(1e6 + 1);
 		assert.strictEqual(stale.from, ownerId);
 		assert.strictEqual(stale.message.ok, false);
-		assert.strictEqual(stale.message.error.reason, 'moved');
+		assert.strictEqual(stale.message.refused, 'moved');
 		assert.deepStrictEqual(
 			factoryRuns('handover').map((event) => event.threadId),
 			[ownerId]
@@ -531,6 +531,15 @@ describe('models.registerProcessBackend: one live backend instance per key, serv
 
 		await command(owner, { command: 'release', text: 'gate:handover' });
 		assertServedBy(await running, ['gate:handover'], ownerId);
+		// The running call is done, so the owner disposes; until its dispose() settles nothing is elected.
+		await waitFor(() => events.some((event) => event.event === 'dispose' && event.id === 'handover'));
+		assert.strictEqual((await statusOf(successor, 'handover')).draining, ownerId);
+		assert.deepStrictEqual(
+			factoryRuns('handover').map((event) => event.threadId),
+			[ownerId],
+			'no successor starts while the released instance is still being disposed'
+		);
+		await command(owner, { command: 'release', text: 'dispose:handover' });
 		assertServedBy(await queued, ['handover:queued'], successorId);
 		const drained = await waitFor(() =>
 			events.find((event) => event.event === 'drained' && event.threadId === ownerId)
@@ -829,7 +838,7 @@ describe('models.registerProcessBackend: one live backend instance per key, serv
 		});
 		const answer = await rawResponse(1e6 + 2);
 		assert.strictEqual(answer.message.ok, false);
-		assert.strictEqual(answer.message.error.reason, 'not-owner');
+		assert.strictEqual(answer.message.refused, 'not-owner');
 		assert.strictEqual(backendCalls('domain:intruder').length, 0);
 	});
 
@@ -844,7 +853,7 @@ describe('models.registerProcessBackend: one live backend instance per key, serv
 		const answer = await rawResponse(1e6 + 3);
 		assert.strictEqual(answer.from, bystander.threadId);
 		assert.strictEqual(answer.message.ok, false);
-		assert.strictEqual(answer.message.error.reason, 'moved');
+		assert.strictEqual(answer.message.refused, 'moved');
 		assert.deepStrictEqual(
 			factoryRuns('elected').map((event) => event.threadId),
 			[owner.threadId]
@@ -962,6 +971,310 @@ describe('models.registerProcessBackend: one live backend instance per key, serv
 		assert.strictEqual((await statusOf(second, 'divergent')).maxRestarts, 1);
 		assert.strictEqual((await statusOf(first, 'divergent')).maxRestarts, 1);
 	});
+
+	it('never sends a call again once its backend has run, even if the backend throws an error shaped like a move', async function () {
+		const [owner, other] = await startWorkers(2);
+		const options = { ownerWaitMs: 1000 };
+		await registerInOrder([owner], 'moved-shaped', options);
+		// The owner calls its own backend, so it receives main's next push while the call settles.
+		const call = command(owner, { command: 'embed', id: 'moved-shaped', texts: ['moved-shaped:a'] });
+		await waitFor(() => backendCalls('moved-shaped:').length === 1);
+		// A newer state: a proxy that took the backend's error for the protocol's move would send the call again.
+		await registerInOrder([other], 'moved-shaped', options);
+
+		const reply = await call;
+		assert.strictEqual(backendCalls('moved-shaped:').length, 1, 'the backend ran the call once');
+		assert.strictEqual(reply.ok, false);
+		assert.strictEqual(reply.error.name, 'ModelBackendUnavailableError');
+		assert.strictEqual(
+			reply.error.message,
+			'backend ran, then threw moved-shaped:a',
+			"the caller gets the backend's error"
+		);
+	});
+
+	it("follows a move the owner's admission path sends at most four times, then fails the call by name", async function () {
+		const [owner, bystander, caller] = await startWorkers(3);
+		await registerInOrder([owner, bystander, caller], 'bounded-moves');
+		// A worker shutting down stays a caller and owns nothing: it refuses every request as moved.
+		bystander.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: manageThreads.restartNumber });
+		await waitFor(() => events.some((event) => event.event === 'drained' && event.threadId === bystander.threadId));
+		// This thread is main, so its pushes are main's: each names the bystander as owner, each newer than the last.
+		const push = (version) =>
+			manageThreads.sendToThread(caller.threadId, {
+				type: STATE,
+				key: keyOf('bounded-moves'),
+				version,
+				epoch: version,
+				state: 'ready',
+				owner: bystander.threadId,
+				restarts: 0,
+				maxRestarts: 1,
+				generation: 1,
+			});
+		push(1e6);
+		await waitForStatus(caller, 'bounded-moves', (status) => status?.owner === bystander.threadId, 'push not seen');
+		const call = command(caller, { command: 'embed', id: 'bounded-moves', texts: ['bounded-moves:a'] });
+		for (let move = 1; move <= 4; move++) {
+			// Each move leaves the call waiting for a state newer than the one it was routed with.
+			await waitFor(
+				async () => (await command(caller, { command: 'callers', id: 'bounded-moves' })).load.waiting === 1
+			);
+			push(1e6 + move);
+		}
+
+		const reply = await call;
+		assert.strictEqual(reply.ok, false);
+		assert.strictEqual(reply.error.name, 'ModelBackendUnavailableError');
+		assert.strictEqual(reply.error.reason, 'moved');
+		assert.strictEqual(
+			events.filter((event) => event.event === 'refused' && event.threadId === caller.threadId).length,
+			5,
+			'one send and four re-sends, each refused unstarted'
+		);
+		assert.strictEqual(backendCalls('bounded-moves:').length, 0);
+	});
+
+	it("holds the election while a released instance's dispose() keeps failing, and fails the key until the next generation", async function () {
+		const generation = manageThreads.restartNumber;
+		const [owner, successor] = await startWorkers(2);
+		const ownerId = owner.threadId;
+		await registerInOrder([owner, successor], 'dispose-fails', undefined, { dispose: 'reject' });
+		await waitForStatus(successor, 'dispose-fails', (status) => status?.state === 'ready', 'dispose-fails: not ready');
+		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: generation });
+
+		const failed = await waitForStatus(
+			successor,
+			'dispose-fails',
+			(status) => status?.state === 'failed',
+			'dispose-fails: a failed disposal never failed the key'
+		);
+		assert.strictEqual(failed.reason, 'dispose-failed');
+		assert.strictEqual(failed.draining, ownerId, 'the thread that may still hold the instance is named');
+		assert.strictEqual(failed.owner, undefined);
+		assert.match(failed.error.message, /could not free the model of dispose-fails/);
+		assert.strictEqual(
+			events.filter((event) => event.event === 'dispose' && event.id === 'dispose-fails').length,
+			3,
+			'dispose() was tried three times'
+		);
+		const refused = await command(successor, { command: 'embed', id: 'dispose-fails', texts: ['dispose-fails:a'] });
+		assert.strictEqual(refused.error.reason, 'failed');
+
+		// A new generation clears the failure, but nothing is elected while the old instance's thread lives.
+		const newer = await startWorkerInGeneration(generation + 1);
+		await command(newer, { command: 'register', id: 'dispose-fails' });
+		await waitForStatus(
+			newer,
+			'dispose-fails',
+			(status) => status?.generation === generation + 1 && status.draining === ownerId,
+			'dispose-fails: the newer claim never reached main'
+		);
+		// Asserting a non-event: give an election time to (not) happen.
+		await delay(200);
+		assert.deepStrictEqual(
+			factoryRuns('dispose-fails').map((event) => event.threadId),
+			[ownerId]
+		);
+		// The thread's exit is what proves the instance gone.
+		owner.wasShutdown = true;
+		await owner.terminate();
+		const elected = await waitForStatus(
+			newer,
+			'dispose-fails',
+			(status) => status?.state === 'ready',
+			'dispose-fails: no owner after the thread exited'
+		);
+		assert.strictEqual(elected.owner, newer.threadId);
+		assert.deepStrictEqual(
+			factoryRuns('dispose-fails').map((event) => event.threadId),
+			[ownerId, newer.threadId]
+		);
+	});
+
+	it('tries a rejecting dispose() again and hands over once it succeeds', async function () {
+		const [owner, successor] = await startWorkers(2);
+		const [ownerId, successorId] = [owner.threadId, successor.threadId];
+		await registerInOrder([owner, successor], 'dispose-retry', undefined, { dispose: 'reject-once' });
+		await waitForStatus(successor, 'dispose-retry', (status) => status?.state === 'ready', 'dispose-retry: not ready');
+		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: manageThreads.restartNumber });
+
+		const handedOver = await waitForStatus(
+			successor,
+			'dispose-retry',
+			(status) => status?.state === 'ready' && status.owner === successorId,
+			'dispose-retry: the successor never became the ready owner'
+		);
+		assert.strictEqual(handedOver.restarts, 0);
+		assert.deepStrictEqual(
+			events
+				.filter((event) => (event.event === 'factory' || event.event === 'dispose') && event.id === 'dispose-retry')
+				.map((event) => `${event.event}@${event.threadId}`),
+			[`factory@${ownerId}`, `dispose@${ownerId}`, `dispose@${ownerId}`, `factory@${successorId}`]
+		);
+	});
+
+	it("never aborts the factory's signal once its backend is ready, so a handover lets a running call finish", async function () {
+		const [owner, successor] = await startWorkers(2);
+		const ownerId = owner.threadId;
+		await registerInOrder([owner, successor], 'factory-signal', undefined, { watchFactorySignal: true });
+		await waitForStatus(
+			successor,
+			'factory-signal',
+			(status) => status?.state === 'ready',
+			'factory-signal: not ready'
+		);
+		// The backend keeps the factory's signal and stops a call when it aborts.
+		const running = command(successor, { command: 'embed', id: 'factory-signal', texts: ['gate:factory-signal'] });
+		await waitingOn('gate:factory-signal');
+		owner.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: manageThreads.restartNumber });
+		// The owner has released the backend once its run drains (or, had the signal aborted, the call has stopped).
+		await waitFor(
+			async () =>
+				events.some((event) => event.event === 'factory-signal-aborted') ||
+				(await ownerLoad(owner, 'factory-signal'))?.phase === 'draining'
+		);
+		assert.ok(
+			!events.some((event) => event.event === 'factory-signal-aborted'),
+			"the handover aborted the factory's signal, which stopped the running call"
+		);
+
+		await command(owner, { command: 'release', text: 'gate:factory-signal' });
+		assertServedBy(await running, ['gate:factory-signal'], ownerId);
+		assert.ok(!events.some((event) => event.event === 'factory-signal-aborted'));
+		await waitForStatus(
+			successor,
+			'factory-signal',
+			(status) => status?.state === 'ready' && status.owner === successor.threadId,
+			'factory-signal: no successor'
+		);
+	});
+
+	it('refuses at once, and never holds, a request that names a newer state from a thread main never admitted', async function () {
+		const [owner, caller] = await startWorkers(2);
+		const isolated = await startFixtureWorker(workers, { application: 'isolated-app' });
+		await registerInOrder([owner, caller], 'admission');
+		const seen = await ownerLoad(owner, 'admission');
+		await command(isolated, {
+			command: 'send',
+			target: owner.threadId,
+			message: rawRequest('admission', isolated.threadId, 1e6 + 5, {
+				version: seen.version + 1,
+				epoch: seen.epoch,
+				args: [['admission:intruder']],
+			}),
+		});
+
+		const answer = await rawResponse(1e6 + 5);
+		assert.strictEqual(answer.from, owner.threadId);
+		assert.strictEqual(answer.message.ok, false);
+		assert.strictEqual(answer.message.refused, 'unconfirmed');
+		assert.strictEqual((await ownerLoad(owner, 'admission')).parked, 0, 'the request was never held');
+		assert.strictEqual(backendCalls('admission:intruder').length, 0);
+	});
+
+	it('sends a call again shortly when the owner it reached has not yet seen the state that admitted its caller', async function () {
+		const [owner, bystander, caller] = await startWorkers(3);
+		await registerInOrder([owner, bystander, caller], 'unconfirmed');
+		// This thread is main: a push naming the bystander as owner reaches the caller before the bystander.
+		const push = (target, extra) =>
+			manageThreads.sendToThread(target.threadId, {
+				type: STATE,
+				key: keyOf('unconfirmed'),
+				version: 1e6,
+				epoch: 1e6,
+				state: 'ready',
+				owner: bystander.threadId,
+				restarts: 0,
+				maxRestarts: 1,
+				generation: 1,
+				...extra,
+			});
+		push(caller);
+		await waitForStatus(caller, 'unconfirmed', (status) => status?.owner === bystander.threadId, 'push not seen');
+		const call = command(caller, { command: 'embed', id: 'unconfirmed', texts: ['unconfirmed:a'] });
+		const refusal = await waitFor(
+			() =>
+				events.find(
+					(event) => event.event === 'refused' && event.threadId === caller.threadId && event.refused === 'unconfirmed'
+				),
+			10000
+		);
+		assert.strictEqual(refusal.from, bystander.threadId);
+		// The same push reaches the bystander, with the callers main admitted: the caller's next try is served.
+		push(bystander, { callers: [owner.threadId, bystander.threadId, caller.threadId] });
+		assertServedBy(await call, ['unconfirmed:a'], bystander.threadId);
+	});
+
+	it("bills a split embed's completed parts on its failed attempt's row only, when a later part fails and a fallback serves", async function () {
+		const [owner, caller] = await startWorkers(2);
+		await registerInOrder([owner, caller], 'partial', { maxBatchInputs: 2 }, { failOn: 'partial:3' });
+		await command(caller, { command: 'fallback', id: 'partial', fallbackId: 'partial-fallback' });
+		const texts = ['partial:0', 'partial:1', 'partial:2', 'partial:3'];
+		assertServedBy(await command(caller, { command: 'embed', id: 'partial', texts }), texts, caller.threadId);
+
+		assert.deepStrictEqual(
+			backendCalls('partial:')
+				.filter((event) => event.id === 'partial')
+				.map((event) => event.texts.length),
+			[2, 2],
+			'the second part failed after the first completed'
+		);
+		const rows = events
+			.filter(
+				(event) => event.event === 'row' && event.threadId === caller.threadId && event.record.model === 'partial'
+			)
+			.map((event) => [event.record.backend, event.record.success, event.record.embedding_tokens]);
+		assert.deepStrictEqual(rows, [
+			['test:partial', false, 6],
+			['test:partial-fallback', true, 12],
+		]);
+		const tokens = events
+			.filter(
+				(event) =>
+					event.event === 'metric' && event.threadId === caller.threadId && event.metric === 'model-embed-tokens'
+			)
+			.map((event) => [event.path, event.value]);
+		assert.deepStrictEqual(tokens, [
+			['test:partial', 6],
+			['test:partial-fallback', 12],
+		]);
+	});
+
+	it("takes a claimant's generation from the worker main started, never from its claim", async function () {
+		const [owner, claimant] = await startWorkers(2);
+		const options = { maxRestarts: 0 };
+		await command(owner, { command: 'register', id: 'claimed-generation', failStart: true, options });
+		await waitFor(() => factoryRuns('claimed-generation').length === 1);
+		await command(claimant, { command: 'register', id: 'claimed-generation', options });
+		await command(owner, { command: 'release', text: 'start:claimed-generation' });
+		const failed = await waitForStatus(
+			claimant,
+			'claimed-generation',
+			(status) => status?.state === 'failed',
+			'claimed-generation: never failed'
+		);
+
+		// A claim naming a later generation than its worker was started in, as a deploy's replacement would.
+		await command(claimant, {
+			command: 'send',
+			target: 0,
+			message: {
+				type: CLAIM,
+				key: keyOf('claimed-generation'),
+				origin: claimant.threadId,
+				generation: failed.generation + 1,
+				eligible: true,
+				options: { concurrency: 1, maxPending: 256, maxRestarts: 1, ownerWaitMs: 30000 },
+			},
+		});
+		// Asserting a non-event: give main time to (not) clear the failure and elect.
+		await delay(200);
+		const kept = await statusOf(claimant, 'claimed-generation');
+		assert.strictEqual(kept.state, 'failed');
+		assert.strictEqual(kept.generation, failed.generation);
+		assert.strictEqual(factoryRuns('claimed-generation').length, 1);
+	});
 });
 
 describe('models.registerProcessBackend on the main thread', function () {
@@ -1078,6 +1391,26 @@ describe('models.registerProcessBackend on the main thread', function () {
 		});
 		assert.strictEqual(status.reason, 'start-failed');
 		assert.strictEqual(status.error.name, 'ModelBackendRegistrationError');
+	});
+
+	it('refuses an option that is a function instead of dropping it, since it cannot reach the owner', async function () {
+		setMainIsWorker(true);
+		let calls = 0;
+		registerProcessBackend('embedding', 'main-options', () =>
+			models.defineBackend({
+				name: 'test:options',
+				embed: async (input) => {
+					calls++;
+					return { status: 'completed', output: [].concat(input).map(() => Float32Array.of(1)) };
+				},
+			})
+		);
+		await assert.rejects(models.embed('a', { model: 'main-options', onProgress: () => {} }), (error) => {
+			assert.match(error.message, /option 'onProgress' is a function/);
+			return true;
+		});
+		assert.strictEqual(calls, 0);
+		assert.strictEqual((await models.embed('a', { model: 'main-options' })).length, 1);
 	});
 
 	it('rejects invalid registrations up front', function () {

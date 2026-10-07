@@ -3,8 +3,10 @@
 // Worker for processBackend.test.js, started through manageThreads' startWorker so it joins the same
 // port mesh production workers use. It registers backends (process-wide or per thread) and calls them
 // through the models facade on command, reporting every factory run, backend call, disposal, analytics
-// row and metric to the test, tagged with the thread it ran on. On SHUTDOWN it runs Harper's shutdown
-// drains the way threadServer does, so the test sees what a real worker would wait for before exiting.
+// row, metric and refusal to the test, tagged with the thread it ran on. Its backends can hold or reject
+// their dispose(), fail on a chosen input, and keep their factory's signal. On SHUTDOWN it runs Harper's
+// shutdown drains the way threadServer does, so the test sees what a real worker would wait for before
+// exiting.
 const { parentPort, threadId } = require('node:worker_threads');
 const { getEventListeners } = require('node:events');
 // Prime Harper's module graph in the order the other models tests do (see Models.test.js).
@@ -42,8 +44,11 @@ function fingerprint(text) {
 	return hash;
 }
 
-/** Held until the test releases `text`, or until the call's signal aborts. */
-function hold(text, signal) {
+/**
+ * Held until the test releases `text`, or until the call's signal aborts. A backend that keeps its
+ * factory's signal (`factorySignal`) stops the call when that signal aborts, too.
+ */
+function hold(text, signal, factorySignal) {
 	return new Promise((resolve, reject) => {
 		report({ event: 'waiting', text });
 		gates.set(text, resolve);
@@ -56,10 +61,20 @@ function hold(text, signal) {
 			},
 			{ once: true }
 		);
+		factorySignal?.addEventListener(
+			'abort',
+			() => {
+				gates.delete(text);
+				report({ event: 'factory-signal-aborted', text });
+				reject(factorySignal.reason);
+			},
+			{ once: true }
+		);
 	});
 }
 
 function embeddingBackend(id, spec = {}) {
+	let disposals = 0;
 	return {
 		name: `test:${id}`,
 		capabilities() {
@@ -74,7 +89,16 @@ function embeddingBackend(id, spec = {}) {
 			report({ event: 'embed', id, texts, opts: rest, accounting });
 			for (const text of texts) {
 				// Held texts keep this call running, so later requests queue behind it.
-				if (text.startsWith('gate:') || text.startsWith('until-aborted:')) await hold(text, signal);
+				if (text.startsWith('gate:') || text.startsWith('until-aborted:')) await hold(text, signal, spec.factorySignal);
+				// An error carrying the name and reason the handover protocol uses, thrown after the call ran.
+				if (text.startsWith('moved-shaped:'))
+					throw Object.assign(new Error(`backend ran, then threw ${text}`), {
+						name: 'ModelBackendUnavailableError',
+						reason: 'moved',
+						statusCode: 503,
+					});
+				if (text === spec.failOn)
+					throw Object.assign(new Error(`provider refused ${text}`), { name: 'ProviderError', statusCode: 503 });
 				if (text.startsWith('error:')) {
 					const [, status, code] = text.split(':');
 					throw Object.assign(new Error(`provider refused ${text}`), {
@@ -90,8 +114,13 @@ function embeddingBackend(id, spec = {}) {
 				usage: spec.usage ?? { embeddingTokens: texts.length * 3 },
 			};
 		},
-		dispose() {
+		// 'hold' waits until the test releases `dispose:<id>`; 'reject' rejects every time, 'reject-once' the first time.
+		async dispose() {
+			disposals++;
 			report({ event: 'dispose', id });
+			if (spec.dispose === 'hold') await new Promise((resolve) => gates.set(`dispose:${id}`, resolve));
+			if (spec.dispose === 'reject' || (spec.dispose === 'reject-once' && disposals === 1))
+				throw new Error(`could not free the model of ${id}`);
 		},
 	};
 }
@@ -136,13 +165,31 @@ const errorReply = (error) => ({
 });
 
 const commands = {
-	register({ id, kind = 'embedding', scope, options, failStart, holdStart, capabilities, usage }) {
-		const build = () =>
+	register({
+		id,
+		kind = 'embedding',
+		scope,
+		options,
+		failStart,
+		holdStart,
+		capabilities,
+		usage,
+		failOn,
+		dispose,
+		watchFactorySignal,
+	}) {
+		const build = (factorySignal) =>
 			kind === 'generative'
 				? generativeBackend(id)
 				: kind === 'decision'
 					? decisionBackend(id)
-					: embeddingBackend(id, { capabilities, usage });
+					: embeddingBackend(id, {
+							capabilities,
+							usage,
+							failOn,
+							dispose,
+							factorySignal: watchFactorySignal ? factorySignal : undefined,
+						});
 		if (scope === 'thread') {
 			report({ event: 'factory', id });
 			models.registerBackend(kind, id, build());
@@ -157,7 +204,7 @@ const commands = {
 				if (failStart || holdStart) await new Promise((resolve) => gates.set(`start:${id}`, resolve));
 				report({ event: 'factory-settled', id, aborted: signal?.aborted === true });
 				if (failStart) throw new Error('model file is missing');
-				return build();
+				return build(signal);
 			},
 			options
 		);
@@ -230,9 +277,11 @@ const commands = {
 	},
 };
 
-// Responses to hand-built requests (their ids start at 1e6), reported with the port they came over.
+// Responses to hand-built requests (their ids start at 1e6), reported with the port they came over, and
+// every refusal an owner sends this thread's proxy.
 onMessageByType('models-process-backend-response', (message, port) => {
 	if (message.request >= 1e6) report({ event: 'raw-response', from: port?.threadId, message });
+	else if (message.refused !== undefined) report({ event: 'refused', from: port?.threadId, refused: message.refused });
 });
 
 // What threadServer does on SHUTDOWN before it closes servers and exits.
