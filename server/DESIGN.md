@@ -75,13 +75,14 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 
 ### Threads
 
-| File                       | Purpose                                                                                                                                                                           |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `threads/socketRouter.ts`  | Starts the HTTP worker pool (`startHTTPThreads`) and isolated applications' dedicated workers (`reconcileIsolatedWorkers`); workers bind their own ports, so no socket is routed. |
-| `threads/manageThreads.js` | Thread pool lifecycle.                                                                                                                                                            |
-| `threads/threadServer.js`  | Worker entry point — loads components (`startServers`) and binds each registered server itself (`listenOnPorts`, `reusePort` where the OS has it).                                |
-| `threads/itc.js`           | Inter-thread comms primitives.                                                                                                                                                    |
-| `transactionLogCooling.ts` | Main-thread timer that cools transaction-log mmaps.                                                                                                                               |
+| File                       | Purpose                                                                                                                                                                                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `threads/socketRouter.ts`  | Starts the HTTP worker pool (`startHTTPThreads`), dedicated pools such as `replication` (`admittedWorkerPools`) and isolated applications' dedicated workers (`reconcileIsolatedWorkers`); workers bind their own ports, so no socket is routed. |
+| `threads/workerPools.ts`   | Dedicated worker pools: which pools run, which worker type owns a listener (`claimListener`), and whether this thread binds it (`shouldBindListenerHere`).                                                                                       |
+| `threads/manageThreads.js` | Thread pool lifecycle.                                                                                                                                                                                                                           |
+| `threads/threadServer.js`  | Worker entry point — loads components (`startServers`) and binds each registered server itself (`listenOnPorts`, `reusePort` where the OS has it).                                                                                               |
+| `threads/itc.js`           | Inter-thread comms primitives.                                                                                                                                                                                                                   |
+| `transactionLogCooling.ts` | Main-thread timer that cools transaction-log mmaps.                                                                                                                                                                                              |
 
 Process-wide shutdown begins by calling `beginProcessShutdown()` in `threads/manageThreads.js`.
 Once set, this terminal state prevents every worker replacement path and makes new `startWorker()`
@@ -735,6 +736,33 @@ This is the transport's fallback, not the error contract. SSE and NDJSON GETs ho
 ## A coarse uWS 413 drains a closing upload before ending the response
 
 uWS force-closes a completed `Connection: close` response while an upload is still arriving, which can lose its status to EPIPE. `uwsServer.ts` flushes a non-empty coarse-limit 413 chunk before discarding bytes until body end or a one-second deadline; that absolute resource bound guarantees early status, not complete framing for a sender that ignores it. Destroying a paused Readable does not clear its queue, so teardown removes data listeners and reads out queued bytes in bounded chunks before retaining the response. Native abort disarms the finisher independently of handler cancellation. "uWS oversized TCP uploads" in `unitTests/server/serverHelpers/uwsServer.test.js` pins these paths and unchanged immediate keep-alive rejection. Other rejection sites, including downstream responses from `contentTypes.ts`'s default 10 MB limit, still end immediately and remain outside this coarse-cap correction.
+
+## Dedicated worker pools own their listeners and load no applications (`server/threads/workerPools.ts`)
+
+A dedicated pool (today only `replication`, sized by `replication.threads`) is a set of workers of
+a type other than `http`, started by `startHTTPThreads` with indices past the HTTP pool, so worker 0
+and last-worker duties never land on one. The invariants:
+
+- **No application code.** `shouldLoadApplicationHere` returns false on a pool worker; trusted
+  built-ins (including `HARPER_BUILTIN_COMPONENTS`) still load, and databases open from storage.
+  Anything an application installs per thread (for example `Table.setResidencyById`, or a
+  `setComputedAttribute` resolver) is absent there; `Table.unresolvedComputedIndexes()` names the
+  indexes such a thread cannot maintain, so a consumer can refuse rather than index wrongly, and a pool
+  worker that resolves one anyway throws instead of indexing `undefined`.
+- **Exclusive listeners.** A component passes `threadType` in its `server.http`/`server.ws`/
+  `server.socket` options to claim a port (and its UDS mirrors). `listenOnPorts` then binds it only on
+  that pool's workers, and a pool worker binds nothing else, so it never receives HTTP traffic.
+  Without `SO_REUSEPORT` only pool member 0 binds, and it retries `EADDRINUSE` for up to a minute
+  because its restarted predecessor keeps the port through its shutdown drain. A pool worker then fails
+  startup on `EADDRINUSE` rather than reporting ready with no listener; a drain longer than that minute
+  costs auto-restarts of the replacement until the port frees.
+- **Active means admitted, not live.** `activeWorkerPools()` is fixed at startup and passed to every
+  worker in `workerData.workerPools`, so an owned port is never handed back to HTTP workers while the
+  pool restarts. Changing the pool size needs a full restart.
+- **Restarts.** Deploys and drops restart `http` workers only; `restart_service` with no `scope` (an
+  operator restart) restarts `http` and `replication` together (`bin/restart.ts`). Pool restarts
+  overlap like HTTP ones.
+- With `threads.count: 0` there is no pool: the setting is logged and ignored.
 
 ## An unread multipart upload is discarded once its response has finished (`server/serverHelpers/multipartParser.ts`)
 

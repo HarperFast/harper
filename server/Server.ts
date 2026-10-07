@@ -65,6 +65,8 @@ export interface ServerOptions {
 	securePort?: number;
 	mtls?: boolean;
 	usageType?: string;
+	/** Worker type that exclusively binds these ports when its dedicated pool runs (e.g. 'replication') */
+	threadType?: string;
 	/** @deprecated Use `before` or `after` for explicit ordering instead */
 	runFirst?: boolean;
 	/** Name for this middleware entry, used by `before`/`after` in other entries. Defaults to the registering component's name. */

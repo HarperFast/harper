@@ -1177,6 +1177,175 @@ describe('Audit log', () => {
 
 		assert(true, 'Should complete successfully after adding and removing logs');
 	});
+	describe('re-admitting an excluded log with addLog (harper-pro#989)', () => {
+		// Writes the way the replication apply loop does, into `logName`'s own log under the given keys.
+		async function writeToLog(logName, records) {
+			const nodeId = AuditedTable.auditStore.ensureLogExists(logName);
+			for (const [id, time] of records) {
+				const context = { source: {}, sourceApply: true, timestamp: time };
+				await transaction(context, async () => {
+					const resource = await AuditedTable.getResource(id, context);
+					return resource._writeUpdate(id, { name: id }, true, { isNotification: true, nodeId, version: time });
+				});
+			}
+		}
+		// several records in one transaction: one log key, with endTxn only on the last entry
+		async function writeTransactionToLog(logName, ids, time) {
+			const nodeId = AuditedTable.auditStore.ensureLogExists(logName);
+			const context = { source: {}, sourceApply: true, timestamp: time };
+			await transaction(context, async () => {
+				for (const id of ids) {
+					const resource = await AuditedTable.getResource(id, context);
+					resource._writeUpdate(id, { name: id }, true, { isNotification: true, nodeId, version: time });
+				}
+			});
+		}
+		const idsWith = (prefix, entries) =>
+			entries.map((entry) => entry.recordId).filter((id) => String(id).startsWith(prefix));
+
+		it('starts it at its startByLog position, even when the caller already edited excludeLogs', async function () {
+			if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+			const peerName = 'addlog-peer-' + Date.now();
+			const base = Date.now() - 10000;
+			await writeToLog(peerName, [
+				['addlog-old', base],
+				['addlog-new', base + 5000],
+			]);
+			const excludeLogs = [peerName];
+			const startByLog = new Map([['local', Date.now()]]);
+			const iterable = AuditedTable.auditStore.getRange({
+				start: Date.now(),
+				excludeLogs,
+				startByLog,
+				snapshot: false,
+			});
+			assert.deepEqual(idsWith('addlog-', [...iterable]), []);
+			startByLog.set(peerName, base + 1);
+			excludeLogs.splice(0); // the replication caller removes the exclusion itself before addLog
+			iterable.addLog(peerName);
+			assert.deepEqual(idsWith('addlog-', [...iterable]), ['addlog-new']);
+		});
+
+		it('admits it while another log still has unread entries', async function () {
+			if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+			const stamp = Date.now();
+			const peerName = 'admit-peer-' + stamp;
+			const busyName = 'admit-busy-' + stamp;
+			const base = stamp - 10000;
+			await writeToLog(peerName, [['admit-peer-row', base]]);
+			await writeToLog(busyName, [
+				['admit-busy-0', base + 1000],
+				['admit-busy-1', base + 2000],
+				['admit-busy-2', base + 3000],
+			]);
+			const startByLog = new Map([
+				['local', stamp],
+				[busyName, base],
+			]);
+			const iterable = AuditedTable.auditStore.getRange({
+				start: stamp,
+				excludeLogs: [peerName],
+				startByLog,
+				snapshot: false,
+			});
+			const iterator = iterable[Symbol.iterator]();
+			const read = [];
+			for (let result = iterator.next(); !result.done; result = iterator.next()) {
+				read.push(result.value);
+				if (result.value.recordId === 'admit-busy-0') {
+					startByLog.set(peerName, base - 1);
+					iterable.addLog(peerName);
+				}
+			}
+			assert.deepEqual(idsWith('admit-', read), ['admit-busy-0', 'admit-peer-row', 'admit-busy-1', 'admit-busy-2']);
+		});
+
+		it('admits it only once the transaction being read has ended', async function () {
+			if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+			const stamp = Date.now();
+			const peerName = 'boundary-peer-' + stamp;
+			const busyName = 'boundary-busy-' + stamp;
+			const base = stamp - 10000;
+			await writeToLog(peerName, [['boundary-peer-row', base]]);
+			await writeTransactionToLog(busyName, ['boundary-txn-a', 'boundary-txn-b'], base + 1000);
+			const startByLog = new Map([
+				['local', stamp],
+				[busyName, base],
+			]);
+			const iterable = AuditedTable.auditStore.getRange({
+				start: stamp,
+				excludeLogs: [peerName],
+				startByLog,
+				snapshot: false,
+			});
+			const iterator = iterable[Symbol.iterator]();
+			const read = [];
+			for (let result = iterator.next(); !result.done; result = iterator.next()) {
+				read.push(result.value);
+				if (result.value.recordId === 'boundary-txn-a') {
+					startByLog.set(peerName, base - 1);
+					iterable.addLog(peerName);
+				}
+			}
+			assert.deepEqual(idsWith('boundary-', read), ['boundary-txn-a', 'boundary-txn-b', 'boundary-peer-row']);
+		});
+
+		it('validates its exact start again after removeLog and addLog', async function () {
+			if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+			const peerName = 'readmit-peer-' + Date.now();
+			const base = Date.now() - 10000;
+			await writeToLog(peerName, [
+				['readmit-10', base],
+				['readmit-20', base + 1000],
+				['readmit-30', base + 2000],
+			]);
+			const startByLog = new Map([[peerName, base]]);
+			const iterable = AuditedTable.auditStore.getRange({
+				start: base,
+				exactStart: true,
+				exclusiveStart: true,
+				resumeAfterExactStart: true,
+				startByLog,
+				excludeLogs: [],
+				snapshot: false,
+			});
+			assert.deepEqual(idsWith('readmit-', [...iterable]), ['readmit-20', 'readmit-30']);
+			iterable.removeLog(peerName);
+			startByLog.set(peerName, base + 1000);
+			iterable.addLog(peerName);
+			assert.deepEqual(idsWith('readmit-', [...iterable]), ['readmit-30']);
+		});
+
+		it('validates its exact start again after an excludeLogs change drops and re-adds it', async function () {
+			if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+			const peerName = 'resync-peer-' + Date.now();
+			const base = Date.now() - 10000;
+			await writeToLog(peerName, [
+				['resync-10', base],
+				['resync-20', base + 1000],
+				['resync-30', base + 2000],
+			]);
+			const excludeLogs = [];
+			const startByLog = new Map([[peerName, base]]);
+			const iterable = AuditedTable.auditStore.getRange({
+				start: base,
+				exactStart: true,
+				exclusiveStart: true,
+				resumeAfterExactStart: true,
+				startByLog,
+				excludeLogs,
+				snapshot: false,
+			});
+			assert.deepEqual(idsWith('resync-', [...iterable]), ['resync-20', 'resync-30']);
+			excludeLogs.push(peerName);
+			iterable.addLog('resync-unrelated'); // any membership refresh drops the excluded log
+			assert.deepEqual(idsWith('resync-', [...iterable]), []);
+			excludeLogs.splice(0);
+			startByLog.set(peerName, base + 1000);
+			iterable.addLog(peerName);
+			assert.deepEqual(idsWith('resync-', [...iterable]), ['resync-30']);
+		});
+	});
 	// A corrupt audit entry must surface as a skip-eligible sentinel record rather than
 	// throwing through the for-of consumer — otherwise the throw escapes in an async context
 	// and lands as uncaughtException, stalling outgoing replication for the affected (peer,

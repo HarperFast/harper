@@ -89,6 +89,56 @@ describe('Certified subscription progress', function () {
 		plain.end();
 	});
 
+	it('keeps a registration drain inside its transaction until the remaining batch is dispatched', async () => {
+		const T = tableInOwnDatabase();
+		const rows = [];
+		const ends = [];
+		const first = await T.subscribe({
+			omitCurrent: true,
+			reportProgress: true,
+			supportsTransactions: true,
+			listener: (event) => {
+				if (event.type === 'end_txn') ends.push(event);
+				else rows.push(event);
+			},
+		});
+		let second;
+		try {
+			await transaction({}, async (context) => {
+				for (let i = 0; i < 300; i++) await T.put(`bulk${i}`, { value: i }, context);
+			});
+			second = await T.subscribe({ omitCurrent: true, reportProgress: true });
+			assert.strictEqual(rows.length, 256, 'registration drains only one notify batch');
+			const key = rows[0].localTime;
+			assert.ok(!(first.progress() >= key), 'an incomplete transaction is not certified');
+			assert.strictEqual(ends.length, 0, 'the transaction is still open');
+			await waitFor(() => rows.length === 300 && ends.length === 1 && first.progress() >= key);
+			assert.strictEqual(new Set(rows.map((event) => event.id)).size, 300);
+		} finally {
+			first.end();
+			second?.end();
+		}
+	});
+
+	it('tracks a failed log read on the iterator restarted after an idle interval', async () => {
+		const T = tableInOwnDatabase();
+		const first = await T.subscribe({ omitCurrent: true });
+		const previousRange = T.auditStore.subscriptionLogRange;
+		first.end();
+		const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true });
+		const range = T.auditStore.subscriptionLogRange;
+		assert.notStrictEqual(range, previousRange);
+		range.failedLogs.add('unreadable');
+		try {
+			await T.put('after-restart', { value: 1 });
+			await waitFor(() => registry(subscription).progressStopped);
+			assert.strictEqual(subscription.progress(), undefined);
+		} finally {
+			range.failedLogs.delete('unreadable');
+			subscription.end();
+		}
+	});
+
 	it('follows a checked replay, then the watermark', async () => {
 		const T = tableInOwnDatabase();
 		const positions = [];
@@ -109,30 +159,33 @@ describe('Certified subscription progress', function () {
 		subscription.end();
 	});
 
-	it('keeps an update made to an already-scanned row while its snapshot runs', async () => {
-		const T = tableInOwnDatabase();
-		for (let i = 0; i < 150; i++) await T.put(`r${String(i).padStart(3, '0')}`, { value: i });
-		const received = [];
-		let wrote = false;
-		const subscription = await T.subscribe({
-			reportProgress: true,
-			listener: (event) => {
-				received.push(event);
-				if (!wrote && event.id === 'r050') {
-					wrote = true;
-					// r000 is already scanned; r149 is scanned later, with a newer time
-					T.put('r000', { value: 'updated' });
-					T.put('r149', { value: 'later' });
-				}
-			},
+	for (const includeSuperseded of [false, true]) {
+		it(`keeps an update to an already-scanned row (includeSuperseded: ${includeSuperseded})`, async () => {
+			const T = tableInOwnDatabase();
+			for (let i = 0; i < 150; i++) await T.put(`r${String(i).padStart(3, '0')}`, { value: i });
+			const received = [];
+			let wrote = false;
+			const subscription = await T.subscribe({
+				reportProgress: true,
+				includeSuperseded,
+				listener: (event) => {
+					received.push(event);
+					if (!wrote && event.id === 'r050') {
+						wrote = true;
+						// r000 is already scanned; r149 is scanned later, with a newer time
+						T.put('r000', { value: 'updated' });
+						T.put('r149', { value: 'later' });
+					}
+				},
+			});
+			await waitFor(() => received.some((event) => event.id === 'r000' && event.value?.value === 'updated'));
+			assert.ok(
+				received.filter((event) => event.fromScan).length >= 150,
+				'the scan events are tagged as state, not history'
+			);
+			subscription.end();
 		});
-		await waitFor(() => received.some((event) => event.id === 'r000' && event.value?.value === 'updated'));
-		assert.ok(
-			received.filter((event) => event.fromScan).length >= 150,
-			'the scan events are tagged as state, not history'
-		);
-		subscription.end();
-	});
+	}
 
 	it('ends rather than re-snapshotting at a reload marker', async () => {
 		const T = tableInOwnDatabase();

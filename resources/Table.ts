@@ -79,6 +79,7 @@ import {
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
+import { isDedicatedPoolWorker } from '../server/threads/workerPools.ts';
 import {
 	databases,
 	table,
@@ -147,6 +148,7 @@ import {
 } from './derivedIndexRegistry.ts';
 import {
 	decodeLockControlPayload,
+	receiveLockControlEntry,
 	encodeLockControlPayload,
 	getClusterLockTransport,
 	isClusterLockRequired,
@@ -1004,6 +1006,11 @@ interface TableResourceClass {
 	updatedAttributes(): void;
 	setComputedAttribute(attribute_name: any, resolver: any): void;
 	/**
+	 * Indexed computed attributes whose resolver this thread does not have: one an application assigns
+	 * with `setComputedAttribute` exists only on threads that ran the application.
+	 */
+	unresolvedComputedIndexes(): string[];
+	/**
 	 * Override the default embedder for an `@embed` attribute. Return the vector to
 	 * store at `attribute_name`. The embedder receives the write payload (the fields
 	 * present in the PUT/PATCH body), not the post-merge record, so multi-field
@@ -1427,6 +1434,7 @@ export function makeTable(options): TableResourceClass {
 	// set on the first expiring write so the unscheduled-expiration warning is evaluated at most once per table
 	let expirationWarningChecked = false;
 	let propertyResolvers: any;
+	const warnedUnresolvedComputed = new Set<string>();
 	let hasRelationships = false;
 	// Attribute names surfaced by the struct `toJSON` on the default (no-select) read: everything that is
 	// @enumerable, PLUS @computed attributes whose declared type is NOT a table type (scalars/objects/arrays
@@ -1882,7 +1890,6 @@ export function makeTable(options): TableResourceClass {
 						logger.warn?.('discarding a malformed record lock control entry from', event.nodeId, event.type);
 						return reportDroppedWrite(event, context, new Error('Malformed record lock control entry'));
 					}
-					const target = event.table ? databases[databaseName]?.[event.table] : TableResource;
 					try {
 						// The audit header's nodeId is the origin, translated on receive and preserved across
 						// relays. The payload's own names are peer-supplied and prove nothing. Rebuild the id
@@ -1898,14 +1905,16 @@ export function makeTable(options): TableResourceClass {
 							logger.warn?.('discarding a record lock control entry whose origin node could not be resolved');
 							return reportDroppedWrite(event, context, new Error('Record lock control origin could not be resolved'));
 						}
-						// The coordinator getter fails closed on an unusable node identity. That is right for
-						// an acquire and wrong here: rejecting out of this sink stalls the apply loop for
-						// every later entry rather than dropping one.
-						// `admittingCoordinator`, because `lockCoordinator` answers undefined while a transport
-						// is momentarily unregistered — and this sink runs off the replication stream, not off
-						// that transport. Dropping a peer's clean-handoff release there leaves the home holding
-						// its grant for the delegation's whole deadline.
-						target?.admittingCoordinator?.applyEntry(entry, author, event.timestamp);
+						// Never the `lockCoordinator` getter: it fails closed on an unusable node identity (a
+						// throw here would stall the apply loop) and answers undefined while a transport is
+						// momentarily unregistered.
+						receiveLockControlEntry(
+							databaseName,
+							event.table ?? TableResource.tableName,
+							entry,
+							author,
+							event.timestamp
+						);
 					} catch (error) {
 						logger.warn?.('dropping a record lock control entry: the coordinator is unavailable', error);
 						return reportDroppedWrite(event, context, error);
@@ -2024,6 +2033,103 @@ export function makeTable(options): TableResourceClass {
 						: runsApplicationCodeSingletons(); // set up by the defining application's code, so it runs where that code does
 					const subscription = hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
 					if (subscription) {
+						// defined once per subscription, so an end_txn allocates no updater
+						const updateRecordedSequenceId = (
+							event: any,
+							advancesSequence: boolean,
+							committingNodeId: number | undefined
+						) => {
+							const originCursors: [number, number][] | undefined = event.originCursors;
+							// the key for tracking the sequence ids and txn times received from this node
+							const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
+							// getSync (not get): dbisDb is the raw __dbis__ store, so on RocksDB get() returns a
+							// Promise on a block-cache miss; `Promise?.nodes` is undefined and per-peer sequence
+							// tracking would silently reset. The seq keyspace grows with peer count, so it evicts.
+							const existingSeq = (dbisDb as any).getSync(seqKey);
+							let nodeStates = existingSeq?.nodes;
+							if (!nodeStates) {
+								// if we don't have a list of nodes, we need to create one, with the main one using the existing seqId
+								nodeStates = [];
+							}
+							// if we are not the only node in the list, we are getting proxied subscriptions, and we need
+							// to track this separately
+							// track the other nodes in the list
+							if (advancesSequence) {
+								for (const nodeId of event.remoteNodeIds.slice(1)) {
+									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+									// remove any duplicates
+									nodeStates = nodeStates.filter(
+										(existingNode) => existingNode.id !== nodeId || existingNode === nodeState
+									);
+									if (!nodeState) {
+										nodeState = { id: nodeId, seqId: 0 };
+										nodeStates.push(nodeState);
+									}
+									nodeState.seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
+									if (nodeId === committingNodeId) {
+										nodeState.lastTxnTime = event.timestamp;
+									}
+								}
+							}
+							let originCursorsChanged = false;
+							if (originCursors)
+								for (const [nodeId, originLogKey] of originCursors) {
+									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									if (!(nodeState.originLogKey >= originLogKey)) {
+										nodeState.originLogKey = originLogKey;
+										originCursorsChanged = true;
+									}
+								}
+							const seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime || 0);
+							// compared with the persisted row, not the cache, which moves before this write lands
+							if (!advancesSequence && !originCursorsChanged && seqId === existingSeq?.seqId) return;
+							logger.trace?.(
+								'Received txn',
+								databaseName,
+								seqId,
+								new Date(seqId),
+								event.localTime,
+								new Date(event.localTime),
+								event.remoteNodeIds
+							);
+							const seqRecord = { seqId, nodes: nodeStates };
+							// On RocksDB `put` is aliased to `putSync` (see openRocksDatabase), so writing
+							// the cursor directly absorbs RocksDB write-stall back-pressure on the event
+							// loop — during bulk catch-up a single call has been measured blocking for
+							// 101s, which also stops this worker's keep-alives and gets the subscription
+							// torn down by the sender's receive watchdog (harper-pro#603). Staging into a
+							// transaction and committing it is the natively-async write path: the stage is
+							// an in-memory WriteBatch append and the stall is absorbed off-thread by the
+							// commit. Awaiting it keeps the same ordering as the blocking call did, and
+							// back-pressures the apply loop instead of freezing it.
+							if (isRocksDB) {
+								const seqTransaction = new RocksTransaction((dbisDb as any).store);
+								try {
+									(dbisDb as any).putSync(seqKey, seqRecord, { transaction: seqTransaction });
+								} catch (error) {
+									// Staging failed (encoding, or the store closing under a shutdown race), so
+									// nothing will commit this transaction. Abort it rather than leaking a native
+									// transaction that would pin a snapshot and hold off compaction.
+									try {
+										seqTransaction.abort();
+									} catch {}
+									throw error;
+								}
+								return commitTrackedRocksTransaction(seqTransaction, dbisDb, (primaryStore as any).rootStore).catch(
+									(error) => {
+										// A rejected commit leaves the handle open too, so release it here as well —
+										// same reason as the staging failure above, and the same shape as the
+										// eviction paths' commit failures (see evict/commitItems below).
+										try {
+											seqTransaction.abort();
+										} catch {}
+										throw error;
+									}
+								);
+							}
+							return dbisDb.put(seqKey, seqRecord);
+						};
 						const defaultStream: SourceTxnStream = { txn: undefined, lastSequenceId: undefined };
 						let taggedStreams: WeakMap<object, SourceTxnStream> | undefined;
 						// we listen for events by iterating through the async iterator provided by the subscription
@@ -2082,7 +2188,7 @@ export function makeTable(options): TableResourceClass {
 								}
 								if (event.type === 'end_txn') {
 									// Capture the in-progress transaction in a stable local: the loop variable is reset
-									// once this transaction completes (below), but the seq-id closure and the commit await
+									// once this transaction completes (below), but the commit await and the sequence record
 									// still need to reference it afterward.
 									const committingTxn = txnInProgress;
 									if (committingTxn) {
@@ -2101,91 +2207,8 @@ export function makeTable(options): TableResourceClass {
 										applied = true;
 										continue;
 									}
-									let updateRecordedSequenceId: () => MaybePromise<void>;
-									if (event.localTime && stream.lastSequenceId !== event.localTime) {
-										if (event.remoteNodeIds?.length > 0) {
-											updateRecordedSequenceId = () => {
-												// the key for tracking the sequence ids and txn times received from this node
-												const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
-												// getSync (not get): dbisDb is the raw __dbis__ store, so on RocksDB get() returns a
-												// Promise on a block-cache miss; `Promise?.nodes` is undefined and per-peer sequence
-												// tracking would silently reset. The seq keyspace grows with peer count, so it evicts.
-												const existingSeq = (dbisDb as any).getSync(seqKey);
-												let nodeStates = existingSeq?.nodes;
-												if (!nodeStates) {
-													// if we don't have a list of nodes, we need to create one, with the main one using the existing seqId
-													nodeStates = [];
-												}
-												// if we are not the only node in the list, we are getting proxied subscriptions, and we need
-												// to track this separately
-												// track the other nodes in the list
-												for (const nodeId of event.remoteNodeIds.slice(1)) {
-													let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-													// remove any duplicates
-													nodeStates = nodeStates.filter(
-														(existingNode) => existingNode.id !== nodeId || existingNode === nodeState
-													);
-													if (!nodeState) {
-														nodeState = { id: nodeId, seqId: 0 };
-														nodeStates.push(nodeState);
-													}
-													nodeState.seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
-													if (nodeId === committingTxn?.nodeId) {
-														nodeState.lastTxnTime = event.timestamp;
-													}
-												}
-												const seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
-												logger.trace?.(
-													'Received txn',
-													databaseName,
-													seqId,
-													new Date(seqId),
-													event.localTime,
-													new Date(event.localTime),
-													event.remoteNodeIds
-												);
-												const seqRecord = { seqId, nodes: nodeStates };
-												// On RocksDB `put` is aliased to `putSync` (see openRocksDatabase), so writing
-												// the cursor directly absorbs RocksDB write-stall back-pressure on the event
-												// loop — during bulk catch-up a single call has been measured blocking for
-												// 101s, which also stops this worker's keep-alives and gets the subscription
-												// torn down by the sender's receive watchdog (harper-pro#603). Staging into a
-												// transaction and committing it is the natively-async write path: the stage is
-												// an in-memory WriteBatch append and the stall is absorbed off-thread by the
-												// commit. Awaiting it keeps the same ordering as the blocking call did, and
-												// back-pressures the apply loop instead of freezing it.
-												if (isRocksDB) {
-													const seqTransaction = new RocksTransaction((dbisDb as any).store);
-													try {
-														(dbisDb as any).putSync(seqKey, seqRecord, { transaction: seqTransaction });
-													} catch (error) {
-														// Staging failed (encoding, or the store closing under a shutdown race), so
-														// nothing will commit this transaction. Abort it rather than leaking a native
-														// transaction that would pin a snapshot and hold off compaction.
-														try {
-															seqTransaction.abort();
-														} catch {}
-														throw error;
-													}
-													return commitTrackedRocksTransaction(
-														seqTransaction,
-														dbisDb,
-														(primaryStore as any).rootStore
-													).catch((error) => {
-														// A rejected commit leaves the handle open too, so release it here as well —
-														// same reason as the staging failure above, and the same shape as the
-														// eviction paths' commit failures (see evict/commitItems below).
-														try {
-															seqTransaction.abort();
-														} catch {}
-														throw error;
-													});
-												}
-												return dbisDb.put(seqKey, seqRecord);
-											};
-											stream.lastSequenceId = event.localTime;
-										}
-									}
+									const advancesSequence = !!event.localTime && stream.lastSequenceId !== event.localTime;
+									if (advancesSequence && event.remoteNodeIds?.length > 0) stream.lastSequenceId = event.localTime;
 									// Backpressure: wait for the transaction's commit to land before recording the sequence
 									// id or pulling the next event. This serializes the apply loop so bulk ingest can't
 									// outrun the commit/conflict-check window, and guarantees the sequence id never
@@ -2240,7 +2263,8 @@ export function makeTable(options): TableResourceClass {
 									}
 									// Only reached when the commit succeeded; a failure propagates to the handler's catch
 									// and the sequence id is intentionally not advanced past the unapplied write.
-									if (updateRecordedSequenceId) await updateRecordedSequenceId();
+									if (event.remoteNodeIds?.length > 0 && (advancesSequence || event.originCursors?.length > 0))
+										await updateRecordedSequenceId(event, advancesSequence, committingTxn?.nodeId);
 									continue;
 								}
 								if (txnInProgress) {
@@ -6709,7 +6733,7 @@ export function makeTable(options): TableResourceClass {
 							if (reportingProgress) return void this.close(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
 							return scheduleReloadResnapshot();
 						}
-						const event = eventFromAudit(id, auditRecord, txnLogKey, beginTxn);
+						const event = eventFromAudit(id, auditRecord, txnLogKey, beginTxn, true);
 						if (!event) return;
 						// Queued events are filtered when the queue drains through send() below; events sent
 						// directly (queue already drained) are filtered here. Each event is filtered once.
@@ -6926,13 +6950,8 @@ export function makeTable(options): TableResourceClass {
 							);
 						}
 					} else if (!request.omitCurrent) {
-						// Track the latest record-time the cursor saw — including deletion tombstones
-						// (entries with null value). Used after iteration to gate out any pre-subscribe
-						// 'committed' callbacks that fired during cursor yields (e.g., late
-						// notifications for deletes/updates done before subscribing). This is in the
-						// audit log's time domain — works on both backends, where a JS-side
-						// `getNextMonotonicTime()` would not be comparable to rocksdb's native
-						// transaction timestamps.
+						// The latest record-time the cursor saw, tombstones included; only includeSuperseded
+						// subscribers without progress reporting gate on it (audit-log time domain).
 						let cursorMaxTime = 0;
 						// Retained-message semantics: subscriber may legitimately receive a record twice
 						// if a post-subscribe write hits a key the cursor also visits. This is
@@ -6962,16 +6981,21 @@ export function makeTable(options): TableResourceClass {
 								if ((await subscription.waitForDrain()) === false) return;
 							}
 						}
-						// Filter the queue to drop in-flight pre-subscribe events the listener queued
-						// while subscription.startTime was still 0. Anything strictly newer than what
-						// the cursor saw is a real post-subscribe commit and is kept. A progress
-						// certificate keeps every buffered event instead: the filter can drop ones the scan
-						// never covered (harper#2933), and duplicate state is safe where lost history is not.
-						if (cursorMaxTime && !reportingProgress) subscription!.startTime = cursorMaxTime;
-						if (pendingRealTimeQueue && cursorMaxTime && !reportingProgress) {
-							pendingRealTimeQueue = pendingRealTimeQueue.filter(
-								(event) => (event.localTime ?? event.version) > cursorMaxTime
-							);
+						if (includeSuperseded && !reportingProgress) {
+							if (cursorMaxTime) {
+								subscription!.startTime = cursorMaxTime;
+								if (pendingRealTimeQueue) {
+									pendingRealTimeQueue = pendingRealTimeQueue.filter(
+										(event) => (event.localTime ?? event.version) > cursorMaxTime
+									);
+								}
+							}
+						} else if (!includeSuperseded && !reportingProgress && pendingRealTimeQueue) {
+							let kept = 0;
+							for (const event of pendingRealTimeQueue) {
+								if (keepCurrentRecordEvent(event)) pendingRealTimeQueue[kept++] = event;
+							}
+							pendingRealTimeQueue.length = kept;
 						}
 					}
 				} else {
@@ -7084,15 +7108,47 @@ export function makeTable(options): TableResourceClass {
 					harperLogger.error?.('Error in real-time subscription listener:', listenerError);
 				}
 			}
-			function eventFromAudit(id: Id, auditRecord: any, localTime: number, beginTxn?: boolean) {
+			// A write folded into a newer version by out-of-order resequencing is listed in the record's
+			// additionalAuditRefs until the next in-order write replaces the record.
+			function wasMergedInto(entry: any, txnLogKey: number, nodeId: number | undefined) {
+				return Boolean(
+					entry.metadataFlags & VERSION_REUSED &&
+					entry.additionalAuditRefs?.some(
+						(ref: { version: number; nodeId?: number }) =>
+							ref.version === txnLogKey && (ref.nodeId ?? 0) === (nodeId ?? 0)
+					)
+				);
+			}
+			function keepCurrentRecordEvent(event: any) {
+				const type = event.type;
+				if (
+					event.id === undefined ||
+					!(type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate')
+				)
+					return true;
+				const entry = primaryStore.getEntry(event.id);
+				if (!entry || entry.version <= event.version) return true;
+				if (!getFullRecord) return false;
+				event.value = entry.value;
+				event.version = entry.version;
+				event.type = entry.metadataFlags & INVALIDATED ? 'invalidate' : entry.value ? 'put' : 'delete';
+				return true;
+			}
+			function eventFromAudit(id: Id, auditRecord: any, localTime: number, beginTxn?: boolean, live?: boolean) {
 				let type = auditRecord.type;
 				let value;
+				let version = auditRecord.version;
 				const isMutation =
 					type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate';
 				if (isMutation && !includeSuperseded) {
 					if (id === undefined) return;
 					const entry = currentEntryForAudit(primaryStore, id, auditRecord);
-					if (!entry || entry.version !== auditRecord.version) return;
+					if (!entry) return;
+					if (entry.version !== auditRecord.version) {
+						// The newer version's event may have gone out before this write was merged into it.
+						if (!(live && getFullRecord && wasMergedInto(entry, localTime, auditRecord.nodeId))) return;
+						version = entry.version;
+					}
 					if (getFullRecord) {
 						value = entry?.value;
 						type = entry?.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';
@@ -7101,7 +7157,7 @@ export function makeTable(options): TableResourceClass {
 					value = auditRecord.getValue?.(primaryStore, getFullRecord, localTime);
 					if (getFullRecord && type === 'patch') type = 'put';
 				}
-				return { id, localTime, value, version: auditRecord.version, type, beginTxn, size: auditRecord.size };
+				return { id, localTime, value, version, type, beginTxn, size: auditRecord.size };
 			}
 			function send(event: any, alreadyFiltered = false) {
 				if (!isActive()) return false;
@@ -8053,13 +8109,19 @@ export function makeTable(options): TableResourceClass {
 						const value = typeof computed.from === 'string' ? object[computed.from] : object;
 						const userResolver = this.userResolvers[attribute.name];
 						if (userResolver) return userResolver(value, context, entry);
-						else {
-							logger.warn?.(
-								`Computed attribute "${attribute.name}" does not have a function assigned to it. Please use setComputedAttribute('${attribute.name}', resolver) to assign a resolver function.`
+						// a pool worker would otherwise maintain this index with undefined values, silently
+						if (indices[attribute.name] && isDedicatedPoolWorker())
+							throw new Error(
+								`Computed index "${attribute.name}" of table "${tableName}" is resolved by application code, which this replication worker does not run`
 							);
-							// silence future warnings but just returning undefined
-							this.userResolvers[attribute.name] = () => {};
-						}
+						if (warnedUnresolvedComputed.has(attribute.name)) return;
+						logger.warn?.(
+							`Computed attribute "${attribute.name}" does not have a function assigned to it. Please use setComputedAttribute('${attribute.name}', resolver) to assign a resolver function.`
+						);
+						// silence future warnings but just returning undefined; a pool worker caches nothing, so that the
+						// throw above still applies if the attribute is indexed later
+						if (isDedicatedPoolWorker()) warnedUnresolvedComputed.add(attribute.name);
+						else this.userResolvers[attribute.name] = Object.assign(() => {}, { unresolved: true });
 					};
 					attribute.resolve.directReturn = true;
 				} else if (indices[attribute.name]?.customIndex?.propertyResolver) {
@@ -8129,6 +8191,15 @@ export function makeTable(options): TableResourceClass {
 			primaryStore.encoder.surfacedToJSON = primaryStore.encoder.structPrototype.toJSON;
 		}
 		// #section: computed-history
+		static unresolvedComputedIndexes(): string[] {
+			const unresolved = [];
+			for (const attribute of attributes) {
+				if (!attribute.computed || !indices[attribute.name]) continue;
+				const resolver = this.userResolvers[attribute.name];
+				if (!resolver || resolver.unresolved) unresolved.push(attribute.name);
+			}
+			return unresolved;
+		}
 		static setComputedAttribute(attribute_name, resolver) {
 			const attribute = findAttribute(attributes, attribute_name);
 			if (!attribute) {
