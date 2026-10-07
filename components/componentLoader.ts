@@ -882,7 +882,6 @@ export async function loadComponent(
 			harperLogger.error?.(misplaced);
 			throw new Error(misplaced);
 		}
-		// Only application loads receive this declaration, including packages with a pre-created scope.
 		if (!isRoot && options.branchedDatabases !== undefined) {
 			// The loader's own application identity, not the directory's basename: a branch path is
 			// keyed by this, and two components can share a basename (a nested one and a top-level one)
