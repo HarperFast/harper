@@ -988,8 +988,16 @@ describe('Audit log', () => {
 		await AuditedTable.put(id, { name: 'first' }, { timestamp: originVersion });
 		await AuditedTable.put(id, { name: 'second' }, { timestamp: originVersion + 1 });
 		const secondEntry = AuditedTable.primaryStore.getEntry(id);
-		const secondAudit = AuditedTable.auditStore.get(secondEntry.localTime, AuditedTable.tableId, id);
-		const resolvedFirst = AuditedTable.auditStore.get(secondAudit.previousVersion, AuditedTable.tableId, id);
+		// A backdated local write keeps its version but, below the origin-closed floor, is appended under
+		// a fresh log key the record and the next entry point at (resources/originClosedFloor.ts); resolve
+		// both heads as a reader does, through those pointers.
+		const headKey =
+			secondEntry.additionalAuditRefs?.find((ref) => (ref.nodeId ?? 0) === 0)?.version ?? secondEntry.localTime;
+		const secondAudit = AuditedTable.auditStore.get(headKey, AuditedTable.tableId, id);
+		const previousKey =
+			secondAudit.previousAdditionalAuditRefs?.find((ref) => (ref.nodeId ?? 0) === 0)?.version ??
+			secondAudit.previousVersion;
+		const resolvedFirst = AuditedTable.auditStore.get(previousKey, AuditedTable.tableId, id);
 		assert(resolvedFirst, 'previousVersion must resolve to the actual first audit entry');
 		assert.equal(resolvedFirst.version, originVersion);
 	});

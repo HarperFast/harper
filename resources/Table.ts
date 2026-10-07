@@ -47,6 +47,7 @@ import {
 	type WriteGeneration,
 	type Transaction as DatabaseTransactionRecord,
 } from './DatabaseTransaction.ts';
+import { releaseLocalKey, reserveLocalKey } from './originClosedFloor.ts';
 import {
 	acquireRecordKey,
 	lockAttemptKey,
@@ -3763,14 +3764,15 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				nodeId: options?.nodeId,
+				viaNodeId: options?.viaNodeId,
 				invalidated: true,
 				entry: this.#entry,
 				recordVersion: options?.version,
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				reloadCommitBase: true,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
-					const txnLogKey =
-						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
+					const txnLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
 						write.skipped = true;
@@ -3824,6 +3826,8 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				nodeId: options?.nodeId,
+				viaNodeId: options?.viaNodeId,
 				invalidated: true,
 				entry: this.#entry,
 				recordVersion: options?.version,
@@ -3834,8 +3838,7 @@ export function makeTable(options): TableResourceClass {
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
 						: undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
-					const txnLogKey =
-						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
+					const txnLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) return;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
@@ -3952,6 +3955,8 @@ export function makeTable(options): TableResourceClass {
 					const removal = removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
 					lmdbCompletion = Promise.all([indexCleanup, removal]);
 				} else {
+					if (hasDerivedIndexRegistration(auditStore, tableId))
+						reserveLocalKey(primaryStore.rootStore, transaction as RocksTransaction);
 					updateIndices(id, existingRecord, null, options);
 					stageDerivedIndexEviction(transaction as RocksTransaction, id, existingVersion);
 					removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), options);
@@ -3983,6 +3988,7 @@ export function makeTable(options): TableResourceClass {
 					commitTrackedRocksTransaction(transaction as RocksTransaction, primaryStore).catch((error) => {
 						// The commit failed, so the read-snapshot/transaction handle is still open — release it, as the
 						// batched-eviction path does on its own commit failures. committed===true skips the finally abort.
+						releaseLocalKey(transaction as RocksTransaction);
 						try {
 							(transaction as any).abort();
 						} catch {}
@@ -3997,6 +4003,7 @@ export function makeTable(options): TableResourceClass {
 					if (primaryStore.ifVersion) {
 						(lmdbTransaction as any).abort?.();
 					} else {
+						releaseLocalKey(transaction as RocksTransaction);
 						(transaction as any)?.abort?.();
 					}
 				}
@@ -4573,6 +4580,8 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				nodeId: options?.nodeId,
+				viaNodeId: options?.viaNodeId,
 				entry,
 				baseReadTxn,
 				nodeName: (context as any)?.nodeName,
@@ -4718,6 +4727,9 @@ export function makeTable(options): TableResourceClass {
 					let omitLocalRecord = false;
 					const txnLogKey =
 						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
+					// Where this write's entry is appended: the handle's key, which the origin-closed floor may have
+					// moved above an explicit `txnTime`; identity and ordering above keep using `txnLogKey`.
+					const appendedLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnLogKey) : txnLogKey;
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
@@ -5059,9 +5071,9 @@ export function makeTable(options): TableResourceClass {
 										// value is a LOG key, not a record version: every consumer follows it straight into
 										// `auditStore.get` (see the `auditRefsToVisit` mapping above and below), and on an
 										// applied write those two clocks differ.
-										additionalAuditRefs.push({ version: txnLogKey, nodeId: options?.nodeId });
+										additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
 										logger.debug?.('Adding additional audit ref for out-of-order write', {
-											txnLogKey,
+											txnLogKey: appendedLogKey,
 											nodeId: options?.nodeId,
 										});
 									}
@@ -5181,7 +5193,7 @@ export function makeTable(options): TableResourceClass {
 							// re-delivery of these ops on. Best-effort, like every other guard here: the encoder bounds
 							// the persisted list, so an identity can age out of it (harper#1148's full-copy convergence
 							// is the backstop).
-							additionalAuditRefs.push({ version: txnLogKey, nodeId: options?.nodeId });
+							additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes —
@@ -5296,12 +5308,12 @@ export function makeTable(options): TableResourceClass {
 					updateIndices(id, existingRecord, recordToStore, transaction && { transaction });
 
 					// Preserve an addressable audit head when the record and log clocks diverge.
-					if (isRocksDB && audit && !isCopyApply && txnLogKey !== txnTime) {
+					if (isRocksDB && audit && !isCopyApply && appendedLogKey !== txnTime) {
 						const headIndex = additionalAuditRefs.findIndex(
-							(ref) => ref.version === txnLogKey && (ref.nodeId ?? 0) === (options?.nodeId ?? 0)
+							(ref) => ref.version === appendedLogKey && (ref.nodeId ?? 0) === (options?.nodeId ?? 0)
 						);
 						if (headIndex > 0) additionalAuditRefs.unshift(additionalAuditRefs.splice(headIndex, 1)[0]);
-						else if (headIndex < 0) additionalAuditRefs.unshift({ version: txnLogKey, nodeId: options?.nodeId });
+						else if (headIndex < 0) additionalAuditRefs.unshift({ version: appendedLogKey, nodeId: options?.nodeId });
 					}
 					writeCommit(true);
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
@@ -5473,6 +5485,8 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				nodeId: options?.nodeId,
+				viaNodeId: options?.viaNodeId,
 				entry,
 				baseReadTxn,
 				chainsStagedState: true,
@@ -5493,8 +5507,7 @@ export function makeTable(options): TableResourceClass {
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
 					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
-					const txnLogKey =
-						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
+					const txnLogKey = isRocksDB ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
@@ -7303,6 +7316,8 @@ export function makeTable(options): TableResourceClass {
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				nodeId: options?.nodeId,
+				viaNodeId: options?.viaNodeId,
 				entry: this.#entry,
 				nodeName: (context as any)?.nodeName,
 				recordVersion: options?.version,
@@ -9711,8 +9726,10 @@ export function makeTable(options): TableResourceClass {
 				let staged: number;
 				try {
 					transaction = new RocksTransaction(primaryStore.store);
+					if (hasDerivedIndexRegistration(auditStore, tableId)) reserveLocalKey(primaryStore.rootStore, transaction);
 					staged = stageInto(transaction, items);
 				} catch (error) {
+					releaseLocalKey(transaction);
 					try {
 						transaction?.abort();
 					} catch {}
@@ -9720,6 +9737,7 @@ export function makeTable(options): TableResourceClass {
 					return;
 				}
 				if (staged === 0) {
+					releaseLocalKey(transaction);
 					try {
 						transaction.abort();
 					} catch {}
@@ -9729,6 +9747,7 @@ export function makeTable(options): TableResourceClass {
 					await commitTrackedRocksTransaction(transaction, primaryStore);
 					return;
 				} catch (error: any) {
+					releaseLocalKey(transaction);
 					try {
 						transaction.abort();
 					} catch {}

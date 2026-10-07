@@ -16,6 +16,7 @@ import { convertToMS } from '../utility/common_utils.ts';
 import { settleBeforeDeadline, when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
+import { releaseLocalKey, reserveLocalKey, shareLocalKey } from './originClosedFloor.ts';
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
@@ -218,6 +219,7 @@ export function commitTrackedRocksTransaction(
 	rootStore = store?.rootStore
 ): Promise<number | void> {
 	if (databaseCommitsSuspended(rootStore)) {
+		releaseLocalKey(transaction);
 		try {
 			transaction.abort();
 		} catch {}
@@ -227,8 +229,13 @@ export function commitTrackedRocksTransaction(
 	try {
 		commitResolution = transaction.commit() as Promise<number | void>;
 	} catch (error) {
+		releaseLocalKey(transaction);
 		return Promise.reject(error);
 	}
+	// A raw handle never recommits after a failure (its callers retry on a fresh handle), so either
+	// outcome ends its reservation.
+	const release = () => releaseLocalKey(transaction);
+	commitResolution.then(release, release);
 	trackOutstandingCommit(commitResolution, store, undefined, transaction, rootStore);
 	return commitResolution;
 }
@@ -318,6 +325,14 @@ export function getOutstandingCommits(): { count: number; oldestAgeMs: number | 
 // about the caller's pattern, not the individual commit.
 let replayedWritesWarned = false;
 
+/** A write carrying a named remote origin goes to that origin's log, never `local` (see `put`). */
+function writesRemoteOrigin(operation: TransactionWrite): boolean {
+	if (operation.nodeId === undefined) return false;
+	const auditStore: any = operation.store.rootStore?.auditStore;
+	const relayed = operation.viaNodeId !== undefined && operation.viaNodeId !== operation.nodeId;
+	return auditStore?.isLocalOrigin?.(operation.nodeId, relayed) === false;
+}
+
 /**
  * Abort a detached native handle. RocksTransaction.abort() throws on one that was already
  * committed or aborted, and every caller is a cleanup path whose own callers have no handler — a
@@ -325,6 +340,7 @@ let replayedWritesWarned = false;
  */
 function abortNativeTransaction(transaction: RocksTransaction | null | undefined, context: string): void {
 	if (transaction == null) return;
+	releaseLocalKey(transaction);
 	try {
 		transaction.abort();
 	} catch (error) {
@@ -559,6 +575,7 @@ export type TransactionWrite = {
 	skipReplicationConfirmation?: boolean;
 	nodeName?: string;
 	nodeId?: number;
+	viaNodeId?: number;
 	promise?: Promise<any>;
 	result?: any;
 	// blobs that were pre-saved as part of this write; used to clean up files if the commit is skipped or aborted
@@ -1041,6 +1058,7 @@ export class DatabaseTransaction implements Transaction {
 			// discards nothing — the replay re-staged the writes AND their audit/txn-log entries
 			// into its own transaction; this handle's never-committed log batch dies with it.
 			const transaction = this.detachOwnedTransaction();
+			releaseLocalKey(transaction);
 			try {
 				transaction?.abort();
 			} catch (error) {
@@ -1443,6 +1461,7 @@ export class DatabaseTransaction implements Transaction {
 			}
 		}
 		let txnTime = operation.lockStamp ?? this.timestamp;
+		const remoteOrigin = writesRemoteOrigin(operation);
 		// Only an OPEN transaction accepts new staged writes. After commit, this.transaction may still
 		// be retained for outstanding read iterators; staging into it would silently discard the write
 		// when doneReadTxn() aborts the handle, so such writes commit immediately on a fresh
@@ -1475,9 +1494,7 @@ export class DatabaseTransaction implements Transaction {
 				// if it is closed, we have to immediately commit, using our immediate transaction
 				immediateCommit = true;
 			}
-			if (txnTime) {
-				transaction.setTimestamp(txnTime);
-			}
+			if (txnTime && (this.isReplay || remoteOrigin)) transaction.setTimestamp(txnTime);
 		}
 		if (this.isReplay) {
 			// Replayed writes came FROM the transaction log; never re-append them —
@@ -1485,6 +1502,14 @@ export class DatabaseTransaction implements Transaction {
 			// (boot hangs replaying its own output). Conflict retries stamp isRetry
 			// at the retry sites in commit(); this is the replay-path equivalent.
 			(transaction as RocksTransactionWithRetry).isRetry = true;
+		} else if (!remoteOrigin) {
+			// Before the first staged write (rocksdb-js freezes the timestamp at staging): the key this
+			// handle appends to the `local` log with is reserved against the origin-closed floor. A key
+			// below the floor's admission bound — a read handle's key minted long before its first write,
+			// a lock stamp as old as its lease, an explicit timestamp in the past — is replaced on the
+			// handle by a fresh one; `txnTime` keeps the explicit value, which stays the record version,
+			// and the entry carries both clocks as an applied write does.
+			reserveLocalKey(operation.store.rootStore, transaction, txnTime || undefined);
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
 		if (!operation.saved && operation.pendingPriorWrite) {
@@ -1937,6 +1962,7 @@ export class DatabaseTransaction implements Transaction {
 								{ coordinatedRetry: true }
 							);
 							if (this.timestamp) replayTransaction.setTimestamp(this.timestamp);
+							shareLocalKey(transaction, replayTransaction);
 							this.retries++; // a replay round: commit handlers re-base on the reloaded entries
 							try {
 								for (const operation of this.writes) {
@@ -1987,6 +2013,7 @@ export class DatabaseTransaction implements Transaction {
 							for (let i = 0; this.hasLeaseProtectedWrite && i < this.writes.length; i++) {
 								const lapsed = this.writes[i].lockHandle;
 								if (!lapsed?.isLeaseExpired()) continue;
+								releaseLocalKey(transaction);
 								try {
 									transaction.abort();
 								} catch {}
@@ -2023,6 +2050,7 @@ export class DatabaseTransaction implements Transaction {
 							// transient-conflict retry rejects this promise and issues a fresh commit()
 							// (re-entering here), which trackOutstandingCommit tracks as its own attempt.
 						} else {
+							releaseLocalKey(transaction);
 							try {
 								commitResolution = transaction.abort();
 							} catch {
@@ -2074,6 +2102,8 @@ export class DatabaseTransaction implements Transaction {
 								}
 								return this.commit({ ...options, transaction });
 							}
+							// The batch is appended: the floor may pass this key now.
+							releaseLocalKey(transaction);
 							// onCommit may be async (e.g. RocksTransactionLogStore emits 'aftercommit'). Surface a
 							// rejection — or a synchronous throw — via logging rather than failing the commit, since
 							// the write is already durable.
@@ -2219,6 +2249,7 @@ export class DatabaseTransaction implements Transaction {
 								// terminal (non-conflict) failure: release the native handle so it doesn't leak;
 								// usually already released by the failed commit itself, abort for the unexpected
 								// case (same defensive pattern as the retry-exhaustion give-up above)
+								releaseLocalKey(transaction);
 								try {
 									transaction.abort();
 								} catch (abortError) {
@@ -2517,6 +2548,8 @@ export class DatabaseTransaction implements Transaction {
 			// abort-after-abort, and it is abort-after-COMMIT that throws.
 			const detached = txn.detachOwnedTransaction();
 			const committingTransaction = txn === this ? headTransaction : detached;
+			releaseLocalKey(committingTransaction);
+			releaseLocalKey(detached);
 			try {
 				committingTransaction?.abort();
 			} catch (abortError) {

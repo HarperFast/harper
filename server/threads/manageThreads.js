@@ -1341,8 +1341,11 @@ function startWorker(path, options = {}, startOptions = {}) {
 		// way)
 		harperLogger.error(`Worker index ${options.workerIndex} error:`, error);
 	});
+	const exitedThreadId = worker.threadId;
 	worker.on('exit', (_code) => {
 		workers.splice(workers.indexOf(worker), 1);
+		// Its native handles are closed by now, so the origin-floor bounds it published are stale.
+		require('../../resources/originClosedFloor.ts').retireOriginFloorSlots(exitedThreadId);
 		if (
 			!processShuttingDown &&
 			!worker.wasShutdown &&
