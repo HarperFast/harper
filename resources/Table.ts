@@ -4751,7 +4751,6 @@ export function makeTable(options): TableResourceClass {
 					this.#savingOperation = null;
 					write.stagedIn = undefined; // nothing may pin this write's transaction past its commit
 					let omitLocalRecord = false;
-					// A reserved handle's admitted key; an unreserved one is a remote apply keyed by its context.
 					const appendedLogKey = isRocksDB
 						? (reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime)
 						: txnTime;
@@ -7399,8 +7398,7 @@ export function makeTable(options): TableResourceClass {
 						scheduleCleanup();
 					}
 					logger.trace?.(`Publishing message to id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
-					// Only a reserved (local) handle can carry a key the floor moved; a remote apply publishes
-					// under the origin key it installed, so it needs neither a pointer nor a native read.
+					// A reserved handle's admitted key; an unreserved one is a remote apply keyed by its context.
 					const appendedLogKey = reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime;
 					// always audit this, but don't change existing version
 					// TODO: Use direct writes in the future (copying binary data is hard because it invalidates the cache)

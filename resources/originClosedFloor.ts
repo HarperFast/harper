@@ -350,8 +350,8 @@ export function publishOriginFloor(rootStore: RocksDatabase, floor: number): voi
 /**
  * One certification round: the clock sample and the admission bound come before the bounds are read,
  * so a key minted or adopted after the read is above the candidate. The caller persists, then publishes.
+ * `null`: a thread was mid-reservation on every read; the caller retries after a yield, not a tick.
  */
-/** `null`: a thread was mid-reservation on every read; the caller retries after a yield, not a tick. */
 export function certifyOriginFloor(rootStore: RocksDatabase): number | null | undefined {
 	const registry = registryFor(rootStore);
 	const words = registry.words;

@@ -1505,7 +1505,8 @@ export class DatabaseTransaction implements Transaction {
 			// Before the first staged write, which freezes the native timestamp. A key below the floor's
 			// admission bound is replaced on the handle only: `txnTime` keeps an explicit value as the
 			// record version, and the entry then carries both clocks as an applied write does.
-			reserveLocalKey(operation.store.rootStore, transaction, txnTime || undefined);
+			const key = reserveLocalKey(operation.store.rootStore, transaction, txnTime || undefined);
+			if (!txnTime) txnTime = this.timestamp = key;
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
 		if (!operation.saved && operation.pendingPriorWrite) {
@@ -1544,48 +1545,41 @@ export class DatabaseTransaction implements Transaction {
 			!this.snapshotFree &&
 			!(transaction as any).snapshotDisabled &&
 			!this.isReplay;
-		// A handle created for an immediate commit is owned by nobody else: a throw anywhere before its
-		// commit is submitted must release it, and the floor reservation it carries, rather than leak both.
-		const abortImmediateOnThrow = <T>(step: () => T): T => {
-			try {
-				return step();
-			} catch (error) {
-				if (immediateCommit) abortNativeTransaction(transaction, 'aborting an immediate transaction whose write threw');
-				throw error;
-			}
-		};
-		if (!reusesBaseRead && (reloadEntry || operation.entry === undefined || reloadsCommitBase)) {
-			const uncachedRead = !!operation.reloadCommitBase || reloadEntry || this.isReplay;
-			operation.entry = abortImmediateOnThrow(() =>
-				operation.store.getEntry(operation.key, { transaction, uncachedRead })
-			);
-		}
-		if (!operation.saved) {
-			// immediately execute in this transaction
-			const validated = abortImmediateOnThrow(() => validateWrite(operation, writeVersion, this));
-			if ((validated as any) === false) {
-				operation.saved = true;
-				operation.commit = () => {}; // noop if we try again
-				closeWriteInstance(operation);
-				if (immediateCommit)
-					abortNativeTransaction(transaction, 'aborting an immediate transaction with nothing to write');
-				return;
-			}
-			operation.saved = true;
-			let result: Promise<void> = abortImmediateOnThrow(() => operation.before?.() as Promise<void>);
-			if (result?.then) this.stageCompletion(result);
-			result = abortImmediateOnThrow(() => operation.beforeIntermediate?.() as Promise<void>);
-			if (result?.then) this.stageCompletion(result);
-		}
-		if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
-		if (operation.trackRecordVersion) operation.recordVersionApplied = false;
 		let completion: Promise<void>;
 		try {
-			completion = abortImmediateOnThrow(
-				() => operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>
-			);
-		} finally {
-			closeWriteInstance(operation);
+			if (!reusesBaseRead && (reloadEntry || operation.entry === undefined || reloadsCommitBase)) {
+				const uncachedRead = !!operation.reloadCommitBase || reloadEntry || this.isReplay;
+				operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead });
+			}
+			if (!operation.saved) {
+				// immediately execute in this transaction
+				const validated = validateWrite(operation, writeVersion, this);
+				if ((validated as any) === false) {
+					operation.saved = true;
+					operation.commit = () => {}; // noop if we try again
+					closeWriteInstance(operation);
+					if (immediateCommit)
+						abortNativeTransaction(transaction, 'aborting an immediate transaction with nothing to write');
+					return;
+				}
+				operation.saved = true;
+				let result: Promise<void> = operation.before?.() as Promise<void>;
+				if (result?.then) this.stageCompletion(result);
+				result = operation.beforeIntermediate?.() as Promise<void>;
+				if (result?.then) this.stageCompletion(result);
+			}
+			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
+			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
+			try {
+				completion = operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>;
+			} finally {
+				closeWriteInstance(operation);
+			}
+		} catch (error) {
+			// A handle created for an immediate commit is owned by nobody else: a throw before its commit
+			// is submitted must release it, and the floor reservation it carries, rather than leak both.
+			if (immediateCommit) abortNativeTransaction(transaction, 'aborting an immediate transaction whose write threw');
+			throw error;
 		}
 		if (operation.trackRecordVersion)
 			operation.appliedRecordVersion = operation.recordVersionApplied ? writeVersion : undefined;
