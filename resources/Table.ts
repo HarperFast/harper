@@ -2141,7 +2141,6 @@ export function makeTable(options): TableResourceClass {
 														}
 													}
 												}
-												// an origin's frames can arrive below its highest key, which must not be lowered
 												let originCursorsChanged = false;
 												if (originCursors)
 													for (const [nodeId, originLogKey] of originCursors) {
@@ -2153,7 +2152,7 @@ export function makeTable(options): TableResourceClass {
 														}
 													}
 												const seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime || 0);
-												// a scalar above the persisted one is a repair: the cache moves before the write lands
+												// compared with the persisted row, not the cache, which moves before this write lands
 												if (!advancesSequence && !originCursorsChanged && seqId === existingSeq?.seqId) return;
 												logger.trace?.(
 													'Received txn',

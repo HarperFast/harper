@@ -1189,6 +1189,17 @@ describe('Audit log', () => {
 				});
 			}
 		}
+		// several records in one transaction: one log key, with endTxn only on the last entry
+		async function writeTransactionToLog(logName, ids, time) {
+			const nodeId = AuditedTable.auditStore.ensureLogExists(logName);
+			const context = { source: {}, sourceApply: true, timestamp: time };
+			await transaction(context, async () => {
+				for (const id of ids) {
+					const resource = await AuditedTable.getResource(id, context);
+					resource._writeUpdate(id, { name: id }, true, { isNotification: true, nodeId, version: time });
+				}
+			});
+		}
 		const idsWith = (prefix, entries) =>
 			entries.map((entry) => entry.recordId).filter((id) => String(id).startsWith(prefix));
 
@@ -1246,8 +1257,37 @@ describe('Audit log', () => {
 					iterable.addLog(peerName);
 				}
 			}
-			// merged in at the next pull, ahead of the busy log's later keys, not after it drains
 			assert.deepEqual(idsWith('admit-', read), ['admit-busy-0', 'admit-peer-row', 'admit-busy-1', 'admit-busy-2']);
+		});
+
+		it('admits it only once the transaction being read has ended', async function () {
+			if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+			const stamp = Date.now();
+			const peerName = 'boundary-peer-' + stamp;
+			const busyName = 'boundary-busy-' + stamp;
+			const base = stamp - 10000;
+			await writeToLog(peerName, [['boundary-peer-row', base]]);
+			await writeTransactionToLog(busyName, ['boundary-txn-a', 'boundary-txn-b'], base + 1000);
+			const startByLog = new Map([
+				['local', stamp],
+				[busyName, base],
+			]);
+			const iterable = AuditedTable.auditStore.getRange({
+				start: stamp,
+				excludeLogs: [peerName],
+				startByLog,
+				snapshot: false,
+			});
+			const iterator = iterable[Symbol.iterator]();
+			const read = [];
+			for (let result = iterator.next(); !result.done; result = iterator.next()) {
+				read.push(result.value);
+				if (result.value.recordId === 'boundary-txn-a') {
+					startByLog.set(peerName, base - 1);
+					iterable.addLog(peerName);
+				}
+			}
+			assert.deepEqual(idsWith('boundary-', read), ['boundary-txn-a', 'boundary-txn-b', 'boundary-peer-row']);
 		});
 
 		it('validates its exact start again after removeLog and addLog', async function () {
@@ -1274,6 +1314,36 @@ describe('Audit log', () => {
 			startByLog.set(peerName, base + 1000);
 			iterable.addLog(peerName);
 			assert.deepEqual(idsWith('readmit-', [...iterable]), ['readmit-30']);
+		});
+
+		it('validates its exact start again after an excludeLogs change drops and re-adds it', async function () {
+			if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+			const peerName = 'resync-peer-' + Date.now();
+			const base = Date.now() - 10000;
+			await writeToLog(peerName, [
+				['resync-10', base],
+				['resync-20', base + 1000],
+				['resync-30', base + 2000],
+			]);
+			const excludeLogs = [];
+			const startByLog = new Map([[peerName, base]]);
+			const iterable = AuditedTable.auditStore.getRange({
+				start: base,
+				exactStart: true,
+				exclusiveStart: true,
+				resumeAfterExactStart: true,
+				startByLog,
+				excludeLogs,
+				snapshot: false,
+			});
+			assert.deepEqual(idsWith('resync-', [...iterable]), ['resync-20', 'resync-30']);
+			excludeLogs.push(peerName);
+			iterable.addLog('resync-unrelated'); // any membership refresh drops the excluded log
+			assert.deepEqual(idsWith('resync-', [...iterable]), []);
+			excludeLogs.splice(0);
+			startByLog.set(peerName, base + 1000);
+			iterable.addLog(peerName);
+			assert.deepEqual(idsWith('resync-', [...iterable]), ['resync-30']);
 		});
 	});
 	// A corrupt audit entry must surface as a skip-eligible sentinel record rather than

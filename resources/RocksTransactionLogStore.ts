@@ -407,6 +407,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			let nextEntries: any[];
 			let latestUpdates: number;
 			let excludeLogsChanged = false;
+			let midTransaction = false;
 			const iterators: TrackedIterator[] = [];
 			const expectedExactStarts: Array<number | undefined> = [];
 			const observedExactStarts = new Set<string>();
@@ -450,6 +451,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 								logs.splice(i, 1);
 								iterators.splice(i, 1);
 								nextEntries?.splice(i, 1);
+								observedExactStarts.delete(log.name);
 								expectedExactStarts.splice(i--, 1);
 							}
 						}
@@ -495,9 +497,9 @@ export class RocksTransactionLogStore extends EventEmitter {
 							// we re-retrieve all the next entries (in case we are resuming after
 							// being done)
 							updateIterators();
-						} else if (excludeLogsChanged) {
-							// a re-admitted log joins now, without re-pulling the entries already queued, so a log
-							// that never drains cannot starve it
+						} else if (excludeLogsChanged && !midTransaction) {
+							// a re-admitted log joins at the next transaction boundary, without re-pulling the entries
+							// already queued, so a log that never drains cannot starve it
 							syncLogs();
 							for (let i = nextEntries.length; i < logs.length; i++) nextEntries.push(pull(i));
 						}
@@ -524,6 +526,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 								iterators[earliestIndex].lastEndTxn = earliest.endTxn;
 							}
 							nextEntries[earliestIndex] = safeNext(iterators[earliestIndex], logs[earliestIndex]);
+							midTransaction = !earliest.endTxn;
 							return {
 								value: onlyKeys ? earliest.timestamp : earliest,
 								done: false,
@@ -537,8 +540,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 				addLog(logName: string) {
 					let index = options.excludeLogs?.indexOf(logName);
 					if (index >= 0) options.excludeLogs.splice(index, 1);
-					// set even when a caller already edited excludeLogs: the store's log list did not change, so
-					// membership is re-read only on this signal
+					// even when the caller already removed it from excludeLogs: the store's log list did not change
 					excludeLogsChanged = true;
 				},
 				removeLog: (logName: string) => {
