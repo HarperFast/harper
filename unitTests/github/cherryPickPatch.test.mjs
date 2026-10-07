@@ -344,18 +344,21 @@ describe('change-landed.sh', function () {
 		assert.strictEqual(withCommit.status, 0, withCommit.stdout + withCommit.stderr);
 	});
 
-	it('cannot tell when a picked commit changes merge attributes', function () {
-		const base = git('rev-parse', 'HEAD');
-		writeFileSync(join(dir, '.gitattributes'), 'text.txt merge=union\n');
-		git('add', '.gitattributes');
-		git('commit', '-qm', 'Merge attributes');
-		const commit = git('rev-parse', 'HEAD');
-		git('checkout', '-qb', 'target', base);
-		git('cherry-pick', commit);
-		const result = landed('target', base, commit);
-		assert.strictEqual(result.status, 2, result.stdout + result.stderr);
-		assert.match(result.stdout, /^::warning::/m);
-	});
+	for (const path of ['.gitattributes', 'café/.gitattributes']) {
+		it(`cannot tell when a picked commit changes ${path}`, function () {
+			const base = git('rev-parse', 'HEAD');
+			mkdirSync(dirname(join(dir, path)), { recursive: true });
+			writeFileSync(join(dir, path), '*.txt merge=union\n');
+			git('add', path);
+			git('commit', '-qm', 'Merge attributes');
+			const commit = git('rev-parse', 'HEAD');
+			git('checkout', '-qb', 'target', base);
+			git('cherry-pick', commit);
+			const result = landed('target', base, commit);
+			assert.strictEqual(result.status, 2, result.stdout + result.stderr);
+			assert.match(result.stdout, /^::warning::.*changes \.gitattributes/m);
+		});
+	}
 
 	it('reports a check that cannot run with a warning and exit 2', function () {
 		const result = landed('refs/heads/no-such-branch', 'HEAD', 'HEAD');
@@ -589,8 +592,6 @@ function runJob({ dir, env, origin, prJson, stickyStub, git, openPr, afterStash 
 	};
 }
 
-// GitHub's expression syntax, limited to the forms this job uses; anything else fails the test
-// rather than being guessed at.
 function expand(text, outputs) {
 	return text.replace(/\$\{\{\s*(.+?)\s*\}\}/g, (_, expression) => {
 		const output = /^steps\.pick\.outputs\.(\w+)$/.exec(expression);
