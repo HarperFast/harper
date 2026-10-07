@@ -3454,7 +3454,7 @@ export function makeTable(options): TableResourceClass {
 						}
 					}
 				}
-				return checkContextPermissions(this.getContext());
+				return true;
 			}
 		}
 
@@ -3474,10 +3474,8 @@ export function makeTable(options): TableResourceClass {
 						for (const key in newData) {
 							if (!attrsForType[key]) return false;
 						}
-						return checkContextPermissions(this.getContext());
-					} else {
-						return checkContextPermissions(this.getContext());
 					}
+					return true;
 				}
 			} else {
 				// creating *within* a record resource just means we are adding some data to a current record, which is
@@ -3491,9 +3489,10 @@ export function makeTable(options): TableResourceClass {
 		 * Determine if the user is allowed to delete from the current resource
 		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
+		// eslint-disable-next-line no-unused-vars
 		allowDelete(user: User, target: RequestTarget, context: Context): boolean {
 			const tablePermission = getTablePermissions(user, target);
-			return !!tablePermission?.delete && checkContextPermissions(context);
+			return !!tablePermission?.delete;
 		}
 
 		// #section: write-path-public
@@ -9641,19 +9640,6 @@ export function makeTable(options): TableResourceClass {
 		});
 	}
 
-	/**
-	 * Verify that the context does not have any replication parameters that are not allowed
-	 * @param context
-	 */
-	function checkContextPermissions(context: Context): boolean {
-		if (!context) return true;
-		if (context.user?.role?.permission?.super_user) return true;
-		if (context.replicateTo)
-			throw new ClientError('Can not specify replication parameters without super user permissions', 403);
-		if (context.replicatedConfirmation)
-			throw new ClientError('Can not specify replication confirmation without super user permissions', 403);
-		return true;
-	}
 	function trackMaintenanceCommit<T>(commit: Promise<T>): Promise<T> {
 		const tracked = commit.finally(() => maintenanceCommits.delete(tracked));
 		maintenanceCommits.add(tracked);

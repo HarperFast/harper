@@ -1071,10 +1071,9 @@ feature that has not yet been measured.
 > afterwards is limitation (2)'s third route.
 >
 > **There is no caller-side mitigation for (2) — the obvious candidate is unreachable and, where it
-> is reachable, makes things worse.** `X-Replicate-To` / `confirm=` is meant to be super-user only —
-> `checkContextPermissions` (`resources/Table.ts`) raises 403 otherwise, though its truthiness
-> gate lets `X-Replicate-To: 0` through, which is harper#2546 and not a mitigation anyone should
-> build on. And where it is legitimately available it is a **residency** directive before it is a
+> is reachable, makes things worse.** `X-Replicate-To` / `confirm=` is super-user only — `server/REST.ts`
+> answers 403 to anyone else ([replication directives](DESIGN.md#client-supplied-replication-directives-are-super-user-only-and-gated-where-they-enter-serverrestts-verifyperms)). And where it is
+> legitimately available it is a **residency** directive before it is a
 > confirmation knob: absent a `getResidencyById` function, which short-circuits ahead of it
 > (`getResidency` in `resources/Table.ts`), a numeric value sets residency to `[self, ...N nodes]` and truncates
 > existing residency on update, while `*` leaves `replicateTo` undefined and falls back to
