@@ -2033,6 +2033,103 @@ export function makeTable(options): TableResourceClass {
 						: runsApplicationCodeSingletons(); // set up by the defining application's code, so it runs where that code does
 					const subscription = hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
 					if (subscription) {
+						// defined once per subscription, so an end_txn allocates no updater
+						const updateRecordedSequenceId = (
+							event: any,
+							advancesSequence: boolean,
+							committingNodeId: number | undefined
+						) => {
+							const originCursors: [number, number][] | undefined = event.originCursors;
+							// the key for tracking the sequence ids and txn times received from this node
+							const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
+							// getSync (not get): dbisDb is the raw __dbis__ store, so on RocksDB get() returns a
+							// Promise on a block-cache miss; `Promise?.nodes` is undefined and per-peer sequence
+							// tracking would silently reset. The seq keyspace grows with peer count, so it evicts.
+							const existingSeq = (dbisDb as any).getSync(seqKey);
+							let nodeStates = existingSeq?.nodes;
+							if (!nodeStates) {
+								// if we don't have a list of nodes, we need to create one, with the main one using the existing seqId
+								nodeStates = [];
+							}
+							// if we are not the only node in the list, we are getting proxied subscriptions, and we need
+							// to track this separately
+							// track the other nodes in the list
+							if (advancesSequence) {
+								for (const nodeId of event.remoteNodeIds.slice(1)) {
+									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+									// remove any duplicates
+									nodeStates = nodeStates.filter(
+										(existingNode) => existingNode.id !== nodeId || existingNode === nodeState
+									);
+									if (!nodeState) {
+										nodeState = { id: nodeId, seqId: 0 };
+										nodeStates.push(nodeState);
+									}
+									nodeState.seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
+									if (nodeId === committingNodeId) {
+										nodeState.lastTxnTime = event.timestamp;
+									}
+								}
+							}
+							let originCursorsChanged = false;
+							if (originCursors)
+								for (const [nodeId, originLogKey] of originCursors) {
+									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									if (!(nodeState.originLogKey >= originLogKey)) {
+										nodeState.originLogKey = originLogKey;
+										originCursorsChanged = true;
+									}
+								}
+							const seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime || 0);
+							// compared with the persisted row, not the cache, which moves before this write lands
+							if (!advancesSequence && !originCursorsChanged && seqId === existingSeq?.seqId) return;
+							logger.trace?.(
+								'Received txn',
+								databaseName,
+								seqId,
+								new Date(seqId),
+								event.localTime,
+								new Date(event.localTime),
+								event.remoteNodeIds
+							);
+							const seqRecord = { seqId, nodes: nodeStates };
+							// On RocksDB `put` is aliased to `putSync` (see openRocksDatabase), so writing
+							// the cursor directly absorbs RocksDB write-stall back-pressure on the event
+							// loop — during bulk catch-up a single call has been measured blocking for
+							// 101s, which also stops this worker's keep-alives and gets the subscription
+							// torn down by the sender's receive watchdog (harper-pro#603). Staging into a
+							// transaction and committing it is the natively-async write path: the stage is
+							// an in-memory WriteBatch append and the stall is absorbed off-thread by the
+							// commit. Awaiting it keeps the same ordering as the blocking call did, and
+							// back-pressures the apply loop instead of freezing it.
+							if (isRocksDB) {
+								const seqTransaction = new RocksTransaction((dbisDb as any).store);
+								try {
+									(dbisDb as any).putSync(seqKey, seqRecord, { transaction: seqTransaction });
+								} catch (error) {
+									// Staging failed (encoding, or the store closing under a shutdown race), so
+									// nothing will commit this transaction. Abort it rather than leaking a native
+									// transaction that would pin a snapshot and hold off compaction.
+									try {
+										seqTransaction.abort();
+									} catch {}
+									throw error;
+								}
+								return commitTrackedRocksTransaction(seqTransaction, dbisDb, (primaryStore as any).rootStore).catch(
+									(error) => {
+										// A rejected commit leaves the handle open too, so release it here as well —
+										// same reason as the staging failure above, and the same shape as the
+										// eviction paths' commit failures (see evict/commitItems below).
+										try {
+											seqTransaction.abort();
+										} catch {}
+										throw error;
+									}
+								);
+							}
+							return dbisDb.put(seqKey, seqRecord);
+						};
 						const defaultStream: SourceTxnStream = { txn: undefined, lastSequenceId: undefined };
 						let taggedStreams: WeakMap<object, SourceTxnStream> | undefined;
 						// we listen for events by iterating through the async iterator provided by the subscription
@@ -2091,7 +2188,7 @@ export function makeTable(options): TableResourceClass {
 								}
 								if (event.type === 'end_txn') {
 									// Capture the in-progress transaction in a stable local: the loop variable is reset
-									// once this transaction completes (below), but the seq-id closure and the commit await
+									// once this transaction completes (below), but the commit await and the sequence record
 									// still need to reference it afterward.
 									const committingTxn = txnInProgress;
 									if (committingTxn) {
@@ -2110,91 +2207,8 @@ export function makeTable(options): TableResourceClass {
 										applied = true;
 										continue;
 									}
-									let updateRecordedSequenceId: () => MaybePromise<void>;
-									if (event.localTime && stream.lastSequenceId !== event.localTime) {
-										if (event.remoteNodeIds?.length > 0) {
-											updateRecordedSequenceId = () => {
-												// the key for tracking the sequence ids and txn times received from this node
-												const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
-												// getSync (not get): dbisDb is the raw __dbis__ store, so on RocksDB get() returns a
-												// Promise on a block-cache miss; `Promise?.nodes` is undefined and per-peer sequence
-												// tracking would silently reset. The seq keyspace grows with peer count, so it evicts.
-												const existingSeq = (dbisDb as any).getSync(seqKey);
-												let nodeStates = existingSeq?.nodes;
-												if (!nodeStates) {
-													// if we don't have a list of nodes, we need to create one, with the main one using the existing seqId
-													nodeStates = [];
-												}
-												// if we are not the only node in the list, we are getting proxied subscriptions, and we need
-												// to track this separately
-												// track the other nodes in the list
-												for (const nodeId of event.remoteNodeIds.slice(1)) {
-													let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-													// remove any duplicates
-													nodeStates = nodeStates.filter(
-														(existingNode) => existingNode.id !== nodeId || existingNode === nodeState
-													);
-													if (!nodeState) {
-														nodeState = { id: nodeId, seqId: 0 };
-														nodeStates.push(nodeState);
-													}
-													nodeState.seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
-													if (nodeId === committingTxn?.nodeId) {
-														nodeState.lastTxnTime = event.timestamp;
-													}
-												}
-												const seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
-												logger.trace?.(
-													'Received txn',
-													databaseName,
-													seqId,
-													new Date(seqId),
-													event.localTime,
-													new Date(event.localTime),
-													event.remoteNodeIds
-												);
-												const seqRecord = { seqId, nodes: nodeStates };
-												// On RocksDB `put` is aliased to `putSync` (see openRocksDatabase), so writing
-												// the cursor directly absorbs RocksDB write-stall back-pressure on the event
-												// loop — during bulk catch-up a single call has been measured blocking for
-												// 101s, which also stops this worker's keep-alives and gets the subscription
-												// torn down by the sender's receive watchdog (harper-pro#603). Staging into a
-												// transaction and committing it is the natively-async write path: the stage is
-												// an in-memory WriteBatch append and the stall is absorbed off-thread by the
-												// commit. Awaiting it keeps the same ordering as the blocking call did, and
-												// back-pressures the apply loop instead of freezing it.
-												if (isRocksDB) {
-													const seqTransaction = new RocksTransaction((dbisDb as any).store);
-													try {
-														(dbisDb as any).putSync(seqKey, seqRecord, { transaction: seqTransaction });
-													} catch (error) {
-														// Staging failed (encoding, or the store closing under a shutdown race), so
-														// nothing will commit this transaction. Abort it rather than leaking a native
-														// transaction that would pin a snapshot and hold off compaction.
-														try {
-															seqTransaction.abort();
-														} catch {}
-														throw error;
-													}
-													return commitTrackedRocksTransaction(
-														seqTransaction,
-														dbisDb,
-														(primaryStore as any).rootStore
-													).catch((error) => {
-														// A rejected commit leaves the handle open too, so release it here as well —
-														// same reason as the staging failure above, and the same shape as the
-														// eviction paths' commit failures (see evict/commitItems below).
-														try {
-															seqTransaction.abort();
-														} catch {}
-														throw error;
-													});
-												}
-												return dbisDb.put(seqKey, seqRecord);
-											};
-											stream.lastSequenceId = event.localTime;
-										}
-									}
+									const advancesSequence = !!event.localTime && stream.lastSequenceId !== event.localTime;
+									if (advancesSequence && event.remoteNodeIds?.length > 0) stream.lastSequenceId = event.localTime;
 									// Backpressure: wait for the transaction's commit to land before recording the sequence
 									// id or pulling the next event. This serializes the apply loop so bulk ingest can't
 									// outrun the commit/conflict-check window, and guarantees the sequence id never
@@ -2249,7 +2263,8 @@ export function makeTable(options): TableResourceClass {
 									}
 									// Only reached when the commit succeeded; a failure propagates to the handler's catch
 									// and the sequence id is intentionally not advanced past the unapplied write.
-									if (updateRecordedSequenceId) await updateRecordedSequenceId();
+									if (event.remoteNodeIds?.length > 0 && (advancesSequence || event.originCursors?.length > 0))
+										await updateRecordedSequenceId(event, advancesSequence, committingTxn?.nodeId);
 									continue;
 								}
 								if (txnInProgress) {

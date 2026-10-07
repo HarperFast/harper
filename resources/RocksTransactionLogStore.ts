@@ -406,11 +406,14 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// holds the queue of next entries from each iterator
 			let nextEntries: any[];
 			let latestUpdates: number;
+			let excludeLogsChanged = false;
+			let midTransaction = false;
 			const iterators: TrackedIterator[] = [];
 			const expectedExactStarts: Array<number | undefined> = [];
 			const observedExactStarts = new Set<string>();
-			const updateIterators = () => {
-				if (latestUpdates !== this.updates) {
+			const syncLogs = () => {
+				if (latestUpdates !== this.updates || excludeLogsChanged) {
+					excludeLogsChanged = false;
 					const latestLogs = (this.nodeLogs || this.loadLogs()).filter(
 						(log) => !options.excludeLogs?.includes(log.name)
 					);
@@ -447,21 +450,28 @@ export class RocksTransactionLogStore extends EventEmitter {
 							if (!latestLogs.includes(log)) {
 								logs.splice(i, 1);
 								iterators.splice(i, 1);
+								nextEntries?.splice(i, 1);
+								observedExactStarts.delete(log.name);
 								expectedExactStarts.splice(i--, 1);
 							}
 						}
 					}
 				}
-				nextEntries = iterators.map((iterator, i) => {
-					const result = safeNext(iterator, logs[i]);
-					const expected = expectedExactStarts[i];
-					if (expected !== undefined && !observedExactStarts.has(logs[i].name)) {
-						observedExactStarts.add(logs[i].name);
-						if (options.resumeAfterExactStart) return resumePastExactStart(result, iterator, logs[i], expected);
-						if (result.done || result.value.timestamp !== expected) exactStartFailures.set(logs[i].name, 'missing');
-					}
-					return result;
-				});
+			};
+			const pull = (i: number) => {
+				const iterator = iterators[i];
+				const result = safeNext(iterator, logs[i]);
+				const expected = expectedExactStarts[i];
+				if (expected !== undefined && !observedExactStarts.has(logs[i].name)) {
+					observedExactStarts.add(logs[i].name);
+					if (options.resumeAfterExactStart) return resumePastExactStart(result, iterator, logs[i], expected);
+					if (result.done || result.value.timestamp !== expected) exactStartFailures.set(logs[i].name, 'missing');
+				}
+				return result;
+			};
+			const updateIterators = () => {
+				syncLogs();
+				nextEntries = iterators.map((_iterator, i) => pull(i));
 			};
 			updateIterators();
 
@@ -487,6 +497,11 @@ export class RocksTransactionLogStore extends EventEmitter {
 							// we re-retrieve all the next entries (in case we are resuming after
 							// being done)
 							updateIterators();
+						} else if (excludeLogsChanged && !midTransaction) {
+							// a re-admitted log joins at the next transaction boundary, without re-pulling the entries
+							// already queued, so a log that never drains cannot starve it
+							syncLogs();
+							for (let i = nextEntries.length; i < logs.length; i++) nextEntries.push(pull(i));
 						}
 						let earliest: TransactionEntry;
 						let earliestIndex = -1;
@@ -511,6 +526,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 								iterators[earliestIndex].lastEndTxn = earliest.endTxn;
 							}
 							nextEntries[earliestIndex] = safeNext(iterators[earliestIndex], logs[earliestIndex]);
+							midTransaction = !earliest.endTxn;
 							return {
 								value: onlyKeys ? earliest.timestamp : earliest,
 								done: false,
@@ -523,9 +539,9 @@ export class RocksTransactionLogStore extends EventEmitter {
 				},
 				addLog(logName: string) {
 					let index = options.excludeLogs?.indexOf(logName);
-					if (index >= 0) {
-						options.excludeLogs.splice(index, 1);
-					}
+					if (index >= 0) options.excludeLogs.splice(index, 1);
+					// even when the caller already removed it from excludeLogs: the store's log list did not change
+					excludeLogsChanged = true;
 				},
 				removeLog: (logName: string) => {
 					const log = this.logByName.get(logName);
@@ -537,6 +553,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 						iterators.splice(index, 1);
 						expectedExactStarts.splice(index, 1);
 						nextEntries.splice(index, 1);
+						observedExactStarts.delete(logName);
 						options.excludeLogs.push(logName);
 					}
 				},
