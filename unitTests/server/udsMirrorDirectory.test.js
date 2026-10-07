@@ -19,8 +19,8 @@ function modeOf(filePath) {
 	return fs.statSync(filePath).mode & 0o777;
 }
 
-// Real containment, not a string-prefix match: `startsWith` alone would admit a sibling like
-// `<root>-evil`.
+// Checks a real path boundary (resolved path plus separator), not a string prefix, so a sibling
+// directory like `<root>-evil` does not count as contained.
 function isWithinTestRoot(candidatePath) {
 	const resolved = path.resolve(candidatePath);
 	const root = path.resolve(testUtils.ENV_DIR_PATH);
@@ -50,8 +50,8 @@ describe('UDS mirror directory and metadata publication', () => {
 		beforeEach(() => {
 			const dir = path.join(env.getHdbBasePath(), 'sockets');
 			assert.ok(isWithinTestRoot(dir), `${dir} is outside the test root`);
-			// Only armed for cleanup once the containment check above has passed, so a failed
-			// assertion here leaves nothing for afterEach to delete.
+			// Assigned only once containment passes, so a failed assertion leaves the previous
+			// test's already-validated target in place for afterEach, never an unvalidated one.
 			SOCKETS_DIR = dir;
 			fs.rmSync(SOCKETS_DIR, { recursive: true, force: true });
 		});
