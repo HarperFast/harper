@@ -606,6 +606,7 @@ Consequence for callers that wrap the source in a hashing `Transform`: calling `
 
 ## Table drops, the `dropping` tombstone, and ghost tables
 
+<<<<<<< HEAD
 A table is a set of RocksDB column families (`T/` plus `T/<attr>`) and a set of catalog rows
 in the `__dbis__` store, with no transaction spanning the two. `Table.dropTable()` therefore
 persists a `dropping: true` flag on the table's primary catalog entry (`T/`) before any
@@ -616,6 +617,27 @@ dies or a drop fails partway, the tombstone survives; both the boot-time schema 
 interrupted drop instead of resurrecting the table. Without this, surviving catalog rows are
 silently re-opened with create-if-missing on the next start, which resurrects "deleted" tables
 (with their data, if the column families were never actually removed).
+=======
+`dropTableGeneration.test.js` enforces legacy primary/index names for first-time RocksDB creates (harper#3102), distinct names for recreates even after local-only reclamation, and recovery via a separate create-journal identity; `creatingStores` must stay separate from `stores`, which shipped 5.3 readers destructively reclaim without recognizing a published legacy primary. Previously stamped tables retain their names; replicated drop markers can also force a first local create to be stamped.
+
+A table is a set of RocksDB column families (`T/` plus `T/<attr>`) and a set of catalog rows in the
+`__dbis__` store, with no transaction spanning the two. `Table.dropTable()` therefore persists a
+`dropping: true` flag on the primary catalog entry (`T/`) before any destructive work, then drops the
+column families (awaited - a failed drop must surface as the operation's error), then removes the
+catalog rows. If the process dies or a drop fails partway, the tombstone survives; the boot-time schema
+load (`completeInterruptedDrop`) and a same-name `table()` create both complete the interrupted drop
+instead of re-opening the surviving rows with create-if-missing, which resurrected "deleted" tables.
+
+**Lifecycle stamps (harper#1212).** The tombstone is node-local, so a peer offline for a replicated
+`drop_table` would bring the table back through the schema handshake. Two durable facts give every node
+one rule: the primary row carries `createdTime` from create (`declareTable`, kept from a peer's propagated
+definition), and the tombstone carries `droppedTime` (`dropTable({ droppedTime })` applies a peer's), which
+every completion path promotes to a `/dropped/<table>` row (`promoteTombstoneToDropMarker`) before removing
+the tombstone — no second-write crash cut. Both come from `tableLifecycleTime()`, the record-version clock;
+`isDeadGeneration(createdTime, droppedTime)` is strict (equal survives, a missing stamp is 0). The marker
+outlives a same-name recreate, only a newer drop overwrites it, the load parser skips `/dropped/` rows, and
+`getTableDrops` / `recordTableDrop` / `onTableDropRecorded` serve replication. `unitTests/resources/dropTableLifecycle.test.js`.
+>>>>>>> 4db030f2a (Keep first-time table stores readable after a minor rollback)
 
 ## The exclusive `update-attributes` lock is a bounded synchronous wait, and drop-then-recreate needs the column-family eviction fix (`Table.ts`)
 

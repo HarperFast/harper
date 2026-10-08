@@ -595,6 +595,7 @@ type GenerationRow = {
 	generation: string;
 	phase: 'creating' | 'retired';
 	stores?: string[];
+	creatingStores?: string[];
 	primaryStore?: string;
 	blobSweepFailures?: number;
 };
@@ -649,6 +650,203 @@ export function recordRetiredGeneration(
 	});
 	return merged;
 }
+<<<<<<< HEAD
+=======
+const DROPPED_ROW_PREFIX = '/dropped/';
+const DROPPED_ROW_END = '/dropped0';
+const LIFECYCLE_STEP = 0.001;
+export interface TableDropMarker {
+	table: string;
+	droppedTime: number;
+	tableId?: number;
+}
+/**
+ * The record-version clock, floored strictly above `after`: a stamp synthesized here for a fact that
+ * follows another (a recreate after a known drop, a drop of a generation stamped by a faster peer clock)
+ * must order after it even when this node's clock has not caught up.
+ */
+export function tableLifecycleTime(after?: number): number {
+	const now = getNextMonotonicTime();
+	return Number.isFinite(after) && now <= after ? after + LIFECYCLE_STEP : now;
+}
+export function isDeadGeneration(createdTime: number | undefined, droppedTime: number): boolean {
+	return (Number.isFinite(createdTime) ? createdTime : 0) < droppedTime;
+}
+function droppedRowKey(tableName: string): string {
+	return DROPPED_ROW_PREFIX + tableName;
+}
+function dropMarkerStoreFor(databaseName: string): { rootStore: RootDatabaseKind; attributesDbi: any } | undefined {
+	if (!databases[databaseName]) return;
+	const rootStore = database({ database: databaseName, table: null });
+	const attributesDbi = (rootStore as any)?.dbisDb;
+	return attributesDbi ? { rootStore, attributesDbi } : undefined;
+}
+/**
+ * Read-compare-write of the newest drop time, serialized against every other writer: the catalog lock
+ * on RocksDB (held by the caller when `exclusive` is false), a write transaction on LMDB. A live
+ * tombstone is read again inside that section, so a drop that joined and raised its time cannot be
+ * promoted from a copy read earlier. A tombstone written before the stamps existed has no time, and no
+ * marker is synthesized for it: a time made up at completion could postdate a peer's live recreate.
+ */
+function writeTableDropMarker(
+	rootStore: RootDatabaseKind,
+	attributesDbi,
+	databaseName: string,
+	tableName: string,
+	droppedTime: number | undefined,
+	tableId: number | undefined,
+	exclusive: boolean,
+	tombstoneKey?: string
+): boolean {
+	const key = droppedRowKey(tableName);
+	const write = () => {
+		if (tombstoneKey) {
+			const live = attributesDbi.getSync(tombstoneKey);
+			if (live?.dropping && Number.isFinite(live.droppedTime) && !(droppedTime >= live.droppedTime)) {
+				droppedTime = live.droppedTime;
+				tableId = live.tableId ?? tableId;
+			}
+		}
+		if (!Number.isFinite(droppedTime)) {
+			if (rootStore instanceof RocksDatabase && tombstoneKey && !attributesDbi.getSync(key))
+				attributesDbi.putSync(key, { table: tableName, tableId });
+			return false;
+		}
+		const existing: TableDropMarker | undefined = attributesDbi.getSync(key);
+		if (existing && existing.droppedTime >= droppedTime) return false;
+		const marker: TableDropMarker = { table: tableName, droppedTime };
+		if (tableId != null) marker.tableId = tableId;
+		attributesDbi.putSync(key, marker);
+		return true;
+	};
+	let written: boolean;
+	if (rootStore instanceof RocksDatabase) {
+		written = exclusive
+			? withUpdateAttributesLock(rootStore, `drop marker for '${databaseName}.${tableName}'`, write)
+			: write();
+	} else {
+		written = (rootStore as any).transactionSync(write);
+	}
+	// Committed by here on both engines; emitted outside the caller's lock because listeners re-send
+	// schemas, which read this catalog.
+	if (written)
+		queueMicrotask(() => {
+			try {
+				databaseEventsEmitter.emit('tableDropRecorded', databaseName, tableName);
+			} catch (error) {
+				logger.warn(`A tableDropRecorded listener failed for ${databaseName}.${tableName}`, error);
+			}
+		});
+	return written;
+}
+export function getTableDrops(databaseName: string): TableDropMarker[] {
+	const store = dropMarkerStoreFor(databaseName);
+	if (!store) return [];
+	const markers: TableDropMarker[] = [];
+	for (const { value } of store.attributesDbi.getRange({ start: DROPPED_ROW_PREFIX, end: DROPPED_ROW_END })) {
+		if (value && typeof value.table === 'string' && Number.isFinite(value.droppedTime)) markers.push(value);
+	}
+	return markers;
+}
+/** A peer's drop of a table this node does not hold; false when the database is unknown here or the marker is not newer. */
+export function recordTableDrop(databaseName: string, tableName: string, droppedTime: number): boolean {
+	if (!Number.isFinite(droppedTime)) return false;
+	const store = dropMarkerStoreFor(databaseName);
+	if (!store) return false;
+	return writeTableDropMarker(
+		store.rootStore,
+		store.attributesDbi,
+		databaseName,
+		tableName,
+		droppedTime,
+		undefined,
+		true
+	);
+}
+export function onTableDropRecorded(listener: (databaseName: string, tableName: string) => void) {
+	databaseEventsEmitter.on('tableDropRecorded', listener);
+	return {
+		remove() {
+			databaseEventsEmitter.off('tableDropRecorded', listener);
+		},
+	};
+}
+/** The primary catalog row of a live table, under either key layout. */
+function primaryCatalogRowFor(table: {
+	dbisDB: any;
+	tableName: string;
+	primaryKey?: string;
+}): { key: string; value: any } | undefined {
+	const bareKey = table.tableName + '/';
+	const bare = table.dbisDB?.getSync(bareKey);
+	if (bare) return { key: bareKey, value: bare };
+	if (!table.primaryKey) return;
+	const legacyKey = `${table.tableName}/${table.primaryKey}`;
+	const legacy = table.dbisDB?.getSync(legacyKey);
+	return legacy?.isPrimaryKey ? { key: legacyKey, value: legacy } : undefined;
+}
+/** The stamp on disk, which a class loaded on another thread may not carry yet. */
+export function catalogCreatedTime(table: { dbisDB: any; tableName: string; primaryKey?: string }): number | undefined {
+	const createdTime = primaryCatalogRowFor(table)?.value?.createdTime;
+	return Number.isFinite(createdTime) ? createdTime : undefined;
+}
+/**
+ * Backfills the stamp of a generation created on a build that stored none, once a peer's stamped definition
+ * proves which generation it is. Only an absent stamp is written; false when one exists or the table is gone.
+ */
+export function stampTableCreatedTime(
+	table: { dbisDB: any; tableName: string; primaryKey?: string; primaryStore: any; createdTime?: number },
+	createdTime: number
+): boolean {
+	if (!Number.isFinite(createdTime)) return false;
+	const rootStore = table.primaryStore?.rootStore;
+	const attributesDbi = table.dbisDB;
+	if (!rootStore || !attributesDbi) return false;
+	const write = () => {
+		const row = primaryCatalogRowFor(table);
+		if (!row || row.value.dropping || Number.isFinite(row.value.createdTime)) return false;
+		row.value.createdTime = createdTime;
+		attributesDbi.putSync(row.key, row.value);
+		return true;
+	};
+	const written: boolean =
+		rootStore instanceof RocksDatabase
+			? withUpdateAttributesLock(rootStore, `stamp '${table.tableName}'`, write)
+			: (rootStore as any).transactionSync(write);
+	if (written) table.createdTime = createdTime;
+	return written;
+}
+/** The time a drop of this name carries for peers: its marker, or the live tombstone of a drop still completing. */
+export function pendingOrRecordedDropTime(databaseName: string, tableName: string): number | undefined {
+	const store = dropMarkerStoreFor(databaseName);
+	if (!store) return;
+	const marker: TableDropMarker | undefined = store.attributesDbi.getSync(droppedRowKey(tableName));
+	const tombstone = store.attributesDbi.getSync(tableName + '/');
+	const pending = tombstone?.dropping ? tombstone.droppedTime : undefined;
+	const candidates = [marker?.droppedTime, pending].filter((time) => Number.isFinite(time)) as number[];
+	return candidates.length ? Math.max(...candidates) : undefined;
+}
+/** Right before a completion path removes the live tombstone at `tombstoneKey`; RocksDB callers hold the catalog lock. */
+export function promoteTombstoneToDropMarker(
+	rootStore: RootDatabaseKind,
+	attributesDbi,
+	databaseName: string,
+	tableName: string,
+	tombstoneKey: string,
+	tombstone: { droppedTime?: number; tableId?: number } | undefined
+): void {
+	writeTableDropMarker(
+		rootStore,
+		attributesDbi,
+		databaseName,
+		tableName,
+		tombstone?.droppedTime,
+		tombstone?.tableId,
+		false,
+		tombstoneKey
+	);
+}
+>>>>>>> 4db030f2a (Keep first-time table stores readable after a minor rollback)
 export function storeNamesFor(attributesDbi, tableName: string, generation: string | undefined): string[] {
 	const names: string[] = [];
 	for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
@@ -3635,6 +3833,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let refreshedLiveAttributes = false;
 	let deferredPrimaryRow: any;
 	let generation: string | undefined;
+	let createJournal: GenerationRow | undefined;
 	let unpublishedPrimaryStore: any;
 	let published = false;
 	let fullTextValuesForPersistence: unknown;
@@ -4177,8 +4376,33 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				clearInterruptedDropEntries(rootStore.path, tableName);
 			}
 			if (rootStore instanceof RocksDatabase) {
-				generation = randomUUID();
-				attributesDbi.putSync(generationRowKey(generation), { table: tableName, generation, phase: 'creating' });
+				const journalId = randomUUID();
+				let hasPriorStores = Boolean(
+					attributesDbi.getSync(droppedRowKey(tableName)) || rootStore.columns.some((name) => name.startsWith(dbiName))
+				);
+				if (!hasPriorStores) {
+					for (const { value } of attributesDbi.getRange({ start: GENERATION_ROW_PREFIX, end: GENERATION_ROW_END })) {
+						if (value?.table === tableName) {
+							hasPriorStores = true;
+							break;
+						}
+					}
+				}
+				if (hasPriorStores) generation = journalId;
+				createJournal = {
+					table: tableName,
+					generation: journalId,
+					phase: 'creating',
+					primaryStore: storeNameFor(dbiName, generation),
+					// Shipped 5.3 readers reclaim `stores` even when a bare primary row was published.
+					creatingStores: [
+						storeNameFor(dbiName, generation),
+						...attributes
+							.filter((attribute) => attribute.indexed && !attribute.isPrimaryKey && !attribute.relationship)
+							.map((attribute) => storeNameFor(`${dbiName}${attribute.name}`, generation)),
+					],
+				};
+				attributesDbi.putSync(generationRowKey(journalId), createJournal);
 				primaryStore = openRocksDatabase(rootStore.path, {
 					...dbiInit,
 					name: storeNameFor(dbiName, generation),
@@ -4200,6 +4424,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 
 			primaryKeyAttribute.tableId = primaryStore.tableId;
 			if (generation) primaryKeyAttribute.generation = generation;
+			else delete primaryKeyAttribute.generation;
 			Table = makeTable({
 				isBranch: Boolean(target.branch),
 				primaryStore,
@@ -4687,13 +4912,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		// below is a no-op for a create — a table is never published with an incomplete relationship list.
 		if (deferredPrimaryRow) {
 			attributesDbi.put(tableName + '/', deferredPrimaryRow);
-			if (generation) attributesDbi.remove(generationRowKey(generation));
 			// That write, not the registration below, is the publish point: it is durable from here
 			// (on LMDB releaseLock()'s finally commits this create's write transaction even while an
 			// error unwinds), so any later throw must leave the catalog alone. Rolling back past it
 			// would delete the attribute rows out from under a live primary row and leave every
 			// thread loading the primary-only schema this change exists to prevent.
 			published = true;
+			if (createJournal) attributesDbi.remove(generationRowKey(createJournal.generation));
 			setTable(tables, tableName, Table);
 		}
 		// a table with no declared primary key has no attribute row to carry relationships, and the
@@ -4806,10 +5031,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		}
 	}
 	function discardUnpublishedTable() {
+		let cleanupFailed = false;
 		const discard = (description: string, action: () => unknown) => {
 			try {
 				action();
 			} catch (discardError) {
+				cleanupFailed = true;
 				logger.warn(
 					`Error discarding ${description} of the failed create of ${databaseName}.${tableName}`,
 					discardError
@@ -4825,13 +5052,15 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		// an LMDB store is a per-environment handle slot shared with every thread and still inside this
 		// create's write transaction; only RocksDB column-family handles hold native state to release
 		if (rootStore instanceof RocksDatabase) {
-			if (generation) {
-				const suffix = '@' + generation;
+			if (createJournal) {
+				const suffix = '@' + createJournal.generation;
+				const stores = new Set(createJournal.creatingStores);
 				for (const columnName of [...((rootStore as any).columns as string[])]) {
-					if (columnName.endsWith(suffix))
+					if (stores.has(columnName) || columnName.endsWith(suffix))
 						discard(`store ${columnName}`, () => dropColumnFamily(rootStore, columnName));
 				}
-				discard('generation journal row', () => attributesDbi.remove(generationRowKey(generation)));
+				if (!cleanupFailed)
+					discard('generation journal row', () => attributesDbi.remove(generationRowKey(createJournal.generation)));
 			}
 			for (const indexName in Table?.indices ?? {})
 				discard(`index ${indexName}`, () => Table.indices[indexName].close());
@@ -5424,13 +5653,20 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 					continue;
 				}
 				const live = attributesDbi.getSync(value.table + '/');
-				if (value.phase === 'creating' && live?.generation === value.generation && !live.dropping) {
+				const publishedCreate =
+					live &&
+					(typeof value.primaryStore === 'string'
+						? storeNameFor(value.table + '/', live.generation) === value.primaryStore
+						: live.generation === value.generation);
+				if (value.phase === 'creating' && publishedCreate) {
 					attributesDbi.remove(key);
 					resetGenerationReclaimDelay(rootStore);
 					continue;
 				}
 				const suffix = '@' + value.generation;
-				const retired = new Set(value.stores ?? []);
+				const retired = new Set(
+					value.phase === 'creating' ? (value.creatingStores ?? value.stores ?? []) : (value.stores ?? [])
+				);
 				const columns = [...((rootStore as any).columns as string[])];
 				if (value.phase === 'retired' && value.primaryStore && columns.includes(value.primaryStore)) {
 					if (manageThreads.ownsStoreMaintenance(rootStore.path))
