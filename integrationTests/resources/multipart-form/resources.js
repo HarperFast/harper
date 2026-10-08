@@ -5,6 +5,10 @@ export class StreamingUpload extends tables.StoredUpload {
 	static streamRequestBody = ['post'];
 
 	async post(data, target) {
+		data = await data;
+		if (!data?.[Symbol.asyncIterator]) {
+			throw Object.assign(new Error('Expected multipart/form-data'), { statusCode: 415 });
+		}
 		const fields = {};
 		const saved = [];
 		const context = this.getContext();
@@ -87,6 +91,14 @@ export class UncommittedUpload extends StreamingUpload {
 		for await (const part of data) {
 			if (part.file) await tables.StoredUpload.put({ id: target.id, file: part.file });
 		}
+	}
+}
+
+export class UncommittedReturnUpload extends StreamingUpload {
+	async post(data, target) {
+		const { value } = await data.next();
+		await tables.StoredUpload.put({ id: target.id, file: value.file });
+		return { ok: true };
 	}
 }
 

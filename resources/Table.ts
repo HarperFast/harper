@@ -646,11 +646,13 @@ interface TableResourceInstance<Record extends object = any> {
 	 * @deprecated Override the resource operation for application-specific authorization.
 	 */
 	allowUpdate(user: User, updatedData: Record, context: Context): boolean;
+	allowUpdate(user: User, updatedData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
 	/**
 	 * Determine if the user is allowed to create new data in the current resource
 	 * @deprecated Override the resource operation for application-specific authorization.
 	 */
 	allowCreate(user: User, newData: Record, context: Context): boolean;
+	allowCreate(user: User, newData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
 	/**
 	 * Determine if the user is allowed to delete from the current resource
 	 * @deprecated Override the resource operation for application-specific authorization.
@@ -3471,13 +3473,16 @@ export function makeTable(options): TableResourceClass {
 		 * Determine if the user is allowed to update data from the current resource
 		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
-		// @ts-expect-error Tables only allow synchronous allowUpdate checks.
-		// eslint-disable-next-line no-unused-vars
-		allowUpdate(user: User, updatedData: Record, context: Context): boolean {
+		allowUpdate(user: User, updatedData: Record, context: Context): boolean;
+		allowUpdate(user: User, updatedData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
+		allowUpdate(user: User, updatedData: Record | Promise<Record>, context: Context): boolean | Promise<boolean> {
 			const tablePermission = getTablePermissions(user);
 			if (tablePermission?.update) {
 				const attribute_permissions = tablePermission.attribute_permissions;
 				if (attribute_permissions?.length > 0) {
+					if (typeof (updatedData as Promise<Record>)?.then === 'function') {
+						return (updatedData as Promise<Record>).then((data) => this.allowUpdate(user, data, context));
+					}
 					// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
 					const attrsForType = attributesAsObject(attribute_permissions, 'update');
 					for (const key in updatedData) {
@@ -3500,13 +3505,17 @@ export function makeTable(options): TableResourceClass {
 		 * Determine if the user is allowed to create new data in the current resource
 		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
-		// @ts-expect-error Tables only allow synchronous allowCreate checks.
-		allowCreate(user: User, newData: Record, context: Context): boolean {
+		allowCreate(user: User, newData: Record, context: Context): boolean;
+		allowCreate(user: User, newData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
+		allowCreate(user: User, newData: Record | Promise<Record>, context: Context): boolean | Promise<boolean> {
 			if (this.isCollection) {
 				const tablePermission = getTablePermissions(user);
 				if (tablePermission?.insert) {
 					const attribute_permissions = tablePermission.attribute_permissions;
 					if (attribute_permissions?.length > 0) {
+						if (typeof (newData as Promise<Record>)?.then === 'function') {
+							return (newData as Promise<Record>).then((data) => this.allowCreate(user, data, context));
+						}
 						// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
 						const attrsForType = attributesAsObject(attribute_permissions, 'insert');
 						for (const key in newData) {

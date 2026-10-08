@@ -29,7 +29,7 @@ interface IncomingMessage extends NodeIncomingMessage {
  * We define our own request class, to ensure that it has integrity against leaks in a secure environment
  * and for better conformance to WHATWG standards.
  */
-export class Request {
+export class Request<Body = any> {
 	#body: RequestBody | undefined;
 	#peerCertificate: any;
 	#abortController = new AbortController();
@@ -61,7 +61,7 @@ export class Request {
 	public replicatedConfirmation?: number;
 	public replicateTo?: any;
 	public replicateFrom?: any;
-	public data?: ResourceBody<unknown>;
+	public data?: ResourceBody<Body>;
 	public authorize?: boolean;
 	public lastModified?: number;
 	public lastRefreshed?: number;

@@ -263,6 +263,48 @@ describe('Permissions through Resource API', () => {
 		}
 		assert(caught_error.message.includes('Unauthorized access'));
 	});
+	it('Rejects promised updates with a restricted attribute', async function () {
+		await assert.rejects(
+			async () =>
+				TestTable.put('id-8', Promise.resolve({ prop1: 'forbidden' }), {
+					user: attribute_authorized_role,
+					authorize: true,
+				}),
+			/Unauthorized access/
+		);
+		assert.equal((await TestTable.get('id-8')).prop1, 'test');
+	});
+	it('Rejects promised creates with a restricted attribute', async function () {
+		await assert.rejects(
+			async () =>
+				TestTable.post(new RequestTarget('/'), Promise.resolve({ prop1: 'forbidden' }), {
+					user: attribute_authorized_role,
+					authorize: true,
+				}),
+			/Unauthorized access/
+		);
+	});
+	it('Allows promised writes with permitted attributes', async function () {
+		await TestTable.put('id-9', Promise.resolve({ name: 'permitted' }), {
+			user: attribute_authorized_role,
+			authorize: true,
+		});
+		assert.equal((await TestTable.get('id-9')).name, 'permitted');
+		const id = await TestTable.post(new RequestTarget('/'), Promise.resolve({ name: 'permitted create' }), {
+			user: attribute_authorized_role,
+			authorize: true,
+		});
+		assert.equal((await TestTable.get(id)).name, 'permitted create');
+	});
+	it('Keeps concrete-record attribute checks synchronous', function () {
+		const context = { user: attribute_authorized_role, authorize: true };
+		const record = new TestTable('id-8', context);
+		const collection = new TestTable(new RequestTarget('/'), context);
+		assert.strictEqual(record.allowUpdate(attribute_authorized_role, { name: 'permitted' }, context), true);
+		assert.strictEqual(record.allowUpdate(attribute_authorized_role, { prop1: 'forbidden' }, context), false);
+		assert.strictEqual(collection.allowCreate(attribute_authorized_role, { name: 'permitted' }, context), true);
+		assert.strictEqual(collection.allowCreate(attribute_authorized_role, { prop1: 'forbidden' }, context), false);
+	});
 });
 
 describe('Bare collection POST authorization', () => {

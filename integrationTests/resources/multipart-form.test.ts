@@ -75,6 +75,16 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 		});
 	});
 
+	test('lets a multipart-only streaming consumer reject ordinary JSON with 415', async () => {
+		const response = await fetch(`${ctx.harper.httpURL}/StreamingUpload/json`, {
+			method: 'POST',
+			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ title: 'ordinary body' }),
+			signal: AbortSignal.timeout(10000),
+		});
+		assert.equal(response.status, 415, await response.text());
+	});
+
 	test('delivers and persists streaming files before the client finishes sending', async () => {
 		const boundary = '----=_IntegrationForm';
 		const payload = Buffer.alloc(200000, 'x');
@@ -227,24 +237,26 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 		assert.equal(response.status, 200, await response.text());
 	});
 
-	test('requires staged Blob writes to finish before advancing to another part', async () => {
-		const form = new FormData();
-		form.append('file', new Blob([Buffer.alloc(200000)]), 'uncommitted.bin');
-		const response = await fetch(`${ctx.harper.httpURL}/UncommittedUpload/uncommitted`, {
-			method: 'POST',
-			headers: { Authorization: authorization },
-			body: form,
-			signal: AbortSignal.timeout(10000),
+	for (const route of ['UncommittedUpload', 'UncommittedReturnUpload']) {
+		test(`reports an unfinished staged Blob write as a handler fault (${route})`, async () => {
+			const form = new FormData();
+			form.append('file', new Blob([Buffer.alloc(200000)]), 'uncommitted.bin');
+			const response = await fetch(`${ctx.harper.httpURL}/${route}/uncommitted`, {
+				method: 'POST',
+				headers: { Authorization: authorization },
+				body: form,
+				signal: AbortSignal.timeout(10000),
+			});
+			assert.equal(response.status, 500);
+			assert.match(await response.text(), /ServerError/);
+			const record = await fetch(`${ctx.harper.httpURL}/StoredUpload/uncommitted`, {
+				headers: { Authorization: authorization },
+				signal: AbortSignal.timeout(10000),
+			});
+			assert.equal(record.status, 404);
+			await record.text();
 		});
-		assert.equal(response.status, 400);
-		assert.match(await response.text(), /commit staged Blob writes/);
-		const record = await fetch(`${ctx.harper.httpURL}/StoredUpload/uncommitted`, {
-			headers: { Authorization: authorization },
-			signal: AbortSignal.timeout(10000),
-		});
-		assert.equal(record.status, 404);
-		await record.text();
-	});
+	}
 
 	test('finishes a slow response before closing an ignored upload', { timeout: 15000 }, async () => {
 		const uploading = httpRequest(`${ctx.harper.httpURL}/SlowResponseUpload/slow`, {
@@ -322,6 +334,28 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 			if (allowFile) assert.equal((await read(`/ReadUpload/${username}-0`)).text, 'permitted file');
 			else {
 				const record = await fetch(`${ctx.harper.httpURL}/StoredUpload/${username}-0`, {
+					headers: { Authorization: authorization },
+					signal: AbortSignal.timeout(10000),
+				});
+				assert.equal(record.status, 404);
+				await record.text();
+			}
+		});
+		test(`enforces file attribute permissions on a buffered form (${allowFile ? 'allowed' : 'denied'})`, async () => {
+			const username = `multipart-${allowFile}`;
+			const form = new FormData();
+			form.append('file', new Blob(['buffered permission']), 'buffered.txt');
+			const id = `${username}-buffered`;
+			const response = await fetch(`${ctx.harper.httpURL}/StoredUpload/${id}`, {
+				method: 'PUT',
+				headers: { Authorization: `Basic ${Buffer.from(`${username}:multipart-test-password`).toString('base64')}` },
+				body: form,
+				signal: AbortSignal.timeout(10000),
+			});
+			assert.equal(response.status, allowFile ? 204 : 403, await response.text());
+			if (allowFile) assert.equal((await read(`/ReadUpload/${id}`)).text, 'buffered permission');
+			else {
+				const record = await fetch(`${ctx.harper.httpURL}/StoredUpload/${id}`, {
 					headers: { Authorization: authorization },
 					signal: AbortSignal.timeout(10000),
 				});
