@@ -180,8 +180,8 @@ jobs:
           HARPER_LEGACY_VERSION_PATH: /tmp/harperdb-legacy/node_modules/harperdb
           HARPER_LEGACY_51_PATH: /tmp/harper-legacy-51/node_modules/harper/dist/bin/harper.js
           HARPER_LEGACY_530_PRERELEASE_PATH: /tmp/harper-legacy-530-prerelease/node_modules/harper/dist/bin/harper.js
-          # The previous minor's latest patch, plus the latest release of package.json's own minor once one
-          # is published; re-pin both when package.json's minor advances.
+          # Pinned releases of the previous minor and of package.json's own minor; re-pin both when
+          # package.json's minor advances.
           HARPER_PREVIOUS_MINOR_PATH: /tmp/harper-prev-minor-52/node_modules/harper:/tmp/harper-prev-minor-53/node_modules/harper
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
           # Linux runners have working inotify, so the file-watch-dependent TLS regression

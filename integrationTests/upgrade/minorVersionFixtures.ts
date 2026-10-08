@@ -37,6 +37,10 @@ export const NO_PREVIOUS_MINOR = 'HARPER_PREVIOUS_MINOR_PATH is not set';
 // The uWS HTTP job never sets HARPER_PREVIOUS_MINOR_PATH: registry installs carry no uWebSockets.js.
 export const skipCrossVersion = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
+// sendOperation takes no deadline, and a suite timeout starts only after its before() hooks finish, so
+// the suites pass this to both; either way teardown still runs.
+export const SUITE_TIMEOUT_MS = 10 * 60_000;
+
 export const FIRST_BOOT_ENV = { TC_AGREEMENT: 'yes', REPLICATION_HOSTNAME: 'localhost' };
 
 type Thing = {

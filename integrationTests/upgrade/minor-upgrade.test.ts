@@ -36,6 +36,7 @@ import { existsSync } from 'node:fs';
 import {
 	FIRST_BOOT_ENV,
 	NO_PREVIOUS_MINOR,
+	SUITE_TIMEOUT_MS,
 	buildWidgets,
 	previousMinorInstalls,
 	seedMinorFixtures,
@@ -49,14 +50,17 @@ if (previousMinorInstalls.length === 0)
 for (const previousMinor of previousMinorInstalls) {
 	suite(
 		`v${previousMinor.version} → current minor upgrade: data integrity + schema migration`,
-		{ skip: skipCrossVersion },
+		{ skip: skipCrossVersion, timeout: SUITE_TIMEOUT_MS },
 		(ctx: ContextWithHarper) => {
 			const widgets = buildWidgets();
 
-			before(async () => {
-				await startHarper(ctx, { config: {}, env: FIRST_BOOT_ENV, harperBinPath: previousMinor.binPath });
-				await seedMinorFixtures(ctx.harper);
-			});
+			before(
+				async () => {
+					await startHarper(ctx, { config: {}, env: FIRST_BOOT_ENV, harperBinPath: previousMinor.binPath });
+					await seedMinorFixtures(ctx.harper);
+				},
+				{ timeout: SUITE_TIMEOUT_MS }
+			);
 
 			after(async () => {
 				await teardownHarper(ctx);
@@ -188,18 +192,21 @@ for (const previousMinor of previousMinorInstalls) {
 
 	suite(
 		`v${previousMinor.version} → current minor upgrade: cold restart fidelity`,
-		{ skip: skipCrossVersion },
+		{ skip: skipCrossVersion, timeout: SUITE_TIMEOUT_MS },
 		(ctx: ContextWithHarper) => {
 			const widgets = buildWidgets();
 
-			before(async () => {
-				await startHarper(ctx, { config: {}, env: FIRST_BOOT_ENV, harperBinPath: previousMinor.binPath });
-				await seedWidgets(ctx.harper, widgets);
+			before(
+				async () => {
+					await startHarper(ctx, { config: {}, env: FIRST_BOOT_ENV, harperBinPath: previousMinor.binPath });
+					await seedWidgets(ctx.harper, widgets);
 
-				// Initial upgrade: kill previous-minor, start current build once
-				await killHarper(ctx);
-				await startHarper(ctx, { config: {}, env: {} });
-			});
+					// Initial upgrade: kill previous-minor, start current build once
+					await killHarper(ctx);
+					await startHarper(ctx, { config: {}, env: {} });
+				},
+				{ timeout: SUITE_TIMEOUT_MS }
+			);
 
 			after(async () => {
 				await teardownHarper(ctx);
