@@ -54,8 +54,14 @@ export function buildWorkflowRef(repository: string, workflow: string, branch: s
 /** The repository-relative path GitHub names in workflow_ref, used for both the file check and the claim. */
 export function canonicalWorkflowPath(workflow: string): string {
 	const normalized = posix.normalize(workflow.replaceAll('\\', '/')).replace(/^\.\//, '');
-	if (!normalized.startsWith('.github/workflows/') || normalized.split('/').length !== 3) {
-		throw cliError(`workflow=${workflow} must name a file in .github/workflows/, where GitHub reads workflows.`);
+	if (
+		!normalized.startsWith('.github/workflows/') ||
+		normalized.split('/').length !== 3 ||
+		!/\.ya?ml$/.test(normalized)
+	) {
+		throw cliError(
+			`workflow=${workflow} must name a .yml or .yaml file in .github/workflows/, where GitHub reads workflows.`
+		);
 	}
 	return normalized;
 }
@@ -97,7 +103,7 @@ export function checkWorkflowFile(content: string, branch: string, environment: 
 	}
 	const triggers = workflow?.on;
 	const push = triggers && typeof triggers === 'object' && !Array.isArray(triggers) ? triggers.push : undefined;
-	const branches = asList(push?.branches);
+	const branches = asList(push?.branches).map(String);
 	const otherTriggers =
 		triggers && typeof triggers === 'object' && !Array.isArray(triggers)
 			? Object.keys(triggers).filter((name) => !['push', 'pull_request', 'pull_request_target'].includes(name))

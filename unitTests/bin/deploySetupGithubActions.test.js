@@ -84,8 +84,9 @@ describe('deploySetupGithubActions', () => {
 				'/Users/me/app/.github/workflows/deploy.yaml',
 				'deploy.yaml',
 				'.github/workflows/ci/deploy.yaml',
+				'.github/workflows/deploy.yaml.bak',
 			]) {
-				assert.throws(() => canonicalWorkflowPath(path), /must name a file in \.github\/workflows\//);
+				assert.throws(() => canonicalWorkflowPath(path), /must name a \.yml or \.yaml file in \.github\/workflows\//);
 			}
 		});
 	});
@@ -193,6 +194,12 @@ jobs:
 			const { problems, unverified } = checkWorkflowFile(content, 'main', 'production');
 			assert.deepStrictEqual(problems, []);
 			assert.match(unverified[0], /"production" environment/);
+		});
+
+		// YAML reads an unquoted 1.0 as a number; GitHub matches it as the branch name it spells.
+		it('compares branch entries as text', () => {
+			const content = 'on:\n  push:\n    branches: [1.0]\njobs:\n  deploy:\n    environment: production\n';
+			assert.deepStrictEqual(checkWorkflowFile(content, '1.0', 'production').problems, []);
 		});
 
 		it('refuses an environment no job runs in', () => {
