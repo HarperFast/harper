@@ -42,8 +42,9 @@ export async function stageRestore(backupDir: string, backupId: number, lock: Re
 	const stagingDir = restoreStagingPath(databaseDir);
 	try {
 		mkdirSync(stagingDir);
-		// the replacement keeps the access the database directory had, rather than the process umask's
-		if (pathPresent(databaseDir)) chmodSync(stagingDir, lstatSync(databaseDir).mode & 0o7777);
+		// After a crash between the publication renames, `.replaced` is the only record of that access.
+		const modeSource = pathPresent(databaseDir) ? databaseDir : restoreReplacedPath(databaseDir);
+		if (pathPresent(modeSource)) chmodSync(stagingDir, lstatSync(modeSource).mode & 0o7777);
 		await backups.restore(backupDir, stagingDir, { backupId, mode: 'purgeAllFiles' });
 		const logsDir = join(stagingDir, 'transaction_logs');
 		if (pathPresent(logsDir)) {
@@ -81,8 +82,7 @@ export function publishStagedRestore(lock: RestoreLock, state: PublishResult): v
 	const parentDir = dirname(databaseDir);
 	const metaDir = restoreMetaDir(databaseDir);
 	if (pathPresent(replacedDir)) {
-		// An interrupted publication: `.replaced` holds the pre-restore database, and anything at the
-		// database path is a candidate an earlier attempt published and never finished.
+		// Whatever is at the database path is a candidate an earlier attempt published and never finished.
 		state.destroyed = true;
 		rmSync(databaseDir, { recursive: true, force: true });
 	} else if (pathPresent(databaseDir)) {
@@ -97,6 +97,8 @@ export function publishStagedRestore(lock: RestoreLock, state: PublishResult): v
 		if (pathPresent(replacedDir)) rollBackPublication(replacedDir, databaseDir, state);
 		throw error;
 	}
+	// Even with nothing displaced, a published engine whose blobs never landed must keep its marker.
+	state.destroyed = true;
 	fsyncDirectory(metaDir);
 	fsyncDirectory(parentDir);
 }

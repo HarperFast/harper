@@ -59,8 +59,8 @@ export const RESTORE_META_DIR = '`restore`';
 export const RESTORE_LOCK_SUFFIX = '.lock';
 export const RESTORING_MARKER_SUFFIX = '.restoring';
 export const DROPPING_MARKER_SUFFIX = '.dropping';
-export const RESTORE_STAGING_SUFFIX = '.staging';
-export const RESTORE_REPLACED_SUFFIX = '.replaced';
+const RESTORE_STAGING_SUFFIX = '.staging';
+const RESTORE_REPLACED_SUFFIX = '.replaced';
 // Deliberately not a `.restoring` suffix: `scanBlockedRestores` selects markers by that suffix, and
 // a half-written temp must never be mistaken for one.
 const MARKER_TEMP_SUFFIX = '.tmp';
@@ -94,12 +94,10 @@ export function restoringMarkerPath(dbPath: string): string {
 	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + RESTORING_MARKER_SUFFIX);
 }
 
-/** Where a restore builds and proves the replacement before it touches the database directory. */
 export function restoreStagingPath(dbPath: string): string {
 	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + RESTORE_STAGING_SUFFIX);
 }
 
-/** Where the database directory waits while its replacement is published. */
 export function restoreReplacedPath(dbPath: string): string {
 	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + RESTORE_REPLACED_SUFFIX);
 }

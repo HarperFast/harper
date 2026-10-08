@@ -18,6 +18,7 @@ const {
 const { dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { spawn } = require('node:child_process');
+const { syncBuiltinESMExports } = require('node:module');
 const { extract } = require('tar-stream');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const {
@@ -485,10 +486,13 @@ describe('rocksdbBackup', function () {
 						throw Object.assign(new Error('injected EXDEV'), { code: 'EXDEV' });
 					return realRename(from, to);
 				};
+				// under TypeStrip the module binds the ESM builtin export, which only this re-syncs
+				syncBuiltinESMExports();
 				try {
 					await assert.rejects(restore(backupId), /injected EXDEV/);
 				} finally {
 					fs.renameSync = realRename;
+					syncBuiltinESMExports();
 				}
 				assertDestinationIntact();
 			});
@@ -503,6 +507,29 @@ describe('rocksdbBackup', function () {
 			assertRestoredFromBackup();
 			assert.strictEqual(lstatSync(stagedDir()).mode & 0o777, 0o700);
 			assertNoDebris();
+		});
+
+		// Nothing was displaced, so only the published engine says the destination changed; the marker
+		// has to outlive a blob restore that fails after it.
+		it('keeps the marker when a restore into a new target fails after publication', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const TARGET = `${STAGED}-target`;
+			const targetDir = join(storageDir, TARGET);
+			const realRestoreBlobs = blobBackupModule.restoreBlobSnapshot;
+			blobBackupModule.restoreBlobSnapshot = async () => {
+				throw new Error('injected blob failure');
+			};
+			try {
+				await assert.rejects(restoreBackupOffline(STAGED, backupId, TARGET), /injected blob failure/);
+				assert.strictEqual(checkRestoreState(targetDir), 'incomplete');
+			} finally {
+				blobBackupModule.restoreBlobSnapshot = realRestoreBlobs;
+				completeRestore(beginRestore(targetDir));
+				rmSync(targetDir, { recursive: true, force: true });
+				rmSync(restoreStagingPath(targetDir), { recursive: true, force: true });
+				for (const root of getBlobPathsForDatabaseName(TARGET)) rmSync(root, { recursive: true, force: true });
+			}
 		});
 
 		it('refuses a symlinked database directory before staging anything', async function () {
@@ -542,6 +569,7 @@ describe('rocksdbBackup', function () {
 					rename(from, to);
 					if (to.endsWith('.replaced')) process.kill(process.pid, 'SIGKILL');
 				};
+				require('node:module').syncBuiltinESMExports();
 				const backup = require(${JSON.stringify(require.resolve('#src/dataLayer/rocksdbBackup'))});
 				backup.restoreBackupOffline(${JSON.stringify(STAGED)}, ${backupId})
 					.then(() => process.exit(2), (error) => { console.error(error); process.exit(3); });
@@ -565,7 +593,7 @@ describe('rocksdbBackup', function () {
 			assert.ok(existsSync(restoreReplacedPath(stagedDir())));
 		}
 
-		it('keeps the moved-aside database through a failed rerun, and a good rerun completes', async function () {
+		it('keeps the moved-aside database through a failed rerun', async function () {
 			this.timeout(60000);
 			const good = await seed();
 			await killBetweenRenames(good);
@@ -575,13 +603,15 @@ describe('rocksdbBackup', function () {
 			assert.ok(existsSync(restoreReplacedPath(stagedDir())), 'and the only copy of the database');
 		});
 
-		it('reruns a publication interrupted between its renames', async function () {
+		it('reruns a publication interrupted between its renames, keeping the moved-aside mode', async function () {
 			this.timeout(60000);
 			const backupId = await seed();
+			chmodSync(stagedDir(), 0o700);
 			await killBetweenRenames(backupId);
 			await restoreBackupOffline(STAGED, backupId);
 			assert.strictEqual(checkRestoreState(stagedDir()), 'clear');
 			assertRestoredFromBackup();
+			if (process.platform !== 'win32') assert.strictEqual(lstatSync(stagedDir()).mode & 0o777, 0o700);
 			assertNoDebris();
 		});
 	});

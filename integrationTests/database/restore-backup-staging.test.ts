@@ -179,15 +179,15 @@ suite('restore_backup verifies before it replaces (harper#2965)', { skip: skipSu
 		corruptManifest(corruptId);
 
 		const { exit, out } = await cliRestore(corruptId);
-		ok(exit !== 0 || /was not modified/.test(out), `CLI restore of a corrupt backup must fail; output:\n${out}`);
+		ok(exit !== 0, `CLI restore of a corrupt backup must fail; output:\n${out}`);
 		match(out, /was not modified/);
 
 		await start();
 		await expectIds(before, 'after offline refusal and restart');
 	});
 
-	// The success path runs offline: an online restore of a running database is refused before any
-	// staging is reached while its handles stay open (see the PR for the tracking issue).
+	// The success path runs offline: online, the restore stages but is then refused at the closure check
+	// while leaked handles stay open (harper#3120).
 	test('offline CLI: a valid backup is staged, swapped in, and survives a restart', async () => {
 		const validId = await createBackup();
 		const kept = await readIds();

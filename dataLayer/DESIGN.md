@@ -60,7 +60,7 @@ The `restore_backup` operation restores a user database on a live server by rest
 into a staging directory, closing the database across all worker threads, swapping the staged copy
 in, and reloading it. Several non-obvious mechanics keep that safe:
 
-- **Nothing is destroyed until this build has read the backup (harper#2965,
+- **Nothing is destroyed until this build has opened the backup (harper#2965,
   `dataLayer/restoreStaging.ts`).** `backups.restore`'s `purgeAllFiles` clears its target _before_
   copying, and an unreadable backup only fails inside the copy (checksum) or at the next open
   (an unsupported table `format_version`, or a transaction log with an unsupported header, which
@@ -70,7 +70,11 @@ in, and reloading it. Several non-obvious mechanics keep that safe:
   its name. The first rename is the one-way door the marker protocol guards, so a staging failure
   (corrupt, unreadable, `ENOSPC`) is a pre-destruction failure. Readability, not completeness, is the
   bar: validation is non-strict, since a torn log tail is something open-time recovery truncates and
-  the operator has no override to restore past a refusal. Cost: disk for one extra engine copy while
+  the operator has no override to restore past a refusal. The open's proof is bounded: with the
+  default table cache RocksDB loads only part of a large database's tables at open, so an
+  unsupported table outside that set still surfaces later, on a cold read. Opening every table
+  (`maxOpenFiles: -1`) would close that gap at the cost of a descriptor per table, which a large
+  database can exhaust. Cost: disk for one extra engine copy while
   staging; blob roots are not staged (they span filesystems and the archive capabilities already
   gate their encodings), so a blob-copy failure after publication still requires a rerun. A
   database directory that is a symlink is refused, since the swap would replace the link with a
@@ -78,7 +82,8 @@ in, and reloading it. Several non-obvious mechanics keep that safe:
   renames leaves it as the only copy of the database, so a rerun keeps it until its own replacement
   publishes (and treats whatever is at the database path then as a disposable candidate); only a
   fresh marker proves it is debris of a completed restore. A failed second rename moves it back, and
-  only a rollback whose directories were fsynced counts as "nothing destroyed".
+  only a rollback whose directories were fsynced counts as "nothing destroyed". Once staging is
+  published the marker stays on any later failure, even where nothing was displaced.
 
 - **Two files in an isolated `` `restore` `` directory beside (never inside) the database directory**,
   each keyed by `sha256(basename(dbPath)).slice(0,32)`: `<key>.lock`, an OS-level exclusive flock

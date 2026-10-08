@@ -536,8 +536,8 @@ files by hand.
 
 ## Restore
 
-Restore is destructive: it purges and rewrites the database directory — and every blob root — from
-the backup (blobs are restored automatically). Restore the latest backup in place:
+Restore is destructive: once the backup has been verified, it replaces the database directory — and
+rewrites every blob root — from the backup (blobs are restored automatically). Restore the latest backup in place:
 
     harper restore_backup database=${databaseName}
 
@@ -623,8 +623,9 @@ export async function validateRestoreBackup(request: any) {
 
 /**
  * Online restore of a user database (see the design's restore lock + marker protocol):
- * take the per-database restore lock, write the restoring marker, close the database across all
- * worker threads, restore, delete the marker, release the lock, and reload everywhere.
+ * take the per-database restore lock, write the restoring marker, stage and verify the backup, close
+ * the database across all worker threads, publish the staged copy, delete the marker, release the
+ * lock, and reload everywhere.
  */
 export async function restoreBackup(request: any) {
 	const databaseName = getDatabaseName(request);
@@ -661,7 +662,7 @@ export async function restoreBackup(request: any) {
 	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
 	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
 	// Once is enough: the decision reads the manifest and the opt-in, never the destination, so no
-	// concurrent writer can change the answer between here and the purge.
+	// concurrent writer can change the answer between here and publication.
 	assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
 	const pinId = restorePinId(databaseDir);
 	const restoreToken = randomUUID();
@@ -689,8 +690,8 @@ export async function restoreBackup(request: any) {
 		}
 		// A live component (or the system database) can hold its own handle on the database that
 		// Harper does not track and cannot close, so verify actual process-wide closure before
-		// purging — restoring under an open instance would corrupt it. If handles remain, fail
-		// with a clear pointer to the offline CLI path rather than purging.
+		// publishing — replacing the directory under an open instance would corrupt it. If handles
+		// remain, fail with a clear pointer to the offline CLI path instead.
 		await verifyDatabaseClosed(databaseDir, databaseName);
 		publishStagedRestore(lock, publication);
 		// restore blobs only for a backup that captured them (an engine-only backup leaves the live
@@ -855,7 +856,7 @@ function beginRestoreForDatabase(
  * surfaces it as a plain `Error` with no `code` and a message like
  * `IO error: While lock file: <db>/LOCK: Resource temporarily unavailable`, so string-matching is
  * the only signal available (there is no typed error to key on — a native primitive is a rocksdb-js
- * follow-on). We match conservatively and fail *closed* on a hit so the offline restore never purges
+ * follow-on). We match conservatively and fail *closed* on a hit so the offline restore never replaces
  * a database another process still has open.
  */
 function isRocksDbLockError(error: any): boolean {
