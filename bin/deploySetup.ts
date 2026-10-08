@@ -21,9 +21,6 @@
 // the hdb_secret row it writes — has to match what the deploy will derive from its own request, or it
 // seals a credential the deploy cannot use. Those derivations therefore come from
 // utility/componentNames.ts, the one module both this client and the server's deploy path use.
-//
-// `provider=github-actions` is a different setup — trust for a CI workflow's identity token, with
-// nothing sealed — and lives in deploySetupGithubActions.ts.
 
 import chalk from 'chalk';
 import { prompts } from '../utility/interactivePrompts.ts';
