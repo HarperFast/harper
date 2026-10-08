@@ -556,6 +556,7 @@ type TopicState = {
 	/** False while a resumed replay awaits its verdict; nothing is checkpointed past the resumed position until then. */
 	verified: boolean;
 	deliveredKey?: number;
+	/** Below every key of the last delivered transaction. */
 	keyBefore?: number;
 	highestKey?: number;
 	/** Each event has its own log key, as on LMDB; a RocksDB transaction's events share one. */
@@ -572,12 +573,19 @@ const RESETTING_REFUSALS = new Set(['RESUME_HISTORY_UNAVAILABLE']);
 
 const KEY_SCRATCH = new Float64Array(1);
 const KEY_BITS = new BigInt64Array(KEY_SCRATCH.buffer);
+<<<<<<< HEAD
 /** The greatest double below a log key, so a replay after it starts at the key. */
 function positionBefore(key: number): number {
 	if (key === 0) return -Number.MIN_VALUE;
 	// doubles of one sign order by their bit patterns, read as signed integers
 	KEY_SCRATCH[0] = key;
 	KEY_BITS[0] += key > 0 ? -1n : 1n;
+=======
+/** The greatest position below a log key, a positive double whose bits order as its value: a replay after it starts at the key. */
+function positionBefore(key: number): number {
+	KEY_SCRATCH[0] = key;
+	KEY_BITS[0] -= 1n;
+>>>>>>> 176dbfc3f (Keep a durable MQTT session's position below a delivered transaction that committed after a higher key)
 	return KEY_SCRATCH[0];
 }
 
@@ -737,6 +745,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				// a transaction can commit after one with a higher key, so it arrives below the last delivered key
 				state.keyBefore = key < state.deliveredKey ? positionBefore(key) : state.deliveredKey;
 				state.deliveredKey = key;
+<<<<<<< HEAD
 			}
 			// a message id wraps, so one can replace an outstanding entry
 			if (state.unacked.get(messageId)?.late) state.lateUnacked--;
@@ -747,6 +756,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				state.highestKey = key;
 				state.unacked.set(messageId, { key, previousKey: state.keyBefore });
 			}
+=======
+			}
+			state.unacked.set(messageId, { key, previousKey: state.keyBefore });
+>>>>>>> 176dbfc3f (Keep a durable MQTT session's position below a delivered transaction that committed after a higher key)
 		}
 		return messageId;
 	}
@@ -841,11 +854,18 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			: state.keysPerEntry
 				? state.deliveredKey
 				: state.keyBefore;
+<<<<<<< HEAD
 		for (const { previousKey } of state.unacked.values()) {
 			if (previousKey === undefined) return;
 			if (previousKey < boundary) boundary = previousKey;
 			// with none late, every unacked key is at or above the oldest's, so the oldest's bound holds for all
 			if (state.lateUnacked === 0) break;
+=======
+		// deliveries arrive in commit order, not key order, so the oldest unacked one need not hold the lowest bound
+		for (const { previousKey } of state.unacked.values()) {
+			if (previousKey === undefined) return;
+			if (previousKey < boundary) boundary = previousKey;
+>>>>>>> 176dbfc3f (Keep a durable MQTT session's position below a delivered transaction that committed after a higher key)
 		}
 		if (boundary === undefined || !certified) return boundary;
 		const progress = subscription.progress();

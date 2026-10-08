@@ -107,7 +107,11 @@ async function ackAll(session, received) {
 	for (const { messageId } of received) session.acknowledge(messageId);
 }
 
+<<<<<<< HEAD
 // its writes take its log key now, so it commits below whatever commits before the returned function is called
+=======
+/** Opens a transaction that takes its log key with its writes, and commits it when the returned function is called. */
+>>>>>>> 176dbfc3f (Keep a durable MQTT session's position below a delivered transaction that committed after a higher key)
 async function heldTransaction(T, ...ids) {
 	let commit;
 	const committed = transaction({}, async (context) => {
@@ -121,6 +125,7 @@ async function heldTransaction(T, ...ids) {
 	};
 }
 
+<<<<<<< HEAD
 /** A topic over the table whose subscription certifies no progress, as a resource that is not a table. */
 function uncertifiedTopic(T, name) {
 	class Uncertified extends Resource {
@@ -133,6 +138,8 @@ function uncertifiedTopic(T, name) {
 	return `${name}Wrapped/#`;
 }
 
+=======
+>>>>>>> 176dbfc3f (Keep a durable MQTT session's position below a delivered transaction that committed after a higher key)
 const delivery = (received, value) => received.find(({ message }) => message?.value === value);
 
 async function storedEntry(clientId, condition) {
@@ -276,7 +283,11 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		const clientId = `late-queued-${name}`;
 		const { session } = await connect(clientId);
 		const delivered = [];
+<<<<<<< HEAD
 		// the late transaction's first message never finishes sending, so its rest stays queued
+=======
+		// acknowledges all but one message as it is sent, and never finishes sending the late transaction's first
+>>>>>>> 176dbfc3f (Keep a durable MQTT session's position below a delivered transaction that committed after a higher key)
 		session.setListener((_topic, message, messageId) => {
 			delivered.push(message?.value);
 			if (message?.value !== 'unacked') session.acknowledge(messageId);
