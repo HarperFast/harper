@@ -170,7 +170,29 @@ jobs:
 				'on:\n  push:\n    branches: [release]\n  workflow_dispatch:\njobs:\n  deploy:\n    environment: production\n';
 			const { problems, unverified } = checkWorkflowFile(content, 'main', 'production');
 			assert.deepStrictEqual(problems, []);
-			assert.match(unverified[0], /only a manual run/);
+			assert.match(unverified[0], /only workflow_dispatch can run it there/);
+		});
+
+		it('reports a branch a scheduled or dispatched run can reach as unverified', () => {
+			const content =
+				'on:\n  push:\n    branches: [release]\n  schedule:\n    - cron: "0 0 * * *"\njobs:\n  deploy:\n    environment: production\n';
+			const { problems, unverified } = checkWorkflowFile(content, 'main', 'production');
+			assert.deepStrictEqual(problems, []);
+			assert.match(unverified[0], /only schedule can run it there/);
+		});
+
+		// GitHub leaves the environment claim out of a token for a job with none.
+		it('refuses a workflow in which no job sets an environment', () => {
+			const content = 'on:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n';
+			assert.match(checkWorkflowFile(content, 'main', 'production').problems[0], /no job sets an environment/);
+		});
+
+		it('cannot tell the environment of a job that calls a reusable workflow', () => {
+			const content =
+				'on:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    uses: ./.github/workflows/release.yaml\n';
+			const { problems, unverified } = checkWorkflowFile(content, 'main', 'production');
+			assert.deepStrictEqual(problems, []);
+			assert.match(unverified[0], /"production" environment/);
 		});
 
 		it('refuses an environment no job runs in', () => {
