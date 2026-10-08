@@ -524,6 +524,38 @@ describe('dropTable generation-distinct stores', function () {
 			}
 		});
 
+		for (const creatingFirst of [true, false]) {
+			it(`sweeps an interrupted drop before reclaiming its surviving create journal (${creatingFirst ? 'creating' : 'retired'} first)`, async function () {
+				const Doomed = defineTable(`GenOverlap${creatingFirst}`, [{ name: 'blob', type: 'Blob' }]);
+				assert.equal(Doomed.storageGeneration, undefined);
+				const blob = await createBlob(Buffer.alloc(50_000, creatingFirst ? 5 : 6));
+				await Doomed.put({ id: 1, blob });
+				const blobPath = getFilePathForBlob((await Doomed.get(1)).blob);
+				const ids = ['11111111-1111-4111-8111-111111111111', 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'];
+				const [creatingId, retiredId] = creatingFirst ? ids : ids.toReversed();
+				dbisDb().putSync(`${GENERATION_ROW_PREFIX}${creatingId}`, {
+					table: Doomed.tableName,
+					generation: creatingId,
+					phase: 'creating',
+					primaryStore: Doomed.primaryStore.name,
+					creatingStores: [Doomed.primaryStore.name, Doomed.indices.str.name],
+				});
+				const primary = dbisDb().getSync(`${Doomed.tableName}/`);
+				primary.dropping = true;
+				primary.dropGeneration = retiredId;
+				dbisDb().putSync(`${Doomed.tableName}/`, primary);
+				resetDatabases();
+				await waitFor(
+					() =>
+						!dbisDb().getSync(`${GENERATION_ROW_PREFIX}${creatingId}`) &&
+						!dbisDb().getSync(`${GENERATION_ROW_PREFIX}${retiredId}`),
+					{ timeout: 15_000 }
+				);
+				assert.ok(!fs.existsSync(blobPath), 'journal completion must follow blob unlinking');
+				assert.ok(!rootStore().columns.includes(Doomed.primaryStore.name));
+			});
+		}
+
 		it('journals an interrupted legacy catalog whose primary row carries its attribute name', async function () {
 			const Legacy = defineTable('GenLegacyPrimary');
 			const primary = dbisDb().getSync('GenLegacyPrimary/');
