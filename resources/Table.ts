@@ -89,6 +89,7 @@ import {
 	storeNameFor,
 	storeNamesFor,
 	liveStoreNamesFor,
+	recordTableNameHistory,
 	isReadOnlyMode,
 } from './databases.ts';
 import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
@@ -3182,6 +3183,7 @@ export function makeTable(options): TableResourceClass {
 						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 							if (key !== primaryCatalogKey) dbisDb.remove(key);
 						}
+						recordTableNameHistory(dbisDb, tableName, currentPrimary.tableId);
 						dbisDb.remove(primaryCatalogKey);
 						return true;
 					});

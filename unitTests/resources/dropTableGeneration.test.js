@@ -13,11 +13,11 @@ const {
 	resetDatabases,
 	openRocksDatabase,
 	setDroppedBlobSweepBatchMsForTesting,
-	getTableDrops,
 	markDropInProgress,
 } = require('#src/resources/databases');
 const { createBlob, getFilePathForBlob } = require('#src/resources/blob');
 const { logger } = require('#src/utility/logging/logger');
+const { forComponent } = require('#src/utility/logging/harper_logger');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { derivedIndexReadiness } = require('#src/resources/indexes/hnswDerivedIndex');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -120,14 +120,13 @@ describe('dropTable generation-distinct stores', function () {
 		await Plain.dropTable();
 	});
 
-	it('keeps local-only name history after reclamation without advertising a replicated drop', async function () {
+	it('keeps local-only name history after reclamation', async function () {
 		if (IS_LMDB) return this.skip();
 		const First = defineTable('GenLocalDrop');
 		assert.equal(First.storageGeneration, undefined);
 		await First.dropTable({ localOnly: true });
 		resetDatabases();
 		assert.ok(dbisDb().getSync('/dropped/GenLocalDrop'));
-		assert.ok(!getTableDrops(TEST_DB).some(({ table }) => table === 'GenLocalDrop'));
 		assert.deepStrictEqual(generationRows(), []);
 		const Fresh = defineTable('GenLocalDrop');
 		assert.match(Fresh.storageGeneration, /^[0-9a-f-]{36}$/);
@@ -555,6 +554,38 @@ describe('dropTable generation-distinct stores', function () {
 				assert.ok(!rootStore().columns.includes(Doomed.primaryStore.name));
 			});
 		}
+
+		it('keeps name history from a drop completed at load after its journal is reclaimed', async function () {
+			const Doomed = defineTable('GenLoadCompleted');
+			assert.equal(Doomed.storageGeneration, undefined);
+			const primary = dbisDb().getSync('GenLoadCompleted/');
+			primary.dropping = true;
+			primary.dropGeneration = randomUUID();
+			dbisDb().putSync('GenLoadCompleted/', primary);
+			resetDatabases();
+			await waitFor(() => !generationRows().some(({ value }) => value.table === 'GenLoadCompleted'), {
+				timeout: 15_000,
+			});
+			assert.deepStrictEqual(catalogRows('GenLoadCompleted'), []);
+			assert.ok(dbisDb().getSync('/dropped/GenLoadCompleted'));
+			const storageLogger = forComponent('storage');
+			const { warn, debug } = storageLogger;
+			const skipped = [];
+			// the first skip of a keyless catalog warns, a repeat logs at debug
+			storageLogger.warn = storageLogger.debug = (message) => {
+				if (String(message).startsWith('Skipping table')) skipped.push(message);
+			};
+			try {
+				resetDatabases();
+			} finally {
+				storageLogger.warn = warn;
+				storageLogger.debug = debug;
+			}
+			assert.deepStrictEqual(skipped, [], 'the load parser skips name-history rows');
+			const Fresh = defineTable('GenLoadCompleted');
+			assert.match(Fresh.storageGeneration, /^[0-9a-f-]{36}$/);
+			await Fresh.dropTable();
+		});
 
 		it('journals an interrupted legacy catalog whose primary row carries its attribute name', async function () {
 			const Legacy = defineTable('GenLegacyPrimary');
