@@ -205,7 +205,7 @@ in, and reloading it. Several non-obvious mechanics keep that safe:
 - **The offline restore probes RocksDB's own `LOCK` file, and fails closed.** The offline path runs
   only when the CLI sees no server (a PID heuristic; the PID file is briefly absent
   mid-`harper restart`), and publishing by rename never takes RocksDB's lock — so before
-  publishing, `restoreBackupOffline` opens the database to probe. It now takes the restore
+  staging and again before publishing, `restoreBackupOffline` opens the database to probe. It now takes the restore
   lock+marker _before_ probing (so a server that starts afterward sees the marker and refuses to
   load), and recognizes the rocksdb-js lock error by message (`isRocksDbLockError`; at 2.5.0, when
   this was written, a plain `Error` with no `code`) —

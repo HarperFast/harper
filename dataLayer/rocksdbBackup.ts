@@ -536,7 +536,7 @@ files by hand.
 
 ## Restore
 
-Restore is destructive: once the backup has been verified, it replaces the database directory — and
+Restore is destructive: once a staged copy of the backup has opened, it replaces the database directory — and
 rewrites every blob root — from the backup (blobs are restored automatically). Restore the latest backup in place:
 
     harper restore_backup database=${databaseName}
@@ -1314,29 +1314,11 @@ export async function restoreBackupOffline(
 		});
 	});
 	try {
+		// Once before the copy so a live holder fails fast, and again just before publication.
+		assertNotOpenElsewhere(databaseDir, databaseName);
 		prepareRestoreStaging(lock);
 		await stageRestore(backupDir, backupId, lock);
-		// The offline path is entered only when the CLI sees no running server (getHdbPid), but that is
-		// a heuristic: the PID file is briefly absent mid-`harper restart`, and publishing by rename
-		// never takes RocksDB's own lock. Probe that lock by opening the database — a live holder makes
-		// open throw its LOCK-file error (isRocksDbLockError) — so we fail closed rather than replace a
-		// database another process still has open. A directory that fails to open for any
-		// *other* reason (corrupt or half-restored) is exactly what restore recovers, so only a lock
-		// conflict aborts.
-		if (existsSync(join(databaseDir, 'CURRENT'))) {
-			let handle: RocksDatabase | undefined;
-			try {
-				handle = RocksDatabase.open(databaseDir);
-			} catch (error: any) {
-				if (isRocksDbLockError(error)) {
-					throw new BackupInProgressError(
-						`Cannot restore database '${databaseName}': it is open by a running Harper process — stop Harper before restoring offline`
-					);
-				}
-				// otherwise corrupt/half-restored — fall through and let restore recover it
-			}
-			handle?.close();
-		}
+		assertNotOpenElsewhere(databaseDir, databaseName);
 		publishStagedRestore(lock, publication);
 		// restore blobs only for a backup that captured them (per the manifest, not snapshot presence)
 		if (manifest.blobs) {
@@ -1376,6 +1358,29 @@ export async function restoreBackupOffline(
 		restored_to: databaseDir,
 		...(allowEngineOnly ? { allow_engine_only: true } : {}),
 	};
+}
+
+/**
+ * The offline path is entered only when the CLI sees no running server (getHdbPid), but that is a
+ * heuristic: the PID file is briefly absent mid-`harper restart`, and publishing by rename never takes
+ * RocksDB's own lock. Probe that lock by opening the database — a live holder makes open throw its
+ * LOCK-file error (isRocksDbLockError) — so we fail closed rather than replace a database another
+ * process still has open. A directory that fails to open for any *other* reason (corrupt or
+ * half-restored) is exactly what restore recovers, so only a lock conflict aborts.
+ */
+function assertNotOpenElsewhere(databaseDir: string, databaseName: string): void {
+	if (!existsSync(join(databaseDir, 'CURRENT'))) return;
+	let handle: RocksDatabase | undefined;
+	try {
+		handle = RocksDatabase.open(databaseDir);
+	} catch (error: any) {
+		if (isRocksDbLockError(error)) {
+			throw new BackupInProgressError(
+				`Cannot restore database '${databaseName}': it is open by a running Harper process — stop Harper before restoring offline`
+			);
+		}
+	}
+	handle?.close();
 }
 
 function isMissingOrEmptyDir(path: string): boolean {
