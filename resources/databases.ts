@@ -751,7 +751,6 @@ export function isDroppedPeerGeneration(databaseName: string, tableName: string,
 	const local = databases[databaseName][tableName];
 	return !local || isDeadGeneration(catalogCreatedTime(local), droppedTime);
 }
-/** A table this node keeps to itself. */
 export function isNodeLocalTable(table: { replicate?: boolean; dbisDB: any; tableName: string; primaryKey?: string }) {
 	return replicateIsFalse(primaryCatalogRowFor(table)?.value, table);
 }

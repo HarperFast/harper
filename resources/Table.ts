@@ -3093,6 +3093,9 @@ export function makeTable(options): TableResourceClass {
 			if (!dropIdentityConfirmed) {
 				releaseFullTextRetirement();
 				abortStaleDrop();
+				// the peer's drop judges the generation that replaced this one, once this thread has its class
+				const current = databases[databaseName]?.[tableName];
+				if (options?.peer && current && current !== TableResource) return current.dropTable(options);
 				recordPeerDrop();
 				return false;
 			}

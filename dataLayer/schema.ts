@@ -257,7 +257,12 @@ export async function dropTable(dropTableObject: any) {
 			message: `table '${dropTableObject.schema}.${dropTableObject.table}' was not dropped: the generation here postdates the drop, does not replicate, or was replaced`,
 		};
 
-	dropTableMeta({ table: dropTableObject.table, database: dropTableObject.schema });
+	try {
+		dropTableMeta({ table: dropTableObject.table, database: dropTableObject.schema });
+	} catch (error) {
+		// the drop is done; rows it left are cleaned by a later call
+		logger.warn(`Could not clean up the metadata of '${dropTableObject.schema}.${dropTableObject.table}'`, error);
+	}
 
 	let response = await server.replication.replicateOperation(dropTableObject);
 	response.message = `successfully deleted table '${dropTableObject.schema}.${dropTableObject.table}'`;
