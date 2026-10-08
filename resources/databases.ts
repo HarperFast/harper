@@ -676,6 +676,43 @@ export function isDeadGeneration(createdTime: number | undefined, droppedTime: n
 function droppedRowKey(tableName: string): string {
 	return DROPPED_ROW_PREFIX + tableName;
 }
+/**
+ * A table with no stamp was created by a build that stored none, so before the first load on a build that stamps.
+ * That load records the bound as `createdBefore`; a table a rolled-back build creates later gets its own at the next.
+ */
+function boundPreStampCreations(rootStore: RootDatabaseKind, attributesDbi: any, primaryRows: Iterable<any>) {
+	if (OMIT_LIFECYCLE_STAMPS_FOR_TEST || isReadOnlyMode()) return;
+	const unbounded = (row: any) =>
+		row && !row.dropping && !Number.isFinite(row.createdTime) && !Number.isFinite(row.createdBefore);
+	const keys = [];
+	for (const row of primaryRows) if (unbounded(row)) keys.push(row.key);
+	if (keys.length === 0) return;
+	const write = () => {
+		const createdBefore = getNextMonotonicTime();
+		for (const key of keys) {
+			const row = attributesDbi.getSync(key);
+			if (unbounded(row)) attributesDbi.putSync(key, { ...row, createdBefore });
+		}
+	};
+	// another thread's load writes the same bound; the next load retries a skipped one
+	if (!(rootStore instanceof RocksDatabase)) (rootStore as any).transactionSync(write);
+	else if (tryUpdateAttributesLock(rootStore)) {
+		try {
+			write();
+		} finally {
+			releaseUpdateAttributesLock(rootStore);
+		}
+	}
+}
+/** The `createdBefore` bound on an unstamped generation, read from the catalog. */
+export function catalogCreatedBefore(table: {
+	dbisDB: any;
+	tableName: string;
+	primaryKey?: string;
+}): number | undefined {
+	const createdBefore = primaryCatalogRowFor(table)?.value?.createdBefore;
+	return Number.isFinite(createdBefore) ? createdBefore : undefined;
+}
 function withCatalogWrite<Callback extends () => unknown>(
 	rootStore: RootDatabaseKind,
 	scopeDescription: string,
@@ -1614,6 +1651,12 @@ function initStores(
 		tablesToLoad.delete(tableName);
 	}
 	if (rootStore instanceof RocksDatabase) reclaimGenerations(rootStore, attributesDbi, databaseName);
+	if (!isLegacy && !destination)
+		boundPreStampCreations(
+			rootStore,
+			attributesDbi,
+			Array.from(tablesToLoad.values(), (tableDef) => tableDef.primary)
+		);
 
 	for (const [tableName, tableDef] of tablesToLoad) {
 		let { attributes, primary: primaryAttribute } = tableDef;

@@ -19,6 +19,7 @@ const {
 	isDeadGeneration,
 	isDroppedPeerGeneration,
 	isNodeLocalTable,
+	catalogCreatedBefore,
 } = require('#src/resources/databases');
 const { REPLICATED_FROM } = require('#src/utility/hdbTerms');
 const { server } = require('#src/server/Server');
@@ -644,5 +645,22 @@ describe('table lifecycle stamps (harper#1212)', () => {
 			"a body's claim is a client's drop"
 		);
 		assert.equal(markerFor('LifecycleOperationContextClaimed'), undefined);
+	});
+
+	it('bounds the creation of a table a build before the stamps created, once, at the next load', () => {
+		const Old = defineTable('LifecycleCreatedBefore');
+		const Stamped = defineTable('LifecycleCreatedBeforeStamped');
+		const row = dbisDb().getSync('LifecycleCreatedBefore/');
+		delete row.createdTime;
+		dbisDb().putSync('LifecycleCreatedBefore/', row);
+		const loadedAfter = Date.now();
+		resetDatabases();
+		const bound = catalogCreatedBefore(getDatabases()[TEST_DB].LifecycleCreatedBefore);
+		assert.ok(bound >= loadedAfter, 'the load that first sees it bounds it');
+		resetDatabases();
+		assert.equal(catalogCreatedBefore(getDatabases()[TEST_DB].LifecycleCreatedBefore), bound, 'later loads keep it');
+		assert.equal(catalogCreatedBefore(getDatabases()[TEST_DB].LifecycleCreatedBeforeStamped), undefined);
+		void Old;
+		void Stamped;
 	});
 });

@@ -653,6 +653,10 @@ row or writes the tombstone, so no peer path can check it and then act on a cata
 - A node-local table's own drop leaves no `droppedTime` and is not forwarded. A marker from an earlier,
   replicated generation of the name is kept and still sent.
 - `dropTableMeta` removes a name's rows only when no primary row, live or still dropping, exists.
+- A table with no stamp was created by a build that stored none, so before the first load on a build that stamps;
+  that load writes the bound as `createdBefore` on its primary row (`catalogCreatedBefore`). A drop recorded after
+  the bound retires the table outright, and only an older drop leaves the replication layer's upgrade heuristic
+  anything to decide. A table created during a rollback to such a build gets its own bound at the next load.
 - The legacy per-table layout (`databasePath` is not the database name) has no database catalog for a marker,
   so its drops leave none.
 
