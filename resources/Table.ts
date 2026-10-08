@@ -2932,7 +2932,7 @@ export function makeTable(options): TableResourceClass {
 				if (peerDropTime !== undefined && databaseName === databasePath)
 					recordTableDrop(databaseName, TableResource.tableName, peerDropTime);
 			};
-			// Rechecked under the lock; a drop already in flight is joined, never refused.
+			// Keeping needs no lock; a drop is rechecked under it, and one already in flight is joined, never refused.
 			const currentMeta = readPrimaryMeta();
 			if (!currentMeta?.dropping && keptFromPeer(currentMeta)) {
 				recordPeerDrop();

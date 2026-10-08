@@ -692,7 +692,7 @@ function boundPreStampCreations(rootStore: RootDatabaseKind, attributesDbi: any,
 		for (const snapshot of loaded) {
 			const row = attributesDbi.getSync(snapshot.key);
 			if (!unbounded(row)) {
-				// another thread's load bounded it first; keep this snapshot from writing it back without
+				// another thread's load bounded it first; keep this snapshot from writing the row back without that bound
 				if (Number.isFinite(row?.createdBefore)) snapshot.createdBefore = row.createdBefore;
 				continue;
 			}

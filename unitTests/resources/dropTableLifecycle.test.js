@@ -221,17 +221,19 @@ describe('table lifecycle stamps (harper#1212)', () => {
 
 	it('announces a recorded marker only once it is readable', async () => {
 		let seenInListener;
+		let droppedTime;
 		const listener = onTableDropRecorded((databaseName, tableName) => {
 			if (tableName === 'LifecycleAnnounced') seenInListener = markerFor(tableName)?.droppedTime;
 		});
 		try {
 			const Announced = defineTable('LifecycleAnnounced');
-			await Announced.dropTable({ peer: true, droppedTime: Announced.createdTime + 9999 });
+			droppedTime = Announced.createdTime + 9999;
+			await Announced.dropTable({ peer: true, droppedTime });
 			await nextTick();
 		} finally {
 			listener.remove();
 		}
-		assert.ok(seenInListener > 9999, 'the listener must see the marker it was told about');
+		assert.equal(seenInListener, droppedTime, 'the listener must see the marker it was told about');
 	});
 
 	it('leaves no marker for a drop the caller asked not to replicate', async () => {
@@ -475,7 +477,7 @@ describe('table lifecycle stamps (harper#1212)', () => {
 			),
 			'a kept generation journals nothing to reclaim'
 		);
-		// the load reclaims retired generations
+		// a reload runs generation reclamation, which must leave a kept generation's stores alone
 		resetDatabases();
 		const Reloaded = databases[TEST_DB].LifecyclePeerDropNewer;
 		assert.equal((await Reloaded.get(1)).str, 'kept');
