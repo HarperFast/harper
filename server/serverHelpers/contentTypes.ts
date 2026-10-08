@@ -407,7 +407,7 @@ export function findBestSerializer(incomingMessage) {
 		}
 		clientQuality = +parameters.q;
 		const serializer = mediaTypes.get(type);
-		if (serializer) {
+		if (serializer?.serialize || serializer?.serializeStream) {
 			const quality = (serializer.q || 1) * clientQuality;
 			if (quality > bestQuality) {
 				bestSerializer = serializer;

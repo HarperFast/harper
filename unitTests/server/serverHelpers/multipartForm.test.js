@@ -5,7 +5,7 @@ const { Readable, PassThrough } = require('node:stream');
 const { EventEmitter } = require('node:events');
 const { setImmediate: nextTurn } = require('node:timers/promises');
 const { Request, BunRequest, UwsRequestBody } = require('#src/server/serverHelpers/Request');
-const { getDeserializer, contentTypes } = require('#src/server/serverHelpers/contentTypes');
+const { getDeserializer, contentTypes, findBestSerializer } = require('#src/server/serverHelpers/contentTypes');
 const { completeMultipartBody } = require('#src/server/serverHelpers/multipartForm');
 const { table } = require('#src/resources/databases');
 const { saveBlob, isSaving } = require('#src/resources/blob');
@@ -44,6 +44,28 @@ async function collect(body) {
 }
 
 describe('REST multipart form decoding', function () {
+	it('refuses multipart as a response content type with 406', function () {
+		assert.throws(() => findBestSerializer({ headers: { accept: 'multipart/form-data' } }), { statusCode: 406 });
+	});
+	it('negotiates an encodable alternative after multipart', function () {
+		const selected = findBestSerializer({ headers: { accept: 'multipart/form-data, application/json;q=0.9' } });
+		assert.equal(selected.type, 'application/json');
+	});
+	it('retains custom response types with only a stream encoder', function () {
+		const type = 'application/x-multipart-stream-encoder-test';
+		const handler = {
+			serializeStream(values) {
+				return values;
+			},
+		};
+		contentTypes.set(type, handler);
+		try {
+			assert.strictEqual(findBestSerializer({ headers: { accept: type } }).serializer, handler);
+		} finally {
+			contentTypes.delete(type);
+		}
+	});
+
 	this.timeout(10000);
 	let Uploads;
 	before(function () {
@@ -329,6 +351,24 @@ describe('REST multipart form decoding', function () {
 				}
 			});
 		}
+
+		it(`accepts exactly 64 fields and 64 files (${streaming ? 'streaming' : 'buffered'})`, async function () {
+			const parts = Array.from({ length: 64 }, (_, index) => [
+				{ name: `field${index}`, value: 'value' },
+				{ name: `file${index}`, filename: `${index}.txt`, value: '' },
+			]).flat();
+			const input = Readable.from([encodeForm(parts)]);
+			const body = getDeserializer(contentType, true, streaming)(input);
+			if (streaming) {
+				let received = 0;
+				for await (const part of body) {
+					const value = Object.values(part)[0];
+					if (value instanceof Blob) await Uploads.put({ id: `part-limit-${received}`, file: value });
+					received++;
+				}
+				assert.equal(received, 128);
+			} else assert.equal(Object.keys(await body).length, 128);
+		});
 
 		it(`rejects truncated fields and excess parts (${streaming ? 'streaming' : 'buffered'})`, async function () {
 			for (const parts of [

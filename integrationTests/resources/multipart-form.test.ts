@@ -1,8 +1,3 @@
-/**
- * REST multipart/form-data decoding and persistence, including opt-in delivery of streaming
- * Blobs before upload completion, inherited buffered methods, and refused/abandoned uploads.
- * Implements https://github.com/HarperFast/harper/issues/39.
- */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { Readable } from 'node:stream';
@@ -33,6 +28,19 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 		});
 		assert.equal(response.status, 200);
 		return response.json();
+	}
+
+	for (const [accept, status] of [
+		['multipart/form-data', 406],
+		['multipart/form-data, application/json;q=0.9', 200],
+	] as const) {
+		test(`negotiates a response for Accept: ${accept}`, async () => {
+			const response = await fetch(`${ctx.harper.httpURL}/UploadProgress/response-type`, {
+				headers: { Authorization: authorization, Accept: accept },
+				signal: AbortSignal.timeout(10000),
+			});
+			assert.equal(response.status, status, await response.text());
+		});
 	}
 
 	for (const route of ['StoredUpload', 'StreamingUpload']) {
