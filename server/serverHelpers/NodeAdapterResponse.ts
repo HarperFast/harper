@@ -31,22 +31,17 @@ class UnsupportedResponseMethodError extends Error {
 const ignoreError = () => {};
 const ignoreChunk = () => {};
 
-// Node 26.11's pipe fast path (nodejs/node#66182) hands a lone pipe source's buffers straight to _write(),
-// skipping any write() override, such as compression's gzip patch of res.write. It only runs while pipe's
-// own listener is the source's sole 'data' listener, so a second one keeps pipe on write(). The fast path
-// brought the static Writable.writeKnownBuffer with it.
+// Node 26.11's pipe fast path (nodejs/node#66182) skips write() overrides such as compression's while pipe's listener
+// is a byte-mode source's only 'data' listener; see server/DESIGN.md
 const pipeSkipsWrite = 'writeKnownBuffer' in Writable;
-function keepPipeOnWrite(this: NodeAdapterResponse, source: Readable) {
-	// legacy and userland pipe() take no fast path, and legacy pipe() never emits 'unpipe'
-	if (!(source instanceof Readable)) return;
-	source.on('data', ignoreChunk);
-	const release = (unpiped: Readable) => {
-		if (unpiped !== source) return;
-		this.removeListener('unpipe', release);
-		source.removeListener('data', ignoreChunk);
-	};
-	// ahead of pipe's own unpipe cleanup, which resumes a source awaiting 'drain' if it still has a 'data' listener
-	this.prependListener('unpipe', release);
+function guardPipeSource(source: Readable) {
+	// object mode, a decoder, and legacy or userland pipe() never take the fast path; legacy pipe() never emits 'unpipe'
+	if (source instanceof Readable && !source.readableObjectMode && !source.readableEncoding)
+		source.on('data', ignoreChunk);
+}
+// must run before pipe's own unpipe cleanup, which resumes a source awaiting 'drain' while any 'data' listener remains
+function releasePipeSource(source: Readable) {
+	source.removeListener('data', ignoreChunk);
 }
 
 export class NodeAdapterResponse extends PassThrough implements NodeServerResponse {
@@ -79,7 +74,10 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 		this.#resolve = resolve;
 		this.#reject = reject;
 		this.on('error', ignoreError);
-		if (pipeSkipsWrite) this.on('pipe', keepPipeOnWrite);
+		if (pipeSkipsWrite) {
+			this.on('pipe', guardPipeSource);
+			this.prependListener('unpipe', releasePipeSource);
+		}
 		if (typeof nodeResponse?.on === 'function') {
 			const forward = (...args: any[]) => this.emit('timeout', ...args);
 			let forwarding = false;

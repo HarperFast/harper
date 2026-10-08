@@ -340,34 +340,36 @@ describe('withNodeAdapter with real Node middleware', function () {
 		assert.deepStrictEqual(events, ['finish', 'close']);
 	});
 
-	// byte mode: Node 26.11's pipe fast path, which calls _write() and skips a patched write(), passes over object mode
-	it('runs a write() that middleware patched for every chunk a byte-mode Readable pipes in', async function () {
-		const request = makeRequest();
-		const chunks = [];
-		for (let offset = 0; offset < BODY.length; offset += CHUNK_SIZE)
-			chunks.push(BODY.subarray(offset, offset + CHUNK_SIZE));
-		let next = 0;
-		const source = new Readable({
-			read() {
-				this.push(next < chunks.length ? chunks[next++] : null);
-			},
-		});
-		let patchedWrites = 0;
-		const responsePromise = request.withNodeAdapter((req, res) => {
-			const write = res.write;
-			res.write = function (...args) {
-				patchedWrites++;
-				return write.apply(this, args);
-			};
-			source.pipe(res);
-		});
+	for (const objectMode of [false, true]) {
+		it(`runs a write() that middleware patched for every chunk ${objectMode ? 'an object' : 'a byte'}-mode Readable pipes in`, async function () {
+			const request = makeRequest();
+			const chunks = [];
+			for (let offset = 0; offset < BODY.length; offset += CHUNK_SIZE)
+				chunks.push(BODY.subarray(offset, offset + CHUNK_SIZE));
+			let next = 0;
+			const source = new Readable({
+				objectMode,
+				read() {
+					this.push(next < chunks.length ? chunks[next++] : null);
+				},
+			});
+			let patchedWrites = 0;
+			const responsePromise = request.withNodeAdapter((req, res) => {
+				const write = res.write;
+				res.write = function (...args) {
+					patchedWrites++;
+					return write.apply(this, args);
+				};
+				source.pipe(res);
+			});
 
-		const { body } = await withTimeout(responsePromise, 'response headers');
-		const received = await withTimeout(collectSlowly(body), 'the response body');
-		assert.deepStrictEqual(received, BODY);
-		assert.strictEqual(patchedWrites, chunks.length);
-		await waitUntil(() => source.listenerCount('data') === 0, "the source's 'data' listeners to be removed");
-	});
+			const { body } = await withTimeout(responsePromise, 'response headers');
+			const received = await withTimeout(collectSlowly(body), 'the response body');
+			assert.deepStrictEqual(received, BODY);
+			assert.strictEqual(patchedWrites, chunks.length);
+			await waitUntil(() => source.listenerCount('data') === 0, "the source's 'data' listeners to be removed");
+		});
+	}
 
 	it('leaves a source paused with its data when its stalled pipe is unpiped or the response is destroyed, and no listener on any source', async function () {
 		const request = makeRequest();
@@ -381,7 +383,6 @@ describe('withNodeAdapter with real Node middleware', function () {
 			destroyed.pipe(res);
 		});
 		await withTimeout(responsePromise, 'response headers');
-		// nothing reads the body, so the pipe stalls awaiting 'drain' with data still in the source
 		for (let offset = 0; offset < BODY.length; offset += CHUNK_SIZE)
 			unpiped.write(BODY.subarray(offset, offset + CHUNK_SIZE));
 		await waitUntil(() => response.writableNeedDrain && unpiped.readableLength > 0, 'the pipe to stall awaiting drain');
