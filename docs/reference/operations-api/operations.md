@@ -620,18 +620,7 @@ A CI runner can authenticate to Harper with **no stored credential**. It present
 
 The alternative is a `HARPER_CLI_REFRESH_TOKEN` secret: a 30-day credential, one per user, that expires on a schedule nobody tracks. A trust policy replaces it with a rule you configure once, and revoke with `drop_oidc_trust`.
 
-```yaml
-permissions:
-  id-token: write
-  contents: read
-environment: production
-steps:
-  - run: harper deploy by_ref=true
-    env:
-      HARPER_CLI_TARGET: ${{ vars.HARPER_CLI_TARGET }} # a var, not a secret
-```
-
-No secret at all — `HARPER_CLI_TARGET` is not sensitive. See [CLI Authentication](../cli/authentication.md#workload-identity-oidc) for the client half and where the exchange sits in credential precedence.
+The workflow needs `permissions: id-token: write` and the `HARPER_CLI_TARGET` variable, and no secret at all, since the target is not sensitive. [Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci#let-the-workflow-authenticate-with-oidc) has a complete workflow, with the trust policy and deploy-only role it needs. See [CLI Authentication](../cli/authentication.md#workload-identity-oidc) for the client half and where the exchange sits in credential precedence.
 
 Policies live in the replicated `system.hdb_oidc_trust` table, so configuring one on any node applies cluster-wide.
 
@@ -685,7 +674,7 @@ harper add_oidc_trust \
 harper list_oidc_trust
 ```
 
-`claims` is a JSON object, so quote it as a single shell argument — the CLI parses each value as JSON, which is what turns that string into the nested object the operation expects. `operations` works the same way if you scope the policy: `operations='["deploy_component","get_deployment"]'`.
+`claims` is a JSON object, so quote it as a single shell argument — the CLI parses each value as JSON, which is what turns that string into the nested object the operation expects. `operations` works the same way if you scope the policy: `operations='["deploy_component","get_job","get_deployment"]'`.
 
 `harper login` stores a token for that target, so step 2 needs no credentials of its own. If you would rather not store one, pass the target and credentials explicitly instead:
 
@@ -708,7 +697,7 @@ The user the policy names is the privilege boundary: a matching run gets that us
 	"issuer": "https://token.actions.githubusercontent.com",
 	"audience": "https://my-instance.harperdb.io:9925/",
 	"user": "ci-deploy",
-	"operations": ["deploy_component", "get_deployment", "restart_service"],
+	"operations": ["deploy_component", "get_job", "get_deployment"],
 	"claims": {
 		"repository_id": "67890",
 		"workflow_ref": "HarperFast/my-app/.github/workflows/deploy.yml@refs/heads/main",
@@ -727,17 +716,19 @@ Names are validated when the policy is written, against the same registry `add_r
 So `operations` bounds what a CI credential can _administer_, not what data it can read or write. If that matters, point the policy's `user` at a role that is itself least-privilege for the data the token can reach, rather than relying on the scope alone.
 :::
 
-A deploy user does not need `super_user`. A role that lists the deploy operation, plus `get_deployment` if the pipeline polls for the outcome, is enough:
+A deploy user does not need `super_user`. A role that lists the operations the pipeline calls is enough:
 
 ```json
 {
 	"operation": "add_role",
 	"role": "ci_deploy",
 	"permission": {
-		"operations": ["deploy_component", "get_deployment"]
+		"operations": ["deploy_component", "get_job", "get_deployment"]
 	}
 }
 ```
+
+`get_job` is what a pipeline polls to wait for a `"restart": "rolling"` deploy to reach every node, and `get_deployment` reads the deployment record. Both have to be listed: an `operations` allowlist, and a policy's `operations` scope, refuse every operation they don't name, including ones like `get_job` that any role may otherwise call. `restart_service` is not needed, since Harper starts the rolling restart's job itself.
 
 Deploying is still administrative authority, since the deployed component runs inside the Harper process. A deploy that passes a literal registry or git `token` in `credentials` needs `super_user` on a node that holds secret custody, because Harper seals that token into the secrets store. Give a least-privilege role a `secret` reference instead.
 
@@ -875,9 +866,11 @@ Detailed documentation: [Components Overview](../components/overview.md)
 | `get_ssh_known_hosts`       | Returns the contents of the SSH known_hosts file                        | super_user    |
 | `install_node_modules`      | _(Deprecated)_ Run npm install on component projects                    | super_user    |
 
+A role that is not `super_user` can be granted these operations by listing them in its [`operations` allowlist](../users-and-roles/overview.md#operation-permissions), which is how a deploy-only CI role gets `deploy_component` and `get_deployment`. A few cannot be granted that way, such as `get_deployment_payload`; that section lists them.
+
 ### `deploy_component`
 
-Deploys a component. The `package` option accepts any valid NPM reference including GitHub repos (`HarperDB/app#semver:v1.0.0`), tarballs, or NPM packages. The `payload` option accepts a base64-encoded tar string from `package_component`. Supports `"replicated": true` and `"restart": true` or `"restart": "rolling"`.
+Deploys a component. The `package` option accepts any valid NPM reference including GitHub repos (`HarperDB/app#semver:v1.0.0`), tarballs, or NPM packages. The `payload` option accepts a base64-encoded tar string from `package_component`. Supports `"restart": true` or `"restart": "rolling"`. On Harper Pro and Fabric, a deploy goes to every node in the cluster unless you pass `"replicated": false`; Harper core on its own does not replicate.
 
 Additional parameters:
 
@@ -1043,7 +1036,7 @@ Private git repository (token resolved from an existing secret):
 	"operation": "deploy_component",
 	"project": "my-app",
 	"package": "github:my-org/my-app#semver:v1.2.3",
-	"credentials": [{ "host": "github.com", "secret": "deploy.my-app.git.github_com" }]
+	"credentials": [{ "host": "github.com", "secret": "deploy.my-app.git.github.com" }]
 }
 ```
 
@@ -1080,13 +1073,13 @@ Response:
 
 <VersionBadge type="changed" version="v5.3.0" />
 
-`"restart": true` restarts this node's HTTP worker threads and waits for that restart to finish before responding, so a successful response means every worker thread is serving the newly deployed code. Until a worker has been replaced it is still running the previous code, and on platforms where replacements share a listening port it keeps accepting connections for the whole rolling restart — before this, a client that treated the immediate response as "the component is live" could be served by a worker that had never loaded it.
+`"restart": true` requests a restart of this node's HTTP workers and waits for it before responding. A redeploy that keeps an application isolated targets only its worker; creating an isolated application or changing isolation also restarts the shared pool. Retrying an activation whose release is already live restarts every worker. After a completed restart, the workers in that scope serve the newly deployed code; a restart failure can still leave a successful deploy response, as described below. Until a worker has been replaced it is still running the previous code, and on platforms where replacements share a listening port it keeps accepting connections for the whole rolling restart — before this, a client that treated the immediate response as "the component is live" could be served by a worker that had never loaded it.
 
 The wait follows the restart's own progress rather than a fixed timeout, so a wide thread pool, a slow component install, or a worker draining in-flight work does not cut it short. That also means the response can take as long as the install plus the restart — tens of seconds on a slow install with many worker threads — so a caller with a short request timeout should use `"restart": "rolling"` and poll its job instead. If it does give up — the restart stopped reporting progress, ran past the wait's absolute ceiling, or left a worker thread that could not be replaced — the restart continues in the background and the Harper log says which of those happened. A restart that fails does not fail the deploy: the component is already installed and replicated.
 
 `"restart": "rolling"` does not restart the other nodes inline: it starts a `restart_service` job and returns its `restartJobId` to poll. Both certify the release in a canary worker before rolling it out; see the next section.
 
-`drop_component` accepts `"restart": true` and waits for the restart the same way (v5.3.0).
+`drop_component` accepts `"restart": true` and waits for the restart the same way (v5.3.0). Dropping a running isolated application stops only that application's worker; dropping an already-absent application can restart the shared workers. On Pro and Fabric it propagates to peers by default unless `replicated` is `false`. Inspect its `replicated` results for peer failures; a successful local response does not establish successful cleanup on every node.
 
 #### Certifying a release in a canary worker
 
@@ -1157,27 +1150,49 @@ A deploy or a stage records an install fingerprint on each node after it install
 Every node that recorded a fingerprint returns it as `install` in its `deploy_component` response. The node that received the deploy compares each peer's fingerprint with its own, and when any differ:
 
 - the response's `message` ends with a sentence naming them, such as `Install fingerprints differ from this node's on 1 of 2 peer node(s): node-b (source npm:web@1.5.0, package-lock.json).`;
-- a `warning` event goes to a caller streaming Server-Sent Events, and the Harper CLI prints it;
+- a `warning` event goes to a caller [streaming Server-Sent Events](#streaming-deploy-progress), and the Harper CLI prints it on a directory deploy;
 - each peer's entry in the deployment's `peer_results` carries `install`, the peer's fingerprint; `install_matches`; and `install_differs`, the list of fields that differ. `install_matches` is `false` when anything compared differs. Otherwise it is `null` when a fingerprint is missing or unreadable, or a source could not be identified (as from a peer on an earlier version), and `true` only when everything compared matches.
 
 A difference never fails the deploy or changes the CLI's exit status. A match means the evidence is equal, not that the installed trees are: an `install_command` can install different dependencies and leave the same lockfile, and lockfiles written against different registry mirrors differ even when the code matches. A staged deploy reports at stage time, before you activate it.
+
+#### Streaming deploy progress
+
+<VersionBadge version="v5.1.0" />
+
+A `deploy_component` request that accepts `text/event-stream` gets its progress as Server-Sent Events, ending in the result, instead of one JSON response. Once the stream starts the HTTP status is `200`, so a failure arrives in-band as an `error` event. The Harper CLI requests it for every deploy, except to a target older than v5.1.0.
+
+| Event             | Data                                                                                                                                                                                                                                            |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `phase`           | `{ phase, status }`. `phase` is `prepare`, `load`, `replicate`, or `restart`, each sent with `status` `start` and then `done`. A deploy that succeeds ends with `{ "phase": "success", "status": "done" }`, or `"staged"` for `activate: false` |
+| `install`         | `{ manager, stream, line }`: one line of the package manager's output, and whether it came from `stdout` or `stderr`                                                                                                                            |
+| `peer`            | One peer's outcome as it arrives, in the shape of an entry in the record's `peer_results`                                                                                                                                                       |
+| `warning`         | `{ message }`, such as [install fingerprints that differ](#checking-what-each-node-installed)                                                                                                                                                   |
+| `payload_dropped` | `{ payload_size, max_size }`: payload retention dropped the stored tarball, because it is larger than `max_size`                                                                                                                                |
+| `error`           | `{ message, code, phase }`, plus `deployment_id`, and when they apply `install_output`, `failed_peers`, and `certification`. The stream ends after it                                                                                           |
+| `done`            | `{ result }`: the response the deploy would have returned as JSON. The stream ends after it                                                                                                                                                     |
+
+From v5.4.0, the `load` phase brackets the [canary's decision](#certifying-a-release-in-a-canary-worker), so a deploy that does not restart, or whose `certification` is `unavailable`, sends no `load` phase. Before v5.4.0, every deploy sends one.
+
+Every event but `done` is also appended to the deployment's `event_log`, which [`get_deployment`](#get_deployment) replays as a stream. A replayed log can also contain `truncated`, `{ dropped_events }`, where the log reached its 200-entry bound and dropped entries from its middle, keeping the start and the most recent, and a `payload_dropped` carrying `deleted_by` instead of `max_size` when [`delete_deployment_payload`](#delete_deployment_payload) reclaimed the tarball.
 
 ### Deployment Operations
 
 Harper records every `deploy_component` call in the `system.hdb_deployment` table, capturing the full lifecycle of a deployment including phase transitions (prepare → load → replicate → restart → success/failed), per-node outcomes, and a bounded event log of install output.
 
+The record is written by the node that received the deploy, and describes that deploy, not what each node is running now. With `"restart": "rolling"` on v5.4.0 and later, it can report `success` once that node has taken the release, before the other nodes have, and keeps reporting it if one of them [rejects the release](#certifying-a-release-in-a-canary-worker). To learn whether every node took it, wait for the deploy's `restartJobId` with [`get_job`](#get_job).
+
 ### `list_deployments`
 
 Returns a list of deployment records, newest first. All filter parameters are optional.
 
-| Parameter | Type   | Description                                                         |
-| --------- | ------ | ------------------------------------------------------------------- |
-| `project` | string | Filter to a specific component project                              |
-| `status`  | string | Filter by status: `pending`, `success`, `failed`, `staged` (v5.3.0) |
-| `since`   | number | Start of time range (Unix timestamp ms)                             |
-| `until`   | number | End of time range (Unix timestamp ms)                               |
-| `limit`   | number | Maximum number of results (default: 100)                            |
-| `offset`  | number | Pagination offset                                                   |
+| Parameter | Type   | Description                                                                  |
+| --------- | ------ | ---------------------------------------------------------------------------- |
+| `project` | string | Filter to a specific component project                                       |
+| `status`  | string | Filter by one status. See `status` under [`get_deployment`](#get_deployment) |
+| `since`   | number | Start of time range (Unix timestamp ms)                                      |
+| `until`   | number | End of time range (Unix timestamp ms)                                        |
+| `limit`   | number | Maximum number of results. Omit to return every matching record              |
+| `offset`  | number | Pagination offset                                                            |
 
 ```json
 {
@@ -1188,11 +1203,17 @@ Returns a list of deployment records, newest first. All filter parameters are op
 }
 ```
 
-Response includes a `deployments` array and a `total` count. The `payload_blob` field is stripped from list responses for size; use `get_deployment_payload` to retrieve the tarball.
+Response includes a `deployments` array and a `total` count. The `payload_blob` field is stripped from list responses for size, and replaced by `payload_blob_present`; use `get_deployment_payload` to retrieve the tarball.
+
+A deploy in progress reads `pending`, or `loading` once its release has started loading, so filtering on `pending` alone misses some deploys in flight. List without `status` and check each record's `completed_at` instead, which is set once the deploy finishes.
+
+The list is the history of deploys as each receiving node recorded them, newest first. It answers what was deployed and when, but the newest `success` for a project is not necessarily the release every node is serving: a rolling deploy's record can say `success` before the other nodes have taken the release, and keeps saying it if one rejects it.
 
 ### `get_deployment`
 
-Returns a single deployment record by `deployment_id`. When called on an in-progress deployment via a request that accepts `text/event-stream`, the response streams live phase events and install output as Server-Sent Events, replaying the buffered event log then tailing until the deployment reaches a terminal status.
+Returns a single deployment record by `deployment_id`. A request that accepts `text/event-stream` gets the record's event log replayed as [Server-Sent Events](#streaming-deploy-progress), followed by a `done` event carrying the record.
+
+The replay is followed by a live tail only when the deploy is still running in the same Harper thread that answers the request. Any other request — one answered by another node, as a load balancer may route it, or by another thread on the same node — replays the log and returns at once, with whatever status the record has then, which may not be terminal. Poll until `completed_at` is set if you need the outcome.
 
 ```json
 {
@@ -1203,24 +1224,27 @@ Returns a single deployment record by `deployment_id`. When called on an in-prog
 
 The deployment record includes:
 
-| Field                 | Description                                                                                                                                                                                                                                   |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `deployment_id`       | Unique identifier (content hash)                                                                                                                                                                                                              |
-| `project`             | Component project name                                                                                                                                                                                                                        |
-| `package_identifier`  | Package reference or `payload` for tar uploads                                                                                                                                                                                                |
-| `status`              | `pending`, `success`, `failed`, `staged` (v5.3.0), or `rolled_back`                                                                                                                                                                           |
-| `phase`               | Current lifecycle phase: `prepare`, `load`, `replicate`, `restart`                                                                                                                                                                            |
-| `event_log`           | Bounded log of install output and phase transitions (up to 200 entries)                                                                                                                                                                       |
-| `peer_results`        | Per-node outcome map for replicated deployments; from v5.3.1, on a deploy or a stage, each peer also carries `install`, `install_matches` and `install_differs` (see [Checking what each node installed](#checking-what-each-node-installed)) |
-| `payload_hash`        | SHA-256 hash of the deployment tarball                                                                                                                                                                                                        |
-| `payload_size`        | Byte size of the deployment tarball                                                                                                                                                                                                           |
-| `install_fingerprint` | (v5.3.1) On a deploy or a stage, this node's install fingerprint: its `source` and `lockfiles`                                                                                                                                                |
-| `started_at`          | Timestamp when deployment began                                                                                                                                                                                                               |
-| `completed_at`        | Timestamp when deployment finished                                                                                                                                                                                                            |
-| `user`                | User who initiated the deployment                                                                                                                                                                                                             |
-| `activated_from`      | (v5.3.0) On an activation, the id of the staged deployment it made live                                                                                                                                                                       |
-| `rollback_of`         | `deployment_id` of the deployment this rolls back, if applicable                                                                                                                                                                              |
-| `error`               | Error message for failed deployments                                                                                                                                                                                                          |
+| Field                  | Description                                                                                                                                                                                                                                                                                                       |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deployment_id`        | Unique identifier, a random UUID assigned to each deploy. `payload_hash` is the content hash                                                                                                                                                                                                                      |
+| `project`              | Component project name                                                                                                                                                                                                                                                                                            |
+| `package_identifier`   | Package reference or `payload` for tar uploads                                                                                                                                                                                                                                                                    |
+| `status`               | In progress: `pending`, or `loading` once the release has started loading. The record is not rewritten during the replicate and restart phases, so it keeps that status until the deploy finishes. Finished: `success`, `failed`, or `staged` (v5.3.0). A stage whose peers fail stays `staged`, with `error` set |
+| `phase`                | The last lifecycle phase reached: `pending` before the first, then `prepare`, `load`, `replicate`, `restart`, and finally `success` or `staged`; a failed deploy keeps the phase it failed in                                                                                                                     |
+| `event_log`            | Bounded log of install output and phase transitions (up to 200 entries)                                                                                                                                                                                                                                           |
+| `peer_results`         | Per-node outcomes for replicated deployments, one entry per peer; from v5.3.1, on a deploy or a stage, each peer also carries `install`, `install_matches` and `install_differs` (see [Checking what each node installed](#checking-what-each-node-installed))                                                    |
+| `payload_hash`         | SHA-256 hash of the deployment tarball                                                                                                                                                                                                                                                                            |
+| `payload_size`         | Byte size of the deployment tarball                                                                                                                                                                                                                                                                               |
+| `payload_blob_present` | Whether the tarball is still stored. `false` once payload retention or `delete_deployment_payload` has reclaimed it                                                                                                                                                                                               |
+| `install_fingerprint`  | (v5.3.1) On a deploy or a stage, this node's install fingerprint: its `source` and `lockfiles`                                                                                                                                                                                                                    |
+| `started_at`           | Timestamp when deployment began                                                                                                                                                                                                                                                                                   |
+| `completed_at`         | Timestamp when deployment finished                                                                                                                                                                                                                                                                                |
+| `user`                 | User who initiated the deployment                                                                                                                                                                                                                                                                                 |
+| `origin_node`          | Host name of the node that received the deploy and wrote this record                                                                                                                                                                                                                                              |
+| `restart_mode`         | `immediate` for `"restart": true`, `rolling` for `"restart": "rolling"`, or `null` for a deploy that did not restart                                                                                                                                                                                              |
+| `credentials`          | The deploy's `credentials`, in reference form (`secret` names, never a token), or `null`                                                                                                                                                                                                                          |
+| `activated_from`       | (v5.3.0) On an activation, the id of the deployment it made live: a staged build, or a release a later deploy replaced. [Going back to a previous release](#going-back-to-a-previous-release) writes a new `success` record with this set                                                                         |
+| `error`                | For a deploy that failed, or a stage whose peers failed: an object with `message`, `code`, and `phase`, the phase it failed in                                                                                                                                                                                    |
 
 ### `get_deployment_payload`
 
@@ -1258,7 +1282,7 @@ Response:
 }
 ```
 
-The deployment must be in a terminal status (`success`, `failed`, or `rolled_back`); deleting the payload of an in-progress deployment fails with `409`, since its payload may still be replicating to peers. Deleting an already-reclaimed payload succeeds with `freed_bytes: 0` (the operation is idempotent). A `payload_dropped` entry recording the deleting user is appended to the deployment's `event_log`.
+The deployment must be in a terminal status (`success`, `failed`, or `staged`); deleting the payload of an in-progress deployment fails with `409`, since its payload may still be replicating to peers. Deleting an already-reclaimed payload succeeds with `freed_bytes: 0` (the operation is idempotent). A `payload_dropped` entry recording the deleting user is appended to the deployment's `event_log`.
 
 ### `add_ssh_key`
 
@@ -1618,9 +1642,19 @@ Restarts a specific service. `service` must be one of: `http`, `http_workers`, `
 { "operation": "restart_service", "service": "http_workers" }
 ```
 
+#### `scope`
+
+<VersionBadge version="v5.3.0" />
+
+Set `scope` to an [isolated application's name](../components/applications.md#isolated-applications) to restart only its worker. A name that identifies neither an isolated root-config entry nor a running isolated worker is refused with `400`.
+
+```json
+{ "operation": "restart_service", "service": "http", "scope": "shop-preview" }
+```
+
 ### `system_information`
 
-Returns system metrics including CPU, memory, disk, network, and Harper process info. Optionally filter by `attributes` array (e.g., `["cpu", "memory", "replication"]`).
+Returns system metrics including CPU, memory, disk, network, and Harper process info. Optionally filter by `attributes` array (e.g., `["cpu", "memory", "replication"]`). With `attributes: ["threads"]`, the response includes a `threads` array of workers. Each entry has a `threadId`; a dedicated isolated worker also has `application: "<name>"`. These describe the node that answers, not its peers.
 
 ```json
 { "operation": "system_information" }
@@ -1914,11 +1948,15 @@ Detailed documentation: [Database Jobs](../database/jobs.md)
 
 ### `get_job`
 
-Returns job status (`COMPLETE`, `IN_PROGRESS`, `ERROR`), timing, and result message for the specified job ID. Bulk import/export operations return a job ID on initiation.
+Returns job status (`COMPLETE`, `IN_PROGRESS`, `ERROR`), timing, and result message for the specified job ID. Bulk import/export operations return a job ID on initiation, as does a `deploy_component` with `"restart": "rolling"`, as `restartJobId`.
 
 ```json
 { "operation": "get_job", "id": "4a982782-929a-4507-8794-26dae1132def" }
 ```
+
+A job is recorded only on the node that ran it, because `system.hdb_job` is not replicated, so `get_job` answers only there; any other node returns an empty array. For a `deploy_component` with `"restart": "rolling"`, that is the node that received the deploy.
+
+Any role may call `get_job`, unless the role has an `operations` allowlist, or the caller's token an `operations` scope, that does not list it. Either one refuses every operation it doesn't name, so a deploy-only role that waits for its rolling deploys must list `get_job`.
 
 ### `search_jobs_by_start_date`
 

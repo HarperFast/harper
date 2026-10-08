@@ -148,10 +148,9 @@ export HARPER_CLI_PASSWORD=password
 
 **Automatic `.env` Updates**:
 
-When you run `harper login <URL>`, the CLI will automatically update your `.env` file in your current directory and set `HARPER_CLI_TARGET` to the specified URL.
+When you run `harper login <URL>` in a directory that already has a `.env` file, the CLI appends `HARPER_CLI_TARGET` with the URL you logged in to. It does not create a `.env` file, and it leaves the file alone if the file, or your environment, already sets `HARPER_CLI_TARGET` or `CLI_TARGET`.
 
 ```bash
-# Automatically sets HARPER_CLI_TARGET in .env
 harper login https://my-project.harperdb.cloud
 ```
 
@@ -264,21 +263,9 @@ On a runner that can prove its own identity, the CLI needs **no stored credentia
 
 Configure the instance to trust the workflow once with [`add_oidc_trust`](../operations-api/operations.md#add_oidc_trust), then grant the token permission in the workflow.
 
-The block below is **GitHub Actions** syntax — `permissions: id-token: write` is how Actions specifically opts a job into requesting an identity token. Other CI systems expose the same idea differently, and Harper currently detects GitHub Actions only; an unrecognized runtime is not an error, the CLI simply falls through to its other credential sources.
+On **GitHub Actions**, a job opts into requesting an identity token with `permissions: id-token: write`. Other CI systems expose the same idea differently, and Harper currently detects GitHub Actions only; an unrecognized runtime is not an error, the CLI simply falls through to its other credential sources.
 
-```yaml
-# .github/workflows/deploy.yml
-permissions:
-  id-token: write
-  contents: read
-environment: production
-steps:
-  - run: harper deploy by_ref=true restart=true replicated=true
-    env:
-      HARPER_CLI_TARGET: ${{ vars.HARPER_CLI_TARGET }} # a var, not a secret
-```
-
-`HARPER_CLI_TARGET` is the only variable the step needs, and it is not sensitive — hence `vars` rather than `secrets`.
+[Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci#path-a-deploy-a-tagged-release-from-your-repository) has a complete workflow that runs as written, with the trust policy and deploy-only role it needs. In it, `HARPER_CLI_TARGET` is the only variable the job is given, and it is not sensitive — hence `vars` rather than `secrets`.
 
 **With a trust policy in place you need nothing else** — no `HARPER_CLI_REFRESH_TOKEN`, no password, no credentials on the command. That is the point of it: the workflow holds no Harper secret at all.
 

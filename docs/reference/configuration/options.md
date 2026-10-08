@@ -62,7 +62,8 @@ threads:
 ```
 
 - `count` — Number of worker threads; _Default_: CPU count minus one
-- `maxHeapMemory` — Heap limit per thread (MB)
+- `maxHeapMemory` — Heap limit per thread (MB). When unset, each thread's limit is derived from available memory and the number of HTTP worker threads, including isolated applications' threads
+- `maxIsolated` <VersionBadge version="v5.3.0" /> — How many [isolated applications](../components/applications.md#isolated-applications) may run, each in a dedicated worker thread; _Default_: `8`. An isolated application past this limit is not loaded anywhere, and a `deploy_component` that would exceed it is refused with a `409`. `0` admits none. Dedicated threads are added to `count`, not taken from it, so a node runs up to `count` + `maxIsolated` HTTP worker threads. When `maxHeapMemory` is unset, they all count when Harper divides available memory into each thread's default heap limit. Each one lowers that limit for threads started afterward, until it reaches its 512 MB floor, after which more threads add to the total heap the node may use
 - `heapSnapshotNearLimit` — Write a `.heapsnapshot` file when a thread nears its heap limit (loadable in Chrome DevTools Memory tab); _Default_: `false`. See [Worker Thread Debugging](./debugging.md#heap-snapshots-near-the-limit)
 - `debug` — Enable Node.js inspector; sub-options: `port`, `startingPort`, `host`, `waitForDebugger`. See [Worker Thread Debugging](./debugging.md)
 - `preload` <VersionBadge version="v5.2.0" /> — Module, or list of modules, to load via Node's `--import` before any Harper or application module on each worker thread. Intended for instrumentation and APM agents. Worker threads only (not under Bun).
@@ -167,6 +168,17 @@ tls:
 - `certificateAuthority` — Path to CA file; _Default_: `<rootPath>/keys/ca.pem`
 - `privateKey` — Path to private key; _Default_: `<rootPath>/keys/privateKey.pem`
 - `ciphers` — Allowed TLS cipher suites
+- `unixDomainSockets` <VersionBadge version="v5.1.0" /> — `true` makes each HTTP worker thread also listen on a Unix domain socket under `<rootPath>/sockets` for each secure port, for a proxy on the same host to forward to. [Isolated applications](../components/applications.md#isolated-applications) are reachable only this way, so they require it; _Default_: `false`
+
+With `tls` as a single object, put `unixDomainSockets: true` inside it. With an SNI certificate array, put `tls_unixDomainSockets: true` at the root of `harper-config.yaml`, alongside `tls`; placing `unixDomainSockets` inside an array entry does not enable the global setting. On v5.3.0, a standalone `TLS_UNIXDOMAINSOCKETS=true` environment variable does not enable this SNI configuration; use the root YAML setting:
+
+```yaml
+tls_unixDomainSockets: true
+tls:
+  - host: app.example.com
+    certificate: ~/hdb/keys/app-certificate.pem
+    privateKey: ~/hdb/keys/app-private-key.pem
+```
 
 ---
 
