@@ -3930,13 +3930,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (Table.primaryStore.rootStore.status === 'closed') {
 				throw new Error(`Can not use a closed data store from ${tableName} class`);
 			}
-			// A stamped peer generation a drop retired must not merge into the live one. Markers only move forward, so
-			// no lock is needed; an unstamped one is taken to describe this live generation (a rolling upgrade).
-			if (Number.isFinite(createdTime)) {
-				const knownDropTime = Table.dbisDB?.getSync(droppedRowKey(tableName))?.droppedTime;
-				if (Number.isFinite(knownDropTime) && isDeadGeneration(createdTime, knownDropTime))
-					throw new TableGenerationDroppedError(databaseName, tableName, createdTime, knownDropTime);
-			}
 			// Reject moving the primary key to a different attribute on a table that already has records.
 			// The storage key (Table.primaryKey) is never re-pointed here, so honoring the change would
 			// leave describe reporting the new attribute while every record — old and newly inserted — stays
@@ -3963,6 +3956,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			// RocksDB serializes every schema update here. LMDB stays lazy until this declaration
 			// actually has full-text state to reconcile.
 			if (rootStore instanceof RocksDatabase) exclusiveLock();
+			// A stamped peer generation a drop retired must not merge into the live one, checked under the lock every
+			// marker is written under; an unstamped one is taken to describe this live generation (a rolling upgrade).
+			if (Number.isFinite(createdTime)) {
+				exclusiveLock();
+				const knownDropTime = Table.dbisDB?.getSync(droppedRowKey(tableName))?.droppedTime;
+				if (Number.isFinite(knownDropTime) && isDeadGeneration(createdTime, knownDropTime))
+					throw new TableGenerationDroppedError(databaseName, tableName, createdTime, knownDropTime);
+			}
 			if (origin !== 'cluster') {
 				const lockedAttributesDbi = Table.dbisDB;
 				const persistedAuditUnderLock = persistedPrimaryDescriptor(lockedAttributesDbi).descriptor?.audit;

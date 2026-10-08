@@ -643,7 +643,8 @@ The rule is enforced where a generation becomes or stops being live, under the l
 row or writes the tombstone, so no peer path can check it and then act on a catalog another thread changed:
 
 - A create carrying a peer's generation (`origin: 'cluster'`, or a supplied `createdTime`) throws
-  `TableGenerationDroppedError` (409) when a marker here retires it. A peer that kept no stamp is stored at `0`:
+  `TableGenerationDroppedError` (409) when a marker here retires it, and so does a stamped one for a name live here,
+  before its attributes merge into the newer generation. A peer that kept no stamp is stored at `0`:
   any drop retires it and nothing backfills it. `undefined` is left to tables created on a pre-stamp build.
 - A peer's drop (`dropTable({ peer: true, droppedTime })`) never retires a `replicate: false` table, and with a
   time only a generation created before it; `writeTombstone` re-checks the row it locked. A kept generation
