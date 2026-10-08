@@ -665,17 +665,22 @@ function parseContentType(contentType: string): ContentType {
 /**
  * Given a content-type header string, get a deserializer function that can be used to parse the body.
  */
-export function getDeserializer(contentTypeString: string, streaming: false): Deserialize;
+export function getDeserializer(contentTypeString?: string, streaming?: false): Deserialize;
 export function getDeserializer(
-	contentTypeString: string,
+	contentTypeString: string | undefined,
 	streaming: true,
 	streamValues?: false
 ): (stream: Readable) => Promise<unknown>;
 export function getDeserializer(
-	contentTypeString: string,
+	contentTypeString: string | undefined,
 	streaming: true,
 	streamValues: boolean
 ): (stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>;
+export function getDeserializer(
+	contentTypeString: string | undefined,
+	streaming: boolean,
+	streamValues?: boolean
+): Deserialize | ((stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>);
 export function getDeserializer(
 	contentTypeString: string = '',
 	streaming: boolean = false,
