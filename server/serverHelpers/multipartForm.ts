@@ -69,7 +69,8 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 			parser = busboy({
 				headers: { 'content-type': contentType },
 				defParamCharset: 'utf8',
-				limits: { fieldSize: 1024 * 1024, fields: 64, files: 64, parts: 128 },
+				// busboy signals partsLimit when reaching it, before admitting the next part.
+				limits: { fieldSize: 1024 * 1024, fields: 64, files: 64, parts: 129 },
 			});
 		} catch (error) {
 			throw new ClientError(error, 400);
