@@ -64,7 +64,10 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static path?: string;
 	static directURLMapping = false;
 	static loadAsInstance: boolean;
-	/** Lowercase REST methods whose custom implementations consume decoded request-body iterables. */
+	/**
+	 * Lowercase REST methods whose custom implementations consume decoded request-body iterables.
+	 * Authorize decoded fields and finish or stop iteration before returning a response.
+	 */
 	static streamRequestBody?: readonly string[];
 	static description?: string;
 	static properties?: { [name: string]: JsonSchemaFragment };

@@ -12,7 +12,7 @@ type MultipartInput = AsyncIterable<Uint8Array> & {
 	afterResponse?: (callback: () => void) => () => void;
 };
 
-export async function deserializeMultipartForm(data: Buffer, contentType: string): Promise<object> {
+export async function deserializeMultipartForm(data: Buffer, contentType = ''): Promise<object> {
 	const form = {};
 	for await (const part of new MultipartFormBody(Readable.from([data]), contentType, false)) {
 		for (const name of Object.keys(part)) {
@@ -90,6 +90,8 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 			},
 		});
 		const fail = (error: Error, clientFault = true) => {
+			// Discard errors from streams destroyed by deliberate cancellation.
+			if (canceled) return;
 			this.#error ??=
 				clientFault && !(error as Error & { statusCode?: number }).statusCode ? new ClientError(error, 400) : error;
 			this.#parts.destroy(this.error);

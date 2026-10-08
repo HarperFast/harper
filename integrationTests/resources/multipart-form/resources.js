@@ -67,6 +67,21 @@ export class IgnoredUpload extends Resource {
 	}
 }
 
+export class SelectedFieldUpload extends Resource {
+	static streamRequestBody = ['post'];
+
+	async post(data, target) {
+		let title;
+		for await (const part of data) {
+			title = part.title;
+			break;
+		}
+		progress.set(target.id, { returned: true });
+		await new Promise((resolve) => responses.set(target.id, resolve));
+		return { title };
+	}
+}
+
 export class UncommittedUpload extends StreamingUpload {
 	async post(data, target) {
 		for await (const part of data) {

@@ -103,7 +103,7 @@ export interface HttpOptions extends ServerOptions {
 export interface ContentTypeHandler {
 	serialize(data: any): Buffer | string;
 	serializeStream(data: any): Buffer | string;
-	deserialize(data: any, contentType?: string): any;
+	deserialize(data: any): any;
 	q: number;
 }
 

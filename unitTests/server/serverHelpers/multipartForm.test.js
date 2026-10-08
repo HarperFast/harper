@@ -3,6 +3,7 @@
 const assert = require('node:assert');
 const { Readable, PassThrough } = require('node:stream');
 const { EventEmitter } = require('node:events');
+const { setImmediate: nextTurn } = require('node:timers/promises');
 const { Request, BunRequest, UwsRequestBody } = require('#src/server/serverHelpers/Request');
 const { getDeserializer, contentTypes } = require('#src/server/serverHelpers/contentTypes');
 const { completeMultipartBody } = require('#src/server/serverHelpers/multipartForm');
@@ -57,10 +58,10 @@ describe('REST multipart form decoding', function () {
 		});
 	});
 
-	it('registers buffered and streaming deserializers', function () {
+	it('registers multipart decoding without exposing a custom streaming hook', function () {
 		const handler = contentTypes.get('multipart/form-data');
 		assert.equal(typeof handler.deserialize, 'function');
-		assert.equal(typeof handler.deserializeStream, 'function');
+		assert.equal('deserializeStream' in handler, false);
 	});
 
 	it('keeps text values and repeated names, including inherited object property names', async function () {
@@ -233,6 +234,26 @@ describe('REST multipart form decoding', function () {
 		await waitFor(() => input.readableEnded);
 	});
 
+	it('preserves a delayed handler result after returning an iterator with a queued file', async function () {
+		const input = new PassThrough();
+		const body = getDeserializer(contentType, true, true)(input);
+		input.write(
+			encodeForm(
+				[
+					{ name: 'title', value: 'first' },
+					{ name: 'file', filename: 'ignored.bin', value: Buffer.alloc(32768) },
+				],
+				false
+			)
+		);
+		assert.deepStrictEqual((await body.next()).value, { title: 'first' });
+		await body.return();
+		await nextTurn();
+		input.end();
+		assert.deepStrictEqual(await completeMultipartBody(body, Promise.resolve({ ignored: true })), { ignored: true });
+		await waitFor(() => input.readableEnded);
+	});
+
 	for (const streaming of [false, true]) {
 		it(`rejects a malformed trailer (${streaming ? 'streaming' : 'buffered'})`, async function () {
 			const input = Readable.from([encodeForm([{ name: 'title', value: 'incomplete' }], false)]);
@@ -331,6 +352,31 @@ describe('REST multipart form decoding', function () {
 		const bytes = Buffer.from('not a complete form');
 		const decoded = getDeserializer(contentType, false)(bytes);
 		assert.deepStrictEqual(decoded, { contentType: 'multipart/form-data', data: bytes });
+	});
+
+	it('keeps a custom decoder optional argument untouched', async function () {
+		for (const type of ['application/x-custom-decoder', 'application/X-CustomDecoder']) {
+			contentTypes.set(type, { deserialize: (data, encoding = 'utf8') => data.toString(encoding) });
+			try {
+				const bytes = Buffer.from('custom bytes');
+				assert.equal(getDeserializer(type, false)(bytes), 'custom bytes');
+				for (const streamValues of [false, true]) {
+					assert.equal(await getDeserializer(type, true, streamValues)(Readable.from([bytes])), 'custom bytes');
+				}
+			} finally {
+				contentTypes.delete(type);
+			}
+		}
+	});
+
+	it('keeps a custom multipart decoder available to synchronous callers', function () {
+		const original = contentTypes.get('multipart/form-data');
+		contentTypes.set('multipart/form-data', { deserialize: (data) => data.toString('utf8') });
+		try {
+			assert.equal(getDeserializer(contentType, false)(Buffer.from('custom format')), 'custom format');
+		} finally {
+			contentTypes.set('multipart/form-data', original);
+		}
 	});
 
 	it('does not present parser state as record fields to authorization', async function () {

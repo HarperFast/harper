@@ -58,19 +58,13 @@ const PUBLIC_ENCODE_OPTIONS = {
 	useToJSON: true,
 };
 
-type Deserialize = (data: Buffer, contentType?: string) => unknown;
-type DeserializeStream = (
-	data: AsyncIterable<Uint8Array>,
-	contentType: string,
-	signal?: AbortSignal
-) => AsyncIterable<unknown>;
+type Deserialize = (data: Buffer) => unknown;
 
 const mediaTypes = new Map<
 	string,
 	{
 		serialize?: unknown;
 		deserialize?: Deserialize;
-		deserializeStream?: DeserializeStream;
 		serializeStream?: unknown;
 		compressible?: boolean;
 		q?: number;
@@ -96,7 +90,7 @@ mediaTypes.set('application/cbor', {
 		return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
 	},
 	serialize: cborEncoder.encode,
-	deserialize: (data) => cborEncoder.decode(data),
+	deserialize: cborEncoder.decode,
 	q: 1,
 });
 mediaTypes.set('application/x-msgpack', {
@@ -107,7 +101,7 @@ mediaTypes.set('application/x-msgpack', {
 		return pack(data);
 	},
 	serialize: pack,
-	deserialize: (data) => unpack(data),
+	deserialize: unpack,
 	q: 0.9,
 });
 mediaTypes.set('text/csv', {
@@ -233,7 +227,6 @@ mediaTypes.set('text/event-stream', {
 });
 mediaTypes.set('multipart/form-data', {
 	deserialize: deserializeMultipartForm,
-	deserializeStream: deserializeMultipartStream,
 });
 mediaTypes.set('application/x-www-form-urlencoded', {
 	deserialize(data) {
@@ -689,15 +682,20 @@ export function getDeserializer(
 	streamValues: boolean = false
 ): Deserialize | ((stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>) {
 	const contentType = parseContentType(contentTypeString);
-	const handler = contentType.type ? mediaTypes.get(contentType.type) : undefined;
+	const handler = contentType.type
+		? mediaTypes.get(contentTypeString.split(';', 1)[0]) || mediaTypes.get(contentType.type)
+		: undefined;
+	const multipart = handler?.deserialize === deserializeMultipartForm;
 	const deserialize =
-		(!streaming && contentType.type === 'multipart/form-data' ? undefined : handler?.deserialize) ||
-		deserializerUnknownType(contentType);
-	if (streaming && streamValues && handler?.deserializeStream)
-		return (stream, signal) => handler.deserializeStream(stream, contentTypeString, signal);
+		(!streaming && multipart ? undefined : handler?.deserialize) || deserializerUnknownType(contentType);
+	if (streaming && streamValues && multipart)
+		return (stream, signal) => deserializeMultipartStream(stream, contentTypeString, signal);
 	return streaming
-		? (stream: RequestBodyStream) => streamToBuffer(stream).then((data) => deserialize(data, contentTypeString))
-		: (data: Buffer) => deserialize(data, contentTypeString);
+		? (stream: RequestBodyStream) =>
+				streamToBuffer(stream).then(
+					multipart ? (data) => deserializeMultipartForm(data, contentTypeString) : deserialize
+				)
+		: deserialize;
 }
 
 function deserializerUnknownType(contentType: ContentType): Deserialize {
