@@ -13,7 +13,7 @@ import logger from '../utility/logging/harper_logger.ts';
  * mutate the same directory concurrently.
  *
  * Restore metadata lives in an isolated `` `restore` `` directory *beside* the database directory
- * (never inside it, since a restore purges the destination). Each database's two files are keyed by
+ * (never inside it, since a restore replaces the destination). Each database's entries are keyed by
  * a hash of the database directory name rather than being suffixed onto the name itself. That keeps
  * them out of the database-name namespace — a legal database literally named `orders.restoring`
  * would otherwise be mistaken for the restore marker of `orders`, and a 250-character name plus a
@@ -49,6 +49,8 @@ import logger from '../utility/logging/harper_logger.ts';
  *   roots, and retrying the same drop removes remaining roots and the blob directories recorded for
  *   their physical store identities before clearing the markers. The recorded identity is covered by
  *   a digest, so damaged marker content fails closed instead of redirecting blob deletion.
+ * - `<meta-dir>/<key>.staging/` and `<key>.replaced/` — a restore's proven replacement and the
+ *   database it displaces, both directories; see `restoreStaging.ts` for when each may be removed.
  */
 
 // The backtick makes this an illegal database name (schemaRegex rejects `/` and backtick only), so
@@ -57,6 +59,8 @@ export const RESTORE_META_DIR = '`restore`';
 export const RESTORE_LOCK_SUFFIX = '.lock';
 export const RESTORING_MARKER_SUFFIX = '.restoring';
 export const DROPPING_MARKER_SUFFIX = '.dropping';
+export const RESTORE_STAGING_SUFFIX = '.staging';
+export const RESTORE_REPLACED_SUFFIX = '.replaced';
 // Deliberately not a `.restoring` suffix: `scanBlockedRestores` selects markers by that suffix, and
 // a half-written temp must never be mistaken for one.
 const MARKER_TEMP_SUFFIX = '.tmp';
@@ -88,6 +92,16 @@ export function restoreLockPath(dbPath: string): string {
 
 export function restoringMarkerPath(dbPath: string): string {
 	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + RESTORING_MARKER_SUFFIX);
+}
+
+/** Where a restore builds and proves the replacement before it touches the database directory. */
+export function restoreStagingPath(dbPath: string): string {
+	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + RESTORE_STAGING_SUFFIX);
+}
+
+/** Where the database directory waits while its replacement is published. */
+export function restoreReplacedPath(dbPath: string): string {
+	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + RESTORE_REPLACED_SUFFIX);
 }
 
 export function droppingMarkerPath(dbPath: string): string {

@@ -12,7 +12,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pack as tarPack, type Pack } from 'tar-stream';
 import { RocksDatabase, backups, registryStatus, type BackupInfo } from '@harperfast/rocksdb-js';
 import { databases, getDatabases, resolveDatabasePath } from '../resources/databases.ts';
-import { stampDatabaseDirectory } from '../resources/auditStore.ts';
 import {
 	type BlobCaptureDisposition,
 	classifyBlobFileForCapture,
@@ -68,6 +67,14 @@ import {
 	writeBackupManifest,
 	type BackupManifest,
 } from './backupManifest.ts';
+import {
+	discardReplaced,
+	discardRestoreStaging,
+	prepareRestoreStaging,
+	publishStagedRestore,
+	stageRestore,
+	type PublishResult,
+} from './restoreStaging.ts';
 import logger from '../utility/logging/harper_logger.ts';
 
 /**
@@ -658,7 +665,7 @@ export async function restoreBackup(request: any) {
 	assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
 	const pinId = restorePinId(databaseDir);
 	const restoreToken = randomUUID();
-	let destructionStarted = false;
+	const publication: PublishResult = { destroyed: false };
 	// Re-check before replacing a previous attempt's claim; publish the new claim before the marker
 	// under both locks, so a crash cannot leave a marked database with an unprotected source.
 	const lock = await withBackupRepositoryLock(backupDir, databaseName, async () => {
@@ -668,6 +675,9 @@ export async function restoreBackup(request: any) {
 		);
 	});
 	try {
+		// Staged while the database is still open and serving, so the copy is not downtime.
+		prepareRestoreStaging(lock);
+		await stageRestore(backupDir, backupId, lock);
 		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
 		// Each thread also rescans, and the restoring marker keeps it from reloading mid-restore.
 		try {
@@ -682,23 +692,22 @@ export async function restoreBackup(request: any) {
 		// purging — restoring under an open instance would corrupt it. If handles remain, fail
 		// with a clear pointer to the offline CLI path rather than purging.
 		await verifyDatabaseClosed(databaseDir, databaseName);
-		destructionStarted = true;
-		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
+		publishStagedRestore(lock, publication);
 		// restore blobs only for a backup that captured them (an engine-only backup leaves the live
 		// blob roots untouched); the manifest, not the mere presence of a snapshot dir, is the source
 		// of truth so a mid-copy or absent snapshot can't be misread
 		if (manifest.blobs) {
 			await restoreBlobSnapshot(backupDir, backupId, databaseName, getBlobPathsForDatabaseName(databaseName));
 		}
-		await stampDatabaseDirectory(databaseDir, { carriesLog: true });
 	} catch (error: any) {
+		discardRestoreStaging(lock);
 		// Leave the marker (so startup/rescan detection reports an incomplete restore until a rerun
-		// succeeds) when either the destructive purge has begun, OR this attempt was itself a recovery
-		// over a pre-existing marker: in that case the directory may already be half-purged from an
-		// earlier failed restore, so clearing the marker and reloading it as healthy would surface
-		// partial/corrupt data. Only a *fresh* marker on a *previously healthy* database that failed
-		// before any destruction is safe to clear.
-		if (destructionStarted || lock.preexisting) {
+		// succeeds) when either publication has replaced the database, OR this attempt was itself a
+		// recovery over a pre-existing marker: in that case the directory may already be half-purged
+		// from an earlier failed restore, so clearing the marker and reloading it as healthy would
+		// surface partial/corrupt data. Only a *fresh* marker on a *previously healthy* database that
+		// failed before any destruction is safe to clear.
+		if (publication.destroyed || lock.preexisting) {
 			// The marker stays, so the database is unloadable until a rerun — and the rerun needs this
 			// backup. The pin stays with it, and lapses on its own once the marker is gone.
 			abandonRestore(lock);
@@ -728,6 +737,7 @@ export async function restoreBackup(request: any) {
 		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken, false));
 		throw error;
 	}
+	discardReplaced(lock);
 	releaseRestoreClaim(backupDir, pinId, lock, databaseName);
 	// signal again: with the marker gone, every thread's rescan reloads the restored database
 	await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken));
@@ -1271,7 +1281,7 @@ export async function restoreBackupOffline(
 	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
 	assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
 	const pinId = restorePinId(databaseDir);
-	let destructionStarted = false;
+	const publication: PublishResult = { destroyed: false };
 	// As online, claim before marking under both locks, and mark before probing the destination.
 	const lock = await withBackupRepositoryLock(backupDir, databaseName, async () => {
 		await findBackup(backupDir, backupId as number, databaseName);
@@ -1303,11 +1313,13 @@ export async function restoreBackupOffline(
 		});
 	});
 	try {
+		prepareRestoreStaging(lock);
+		await stageRestore(backupDir, backupId, lock);
 		// The offline path is entered only when the CLI sees no running server (getHdbPid), but that is
-		// a heuristic: the PID file is briefly absent mid-`harper restart`, and backups.restore's
-		// purgeAllFiles never takes RocksDB's own lock. Probe that lock by opening the database — a live
-		// holder makes open throw its LOCK-file error (isRocksDbLockError) — so we fail closed rather
-		// than purge a database another process still has open. A directory that fails to open for any
+		// a heuristic: the PID file is briefly absent mid-`harper restart`, and publishing by rename
+		// never takes RocksDB's own lock. Probe that lock by opening the database — a live holder makes
+		// open throw its LOCK-file error (isRocksDbLockError) — so we fail closed rather than replace a
+		// database another process still has open. A directory that fails to open for any
 		// *other* reason (corrupt or half-restored) is exactly what restore recovers, so only a lock
 		// conflict aborts.
 		if (existsSync(join(databaseDir, 'CURRENT'))) {
@@ -1324,8 +1336,7 @@ export async function restoreBackupOffline(
 			}
 			handle?.close();
 		}
-		destructionStarted = true;
-		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
+		publishStagedRestore(lock, publication);
 		// restore blobs only for a backup that captured them (per the manifest, not snapshot presence)
 		if (manifest.blobs) {
 			await restoreBlobSnapshot(
@@ -1335,20 +1346,20 @@ export async function restoreBackupOffline(
 				getBlobPathsForDatabaseName(targetDatabase ?? databaseName)
 			);
 		}
-		await stampDatabaseDirectory(databaseDir, { carriesLog: true });
 	} catch (error: any) {
+		discardRestoreStaging(lock);
 		// Preserve the marker on a destructive failure or a recovery over a pre-existing marker (see
 		// the online restoreBackup for the rationale); otherwise clear the fresh marker so an intact,
 		// merely-locked database is not left flagged as an incomplete restore.
 		// The pin stays exactly as long as the marker does: a retained marker means a rerun is required,
 		// and the rerun needs this backup to still be there.
-		if (destructionStarted || lock.preexisting) abandonRestore(lock);
+		if (publication.destroyed || lock.preexisting) abandonRestore(lock);
 		else {
 			releaseRestoreClaim(backupDir, pinId, lock, databaseName);
 		}
 		// preserve typed client errors (e.g. the 409 lock probe) unwrapped; only wrap an opaque restore
 		// failure after destruction has begun
-		if (destructionStarted && !(error instanceof ClientError)) {
+		if (publication.destroyed && !(error instanceof ClientError)) {
 			throw new Error(
 				`Restore of database '${databaseName}' from backup ${backupId} failed (rerun restore_backup to recover): ${error.message}`,
 				{ cause: error }
@@ -1356,6 +1367,7 @@ export async function restoreBackupOffline(
 		}
 		throw error;
 	}
+	discardReplaced(lock);
 	releaseRestoreClaim(backupDir, pinId, lock, databaseName);
 	return {
 		database: databaseName,

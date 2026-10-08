@@ -56,9 +56,29 @@ The certificate verification tables (`hdb_certificate_cache`, `hdb_crl_cache`, `
 
 ## RocksDB backup/restore: the restore lock + marker protocol (`dataLayer/restoreMarker.ts`, `dataLayer/rocksdbBackup.ts`)
 
-The `restore_backup` operation restores a user database on a live server by closing it across all
-worker threads, purging its directory (`backups.restore` with `purgeAllFiles`), and reloading it.
-Three non-obvious mechanics keep that safe:
+The `restore_backup` operation restores a user database on a live server by restoring the backup
+into a staging directory, closing the database across all worker threads, swapping the staged copy
+in, and reloading it. Several non-obvious mechanics keep that safe:
+
+- **Nothing is destroyed until this build has read the backup (harper#2965,
+  `dataLayer/restoreStaging.ts`).** `backups.restore`'s `purgeAllFiles` clears its target _before_
+  copying, and an unreadable backup only fails inside the copy (checksum) or at the next open
+  (an unsupported table `format_version`, or a transaction log with an unsupported header, which
+  `open` silently skips). So the restore lands in `` `restore`/<key>.staging ``, every staged
+  transaction-log store must pass `validateTransactionLogStore`, and the engine is opened and stamped
+  there; only then is the database published by two renames — itself to `<key>.replaced`, staging to
+  its name. The first rename is the one-way door the marker protocol guards, so a staging failure
+  (corrupt, unreadable, `ENOSPC`) is a pre-destruction failure. Readability, not completeness, is the
+  bar: validation is non-strict, since a torn log tail is something open-time recovery truncates and
+  the operator has no override to restore past a refusal. Cost: disk for one extra engine copy while
+  staging; blob roots are not staged (they span filesystems and the archive capabilities already
+  gate their encodings), so a blob-copy failure after publication still requires a rerun. A
+  database directory that is a symlink is refused, since the swap would replace the link with a
+  directory. **`.replaced` outlives every attempt under a preexisting marker**: a crash between the
+  renames leaves it as the only copy of the database, so a rerun keeps it until its own replacement
+  publishes (and treats whatever is at the database path then as a disposable candidate); only a
+  fresh marker proves it is debris of a completed restore. A failed second rename moves it back, and
+  only a rollback whose directories were fsynced counts as "nothing destroyed".
 
 - **Two files in an isolated `` `restore` `` directory beside (never inside) the database directory**,
   each keyed by `sha256(basename(dbPath)).slice(0,32)`: `<key>.lock`, an OS-level exclusive flock
@@ -89,12 +109,12 @@ Three non-obvious mechanics keep that safe:
   it and broadcasting a reload would surface the earlier attempt's partial/corrupt directory as
   healthy. Only a _fresh_ marker on a _previously healthy_ database that failed before destruction is
   safe to clear.
-- **The ITC close broadcast is normally best-effort, so closure is verified before the purge.** A
+- **The ITC close broadcast is normally best-effort, so closure is verified before publication.** A
   SCHEMA broadcast (`signalSchemaChange`) usually resolves after remote handlers complete but times
   out at 30s "best-effort" and swallows errors. The restore `close` phase is stricter: it waits until
   every eligible recipient acknowledges or its port closes, and aborts the restore with a retryable
   409 if that does not happen within 30s, because proceeding past an unconfirmed blob-save barrier
-  would re-open the race the barrier exists to close. A destructive purge still
+  would re-open the race the barrier exists to close. Publication still
   verifies closure independently: `restoreBackup` polls rocksdb-js `registryStatus()` (process-global
   across worker threads) until the database path has no open instance, and aborts with a 409 —
   _cleaning up the marker, since nothing was destroyed_ — if handles remain.
@@ -128,7 +148,7 @@ Three non-obvious mechanics keep that safe:
   correct.** rocksdb-js's registry is process-global but records only a per-path refCount, with no
   attribution to a thread or component; Harper keeps no component→database ownership map. So when a
   loaded component holds its own handle on the target database, `registryStatus()` stays non-zero,
-  Harper can neither identify nor force-close that handle, and an in-place purge would corrupt a live
+  Harper can neither identify nor force-close that handle, and swapping its directory would corrupt a live
   instance.
   `verifyDatabaseClosed` therefore waits only a short grace period (`DATABASE_CLOSE_WAIT_MS`, for a
   just-finished job worker's own close to drain) and then fails fast with a 409 that points at
@@ -150,13 +170,12 @@ Three non-obvious mechanics keep that safe:
   calls `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, closing every loaded
   user database on that thread (the non-enumerable `system` DB is intentionally skipped), so an
   exited job worker leaves no residual handle to be mistaken for a live holder.
-- **A restore stamps a new database generation before `completeRestore`.** The restored files carry
-  the backup's generation, so both paths open the restored directory privately, stamp it and flush
-  (`stampDatabaseDirectory`, [database generation](../resources/DESIGN.md#database-generation-and-resumable-positions))
-  inside the destructive section: a failed stamp leaves the marker, and the rerun re-purges and
-  re-stamps. The stamp is as durable as the marker protocol it runs inside.
+- **A restore stamps a new database generation before publishing.** The restored files carry
+  the backup's generation, so both paths stamp the staged copy and flush
+  (`stampDatabaseDirectory`, [database generation](../resources/DESIGN.md#database-generation-and-resumable-positions));
+  that open is also the readability proof above, and a failed stamp destroys nothing.
 - **`dropDatabase` and `restore_backup` serialize on the same lock, not a check-then-act probe.**
-  A drop's `destroy()` interleaving with a restore's purge-and-copy on the same directory would gut
+  A drop's `destroy()` interleaving with a restore's publication on the same directory would gut
   a "successful" restore (or vice versa). `dropDatabase` takes the restore lock for every RocksDB or
   LMDB root and publishes a positional `.dropping` marker beside each root before deleting any of
   them. A restore in progress makes the acquire fail with 409; `beginRestore` likewise refuses a
@@ -180,13 +199,13 @@ Three non-obvious mechanics keep that safe:
   cheap pre-check that answers a plainly blocked caller without taking a lock.
 - **The offline restore probes RocksDB's own `LOCK` file, and fails closed.** The offline path runs
   only when the CLI sees no server (a PID heuristic; the PID file is briefly absent
-  mid-`harper restart`), and `backups.restore`'s `purgeAllFiles` never takes RocksDB's lock — so
-  before purging, `restoreBackupOffline` opens the database to probe. It now takes the restore
+  mid-`harper restart`), and publishing by rename never takes RocksDB's lock — so before
+  publishing, `restoreBackupOffline` opens the database to probe. It now takes the restore
   lock+marker _before_ probing (so a server that starts afterward sees the marker and refuses to
   load), and recognizes the rocksdb-js lock error by message (`isRocksDbLockError`; at 2.5.0, when
   this was written, a plain `Error` with no `code`) —
   `IO error: While lock file: <db>/LOCK: Resource temporarily unavailable` — aborting with a 409
-  rather than purging a database another process holds open. Any _other_ open failure
+  rather than replacing a database another process holds open. Any _other_ open failure
   (corrupt/half-restored) is exactly what restore recovers, so only a lock conflict aborts.
 
 Known limitation: the flock is process-owned; if the restore job's worker _thread_ dies without
