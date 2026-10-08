@@ -198,6 +198,27 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 		assert.equal(response.status, 200, await response.text());
 	});
 
+	test('preserves a delayed response after reading one field and returning the body iterator', async () => {
+		const form = new FormData();
+		form.append('title', 'selected field');
+		form.append('file', new Blob([Buffer.alloc(200000)]), 'ignored.bin');
+		const receiving = fetch(`${ctx.harper.httpURL}/SelectedFieldUpload/early`, {
+			method: 'POST',
+			headers: { Authorization: authorization },
+			body: form,
+			signal: AbortSignal.timeout(10000),
+		});
+		try {
+			await waitFor(async () => (await read('/UploadProgress/early')).returned, 10000);
+		} finally {
+			await read('/ReleaseUpload/early');
+		}
+		const response = await receiving;
+		const text = await response.text();
+		assert.equal(response.status, 200, text);
+		assert.deepStrictEqual(JSON.parse(text), { title: 'selected field' });
+	});
+
 	test('serves OpenAPI when a bodyless request explicitly declares a zero content length', async () => {
 		const response = await fetch(`${ctx.harper.httpURL}/openapi`, {
 			headers: { 'Authorization': authorization, 'Content-Length': '0' },
