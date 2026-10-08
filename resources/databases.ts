@@ -812,20 +812,28 @@ function writeTableDropMarker(
 			: write();
 	// Committed by here on both engines; announced outside the caller's lock because listeners re-send
 	// schemas, which read this catalog, and to every thread, since each owns its own replication connections.
-	if (written)
-		queueMicrotask(() => void manageThreads.broadcast({ type: TABLE_DROP_RECORDED, databaseName, tableName }, true));
+	if (written) {
+		dropEpoch++;
+		queueMicrotask(() => {
+			emitTableDropRecorded(databaseName, tableName);
+			void manageThreads.broadcast({ type: TABLE_DROP_RECORDED, databaseName, tableName });
+		});
+	}
 	return written;
 }
 const TABLE_DROP_RECORDED = 'table-drop-recorded';
 let dropEpoch = 0;
-manageThreads.onMessageByType(TABLE_DROP_RECORDED, ({ databaseName, tableName }) => {
-	dropEpoch++;
-	// a message queued before this registration is replayed outside manageThreads' own catch
+function emitTableDropRecorded(databaseName: string, tableName: string) {
 	try {
 		databaseEventsEmitter.emit('tableDropRecorded', databaseName, tableName);
 	} catch (error) {
 		logger.warn(`A tableDropRecorded listener failed for ${databaseName}.${tableName}`, error);
 	}
+}
+// a message queued before this registration is replayed outside manageThreads' own catch, hence the one above
+manageThreads.onMessageByType(TABLE_DROP_RECORDED, ({ databaseName, tableName }) => {
+	dropEpoch++;
+	emitTableDropRecorded(databaseName, tableName);
 });
 /** Advances on this thread whenever a drop marker is recorded on any thread. */
 export function tableDropEpoch(): number {
