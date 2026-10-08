@@ -55,6 +55,7 @@ function checkAnalyticsEnabled(): boolean {
 		analyticsReadOnlyChecked = true;
 		if (isReadOnlyMode()) {
 			analyticsEnabled = false;
+			stopEventLoopDelayMonitor();
 		}
 	}
 	return analyticsEnabled;

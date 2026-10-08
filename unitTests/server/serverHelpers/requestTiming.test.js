@@ -28,9 +28,10 @@ describe('request timing', () => {
 		assert.strictEqual(socket.requestSeenAt, undefined, 'the stamp is consumed');
 
 		socket.parser[0]();
-		const stale = socket.requestSeenAt;
+		socket.requestSeenAt = -1;
+		const next = performance.now();
 		socket.parser[0]();
-		assert.ok(socket.requestSeenAt >= stale, 'a message the server answers itself is overwritten by the next begin');
+		assert.ok(socket.requestSeenAt >= next, 'a message the server answers itself is overwritten by the next begin');
 	});
 
 	it('falls back to now without a stamp, a parser, or on HTTP/2', () => {
@@ -142,7 +143,9 @@ describe('request timing', () => {
 			received.length = 0;
 			const socket = await openSocket();
 			const sentAt = performance.now();
-			socket.write('GET /one HTTP/1.1\r\nHost: localhost\r\n\r\nGET /two HTTP/1.1\r\nHost: localhost\r\n\r\n');
+			socket.write('GET /one HTTP/1.1\r\nHost: localhost\r\n\r\nGET /two HTTP/1.1\r\n');
+			await delay(150);
+			socket.write('Host: localhost\r\n\r\n');
 			await readResponses(socket, 2);
 			assert.deepStrictEqual(
 				received.map((entry) => entry.url),
@@ -150,6 +153,10 @@ describe('request timing', () => {
 			);
 			for (const entry of received) assert.ok(entry.receivedAt >= sentAt - 1, JSON.stringify(entry));
 			assert.ok(received[1].receivedAt >= received[0].receivedAt);
+			assert.ok(
+				received[1].at - received[1].receivedAt >= 100,
+				`the second request was stamped from the chunk that carried its first bytes: ${JSON.stringify(received[1])}`
+			);
 			socket.destroy();
 		});
 	});
