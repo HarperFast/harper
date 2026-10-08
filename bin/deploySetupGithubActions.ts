@@ -1,19 +1,8 @@
 'use strict';
 
-// `harper deploy setup=true provider=github-actions` — the one-time cluster setup a GitHub Actions
-// workflow needs to deploy with its OIDC identity token instead of a stored credential: a deploy-only
-// role, a user in it, and a trust policy matching the token the workflow presents.
-//
-// The policy has to match the token claim for claim, and a mismatch reaches CI only as a bare 401
-// (the exchange deliberately does not say which check failed). So every claim is derived from the
-// sources the workflow and the CLI use — the repository's numeric id, the workflow file in this
-// checkout, and the target exactly as the CLI normalizes it for the audience — and the stored policy
-// is read back and compared before setup reports success.
-//
-// Setup only creates what is missing. An existing role, user or policy that already matches is left
-// alone; one that differs, or that someone disabled, stops setup before it writes anything. Altering
-// a record could repurpose a role another application uses, and re-enabling one would undo a
-// revocation.
+// `harper deploy setup=true provider=github-actions`: the role, user and trust policy a GitHub Actions
+// workflow needs to deploy with its OIDC identity token. Why it only creates, and how it keeps the
+// policy matching the token, is in security/DESIGN.md (OIDC trusted publishing).
 
 import chalk from 'chalk';
 import { randomBytes } from 'node:crypto';
@@ -109,25 +98,36 @@ export function checkWorkflowFile(content: string, branch: string, environment: 
 	const triggers = workflow?.on;
 	const push = triggers && typeof triggers === 'object' && !Array.isArray(triggers) ? triggers.push : undefined;
 	const branches = asList(push?.branches);
+	const otherTriggers =
+		triggers && typeof triggers === 'object' && !Array.isArray(triggers)
+			? Object.keys(triggers).filter((name) => !['push', 'pull_request', 'pull_request_target'].includes(name))
+			: [];
 	if (branches.length === 0) {
 		unverified.push(`that it deploys from "${branch}" (it has no on.push.branches filter)`);
 	} else if (!branches.includes(branch)) {
 		// Entries are glob patterns; matching them is GitHub's job, so a pattern is only unverified.
 		if (branches.some((entry) => isExpression(entry) || /[*?[!+]/.test(String(entry)))) {
 			unverified.push(`that ${branches.join(', ')} matches "${branch}"`);
-		} else if (triggers && typeof triggers === 'object' && 'workflow_dispatch' in triggers) {
-			unverified.push(`that "${branch}" deploys: only a manual run (workflow_dispatch) can run it there`);
+		} else if (otherTriggers.length > 0) {
+			// A manual, scheduled or dispatched run can run on the branch the push filter leaves out.
+			unverified.push(`that "${branch}" deploys: only ${otherTriggers.join(', ')} can run it there`);
 		} else {
 			problems.push(`it deploys on pushes to ${branches.join(', ')}, not "${branch}"`);
 		}
 	}
 
-	const environments = Object.values(workflow?.jobs ?? {})
+	const jobs: any[] = Object.values(workflow?.jobs ?? {});
+	const environments = jobs
 		.map((job: any) => (typeof job?.environment === 'object' ? job.environment?.name : job?.environment))
 		.filter((name) => name !== undefined && name !== null);
 	const literal = environments.filter((name) => !isExpression(name));
+	// A reusable workflow (`uses:`) can set the environment in the file it calls, out of sight here.
+	const callsReusable = jobs.some((job: any) => typeof job?.uses === 'string');
 	if (literal.includes(environment)) return { problems, unverified };
-	if (literal.length > 0 && literal.length === environments.length) {
+	if (environments.length === 0 && !callsReusable) {
+		// GitHub omits the environment claim for a job with none, so the policy could never match.
+		problems.push(`no job sets an environment, so no run's token carries "${environment}"`);
+	} else if (literal.length > 0 && literal.length === environments.length && !callsReusable) {
 		problems.push(`its jobs use environment ${literal.join(', ')}, not "${environment}"`);
 	} else {
 		unverified.push(`that a job runs in the "${environment}" environment`);
