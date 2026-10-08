@@ -589,7 +589,11 @@ export function hasAsyncSerialization() {
 	return !!asyncSerializations;
 }
 
-function streamToBuffer(stream: Readable): Promise<Buffer> {
+type RequestBodyStream = AsyncIterable<Uint8Array> & {
+	on(event: string, listener: (...args: any[]) => void): unknown;
+};
+
+function streamToBuffer(stream: RequestBodyStream): Promise<Buffer> {
 	const MAX_REQUEST_BODY_SIZE = envMgr.get(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE) ?? 10_000_000;
 	return new Promise((resolve, reject) => {
 		const buffers = [];
@@ -678,21 +682,21 @@ export function getDeserializer(
 	contentTypeString: string,
 	streaming: true,
 	streamValues: boolean
-): (stream: AsyncIterable<Uint8Array>, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>;
+): (stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>;
 export function getDeserializer(
 	contentTypeString: string = '',
 	streaming: boolean = false,
 	streamValues: boolean = false
-):
-	| Deserialize
-	| ((stream: AsyncIterable<Uint8Array>, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>) {
+): Deserialize | ((stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>) {
 	const contentType = parseContentType(contentTypeString);
-	const handler = mediaTypes.get(contentType.type);
-	const deserialize = handler?.deserialize || deserializerUnknownType(contentType);
+	const handler = contentType.type ? mediaTypes.get(contentType.type) : undefined;
+	const deserialize =
+		(!streaming && contentType.type === 'multipart/form-data' ? undefined : handler?.deserialize) ||
+		deserializerUnknownType(contentType);
 	if (streaming && streamValues && handler?.deserializeStream)
 		return (stream, signal) => handler.deserializeStream(stream, contentTypeString, signal);
 	return streaming
-		? (stream: Readable) => streamToBuffer(stream).then((data) => deserialize(data, contentTypeString))
+		? (stream: RequestBodyStream) => streamToBuffer(stream).then((data) => deserialize(data, contentTypeString))
 		: (data: Buffer) => deserialize(data, contentTypeString);
 }
 

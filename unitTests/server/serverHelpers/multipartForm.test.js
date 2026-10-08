@@ -139,8 +139,8 @@ describe('REST multipart form decoding', function () {
 			true
 		)(Readable.from([encodeForm([{ name: 'file', filename: 'unread.txt', value: 'important contents' }])]));
 		const first = await body.next();
-		await assert.rejects(body.next(), /Save each multipart Blob/);
-		await assert.rejects(Uploads.put({ id: 'unread', file: first.value.file }), /Save each multipart Blob/);
+		await assert.rejects(body.next(), /Consume each multipart Blob/);
+		await assert.rejects(Uploads.put({ id: 'unread', file: first.value.file }), /Consume each multipart Blob/);
 		assert.equal(await Uploads.get('unread'), undefined);
 	});
 
@@ -197,9 +197,11 @@ describe('REST multipart form decoding', function () {
 
 		for (const name of ['__proto__', 'constructor', 'prototype']) {
 			it(`rejects unsafe field ${name} (${streaming ? 'streaming' : 'buffered'})`, async function () {
-				const input = Readable.from([encodeForm([{ name, value: 'unsafe' }])]);
-				const body = getDeserializer(contentType, true, streaming)(input);
-				await assert.rejects(streaming ? collect(body) : body, (error) => error.statusCode === 400);
+				for (const filename of [undefined, 'unsafe.txt']) {
+					const input = Readable.from([encodeForm([{ name, filename, value: 'unsafe' }])]);
+					const body = getDeserializer(contentType, true, streaming)(input);
+					await assert.rejects(streaming ? collect(body) : body, (error) => error.statusCode === 400);
+				}
 			});
 		}
 
@@ -268,5 +270,29 @@ describe('REST multipart form decoding', function () {
 		const body = getDeserializer('application/json', true, true)(Readable.from([Buffer.from('{"value":1}')]));
 		assert.equal(typeof body.then, 'function');
 		assert.deepStrictEqual(await body, { value: 1 });
+	});
+
+	it('keeps headerless request bodies in their binary envelope', async function () {
+		const bytes = Buffer.from([1, 2, 3]);
+		for (const streaming of [false, true]) {
+			assert.deepStrictEqual(await getDeserializer('', true, streaming)(Readable.from([bytes])), {
+				contentType: 'application/octet-stream',
+				data: bytes,
+			});
+		}
+	});
+
+	it('keeps synchronous protocol messages opaque instead of returning multipart promises', function () {
+		const bytes = Buffer.from('not a complete form');
+		const decoded = getDeserializer(contentType, false)(bytes);
+		assert.deepStrictEqual(decoded, { contentType: 'multipart/form-data', data: bytes });
+	});
+
+	it('does not present parser state as record fields to authorization', async function () {
+		const body = getDeserializer(contentType, true, true)(Readable.from([encodeForm([])]));
+		const fields = [];
+		for (const name in body) fields.push(name);
+		assert.deepStrictEqual(fields, []);
+		await collect(body);
 	});
 });
