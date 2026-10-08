@@ -59,7 +59,14 @@ describe('install_node_modules', function () {
 	// npm still counts the dependency it would add under --dry-run, so asserting on that count
 	// distinguishes a real dry run from npm never running at all
 	function assertDryRun(response) {
-		assert.equal(response.application.npm_output.added, 1, JSON.stringify(response.application));
+		const report = response.application.npm_output;
+		assert.equal(report.added, 1, JSON.stringify(response.application));
+		// npm 11 names what it would add; npm 10's report only counts it
+		if (report.add)
+			assert.deepStrictEqual(
+				report.add.map(({ name }) => name),
+				['local-dependency']
+			);
 		assert.equal(installedDependencyExists(), false);
 	}
 
