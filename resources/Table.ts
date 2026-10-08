@@ -3173,7 +3173,6 @@ export function makeTable(options): TableResourceClass {
 				let removed: boolean;
 				try {
 					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
-					// another thread completed this tombstone's drop
 					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId)) {
 						abortStaleDrop();
 						recordPeerDrop();

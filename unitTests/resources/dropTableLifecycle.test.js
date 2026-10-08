@@ -616,4 +616,33 @@ describe('table lifecycle stamps (harper#1212)', () => {
 		Redeclared.replicate = undefined;
 		await Redeclared.dropTable();
 	});
+
+	it("takes a forwarded drop as a peer's from the operation context, never from the body", async () => {
+		const { operation } = require('#src/server/serverHelpers/serverUtilities');
+		const Live = defineTable('LifecycleOperationContext');
+		const olderDrop = Live.createdTime - 1;
+		const forwarded = (table) => ({
+			operation: 'drop_table',
+			schema: TEST_DB,
+			table,
+			replicated: false,
+			droppedTime: olderDrop,
+		});
+		await operation(forwarded('LifecycleOperationContext'), { replicatedFrom: 'origin-node' }, false);
+		assert.equal(databases[TEST_DB].LifecycleOperationContext, Live, "the peer's drop predates this generation");
+		assert.equal(markerFor('LifecycleOperationContext').droppedTime, olderDrop);
+
+		await operation(forwarded('LifecycleOperationContextGone'), { replicatedFrom: 'origin-node' }, false);
+		assert.equal(
+			markerFor('LifecycleOperationContextGone').droppedTime,
+			olderDrop,
+			"a peer's drop of a table gone here"
+		);
+		await assert.rejects(
+			() => operation({ ...forwarded('LifecycleOperationContextClaimed'), replicatedFrom: 'origin-node' }, {}, false),
+			/does not exist|not exist|not found/i,
+			"a body's claim is a client's drop"
+		);
+		assert.equal(markerFor('LifecycleOperationContextClaimed'), undefined);
+	});
 });
