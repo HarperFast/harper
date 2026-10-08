@@ -246,7 +246,7 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 
 ## busboy
 
-- Need for usage: Streaming multipart/form-data parser for the operations API. Required so `deploy_component` payloads can exceed the Node.js 2 GB Buffer cap by being piped straight into extraction (gunzip + tar-fs) instead of buffered. Used only on the operations API ingest path; outbound multipart bodies on the CLI are formatted inline in `bin/multipartBuilder.ts` and do not depend on busboy.
+- Need for usage: Streaming multipart/form-data parser for the operations API. Required so `deploy_component` payloads can exceed the Node.js 2 GB Buffer cap by being piped straight into extraction (gunzip + tar-fs) instead of buffered. Also used by REST to decode ordinary form fields and Blob files, with optional streaming delivery to resource methods; outbound multipart bodies on the CLI are formatted inline in `bin/multipartBuilder.ts` and do not depend on busboy.
 - Size/memory cost: ~50 KB on disk including its sole transitive dep `streamsearch` (~7 KB). Memory overhead is per-request and bounded by busboy's configured `fieldSize`/`fields` limits plus the natural backpressure of the file Readable it emits.
 - Security: No CVEs against busboy ≥ 1.0. Pre-1.0 had a couple of low-severity DoS reports against the field/parts limits, all fixed by the configurable limits we now use (`fieldSize`, `fields`, `files`). Active maintenance by the Fastify org (busboy is the underpinning of @fastify/multipart and most Node multipart implementations).
 - Environment interaction: None. Pure Node streams, no global mutation, no polyfills.

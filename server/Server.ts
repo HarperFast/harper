@@ -160,7 +160,8 @@ export interface ContentTypeHandler {
 	 */
 	serialize(data: any): Buffer | string;
 	serializeStream(data: any): Buffer | string;
-	deserialize(data: any): Buffer | string;
+	deserialize(data: any, contentType?: string): any;
+	deserializeStream?(data: AsyncIterable<Uint8Array>, contentType: string): AsyncIterable<unknown>;
 	q: number;
 }
 

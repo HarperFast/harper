@@ -7,6 +7,8 @@ import { RequestTarget } from './RequestTarget.ts';
 import type { RecordLockOptions } from './recordLock.ts';
 import { FULL_TEXT_COMPARATORS } from './indexes/fullTextQueryProtocol.ts';
 
+export type ResourceBody<T> = T | Promise<T> | AsyncIterable<T>;
+
 export interface ResourceInterface<Record extends object = any>
 	extends Partial<RecordObject>, Pick<UpdatableRecord<Record>, 'addTo' | 'subtractFrom'> {
 	allowRead(user: User, target: RequestTarget, context: Context): boolean | Promise<boolean>;

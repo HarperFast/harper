@@ -42,6 +42,7 @@ export type {
 	RecordLockOptions,
 	RequestTargetOrId,
 	ResourceInterface,
+	ResourceBody,
 	WritableRecord,
 } from './resources/ResourceInterface.ts';
 export type { User } from './security/user.ts';
