@@ -123,6 +123,7 @@ jobs:
             dataLayer/harperBridge/ResourceBridge.ts
             dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetBackup.js
             dataLayer/restoreMarker.ts
+            dataLayer/restoreStaging.ts
             dataLayer/rocksdbBackup.ts
             dataLayer/schemaDescribe.ts
             resources/DatabaseTransaction.ts
