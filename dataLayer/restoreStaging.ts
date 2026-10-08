@@ -1,4 +1,4 @@
-import { chmodSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { backups, validateTransactionLogStore } from '@harperfast/rocksdb-js';
 import { stampDatabaseDirectory } from '../resources/auditStore.ts';
@@ -25,6 +25,12 @@ export function prepareRestoreStaging(lock: RestoreLock): void {
 	if (isSymbolicLink(databaseDir)) {
 		throw new ClientError(
 			`Cannot restore into ${databaseDir}: it is a symbolic link, and a restore replaces the database directory itself. Point the configured database path at the real directory, then rerun the restore`
+		);
+	}
+	// Staging lives beside the database, so a mount point would cost a full copy only for the rename to fail.
+	if (pathPresent(databaseDir) && statSync(databaseDir).dev !== statSync(restoreMetaDir(databaseDir)).dev) {
+		throw new ClientError(
+			`Cannot restore into ${databaseDir}: it is a mount point, on a different filesystem from ${dirname(databaseDir)}, and a restore replaces the database directory by renaming it. Mount the volume at the parent directory instead, or restore offline into a new target_database`
 		);
 	}
 	rmSync(restoreStagingPath(databaseDir), { recursive: true, force: true });

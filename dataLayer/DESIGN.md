@@ -78,10 +78,12 @@ in, and reloading it. Several non-obvious mechanics keep that safe:
   staging; blob roots are not staged (they span filesystems and the archive capabilities already
   gate their encodings), so a blob-copy failure after publication still requires a rerun. A
   database directory that is a symlink is refused, since the swap would replace the link with a
-  directory. **`.replaced` outlives every attempt under a preexisting marker**: a crash between the
-  renames leaves it as the only copy of the database, so a rerun keeps it until its own replacement
-  publishes (and treats whatever is at the database path then as a disposable candidate); only a
-  fresh marker proves it is debris of a completed restore. A failed second rename moves it back, and
+  directory, and so is one that is a mount point, since staging (beside it) would land on another
+  filesystem and the rename could only fail after a full copy. **`.replaced` outlives every
+  attempt under a preexisting marker**: a crash between the renames leaves it as the only copy of
+  the database, so a rerun keeps it until its own replacement publishes (and treats whatever is
+  at the database path then as a disposable candidate); only a fresh marker proves it is debris of
+  a completed restore. A failed second rename moves it back, and
   only a rollback whose directories were fsynced counts as "nothing destroyed". Once staging is
   published the marker stays on any later failure, even where nothing was displaced.
 

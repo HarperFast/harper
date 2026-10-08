@@ -532,6 +532,29 @@ describe('rocksdbBackup', function () {
 			}
 		});
 
+		it('refuses a database directory that is a mount point before staging anything', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realStat = fs.statSync;
+			fs.statSync = (path, ...rest) => {
+				const stats = realStat(path, ...rest);
+				return path === stagedDir()
+					? Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { dev: stats.dev + 1 })
+					: stats;
+			};
+			syncBuiltinESMExports();
+			try {
+				await assert.rejects(
+					restoreBackupOffline(STAGED, backupId),
+					(error) => error.statusCode === 400 && /mount point/.test(error.message)
+				);
+			} finally {
+				fs.statSync = realStat;
+				syncBuiltinESMExports();
+			}
+			assertDestinationIntact();
+		});
+
 		it('refuses a symlinked database directory before staging anything', async function () {
 			this.timeout(30000);
 			const backupId = await seed();
