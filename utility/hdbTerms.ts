@@ -143,6 +143,9 @@ export const HDB_HOME_DIR_NAME = '.harperdb';
 /** License Key directory */
 export const LICENSE_KEY_DIR_NAME = 'keys';
 
+/** Git deploy key directory under rootPath (keys written by Harper Pro's `add_ssh_key`) */
+export const SSH_KEY_DIR_NAME = 'ssh';
+
 /** Harper Boot Properties file name */
 export const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
 
@@ -642,6 +645,7 @@ export const CONFIG_PARAMS = {
 	AGENT_ALLOWDESTRUCTIVE: 'agent_allowDestructive',
 	AGENT_USER: 'agent_user',
 	AGENT_COMPONENTSSCOPE: 'agent_componentsScope',
+	AGENT_CONFIGSCOPE: 'agent_configScope',
 	AGENT_HTTPFETCH: 'agent_httpFetch',
 	AGENT_HTTPFETCH_ALLOW: 'agent_httpFetch_allow',
 	REPLICATION: 'replication',

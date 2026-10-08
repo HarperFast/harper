@@ -133,8 +133,10 @@ async function approveAgentAction(op: any, deps: OperationDeps) {
 }
 
 async function setAgentConfig(op: any, deps: OperationDeps) {
-	if (op?.httpFetch !== undefined) {
-		throw new ClientError('agent.httpFetch is fixed at startup; change it in the config file and restart', 400);
+	for (const key of ['httpFetch', 'componentsScope', 'configScope']) {
+		if (op?.[key] !== undefined) {
+			throw new ClientError(`agent.${key} is fixed at startup; change it in the config file and restart`, 400);
+		}
 	}
 	const patch: Partial<AgentConfig> = {};
 	for (const key of [
