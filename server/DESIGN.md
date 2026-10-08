@@ -727,7 +727,7 @@ Both compressor call sites take their parameters from `brotliOptions(contentType
 
 ## An event-stream field value is one line (`server/serverHelpers/contentTypes.ts`)
 
-SSE has no escape for a field value: a CR or LF ends the field, so an `event`, `id` or `retry` value carrying one would add fields or a whole event. The `text/event-stream` serializer strips CR/LF from `event` and `id`, writes `retry` only when it is all ASCII digits (a client ignores any other value), and splits `data` into one `data:` line per line. Values are still coerced with `'' + value` (`valueOf` first), not `String()`, so a value without a line break serializes exactly as before. Enforced by the SSE tests in `unitTests/server/serverHelpers/contentTypes.test.js` and the `LineBreakFieldsPayload` case in `integrationTests/server/qa702-sse-event-data.test.ts`.
+SSE has no escape for a field value: a CR or LF ends the field, so an `event`, `id` or `retry` value carrying one would add fields or a whole event. The `text/event-stream` serializer strips CR/LF from `event` and `id`, writes `retry` only when it is all ASCII digits (a client ignores any other value), and splits `data` into one `data:` line per line. Values are still coerced with `'' + value` (`valueOf` first), not `String()`, so an `event` or `id` without a line break serializes exactly as before; `retry` changes only for values a client ignores. Enforced by the SSE tests in `unitTests/server/serverHelpers/contentTypes.test.js` and the `LineBreakFieldsPayload` case in `integrationTests/server/qa702-sse-event-data.test.ts`.
 
 ## A streamed response is completed only when its source ends cleanly (`server/http.ts`, `server/serverHelpers/uwsServer.ts`)
 

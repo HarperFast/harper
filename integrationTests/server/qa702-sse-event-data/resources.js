@@ -122,7 +122,6 @@ export class IdKeyPlainObjectPayload extends Resource {
 }
 
 // GET /LineBreakFieldsPayload/ — event/id/retry values carrying CR/LF, followed by a clean frame.
-// None of them may start a field or event on the wire, and the stream must carry on to the second frame.
 export class LineBreakFieldsPayload extends Resource {
 	static loadAsInstance = false;
 	static async *connect() {
