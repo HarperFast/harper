@@ -10,6 +10,7 @@ import { request as httpRequest } from 'node:http';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { once } from 'node:events';
 import type { IncomingMessage } from 'node:http';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import { createApiClient } from '../apiTests/utils/client.mjs';
@@ -288,6 +289,53 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 			assert.match(remaining, /last/);
 		} finally {
 			uploading.destroy();
+		}
+	});
+
+	test('limits discarded upload bytes while allowing the held response to finish', { timeout: 15000 }, async () => {
+		const uploading = httpRequest(`${ctx.harper.httpURL}/SlowResponseUpload/capped`, {
+			method: 'POST',
+			headers: {
+				'Authorization': authorization,
+				'Content-Type': 'multipart/form-data; boundary=capped',
+				'Accept': 'application/x-ndjson',
+			},
+		});
+		const stop = new AbortController();
+		uploading.once('close', () => stop.abort());
+		const receiving = new Promise<IncomingMessage>((resolve, reject) => {
+			uploading.once('response', resolve);
+			uploading.on('error', reject);
+		});
+		uploading.write('--capped\r\nContent-Disposition: form-data; name="pending"\r\n\r\n');
+		let sending: Promise<void>,
+			sent = 0;
+		try {
+			const response = await receiving;
+			response.on('error', () => {});
+			const iterator = response[Symbol.asyncIterator]();
+			const first = await iterator.next();
+			assert.equal(response.statusCode, 200);
+			assert.match(first.value.toString(), /first/);
+			sending = (async () => {
+				const chunk = Buffer.alloc(65536);
+				for (let i = 0; i < 1024; i++) {
+					if (!uploading.write(chunk)) await once(uploading, 'drain', { signal: stop.signal });
+					sent++;
+				}
+			})();
+			sending.catch(() => {});
+			await waitFor(() => sent >= 32, { timeout: 5000 });
+			await delay(1000);
+			assert(sent < 1024, 'The whole discarded upload drained while the response remained open');
+			assert.equal(response.destroyed, false);
+			await read('/ReleaseUpload/capped');
+			let remaining = '';
+			for await (const chunk of { [Symbol.asyncIterator]: () => iterator }) remaining += chunk;
+			assert.match(remaining, /last/);
+		} finally {
+			uploading.destroy();
+			await sending?.catch(() => {});
 		}
 	});
 

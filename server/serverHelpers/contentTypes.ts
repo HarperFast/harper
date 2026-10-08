@@ -616,6 +616,7 @@ function streamToBuffer(stream: RequestBodyStream): Promise<Buffer> {
  */
 type ContentType = {
 	type: string;
+	rawType: string;
 	parameters?: { charset?: string; boundary?: string; [k: string]: string };
 };
 
@@ -659,7 +660,7 @@ function parseContentType(contentType: string): ContentType {
 		contentType = contentType.slice(0, parametersStart);
 	}
 
-	return { type: contentType.trim().toLowerCase(), parameters };
+	return { type: contentType.trim().toLowerCase(), rawType: contentType, parameters };
 }
 
 /**
@@ -687,9 +688,9 @@ export function getDeserializer(
 	streamValues: boolean = false
 ): Deserialize | ((stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>) {
 	const contentType = parseContentType(contentTypeString);
-	const parametersStart = contentTypeString.indexOf(';');
-	const rawType = parametersStart < 0 ? contentTypeString : contentTypeString.slice(0, parametersStart);
-	const handler = contentType.type ? mediaTypes.get(rawType) || mediaTypes.get(contentType.type) : undefined;
+	const handler = contentType.type
+		? mediaTypes.get(contentType.rawType) || mediaTypes.get(contentType.type)
+		: undefined;
 	const multipart = handler?.deserialize === deserializeMultipartForm;
 	const deserialize =
 		(!streaming && multipart ? undefined : handler?.deserialize) || deserializerUnknownType(contentType);
