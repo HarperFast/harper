@@ -130,6 +130,13 @@ jobs:
 			assert.match(problems[0], /pushes to release, not "main"/);
 		});
 
+		// GitHub matches on.push.branches as globs; setup must not refuse a pattern it can't evaluate.
+		it('reports a branch pattern as unverified rather than a mismatch', () => {
+			const { problems, unverified } = checkWorkflowFile(workflow(['**'], 'production'), 'main', 'production');
+			assert.deepStrictEqual(problems, []);
+			assert.match(unverified[0], /that \*\* matches "main"/);
+		});
+
 		it('refuses an environment no job runs in', () => {
 			const { problems } = checkWorkflowFile(workflow(['main'], 'staging'), 'main', 'production');
 			assert.match(problems[0], /environment staging, not "production"/);
@@ -181,6 +188,16 @@ jobs:
 				),
 				/its operations are/
 			);
+		});
+
+		it('flags a role that sets structure_user or cluster_user', () => {
+			const role = matchingRole();
+			for (const flag of ['structure_user', 'cluster_user']) {
+				assert.strictEqual(
+					roleDifference({ ...role, permission: { ...role.permission, [flag]: true } }, desired().role),
+					`it sets ${flag}`
+				);
+			}
 		});
 
 		it('flags a user in another role, or one someone deactivated', () => {
