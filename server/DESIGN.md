@@ -725,6 +725,10 @@ The compressor is attached with `stream.pipeline`, not `.pipe()`: `.pipe()` does
 
 Both compressor call sites take their parameters from `brotliOptions(contentType)`. Node's brotli default is quality 11, which compresses at about 1–2 MB/s — seconds of libuv-pool CPU for a multi-megabyte response — while quality 2 runs at 400–600 MB/s for a third to a half more bytes than 11 on JSON. A second call site with its own parameters is how the single-buffer path came to run at quality 11 while the stream path ran at 2; keep one definition. The operations API's Fastify compression (`operationsServer.ts`) is configured separately.
 
+## An event-stream field value is one line (`server/serverHelpers/contentTypes.ts`)
+
+SSE has no escape for a field value: a CR or LF ends the field, so an `event`, `id` or `retry` value carrying one would add fields or a whole event. The `text/event-stream` serializer strips CR/LF from `event` and `id`, writes `retry` only when it is all ASCII digits (a client ignores any other value), and splits `data` into one `data:` line per line. Values are still coerced with `'' + value` (`valueOf` first), not `String()`, so an `event` or `id` without a line break serializes exactly as before; `retry` changes only for values a client ignores. Enforced by the SSE tests in `unitTests/server/serverHelpers/contentTypes.test.js` and the `LineBreakFieldsPayload` case in `integrationTests/server/qa702-sse-event-data.test.ts`.
+
 ## A streamed response is completed only when its source ends cleanly (`server/http.ts`, `server/serverHelpers/uwsServer.ts`)
 
 A response stream that fails after its first byte has no status left to report the failure with. The only signal HTTP/1.1 has is an incomplete message: the connection closes without the chunked terminator. So each transport sink ends the response for a source `'end'` and aborts the connection for anything else — a source `'error'`, or a `'close'` with no `'end'`. Ending cleanly instead hands the client a truncated body framed as a complete 200; formats that truncate at a record boundary (CSV, NDJSON, a msgpack sequence) then parse as a valid shorter result.
