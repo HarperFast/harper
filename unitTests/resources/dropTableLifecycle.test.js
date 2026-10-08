@@ -702,4 +702,24 @@ describe('table lifecycle stamps (harper#1212)', () => {
 		assert.equal(isDroppedPeerGeneration(TEST_DB, 'LifecycleJudgedPending', dropTime - 1), true);
 		assert.equal(isDroppedPeerGeneration(TEST_DB, 'LifecycleJudgedPending', dropTime), false);
 	});
+
+	it('leaves the tombstone of a drop that failed after writing it for the next load to complete', async () => {
+		const Failed = defineTable('LifecycleCleanupFailed');
+		await Failed.put({ id: 1, str: 'x' });
+		const cleanup = Failed.cleanup;
+		Failed.cleanup = () => {
+			throw new Error('injected cleanup failure');
+		};
+		try {
+			await assert.rejects(() => Failed.dropTable(), /injected cleanup failure/);
+		} finally {
+			Failed.cleanup = cleanup;
+			Failed.cleanup();
+		}
+		resetDatabases();
+		await nextTick();
+		assert.equal(getDatabases()[TEST_DB].LifecycleCleanupFailed, undefined);
+		assert.equal(dbisDb().getSync('LifecycleCleanupFailed/'), undefined, 'the load completed the interrupted drop');
+		assert.ok(markerFor('LifecycleCleanupFailed'), 'and promoted its tombstone to a marker');
+	});
 });

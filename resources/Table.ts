@@ -3117,7 +3117,14 @@ export function makeTable(options): TableResourceClass {
 			// invisible, and the tombstone guarantees the drop completes on the
 			// next startup (or on a same-name create).
 			if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
-			TableResource.cleanup();
+			try {
+				TableResource.cleanup();
+			} catch (error) {
+				releaseLmdbDropMark?.();
+				releaseFullTextRetirement();
+				derivedIndexRuntime?.completeDrop?.();
+				throw error;
+			}
 			if (databaseName === databasePath && rootStore instanceof RocksDatabase) {
 				try {
 					if (!dropGeneration)
