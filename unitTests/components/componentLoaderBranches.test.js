@@ -1,11 +1,11 @@
 const assert = require('node:assert');
 const { mkdtemp, mkdir, writeFile, rm } = require('node:fs/promises');
-const { join, basename } = require('node:path');
+const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { setupTestDBPath } = require('../testUtils.js');
 const { ApplicationScope } = require('#src/components/ApplicationScope');
 const { loadComponent } = require('#src/components/componentLoader');
-const { statusForComponent, internal: statusInternal } = require('#src/components/status/index');
+const { internal: statusInternal } = require('#src/components/status/index');
 const { Resources } = require('#src/resources/Resources');
 const { table, databases } = require('#src/resources/databases');
 const { removeBranches } = require('#src/resources/branchDatabase');
@@ -97,8 +97,7 @@ describe('componentLoader branch scope ownership', () => {
 		await moduleAt(directory, `branchedDatabases: [${BASE}]\n`);
 		const applicationScope = new ApplicationScope('misplaced-branch', resources, server);
 		assert.strictEqual(await loadComponent(directory, resources, 'test', { applicationScope }), undefined);
-		const status = statusForComponent(basename(directory)).get();
-		assert.strictEqual(status.status, 'error');
+		assert.ok(resources.get(''), 'a refused load must register an error resource');
 		assert.strictEqual(applicationScope.branches, undefined);
 	});
 

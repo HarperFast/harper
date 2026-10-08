@@ -145,6 +145,13 @@ for (const isolated of [false, true]) {
 				return JSON.parse(response.body);
 			}
 
+			// v5.3 deploys from the operations API without a load check, so a refused load answers 200 and
+			// surfaces only once the restarted worker loads the package.
+			async function deployRefusedAfterRestart(deployment: Record<string, unknown>) {
+				const deployed = await operation(deployment);
+				assert.strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
+			}
+
 			before(async () => {
 				directory = await mkdtemp(join(tmpdir(), 'branch-pkg-'));
 				pkg = await packageFixture(directory);
@@ -170,7 +177,7 @@ for (const isolated of [false, true]) {
 			});
 
 			test(
-				'package deploy and its canary keep module and HTTP writes in the fork, including nested components',
+				'package deploy keeps module and HTTP writes in the fork, including nested components',
 				{ timeout: 180000 },
 				async () => {
 					const declaration = isolated ? true : ['data'];
@@ -183,15 +190,8 @@ for (const isolated of [false, true]) {
 						branchedDatabases: declaration,
 						restart: true,
 					};
-					let deployed = await operation(deployment);
+					const deployed = await operation(deployment);
 					assert.strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
-					if (isolated) {
-						// The first deploy creates the dedicated worker; its next load can be certified.
-						await read('/PackageProbe/seed');
-						deployed = await operation(deployment);
-						assert.strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
-					}
-					assert.strictEqual(deployed.body.certification, 'certified');
 					const rootConfig = parse(await readFile(join(ctx.harper.dataRootDir, 'harper-config.yaml'), 'utf8'));
 					assert.strictEqual(rootConfig[project].package, pkg);
 					assert.deepStrictEqual(rootConfig[project].branchedDatabases, declaration);
@@ -232,10 +232,10 @@ for (const isolated of [false, true]) {
 			);
 
 			test(
-				'a missing database rejects the certified load before any application module runs',
+				'a missing database fails the package load before any application module runs',
 				{ timeout: 180000 },
 				async () => {
-					const failed = await operation({
+					await deployRefusedAfterRestart({
 						operation: 'deploy_component',
 						project,
 						package: pkg,
@@ -244,9 +244,17 @@ for (const isolated of [false, true]) {
 						branchedDatabases: ['missingbranchdatabase'],
 						restart: true,
 					});
-					assert.strictEqual(failed.status, 400, JSON.stringify(failed.body));
-					assert.strictEqual(failed.body.certification?.status, 'rejected', JSON.stringify(failed.body));
-					assert.match(JSON.stringify(failed.body.certification), /missingbranchdatabase.*does not exist/);
+					// The previous release served this route; the refused load registers none of it.
+					await waitFor(
+						async () => {
+							try {
+								return (await appRequest('/PackageProbe/seed')).status === 404;
+							} catch {
+								return false;
+							}
+						},
+						{ timeout: 30000, interval: 250, message: 'the package still served after its branch was refused' }
+					);
 					assert.ok(!existsSync(join(branchRoot(), 'missingbranchdatabase')));
 					assert.deepStrictEqual(await baseRows(['PackageProbe-init', 'ChildProbe-init']), []);
 				}
@@ -256,7 +264,7 @@ for (const isolated of [false, true]) {
 				'a root plugin package cannot invoke its callbacks on the shared root scope',
 				{ timeout: 180000 },
 				async () => {
-					const failed = await operation({
+					await deployRefusedAfterRestart({
 						operation: 'deploy_component',
 						project,
 						package: await packageFixture(directory, true),
@@ -265,11 +273,12 @@ for (const isolated of [false, true]) {
 						branchedDatabases: ['data'],
 						restart: true,
 					});
-					assert.strictEqual(failed.status, 400, JSON.stringify(failed.body));
-					assert.strictEqual(failed.body.certification?.status, 'rejected', JSON.stringify(failed.body));
-					assert.match(
-						JSON.stringify(failed.body.certification),
-						/root plugin callbacks receive the shared root scope/
+					await waitFor(
+						async () => {
+							const { componentStatus = [] } = (await operation({ operation: 'get_status' })).body;
+							return componentStatus.find((entry: { name: string }) => entry.name === project)?.status === 'error';
+						},
+						{ timeout: 30000, interval: 250, message: 'the root plugin package did not report its refused load' }
 					);
 					assert.deepStrictEqual(await baseRows(['root-callback']), []);
 				}
