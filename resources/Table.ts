@@ -3174,6 +3174,8 @@ export function makeTable(options): TableResourceClass {
 					return true;
 				};
 				let removed: boolean;
+				// as on RocksDB: a schema reload on this thread leaves the tombstone to this drop instead of completing it
+				const releaseDropMark = markDropInProgress(dropGeneration);
 				try {
 					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
 					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId)) {
@@ -3197,6 +3199,8 @@ export function makeTable(options): TableResourceClass {
 					releaseFullTextRetirement();
 					derivedIndexRuntime?.completeDrop?.();
 					throw error;
+				} finally {
+					releaseDropMark();
 				}
 				if (!removed) {
 					abortStaleDrop();
