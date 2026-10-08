@@ -31,8 +31,8 @@ import {
 	FIRST_BOOT_ENV,
 	NO_PREVIOUS_MINOR,
 	SEEDED_AUDIT_IDS,
-	buildAuditSubjects,
-	buildThings,
+	seededAuditSubjects,
+	seededThings,
 	buildWidget,
 	buildWidgets,
 	previousMinorInstalls,
@@ -45,6 +45,8 @@ const KNOWN_ISSUE = 'https://github.com/HarperFast/harper/issues/3102';
 // The gate exits about 2 s into boot; an absolute deadline also catches a gate that keeps logging while it waits.
 const REFUSAL_DEADLINE_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 30_000;
+// sendOperation takes no deadline; a suite deadline still reaches teardown if an old binary stops answering.
+const SUITE_TIMEOUT_MS = 10 * 60_000;
 const NEW_TABLE = 'born_on_current';
 const NEW_TABLE_TARGET_ROW = { id: 'n-2', v: 'target' };
 
@@ -64,7 +66,7 @@ for (const target of previousMinorInstalls) {
 
 	suite(
 		`rollback ${v} → current (${CURRENT_VERSION}) → ${v} → current: every binary's rows survive`,
-		{ skip: skipCrossVersion },
+		{ skip: skipCrossVersion, timeout: SUITE_TIMEOUT_MS },
 		(ctx: ContextWithHarper) => {
 			const expected = new Map<string, Map<string, Row>>();
 			const expectedAudit = SEEDED_AUDIT_IDS.map((id) => `upsert:${id}`);
@@ -133,7 +135,6 @@ for (const target of previousMinorInstalls) {
 					.map(({ id }) => id)
 					.sort();
 
-			/** Reads every table through search_by_value, SQL, REST, indexed search and the audit log against the rows written so far. */
 			async function assertEveryRow(phase: string) {
 				for (const table of ['things', 'widgets', 'audit_subject', 'Gadget'])
 					deepStrictEqual(await readAll(table), expectedRows(table), `${phase}: search_by_value on ${table}`);
@@ -209,9 +210,9 @@ for (const target of previousMinorInstalls) {
 					harperBinPath: target.binPath,
 				});
 				await seedMinorFixtures(ctx.harper);
-				track('things', buildThings());
+				track('things', seededThings());
 				track('widgets', buildWidgets());
-				track('audit_subject', buildAuditSubjects());
+				track('audit_subject', seededAuditSubjects());
 				await write(
 					'Gadget',
 					Array.from({ length: 5 }, (_, i) => ({ id: `g-${i}`, name: `gadget-${i}`, phase: 'previous' }))
@@ -295,7 +296,7 @@ for (const target of previousMinorInstalls) {
 						/^Harper process failed with exit code\/signal [1-9]/,
 						'the gate must refuse by exiting non-zero, not by waiting until the startup deadline'
 					);
-					match(refusal.stderr, /CONFIRM_DOWNGRADE=yes/, 'the refusal must name the override');
+					match(refusal.message, /CONFIRM_DOWNGRADE=yes/, 'the refusal must name the override');
 				}
 			);
 
