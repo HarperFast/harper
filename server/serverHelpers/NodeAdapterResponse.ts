@@ -40,8 +40,8 @@ function guardPipeSource(source: Readable) {
 		source.on('data', ignoreChunk);
 }
 // must run before pipe's own unpipe cleanup, which resumes a source awaiting 'drain' while any 'data' listener remains
-function releasePipeSource(source: Readable | undefined) {
-	source?.removeListener('data', ignoreChunk);
+function releasePipeSource(source: unknown) {
+	if (source instanceof Readable) source.removeListener('data', ignoreChunk);
 }
 
 export class NodeAdapterResponse extends PassThrough implements NodeServerResponse {
