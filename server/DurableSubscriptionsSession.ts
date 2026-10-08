@@ -570,8 +570,9 @@ const RESETTING_REFUSALS = new Set(['RESUME_HISTORY_UNAVAILABLE']);
 
 const KEY_SCRATCH = new Float64Array(1);
 const KEY_BITS = new BigInt64Array(KEY_SCRATCH.buffer);
-/** The greatest position below a log key, a positive double whose bits order as its value: a replay after it starts at the key. */
+/** The greatest position below a log key, so a replay after it starts at the key. A positive double's bits order as its value. */
 function positionBefore(key: number): number {
+	if (!(key > 0)) return key - 1;
 	KEY_SCRATCH[0] = key;
 	KEY_BITS[0] -= 1n;
 	return KEY_SCRATCH[0];
