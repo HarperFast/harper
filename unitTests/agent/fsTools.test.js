@@ -251,7 +251,9 @@ describe('agent/fsTools pages', () => {
 
 	it('keeps a whole result, cursor included, under the minimum cap even with a long path', async () => {
 		const { serializeToolResult } = require('#src/resources/models/agentLoop');
-		const deep = join('d'.repeat(120), 'e'.repeat(120), 'f'.repeat(120));
+		// About 430 characters in all, whatever the platform's tmpdir length.
+		const segment = Math.floor((420 - scopes.logDir.length) / 3);
+		const deep = join('d'.repeat(segment), 'e'.repeat(segment), 'f'.repeat(segment));
 		mkdirSync(join(scopes.logDir, deep), { recursive: true });
 		writeFileSync(join(scopes.logDir, deep, 'srv.log'), numberedLines(200));
 		const read = await readFileTool.handler({ root: 'logs', path: join(deep, 'srv.log') }, pagedCtx(1024));
@@ -337,13 +339,14 @@ describe('agent/fsTools pages', () => {
 	});
 
 	it('grep_files stops at a page of results, cuts long lines, and says it stopped', async () => {
+		const { serializeToolResult } = require('#src/resources/models/agentLoop');
 		writeFileSync(join(scopes.logDir, 'srv.log'), `${'error '.repeat(200)}\n${'error here\n'.repeat(500)}`);
 		const result = await grepFilesTool.handler({ root: 'logs', pattern: 'error' }, pagedCtx(4096));
 		assert.equal(result.truncated, true);
 		assert.ok(result.count < 500);
 		assert.equal(result.results[0].text.length, 501);
 		assert.ok(result.results[0].text.endsWith('…'));
-		assert.ok(Buffer.byteLength(JSON.stringify(result.results)) <= 2048);
+		assert.equal(serializeToolResult({ ok: true, result }, 4096).truncated, false);
 	});
 
 	it('tail_file keeps its JSON-escaped lines within a page', async () => {

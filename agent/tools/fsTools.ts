@@ -515,7 +515,7 @@ export const grepFilesTool: AgentTool = {
 			for (let i = 0; i < lines.length; i++) {
 				if (!pattern.test(lines[i])) continue;
 				const match = { path: file, line: i + 1, text: clipLine(lines[i]) };
-				const matchBytes = Buffer.byteLength(JSON.stringify(match), 'utf8');
+				const matchBytes = Buffer.byteLength(JSON.stringify(match), 'utf8') + 1; // with its comma
 				if (results.length >= cap || resultBytes + matchBytes > budget) {
 					truncated = true;
 					// A first match too long for the page still comes back, cut to fit, rather than none.
