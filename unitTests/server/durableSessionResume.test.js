@@ -294,10 +294,14 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		const { session } = await connect(clientId);
 		const delivered = [];
 <<<<<<< HEAD
+<<<<<<< HEAD
 		// the late transaction's first message never finishes sending, so its rest stays queued
 =======
 		// acknowledges all but one message as it is sent, and never finishes sending the late transaction's first
 >>>>>>> 176dbfc3f (Keep a durable MQTT session's position below a delivered transaction that committed after a higher key)
+=======
+		// the late transaction's first message never finishes sending, so its rest stays queued
+>>>>>>> 15fdc80d5 (Take the strict predecessor of any finite key, and keep the late count across a wrapped message id)
 		session.setListener((_topic, message, messageId) => {
 			delivered.push(message?.value);
 			if (message?.value !== 'unacked') session.acknowledge(messageId);

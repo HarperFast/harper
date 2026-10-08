@@ -556,7 +556,6 @@ type TopicState = {
 	/** False while a resumed replay awaits its verdict; nothing is checkpointed past the resumed position until then. */
 	verified: boolean;
 	deliveredKey?: number;
-	/** Below every key of the last delivered transaction. */
 	keyBefore?: number;
 	highestKey?: number;
 	/** Each event has its own log key, as on LMDB; a RocksDB transaction's events share one. */
@@ -564,10 +563,14 @@ type TopicState = {
 	/** In delivery order: `needsAcknowledge` is its only writer and runs as each message is sent. */
 	unacked: Map<number, { key: number; previousKey?: number; late?: boolean }>;
 <<<<<<< HEAD
+<<<<<<< HEAD
 	/** Unacked deliveries that arrived below a key delivered before them. */
 =======
 	/** Unacked deliveries that arrived below a key delivered before them: their transactions committed after a higher one. */
 >>>>>>> 6bba7ac26 (Read only the oldest unacknowledged delivery's bound unless a late one is outstanding)
+=======
+	/** Unacked deliveries that arrived below a key delivered before them. */
+>>>>>>> 15fdc80d5 (Take the strict predecessor of any finite key, and keep the late count across a wrapped message id)
 	lateUnacked: number;
 	consumed: number;
 };
@@ -577,6 +580,7 @@ const RESETTING_REFUSALS = new Set(['RESUME_HISTORY_UNAVAILABLE']);
 
 const KEY_SCRATCH = new Float64Array(1);
 const KEY_BITS = new BigInt64Array(KEY_SCRATCH.buffer);
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 /** The greatest double below a log key, so a replay after it starts at the key. */
@@ -590,11 +594,19 @@ function positionBefore(key: number): number {
 =======
 /** The greatest position below a log key, so a replay after it starts at the key. A positive double's bits order as its value. */
 >>>>>>> 3ce0e0247 (Fail closed on a non-positive key, and state the new position rule in every design summary)
+=======
+/** The greatest double below a log key, so a replay after it starts at the key. */
+>>>>>>> 15fdc80d5 (Take the strict predecessor of any finite key, and keep the late count across a wrapped message id)
 function positionBefore(key: number): number {
-	if (!(key > 0)) return key - 1;
+	if (key === 0) return -Number.MIN_VALUE;
+	// doubles of one sign order by their bit patterns, read as signed integers
 	KEY_SCRATCH[0] = key;
+<<<<<<< HEAD
 	KEY_BITS[0] -= 1n;
 >>>>>>> 176dbfc3f (Keep a durable MQTT session's position below a delivered transaction that committed after a higher key)
+=======
+	KEY_BITS[0] += key > 0 ? -1n : 1n;
+>>>>>>> 15fdc80d5 (Take the strict predecessor of any finite key, and keep the late count across a wrapped message id)
 	return KEY_SCRATCH[0];
 }
 
