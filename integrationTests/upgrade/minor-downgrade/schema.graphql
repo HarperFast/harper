@@ -1,0 +1,6 @@
+# Exported so the rollback suite reads rows from every binary over REST, which ops-API tables are not.
+type Gadget @table @export {
+	id: ID @primaryKey
+	name: String @indexed
+	phase: String
+}
