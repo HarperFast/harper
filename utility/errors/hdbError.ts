@@ -126,6 +126,19 @@ export class DatabaseGenerationChangedError extends ClientError {
 	}
 }
 
+/** A peer's table generation that a drop of its name recorded on this node retired. */
+export class TableGenerationDroppedError extends ClientError {
+	code: string;
+	constructor(databaseName: string, tableName: string, createdTime: number | undefined, droppedTime: number) {
+		super(
+			`'${databaseName}.${tableName}' (created ${createdTime ?? 'without a stamp'}) predates its drop at ${droppedTime}`,
+			409
+		);
+		this.name = 'TableGenerationDroppedError';
+		this.code = 'TABLE_GENERATION_DROPPED';
+	}
+}
+
 export class ResumeHistoryUnavailableError extends ClientError {
 	code: string;
 	constructor(message = 'The history after this resume position is no longer retained; resubscribe to resynchronize') {

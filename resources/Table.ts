@@ -89,6 +89,8 @@ import {
 	recordRetiredGeneration,
 	promoteTombstoneToDropMarker,
 	tableLifecycleTime,
+	isDeadGeneration,
+	recordTableDrop,
 	sweepDroppedTableBlobs,
 	storeNameFor,
 	storeNamesFor,
@@ -885,8 +887,12 @@ interface TableResourceClass {
 	 * branch owns a schema identity of its own.
 	 */
 	assertSchemaMutable(operation: string): void;
-	/** `localOnly`: a drop the caller asked not to replicate leaves no drop marker for peers. */
-	dropTable(options?: { droppedTime?: number; localOnly?: boolean }): Promise<void>;
+	/**
+	 * `localOnly`: a drop the caller asked not to replicate leaves no drop marker for peers. `peer`: a peer's drop,
+	 * which never retires a `replicate: false` table and, with `droppedTime`, only a generation created before it.
+	 * Resolves false when nothing was dropped.
+	 */
+	dropTable(options?: { droppedTime?: number; localOnly?: boolean; peer?: boolean }): Promise<boolean>;
 	/**
 	 * Record the relocation of an entry (when a record is moved to a different node), return true if it is now located locally
 	 */
@@ -2891,7 +2897,7 @@ export function makeTable(options): TableResourceClass {
 			throw error;
 		}
 
-		static async dropTable(options?: { droppedTime?: number; localOnly?: boolean }) {
+		static async dropTable(options?: { droppedTime?: number; localOnly?: boolean; peer?: boolean }): Promise<boolean> {
 			TableResource.assertSchemaMutable('drop a table');
 			const rootStore = primaryStore.rootStore;
 			if (
@@ -2902,6 +2908,35 @@ export function makeTable(options): TableResourceClass {
 				throw new Error(
 					`Cannot drop ${databaseName}.${TableResource.tableName}: the catalog store's put is asynchronous, so the drop tombstone cannot be made durable before the column families are dropped`
 				);
+			let primaryCatalogKey = TableResource.tableName + '/';
+			const readPrimaryMeta = () => {
+				const primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
+				if (primaryMeta || !primaryKey) return primaryMeta;
+				const legacyPrimaryKey = `${TableResource.tableName}/${primaryKey}`;
+				const legacyPrimaryMeta = (dbisDb as any).getSync(legacyPrimaryKey);
+				if (!legacyPrimaryMeta?.isPrimaryKey) return undefined;
+				primaryCatalogKey = legacyPrimaryKey;
+				return legacyPrimaryMeta;
+			};
+			const isNodeLocal = (primaryMeta: any) => TableResource.replicate === false || primaryMeta?.replicate === false;
+			const peerDropTime = options?.peer && Number.isFinite(options.droppedTime) ? options.droppedTime : undefined;
+			const keptFromPeer = (primaryMeta: any) =>
+				Boolean(options?.peer) &&
+				(isNodeLocal(primaryMeta) ||
+					(peerDropTime !== undefined && !isDeadGeneration(primaryMeta?.createdTime, peerDropTime)));
+			// The peer's fact is kept for relay whatever happens to this generation; a legacy per-table store has no
+			// database catalog to hold it.
+			const recordPeerDrop = () => {
+				if (peerDropTime !== undefined && databaseName === databasePath)
+					recordTableDrop(databaseName, TableResource.tableName, peerDropTime);
+			};
+			// Checked again with the tombstone write; this read only spares the teardown below. A drop already in flight
+			// is joined, never refused.
+			const currentMeta = readPrimaryMeta();
+			if (!currentMeta?.dropping && keptFromPeer(currentMeta)) {
+				recordPeerDrop();
+				return false;
+			}
 			// Release post-commit derived-index delivery before any destructive work: the runner's
 			// backend must have quiesced before its stores and native file are destroyed, and a
 			// same-name recreate must not race an owner still applying to the old generation.
@@ -2948,7 +2983,7 @@ export function makeTable(options): TableResourceClass {
 				...TableResource.fullTextIndexes,
 			];
 			let dropIdentityConfirmed = databaseName !== databasePath;
-			let primaryCatalogKey = TableResource.tableName + '/';
+			let keptByPeerRule = false;
 			let storeGeneration: string | undefined;
 			let dropGeneration: string | undefined;
 			if (databaseName === databasePath) {
@@ -2960,21 +2995,19 @@ export function makeTable(options): TableResourceClass {
 				// the table.
 				let tombstoneWrite: any;
 				const writeTombstone = () => {
-					let primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
-					if (!primaryMeta && primaryKey) {
-						const legacyPrimaryKey = `${TableResource.tableName}/${primaryKey}`;
-						const legacyPrimaryMeta = (dbisDb as any).getSync(legacyPrimaryKey);
-						if (legacyPrimaryMeta?.isPrimaryKey) {
-							primaryCatalogKey = legacyPrimaryKey;
-							primaryMeta = legacyPrimaryMeta;
-						}
-					}
+					const primaryMeta = readPrimaryMeta();
 					if (
 						!primaryMeta ||
 						(primaryMeta.tableId != null && primaryMeta.tableId !== tableId) ||
 						(rootStore instanceof RocksDatabase && primaryMeta.generation !== tableGeneration)
 					)
 						return false;
+					// Against the row under the lock: another thread may have stamped or redeclared this generation.
+					if (!primaryMeta.dropping && keptFromPeer(primaryMeta)) {
+						keptByPeerRule = true;
+						return false;
+					}
+					const leavesMarker = !options?.localOnly && !isNodeLocal(primaryMeta);
 					dropGeneration = primaryMeta.dropGeneration;
 					storeGeneration = primaryMeta.generation;
 					const durableFullTextDefinitions =
@@ -3002,13 +3035,12 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (primaryMeta.dropping) {
 						// A joining drop that replicates stamps a tombstone a local-only drop left bare, or raises it.
-						const joinedTime = options?.localOnly
+						const joinedTime = !leavesMarker
 							? undefined
-							: Number.isFinite(options?.droppedTime)
-								? options.droppedTime
-								: primaryMeta.droppedTime === undefined
-									? tableLifecycleTime(createdTime)
-									: undefined;
+							: (peerDropTime ??
+								(primaryMeta.droppedTime === undefined
+									? tableLifecycleTime(primaryMeta.createdTime ?? createdTime)
+									: undefined));
 						if (joinedTime !== undefined && !(primaryMeta.droppedTime >= joinedTime)) {
 							primaryMeta.droppedTime = joinedTime;
 							tombstoneWrite = (dbisDb as any).put(primaryCatalogKey, primaryMeta);
@@ -3016,10 +3048,8 @@ export function makeTable(options): TableResourceClass {
 						return true;
 					}
 					primaryMeta.dropping = true;
-					if (!options?.localOnly)
-						primaryMeta.droppedTime = Number.isFinite(options?.droppedTime)
-							? options.droppedTime
-							: tableLifecycleTime(createdTime);
+					if (leavesMarker)
+						primaryMeta.droppedTime = peerDropTime ?? tableLifecycleTime(primaryMeta.createdTime ?? createdTime);
 					// Stamps this drop's identity so the interrupted-drop retry budget in
 					// databases.ts can be scoped to THIS drop rather than the table name: a
 					// worker that exhausts the budget for a table can observe the catalog
@@ -3054,10 +3084,16 @@ export function makeTable(options): TableResourceClass {
 					throw error;
 				}
 			}
+			if (keptByPeerRule) {
+				restoreDerivedIndexesAfterFailedDrop();
+				recordPeerDrop();
+				return false;
+			}
 			if (!dropIdentityConfirmed) {
 				releaseFullTextRetirement();
 				abortStaleDrop();
-				return;
+				recordPeerDrop();
+				return false;
 			}
 			TableResource.derivedIndexRuntime = undefined;
 			// A get() against a sourcedFrom table resolves to its caller before the resolved
@@ -3080,9 +3116,11 @@ export function makeTable(options): TableResourceClass {
 						throw new Error(`Cannot drop ${databaseName}.${tableName}: its catalog tombstone has no drop generation`);
 					const retired = await retireRocksStores(storeGeneration, dropGeneration);
 					if (!retired) {
+						// the tombstone stays, and completes this drop once the full-text retirement can
 						derivedIndexRuntime?.completeDrop?.();
 						releaseFullTextRetirement();
-						return;
+						recordPeerDrop();
+						return true;
 					}
 				} catch (error) {
 					releaseFullTextRetirement();
@@ -3091,7 +3129,8 @@ export function makeTable(options): TableResourceClass {
 				}
 				derivedIndexRuntime?.completeDrop?.();
 				releaseFullTextRetirement();
-				return;
+				recordPeerDrop();
+				return true;
 			}
 			try {
 				for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
@@ -3133,9 +3172,11 @@ export function makeTable(options): TableResourceClass {
 				let removed: boolean;
 				try {
 					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+					// another thread completed this tombstone's drop
 					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId)) {
 						abortStaleDrop();
-						return;
+						recordPeerDrop();
+						return true;
 					}
 					const drops = [];
 					for (const attribute of attributes) {
@@ -3185,6 +3226,8 @@ export function makeTable(options): TableResourceClass {
 			} finally {
 				releaseFullTextRetirement();
 			}
+			recordPeerDrop();
+			return true;
 
 			async function retireFullTextStorage(): Promise<boolean> {
 				if (fullTextDefinitionsForRetirement.length === 0) return true;

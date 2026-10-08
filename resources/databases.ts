@@ -37,7 +37,7 @@ import {
 	RESERVED_DATABASE_NAMES,
 } from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
-import { ClientError, DatabaseClosingError } from '../utility/errors/hdbError.ts';
+import { ClientError, DatabaseClosingError, TableGenerationDroppedError } from '../utility/errors/hdbError.ts';
 import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
@@ -674,6 +674,33 @@ export function isDeadGeneration(createdTime: number | undefined, droppedTime: n
 function droppedRowKey(tableName: string): string {
 	return DROPPED_ROW_PREFIX + tableName;
 }
+/** Serialized against every other catalog writer: the `update-attributes` lock on RocksDB, a write transaction on LMDB. */
+function withCatalogWrite<Callback extends () => unknown>(
+	rootStore: RootDatabaseKind,
+	scopeDescription: string,
+	write: Callback & (ReturnType<Callback> extends PromiseLike<unknown> ? never : unknown)
+): ReturnType<Callback> {
+	return rootStore instanceof RocksDatabase
+		? withUpdateAttributesLock(rootStore, scopeDescription, write)
+		: (rootStore as any).transactionSync(write);
+}
+/**
+ * Whether a peer's generation of this table, stamped `createdTime` (none from a peer that predates the stamps),
+ * is one a drop recorded here retired. An unstamped one is taken to describe a live local generation newer than
+ * that drop, so a not-yet-upgraded peer's writes to a recreated table keep flowing through a rolling upgrade.
+ */
+export function isDroppedPeerGeneration(databaseName: string, tableName: string, createdTime: unknown): boolean {
+	const attributesDbi = databases[databaseName] && (definedDatabases.get(databaseName) as any)?.rootStore?.dbisDb;
+	const droppedTime = attributesDbi?.getSync(droppedRowKey(tableName))?.droppedTime;
+	if (!Number.isFinite(droppedTime)) return false;
+	if (typeof createdTime === 'number') return isDeadGeneration(createdTime, droppedTime);
+	const local = databases[databaseName][tableName];
+	return !local || isDeadGeneration(catalogCreatedTime(local), droppedTime);
+}
+/** A table this node keeps to itself, by its class or by its catalog row (another thread may have redeclared it). */
+export function isNodeLocalTable(table: { replicate?: boolean; dbisDB: any; tableName: string; primaryKey?: string }) {
+	return table.replicate === false || primaryCatalogRowFor(table)?.value?.replicate === false;
+}
 function dropMarkerStoreFor(databaseName: string): { rootStore: RootDatabaseKind; attributesDbi: any } | undefined {
 	if (!databases[databaseName]) return;
 	const rootStore = database({ database: databaseName, table: null });
@@ -719,14 +746,10 @@ function writeTableDropMarker(
 		attributesDbi.putSync(key, marker);
 		return true;
 	};
-	let written: boolean;
-	if (rootStore instanceof RocksDatabase) {
-		written = exclusive
-			? withUpdateAttributesLock(rootStore, `drop marker for '${databaseName}.${tableName}'`, write)
+	const written: boolean =
+		exclusive || !(rootStore instanceof RocksDatabase)
+			? withCatalogWrite(rootStore, `drop marker for '${databaseName}.${tableName}'`, write)
 			: write();
-	} else {
-		written = (rootStore as any).transactionSync(write);
-	}
 	// Committed by here on both engines; emitted outside the caller's lock because listeners re-send
 	// schemas, which read this catalog.
 	if (written)
@@ -753,6 +776,8 @@ export function recordTableDrop(databaseName: string, tableName: string, dropped
 	if (!Number.isFinite(droppedTime)) return false;
 	const store = dropMarkerStoreFor(databaseName);
 	if (!store) return false;
+	// markers only move forward, so one at least this new needs no lock
+	if (store.attributesDbi.getSync(droppedRowKey(tableName))?.droppedTime >= droppedTime) return false;
 	return writeTableDropMarker(
 		store.rootStore,
 		store.attributesDbi,
@@ -809,10 +834,7 @@ export function stampTableCreatedTime(
 		attributesDbi.putSync(row.key, row.value);
 		return true;
 	};
-	const written: boolean =
-		rootStore instanceof RocksDatabase
-			? withUpdateAttributesLock(rootStore, `stamp '${table.tableName}'`, write)
-			: (rootStore as any).transactionSync(write);
+	const written: boolean = withCatalogWrite(rootStore, `stamp '${table.tableName}'`, write);
 	if (written) table.createdTime = createdTime;
 	return written;
 }
@@ -4379,11 +4401,19 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// generation this table has ever spent, not just the one on this row.
 				clearInterruptedDropEntries(rootStore.path, tableName);
 			}
-			// After any interrupted drop completed, and never below the newest drop of this name: a recreate
-			// that follows a drop this node knows of must read as the newer generation everywhere.
-			primaryKeyAttribute.createdTime = Number.isFinite(createdTime)
-				? createdTime
-				: tableLifecycleTime((attributesDbi as any).getSync(droppedRowKey(tableName))?.droppedTime);
+			// After any interrupted drop completed, and under the lock every drop marker is written under.
+			const knownDropTime = (attributesDbi as any).getSync(droppedRowKey(tableName))?.droppedTime;
+			if (origin === 'cluster' || createdTime !== undefined) {
+				// A peer's generation keeps its stamp, or 0 when its node kept none, so any drop retires it and it is
+				// never taken for a table created on a build that stored no stamp.
+				const peerCreatedTime = Number.isFinite(createdTime) ? createdTime : 0;
+				if (Number.isFinite(knownDropTime) && isDeadGeneration(peerCreatedTime, knownDropTime))
+					throw new TableGenerationDroppedError(databaseName, tableName, createdTime, knownDropTime);
+				primaryKeyAttribute.createdTime = peerCreatedTime;
+			} else {
+				// never below the newest drop of this name: a local recreate must read as newer everywhere
+				primaryKeyAttribute.createdTime = tableLifecycleTime(knownDropTime);
+			}
 			if (rootStore instanceof RocksDatabase) {
 				const journalId = randomUUID();
 				let hasPriorStores = Boolean(
@@ -6027,19 +6057,23 @@ function completeInterruptedDrop(
 	return true;
 }
 
+/**
+ * Removes the catalog rows of a name that no generation owns. A primary row means a newer generation is live, or
+ * a drop has kept its tombstone to finish later (full-text retirement pending); either removes its own rows.
+ */
 export function dropTableMeta({ table: tableName, database: databaseName }) {
 	const rootStore = database({ database: databaseName, table: tableName });
-	const removals = [];
 	const dbisDb = rootStore.dbisDb;
-	for (const { key, value } of dbisDb.getRange({ start: tableName + '/', end: tableName + '0' })) {
-		// A drop that returned with its tombstone still in place (full-text retirement pending) must not
-		// lose the drop time with the row.
-		if (value?.dropping)
-			writeTableDropMarker(rootStore, dbisDb, databaseName, tableName, value.droppedTime, value.tableId, true, key);
-		removals.push(dbisDb.remove(key));
-	}
-	databaseEventsEmitter.emit('dropTable', tableName, databaseName);
-	return Promise.all(removals);
+	const outcome = withCatalogWrite(rootStore, `drop metadata of '${databaseName}.${tableName}'`, () => {
+		const orphans = [];
+		for (const { key, value } of dbisDb.getRange({ start: tableName + '/', end: tableName + '0' })) {
+			if (key === tableName + '/' || value?.isPrimaryKey) return value?.dropping ? 'dropping' : 'live';
+			orphans.push(key);
+		}
+		for (const key of orphans) dbisDb.removeSync(key);
+		return 'removed';
+	});
+	if (outcome !== 'live') databaseEventsEmitter.emit('dropTable', tableName, databaseName);
 }
 
 export function onUpdatedTable(listener: (table: Table) => void) {
