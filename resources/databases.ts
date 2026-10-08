@@ -6158,10 +6158,10 @@ function completeInterruptedDrop(
  * a drop has kept its tombstone to finish later (full-text retirement pending); either removes its own rows.
  */
 export function dropTableMeta({ table: tableName, database: databaseName }) {
-	const rootStore = database({ database: databaseName, table: tableName });
-	const dbisDb = rootStore.dbisDb;
 	let outcome: string | undefined;
 	try {
+		const rootStore = database({ database: databaseName, table: tableName });
+		const dbisDb = rootStore.dbisDb;
 		outcome = withCatalogWrite(rootStore, `drop metadata of '${databaseName}.${tableName}'`, () => {
 			const orphans = [];
 			for (const { key, value } of dbisDb.getRange({ start: tableName + '/', end: tableName + '0' })) {

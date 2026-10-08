@@ -2985,6 +2985,7 @@ export function makeTable(options): TableResourceClass {
 			];
 			let dropIdentityConfirmed = databaseName !== databasePath;
 			let keptByPeerRule = false;
+			let releaseLmdbDropMark: (() => void) | undefined;
 			let storeGeneration: string | undefined;
 			let dropGeneration: string | undefined;
 			if (databaseName === databasePath) {
@@ -3077,9 +3078,12 @@ export function makeTable(options): TableResourceClass {
 						rootStore.transactionSync(() => {
 							dropIdentityConfirmed = writeTombstone();
 						});
+						// as on RocksDB: a schema reload on this thread leaves the tombstone to this drop instead of completing it
+						if (dropIdentityConfirmed && dropGeneration) releaseLmdbDropMark = markDropInProgress(dropGeneration);
 						if (typeof tombstoneWrite?.then === 'function') await tombstoneWrite;
 					}
 				} catch (error) {
+					releaseLmdbDropMark?.();
 					releaseFullTextRetirement();
 					restoreDerivedIndexesAfterFailedDrop();
 					throw error;
@@ -3143,6 +3147,7 @@ export function makeTable(options): TableResourceClass {
 					}
 				}
 			} catch (error) {
+				releaseLmdbDropMark?.();
 				releaseFullTextRetirement();
 				derivedIndexRuntime?.completeDrop?.();
 				throw error;
@@ -3174,8 +3179,6 @@ export function makeTable(options): TableResourceClass {
 					return true;
 				};
 				let removed: boolean;
-				// as on RocksDB: a schema reload on this thread leaves the tombstone to this drop instead of completing it
-				const releaseDropMark = markDropInProgress(dropGeneration);
 				try {
 					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
 					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId)) {
@@ -3200,7 +3203,7 @@ export function makeTable(options): TableResourceClass {
 					derivedIndexRuntime?.completeDrop?.();
 					throw error;
 				} finally {
-					releaseDropMark();
+					releaseLmdbDropMark?.();
 				}
 				if (!removed) {
 					abortStaleDrop();
