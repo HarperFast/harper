@@ -563,7 +563,11 @@ type TopicState = {
 	keysPerEntry?: boolean;
 	/** In delivery order: `needsAcknowledge` is its only writer and runs as each message is sent. */
 	unacked: Map<number, { key: number; previousKey?: number; late?: boolean }>;
+<<<<<<< HEAD
 	/** Unacked deliveries that arrived below a key delivered before them. */
+=======
+	/** Unacked deliveries that arrived below a key delivered before them: their transactions committed after a higher one. */
+>>>>>>> 6bba7ac26 (Read only the oldest unacknowledged delivery's bound unless a late one is outstanding)
 	lateUnacked: number;
 	consumed: number;
 };
@@ -763,8 +767,18 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			}
 =======
 			}
+<<<<<<< HEAD
 			state.unacked.set(messageId, { key, previousKey: state.keyBefore });
 >>>>>>> 176dbfc3f (Keep a durable MQTT session's position below a delivered transaction that committed after a higher key)
+=======
+			if (key < state.highestKey) {
+				state.lateUnacked++;
+				state.unacked.set(messageId, { key, previousKey: state.keyBefore, late: true });
+			} else {
+				state.highestKey = key;
+				state.unacked.set(messageId, { key, previousKey: state.keyBefore });
+			}
+>>>>>>> 6bba7ac26 (Read only the oldest unacknowledged delivery's bound unless a late one is outstanding)
 		}
 		return messageId;
 	}
@@ -860,6 +874,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				? state.deliveredKey
 				: state.keyBefore;
 <<<<<<< HEAD
+<<<<<<< HEAD
 		for (const { previousKey } of state.unacked.values()) {
 			if (previousKey === undefined) return;
 			if (previousKey < boundary) boundary = previousKey;
@@ -871,6 +886,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (previousKey === undefined) return;
 			if (previousKey < boundary) boundary = previousKey;
 >>>>>>> 176dbfc3f (Keep a durable MQTT session's position below a delivered transaction that committed after a higher key)
+=======
+		for (const { previousKey } of state.unacked.values()) {
+			if (previousKey === undefined) return;
+			if (previousKey < boundary) boundary = previousKey;
+			// with none late, every unacked key is at or above the oldest's, so the oldest's bound holds for all
+			if (state.lateUnacked === 0) break;
+>>>>>>> 6bba7ac26 (Read only the oldest unacknowledged delivery's bound unless a late one is outstanding)
 		}
 		if (boundary === undefined || !certified) return boundary;
 		const progress = subscription.progress();
