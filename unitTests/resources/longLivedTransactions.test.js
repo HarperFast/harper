@@ -782,9 +782,11 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			this.timeout(20000);
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 			setMainIsWorker(true);
+			// Not `test`: data/dev/test/test2 share one root, which carries the name of whichever alias opened
+			// it first (databases.ts initStores), so the logged database depends on which suites ran earlier.
 			const Primary = table({
 				table: 'MonitorAbortPrimaryTable',
-				database: 'test',
+				database: 'monitor-abort-primary',
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'v' }],
 			});
 			const Secondary = table({
@@ -806,6 +808,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			// catch them mid-flight.
 			const trackedTxns = setTxnExpiration(30000);
 			const context = {};
+			let headId;
 			try {
 				await assert.rejects(
 					transaction(context, async () => {
@@ -818,7 +821,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 						// otherwise be visited by the monitor and abort on its own terms too.
 						trackedTxns.delete(links[1]);
 						links[1].writeTimeout = 0; // decays chainStillActive() for the head's own visit below
-						const headId = links[0].transaction?.id;
+						headId = links[0].transaction?.id;
 						assert.ok(headId !== undefined, 'the head must own a native handle');
 						setTxnExpiration(20);
 						links[0].timeout = 0;
@@ -826,16 +829,21 @@ describe('Long-lived transaction reporting (#2471)', () => {
 							timeout: 10000,
 							message: 'the monitor never logged the abort',
 						});
-						// `table()` names an ephemeral test table with a component-scoped `/@<uuid>` suffix, so
-						// match around it rather than requiring the table name to butt up against "(transaction N)".
-						assert.match(
-							String(abortLine()[0]),
-							new RegExp(`from table: test\\.MonitorAbortPrimaryTable\\S* \\(transaction ${headId}\\)`),
-							`expected the describeCommitIdentity form naming the head's database.table and native id: ${abortLine()[0]}`
-						);
 					}),
-					/exceeding the maximum open-transaction time/,
+					(error) => {
+						// An assertion that failed inside the callback rejects this too; rethrow it so it reports as
+						// itself rather than as a missing poison.
+						if (!/exceeding the maximum open-transaction time/.test(error?.message)) throw error;
+						return true;
+					},
 					'the poisoned commit must still surface as a rejection once the callback returns'
+				);
+				// `table()` names an ephemeral test table with a component-scoped `/@<uuid>` suffix, so match
+				// around it rather than requiring the table name to butt up against "(transaction N)".
+				assert.match(
+					String(abortLine()[0]),
+					new RegExp(`from table: monitor-abort-primary\\.MonitorAbortPrimaryTable\\S* \\(transaction ${headId}\\)`),
+					`expected the describeCommitIdentity form naming the head's database.table and native id: ${abortLine()[0]}`
 				);
 			} finally {
 				harperLogger.error = originalError;
