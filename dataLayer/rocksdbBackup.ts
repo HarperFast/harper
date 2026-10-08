@@ -1281,7 +1281,7 @@ export async function restoreBackupOffline(
 			// rerun wedges for good — a drop refuses a marked directory too, and the marker keeps the pin
 			// live. A marker records only the directory name, so this source's own pin is what proves
 			// the debris is ours. Known gap: a pin that outlived its marker vouches for a later,
-			// unrelated one (harper#2632).
+			// unrelated one (harper#3106).
 			const ourInterruptedRestore = preexisting && readBackupPins(backupDir).some((pin) => pin.pin_id === pinId);
 			if (
 				targetDatabase !== undefined &&
