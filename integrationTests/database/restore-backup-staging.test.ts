@@ -1,11 +1,4 @@
-/**
- * harper#2965 — restore_backup must verify the backup before it touches the destination.
- *
- * A backup that cannot be read must leave the live database fully intact (every row, including
- * rows written after the backup, readable and writable, no restoring marker) and the refusal must
- * say so ("was not modified"), both online (operations API job) and offline (CLI). A valid backup
- * must still restore through the staging swap, and the restored state must survive a restart.
- */
+/** harper#2965 — restore_backup must verify the backup before it touches the destination. */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, match } from 'node:assert';
 import { execFile } from 'node:child_process';

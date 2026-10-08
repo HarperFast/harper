@@ -32,6 +32,7 @@ import {
 	abandonRestore,
 	checkRestoreState,
 	releaseRestoreLock,
+	restoreReplacedPath,
 	type RestoreLock,
 } from './restoreMarker.ts';
 import {
@@ -676,6 +677,8 @@ export async function restoreBackup(request: any) {
 		);
 	});
 	try {
+		// Preparing a rerun of an unfinished publication drops the candidate it left, so nothing may hold it.
+		if (pathPresent(restoreReplacedPath(databaseDir))) await verifyDatabaseClosed(databaseDir, databaseName);
 		// Staged while the database is still open and serving, so the copy is not downtime.
 		prepareRestoreStaging(lock, publication);
 		await stageRestore(backupDir, backupId, lock);

@@ -603,6 +603,36 @@ describe('rocksdbBackup', function () {
 			assertNoDebris();
 		});
 
+		it('online: refuses to drop a published candidate something still holds open', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realRestoreBlobs = blobBackupModule.restoreBlobSnapshot;
+			blobBackupModule.restoreBlobSnapshot = async () => {
+				throw new Error('injected blob failure');
+			};
+			try {
+				await assert.rejects(restoreBackupOffline(STAGED, backupId), /injected blob failure/);
+			} finally {
+				blobBackupModule.restoreBlobSnapshot = realRestoreBlobs;
+			}
+			assert.ok(existsSync(restoreReplacedPath(stagedDir())), 'precondition: publication began');
+			const holder = RocksDatabase.open(stagedDir());
+			try {
+				await assert.rejects(
+					restoreBackup({ ...SU, database: STAGED, backup_id: backupId }),
+					(error) => error.statusCode === 409
+				);
+				assert.ok(existsSync(join(stagedDir(), 'CURRENT')), 'the held candidate was not removed');
+			} finally {
+				holder.close();
+			}
+			await restoreBackup({ ...SU, database: STAGED, backup_id: backupId });
+			assert.strictEqual(checkRestoreState(stagedDir()), 'clear');
+			await closeLoadedDatabases();
+			assertRestoredFromBackup();
+			assertNoDebris();
+		});
+
 		// `.replaced` is what tells a rerun that the database path holds only a candidate, so it may not
 		// outlive the restore that made it.
 		it('keeps the marker when the pre-restore copy cannot be retired', async function () {
