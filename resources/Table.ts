@@ -1062,6 +1062,7 @@ interface TableResourceClass {
 	path?: string;
 	directURLMapping: boolean;
 	loadAsInstance: boolean;
+	streamRequestBody?: readonly string[];
 	requestContract?: Contract;
 	inputSchemas?: {
 		[verb: string]: {

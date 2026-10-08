@@ -26,6 +26,7 @@ import {
 	settleDeferredCredentialRejection,
 } from '../security/deferredAuthentication.ts';
 import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
+import { completeMultipartBody, cancelMultipartBody } from './serverHelpers/multipartForm.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
@@ -283,12 +284,13 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		}
 		let responseData = await transaction(request, () => {
 			if (headersObject['content-length'] || headersObject['transfer-encoding']) {
-				// TODO: Support cancellation (if the request otherwise fails or takes too many bytes)
+				// TODO: Support cancellation for non-multipart bodies.
 				try {
-					request.data = (getDeserializer(headersObject['content-type'] as any, true) as any)(
-						request.body,
-						request.headers
-					);
+					request.data = getDeserializer(
+						headersObject['content-type'] as any,
+						true,
+						resource.streamRequestBody?.includes(method.toLowerCase()) === true
+					)(request.body, request.signal);
 				} catch (error) {
 					throw new ClientError(error, 400);
 				}
@@ -310,13 +312,22 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				case 'HEAD':
 					return resource.get ? resource.get(target, request) : missingMethod(resource, 'get');
 				case 'POST':
-					return resource.post ? resource.post(target, request.data, request) : missingMethod(resource, 'post');
+					return completeMultipartBody(
+						request.data,
+						resource.post ? resource.post(target, request.data, request) : missingMethod(resource, 'post')
+					);
 				case 'PUT':
-					return resource.put ? resource.put(target, request.data, request) : missingMethod(resource, 'put');
+					return completeMultipartBody(
+						request.data,
+						resource.put ? resource.put(target, request.data, request) : missingMethod(resource, 'put')
+					);
 				case 'DELETE':
 					return resource.delete ? resource.delete(target, request) : missingMethod(resource, 'delete');
 				case 'PATCH':
-					return resource.patch ? resource.patch(target, request.data, request) : missingMethod(resource, 'patch');
+					return completeMultipartBody(
+						request.data,
+						resource.patch ? resource.patch(target, request.data, request) : missingMethod(resource, 'patch')
+					);
 				case 'OPTIONS': // used primarily for CORS
 					headers.setIfNone(
 						'Allow',
@@ -331,7 +342,10 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				case 'TRACE':
 					return 'Harper is the terminating server';
 				case 'QUERY':
-					return resource.query ? resource.query(target, request.data, request) : missingMethod(resource, 'query');
+					return completeMultipartBody(
+						request.data,
+						resource.query ? resource.query(target, request.data, request) : missingMethod(resource, 'query')
+					);
 				case 'COPY': // methods suggested from webdav RFC 4918
 					return resource.copy
 						? resource.copy(target, headersObject.destination, request)
@@ -451,6 +465,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		if ((method === 'GET' || method === 'HEAD') && (target as any)?.isCollection) addVaryHeader(headers, 'Prefer');
 		return responseObject;
 	} catch (error) {
+		cancelMultipartBody(request.data);
 		error ??= new Error('Unknown error occurred');
 		// a thrown Response short-circuits as the response, the same as returning one
 		if (error instanceof Response) return finalizeResponse(error, headers, request.response.status, request);

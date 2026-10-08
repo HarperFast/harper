@@ -18,6 +18,7 @@ import { Blob } from '../../resources/blob.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
 import { parseMultipartRequest, releaseUnreadUpload } from './multipartParser.ts';
+import { deserializeMultipartForm, deserializeMultipartStream } from './multipartForm.ts';
 const SERIALIZATION_BIGINT = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
 const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
 const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
@@ -57,13 +58,19 @@ const PUBLIC_ENCODE_OPTIONS = {
 	useToJSON: true,
 };
 
-type Deserialize = (data: Buffer) => { contentType?: string; data: unknown } | unknown;
+type Deserialize = (data: Buffer, contentType?: string) => unknown;
+type DeserializeStream = (
+	data: AsyncIterable<Uint8Array>,
+	contentType: string,
+	signal?: AbortSignal
+) => AsyncIterable<unknown>;
 
 const mediaTypes = new Map<
 	string,
 	{
 		serialize?: unknown;
 		deserialize?: Deserialize;
+		deserializeStream?: DeserializeStream;
 		serializeStream?: unknown;
 		compressible?: boolean;
 		q?: number;
@@ -89,7 +96,7 @@ mediaTypes.set('application/cbor', {
 		return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
 	},
 	serialize: cborEncoder.encode,
-	deserialize: cborEncoder.decode,
+	deserialize: (data) => cborEncoder.decode(data),
 	q: 1,
 });
 mediaTypes.set('application/x-msgpack', {
@@ -100,7 +107,7 @@ mediaTypes.set('application/x-msgpack', {
 		return pack(data);
 	},
 	serialize: pack,
-	deserialize: unpack,
+	deserialize: (data) => unpack(data),
 	q: 0.9,
 });
 mediaTypes.set('text/csv', {
@@ -224,8 +231,10 @@ mediaTypes.set('text/event-stream', {
 	compressible: false,
 	q: 0.8,
 });
-// TODO: Support this as well:
-//'multipart/form-data'
+mediaTypes.set('multipart/form-data', {
+	deserialize: deserializeMultipartForm,
+	deserializeStream: deserializeMultipartStream,
+});
 mediaTypes.set('application/x-www-form-urlencoded', {
 	deserialize(data) {
 		const stringData = Buffer.isBuffer(data) ? data.toString('utf8') : data;
@@ -653,7 +662,7 @@ function parseContentType(contentType: string): ContentType {
 		contentType = contentType.slice(0, parametersStart);
 	}
 
-	return { type: contentType, parameters };
+	return { type: contentType.trim().toLowerCase(), parameters };
 }
 
 /**
@@ -662,18 +671,29 @@ function parseContentType(contentType: string): ContentType {
 export function getDeserializer(contentTypeString: string, streaming: false): Deserialize;
 export function getDeserializer(
 	contentTypeString: string,
-	streaming: true
-): (stream: Readable) => Promise<ReturnType<Deserialize>>;
+	streaming: true,
+	streamValues?: false
+): (stream: Readable) => Promise<unknown>;
+export function getDeserializer(
+	contentTypeString: string,
+	streaming: true,
+	streamValues: boolean
+): (stream: AsyncIterable<Uint8Array>, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>;
 export function getDeserializer(
 	contentTypeString: string = '',
-	streaming: boolean = false
-): Deserialize | ((stream: Readable) => Promise<ReturnType<Deserialize>>) {
+	streaming: boolean = false,
+	streamValues: boolean = false
+):
+	| Deserialize
+	| ((stream: AsyncIterable<Uint8Array>, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>) {
 	const contentType = parseContentType(contentTypeString);
-
-	const deserialize =
-		(contentType.type && mediaTypes.get(contentType.type)?.deserialize) || deserializerUnknownType(contentType);
-
-	return streaming ? (stream: Readable) => streamToBuffer(stream).then(deserialize) : deserialize;
+	const handler = mediaTypes.get(contentType.type);
+	const deserialize = handler?.deserialize || deserializerUnknownType(contentType);
+	if (streaming && streamValues && handler?.deserializeStream)
+		return (stream, signal) => handler.deserializeStream(stream, contentTypeString, signal);
+	return streaming
+		? (stream: Readable) => streamToBuffer(stream).then((data) => deserialize(data, contentTypeString))
+		: (data: Buffer) => deserialize(data, contentTypeString);
 }
 
 function deserializerUnknownType(contentType: ContentType): Deserialize {
