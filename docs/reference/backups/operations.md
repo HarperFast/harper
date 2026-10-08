@@ -108,7 +108,7 @@ harper purge_backups database=data keep_count=3
 
 ## `restore_backup`
 
-<VersionBadge version="v5.2.0" /> <EngineBadge engines="RocksDB" />
+<VersionBadge version="v5.2.0" /> <VersionBadge type="changed" version="v5.3.2" /> <EngineBadge engines="RocksDB" />
 
 Restores a database in place from a managed backup. `backup_id` defaults to the latest backup. The audit/transaction log is restored alongside the data, and — for a database with file-backed blobs — the blob roots are purged and rewritten from the backup's blob snapshot.
 
