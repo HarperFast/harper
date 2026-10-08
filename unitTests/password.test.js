@@ -77,7 +77,8 @@ describe('Test password module', function () {
 			assert((await validate(hashedPass, 'wrongPassword', HASH_FUNCTION.ARGON2ID)) === false);
 		});
 
-		// Stored hashes outlive the argon2 build that wrote them; a dependency bump must still verify these.
+		// Stored hashes outlive the argon2 build that wrote them. A bump that fails these would lock out
+		// existing users: fix the bump, never regenerate the fixtures.
 		const PINNED_ARGON2ID_HASHES = [
 			{
 				description: 'written by hash() with the default parameters',

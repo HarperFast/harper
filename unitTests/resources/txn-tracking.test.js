@@ -209,7 +209,6 @@ describe('Write txn timeout', () => {
 			await assert.rejects(
 				transaction(context, async () => {
 					await IndexedResource.put(101, { t: 9999 }, context);
-					// hold the transaction open (with a pending write) until the monitor fires
 					const databaseTxn = databaseTxns(context)[0];
 					await waitFor(() => databaseTxn.timedOut, {
 						message: 'the monitor never aborted the idle write-bearing transaction',
@@ -367,7 +366,6 @@ describe('Write txn timeout', () => {
 			assert.ok(!trackedTxns.has(next), 'test setup: next must not be tracked — it is never itself read');
 			assert.ok(head.hasPendingWrites(), "test setup: head must see the next chain's write");
 
-			// nothing touches either link while the monitor cycles
 			await waitFor(() => !trackedTxns.has(head), {
 				message: 'an idle chain whose only write lives on an untracked next link must eventually be reaped',
 			});
