@@ -66,7 +66,7 @@ describe('request timing', () => {
 			await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 			port = server.address().port;
 		});
-		after(() => new Promise((resolve) => server.close(resolve)));
+		after(() => server && new Promise((resolve) => server.close(resolve)));
 
 		function readResponses(socket, count) {
 			return new Promise((resolve) => {
