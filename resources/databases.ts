@@ -668,13 +668,14 @@ export function tableLifecycleTime(after?: number): number {
 	const now = getNextMonotonicTime();
 	return Number.isFinite(after) && now <= after ? after + LIFECYCLE_STEP : now;
 }
+/** Test-only: the node simulates a build that predates the stamps, which stored no `createdTime` or `droppedTime`. */
+export const OMIT_LIFECYCLE_STAMPS_FOR_TEST = process.env.HARPER_TEST_OMIT_TABLE_LIFECYCLE === '1';
 export function isDeadGeneration(createdTime: number | undefined, droppedTime: number): boolean {
 	return (Number.isFinite(createdTime) ? createdTime : 0) < droppedTime;
 }
 function droppedRowKey(tableName: string): string {
 	return DROPPED_ROW_PREFIX + tableName;
 }
-/** Serialized against every other catalog writer: the `update-attributes` lock on RocksDB, a write transaction on LMDB. */
 function withCatalogWrite<Callback extends () => unknown>(
 	rootStore: RootDatabaseKind,
 	scopeDescription: string,
@@ -697,9 +698,16 @@ export function isDroppedPeerGeneration(databaseName: string, tableName: string,
 	const local = databases[databaseName][tableName];
 	return !local || isDeadGeneration(catalogCreatedTime(local), droppedTime);
 }
-/** A table this node keeps to itself, by its class or by its catalog row (another thread may have redeclared it). */
+/** A table this node keeps to itself. */
 export function isNodeLocalTable(table: { replicate?: boolean; dbisDB: any; tableName: string; primaryKey?: string }) {
-	return table.replicate === false || primaryCatalogRowFor(table)?.value?.replicate === false;
+	return replicateIsFalse(primaryCatalogRowFor(table)?.value, table);
+}
+/**
+ * A declared `replicate` is persisted on the primary catalog row, which another thread may have redeclared since this
+ * class loaded; only a runtime exclusion (a non-replicating system table) lives on the class alone.
+ */
+export function replicateIsFalse(primaryRow: any, table: { replicate?: boolean }): boolean {
+	return typeof primaryRow?.replicate === 'boolean' ? primaryRow.replicate === false : table.replicate === false;
 }
 function dropMarkerStoreFor(databaseName: string): { rootStore: RootDatabaseKind; attributesDbi: any } | undefined {
 	if (!databases[databaseName]) return;
@@ -3879,6 +3887,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (Table.primaryStore.rootStore.status === 'closed') {
 				throw new Error(`Can not use a closed data store from ${tableName} class`);
 			}
+			// A stamped peer generation a drop retired must not merge into the live one. Markers only move forward, so
+			// no lock is needed; an unstamped one is taken to describe this live generation (a rolling upgrade).
+			if (Number.isFinite(createdTime)) {
+				const knownDropTime = Table.dbisDB?.getSync(droppedRowKey(tableName))?.droppedTime;
+				if (Number.isFinite(knownDropTime) && isDeadGeneration(createdTime, knownDropTime))
+					throw new TableGenerationDroppedError(databaseName, tableName, createdTime, knownDropTime);
+			}
 			// Reject moving the primary key to a different attribute on a table that already has records.
 			// The storage key (Table.primaryKey) is never re-pointed here, so honoring the change would
 			// leave describe reporting the new attribute while every record — old and newly inserted — stays
@@ -4414,6 +4429,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// never below the newest drop of this name: a local recreate must read as newer everywhere
 				primaryKeyAttribute.createdTime = tableLifecycleTime(knownDropTime);
 			}
+			if (OMIT_LIFECYCLE_STAMPS_FOR_TEST) delete primaryKeyAttribute.createdTime;
 			if (rootStore instanceof RocksDatabase) {
 				const journalId = randomUUID();
 				let hasPriorStores = Boolean(

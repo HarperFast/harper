@@ -18,6 +18,7 @@ const {
 	onTableDropRecorded,
 	isDeadGeneration,
 	isDroppedPeerGeneration,
+	isNodeLocalTable,
 } = require('#src/resources/databases');
 const { REPLICATED_FROM } = require('#src/utility/hdbTerms');
 const { server } = require('#src/server/Server');
@@ -572,5 +573,47 @@ describe('table lifecycle stamps (harper#1212)', () => {
 			'a stamped stale one is not'
 		);
 		await Recreated.dropTable();
+	});
+
+	it('refuses a stale stamped peer definition of a live, newer generation without merging its attributes', async () => {
+		const First = defineTable('LifecycleStaleMerge');
+		const staleCreated = First.createdTime;
+		await First.dropTable();
+		const Live = defineTable('LifecycleStaleMerge');
+		assert.throws(
+			() =>
+				table({
+					table: 'LifecycleStaleMerge',
+					database: TEST_DB,
+					origin: 'cluster',
+					createdTime: staleCreated,
+					attributes: [
+						{ name: 'id', type: 'Int', isPrimaryKey: true },
+						{ name: 'str', type: 'String' },
+						{ name: 'retiredOnly', type: 'String' },
+					],
+				}),
+			droppedGeneration
+		);
+		assert.equal(databases[TEST_DB].LifecycleStaleMerge, Live);
+		assert.equal(dbisDb().getSync('LifecycleStaleMerge/retiredOnly'), undefined, "the retired generation's attribute");
+		assert.ok(!Live.attributes.some((attribute) => attribute.name === 'retiredOnly'));
+		await Live.dropTable();
+	});
+
+	it("reads a table's replicate flag from its catalog row, and from the class only where the row has none", async () => {
+		const Redeclared = defineTable('LifecycleReplicateFlag');
+		const row = dbisDb().getSync('LifecycleReplicateFlag/');
+		Redeclared.replicate = false;
+		dbisDb().putSync('LifecycleReplicateFlag/', { ...row, replicate: true });
+		assert.equal(isNodeLocalTable(Redeclared), false, 'a stale class flag loses to the declaration on disk');
+		dbisDb().putSync('LifecycleReplicateFlag/', { ...row, replicate: false });
+		Redeclared.replicate = undefined;
+		assert.equal(isNodeLocalTable(Redeclared), true);
+		dbisDb().putSync('LifecycleReplicateFlag/', row);
+		Redeclared.replicate = false;
+		assert.equal(isNodeLocalTable(Redeclared), true, 'a runtime exclusion is the class flag alone');
+		Redeclared.replicate = undefined;
+		await Redeclared.dropTable();
 	});
 });

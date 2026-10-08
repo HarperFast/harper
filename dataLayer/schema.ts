@@ -250,8 +250,8 @@ export async function dropTable(dropTableObject: any) {
 	}
 
 	// Peers never learn of a node-local table's drop: their table of that name is theirs alone.
-	if (isNodeLocalTable(getDatabases()[dropTableObject.schema][dropTableObject.table]))
-		dropTableObject.replicated = false;
+	const dropping = getDatabases()[dropTableObject.schema]?.[dropTableObject.table];
+	if (dropping && isNodeLocalTable(dropping)) dropTableObject.replicated = false;
 	if (!(await harperBridge.dropTable(dropTableObject)))
 		return {
 			message: `table '${dropTableObject.schema}.${dropTableObject.table}' was not dropped: the generation here postdates the drop, does not replicate, or was replaced`,

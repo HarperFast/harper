@@ -91,6 +91,8 @@ import {
 	tableLifecycleTime,
 	isDeadGeneration,
 	recordTableDrop,
+	replicateIsFalse,
+	OMIT_LIFECYCLE_STAMPS_FOR_TEST,
 	sweepDroppedTableBlobs,
 	storeNameFor,
 	storeNamesFor,
@@ -2918,7 +2920,7 @@ export function makeTable(options): TableResourceClass {
 				primaryCatalogKey = legacyPrimaryKey;
 				return legacyPrimaryMeta;
 			};
-			const isNodeLocal = (primaryMeta: any) => TableResource.replicate === false || primaryMeta?.replicate === false;
+			const isNodeLocal = (primaryMeta: any) => replicateIsFalse(primaryMeta, TableResource);
 			const peerDropTime = options?.peer && Number.isFinite(options.droppedTime) ? options.droppedTime : undefined;
 			const keptFromPeer = (primaryMeta: any) =>
 				Boolean(options?.peer) &&
@@ -2930,8 +2932,7 @@ export function makeTable(options): TableResourceClass {
 				if (peerDropTime !== undefined && databaseName === databasePath)
 					recordTableDrop(databaseName, TableResource.tableName, peerDropTime);
 			};
-			// Checked again with the tombstone write; this read only spares the teardown below. A drop already in flight
-			// is joined, never refused.
+			// Rechecked under the lock; a drop already in flight is joined, never refused.
 			const currentMeta = readPrimaryMeta();
 			if (!currentMeta?.dropping && keptFromPeer(currentMeta)) {
 				recordPeerDrop();
@@ -3007,7 +3008,7 @@ export function makeTable(options): TableResourceClass {
 						keptByPeerRule = true;
 						return false;
 					}
-					const leavesMarker = !options?.localOnly && !isNodeLocal(primaryMeta);
+					const leavesMarker = !options?.localOnly && !isNodeLocal(primaryMeta) && !OMIT_LIFECYCLE_STAMPS_FOR_TEST;
 					dropGeneration = primaryMeta.dropGeneration;
 					storeGeneration = primaryMeta.generation;
 					const durableFullTextDefinitions =
@@ -3116,7 +3117,7 @@ export function makeTable(options): TableResourceClass {
 						throw new Error(`Cannot drop ${databaseName}.${tableName}: its catalog tombstone has no drop generation`);
 					const retired = await retireRocksStores(storeGeneration, dropGeneration);
 					if (!retired) {
-						// the tombstone stays, and completes this drop once the full-text retirement can
+						// the tombstone stays to finish the drop once its full-text storage is retired
 						derivedIndexRuntime?.completeDrop?.();
 						releaseFullTextRetirement();
 						recordPeerDrop();

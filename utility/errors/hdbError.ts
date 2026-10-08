@@ -126,7 +126,6 @@ export class DatabaseGenerationChangedError extends ClientError {
 	}
 }
 
-/** A peer's table generation that a drop of its name recorded on this node retired. */
 export class TableGenerationDroppedError extends ClientError {
 	code: string;
 	constructor(databaseName: string, tableName: string, createdTime: number | undefined, droppedTime: number) {

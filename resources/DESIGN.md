@@ -632,7 +632,7 @@ instead of re-opening the surviving rows with create-if-missing, which resurrect
 **Lifecycle stamps (harper#1212).** The tombstone is node-local, so a peer offline for a replicated
 `drop_table` would bring the table back through the schema handshake. Two durable facts give every node
 one rule: the primary row carries `createdTime` from create (`declareTable`, kept from a peer's propagated
-definition), and the tombstone carries `droppedTime` (`dropTable({ droppedTime })` applies a peer's), which
+definition), and the tombstone carries `droppedTime` (`dropTable({ peer: true, droppedTime })` applies a peer's), which
 every completion path promotes to a `/dropped/<table>` row (`promoteTombstoneToDropMarker`) before removing
 the tombstone — no second-write crash cut. Both come from `tableLifecycleTime()`, the record-version clock;
 `isDeadGeneration(createdTime, droppedTime)` is strict (equal survives, a missing stamp is 0). The marker
