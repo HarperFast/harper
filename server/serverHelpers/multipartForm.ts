@@ -56,7 +56,7 @@ export function cancelMultipartBody(data: unknown): void {
 }
 
 class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValue>> {
-	#error?: ClientError;
+	#error?: Error;
 	#parts: Readable;
 	#iterator: AsyncIterator<FormPart>;
 	#previousFile?: Readable;
@@ -89,8 +89,9 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 				);
 			},
 		});
-		const fail = (error: Error) => {
-			this.#error ??= error instanceof ClientError ? error : new ClientError(error, 400);
+		const fail = (error: Error, clientFault = true) => {
+			this.#error ??=
+				clientFault && !(error as Error & { statusCode?: number }).statusCode ? new ClientError(error, 400) : error;
 			this.#parts.destroy(this.error);
 		};
 		this.#cancel = () => {
@@ -147,7 +148,8 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 			if (checkName(name)) this.#parts.push({ name, value });
 		});
 		parser.on('file', (name, file, info) => {
-			file.on('error', fail);
+			// busboy destroys itself before notifying files of a parse failure; consumer errors leave it live.
+			file.on('error', (error) => fail(error, parser.destroyed));
 			files.add(file);
 			file.once('close', () => files.delete(file));
 			if (!checkName(name)) {
@@ -190,6 +192,8 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 	}
 
 	async next(): Promise<IteratorResult<Record<string, FormValue>>> {
+		if (this.#error) throw this.#error;
+		if (this.#parts.destroyed && !this.#parts.readableEnded) return { value: undefined, done: true };
 		if (this.#previousFile && !this.#previousFile.readableEnded) {
 			this.#error ??= new ClientError(
 				'Consume each multipart Blob before reading the next part; commit staged Blob writes',
@@ -198,9 +202,12 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 			this.#parts.destroy(this.error);
 		}
 		const part = await this.#iterator.next();
+		if (this.#error) throw this.#error;
 		if (part.done) return { value: undefined, done: true };
 		this.#previousFile = part.value.file;
-		return { value: { [part.value.name]: await part.value.value }, done: false };
+		const value = await part.value.value;
+		if (this.#error) throw this.#error;
+		return { value: { [part.value.name]: value }, done: false };
 	}
 
 	async return(): Promise<IteratorResult<Record<string, FormValue>>> {

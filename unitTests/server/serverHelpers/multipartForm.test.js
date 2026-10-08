@@ -7,6 +7,7 @@ const { Request, BunRequest, UwsRequestBody } = require('#src/server/serverHelpe
 const { getDeserializer, contentTypes } = require('#src/server/serverHelpers/contentTypes');
 const { completeMultipartBody } = require('#src/server/serverHelpers/multipartForm');
 const { table } = require('#src/resources/databases');
+const { saveBlob, isSaving } = require('#src/resources/blob');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../../waitFor.js');
 const env = require('#src/utility/environment/environmentManager');
@@ -164,6 +165,50 @@ describe('REST multipart form decoding', function () {
 		controller.abort();
 		input.end();
 		await assert.rejects(body.next(), /Multipart request aborted/);
+	});
+
+	it('does not deliver a buffered part after the request aborts', async function () {
+		const controller = new AbortController();
+		const input = new PassThrough();
+		const body = getDeserializer(contentType, true, true)(input, controller.signal);
+		input.write(
+			Buffer.concat([encodeForm([{ name: 'title', value: 'buffered' }], false), Buffer.from(`--${boundary}\r\n`)])
+		);
+		await waitFor(() => input.readableLength === 0);
+		const pending = body.next();
+		const rejected = assert.rejects(pending, /Multipart request aborted/);
+		controller.abort();
+		input.end();
+		await rejected;
+	});
+
+	it('preserves a consumer failure without relabeling it as a client error', async function () {
+		const input = new PassThrough();
+		const body = getDeserializer(contentType, true, true)(input);
+		input.write(encodeForm([{ name: 'file', filename: 'write-failure.txt', value: 'initial bytes' }], false));
+		const first = await body.next();
+		const diskFault = Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+		const saving = Uploads.put({ id: 'write-failure', file: first.value.file });
+		const failed = assert.rejects(saving, (error) => error === diskFault && error.statusCode !== 400);
+		await waitFor(() => !!isSaving(first.value.file));
+		saveBlob(first.value.file).source.destroy(diskFault);
+		input.end();
+		await failed;
+		await assert.rejects(body.next(), (error) => error === diskFault && error.statusCode !== 400);
+		assert.equal(await Uploads.get('write-failure'), undefined);
+	});
+
+	it('reports an incomplete file as a client error to both the iterator and its save', async function () {
+		const input = new PassThrough();
+		const body = getDeserializer(contentType, true, true)(input);
+		input.write(encodeForm([{ name: 'file', filename: 'incomplete.txt', value: 'initial bytes' }], false));
+		const first = await body.next();
+		const saving = Uploads.put({ id: 'incomplete-file', file: first.value.file });
+		const failed = assert.rejects(saving, (error) => error.statusCode === 400);
+		input.end();
+		await failed;
+		await assert.rejects(body.next(), (error) => error.statusCode === 400);
+		assert.equal(await Uploads.get('incomplete-file'), undefined);
 	});
 
 	it('settles a pending next when a handler returns without consuming its body', async function () {
