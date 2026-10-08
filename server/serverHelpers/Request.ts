@@ -7,6 +7,7 @@ import { Headers as ResponseHeaders } from './Headers.ts';
 import { NodeAdapterResponse, type AdaptedResponse } from './NodeAdapterResponse.ts';
 import type { ConnectionInfo } from './proxyProtocol.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import type { ResourceBody } from '../../resources/ResourceInterface.ts';
 
 export const isBun = typeof globalThis.Bun !== 'undefined';
 
@@ -60,7 +61,7 @@ export class Request {
 	public replicatedConfirmation?: number;
 	public replicateTo?: any;
 	public replicateFrom?: any;
-	public data?: any;
+	public data?: ResourceBody<unknown>;
 	public authorize?: boolean;
 	public lastModified?: number;
 	public lastRefreshed?: number;
@@ -152,7 +153,7 @@ export class Request {
 		return this._nodeRequest.socket.connectionInfo;
 	}
 	get body() {
-		return this.#body || (this.#body = new RequestBody(this._nodeRequest));
+		return this.#body || (this.#body = new RequestBody(this._nodeRequest, this._nodeResponse));
 	}
 	get host() {
 		return this._nodeRequest.authority || this._nodeRequest.headers.host;
@@ -499,8 +500,10 @@ export class UwsRequestBody extends Readable {
 
 class RequestBody {
 	#nodeRequest: IncomingMessage;
-	constructor(nodeRequest: IncomingMessage) {
+	#nodeResponse?: NodeServerResponse;
+	constructor(nodeRequest: IncomingMessage, nodeResponse?: NodeServerResponse) {
 		this.#nodeRequest = nodeRequest;
+		this.#nodeResponse = nodeResponse;
 	}
 	on(event: string, listener: (...args: any[]) => void) {
 		this.#nodeRequest.on(event, listener);
@@ -511,6 +514,24 @@ class RequestBody {
 	}
 	destroy(error?: Error) {
 		this.#nodeRequest.destroy(error);
+	}
+	afterResponse(callback: () => void): () => void {
+		const response = this.#nodeResponse;
+		if (!response || response.writableFinished || response.destroyed) {
+			callback();
+			return () => {};
+		}
+		const detach = () => {
+			response.off('finish', done);
+			response.off('close', done);
+		};
+		const done = () => {
+			detach();
+			callback();
+		};
+		response.once('finish', done);
+		response.once('close', done);
+		return detach;
 	}
 	// Delegate async iteration to the underlying request, which is natively
 	// async-iterable. Without this, `for await (const chunk of request.body)`

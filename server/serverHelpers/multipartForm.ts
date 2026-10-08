@@ -7,6 +7,10 @@ import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 
 type FormValue = string | Blob;
 type FormPart = { name: string; value: FormValue | Promise<Blob>; file?: Readable };
+type MultipartInput = AsyncIterable<Uint8Array> & {
+	destroy?: () => void;
+	afterResponse?: (callback: () => void) => () => void;
+};
 
 export async function deserializeMultipartForm(data: Buffer, contentType: string): Promise<object> {
 	const form = {};
@@ -24,7 +28,7 @@ export async function deserializeMultipartForm(data: Buffer, contentType: string
 }
 
 export function deserializeMultipartStream(
-	input: AsyncIterable<Uint8Array>,
+	input: MultipartInput,
 	contentType: string,
 	signal?: AbortSignal
 ): MultipartFormBody {
@@ -52,13 +56,13 @@ export function cancelMultipartBody(data: unknown): void {
 }
 
 class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValue>> {
-	error?: ClientError;
+	#error?: ClientError;
 	#parts: Readable;
 	#iterator: AsyncIterator<FormPart>;
 	#previousFile?: Readable;
 	#cancel: () => void;
 
-	constructor(input: AsyncIterable<Uint8Array>, contentType: string, streamFiles: boolean, signal?: AbortSignal) {
+	constructor(input: MultipartInput, contentType: string, streamFiles: boolean, signal?: AbortSignal) {
 		let parser: ReturnType<typeof busboy>;
 		try {
 			parser = busboy({
@@ -86,7 +90,7 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 			},
 		});
 		const fail = (error: Error) => {
-			this.error ??= error instanceof ClientError ? error : new ClientError(error, 400);
+			this.#error ??= error instanceof ClientError ? error : new ClientError(error, 400);
 			this.#parts.destroy(this.error);
 		};
 		this.#cancel = () => {
@@ -98,15 +102,23 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 			for (const file of files) file.destroy(this.error ?? new ClientError('Multipart file was not consumed', 400));
 			parser.destroy();
 			counter.destroy();
-			// Draining preserves the early response; the grace bounds a sender that never finishes.
+			// On Node, destroying an unread request closes its socket, so wait for the response first.
 			if (!source.readableEnded && !source.destroyed) {
 				source.resume();
-				const grace = setTimeout(() => {
-					(input as AsyncIterable<Uint8Array> & { destroy?: () => void }).destroy?.();
-					source.destroy();
-				}, 1000);
-				grace.unref();
-				source.once('close', () => clearTimeout(grace));
+				let grace: NodeJS.Timeout;
+				const startGrace = () => {
+					grace = setTimeout(() => {
+						input.destroy?.();
+						source.destroy();
+					}, 1000);
+					grace.unref();
+				};
+				const detach = input.afterResponse?.(startGrace);
+				if (!input.afterResponse) startGrace();
+				source.once('close', () => {
+					clearTimeout(grace);
+					detach?.();
+				});
 			}
 		};
 		this.#parts = new Readable({
@@ -138,7 +150,6 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 			file.on('error', fail);
 			files.add(file);
 			file.once('close', () => files.delete(file));
-			file.on('limit', () => fail(new ClientError('Multipart file too large', 413)));
 			if (!checkName(name)) {
 				file.destroy(this.error);
 				return;
@@ -174,9 +185,16 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 		return this;
 	}
 
+	get error() {
+		return this.#error;
+	}
+
 	async next(): Promise<IteratorResult<Record<string, FormValue>>> {
 		if (this.#previousFile && !this.#previousFile.readableEnded) {
-			this.error ??= new ClientError('Save each multipart Blob before reading the next part', 400);
+			this.#error ??= new ClientError(
+				'Consume each multipart Blob before reading the next part; commit staged Blob writes',
+				400
+			);
 			this.#parts.destroy(this.error);
 		}
 		const part = await this.#iterator.next();
