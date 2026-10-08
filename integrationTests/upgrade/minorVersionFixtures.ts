@@ -6,10 +6,11 @@
  * `dist/bin/harper.js`), or several joined with the platform path delimiter (`:` on Linux); each
  * root gets its own suites, named by its `package.json` version. Unset, every suite skips.
  *
- *   mkdir -p ~/dev/tmp/prev-minor && cd ~/dev/tmp/prev-minor
- *   npm install --ignore-scripts --prefix 5.2 harper@5.2.15
- *   npm install --ignore-scripts --prefix 5.3 harper@5.3.1
- *   HARPER_PREVIOUS_MINOR_PATH=$PWD/5.2/node_modules/harper:$PWD/5.3/node_modules/harper \
+ *   P=~/dev/tmp/prev-minor && mkdir -p $P/5.2 $P/5.3
+ *   npm install --ignore-scripts --prefix $P/5.2 harper@5.2.15
+ *   npm install --ignore-scripts --prefix $P/5.3 harper@5.3.1
+ *   # then, from the harper checkout after `npm run build`:
+ *   HARPER_PREVIOUS_MINOR_PATH=$P/5.2/node_modules/harper:$P/5.3/node_modules/harper \
  *     npm run test:integration -- "integrationTests/upgrade/minor-*.test.ts"
  */
 import { readFileSync } from 'node:fs';
