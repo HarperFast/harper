@@ -684,4 +684,22 @@ describe('table lifecycle stamps (harper#1212)', () => {
 			false
 		);
 	});
+
+	it("judges a peer's generation against a drop still completing here", async () => {
+		const Pending = defineTable('LifecycleJudgedPending');
+		const dropTime = Pending.createdTime + 1000;
+		const original = { drop: Pending.primaryStore.drop, dropSync: Pending.primaryStore.dropSync };
+		Pending.primaryStore.dropSync = () => {
+			throw new Error('injected drop failure');
+		};
+		Pending.primaryStore.drop = () => Promise.reject(new Error('injected drop failure'));
+		try {
+			await assert.rejects(() => Pending.dropTable({ peer: true, droppedTime: dropTime }), /injected drop failure/);
+		} finally {
+			Object.assign(Pending.primaryStore, original);
+		}
+		assert.equal(markerFor('LifecycleJudgedPending'), undefined, 'no marker until the drop completes');
+		assert.equal(isDroppedPeerGeneration(TEST_DB, 'LifecycleJudgedPending', dropTime - 1), true);
+		assert.equal(isDroppedPeerGeneration(TEST_DB, 'LifecycleJudgedPending', dropTime), false);
+	});
 });

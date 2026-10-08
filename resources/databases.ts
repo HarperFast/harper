@@ -740,7 +740,12 @@ function withCatalogWrite<Callback extends () => unknown>(
  */
 export function isDroppedPeerGeneration(databaseName: string, tableName: string, createdTime: unknown): boolean {
 	const attributesDbi = databases[databaseName] && (definedDatabases.get(databaseName) as any)?.rootStore?.dbisDb;
-	const droppedTime = attributesDbi?.getSync(droppedRowKey(tableName))?.droppedTime;
+	if (!attributesDbi) return false;
+	const markerTime = attributesDbi.getSync(droppedRowKey(tableName))?.droppedTime;
+	// a drop still completing has its time only on the tombstone
+	const tombstone = attributesDbi.getSync(tableName + '/');
+	const pendingTime = tombstone?.dropping ? tombstone.droppedTime : undefined;
+	const droppedTime = Number.isFinite(pendingTime) && !(markerTime >= pendingTime) ? pendingTime : markerTime;
 	if (!Number.isFinite(droppedTime)) return false;
 	if (typeof createdTime === 'number') return isDeadGeneration(createdTime, droppedTime);
 	const local = databases[databaseName][tableName];
