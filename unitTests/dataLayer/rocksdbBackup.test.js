@@ -503,6 +503,17 @@ describe('rocksdbBackup', function () {
 			});
 		}
 
+		it('online: restores a valid backup through the swap', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const result = await restoreBackup({ ...SU, database: STAGED, backup_id: backupId });
+			assert.strictEqual(result.backup_id, backupId);
+			assert.strictEqual(checkRestoreState(stagedDir()), 'clear');
+			await closeLoadedDatabases();
+			assertRestoredFromBackup();
+			assertNoDebris();
+		});
+
 		it('keeps the database directory mode across the swap', async function () {
 			if (process.platform === 'win32') this.skip();
 			this.timeout(30000);

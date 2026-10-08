@@ -726,12 +726,7 @@ export async function restoreBackup(request: any) {
 				// and a process restart clears it regardless.
 				logger.error(`Could not release the blob fence after a failed restore of '${databaseName}'`, releaseError);
 			}
-			// wrap rather than mutate error.message: a frozen/library error can have a non-writable
-			// message (assigning it throws TypeError under 'use strict')
-			throw new Error(
-				`Restore of database '${databaseName}' from backup ${backupId} failed (rerun restore_backup to recover): ${error.message}`,
-				{ cause: error }
-			);
+			throw rerunRequiredError(databaseName, backupId, error);
 		}
 		// nothing destructive happened and the marker was fresh — clear it and let every thread reload
 		// the intact database
@@ -1344,10 +1339,7 @@ export async function restoreBackupOffline(
 		// preserve typed client errors (e.g. the 409 lock probe) unwrapped; only wrap an opaque restore
 		// failure after destruction has begun
 		if (publication.destroyed && !(error instanceof ClientError)) {
-			throw new Error(
-				`Restore of database '${databaseName}' from backup ${backupId} failed (rerun restore_backup to recover): ${error.message}`,
-				{ cause: error }
-			);
+			throw rerunRequiredError(databaseName, backupId, error);
 		}
 		throw error;
 	}
@@ -1381,6 +1373,20 @@ function assertNotOpenElsewhere(databaseDir: string, databaseName: string): void
 		}
 	}
 	handle?.close();
+}
+
+/**
+ * A restore that may have changed the destination needs a rerun. Wrapped rather than mutated, since a
+ * frozen or library error can have a non-writable message; the status code of a refusal such as a 507
+ * is carried over.
+ */
+function rerunRequiredError(databaseName: string, backupId: number, error: any): Error {
+	const wrapped: any = new Error(
+		`Restore of database '${databaseName}' from backup ${backupId} failed (rerun restore_backup to recover): ${error.message}`,
+		{ cause: error }
+	);
+	if (typeof error?.statusCode === 'number') wrapped.statusCode = error.statusCode;
+	return wrapped;
 }
 
 function isMissingOrEmptyDir(path: string): boolean {
