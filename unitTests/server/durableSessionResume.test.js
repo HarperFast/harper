@@ -107,7 +107,7 @@ async function ackAll(session, received) {
 	for (const { messageId } of received) session.acknowledge(messageId);
 }
 
-/** Opens a transaction that takes its log key with its writes, and commits it when the returned function is called. */
+// its writes take its log key now, so it commits below whatever commits before the returned function is called
 async function heldTransaction(T, ...ids) {
 	let commit;
 	const committed = transaction({}, async (context) => {
