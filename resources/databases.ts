@@ -5031,16 +5031,17 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		}
 	}
 	function discardUnpublishedTable() {
-		let cleanupFailed = false;
+		let storeDropFailed = false;
 		const discard = (description: string, action: () => unknown) => {
 			try {
 				action();
+				return true;
 			} catch (discardError) {
-				cleanupFailed = true;
 				logger.warn(
 					`Error discarding ${description} of the failed create of ${databaseName}.${tableName}`,
 					discardError
 				);
+				return false;
 			}
 		};
 		discard('catalog rows', () => {
@@ -5057,9 +5058,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				const stores = new Set(createJournal.creatingStores);
 				for (const columnName of [...((rootStore as any).columns as string[])]) {
 					if (stores.has(columnName) || columnName.endsWith(suffix))
-						discard(`store ${columnName}`, () => dropColumnFamily(rootStore, columnName));
+						if (!discard(`store ${columnName}`, () => dropColumnFamily(rootStore, columnName))) storeDropFailed = true;
 				}
-				if (!cleanupFailed)
+				if (!storeDropFailed)
 					discard('generation journal row', () => attributesDbi.remove(generationRowKey(createJournal.generation)));
 			}
 			for (const indexName in Table?.indices ?? {})
@@ -5627,6 +5628,20 @@ export async function sweepDroppedTableBlobs(
 	return { failures, cancelled: Boolean(cancelled()), batches };
 }
 
+/** Older writers can reuse bare names without updating their retired journals. */
+function liveStoreNamesFor(attributesDbi, tableName: string): Set<string> {
+	let primary = attributesDbi.getSync(tableName + '/');
+	if (!primary) {
+		for (const { value } of attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })) {
+			if (value?.isPrimaryKey || value?.is_hash_attribute) {
+				primary = value;
+				break;
+			}
+		}
+	}
+	return new Set(primary && !primary.dropping ? storeNamesFor(attributesDbi, tableName, primary.generation) : []);
+}
+
 function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseName: string) {
 	const rows = Array.from(attributesDbi.getRange({ start: GENERATION_ROW_PREFIX, end: GENERATION_ROW_END }));
 	const state = scheduledGenerationReclaims.get(rootStore);
@@ -5668,13 +5683,20 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 					value.phase === 'creating' ? (value.creatingStores ?? value.stores ?? []) : (value.stores ?? [])
 				);
 				const columns = [...((rootStore as any).columns as string[])];
-				if (value.phase === 'retired' && value.primaryStore && columns.includes(value.primaryStore)) {
+				const owned = liveStoreNamesFor(attributesDbi, value.table);
+				if (
+					value.phase === 'retired' &&
+					value.primaryStore &&
+					columns.includes(value.primaryStore) &&
+					!owned.has(value.primaryStore)
+				) {
 					if (manageThreads.ownsStoreMaintenance(rootStore.path))
 						scheduleGenerationBlobSweep(rootStore, attributesDbi, databaseName, key, value);
 					continue;
 				}
 				for (const columnName of columns) {
-					if (retired.has(columnName) || columnName.endsWith(suffix)) dropColumnFamily(rootStore, columnName);
+					if (!owned.has(columnName) && (retired.has(columnName) || columnName.endsWith(suffix)))
+						dropColumnFamily(rootStore, columnName);
 				}
 				if ((rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0) {
 					scheduleGenerationReclaim(rootStore, attributesDbi, databaseName);
@@ -5729,8 +5751,10 @@ async function finishGenerationBlobSweep(
 		}
 		const suffix = '@' + latest.generation;
 		const retired = new Set(latest.stores ?? []);
+		const owned = liveStoreNamesFor(attributesDbi, latest.table);
 		for (const columnName of [...((rootStore as any).columns as string[])]) {
-			if (retired.has(columnName) || columnName.endsWith(suffix)) dropColumnFamily(rootStore, columnName);
+			if (!owned.has(columnName) && (retired.has(columnName) || columnName.endsWith(suffix)))
+				dropColumnFamily(rootStore, columnName);
 		}
 		if ((rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) === 0) {
 			attributesDbi.remove(key);
@@ -5759,7 +5783,8 @@ function scheduleGenerationBlobSweep(
 				current?.phase !== 'retired' ||
 				current.generation !== row.generation ||
 				current.primaryStore !== row.primaryStore ||
-				!((rootStore as any).columns as string[]).includes(row.primaryStore)
+				!((rootStore as any).columns as string[]).includes(row.primaryStore) ||
+				liveStoreNamesFor(attributesDbi, row.table).has(row.primaryStore)
 			)
 				return;
 			let result: Awaited<ReturnType<typeof sweepDroppedTableBlobs>>;

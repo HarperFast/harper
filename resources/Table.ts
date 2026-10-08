@@ -3171,13 +3171,23 @@ export function makeTable(options): TableResourceClass {
 							if (!droppedStores.has(columnName) && (rootStore as any).columns.includes(columnName))
 								dropColumnFamily(rootStore, columnName);
 						}
+						const remainingPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+						if (
+							!remainingPrimary?.dropping ||
+							(remainingPrimary.tableId != null && remainingPrimary.tableId !== tableId) ||
+							remainingPrimary.dropGeneration !== dropGeneration
+						)
+							return false;
 						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 							if (key !== primaryCatalogKey) dbisDb.remove(key);
 						}
 						dbisDb.remove(primaryCatalogKey);
 						return true;
 					});
-					if (!removed) return false;
+					if (!removed) {
+						await sweepDroppedTableBlobs(primaryStore, `${databaseName}.${tableName}`);
+						return false;
+					}
 					await dbisDb.committed;
 					const label = `${databaseName}.${tableName}`;
 					const settled = await settlePhysicalDrops(rootStore, label);
