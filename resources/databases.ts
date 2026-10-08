@@ -655,9 +655,10 @@ function droppedRowKey(tableName: string): string {
 	return DROPPED_ROW_PREFIX + tableName;
 }
 /**
- * Untimed name history: once a name has been dropped, a later create takes a generation even after the
- * retirement journal is reclaimed (harper#3102). 5.4 reads this row as its untimed drop marker, which a
- * timed drop overwrites. RocksDB callers hold the catalog lock and write it before removing the tombstone.
+ * Once a name has been dropped, later creates of it take a generation even after the retirement journal is
+ * reclaimed. Keep the row untimed and shaped `{ table, tableId }`: later versions read it as an untimed drop
+ * marker that a timed drop overwrites. RocksDB callers hold the catalog lock and write it before removing
+ * the tombstone.
  */
 export function recordTableNameHistory(attributesDbi, tableName: string, tableId: number | undefined): void {
 	const key = droppedRowKey(tableName);

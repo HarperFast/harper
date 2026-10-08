@@ -120,11 +120,11 @@ describe('dropTable generation-distinct stores', function () {
 		await Plain.dropTable();
 	});
 
-	it('keeps local-only name history after reclamation', async function () {
+	it('keeps a /dropped/ name-history row after reclamation', async function () {
 		if (IS_LMDB) return this.skip();
 		const First = defineTable('GenLocalDrop');
 		assert.equal(First.storageGeneration, undefined);
-		await First.dropTable({ localOnly: true });
+		await First.dropTable();
 		resetDatabases();
 		assert.ok(dbisDb().getSync('/dropped/GenLocalDrop'));
 		assert.deepStrictEqual(generationRows(), []);
@@ -161,7 +161,7 @@ describe('dropTable generation-distinct stores', function () {
 				Fresh = defineTable(First.tableName, [{ name: 'replacementOnly', type: 'String', indexed: true }]);
 		});
 		try {
-			await First.dropTable({ localOnly: true });
+			await First.dropTable();
 		} finally {
 			removeListener();
 		}
