@@ -97,6 +97,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 ## resources/analytics/
 
 - [Analytics aggregation resumes from a raw cursor, which is not a clock (`resources/analytics/write.ts`)](resources/analytics/DESIGN.md#analytics-aggregation-resumes-from-a-raw-cursor-which-is-not-a-clock-resourcesanalyticswritets) — `rawCursor` moves only to a record a cycle actually read and is separate from the cadence marker.
+- [Per-thread rows carry a `thread` attribute under their own metric name (`resources/analytics/write.ts`)](resources/analytics/DESIGN.md#per-thread-rows-carry-a-thread-attribute-under-their-own-metric-name-resourcesanalyticswritets) — `perThread` entries roll up one row per thread; `duration` per thread is `duration-by-thread`, never extra `duration` rows; rows stay flat scalars for the Grafana datasource.
 
 ## resources/models/ — model facade, backends, decisions
 
@@ -138,6 +139,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [A WebSocket close reason must be bounded to 123 bytes (`server/serverHelpers/webSocketCloseReason.ts`)](server/DESIGN.md#a-websocket-close-reason-must-be-bounded-to-123-bytes-serverserverhelperswebsocketclosereasonts) — `ws` throws past 123 bytes from a rejection handler; every dynamic reason goes through `toCloseReason()`, and all three terminal handlers render the error code alike.
 - [`serverErrorHandler` skips what `handlePostRequest` already logged (`server/serverHelpers/serverHandlers.js`)](server/DESIGN.md#servererrorhandler-skips-what-handlepostrequest-already-logged-serverserverhelpersserverhandlersjs) — One Error line per failure raised before an operation runs; an error thrown while it runs is also logged by `OperationFunctionCaller`.
 - [A request-queue shed is a 503 the server never logged (`server/throttle.ts`)](server/DESIGN.md#a-request-queue-shed-is-a-503-the-server-never-logged-serverthrottlets) — the HTTP request-queue throttle answers a literal 503 body without throwing, so no error-path log line exists; its per-instance warn names the queue.
+- [`request-time` starts at the request's first byte on the socket (`server/serverHelpers/requestTiming.ts`)](server/DESIGN.md#request-time-starts-at-the-requests-first-byte-on-the-socket-serverserverhelpersrequesttimingts) — stamped ahead of the parser while the socket is idle between requests, consumed before the throttle; HTTP/2, uWS and Bun.serve start at the server callback.
 - [MQTT durable sessions resume through the checked subscription (`server/DurableSubscriptionsSession.ts`)](server/DESIGN.md#mqtt-durable-sessions-resume-through-the-checked-subscription-serverdurablesubscriptionssessionts) — Positions are certified by the subscription's progress and every unacknowledged delivery, checked before CONNACK, fenced by a per-connection incarnation; pruned history (410) discards the session, while a position from another generation resumes best-effort.
 
 ## security/ — tokens, OIDC, TLS
