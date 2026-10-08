@@ -12,10 +12,17 @@ export function formBody(request: Request<{ title: string }>): ResourceBody<{ ti
 	return request.data;
 }
 
-export function decoderDefaults(streaming: boolean) {
+export function typedBodyIsNotAny(request: Request<{ title: string }>): string {
+	// @ts-expect-error A typed body may be a record, promise or iterable, rather than any.
+	return request.data;
+}
+
+export function decoderDefaults(streaming: boolean, optionalStreaming?: boolean) {
 	getDeserializer();
 	getDeserializer('application/json');
 	getDeserializer(undefined, false);
 	getDeserializer(undefined, true);
 	getDeserializer('application/json', streaming);
+	getDeserializer('application/json', optionalStreaming);
+	getDeserializer(undefined, optionalStreaming);
 }
