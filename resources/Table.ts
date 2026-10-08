@@ -3206,6 +3206,13 @@ export function makeTable(options): TableResourceClass {
 					// has stopped and the wrapper has retired their storage.
 					if (!(await retireFullTextStorage())) return false;
 					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
+						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+						if (
+							!currentPrimary?.dropping ||
+							(currentPrimary.tableId != null && currentPrimary.tableId !== tableId) ||
+							currentPrimary.dropGeneration !== dropGeneration
+						)
+							return false;
 						const stores = storeNamesFor(dbisDb, tableName, generation);
 						const retiredStores = recordRetiredGeneration(
 							dbisDb,
@@ -3239,13 +3246,6 @@ export function makeTable(options): TableResourceClass {
 							if (!droppedStores.has(columnName) && (rootStore as any).columns.includes(columnName))
 								dropColumnFamily(rootStore, columnName);
 						}
-						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
-						if (
-							!currentPrimary?.dropping ||
-							(currentPrimary.tableId != null && currentPrimary.tableId !== tableId) ||
-							currentPrimary.dropGeneration !== dropGeneration
-						)
-							return false;
 						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 							if (key !== primaryCatalogKey) dbisDb.remove(key);
 						}
@@ -3253,7 +3253,8 @@ export function makeTable(options): TableResourceClass {
 						dbisDb.remove(primaryCatalogKey);
 						return true;
 					});
-					if (removed) await dbisDb.committed;
+					if (!removed) return false;
+					await dbisDb.committed;
 					const label = `${databaseName}.${tableName}`;
 					const settled = await settlePhysicalDrops(rootStore, label);
 					await sweepDroppedTableBlobs(primaryStore, label);

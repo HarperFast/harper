@@ -621,6 +621,8 @@ Consequence for callers that wrap the source in a hashing `Transform`: calling `
 
 ## Table drops, the `dropping` tombstone, ghost tables, and lifecycle stamps
 
+`dropTableGeneration.test.js` enforces legacy primary/index names for first-time RocksDB creates (harper#3102), distinct names for recreates even after local-only reclamation, and recovery via a separate create-journal identity; `creatingStores` must stay separate from `stores`, which shipped 5.3 readers destructively reclaim without recognizing a published legacy primary. Previously stamped tables retain their names; replicated drop markers can also force a first local create to be stamped.
+
 A table is a set of RocksDB column families (`T/` plus `T/<attr>`) and a set of catalog rows in the
 `__dbis__` store, with no transaction spanning the two. `Table.dropTable()` therefore persists a
 `dropping: true` flag on the primary catalog entry (`T/`) before any destructive work, then drops the

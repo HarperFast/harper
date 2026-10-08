@@ -17,6 +17,8 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 ## resources/ — records, transactions, tables, blobs, audit
 
+- [First-time create names and recovery](resources/DESIGN.md#table-drops-the-dropping-tombstone-ghost-tables-and-lifecycle-stamps) — Legacy names preserve minor rollback readability; name history and create journals keep replacements and crash recovery separate.
+
 - [File overview](resources/DESIGN.md#file-overview) — What each file in `resources/` owns.
 - [`Resource.ts` — base class](resources/DESIGN.md#resourcets--base-class) — Static entry points versus instance methods, and the `transactional()` wrapper.
 - [`Table.ts` — section map](resources/DESIGN.md#tablets--section-map) — Section markers for the `makeTable()` factory.
