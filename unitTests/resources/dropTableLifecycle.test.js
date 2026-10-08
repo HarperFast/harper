@@ -674,4 +674,14 @@ describe('table lifecycle stamps (harper#1212)', () => {
 		await nextTick();
 		assert.equal(tableDropEpoch(), before + 1);
 	});
+
+	it('keeps a runtime-excluded system table node-local whatever its catalog row says', () => {
+		const { NON_REPLICATING_SYSTEM_TABLES, replicateIsFalse } = require('#src/resources/databases');
+		const excluded = { databaseName: 'system', tableName: NON_REPLICATING_SYSTEM_TABLES[0], replicate: false };
+		assert.equal(replicateIsFalse({ replicate: true }, excluded), true);
+		assert.equal(
+			replicateIsFalse({ replicate: true }, { databaseName: TEST_DB, tableName: 'x', replicate: false }),
+			false
+		);
+	});
 });

@@ -691,7 +691,11 @@ function boundPreStampCreations(rootStore: RootDatabaseKind, attributesDbi: any,
 		const createdBefore = getNextMonotonicTime();
 		for (const snapshot of loaded) {
 			const row = attributesDbi.getSync(snapshot.key);
-			if (!unbounded(row)) continue;
+			if (!unbounded(row)) {
+				// another thread's load bounded it first; keep this snapshot from writing it back without
+				if (Number.isFinite(row?.createdBefore)) snapshot.createdBefore = row.createdBefore;
+				continue;
+			}
 			attributesDbi.putSync(snapshot.key, { ...row, createdBefore });
 			// the load may write this snapshot back (a tableId repair)
 			snapshot.createdBefore = createdBefore;
@@ -750,7 +754,11 @@ export function isNodeLocalTable(table: { replicate?: boolean; dbisDB: any; tabl
  * A declared `replicate` is persisted on the primary catalog row, which another thread may have redeclared since this
  * class loaded; only a runtime exclusion (a non-replicating system table) lives on the class alone.
  */
-export function replicateIsFalse(primaryRow: any, table: { replicate?: boolean }): boolean {
+export function replicateIsFalse(
+	primaryRow: any,
+	table: { replicate?: boolean; databaseName?: string; tableName?: string }
+): boolean {
+	if (table.databaseName === 'system' && NON_REPLICATING_SYSTEM_TABLES.includes(table.tableName)) return true;
 	return typeof primaryRow?.replicate === 'boolean' ? primaryRow.replicate === false : table.replicate === false;
 }
 function dropMarkerStoreFor(databaseName: string): { rootStore: RootDatabaseKind; attributesDbi: any } | undefined {
@@ -812,7 +820,12 @@ const TABLE_DROP_RECORDED = 'table-drop-recorded';
 let dropEpoch = 0;
 manageThreads.onMessageByType(TABLE_DROP_RECORDED, ({ databaseName, tableName }) => {
 	dropEpoch++;
-	databaseEventsEmitter.emit('tableDropRecorded', databaseName, tableName);
+	// a message queued before this registration is replayed outside manageThreads' own catch
+	try {
+		databaseEventsEmitter.emit('tableDropRecorded', databaseName, tableName);
+	} catch (error) {
+		logger.warn(`A tableDropRecorded listener failed for ${databaseName}.${tableName}`, error);
+	}
 });
 /** Advances on this thread whenever a drop marker is recorded on any thread. */
 export function tableDropEpoch(): number {
