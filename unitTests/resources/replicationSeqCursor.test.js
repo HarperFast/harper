@@ -153,6 +153,96 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 		}
 	});
 
+	it('merges per-origin cursors attached at commit, even when the sequence does not advance', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		const endTxn = (localTime, cursors) => {
+			const event = { type: 'end_txn', localTime, timestamp: localTime, remoteNodeIds: [44] };
+			event.onCommit = () => {
+				event.originCursors = cursors;
+			};
+			return event;
+		};
+		const ReplicatedTable = makeReplicatedTable(
+			'SeqCursorOriginTable',
+			[
+				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
+				endTxn(now, [[7, now - 5]]),
+				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now },
+				endTxn(now, [
+					[7, now - 10],
+					[8, now],
+				]),
+				{ type: 'put', id: 3, value: { id: 3, name: 'third' }, timestamp: now },
+				endTxn(now, [[8, now - 1]]),
+				{ type: 'put', id: 4, value: { id: 4, name: 'fourth' }, timestamp: now + 1 },
+				endTxn(now + 1, []),
+			],
+			held
+		);
+		const spy = spyOnCursorWrites(ReplicatedTable);
+		try {
+			await waitFor(() => readCursor(ReplicatedTable, 44)?.seqId === now + 1, {
+				timeout: 5000,
+				message: 'the last frame recorded its sequence id',
+			});
+			const cursor = readCursor(ReplicatedTable, 44);
+			assert.deepEqual(
+				cursor.nodes.map((node) => ({ ...node })),
+				[
+					{ id: 7, originLogKey: now - 5 },
+					{ id: 8, originLogKey: now },
+				]
+			);
+			assert.equal(spy.staged.length, 3, 'a frame that advances nothing writes no cursor');
+		} finally {
+			spy.restore();
+			release();
+		}
+	});
+
+	it('repairs a scalar whose write failed, on a repeat frame whose origin cursors did not change', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		const endTxn = (localTime) => {
+			const event = { type: 'end_txn', localTime, timestamp: localTime, remoteNodeIds: [45] };
+			event.onCommit = () => {
+				event.originCursors = [[7, now - 5]];
+			};
+			return event;
+		};
+		const ReplicatedTable = makeReplicatedTable(
+			'SeqCursorRepairTable',
+			[
+				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
+				endTxn(now),
+				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now + 1 },
+				endTxn(now + 1),
+				{ type: 'put', id: 3, value: { id: 3, name: 'third' }, timestamp: now + 1 },
+				endTxn(now + 1),
+			],
+			held
+		);
+		let staged = 0;
+		const spy = spyOnCursorWrites(ReplicatedTable, (transaction) => {
+			if (++staged !== 2) return;
+			transaction.commit = () =>
+				Promise.reject(Object.assign(new Error('forced cursor commit failure'), { code: 'ERR_BUSY' }));
+		});
+		try {
+			await waitFor(() => readCursor(ReplicatedTable, 45)?.seqId === now + 1, {
+				timeout: 5000,
+				message: 'the repeat frame repaired the scalar',
+			});
+			assert.equal(staged, 3);
+		} finally {
+			spy.restore();
+			release();
+		}
+	});
+
 	it('continues replication after teardown denies a cursor commit', async function () {
 		let release;
 		const held = new Promise((resolve) => (release = resolve));

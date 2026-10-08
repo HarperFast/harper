@@ -143,6 +143,9 @@ export const HDB_HOME_DIR_NAME = '.harperdb';
 /** License Key directory */
 export const LICENSE_KEY_DIR_NAME = 'keys';
 
+/** Git deploy key directory under rootPath (keys written by Harper Pro's `add_ssh_key`) */
+export const SSH_KEY_DIR_NAME = 'ssh';
+
 /** Harper Boot Properties file name */
 export const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
 
@@ -643,6 +646,7 @@ export const CONFIG_PARAMS = {
 	AGENT_ALLOWDESTRUCTIVE: 'agent_allowDestructive',
 	AGENT_USER: 'agent_user',
 	AGENT_COMPONENTSSCOPE: 'agent_componentsScope',
+	AGENT_CONFIGSCOPE: 'agent_configScope',
 	AGENT_HTTPFETCH: 'agent_httpFetch',
 	AGENT_HTTPFETCH_ALLOW: 'agent_httpFetch_allow',
 	REPLICATION: 'replication',
@@ -650,6 +654,7 @@ export const CONFIG_PARAMS = {
 	REPLICATION_URL: 'replication_url',
 	REPLICATION_PORT: 'replication_port',
 	REPLICATION_SECUREPORT: 'replication_securePort',
+	REPLICATION_THREADS: 'replication_threads',
 	REPLICATION_ROUTES: 'replication_routes',
 	REPLICATION_DATABASES: 'replication_databases',
 	REPLICATION_ENABLEROOTCAS: 'replication_enableRootCAs',
@@ -990,6 +995,7 @@ export const ITC_EVENT_TYPES = {
 export const THREAD_TYPES = {
 	HTTP: 'http',
 	JOB: 'job',
+	REPLICATION: 'replication',
 } as const;
 
 /** A version string for pre 4.0.0 comparison */

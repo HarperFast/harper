@@ -249,6 +249,11 @@
 				},
 				"port": { "type": "integer", "description": "Replication insecure port." },
 				"securePort": { "type": "integer", "description": "Replication secure port. Default: 9933" },
+				"threads": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Dedicated replication worker threads. When above 0, replication (the replication port's listener and outbound subscriptions) runs on these workers, which load no application code, instead of the HTTP workers. Requires replication.port or replication.securePort distinct from the HTTP and operations API ports. Changing it requires a full restart. Default: 0"
+				},
 				"enableRootCAs": {
 					"type": "boolean",
 					"description": "Verify certificates against Node.js bundled CA store. Default: true"
@@ -736,6 +741,10 @@
 				"componentsScope": {
 					"type": "string",
 					"description": "Filesystem scope for component edits, relative to rootPath. Default: ./components"
+				},
+				"configScope": {
+					"type": "string",
+					"description": "The agent's read-only 'config' filesystem scope: a file or a directory, absolute or relative to rootPath. In every scope the fs tools refuse to read *.pem, *.key and .jwtPass files, the keys and ssh directories, and text holding a PEM private key, and refuse to write into the keys and ssh directories. Read at startup only; set_agent_config cannot change it. Default: the Harper config file only"
 				},
 				"httpFetch": {
 					"description": "The agent's http_fetch tool. true: enabled, with cloud-metadata and link-local addresses blocked. false: the tool is removed from the agent's toolset. { allow: [...] }: requests, including every redirect hop, are refused unless the host matches an entry. Read at startup only; set_agent_config cannot change it. Default: true",

@@ -31,6 +31,13 @@ const {
 	applicationSocketName,
 	shouldStartUwsListenerHere,
 } = require('./isolatedApplications.ts');
+const {
+	shouldBindListenerHere,
+	isDedicatedPoolWorker,
+	poolMemberIndex,
+	claimListener,
+	listenerOwner,
+} = require('./workerPools.ts');
 const { isBun } = require('../serverHelpers/Request.ts');
 const { getDomainSocketPathMaxBytes, isDomainSocketPathTooLong } = require('../../utility/domainSocket.ts');
 const { createTLSSelector, getEffectiveTlsCiphers } = require('../../security/keys.ts');
@@ -106,7 +113,9 @@ exports.listenOnPorts = listenOnPorts;
 exports.startServers = startServers;
 exports.closeServers = closeServers;
 
+let serversClosing = false;
 function closeServers() {
+	serversClosing = true;
 	if (isBun) {
 		// Bun servers use .stop() for graceful shutdown
 		for (let port in SERVERS) {
@@ -368,6 +377,7 @@ function mirrorBindPath(socketPath) {
 	return join(dirname(socketPath), `.${threadId}.${++mirrorBindSequence}`);
 }
 
+const POOL_BIND_RETRY_MS = 60_000;
 let listening;
 function listenOnPorts() {
 	if (isBun) return listenOnPortsBun();
@@ -381,15 +391,17 @@ function listenOnPorts() {
 		// ports (the kernel would hand it every application's connections) and not a global domain socket
 		// such as the operations API's, which it would take from the main thread.
 		if (port.includes?.('/')) {
-			if (!thisThreadsIsolatedApplication() || server.isPerThreadSocket)
+			if ((!thisThreadsIsolatedApplication() || server.isPerThreadSocket) && shouldBindListenerHere(port))
 				listening.push(listenOnDomainSocket(port, server));
 			continue;
 		}
-		if (thisThreadsIsolatedApplication()) continue;
+		if (thisThreadsIsolatedApplication() || !shouldBindListenerHere(port)) continue;
+		// A pool worker binds only its type's own listeners, which http.threadRange does not cover.
+		const poolWorker = isDedicatedPoolWorker();
 		let listen_on;
 		let ownerWorkerIndex = 0; // lowest eligible worker index for this port
 		const threadRange = env.get(terms.CONFIG_PARAMS.HTTP_THREADRANGE);
-		if (threadRange) {
+		if (threadRange && !poolWorker) {
 			let threadRangeArray = typeof threadRange === 'string' ? threadRange.split('-') : threadRange;
 			let threadIndex = getWorkerIndex();
 			if (threadIndex < threadRangeArray[0] || threadIndex > threadRangeArray[1]) {
@@ -414,13 +426,21 @@ function listenOnPorts() {
 			harperLogger.error(`Unable to bind to port ${port}`, error);
 			continue;
 		}
-		// A dedicated listener (see onSocket()) with an exclusive (non-reusePort) bind is owned by a
-		// single deterministic worker — the lowest eligible index — instead of every worker racing
-		// for it. Nothing else in-process can then hold its port (the main thread doesn't bind these,
-		// and restarts of the owner are non-overlapping on non-reusePort platforms, see
-		// restartWorkers()), which is what makes the owner's EADDRINUSE below unambiguously external.
-		if (server.dedicatedListener && !listen_on.reusePort && !isMainThread && getWorkerIndex() !== ownerWorkerIndex)
+		// An exclusive (non-reusePort) bind of a dedicated listener (see onSocket()) or of a pool-owned
+		// listener has a single deterministic owner -- the lowest eligible worker index, or pool member 0 --
+		// instead of every worker racing for it. Nothing else in-process can then hold its port (the main
+		// thread doesn't bind these, and restarts of the owner are non-overlapping on non-reusePort
+		// platforms, see restartWorkers()), which makes the owner's EADDRINUSE below unambiguously external.
+		if (poolWorker) {
+			if (!listen_on.reusePort && poolMemberIndex() !== 0) continue;
+		} else if (
+			server.dedicatedListener &&
+			!listen_on.reusePort &&
+			!isMainThread &&
+			getWorkerIndex() !== ownerWorkerIndex
+		)
 			continue;
+		let bindRetryDeadline;
 		listening.push(
 			new Promise((resolve, reject) => {
 				server
@@ -430,6 +450,19 @@ function listenOnPorts() {
 					})
 					.on('error', (err) => {
 						if (err.code !== 'EADDRINUSE') return reject(err);
+						// A pool worker exists to serve the listeners its type owns, and its siblings co-bind
+						// (reusePort) or defer to pool member 0, so this conflict is external: failing startup is
+						// what keeps a pool with no reachable listener from reporting ready.
+						if (poolWorker) {
+							// Without reusePort the outgoing member 0 of a restart may still hold the port while it drains.
+							bindRetryDeadline ??= Date.now() + POOL_BIND_RETRY_MS;
+							if (!listen_on.reusePort && !serversClosing && Date.now() < bindRetryDeadline) {
+								setTimeout(() => (serversClosing ? reject(err) : server.listen(listen_on)), 250).unref();
+								return;
+							}
+							logExternalBindConflict(port, err);
+							return reject(err);
+						}
 						// An EADDRINUSE here is unambiguously an unrelated external process already
 						// holding the port (which will silently receive this listener's traffic) when:
 						// - the listener uses reusePort: Harper's supported Node fully supports
@@ -458,7 +491,7 @@ function listenOnPorts() {
 	if (uwsServeConfigs) {
 		for (const key in uwsServeConfigs) {
 			const cfg = uwsServeConfigs[key];
-			if (!shouldStartUwsListenerHere(cfg)) continue; // dedicated worker: its own mirrors only
+			if (!shouldStartUwsListenerHere(cfg) || !shouldBindListenerHere(key)) continue; // dedicated worker: its own mirrors only
 			if (cfg.socketPath && existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath);
 			const { createUwsServer } = require('../serverHelpers/uwsServer.ts');
 			listening.push(
@@ -507,8 +540,9 @@ async function listenOnPortsBun() {
 	const bunServeConfigs = httpComponent.bunServeConfigs;
 	for (let port in bunServeConfigs) {
 		const config = bunServeConfigs[port];
+		if (!shouldBindListenerHere(port)) continue;
 		const threadRange = env.get(terms.CONFIG_PARAMS.HTTP_THREADRANGE);
-		if (threadRange && !thisThreadsIsolatedApplication()) {
+		if (threadRange && !thisThreadsIsolatedApplication() && !isDedicatedPoolWorker()) {
 			let threadRangeArray = typeof threadRange === 'string' ? threadRange.split('-') : threadRange;
 			let threadIndex = getWorkerIndex();
 			if (threadIndex < threadRangeArray[0] || threadIndex > threadRangeArray[1]) {
@@ -533,6 +567,8 @@ async function listenOnPortsBun() {
 				reusePort: config.reusePort ?? (!isWindows && !isMac),
 				fetch: config.fetch,
 			};
+			// as in listenOnPorts(): an exclusive pool-owned bind belongs to pool member 0 alone
+			if (!serveOptions.reusePort && isDedicatedPoolWorker() && poolMemberIndex() !== 0) continue;
 			if (portHostname) serveOptions.hostname = portHostname;
 			// Add TLS config if this is a secure server
 			if (config.isSecure && config.tlsSelector) {
@@ -624,7 +660,7 @@ async function listenOnPortsBun() {
 			}
 		} catch (error) {
 			harperLogger.error(`Unable to start Bun server on port ${port}`, error);
-			if (thisThreadsIsolatedApplication()) throw error;
+			if (thisThreadsIsolatedApplication() || isDedicatedPoolWorker()) throw error;
 		}
 	}
 	// Also start any non-HTTP servers (raw socket servers) that were registered in SERVERS
@@ -634,6 +670,7 @@ async function listenOnPortsBun() {
 		// Skip Bun servers (they're already listening) and config objects
 		if (server?.stop || bunServeConfigs[port]) continue;
 		if (server?.listen) {
+			if (!shouldBindListenerHere(port)) continue;
 			if (port.includes?.('/')) {
 				if (thisThreadsIsolatedApplication() && !server.isPerThreadSocket) continue; // as in listenOnPorts
 				listening.push(listenOnDomainSocket(port, server));
@@ -644,7 +681,11 @@ async function listenOnPortsBun() {
 				// These raw-socket listens bind exclusively (no reusePort), so a dedicated listener
 				// gets a single owner worker — same reasoning as listenOnPorts(). Bun restarts are
 				// already non-overlapping (see restartWorkers()).
-				if (server.dedicatedListener && !isMainThread && getWorkerIndex() !== 0) {
+				if (
+					isDedicatedPoolWorker()
+						? poolMemberIndex() !== 0
+						: server.dedicatedListener && !isMainThread && getWorkerIndex() !== 0
+				) {
 					listening.push(Promise.resolve({ port }));
 					continue;
 				}
@@ -656,7 +697,7 @@ async function listenOnPortsBun() {
 								harperLogger.trace('Listening on port ' + port, threadId);
 							})
 							.on('error', (err) => {
-								if (err.code !== 'EADDRINUSE') return reject(err);
+								if (err.code !== 'EADDRINUSE' || isDedicatedPoolWorker()) return reject(err);
 								// The main thread binds before any worker and never restarts, and a
 								// dedicated listener's owner worker is the only thread that binds it — in
 								// both cases EADDRINUSE can only come from an unrelated external process;
@@ -684,6 +725,19 @@ if (!isMainThread && !workerData?.noServerStart) {
 function onSocket(listener, options) {
 	let getComponentName = require('../../components/componentLoader.ts').getComponentName;
 	let socketServer;
+	const { threadType } = options;
+	for (const port of [options.securePort, options.port]) {
+		if (!port) continue;
+		const owner = listenerOwner(port);
+		if (threadType) {
+			if (SERVERS[port] && owner === undefined)
+				throw new Error(
+					`Port ${port} already serves listeners on every worker, so '${threadType}' workers cannot own it`
+				);
+			claimListener(port, threadType);
+		} else if (owner !== undefined)
+			throw new Error(`Port ${port} is owned by '${owner}' workers, so it cannot serve listeners on every worker`);
+	}
 	if (options.securePort) {
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
 		// usageType lets a caller's certificates (tagged via hdb_certificate.uses) win the quality
@@ -732,7 +786,7 @@ function onSocket(listener, options) {
 		SERVERS[options.securePort] = secureSocketServer;
 
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
-		if (env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
+		if (env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(options.securePort)) {
 			const socketsDir = join(env.getHdbBasePath(), 'sockets');
 			mkdirSync(socketsDir, { recursive: true });
 			const isolatedApplication = thisThreadsIsolatedApplication();
@@ -750,6 +804,7 @@ function onSocket(listener, options) {
 			const udsServer = createSocketServer({ ...socketOptionDefaults }, withProxyProtocol(listener));
 
 			udsServer.isPerThreadSocket = true;
+			if (threadType) claimListener(udsPath, threadType);
 			SERVERS[udsPath] = udsServer;
 			httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
 

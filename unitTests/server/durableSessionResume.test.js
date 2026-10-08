@@ -107,6 +107,34 @@ async function ackAll(session, received) {
 	for (const { messageId } of received) session.acknowledge(messageId);
 }
 
+// its writes take its log key now, so it commits below whatever commits before the returned function is called
+async function heldTransaction(T, ...ids) {
+	let commit;
+	const committed = transaction({}, async (context) => {
+		for (const id of ids) await T.put(id, { value: id }, context);
+		await new Promise((resolve) => (commit = resolve));
+	});
+	await waitFor(() => commit);
+	return () => {
+		commit();
+		return committed;
+	};
+}
+
+/** A topic over the table whose subscription certifies no progress, as a resource that is not a table. */
+function uncertifiedTopic(T, name) {
+	class Uncertified extends Resource {
+		static async subscribe(request) {
+			const inner = await T.subscribe({ startTime: request.startTime, omitCurrent: true });
+			return { [Symbol.asyncIterator]: () => inner[Symbol.asyncIterator](), end: () => inner.end() };
+		}
+	}
+	Resources.resources.set(`${name}Wrapped`, Uncertified, { mqtt: true });
+	return `${name}Wrapped/#`;
+}
+
+const delivery = (received, value) => received.find(({ message }) => message?.value === value);
+
 async function storedEntry(clientId, condition) {
 	let entry;
 	await waitFor(async () => {
@@ -181,6 +209,92 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		session.acknowledge(received[2].messageId);
 		await storedEntry(clientId, (entry) => entry.startTime > settled.startTime);
 		session.disconnect(true);
+	});
+
+	it('keeps a delivered transaction that committed after a higher key until it is acknowledged', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const clientId = `late-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('early', { value: 'early' });
+		await waitFor(() => values(first.received).includes('early'));
+		await commitLate();
+		await waitFor(() => values(first.received).includes('late'));
+		const state = first.session.topics.get(topic);
+		const key = (value) => state.unacked.get(delivery(first.received, value).messageId).key;
+		const lateKey = key('late');
+		assert.ok(lateKey < key('early'), 'the late transaction holds the lower key');
+		await waitFor(() => state.subscription.progress() > lateKey);
+		await first.session.acknowledge(delivery(first.received, 'early').messageId);
+		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'the unacknowledged delivery is kept');
+		first.session.disconnect(true);
+		await first.session.writes;
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => values(second.received).includes('late'));
+		second.session.disconnect(true);
+	});
+
+	it('keeps a delivery whose key is below the bound of an older unacknowledged one', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const clientId = `below-older-${name}`;
+		const { session, received } = await connect(clientId);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitA = await heldTransaction(T, 'a');
+		const commitC = await heldTransaction(T, 'c');
+		await T.put('b', { value: 'b' });
+		await T.put('e', { value: 'e' });
+		await waitFor(() => values(received).includes('e'));
+		await commitA();
+		await waitFor(() => values(received).includes('a'));
+		await commitC();
+		await waitFor(() => values(received).includes('c'));
+		assert.deepStrictEqual(values(received), ['b', 'e', 'a', 'c']);
+		const state = session.topics.get(topic);
+		const key = (value) => state.unacked.get(delivery(received, value).messageId).key;
+		const cKey = key('c');
+		assert.ok(key('a') < cKey && cKey < key('b'), 'c commits below b and e, after a');
+		await waitFor(() => state.subscription.progress() > cKey);
+		session.acknowledge(delivery(received, 'b').messageId);
+		await session.acknowledge(delivery(received, 'a').messageId);
+		assert.ok(
+			(await stored(clientId)).subscriptions[0].startTime < cKey,
+			'e, the oldest unacknowledged, does not bound c'
+		);
+		session.disconnect(true);
+	});
+
+	it('keeps the queued rest of a transaction that committed after a higher key, whatever else awaits an acknowledgement', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const clientId = `late-queued-${name}`;
+		const { session } = await connect(clientId);
+		const delivered = [];
+		// the late transaction's first message never finishes sending, so its rest stays queued
+		session.setListener((_topic, message, messageId) => {
+			delivered.push(message?.value);
+			if (message?.value !== 'unacked') session.acknowledge(messageId);
+			return message?.value === 'late' ? new Promise(() => {}) : true;
+		});
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late', 'late-rest');
+		await T.put('early', { value: 'early' });
+		await T.put('unacked', { value: 'unacked' });
+		await waitFor(() => delivered.includes('unacked'));
+		await commitLate();
+		const state = session.topics.get(topic);
+		await waitFor(() => state.subscription.sentCount >= 4);
+		assert.deepStrictEqual(delivered, ['early', 'unacked', 'late']);
+		const lateKey = state.deliveredKey;
+		session.disconnect(true);
+		await session.writes;
+		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'the queued rest shares the late key');
 	});
 
 	it('resumes a session after a reconnect, and delivers what it missed', async () => {
@@ -641,14 +755,7 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 	it('keeps an uncertified topic before a key a queued message may share', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
-		class Uncertified extends Resource {
-			static async subscribe(request) {
-				const inner = await T.subscribe({ startTime: request.startTime, omitCurrent: true });
-				return { [Symbol.asyncIterator]: () => inner[Symbol.asyncIterator](), end: () => inner.end() };
-			}
-		}
-		Resources.resources.set(`${name}Wrapped`, Uncertified, { mqtt: true });
-		const topic = `${name}Wrapped/#`;
+		const topic = uncertifiedTopic(T, name);
 		const clientId = `uncertified-${name}`;
 		const first = await connect(clientId);
 		first.session.setListener((_topic, message, messageId) => {
@@ -671,6 +778,28 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		await second.session.resume();
 		await waitFor(() => values(second.received).includes('y'));
 		second.session.disconnect(true);
+	});
+
+	it('keeps an uncertified topic before a delivered transaction that committed after a higher key', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = uncertifiedTopic(T, name);
+		const clientId = `late-uncertified-${name}`;
+		const { session, received } = await connect(clientId);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('early', { value: 'early' });
+		await waitFor(() => values(received).includes('early'));
+		await commitLate();
+		await waitFor(() => values(received).includes('late'));
+		const state = session.topics.get(topic);
+		assert.strictEqual(state.subscription.progress, undefined, 'the topic certifies no progress');
+		const key = (value) => state.unacked.get(delivery(received, value).messageId).key;
+		const lateKey = key('late');
+		assert.ok(lateKey < key('early'), 'the late transaction holds the lower key');
+		await session.acknowledge(delivery(received, 'early').messageId);
+		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'the unacknowledged delivery is kept');
+		session.disconnect(true);
 	});
 
 	it('closes the connection, keeping the session, when a resume fails for another reason', async () => {

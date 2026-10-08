@@ -12,7 +12,7 @@
  */
 
 import { readFile, writeFile, readdir, stat, mkdir, realpath, lstat, open, type FileHandle } from 'node:fs/promises';
-import { resolve, dirname, relative, sep, isAbsolute } from 'node:path';
+import { resolve, dirname, relative, sep, isAbsolute, basename } from 'node:path';
 import type { AgentTool, AgentToolContext, AgentScopes } from '../types.ts';
 
 const MAX_READ_BYTES = 5 * 1024 * 1024; // 5 MiB — grep skips larger files
@@ -53,6 +53,14 @@ function optionalInteger(value: unknown, name: string, minimum: number): number 
 	return value as number;
 }
 
+const KEY_FILE_NAME = /\.(?:pem|key)$|^\.jwtPass$/i;
+// Checked against the text a tool returns, so a key without armor passes; the name and key-directory
+// rules are the guarantee.
+const PRIVATE_KEY_ARMOR = /-----(BEGIN|END) [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
+const ARMOR_LINE_OVERLAP_BYTES = 64;
+// Longer than any PEM private-key block, so a window whose start lies inside a key sees its BEGIN line.
+const KEY_LOOKBACK_BYTES = 32 * 1024;
+
 type Access = 'read' | 'write';
 type Scope = 'components' | 'logs' | 'config';
 
@@ -71,10 +79,53 @@ function scopeRoot(scopes: AgentScopes, scope: Scope): string {
 		case 'logs':
 			return scopes.logDir;
 		case 'config':
+			if (!scopes.configDir) {
+				throw new Error(
+					"The 'config' scope is unavailable: agent.configScope named no readable file or directory at startup."
+				);
+			}
 			return scopes.configDir;
 		default:
 			throw new Error(`Unknown fs root '${scope}'. Use one of: ${SCOPES.join(', ')}.`);
 	}
+}
+
+function scopeFile(scopes: AgentScopes, scope: Scope): string | undefined {
+	return scope === 'config' ? scopes.configFile : undefined;
+}
+
+function scopedPath(scopes: AgentScopes, scope: Scope, path: unknown): string {
+	const file = scopeFile(scopes, scope);
+	if (file && (path == null || path === '' || path === '.')) return file;
+	return (path as string) ?? '';
+}
+
+// Resolved on every call, like scope roots, so a key directory that becomes a link after boot is followed.
+function realKeyDirs(scopes: AgentScopes): Promise<string[]> {
+	return Promise.all(scopes.keyDirs.map(safeRealPath));
+}
+
+function inKeyDir(realKeyDirs: string[], realPath: string): boolean {
+	return realKeyDirs.some((keyDir) => isInside(realPath, keyDir));
+}
+
+function assertNoPrivateKey(text: string, path: string): void {
+	if (PRIVATE_KEY_ARMOR.test(text)) throw new Error(`Refusing to read key material: ${path} holds a PEM private key`);
+}
+
+function endsInsidePrivateKey(text: string): boolean {
+	let last: string | undefined;
+	for (const match of text.matchAll(new RegExp(PRIVATE_KEY_ARMOR.source, 'g'))) last = match[1];
+	return last === 'BEGIN';
+}
+
+/** Whether byte `start` lies inside a PEM private-key block, judged by the armor lines before it. */
+async function startsInsidePrivateKey(fh: FileHandle, start: number): Promise<boolean> {
+	if (start === 0) return false;
+	const from = Math.max(0, start - KEY_LOOKBACK_BYTES);
+	const before = Buffer.alloc(start - from + ARMOR_LINE_OVERLAP_BYTES);
+	const { bytesRead } = await fh.read(before, 0, before.length, from);
+	return endsInsidePrivateKey(before.toString('utf8', 0, bytesRead));
 }
 
 /** Coerce/validate a tool's `root` argument, defaulting to the writable components scope. */
@@ -114,8 +165,16 @@ async function resolveScoped(scopes: AgentScopes, scope: Scope, path: string, ac
 	}
 	const realAbsolute = await safeRealPath(absolute);
 	const realRoot = await safeRealPath(root);
-	if (isInside(realAbsolute, realRoot)) return realAbsolute;
-	throw new Error(`Path is outside the agent's '${scope}' scope: ${path}`);
+	const file = scopeFile(scopes, scope);
+	const admitted = file ? realAbsolute === resolve(realRoot, file) : isInside(realAbsolute, realRoot);
+	if (!admitted) throw new Error(`Path is outside the agent's '${scope}' scope: ${path}`);
+	if (
+		inKeyDir(await realKeyDirs(scopes), realAbsolute) ||
+		(access === 'read' && KEY_FILE_NAME.test(basename(realAbsolute)))
+	) {
+		throw new Error(`Refusing to ${access} key material: ${path}`);
+	}
+	return realAbsolute;
 }
 
 async function safeRealPath(p: string): Promise<string> {
@@ -174,7 +233,9 @@ export const readFileTool: AgentTool = {
 		},
 	},
 	handler: async (args: any, ctx: AgentToolContext) => {
-		const path = await resolveScoped(ctx.scopes, normalizeScope(args.root), args.path, 'read');
+		const scope = normalizeScope(args.root);
+		const requested = scopedPath(ctx.scopes, scope, args.path);
+		const path = await resolveScoped(ctx.scopes, scope, requested, 'read');
 		const requestedLine = optionalInteger(args.startLine, 'startLine', 1);
 		const offset = optionalInteger(args.offset, 'offset', 0);
 		const lineCount = optionalInteger(args.lineCount, 'lineCount', 1) ?? Infinity;
@@ -192,6 +253,10 @@ export const readFileTool: AgentTool = {
 				start = located.offset;
 			}
 			const page = await readPage(fh, size, start, lineCount, pageBytes(ctx, path));
+			assertNoPrivateKey(page.content, requested);
+			if (await startsInsidePrivateKey(fh, start)) {
+				throw new Error(`Refusing to read key material: ${requested} holds a PEM private key at that position`);
+			}
 			const result: Record<string, unknown> = { path, size, offset: start, content: page.content };
 			const endLine = startLine === undefined || page.lines === 0 ? undefined : startLine + page.lines - 1;
 			if (startLine !== undefined) Object.assign(result, { startLine, endLine });
@@ -365,7 +430,11 @@ export const listDirTool: AgentTool = {
 		},
 	},
 	handler: async (args: any, ctx: AgentToolContext) => {
-		const path = await resolveScoped(ctx.scopes, normalizeScope(args.root), args.path ?? '', 'read');
+		const scope = normalizeScope(args.root);
+		const path = await resolveScoped(ctx.scopes, scope, scopedPath(ctx.scopes, scope, args.path), 'read');
+		const file = scopeFile(ctx.scopes, scope);
+		// Never enumerated, even if the file was swapped for a directory after boot.
+		if (file) return { path, entries: (await lstat(path)).isFile() ? [{ name: file, kind: 'file' }] : [] };
 		const entries = await readdir(path, { withFileTypes: true });
 		return {
 			path,
@@ -401,7 +470,8 @@ export const grepFilesTool: AgentTool = {
 		},
 	},
 	handler: async (args: any, ctx: AgentToolContext) => {
-		const root = await resolveScoped(ctx.scopes, normalizeScope(args.root), args.path ?? '', 'read');
+		const scope = normalizeScope(args.root);
+		const root = await resolveScoped(ctx.scopes, scope, scopedPath(ctx.scopes, scope, args.path), 'read');
 		// Cap pattern length. A maliciously crafted regex (e.g. nested quantifiers) can backtrack
 		// catastrophically and block the main thread; JS has no native per-match timeout. The agent
 		// is super_user-gated so this is self-inflicted DoS rather than a privilege boundary, but a
@@ -417,7 +487,7 @@ export const grepFilesTool: AgentTool = {
 		let truncated = false;
 		let skippedFiles = 0;
 		const results: Array<{ path: string; line: number; text: string }> = [];
-		await walk(root, async (file) => {
+		const grepFile = async (file: string): Promise<boolean> => {
 			if (truncated) return false;
 			// `stat` first so a multi-GB log or database file can't be slurped into memory by a
 			// well-formed grep request. Anything over the read cap is silently skipped.
@@ -433,7 +503,8 @@ export const grepFilesTool: AgentTool = {
 				return true;
 			}
 			const text = await readFile(file, 'utf8').catch(() => '');
-			if (!text) return true;
+			// Skipped whole, like an oversize file: a matched line could be one line of a key.
+			if (!text || PRIVATE_KEY_ARMOR.test(text)) return true;
 			const lines = text.split('\n');
 			for (let i = 0; i < lines.length; i++) {
 				if (!pattern.test(lines[i])) continue;
@@ -452,7 +523,13 @@ export const grepFilesTool: AgentTool = {
 				results.push(match);
 			}
 			return true;
-		});
+		};
+		const target = await stat(root).catch(() => undefined);
+		if (target?.isFile()) {
+			await grepFile(root);
+		} else if (target?.isDirectory() && !scopeFile(ctx.scopes, scope)) {
+			await walk(root, await realKeyDirs(ctx.scopes), grepFile);
+		}
 		return { root, count: results.length, results, truncated, skippedFiles };
 	},
 };
@@ -475,17 +552,21 @@ export const tailFileTool: AgentTool = {
 		},
 	},
 	handler: async (args: any, ctx: AgentToolContext) => {
-		const path = await resolveScoped(ctx.scopes, normalizeScope(args.root), args.path, 'read');
+		const scope = normalizeScope(args.root);
+		const requested = scopedPath(ctx.scopes, scope, args.path);
+		const path = await resolveScoped(ctx.scopes, scope, requested, 'read');
 		const wanted = Math.min(optionalInteger(args.lines, 'lines', 1) ?? DEFAULT_TAIL_LINES, MAX_TAIL_LINES);
 		const budget = pageBytes(ctx, path);
 		const fh = await open(path, 'r');
 		try {
-			// Read only the trailing page — a multi-GB log file otherwise OOMs the process.
+			// Read only the trailing page — a multi-GB log file otherwise OOMs the process — and the bytes
+			// before it that can hold the BEGIN line of a key the page ends inside.
 			const { size } = await fh.stat();
 			const start = Math.max(0, size - budget);
-			const window = Buffer.alloc(size - start);
-			const { bytesRead } = await fh.read(window, 0, window.length, start);
-			const bytes = window.subarray(0, bytesRead);
+			const scanStart = Math.max(0, start - KEY_LOOKBACK_BYTES);
+			const scanned = Buffer.alloc(size - scanStart);
+			const { bytesRead } = await fh.read(scanned, 0, scanned.length, scanStart);
+			const bytes = scanned.subarray(start - scanStart, bytesRead);
 			let firstChar = 0;
 			while (start > 0 && firstChar < bytes.length && (bytes[firstChar] & 0xc0) === 0x80) firstChar++;
 			const all = bytes.toString('utf8', firstChar).split('\n');
@@ -503,6 +584,10 @@ export const tailFileTool: AgentTool = {
 				lines[0] = escapedTail(lines[0], budget);
 				lastLineCut = true;
 			}
+			assertNoPrivateKey(lines.join('\n'), requested);
+			if (endsInsidePrivateKey(scanned.toString('utf8', 0, bytesRead))) {
+				throw new Error(`Refusing to read key material: ${requested} ends inside a PEM private key`);
+			}
 			const omitted = lines.length < Math.min(wanted, start > 0 ? Infinity : all.length);
 			return { path, lines, truncated: omitted || lastLineCut };
 		} finally {
@@ -513,11 +598,12 @@ export const tailFileTool: AgentTool = {
 
 export const fsTools: AgentTool[] = [readFileTool, writeFileTool, listDirTool, grepFilesTool, tailFileTool];
 
-async function walk(root: string, visit: (file: string) => Promise<boolean>): Promise<void> {
+async function walk(root: string, realKeyDirs: string[], visit: (file: string) => Promise<boolean>): Promise<void> {
 	// Resolve the scope root once via realpath so the per-entry symlink check below has a
 	// stable comparison anchor; otherwise a symlink in the root itself could shift the anchor.
 	const realRoot = await safeRealPath(root);
-	const stack: string[] = [root];
+	// Only real paths go on the stack, so a regular file's path below is already its real path.
+	const stack: string[] = [realRoot];
 	while (stack.length) {
 		const dir = stack.pop()!;
 		let entries;
@@ -533,11 +619,11 @@ async function walk(root: string, visit: (file: string) => Promise<boolean>): Pr
 				// Re-resolve via realpath so a symlinked directory pointing outside the scope is rejected.
 				// Without this, `componentsRoot/escape -> /etc` would let grep walk into /etc.
 				const realFull = await safeRealPath(full);
-				if (!isInside(realFull, realRoot)) continue;
-				stack.push(full);
+				if (!isInside(realFull, realRoot) || inKeyDir(realKeyDirs, realFull)) continue;
+				stack.push(realFull);
 			} else if (entry.isFile()) {
-				const realFull = await safeRealPath(full);
-				if (!isInside(realFull, realRoot)) continue;
+				// A Dirent is never a followed link, so `isFile()` excludes symlinks and `full` needs no realpath.
+				if (KEY_FILE_NAME.test(entry.name) || inKeyDir(realKeyDirs, full)) continue;
 				const proceed = await visit(full);
 				if (proceed === false) return;
 			}
