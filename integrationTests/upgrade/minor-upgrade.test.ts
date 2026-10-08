@@ -3,8 +3,8 @@
  *
  * The evergreen "N-1 minor" upgrade gate for Category 14 / §5.9 of the Harper v5 Integration Test
  * Plan. Each install in HARPER_PREVIOUS_MINOR_PATH (see minorVersionFixtures.ts) seeds a data
- * directory, and the current build must open it without data loss. CI runs the latest 5.2.x and
- * 5.3.x; while `package.json` says 5.3.x, the 5.3.x run is a same-version open (no upgrade directive
+ * directory, and the current build must open it without data loss. CI runs 5.2.15 and 5.3.1;
+ * while `package.json` says 5.3.x, the 5.3.x run is a same-version open (no upgrade directive
  * runs) and only the 5.2.x run exercises a minor upgrade.
  *
  * Rollback in the other direction is minor-downgrade.test.ts.

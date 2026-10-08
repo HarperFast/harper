@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
 import { sendOperation, type HarperContext } from '@harperfast/integration-testing';
 
-export interface PreviousMinorInstall {
+interface PreviousMinorInstall {
 	version: string;
 	binPath: string;
 }
@@ -39,14 +39,14 @@ export const skipCrossVersion = process.env.HARPER_RUNTIME === 'bun' || process.
 
 export const FIRST_BOOT_ENV = { TC_AGREEMENT: 'yes', REPLICATION_HOSTNAME: 'localhost' };
 
-export type Thing = {
+type Thing = {
 	id: string;
 	label: string;
 	count: number;
 	extra?: string;
 };
 
-export type Widget = {
+type Widget = {
 	id: string;
 	name: string;
 	category: string;
@@ -55,15 +55,15 @@ export type Widget = {
 	tags: string[];
 };
 
-export type AuditSubject = {
+type AuditSubject = {
 	id: string;
 	value: string;
 };
 
-export const WIDGET_COUNT = 40;
-export const THING_COUNT = 15;
-export const OVERWRITTEN_THING_COUNT = 5;
-export const AUDIT_SUBJECT_COUNT = 5;
+const WIDGET_COUNT = 40;
+const THING_COUNT = 15;
+const OVERWRITTEN_THING_COUNT = 5;
+const AUDIT_SUBJECT_COUNT = 5;
 
 export function buildWidget(i: number): Widget {
 	return {
@@ -78,8 +78,7 @@ export function buildWidget(i: number): Widget {
 
 export const buildWidgets = (): Widget[] => Array.from({ length: WIDGET_COUNT }, (_, i) => buildWidget(i));
 
-/** The `things` rows as {@link seedMinorFixtures} leaves them, after its overwrites. */
-export function buildThings(): Thing[] {
+export function seededThings(): Thing[] {
 	return Array.from({ length: THING_COUNT }, (_, i) =>
 		i < OVERWRITTEN_THING_COUNT
 			? { id: `t-${i}`, label: `thing-${i}-v2`, count: i * 3 + 100 }
@@ -87,16 +86,14 @@ export function buildThings(): Thing[] {
 	);
 }
 
-/** The `audit_subject` rows as {@link seedMinorFixtures} leaves them, after its one overwrite. */
-export function buildAuditSubjects(): AuditSubject[] {
+export function seededAuditSubjects(): AuditSubject[] {
 	return Array.from({ length: AUDIT_SUBJECT_COUNT }, (_, i) => ({
 		id: `a-${i}`,
 		value: i === 0 ? 'updated-val-0' : `val-${i}`,
 	}));
 }
 
-/** `ids` of each audit entry {@link seedMinorFixtures} writes, in write order. */
-export const SEEDED_AUDIT_IDS = [...buildAuditSubjects().map(({ id }) => id), 'a-0'];
+export const SEEDED_AUDIT_IDS = [...seededAuditSubjects().map(({ id }) => id), 'a-0'];
 
 export async function seedWidgets(harper: HarperContext, widgets: Widget[]): Promise<void> {
 	await sendOperation(harper, {
@@ -140,7 +137,7 @@ export async function seedMinorFixtures(harper: HarperContext): Promise<void> {
 			records: [{ id: `t-${i}`, label: `thing-${i}`, count: i * 3 }],
 		});
 	}
-	for (const thing of buildThings().slice(0, OVERWRITTEN_THING_COUNT)) {
+	for (const thing of seededThings().slice(0, OVERWRITTEN_THING_COUNT)) {
 		await sendOperation(harper, { operation: 'upsert', table: 'things', records: [thing] });
 	}
 
@@ -165,6 +162,6 @@ export async function seedMinorFixtures(harper: HarperContext): Promise<void> {
 	await sendOperation(harper, {
 		operation: 'upsert',
 		table: 'audit_subject',
-		records: [buildAuditSubjects()[0]],
+		records: [seededAuditSubjects()[0]],
 	});
 }
