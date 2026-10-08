@@ -18,7 +18,7 @@
 import chalk from 'chalk';
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import * as YAML from 'yaml';
 import { prompts } from '../utility/interactivePrompts.ts';
@@ -102,8 +102,13 @@ export function checkWorkflowFile(content: string, branch: string, environment: 
 	const branches = asList(push?.branches);
 	if (branches.length === 0) {
 		unverified.push(`that it deploys from "${branch}" (it has no on.push.branches filter)`);
-	} else if (!branches.some((entry) => entry === branch || isExpression(entry))) {
-		problems.push(`it deploys on pushes to ${branches.join(', ')}, not "${branch}"`);
+	} else if (!branches.includes(branch)) {
+		// Entries are glob patterns; matching them is GitHub's job, so a pattern is only unverified.
+		if (branches.some((entry) => isExpression(entry) || /[*?[!]/.test(String(entry)))) {
+			unverified.push(`that ${branches.join(', ')} matches "${branch}"`);
+		} else {
+			problems.push(`it deploys on pushes to ${branches.join(', ')}, not "${branch}"`);
+		}
 	}
 
 	const environments = Object.values(workflow?.jobs ?? {})
@@ -142,6 +147,9 @@ const ROLE_FLAGS = new Set(['super_user', 'structure_user', 'cluster_user', 'ope
 export function roleDifference(existing: any, desired: DesiredRecords['role']): string | undefined {
 	const permission = existing?.permission ?? {};
 	if (permission.super_user === true) return 'it is a super_user role';
+	for (const flag of ['structure_user', 'cluster_user']) {
+		if (permission[flag]) return `it sets ${flag}`;
+	}
 	if (!sameSet(permission.operations, desired.permission.operations)) {
 		return `its operations are ${JSON.stringify(permission.operations ?? null)}, not ${JSON.stringify(desired.permission.operations)}`;
 	}
@@ -189,7 +197,6 @@ export interface ReconcilePlan {
 	conflicts: string[];
 }
 
-/** Decides each record from what the cluster already holds, before anything is written. */
 export function planReconcile(
 	existing: { roles: any[]; users: any[]; policies: any[] },
 	desired: DesiredRecords
@@ -246,9 +253,7 @@ async function lookupRepository(repository: string): Promise<RepositoryInfo | un
 		try {
 			const info = parseRepositoryResponse(JSON.parse(gh.stdout));
 			if (info) return info;
-		} catch {
-			// Not JSON; fall through to the public API.
-		}
+		} catch {}
 	}
 	try {
 		const response = await fetch(`https://api.github.com/repos/${repository}`, {
@@ -256,9 +261,7 @@ async function lookupRepository(repository: string): Promise<RepositoryInfo | un
 			signal: AbortSignal.timeout(CHILD_PROCESS_TIMEOUT_MS),
 		});
 		if (response.ok) return parseRepositoryResponse(await response.json());
-	} catch {
-		// Offline, or the request timed out.
-	}
+	} catch {}
 	return undefined;
 }
 
@@ -328,10 +331,6 @@ function setGithubVariable(repository: string, value: string): { ok: boolean; re
 	return { ok: true };
 }
 
-/**
- * @param transport the caller's connection context; its target is pinned to the first call's
- *   resolved target, so a concurrent `harper login` elsewhere cannot move the later writes.
- */
 export async function setupGithubActions(req: any, transport: any, component: string): Promise<void> {
 	const interactive = Boolean(process.stdin.isTTY);
 	const names = deriveCiNames(component);
@@ -343,6 +342,7 @@ export async function setupGithubActions(req: any, transport: any, component: st
 			'GitHub Actions setup needs a remote cluster: pass target=<url>, set HARPER_CLI_TARGET, or run `harper login <url>` first.'
 		);
 	}
+	// Pinned, so a `harper login` elsewhere during setup can't move the later writes to another cluster.
 	if (!transport.target) transport.target = resolvedTarget;
 	const audience = normalizeTarget(resolvedTarget);
 
@@ -357,10 +357,19 @@ export async function setupGithubActions(req: any, transport: any, component: st
 	const environment = rawStringArg(req, 'environment') ?? DEFAULT_ENVIRONMENT;
 
 	const notes: string[] = [];
+	if (!info) {
+		notes.push(
+			`The repository name was not looked up, so its casing was not verified: workflow_ref is compared exactly, ` +
+				`so "${fullName}" must be spelled as GitHub spells it.`
+		);
+	}
 	if (info?.defaultBranch && info.defaultBranch !== branch) {
 		notes.push(`The repository's default branch is "${info.defaultBranch}"; the policy pins "${branch}".`);
 	}
 	const workflowPath = join(gitTopLevel(), workflow);
+	if (existsSync(workflowPath) && !statSync(workflowPath).isFile()) {
+		throw cliError(`workflow=${workflow} is not a file.`);
+	}
 	if (existsSync(workflowPath)) {
 		const check = checkWorkflowFile(readFileSync(workflowPath, 'utf8'), branch, environment);
 		if (check.problems.length > 0) {
@@ -403,36 +412,32 @@ export async function setupGithubActions(req: any, transport: any, component: st
 	}
 
 	const created: string[] = [];
-	try {
-		if (plan.role === 'create') {
-			await cliOperations({ ...transport, operation: 'add_role', ...desired.role }, true);
-			created.push(`role ${names.role}`);
-		}
-		if (plan.user === 'create') {
-			await cliOperations(
-				{
-					...transport,
-					operation: 'add_user',
-					username: names.user,
-					role: names.role,
-					active: true,
-					// Nothing signs in with it: runs authenticate through the trust policy.
-					password: randomBytes(32).toString('base64url'),
-				},
-				true
-			);
-			created.push(`user ${names.user}`);
-		}
-		if (plan.policy === 'create') {
-			const response: any = await cliOperations({ ...transport, operation: 'add_oidc_trust', ...desired.policy }, true);
-			if (response?.warning) console.log(chalk.yellow(response.warning));
-			created.push(`trust policy ${names.policy}`);
-		}
-	} catch (error) {
-		if (created.length > 0) {
-			console.error(chalk.yellow(`Created ${created.join(', ')} before the failure; run setup again to finish.`));
-		}
-		throw error;
+	if (plan.role === 'create' || plan.user === 'create' || plan.policy === 'create') {
+		console.log(chalk.gray('Creating what is missing. If this stops partway, run it again to finish.'));
+	}
+	if (plan.role === 'create') {
+		await cliOperations({ ...transport, operation: 'add_role', ...desired.role }, true);
+		created.push(`role ${names.role}`);
+	}
+	if (plan.user === 'create') {
+		await cliOperations(
+			{
+				...transport,
+				operation: 'add_user',
+				username: names.user,
+				role: names.role,
+				active: true,
+				// Nothing signs in with it: runs authenticate through the trust policy.
+				password: randomBytes(32).toString('base64url'),
+			},
+			true
+		);
+		created.push(`user ${names.user}`);
+	}
+	if (plan.policy === 'create') {
+		const response: any = await cliOperations({ ...transport, operation: 'add_oidc_trust', ...desired.policy }, true);
+		if (response?.warning) console.log(chalk.yellow(response.warning));
+		created.push(`trust policy ${names.policy}`);
 	}
 
 	const after: any = await cliOperations({ ...transport, operation: 'list_oidc_trust' }, true);
