@@ -6,7 +6,8 @@
  * ever creates. A rerun changes nothing; a record that differs, or that someone disabled, stops setup
  * before it writes, so setup can neither repurpose a role nor undo a revocation.
  *
- * `gh` is kept off PATH and `repository_id=` is given, so no run touches the network. Without `gh`
+ * `gh` is kept off PATH and the repository doesn't exist, so the GitHub lookup finds nothing and the
+ * given `repository_id=` is used. Without `gh`
  * the GitHub variable cannot be set, so every run here exits 1 after the cluster part, and says so.
  *
  * Unit coverage of the derivations and the reconcile decision: unitTests/bin/deploySetupGithubActions.test.js.
@@ -36,6 +37,8 @@ const skipSuite = process.platform === 'win32';
 const COMPONENT = 'web';
 const NAME = `${COMPONENT}-ci-deploy`;
 const POLICY = `github-actions-${COMPONENT}`;
+// A repository GitHub doesn't have, under an org Harper controls, so its lookup finds nothing.
+const REPO = 'HarperFast/deploy-setup-integration-fixture';
 
 interface CliResult {
 	code: number;
@@ -49,7 +52,15 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 	let audience: string;
 
 	/** A child process: cliOperations() calls process.exit(). */
-	async function runSetup(args: string[], cwd = cliHome): Promise<CliResult> {
+	async function runSetup(
+		args: string[],
+		cwd = cliHome,
+		auth: Record<string, string> = {
+			HARPER_CLI_USERNAME: ctx.harper.admin.username,
+			HARPER_CLI_PASSWORD: ctx.harper.admin.password,
+		},
+		target: string[] = [`target=${ctx.harper.operationsAPIURL}`]
+	): Promise<CliResult> {
 		const base: Record<string, string | undefined> = { ...process.env };
 		for (const key of Object.keys(base)) {
 			if (key.startsWith('HARPER_CLI_') || key.startsWith('CLI_TARGET_')) delete base[key];
@@ -62,8 +73,8 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 			'deploy',
 			'setup=true',
 			'provider=github-actions',
-			`target=${ctx.harper.operationsAPIURL}`,
-			'repo=acme/web',
+			...target,
+			`repo=${REPO}`,
 			'repository_id=67890',
 			...args,
 		];
@@ -76,8 +87,7 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 					USERPROFILE: cliHome,
 					// Only node's own directory: no `gh`, so nothing reaches GitHub.
 					PATH: dirname(process.execPath),
-					HARPER_CLI_USERNAME: ctx.harper.admin.username,
-					HARPER_CLI_PASSWORD: ctx.harper.admin.password,
+					...auth,
 				},
 				timeout: 30_000,
 			});
@@ -125,7 +135,7 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 		assert.strictEqual(code, 1, `expected exit 1 (no gh). stdout=${stdout} stderr=${stderr}`);
 		assert.match(stdout, new RegExp(`Created role ${NAME}, user ${NAME}, trust policy ${POLICY}`));
 		assert.match(stderr, /The cluster is set up, but the HARPER_CLI_TARGET repository variable was not set/);
-		assert.match(stderr, new RegExp(`gh variable set HARPER_CLI_TARGET --repo acme/web --body ${audience}`));
+		assert.match(stderr, new RegExp(`gh variable set HARPER_CLI_TARGET --repo ${REPO} --body ${audience}`));
 
 		const role = await findRole();
 		assert.deepStrictEqual(role.permission.operations.sort(), ['deploy_component', 'get_job']);
@@ -141,7 +151,7 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 		assert.strictEqual(policy.user, NAME);
 		assert.deepStrictEqual(policy.claims, {
 			repository_id: '67890',
-			workflow_ref: 'acme/web/.github/workflows/deploy.yaml@refs/heads/main',
+			workflow_ref: `${REPO}/.github/workflows/deploy.yaml@refs/heads/main`,
 			environment: 'production',
 		});
 		assert.deepStrictEqual(policy.operations.sort(), ['deploy_component', 'get_job']);
@@ -196,6 +206,25 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 		assert.match(stderr, new RegExp(`User "${NAME}" already exists and it is inactive`));
 		assert.strictEqual((await findUser()).active, false);
 		await op({ operation: 'alter_user', username: NAME, active: true });
+	});
+
+	// Setup pins a saved-login target for the rest of the run; a target carrying its own credentials
+	// must not be pinned, or the later calls would go out without them.
+	test('credentials in the HARPER_CLI_TARGET URL authenticate every call', async () => {
+		const url = new URL(ctx.harper.operationsAPIURL);
+		url.username = ctx.harper.admin.username;
+		url.password = ctx.harper.admin.password;
+		const { code, stdout, stderr } = await runSetup(
+			['project=userinfo'],
+			cliHome,
+			{ HARPER_CLI_TARGET: url.toString() },
+			[]
+		);
+		assert.strictEqual(code, 1, `expected exit 1 (no gh). stdout=${stdout} stderr=${stderr}`);
+		assert.match(
+			stdout,
+			/Created role userinfo-ci-deploy, user userinfo-ci-deploy, trust policy github-actions-userinfo/
+		);
 	});
 
 	test('a workflow file that cannot match stops setup before it creates anything', async () => {

@@ -18,8 +18,8 @@
 import chalk from 'chalk';
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, posix } from 'node:path';
 import * as YAML from 'yaml';
 import { prompts } from '../utility/interactivePrompts.ts';
 import { cliOperations, resolveGitRepo } from './cliOperations.ts';
@@ -59,7 +59,16 @@ export function deriveCiNames(component: string): CiNames {
 }
 
 export function buildWorkflowRef(repository: string, workflow: string, branch: string): string {
-	return `${repository}/${workflow.replace(/^\.?\//, '')}@refs/heads/${branch}`;
+	return `${repository}/${workflow}@refs/heads/${branch}`;
+}
+
+/** The repository-relative path GitHub names in workflow_ref, used for both the file check and the claim. */
+export function canonicalWorkflowPath(workflow: string): string {
+	const normalized = posix.normalize(workflow.replaceAll('\\', '/')).replace(/^\.\//, '');
+	if (!normalized.startsWith('.github/workflows/') || normalized.split('/').length !== 3) {
+		throw cliError(`workflow=${workflow} must name a file in .github/workflows/, where GitHub reads workflows.`);
+	}
+	return normalized;
 }
 
 /** An argument as typed: `branch=1.0` must stay "1.0", not become the number 1. */
@@ -104,8 +113,10 @@ export function checkWorkflowFile(content: string, branch: string, environment: 
 		unverified.push(`that it deploys from "${branch}" (it has no on.push.branches filter)`);
 	} else if (!branches.includes(branch)) {
 		// Entries are glob patterns; matching them is GitHub's job, so a pattern is only unverified.
-		if (branches.some((entry) => isExpression(entry) || /[*?[!]/.test(String(entry)))) {
+		if (branches.some((entry) => isExpression(entry) || /[*?[!+]/.test(String(entry)))) {
 			unverified.push(`that ${branches.join(', ')} matches "${branch}"`);
+		} else if (triggers && typeof triggers === 'object' && 'workflow_dispatch' in triggers) {
+			unverified.push(`that "${branch}" deploys: only a manual run (workflow_dispatch) can run it there`);
 		} else {
 			problems.push(`it deploys on pushes to ${branches.join(', ')}, not "${branch}"`);
 		}
@@ -342,17 +353,23 @@ export async function setupGithubActions(req: any, transport: any, component: st
 			'GitHub Actions setup needs a remote cluster: pass target=<url>, set HARPER_CLI_TARGET, or run `harper login <url>` first.'
 		);
 	}
-	// Pinned, so a `harper login` elsewhere during setup can't move the later writes to another cluster.
-	if (!transport.target) transport.target = resolvedTarget;
+	// A target from a saved login can change if someone runs `harper login` during setup, so pin it. An
+	// explicit or environment target can't, and pinning it would drop credentials in its userinfo.
+	if (!transport.target && !process.env.HARPER_CLI_TARGET && !process.env.CLI_TARGET) {
+		transport.target = resolvedTarget;
+	}
 	const audience = normalizeTarget(resolvedTarget);
 
 	const repository = await resolveRepository(req, interactive);
-	// An explicit repository_id is the caller's word for the identity; looking it up anyway would make
-	// an offline or scripted run depend on the network.
-	const info = rawStringArg(req, 'repository_id') ? undefined : await lookupRepository(repository);
+	// Looked up even when repository_id= is given: GitHub's spelling of the name is what workflow_ref
+	// carries, and the claim is compared exactly.
+	const info = await lookupRepository(repository);
 	const repositoryId = await resolveRepositoryId(req, info, interactive);
+	if (info && info.id !== repositoryId) {
+		throw cliError(`${info.fullName} has id ${info.id}, not ${repositoryId}.`);
+	}
 	const fullName = info?.fullName ?? repository;
-	const workflow = rawStringArg(req, 'workflow') ?? DEFAULT_WORKFLOW;
+	const workflow = canonicalWorkflowPath(rawStringArg(req, 'workflow') ?? DEFAULT_WORKFLOW);
 	const branch = rawStringArg(req, 'branch') ?? DEFAULT_BRANCH;
 	const environment = rawStringArg(req, 'environment') ?? DEFAULT_ENVIRONMENT;
 
@@ -367,11 +384,14 @@ export async function setupGithubActions(req: any, transport: any, component: st
 		notes.push(`The repository's default branch is "${info.defaultBranch}"; the policy pins "${branch}".`);
 	}
 	const workflowPath = join(gitTopLevel(), workflow);
-	if (existsSync(workflowPath) && !statSync(workflowPath).isFile()) {
-		throw cliError(`workflow=${workflow} is not a file.`);
-	}
 	if (existsSync(workflowPath)) {
-		const check = checkWorkflowFile(readFileSync(workflowPath, 'utf8'), branch, environment);
+		let content: string;
+		try {
+			content = readFileSync(workflowPath, 'utf8');
+		} catch (error) {
+			throw cliError(`Couldn't read ${workflow}: ${(error as Error).message}`);
+		}
+		const check = checkWorkflowFile(content, branch, environment);
 		if (check.problems.length > 0) {
 			throw cliError(
 				`${workflow} cannot match the trust policy: ${check.problems.join('; ')}. Pass branch= or environment= to ` +
@@ -412,6 +432,10 @@ export async function setupGithubActions(req: any, transport: any, component: st
 	}
 
 	const created: string[] = [];
+	const policyNow = async () =>
+		asList(((await cliOperations({ ...transport, operation: 'list_oidc_trust' }, true)) as any)?.policies).find(
+			(policy: any) => policy?.id === names.policy
+		);
 	if (plan.role === 'create' || plan.user === 'create' || plan.policy === 'create') {
 		console.log(chalk.gray('Creating what is missing. If this stops partway, run it again to finish.'));
 	}
@@ -435,13 +459,17 @@ export async function setupGithubActions(req: any, transport: any, component: st
 		created.push(`user ${names.user}`);
 	}
 	if (plan.policy === 'create') {
+		// add_oidc_trust replaces a policy, so one created or disabled since the preflight would be
+		// overwritten. Checking again narrows that window; it can't close it without a server-side guard.
+		if (await policyNow()) {
+			throw cliError(`Trust policy "${names.policy}" was created while setup ran. Run setup again to check it.`);
+		}
 		const response: any = await cliOperations({ ...transport, operation: 'add_oidc_trust', ...desired.policy }, true);
 		if (response?.warning) console.log(chalk.yellow(response.warning));
 		created.push(`trust policy ${names.policy}`);
 	}
 
-	const after: any = await cliOperations({ ...transport, operation: 'list_oidc_trust' }, true);
-	const stored = asList(after?.policies).find((policy: any) => policy?.id === names.policy) as any;
+	const stored: any = await policyNow();
 	const verifyProblems = stored ? policyDifferences(stored, desired.policy) : ['it is missing'];
 	if (stored?.invalid_reason) verifyProblems.push(stored.invalid_reason);
 	if (verifyProblems.length > 0) {

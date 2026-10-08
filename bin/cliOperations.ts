@@ -633,7 +633,7 @@ function buildRequest(): any {
 	// (`harper deploy setup=true branch=1.0`). Non-enumerable so it never reaches a request body or a
 	// log: the raw strings include `auth_password=` and every other credential argument.
 	const rawArgs: Record<string, string> = {};
-	Object.defineProperty(req, '_rawArgs', { value: rawArgs, enumerable: false });
+	Object.defineProperty(req, '_rawArgs', { value: rawArgs, enumerable: false, writable: true });
 	for (const arg of process.argv.slice(2)) {
 		if (OP_ALIASES.hasOwnProperty(arg)) {
 			req.operation = OP_ALIASES[arg];

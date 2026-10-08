@@ -7,6 +7,7 @@
 const assert = require('node:assert');
 const {
 	buildWorkflowRef,
+	canonicalWorkflowPath,
 	checkWorkflowFile,
 	deriveCiNames,
 	planReconcile,
@@ -62,10 +63,30 @@ describe('deploySetupGithubActions', () => {
 				buildWorkflowRef('acme/web', '.github/workflows/deploy.yaml', 'main'),
 				'acme/web/.github/workflows/deploy.yaml@refs/heads/main'
 			);
-			assert.strictEqual(
-				buildWorkflowRef('acme/web', './.github/workflows/deploy.yaml', 'release'),
-				'acme/web/.github/workflows/deploy.yaml@refs/heads/release'
-			);
+		});
+	});
+
+	describe('canonicalWorkflowPath', () => {
+		// The file check and the claim must name the same path, spelled as GitHub spells it.
+		it('normalizes the spellings that name the same file', () => {
+			for (const spelling of [
+				'.github/workflows/deploy.yaml',
+				'./.github/workflows/deploy.yaml',
+				'.github/workflows/./deploy.yaml',
+				'.github/workflows/../workflows/deploy.yaml',
+			]) {
+				assert.strictEqual(canonicalWorkflowPath(spelling), '.github/workflows/deploy.yaml');
+			}
+		});
+
+		it('refuses a path GitHub would never run a workflow from', () => {
+			for (const path of [
+				'/Users/me/app/.github/workflows/deploy.yaml',
+				'deploy.yaml',
+				'.github/workflows/ci/deploy.yaml',
+			]) {
+				assert.throws(() => canonicalWorkflowPath(path), /must name a file in \.github\/workflows\//);
+			}
 		});
 	});
 
@@ -135,6 +156,21 @@ jobs:
 			const { problems, unverified } = checkWorkflowFile(workflow(['**'], 'production'), 'main', 'production');
 			assert.deepStrictEqual(problems, []);
 			assert.match(unverified[0], /that \*\* matches "main"/);
+		});
+
+		it("treats GitHub's + quantifier as a pattern", () => {
+			const { problems, unverified } = checkWorkflowFile(workflow(['mai+n'], 'production'), 'main', 'production');
+			assert.deepStrictEqual(problems, []);
+			assert.strictEqual(unverified.length, 1);
+		});
+
+		// A manual run can still deploy from the branch the push filter leaves out.
+		it('reports a branch only workflow_dispatch can reach as unverified', () => {
+			const content =
+				'on:\n  push:\n    branches: [release]\n  workflow_dispatch:\njobs:\n  deploy:\n    environment: production\n';
+			const { problems, unverified } = checkWorkflowFile(content, 'main', 'production');
+			assert.deepStrictEqual(problems, []);
+			assert.match(unverified[0], /only a manual run/);
 		});
 
 		it('refuses an environment no job runs in', () => {
