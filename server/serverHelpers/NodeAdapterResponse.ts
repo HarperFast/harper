@@ -6,7 +6,8 @@ import type {
 	ServerResponse as NodeServerResponse,
 } from 'node:http';
 import type { Socket } from 'node:net';
-import { PassThrough } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
+import type { Readable } from 'node:stream';
 import { Headers as ResponseHeaders, applyWriteHeadHeaders } from './Headers.ts';
 
 export interface AdaptedResponse {
@@ -29,6 +30,21 @@ class UnsupportedResponseMethodError extends Error {
 }
 
 const ignoreError = () => {};
+const ignoreChunk = () => {};
+
+// Node 26.11's pipe fast path (nodejs/node#66182) hands a lone pipe source's buffers straight to _write(),
+// skipping any write() override, such as compression's gzip patch of res.write. It only runs while pipe's
+// own listener is the source's sole 'data' listener, so a second one keeps pipe on write().
+const pipeSkipsWrite = 'writeKnownBuffer' in Writable;
+function keepPipeOnWrite(this: NodeAdapterResponse, source: Readable) {
+	source.on('data', ignoreChunk);
+	const release = (unpiped: Readable) => {
+		if (unpiped !== source) return;
+		this.removeListener('unpipe', release);
+		source.removeListener('data', ignoreChunk);
+	};
+	this.on('unpipe', release);
+}
 
 export class NodeAdapterResponse extends PassThrough implements NodeServerResponse {
 	statusCode = 200;
@@ -60,6 +76,7 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 		this.#resolve = resolve;
 		this.#reject = reject;
 		this.on('error', ignoreError);
+		if (pipeSkipsWrite) this.on('pipe', keepPipeOnWrite);
 		if (typeof nodeResponse?.on === 'function') {
 			const forward = (...args: any[]) => this.emit('timeout', ...args);
 			let forwarding = false;

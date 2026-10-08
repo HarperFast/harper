@@ -11,7 +11,7 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
-const { Readable } = require('node:stream');
+const { PassThrough, Readable } = require('node:stream');
 const { setTimeout: sleep } = require('node:timers/promises');
 const onFinished = require('on-finished');
 const onHeaders = require('on-headers');
@@ -338,6 +338,55 @@ describe('withNodeAdapter with real Node middleware', function () {
 		assert.ok(backpressure.backpressured, 'write() never returned false');
 		await waitUntil(() => events.length === 2, 'the response stream to close');
 		assert.deepStrictEqual(events, ['finish', 'close']);
+	});
+
+	// Node 26.11's pipe fast path calls _write() directly for a byte-mode source, skipping a patched write()
+	it('runs a write() that middleware patched for every chunk a byte-mode Readable pipes in', async function () {
+		const request = makeRequest();
+		const chunks = [];
+		for (let offset = 0; offset < BODY.length; offset += CHUNK_SIZE)
+			chunks.push(BODY.subarray(offset, offset + CHUNK_SIZE));
+		let next = 0;
+		const source = new Readable({
+			read() {
+				this.push(next < chunks.length ? chunks[next++] : null);
+			},
+		});
+		let patchedWrites = 0;
+		const responsePromise = request.withNodeAdapter((req, res) => {
+			const write = res.write;
+			res.write = function (...args) {
+				patchedWrites++;
+				return write.apply(this, args);
+			};
+			source.pipe(res);
+		});
+
+		const { body } = await withTimeout(responsePromise, 'response headers');
+		const received = await withTimeout(collectSlowly(body), 'the response body');
+		assert.deepStrictEqual(received, BODY);
+		assert.strictEqual(patchedWrites, chunks.length);
+		await waitUntil(() => source.listenerCount('data') === 0, "the source's 'data' listeners to be removed");
+	});
+
+	it('leaves no listener on a source that unpipes or whose pipe the response destroys', async function () {
+		const request = makeRequest();
+		const unpiped = new PassThrough();
+		const destroyed = new PassThrough();
+		let response;
+		const responsePromise = request.withNodeAdapter((req, res) => {
+			response = res;
+			res.writeHead(200);
+			unpiped.pipe(res);
+			destroyed.pipe(res);
+		});
+		await withTimeout(responsePromise, 'response headers');
+
+		unpiped.unpipe(response);
+		assert.strictEqual(unpiped.listenerCount('data'), 0);
+		assert.strictEqual(unpiped.readableFlowing, false);
+		response.destroy();
+		await waitUntil(() => destroyed.listenerCount('data') === 0, "the destroyed pipe's 'data' listeners to be removed");
 	});
 
 	it('runs on-headers listeners inside _implicitHeader() before the headers resolve', async function () {

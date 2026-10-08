@@ -56,10 +56,10 @@ describe('install_node_modules', function () {
 		fs.rmSync(lifecycleMarker, { force: true });
 	});
 
-	// npm still reports the dependency it would add under --dry-run, so asserting on that output
+	// npm still counts the dependency it would add under --dry-run, so asserting on that count
 	// distinguishes a real dry run from npm never running at all
 	function assertDryRun(response) {
-		assert.match(JSON.stringify(response.application.npm_output), /add local-dependency/);
+		assert.equal(response.application.npm_output.added, 1, JSON.stringify(response.application));
 		assert.equal(installedDependencyExists(), false);
 	}
 
@@ -159,30 +159,53 @@ describe('install_node_modules', function () {
 		await assert.rejects(installModules({ dry_run: true }), { statusCode: 400, message: /'projects'/ });
 	});
 
-	it('runs npm with the registry audit disabled', async function () {
-		if (process.platform === 'win32') return this.skip(); // the shim below is a POSIX shell script
+	// the shim is a POSIX shell script; its output and argv files travel as environment values, not as
+	// text in the script, so a `$` or a backtick in TMPDIR is never expanded by the shell that runs it
+	async function withNpmShim(stdout, callback) {
 		const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-npm-shim-'));
 		const originalPath = process.env.PATH;
-		let argv;
 		try {
-			const argvPath = path.join(shimDir, 'argv.txt');
-			// the destination travels as an environment value, not as text in the script: a `$` or a
-			// backtick in TMPDIR would otherwise be expanded by the shell that runs this
+			const stdoutPath = path.join(shimDir, 'stdout.txt');
+			fs.writeFileSync(stdoutPath, stdout);
 			fs.writeFileSync(
 				path.join(shimDir, 'npm'),
-				'#!/bin/sh\nprintf \'%s\\n\' "$@" > "$HARPER_TEST_NPM_ARGV_PATH"\necho \'{"added":0}\'\n',
+				'#!/bin/sh\nprintf \'%s\\n\' "$@" > "$HARPER_TEST_NPM_ARGV_PATH"\ncat "$HARPER_TEST_NPM_STDOUT_PATH"\n',
 				{ mode: 0o755 }
 			);
 			process.env.PATH = `${shimDir}${path.delimiter}${originalPath}`;
-			process.env.HARPER_TEST_NPM_ARGV_PATH = argvPath;
-			await installModules({ projects: ['application'] });
-			argv = fs.readFileSync(argvPath, 'utf8').split('\n').filter(Boolean);
+			process.env.HARPER_TEST_NPM_ARGV_PATH = path.join(shimDir, 'argv.txt');
+			process.env.HARPER_TEST_NPM_STDOUT_PATH = stdoutPath;
+			return await callback(process.env.HARPER_TEST_NPM_ARGV_PATH);
 		} finally {
 			process.env.PATH = originalPath;
 			delete process.env.HARPER_TEST_NPM_ARGV_PATH;
+			delete process.env.HARPER_TEST_NPM_STDOUT_PATH;
 			fs.rmSync(shimDir, { recursive: true, force: true });
 		}
+	}
+
+	it('runs npm with the registry audit disabled', async function () {
+		if (process.platform === 'win32') return this.skip();
+		const argv = await withNpmShim('{"added":0}\n', async (argvPath) => {
+			await installModules({ projects: ['application'] });
+			return fs.readFileSync(argvPath, 'utf8').split('\n').filter(Boolean);
+		});
 
 		assert.deepStrictEqual(argv, ['install', '--force', '--omit=dev', '--no-audit', '--no-fund', '--json']);
+	});
+
+	it('parses the JSON report out of the dry-run diff that npm before 11.20 prints ahead of it', async function () {
+		if (process.platform === 'win32') return this.skip();
+		const cases = [
+			['add local-dependency 1.0.0\n{\n  "added": 1\n}\n', { added: 1 }],
+			['add local-dependency 1.0.0\r\n{\r\n  "added": 1\r\n}\r\n', { added: 1 }],
+			['{\n  "added": 1\n}\n', { added: 1 }],
+			['{"from":"a lifecycle script"}\n{\n  "added": 1\n}\n', { added: 1 }],
+			['not json\n', 'not json'],
+		];
+		for (const [stdout, expected] of cases) {
+			const response = await withNpmShim(stdout, () => installModules({ projects: ['application'], dry_run: true }));
+			assert.deepStrictEqual(response.application.npm_output, expected, JSON.stringify(stdout));
+		}
 	});
 });
