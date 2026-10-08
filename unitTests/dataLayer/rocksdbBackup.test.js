@@ -532,6 +532,26 @@ describe('rocksdbBackup', function () {
 			}
 		});
 
+		it('refuses a backup that would not fit beside the database before staging anything', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realStatfs = fs.statfsSync;
+			fs.statfsSync = (path, ...rest) => ({ ...realStatfs(path, ...rest), bavail: 1, bsize: 4096 });
+			syncBuiltinESMExports();
+			try {
+				for (const restore of Object.values(restores)) {
+					await assert.rejects(
+						restore(backupId),
+						(error) => error.statusCode === 507 && /was not modified/.test(error.message)
+					);
+					assertDestinationIntact();
+				}
+			} finally {
+				fs.statfsSync = realStatfs;
+				syncBuiltinESMExports();
+			}
+		});
+
 		it('refuses a database directory that is a mount point before staging anything', async function () {
 			this.timeout(30000);
 			const backupId = await seed();

@@ -74,9 +74,12 @@ in, and reloading it. Several non-obvious mechanics keep that safe:
   default table cache RocksDB loads only part of a large database's tables at open, so an
   unsupported table outside that set still surfaces later, on a cold read. Opening every table
   (`maxOpenFiles: -1`) would close that gap at the cost of a descriptor per table, which a large
-  database can exhaust. Cost: disk for one extra engine copy while
-  staging; blob roots are not staged (they span filesystems and the archive capabilities already
-  gate their encodings), so a blob-copy failure after publication still requires a rerun. A
+  database can exhaust. Cost: disk for one extra engine copy while staging, written online while
+  every database on that filesystem keeps serving, so a copy that would not leave headroom (the
+  larger of 256 MiB and a tenth of the copy) is refused with a 507 before it starts, where the
+  purge it replaced freed the space first. Blob roots are not staged (they span filesystems and
+  the archive capabilities already gate their encodings), so a blob-copy failure after
+  publication still requires a rerun. A
   database directory that is a symlink is refused, since the swap would replace the link with a
   directory, and so is one that is a mount point, since staging (beside it) would land on another
   filesystem and the rename could only fail after a full copy. **`.replaced` outlives every

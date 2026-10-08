@@ -1,8 +1,8 @@
-import { chmodSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, statfsSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { backups, validateTransactionLogStore } from '@harperfast/rocksdb-js';
 import { stampDatabaseDirectory } from '../resources/auditStore.ts';
-import { ClientError } from '../utility/errors/hdbError.ts';
+import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import { fsyncDirectory, pathPresent } from '../utility/durableFile.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { restoreMetaDir, restoreReplacedPath, restoreStagingPath, type RestoreLock } from './restoreMarker.ts';
@@ -23,8 +23,13 @@ import { restoreMetaDir, restoreReplacedPath, restoreStagingPath, type RestoreLo
 export function prepareRestoreStaging(lock: RestoreLock): void {
 	const databaseDir = lock.dbPath;
 	if (isSymbolicLink(databaseDir)) {
+		// Repointing moves the restore metadata with the path, so an earlier restore's marker stops
+		// guarding its half-restored directory; only an offline rerun before the next start covers that.
+		const remedy = lock.preexisting
+			? 'An earlier restore of this database did not finish: with Harper stopped, point the configured database path at the real directory, then rerun this restore offline before starting Harper again, so the half-restored directory is never loaded'
+			: 'Point the configured database path at the real directory, then rerun the restore';
 		throw new ClientError(
-			`Cannot restore into ${databaseDir}: it is a symbolic link, and a restore replaces the database directory itself. Point the configured database path at the real directory, then rerun the restore`
+			`Cannot restore into ${databaseDir}: it is a symbolic link, and a restore replaces the database directory itself. ${remedy}`
 		);
 	}
 	// Staging lives beside the database, so a mount point would cost a full copy only for the rename to fail.
@@ -46,6 +51,7 @@ export function prepareRestoreStaging(lock: RestoreLock): void {
 export async function stageRestore(backupDir: string, backupId: number, lock: RestoreLock): Promise<void> {
 	const databaseDir = lock.dbPath;
 	const stagingDir = restoreStagingPath(databaseDir);
+	await assertRoomToStage(backupDir, backupId, databaseDir);
 	try {
 		mkdirSync(stagingDir);
 		// After a crash between the publication renames, `.replaced` is the only record of that access.
@@ -73,6 +79,42 @@ export async function stageRestore(backupDir: string, backupId: number, lock: Re
 			{ cause: error }
 		);
 	}
+}
+
+// Free space a restore leaves on the shared filesystem for the databases still serving there.
+const STAGING_HEADROOM_BYTES = 256 * 1024 ** 2;
+
+/**
+ * Staging needs a second engine copy where the purge it replaced freed the space first, and online it
+ * is written while every database on that filesystem keeps serving. Running out partway would fail
+ * their writes too, so a copy that will not fit is refused before it starts.
+ */
+async function assertRoomToStage(backupDir: string, backupId: number, databaseDir: string): Promise<void> {
+	const engineBytes = (await backups.list(backupDir)).find((backup) => backup.backupId === backupId)?.size ?? 0;
+	const needed = engineBytes + directoryBytes(join(backupDir, 'transaction_logs', String(backupId)));
+	const headroom = Math.max(STAGING_HEADROOM_BYTES, needed / 10);
+	const { bavail, bsize } = statfsSync(restoreMetaDir(databaseDir));
+	const available = Number(bavail) * Number(bsize);
+	if (available < needed + headroom) {
+		throw new ServerError(
+			`Cannot restore backup ${backupId}: staging it needs about ${formatBytes(needed)} beside ${databaseDir}, plus ${formatBytes(headroom)} left free for the databases still serving on that filesystem, but only ${formatBytes(available)} is available. Free space there and rerun the restore; the database was not modified`,
+			507
+		);
+	}
+}
+
+function directoryBytes(path: string): number {
+	if (!pathPresent(path)) return 0;
+	let total = 0;
+	for (const entry of readdirSync(path, { withFileTypes: true })) {
+		const entryPath = join(path, entry.name);
+		total += entry.isDirectory() ? directoryBytes(entryPath) : statSync(entryPath).size;
+	}
+	return total;
+}
+
+function formatBytes(bytes: number): string {
+	return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
 }
 
 export type PublishResult = { destroyed: boolean };
