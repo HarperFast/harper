@@ -209,7 +209,6 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 		const txnStream = {};
 		const endTxn = (localTime, cursors, floors, withoutOnFailure = false) => {
 			const event = { type: 'end_txn', localTime, timestamp: localTime, remoteNodeIds: [46], txnStream };
-			// a floor is merged only from a stream whose failures core can see
 			if (!withoutOnFailure) event.onFailure = () => false;
 			event.onCommit = () => {
 				event.originCursors = cursors;

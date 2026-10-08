@@ -2053,6 +2053,8 @@ export function makeTable(options): TableResourceClass {
 						: runsApplicationCodeSingletons(); // set up by the defining application's code, so it runs where that code does
 					const subscription = hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
 					if (subscription) {
+						const admitsOriginFloors = (event: any) =>
+							event.originFloors?.length > 0 && event.onFailure && event.txnStream !== undefined;
 						// defined once per subscription, so an end_txn allocates no updater
 						const updateRecordedSequenceId = (
 							event: any,
@@ -2060,11 +2062,10 @@ export function makeTable(options): TableResourceClass {
 							committingNodeId: number | undefined
 						) => {
 							const originCursors: [number, number][] | undefined = event.originCursors;
-							// A floor is resume's proof, so it is merged only from a stream whose failures it can see:
-							// tagged, and with onFailure (an untagged or callback-less source reports a failed segment
-							// nowhere this loop can hold the floor back).
-							const originFloors: [number, number, boolean][] | undefined =
-								event.onFailure && event.txnStream !== undefined ? event.originFloors : undefined;
+							// only a stream whose failures this loop can see may certify a floor (resources/DESIGN.md)
+							const originFloors: [number, number, boolean][] | undefined = admitsOriginFloors(event)
+								? event.originFloors
+								: undefined;
 							// the key for tracking the sequence ids and txn times received from this node
 							const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
 							// getSync (not get): dbisDb is the raw __dbis__ store, so on RocksDB get() returns a
@@ -2106,7 +2107,6 @@ export function makeTable(options): TableResourceClass {
 										originCursorsChanged = true;
 									}
 								}
-							// kept apart from originLogKey: a position can sit above an open transaction, a floor cannot
 							if (originFloors)
 								for (const [nodeId, closedFloor, relayable] of originFloors) {
 									if (!(typeof closedFloor === 'number' && Number.isFinite(closedFloor) && closedFloor > 0)) continue;
@@ -2305,7 +2305,7 @@ export function makeTable(options): TableResourceClass {
 									// and the sequence id is intentionally not advanced past the unapplied write.
 									if (
 										event.remoteNodeIds?.length > 0 &&
-										(advancesSequence || event.originCursors?.length > 0 || event.originFloors?.length > 0)
+										(advancesSequence || event.originCursors?.length > 0 || admitsOriginFloors(event))
 									)
 										await updateRecordedSequenceId(event, advancesSequence, committingTxn?.nodeId);
 									continue;
