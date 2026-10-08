@@ -1,41 +1,13 @@
 /**
- * Upgrade compatibility tests: v5.N-1 → v5.N (previous-minor → current).
+ * Upgrade compatibility tests: previous minor → current build.
  *
- * This is the evergreen "N-1 minor" upgrade gate for Category 14 / §5.9 of the
- * Harper v5 Integration Test Plan. As the release line advances, the env var
- * below points at the previous minor's install and the assertions here validate
- * that the new build opens the same data directory without data loss.
+ * The evergreen "N-1 minor" upgrade gate for Category 14 / §5.9 of the Harper v5 Integration Test
+ * Plan. Each install in HARPER_PREVIOUS_MINOR_PATH (see minorVersionFixtures.ts) seeds a data
+ * directory, and the current build must open it without data loss. CI runs 5.2.15 and 5.3.1; while
+ * `package.json` is on the 5.3 line, the 5.3.x run reopens same-minor data (no upgrade directive runs)
+ * and only the 5.2.x run exercises a minor upgrade.
  *
- * ## Validated against
- *
- * Local validation was run against harper@5.0.31 (latest 5.0.x as of 2025-06-18)
- * installed via:
- *
- *   mkdir /path/to/tmp/harper-prev-minor && cd /path/to/tmp/harper-prev-minor
- *   npm install harper@5.0.31
- *   HARPER_PREVIOUS_MINOR_PATH=/path/to/tmp/harper-prev-minor/node_modules/harper \
- *     npm run test:integration -- "integrationTests/upgrade/minor-upgrade.test.ts"
- *
- * ## Version matrix / parameterization
- *
- * The suite is parameterized by a single env var:
- *
- *   HARPER_PREVIOUS_MINOR_PATH  — absolute path to the previous-minor Harper
- *                                 install root (the directory containing
- *                                 dist/bin/harper.js and package.json).
- *
- * The suite skips cleanly when the variable is unset — CI slots that lack a
- * prior-minor install simply skip; no suite-level failure.
- *
- * To run locally:
- *   # Install the previous minor into a temp dir (outside the worktree):
- *   mkdir ~/dev/tmp/harper-prev-minor
- *   cd ~/dev/tmp/harper-prev-minor
- *   npm install harper@5.0.31
- *
- *   # Run only this test file:
- *   HARPER_PREVIOUS_MINOR_PATH=~/dev/tmp/harper-prev-minor/node_modules/harper \
- *     npm run test:integration -- "integrationTests/upgrade/minor-upgrade.test.ts"
+ * Rollback in the other direction is minor-downgrade.test.ts.
  *
  * ## What is tested
  *
@@ -48,8 +20,7 @@
  * 3. **Operations API stability** — search_by_conditions, read_audit_log, and
  *    search_by_value return well-formed response shapes (array, typed fields) after
  *    upgrade and after cold restart.
- * 4. **Upgrade directive guard** — the 5.1.0 directive (system.hdb_deployment) ran
- *    exactly once and the table is present after upgrade (RocksDB CURRENT marker).
+ * 4. **system.hdb_deployment** — the table the 5.1.0 directive provisions is present after upgrade.
  */
 import { suite, test, before, after } from 'node:test';
 import {
@@ -62,338 +33,227 @@ import {
 import { ok, deepStrictEqual, strictEqual } from 'node:assert';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
+import {
+	FIRST_BOOT_ENV,
+	NO_PREVIOUS_MINOR,
+	SUITE_TIMEOUT_MS,
+	buildWidgets,
+	previousMinorInstalls,
+	seedMinorFixtures,
+	seedWidgets,
+	skipCrossVersion,
+} from './minorVersionFixtures.ts';
 
-// ---------------------------------------------------------------------------
-// Shared data fixtures
-// ---------------------------------------------------------------------------
+if (previousMinorInstalls.length === 0)
+	suite('previous minor → current minor upgrade', { skip: NO_PREVIOUS_MINOR }, () => {});
 
-const WIDGET_COUNT = 40;
-const buildWidgets = () =>
-	Array.from({ length: WIDGET_COUNT }, (_, i) => ({
-		id: `w-${i}`,
-		name: `widget-${i}`,
-		category: i % 3 === 0 ? 'A' : i % 3 === 1 ? 'B' : 'C',
-		price: Number((9.99 + i).toFixed(2)),
-		inStock: i % 2 === 0,
-		tags: [`tag${i % 5}`, `bucket${i % 4}`],
-	}));
+for (const previousMinor of previousMinorInstalls) {
+	suite(
+		`v${previousMinor.version} → current minor upgrade: data integrity + schema migration`,
+		{ skip: skipCrossVersion, timeout: SUITE_TIMEOUT_MS },
+		(ctx: ContextWithHarper) => {
+			const widgets = buildWidgets();
 
-// ---------------------------------------------------------------------------
-// Guard: skip on Bun and Windows (matches 4.x-upgrade.test.ts convention)
-// ---------------------------------------------------------------------------
-
-const testsBun = process.env.HARPER_RUNTIME === 'bun';
-const previousMinorPath = process.env.HARPER_PREVIOUS_MINOR_PATH;
-
-// ---------------------------------------------------------------------------
-// Primary suite: seed data under previous minor, then upgrade and assert
-// ---------------------------------------------------------------------------
-
-suite(
-	'v5.N-1 → v5.N minor upgrade: data integrity + schema migration',
-	{ skip: !previousMinorPath || testsBun || process.platform === 'win32' },
-	(ctx: ContextWithHarper) => {
-		const widgets = buildWidgets();
-
-		before(async () => {
-			// --- Boot previous-minor Harper ---
-			await startHarper(ctx, {
-				config: {},
-				env: {
-					TC_AGREEMENT: 'yes',
-					REPLICATION_HOSTNAME: 'localhost',
+			before(
+				async () => {
+					await startHarper(ctx, { config: {}, env: FIRST_BOOT_ENV, harperBinPath: previousMinor.binPath });
+					await seedMinorFixtures(ctx.harper);
 				},
-				harperBinPath: join(previousMinorPath!, 'dist', 'bin', 'harper.js'),
+				{ timeout: SUITE_TIMEOUT_MS }
+			);
+
+			after(async () => {
+				await teardownHarper(ctx);
 			});
 
-			// Plain table with several upserts (tests basic record persistence)
-			await sendOperation(ctx.harper, {
-				operation: 'create_table',
-				table: 'things',
-				primary_key: 'id',
-				attributes: [
-					{ name: 'id', type: 'ID' },
-					{ name: 'label', type: 'String' },
-					{ name: 'count', type: 'Integer' },
-				],
-			});
-			for (let i = 0; i < 15; i++) {
-				await sendOperation(ctx.harper, {
-					operation: 'upsert',
+			test('upgrade: current build opens previous-minor data dir and records are intact', async () => {
+				await killHarper(ctx);
+
+				// Re-open the same dataRootDir with the current build (upgrade directives run automatically)
+				await startHarper(ctx, { config: {}, env: {} });
+
+				// Plain table: all 15 records readable; overwrote ids 0-4 → labels end in -v2
+				const thingsResponse = await sendOperation(ctx.harper, {
+					operation: 'search_by_conditions',
 					table: 'things',
-					records: [{ id: `t-${i}`, label: `thing-${i}`, count: i * 3 }],
+					conditions: [{ attribute: 'id', comparator: 'greater_than', value: 'id-0' }],
 				});
-			}
-			// A few overwrites to ensure versioned records are handled
-			for (let i = 0; i < 5; i++) {
-				await sendOperation(ctx.harper, {
-					operation: 'upsert',
+				ok(Array.isArray(thingsResponse), 'search_by_conditions must return an array');
+				ok(thingsResponse.length > 0, 'things table must have records after minor upgrade');
+
+				// Fetch the overwritten record to confirm the updated value survived
+				const overwritten = await sendOperation(ctx.harper, {
+					operation: 'search_by_value',
 					table: 'things',
-					records: [{ id: `t-${i}`, label: `thing-${i}-v2`, count: i * 3 + 100 }],
+					search_attribute: 'id',
+					search_value: 't-0',
+					attributes: ['id', 'label', 'count'],
 				});
-			}
-
-			// Indexed table (tests secondary-index migration across minor versions)
-			await sendOperation(ctx.harper, {
-				operation: 'create_table',
-				table: 'widgets',
-				primary_key: 'id',
-				attributes: [
-					{ name: 'id', type: 'ID' },
-					{ name: 'name', type: 'String' },
-					{ name: 'category', type: 'String' },
-					{ name: 'price', type: 'Float' },
-					{ name: 'inStock', type: 'Boolean' },
-					{ name: 'tags', type: 'Any' },
-				],
+				ok(Array.isArray(overwritten) && overwritten.length === 1, 'overwritten record t-0 must exist after upgrade');
+				strictEqual(overwritten[0].label, 'thing-0-v2', 'overwritten record must carry updated label after upgrade');
+				strictEqual(overwritten[0].count, 100, 'overwritten record must carry updated count after upgrade');
 			});
-			for (const widget of widgets) {
-				await sendOperation(ctx.harper, { operation: 'upsert', table: 'widgets', records: [widget] });
-			}
 
-			// Audit-enabled table (tests audit-log persistence across minor versions)
-			// Note: audit is enabled by default for all tables in v5; we rely on the
-			// subsequent read_audit_log assertion to confirm the audit records survived.
-			await sendOperation(ctx.harper, {
-				operation: 'create_table',
-				table: 'audit_subject',
-				primary_key: 'id',
-				attributes: [
-					{ name: 'id', type: 'ID' },
-					{ name: 'value', type: 'String' },
-				],
+			test('upgrade: indexed table records round-trip cleanly and indexed search resolves', async () => {
+				// All widget records intact and field types preserved
+				for (const expected of widgets) {
+					const rows = await sendOperation(ctx.harper, {
+						operation: 'search_by_conditions',
+						table: 'widgets',
+						conditions: [{ attribute: 'id', comparator: 'equals', value: expected.id }],
+					});
+					ok(rows.length === 1, `expected exactly 1 row for ${expected.id}, got ${rows.length}`);
+					const actual = rows[0];
+					deepStrictEqual(
+						{
+							id: actual.id,
+							name: actual.name,
+							category: actual.category,
+							price: actual.price,
+							inStock: actual.inStock,
+							tags: actual.tags,
+						},
+						expected,
+						`record ${expected.id} did not round-trip cleanly through minor upgrade`
+					);
+				}
+
+				// Secondary index (name) still resolves
+				const byName = await sendOperation(ctx.harper, {
+					operation: 'search_by_conditions',
+					table: 'widgets',
+					conditions: [{ attribute: 'name', comparator: 'equals', value: 'widget-7' }],
+				});
+				ok(
+					byName.length === 1 && byName[0].id === 'w-7',
+					'secondary index on widgets.name must resolve to w-7 after minor upgrade'
+				);
+
+				const catA = await sendOperation(ctx.harper, {
+					operation: 'search_by_conditions',
+					table: 'widgets',
+					conditions: [{ attribute: 'category', comparator: 'equals', value: 'A' }],
+				});
+				deepStrictEqual(
+					catA.map(({ id }: { id: string }) => id).sort(),
+					widgets
+						.filter(({ category }) => category === 'A')
+						.map(({ id }) => id)
+						.sort(),
+					'category-indexed search must return exactly the category A widgets after minor upgrade'
+				);
 			});
-			for (let i = 0; i < 5; i++) {
-				await sendOperation(ctx.harper, {
-					operation: 'upsert',
+
+			test('upgrade: audit log entries survive minor upgrade', async () => {
+				const auditResponse = await sendOperation(ctx.harper, {
+					operation: 'read_audit_log',
+					schema: 'data',
 					table: 'audit_subject',
-					records: [{ id: `a-${i}`, value: `val-${i}` }],
-				});
-			}
-			// Overwrite a record to generate an update audit entry
-			await sendOperation(ctx.harper, {
-				operation: 'upsert',
-				table: 'audit_subject',
-				records: [{ id: 'a-0', value: 'updated-val-0' }],
-			});
-		});
-
-		after(async () => {
-			await teardownHarper(ctx);
-		});
-
-		test('upgrade: current build opens previous-minor data dir and records are intact', async () => {
-			await killHarper(ctx);
-
-			// Re-open the same dataRootDir with the current build (upgrade directives run automatically)
-			await startHarper(ctx, { config: {}, env: {} });
-
-			// Plain table: all 15 records readable; overwrote ids 0-4 → labels end in -v2
-			const thingsResponse = await sendOperation(ctx.harper, {
-				operation: 'search_by_conditions',
-				table: 'things',
-				conditions: [{ attribute: 'id', comparator: 'greater_than', value: 'id-0' }],
-			});
-			ok(Array.isArray(thingsResponse), 'search_by_conditions must return an array');
-			ok(thingsResponse.length > 0, 'things table must have records after minor upgrade');
-
-			// Fetch the overwritten record to confirm the updated value survived
-			const overwritten = await sendOperation(ctx.harper, {
-				operation: 'search_by_value',
-				table: 'things',
-				search_attribute: 'id',
-				search_value: 't-0',
-				attributes: ['id', 'label', 'count'],
-			});
-			ok(Array.isArray(overwritten) && overwritten.length === 1, 'overwritten record t-0 must exist after upgrade');
-			strictEqual(overwritten[0].label, 'thing-0-v2', 'overwritten record must carry updated label after upgrade');
-			strictEqual(overwritten[0].count, 100, 'overwritten record must carry updated count after upgrade');
-		});
-
-		test('upgrade: indexed table records round-trip cleanly and indexed search resolves', async () => {
-			// All widget records intact and field types preserved
-			for (const expected of widgets) {
-				const rows = await sendOperation(ctx.harper, {
-					operation: 'search_by_conditions',
-					table: 'widgets',
-					conditions: [{ attribute: 'id', comparator: 'equals', value: expected.id }],
-				});
-				ok(rows.length === 1, `expected exactly 1 row for ${expected.id}, got ${rows.length}`);
-				const actual = rows[0];
-				deepStrictEqual(
-					{
-						id: actual.id,
-						name: actual.name,
-						category: actual.category,
-						price: actual.price,
-						inStock: actual.inStock,
-						tags: actual.tags,
-					},
-					expected,
-					`record ${expected.id} did not round-trip cleanly through minor upgrade`
-				);
-			}
-
-			// Secondary index (name) still resolves
-			const byName = await sendOperation(ctx.harper, {
-				operation: 'search_by_conditions',
-				table: 'widgets',
-				conditions: [{ attribute: 'name', comparator: 'equals', value: 'widget-7' }],
-			});
-			ok(
-				byName.length === 1 && byName[0].id === 'w-7',
-				'secondary index on widgets.name must resolve to w-7 after minor upgrade'
-			);
-
-			// Category-filtered search returns expected count (20 widgets with category 'A': ids 0,3,6,…39 → 14 rows)
-			const catA = await sendOperation(ctx.harper, {
-				operation: 'search_by_conditions',
-				table: 'widgets',
-				conditions: [{ attribute: 'category', comparator: 'equals', value: 'A' }],
-			});
-			ok(catA.length > 0, 'category-indexed search must return results after minor upgrade');
-		});
-
-		test('upgrade: audit log entries survive minor upgrade', async () => {
-			const auditResponse = await sendOperation(ctx.harper, {
-				operation: 'read_audit_log',
-				schema: 'data',
-				table: 'audit_subject',
-			});
-			ok(
-				Array.isArray(auditResponse) && auditResponse.length >= 6,
-				`expected at least 6 audit log entries (5 inserts + 1 update), got ${auditResponse?.length}`
-			);
-			// Confirm response shape: each entry must have operation, timestamp, user_name
-			for (const entry of auditResponse) {
-				ok('operation' in entry, `audit entry missing 'operation' field: ${JSON.stringify(entry)}`);
-				ok('timestamp' in entry, `audit entry missing 'timestamp' field: ${JSON.stringify(entry)}`);
-			}
-		});
-
-		test('upgrade: 5.1.0 directive created system.hdb_deployment table', async () => {
-			// The 5.1.0 upgrade directive creates this RocksDB column family. Confirm the
-			// RocksDB CURRENT marker exists — a reliable proxy that the table was created.
-			const deploymentDbPath = join(ctx.harper.dataRootDir, 'database', 'system', 'CURRENT');
-			ok(
-				existsSync(deploymentDbPath),
-				`system RocksDB CURRENT marker not found at ${deploymentDbPath}; ` + `5.1.0 upgrade directive may not have run`
-			);
-
-			// Confirm the table is described via the operations API (describe_table does not
-			// require records to exist — a safer check than search_by_conditions with
-			// zero conditions, which the API rejects).
-			try {
-				const desc = await sendOperation(ctx.harper, {
-					operation: 'describe_table',
-					database: 'system',
-					table: 'hdb_deployment',
 				});
 				ok(
-					desc && typeof desc === 'object',
-					'describe_table must return a descriptor object for system.hdb_deployment'
+					Array.isArray(auditResponse) && auditResponse.length >= 6,
+					`expected at least 6 audit log entries (5 inserts + 1 update), got ${auditResponse?.length}`
 				);
-				ok(
-					'id' in desc || 'hash_attribute' in desc || 'attributes' in desc,
-					'descriptor must have id, hash_attribute, or attributes field'
-				);
-			} catch (err: any) {
-				// If the table doesn't exist the operation throws; re-throw with context
-				throw new Error(`system.hdb_deployment not found after 5.0 → 5.1 upgrade: ${err?.message ?? err}`);
-			}
-		});
-	}
-);
+				for (const entry of auditResponse) {
+					ok('operation' in entry, `audit entry missing 'operation' field: ${JSON.stringify(entry)}`);
+					ok('timestamp' in entry, `audit entry missing 'timestamp' field: ${JSON.stringify(entry)}`);
+				}
+			});
 
-// ---------------------------------------------------------------------------
-// Cold-restart suite: verify data survives a full stop+start of the current build
-// (no prior-minor involvement; validates RocksDB wrote cleanly on first upgrade)
-// ---------------------------------------------------------------------------
+			test('upgrade: system.hdb_deployment (provisioned by the 5.1.0 directive) is present', async () => {
+				// Only shows the system database is RocksDB; describe_table below is what proves the table exists.
+				const deploymentDbPath = join(ctx.harper.dataRootDir, 'database', 'system', 'CURRENT');
+				ok(existsSync(deploymentDbPath), `system RocksDB CURRENT marker not found at ${deploymentDbPath}`);
 
-suite(
-	'v5.N-1 → v5.N minor upgrade: cold restart fidelity',
-	{ skip: !previousMinorPath || testsBun || process.platform === 'win32' },
-	(ctx: ContextWithHarper) => {
-		const widgets = buildWidgets();
+				// Confirm the table is described via the operations API (describe_table does not
+				// require records to exist — a safer check than search_by_conditions with
+				// zero conditions, which the API rejects).
+				try {
+					const desc = await sendOperation(ctx.harper, {
+						operation: 'describe_table',
+						database: 'system',
+						table: 'hdb_deployment',
+					});
+					ok(
+						desc && typeof desc === 'object',
+						'describe_table must return a descriptor object for system.hdb_deployment'
+					);
+					ok(
+						'id' in desc || 'hash_attribute' in desc || 'attributes' in desc,
+						'descriptor must have id, hash_attribute, or attributes field'
+					);
+				} catch (err: any) {
+					// If the table doesn't exist the operation throws; re-throw with context
+					throw new Error(`system.hdb_deployment not found after minor upgrade: ${err?.message ?? err}`);
+				}
+			});
+		}
+	);
 
-		before(async () => {
-			// Boot previous-minor and seed data
-			await startHarper(ctx, {
-				config: {},
-				env: {
-					TC_AGREEMENT: 'yes',
-					REPLICATION_HOSTNAME: 'localhost',
+	suite(
+		`v${previousMinor.version} → current minor upgrade: cold restart fidelity`,
+		{ skip: skipCrossVersion, timeout: SUITE_TIMEOUT_MS },
+		(ctx: ContextWithHarper) => {
+			const widgets = buildWidgets();
+
+			before(
+				async () => {
+					await startHarper(ctx, { config: {}, env: FIRST_BOOT_ENV, harperBinPath: previousMinor.binPath });
+					await seedWidgets(ctx.harper, widgets);
+
+					// Initial upgrade: kill previous-minor, start current build once
+					await killHarper(ctx);
+					await startHarper(ctx, { config: {}, env: {} });
 				},
-				harperBinPath: join(previousMinorPath!, 'dist', 'bin', 'harper.js'),
+				{ timeout: SUITE_TIMEOUT_MS }
+			);
+
+			after(async () => {
+				await teardownHarper(ctx);
 			});
 
-			await sendOperation(ctx.harper, {
-				operation: 'create_table',
-				table: 'widgets',
-				primary_key: 'id',
-				attributes: [
-					{ name: 'id', type: 'ID' },
-					{ name: 'name', type: 'String' },
-					{ name: 'category', type: 'String' },
-					{ name: 'price', type: 'Float' },
-					{ name: 'inStock', type: 'Boolean' },
-					{ name: 'tags', type: 'Any' },
-				],
-			});
-			for (const widget of widgets) {
-				await sendOperation(ctx.harper, { operation: 'upsert', table: 'widgets', records: [widget] });
-			}
+			// Regression: after LMDB→RocksDB migration in 4.x tests, the cold restart exposed
+			// __dbis__ structure decoder crashes (harper#1260). A clean minor upgrade should not
+			// produce a similar cold-restart regression.
+			test('cold restart after minor upgrade: all widget records readable and indexes intact', async () => {
+				// Kill upgraded instance and restart the current build on the same data dir
+				await killHarper(ctx);
+				await startHarper(ctx, { config: {}, env: {} });
 
-			// Initial upgrade: kill previous-minor, start current build once
-			await killHarper(ctx);
-			await startHarper(ctx, { config: {}, env: {} });
-		});
+				// All records intact
+				for (const expected of widgets) {
+					const rows = await sendOperation(ctx.harper, {
+						operation: 'search_by_conditions',
+						table: 'widgets',
+						conditions: [{ attribute: 'id', comparator: 'equals', value: expected.id }],
+					});
+					ok(rows.length === 1, `expected exactly 1 row for ${expected.id} after cold restart, got ${rows.length}`);
+					const actual = rows[0];
+					deepStrictEqual(
+						{
+							id: actual.id,
+							name: actual.name,
+							category: actual.category,
+							price: actual.price,
+							inStock: actual.inStock,
+							tags: actual.tags,
+						},
+						expected,
+						`record ${expected.id} did not survive cold restart post minor-upgrade`
+					);
+				}
 
-		after(async () => {
-			await teardownHarper(ctx);
-		});
-
-		// Regression: after LMDB→RocksDB migration in 4.x tests, the cold restart exposed
-		// __dbis__ structure decoder crashes (harper#1260). A clean minor upgrade should not
-		// produce a similar cold-restart regression.
-		test('cold restart after minor upgrade: all widget records readable and indexes intact', async () => {
-			// Kill upgraded instance and restart the current build on the same data dir
-			await killHarper(ctx);
-			await startHarper(ctx, { config: {}, env: {} });
-
-			// All records intact
-			for (const expected of widgets) {
-				const rows = await sendOperation(ctx.harper, {
+				// Secondary index still resolves after cold restart
+				const byName = await sendOperation(ctx.harper, {
 					operation: 'search_by_conditions',
 					table: 'widgets',
-					conditions: [{ attribute: 'id', comparator: 'equals', value: expected.id }],
+					conditions: [{ attribute: 'name', comparator: 'equals', value: 'widget-15' }],
 				});
-				ok(rows.length === 1, `expected exactly 1 row for ${expected.id} after cold restart, got ${rows.length}`);
-				const actual = rows[0];
-				deepStrictEqual(
-					{
-						id: actual.id,
-						name: actual.name,
-						category: actual.category,
-						price: actual.price,
-						inStock: actual.inStock,
-						tags: actual.tags,
-					},
-					expected,
-					`record ${expected.id} did not survive cold restart post minor-upgrade`
+				ok(
+					byName.length === 1 && byName[0].id === 'w-15',
+					'secondary index on widgets.name must resolve to w-15 after cold restart post minor-upgrade'
 				);
-			}
-
-			// Secondary index still resolves after cold restart
-			const byName = await sendOperation(ctx.harper, {
-				operation: 'search_by_conditions',
-				table: 'widgets',
-				conditions: [{ attribute: 'name', comparator: 'equals', value: 'widget-15' }],
 			});
-			ok(
-				byName.length === 1 && byName[0].id === 'w-15',
-				'secondary index on widgets.name must resolve to w-15 after cold restart post minor-upgrade'
-			);
-		});
-	}
-);
+		}
+	);
+}
