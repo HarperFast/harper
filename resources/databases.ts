@@ -595,6 +595,7 @@ type GenerationRow = {
 	generation: string;
 	phase: 'creating' | 'retired';
 	stores?: string[];
+	creatingStores?: string[];
 	primaryStore?: string;
 	blobSweepFailures?: number;
 };
@@ -648,6 +649,20 @@ export function recordRetiredGeneration(
 		primaryStore,
 	});
 	return merged;
+}
+const DROPPED_ROW_PREFIX = '/dropped/';
+function droppedRowKey(tableName: string): string {
+	return DROPPED_ROW_PREFIX + tableName;
+}
+/**
+ * Once a name has been dropped, later creates of it take a generation even after the retirement journal is
+ * reclaimed. Keep the row untimed and shaped `{ table, tableId }`: later versions read it as an untimed drop
+ * marker that a timed drop overwrites. RocksDB callers hold the catalog lock and write it before removing
+ * the tombstone.
+ */
+export function recordTableNameHistory(attributesDbi, tableName: string, tableId: number | undefined): void {
+	const key = droppedRowKey(tableName);
+	if (!attributesDbi.getSync(key)) attributesDbi.putSync(key, { table: tableName, tableId });
 }
 export function storeNamesFor(attributesDbi, tableName: string, generation: string | undefined): string[] {
 	const names: string[] = [];
@@ -1292,7 +1307,8 @@ function initStores(
 	for (const result of attributesDbi.getRange({ start: false })) {
 		const { key, value } = result as { key: string; value: any };
 		if (value == null) continue;
-		if (typeof key === 'string' && key.startsWith(GENERATION_ROW_PREFIX)) continue;
+		if (typeof key === 'string' && (key.startsWith(GENERATION_ROW_PREFIX) || key.startsWith(DROPPED_ROW_PREFIX)))
+			continue;
 		let [tableName, attribute_name] = key.toString().split('/');
 		if (attribute_name === '') {
 			// primary key
@@ -3635,6 +3651,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let refreshedLiveAttributes = false;
 	let deferredPrimaryRow: any;
 	let generation: string | undefined;
+	let createJournal: GenerationRow | undefined;
 	let unpublishedPrimaryStore: any;
 	let published = false;
 	let fullTextValuesForPersistence: unknown;
@@ -4177,8 +4194,33 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				clearInterruptedDropEntries(rootStore.path, tableName);
 			}
 			if (rootStore instanceof RocksDatabase) {
-				generation = randomUUID();
-				attributesDbi.putSync(generationRowKey(generation), { table: tableName, generation, phase: 'creating' });
+				const journalId = randomUUID();
+				let hasPriorStores = Boolean(
+					attributesDbi.getSync(droppedRowKey(tableName)) || rootStore.columns.some((name) => name.startsWith(dbiName))
+				);
+				if (!hasPriorStores) {
+					for (const { value } of attributesDbi.getRange({ start: GENERATION_ROW_PREFIX, end: GENERATION_ROW_END })) {
+						if (value?.table === tableName) {
+							hasPriorStores = true;
+							break;
+						}
+					}
+				}
+				if (hasPriorStores) generation = journalId;
+				createJournal = {
+					table: tableName,
+					generation: journalId,
+					phase: 'creating',
+					primaryStore: storeNameFor(dbiName, generation),
+					// Shipped 5.3 readers reclaim `stores` even when a bare primary row was published.
+					creatingStores: [
+						storeNameFor(dbiName, generation),
+						...attributes
+							.filter((attribute) => attribute.indexed && !attribute.isPrimaryKey && !attribute.relationship)
+							.map((attribute) => storeNameFor(`${dbiName}${attribute.name}`, generation)),
+					],
+				};
+				attributesDbi.putSync(generationRowKey(journalId), createJournal);
 				primaryStore = openRocksDatabase(rootStore.path, {
 					...dbiInit,
 					name: storeNameFor(dbiName, generation),
@@ -4200,6 +4242,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 
 			primaryKeyAttribute.tableId = primaryStore.tableId;
 			if (generation) primaryKeyAttribute.generation = generation;
+			else delete primaryKeyAttribute.generation;
 			Table = makeTable({
 				isBranch: Boolean(target.branch),
 				primaryStore,
@@ -4687,13 +4730,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		// below is a no-op for a create — a table is never published with an incomplete relationship list.
 		if (deferredPrimaryRow) {
 			attributesDbi.put(tableName + '/', deferredPrimaryRow);
-			if (generation) attributesDbi.remove(generationRowKey(generation));
 			// That write, not the registration below, is the publish point: it is durable from here
 			// (on LMDB releaseLock()'s finally commits this create's write transaction even while an
 			// error unwinds), so any later throw must leave the catalog alone. Rolling back past it
 			// would delete the attribute rows out from under a live primary row and leave every
 			// thread loading the primary-only schema this change exists to prevent.
 			published = true;
+			if (createJournal) attributesDbi.remove(generationRowKey(createJournal.generation));
 			setTable(tables, tableName, Table);
 		}
 		// a table with no declared primary key has no attribute row to carry relationships, and the
@@ -4806,14 +4849,17 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		}
 	}
 	function discardUnpublishedTable() {
+		let storeDropFailed = false;
 		const discard = (description: string, action: () => unknown) => {
 			try {
 				action();
+				return true;
 			} catch (discardError) {
 				logger.warn(
 					`Error discarding ${description} of the failed create of ${databaseName}.${tableName}`,
 					discardError
 				);
+				return false;
 			}
 		};
 		discard('catalog rows', () => {
@@ -4825,13 +4871,15 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		// an LMDB store is a per-environment handle slot shared with every thread and still inside this
 		// create's write transaction; only RocksDB column-family handles hold native state to release
 		if (rootStore instanceof RocksDatabase) {
-			if (generation) {
-				const suffix = '@' + generation;
+			if (createJournal) {
+				const suffix = '@' + createJournal.generation;
+				const stores = new Set(createJournal.creatingStores);
 				for (const columnName of [...((rootStore as any).columns as string[])]) {
-					if (columnName.endsWith(suffix))
-						discard(`store ${columnName}`, () => dropColumnFamily(rootStore, columnName));
+					if (stores.has(columnName) || columnName.endsWith(suffix))
+						if (!discard(`store ${columnName}`, () => dropColumnFamily(rootStore, columnName))) storeDropFailed = true;
 				}
-				discard('generation journal row', () => attributesDbi.remove(generationRowKey(generation)));
+				if (!storeDropFailed)
+					discard('generation journal row', () => attributesDbi.remove(generationRowKey(createJournal.generation)));
 			}
 			for (const indexName in Table?.indices ?? {})
 				discard(`index ${indexName}`, () => Table.indices[indexName].close());
@@ -5398,6 +5446,20 @@ export async function sweepDroppedTableBlobs(
 	return { failures, cancelled: Boolean(cancelled()), batches };
 }
 
+/** Older writers can reuse bare names without updating their retired journals. */
+export function liveStoreNamesFor(attributesDbi, tableName: string): Set<string> {
+	let primary = attributesDbi.getSync(tableName + '/');
+	if (!primary) {
+		for (const { value } of attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })) {
+			if (value?.isPrimaryKey || value?.is_hash_attribute) {
+				primary = value;
+				break;
+			}
+		}
+	}
+	return new Set(primary && !primary.dropping ? storeNamesFor(attributesDbi, tableName, primary.generation) : []);
+}
+
 function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseName: string) {
 	const rows = Array.from(attributesDbi.getRange({ start: GENERATION_ROW_PREFIX, end: GENERATION_ROW_END }));
 	const state = scheduledGenerationReclaims.get(rootStore);
@@ -5415,7 +5477,18 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 		return;
 	}
 	try {
-		for (const { key, value } of rows as Array<{ key: string; value: GenerationRow }>) {
+		const currentRows = Array.from(
+			attributesDbi.getRange({ start: GENERATION_ROW_PREFIX, end: GENERATION_ROW_END })
+		) as Array<{ key: string; value: GenerationRow }>;
+		const retiredPrimaries = new Set(
+			currentRows
+				.filter(
+					({ value }) =>
+						value?.phase === 'retired' && value.generation && value.table && typeof value.primaryStore === 'string'
+				)
+				.map(({ value }) => value.primaryStore)
+		);
+		for (const { key, value } of currentRows) {
 			try {
 				if (!value?.generation || !value.table) {
 					logger.warn(`Removing a malformed generation journal row ${String(key)} in ${databaseName}`);
@@ -5424,21 +5497,36 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 					continue;
 				}
 				const live = attributesDbi.getSync(value.table + '/');
-				if (value.phase === 'creating' && live?.generation === value.generation && !live.dropping) {
+				const publishedCreate =
+					live &&
+					(typeof value.primaryStore === 'string'
+						? storeNameFor(value.table + '/', live.generation) === value.primaryStore
+						: live.generation === value.generation);
+				if (value.phase === 'creating' && publishedCreate) {
 					attributesDbi.remove(key);
 					resetGenerationReclaimDelay(rootStore);
 					continue;
 				}
 				const suffix = '@' + value.generation;
-				const retired = new Set(value.stores ?? []);
+				const retired = new Set(
+					value.phase === 'creating' ? (value.creatingStores ?? value.stores ?? []) : (value.stores ?? [])
+				);
 				const columns = [...((rootStore as any).columns as string[])];
-				if (value.phase === 'retired' && value.primaryStore && columns.includes(value.primaryStore)) {
+				const owned = liveStoreNamesFor(attributesDbi, value.table);
+				if (
+					value.phase === 'retired' &&
+					value.primaryStore &&
+					columns.includes(value.primaryStore) &&
+					!owned.has(value.primaryStore)
+				) {
 					if (manageThreads.ownsStoreMaintenance(rootStore.path))
 						scheduleGenerationBlobSweep(rootStore, attributesDbi, databaseName, key, value);
 					continue;
 				}
 				for (const columnName of columns) {
-					if (retired.has(columnName) || columnName.endsWith(suffix)) dropColumnFamily(rootStore, columnName);
+					if (value.phase === 'creating' && retiredPrimaries.has(columnName)) continue;
+					if (!owned.has(columnName) && (retired.has(columnName) || columnName.endsWith(suffix)))
+						dropColumnFamily(rootStore, columnName);
 				}
 				if ((rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0) {
 					scheduleGenerationReclaim(rootStore, attributesDbi, databaseName);
@@ -5493,8 +5581,10 @@ async function finishGenerationBlobSweep(
 		}
 		const suffix = '@' + latest.generation;
 		const retired = new Set(latest.stores ?? []);
+		const owned = liveStoreNamesFor(attributesDbi, latest.table);
 		for (const columnName of [...((rootStore as any).columns as string[])]) {
-			if (retired.has(columnName) || columnName.endsWith(suffix)) dropColumnFamily(rootStore, columnName);
+			if (!owned.has(columnName) && (retired.has(columnName) || columnName.endsWith(suffix)))
+				dropColumnFamily(rootStore, columnName);
 		}
 		if ((rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) === 0) {
 			attributesDbi.remove(key);
@@ -5523,7 +5613,8 @@ function scheduleGenerationBlobSweep(
 				current?.phase !== 'retired' ||
 				current.generation !== row.generation ||
 				current.primaryStore !== row.primaryStore ||
-				!((rootStore as any).columns as string[]).includes(row.primaryStore)
+				!((rootStore as any).columns as string[]).includes(row.primaryStore) ||
+				liveStoreNamesFor(attributesDbi, row.table).has(row.primaryStore)
 			)
 				return;
 			let result: Awaited<ReturnType<typeof sweepDroppedTableBlobs>>;
@@ -5730,7 +5821,11 @@ function completeInterruptedDrop(
 		// catalog-removal failure would bypass the retry accounting entirely.
 		(attributesDbi as any).removeSync(key);
 	}
-	if (tombstoneEntry) (attributesDbi as any).removeSync(tombstoneEntry.key);
+	if (tombstoneEntry) {
+		if (rootStore instanceof RocksDatabase)
+			recordTableNameHistory(attributesDbi, tableName, tombstoneEntry.value?.tableId);
+		(attributesDbi as any).removeSync(tombstoneEntry.key);
+	}
 	return true;
 }
 

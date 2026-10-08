@@ -88,6 +88,8 @@ import {
 	sweepDroppedTableBlobs,
 	storeNameFor,
 	storeNamesFor,
+	liveStoreNamesFor,
+	recordTableNameHistory,
 	isReadOnlyMode,
 } from './databases.ts';
 import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
@@ -3131,6 +3133,13 @@ export function makeTable(options): TableResourceClass {
 					// has stopped and the wrapper has retired their storage.
 					if (!(await retireFullTextStorage())) return false;
 					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
+						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+						if (
+							!currentPrimary?.dropping ||
+							(currentPrimary.tableId != null && currentPrimary.tableId !== tableId) ||
+							currentPrimary.dropGeneration !== dropGeneration
+						)
+							return false;
 						const stores = storeNamesFor(dbisDb, tableName, generation);
 						const retiredStores = recordRetiredGeneration(
 							dbisDb,
@@ -3164,25 +3173,35 @@ export function makeTable(options): TableResourceClass {
 							if (!droppedStores.has(columnName) && (rootStore as any).columns.includes(columnName))
 								dropColumnFamily(rootStore, columnName);
 						}
-						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+						const remainingPrimary = (dbisDb as any).getSync(primaryCatalogKey);
 						if (
-							!currentPrimary?.dropping ||
-							(currentPrimary.tableId != null && currentPrimary.tableId !== tableId) ||
-							currentPrimary.dropGeneration !== dropGeneration
+							!remainingPrimary?.dropping ||
+							(remainingPrimary.tableId != null && remainingPrimary.tableId !== tableId) ||
+							remainingPrimary.dropGeneration !== dropGeneration
 						)
 							return false;
 						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 							if (key !== primaryCatalogKey) dbisDb.remove(key);
 						}
+						recordTableNameHistory(dbisDb, tableName, currentPrimary.tableId);
 						dbisDb.remove(primaryCatalogKey);
 						return true;
 					});
-					if (removed) await dbisDb.committed;
+					if (!removed) {
+						withUpdateAttributesLock(rootStore, `retire stale stores of '${databaseName}.${tableName}'`, () => {
+							const owned = liveStoreNamesFor(dbisDb, tableName);
+							const columns = new Set<string>((rootStore as any).columns);
+							for (const store of [primaryStore, ...Object.values(indices)]) {
+								if (store.name && columns.has(store.name) && !owned.has(store.name))
+									dropColumnFamily(rootStore, store.name);
+							}
+						});
+					} else await dbisDb.committed;
 					const label = `${databaseName}.${tableName}`;
 					const settled = await settlePhysicalDrops(rootStore, label);
 					await sweepDroppedTableBlobs(primaryStore, label);
 					if (!settled) finishDroppedTableBlobSweep(rootStore, primaryStore, label);
-					return true;
+					return removed;
 				} finally {
 					releaseDropMark();
 				}
