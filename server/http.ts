@@ -923,40 +923,10 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		// Operations API domain socket connections bypass auth (equivalent to local access)
 		if (isOperationsServer && String(port).includes('/')) server.bypassLocalAuth = true;
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
 		// Create a corresponding Unix Domain Socket mirror for secure ports
-		if (secure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
-			const socketsDir = join(env.getHdbBasePath(), 'sockets');
-			mkdirSync(socketsDir, { recursive: true });
-=======
-		// Create a corresponding Unix Domain Socket mirror for secure ports, on the threads that bind the port
-<<<<<<< HEAD
-		const socketsDir = join(env.getHdbBasePath(), 'sockets');
-		if (
-			secure &&
-			env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) &&
-			shouldBindListenerHere(port) &&
-			ensureSocketsDirectory(socketsDir)
-		) {
->>>>>>> 396ab5ffc (Harden the UDS mirror directory and publish its metadata atomically)
-=======
-=======
-		// Create a corresponding Unix Domain Socket mirror for secure ports, on the threads that bind the port
->>>>>>> cd6eff0e6 (Refuse ready for an isolated worker that bound no UDS mirror)
 		const socketsDir =
-			secure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(port)
-				? ensureSocketsDirectory()
-				: undefined;
-<<<<<<< HEAD
-=======
-		// Create a corresponding Unix Domain Socket mirror for secure ports
->>>>>>> 5970700ab (Check the UDS mirror directory before registering the secure listener)
-=======
->>>>>>> cd6eff0e6 (Refuse ready for an isolated worker that bound no UDS mirror)
+			secure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) ? ensureSocketsDirectory() : undefined;
 		if (socketsDir) {
->>>>>>> 7b26d4c87 (Resolve the UDS mirror directory from the helper and fail isolated workers loudly)
 			const isolatedApplication = thisThreadsIsolatedApplication();
 			const socketName = isolatedApplication
 				? applicationSocketName(isolatedApplication, port)
