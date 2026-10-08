@@ -637,7 +637,8 @@ every completion path promotes to a `/dropped/<table>` row (`promoteTombstoneToD
 the tombstone — no second-write crash cut. Both come from `tableLifecycleTime()`, the record-version clock;
 `isDeadGeneration(createdTime, droppedTime)` is strict (equal survives, a missing stamp is 0). The marker
 outlives a same-name recreate, only a newer drop overwrites it, the load parser skips `/dropped/` rows, and
-`getTableDrops` / `recordTableDrop` / `onTableDropRecorded` serve replication. On RocksDB, a completion without a drop time records untimed name history instead; `getTableDrops` and `pendingOrRecordedDropTime` skip that marker, and a timed drop overwrites it.
+`getTableDrops` / `recordTableDrop` / `onTableDropRecorded` serve replication; a recorded marker is announced on every
+thread (each owns its own replication connections) and advances that thread's `tableDropEpoch`. On RocksDB, a completion without a drop time records untimed name history instead; `getTableDrops` and `pendingOrRecordedDropTime` skip that marker, and a timed drop overwrites it.
 
 The rule is enforced where a generation becomes or stops being live, under the lock that publishes the primary
 row or writes the tombstone, so no peer path can check it and then act on a catalog another thread changed:

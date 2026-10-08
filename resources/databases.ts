@@ -795,17 +795,21 @@ function writeTableDropMarker(
 		exclusive || !(rootStore instanceof RocksDatabase)
 			? withCatalogWrite(rootStore, `drop marker for '${databaseName}.${tableName}'`, write)
 			: write();
-	// Committed by here on both engines; emitted outside the caller's lock because listeners re-send
-	// schemas, which read this catalog.
+	// Committed by here on both engines; announced outside the caller's lock because listeners re-send
+	// schemas, which read this catalog, and to every thread, since each owns its own replication connections.
 	if (written)
-		queueMicrotask(() => {
-			try {
-				databaseEventsEmitter.emit('tableDropRecorded', databaseName, tableName);
-			} catch (error) {
-				logger.warn(`A tableDropRecorded listener failed for ${databaseName}.${tableName}`, error);
-			}
-		});
+		queueMicrotask(() => void manageThreads.broadcast({ type: TABLE_DROP_RECORDED, databaseName, tableName }, true));
 	return written;
+}
+const TABLE_DROP_RECORDED = 'table-drop-recorded';
+let dropEpoch = 0;
+manageThreads.onMessageByType(TABLE_DROP_RECORDED, ({ databaseName, tableName }) => {
+	dropEpoch++;
+	databaseEventsEmitter.emit('tableDropRecorded', databaseName, tableName);
+});
+/** Advances on this thread whenever a drop marker is recorded on any thread. */
+export function tableDropEpoch(): number {
+	return dropEpoch;
 }
 export function getTableDrops(databaseName: string): TableDropMarker[] {
 	const store = dropMarkerStoreFor(databaseName);

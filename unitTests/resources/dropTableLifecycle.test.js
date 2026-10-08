@@ -20,6 +20,7 @@ const {
 	isDroppedPeerGeneration,
 	isNodeLocalTable,
 	catalogCreatedBefore,
+	tableDropEpoch,
 } = require('#src/resources/databases');
 const { REPLICATED_FROM } = require('#src/utility/hdbTerms');
 const { server } = require('#src/server/Server');
@@ -662,5 +663,15 @@ describe('table lifecycle stamps (harper#1212)', () => {
 		assert.equal(catalogCreatedBefore(getDatabases()[TEST_DB].LifecycleCreatedBeforeStamped), undefined);
 		void Old;
 		void Stamped;
+	});
+
+	it('advances the drop epoch whenever a marker is recorded, and only then', async () => {
+		const before = tableDropEpoch();
+		assert.equal(recordTableDrop(TEST_DB, 'LifecycleEpoch', 4242), true);
+		await nextTick();
+		assert.equal(tableDropEpoch(), before + 1);
+		assert.equal(recordTableDrop(TEST_DB, 'LifecycleEpoch', 4242), false, 'a marker that is not newer is not news');
+		await nextTick();
+		assert.equal(tableDropEpoch(), before + 1);
 	});
 });
