@@ -40,6 +40,9 @@ export function prepareRestoreStaging(lock: RestoreLock): void {
 	}
 	rmSync(restoreStagingPath(databaseDir), { recursive: true, force: true });
 	if (!lock.preexisting) rmSync(restoreReplacedPath(databaseDir), { recursive: true, force: true });
+	// A publication already began, so the database path holds a candidate, never the database; dropped
+	// now rather than at publish so the space check does not count a third copy.
+	else if (pathPresent(restoreReplacedPath(databaseDir))) rmSync(databaseDir, { recursive: true, force: true });
 }
 
 /**

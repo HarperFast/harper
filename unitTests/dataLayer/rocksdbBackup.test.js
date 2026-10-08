@@ -552,6 +552,41 @@ describe('rocksdbBackup', function () {
 			}
 		});
 
+		// The published candidate is disposable, so it must not be counted against the space for a third copy.
+		it('drops the published candidate before measuring space when rerunning a failed publication', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realRestoreBlobs = blobBackupModule.restoreBlobSnapshot;
+			blobBackupModule.restoreBlobSnapshot = async () => {
+				throw new Error('injected blob failure');
+			};
+			try {
+				await assert.rejects(restoreBackupOffline(STAGED, backupId), /injected blob failure/);
+			} finally {
+				blobBackupModule.restoreBlobSnapshot = realRestoreBlobs;
+			}
+			assert.ok(existsSync(restoreReplacedPath(stagedDir())), 'precondition: publication began');
+			assert.ok(existsSync(stagedDir()), 'precondition: a candidate is published');
+
+			const realStatfs = fs.statfsSync;
+			let candidateAtCheck;
+			fs.statfsSync = (path, ...rest) => {
+				candidateAtCheck = existsSync(stagedDir());
+				return realStatfs(path, ...rest);
+			};
+			syncBuiltinESMExports();
+			try {
+				await restoreBackupOffline(STAGED, backupId);
+			} finally {
+				fs.statfsSync = realStatfs;
+				syncBuiltinESMExports();
+			}
+			assert.strictEqual(candidateAtCheck, false);
+			assert.strictEqual(checkRestoreState(stagedDir()), 'clear');
+			assertRestoredFromBackup();
+			assertNoDebris();
+		});
+
 		it('refuses a database directory that is a mount point before staging anything', async function () {
 			this.timeout(30000);
 			const backupId = await seed();

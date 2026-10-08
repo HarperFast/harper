@@ -77,16 +77,18 @@ in, and reloading it. Several non-obvious mechanics keep that safe:
   database can exhaust. Cost: disk for one extra engine copy while staging, written online while
   every database on that filesystem keeps serving, so a copy that would not leave headroom (the
   larger of 256 MiB and a tenth of the copy) is refused with a 507 before it starts, where the
-  purge it replaced freed the space first. Blob roots are not staged (they span filesystems and
-  the archive capabilities already gate their encodings), so a blob-copy failure after
-  publication still requires a rerun. A
-  database directory that is a symlink is refused, since the swap would replace the link with a
-  directory, and so is one that is a mount point, since staging (beside it) would land on another
-  filesystem and the rename could only fail after a full copy. **`.replaced` outlives every
-  attempt under a preexisting marker**: a crash between the renames leaves it as the only copy of
-  the database, so a rerun keeps it until its own replacement publishes (and treats whatever is
-  at the database path then as a disposable candidate); only a fresh marker proves it is debris of
-  a completed restore. A failed second rename moves it back, and
+  purge it replaced freed the space first. Two limits: an in-place restore needs room for two
+  copies even offline, where nothing else is serving, and the check is per restore, so concurrent
+  restores of different databases on one filesystem are not reserved against each other. Blob
+  roots are not staged (they span filesystems and the archive capabilities already gate their
+  encodings), so a blob-copy failure after publication still requires a rerun. A database
+  directory that is a symlink is refused, since the swap would replace the link with a directory,
+  and so is one that is a mount point, since staging (beside it) would land on another filesystem
+  and the rename could only fail after a full copy. **`.replaced` outlives every attempt under a
+  preexisting marker**: a crash between the renames leaves it as the only copy of the database, so
+  a rerun keeps it until its own replacement publishes (and drops whatever is at the database path
+  then, a disposable candidate, before the space check); only a fresh marker proves it is debris
+  of a completed restore. A failed second rename moves it back, and
   only a rollback whose directories were fsynced counts as "nothing destroyed". Once staging is
   published the marker stays on any later failure, even where nothing was displaced.
 
