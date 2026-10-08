@@ -121,6 +121,20 @@ export class IdKeyPlainObjectPayload extends Resource {
 	}
 }
 
+// GET /LineBreakFieldsPayload/ — event/id/retry values carrying CR/LF, followed by a clean frame.
+export class LineBreakFieldsPayload extends Resource {
+	static loadAsInstance = false;
+	static async *connect() {
+		yield {
+			event: 'payload\r\nevent: forged',
+			data: 'line-break-probe',
+			id: '7\ndata: forged',
+			retry: '1000\r\rdata: forged-event',
+		};
+		yield { event: 'payload', data: 'after-line-break-probe' };
+	}
+}
+
 // GET /PlainObjectPayload/ — data: an object with no field literally named "data" inside it.
 export class PlainObjectPayload extends ssePayloadResource({ foo: 'bar', n: 42 }) {}
 
