@@ -11,7 +11,7 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
-const { PassThrough, Readable } = require('node:stream');
+const { PassThrough, Readable, Stream } = require('node:stream');
 const { setTimeout: sleep } = require('node:timers/promises');
 const onFinished = require('on-finished');
 const onHeaders = require('on-headers');
@@ -369,7 +369,7 @@ describe('withNodeAdapter with real Node middleware', function () {
 		await waitUntil(() => source.listenerCount('data') === 0, "the source's 'data' listeners to be removed");
 	});
 
-	it('leaves a source paused with its data when its stalled pipe is unpiped or the response is destroyed', async function () {
+	it('leaves a source paused with its data when its stalled pipe is unpiped or the response is destroyed, and no listener on any source', async function () {
 		const request = makeRequest();
 		const unpiped = new PassThrough();
 		const destroyed = new PassThrough();
@@ -396,6 +396,10 @@ describe('withNodeAdapter with real Node middleware', function () {
 		destroyed.write(BODY.subarray(0, CHUNK_SIZE));
 		destroyed.write(BODY.subarray(CHUNK_SIZE, 2 * CHUNK_SIZE));
 		await waitUntil(() => destroyed.readableFlowing === false, 'the second pipe to stall awaiting drain');
+		const legacy = new Stream();
+		legacy.pipe(response);
+		legacy.emit('end');
+		assert.strictEqual(legacy.listenerCount('data'), 0);
 		response.destroy();
 		await waitUntil(() => destroyed.listenerCount('data') === 0, "the destroyed pipe's 'data' listeners to be removed");
 		await sleep(1);

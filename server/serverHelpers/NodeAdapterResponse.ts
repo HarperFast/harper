@@ -6,8 +6,7 @@ import type {
 	ServerResponse as NodeServerResponse,
 } from 'node:http';
 import type { Socket } from 'node:net';
-import { PassThrough, Writable } from 'node:stream';
-import type { Readable } from 'node:stream';
+import { PassThrough, Readable, Writable } from 'node:stream';
 import { Headers as ResponseHeaders, applyWriteHeadHeaders } from './Headers.ts';
 
 export interface AdaptedResponse {
@@ -38,6 +37,8 @@ const ignoreChunk = () => {};
 // brought the static Writable.writeKnownBuffer with it.
 const pipeSkipsWrite = 'writeKnownBuffer' in Writable;
 function keepPipeOnWrite(this: NodeAdapterResponse, source: Readable) {
+	// legacy and userland pipe() take no fast path, and legacy pipe() never emits 'unpipe'
+	if (!(source instanceof Readable)) return;
 	source.on('data', ignoreChunk);
 	const release = (unpiped: Readable) => {
 		if (unpiped !== source) return;
