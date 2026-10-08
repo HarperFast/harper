@@ -685,8 +685,9 @@ function dropMarkerStoreFor(databaseName: string): { rootStore: RootDatabaseKind
  * Read-compare-write of the newest drop time, serialized against every other writer: the catalog lock
  * on RocksDB (held by the caller when `exclusive` is false), a write transaction on LMDB. A live
  * tombstone is read again inside that section, so a drop that joined and raised its time cannot be
- * promoted from a copy read earlier. A tombstone written before the stamps existed has no time, and no
- * marker is synthesized for it: a time made up at completion could postdate a peer's live recreate.
+ * promoted from a copy read earlier. An untimed RocksDB marker records name history only; readers of
+ * replicated drop times skip it, and a timed drop overwrites it. Inventing a completion time could
+ * postdate a peer's live recreate.
  */
 function writeTableDropMarker(
 	rootStore: RootDatabaseKind,
@@ -5629,7 +5630,7 @@ export async function sweepDroppedTableBlobs(
 }
 
 /** Older writers can reuse bare names without updating their retired journals. */
-function liveStoreNamesFor(attributesDbi, tableName: string): Set<string> {
+export function liveStoreNamesFor(attributesDbi, tableName: string): Set<string> {
 	let primary = attributesDbi.getSync(tableName + '/');
 	if (!primary) {
 		for (const { value } of attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })) {
