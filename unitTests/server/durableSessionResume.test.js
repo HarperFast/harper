@@ -126,6 +126,9 @@ async function heldTransaction(T, ...ids) {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 048db746e (Cover a late transaction on a durable topic that certifies no progress)
 /** A topic over the table whose subscription certifies no progress, as a resource that is not a table. */
 function uncertifiedTopic(T, name) {
 	class Uncertified extends Resource {
@@ -138,8 +141,11 @@ function uncertifiedTopic(T, name) {
 	return `${name}Wrapped/#`;
 }
 
+<<<<<<< HEAD
 =======
 >>>>>>> 176dbfc3f (Keep a durable MQTT session's position below a delivered transaction that committed after a higher key)
+=======
+>>>>>>> 048db746e (Cover a late transaction on a durable topic that certifies no progress)
 const delivery = (received, value) => received.find(({ message }) => message?.value === value);
 
 async function storedEntry(clientId, condition) {
