@@ -1382,7 +1382,7 @@ function assertNotOpenElsewhere(databaseDir: string, databaseName: string): void
  */
 function rerunRequiredError(databaseName: string, backupId: number, error: any): Error {
 	const wrapped: any = new Error(
-		`Restore of database '${databaseName}' from backup ${backupId} failed (rerun restore_backup to recover): ${error.message}`,
+		`Restore of database '${databaseName}' from backup ${backupId} failed (rerun restore_backup to recover): ${error instanceof Error ? error.message : String(error)}`,
 		{ cause: error }
 	);
 	if (typeof error?.statusCode === 'number') wrapped.statusCode = error.statusCode;

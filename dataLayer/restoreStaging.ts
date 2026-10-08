@@ -87,9 +87,12 @@ export async function stageRestore(backupDir: string, backupId: number, lock: Re
 		}
 		await stampDatabaseDirectory(stagingDir, { carriesLog: true });
 	} catch (error) {
-		throw new Error(`Backup ${backupId} could not be staged and verified, so ${untouched(lock)}: ${error.message}`, {
-			cause: error,
-		});
+		throw new Error(
+			`Backup ${backupId} could not be staged and verified, so ${untouched(lock)}: ${error instanceof Error ? error.message : String(error)}`,
+			{
+				cause: error,
+			}
+		);
 	}
 }
 
@@ -219,7 +222,7 @@ function isSymbolicLink(path: string): boolean {
 	try {
 		return lstatSync(path).isSymbolicLink();
 	} catch (error) {
-		if (error.code === 'ENOENT') return false;
+		if ((error as any)?.code === 'ENOENT') return false;
 		throw error;
 	}
 }
