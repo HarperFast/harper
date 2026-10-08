@@ -3,9 +3,9 @@
  *
  * The evergreen "N-1 minor" upgrade gate for Category 14 / §5.9 of the Harper v5 Integration Test
  * Plan. Each install in HARPER_PREVIOUS_MINOR_PATH (see minorVersionFixtures.ts) seeds a data
- * directory, and the current build must open it without data loss. CI runs 5.2.15 and 5.3.1;
- * while `package.json` says 5.3.x, the 5.3.x run is a same-version open (no upgrade directive
- * runs) and only the 5.2.x run exercises a minor upgrade.
+ * directory, and the current build must open it without data loss. CI runs 5.2.15 and 5.3.1; while
+ * `package.json` is on the 5.3 line, the 5.3.x run reopens same-minor data (no upgrade directive runs)
+ * and only the 5.2.x run exercises a minor upgrade.
  *
  * Rollback in the other direction is minor-downgrade.test.ts.
  *
@@ -129,13 +129,19 @@ for (const previousMinor of previousMinorInstalls) {
 					'secondary index on widgets.name must resolve to w-7 after minor upgrade'
 				);
 
-				// Category-filtered search returns expected count (20 widgets with category 'A': ids 0,3,6,…39 → 14 rows)
 				const catA = await sendOperation(ctx.harper, {
 					operation: 'search_by_conditions',
 					table: 'widgets',
 					conditions: [{ attribute: 'category', comparator: 'equals', value: 'A' }],
 				});
-				ok(catA.length > 0, 'category-indexed search must return results after minor upgrade');
+				deepStrictEqual(
+					catA.map(({ id }: { id: string }) => id).sort(),
+					widgets
+						.filter(({ category }) => category === 'A')
+						.map(({ id }) => id)
+						.sort(),
+					'category-indexed search must return exactly the category A widgets after minor upgrade'
+				);
 			});
 
 			test('upgrade: audit log entries survive minor upgrade', async () => {
@@ -148,7 +154,6 @@ for (const previousMinor of previousMinorInstalls) {
 					Array.isArray(auditResponse) && auditResponse.length >= 6,
 					`expected at least 6 audit log entries (5 inserts + 1 update), got ${auditResponse?.length}`
 				);
-				// Confirm response shape: each entry must have operation, timestamp, user_name
 				for (const entry of auditResponse) {
 					ok('operation' in entry, `audit entry missing 'operation' field: ${JSON.stringify(entry)}`);
 					ok('timestamp' in entry, `audit entry missing 'timestamp' field: ${JSON.stringify(entry)}`);
@@ -156,14 +161,9 @@ for (const previousMinor of previousMinorInstalls) {
 			});
 
 			test('upgrade: system.hdb_deployment (provisioned by the 5.1.0 directive) is present', async () => {
-				// The 5.1.0 upgrade directive creates this RocksDB column family. Confirm the
-				// RocksDB CURRENT marker exists — a reliable proxy that the table was created.
+				// Only shows the system database is RocksDB; describe_table below is what proves the table exists.
 				const deploymentDbPath = join(ctx.harper.dataRootDir, 'database', 'system', 'CURRENT');
-				ok(
-					existsSync(deploymentDbPath),
-					`system RocksDB CURRENT marker not found at ${deploymentDbPath}; ` +
-						`5.1.0 upgrade directive may not have run`
-				);
+				ok(existsSync(deploymentDbPath), `system RocksDB CURRENT marker not found at ${deploymentDbPath}`);
 
 				// Confirm the table is described via the operations API (describe_table does not
 				// require records to exist — a safer check than search_by_conditions with
