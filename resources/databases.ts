@@ -5669,7 +5669,18 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 		return;
 	}
 	try {
-		for (const { key, value } of rows as Array<{ key: string; value: GenerationRow }>) {
+		const currentRows = Array.from(
+			attributesDbi.getRange({ start: GENERATION_ROW_PREFIX, end: GENERATION_ROW_END })
+		) as Array<{ key: string; value: GenerationRow }>;
+		const retiredPrimaries = new Set(
+			currentRows
+				.filter(
+					({ value }) =>
+						value?.phase === 'retired' && value.generation && value.table && typeof value.primaryStore === 'string'
+				)
+				.map(({ value }) => value.primaryStore)
+		);
+		for (const { key, value } of currentRows) {
 			try {
 				if (!value?.generation || !value.table) {
 					logger.warn(`Removing a malformed generation journal row ${String(key)} in ${databaseName}`);
@@ -5705,6 +5716,7 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 					continue;
 				}
 				for (const columnName of columns) {
+					if (value.phase === 'creating' && retiredPrimaries.has(columnName)) continue;
 					if (!owned.has(columnName) && (retired.has(columnName) || columnName.endsWith(suffix)))
 						dropColumnFamily(rootStore, columnName);
 				}
