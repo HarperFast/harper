@@ -87,8 +87,9 @@ in, and reloading it. Several non-obvious mechanics keep that safe:
   and the rename could only fail after a full copy. **`.replaced` outlives every attempt under a
   preexisting marker**: a crash between the renames leaves it as the only copy of the database, so
   a rerun keeps it until its own replacement publishes (and drops whatever is at the database path
-  then, a disposable candidate, before the space check); only a fresh marker proves it is debris
-  of a completed restore. A failed second rename moves it back, and
+  then, a disposable candidate, before the space check). That inference needs `.replaced` never to
+  outlive its restore, so a finished restore renames it to `<key>.discarded` while its marker still
+  stands, and only the removal of that may fail quietly. A failed second rename moves it back, and
   only a rollback whose directories were fsynced counts as "nothing destroyed". Once staging is
   published the marker stays on any later failure, even where nothing was displaced.
 

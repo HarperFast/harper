@@ -58,6 +58,7 @@ const {
 	beginRestore,
 	completeRestore,
 	checkRestoreState,
+	restoreDiscardedPath,
 	restoreReplacedPath,
 	restoreStagingPath,
 } = require('#src/dataLayer/restoreMarker');
@@ -383,7 +384,11 @@ describe('rocksdbBackup', function () {
 		}
 
 		function assertNoDebris() {
-			for (const path of [restoreStagingPath(stagedDir()), restoreReplacedPath(stagedDir())]) {
+			for (const path of [
+				restoreStagingPath(stagedDir()),
+				restoreReplacedPath(stagedDir()),
+				restoreDiscardedPath(stagedDir()),
+			]) {
 				assert.ok(!existsSync(path), `${path} must not be left behind`);
 			}
 		}
@@ -587,6 +592,30 @@ describe('rocksdbBackup', function () {
 			assertNoDebris();
 		});
 
+		// `.replaced` is what tells a rerun that the database path holds only a candidate, so it may not
+		// outlive the restore that made it.
+		it('keeps the marker when the pre-restore copy cannot be retired', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realRename = fs.renameSync;
+			fs.renameSync = (from, to) => {
+				if (to === restoreDiscardedPath(stagedDir())) throw Object.assign(new Error('injected EIO'), { code: 'EIO' });
+				return realRename(from, to);
+			};
+			syncBuiltinESMExports();
+			try {
+				await assert.rejects(restoreBackupOffline(STAGED, backupId), /injected EIO/);
+			} finally {
+				fs.renameSync = realRename;
+				syncBuiltinESMExports();
+			}
+			assert.strictEqual(checkRestoreState(stagedDir()), 'incomplete');
+			await restoreBackupOffline(STAGED, backupId);
+			assert.strictEqual(checkRestoreState(stagedDir()), 'clear');
+			assertRestoredFromBackup();
+			assertNoDebris();
+		});
+
 		it('refuses a database directory that is a mount point before staging anything', async function () {
 			this.timeout(30000);
 			const backupId = await seed();
@@ -676,7 +705,7 @@ describe('rocksdbBackup', function () {
 			const good = await seed();
 			await killBetweenRenames(good);
 			corruptBackupFile(good);
-			await assert.rejects(restoreBackupOffline(STAGED, good), /was not modified/);
+			await assert.rejects(restoreBackupOffline(STAGED, good), /rerun restore_backup to recover/);
 			assert.strictEqual(checkRestoreState(stagedDir()), 'incomplete', 'a failed recovery keeps the marker');
 			assert.ok(existsSync(restoreReplacedPath(stagedDir())), 'and the only copy of the database');
 		});

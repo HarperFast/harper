@@ -49,8 +49,8 @@ import logger from '../utility/logging/harper_logger.ts';
  *   roots, and retrying the same drop removes remaining roots and the blob directories recorded for
  *   their physical store identities before clearing the markers. The recorded identity is covered by
  *   a digest, so damaged marker content fails closed instead of redirecting blob deletion.
- * - `<meta-dir>/<key>.staging/` and `<key>.replaced/` — a restore's proven replacement and the
- *   database it displaces, both directories; see `restoreStaging.ts` for when each may be removed.
+ * - `<meta-dir>/<key>.staging/`, `<key>.replaced/` and `<key>.discarded/` — a restore's proven
+ *   replacement, the database it displaces, and that database once the restore no longer needs it; see `restoreStaging.ts` for when each may be removed.
  */
 
 // The backtick makes this an illegal database name (schemaRegex rejects `/` and backtick only), so
@@ -61,6 +61,7 @@ export const RESTORING_MARKER_SUFFIX = '.restoring';
 export const DROPPING_MARKER_SUFFIX = '.dropping';
 const RESTORE_STAGING_SUFFIX = '.staging';
 const RESTORE_REPLACED_SUFFIX = '.replaced';
+const RESTORE_DISCARDED_SUFFIX = '.discarded';
 // Deliberately not a `.restoring` suffix: `scanBlockedRestores` selects markers by that suffix, and
 // a half-written temp must never be mistaken for one.
 const MARKER_TEMP_SUFFIX = '.tmp';
@@ -100,6 +101,10 @@ export function restoreStagingPath(dbPath: string): string {
 
 export function restoreReplacedPath(dbPath: string): string {
 	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + RESTORE_REPLACED_SUFFIX);
+}
+
+export function restoreDiscardedPath(dbPath: string): string {
+	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + RESTORE_DISCARDED_SUFFIX);
 }
 
 export function droppingMarkerPath(dbPath: string): string {

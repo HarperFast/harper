@@ -677,7 +677,7 @@ export async function restoreBackup(request: any) {
 	});
 	try {
 		// Staged while the database is still open and serving, so the copy is not downtime.
-		prepareRestoreStaging(lock);
+		prepareRestoreStaging(lock, publication);
 		await stageRestore(backupDir, backupId, lock);
 		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
 		// Each thread also rescans, and the restoring marker keeps it from reloading mid-restore.
@@ -700,6 +700,7 @@ export async function restoreBackup(request: any) {
 		if (manifest.blobs) {
 			await restoreBlobSnapshot(backupDir, backupId, databaseName, getBlobPathsForDatabaseName(databaseName));
 		}
+		discardReplaced(lock);
 	} catch (error: any) {
 		discardRestoreStaging(lock);
 		// Leave the marker (so startup/rescan detection reports an incomplete restore until a rerun
@@ -738,7 +739,6 @@ export async function restoreBackup(request: any) {
 		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken, false));
 		throw error;
 	}
-	discardReplaced(lock);
 	releaseRestoreClaim(backupDir, pinId, lock, databaseName);
 	// signal again: with the marker gone, every thread's rescan reloads the restored database
 	await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken));
@@ -1316,7 +1316,7 @@ export async function restoreBackupOffline(
 	try {
 		// Once before the copy so a live holder fails fast, and again just before publication.
 		assertNotOpenElsewhere(databaseDir, databaseName);
-		prepareRestoreStaging(lock);
+		prepareRestoreStaging(lock, publication);
 		await stageRestore(backupDir, backupId, lock);
 		assertNotOpenElsewhere(databaseDir, databaseName);
 		publishStagedRestore(lock, publication);
@@ -1329,6 +1329,7 @@ export async function restoreBackupOffline(
 				getBlobPathsForDatabaseName(targetDatabase ?? databaseName)
 			);
 		}
+		discardReplaced(lock);
 	} catch (error: any) {
 		discardRestoreStaging(lock);
 		// Preserve the marker on a destructive failure or a recovery over a pre-existing marker (see
@@ -1350,7 +1351,6 @@ export async function restoreBackupOffline(
 		}
 		throw error;
 	}
-	discardReplaced(lock);
 	releaseRestoreClaim(backupDir, pinId, lock, databaseName);
 	return {
 		database: databaseName,

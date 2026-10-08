@@ -5,7 +5,13 @@ import { stampDatabaseDirectory } from '../resources/auditStore.ts';
 import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import { fsyncDirectory, pathPresent } from '../utility/durableFile.ts';
 import logger from '../utility/logging/harper_logger.ts';
-import { restoreMetaDir, restoreReplacedPath, restoreStagingPath, type RestoreLock } from './restoreMarker.ts';
+import {
+	restoreDiscardedPath,
+	restoreMetaDir,
+	restoreReplacedPath,
+	restoreStagingPath,
+	type RestoreLock,
+} from './restoreMarker.ts';
 
 /**
  * Stage → prove → publish for `restore_backup` (harper#2965). The database directory is not touched
@@ -18,9 +24,10 @@ import { restoreMetaDir, restoreReplacedPath, restoreStagingPath, type RestoreLo
  * Clear what an earlier attempt left behind. Staging was never published, so it is always disposable.
  * `.replaced` is the database as it was before an interrupted publication — the only copy of it if
  * that publication died between its renames — so it survives every attempt that runs under a
- * preexisting marker; under a fresh marker it is debris of a restore that completed.
+ * preexisting marker. It exists only while a publication is unfinished: a finished restore moves it to
+ * `.discarded` while it still holds its marker (`discardReplaced`).
  */
-export function prepareRestoreStaging(lock: RestoreLock): void {
+export function prepareRestoreStaging(lock: RestoreLock, state: PublishResult): void {
 	const databaseDir = lock.dbPath;
 	if (isSymbolicLink(databaseDir)) {
 		// Repointing moves the restore metadata with the path, so an earlier restore's marker stops
@@ -39,10 +46,13 @@ export function prepareRestoreStaging(lock: RestoreLock): void {
 		);
 	}
 	rmSync(restoreStagingPath(databaseDir), { recursive: true, force: true });
-	if (!lock.preexisting) rmSync(restoreReplacedPath(databaseDir), { recursive: true, force: true });
-	// A publication already began, so the database path holds a candidate, never the database; dropped
-	// now rather than at publish so the space check does not count a third copy.
-	else if (pathPresent(restoreReplacedPath(databaseDir))) rmSync(databaseDir, { recursive: true, force: true });
+	rmSync(restoreDiscardedPath(databaseDir), { recursive: true, force: true });
+	if (pathPresent(restoreReplacedPath(databaseDir))) {
+		// A publication began and never finished, so the database path holds a candidate, never the
+		// database; dropped now rather than at publish so the space check does not count a third copy.
+		state.destroyed = true;
+		rmSync(databaseDir, { recursive: true, force: true });
+	}
 }
 
 /**
@@ -54,7 +64,7 @@ export function prepareRestoreStaging(lock: RestoreLock): void {
 export async function stageRestore(backupDir: string, backupId: number, lock: RestoreLock): Promise<void> {
 	const databaseDir = lock.dbPath;
 	const stagingDir = restoreStagingPath(databaseDir);
-	await assertRoomToStage(backupDir, backupId, databaseDir);
+	await assertRoomToStage(backupDir, backupId, lock);
 	try {
 		mkdirSync(stagingDir);
 		// After a crash between the publication renames, `.replaced` is the only record of that access.
@@ -77,10 +87,9 @@ export async function stageRestore(backupDir: string, backupId: number, lock: Re
 		}
 		await stampDatabaseDirectory(stagingDir, { carriesLog: true });
 	} catch (error) {
-		throw new Error(
-			`Backup ${backupId} could not be staged and verified, so ${databaseDir} was not modified: ${error.message}`,
-			{ cause: error }
-		);
+		throw new Error(`Backup ${backupId} could not be staged and verified, so ${untouched(lock)}: ${error.message}`, {
+			cause: error,
+		});
 	}
 }
 
@@ -92,7 +101,8 @@ const STAGING_HEADROOM_BYTES = 256 * 1024 ** 2;
  * is written while every database on that filesystem keeps serving. Running out partway would fail
  * their writes too, so a copy that will not fit is refused before it starts.
  */
-async function assertRoomToStage(backupDir: string, backupId: number, databaseDir: string): Promise<void> {
+async function assertRoomToStage(backupDir: string, backupId: number, lock: RestoreLock): Promise<void> {
+	const databaseDir = lock.dbPath;
 	const engineBytes = (await backups.list(backupDir)).find((backup) => backup.backupId === backupId)?.size ?? 0;
 	const needed = engineBytes + directoryBytes(join(backupDir, 'transaction_logs', String(backupId)));
 	const headroom = Math.max(STAGING_HEADROOM_BYTES, needed / 10);
@@ -100,10 +110,17 @@ async function assertRoomToStage(backupDir: string, backupId: number, databaseDi
 	const available = Number(bavail) * Number(bsize);
 	if (available < needed + headroom) {
 		throw new ServerError(
-			`Cannot restore backup ${backupId}: staging it needs about ${formatBytes(needed)} beside ${databaseDir}, plus ${formatBytes(headroom)} left free for the databases still serving on that filesystem, but only ${formatBytes(available)} is available. Free space there and rerun the restore; the database was not modified`,
+			`Cannot restore backup ${backupId}: staging it needs about ${formatBytes(needed)} beside ${databaseDir}, plus ${formatBytes(headroom)} left free for the databases still serving on that filesystem, but only ${formatBytes(available)} is available. Free space there and rerun the restore; ${untouched(lock)}`,
 			507
 		);
 	}
+}
+
+/** What a refusal before publication can truthfully say about the destination. */
+function untouched(lock: RestoreLock): string {
+	return lock.preexisting
+		? `${lock.dbPath} is still incomplete from an earlier restore; rerun restore_backup to recover`
+		: `${lock.dbPath} was not modified`;
 }
 
 function directoryBytes(path: string): number {
@@ -170,12 +187,19 @@ function rollBackPublication(replacedDir: string, databaseDir: string, state: Pu
 }
 
 /**
- * Drop the pre-restore copy once the restore has finished. Not fatal: with the marker gone it is
- * debris that the next restore of this database removes.
+ * Retire the pre-restore copy before the marker clears. The rename is atomic, so `.replaced` can never
+ * outlive its restore and later pass for an unfinished publication; it throws while the marker still
+ * stands. Only removing the renamed copy may fail quietly, since the next restore removes it.
  */
 export function discardReplaced(lock: RestoreLock): void {
+	const replacedDir = restoreReplacedPath(lock.dbPath);
+	if (!pathPresent(replacedDir)) return;
+	const discardedDir = restoreDiscardedPath(lock.dbPath);
+	rmSync(discardedDir, { recursive: true, force: true });
+	renameSync(replacedDir, discardedDir);
+	fsyncDirectory(restoreMetaDir(lock.dbPath));
 	try {
-		rmSync(restoreReplacedPath(lock.dbPath), { recursive: true, force: true });
+		rmSync(discardedDir, { recursive: true, force: true });
 	} catch (error) {
 		logger.warn(`Could not remove the pre-restore copy of ${lock.dbPath}; the next restore removes it`, error);
 	}
