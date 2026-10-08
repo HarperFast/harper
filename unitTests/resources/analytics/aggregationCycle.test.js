@@ -119,6 +119,7 @@ function durationReport(id, threadId, path, count, mean) {
 				mean,
 				distribution: [{ value: mean, count }],
 			},
+			{ metric: 'db-write', path, count, mean: 10 },
 		],
 	};
 }
@@ -341,10 +342,11 @@ describe('analytics aggregation cycle', () => {
 			period: PERIOD,
 		});
 		assert.strictEqual(byThread[0].p95, undefined);
-		assert.strictEqual(
-			aggregatedMetrics('db-write', first + 2).some((row) => row.thread !== undefined),
-			false
-		);
+		const writes = aggregatedMetrics('db-write', first + 2).filter((row) => row.path === 'ThreadPath');
+		assert.strictEqual(writes.length, 1, 'a metric outside the per-thread set keeps its single aggregate row');
+		assert.strictEqual(writes[0].count, 50);
+		assert.strictEqual(writes[0].thread, undefined);
+		assert.strictEqual(aggregatedMetrics('db-write-by-thread', first + 2).length, 0);
 	});
 
 	it('reports the event loop delay of the reporting thread with every flush', async function () {

@@ -1,43 +1,45 @@
-import type { IncomingMessage } from 'node:http';
-
-export interface TimedRequest extends Partial<Pick<IncomingMessage, 'httpVersionMajor' | 'complete'>> {
+export interface TimedRequest {
+	httpVersionMajor?: number;
 	socket?: TimedSocket | null;
 	receivedAt?: number;
 }
 
 export interface TimedSocket {
 	requestSeenAt?: number;
-	currentRequest?: TimedRequest;
-	prependListener?: (event: string, listener: (chunk: unknown) => void) => unknown;
+	parser?: HttpParserLike | null;
+}
+
+interface HttpParserLike {
+	socket?: TimedSocket | null;
+	constructor: { kOnMessageBegin?: number };
+	[slot: number]: unknown;
+}
+
+function onMessageBegin(this: HttpParserLike) {
+	const socket = this.socket;
+	if (socket) socket.requestSeenAt = performance.now();
 }
 
 /**
- * Body chunks of the request in flight must not restamp: a stamp is taken only while the socket
- * is between requests, which is before any request or once the parser has completed the last one.
+ * Hooks the parser's message-begin callback, which Node's own listener leaves empty: it fires at
+ * the first bytes of every message, before the headers are complete and without adding a socket
+ * `data` listener, which would move the parser off its consumed native stream.
  */
-function markRequestSeen(this: TimedSocket) {
-	if (this.requestSeenAt === undefined && this.currentRequest?.complete !== false) {
-		this.requestSeenAt = performance.now();
-	}
-}
-
-/** Stamps the socket with the arrival of each request's first bytes; runs ahead of the HTTP parser. */
 export function watchRequestArrival(socket: TimedSocket | undefined | null): void {
-	if (typeof socket?.prependListener !== 'function') return;
-	socket.prependListener('data', markRequestSeen);
+	const parser = socket?.parser;
+	const slot = parser?.constructor?.kOnMessageBegin;
+	if (typeof slot !== 'number') return;
+	parser[slot] = onMessageBegin;
 }
 
 /**
  * Moves the socket's arrival stamp onto the request as `receivedAt`, falling back to now where
- * there is none: HTTP/2 sessions and other transports that surface no socket data events.
+ * there is none: HTTP/2 sessions and other transports without a Node HTTP parser.
  */
 export function startRequestTimer(request: TimedRequest): number {
 	const socket = request.httpVersionMajor === 2 ? undefined : request.socket;
 	let receivedAt = socket?.requestSeenAt;
-	if (socket) {
-		socket.requestSeenAt = undefined;
-		socket.currentRequest = request;
-	}
+	if (socket) socket.requestSeenAt = undefined;
 	if (receivedAt === undefined) receivedAt = performance.now();
 	request.receivedAt = receivedAt;
 	return receivedAt;

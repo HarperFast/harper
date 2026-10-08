@@ -915,8 +915,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			server.on('secureConnection', (socket) => {
 				if (socket._parent.startTime) recordAction(performance.now() - socket._parent.startTime, 'tls-handshake', port);
 				recordAction(socket.isSessionReused(), 'tls-reused', port);
-				// an h2 session reads the socket natively, so only HTTP/1 sockets surface request bytes
-				if (socket.alpnProtocol !== 'h2') watchRequestArrival(socket);
+				watchRequestArrival(socket);
 			});
 			server.isSecure = true;
 		} else server.on('connection', watchRequestArrival);

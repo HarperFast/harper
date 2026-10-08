@@ -14,7 +14,11 @@ import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
 import { METRIC } from './metadata.ts';
-import { readEventLoopDelay, startEventLoopDelayMonitor } from '../../server/eventLoopDelay.ts';
+import {
+	readEventLoopDelay,
+	startEventLoopDelayMonitor,
+	stopEventLoopDelayMonitor,
+} from '../../server/eventLoopDelay.ts';
 import { getTransactionQueueDepths, setCommitLatencyRecorder } from '../DatabaseTransaction.ts';
 import { contextStorage } from '../transaction.ts';
 import { RocksDatabase, type TransactionLogStats } from '@harperfast/rocksdb-js';
@@ -59,6 +63,7 @@ function checkAnalyticsEnabled(): boolean {
 export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsEnabled = enabled;
 	if (enabled) startEventLoopDelayMonitor();
+	else stopEventLoopDelayMonitor();
 	clearTimeout(sendAnalyticsTimeout); // reset this
 	sendAnalyticsTimeout = null;
 }
@@ -940,7 +945,7 @@ export async function runAggregationCycle(fromPeriod, toPeriod = 60000) {
 // A mean of per-sample peaks is not a peak, so peak-named measures fold with max.
 const MAX_MEASURE_NAME = /^max[A-Z]/;
 // Sampled metrics that are also rolled up one row per thread, under the name those rows carry.
-const PER_THREAD_METRICS: Record<string, string> = { duration: METRIC.DURATION_BY_THREAD };
+const PER_THREAD_METRICS = new Map<string, string>([['duration', METRIC.DURATION_BY_THREAD]]);
 
 async function aggregation(fromPeriod, toPeriod = 60000) {
 	const rawAnalyticsTable = getRawAnalyticsTable();
@@ -1066,7 +1071,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		};
 		for (const entry of metrics || []) {
 			aggregateEntry(entry);
-			const perThreadMetric = PER_THREAD_METRICS[entry.metric];
+			const perThreadMetric = PER_THREAD_METRICS.get(entry.metric);
 			if (perThreadMetric)
 				aggregateEntry({ ...entry, metric: perThreadMetric, perThread: true, distribution: undefined });
 		}
