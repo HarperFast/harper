@@ -34,7 +34,6 @@
 		"index.*",
 		"json",
 		"launchServiceScripts",
-		"npm-shrinkwrap.json",
 		"README.md",
 		"resources",
 		"schema.graphql",
