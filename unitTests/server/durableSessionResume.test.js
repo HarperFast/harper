@@ -107,6 +107,22 @@ async function ackAll(session, received) {
 	for (const { messageId } of received) session.acknowledge(messageId);
 }
 
+/** Opens a transaction that takes its log key with its writes, and commits it when the returned function is called. */
+async function heldTransaction(T, ...ids) {
+	let commit;
+	const committed = transaction({}, async (context) => {
+		for (const id of ids) await T.put(id, { value: id }, context);
+		await new Promise((resolve) => (commit = resolve));
+	});
+	await waitFor(() => commit);
+	return () => {
+		commit();
+		return committed;
+	};
+}
+
+const delivery = (received, value) => received.find(({ message }) => message?.value === value);
+
 async function storedEntry(clientId, condition) {
 	let entry;
 	await waitFor(async () => {
@@ -181,6 +197,92 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		session.acknowledge(received[2].messageId);
 		await storedEntry(clientId, (entry) => entry.startTime > settled.startTime);
 		session.disconnect(true);
+	});
+
+	it('keeps a delivered transaction that committed after a higher key until it is acknowledged', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const clientId = `late-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late');
+		await T.put('early', { value: 'early' });
+		await waitFor(() => values(first.received).includes('early'));
+		await commitLate();
+		await waitFor(() => values(first.received).includes('late'));
+		const state = first.session.topics.get(topic);
+		const key = (value) => state.unacked.get(delivery(first.received, value).messageId).key;
+		const lateKey = key('late');
+		assert.ok(lateKey < key('early'), 'the late transaction holds the lower key');
+		await waitFor(() => state.subscription.progress() > lateKey);
+		await first.session.acknowledge(delivery(first.received, 'early').messageId);
+		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'the unacknowledged delivery is kept');
+		first.session.disconnect(true);
+		await first.session.writes;
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => values(second.received).includes('late'));
+		second.session.disconnect(true);
+	});
+
+	it('keeps a delivery whose key is below the bound of an older unacknowledged one', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const clientId = `below-older-${name}`;
+		const { session, received } = await connect(clientId);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitA = await heldTransaction(T, 'a');
+		const commitC = await heldTransaction(T, 'c');
+		await T.put('b', { value: 'b' });
+		await T.put('e', { value: 'e' });
+		await waitFor(() => values(received).includes('e'));
+		await commitA();
+		await waitFor(() => values(received).includes('a'));
+		await commitC();
+		await waitFor(() => values(received).includes('c'));
+		assert.deepStrictEqual(values(received), ['b', 'e', 'a', 'c']);
+		const state = session.topics.get(topic);
+		const key = (value) => state.unacked.get(delivery(received, value).messageId).key;
+		const cKey = key('c');
+		assert.ok(key('a') < cKey && cKey < key('b'), 'c commits below b and e, after a');
+		await waitFor(() => state.subscription.progress() > cKey);
+		session.acknowledge(delivery(received, 'b').messageId);
+		await session.acknowledge(delivery(received, 'a').messageId);
+		assert.ok(
+			(await stored(clientId)).subscriptions[0].startTime < cKey,
+			'e, the oldest unacknowledged, does not bound c'
+		);
+		session.disconnect(true);
+	});
+
+	it('keeps the queued rest of a transaction that committed after a higher key, whatever else awaits an acknowledgement', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const clientId = `late-queued-${name}`;
+		const { session } = await connect(clientId);
+		const delivered = [];
+		// acknowledges all but one message as it is sent, and never finishes sending the late transaction's first
+		session.setListener((_topic, message, messageId) => {
+			delivered.push(message?.value);
+			if (message?.value !== 'unacked') session.acknowledge(messageId);
+			return message?.value === 'late' ? new Promise(() => {}) : true;
+		});
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const commitLate = await heldTransaction(T, 'late', 'late-rest');
+		await T.put('early', { value: 'early' });
+		await T.put('unacked', { value: 'unacked' });
+		await waitFor(() => delivered.includes('unacked'));
+		await commitLate();
+		const state = session.topics.get(topic);
+		await waitFor(() => state.subscription.sentCount >= 4);
+		assert.deepStrictEqual(delivered, ['early', 'unacked', 'late']);
+		const lateKey = state.deliveredKey;
+		session.disconnect(true);
+		await session.writes;
+		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'the queued rest shares the late key');
 	});
 
 	it('resumes a session after a reconnect, and delivers what it missed', async () => {
