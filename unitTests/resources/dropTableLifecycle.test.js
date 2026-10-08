@@ -28,6 +28,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
 
 const TEST_DB = 'test';
+const IS_LMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 function defineTable(name, createdTime) {
 	return table({
@@ -468,7 +469,17 @@ describe('table lifecycle stamps (harper#1212)', () => {
 		);
 		await Live.put({ id: 2, str: 'still writable' });
 		assert.equal((await Live.get(2)).str, 'still writable');
-		assert.equal(await Live.dropTable(), true);
+		assert.ok(
+			![...dbisDb().getRange({ start: '/generation/', end: '/generation0' })].some(
+				({ value }) => value?.table === 'LifecyclePeerDropNewer'
+			),
+			'a kept generation journals nothing to reclaim'
+		);
+		// the load reclaims retired generations
+		resetDatabases();
+		const Reloaded = databases[TEST_DB].LifecyclePeerDropNewer;
+		assert.equal((await Reloaded.get(1)).str, 'kept');
+		assert.equal(await Reloaded.dropTable(), true);
 	});
 
 	it('re-checks a peer drop under the catalog lock: a stamp written meanwhile keeps the table', async () => {
@@ -534,6 +545,48 @@ describe('table lifecycle stamps (harper#1212)', () => {
 		}
 		assert.equal(replicated.length, 1);
 		assert.equal(replicated[0].replicated, false, "a node-local table's drop is not forwarded to peers");
+	});
+
+	it("reads a node-local drop's untimed name history as no drop, and refuses a stale create before journaling it", async () => {
+		const name = 'LifecycleLocalHistory';
+		const Local = table({
+			table: name,
+			database: TEST_DB,
+			replicate: false,
+			attributes: [{ name: 'id', type: 'Int', isPrimaryKey: true }],
+		});
+		assert.equal(await Local.dropTable(), true);
+		const history = dbisDb().getSync('/dropped/' + name);
+		if (IS_LMDB) assert.equal(history, undefined);
+		else {
+			assert.ok(history, 'RocksDB keeps name history for its store names');
+			assert.equal(history.droppedTime, undefined);
+		}
+		assert.equal(markerFor(name), undefined);
+		assert.equal(pendingOrRecordedDropTime(TEST_DB, name), undefined);
+		assert.equal(isDroppedPeerGeneration(TEST_DB, name, 0), false);
+
+		const Peer = definePeerTable(name);
+		assert.equal(Peer.createdTime, 0, 'name history refuses no create and stamps none');
+		if (!IS_LMDB) assert.match(Peer.storageGeneration, /^[0-9a-f-]{36}$/, 'the recreate gets distinct store names');
+		const peerTime = Date.now();
+		assert.equal(await Peer.dropTable({ peer: true, droppedTime: peerTime }), true);
+		assert.equal(markerFor(name).droppedTime, peerTime, 'a timed drop overwrites the history');
+
+		const creating = () =>
+			[...dbisDb().getRange({ start: '/generation/', end: '/generation0' })].filter(
+				({ value }) => value?.table === name && value.phase === 'creating'
+			);
+		const columns = () =>
+			(database({ database: TEST_DB, table: null }).columns ?? []).filter((c) => c.startsWith(name));
+		const columnsBefore = columns();
+		assert.throws(() => defineTable(name, peerTime - 1), droppedGeneration);
+		assert.deepEqual(creating(), [], 'a refused create leaves no create journal');
+		assert.deepEqual(
+			columns().filter((column) => !columnsBefore.includes(column)),
+			[],
+			'a refused create opens no store'
+		);
 	});
 
 	it("answers a peer's forwarded drop that keeps a newer generation without touching its catalog", async () => {

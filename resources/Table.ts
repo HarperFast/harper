@@ -3129,14 +3129,9 @@ export function makeTable(options): TableResourceClass {
 				try {
 					if (!dropGeneration)
 						throw new Error(`Cannot drop ${databaseName}.${tableName}: its catalog tombstone has no drop generation`);
-					const retired = await retireRocksStores(storeGeneration, dropGeneration);
-					if (!retired) {
-						// the tombstone stays to finish the drop once its full-text storage is retired
-						derivedIndexRuntime?.completeDrop?.();
-						releaseFullTextRetirement();
-						recordPeerDrop();
-						return true;
-					}
+					// False when the tombstone stays for a pending full-text retirement, or another thread completed it
+					// first; this drop retired its generation either way.
+					await retireRocksStores(storeGeneration, dropGeneration);
 				} catch (error) {
 					releaseFullTextRetirement();
 					derivedIndexRuntime?.completeDrop?.();
