@@ -209,8 +209,11 @@ describe('Write txn timeout', () => {
 			await assert.rejects(
 				transaction(context, async () => {
 					await IndexedResource.put(101, { t: 9999 }, context);
-					// hold the transaction open (with a pending write) long enough for the monitor to fire
-					await delay(150);
+					// hold the transaction open (with a pending write) until the monitor fires
+					const databaseTxn = databaseTxns(context)[0];
+					await waitFor(() => databaseTxn.timedOut, {
+						message: 'the monitor never aborted the idle write-bearing transaction',
+					});
 				}),
 				/open-transaction time/
 			);
@@ -364,11 +367,10 @@ describe('Write txn timeout', () => {
 			assert.ok(!trackedTxns.has(next), 'test setup: next must not be tracked — it is never itself read');
 			assert.ok(head.hasPendingWrites(), "test setup: head must see the next chain's write");
 
-			await delay(150); // several monitor cycles with nothing touching either link
-			assert.ok(
-				!trackedTxns.has(head),
-				'an idle chain whose only write lives on an untracked next link must eventually be reaped'
-			);
+			// nothing touches either link while the monitor cycles
+			await waitFor(() => !trackedTxns.has(head), {
+				message: 'an idle chain whose only write lives on an untracked next link must eventually be reaped',
+			});
 		} finally {
 			setExpiration(30000);
 		}
@@ -405,7 +407,10 @@ describe('Write txn timeout', () => {
 				transaction(context, async () => {
 					await IndexedResource.get(301, context); // read database A -> head, no writes of its own
 					await OtherResource.put(302, { name: 'should not persist' }, context); // write database B -> next
-					await delay(150);
+					const databaseTxn = databaseTxns(context)[0];
+					await waitFor(() => databaseTxn.timedOut, {
+						message: 'the monitor never aborted the idle multi-store transaction',
+					});
 				}),
 				/open-transaction time/
 			);
