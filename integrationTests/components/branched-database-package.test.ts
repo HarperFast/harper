@@ -147,9 +147,23 @@ for (const isolated of [false, true]) {
 
 			// v5.3 deploys from the operations API without a load check, so a refused load answers 200 and
 			// surfaces only once the restarted worker loads the package.
-			async function deployRefusedAfterRestart(deployment: Record<string, unknown>) {
+			async function deployRefusedAfterRestart(
+				deployment: Record<string, unknown>,
+				refused: () => Promise<boolean>,
+				message: string
+			) {
 				const deployed = await operation(deployment);
 				assert.strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
+				await waitFor(
+					async () => {
+						try {
+							return await refused();
+						} catch {
+							return false;
+						}
+					},
+					{ timeout: 30000, interval: 250, message }
+				);
 			}
 
 			before(async () => {
@@ -235,25 +249,19 @@ for (const isolated of [false, true]) {
 				'a missing database fails the package load before any application module runs',
 				{ timeout: 180000 },
 				async () => {
-					await deployRefusedAfterRestart({
-						operation: 'deploy_component',
-						project,
-						package: pkg,
-						isolated,
-						host,
-						branchedDatabases: ['missingbranchdatabase'],
-						restart: true,
-					});
-					// The previous release served this route; the refused load registers none of it.
-					await waitFor(
-						async () => {
-							try {
-								return (await appRequest('/PackageProbe/seed')).status === 404;
-							} catch {
-								return false;
-							}
+					await deployRefusedAfterRestart(
+						{
+							operation: 'deploy_component',
+							project,
+							package: pkg,
+							isolated,
+							host,
+							branchedDatabases: ['missingbranchdatabase'],
+							restart: true,
 						},
-						{ timeout: 30000, interval: 250, message: 'the package still served after its branch was refused' }
+						// The previous release served this route.
+						async () => (await appRequest('/PackageProbe/seed')).status === 404,
+						'the package still served after its branch was refused'
 					);
 					assert.ok(!existsSync(join(branchRoot(), 'missingbranchdatabase')));
 					assert.deepStrictEqual(await baseRows(['PackageProbe-init', 'ChildProbe-init']), []);
@@ -264,21 +272,21 @@ for (const isolated of [false, true]) {
 				'a root plugin package cannot invoke its callbacks on the shared root scope',
 				{ timeout: 180000 },
 				async () => {
-					await deployRefusedAfterRestart({
-						operation: 'deploy_component',
-						project,
-						package: await packageFixture(directory, true),
-						isolated,
-						host,
-						branchedDatabases: ['data'],
-						restart: true,
-					});
-					await waitFor(
+					await deployRefusedAfterRestart(
+						{
+							operation: 'deploy_component',
+							project,
+							package: await packageFixture(directory, true),
+							isolated,
+							host,
+							branchedDatabases: ['data'],
+							restart: true,
+						},
 						async () => {
 							const { componentStatus = [] } = (await operation({ operation: 'get_status' })).body;
 							return componentStatus.find((entry: { name: string }) => entry.name === project)?.status === 'error';
 						},
-						{ timeout: 30000, interval: 250, message: 'the root plugin package did not report its refused load' }
+						'the root plugin package did not report its refused load'
 					);
 					assert.deepStrictEqual(await baseRows(['root-callback']), []);
 				}
