@@ -92,6 +92,7 @@ import {
 	sweepDroppedTableBlobs,
 	storeNameFor,
 	storeNamesFor,
+	liveStoreNamesFor,
 	isReadOnlyMode,
 } from './databases.ts';
 import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
@@ -3261,15 +3262,20 @@ export function makeTable(options): TableResourceClass {
 						return true;
 					});
 					if (!removed) {
-						await sweepDroppedTableBlobs(primaryStore, `${databaseName}.${tableName}`);
-						return false;
-					}
-					await dbisDb.committed;
+						withUpdateAttributesLock(rootStore, `retire stale stores of '${databaseName}.${tableName}'`, () => {
+							const owned = liveStoreNamesFor(dbisDb, tableName);
+							const columns = new Set<string>((rootStore as any).columns);
+							for (const store of [primaryStore, ...Object.values(indices)]) {
+								if (store.name && columns.has(store.name) && !owned.has(store.name))
+									dropColumnFamily(rootStore, store.name);
+							}
+						});
+					} else await dbisDb.committed;
 					const label = `${databaseName}.${tableName}`;
 					const settled = await settlePhysicalDrops(rootStore, label);
 					await sweepDroppedTableBlobs(primaryStore, label);
 					if (!settled) finishDroppedTableBlobSweep(rootStore, primaryStore, label);
-					return true;
+					return removed;
 				} finally {
 					releaseDropMark();
 				}

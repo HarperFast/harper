@@ -152,7 +152,10 @@ describe('dropTable generation-distinct stores', function () {
 
 	it('does not retire catalog stores after a schema listener completes the drop and recreates the table', async function () {
 		if (IS_LMDB) return this.skip();
-		const First = defineTable('GenListenerRecreate');
+		const First = defineTable('GenListenerRecreate', [{ name: 'blob', type: 'Blob' }]);
+		const blob = await createBlob(Buffer.alloc(50_000, 4));
+		await First.put({ id: 1, str: 'retired', blob });
+		const blobPath = getFilePathForBlob((await First.get(1)).blob);
 		let Fresh;
 		const removeListener = schemaHandler.addListener((message) => {
 			if (message.operation === 'drop_table' && message.table === First.tableName && !Fresh)
@@ -164,6 +167,9 @@ describe('dropTable generation-distinct stores', function () {
 			removeListener();
 		}
 		assert.ok(Fresh, 'the recreate runs before the old drop resumes from its broadcast');
+		assert.ok(!rootStore().columns.includes(First.primaryStore.name), 'the stale drop retires its bare primary');
+		assert.ok(!rootStore().columns.includes(First.indices.str.name), 'the stale drop retires its bare index');
+		await waitFor(() => !fs.existsSync(blobPath), { timeout: 15_000 });
 		await Fresh.put({ id: 1, str: 'replacement' });
 		assert.equal((await Fresh.get(1)).str, 'replacement');
 		assert.ok(!generationRows().some(({ value }) => value.stores?.includes(Fresh.primaryStore.name)));
