@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791451437722,
+  "lastUpdate": 1791451442058,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -26608,6 +26608,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 1377.9,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f038807dfa38c384cf20dd8f131da51dd40f964b",
+          "message": "Merge pull request #2649 from HarperFast/fix/restore-lock-exclusion\n\nMake the restoring marker an exclusion around database opens, not a check before one",
+          "timestamp": "2026-10-08T06:50:04Z",
+          "url": "https://github.com/HarperFast/harper/commit/f038807dfa38c384cf20dd8f131da51dd40f964b"
+        },
+        "date": 1791451440940,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 3634.87,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 3634.87,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 253.3,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 645.6,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 850.6,
             "unit": "ms"
           }
         ]
