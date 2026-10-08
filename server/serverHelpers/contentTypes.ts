@@ -679,7 +679,7 @@ export function getDeserializer(
 ): (stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>;
 export function getDeserializer(
 	contentTypeString: string | undefined,
-	streaming: boolean,
+	streaming?: boolean,
 	streamValues?: boolean
 ): Deserialize | ((stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>);
 export function getDeserializer(
