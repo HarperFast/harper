@@ -834,7 +834,7 @@ function emitTableDropRecorded(databaseName: string, tableName: string) {
 		logger.warn(`A tableDropRecorded listener failed for ${databaseName}.${tableName}`, error);
 	}
 }
-// a message queued before this registration is replayed outside manageThreads' own catch, hence the one above
+// a message queued before this registration is replayed outside manageThreads' own catch, so the emit catches
 manageThreads.onMessageByType(TABLE_DROP_RECORDED, ({ databaseName, tableName }) => {
 	dropEpoch++;
 	emitTableDropRecorded(databaseName, tableName);
@@ -6160,16 +6160,21 @@ function completeInterruptedDrop(
 export function dropTableMeta({ table: tableName, database: databaseName }) {
 	const rootStore = database({ database: databaseName, table: tableName });
 	const dbisDb = rootStore.dbisDb;
-	const outcome = withCatalogWrite(rootStore, `drop metadata of '${databaseName}.${tableName}'`, () => {
-		const orphans = [];
-		for (const { key, value } of dbisDb.getRange({ start: tableName + '/', end: tableName + '0' })) {
-			if (key === tableName + '/' || value?.isPrimaryKey) return value?.dropping ? 'dropping' : 'live';
-			orphans.push(key);
-		}
-		for (const key of orphans) dbisDb.removeSync(key);
-		return 'removed';
-	});
-	if (outcome !== 'live') databaseEventsEmitter.emit('dropTable', tableName, databaseName);
+	let outcome: string | undefined;
+	try {
+		outcome = withCatalogWrite(rootStore, `drop metadata of '${databaseName}.${tableName}'`, () => {
+			const orphans = [];
+			for (const { key, value } of dbisDb.getRange({ start: tableName + '/', end: tableName + '0' })) {
+				if (key === tableName + '/' || value?.isPrimaryKey) return value?.dropping ? 'dropping' : 'live';
+				orphans.push(key);
+			}
+			for (const key of orphans) dbisDb.removeSync(key);
+			return 'removed';
+		});
+	} finally {
+		// the table is gone even when the cleanup could not take the lock
+		if (outcome !== 'live') databaseEventsEmitter.emit('dropTable', tableName, databaseName);
+	}
 }
 
 export function onUpdatedTable(listener: (table: Table) => void) {
