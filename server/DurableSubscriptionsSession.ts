@@ -558,10 +558,13 @@ type TopicState = {
 	deliveredKey?: number;
 	/** Below every key of the last delivered transaction. */
 	keyBefore?: number;
+	highestKey?: number;
 	/** Each event has its own log key, as on LMDB; a RocksDB transaction's events share one. */
 	keysPerEntry?: boolean;
 	/** In delivery order: `needsAcknowledge` is its only writer and runs as each message is sent. */
-	unacked: Map<number, { key: number; previousKey?: number }>;
+	unacked: Map<number, { key: number; previousKey?: number; late?: boolean }>;
+	/** Unacked deliveries that arrived below a key delivered before them: their transactions committed after a higher one. */
+	lateUnacked: number;
 	consumed: number;
 };
 
@@ -735,7 +738,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				state.keyBefore = key < state.deliveredKey ? positionBefore(key) : state.deliveredKey;
 				state.deliveredKey = key;
 			}
-			state.unacked.set(messageId, { key, previousKey: state.keyBefore });
+			if (key < state.highestKey) {
+				state.lateUnacked++;
+				state.unacked.set(messageId, { key, previousKey: state.keyBefore, late: true });
+			} else {
+				state.highestKey = key;
+				state.unacked.set(messageId, { key, previousKey: state.keyBefore });
+			}
 		}
 		return messageId;
 	}
@@ -744,7 +753,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (!update) return;
 		this.awaitingAcks.delete(messageId);
 		update.acknowledge?.();
-		this.topics.get(update.topic)?.unacked.delete(messageId);
+		const state = this.topics.get(update.topic);
+		if (state?.unacked.get(messageId)?.late) state.lateUnacked--;
+		state?.unacked.delete(messageId);
 		// mqtt.ts reports the acknowledgement once this settles, so what it allows is saved by then
 		return this.scheduleCheckpoint();
 	}
@@ -828,10 +839,11 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			: state.keysPerEntry
 				? state.deliveredKey
 				: state.keyBefore;
-		// deliveries arrive in commit order, not key order, so the oldest unacked one need not hold the lowest bound
 		for (const { previousKey } of state.unacked.values()) {
 			if (previousKey === undefined) return;
 			if (previousKey < boundary) boundary = previousKey;
+			// with none late, every unacked key is at or above the oldest's, so the oldest's bound holds for all
+			if (state.lateUnacked === 0) break;
 		}
 		if (boundary === undefined || !certified) return boundary;
 		const progress = subscription.progress();
@@ -991,5 +1003,5 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 }
 
 function newTopicState(entry: DurableEntry): TopicState {
-	return { entry, verified: true, unacked: new Map(), consumed: 0 };
+	return { entry, verified: true, unacked: new Map(), lateUnacked: 0, consumed: 0 };
 }
