@@ -574,6 +574,7 @@ const RESETTING_REFUSALS = new Set(['RESUME_HISTORY_UNAVAILABLE']);
 const KEY_SCRATCH = new Float64Array(1);
 const KEY_BITS = new BigInt64Array(KEY_SCRATCH.buffer);
 <<<<<<< HEAD
+<<<<<<< HEAD
 /** The greatest double below a log key, so a replay after it starts at the key. */
 function positionBefore(key: number): number {
 	if (key === 0) return -Number.MIN_VALUE;
@@ -582,7 +583,11 @@ function positionBefore(key: number): number {
 	KEY_BITS[0] += key > 0 ? -1n : 1n;
 =======
 /** The greatest position below a log key, a positive double whose bits order as its value: a replay after it starts at the key. */
+=======
+/** The greatest position below a log key, so a replay after it starts at the key. A positive double's bits order as its value. */
+>>>>>>> 3ce0e0247 (Fail closed on a non-positive key, and state the new position rule in every design summary)
 function positionBefore(key: number): number {
+	if (!(key > 0)) return key - 1;
 	KEY_SCRATCH[0] = key;
 	KEY_BITS[0] -= 1n;
 >>>>>>> 176dbfc3f (Keep a durable MQTT session's position below a delivered transaction that committed after a higher key)

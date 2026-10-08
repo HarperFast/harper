@@ -108,10 +108,14 @@ async function ackAll(session, received) {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 // its writes take its log key now, so it commits below whatever commits before the returned function is called
 =======
 /** Opens a transaction that takes its log key with its writes, and commits it when the returned function is called. */
 >>>>>>> 176dbfc3f (Keep a durable MQTT session's position below a delivered transaction that committed after a higher key)
+=======
+// its writes take its log key now, so it commits below whatever commits before the returned function is called
+>>>>>>> 3ce0e0247 (Fail closed on a non-positive key, and state the new position rule in every design summary)
 async function heldTransaction(T, ...ids) {
 	let commit;
 	const committed = transaction({}, async (context) => {
