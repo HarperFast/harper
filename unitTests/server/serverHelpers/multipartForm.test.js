@@ -13,6 +13,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../../waitFor.js');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+const { ServerError } = require('#src/utility/errors/hdbError');
 const { setupTestDBPath } = require('../../testUtils.js');
 
 const boundary = '----=_HarperForm';
@@ -141,9 +142,27 @@ describe('REST multipart form decoding', function () {
 			true
 		)(Readable.from([encodeForm([{ name: 'file', filename: 'unread.txt', value: 'important contents' }])]));
 		const first = await body.next();
-		await assert.rejects(body.next(), /Consume each multipart Blob/);
+		await assert.rejects(
+			body.next(),
+			(error) =>
+				error instanceof ServerError && error.statusCode === 500 && /Consume each multipart Blob/.test(error.message)
+		);
 		await assert.rejects(Uploads.put({ id: 'unread', file: first.value.file }), /Consume each multipart Blob/);
 		assert.equal(await Uploads.get('unread'), undefined);
+	});
+
+	it('reports an abandoned pending Blob save as a handler fault', async function () {
+		const input = new PassThrough();
+		const body = getDeserializer(contentType, true, true)(input);
+		input.write(encodeForm([{ name: 'file', filename: 'abandoned.txt', value: 'initial bytes' }], false));
+		const first = await body.next();
+		const saving = Uploads.put({ id: 'abandoned-save', file: first.value.file });
+		const failed = assert.rejects(saving, (error) => error instanceof ServerError && error.statusCode === 500);
+		await waitFor(() => !!isSaving(first.value.file));
+		assert.equal(await completeMultipartBody(body, 'handler returned'), 'handler returned');
+		input.end();
+		await failed;
+		assert.equal(await Uploads.get('abandoned-save'), undefined);
 	});
 
 	it('propagates source failures into both the iterator and a Blob save', async function () {
@@ -220,6 +239,46 @@ describe('REST multipart form decoding', function () {
 		assert.equal(await completeMultipartBody(body, 'early response'), 'early response');
 		input.end();
 		await rejected;
+	});
+
+	it('does not deliver a queued field after iterator return completes', async function () {
+		const body = getDeserializer(
+			contentType,
+			true,
+			true
+		)(
+			Readable.from([
+				encodeForm([
+					{ name: 'queued', value: 'value' },
+					{ name: 'next', value: 'value' },
+				]),
+			])
+		);
+		await nextTurn();
+		const pending = body.next();
+		await body.return();
+		assert.equal((await pending).done, true);
+	});
+
+	it('observes ignored buffered form failures while retaining their rejection for consumers', async function () {
+		const body = getDeserializer(
+			contentType,
+			true
+		)(Readable.from([encodeForm([{ name: 'incomplete', value: 'value' }], false)]));
+		let unhandled;
+		const observe = (error, promise) => {
+			if (promise === body) unhandled = error;
+		};
+		process.on('unhandledRejection', observe);
+		try {
+			await nextTurn();
+			await nextTurn();
+			assert.equal(unhandled, undefined);
+			await assert.rejects(body, (error) => error.statusCode === 400);
+		} finally {
+			process.removeListener('unhandledRejection', observe);
+			body.catch(() => {});
+		}
 	});
 
 	it('releases an upload on an early iterator return', async function () {

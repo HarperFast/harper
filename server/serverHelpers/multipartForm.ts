@@ -1,7 +1,7 @@
 import busboy from 'busboy';
 import { Readable, Transform } from 'node:stream';
 import { Blob, createBlob } from '../../resources/blob.ts';
-import { ClientError } from '../../utility/errors/hdbError.ts';
+import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import { get } from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 
@@ -57,6 +57,7 @@ export function cancelMultipartBody(data: unknown): void {
 
 class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValue>> {
 	#error?: Error;
+	#stopped = false;
 	#parts: Readable;
 	#iterator: AsyncIterator<FormPart>;
 	#previousFile?: Readable;
@@ -102,7 +103,7 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 			signal?.removeEventListener('abort', abort);
 			source.unpipe(counter);
 			counter.unpipe(parser);
-			for (const file of files) file.destroy(this.error ?? new ClientError('Multipart file was not consumed', 400));
+			for (const file of files) file.destroy(this.error ?? new ServerError('Multipart file was not consumed'));
 			parser.destroy();
 			counter.destroy();
 			// On Node, destroying an unread request closes its socket, so wait for the response first.
@@ -195,20 +196,21 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 
 	async next(): Promise<IteratorResult<Record<string, FormValue>>> {
 		if (this.#error) throw this.#error;
-		if (this.#parts.destroyed && !this.#parts.readableEnded) return { value: undefined, done: true };
+		if (this.#stopped || (this.#parts.destroyed && !this.#parts.readableEnded)) return { value: undefined, done: true };
 		if (this.#previousFile && !this.#previousFile.readableEnded) {
-			this.#error ??= new ClientError(
-				'Consume each multipart Blob before reading the next part; commit staged Blob writes',
-				400
+			this.#error ??= new ServerError(
+				'Consume each multipart Blob before reading the next part; commit staged Blob writes'
 			);
 			this.#parts.destroy(this.error);
 		}
 		const part = await this.#iterator.next();
 		if (this.#error) throw this.#error;
+		if (this.#stopped) return { value: undefined, done: true };
 		if (part.done) return { value: undefined, done: true };
 		this.#previousFile = part.value.file;
 		const value = await part.value.value;
 		if (this.#error) throw this.#error;
+		if (this.#stopped) return { value: undefined, done: true };
 		return { value: { [part.value.name]: value }, done: false };
 	}
 
@@ -218,6 +220,7 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 	}
 
 	cancel() {
+		this.#stopped = true;
 		this.#parts.destroy();
 	}
 }
