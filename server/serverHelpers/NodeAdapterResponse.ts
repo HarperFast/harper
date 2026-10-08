@@ -34,7 +34,8 @@ const ignoreChunk = () => {};
 
 // Node 26.11's pipe fast path (nodejs/node#66182) hands a lone pipe source's buffers straight to _write(),
 // skipping any write() override, such as compression's gzip patch of res.write. It only runs while pipe's
-// own listener is the source's sole 'data' listener, so a second one keeps pipe on write().
+// own listener is the source's sole 'data' listener, so a second one keeps pipe on write(). The fast path
+// brought the static Writable.writeKnownBuffer with it.
 const pipeSkipsWrite = 'writeKnownBuffer' in Writable;
 function keepPipeOnWrite(this: NodeAdapterResponse, source: Readable) {
 	source.on('data', ignoreChunk);
@@ -43,7 +44,8 @@ function keepPipeOnWrite(this: NodeAdapterResponse, source: Readable) {
 		this.removeListener('unpipe', release);
 		source.removeListener('data', ignoreChunk);
 	};
-	this.on('unpipe', release);
+	// ahead of pipe's own unpipe cleanup, which resumes a source awaiting 'drain' if it still has a 'data' listener
+	this.prependListener('unpipe', release);
 }
 
 export class NodeAdapterResponse extends PassThrough implements NodeServerResponse {

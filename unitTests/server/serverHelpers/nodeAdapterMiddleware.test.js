@@ -340,7 +340,7 @@ describe('withNodeAdapter with real Node middleware', function () {
 		assert.deepStrictEqual(events, ['finish', 'close']);
 	});
 
-	// Node 26.11's pipe fast path calls _write() directly for a byte-mode source, skipping a patched write()
+	// byte mode: Node 26.11's pipe fast path, which calls _write() and skips a patched write(), passes over object mode
 	it('runs a write() that middleware patched for every chunk a byte-mode Readable pipes in', async function () {
 		const request = makeRequest();
 		const chunks = [];
@@ -369,7 +369,7 @@ describe('withNodeAdapter with real Node middleware', function () {
 		await waitUntil(() => source.listenerCount('data') === 0, "the source's 'data' listeners to be removed");
 	});
 
-	it('leaves no listener on a source that unpipes or whose pipe the response destroys', async function () {
+	it('leaves a source paused with its data when its stalled pipe is unpiped or the response is destroyed', async function () {
 		const request = makeRequest();
 		const unpiped = new PassThrough();
 		const destroyed = new PassThrough();
@@ -381,12 +381,26 @@ describe('withNodeAdapter with real Node middleware', function () {
 			destroyed.pipe(res);
 		});
 		await withTimeout(responsePromise, 'response headers');
+		// nothing reads the body, so the pipe stalls awaiting 'drain' with data still in the source
+		for (let offset = 0; offset < BODY.length; offset += CHUNK_SIZE)
+			unpiped.write(BODY.subarray(offset, offset + CHUNK_SIZE));
+		await waitUntil(() => response.writableNeedDrain && unpiped.readableLength > 0, 'the pipe to stall awaiting drain');
+		const buffered = unpiped.readableLength;
 
 		unpiped.unpipe(response);
+		await sleep(1);
 		assert.strictEqual(unpiped.listenerCount('data'), 0);
 		assert.strictEqual(unpiped.readableFlowing, false);
+		assert.strictEqual(unpiped.readableLength, buffered);
+
+		destroyed.write(BODY.subarray(0, CHUNK_SIZE));
+		destroyed.write(BODY.subarray(CHUNK_SIZE, 2 * CHUNK_SIZE));
+		await waitUntil(() => destroyed.readableFlowing === false, 'the second pipe to stall awaiting drain');
 		response.destroy();
 		await waitUntil(() => destroyed.listenerCount('data') === 0, "the destroyed pipe's 'data' listeners to be removed");
+		await sleep(1);
+		assert.strictEqual(destroyed.readableFlowing, false);
+		assert.ok(destroyed.readableLength > 0, 'the source lost the data it had not delivered');
 	});
 
 	it('runs on-headers listeners inside _implicitHeader() before the headers resolve', async function () {
