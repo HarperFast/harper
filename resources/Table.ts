@@ -2060,7 +2060,11 @@ export function makeTable(options): TableResourceClass {
 							committingNodeId: number | undefined
 						) => {
 							const originCursors: [number, number][] | undefined = event.originCursors;
-							const originFloors: [number, number, boolean][] | undefined = event.originFloors;
+							// A floor is resume's proof, so it is merged only from a stream whose failures it can see:
+							// tagged, and with onFailure (an untagged or callback-less source reports a failed segment
+							// nowhere this loop can hold the floor back).
+							const originFloors: [number, number, boolean][] | undefined =
+								event.onFailure && event.txnStream !== undefined ? event.originFloors : undefined;
 							// the key for tracking the sequence ids and txn times received from this node
 							const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
 							// getSync (not get): dbisDb is the raw __dbis__ store, so on RocksDB get() returns a
@@ -2102,10 +2106,10 @@ export function makeTable(options): TableResourceClass {
 										originCursorsChanged = true;
 									}
 								}
-							// A certified floor is kept apart from the applied position: the position can sit above a
-							// transaction still open at the origin, the floor cannot (harper-pro#922).
+							// kept apart from originLogKey: a position can sit above an open transaction, a floor cannot
 							if (originFloors)
 								for (const [nodeId, closedFloor, relayable] of originFloors) {
+									if (!(typeof closedFloor === 'number' && Number.isFinite(closedFloor) && closedFloor > 0)) continue;
 									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
 									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
 									if (!(nodeState.closedFloor >= closedFloor)) {

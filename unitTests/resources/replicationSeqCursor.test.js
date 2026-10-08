@@ -206,8 +206,11 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 		let release;
 		const held = new Promise((resolve) => (release = resolve));
 		const now = Date.now();
-		const endTxn = (localTime, cursors, floors) => {
-			const event = { type: 'end_txn', localTime, timestamp: localTime, remoteNodeIds: [46] };
+		const txnStream = {};
+		const endTxn = (localTime, cursors, floors, withoutOnFailure = false) => {
+			const event = { type: 'end_txn', localTime, timestamp: localTime, remoteNodeIds: [46], txnStream };
+			// a floor is merged only from a stream whose failures core can see
+			if (!withoutOnFailure) event.onFailure = () => false;
 			event.onCommit = () => {
 				event.originCursors = cursors;
 				event.originFloors = floors;
@@ -219,27 +222,27 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 			[
 				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
 				endTxn(now, [[7, now - 5]], [[7, now - 20, true]]),
-				// the scalar and the cursor stand still; a higher floor alone must still write
 				endTxn(now, undefined, [[7, now - 10, false]]),
-				// equal floor: a relayable flag that turns on is recorded once, a lower floor is ignored
 				endTxn(now, undefined, [[7, now - 10, true]]),
 				endTxn(now, undefined, [
 					[7, now - 15, true],
 					[8, now - 30, false],
 				]),
 				endTxn(now, undefined, [[8, now - 30, false]]),
+				endTxn(now, undefined, [[8, now - 1, true]], true),
+				endTxn(now, undefined, [[8, NaN, true]]),
+				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now + 1 },
+				endTxn(now + 1, undefined, undefined),
 			],
 			held
 		);
 		const spy = spyOnCursorWrites(ReplicatedTable);
 		try {
-			await waitFor(() => readCursor(ReplicatedTable, 46)?.nodes?.length === 2, {
+			await waitFor(() => readCursor(ReplicatedTable, 46)?.seqId === now + 1, {
 				timeout: 5000,
-				message: 'the floor for a second origin was recorded',
+				message: 'the frame after the floor frames recorded its sequence id',
 			});
-			await new Promise((resolve) => setTimeout(resolve, 100));
 			const cursor = readCursor(ReplicatedTable, 46);
-			assert.equal(cursor.seqId, now);
 			assert.deepEqual(
 				cursor.nodes.map((node) => ({ ...node })),
 				[
@@ -247,7 +250,11 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 					{ id: 8, closedFloor: now - 30, relayable: false },
 				]
 			);
-			assert.equal(spy.staged.length, 4, 'a frame whose floors neither rise nor turn relayable writes no cursor');
+			assert.equal(
+				spy.staged.length,
+				5,
+				'an unchanged floor, a stream without onFailure and a malformed floor each write no cursor'
+			);
 		} finally {
 			spy.restore();
 			release();
