@@ -390,6 +390,51 @@ describe('REST multipart form decoding', function () {
 		assert.equal(await completeMultipartBody(body, 'ignored'), 'ignored');
 		await waitFor(() => input.destroyed, { timeout: 3000 });
 	});
+	it('bounds discarded bytes while waiting for the response to finish', async function () {
+		const previous = env.get(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE);
+		env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, 2 * 65536);
+		let start,
+			finishResponse,
+			reads = 0,
+			destroyed = false;
+		const gate = new Promise((resolve) => {
+			start = resolve;
+		});
+		const input = {
+			afterResponse(callback) {
+				finishResponse = callback;
+				return () => {
+					finishResponse = undefined;
+				};
+			},
+			destroy() {
+				destroyed = true;
+			},
+			async *[Symbol.asyncIterator]() {
+				await gate;
+				for (let i = 0; i < 256; i++) {
+					reads++;
+					yield Buffer.alloc(65536);
+				}
+			},
+		};
+		try {
+			const body = getDeserializer(contentType, true, true)(input);
+			assert.equal(await completeMultipartBody(body, 'response'), 'response');
+			start();
+			await waitFor(() => reads >= 2);
+			await nextTurn();
+			assert(reads <= 6, `Discarding read ${reads} chunks despite the byte limit`);
+			assert.equal(destroyed, false);
+		} finally {
+			start();
+			if (finishResponse) {
+				finishResponse();
+				await waitFor(() => destroyed, { timeout: 3000 });
+			}
+			env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, previous);
+		}
+	});
 
 	it('keeps ordinary JSON bodies as promises for opted-in methods', async function () {
 		const body = getDeserializer('application/json', true, true)(Readable.from([Buffer.from('{"value":1}')]));

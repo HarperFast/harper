@@ -78,12 +78,15 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 		const files = new Set<Readable>();
 		const maximumSize = get(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE) ?? 10_000_000;
 		let size = 0;
+		const exceedsLimit = (chunk: Uint8Array) => {
+			size += chunk.length;
+			return size > maximumSize;
+		};
 		let canceled = false;
 		const counter = new Transform({
 			transform(chunk, _encoding, done) {
-				size += chunk.length;
 				done(
-					size > maximumSize
+					exceedsLimit(chunk)
 						? new ClientError(`Request body too large, maximum size is ${maximumSize} bytes`, 413)
 						: null,
 					chunk
@@ -108,7 +111,11 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 			counter.destroy();
 			// On Node, destroying an unread request closes its socket, so wait for the response first.
 			if (!source.readableEnded && !source.destroyed) {
-				source.resume();
+				source.on('data', (chunk) => {
+					if (exceedsLimit(chunk)) source.pause();
+				});
+				if (size > maximumSize) source.pause();
+				else source.resume();
 				let grace: NodeJS.Timeout;
 				const startGrace = () => {
 					grace = setTimeout(() => {
