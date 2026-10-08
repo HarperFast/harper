@@ -154,7 +154,6 @@ const sameSet = (left: unknown, right: string[]) =>
 
 const ROLE_FLAGS = new Set(['super_user', 'structure_user', 'cluster_user', 'operations']);
 
-/** Undefined when an existing role grants exactly the deploy role's permission, else what differs. */
 export function roleDifference(existing: any, desired: DesiredRecords['role']): string | undefined {
 	const permission = existing?.permission ?? {};
 	if (permission.super_user === true) return 'it is a super_user role';
@@ -291,9 +290,7 @@ async function resolveRepository(req: any, interactive: boolean): Promise<string
 		let detected: string | undefined;
 		try {
 			detected = resolveGitRepo();
-		} catch {
-			// No GitHub origin remote; ask, or require repo=.
-		}
+		} catch {}
 		if (interactive) {
 			repository = (
 				await prompts.input({ message: 'GitHub repository that deploys (owner/name):', default: detected })

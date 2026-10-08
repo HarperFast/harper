@@ -37,8 +37,8 @@ const skipSuite = process.platform === 'win32';
 const COMPONENT = 'web';
 const NAME = `${COMPONENT}-ci-deploy`;
 const POLICY = `github-actions-${COMPONENT}`;
-// A repository GitHub doesn't have, under an org Harper controls, so its lookup finds nothing.
-const REPO = 'HarperFast/deploy-setup-integration-fixture';
+// GitHub owner names can't contain `_`, so this repository can never exist and its lookup finds nothing.
+const REPO = 'deploy_setup_fixture/web';
 
 interface CliResult {
 	code: number;
