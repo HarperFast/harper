@@ -21,7 +21,14 @@ const previousPath = process.env.HARPER_PREVIOUS_MINOR_PATH?.split(delimiter).fi
 
 suite(
 	'first-time table create survives 5.2 rollback',
-	{ skip: !previousPath || process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32', timeout: 300_000 },
+	{
+		skip:
+			!previousPath ||
+			process.env.HARPER_RUNTIME === 'bun' ||
+			process.env.HARPER_STORAGE_ENGINE === 'lmdb' ||
+			process.platform === 'win32',
+		timeout: 300_000,
+	},
 	(ctx: ContextWithHarper) => {
 		after(async () => teardownHarper(ctx));
 
@@ -50,11 +57,25 @@ suite(
 				await sendOperation(ctx.harper, { operation: 'upsert', schema, table: 'born_on_current', records });
 			}
 			await sendOperation(ctx.harper, { operation: 'create_table', table: 'recreated', primary_key: 'id' });
+			await sendOperation(ctx.harper, { operation: 'upsert', table: 'recreated', records: [{ id: 'retired' }] });
 			await sendOperation(ctx.harper, { operation: 'drop_table', table: 'recreated' });
 			await sendOperation(ctx.harper, { operation: 'create_table', table: 'recreated', primary_key: 'id' });
 			await sendOperation(ctx.harper, { operation: 'upsert', table: 'recreated', records: [{ id: 'stamped' }] });
+			await sendOperation(ctx.harper, { operation: 'create_table', table: 'rollback_recreate', primary_key: 'id' });
+			await sendOperation(ctx.harper, {
+				operation: 'upsert',
+				table: 'rollback_recreate',
+				records: [{ id: 'retired' }],
+			});
+			await sendOperation(ctx.harper, { operation: 'drop_table', table: 'rollback_recreate' });
 			await killHarper(ctx);
 			await startHarper(ctx, { config: {}, env: { CONFIRM_DOWNGRADE: 'yes' }, harperBinPath: previousBin });
+			await sendOperation(ctx.harper, { operation: 'create_table', table: 'rollback_recreate', primary_key: 'id' });
+			await sendOperation(ctx.harper, {
+				operation: 'upsert',
+				table: 'rollback_recreate',
+				records: [{ id: 'legacy-recreated' }],
+			});
 
 			const read = (schema: string | undefined, attribute = 'id', value = '*') =>
 				sendOperation(ctx.harper, {
@@ -89,6 +110,17 @@ suite(
 			}
 			await killHarper(ctx);
 			await startHarper(ctx, { config: {} });
+			assert.deepStrictEqual(
+				await sendOperation(ctx.harper, {
+					operation: 'search_by_value',
+					table: 'rollback_recreate',
+					search_attribute: 'id',
+					search_value: '*',
+					get_attributes: ['id'],
+				}),
+				[{ id: 'legacy-recreated' }],
+				'a retired journal must not reclaim the bare table recreated on 5.2'
+			);
 			for (const schema of schemas) {
 				assert.deepStrictEqual(await read(schema), [...records, rollbackRecord]);
 				assert.deepStrictEqual(await read(schema, 'category', 'current'), records);

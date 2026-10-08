@@ -218,6 +218,39 @@ describe('dropTable generation-distinct stores', function () {
 		);
 	});
 
+	it('preserves bare stores and blobs recreated by a legacy writer despite a retired journal', async function () {
+		if (IS_LMDB) return this.skip();
+		const First = defineTable('GenLegacyRecreate', [{ name: 'oldOnly', type: 'String', indexed: true }]);
+		await First.put({ id: 1, str: 'retired' });
+		await First.dropTable();
+		const retired = generationRows().find(({ value }) => value.table === First.tableName);
+		assert.ok(retired);
+		// 5.2 ignores the drop marker and journal when it chooses physical names.
+		dbisDb().removeSync(retired.key);
+		dbisDb().removeSync('/dropped/' + First.tableName);
+		const Fresh = defineTable(First.tableName, [{ name: 'blob', type: 'Blob' }]);
+		assert.equal(Fresh.primaryStore.name, First.tableName + '/');
+		const blob = await createBlob(Buffer.alloc(50_000, 3));
+		await Fresh.put({ id: 2, str: 'rollback', blob });
+		const blobPath = getFilePathForBlob((await Fresh.get(2)).blob);
+		openRocksDatabase(rootStore().path, { name: First.tableName + '/oldOnly' }).close();
+		dbisDb().putSync(retired.key, retired.value);
+		resetDatabases();
+		await waitFor(() => !dbisDb().getSync(retired.key), { timeout: 15_000 });
+		const Reloaded = databases[TEST_DB][First.tableName];
+		assert.equal((await Reloaded.get(2)).str, 'rollback');
+		assert.deepStrictEqual(
+			(await fromAsync(Reloaded.search({ conditions: [{ attribute: 'str', value: 'rollback' }] }))).map(({ id }) => id),
+			[2]
+		);
+		assert.ok(fs.existsSync(blobPath), 'reclaiming an old journal must not unlink a live blob');
+		assert.ok(
+			!rootStore().columns.includes(First.tableName + '/oldOnly'),
+			'unowned retired stores still get reclaimed'
+		);
+		await Reloaded.dropTable();
+	});
+
 	it('keeps the retirement journal complete under a redundant concurrent drop', async function () {
 		if (IS_LMDB) return this.skip();
 		const Twice = defineTable('GenDoubleDrop');

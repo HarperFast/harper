@@ -621,8 +621,6 @@ Consequence for callers that wrap the source in a hashing `Transform`: calling `
 
 ## Table drops, the `dropping` tombstone, ghost tables, and lifecycle stamps
 
-`dropTableGeneration.test.js` enforces legacy primary/index names for first-time RocksDB creates (harper#3102), distinct names for recreates even after local-only reclamation, and recovery via a separate create-journal identity; `creatingStores` must stay separate from `stores`, which shipped 5.3 readers destructively reclaim without recognizing a published legacy primary. Previously stamped tables retain their names; replicated drop markers can also force a first local create to be stamped.
-
 A table is a set of RocksDB column families (`T/` plus `T/<attr>`) and a set of catalog rows in the
 `__dbis__` store, with no transaction spanning the two. `Table.dropTable()` therefore persists a
 `dropping: true` flag on the primary catalog entry (`T/`) before any destructive work, then drops the
@@ -640,6 +638,8 @@ the tombstone — no second-write crash cut. Both come from `tableLifecycleTime(
 `isDeadGeneration(createdTime, droppedTime)` is strict (equal survives, a missing stamp is 0). The marker
 outlives a same-name recreate, only a newer drop overwrites it, the load parser skips `/dropped/` rows, and
 `getTableDrops` / `recordTableDrop` / `onTableDropRecorded` serve replication. `unitTests/resources/dropTableLifecycle.test.js`.
+
+First-time RocksDB creates use bare primary/index names only when this node has no drop marker, no journal row for the table, and no `T/` column family (harper#3102). Any name history requires a generation stamp, including after local-only reclamation or a replicated drop on a node that never held the table. Incoming primary-attribute generations are replaced by this node's physical naming choice. Create journals have their own identity; their `creatingStores` field must stay separate from `stores`, which shipped 5.3 readers destructively reclaim without recognizing a published bare primary. Reclamation always preserves stores owned by the live, non-dropping catalog and never sweeps that primary's blobs: a 5.2 writer can reuse bare names while ignoring the retired journal. Previously stamped tables retain their names and remain outside 5.2 rollback support, as do stamped recreates. `unitTests/resources/dropTableGeneration.test.js` enforces naming, crash recovery, and live-store ownership; `integrationTests/upgrade/first-create-downgrade.test.ts` exercises the real 5.2 round trip.
 
 ## The exclusive `update-attributes` lock is a bounded synchronous wait, and drop-then-recreate needs the column-family eviction fix (`Table.ts`)
 
