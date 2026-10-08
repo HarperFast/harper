@@ -684,27 +684,34 @@ function boundPreStampCreations(rootStore: RootDatabaseKind, attributesDbi: any,
 	if (OMIT_LIFECYCLE_STAMPS_FOR_TEST || isReadOnlyMode()) return;
 	const unbounded = (row: any) =>
 		row && !row.dropping && !Number.isFinite(row.createdTime) && !Number.isFinite(row.createdBefore);
-	const keys = [];
-	for (const row of primaryRows) if (unbounded(row)) keys.push(row.key);
-	if (keys.length === 0) return;
+	const loaded = [];
+	for (const row of primaryRows) if (unbounded(row)) loaded.push(row);
+	if (loaded.length === 0) return;
 	const write = () => {
 		const createdBefore = getNextMonotonicTime();
-		for (const key of keys) {
-			const row = attributesDbi.getSync(key);
-			if (unbounded(row)) attributesDbi.putSync(key, { ...row, createdBefore });
+		for (const snapshot of loaded) {
+			const row = attributesDbi.getSync(snapshot.key);
+			if (!unbounded(row)) continue;
+			attributesDbi.putSync(snapshot.key, { ...row, createdBefore });
+			// the load may write this snapshot back (a tableId repair)
+			snapshot.createdBefore = createdBefore;
 		}
 	};
-	// another thread's load writes the same bound; the next load retries a skipped one
-	if (!(rootStore instanceof RocksDatabase)) (rootStore as any).transactionSync(write);
-	else if (tryUpdateAttributesLock(rootStore)) {
-		try {
-			write();
-		} finally {
-			releaseUpdateAttributesLock(rootStore);
+	// another thread's load writes the same bound, and the next load retries a skipped or failed one: the bound
+	// is never worth failing a load over
+	try {
+		if (!(rootStore instanceof RocksDatabase)) (rootStore as any).transactionSync(write);
+		else if (tryUpdateAttributesLock(rootStore)) {
+			try {
+				write();
+			} finally {
+				releaseUpdateAttributesLock(rootStore);
+			}
 		}
+	} catch (error) {
+		logger.warn(`Could not record when unstamped tables were created in ${rootStore.path}`, error);
 	}
 }
-/** The `createdBefore` bound on an unstamped generation, read from the catalog. */
 export function catalogCreatedBefore(table: {
 	dbisDB: any;
 	tableName: string;
@@ -3958,7 +3965,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				}
 			}
 			// RocksDB serializes every schema update here. LMDB stays lazy until this declaration
-			// actually has full-text state to reconcile.
+			// has full-text state to reconcile or carries a peer's stamp.
 			if (rootStore instanceof RocksDatabase) exclusiveLock();
 			// A stamped peer generation a drop retired must not merge into the live one, checked under the lock every
 			// marker is written under; an unstamped one is taken to describe this live generation (a rolling upgrade).
