@@ -2060,6 +2060,7 @@ export function makeTable(options): TableResourceClass {
 							committingNodeId: number | undefined
 						) => {
 							const originCursors: [number, number][] | undefined = event.originCursors;
+							const originFloors: [number, number, boolean][] | undefined = event.originFloors;
 							// the key for tracking the sequence ids and txn times received from this node
 							const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
 							// getSync (not get): dbisDb is the raw __dbis__ store, so on RocksDB get() returns a
@@ -2098,6 +2099,21 @@ export function makeTable(options): TableResourceClass {
 									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
 									if (!(nodeState.originLogKey >= originLogKey)) {
 										nodeState.originLogKey = originLogKey;
+										originCursorsChanged = true;
+									}
+								}
+							// A certified floor is kept apart from the applied position: the position can sit above a
+							// transaction still open at the origin, the floor cannot (harper-pro#922).
+							if (originFloors)
+								for (const [nodeId, closedFloor, relayable] of originFloors) {
+									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									if (!(nodeState.closedFloor >= closedFloor)) {
+										nodeState.closedFloor = closedFloor;
+										nodeState.relayable = relayable === true;
+										originCursorsChanged = true;
+									} else if (nodeState.closedFloor === closedFloor && relayable === true && !nodeState.relayable) {
+										nodeState.relayable = true;
 										originCursorsChanged = true;
 									}
 								}
@@ -2283,7 +2299,10 @@ export function makeTable(options): TableResourceClass {
 									}
 									// Only reached when the commit succeeded; a failure propagates to the handler's catch
 									// and the sequence id is intentionally not advanced past the unapplied write.
-									if (event.remoteNodeIds?.length > 0 && (advancesSequence || event.originCursors?.length > 0))
+									if (
+										event.remoteNodeIds?.length > 0 &&
+										(advancesSequence || event.originCursors?.length > 0 || event.originFloors?.length > 0)
+									)
 										await updateRecordedSequenceId(event, advancesSequence, committingTxn?.nodeId);
 									continue;
 								}

@@ -202,6 +202,58 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 		}
 	});
 
+	it('merges certified origin floors apart from the applied cursors, writing on a floor-only rise', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		const endTxn = (localTime, cursors, floors) => {
+			const event = { type: 'end_txn', localTime, timestamp: localTime, remoteNodeIds: [46] };
+			event.onCommit = () => {
+				event.originCursors = cursors;
+				event.originFloors = floors;
+			};
+			return event;
+		};
+		const ReplicatedTable = makeReplicatedTable(
+			'SeqCursorFloorTable',
+			[
+				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
+				endTxn(now, [[7, now - 5]], [[7, now - 20, true]]),
+				// the scalar and the cursor stand still; a higher floor alone must still write
+				endTxn(now, undefined, [[7, now - 10, false]]),
+				// equal floor: a relayable flag that turns on is recorded once, a lower floor is ignored
+				endTxn(now, undefined, [[7, now - 10, true]]),
+				endTxn(now, undefined, [
+					[7, now - 15, true],
+					[8, now - 30, false],
+				]),
+				endTxn(now, undefined, [[8, now - 30, false]]),
+			],
+			held
+		);
+		const spy = spyOnCursorWrites(ReplicatedTable);
+		try {
+			await waitFor(() => readCursor(ReplicatedTable, 46)?.nodes?.length === 2, {
+				timeout: 5000,
+				message: 'the floor for a second origin was recorded',
+			});
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const cursor = readCursor(ReplicatedTable, 46);
+			assert.equal(cursor.seqId, now);
+			assert.deepEqual(
+				cursor.nodes.map((node) => ({ ...node })),
+				[
+					{ id: 7, originLogKey: now - 5, closedFloor: now - 10, relayable: true },
+					{ id: 8, closedFloor: now - 30, relayable: false },
+				]
+			);
+			assert.equal(spy.staged.length, 4, 'a frame whose floors neither rise nor turn relayable writes no cursor');
+		} finally {
+			spy.restore();
+			release();
+		}
+	});
+
 	it('repairs a scalar whose write failed, on a repeat frame whose origin cursors did not change', async function () {
 		let release;
 		const held = new Promise((resolve) => (release = resolve));
