@@ -649,6 +649,7 @@ export const CONFIG_PARAMS = {
 	REPLICATION_URL: 'replication_url',
 	REPLICATION_PORT: 'replication_port',
 	REPLICATION_SECUREPORT: 'replication_securePort',
+	REPLICATION_THREADS: 'replication_threads',
 	REPLICATION_ROUTES: 'replication_routes',
 	REPLICATION_DATABASES: 'replication_databases',
 	REPLICATION_ENABLEROOTCAS: 'replication_enableRootCAs',
@@ -989,6 +990,7 @@ export const ITC_EVENT_TYPES = {
 export const THREAD_TYPES = {
 	HTTP: 'http',
 	JOB: 'job',
+	REPLICATION: 'replication',
 } as const;
 
 /** A version string for pre 4.0.0 comparison */

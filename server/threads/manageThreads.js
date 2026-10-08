@@ -10,6 +10,7 @@ const { spawnSync } = require('node:child_process');
 const { readdirSync, readFileSync, readlinkSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { confirmWindowsProcessTreeGone, ROOT_SPAWN_ALLOWANCE_MS } = require('./windowsProcessTree.ts');
+const { activeWorkerPools } = require('./workerPools.ts');
 const { join, isAbsolute, extname } = require('path');
 const { pathToFileURL } = require('url');
 const { server } = require('../Server.ts');
@@ -400,6 +401,8 @@ const RESERVED_WORKER_DATA_KEYS = [
 	'isolatedApplication',
 	'certify',
 	'failClosed',
+	'workerPools',
+	'poolIndex',
 	'__proto__', // never a legitimate payload name; spread would define it as an own property
 ];
 const workerDataProviders = new Map();
@@ -1298,6 +1301,8 @@ function startWorker(path, options = {}, startOptions = {}) {
 			workerCount: options.threadCount,
 			name: options.name,
 			isolatedApplication: options.application,
+			workerPools: activeWorkerPools(),
+			poolIndex: options.poolIndex,
 			restartNumber: module.exports.restartNumber,
 			processIncarnation: module.exports.processIncarnation,
 			ticketKeys: getTicketKeys(),
@@ -1336,8 +1341,14 @@ function startWorker(path, options = {}, startOptions = {}) {
 		// way)
 		harperLogger.error(`Worker index ${options.workerIndex} error:`, error);
 	});
+	const exitedThreadId = worker.threadId;
 	worker.on('exit', (_code) => {
 		workers.splice(workers.indexOf(worker), 1);
+		// Its native handles are closed by now, so the origin-floor bounds it published are stale; every
+		// thread retires them for the databases it has open, since this one need not have them all.
+		const { ORIGIN_FLOOR_RETIRE, retireOriginFloorSlots } = require('../../resources/originClosedFloor.ts');
+		retireOriginFloorSlots(exitedThreadId);
+		broadcast({ type: ORIGIN_FLOOR_RETIRE, threadId: exitedThreadId });
 		if (
 			!processShuttingDown &&
 			!worker.wasShutdown &&
@@ -1366,12 +1377,11 @@ function startWorker(path, options = {}, startOptions = {}) {
 	return worker;
 }
 
-const OVERLAPPING_RESTART_TYPES = [hdbTerms.THREAD_TYPES.HTTP];
+const OVERLAPPING_RESTART_TYPES = [hdbTerms.THREAD_TYPES.HTTP, hdbTerms.THREAD_TYPES.REPLICATION];
 
 /**
  * Restart all the worker threads
- * @param name If there is a specific set of threads that need to be restarted, they can be specified with this
- * parameter
+ * @param name The worker type (or array of types) to restart; all types when omitted
  * @param maxWorkersDown The maximum number of worker threads to restart at once. In restarts, we start new
  * threads at the same time we shutdown new ones. However, we usually want to limit how many we do at once to avoid
  * excessive load and to keep things responsive. This parameter throttles the restarts to minimize load from
@@ -1529,7 +1539,8 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 		const untouchedAfter = (index) =>
 			restarting
 				.slice(index + 1)
-				.filter((other) => (!name || other.name === name) && !other.wasShutdown && workers.includes(other)).length;
+				.filter((other) => (!name || typeMatches(name, other.name)) && !other.wasShutdown && workers.includes(other))
+				.length;
 		for (let index = 0; index < restarting.length; index++) {
 			const worker = restarting[index];
 			// Before every replacement, not just the first: one booted while another release is armed cannot decide it,
@@ -1539,7 +1550,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 			if (processShuttingDown && startReplacementThreads) break;
 			// A refusal ends the rollout wherever it was decided, including by a crash restart's canary.
 			if (certification?.decision && refusesRelease(certification.decision)) break;
-			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
+			if ((name && !typeMatches(name, worker.name)) || worker.wasShutdown) continue; // filter by type, if specified
 			// exited on its own since the snapshot; its exit handler restarts it (or holds that start for a decision)
 			if (!workers.includes(worker)) continue;
 			if (application !== '*' && worker.application !== application) continue; // and by isolated application
@@ -1773,6 +1784,9 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 			? { workersKeptOnOldCode, replacementsNotStarted, certification: certification.decision }
 			: { workersKeptOnOldCode, replacementsNotStarted };
 	}
+}
+function typeMatches(name, workerName) {
+	return Array.isArray(name) ? name.includes(workerName) : workerName === name;
 }
 /**
  * Its predecessor is gone, so a copy the gate stopped, or refused for a load a release's commit crossed, is started

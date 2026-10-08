@@ -63,15 +63,21 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	} else {
 		databaseSubscriptions = allSubscriptions[path] || (allSubscriptions[path] = []);
 		const auditStore = table.auditStore;
+		// A new subscriber receives only what commits after it registers (resources/DESIGN.md).
+		if (!databaseSubscriptions.activeCount) {
+			// with rocksdb-js iterator we can and should not specify a start time so we just start at the end of the txn log
+			// and still match older version numbers that may commit in the future. But we have to start
+			// immediately so we are at the right position.
+			if (auditStore.reusableIterable) auditStore.subscriptionLogRange = auditStore.getRange({});
+		} else if (!databaseSubscriptions.passYielded && !databaseSubscriptions.dispatching) {
+			notifyFromTransactionData(
+				databaseSubscriptions,
+				auditStore.reusableIterable ? auditStore.subscriptionLogRange : null,
+				false,
+				true
+			);
+		}
 		if (!auditStore.hasSubscriptionCommitListener) {
-			let auditLogIterator;
-			if (auditStore.reusableIterable) {
-				// with rocksdb-js iterator we can and should not specify a start time so we just start at the end of the txn log
-				// and still match older version numbers that may commit in the future. But we have to start
-				// immediately so we are at the right position
-				auditLogIterator = auditStore.getRange({});
-				auditStore.subscriptionLogRange = auditLogIterator;
-			}
 			auditStore.hasSubscriptionCommitListener = true;
 			// Coalesce 'committed' bursts: instead of iterating the audit log synchronously inside the
 			// commit microtask (which pegs the event loop during replication backlog catch-up), defer
@@ -88,7 +94,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 				}
 				if (databaseSubscriptions.notifyScheduled) return;
 				databaseSubscriptions.notifyScheduled = true;
-				setImmediate(() => notifyFromTransactionData(databaseSubscriptions, auditLogIterator, true));
+				setImmediate(() => notifyFromTransactionData(databaseSubscriptions, auditStore.subscriptionLogRange, true));
 			});
 		}
 	}
@@ -275,12 +281,13 @@ const ACTIONS_OF_INTEREST = ['put', 'patch', 'delete', 'message', 'invalidate'];
 // Sized to keep per-batch wall time within a few ms on commodity hardware while keeping the
 // scheduling overhead amortized; tune if profiling shows different shapes.
 const NOTIFY_BATCH_SIZE = 256;
-function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield = false) {
+function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield = false, registrationDrain = false) {
 	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
 	// If no real subscribers are attached, skip the iteration. The reusable iterator preserves its
 	// position and will pick up from where we left it once a subscriber is added.
 	if (!subscriptions.activeCount) {
 		subscriptions.pendingTxnSubscribers = null; // discard any carry-over from a yielded run
+		subscriptions.passYielded = false;
 		if (allowYield) subscriptions.notifyScheduled = false;
 		return;
 	}
@@ -303,6 +310,8 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 	let iteratorFailed = false;
 	let trackProgress = subscriptions.progressConsumers > 0 && !subscriptions.progressStopped;
 	let progressKey = trackProgress ? subscriptions.pendingProgressKey : undefined;
+	subscriptions.dispatching = true;
+	subscriptions.passYielded = false;
 	try {
 		while (true) {
 			let result;
@@ -430,7 +439,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 					}
 				}
 			}
-			if (allowYield && ++processed >= NOTIFY_BATCH_SIZE) {
+			if ((allowYield || registrationDrain) && ++processed >= NOTIFY_BATCH_SIZE) {
 				// Yield the event loop. Save in-progress txn state so the next batch can resume.
 				// Reusable iterables (rocksdb) can be passed back in directly; LMDB-style iterables
 				// are recreated from the advanced lastTxnTime. The same-thread aftercommit path does not
@@ -438,8 +447,17 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 				subscriptions.pendingTxnSubscribers = subscribersWithTxns;
 				subscriptions.pendingProgressKey = progressKey;
 				yielded = true;
+				subscriptions.passYielded = true;
+				if (registrationDrain) {
+					if (subscriptions.notifyScheduled) return;
+					subscriptions.notifyScheduled = true;
+				}
 				setImmediate(() =>
-					notifyFromTransactionData(subscriptions, auditStore.reusableIterable ? auditLogIterable : null, true)
+					notifyFromTransactionData(
+						subscriptions,
+						auditStore.reusableIterable ? auditStore.subscriptionLogRange : null,
+						true
+					)
 				);
 				return;
 			}
@@ -462,6 +480,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			}
 		}
 	} finally {
+		subscriptions.dispatching = false;
 		// If we yielded, the continuation owns notifyScheduled; otherwise (drain or any throw) we
 		// must clear it here so a stuck flag doesn't permanently silence future commits.
 		if (allowYield && !yielded) subscriptions.notifyScheduled = false;

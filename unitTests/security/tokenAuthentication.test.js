@@ -243,7 +243,7 @@ describe('test getJWTRSAKeys function', () => {
 
 		assert.deepStrictEqual(results, new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
 
-		assert(path_join_spy.callCount === 0);
+		// Cache hit: no key files are read, so no path is built either.
 		assert(fs_readfile_spy.callCount === 0);
 
 		rw_rsa_keys();

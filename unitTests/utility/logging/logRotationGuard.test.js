@@ -7,7 +7,7 @@ const { spawnSync } = require('node:child_process');
 const { Worker } = require('node:worker_threads');
 const hdbTerms = require('#src/utility/hdbTerms');
 const hdbLogger = require('#src/utility/logging/harper_logger');
-const { parseMaxSize } = require('#src/utility/logging/logRotation');
+const { parseMaxSize, rotateLogFileSync } = require('#src/utility/logging/logRotation');
 const { requestGenerationClose } = require('#src/utility/logging/logGenerationCoordinator');
 const { pinLogConfig } = require('../../logConfigFixture.js');
 const { waitFor } = require('../../waitFor.js');
@@ -304,12 +304,14 @@ describe('Test log rotation on the write path (#1877)', () => {
 			rotation: { enabled: true, interval: '1D', auditInterval: NEVER_TICKS },
 		});
 		logger.error('opens the descriptor');
-		const held = fs.statSync(logPath);
 
-		// Another thread rotates: the file moves out from under this descriptor.
-		const archivePath = path.join(dir, 'moved.log');
-		fs.renameSync(logPath, archivePath);
-		await requestGenerationClose({ logPath, generation: 'g', ino: held.ino, dev: held.dev });
+		// Another thread rotates: the file moves out from under this descriptor. The announcement carries
+		// the identity that rotation read, so it has to match the one this sink read when it opened.
+		const rotatedDir = path.join(dir, 'rotated');
+		fs.mkdirpSync(rotatedDir);
+		const generation = rotateLogFileSync(logPath, rotatedDir, () => {});
+		const { archivePath } = generation;
+		await requestGenerationClose(generation);
 
 		const marker = 'after the announced rotation';
 		logger.error(marker);
