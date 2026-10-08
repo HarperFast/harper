@@ -1005,11 +1005,8 @@ export async function loadComponent(
 								applicationScope: subApplicationScope,
 								autoReload: false,
 								appName: appName || componentName,
-<<<<<<< HEAD
-								collectScopes: options.collectScopes,
-=======
 								branchedDatabases: isRoot ? rootConfigBranchedDatabases(componentName) : undefined,
->>>>>>> 834835f53 (Honor branchedDatabases when loading package applications)
+								collectScopes: options.collectScopes,
 								collectLoadedModules,
 								// `host`/`urlPath` on this entry route the component being loaded. For an
 								// application (no plugin module of its own) that entry is the only place an
