@@ -1486,7 +1486,9 @@ export class LockCoordinator {
 			'the coordinating worker did not answer'
 		).catch((error) => {
 			backstopWon = true;
-			throw error instanceof LockUnavailableError
+			// The owner's 423 is its definitive "contended past the wait" answer, the same one a local
+			// acquire gives; only a failure to reach a verdict becomes the retryable 503.
+			throw error instanceof LockUnavailableError || error?.statusCode === 423
 				? error
 				: new LockUnavailableError(
 						`Could not obtain a cluster record lock on ${this.database}.${this.table} from the coordinating worker: ${(error as Error)?.message ?? error}`

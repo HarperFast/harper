@@ -33,6 +33,7 @@ const {
 	droppingMarkerPath,
 	restoreMetaDir,
 	scanBlockedRestores,
+	withRestoreExclusion,
 	scanBlockedDatabaseDrops,
 	RESTORE_META_DIR,
 } = require('#src/dataLayer/restoreMarker');
@@ -201,12 +202,14 @@ describe('restoreMarker', function () {
 			}
 		});
 
-		it('fails with 409 when a restore is already in progress', function () {
+		it('fails with 409, naming every holder the lock could have, when it is already held', function () {
 			const lock = beginRestore(dbPath);
 			try {
 				assert.throws(
 					() => beginRestore(dbPath),
-					(error) => error.statusCode === 409 && /already in progress/.test(error.message)
+					// an opener holds this lock shared too, so the 409 must not pin the blame on a restore
+					(error) =>
+						error.statusCode === 409 && /a restore, a drop, or a database open holds its lock/.test(error.message)
 				);
 			} finally {
 				completeRestore(lock);
@@ -312,6 +315,160 @@ describe('restoreMarker', function () {
 				assert.ok(!existsSync(tempPath), 'the temp file is consumed by the rename');
 			} finally {
 				completeRestore(lock);
+			}
+		});
+	});
+
+	describe('withRestoreExclusion', function () {
+		const opened = () => 'opened';
+		const blockedWith = (states) => (state) => {
+			states.push(state);
+			return 'blocked';
+		};
+
+		it('opens when no restore is in progress and no marker survives', function () {
+			assert.strictEqual(
+				withRestoreExclusion(dbPath, opened, () => 'blocked'),
+				'opened'
+			);
+		});
+
+		it('reports an incomplete restore rather than opening a half-purged directory', function () {
+			abandonRestore(beginRestore(dbPath));
+			const states = [];
+			assert.strictEqual(withRestoreExclusion(dbPath, opened, blockedWith(states)), 'blocked');
+			assert.deepStrictEqual(states, ['incomplete']);
+		});
+
+		it('reports a restore in progress while one holds the lock', function () {
+			const lock = beginRestore(dbPath);
+			try {
+				const states = [];
+				assert.strictEqual(withRestoreExclusion(dbPath, opened, blockedWith(states)), 'blocked');
+				assert.deepStrictEqual(states, ['in-progress']);
+			} finally {
+				completeRestore(lock);
+			}
+		});
+
+		it('keeps a restore from starting while the database is being opened', function () {
+			// the window the marker alone cannot close: check says clear, then a restore claims the
+			// directory, then the open lands on a directory that is being purged
+			const result = withRestoreExclusion(
+				dbPath,
+				() => {
+					assert.throws(
+						() => beginRestore(dbPath),
+						(error) => error.statusCode === 409,
+						'a restore must not be able to claim a database that is mid-open'
+					);
+					return 'opened';
+				},
+				() => 'blocked'
+			);
+			assert.strictEqual(result, 'opened');
+		});
+
+		it('lets concurrent opens proceed — readers do not exclude each other', function () {
+			const result = withRestoreExclusion(
+				dbPath,
+				() =>
+					withRestoreExclusion(
+						dbPath,
+						() => 'both opened',
+						() => 'blocked'
+					),
+				() => 'blocked'
+			);
+			assert.strictEqual(result, 'both opened');
+		});
+
+		it('releases the lock when the open throws', function () {
+			assert.throws(() => {
+				withRestoreExclusion(
+					dbPath,
+					() => {
+						throw new Error('open failed');
+					},
+					() => 'blocked'
+				);
+			}, /open failed/);
+			const lock = beginRestore(dbPath);
+			completeRestore(lock);
+		});
+
+		it('does not make a concurrent open look like a restore to checkRestoreState', function () {
+			// a reader holding the shared lock, exactly as withRestoreExclusion does mid-open
+			abandonRestore(beginRestore(dbPath)); // marker survives, so the state is actually probed
+			const readerToken = tryFileLock(restoreLockPath(dbPath), true);
+			assert.notStrictEqual(readerToken, 0, 'a reader must be able to take the lock shared');
+			try {
+				assert.strictEqual(
+					checkRestoreState(dbPath),
+					'incomplete',
+					'a reader holding the lock must not read as a restore in progress'
+				);
+			} finally {
+				fileLockRelease(readerToken);
+			}
+		});
+
+		it('propagates a lock failure that is not an unwritable root, rather than opening unguarded', function () {
+			// Degrading to the marker check is for a root Harper cannot write to. Any other failure means
+			// the exclusion is not in place for a reason nobody chose, and opening anyway would reopen
+			// the check-then-open window this guard exists to close — so it has to be loud.
+			const misconfigured = join(tempDir, 'misconfigured');
+			mkdirSync(misconfigured);
+			// a file where the metadata directory belongs: not a permissions problem, a broken root
+			writeFileSync(join(misconfigured, RESTORE_META_DIR), '');
+			assert.throws(
+				() =>
+					withRestoreExclusion(
+						join(misconfigured, 'somedb'),
+						() => 'opened',
+						() => 'blocked'
+					),
+				/failed to create parent directory/
+			);
+		});
+
+		it('still blocks on a marker when the lock cannot be created', function () {
+			// chmod does not deny these, so the root would be writable and nothing would degrade
+			if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+			// an unwritable databases root: the exclusion degrades to the marker check rather than
+			// throwing out through the startup scan and taking every later database with it. The
+			// degraded check must still deny, or a root that went read-only under a half-purged
+			// database would quietly open it.
+			const unwritable = join(tempDir, 'readonly');
+			const marked = join(unwritable, 'marked');
+			mkdirSync(marked, { recursive: true });
+			abandonRestore(beginRestore(marked)); // the marker survives the abandon
+			// beginRestore leaves its lock file behind, and an existing file still opens under an
+			// unwritable directory; removing it is what leaves the fallback as the only path
+			rmSync(restoreLockPath(marked), { force: true });
+			chmodSync(restoreMetaDir(marked), 0o500);
+			chmodSync(unwritable, 0o500);
+			try {
+				const states = [];
+				const blocked = (state) => {
+					states.push(state);
+					return 'blocked';
+				};
+				assert.strictEqual(
+					withRestoreExclusion(join(unwritable, 'unmarked'), () => 'opened', blocked),
+					'opened',
+					'an unmarked database in an unwritable root still loads'
+				);
+				assert.deepStrictEqual(states, []);
+				assert.strictEqual(
+					withRestoreExclusion(marked, () => 'opened', blocked),
+					'blocked',
+					'a marked database must not open just because the lock could not be created'
+				);
+				assert.deepStrictEqual(states, ['incomplete']);
+			} finally {
+				chmodSync(unwritable, 0o700);
+				chmodSync(restoreMetaDir(marked), 0o700);
 			}
 		});
 	});

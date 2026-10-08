@@ -67,7 +67,7 @@ describe('getThisNodeName precedence (harper-pro#351)', () => {
 		// Must not steer the operator to cement the already-picked (wrong) value, and must
 		// mention reconciling against hdb_nodes. Also guards against the stray trailing paren.
 		assert.ok(/hdb_nodes/.test(msg), 'warning should mention reconciling against hdb_nodes');
-		assert.ok(!/\)$/.test(msg), 'warning should not end with a stray trailing paren');
+		assert.ok(!msg.endsWith(')'), 'warning should not end with a stray trailing paren');
 		assert.ok(/real-node/.test(msg), 'warning should surface the differing replication.hostname');
 	});
 

@@ -139,6 +139,7 @@ jobs:
             resources/indexes/HierarchicalNavigableSmallWorld.ts
             resources/longLivedTransactions.ts
             resources/nodeIdMapping.ts
+            resources/originClosedFloor.ts
             resources/replayLogs.ts
             resources/search.ts
             server/http.ts

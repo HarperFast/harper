@@ -390,6 +390,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 			url: nodeUrlConstraints,
 			port: portConstraints,
 			securePort: portConstraints,
+			threads: number.integer().min(0).optional().empty(null),
 			routes: array.optional().empty(null),
 			databases: Joi.alternatives(string, array),
 			enableRootCAs: boolean.optional(),

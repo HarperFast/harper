@@ -77,10 +77,10 @@ Three non-obvious mechanics keep that safe:
   directory without re-applying `schemaRegex`, it also explicitly skips the reserved `` `restore` ``
   entry so an out-of-band directory at that name is never loaded as a database. Startup/rescan
   detection (`databasesBlockedByRestore` in `resources/databases.ts` → `scanBlockedRestores` in `dataLayer/restoreMarker.ts`)
-  reads the metadata directory and checks the **marker first**, only probing the lock when the marker exists —
-  probes take the flock and are mutually exclusive across threads, so probing the (persistent) lock
-  file of every long-ago-restored database on every rescan would make concurrent rescans misclassify
-  healthy databases as in-progress. Marker-present + lock-held = restore in progress (don't load);
+  reads the metadata directory and checks the **marker first**, only probing the lock when the marker
+  exists — the probe is shared, so it coexists with other readers, but it is still skipped without a
+  marker so a rescan does no lock work for the (persistent) lock file of every long-ago-restored
+  database. Marker-present + lock-held = restore in progress (don't load);
   marker-present + lock-free = crashed mid-restore (don't load; rerun the restore to recover).
 - **A recovery restore must not clear a pre-existing marker on a pre-destruction failure.**
   `beginRestore` returns `preexisting: true` when a `.restoring` marker was already present (this run
@@ -172,9 +172,12 @@ Three non-obvious mechanics keep that safe:
   it is an alias-owned member, and dropping any alias drops the graph. A strict worker-close failure
   similarly keeps that worker's physical roots fenced and remembered; a same-name drop retry
   re-attempts those closes before marker publication or deletion.
-  `database()`'s on-demand open still uses the read-only `throwIfBlockedByRestore` (a
-  `create_table`/`create_schema` must not resurrect a half-purged directory as a fresh empty DB), but
-  the destructive drop path now uses the exclusive lock so the race is closed, not merely narrowed.
+  Every open now runs under `withRestoreExclusion` — the startup scan and `database()`'s on-demand
+  open, both engines — so the marker check and the open are one critical section (a
+  `create_table`/`create_schema` must not resurrect a half-purged directory as a fresh empty DB).
+  A restore never targets LMDB, but a drop locks and marks LMDB roots exactly as it does RocksDB
+  ones, so LMDB needs the same exclusion against drop. `throwIfBlockedByRestore` survives as the
+  cheap pre-check that answers a plainly blocked caller without taking a lock.
 - **The offline restore probes RocksDB's own `LOCK` file, and fails closed.** The offline path runs
   only when the CLI sees no server (a PID heuristic; the PID file is briefly absent
   mid-`harper restart`), and `backups.restore`'s `purgeAllFiles` never takes RocksDB's lock — so
@@ -190,6 +193,18 @@ Known limitation: the flock is process-owned; if the restore job's worker _threa
 the process exiting, the lock stays held (restores 409) until Harper restarts. rocksdb-js had no typed
 native lock signal at 2.5.0 (the pin is now 2.10.0), so the offline probe relies on message matching; a native
 lock primitive is a rocksdb-js follow-on.
+
+## Backup repository coordination: the management lock, pins, and the restore exclusion (`dataLayer/backupRepository.ts`, `dataLayer/restoreMarker.ts`)
+
+Four coupled mechanisms guard the backup/restore surface. They are easy to break individually, and each exists because of a specific way the previous arrangement failed.
+
+- **rocksdb-js's `.backup.lock` covers only the engine files.** Harper's blob snapshots (`blobs/<id>/`) and completion manifests (`manifests/<id>.json`) live beside them and are written and removed by Harper code the binding knows nothing about, so a `purge_backups` could remove a blob snapshot out from under a `create_backup` that was still finalizing (harper#2031). Every Harper-managed mutation of a repository therefore takes a **Harper-level management lock** (`withBackupRepositoryLock`) before any engine call that takes `.backup.lock`, and a create holds it across `db.backup()` _and_ finalization: the whole create is one critical section, so no purge can land inside it. It waits rather than failing (30s, then 409), and a holder that dies releases it with its process. The cost is that maintenance stalls behind a multi-gigabyte create — the earlier arrangement left `db.backup()` outside the lock to avoid exactly that, and paid for it by making `finalizeBackup`'s existence check load-bearing rather than defence in depth. That check (`assertBackupStillPresent`) stays, now guarding only writers outside this protocol — an older binary, or a direct binding call — because a manifest and blob snapshot published for engine files that are gone is a backup that lists and verifies with nothing to restore.
+- **`purge_backups` names the ids it will remove before the binding removes them.** The management lock excludes every Harper writer, so the listing it takes is exactly what the binding will see, and `backups.purge` keeps the newest `keepCount` by id — so the departing ids can be named, checked against the pins, and then removed by one bulk call. That set is sorted by `backupId` rather than sliced off the listing as returned: it gates pin protection, so it must not rest on the documented list order holding.
+- **A pin's lifetime is the restoring marker's lifetime.** A pin names the database directory it protects and counts only while that database still carries a marker (`pinIsLive`). The marker is present exactly when a restore is running or waiting to be rerun, which is exactly when its source must survive, so the two live and die together: a process killed mid-restore leaves both and the rerun clears both, while one killed between clearing the marker and releasing the pin leaves a pin that is ignored and swept the next time anything looks. This is why pins carry no owner id, no expiry and no boot sweep: each is a second answer to when a pin ends, and a pin that outlives the marker it belongs to 409s every later delete forever. The converse is the known gap: a pin that outlives its marker is also taken as proof that a _later_ marker on that target is this source's own, which `target_database` admission relies on (harper#2632). A restore takes the restore lock _before_ pinning, so only the attempt that will actually run touches the pin, and the pin id is derived from the target directory so two attempts cannot collide. The existence check and the pin installation are one step under the management lock: checking after pinning let a failed rerun replace a good claim with one naming nothing.
+- **The restoring marker is an exclusion, not a check.** `withRestoreExclusion` holds the per-database restore lock in **shared** mode across the marker check _and_ the open, so a restore's exclusive acquire cannot succeed while any opener holds it and no opener can begin under a restore, while readers never exclude each other. `checkRestoreState` probes shared for the same reason: an exclusive probe answers "is a restore holding this?" by conflicting with every other reader, so a marked database being rescanned on several threads could read as `in-progress` on all of them. The guard runs for every directory the startup scan considers, so on a root Harper cannot write to (`EACCES`/`EPERM`/`EROFS`, or the binding's untyped equivalent) it degrades to the marker check alone and warns once per root — one unwritable root must not take down the rest of the scan. Every other failure propagates: a transient `EMFILE` is not a reason to open a database with no exclusion at all, and failing loudly is recoverable where a silent unguarded open is not. The exclusion is taken only around an engine open; a root already in the engine map is skipped, because a restore must close the live handle first regardless and holding the lock through every rescan would make routine scans collide with drop and restore.
+- **The marker itself is published temp → fsync → rename → parent fsync, and an intact one is never rewritten.** `beginRestore` used to open it with `'w'`, truncating before the name was written, and `scanBlockedRestores` skips a marker whose first line is empty — so a crash during a _recovery_ attempt could unblock a half-purged database. "Intact" means the first line equals the database directory name: a torn name leaves a prefix that resolves to a different metadata key and blocks nothing. `preexisting` is sampled while holding the lock, or a restore that waited out an earlier one inherits the earlier run's reading and can clear a marker that run needed.
+
+The work items are tracked under harper#2632.
 
 ## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)
 

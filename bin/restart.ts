@@ -417,7 +417,11 @@ async function restartService(req: any) {
 					const runningApplications = await getRunningIsolatedApplications(ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS);
 					if (!runningApplications.includes(scope)) scope = fallbackScope;
 				}
-				await restartWorkers('http', undefined, true, null, scope);
+				// An operator's restart names no scope; every deploy and drop names one, so only an operator
+				// restart reaches the dedicated pools (which load no application code).
+				const workerTypes =
+					req.scope === undefined ? [hdbTerms.THREAD_TYPES.HTTP, hdbTerms.THREAD_TYPES.REPLICATION] : 'http';
+				await restartWorkers(workerTypes, undefined, true, null, scope);
 			}
 			break;
 		default:
