@@ -113,19 +113,25 @@ function assertNoPrivateKey(text: string, path: string): void {
 	if (PRIVATE_KEY_ARMOR.test(text)) throw new Error(`Refusing to read key material: ${path} holds a PEM private key`);
 }
 
-function endsInsidePrivateKey(text: string): boolean {
+function endsInsidePrivateKey(text: string, limit = Infinity): boolean {
 	let last: string | undefined;
-	for (const match of text.matchAll(new RegExp(PRIVATE_KEY_ARMOR.source, 'g'))) last = match[1];
+	for (const match of text.matchAll(new RegExp(PRIVATE_KEY_ARMOR.source, 'g'))) {
+		if (match.index >= limit) break;
+		last = match[1];
+	}
 	return last === 'BEGIN';
 }
 
-/** Whether byte `start` lies inside a PEM private-key block, judged by the armor lines before it. */
+/** Whether byte `start` lies inside a PEM private-key block, judged by the armor lines that begin before it. */
 async function startsInsidePrivateKey(fh: FileHandle, start: number): Promise<boolean> {
 	if (start === 0) return false;
 	const from = Math.max(0, start - KEY_LOOKBACK_BYTES);
+	// Read past `start` so an armor line cut by it still matches, but count only lines that begin before it:
+	// an END line just after `start` must not clear a page that starts on the key's last body line.
 	const before = Buffer.alloc(start - from + ARMOR_LINE_OVERLAP_BYTES);
 	const { bytesRead } = await fh.read(before, 0, before.length, from);
-	return endsInsidePrivateKey(before.toString('utf8', 0, bytesRead));
+	const limit = before.toString('utf8', 0, Math.min(start - from, bytesRead)).length;
+	return endsInsidePrivateKey(before.toString('utf8', 0, bytesRead), limit);
 }
 
 /** Coerce/validate a tool's `root` argument, defaulting to the writable components scope. */

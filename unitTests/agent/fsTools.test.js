@@ -646,5 +646,24 @@ describe('agent/fsTools key material and the single-file config scope (harper#30
 			const after = await readFileTool.handler({ root: 'logs', path: 'hdb.log', startLine: 44 }, small);
 			assert.equal(after.content, 'after the key\n');
 		});
+
+		it("read_file refuses a page that starts on a key's last body line, just before its END line", async () => {
+			const head = `start\n-----BEGIN PRIVATE KEY-----\n${'A'.repeat(64)}\n`;
+			const lastBody = `${'B'.repeat(20)}\n`;
+			writeFileSync(join(root, 'log', 'hdb.log'), `${head}${lastBody}-----END PRIVATE KEY-----\nafter\n`);
+			const endStart = head.length + lastBody.length;
+			for (const cursor of [{ startLine: 4 }, { offset: endStart - 21 }, { offset: endStart - 39 }]) {
+				await assert.rejects(
+					readFileTool.handler({ root: 'logs', path: 'hdb.log', lineCount: 1, ...cursor }, ctx(defaultScopes())),
+					/holds a PEM private key at that position/,
+					JSON.stringify(cursor)
+				);
+			}
+			const after = await readFileTool.handler(
+				{ root: 'logs', path: 'hdb.log', offset: endStart + 26 },
+				ctx(defaultScopes())
+			);
+			assert.equal(after.content, 'after\n');
+		});
 	});
 });
