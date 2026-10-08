@@ -110,14 +110,19 @@ suite(
 			}
 			await killHarper(ctx);
 			await startHarper(ctx, { config: {} });
-			assert.deepStrictEqual(
-				await sendOperation(ctx.harper, {
+			const readRecreated = () =>
+				sendOperation(ctx.harper, {
 					operation: 'search_by_value',
 					table: 'rollback_recreate',
 					search_attribute: 'id',
 					search_value: '*',
 					get_attributes: ['id'],
-				}),
+				});
+			assert.deepStrictEqual(await readRecreated(), [{ id: 'legacy-recreated' }]);
+			await killHarper(ctx);
+			await startHarper(ctx, { config: {} });
+			assert.deepStrictEqual(
+				await readRecreated(),
 				[{ id: 'legacy-recreated' }],
 				'a retired journal must not reclaim the bare table recreated on 5.2'
 			);
