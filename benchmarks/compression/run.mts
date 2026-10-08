@@ -43,6 +43,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
 import { readdir, stat, readFile, mkdir, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { homedir } from 'node:os';
 import http from 'node:http';
 import {
@@ -541,6 +542,7 @@ interface RunResult {
 	/** False when the instance shed enough load that the numbers describe backpressure, not the codec. */
 	valid: boolean;
 	errorRate: number;
+	errors: number;
 }
 
 async function runOne(opts: CliOptions, codec: string, dataset: string): Promise<RunResult> {
@@ -570,7 +572,7 @@ async function runOne(opts: CliOptions, codec: string, dataset: string): Promise
 		startupTimeoutMs: opts.startupTimeoutMs,
 	});
 
-	const started = ctx as { harper: { httpURL: string; dataRootDir: string; process: { pid?: number } } };
+	const started = ctx as { harper: { httpURL: string; dataRootDir: string; process: ChildProcess } };
 	const { httpURL, dataRootDir } = started.harper;
 	const pid = started.harper.process.pid!;
 	const parsed = new URL(httpURL);
@@ -675,15 +677,20 @@ async function runOne(opts: CliOptions, codec: string, dataset: string): Promise
 		// killed flush loses SST bytes that were never written — which this benchmark, having
 		// excluded WAL bytes, would report as the codec being smaller. Give the flush a
 		// benchmark-sized budget and confirm the process actually exited on its own.
-		const exited = new Promise<number | NodeJS.Signals | null>((resolve) => {
-			const child = started.harper.process as unknown as {
-				once(e: string, cb: (c: number | null, s: NodeJS.Signals | null) => void): void;
-			};
-			child.once('exit', (code, signal) => resolve(signal ?? code));
-		});
+		// Keep synchronous with killHarper: a process that already exited emits no 'exit' to wait on.
+		const child = started.harper.process;
+		if (child.exitCode !== null || child.signalCode !== null) {
+			throw new Error(
+				`[${label}] Harper exited during the workload (code ${child.exitCode}, signal ${child.signalCode}); ` +
+					`this run measured a dead instance.`
+			);
+		}
 		await killHarper(ctx as never, { graceMs: opts.shutdownGraceMs });
-		const exitStatus = await exited;
-		if (exitStatus === 'SIGKILL') {
+		// killHarper's backstop resolves even if the process is still alive.
+		if (child.exitCode === null && child.signalCode === null) {
+			throw new Error(`[${label}] Harper is still running after shutdown; its on-disk size would be read mid-flush.`);
+		}
+		if (child.signalCode === 'SIGKILL') {
 			throw new Error(
 				`[${label}] Harper did not shut down within ${opts.shutdownGraceMs}ms and was SIGKILLed; ` +
 					`its final flush is incomplete, so the on-disk size would understate this codec. ` +
@@ -705,7 +712,8 @@ async function runOne(opts: CliOptions, codec: string, dataset: string): Promise
 		const writeErrors = warmupErrors + insert.errors + update.errors;
 		const readAttempts = opts.reads + opts.scans;
 		const readErrors = read.errors + scan.errors;
-		const errorRate = (writeErrors + readErrors) / (opts.warmup + opts.records + opts.updates + readAttempts);
+		const errors = writeErrors + readErrors;
+		const errorRate = errors / (opts.warmup + opts.records + opts.updates + readAttempts);
 		const valid = writeErrors === 0 && readErrors / Math.max(1, readAttempts) <= opts.maxErrorRate;
 		if (!valid) {
 			console.warn(
@@ -722,6 +730,7 @@ async function runOne(opts: CliOptions, codec: string, dataset: string): Promise
 			records: opts.records,
 			valid,
 			errorRate,
+			errors,
 			meanRecordBytes: meanBytes,
 			// Warmup rows are written to the same table and drawn from the same
 			// pool, so they belong in the logical total the ratio is taken against.
@@ -810,7 +819,7 @@ function printReport(results: RunResult[]): void {
 					`insert_ops_per_sec=${r.insert.throughput.toFixed(0)} update_ops_per_sec=${r.update.throughput.toFixed(0)} ` +
 					`read_ops_per_sec=${r.read.throughput.toFixed(0)} read_p99_ms=${r.read.p99Ms.toFixed(2)} ` +
 					`scan_ops_per_sec=${r.scan.throughput.toFixed(0)} cpu_seconds=${r.cpuSeconds.toFixed(1)} ` +
-					`errors=${r.insert.errors + r.read.errors + r.scan.errors + r.update.errors} valid=${r.valid}`
+					`errors=${r.errors} valid=${r.valid}`
 			);
 		}
 	}

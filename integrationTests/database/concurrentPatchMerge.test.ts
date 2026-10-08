@@ -348,7 +348,7 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 			await sleep(30);
 			const doc = await getDoc(runId);
 
-			const bodyPresent = doc?.body != null && (doc?.body as string).length > 0;
+			const bodyPresent = doc?.body != null && (doc.body as string).length > 0;
 
 			log(
 				`[c2:r${round}] PUT.status=${putRes.status} PATCH.status=${patchRes.status} title="${doc?.title}" body="${doc?.body}"`

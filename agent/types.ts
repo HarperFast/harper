@@ -69,7 +69,12 @@ export interface AgentToolContext {
 export interface AgentScopes {
 	componentsRoot: string;
 	logDir: string;
-	configDir: string;
+	/** Root of the read-only `config` scope; absent when its target named no file or directory at boot. */
+	configDir?: string;
+	/** Set when the `config` scope is a single file: its name, directly under `configDir`. */
+	configFile?: string;
+	/** Directories no fs tool reads from or writes into, whatever the scope; compared by real path on every call. */
+	keyDirs: string[];
 }
 
 /** Resolved `agent.httpFetch`: on, off, or limited to the listed hosts. Fixed at boot. */
@@ -86,6 +91,7 @@ export interface AgentConfig {
 	allowDestructive: boolean;
 	user: string;
 	componentsScope?: string;
+	configScope?: string;
 	httpFetch: HttpFetchConfig;
 	/** Operator text appended to the agent's system prompt (after the built-in grounding + best practices). */
 	systemPromptAppend?: string;

@@ -25,8 +25,10 @@ describe('Dual-clock audit records (harper#2412)', () => {
 	// Origin log keys for applied writes. Each must be unique on the local log: auditStore.get reads
 	// only the contiguous run of entries at a key, so a second transaction at the same key hides
 	// whatever was written after it. Anchors are 100 s apart so the offsets tests subtract from one
-	// (at most 60 s) never reach the previous anchor.
-	let lastAnchor = Date.now() - 3 * 3_600_000;
+	// (at most 60 s) never reach the previous anchor. They sit in the future: an applied write for
+	// nodeId 0 lands in the `local` log, where a key below the origin-closed floor is replaced by a
+	// fresh one (resources/originClosedFloor.ts), and these tests assert the key they chose.
+	let lastAnchor = Date.now() + 3 * 3_600_000;
 	function originClock() {
 		return (lastAnchor += 100_000);
 	}
