@@ -516,7 +516,7 @@ describe('Test custom functions operations', () => {
 				() => operations.getComponentFile({ project: '../../../../etc', file: 'passwd' }),
 				(error) => {
 					assert.match(error.message, /project name/i);
-					assert.strictEqual(error.statusCode, 400);
+					assert.equal(error.statusCode, 400);
 					return true;
 				}
 			);
