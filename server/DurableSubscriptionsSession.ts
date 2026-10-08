@@ -556,6 +556,7 @@ type TopicState = {
 	/** False while a resumed replay awaits its verdict; nothing is checkpointed past the resumed position until then. */
 	verified: boolean;
 	deliveredKey?: number;
+	/** Below every key of the last delivered transaction. */
 	keyBefore?: number;
 	/** Each event has its own log key, as on LMDB; a RocksDB transaction's events share one. */
 	keysPerEntry?: boolean;
@@ -566,6 +567,15 @@ type TopicState = {
 
 /** Only pruned history resets a session: a position from another generation resumes unchecked instead. */
 const RESETTING_REFUSALS = new Set(['RESUME_HISTORY_UNAVAILABLE']);
+
+const KEY_SCRATCH = new Float64Array(1);
+const KEY_BITS = new BigInt64Array(KEY_SCRATCH.buffer);
+/** The greatest position below a log key, a positive double whose bits order as its value: a replay after it starts at the key. */
+function positionBefore(key: number): number {
+	KEY_SCRATCH[0] = key;
+	KEY_BITS[0] -= 1n;
+	return KEY_SCRATCH[0];
+}
 
 function logKeysPerEntry(topic: string): boolean {
 	const auditStore = resources.getMatch(topic.split('?')[0], 'mqtt')?.Resource?.auditStore;
@@ -718,11 +728,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const state = this.topics.get(update.topic);
 		// scan deliveries are state, not history: their keys follow no transaction order
 		if (state && !update.fromScan && typeof update.localTime === 'number') {
-			if (update.localTime !== state.deliveredKey) {
-				state.keyBefore = state.deliveredKey;
-				state.deliveredKey = update.localTime;
+			const key = update.localTime;
+			if (key !== state.deliveredKey) {
+				// a transaction can commit after one with a higher key, so it arrives below the last delivered key
+				state.keyBefore = key < state.deliveredKey ? positionBefore(key) : state.deliveredKey;
+				state.deliveredKey = key;
 			}
-			state.unacked.set(messageId, { key: update.localTime, previousKey: state.keyBefore });
+			state.unacked.set(messageId, { key, previousKey: state.keyBefore });
 		}
 		return messageId;
 	}
@@ -798,28 +810,31 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 	/**
 	 * The newest position this topic can resume from with nothing it has delivered and not been acked
-	 * after it: `progress()` bounds what the subscription has sent, and the oldest unacked delivery bounds
+	 * after it: `progress()` bounds what the subscription has sent, and every unacked delivery bounds
 	 * what the client has taken. A transaction's deliveries share its key, so an unacked one holds the
 	 * position before its whole transaction.
 	 */
 	nextPosition(state: TopicState): number | undefined {
 		const subscription = state.subscription;
 		if (!subscription || !state.verified) return;
-		const oldestUnacked = state.unacked.values().next();
-		if (subscription.progress === undefined) {
-			// a resource that certifies nothing (LMDB, or not a table) advances on acknowledgements alone
-			if (!oldestUnacked.done) return oldestUnacked.value.previousKey;
-			// a message still queued can share the last delivered key, unless every event has its own
-			return state.keysPerEntry ? state.deliveredKey : state.keyBefore;
+		// a resource that certifies nothing (LMDB, or not a table) advances on acknowledgements alone
+		const certified = subscription.progress !== undefined;
+		// a message still queued can share the last delivered key, unless every event has its own
+		let boundary = certified
+			? subscription.sentCount === state.consumed
+				? Infinity
+				: state.keyBefore
+			: state.keysPerEntry
+				? state.deliveredKey
+				: state.keyBefore;
+		// deliveries arrive in commit order, not key order, so the oldest unacked one need not hold the lowest bound
+		for (const { previousKey } of state.unacked.values()) {
+			if (previousKey === undefined) return;
+			if (previousKey < boundary) boundary = previousKey;
 		}
+		if (boundary === undefined || !certified) return boundary;
 		const progress = subscription.progress();
 		if (progress === undefined) return;
-		const boundary = !oldestUnacked.done
-			? oldestUnacked.value.previousKey
-			: subscription.sentCount === state.consumed
-				? Infinity
-				: state.keyBefore;
-		if (boundary === undefined) return;
 		return boundary < progress ? boundary : progress;
 	}
 	advancePositions(): boolean {
