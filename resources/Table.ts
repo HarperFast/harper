@@ -875,6 +875,11 @@ interface TableResourceClass {
 			  }
 	): void;
 	getResidencyRecord(id: Id): any;
+	/**
+	 * Set the nodes that store each record in full; other nodes keep an indexed stub. The node that makes a
+	 * write is added to the list and keeps the full record, unless the write is a patch onto a stub it holds.
+	 * Call with no function to restore the default.
+	 */
 	setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition): void;
 	setResidencyById(getResidencyById?: (id: Id) => number | void): void;
 	getResidency(record: object, context: Context): number | void | string[];
@@ -1448,6 +1453,7 @@ export function makeTable(options): TableResourceClass {
 	let expirationScanScheduled = false;
 	// set on the first expiring write so the unscheduled-expiration warning is evaluated at most once per table
 	let expirationWarningChecked = false;
+	let writerResidencyWarned = false;
 	let propertyResolvers: any;
 	const warnedUnresolvedComputed = new Set<string>();
 	let hasRelationships = false;
@@ -2837,16 +2843,16 @@ export function makeTable(options): TableResourceClass {
 		}
 
 		static setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition) {
-			TableResource.getResidency =
-				getResidency &&
-				((record: object, context: Context) => {
-					try {
-						return getResidency(record, context);
-					} catch (error: unknown) {
-						(error as Error).message += ` in residency function for table ${tableName}`;
-						throw error;
+			TableResource.getResidency = getResidency
+				? (record: object, context: Context) => {
+						try {
+							return getResidency(record, context);
+						} catch (error: unknown) {
+							(error as Error).message += ` in residency function for table ${tableName}`;
+							throw error;
+						}
 					}
-				});
+				: defaultGetResidency;
 		}
 		static setResidencyById(getResidencyById?: (id: Id) => number | void) {
 			TableResource.getResidencyById =
@@ -4653,6 +4659,7 @@ export function makeTable(options): TableResourceClass {
 			const transaction = txnForContext(context);
 			const replaying = transaction.isReplay === true;
 			assertDerivedIndexAdmission(options, transaction);
+			const writtenHere = !options?.isNotification && !transaction.sourceApply && !replaying;
 			checkValidId(id);
 			if (fullUpdate && recordUpdate == null && options?.isNotification) {
 				// A source/replication-applied put must carry the record; these applies skip record
@@ -5370,37 +5377,32 @@ export function makeTable(options): TableResourceClass {
 					this.#record = recordToStore;
 					if (recordToStore && recordToStore.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');
-					if (residencyId == undefined) {
+					// A patch onto a record-based residency stub has no complete base, so it stays a stub and keeps the
+					// stub's residency: that list names the nodes holding the complete record.
+					const baseEntry = priorStaged ?? existingEntry;
+					const patchesStub =
+						!fullUpdate &&
+						!TableResource.getResidencyById &&
+						Boolean(baseEntry?.residencyId && baseEntry.metadataFlags & INVALIDATED);
+					if (patchesStub) {
+						omitLocalRecord = true;
+						residencyId ??= baseEntry.residencyId;
+					} else if (residencyId == undefined) {
 						if (existingEntry?.residencyId)
 							(context as any).previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
-						const residency = residencyFromFunction(TableResource.getResidency(recordToStore, context));
-						if (residency) {
-							if (!residency.includes(server.hostname)) {
-								// if we aren't in the residency list, specify that our local record should be omitted or be partial
-								auditRecordToStore ??= recordToStore;
-								omitLocalRecord = true;
-								if (TableResource.getResidencyById) {
-									// complete omission of the record that doesn't belong here
-									recordToStore = undefined;
-								} else {
-									// store the partial record
-									recordToStore = null;
-									for (const name in indices) {
-										if (!recordToStore) {
-											recordToStore = {};
-										}
-										// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-										recordToStore[name] = auditRecordToStore[name];
-									}
-									if (createdTimeProperty && auditRecordToStore[createdTimeProperty.name] != null) {
-										// preserve the created timestamp in the partial record so it isn't lost when we don't have residency
-										if (!recordToStore) recordToStore = {};
-										recordToStore[createdTimeProperty.name] = auditRecordToStore[createdTimeProperty.name];
-									}
-								}
-							}
+						let residency = residencyFromFunction(TableResource.getResidency(recordToStore, context));
+						if (residency && !residency.includes(server.hostname)) {
+							if (writtenHere && !TableResource.getResidencyById) {
+								// a write made here never sheds this node's complete copy (harper#2257)
+								residency = [...residency, server.hostname];
+								warnWriterKeptResident(residency);
+							} else omitLocalRecord = true;
 						}
 						residencyId = getResidencyId(residency);
+					}
+					if (omitLocalRecord) {
+						auditRecordToStore ??= recordToStore;
+						recordToStore = TableResource.getResidencyById ? undefined : residencyStub(auditRecordToStore);
 					}
 					if (expiresAt == undefined) {
 						// A schema @expiresAt attribute makes the record field authoritative over the table
@@ -5529,7 +5531,9 @@ export function makeTable(options): TableResourceClass {
 						// transaction (an audit-only commit stored no record, so it stages nothing and the
 						// earlier staged record, if any, remains the basis)
 						if (storeRecord) {
-							write.stagedEntry = { value: recordToStore };
+							write.stagedEntry = omitLocalRecord
+								? { value: recordToStore, metadataFlags: INVALIDATED, residencyId }
+								: { value: recordToStore };
 							// blobs this write saved are referenced by its audit entry (if it wrote one), which
 							// then owns their lifetime; and any record an earlier write in this transaction
 							// stored is now replaced, so mark those writes for the superseded-blob cleanup
@@ -8710,6 +8714,7 @@ export function makeTable(options): TableResourceClass {
 		AssertTrue<ExactlyEqual<InstanceType<TableResourceClass>, TableResourceInstance<object>>>,
 		AssertTrue<ExactlyEqual<TableResourceClass['prototype'], TableResourceInstance>>,
 	];
+	const defaultGetResidency = TableResource.getResidency;
 	const throttledCallToSource = throttle(
 		async (source, id, sourceContext, existingEntry) => {
 			// call the data source if it exists and will fulfill our request for data
@@ -9697,25 +9702,7 @@ export function makeTable(options): TableResourceClass {
 									// if we aren't in the residency list, specify that our local record should be omitted or be partial
 									auditRecord = updatedRecord;
 									omitLocalRecord = true;
-									if (TableResource.getResidencyById) {
-										// complete omission of the record that doesn't belong here
-										updatedRecord = undefined;
-									} else {
-										// store the partial record
-										updatedRecord = null;
-										for (const name in indices) {
-											if (!updatedRecord) {
-												updatedRecord = {};
-											}
-											// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-											updatedRecord[name] = auditRecord[name];
-										}
-										if (createdTimeProperty && auditRecord[createdTimeProperty.name] != null) {
-											// preserve the created timestamp in the partial record so it isn't lost when we don't have residency
-											if (!updatedRecord) updatedRecord = {};
-											updatedRecord[createdTimeProperty.name] = auditRecord[createdTimeProperty.name];
-										}
-									}
+									updatedRecord = TableResource.getResidencyById ? undefined : residencyStub(auditRecord);
 								}
 								residencyId = getResidencyId(residency);
 							}
@@ -10185,6 +10172,27 @@ export function makeTable(options): TableResourceClass {
 		}
 		throw new Error(
 			`Shard or residency list ${shardOrResidencyList} is not a valid type, must be a shard number or residency list of node hostnames`
+		);
+	}
+	/** The indexed fields (and created time) a node outside a record's residency keeps, so searches still find it. */
+	function residencyStub(record: any) {
+		let stub = null;
+		for (const name in indices) {
+			stub ??= {};
+			stub[name] = record[name];
+		}
+		if (createdTimeProperty && record[createdTimeProperty.name] != null) {
+			stub ??= {};
+			stub[createdTimeProperty.name] = record[createdTimeProperty.name];
+		}
+		return stub;
+	}
+	/** Once per table per thread. */
+	function warnWriterKeptResident(residency: string[]) {
+		if (writerResidencyWarned) return;
+		writerResidencyWarned = true;
+		logger.warn?.(
+			`The residency function for table "${tableName}" excluded this node (${server.hostname}) for a write made here; this node keeps the full record and was added to its residency: ${residency.join(', ')}`
 		);
 	}
 	function getResidencyId(ownerNodeNames) {
