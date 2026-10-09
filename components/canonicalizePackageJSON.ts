@@ -24,9 +24,7 @@ function canonicalizeResolutionField(value: unknown, field: 'exports' | 'imports
 	if (Array.isArray(value)) return value.map((item) => canonicalize(item, true));
 	if (!value || typeof value !== 'object') return value;
 	const keys = Object.keys(value);
-	// `imports` keys are always subpaths ("#dep"); at the `exports` root only a leading "." makes a
-	// key a subpath — "#" there is a legal, if unusual, condition name (Node's own
-	// isConditionalExportsMainSugar treats any non-"."-leading key as a condition).
+	// "#" marks a subpath only under `imports`; at the `exports` root only a leading "." does.
 	const isSubpathMap = field === 'imports' || keys.some((key) => key.startsWith('.'));
 	const canonical: Record<string, unknown> = Object.create(null);
 	for (const key of isSubpathMap ? keys.sort() : keys)

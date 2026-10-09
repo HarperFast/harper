@@ -118,6 +118,27 @@ describe('installed application runtime metadata', () => {
 		);
 	});
 
+	it('detects reordering of a condition map inside a root exports array fallback', async function () {
+		const manifest = {
+			name: 'app',
+			exports: [{ node: './node.js', default: './default.js' }, './legacy.js'],
+		};
+		await fs.writeFile(path.join(this.previous, 'package.json'), JSON.stringify(manifest));
+
+		const reordered = structuredClone(manifest);
+		reordered.exports[0] = { default: './default.js', node: './node.js' };
+		await fs.writeFile(path.join(this.current, 'package.json'), JSON.stringify(reordered));
+
+		assert.equal(
+			installedRuntimeChanged(
+				await readInstalledPackageMetadata(this.previous),
+				await readInstalledPackageMetadata(this.current),
+				false
+			),
+			true
+		);
+	});
+
 	it('compares generated lock evidence after installation', async function () {
 		await Promise.all([
 			fs.writeFile(path.join(this.previous, 'package.json'), '{"name":"app"}\n'),
