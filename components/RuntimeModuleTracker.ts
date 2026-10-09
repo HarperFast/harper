@@ -4,6 +4,7 @@ import { lstat, readFile, readlink } from 'node:fs/promises';
 import { createRequire, Module } from 'node:module';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { canonicalizeJSON } from './canonicalizePackageJSON.ts';
 
 type Source = string | Buffer;
 
@@ -208,13 +209,4 @@ function moduleDigest(path: string, source: Source): string {
 		} catch {}
 	}
 	return digest(source);
-}
-
-function canonicalizeJSON(value: unknown): unknown {
-	if (Array.isArray(value)) return value.map(canonicalizeJSON);
-	if (!value || typeof value !== 'object') return value;
-	const canonical: Record<string, unknown> = Object.create(null);
-	for (const key of Object.keys(value).sort())
-		canonical[key] = canonicalizeJSON((value as Record<string, unknown>)[key]);
-	return canonical;
 }

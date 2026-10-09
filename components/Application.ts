@@ -41,6 +41,7 @@ import {
 	type GitCredentialSession,
 	type ResolvedGitCredential,
 } from './gitCredentialServer.ts';
+import { canonicalizeJSON } from './canonicalizePackageJSON.ts';
 import { getSecretDecryptor } from '../resources/secretDecryptor.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 import {
@@ -797,14 +798,6 @@ export function installedRuntimeChanged(
 		(current.hasInstallableDependencies && !current.hasLockfile) ||
 		!installedPackageMetadataEqual(previous, current)
 	);
-}
-
-function canonicalizeJSON(value: any): any {
-	if (Array.isArray(value)) return value.map(canonicalizeJSON);
-	if (!value || typeof value !== 'object') return value;
-	const canonical: Record<string, any> = Object.create(null);
-	for (const key of Object.keys(value).sort()) canonical[key] = canonicalizeJSON(value[key]);
-	return canonical;
 }
 
 /**

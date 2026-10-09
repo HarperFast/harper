@@ -58,6 +58,63 @@ describe('RuntimeModuleTracker', () => {
 		assert.equal(await this.tracker.finishDeploy(), true);
 	});
 
+	const EXPORTS_IMPORTS_MANIFEST = {
+		name: 'example',
+		version: '1.0.0',
+		exports: {
+			'.': { node: './node.js', default: './default.js' },
+			'./sub': { import: { types: './sub.d.ts', default: './sub.js' }, require: './sub.cjs' },
+		},
+		imports: { '#dep': { node: './dep-node.js', default: './dep-default.js' } },
+	};
+
+	// Each case starts a fresh tracker recording the original manifest, because the tracker's
+	// stored digest never updates after the initial recordModule() — finishDeploy() always compares
+	// against that one baseline, not against whatever a prior round wrote.
+	async function digestChanged(directory, rewrittenContent) {
+		const packagePath = join(directory, 'package.json');
+		const original = JSON.stringify(EXPORTS_IMPORTS_MANIFEST);
+		writeFileSync(packagePath, original);
+		const tracker = new RuntimeModuleTracker(() => directory);
+		tracker.recordModule(pathToFileURL(packagePath).href, original);
+		tracker.beginDeploy();
+		writeFileSync(packagePath, rewrittenContent);
+		return tracker.finishDeploy();
+	}
+
+	it('ignores whitespace-only reformatting of exports/imports condition maps', async () => {
+		const reformatted = `${JSON.stringify(EXPORTS_IMPORTS_MANIFEST, null, 2)}\n`;
+		assert.equal(await digestChanged(this.directory, reformatted), false);
+	});
+
+	it('detects reordering of a top-level exports condition map', async () => {
+		const reordered = structuredClone(EXPORTS_IMPORTS_MANIFEST);
+		reordered.exports['.'] = { default: './default.js', node: './node.js' };
+		assert.equal(await digestChanged(this.directory, JSON.stringify(reordered)), true);
+	});
+
+	it('detects reordering of a nested exports condition map', async () => {
+		const reordered = structuredClone(EXPORTS_IMPORTS_MANIFEST);
+		reordered.exports['./sub'].import = { default: './sub.js', types: './sub.d.ts' };
+		assert.equal(await digestChanged(this.directory, JSON.stringify(reordered)), true);
+	});
+
+	it('detects reordering of an imports condition map', async () => {
+		const reordered = structuredClone(EXPORTS_IMPORTS_MANIFEST);
+		reordered.imports['#dep'] = { default: './dep-default.js', node: './dep-node.js' };
+		assert.equal(await digestChanged(this.directory, JSON.stringify(reordered)), true);
+	});
+
+	it('ignores reordering of ordinary package.json keys outside exports/imports', async () => {
+		const reordered = {
+			version: EXPORTS_IMPORTS_MANIFEST.version,
+			imports: EXPORTS_IMPORTS_MANIFEST.imports,
+			name: EXPORTS_IMPORTS_MANIFEST.name,
+			exports: EXPORTS_IMPORTS_MANIFEST.exports,
+		};
+		assert.equal(await digestChanged(this.directory, JSON.stringify(reordered)), false);
+	});
+
 	it('detects a new higher-priority extensionless resolution candidate', async () => {
 		const referrerPath = join(this.directory, 'resources.js');
 		const jsonPath = join(this.directory, 'helper.json');
