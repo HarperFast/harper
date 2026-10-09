@@ -641,14 +641,64 @@ instead of re-opening the surviving rows with create-if-missing, which resurrect
 **Lifecycle stamps (harper#1212).** The tombstone is node-local, so a peer offline for a replicated
 `drop_table` would bring the table back through the schema handshake. Two durable facts give every node
 one rule: the primary row carries `createdTime` from create (`declareTable`, kept from a peer's propagated
-definition), and the tombstone carries `droppedTime` (`dropTable({ droppedTime })` applies a peer's), which
+definition), and the tombstone carries `droppedTime` (`dropTable({ peer: true, droppedTime })` applies a peer's), which
 every completion path promotes to a `/dropped/<table>` row (`promoteTombstoneToDropMarker`) before removing
 the tombstone — no second-write crash cut. Both come from `tableLifecycleTime()`, the record-version clock;
 `isDeadGeneration(createdTime, droppedTime)` is strict (equal survives, a missing stamp is 0). The marker
 outlives a same-name recreate, only a newer drop overwrites it, the load parser skips `/dropped/` rows, and
-`getTableDrops` / `recordTableDrop` / `onTableDropRecorded` serve replication. On RocksDB, a completion without a drop time records untimed name history instead; `getTableDrops` and `pendingOrRecordedDropTime` skip that marker, and a timed drop overwrites it. `unitTests/resources/dropTableLifecycle.test.js`.
+`getTableDrops` / `recordTableDrop` / `onTableDropRecorded` serve replication; a recorded marker is announced on every
+thread (each owns its own replication connections) and advances that thread's `tableDropEpoch`.
 
-First-time RocksDB creates use bare primary/index names only when this node has no drop marker, no journal row for the table, and no `T/` column family (harper#3102). Any name history requires a generation stamp, including after local-only reclamation or a replicated drop on a node that never held the table. Incoming primary-attribute generations are replaced by this node's physical naming choice. Create journals have their own identity; when a creating and retired journal name the same primary, the creating row leaves that primary to the retired row's blob sweep. Recovery reads their current phases under the catalog lock. Their `creatingStores` field must stay separate from `stores`, which shipped 5.3 readers destructively reclaim without recognizing a published bare primary. Reclamation always preserves stores owned by the live, non-dropping catalog and never sweeps that primary's blobs: a 5.2 writer can reuse bare names while ignoring the retired journal. Previously stamped tables retain their names and remain outside 5.2 rollback support, as do stamped recreates. During interrupted-drop recovery, a bare predecessor can remain until its asynchronous reclamation finishes; 5.2 ignores that recovery state and can expose predecessor rows through a recreate. `unitTests/resources/dropTableGeneration.test.js` enforces naming, crash recovery, and live-store ownership; `integrationTests/upgrade/first-create-downgrade.test.ts` exercises the real 5.2 round trip.
+A drop with no `droppedTime` (a node-local table's, a `localOnly` one, or a tombstone written before the stamps
+existed) is never given one at completion: a time invented then could postdate a peer's live recreate. On RocksDB
+its completion leaves an untimed `/dropped/<table>` row instead, name history for the store naming below. Every
+reader of a drop time skips that row (`getTableDrops`, `pendingOrRecordedDropTime`, `isDroppedPeerGeneration`
+and the create checks), so peers never learn of the drop, and a timed drop overwrites it.
+
+The rule is enforced where a generation becomes or stops being live, under the lock that publishes the primary
+row or writes the tombstone, so no peer path can check it and then act on a catalog another thread changed:
+
+- A create carrying a peer's generation (`origin: 'cluster'`, or a supplied `createdTime`) throws
+  `TableGenerationDroppedError` (409) when a marker here retires it, and so does a stamped one for a name live here,
+  before its attributes merge into the newer generation. The check precedes the create journal and every store
+  open, so a refused create leaves nothing to reclaim. A peer that kept no stamp is stored at `0`: any drop retires
+  it and nothing backfills it. `undefined` is left to tables created on a pre-stamp build.
+- A peer's drop (`dropTable({ peer: true, droppedTime })`) never retires a `replicate: false` table, and with a
+  time only a generation created before it; `writeTombstone` re-checks the row it locked. A kept generation
+  resolves `false` and writes no tombstone or retirement journal, and the peer's time is recorded as a marker
+  either way. A tombstone is written only after the rule passed, so the recovery that completes one judges
+  nothing again. The operation bridge treats a drop as a peer's only through `REPLICATED_FROM`, which
+  `server.operation` sets from its context: a JSON body cannot claim it, and `schema.dropTable` discards a
+  client's `droppedTime`.
+- A node-local table's own drop leaves no `droppedTime` and is not forwarded. A marker from an earlier,
+  replicated generation of the name is kept and still sent.
+- `dropTableMeta` removes a name's rows only when no primary row, live or still dropping, exists.
+- A table with no stamp was created by a build that stored none, so before the first load on a build that stamps;
+  that load writes the bound as `createdBefore` on its primary row (`catalogCreatedBefore`). A drop recorded after
+  the bound retires the table outright, and only an older drop leaves the replication layer's upgrade heuristic
+  anything to decide. A table created during a rollback to such a build gets its own bound at the next load.
+- The legacy per-table layout (`databasePath` is not the database name) has no database catalog for a marker,
+  so its drops leave none.
+
+`unitTests/resources/dropTableLifecycle.test.js`.
+
+**Store names and 5.2 rollback (harper#3102).** A RocksDB table's store names are distinct from its `createdTime`
+stamp: a generation suffix (`T/@<generation>`) on the primary row, which `writeTombstone` also checks as identity.
+First-time creates use bare primary/index names only when this node has no `/dropped/` row of the name (timed or
+untimed, including one recorded for a peer's drop this node kept or never held), no journal row for the table,
+and no `T/` column family. Any name history requires a suffix, including after local-only reclamation. Incoming
+primary-attribute suffixes are replaced by this node's physical naming choice, while a peer's `createdTime` is
+kept. Create journals have their own identity; when a creating and retired journal name the same primary, the
+creating row leaves that primary to the retired row's blob sweep. Recovery reads their current phases under the
+catalog lock. Their `creatingStores` field must stay separate from `stores`, which shipped 5.3 readers
+destructively reclaim without recognizing a published bare primary. Reclamation always preserves stores owned by
+the live, non-dropping catalog and never sweeps that primary's blobs: a 5.2 writer can reuse bare names while
+ignoring the retired journal. A drop whose tombstone another thread completed first retires only its own stores
+that the live catalog does not own, and still resolves `true`. Tables with suffixed names keep them and remain
+outside 5.2 rollback support, as do suffixed recreates. During interrupted-drop recovery, a bare predecessor can
+remain until its asynchronous reclamation finishes; 5.2 ignores that recovery state and can expose predecessor
+rows through a recreate. `unitTests/resources/dropTableGeneration.test.js` enforces naming, crash recovery, and
+live-store ownership; `integrationTests/upgrade/first-create-downgrade.test.ts` exercises the real 5.2 round trip.
 
 ## The exclusive `update-attributes` lock is a bounded synchronous wait, and drop-then-recreate needs the column-family eviction fix (`Table.ts`)
 
