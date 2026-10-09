@@ -1282,13 +1282,6 @@ function reportRelationshipError(key: string, message: string): void {
 }
 
 /**
- * Scan a databases directory's entries for restore lock/marker files and return the names of
- * databases that must not be loaded: a held restore lock means a restore is in progress in some
- * process; an unheld lock with a surviving `.restoring` marker means a restore was interrupted
- * mid-purge (the directory may be partial garbage) and must be rerun. The files live *next to*
- * the database directory, so this also covers a database whose directory is missing or empty.
- */
-/**
  * A marked root this thread already has open is the live database an online restore is staging
  * beside: it keeps serving and stays loaded until the restore's close broadcast closes it. Dropping
  * it here would orphan the handle, since `closeDatabase` only reaches loaded databases.
@@ -1297,6 +1290,13 @@ function restoreBlocksLoad(blockedByRestore: Set<string>, dbName: string, dbPath
 	return blockedByRestore.has(dbName) && !rocksdbDatabaseEnvs.has(dbPath) && !lmdbDatabaseEnvs.has(dbPath);
 }
 
+/**
+ * Scan a databases directory's entries for restore lock/marker files and return the names of
+ * databases that must not be loaded: a held restore lock means a restore is in progress in some
+ * process; an unheld lock with a surviving `.restoring` marker means a restore was interrupted
+ * mid-purge (the directory may be partial garbage) and must be rerun. The files live *next to*
+ * the database directory, so this also covers a database whose directory is missing or empty.
+ */
 function databasesBlockedByRestore(databasePath: string): Set<string> {
 	const blocked = new Set<string>();
 	for (const [dbName, state] of scanBlockedRestores(databasePath)) {

@@ -85,8 +85,8 @@ in, and reloading it. Several non-obvious mechanics keep that safe:
   directory that is a symlink is refused, since the swap would replace the link with a directory,
   and so is one that is a mount point of another filesystem, since staging (beside it) would land
   elsewhere and the rename could only fail after a full copy. The check compares devices, so a
-  same-device bind mount passes it and fails at the first rename, with the database untouched. **`.replaced` outlives every attempt under a
-  preexisting marker**: a crash between the renames leaves it as the only copy of the database, so
+  same-device bind mount passes it and fails at the first rename, with the database untouched.
+  **`.replaced` outlives every attempt under a preexisting marker**: a crash between the renames leaves it as the only copy of the database, so
   a rerun keeps it until its own replacement publishes (and drops whatever is at the database path
   then, a disposable candidate, before the space check; online, only once nothing holds it open). That inference needs `.replaced` never to
   outlive its restore, so a finished restore renames it to `<key>.discarded` while its marker still

@@ -100,8 +100,8 @@ async function schemaHandler(event) {
 				event.message.dropPreparationRootPaths
 			);
 	}
-	// restore_backup: this thread must release its store handles so the restore can purge and
-	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
+	// restore_backup: this thread must release its store handles so the restore can replace the
+	// database directory. The rescan below (resetDatabases) skips reloading it while
 	// the restoring marker is present, and reloads it on the completion signal (marker gone).
 	let resumeBlobSavesFor;
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {

@@ -546,7 +546,10 @@ describe('rocksdbBackup', function () {
 			for (const restore of Object.values(restores)) {
 				mkdirSync(replacedDir, { recursive: true });
 				try {
-					await assert.rejects(restore(backupId), (error) => error.statusCode === 409);
+					await assert.rejects(
+						restore(backupId),
+						(error) => error.statusCode === 409 && /recorded no restore marker/.test(error.message)
+					);
 					assert.ok(existsSync(replacedDir));
 				} finally {
 					rmSync(replacedDir, { recursive: true, force: true });

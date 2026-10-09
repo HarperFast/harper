@@ -678,7 +678,9 @@ export async function restoreBackup(request: any) {
 	});
 	try {
 		// Preparing a rerun of an unfinished publication drops the candidate it left, so nothing may hold it.
-		if (pathPresent(restoreReplacedPath(databaseDir))) await verifyDatabaseClosed(databaseDir, databaseName);
+		if (lock.preexisting && pathPresent(restoreReplacedPath(databaseDir))) {
+			await verifyDatabaseClosed(databaseDir, databaseName);
+		}
 		// Staged while the database is still open and serving, so the copy is not downtime.
 		prepareRestoreStaging(lock, publication);
 		await stageRestore(backupDir, backupId, lock);
@@ -1312,7 +1314,6 @@ export async function restoreBackupOffline(
 		});
 	});
 	try {
-		// Once before the copy so a live holder fails fast, and again just before publication.
 		assertNotOpenElsewhere(databaseDir, databaseName);
 		prepareRestoreStaging(lock, publication);
 		await stageRestore(backupDir, backupId, lock);

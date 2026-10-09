@@ -1,4 +1,3 @@
-/** harper#2965 — restore_backup must verify the backup before it touches the destination. */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, match } from 'node:assert';
 import { execFile } from 'node:child_process';
