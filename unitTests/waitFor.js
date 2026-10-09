@@ -21,10 +21,12 @@ const { setTimeout: sleep } = require('node:timers/promises');
 async function waitFor(condition, timeoutOrOptions = {}, interval) {
 	const options = typeof timeoutOrOptions === 'number' ? { timeout: timeoutOrOptions, interval } : timeoutOrOptions;
 	const { timeout = 2000, interval: pollInterval = 10, message } = options;
-	const deadline = Date.now() + timeout;
+	// performance.now(), not Date.now(): callers freeze Date.now (logRotator.test.js) while
+	// waiting, and a deadline on that clock never arrives
+	const deadline = performance.now() + timeout;
 	let result = await condition();
 	while (!result) {
-		if (Date.now() >= deadline) {
+		if (performance.now() >= deadline) {
 			assert.fail(
 				(typeof message === 'function' ? message() : message) ?? `Timed out after ${timeout}ms waiting for condition`
 			);

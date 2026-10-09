@@ -131,6 +131,18 @@ process.env.ROOTPATH = PID_DIR_PATH;
 // installed root despite everything above
 delete process.env.STORAGE_PATH;
 delete process.env.SCHEMAS_DATA_PATH;
+// initSync() below merges these into the per-PID config, so a shell that exports one would
+// silently change defaults the suites assert (e.g. storage.randomAccessFields). Tests that
+// exercise them set and restore their own values.
+const scrubbedConfigEnvVars = ['HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'].filter(
+	(name) => name in process.env
+);
+for (const name of scrubbedConfigEnvVars) delete process.env[name];
+if (isMainThread && scrubbedConfigEnvVars.length) {
+	process.stderr.write(
+		`mocha.init.js: ignoring ${scrubbedConfigEnvVars.join(', ')} from the environment; unit runs use the per-PID config\n`
+	);
+}
 
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
