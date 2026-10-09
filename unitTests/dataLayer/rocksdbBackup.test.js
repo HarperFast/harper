@@ -1,10 +1,24 @@
 'use strict';
 
 const assert = require('node:assert');
-const { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const fs = require('node:fs');
+const {
+	chmodSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} = fs;
 const { dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { spawn } = require('node:child_process');
+const { syncBuiltinESMExports } = require('node:module');
 const { extract } = require('tar-stream');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const {
@@ -39,10 +53,18 @@ const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 // managed-backup ops self-enforce super_user (see requireSuperUser in rocksdbBackup.ts); requests
 // in the online-operation tests below must therefore carry a super_user role.
 const SU = { hdb_user: { role: { permission: { super_user: true } } } };
-const { abandonRestore, beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
+const {
+	abandonRestore,
+	beginRestore,
+	completeRestore,
+	checkRestoreState,
+	restoreDiscardedPath,
+	restoreReplacedPath,
+	restoreStagingPath,
+} = require('#src/dataLayer/restoreMarker');
 const { pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } = require('#src/dataLayer/backupRepository');
 const { backups } = require('@harperfast/rocksdb-js');
-const { closeLoadedDatabases } = require('#src/resources/databases');
+const { closeLoadedDatabases, resetDatabases } = require('#src/resources/databases');
 const {
 	ARCHIVE_MANIFEST_ENTRY,
 	ARCHIVE_SCHEMA_VERSION,
@@ -319,6 +341,469 @@ describe('rocksdbBackup', function () {
 			} finally {
 				completeRestore(lock);
 			}
+		});
+	});
+
+	// harper#2965
+	describe('restore staging', function () {
+		const STAGED = `${DB_NAME}-staged`;
+		const stagedDir = () => join(storageDir, STAGED);
+		const RECORDS = Array.from({ length: 500 }, (_, i) => [`k${i}`, { i, pad: 'x'.repeat(100) }]);
+
+		afterEach(async function () {
+			// a refused online restore reloads the database it left intact, in this process too
+			await closeLoadedDatabases();
+			if (checkRestoreState(stagedDir()) !== 'clear') completeRestore(beginRestore(stagedDir()));
+			rmSync(stagedDir(), { recursive: true, force: true });
+			rmSync(backupDirForDatabase(STAGED), { recursive: true, force: true });
+			rmSync(restoreStagingPath(stagedDir()), { recursive: true, force: true });
+			rmSync(restoreReplacedPath(stagedDir()), { recursive: true, force: true });
+		});
+
+		async function seed() {
+			const database = RocksDatabase.open(stagedDir());
+			try {
+				await database.transaction(async (transaction) => {
+					transaction.useLog('audit').addEntry(Buffer.from('entry'));
+					for (const [key, value] of RECORDS) transaction.putSync(key, value);
+				});
+				await database.flush();
+			} finally {
+				database.close();
+			}
+			const { backup_id: backupId } = await createBackupOffline(STAGED);
+			// diverge from the backup, so "intact" cannot be satisfied by a restore that happened to succeed
+			const after = RocksDatabase.open(stagedDir());
+			try {
+				after.putSync('after-backup', { kept: true });
+			} finally {
+				after.close();
+			}
+			return backupId;
+		}
+
+		function assertNoDebris() {
+			for (const path of [
+				restoreStagingPath(stagedDir()),
+				restoreReplacedPath(stagedDir()),
+				restoreDiscardedPath(stagedDir()),
+			]) {
+				assert.ok(!existsSync(path), `${path} must not be left behind`);
+			}
+		}
+
+		function assertDestinationIntact() {
+			assert.strictEqual(checkRestoreState(stagedDir()), 'clear', 'a refused restore must not leave a marker');
+			const database = RocksDatabase.open(stagedDir());
+			try {
+				assert.deepStrictEqual(database.getSync('k7'), RECORDS[7][1]);
+				assert.deepStrictEqual(database.getSync('after-backup'), { kept: true }, 'the pre-restore data must survive');
+			} finally {
+				database.close();
+			}
+			assertNoDebris();
+		}
+
+		function assertRestoredFromBackup() {
+			const database = RocksDatabase.open(stagedDir());
+			try {
+				assert.deepStrictEqual(database.getSync('k7'), RECORDS[7][1]);
+				assert.strictEqual(database.getSync('after-backup'), undefined, 'the restore took effect');
+			} finally {
+				database.close();
+			}
+		}
+
+		// RocksDB's backup meta records a crc32c per file, verified as the file is copied out.
+		function crc32c(buffer) {
+			let crc = 0xffffffff;
+			for (const byte of buffer) {
+				crc ^= byte;
+				for (let bit = 0; bit < 8; bit++) crc = crc & 1 ? (crc >>> 1) ^ 0x82f63b78 : crc >>> 1;
+			}
+			return (crc ^ 0xffffffff) >>> 0;
+		}
+
+		// A table whose footer declares a format_version this build does not know — what a newer
+		// binding's table format looks like to this one — with its checksum re-recorded, so the copy
+		// succeeds and only an open by this build can refuse it.
+		function writeUnsupportedTableFormat(backupId) {
+			const backupDir = backupDirForDatabase(STAGED);
+			const sst = readdirSync(join(backupDir, 'shared_checksum')).find((name) => name.endsWith('.sst'));
+			assert.ok(sst, 'precondition: the backup holds a table file');
+			const sstPath = join(backupDir, 'shared_checksum', sst);
+			const contents = readFileSync(sstPath);
+			contents.writeUInt32LE(99, contents.length - 12);
+			writeFileSync(sstPath, contents);
+			const metaPath = join(backupDir, 'meta', String(backupId));
+			const meta = readFileSync(metaPath, 'utf8');
+			const entry = new RegExp(`^(shared_checksum/${sst} crc32 )\\d+$`, 'm');
+			assert.match(meta, entry);
+			writeFileSync(metaPath, meta.replace(entry, `$1${crc32c(contents)}`));
+		}
+
+		function writeUnsupportedLogVersion(backupId) {
+			const store = join(backupDirForDatabase(STAGED), 'transaction_logs', String(backupId), 'audit');
+			const log = readdirSync(store).find((name) => name.endsWith('.txnlog'));
+			const contents = readFileSync(join(store, log));
+			contents[4] = 99;
+			writeFileSync(join(store, log), contents);
+		}
+
+		function corruptBackupFile(backupId) {
+			const privateDir = join(backupDirForDatabase(STAGED), 'private', String(backupId));
+			const manifest = readdirSync(privateDir).find((name) => name.startsWith('MANIFEST-'));
+			const contents = readFileSync(join(privateDir, manifest));
+			contents.fill(0x5a, 0, Math.min(contents.length, 64));
+			writeFileSync(join(privateDir, manifest), contents);
+		}
+
+		const restores = {
+			offline: (backupId) => restoreBackupOffline(STAGED, backupId),
+			online: (backupId) => restoreBackup({ ...SU, database: STAGED, backup_id: backupId }),
+		};
+		const unreadable = [
+			['a corrupt backup', corruptBackupFile, /checksum/i],
+			['a table format this build cannot open', writeUnsupportedTableFormat, /format_version 99/],
+			['a transaction log format this build cannot read', writeUnsupportedLogVersion, /version: 99/],
+		];
+		for (const [mode, restore] of Object.entries(restores)) {
+			for (const [label, damage, signature] of unreadable) {
+				it(`${mode}: refuses ${label} without touching the destination`, async function () {
+					this.timeout(30000);
+					const backupId = await seed();
+					damage(backupId);
+					await assert.rejects(
+						restore(backupId),
+						(error) => signature.test(error.message) && /was not modified/.test(error.message)
+					);
+					assertDestinationIntact();
+				});
+			}
+
+			it(`${mode}: puts the database back when publication fails after moving it aside`, async function () {
+				this.timeout(30000);
+				const backupId = await seed();
+				const realRename = fs.renameSync;
+				fs.renameSync = (from, to) => {
+					if (from === restoreStagingPath(stagedDir()))
+						throw Object.assign(new Error('injected EXDEV'), { code: 'EXDEV' });
+					return realRename(from, to);
+				};
+				// under TypeStrip the module binds the ESM builtin export, which only this re-syncs
+				syncBuiltinESMExports();
+				try {
+					await assert.rejects(restore(backupId), /injected EXDEV/);
+				} finally {
+					fs.renameSync = realRename;
+					syncBuiltinESMExports();
+				}
+				assertDestinationIntact();
+			});
+		}
+
+		it('online: restores a valid backup through the swap', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const result = await restoreBackup({ ...SU, database: STAGED, backup_id: backupId });
+			assert.strictEqual(result.backup_id, backupId);
+			assert.strictEqual(checkRestoreState(stagedDir()), 'clear');
+			await closeLoadedDatabases();
+			assertRestoredFromBackup();
+			assertNoDebris();
+		});
+
+		it('online: a rescan during staging keeps the live database closable', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realRestore = backups.restore;
+			let release;
+			let parked;
+			const staged = new Promise((resolve) => (parked = resolve));
+			backups.restore = async (...args) => {
+				parked();
+				await new Promise((resolve) => (release = resolve));
+				return realRestore.apply(backups, args);
+			};
+			try {
+				const restoring = restoreBackup({ ...SU, database: STAGED, backup_id: backupId });
+				await staged;
+				resetDatabases();
+				release();
+				await restoring;
+			} finally {
+				backups.restore = realRestore;
+			}
+			await closeLoadedDatabases();
+			assertRestoredFromBackup();
+			assertNoDebris();
+		});
+
+		it('refuses a pre-restore copy that no restore marker accounts for', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const replacedDir = restoreReplacedPath(stagedDir());
+			for (const restore of Object.values(restores)) {
+				mkdirSync(replacedDir, { recursive: true });
+				try {
+					await assert.rejects(
+						restore(backupId),
+						(error) => error.statusCode === 409 && /recorded no restore marker/.test(error.message)
+					);
+					assert.ok(existsSync(replacedDir));
+				} finally {
+					rmSync(replacedDir, { recursive: true, force: true });
+				}
+				assertDestinationIntact();
+			}
+		});
+
+		it('keeps the database directory mode across the swap', async function () {
+			if (process.platform === 'win32') this.skip();
+			this.timeout(30000);
+			const backupId = await seed();
+			chmodSync(stagedDir(), 0o700);
+			await restoreBackupOffline(STAGED, backupId);
+			assertRestoredFromBackup();
+			assert.strictEqual(lstatSync(stagedDir()).mode & 0o777, 0o700);
+			assertNoDebris();
+		});
+
+		// Nothing was displaced, so only the published engine says the destination changed; the marker
+		// has to outlive a blob restore that fails after it.
+		it('keeps the marker when a restore into a new target fails after publication', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const TARGET = `${STAGED}-target`;
+			const targetDir = join(storageDir, TARGET);
+			const realRestoreBlobs = blobBackupModule.restoreBlobSnapshot;
+			blobBackupModule.restoreBlobSnapshot = async () => {
+				throw new Error('injected blob failure');
+			};
+			try {
+				await assert.rejects(restoreBackupOffline(STAGED, backupId, TARGET), /injected blob failure/);
+				assert.strictEqual(checkRestoreState(targetDir), 'incomplete');
+			} finally {
+				blobBackupModule.restoreBlobSnapshot = realRestoreBlobs;
+				completeRestore(beginRestore(targetDir));
+				rmSync(targetDir, { recursive: true, force: true });
+				rmSync(restoreStagingPath(targetDir), { recursive: true, force: true });
+				for (const root of getBlobPathsForDatabaseName(TARGET)) rmSync(root, { recursive: true, force: true });
+			}
+		});
+
+		it('refuses a backup that would not fit beside the database before staging anything', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realStatfs = fs.statfsSync;
+			fs.statfsSync = (path, ...rest) => ({ ...realStatfs(path, ...rest), bavail: 1, bsize: 4096 });
+			syncBuiltinESMExports();
+			try {
+				for (const restore of Object.values(restores)) {
+					await assert.rejects(
+						restore(backupId),
+						(error) => error.statusCode === 507 && /was not modified/.test(error.message)
+					);
+					assertDestinationIntact();
+				}
+			} finally {
+				fs.statfsSync = realStatfs;
+				syncBuiltinESMExports();
+			}
+		});
+
+		it('drops the published candidate before measuring space when rerunning a failed publication', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realRestoreBlobs = blobBackupModule.restoreBlobSnapshot;
+			blobBackupModule.restoreBlobSnapshot = async () => {
+				throw new Error('injected blob failure');
+			};
+			try {
+				await assert.rejects(restoreBackupOffline(STAGED, backupId), /injected blob failure/);
+			} finally {
+				blobBackupModule.restoreBlobSnapshot = realRestoreBlobs;
+			}
+			assert.ok(existsSync(restoreReplacedPath(stagedDir())), 'precondition: publication began');
+			assert.ok(existsSync(stagedDir()), 'precondition: a candidate is published');
+
+			const realStatfs = fs.statfsSync;
+			let candidateAtCheck;
+			fs.statfsSync = (path, ...rest) => {
+				candidateAtCheck = existsSync(stagedDir());
+				return realStatfs(path, ...rest);
+			};
+			syncBuiltinESMExports();
+			try {
+				await restoreBackupOffline(STAGED, backupId);
+			} finally {
+				fs.statfsSync = realStatfs;
+				syncBuiltinESMExports();
+			}
+			assert.strictEqual(candidateAtCheck, false);
+			assert.strictEqual(checkRestoreState(stagedDir()), 'clear');
+			assertRestoredFromBackup();
+			assertNoDebris();
+		});
+
+		it('online: refuses to drop a published candidate something still holds open', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realRestoreBlobs = blobBackupModule.restoreBlobSnapshot;
+			blobBackupModule.restoreBlobSnapshot = async () => {
+				throw new Error('injected blob failure');
+			};
+			try {
+				await assert.rejects(restoreBackupOffline(STAGED, backupId), /injected blob failure/);
+			} finally {
+				blobBackupModule.restoreBlobSnapshot = realRestoreBlobs;
+			}
+			assert.ok(existsSync(restoreReplacedPath(stagedDir())), 'precondition: publication began');
+			const holder = RocksDatabase.open(stagedDir());
+			try {
+				await assert.rejects(
+					restoreBackup({ ...SU, database: STAGED, backup_id: backupId }),
+					(error) => error.statusCode === 409
+				);
+				assert.ok(existsSync(join(stagedDir(), 'CURRENT')), 'the held candidate was not removed');
+			} finally {
+				holder.close();
+			}
+			await restoreBackup({ ...SU, database: STAGED, backup_id: backupId });
+			assert.strictEqual(checkRestoreState(stagedDir()), 'clear');
+			await closeLoadedDatabases();
+			assertRestoredFromBackup();
+			assertNoDebris();
+		});
+
+		// `.replaced` is what tells a rerun that the database path holds only a candidate, so it may not
+		// outlive the restore that made it.
+		it('keeps the marker when the pre-restore copy cannot be retired', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realRename = fs.renameSync;
+			fs.renameSync = (from, to) => {
+				if (to === restoreDiscardedPath(stagedDir())) throw Object.assign(new Error('injected EIO'), { code: 'EIO' });
+				return realRename(from, to);
+			};
+			syncBuiltinESMExports();
+			try {
+				await assert.rejects(restoreBackupOffline(STAGED, backupId), /injected EIO/);
+			} finally {
+				fs.renameSync = realRename;
+				syncBuiltinESMExports();
+			}
+			assert.strictEqual(checkRestoreState(stagedDir()), 'incomplete');
+			await restoreBackupOffline(STAGED, backupId);
+			assert.strictEqual(checkRestoreState(stagedDir()), 'clear');
+			assertRestoredFromBackup();
+			assertNoDebris();
+		});
+
+		it('refuses a database directory that is a mount point before staging anything', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realStat = fs.statSync;
+			fs.statSync = (path, ...rest) => {
+				const stats = realStat(path, ...rest);
+				return path === stagedDir()
+					? Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { dev: stats.dev + 1 })
+					: stats;
+			};
+			syncBuiltinESMExports();
+			try {
+				await assert.rejects(
+					restoreBackupOffline(STAGED, backupId),
+					(error) => error.statusCode === 400 && /mount point/.test(error.message)
+				);
+			} finally {
+				fs.statSync = realStat;
+				syncBuiltinESMExports();
+			}
+			assertDestinationIntact();
+		});
+
+		it('refuses a symlinked database directory before staging anything', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realDir = `${stagedDir()}-real`;
+			renameSync(stagedDir(), realDir);
+			symlinkSync(realDir, stagedDir(), 'dir');
+			try {
+				await assert.rejects(
+					restoreBackupOffline(STAGED, backupId),
+					(error) => error.statusCode === 400 && /symbolic link/.test(error.message)
+				);
+				assert.ok(lstatSync(stagedDir()).isSymbolicLink(), 'the link is untouched');
+				assert.strictEqual(checkRestoreState(stagedDir()), 'clear');
+				assertNoDebris();
+			} finally {
+				rmSync(stagedDir(), { force: true });
+				renameSync(realDir, stagedDir());
+			}
+		});
+
+		// Killed between moving the database aside and publishing its replacement: the database path is
+		// empty and `.replaced` is the only copy of it.
+		async function killBetweenRenames(backupId) {
+			const child = spawn(
+				process.execPath,
+				[
+					'-e',
+					`
+				const fs = require('node:fs');
+				const env = require(${JSON.stringify(require.resolve('#src/utility/environment/environmentManager'))});
+				env.initSync();
+				env.setProperty('storage.backupPath', ${JSON.stringify(getBackupsRoot())});
+				const rename = fs.renameSync;
+				fs.renameSync = (from, to) => {
+					rename(from, to);
+					if (to.endsWith('.replaced')) process.kill(process.pid, 'SIGKILL');
+				};
+				require('node:module').syncBuiltinESMExports();
+				const backup = require(${JSON.stringify(require.resolve('#src/dataLayer/rocksdbBackup'))});
+				backup.restoreBackupOffline(${JSON.stringify(STAGED)}, ${backupId})
+					.then(() => process.exit(2), (error) => { console.error(error); process.exit(3); });
+			`,
+				],
+				{ timeout: 20000, env: { ...process.env, STORAGE_PATH: storageDir } }
+			);
+			let stderr = '';
+			child.stderr.on('data', (data) => {
+				stderr += data;
+			});
+			const signal = await new Promise((resolve, reject) => {
+				child.once('error', reject);
+				child.once('exit', (code, exitSignal) =>
+					exitSignal ? resolve(exitSignal) : reject(new Error(`child exited ${code}: ${stderr}`))
+				);
+			});
+			assert.strictEqual(signal, 'SIGKILL');
+			assert.strictEqual(checkRestoreState(stagedDir()), 'incomplete');
+			assert.ok(!existsSync(stagedDir()), 'precondition: killed with the database moved aside');
+			assert.ok(existsSync(restoreReplacedPath(stagedDir())));
+		}
+
+		it('keeps the moved-aside database through a failed rerun', async function () {
+			this.timeout(60000);
+			const good = await seed();
+			await killBetweenRenames(good);
+			corruptBackupFile(good);
+			await assert.rejects(restoreBackupOffline(STAGED, good), /rerun restore_backup to recover/);
+			assert.strictEqual(checkRestoreState(stagedDir()), 'incomplete', 'a failed recovery keeps the marker');
+			assert.ok(existsSync(restoreReplacedPath(stagedDir())), 'and the only copy of the database');
+		});
+
+		it('reruns a publication interrupted between its renames, keeping the moved-aside mode', async function () {
+			this.timeout(60000);
+			const backupId = await seed();
+			chmodSync(stagedDir(), 0o700);
+			await killBetweenRenames(backupId);
+			await restoreBackupOffline(STAGED, backupId);
+			assert.strictEqual(checkRestoreState(stagedDir()), 'clear');
+			assertRestoredFromBackup();
+			if (process.platform !== 'win32') assert.strictEqual(lstatSync(stagedDir()).mode & 0o777, 0o700);
+			assertNoDebris();
 		});
 	});
 

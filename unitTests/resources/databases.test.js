@@ -267,7 +267,7 @@ describe('dropDatabase restore serialization', () => {
 		assert.ok(existsSync(reservedDir), 'the reserved dir itself is left in place (used for lifecycle metadata)');
 	});
 
-	it('never loads a database whose pre-atomic restoring marker is empty', function () {
+	it('never loads a database whose pre-atomic restoring marker is empty', async function () {
 		const databaseName = 'corrupt-marker-startup-test';
 		const Table = table({
 			table: 'CorruptMarker',
@@ -279,6 +279,8 @@ describe('dropDatabase restore serialization', () => {
 
 		abandonRestore(beginRestore(rootStore.path));
 		writeFileSync(restoringMarkerPath(rootStore.path), '');
+		// Startup has nothing open; a root this thread still holds is kept loaded for the restore's close.
+		await closeDatabase(databaseName);
 		try {
 			resetDatabases();
 			assert.strictEqual(
