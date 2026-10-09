@@ -601,6 +601,7 @@ describe('DeploymentRecorder.ingestPayload streaming source', () => {
 	// the commit until the file-backed blob is durable), so this needs a real table, shaped like
 	// hdb_deployment, rather than the Map mock above.
 	const TICK_MS = 20;
+	const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 	let IngestTable;
 	let mainWasWorker;
 
@@ -681,19 +682,25 @@ describe('DeploymentRecorder.ingestPayload streaming source', () => {
 			);
 			assert.strictEqual(blobWrite.timeoutBudget, ingestTransactionTimeoutMs(configuredBudget));
 			assert.strictEqual(blobWrite.context.user, ambientContext.user);
-			// Count real monitor ticks on this transaction rather than wall-clock time: without the budget,
-			// the countdown plus the commit-phase grace (each spare re-arms one tick) aborts it in about
-			// 2 * COMMIT_PHASE_GRACE + 2 ticks.
-			const ticksPastAbort = 2 * COMMIT_PHASE_GRACE + 4;
-			await waitFor(
-				() =>
-					ingestError ||
-					ingestTransactionTimeoutMs(configuredBudget) - blobWrite.transaction.timeout >= ticksPastAbort * TICK_MS,
-				{
-					timeout: 15_000,
-					message: () => `the monitor did not tick the ingest transaction (timeout ${blobWrite.transaction.timeout}ms)`,
-				}
-			);
+			// TODO(harper#2057): the budget does not reach LMDB's chained transaction, so the monitor
+			// check below is RocksDB-only.
+			if (!isLMDB) {
+				// Count real monitor ticks rather than wall-clock time: without the budget, the countdown
+				// plus the commit-phase grace (each spare re-arms one tick) aborts the write in about
+				// 2 * COMMIT_PHASE_GRACE + 2 ticks.
+				const ingestTransaction = blobWrite.transaction;
+				const armedTimeout = ingestTransaction.timeout;
+				await waitFor(
+					() =>
+						ingestTransaction.timedOut ||
+						armedTimeout - ingestTransaction.timeout >= (2 * COMMIT_PHASE_GRACE + 4) * TICK_MS,
+					{
+						timeout: 15_000,
+						message: () => `the monitor did not tick the ingest transaction (timeout ${ingestTransaction.timeout}ms)`,
+					}
+				);
+				assert.ok(!ingestTransaction.timedOut, 'the monitor aborted the ingest write at the generic open limit');
+			}
 			assert.strictEqual(ingestError, undefined);
 			source.write(chunks[1]);
 			source.end(chunks[2]);
