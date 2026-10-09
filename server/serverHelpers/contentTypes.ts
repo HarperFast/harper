@@ -18,6 +18,7 @@ import { Blob } from '../../resources/blob.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
 import { parseMultipartRequest, releaseUnreadUpload } from './multipartParser.ts';
+import { deserializeMultipartForm, deserializeMultipartStream } from './multipartForm.ts';
 const SERIALIZATION_BIGINT = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
 const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
 const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
@@ -57,7 +58,7 @@ const PUBLIC_ENCODE_OPTIONS = {
 	useToJSON: true,
 };
 
-type Deserialize = (data: Buffer) => { contentType?: string; data: unknown } | unknown;
+type Deserialize = (data: Buffer) => unknown;
 
 const mediaTypes = new Map<
 	string,
@@ -224,8 +225,6 @@ mediaTypes.set('text/event-stream', {
 	compressible: false,
 	q: 0.8,
 });
-// TODO: Support this as well:
-//'multipart/form-data'
 mediaTypes.set('application/x-www-form-urlencoded', {
 	deserialize(data) {
 		const stringData = Buffer.isBuffer(data) ? data.toString('utf8') : data;
@@ -405,7 +404,7 @@ export function findBestSerializer(incomingMessage) {
 		}
 		clientQuality = +parameters.q;
 		const serializer = mediaTypes.get(type);
-		if (serializer) {
+		if (serializer?.serialize || serializer?.serializeStream) {
 			const quality = (serializer.q || 1) * clientQuality;
 			if (quality > bestQuality) {
 				bestSerializer = serializer;
@@ -419,7 +418,10 @@ export function findBestSerializer(incomingMessage) {
 		if (acceptType) {
 			throw new ClientError(
 				'No supported content types found in Accept header, supported types include: ' +
-					Array.from(mediaTypes.keys()).join(', '),
+					Array.from(mediaTypes)
+						.filter(([, handler]) => handler?.serialize || handler?.serializeStream)
+						.map(([type]) => type)
+						.join(', '),
 				406
 			);
 		} else {
@@ -580,7 +582,11 @@ export function hasAsyncSerialization() {
 	return !!asyncSerializations;
 }
 
-function streamToBuffer(stream: Readable): Promise<Buffer> {
+type RequestBodyStream = AsyncIterable<Uint8Array> & {
+	on(event: string, listener: (...args: any[]) => void): unknown;
+};
+
+function streamToBuffer(stream: RequestBodyStream): Promise<Buffer> {
 	const MAX_REQUEST_BODY_SIZE = envMgr.get(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE) ?? 10_000_000;
 	return new Promise((resolve, reject) => {
 		const buffers = [];
@@ -610,6 +616,7 @@ function streamToBuffer(stream: Readable): Promise<Buffer> {
  */
 type ContentType = {
 	type: string;
+	rawType: string;
 	parameters?: { charset?: string; boundary?: string; [k: string]: string };
 };
 
@@ -653,27 +660,49 @@ function parseContentType(contentType: string): ContentType {
 		contentType = contentType.slice(0, parametersStart);
 	}
 
-	return { type: contentType, parameters };
+	return { type: contentType.trim().toLowerCase(), rawType: contentType, parameters };
 }
 
 /**
  * Given a content-type header string, get a deserializer function that can be used to parse the body.
  */
-export function getDeserializer(contentTypeString: string, streaming: false): Deserialize;
+export function getDeserializer(contentTypeString?: string, streaming?: false): Deserialize;
 export function getDeserializer(
-	contentTypeString: string,
-	streaming: true
-): (stream: Readable) => Promise<ReturnType<Deserialize>>;
+	contentTypeString: string | undefined,
+	streaming: true,
+	streamValues?: false
+): (stream: Readable) => Promise<unknown>;
+export function getDeserializer(
+	contentTypeString: string | undefined,
+	streaming: true,
+	streamValues: boolean
+): (stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>;
+export function getDeserializer(
+	contentTypeString: string | undefined,
+	streaming?: boolean,
+	streamValues?: boolean
+): Deserialize | ((stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>);
 export function getDeserializer(
 	contentTypeString: string = '',
-	streaming: boolean = false
-): Deserialize | ((stream: Readable) => Promise<ReturnType<Deserialize>>) {
+	streaming: boolean = false,
+	streamValues: boolean = false
+): Deserialize | ((stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>) {
 	const contentType = parseContentType(contentTypeString);
-
-	const deserialize =
-		(contentType.type && mediaTypes.get(contentType.type)?.deserialize) || deserializerUnknownType(contentType);
-
-	return streaming ? (stream: Readable) => streamToBuffer(stream).then(deserialize) : deserialize;
+	const handler = contentType.type
+		? mediaTypes.get(contentType.rawType) || mediaTypes.get(contentType.type)
+		: undefined;
+	const multipart = !handler?.deserialize && contentType.type === 'multipart/form-data';
+	const deserialize = handler?.deserialize || deserializerUnknownType(contentType);
+	if (streaming && streamValues && multipart)
+		return (stream, signal) => deserializeMultipartStream(stream, contentTypeString, signal);
+	if (!streaming) return deserialize;
+	return (stream: RequestBodyStream) => {
+		const body = streamToBuffer(stream).then(
+			multipart ? (data) => deserializeMultipartForm(data, contentTypeString) : deserialize
+		);
+		if (multipart) body.catch(() => {});
+		return body;
+	};
 }
 
 function deserializerUnknownType(contentType: ContentType): Deserialize {
