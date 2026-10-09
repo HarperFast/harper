@@ -618,7 +618,9 @@ describe('DeploymentRecorder.ingestPayload streaming source', () => {
 			),
 		});
 	});
-	after(() => setMainIsWorker(mainWasWorker));
+	after(() => {
+		if (mainWasWorker !== undefined) setMainIsWorker(mainWasWorker);
+	});
 
 	function installRealDeploymentTable() {
 		const writes = [];
@@ -656,15 +658,14 @@ describe('DeploymentRecorder.ingestPayload streaming source', () => {
 		const installed = installRealDeploymentTable();
 		const priorExpiration = envMngr.get(terms.CONFIG_PARAMS.STORAGE_MAXTRANSACTIONOPENTIME) ?? 30000;
 		let recorder;
+		let ingest;
 		try {
 			recorder = await contextStorage.run(ambientContext, () =>
 				DeploymentRecorder.create({ project: 'p', ingestTimeoutMs: configuredBudget })
 			);
-			// Shrink the generic open-transaction limit so the monitor would abort the ingest write
-			// while it is gated on the blob, unless the ingest budget is in force.
 			setTxnExpiration(TICK_MS);
 			source.write(chunks[0]);
-			const ingest = contextStorage.run(ambientContext, () => recorder.ingestPayload(source));
+			ingest = contextStorage.run(ambientContext, () => recorder.ingestPayload(source));
 			let ingestError;
 			ingest.catch((error) => (ingestError = error));
 			await waitFor(() => installed.writes.some((write) => write.hasBlob) || ingestError);
@@ -680,17 +681,30 @@ describe('DeploymentRecorder.ingestPayload streaming source', () => {
 			);
 			assert.strictEqual(blobWrite.timeoutBudget, ingestTransactionTimeoutMs(configuredBudget));
 			assert.strictEqual(blobWrite.context.user, ambientContext.user);
-			// Hold the source open well past the monitor's commit-phase grace (COMMIT_PHASE_GRACE
-			// ticks) so the commit, gated on the blob's durable write, outlives the generic limit.
-			await new Promise((resolve) => setTimeout(resolve, TICK_MS * (COMMIT_PHASE_GRACE + 20)));
+			// Count real monitor ticks on this transaction rather than wall-clock time: without the budget,
+			// the countdown plus the commit-phase grace (each spare re-arms one tick) aborts it in about
+			// 2 * COMMIT_PHASE_GRACE + 2 ticks.
+			const ticksPastAbort = 2 * COMMIT_PHASE_GRACE + 4;
+			await waitFor(
+				() =>
+					ingestError ||
+					ingestTransactionTimeoutMs(configuredBudget) - blobWrite.transaction.timeout >= ticksPastAbort * TICK_MS,
+				{
+					timeout: 15_000,
+					message: () => `the monitor did not tick the ingest transaction (timeout ${blobWrite.transaction.timeout}ms)`,
+				}
+			);
 			assert.strictEqual(ingestError, undefined);
 			source.write(chunks[1]);
 			source.end(chunks[2]);
 			await ingest;
 		} finally {
+			// A failed assertion leaves the ingest mid-stream; its cleanup put must land in this
+			// fixture, not in whatever table restore() puts back.
+			if (!source.writableEnded) source.destroy();
+			await ingest?.catch(() => {});
 			setTxnExpiration(priorExpiration);
 			installed.restore();
-			if (!source.writableEnded) source.destroy();
 		}
 
 		const ingestWrites = installed.writes.slice(1);
