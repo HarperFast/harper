@@ -13,6 +13,12 @@ export const HARPER_CONFIG_FILE = 'harper-config.yaml';
 export const HDB_DEFAULT_CONFIG_FILE = 'defaultConfig.yaml';
 /** Harper Root Directory Name */
 export const HDB_ROOT_DIR_NAME = 'harper';
+
+/**
+ * The peer an operation was forwarded from, set by `server.operation` from its context. A symbol, so a
+ * JSON request body cannot claim it.
+ */
+export const REPLICATED_FROM = Symbol('replicatedFrom');
 /** Harper Component Config File */
 export const HDB_COMPONENT_CONFIG_FILE = 'config.yaml';
 
