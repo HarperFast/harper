@@ -108,7 +108,6 @@ describe('RocksDB handle release', function () {
 		);
 	});
 
-	// harper#3120: an insert that adds an attribute redeclares the table at runtime
 	it('closeDatabase releases the handles a runtime redeclare replaced (refCount → 0)', async function () {
 		this.timeout(30000);
 		const Items = table({
@@ -148,7 +147,7 @@ describe('RocksDB handle release', function () {
 		};
 	}
 
-	it('closeDatabase releases an index loaded from disk that a redeclare replaced', async function () {
+	it('closeDatabase releases the handles of a database a redeclare changed after it loaded', async function () {
 		this.timeout(30000);
 		const databaseName = 'closeloadedredeclare';
 		const Items = table(itemsDefinition(databaseName));
@@ -162,6 +161,24 @@ describe('RocksDB handle release', function () {
 		table(itemsDefinition(databaseName, [{ attribute: 'added', indexed: true }]));
 		await closeDatabase(databaseName);
 
+		assert.strictEqual(refCountFor(rootStore.path), 0);
+	});
+
+	it('a redeclare reopens no index whose store is unchanged', async function () {
+		this.timeout(30000);
+		const databaseName = 'redeclarereuse';
+		const Items = table(itemsDefinition(databaseName));
+		const rootStore = Items.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const handlesAfterCreate = refCountFor(rootStore.path);
+		const added = [];
+		for (let i = 0; i < 5; i++) {
+			added.push({ attribute: `added${i}`, indexed: true });
+			table(itemsDefinition(databaseName, added));
+		}
+
+		assert.strictEqual(refCountFor(rootStore.path), handlesAfterCreate + added.length);
+		await closeDatabase(databaseName);
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
@@ -197,65 +214,37 @@ describe('RocksDB handle release', function () {
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
-	it('dropSchema releases an index a redeclare replaced', async function () {
-		this.timeout(30000);
-		const databaseName = 'dropredeclare';
-		const Items = table(itemsDefinition(databaseName));
-		const rootStore = Items.primaryStore.rootStore;
-		if (!(rootStore instanceof RocksDatabase)) return this.skip();
-		const replaced = Items.indices.name;
-		table(itemsDefinition(databaseName, [{ attribute: 'added', indexed: true }]));
-
-		await new ResourceBridge().dropSchema({ schema: databaseName });
-
-		assert.strictEqual(databases[databaseName], undefined);
-		assert.strictEqual(replaced.status, 'closed', 'the replaced wrapper must be closed before the root is destroyed');
-		assert.strictEqual(refCountFor(rootStore.path), 0);
-	});
-
-	function failCloseOnce(store) {
+	function failClose(store, times) {
 		const close = store.close;
 		store.close = function () {
-			store.close = close;
-			throw new Error('replaced index close failed');
+			if (--times === 0) store.close = close;
+			throw new Error('index close failed');
 		};
 	}
 
-	it('a strict close that fails on a replaced index retries it through the drop', async function () {
-		this.timeout(30000);
-		const databaseName = 'strictreplacedfailure';
-		const Items = table(itemsDefinition(databaseName));
-		const rootStore = Items.primaryStore.rootStore;
-		if (!(rootStore instanceof RocksDatabase)) return this.skip();
-		const replaced = Items.indices.name;
-		table(itemsDefinition(databaseName, [{ attribute: 'added', indexed: true }]));
-		assert.notStrictEqual(Items.indices.name, replaced, 'precondition: the redeclare replaced the index');
-		failCloseOnce(replaced);
+	// the graph pass and the owned-list pass each try it, so only the owned list still reaches it later
+	for (const loaded of [false, true]) {
+		it(`a later close releases an index whose earlier closes failed (${loaded ? 'loaded' : 'declared'})`, async function () {
+			this.timeout(30000);
+			const databaseName = `lenientclosefailure${loaded ? 'loaded' : ''}`;
+			let Items = table(itemsDefinition(databaseName));
+			const rootStore = Items.primaryStore.rootStore;
+			if (!(rootStore instanceof RocksDatabase)) return this.skip();
+			if (loaded) {
+				await closeDatabase(databaseName);
+				resetDatabases();
+				Items = databases[databaseName].Items;
+			}
+			failClose(Items.indices.name, 2);
 
-		await assert.rejects(closeDatabase(databaseName, { requireClosed: true }), /for destructive DDL/);
-		assert.ok(refCountFor(rootStore.path) > 0, 'precondition: the failed wrapper is still open');
-		await new ResourceBridge().dropSchema({ schema: databaseName });
+			await closeDatabase(databaseName);
+			assert.ok(refCountFor(rootStore.path) > 0, 'precondition: the failed wrapper is still open');
+			resetDatabases();
+			await closeDatabase(databaseName);
 
-		assert.strictEqual(refCountFor(rootStore.path), 0);
-	});
-
-	it('a later close releases a replaced index whose earlier close failed', async function () {
-		this.timeout(30000);
-		const databaseName = 'lenientreplacedfailure';
-		const Items = table(itemsDefinition(databaseName));
-		const rootStore = Items.primaryStore.rootStore;
-		if (!(rootStore instanceof RocksDatabase)) return this.skip();
-		const replaced = Items.indices.name;
-		table(itemsDefinition(databaseName, [{ attribute: 'added', indexed: true }]));
-		failCloseOnce(replaced);
-
-		await closeDatabase(databaseName);
-		assert.ok(refCountFor(rootStore.path) > 0, 'precondition: the failed wrapper is still open');
-		resetDatabases();
-		await closeDatabase(databaseName);
-
-		assert.strictEqual(refCountFor(rootStore.path), 0);
-	});
+			assert.strictEqual(refCountFor(rootStore.path), 0);
+		});
+	}
 
 	it('keeps database handles open when an outstanding commit misses the drain deadline', async function () {
 		this.timeout(30000);

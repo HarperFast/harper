@@ -711,7 +711,23 @@ async function seedUsers(users = []) {
 	await new Promise((resolve) => setImmediate(resolve));
 }
 
+/**
+ * A catalog (`__dbis__`) wrapper is opened once per root and reused, and its own `put` is a snapshot of
+ * `putSync` taken at open, so a test patching the prototype's `putSync` must route `put` through it.
+ */
+function routePutThroughPutSync(instance) {
+	if (!Object.hasOwn(instance, 'put')) return () => {};
+	const ownPut = instance.put;
+	instance.put = function (...args) {
+		return this.putSync(...args);
+	};
+	return () => {
+		instance.put = ownPut;
+	};
+}
+
 module.exports = {
+	routePutThroughPutSync,
 	changeProcessToBinDir,
 	deepClone,
 	mochaAsyncWrapper,

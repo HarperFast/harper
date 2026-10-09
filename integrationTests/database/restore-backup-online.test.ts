@@ -9,8 +9,6 @@ const OTHER_TABLE = 'Other';
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 const JOB_TIMEOUT_MS = 120_000;
 
-// harper#3120: runtime schema changes left RocksDB handles no close could reach, so every online
-// restore of such a database was refused as "held open by a loaded component".
 suite(
 	'online restore_backup after runtime schema changes (harper#3120)',
 	{ skip: skipSuite },

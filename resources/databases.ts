@@ -501,10 +501,9 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
 const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
 /**
- * Every column-family wrapper this thread opened for a RocksDB database root, by root path, until it
- * closes. A redeclare replaces wrappers the table graph points at, so closing the graph alone would
- * leave the replaced ones holding the root open (harper#3120). Keyed by path, not root object, so a
- * wrapper whose close failed is still found after the root itself is discarded.
+ * The column-family wrappers this thread opened for each RocksDB root, by path, until they close: a
+ * redeclare can replace a wrapper the table graph points at, and only this list still reaches it. By
+ * path, not root object, so a wrapper whose close failed is still found after the root is discarded.
  */
 const ownedRocksStores = new Map<string, any[]>();
 
@@ -515,14 +514,28 @@ function ownedStoresFor(rootStore: any): any[] | undefined {
 	return owned;
 }
 
-/** Closes every wrapper owned under `path`; one whose close fails stays owned for the next attempt. */
-async function closeOwnedStores(path: string, close: (store: any) => Promise<boolean>): Promise<void> {
-	const owned = ownedRocksStores.get(path);
+function adoptOwnedStore(rootStore: any, store: any): void {
+	const owned = ownedStoresFor(rootStore);
 	if (!owned) return;
+	owned.push(store);
+	// a dropped table leaves closed wrappers behind; compacting at each doubling keeps this amortized
+	if (owned.length >= 64 && (owned.length & (owned.length - 1)) === 0) {
+		let kept = 0;
+		for (const owner of owned) if (owner.status !== 'closed') owned[kept++] = owner;
+		owned.length = kept;
+	}
+}
+
+/** A wrapper whose close fails stays owned for the next attempt. */
+async function closeOwnedStores(path: string, close: (store: any) => Promise<boolean>): Promise<void> {
 	const failed: any[] = [];
-	for (const store of owned) if (!(await close(store))) failed.push(store);
+	let owned: any[] | undefined;
+	// a declaration during an await below starts a fresh list, which the next pass drains
+	while ((owned = ownedRocksStores.get(path))) {
+		ownedRocksStores.delete(path);
+		for (const store of owned) if (!(await close(store))) failed.push(store);
+	}
 	if (failed.length) ownedRocksStores.set(path, failed);
-	else ownedRocksStores.delete(path);
 }
 type IncompleteDatabaseClose = {
 	databaseNames: Set<string>;
@@ -3687,7 +3700,7 @@ const GLOBAL_TARGET: TableTarget = {
 	rootStore: (databaseName, tableName) => database({ database: databaseName, table: tableName }),
 	tables: (databaseName) => databases[databaseName],
 	reload: () => resetDatabases(),
-	adopt: (store, rootStore) => ownedStoresFor(rootStore)?.push(store),
+	adopt: (store, rootStore) => adoptOwnedStore(rootStore, store),
 };
 
 /** One `__dbis__` wrapper per root store: opening another would replace the one teardown closes. */
@@ -4635,6 +4648,20 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		}
 		const indices = Table.indices;
 		attributesDbi ??= internalDbisFor(rootStore, target);
+		// A redeclare reaches every indexed attribute, and a wrapper it replaces stays owned until the
+		// database closes, so a plain index keeps its open wrapper on an unchanged store. A custom index
+		// is reopened: openIndex builds its state from the declaration's current options.
+		const indexFor = (dbiKey: string, attribute: any) => {
+			const current = indices[attribute.name];
+			if (
+				rootStore instanceof RocksDatabase &&
+				!attribute.indexed?.type &&
+				current?.status === 'open' &&
+				current.name === storeNameFor(dbiKey, generation)
+			)
+				return current;
+			return openIndex(dbiKey, rootStore, attribute, generation, (store) => target.adopt(store, rootStore));
+		};
 		Table.dbisDB = attributesDbi;
 		generation ??= attributesDbi.getSync(tableName + '/')?.generation;
 		// A cluster-origin list can miss a descriptor another thread committed moments ago, so removal
@@ -4808,7 +4835,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					applyDurableDeclaration(attribute, attributesDbi.getSync(dbiKey) ?? attributeDescriptor);
 				} else {
 					if (attribute.indexed) {
-						const dbi = openIndex(dbiKey, rootStore, attribute, generation, (store) => target.adopt(store, rootStore));
+						const dbi = indexFor(dbiKey, attribute);
 						// Persisting the indexFormat openIndex just resolved adds a field the descriptor lacks
 						// rather than rewriting one it has. Without it an empty index resolves 'versioned', writes
 						// versioned nodes, then re-derives 'legacy' on the next load — see indexFormatNeedsPersist.
@@ -4875,7 +4902,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// crash-recovery, leaving the index stuck. Falls back to manageThreads.restartNumber
 				// on the main thread, where workerData is undefined (and it is initialized to 1).
 				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
-				const dbi = openIndex(dbiKey, rootStore, attribute, generation, (store) => target.adopt(store, rootStore));
+				const dbi = indexFor(dbiKey, attribute);
 				if (deferredPrimaryRow) indices[attribute.name] = dbi; // private until published; lets the rollback close it
 				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
 				// custom-object) index. An index created before this field existed has no indexFormat on
