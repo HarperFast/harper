@@ -1,5 +1,3 @@
-// A write never sheds the writer's complete copy, and a patch over a residency stub never becomes a
-// complete row (harper#2257).
 require('../testUtils');
 const assert = require('node:assert');
 const { hostname } = require('node:os');
@@ -21,8 +19,7 @@ describe('Writer residency (harper#2257)', () => {
 		return (lastLogKey += 10_000);
 	}
 
-	function applyFrame(writes) {
-		const logKey = originClock();
+	function applyFrame(writes, logKey = originClock()) {
 		const context = { source: {}, sourceApply: true, timestamp: logKey };
 		return transaction(context, async () => {
 			for (const { id, record, fullUpdate = true, residencyId, withoutNodeId } of writes) {
@@ -52,7 +49,15 @@ describe('Writer residency (harper#2257)', () => {
 	}
 
 	const residencyOf = (entry) => Records.getResidencyRecord(entry.residencyId);
-	// a stub merged with a patch is a partial row; it must never be stored as complete
+	// mints the id the way a local write does
+	async function residencyIdFor(residency) {
+		const previous = Records.getResidency;
+		Records.setResidency(() => residency);
+		const id = `minter-${residency.join('-')}`;
+		await Records.put(id, { id, name: 'minter', body: 'complete' });
+		Records.getResidency = previous;
+		return Records.primaryStore.getEntry(id).residencyId;
+	}
 	const assertNoCompletePartialRow = (entry) =>
 		assert.ok(
 			entry.metadataFlags & INVALIDATED || entry.value?.body !== undefined,
@@ -71,6 +76,7 @@ describe('Writer residency (harper#2257)', () => {
 				{ name: 'body' },
 				{ name: 'note' },
 				{ name: 'place' },
+				{ name: 'createdAt', assignCreatedTime: true },
 			],
 			audit: true,
 		});
@@ -123,11 +129,12 @@ describe('Writer residency (harper#2257)', () => {
 
 	it('stores a stub on a non-resident replicated receive that carries no residency list', async () => {
 		Records.setResidency(() => [PEER]);
-		await applyFrame([{ id: 'received', record: { id: 'received', name: 'n', body: 'complete' } }]);
+		await applyFrame([{ id: 'received', record: { id: 'received', name: 'n', body: 'complete', createdAt: 123 } }]);
 		const entry = Records.primaryStore.getEntry('received');
 		assert.ok(entry.metadataFlags & INVALIDATED);
 		assert.equal(entry.value.body, undefined);
 		assert.equal(entry.value.name, 'n');
+		assert.equal(entry.value.createdAt, 123);
 		assert.deepEqual(residencyOf(entry), [PEER]);
 	});
 
@@ -145,7 +152,6 @@ describe('Writer residency (harper#2257)', () => {
 		Records.setResidency(() => [PEER]);
 		await applyFrame([{ id: 'stub-moved', record: { id: 'stub-moved', name: 'n', body: 'complete' } }]);
 		assert.ok(Records.primaryStore.getEntry('stub-moved').metadataFlags & INVALIDATED, 'premise: a stub');
-		// residency moves to include this node, which never held the complete record
 		Records.setResidency(() => [PEER, SELF]);
 		await Records.patch('stub-moved', { note: 'added' });
 		const entry = Records.primaryStore.getEntry('stub-moved');
@@ -197,12 +203,32 @@ describe('Writer residency (harper#2257)', () => {
 	it('never stores a replicated patch over a stub as complete on a now-resident receiver', async () => {
 		Records.setResidency(() => [PEER]);
 		await applyFrame([{ id: 'stub-replicated', record: { id: 'stub-replicated', name: 'n', body: 'complete' } }]);
-		// mint the residency id for [PEER, SELF] the way a local write does
-		Records.setResidency(() => [PEER, SELF]);
-		await Records.put('residency-minter', { id: 'residency-minter', name: 'm', body: 'complete' });
-		const residencyId = Records.primaryStore.getEntry('residency-minter').residencyId;
+		const residencyId = await residencyIdFor([PEER, SELF]);
 		await applyFrame([{ id: 'stub-replicated', record: { note: 'added' }, fullUpdate: false, residencyId }]);
-		assertNoCompletePartialRow(Records.primaryStore.getEntry('stub-replicated'));
+		const entry = Records.primaryStore.getEntry('stub-replicated');
+		assertNoCompletePartialRow(entry);
+		assert.deepEqual(residencyOf(entry), [PEER, SELF], 'the received residency stays authoritative');
+	});
+
+	it('keeps the merged indexed values on an out-of-order patch over a stub', async () => {
+		// clocks near now so the older patch is resequenced through the audit walk (reached on LMDB)
+		const now = Date.now();
+		Records.setResidency(() => [PEER]);
+		await applyFrame(
+			[{ id: 'stub-reordered', record: { id: 'stub-reordered', name: 'old', body: 'complete' } }],
+			now - 3000
+		);
+		const residencyId = await residencyIdFor([PEER, SELF]);
+		const earlier = now - 2000;
+		const later = now - 1000;
+		await applyFrame([{ id: 'stub-reordered', record: { name: 'new' }, fullUpdate: false, residencyId }], later);
+		await applyFrame([{ id: 'stub-reordered', record: { note: 'x' }, fullUpdate: false, residencyId }], earlier);
+		const entry = Records.primaryStore.getEntry('stub-reordered');
+		assertNoCompletePartialRow(entry);
+		assert.equal(entry.value.name, 'new');
+		let hits = 0;
+		for await (const _record of Records.search({ conditions: [{ attribute: 'name', value: 'new' }] })) hits++;
+		assert.equal(hits, 1, 'the name index lost the record');
 	});
 
 	it('restores the default residency when the function is cleared', async () => {

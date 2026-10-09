@@ -888,7 +888,8 @@ a listed node complete. A write made here (not `isNotification`, `sourceApply` o
 residency excludes this node adds this node to the list and stores the full record, warning once per table
 per thread: before this, an ordinary write destroyed the writer's copy while the log recorded a plain upsert.
 And a patch whose base (stored, or staged earlier in the transaction) is a record-based stub is stored as a
-stub again on every path, keeping the base's `residencyId` without consulting the residency function: the
-merged row lacks the fields a placement decision needs, and the base's list is the one naming a complete
-holder. A replicated or source write with no residency list, and `setResidencyById`, still omit or stub as
+stub again on every path. Without an explicit received residency it keeps the base's `residencyId` and does
+not consult the residency function: the merged row lacks the fields a placement decision needs, and the
+base's list is the one naming a complete holder. An explicit received residency stays authoritative, but
+does not make the receiver complete. A replicated or source write with no residency list, and `setResidencyById`, still omit or stub as
 before. Enforced by `unitTests/resources/writerResidency.test.js` (both engines).

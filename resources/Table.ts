@@ -5377,8 +5377,8 @@ export function makeTable(options): TableResourceClass {
 					this.#record = recordToStore;
 					if (recordToStore && recordToStore.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');
-					// A patch onto a record-based residency stub has no complete base, so it stays a stub and keeps the
-					// stub's residency: that list names the nodes holding the complete record.
+					// A patch onto a stub has no complete base, so it can't decide placement; the stub's list names the
+					// nodes holding the complete record.
 					const baseEntry = priorStaged ?? existingEntry;
 					const patchesStub =
 						!fullUpdate &&
@@ -5393,7 +5393,6 @@ export function makeTable(options): TableResourceClass {
 						let residency = residencyFromFunction(TableResource.getResidency(recordToStore, context));
 						if (residency && !residency.includes(server.hostname)) {
 							if (writtenHere && !TableResource.getResidencyById) {
-								// a write made here never sheds this node's complete copy (harper#2257)
 								residency = [...residency, server.hostname];
 								warnWriterKeptResident(residency);
 							} else omitLocalRecord = true;
@@ -5402,7 +5401,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (omitLocalRecord) {
 						auditRecordToStore ??= recordToStore;
-						recordToStore = TableResource.getResidencyById ? undefined : residencyStub(auditRecordToStore);
+						recordToStore = TableResource.getResidencyById ? undefined : residencyStub(recordToStore);
 					}
 					if (expiresAt == undefined) {
 						// A schema @expiresAt attribute makes the record field authoritative over the table
@@ -10174,7 +10173,6 @@ export function makeTable(options): TableResourceClass {
 			`Shard or residency list ${shardOrResidencyList} is not a valid type, must be a shard number or residency list of node hostnames`
 		);
 	}
-	/** The indexed fields (and created time) a node outside a record's residency keeps, so searches still find it. */
 	function residencyStub(record: any) {
 		let stub = null;
 		for (const name in indices) {
@@ -10187,7 +10185,6 @@ export function makeTable(options): TableResourceClass {
 		}
 		return stub;
 	}
-	/** Once per table per thread. */
 	function warnWriterKeptResident(residency: string[]) {
 		if (writerResidencyWarned) return;
 		writerResidencyWarned = true;
