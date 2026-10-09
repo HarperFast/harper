@@ -97,13 +97,14 @@ export function checkWorkflowFile(content: string, branch: string, environment: 
 	const unverified: string[] = [];
 	let workflow: any;
 	try {
-		workflow = YAML.parse(content);
+		// Failsafe keeps every scalar as written: the default schema reads `branches: [1.0]` as the number 1.
+		workflow = YAML.parse(content, { schema: 'failsafe' });
 	} catch (error) {
 		return { problems: [`it is not valid YAML: ${(error as Error).message}`], unverified };
 	}
 	const triggers = workflow?.on;
 	const push = triggers && typeof triggers === 'object' && !Array.isArray(triggers) ? triggers.push : undefined;
-	const branches = asList(push?.branches).map(String);
+	const branches = asList(push?.branches);
 	const otherTriggers =
 		triggers && typeof triggers === 'object' && !Array.isArray(triggers)
 			? Object.keys(triggers).filter((name) => !['push', 'pull_request', 'pull_request_target'].includes(name))
