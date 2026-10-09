@@ -39,7 +39,9 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 				headers: { Authorization: authorization, Accept: accept },
 				signal: AbortSignal.timeout(10000),
 			});
-			assert.equal(response.status, status, await response.text());
+			const body = await response.text();
+			assert.equal(response.status, status, body);
+			if (status === 406) assert(!body.includes('multipart/form-data'), body);
 		});
 	}
 
