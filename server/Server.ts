@@ -102,13 +102,12 @@ export interface HttpOptions extends ServerOptions {
 }
 export interface ContentTypeHandler {
 	/**
-	 * For event/message delivery (e.g. MQTT, subscriptions), the result of `serialize(data)` is
-	 * cached by message identity and version and reused for every subscriber negotiating this
-	 * content type (`serverHelpers/sharedMessageEncoding.ts`); that path calls this with only the
-	 * value being serialized, never any per-request context an HTTP response serialization might
-	 * pass. A serializer registered here whose output varies by anything beyond `data` itself —
-	 * subscriber, request, ambient state — must not be used for that path, or its output would leak
-	 * across subscribers.
+	 * Any serializer registered here is reachable from event/message delivery (e.g. MQTT,
+	 * subscriptions), not only HTTP responses: there, the result of `serialize(data)` is cached by
+	 * message identity and version and reused for every subscriber negotiating this content type
+	 * (`serverHelpers/sharedMessageEncoding.ts`), called with only the value being serialized. So
+	 * `serialize`'s output must depend on `data` alone — never on the subscriber, the request, or
+	 * other ambient state — or it would leak across subscribers once shared.
 	 */
 	serialize(data: any): Buffer | string;
 	serializeStream(data: any): Buffer | string;

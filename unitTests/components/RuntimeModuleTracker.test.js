@@ -68,8 +68,6 @@ describe('RuntimeModuleTracker', () => {
 		imports: { '#dep': { node: './dep-node.js', default: './dep-default.js' } },
 	};
 
-	// A fresh tracker per case: finishDeploy() always compares against the digest recordModule()
-	// captured at the start, never against a later write, so there is no "reset to baseline" step.
 	async function digestChanged(directory, rewrittenContent) {
 		const packagePath = join(directory, 'package.json');
 		const original = JSON.stringify(EXPORTS_IMPORTS_MANIFEST);
@@ -131,6 +129,46 @@ describe('RuntimeModuleTracker', () => {
 		this.tracker.beginDeploy();
 		writeFileSync(packagePath, JSON.stringify(reordered));
 		assert.equal(await this.tracker.finishDeploy(), false);
+	});
+
+	it('treats a root exports condition map with a legal #-prefixed condition name as a condition map, not a subpath map', async () => {
+		const withHashCondition = {
+			name: 'example',
+			exports: { '#legacy': './legacy.js', 'node': './node.js', 'default': './default.js' },
+		};
+		const reordered = structuredClone(withHashCondition);
+		reordered.exports = { '#legacy': './legacy.js', 'default': './default.js', 'node': './node.js' };
+
+		const packagePath = join(this.directory, 'package.json');
+		const original = JSON.stringify(withHashCondition);
+		writeFileSync(packagePath, original);
+		const tracker = new RuntimeModuleTracker(() => this.directory);
+		tracker.recordModule(pathToFileURL(packagePath).href, original);
+		tracker.beginDeploy();
+		writeFileSync(packagePath, JSON.stringify(reordered));
+		assert.equal(
+			await tracker.finishDeploy(),
+			true,
+			'"#" only means subpath under imports; at the exports root it is a legal condition name'
+		);
+	});
+
+	it('detects reordering of a condition map nested inside an exports array fallback', async () => {
+		const withArrayFallback = {
+			name: 'example',
+			exports: { '.': [{ node: './node.js', default: './default.js' }, './legacy.js'] },
+		};
+		const reordered = structuredClone(withArrayFallback);
+		reordered.exports['.'][0] = { default: './default.js', node: './node.js' };
+
+		const packagePath = join(this.directory, 'package.json');
+		const original = JSON.stringify(withArrayFallback);
+		writeFileSync(packagePath, original);
+		const tracker = new RuntimeModuleTracker(() => this.directory);
+		tracker.recordModule(pathToFileURL(packagePath).href, original);
+		tracker.beginDeploy();
+		writeFileSync(packagePath, JSON.stringify(reordered));
+		assert.equal(await tracker.finishDeploy(), true);
 	});
 
 	it('detects a new higher-priority extensionless resolution candidate', async () => {
