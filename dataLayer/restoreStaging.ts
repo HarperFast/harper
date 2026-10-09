@@ -13,12 +13,8 @@ import {
 	type RestoreLock,
 } from './restoreMarker.ts';
 
-/**
- * Stage → prove → publish for `restore_backup` (harper#2965). The database directory is not touched
- * until this build has restored the backup into a staging directory and opened it; publication is two
- * renames, so the one-way door of the restore marker protocol is the first rename, not a purge.
- * The caller holds the restore lock (and its marker) throughout.
- */
+// Stage → prove → publish for `restore_backup` (harper#2965); the protocol is in dataLayer/DESIGN.md.
+// The caller holds the restore lock (and its marker) throughout.
 
 /**
  * Clear what an earlier attempt left behind. Staging was never published, so it is always disposable.
@@ -45,9 +41,18 @@ export function prepareRestoreStaging(lock: RestoreLock, state: PublishResult): 
 			`Cannot restore into ${databaseDir}: it is a mount point, on a different filesystem from ${dirname(databaseDir)}, and a restore replaces the database directory by renaming it. Mount the volume at the parent directory instead, or restore offline into a new target_database`
 		);
 	}
+	const replacedDir = restoreReplacedPath(databaseDir);
+	// Only a marker proves `.replaced` is this database's unfinished publication; without one the
+	// database path may be the live database, not a candidate.
+	if (!lock.preexisting && pathPresent(replacedDir)) {
+		throw new ClientError(
+			`Cannot restore into ${databaseDir}: ${replacedDir} is left from an earlier restore that recorded no restore marker, so it cannot be told apart from the database. Inspect it and remove it, then rerun the restore`,
+			409
+		);
+	}
 	rmSync(restoreStagingPath(databaseDir), { recursive: true, force: true });
 	rmSync(restoreDiscardedPath(databaseDir), { recursive: true, force: true });
-	if (pathPresent(restoreReplacedPath(databaseDir))) {
+	if (pathPresent(replacedDir)) {
 		// A publication began and never finished, so the database path holds a candidate, never the
 		// database; dropped now rather than at publish so the space check does not count a third copy.
 		state.destroyed = true;
@@ -56,8 +61,6 @@ export function prepareRestoreStaging(lock: RestoreLock, state: PublishResult): 
 }
 
 /**
- * Restore the backup into staging and prove this build can read it: every transaction log store
- * validates, and the engine opens writably — the open is also where the new generation is stamped.
  * Readability, not completeness, is the bar: a torn log tail is something open-time recovery
  * truncates, so it is not a reason to refuse a backup the operator has no other way to restore.
  */

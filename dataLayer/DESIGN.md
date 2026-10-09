@@ -90,7 +90,8 @@ in, and reloading it. Several non-obvious mechanics keep that safe:
   a rerun keeps it until its own replacement publishes (and drops whatever is at the database path
   then, a disposable candidate, before the space check; online, only once nothing holds it open). That inference needs `.replaced` never to
   outlive its restore, so a finished restore renames it to `<key>.discarded` while its marker still
-  stands, and only the removal of that may fail quietly. A failed second rename moves it back, and
+  stands, and only the removal of that may fail quietly; a `.replaced` that no marker accounts for
+  is refused (409), never trusted. A failed second rename moves it back, and
   only a rollback whose directories were fsynced counts as "nothing destroyed". Once staging is
   published the marker stays on any later failure, even where nothing was displaced.
 
@@ -131,7 +132,10 @@ in, and reloading it. Several non-obvious mechanics keep that safe:
   would re-open the race the barrier exists to close. Publication still
   verifies closure independently: `restoreBackup` polls rocksdb-js `registryStatus()` (process-global
   across worker threads) until the database path has no open instance, and aborts with a 409 —
-  _cleaning up the marker, since nothing was destroyed_ — if handles remain.
+  _cleaning up the marker, since nothing was destroyed_ — if handles remain. The close can only reach
+  a loaded database, and online staging holds the marker for the whole copy, so a rescan during it
+  keeps a marked root this thread already has open (`restoreBlocksLoad`) instead of unloading it and
+  orphaning the handle.
 - **The close acknowledgement fences blob saves, deferred reclamation and orphan cleanup, not just
   database handles.** A store
   handle can close while a `saveBlob` file pipeline it started is still pending, because blob roots

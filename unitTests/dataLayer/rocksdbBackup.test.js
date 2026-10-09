@@ -64,7 +64,7 @@ const {
 } = require('#src/dataLayer/restoreMarker');
 const { pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } = require('#src/dataLayer/backupRepository');
 const { backups } = require('@harperfast/rocksdb-js');
-const { closeLoadedDatabases } = require('#src/resources/databases');
+const { closeLoadedDatabases, resetDatabases } = require('#src/resources/databases');
 const {
 	ARCHIVE_MANIFEST_ENTRY,
 	ARCHIVE_SCHEMA_VERSION,
@@ -344,8 +344,7 @@ describe('rocksdbBackup', function () {
 		});
 	});
 
-	// harper#2965: a backup this build cannot read must be refused before the destination is touched,
-	// and a publication interrupted between its renames must never cost the only copy of the database.
+	// harper#2965
 	describe('restore staging', function () {
 		const STAGED = `${DB_NAME}-staged`;
 		const stagedDir = () => join(storageDir, STAGED);
@@ -514,6 +513,48 @@ describe('rocksdbBackup', function () {
 			assertNoDebris();
 		});
 
+		it('online: a rescan during staging keeps the live database closable', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realRestore = backups.restore;
+			let release;
+			let parked;
+			const staged = new Promise((resolve) => (parked = resolve));
+			backups.restore = async (...args) => {
+				parked();
+				await new Promise((resolve) => (release = resolve));
+				return realRestore.apply(backups, args);
+			};
+			try {
+				const restoring = restoreBackup({ ...SU, database: STAGED, backup_id: backupId });
+				await staged;
+				resetDatabases();
+				release();
+				await restoring;
+			} finally {
+				backups.restore = realRestore;
+			}
+			await closeLoadedDatabases();
+			assertRestoredFromBackup();
+			assertNoDebris();
+		});
+
+		it('refuses a pre-restore copy that no restore marker accounts for', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const replacedDir = restoreReplacedPath(stagedDir());
+			for (const restore of Object.values(restores)) {
+				mkdirSync(replacedDir, { recursive: true });
+				try {
+					await assert.rejects(restore(backupId), (error) => error.statusCode === 409);
+					assert.ok(existsSync(replacedDir));
+				} finally {
+					rmSync(replacedDir, { recursive: true, force: true });
+				}
+				assertDestinationIntact();
+			}
+		});
+
 		it('keeps the database directory mode across the swap', async function () {
 			if (process.platform === 'win32') this.skip();
 			this.timeout(30000);
@@ -568,7 +609,6 @@ describe('rocksdbBackup', function () {
 			}
 		});
 
-		// The published candidate is disposable, so it must not be counted against the space for a third copy.
 		it('drops the published candidate before measuring space when rerunning a failed publication', async function () {
 			this.timeout(30000);
 			const backupId = await seed();

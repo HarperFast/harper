@@ -965,7 +965,7 @@ export function getDatabases(): Databases {
 				blockedByDrop.databaseNames.has(dbName)
 			)
 				continue;
-			if (blockedByRestore.has(dbName)) continue;
+			if (restoreBlocksLoad(blockedByRestore, dbName, dbPath)) continue;
 			if (isOpenBranchPath(dbPath)) continue;
 
 			if (
@@ -1033,8 +1033,8 @@ export function getDatabases(): Databases {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
 					if (databaseEntry.name === BRANCH_ROOT_DIR) continue; // reserved branch root
-					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
 					const dbPath = join(databasePath, databaseEntry.name);
+					if (restoreBlocksLoad(blockedByRestore, basename(databaseEntry.name, '.mdb'), dbPath)) continue;
 					if (databaseRootUnavailable(dbPath)) continue;
 					if (blockedByDrop.rootPaths.has(dbPath) || blockedByDrop.databaseNames.has(dbName)) continue;
 					if (isOpenBranchPath(dbPath)) continue;
@@ -1288,6 +1288,15 @@ function reportRelationshipError(key: string, message: string): void {
  * mid-purge (the directory may be partial garbage) and must be rerun. The files live *next to*
  * the database directory, so this also covers a database whose directory is missing or empty.
  */
+/**
+ * A marked root this thread already has open is the live database an online restore is staging
+ * beside: it keeps serving and stays loaded until the restore's close broadcast closes it. Dropping
+ * it here would orphan the handle, since `closeDatabase` only reaches loaded databases.
+ */
+function restoreBlocksLoad(blockedByRestore: Set<string>, dbName: string, dbPath: string): boolean {
+	return blockedByRestore.has(dbName) && !rocksdbDatabaseEnvs.has(dbPath) && !lmdbDatabaseEnvs.has(dbPath);
+}
+
 function databasesBlockedByRestore(databasePath: string): Set<string> {
 	const blocked = new Set<string>();
 	for (const [dbName, state] of scanBlockedRestores(databasePath)) {
