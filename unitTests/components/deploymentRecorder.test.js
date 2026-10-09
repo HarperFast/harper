@@ -11,6 +11,8 @@
 // need to control the `.get()` return value or assert side effects.
 
 const assert = require('node:assert');
+const crypto = require('node:crypto');
+const { PassThrough } = require('node:stream');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
@@ -21,8 +23,12 @@ const {
 	ingestTransactionTimeoutMs,
 	DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS,
 } = require('#src/components/deploymentRecorder');
-const { databases } = require('#src/resources/databases');
+const { databases, table } = require('#src/resources/databases');
 const { contextStorage } = require('#src/resources/transaction');
+const { setTxnExpiration, COMMIT_PHASE_GRACE } = require('#src/resources/DatabaseTransaction');
+const envMngr = require('#src/utility/environment/environmentManager');
+const { setMainIsWorker, getWorkerIndex } = require('#js/server/threads/manageThreads');
+const systemSchema = require('../../json/systemSchema.json');
 const { ProgressEmitter } = require('#src/server/serverHelpers/progressEmitter');
 const terms = require('#src/utility/hdbTerms');
 const { waitFor } = require('../waitFor.js');
@@ -587,6 +593,123 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 			await recorder?.finish('failed');
 			installed.restore();
 		}
+	});
+});
+
+describe('DeploymentRecorder.ingestPayload streaming source', () => {
+	// The commit gate under test lives in the real write path (startPreCommitBlobsForRecord holds
+	// the commit until the file-backed blob is durable), so this needs a real table, shaped like
+	// hdb_deployment, rather than the Map mock above.
+	const TICK_MS = 20;
+	let IngestTable;
+	let mainWasWorker;
+
+	before(() => {
+		mainWasWorker = getWorkerIndex() === 0;
+		testUtils.setupTestDBPath();
+		setMainIsWorker(true);
+		IngestTable = table({
+			table: 'DeploymentIngestStream',
+			database: 'test',
+			attributes: systemSchema[DEPLOYMENT_TABLE].attributes.map(({ attribute }) =>
+				attribute === systemSchema[DEPLOYMENT_TABLE].hash_attribute
+					? { name: attribute, isPrimaryKey: true }
+					: { name: attribute }
+			),
+		});
+	});
+	after(() => setMainIsWorker(mainWasWorker));
+
+	function installRealDeploymentTable() {
+		const writes = [];
+		if (!databases.system) databases.system = {};
+		const prior = databases.system[DEPLOYMENT_TABLE];
+		databases.system[DEPLOYMENT_TABLE] = {
+			get: (id) => IngestTable.get(id),
+			put(row) {
+				const context = contextStorage.getStore();
+				writes.push({
+					context,
+					transaction: context?.transaction,
+					timeoutBudget: context?.transaction?.timeoutBudget,
+					hasBlob: row.payload_blob != null,
+				});
+				return IngestTable.put(row);
+			},
+		};
+		return {
+			writes,
+			restore() {
+				databases.system[DEPLOYMENT_TABLE] = prior;
+			},
+		};
+	}
+
+	it('streams into a file-backed blob in its own transaction, under the ingest budget, past the generic open limit', async function () {
+		this.timeout(20_000);
+		const configuredBudget = DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS * 2;
+		const chunks = [crypto.randomBytes(64 * 1024), crypto.randomBytes(64 * 1024), 'trailing string chunk'];
+		const expected = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+		const source = new PassThrough();
+		const ambientTransaction = { marker: 'ambient' };
+		const ambientContext = { user: { username: 'deploy-user' }, transaction: ambientTransaction };
+		const installed = installRealDeploymentTable();
+		const priorExpiration = envMngr.get(terms.CONFIG_PARAMS.STORAGE_MAXTRANSACTIONOPENTIME) ?? 30000;
+		let recorder;
+		try {
+			recorder = await contextStorage.run(ambientContext, () =>
+				DeploymentRecorder.create({ project: 'p', ingestTimeoutMs: configuredBudget })
+			);
+			// Shrink the generic open-transaction limit so the monitor would abort the ingest write
+			// while it is gated on the blob, unless the ingest budget is in force.
+			setTxnExpiration(TICK_MS);
+			source.write(chunks[0]);
+			const ingest = contextStorage.run(ambientContext, () => recorder.ingestPayload(source));
+			let ingestError;
+			ingest.catch((error) => (ingestError = error));
+			await waitFor(() => installed.writes.some((write) => write.hasBlob) || ingestError);
+			const blobWrite = installed.writes.find((write) => write.hasBlob);
+			assert.ok(blobWrite, `ingest failed before its write: ${ingestError?.message}`);
+			assert.ok(blobWrite.transaction);
+			// Identity checks as booleans: a failing assert would otherwise inspect a whole Harper transaction.
+			assert.ok(blobWrite.context !== ambientContext, 'ingest write ran in the caller context');
+			assert.ok(blobWrite.transaction !== ambientTransaction, 'ingest write joined the caller transaction');
+			assert.ok(
+				blobWrite.transaction !== installed.writes[0].transaction,
+				'ingest write reused the create transaction'
+			);
+			assert.strictEqual(blobWrite.timeoutBudget, ingestTransactionTimeoutMs(configuredBudget));
+			assert.strictEqual(blobWrite.context.user, ambientContext.user);
+			// Hold the source open well past the monitor's commit-phase grace (COMMIT_PHASE_GRACE
+			// ticks) so the commit, gated on the blob's durable write, outlives the generic limit.
+			await new Promise((resolve) => setTimeout(resolve, TICK_MS * (COMMIT_PHASE_GRACE + 20)));
+			assert.strictEqual(ingestError, undefined);
+			source.write(chunks[1]);
+			source.end(chunks[2]);
+			await ingest;
+		} finally {
+			setTxnExpiration(priorExpiration);
+			installed.restore();
+			if (!source.writableEnded) source.destroy();
+		}
+
+		const ingestWrites = installed.writes.slice(1);
+		assert.strictEqual(ingestWrites.length, 2);
+		for (const write of ingestWrites) {
+			assert.strictEqual(write.timeoutBudget, ingestTransactionTimeoutMs(configuredBudget));
+			assert.ok(write.transaction !== ambientTransaction, 'ingest write joined the caller transaction');
+		}
+		assert.ok(ingestWrites[0].transaction !== ingestWrites[1].transaction, 'ingest writes shared a transaction');
+		assert.strictEqual(installed.writes[0].timeoutBudget, 0);
+		assert.strictEqual(ambientTransaction.timeoutBudget, undefined);
+
+		const expectedHash = crypto.createHash('sha256').update(expected).digest('hex');
+		assert.strictEqual(recorder.row.payload_hash, expectedHash);
+		assert.strictEqual(recorder.row.payload_size, expected.length);
+		const stored = await IngestTable.get(recorder.deploymentId);
+		assert.strictEqual(stored.payload_hash, expectedHash);
+		assert.strictEqual(stored.payload_size, expected.length);
+		assert.ok(Buffer.from(await stored.payload_blob.bytes()).equals(expected));
 	});
 });
 
