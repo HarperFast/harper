@@ -135,10 +135,8 @@ process.env.ROOTPATH = PID_DIR_PATH;
 // installed root despite everything above
 delete process.env.STORAGE_PATH;
 delete process.env.SCHEMAS_DATA_PATH;
-// initSync() below merges these into the per-PID config, so a shell that exports one would
-// silently change defaults the suites assert (e.g. storage.randomAccessFields). Literal, not
-// config/componentEnvPrepass.ts's CONFIG_SHAPING_ENV_VARS: importing that loads Harper modules
-// before the scrub. isolation.test.js checks the two lists agree.
+// a literal: importing config/componentEnvPrepass.ts's CONFIG_SHAPING_ENV_VARS would load Harper
+// modules before the scrub; isolation.test.js checks the two lists agree
 const scrubbedConfigEnvVars = ['HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'].filter(
 	(name) => name in process.env
 );

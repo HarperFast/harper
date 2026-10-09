@@ -5,8 +5,7 @@ const { waitFor } = require('./waitFor.js');
 
 describe('waitFor', () => {
 	const realDateNow = Date.now;
-	// afterEach, not finally: if waitFor regresses to Date.now, the mocha timeout abandons the test
-	// with its promise unsettled, so a finally would leave the clock frozen for later suites
+	// a timed-out test's promise never settles, so only a hook is sure to restore the clock
 	afterEach(() => {
 		Date.now = realDateNow;
 	});
