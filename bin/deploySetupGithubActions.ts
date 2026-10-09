@@ -274,7 +274,8 @@ async function lookupRepository(repository: string): Promise<RepositoryInfo | un
 	}
 	try {
 		const response = await fetch(`https://api.github.com/repos/${repository}`, {
-			headers: { Accept: 'application/vnd.github+json' },
+			// GitHub refuses a request with no User-Agent; Node's default (`node`) satisfies it, but don't rely on that.
+			headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'harper-cli' },
 			signal: AbortSignal.timeout(CHILD_PROCESS_TIMEOUT_MS),
 		});
 		if (response.ok) return parseRepositoryResponse(await response.json());
