@@ -18,7 +18,15 @@ import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
 
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
-import { markCredentialRejection, credentialRejectionError } from './credentialRejection.ts';
+import { markCredentialRejection, credentialRejectionError, isCredentialRejection } from './credentialRejection.ts';
+import {
+	assertNoDeferredCredentialRejection,
+	getAuthenticationRejectedInPlace,
+	getDeferredCredentialRejection,
+	settleDeferredCredentialRejection,
+} from './deferredAuthentication.ts';
+import { verifyCertificate } from './certificateVerification/index.ts';
+import { registerShutdownDrain } from '../components/shutdownDrain.ts';
 import type {} from 'ses';
 import { existsSync, mkdirSync, readFileSync, unlinkSync, realpathSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
@@ -950,6 +958,13 @@ function getHarperExports(scope: ApplicationScope) {
 		contentTypes,
 		markCredentialRejection,
 		credentialRejectionError,
+		isCredentialRejection,
+		assertNoDeferredCredentialRejection,
+		getAuthenticationRejectedInPlace,
+		getDeferredCredentialRejection,
+		settleDeferredCredentialRejection,
+		registerShutdownDrain,
+		verifyCertificate,
 		Attribute: undefined,
 		Config: undefined,
 		ConfigValue: undefined,
