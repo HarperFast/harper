@@ -2062,7 +2062,9 @@ describe('record lock delegations', () => {
 				coordinators = [];
 			});
 			afterEach(() => {
-				for (const coordinator of coordinators) coordinator.close();
+				if (coordinators) {
+					for (const coordinator of coordinators) coordinator.close();
+				}
 			});
 			function create(options = {}) {
 				const coordinator = coldCoordinator(() => mono, {
@@ -2130,7 +2132,7 @@ describe('record lock delegations', () => {
 				});
 			}
 
-			it('does not read identity off the owner or let the waiver cover a later takeover', async () => {
+			it('does not read identity when not the owner or let the waiver cover a later takeover', async () => {
 				owns = false;
 				const coordinator = create();
 				assert.strictEqual(reads, 0);
@@ -2138,6 +2140,67 @@ describe('record lock delegations', () => {
 				owns = ready = true;
 				assert.strictEqual((await request(coordinator)).reason, 'quarantine');
 				assert.strictEqual(reads, 0);
+			});
+
+			for (const waived of [false, true]) {
+				it(`quarantines adoption of an unknown incarnation with an ${waived ? 'explicitly waived' : 'expired'} clock`, async () => {
+					const predecessor = create({
+						grantableAfterMono: waived ? -Infinity : undefined,
+						transport: { coordinationIncarnation: () => undefined },
+					});
+					mono += horizon;
+					// Another owner can have granted while the idle predecessor could not observe identity.
+					const homes = ['alpha', 'beta'];
+					let key = 'bootstrap';
+					while (homeFor(ringKeyFor(predecessor.database, predecessor.table, key), homes) !== 'alpha') key += 'x';
+					incarnation = 2;
+					ready = true;
+					const sibling = create({
+						database: predecessor.database,
+						table: predecessor.table,
+						grantableAfterMono: undefined,
+						transport: { homeMap: () => ({ generation: 1, homes, homeIncarnation: 2 }) },
+					});
+					mono += horizon;
+					const grantedAt = mono;
+					const prior = await sibling.onDelegationRequest({
+						key,
+						requester: 'beta',
+						generation: 1,
+						leaseMs: LEASE,
+					});
+					assert.strictEqual(prior.granted, true);
+					incarnation = 3;
+					ready = false;
+					mono++;
+					const successor = create({
+						database: predecessor.database,
+						table: predecessor.table,
+						adopt: predecessor,
+						transport: { homeMap: () => (ready ? { generation: 1, homes, homeIncarnation: 3 } : undefined) },
+					});
+					ready = true;
+					assert.ok(grantedAt + prior.leaseMs > mono, 'the prior delegation must still be live');
+					assert.strictEqual((await request(successor, key)).reason, 'quarantine');
+					assert.strictEqual(successor.unprovenOwnershipMs(), horizon);
+					mono += horizon - 1;
+					assert.strictEqual((await request(successor, key)).reason, 'quarantine');
+					mono++;
+					assert.ok(mono >= grantedAt + prior.leaseMs);
+					assert.strictEqual((await request(successor, key)).granted, true);
+				});
+			}
+
+			it('carries a known incarnation and its construction deadline through adoption before agreement', async () => {
+				const constructed = mono;
+				const predecessor = create({ grantableAfterMono: undefined });
+				mono += 120_000;
+				const successor = create({ database: predecessor.database, table: predecessor.table, adopt: predecessor });
+				ready = true;
+				assert.strictEqual((await request(successor)).reason, 'quarantine');
+				assert.strictEqual(successor.unprovenOwnershipMs(), horizon - 120_000);
+				mono = constructed + horizon;
+				assert.strictEqual((await request(successor)).granted, true);
 			});
 
 			for (const value of [
@@ -2163,19 +2226,19 @@ describe('record lock delegations', () => {
 					ready = true;
 					assert.strictEqual((await request(coordinator)).reason, 'quarantine');
 				});
-			}
-
-			it('falls back to an available map when the optional hook throws', async () => {
-				ready = true;
-				const coordinator = create({
-					transport: {
-						coordinationIncarnation() {
-							throw new Error('unknown');
+				it(`falls back to an available map with incarnation ${String(value)}`, async () => {
+					ready = true;
+					const coordinator = create({
+						transport: {
+							coordinationIncarnation() {
+								if (value instanceof Error) throw value;
+								return value;
+							},
 						},
-					},
+					});
+					assert.strictEqual((await request(coordinator)).granted, true);
 				});
-				assert.strictEqual((await request(coordinator)).granted, true);
-			});
+			}
 		});
 
 		it('quarantines a cold home by default, on its own process clock', async () => {
