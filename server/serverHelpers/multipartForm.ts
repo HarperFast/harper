@@ -95,7 +95,7 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 			},
 		});
 		const fail = (error: Error, clientFault = true) => {
-			// Discard errors from streams destroyed by deliberate cancellation.
+			// Discarded files must not turn an intentional iterator return into a request failure.
 			if (canceled) return;
 			this.#error ??=
 				clientFault && !(error as Error & { statusCode?: number }).statusCode ? new ClientError(error, 400) : error;

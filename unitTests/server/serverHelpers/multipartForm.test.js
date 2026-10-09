@@ -65,6 +65,28 @@ describe('REST multipart form decoding', function () {
 			contentTypes.delete(type);
 		}
 	});
+	it('lists only encodable response types in a 406 error', function () {
+		const decoderType = 'application/x-multipart-decoder-only-test';
+		const encoderType = 'application/x-multipart-stream-only-test';
+		const emptyType = 'application/x-multipart-empty-handler-test';
+		contentTypes.set(decoderType, { deserialize: (bytes) => bytes });
+		contentTypes.set(encoderType, { serializeStream: (values) => values });
+		contentTypes.set(emptyType, undefined);
+		try {
+			assert.throws(
+				() => findBestSerializer({ headers: { accept: decoderType } }),
+				(error) =>
+					error.statusCode === 406 &&
+					!error.message.includes(decoderType) &&
+					!error.message.includes(emptyType) &&
+					error.message.includes(encoderType)
+			);
+		} finally {
+			contentTypes.delete(decoderType);
+			contentTypes.delete(encoderType);
+			contentTypes.delete(emptyType);
+		}
+	});
 
 	this.timeout(10000);
 	let Uploads;
@@ -81,11 +103,42 @@ describe('REST multipart form decoding', function () {
 		});
 	});
 
-	it('registers multipart decoding without exposing a custom streaming hook', function () {
-		const handler = contentTypes.get('multipart/form-data');
-		assert.equal(typeof handler.deserialize, 'function');
-		assert.equal('deserializeStream' in handler, false);
+	it('keeps header-aware multipart decoding out of the synchronous registry', async function () {
+		assert.equal(contentTypes.has('multipart/form-data'), false);
+		assert.deepStrictEqual(await decode([{ name: 'title', value: 'request form' }]), { title: 'request form' });
 	});
+	for (const [name, header] of [
+		['bare', 'multipart/form-data'],
+		['boundary', contentType],
+	]) {
+		it(`preserves a ${name} multipart source Response as cached Blob bytes`, async function () {
+			const bytes = encodeForm([{ name: 'field', value: 'cached source' }]);
+			const Cached = table({
+				database: 'multipart_forms',
+				table: `Cached_${name}`,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'body', type: 'Blob' },
+				],
+			});
+			let sourceReads = 0;
+			Cached.sourcedFrom({
+				get(_id, context) {
+					sourceReads++;
+					context.expiresAt = Date.now() + 60_000;
+					return new Response(bytes, { headers: { 'Content-Type': header } });
+				},
+			});
+			for (let read = 0; read < 2; read++) {
+				const cached = await Cached.get('response');
+				assert(cached.body instanceof Blob, 'Expected cached multipart bytes to remain a Blob');
+				assert.deepStrictEqual(Buffer.from(await cached.body.arrayBuffer()), bytes);
+				assert.equal(cached.headers['content-type'], header);
+				assert.equal(cached.data, undefined);
+			}
+			assert.equal(sourceReads, 1);
+		});
+	}
 
 	it('keeps text values and repeated names, including inherited object property names', async function () {
 		const form = await decode([
@@ -519,7 +572,27 @@ describe('REST multipart form decoding', function () {
 		try {
 			assert.equal(getDeserializer(contentType, false)(Buffer.from('custom format')), 'custom format');
 		} finally {
-			contentTypes.set('multipart/form-data', original);
+			if (original === undefined) contentTypes.delete('multipart/form-data');
+			else contentTypes.set('multipart/form-data', original);
+		}
+	});
+	it('decodes multipart requests when a custom registration only supplies a serializer', async function () {
+		const type = 'multipart/form-data';
+		const original = contentTypes.get(type);
+		contentTypes.set(type, { serialize: JSON.stringify });
+		try {
+			const bytes = encodeForm([{ name: 'title', value: 'request form' }]);
+			assert.strictEqual(getDeserializer(contentType, false)(bytes).data, bytes);
+			for (const streamValues of [false, true]) {
+				const body = getDeserializer(contentType, true, streamValues)(Readable.from([bytes]));
+				assert.deepStrictEqual(
+					streamValues ? await collect(body) : await body,
+					streamValues ? [{ title: 'request form' }] : { title: 'request form' }
+				);
+			}
+		} finally {
+			if (original === undefined) contentTypes.delete(type);
+			else contentTypes.set(type, original);
 		}
 	});
 

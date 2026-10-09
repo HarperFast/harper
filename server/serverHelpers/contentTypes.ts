@@ -225,9 +225,6 @@ mediaTypes.set('text/event-stream', {
 	compressible: false,
 	q: 0.8,
 });
-mediaTypes.set('multipart/form-data', {
-	deserialize: deserializeMultipartForm,
-});
 mediaTypes.set('application/x-www-form-urlencoded', {
 	deserialize(data) {
 		const stringData = Buffer.isBuffer(data) ? data.toString('utf8') : data;
@@ -421,7 +418,10 @@ export function findBestSerializer(incomingMessage) {
 		if (acceptType) {
 			throw new ClientError(
 				'No supported content types found in Accept header, supported types include: ' +
-					Array.from(mediaTypes.keys()).join(', '),
+					Array.from(mediaTypes)
+						.filter(([, handler]) => handler?.serialize || handler?.serializeStream)
+						.map(([type]) => type)
+						.join(', '),
 				406
 			);
 		} else {
@@ -691,9 +691,8 @@ export function getDeserializer(
 	const handler = contentType.type
 		? mediaTypes.get(contentType.rawType) || mediaTypes.get(contentType.type)
 		: undefined;
-	const multipart = handler?.deserialize === deserializeMultipartForm;
-	const deserialize =
-		(!streaming && multipart ? undefined : handler?.deserialize) || deserializerUnknownType(contentType);
+	const multipart = !handler?.deserialize && contentType.type === 'multipart/form-data';
+	const deserialize = handler?.deserialize || deserializerUnknownType(contentType);
 	if (streaming && streamValues && multipart)
 		return (stream, signal) => deserializeMultipartStream(stream, contentTypeString, signal);
 	if (!streaming) return deserialize;
