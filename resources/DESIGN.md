@@ -784,7 +784,8 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
 A `TableTarget` is the small binding the declaration body needs and nothing more: the root store, the
 `tables` graph the class is published into, what to do after a lost create race (another thread created
 the table first), and who owns the column-family wrappers the declaration opens. The global target is
-`database()` / `databases[name]` / `resetDatabases()`; a branch target (harper#2264) is that branch's
+`database()` / `databases[name]` / `resetDatabases()`, and it adopts every RocksDB wrapper into the
+root's owned list (see the next-but-one section); a branch target (harper#2264) is that branch's
 `rootStore` / `tables` / `reloadBranch`, and it adopts every wrapper into `branch.openedStores` so
 `close()` releases them.
 
@@ -855,6 +856,23 @@ environment is a use-after-free (an intermittent segfault in the lmdb unit run).
 an LMDB root once, only while `open`, skips its dbis, and closes every alias sharing it. RocksDB
 column families are independently refcounted handles, so they are still closed one by one. Enforced by
 the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
+
+## A RocksDB database's teardown closes every wrapper the thread opened for it, replaced ones included (`databases.ts`, harper#3120)
+
+A redeclare (an insert that adds an attribute, `addAttributes`, a cluster definition) reopens each
+indexed attribute's column family and overwrites `Table.indices[name]`, so the table graph no longer
+reaches the wrapper it replaced. rocksdb-js's registry is process-global, so one such wrapper keeps the
+path's refCount up and online `restore_backup` refuses the database as held open. Two rules close it:
+`declareTable` reuses the root's one `__dbis__` wrapper (`internalDbisFor`), and every wrapper a
+thread opens for a global RocksDB root, whether `initStores` loads it or `declareTable` adopts it (an
+index right at the native open, in `openIndex`), goes into `ownedRocksStores` under the root path.
+`closeDatabaseStores` closes that list before the root and keeps only wrappers whose close failed, so a
+strict close's retry or a later close still finds them; it is keyed by path because a lenient close
+discards the root object even after a failure. A replaced index is not closed at replacement: a lazy
+range (`searchByIndex`) can still be reading it, so it lives until database close, and handle counts
+grow with redeclares until then. `destroy()` closes every wrapper on the root, so a drop only forgets
+the list. Enforced by the redeclare cases in `unitTests/resources/closeLoadedDatabases.test.js` and,
+end to end, `integrationTests/database/restore-backup-online.test.ts`.
 
 ## Every `.mdb` under a storage path must open as LMDB (`databases.ts` `getDatabases`)
 

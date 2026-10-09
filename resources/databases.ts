@@ -500,6 +500,30 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
 const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
+/**
+ * Every column-family wrapper this thread opened for a RocksDB database root, by root path, until it
+ * closes. A redeclare replaces wrappers the table graph points at, so closing the graph alone would
+ * leave the replaced ones holding the root open (harper#3120). Keyed by path, not root object, so a
+ * wrapper whose close failed is still found after the root itself is discarded.
+ */
+const ownedRocksStores = new Map<string, any[]>();
+
+function ownedStoresFor(rootStore: any): any[] | undefined {
+	if (!(rootStore instanceof RocksDatabase)) return undefined;
+	let owned = ownedRocksStores.get(rootStore.path);
+	if (!owned) ownedRocksStores.set(rootStore.path, (owned = []));
+	return owned;
+}
+
+/** Closes every wrapper owned under `path`; one whose close fails stays owned for the next attempt. */
+async function closeOwnedStores(path: string, close: (store: any) => Promise<boolean>): Promise<void> {
+	const owned = ownedRocksStores.get(path);
+	if (!owned) return;
+	const failed: any[] = [];
+	for (const store of owned) if (!(await close(store))) failed.push(store);
+	if (failed.length) ownedRocksStores.set(path, failed);
+	else ownedRocksStores.delete(path);
+}
 type IncompleteDatabaseClose = {
 	databaseNames: Set<string>;
 	rootPaths: string[];
@@ -1538,6 +1562,7 @@ function initStores(
 	databaseName: string,
 	{ defaultTable, auditPath, isLegacy, destination, storeName, openedStores }: InitStoresOptions = {}
 ) {
+	openedStores ??= ownedStoresFor(rootStore);
 	// a store with no tables never reaches the per-table loop below, and blob roots resolve from this
 	rootStore.databaseName ??= storeName ?? databaseName;
 	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
@@ -1827,8 +1852,9 @@ function initStores(
 				// now load the non-primary keys, opening the dbs as necessary for indices
 				if (!attribute.isPrimaryKey && (attribute.indexed || (attribute.attribute && !attribute.name))) {
 					if (!indices[attribute.name]) {
-						const dbi = openIndex(attribute.key, rootStore, attribute, primaryAttribute.generation);
-						openedStores?.push(dbi);
+						const dbi = openIndex(attribute.key, rootStore, attribute, primaryAttribute.generation, (store) =>
+							openedStores?.push(store)
+						);
 						indices[attribute.name] = dbi;
 						indices[attribute.name].indexNulls = attribute.indexNulls;
 					}
@@ -2883,6 +2909,7 @@ async function destroyIncompleteDatabaseRoot(rootPath: string): Promise<void> {
 			await rootStore.close();
 		}
 		await rootStore.destroy();
+		ownedRocksStores.delete(rootPath);
 	} else {
 		if (rootStore.status === 'open') await rootStore.close();
 		await rm(rootPath, { force: true });
@@ -3002,7 +3029,9 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 				if (rootStore instanceof RocksDatabase) {
 					await (rootStore as any).dbisDb?.close?.();
 					await rootStore.close();
+					// destroying the root closes every wrapper still open on it, replaced ones included
 					await rootStore.destroy();
+					ownedRocksStores.delete(rootStore.path);
 				} else {
 					await rootStore.close();
 					await unlink(rootStore.path);
@@ -3235,6 +3264,7 @@ async function closeDatabaseStores(
 		databasePaths.delete(rootStore as RootDatabase);
 		let rootClosed = rootStore.status !== 'open';
 		if (!lmdbRootStores.has(rootStore)) {
+			await closeOwnedStores(rootStore.path, (store) => closeStore(store, 'replaced store'));
 			await closeStore(rootStore.dbisDb, 'attributes store');
 			rootClosed = await closeStore(rootStore, 'root store');
 		} else if (!rootClosed) rootClosed = await closeStore(rootStore, 'root store');
@@ -3539,7 +3569,13 @@ function armVersionedIndexEncoder(dbi: any, rootStore: any) {
 }
 
 // opens an index, consulting with custom indexes that may use alternate store configuration
-function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any, generation?: string) {
+function openIndex(
+	dbiKey: string,
+	rootStore: RootDatabaseKind,
+	attribute: any,
+	generation: string | undefined,
+	adopt: (store: any) => void
+) {
 	const objectStorage =
 		attribute.isPrimaryKey || (attribute.indexed.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
 	const dbiInit = createOpenDBIObject(!objectStorage, objectStorage);
@@ -3569,6 +3605,8 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any, 
 			name: storeNameFor(dbiKey, generation),
 			cache: isCustomObjectIndex,
 		} as any) as any;
+		// before the setup below, whose failure cleanup can itself fail to close it
+		adopt(dbi);
 		(dbi as any).rootStore = rootStore;
 		try {
 			// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
@@ -3591,6 +3629,7 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any, 
 		}
 	} else {
 		dbi = (rootStore as any).openDB(dbiKey, dbiInit as any);
+		adopt(dbi);
 		installCustomIndex(dbi);
 	}
 	function installCustomIndex(indexStore: any) {
@@ -3639,7 +3678,7 @@ interface TableTarget {
 	/** Another thread created the table this declaration was about to; make `tables` reflect it. */
 	reload(databaseName: string): void;
 	/** Records a column-family wrapper the declaration opened, for whoever closes the store. */
-	adopt(store: any): void;
+	adopt(store: any, rootStore: RootDatabaseKind): void;
 	/** Set for a branch: its Table classes refuse DDL, and its schema signals address it by path. */
 	branch?: BranchDatabase;
 }
@@ -3648,9 +3687,22 @@ const GLOBAL_TARGET: TableTarget = {
 	rootStore: (databaseName, tableName) => database({ database: databaseName, table: tableName }),
 	tables: (databaseName) => databases[databaseName],
 	reload: () => resetDatabases(),
-	// a real database's stores live until the process (or `closeDatabase`, which walks the graph) ends
-	adopt: () => {},
+	adopt: (store, rootStore) => ownedStoresFor(rootStore)?.push(store),
 };
+
+/** One `__dbis__` wrapper per root store: opening another would replace the one teardown closes. */
+function internalDbisFor(rootStore: any, target: TableTarget): any {
+	const existing = rootStore.dbisDb;
+	if (existing && existing.status !== 'closed') return existing;
+	const internalDbiInit = createOpenDBIObject(false);
+	const dbisDb =
+		rootStore instanceof RocksDatabase
+			? openRocksDatabase(rootStore.path, { ...internalDbiInit, disableWAL: false, name: INTERNAL_DBIS_NAME } as any)
+			: rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
+	target.adopt(dbisDb, rootStore);
+	rootStore.dbisDb = markInternalDbiNonVersioned(dbisDb);
+	return dbisDb;
+}
 
 /**
  * The factory a branched application declares tables through: each declaration goes to the branch
@@ -3787,7 +3839,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	const schemaDefinedExplicit = tableDefinition.schemaDefined !== undefined;
 	if (schemaDefined == undefined) schemaDefined = true;
 	const relationshipDefinitions = schemaRelationshipsDefined ? normalizeRelationships(attributes) : undefined;
-	const internalDbiInit = createOpenDBIObject(false);
 	let releaseExclusiveLock: (() => void) | undefined;
 
 	const hasHnswAtEntry = attributes.some((attribute) => attribute.indexed?.type === 'HNSW');
@@ -4444,20 +4495,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				dbiInit.randomAccessStructure = primaryKeyAttribute.randomAccessFields;
 			const dbiName = tableName + '/';
 
-			if (rootStore instanceof RocksDatabase) {
-				attributesDbi = (rootStore as any).dbisDb = openRocksDatabase(rootStore.path, {
-					...internalDbiInit,
-					disableWAL: false,
-					name: INTERNAL_DBIS_NAME,
-				} as any);
-			} else {
-				attributesDbi = (rootStore as any).dbisDb = (rootStore as any).openDB(
-					INTERNAL_DBIS_NAME,
-					internalDbiInit as any
-				);
-			}
-			target.adopt(attributesDbi);
-			markInternalDbiNonVersioned(attributesDbi);
+			attributesDbi = internalDbisFor(rootStore, target);
 
 			exclusiveLock(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
 			if (rootStore instanceof RocksDatabase && fullTextRetirementInProgress(rootStore, tableName))
@@ -4546,7 +4584,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}
-			target.adopt(primaryStore);
+			target.adopt(primaryStore, rootStore);
 			unpublishedPrimaryStore = primaryStore;
 			primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
 			// only a store no table has loaded yet is unnamed; a branch's store carries its own store
@@ -4596,19 +4634,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			deferredPrimaryRow = primaryKeyAttribute;
 		}
 		const indices = Table.indices;
-		if (!attributesDbi) {
-			if (rootStore instanceof RocksDatabase) {
-				(rootStore as any).dbisDb = openRocksDatabase(rootStore.path, {
-					...internalDbiInit,
-					disableWAL: false,
-					name: INTERNAL_DBIS_NAME,
-				} as any);
-			} else {
-				(rootStore as any).dbisDb = (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
-			}
-			target.adopt((rootStore as any).dbisDb);
-			attributesDbi = markInternalDbiNonVersioned((rootStore as any).dbisDb);
-		}
+		attributesDbi ??= internalDbisFor(rootStore, target);
 		Table.dbisDB = attributesDbi;
 		generation ??= attributesDbi.getSync(tableName + '/')?.generation;
 		// A cluster-origin list can miss a descriptor another thread committed moments ago, so removal
@@ -4782,8 +4808,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					applyDurableDeclaration(attribute, attributesDbi.getSync(dbiKey) ?? attributeDescriptor);
 				} else {
 					if (attribute.indexed) {
-						const dbi = openIndex(dbiKey, rootStore, attribute, generation);
-						target.adopt(dbi);
+						const dbi = openIndex(dbiKey, rootStore, attribute, generation, (store) => target.adopt(store, rootStore));
 						// Persisting the indexFormat openIndex just resolved adds a field the descriptor lacks
 						// rather than rewriting one it has. Without it an empty index resolves 'versioned', writes
 						// versioned nodes, then re-derives 'legacy' on the next load — see indexFormatNeedsPersist.
@@ -4850,8 +4875,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// crash-recovery, leaving the index stuck. Falls back to manageThreads.restartNumber
 				// on the main thread, where workerData is undefined (and it is initialized to 1).
 				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
-				const dbi = openIndex(dbiKey, rootStore, attribute, generation);
-				target.adopt(dbi);
+				const dbi = openIndex(dbiKey, rootStore, attribute, generation, (store) => target.adopt(store, rootStore));
 				if (deferredPrimaryRow) indices[attribute.name] = dbi; // private until published; lets the rollback close it
 				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
 				// custom-object) index. An index created before this field existed has no indexFormat on
