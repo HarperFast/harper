@@ -12,7 +12,7 @@ const SELF = global.server.hostname || hostname();
 const PEER = 'writer-residency-peer';
 
 describe('Writer residency (harper#2257)', () => {
-	let Records;
+	let Records, auditStore;
 
 	let lastLogKey = Date.now() - 3_600_000;
 	function originClock() {
@@ -80,6 +80,7 @@ describe('Writer residency (harper#2257)', () => {
 			],
 			audit: true,
 		});
+		auditStore = Records.primaryStore.rootStore.auditStore;
 	});
 
 	afterEach(() => {
@@ -211,18 +212,21 @@ describe('Writer residency (harper#2257)', () => {
 	});
 
 	it('keeps the merged indexed values on an out-of-order patch over a stub', async () => {
-		// clocks near now so the older patch is resequenced through the audit walk (reached on LMDB)
-		const now = Date.now();
+		// above RocksDB's audit floor (stamped at open) so the older patch is applied, not dropped; LMDB resequences
+		// it through the audit walk onto the stub, RocksDB commits it audit-only
+		const base = Date.now() + 60_000;
 		Records.setResidency(() => [PEER]);
-		await applyFrame(
-			[{ id: 'stub-reordered', record: { id: 'stub-reordered', name: 'old', body: 'complete' } }],
-			now - 3000
-		);
+		await applyFrame([{ id: 'stub-reordered', record: { id: 'stub-reordered', name: 'old', body: 'complete' } }], base);
 		const residencyId = await residencyIdFor([PEER, SELF]);
-		const earlier = now - 2000;
-		const later = now - 1000;
+		const earlier = base + 1000;
+		const later = base + 2000;
 		await applyFrame([{ id: 'stub-reordered', record: { name: 'new' }, fullUpdate: false, residencyId }], later);
 		await applyFrame([{ id: 'stub-reordered', record: { note: 'x' }, fullUpdate: false, residencyId }], earlier);
+		const appliedVersions = [];
+		for (const auditRecord of auditStore.getRange({ start: 1 }))
+			if (auditRecord.recordId === 'stub-reordered' && auditRecord.type === 'patch')
+				appliedVersions.push(auditRecord.version);
+		assert.ok(appliedVersions.includes(earlier), 'premise: the older patch was applied, not skipped');
 		const entry = Records.primaryStore.getEntry('stub-reordered');
 		assertNoCompletePartialRow(entry);
 		assert.equal(entry.value.name, 'new');
