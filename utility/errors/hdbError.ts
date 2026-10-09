@@ -220,6 +220,55 @@ export class LockUnavailableError extends ServerError {
 	}
 }
 
+/**
+ * Keys the conditional-write guard's context property (`Table.ts` `_writeUpdate` reads
+ * `context?.[IF_VERSION]`). A module-private symbol, not the public string `ifVersion` the
+ * `request.session.update(data, { ifVersion })` API takes: `security/auth.ts` is the only place
+ * that translates one into the other, so `Table.put(record, { ifVersion })` isn't a general,
+ * any-caller option yet — the only shipped caller doesn't need it to be, and the shared-transaction
+ * leak this guard can hit (harper#2991) is unexplained. Exporting the symbol instead of just the
+ * field name is a one-line change to open later; taking the string key back once a caller depends
+ * on it would not be.
+ */
+export const IF_VERSION: unique symbol = Symbol('ifVersion');
+
+/**
+ * A conditional write (`Table.put()`'s internal `ifVersion` guard, used by
+ * `request.session.update(data, { ifVersion })`) found the record's version did not match the
+ * caller's expectation at commit time — the record changed, is missing, or the compare-and-write
+ * could not be proven atomic (a snapshot-free RocksDB transaction, or a resequenced write that
+ * reused its version). Nothing was written. Distinct from a storage failure so callers can catch
+ * it and re-read rather than treat it as an infrastructure error. The message never includes the
+ * record id: for `hdb_session` that id is the bearer cookie value, and this error is exactly the
+ * case where the session is still live — logging it (an uncaught rejection is logged by the
+ * server) must not hand out a replayable cookie. `retryable` is a required constructor argument,
+ * not derived from `reason`: a caller's retry loop depends on it, and deriving it from freeform
+ * text would silently flip the flag if that text is ever reworded. `false` marks the cases a
+ * fresh re-read cannot resolve (`VERSION_REUSED`: the flag survives a plain read, so the same
+ * `ifVersion` will keep failing until an unconditional write lands) — the code is the same for
+ * every reason, so a caller that needs to tell them apart reads `retryable`, not `code`.
+ */
+export class VersionConflictError extends ClientError {
+	code: string;
+	retryable: boolean;
+	constructor(
+		tableName: string,
+		expectedVersion: number,
+		actualVersion: number | undefined,
+		retryable: boolean,
+		reason?: string
+	) {
+		super(
+			`Conditional write to ${tableName} rejected: expected version ${expectedVersion}, found ` +
+				`${actualVersion ?? 'no record'}${reason ? ` (${reason})` : ''}`,
+			409
+		);
+		this.name = 'VersionConflictError';
+		this.code = 'VERSION_CONFLICT';
+		this.retryable = retryable;
+	}
+}
+
 /** One structured validation failure. `path` is dot-scoped (`body.price`, `query.sort`, `params.id`). */
 export interface ValidationIssue {
 	/** Where the failure occurred, e.g. `body.price`, `query.expand`, `params.id`. */

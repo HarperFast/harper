@@ -187,6 +187,43 @@ Two consequences that are easy to miss:
   resolving a principal from a different credential is a contradiction. Hence a rejected certificate
   identity stops resolution outright instead of falling through to Basic, the session, or the local bypass.
 
+## `session.update(data, { ifVersion })` guards a maintenance write, not the hot path (`security/auth.ts`, harper#2983)
+
+`request.session.update(data)` is an unconditional full-replace `put` on `hdb_session`. The optional
+second argument conditions it on the version `request.session.version` was read at. A mismatch
+writes nothing and rejects with `VersionConflictError` (`.code === 'VERSION_CONFLICT'`, 409) —
+distinct from a storage failure, so a maintenance writer that reads-then-awaits-then-writes-back
+(HarperFast/oauth#212: a refreshed token, a detected-invalid-session logout) can tell whether
+something else won the race, instead of blindly overwriting a more authoritative concurrent write.
+`.retryable` tells it whether a fresh read is worth another attempt. `options.ifVersion` present
+but not a finite number throws rather than falling back to unconditional — a caller building it
+from `.version` on a session that turned out missing/deleted must not silently recreate what it
+meant to guard. The guard lives in `Table.ts`'s own write-commit path (see its `DESIGN.md` entry,
+including the single-write-transaction scope this call relies on), not here; `auth.ts` only
+validates the option shape and defers the `X-Hdb-Session: Secure` response header until the
+conditional write actually confirms (the unconditional path sets it synchronously, unchanged).
+
+`request.session.version` is a lazily-evaluated, non-enumerable getter, defined only when the
+loaded session has no own `version` key already — an app's own enumerable `version` field in
+session data survives untouched (and keeps working with `update()`, which only ever persists own
+enumerable fields), at the cost of no `ifVersion` support for that one session. Lazy because the
+version read (`getUpdatedTime()`, a `WeakMap` lookup) then only costs a caller that uses it, not
+every cookie-session request.
+
+**Rollout**: an old core silently ignores `update()`'s second argument and writes unconditionally
+— there is no capability negotiation here. A component that raises its peer `harper` minimum for
+this feature (HarperFast/oauth#212's plan) must not run against a mixed-version cluster where an
+older node could still serve the request; that gate is the component's responsibility, not core's.
+
+**Cross-node scope**: the guard is atomic against writes already applied on the local node, not
+against the cluster. `hdb_session` replicates (it is not in `NON_REPLICATING_SYSTEM_TABLES`,
+`resources/databases.ts`), so a logout committed on node A is invisible to node B's conditional
+write until it replicates — a maintenance write on B can pass `ifVersion` and commit locally before
+A's logout arrives. Last-write-wins keeps the later version on every node regardless of arrival
+order, so a refresh committed after the logout reverts it cluster-wide. A successful conditional
+write proves only "nothing else committed on this node since I read", never "nothing happened
+anywhere". No cross-node compare-and-set exists here or in this PR.
+
 ## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
 
 There is no per-thread copy of `hdb_user`/`hdb_role`: every lookup point-reads the user by name and its role by id through the primary store's record cache, so no writer (an operation, a replicated commit) has to announce a change for lookups to see it. Three rules keep that true:

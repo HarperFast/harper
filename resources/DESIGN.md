@@ -879,3 +879,132 @@ replay re-encodes the record but never re-appends its audit entry (replay transa
 The row bit reflects its latest mutation, so a caller needing a row to stay local re-asserts it on every
 mutation. Reload and derived-index `evict` markers are always local-only; lock control entries never are.
 Enforced by `unitTests/resources/localOnly.test.js` (both engines; crash + boot replay on RocksDB).
+
+## `Table.put()`'s internal `IF_VERSION`-keyed guard: a per-write conditional commit, fenced to one caller (`Table.ts` `_writeUpdate`, harper#2983)
+
+`_writeUpdate` reads `context?.[IF_VERSION]` once — `IF_VERSION` is a module-private symbol
+(`utility/errors/hdbError.ts`, exported next to `VersionConflictError`), not a public `ifVersion`
+string option: a plain `Table.put(record, { ifVersion })` call does not reach this at all. Only
+`security/auth.ts` sets it (`putOptions[IF_VERSION] = ifVersion`, flowing through `applyContext`
+on the same object `request.session.update(data, { ifVersion })` built), fencing the guard to that
+one caller. Opening it to every `Table.put()` caller later — export the symbol, or add the public
+string key as an alias — is a one-line change; taking the capability back once a direct caller
+depends on it would not be, and the shared-transaction leak below is exactly the kind of risk a
+second caller shouldn't inherit silently. When the value is defined, it must be a finite number —
+a present-but-non-finite value (`null`, a string, `NaN`, `±Infinity`) throws synchronously rather
+than reaching the guard below, where `null` would otherwise pass `(existingEntry?.version ?? null)
+!== ifVersion` for a nonexistent row and silently create it, and `NaN`/`Infinity` would never equal
+a real stored version and reject every attempt forever. When it _is_ a finite number, `write.commit`
+is reassigned to a wrapper around the function the literal already built
+(`const plainCommit = write.commit;`) — not a named function hoisted out of the literal, which
+would reindent and lose blame on this file's most-edited closure. An ordinary write (the symbol
+key unset) never reassigns `write.commit` at all: zero added branch, allocation, or retry cost.
+The guard compares the caller's expected version against `existingEntry.version`, the same value
+every retry of this write's commit already re-reads fresh on both engines (RocksDB via its native
+optimistic-transaction conflict detection, LMDB via `ifVersion`-chained conditional batching) —
+that shared re-read is what makes the compare atomic with the actual write — **on RocksDB**.
+RocksDB drains staged completions (including a rejected `VersionConflictError`) before the native
+commit and aborts the whole transaction if one rejects (`DatabaseTransaction.ts`'s pre-commit
+completion drain), so a sibling `Table.put()` in the same transaction is aborted along with the
+guarded write. **LMDB does not**: `write.commit` runs inside the conditional batch, and the
+batch's own writes land natively before the returned rejection is even joined
+(`LMDBTransaction.ts`), so a sibling `Table.put()` sharing the same `context`/`transaction` can
+land durably in the same native commit that this write's guard rejects. `request.session.update()`
+never hits this on either engine: it builds a fresh context with no request transaction, so its
+`Table.put()` call is always alone. Do not use this guard from a shared/joined transaction on
+**either engine** right now, for two different, unrelated reasons. On LMDB: until that engine
+enforces the same all-or-nothing outcome RocksDB already does — enforcing it (reject a guarded
+write that joins a multi-write LMDB transaction, before staging) is cheap today and harder to
+retrofit once a caller depends on the unenforced contract; deferred rather than done here because
+the only shipped caller cannot reach it and the fix needs its own verification against a real
+multi-write LMDB transaction. On RocksDB: the all-or-nothing abort described in the paragraph
+above is real, but a shared transaction built around this guard was also observed to leak a read
+snapshot past that abort into later, unrelated test files — see the "test-harness repros"
+paragraphs below. That leak's cause is not yet understood, so the RocksDB restriction stands until
+it is — and is the reason this guard stays symbol-fenced rather than becoming a public option.
+
+Three cases fail closed instead of comparing on an unproven or ambiguous base, and are
+**not retryable** (`VersionConflictError`'s `retryable` argument, passed explicitly at each call
+site — never derived from the `reason` string, so rewording a reason can't silently flip it)
+because a fresh re-read cannot resolve them: a snapshot-free/disabled-snapshot transaction
+(`DatabaseTransaction.ts`'s own comment: narrows the read-to-put window, does not close it);
+`VERSION_REUSED` on the existing entry (a resequenced RocksDB write can keep its predecessor's
+version while changing the record, so version equality proves nothing — and the flag survives a
+plain re-read, so the row rejects every `ifVersion` write until an unconditional write lands); and
+the version matches but this write's own `txnTime` is not strictly after it — deliberately a
+plainer, stricter check than the general out-of-order resequencing order
+(`precedesExistingVersion`'s cross-node timestamp-tie break has no use for a conditional write,
+which only cares whether this write lands strictly after what it conditioned on). Without this
+third check, a matched write at or behind the existing version takes `plainCommit`'s normal
+out-of-order path, merges onto whatever is newer, and reports success while the caller's own value
+never lands; checking first means the (now unreachable) `write.skipped` flag that same path also
+sets never needs a second check here. Not retryable either: a replicated row whose origin's clock
+runs ahead holds the existing version in the future until local time catches up — there is no
+logical-clock bump — so a fresh read of the same row hits the same block, not a new version to
+retry with. For a table with a `source`, `writeToSource()` runs in `save()` before this guard, so
+a version mismatch rejects the local write after the source already saw it; `hdb_session` has no
+source.
+
+Every rejection is a returned `Promise.reject(new VersionConflictError(...))`, never a `throw` — a
+throw from inside a commit closure can escape its caller as a synchronous exception rather than a
+promise rejection, depending on how much of the chain above resolved synchronously.
+`VersionConflictError`'s message never includes the record id (`utility/errors/hdbError.ts`): for
+`hdb_session` the id is the bearer cookie value, and this is exactly the case where the session is
+still live, so logging it (an uncaught rejection is logged by the server) would hand out a
+replayable cookie.
+
+`context?.[IF_VERSION]` is a property of the shared write `context`, not a per-call argument scoped
+to one record — every write that reuses that `context` inherits the same expected version. Changing
+that later (to a per-write option independent of `context`) would be a breaking change for any
+caller depending on it; `request.session.update()`'s fresh-context-per-call usage does not depend
+on it, so this is free to revisit before a second caller exists. `request.session.version` is a
+snapshot from the request's own read and is not updated after a successful `update()` — a second
+conditional write in the same request needs its own re-read, not the first call's held version.
+
+Session-table use (`security/auth.ts`, `request.session.update(data, { ifVersion })`, translating
+to `putOptions[IF_VERSION]`) is the only caller today; nothing else imports or sets `IF_VERSION`.
+Enforced by `unitTests/resources/tableIfVersion.test.js` (both engines, including a RocksDB-only
+`VERSION_REUSED` case, using the real `IF_VERSION` symbol imported the same way `Table.ts` does —
+see that file's own note on why) and `unitTests/security/sessionUpdateIfVersion.test.js`.
+
+Two attempts to exercise this guard's per-attempt re-read against a genuine concurrent writer,
+rather than `tableIfVersion.test.js`'s `getEntry` interception, both corrupted state outside their
+own test file when run in the same mocha process and were dropped (harper#2990, found writing
+that file's regression test). Recorded here rather than silently abandoned, because the first one
+bears directly on the RocksDB-aborts-the-sibling claim two paragraphs up.
+
+1. **Shared-transaction snapshot leak (RocksDB).** Staging the guarded `Table.put()` and a second,
+   unconditional `Table.put()` to the same key under one shared, explicit
+   `transaction(async (context) => {...})`, then letting the guard reject: the test passed in
+   isolation, but running it ahead of `unitTests/resources/localOnly.test.js` in the same process
+   broke that file with "an audit entry of type relocate was written" / "Cannot read properties of
+   undefined (reading 'extendedType')", confirmed by bisecting file combinations. The native commit
+   does abort along with the guarded write, as the paragraph above says — but something tied to
+   that shared transaction's read snapshot is not released with it, and the next test file to open
+   its own snapshot trips over what is left open. The mechanism is not understood.
+2. **Native retry-bookkeeping desync (RocksDB).** Interposing a concurrent `Table.put()` by
+   monkey-patching `Transaction.prototype.commit` — the same technique
+   `unitTests/resources/immediateTransactionConflictRetry.test.js` uses on itself — to land a write
+   between the guarded write's base read and its commit: this test also passed alone, and was
+   verified (by temporarily disabling the guard's own checks and confirming the test then failed
+   for the expected reason) to genuinely drive a conflict → retry → re-read → reject on a real
+   retry attempt, not attempt 0. But running it ahead of `immediateTransactionConflictRetry.test.js`
+   in the same process desynced that file's own conflict/retry bookkeeping on its next run ("the
+   retry re-staged the record, not a second audit entry: 0 !== 1"; "the later plain write wins by
+   LWW: 7 !== 100"), confirmed by bisection. `Transaction.prototype.commit` is patched in place on a
+   shared prototype; a second file patching it after this one leaves whatever that file's own
+   interposition assumed about transaction identity or attempt count out of sync.
+
+Neither reaches production today. Repro 2 (the monkey-patched `Transaction.prototype.commit`) is a
+pure harness artifact regardless of who can set `IF_VERSION`: no application code patches that
+prototype, so nothing resembling it can happen outside a test process. Repro 1 is different in
+kind — it patches nothing and runs a real `transaction()` — but it's unreachable for a narrower
+reason: `IF_VERSION` is a module-private symbol (`utility/errors/hdbError.ts`), not a public
+`ifVersion` string option, so the only code that can set it is `security/auth.ts`, and that code
+never shares a transaction. A future caller that imports `IF_VERSION` directly and does share one
+would reach repro 1's exact shape, and whether it actually leaks there is still an open question:
+the native commit does abort along with the guard's rejection, but something tied to that
+transaction's read snapshot survives the abort regardless, and a later, unrelated snapshot trips
+over whatever that leaves open. The mechanism is unexplained, not ruled out as a risk for whatever
+reaches it next; harper#2991 tracks it. `tableIfVersion.test.js`'s own regression test uses
+`getEntry` interception instead of either construction, which reproduces neither.
