@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791531413137,
+  "lastUpdate": 1791537789536,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -22275,6 +22275,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 1138,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "bc61f1f8a5ee2ae06733d23bf54bf390570b667d",
+          "message": "Refuse a peer's retired table generation, and keep newer or node-local tables when a peer drops one (#3119)\n\n* Enforce the table-generation rule in the catalog-locked create and drop\n\nA create that carries a peer's generation is refused under the catalog lock when a\ndrop marker here retires it, and an unstamped one is kept at 0 instead of \"now\". A\npeer's drop never retires a replicate:false table, and with a time only a\ngeneration created before it, re-checked against the locked catalog row; the\nmarker is recorded either way. Peer provenance comes from the operation context,\nnever the JSON body. A node-local table's drop leaves no marker and is not\nforwarded, and dropTableMeta keeps a live or still-dropping primary row.\n\nRefs HarperFast/harper#1212\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QCffnMMpweL8Q9EceYqBbT\nDispatch-Task: hp-956-core-enforced-lifecycle\n\n* Refuse a stale stamped peer definition of a live table, and read replicate from the catalog first\n\nA stamped peer generation a drop retired could still merge its attributes into\nthe live table through the existing-table branch; it is refused there too. A\npersisted replicate flag on the catalog row wins over this thread's class, which\nalone carries only runtime exclusions. Adds a test-only switch for a node that\nsimulates a build before the stamps.\n\nRefs HarperFast/harper#1212\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QCffnMMpweL8Q9EceYqBbT\nDispatch-Task: hp-956-core-enforced-lifecycle\n\n* Cover a forwarded drop's provenance through server.operation, and drop a narrating comment\n\nRefs HarperFast/harper#1212\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QCffnMMpweL8Q9EceYqBbT\nDispatch-Task: hp-956-core-enforced-lifecycle\n\n* Bound when an unstamped table was created, at the first load on a build that stamps\n\nA table with no createdTime was created by a build that stored none, so before\nthe first load on a build that stamps; that load writes the bound as\ncreatedBefore on its primary row. A drop recorded after the bound retires the\ntable outright, so only an older drop leaves the replication layer's upgrade\nheuristic anything to decide. A table created during a rollback to such a build\ngets its own bound at the next load.\n\nRefs HarperFast/harper#1212\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QCffnMMpweL8Q9EceYqBbT\nDispatch-Task: hp-956-core-enforced-lifecycle\n\n* Judge a stamped peer definition of a live table under the catalog lock\n\nRefs HarperFast/harper#1212\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QCffnMMpweL8Q9EceYqBbT\nDispatch-Task: hp-956-core-enforced-lifecycle\n\n* Announce a recorded drop marker on every thread, with a per-thread drop epoch\n\nEach worker owns its own replication connections, so a marker learned on one\nmust reach the others: to re-announce it to their peers, and to rejudge a peer\ngeneration their connections accepted before the marker existed.\n\nRefs HarperFast/harper#1212\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QCffnMMpweL8Q9EceYqBbT\nDispatch-Task: hp-956-core-enforced-lifecycle\n\n* Never fail a database load over the createdBefore bound, and keep it on the loaded row\n\nRefs HarperFast/harper#1212\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QCffnMMpweL8Q9EceYqBbT\nDispatch-Task: hp-956-core-enforced-lifecycle\n\n* Contain a replayed drop announcement's listener errors, and keep a concurrent bound and system-table exclusions\n\nA drop announcement queued before its handler registered is replayed outside\nmanageThreads' catch, so the handler contains listener errors itself. A load that\nfinds another thread already bounded an unstamped table keeps that bound on its\nsnapshot, which its tableId repair may write back. A runtime-excluded system table\nstays node-local whatever its catalog row says.\n\nRefs HarperFast/harper#1212\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QCffnMMpweL8Q9EceYqBbT\nDispatch-Task: hp-956-core-enforced-lifecycle\n\n* Advance the recording thread's drop epoch at commit, before the broadcast reaches the others\n\nRefs HarperFast/harper#1212\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QCffnMMpweL8Q9EceYqBbT\nDispatch-Task: hp-956-core-enforced-lifecycle\n\n* Judge a peer's generation against a drop still completing, not only a recorded marker\n\nRefs HarperFast/harper#1212\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QCffnMMpweL8Q9EceYqBbT\nDispatch-Task: hp-956-core-enforced-lifecycle\n\n* Re-dispatch a peer drop that reached a stale class, and never fail a completed drop over its metadata cleanup\n\nRefs HarperFast/harper#1212\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QCffnMMpweL8Q9EceYqBbT\nDispatch-Task: hp-956-core-enforced-lifecycle\n\n* Announce a dropped table even when its metadata cleanup times out; comment fixes\n\nRefs HarperFast/harper#1212\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QCffnMMpweL8Q9EceYqBbT\nDispatch-Task: hp-956-core-enforced-lifecycle\n\n* Mark an LMDB drop in progress, as the RocksDB drop already is\n\nA schema reload on the dropping thread (one the drop's own schema signal can\ntrigger) found the LMDB drop's tombstone and completed it mid-drop, so the drop\nthen threw \"a replacement table became current\". The reload already skips a\ndrop generation marked in progress; only the RocksDB path marked it.\n\nRefs HarperFast/harper#1212\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QCffnMMpweL8Q9EceYqBbT\nDispatch-Task: hp-956-core-enforced-lifecycle\n\n* Mark an LMDB drop in progress as soon as its tombstone commits, and announce a drop whose cleanup cannot open its root\n\nRefs HarperFast/harper#1212\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QCffnMMpweL8Q9EceYqBbT\nDispatch-Task: hp-956-core-enforced-lifecycle\n\n* Release an LMDB drop's in-progress mark when table cleanup throws\n\nA cleanup failure after the tombstone left the mark held for the worker's\nlife, so every later load on that thread skipped the tombstone instead of\ncompleting the drop.\n\nDispatch-Task: hp-956-core-enforced-lifecycle\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QCffnMMpweL8Q9EceYqBbT\n\n* Describe the table lifecycle and 5.2 store naming as one rule, and pin how they compose\n\nAfter rebasing over #3118: a node-local drop's untimed name history is read as no drop by every drop-time reader, a refused peer create leaves no create journal or store, and a kept peer drop journals nothing for reclamation. retireRocksStores now also resolves false when another thread completed the tombstone; this drop still retired its generation, so dropTable resolves true either way.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KMpTV1zehf49BFieVUy7d1\nDispatch-Task: harper-3119-rebase-main-3118\n\n* Assert the announced marker carries the peer's exact drop time, and finish three comments\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KMpTV1zehf49BFieVUy7d1\nDispatch-Task: harper-3119-rebase-main-3118\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-09T04:25:37Z",
+          "url": "https://github.com/HarperFast/harper/commit/bc61f1f8a5ee2ae06733d23bf54bf390570b667d"
+        },
+        "date": 1791537786164,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 14953,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 14011,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 14742,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 17835968,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 6495,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 683,
             "unit": "ops"
           }
         ]
