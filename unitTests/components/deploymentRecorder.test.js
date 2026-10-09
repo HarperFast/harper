@@ -685,9 +685,8 @@ describe('DeploymentRecorder.ingestPayload streaming source', () => {
 			// TODO(harper#2057): the budget does not reach LMDB's chained transaction, so the monitor
 			// check below is RocksDB-only.
 			if (!isLMDB) {
-				// Count real monitor ticks rather than wall-clock time: without the budget, the countdown
-				// plus the commit-phase grace (each spare re-arms one tick) aborts the write in about
-				// 2 * COMMIT_PHASE_GRACE + 2 ticks.
+				// Without the budget, the countdown plus the commit-phase grace (each spare re-arms one
+				// tick) aborts the write in about 2 * COMMIT_PHASE_GRACE + 2 monitor ticks.
 				const ingestTransaction = blobWrite.transaction;
 				const armedTimeout = ingestTransaction.timeout;
 				await waitFor(
