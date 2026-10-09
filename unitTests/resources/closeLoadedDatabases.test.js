@@ -182,6 +182,19 @@ describe('RocksDB handle release', function () {
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
+	it('a redeclare from a custom index to a plain one drops the custom index', async function () {
+		this.timeout(30000);
+		const databaseName = 'redeclarecustomtoplain';
+		const Items = table(itemsDefinition(databaseName, [{ name: 'vector', type: 'Array', indexed: { type: 'HNSW' } }]));
+		if (!(Items.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
+		assert.ok(Items.indices.vector.customIndex, 'precondition: the index starts as HNSW');
+
+		table(itemsDefinition(databaseName, [{ name: 'vector', type: 'Array', indexed: true }]));
+
+		assert.strictEqual(Items.indices.vector.customIndex, undefined);
+		await closeDatabase(databaseName);
+	});
+
 	it('a table created beside another keeps the database’s one attributes store', async function () {
 		this.timeout(30000);
 		const databaseName = 'closesecondtable';

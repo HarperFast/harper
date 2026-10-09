@@ -501,39 +501,41 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
 const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
 /**
- * The column-family wrappers this thread opened for each RocksDB root, by path, until they close: a
- * redeclare can replace a wrapper the table graph points at, and only this list still reaches it. By
- * path, not root object, so a wrapper whose close failed is still found after the root is discarded.
+ * The column-family wrappers this thread opened for each RocksDB root, by path, so a close reaches one
+ * the table graph no longer points at. Held weakly: an unreachable wrapper is released when it is
+ * collected, as before; this only lets a close release the reachable ones now. By path, not root
+ * object, so a wrapper whose close failed is still found after the root is discarded.
  */
-const ownedRocksStores = new Map<string, any[]>();
+const ownedRocksStores = new Map<string, WeakRef<any>[]>();
 
-function ownedStoresFor(rootStore: any): any[] | undefined {
+/** The owner `initStores` and the global declaration target record a global RocksDB root's wrappers in. */
+function ownedStoresFor(rootStore: any): { push(store: any): void } | undefined {
 	if (!(rootStore instanceof RocksDatabase)) return undefined;
-	let owned = ownedRocksStores.get(rootStore.path);
-	if (!owned) ownedRocksStores.set(rootStore.path, (owned = []));
-	return owned;
+	return { push: (store) => adoptOwnedStore(rootStore.path, store) };
 }
 
-function adoptOwnedStore(rootStore: any, store: any): void {
-	const owned = ownedStoresFor(rootStore);
-	if (!owned) return;
-	owned.push(store);
-	// a dropped table leaves closed wrappers behind; compacting at each doubling keeps this amortized
+function adoptOwnedStore(path: string, store: any): void {
+	let owned = ownedRocksStores.get(path);
+	if (!owned) ownedRocksStores.set(path, (owned = []));
+	owned.push(new WeakRef(store));
+	// collected and closed wrappers leave dead entries; compacting at each doubling keeps this amortized
 	if (owned.length >= 64 && (owned.length & (owned.length - 1)) === 0) {
 		let kept = 0;
-		for (const owner of owned) if (owner.status !== 'closed') owned[kept++] = owner;
+		for (const ref of owned) if (ref.deref() && ref.deref().status !== 'closed') owned[kept++] = ref;
 		owned.length = kept;
 	}
 }
 
-/** A wrapper whose close fails stays owned for the next attempt. */
 async function closeOwnedStores(path: string, close: (store: any) => Promise<boolean>): Promise<void> {
-	const failed: any[] = [];
-	let owned: any[] | undefined;
+	const failed: WeakRef<any>[] = [];
+	let owned: WeakRef<any>[] | undefined;
 	// a declaration during an await below starts a fresh list, which the next pass drains
 	while ((owned = ownedRocksStores.get(path))) {
 		ownedRocksStores.delete(path);
-		for (const store of owned) if (!(await close(store))) failed.push(store);
+		for (const ref of owned) {
+			const store = ref.deref();
+			if (store && !(await close(store))) failed.push(ref);
+		}
 	}
 	if (failed.length) ownedRocksStores.set(path, failed);
 }
@@ -1566,7 +1568,7 @@ interface InitStoresOptions {
 	 * Every column family opened here is appended, so a caller can release the ones a failure left
 	 * unreachable — a table's stores are opened well before `setTable` publishes it into the graph.
 	 */
-	openedStores?: any[];
+	openedStores?: { push(store: any): unknown };
 }
 
 function initStores(
@@ -3042,7 +3044,7 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 				if (rootStore instanceof RocksDatabase) {
 					await (rootStore as any).dbisDb?.close?.();
 					await rootStore.close();
-					// destroying the root closes every wrapper still open on it, replaced ones included
+					// destroy() closes every wrapper still open on the root, so the owned list needs no drain
 					await rootStore.destroy();
 					ownedRocksStores.delete(rootStore.path);
 				} else {
@@ -3700,7 +3702,7 @@ const GLOBAL_TARGET: TableTarget = {
 	rootStore: (databaseName, tableName) => database({ database: databaseName, table: tableName }),
 	tables: (databaseName) => databases[databaseName],
 	reload: () => resetDatabases(),
-	adopt: (store, rootStore) => adoptOwnedStore(rootStore, store),
+	adopt: (store, rootStore) => ownedStoresFor(rootStore)?.push(store),
 };
 
 /** One `__dbis__` wrapper per root store: opening another would replace the one teardown closes. */
@@ -4648,14 +4650,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		}
 		const indices = Table.indices;
 		attributesDbi ??= internalDbisFor(rootStore, target);
-		// A redeclare reaches every indexed attribute, and a wrapper it replaces stays owned until the
-		// database closes, so a plain index keeps its open wrapper on an unchanged store. A custom index
-		// is reopened: openIndex builds its state from the declaration's current options.
+		// A replaced wrapper stays owned until the database closes, so a plain index keeps its open wrapper
+		// on an unchanged store. Any custom index is reopened: openIndex builds its state from the options.
 		const indexFor = (dbiKey: string, attribute: any) => {
 			const current = indices[attribute.name];
 			if (
 				rootStore instanceof RocksDatabase &&
 				!attribute.indexed?.type &&
+				!current?.customIndex &&
 				current?.status === 'open' &&
 				current.name === storeNameFor(dbiKey, generation)
 			)

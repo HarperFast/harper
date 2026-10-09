@@ -726,7 +726,22 @@ function routePutThroughPutSync(instance) {
 	};
 }
 
+/**
+ * Install `replacement` as `instance[name]`; the returned restore puts the instance back exactly as it was. A reused
+ * wrapper must not keep an own copy of a prototype method, which would shadow later prototype patches.
+ */
+function stubMethod(instance, name, replacement) {
+	const hadOwn = Object.prototype.hasOwnProperty.call(instance, name);
+	const saved = instance[name];
+	instance[name] = replacement;
+	return function restore() {
+		if (hadOwn) instance[name] = saved;
+		else delete instance[name];
+	};
+}
+
 module.exports = {
+	stubMethod,
 	routePutThroughPutSync,
 	changeProcessToBinDir,
 	deepClone,

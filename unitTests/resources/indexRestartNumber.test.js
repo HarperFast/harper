@@ -81,6 +81,7 @@ describe('indexing crash-recovery: restartNumber re-trigger (#1359)', () => {
 			],
 		});
 		const tagIndex = Tbl.indices?.tag;
+		const ownPut = tagIndex?.put;
 		if (tagIndex && typeof tagIndex.put === 'function') {
 			const origPut = tagIndex.put.bind(tagIndex);
 			let opCount = 0;
@@ -90,6 +91,8 @@ describe('indexing crash-recovery: restartNumber re-trigger (#1359)', () => {
 			};
 		}
 		if (Tbl.indexingOperation) await Tbl.indexingOperation;
+		// a redeclare keeps this wrapper, so the simulated restart below must not inherit the failure
+		if (tagIndex) tagIndex.put = ownPut;
 
 		const parked = findDescriptor(Tbl, 'tag');
 		assert.ok(parked, 'tag descriptor should exist after a parked backfill');

@@ -32,7 +32,7 @@
  */
 require('../testUtils');
 const assert = require('node:assert');
-const { setupTestDBPath } = require('../testUtils');
+const { setupTestDBPath, stubMethod } = require('../testUtils');
 const { table, resetDatabases, getDatabases, closeDatabase } = require('#src/resources/databases');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { RequestTarget } = require('#src/resources/RequestTarget');
@@ -122,6 +122,7 @@ describe('schema-migration fragility: silent gaps when per-record indexing error
 			],
 		});
 		const tagIndex = Tbl.indices?.tag;
+		const ownPut = tagIndex?.put;
 		if (tagIndex && typeof tagIndex.put === 'function') {
 			const origPut = tagIndex.put.bind(tagIndex);
 			let opCount = 0;
@@ -137,6 +138,8 @@ describe('schema-migration fragility: silent gaps when per-record indexing error
 			};
 		}
 		if (Tbl.indexingOperation) await Tbl.indexingOperation;
+		// a redeclare keeps this wrapper, so the simulated restart below must not inherit the failure
+		if (tagIndex) tagIndex.put = ownPut;
 
 		// With the fix, the index must NOT be silently complete when errors occurred.
 		// The fix leaves isIndexing = true and sets indexingFailed = true so:
@@ -288,6 +291,8 @@ describe('schema-migration fragility: outer catch does not persist indexingFaile
 		// Intercept clear() on the tag index dbi to simulate ERR_COLUMN_FAMILY_DROPPED.
 		// This throws before the record scan begins, hitting the outer catch in runIndexing.
 		const tagIndex = Tbl.indices?.tag;
+		const hadOwnClear = tagIndex && Object.hasOwn(tagIndex, 'clear');
+		const ownClear = tagIndex?.clear;
 		if (tagIndex && typeof tagIndex.clear === 'function') {
 			tagIndex.clear = async function () {
 				throw Object.assign(new Error('simulated clear failure: column family dropped'), {
@@ -298,6 +303,9 @@ describe('schema-migration fragility: outer catch does not persist indexingFaile
 
 		// Wait for runIndexing to finish (the outer catch swallows the error).
 		if (Tbl.indexingOperation) await Tbl.indexingOperation.catch(() => {});
+		// a redeclare keeps this wrapper, so the simulated restart below must not inherit the failure
+		if (hadOwnClear) tagIndex.clear = ownClear;
+		else if (tagIndex) delete tagIndex.clear;
 
 		// Verify: simulate restart by resetting and re-opening.
 		// The outer catch should have persisted indexingFailed=true in the attribute descriptor.
@@ -796,11 +804,11 @@ describe('schema relationship catalog on a legacy named primary descriptor', () 
 	it('refuses a drop whose tombstone could not be durable without leaving one behind', async () => {
 		const dbisDB = source.dbisDB;
 		const originalPut = dbisDB.put;
-		dbisDB.put = async (...args) => originalPut.apply(dbisDB, args);
+		const restorePut = stubMethod(dbisDB, 'put', async (...args) => originalPut.apply(dbisDB, args));
 		try {
 			await assert.rejects(() => source.dropTable(), /tombstone cannot be made durable/);
 		} finally {
-			dbisDB.put = originalPut;
+			restorePut();
 		}
 		// the refusal has to happen before the write: a tombstone left behind would make the next load
 		// complete a drop the caller was told did not happen

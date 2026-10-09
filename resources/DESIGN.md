@@ -861,20 +861,22 @@ the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.
 
 A redeclare (an insert that adds an attribute, `addAttributes`, a cluster definition) used to reopen
 `__dbis__` and every indexed attribute's column family and overwrite the references the table graph
-holds, leaving the old wrappers open where no close could reach them. rocksdb-js's registry is
-process-global, so one such wrapper keeps the path's refCount up and online `restore_backup` refuses the
-database as held open. `declareTable` now reuses the root's one `__dbis__` wrapper (`internalDbisFor`)
-and, on a redeclare, a plain index's open wrapper on an unchanged store (`indexFor`); a custom index is
-never reused, since `openIndex` builds its state from the current options. Every wrapper a thread opens
-for a global RocksDB root, whether `initStores` loads it or `declareTable` opens it (an index right at
-the native open, in `openIndex`), also goes into `ownedRocksStores` under the root path, so a wrapper the
-graph stops reaching is still closed. `closeDatabaseStores` closes that list before the root and keeps
-only wrappers whose close failed; it is keyed by path because a lenient close discards the root object
-even after a failure, and a later close of the path must still find them. A wrapper is never closed when
-the graph stops pointing at it: a lazy range (`searchByIndex`) can still be reading it. Short-lived
-wrappers (column-family drops, the blob sweep) close themselves and are not tracked. `destroy()` closes
-every wrapper on the root, so a drop only forgets the list. Enforced by the redeclare and close-failure
-cases in `unitTests/resources/closeLoadedDatabases.test.js` and, end to end,
+holds. rocksdb-js releases a wrapper's native handle only when it closes or is garbage-collected, so the
+replaced wrappers kept the process-global refCount up until a collection happened to run, and online
+`restore_backup`, which waits 3 s for closure, refused the database as held open. `declareTable` now
+reuses the root's one `__dbis__` wrapper (`internalDbisFor`) and, on a redeclare, a plain index's open
+wrapper on an unchanged store (`indexFor`); a custom index (HNSW) is always reopened, since `openIndex`
+builds its state from the current options, and is never reused for a plain declaration. Every wrapper a
+thread opens for a global RocksDB root, whether `initStores` loads it or `declareTable` opens it (an index
+right at the native open, in `openIndex`), is also recorded in `ownedRocksStores` under the root path, so
+a close reaches one the graph stopped pointing at. The record is a `WeakRef`: an unreachable wrapper is
+still released by collection, as before, rather than kept alive until the database closes.
+`closeDatabaseStores` closes the live entries before the root and keeps only those whose close failed;
+the record is keyed by path because a lenient close discards the root object even after a failure. A
+wrapper is never closed when the graph stops pointing at it: a lazy range (`searchByIndex`) can still be
+reading it. Short-lived wrappers (column-family drops, the blob sweep) close themselves and are not
+recorded. `destroy()` closes every wrapper on the root, so a drop only forgets the record. Enforced by the
+redeclare and close-failure cases in `unitTests/resources/closeLoadedDatabases.test.js` and, end to end,
 `integrationTests/database/restore-backup-online.test.ts`.
 
 ## Every `.mdb` under a storage path must open as LMDB (`databases.ts` `getDatabases`)
