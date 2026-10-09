@@ -201,6 +201,18 @@ describe('AnthropicBackend', () => {
 			assert.strictEqual(result.output.finishReason, 'length');
 		});
 
+		it('reports a reply cut short by the context window or a refusal as not finished', async () => {
+			for (const [stopReason, finishReason] of [
+				['model_context_window_exceeded', 'length'],
+				['refusal', 'content_filter'],
+			]) {
+				const fetch = mockFetch(() => messagesResponse({ stopReason }));
+				const b = new AnthropicBackend({ apiKey: API_KEY, model: 'claude' }, fetch);
+				const result = await b.generate('q', { accounting: ACCOUNTING });
+				assert.strictEqual(result.output.finishReason, finishReason, stopReason);
+			}
+		});
+
 		it('honors opts.maxTokens', async () => {
 			const fetch = mockFetch(() => messagesResponse());
 			const b = new AnthropicBackend({ apiKey: API_KEY, model: 'claude' }, fetch);

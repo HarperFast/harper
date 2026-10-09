@@ -85,6 +85,7 @@ export interface AgentConfig {
 	provider?: string;
 	model?: string;
 	maxTurns: number;
+	maxTokens: number;
 	maxCostUsd: number;
 	autoApprove: boolean;
 	allowDestructive: boolean;

@@ -17,7 +17,7 @@ const assert = require('node:assert');
 const { mkdtempSync, mkdirSync, writeFileSync, realpathSync, symlinkSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
-const { resolveAgentIdentity, resolveScopes, buildStaticSystemPrompt } = require('#src/agent/agent');
+const { mergeConfig, resolveAgentIdentity, resolveScopes, buildStaticSystemPrompt } = require('#src/agent/agent');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { readFileTool, listDirTool } = require('#src/agent/tools/fsTools');
 
@@ -189,5 +189,22 @@ describe('agent/agent buildStaticSystemPrompt config scope line', () => {
 	it('names a directory override as a directory, and an unavailable scope as unavailable', () => {
 		assert.match(buildStaticSystemPrompt({ ...base, configDir: '/h/etc' }, false), /- config — read-only: \/h\/etc\n/);
 		assert.match(buildStaticSystemPrompt(base, false), /- config — unavailable/);
+	});
+});
+
+describe('agent/agent mergeConfig maxTokens', () => {
+	it('defaults to 16384', () => {
+		assert.strictEqual(mergeConfig({}).maxTokens, 16384);
+	});
+
+	it('accepts a positive integer from YAML or an env string', () => {
+		assert.strictEqual(mergeConfig({ maxTokens: 32000 }).maxTokens, 32000);
+		assert.strictEqual(mergeConfig({ maxTokens: '8000' }).maxTokens, 8000);
+	});
+
+	it('falls back to the default for anything else', () => {
+		for (const maxTokens of [0, -5, 1.5, true, [8192], '', 'abc', null, 8n, { value: 1 }]) {
+			assert.strictEqual(mergeConfig({ maxTokens }).maxTokens, 16384, String(maxTokens));
+		}
 	});
 });
