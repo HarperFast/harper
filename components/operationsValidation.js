@@ -215,7 +215,10 @@ function dropComponentFileValidator(req) {
 
 function getComponentFileValidator(req) {
 	const getCompSchema = Joi.object({
-		project: Joi.string().required(),
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		file: Joi.string().custom(checkFilePath).required(),
 		encoding: Joi.string().valid('utf8', 'ASCII', 'binary', 'hex', 'base64', 'utf16le', 'latin1', 'ucs2').optional(),
 	});
@@ -230,8 +233,6 @@ function getComponentFileValidator(req) {
  */
 function getEnvKeysValidator(req) {
 	const schema = Joi.object({
-		// Patterned like the env writers (not the looser getComponentFile) so a `project` containing
-		// `..` can't traverse out of the components root when joined in resolveEnvFilePath.
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
 			.required()

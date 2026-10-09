@@ -420,7 +420,7 @@ describe.skip('Test schema module', function () {
 		let purge_table_stream_stub;
 
 		before(() => {
-			bridge_drop_table_stub = sandbox.stub(harperBridge, 'dropTable');
+			bridge_drop_table_stub = sandbox.stub(harperBridge, 'dropTable').resolves(true);
 			schema_val_stub = sandbox.stub(schema_metadata_validator, 'checkSchemaTableExists');
 		});
 

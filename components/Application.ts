@@ -7,7 +7,7 @@ import {
 	isUnsupportedSyncError as isUnsupportedSync,
 } from '../config/configUtils.ts';
 export { getEnvBuiltInComponents };
-import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS, SSH_KEY_DIR_NAME } from '../utility/hdbTerms.ts';
 import {
 	applyRootConfigEffect,
 	assertRootConfigEffectPublishable,
@@ -5694,7 +5694,7 @@ export function rewriteSshConfigPaths(
 export async function materializeGitSSH(): Promise<{ command: string; cleanup: () => Promise<void> } | undefined> {
 	const rootDir = getConfigValue(CONFIG_PARAMS.ROOTPATH);
 	if (!rootDir) return; // config not initialized (e.g. an install-time spawn) — no ssh dir to read
-	const sshDir = join(rootDir, 'ssh');
+	const sshDir = join(rootDir, SSH_KEY_DIR_NAME);
 	// `withFileTypes` so a stray subdirectory in the ssh dir (e.g. one named `foo.key`) is filtered
 	// out here rather than reaching `readFile` below and throwing EISDIR, which would abort the
 	// whole spawn instead of just skipping that one entry.
