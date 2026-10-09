@@ -293,6 +293,12 @@ export interface ClusterLockTransport {
 	 */
 	homeMap(database: string): LockHomeMap | undefined;
 	/**
+	 * Current positive safe-integer coordination incarnation, independent of home-map readiness.
+	 * Read once at construction, only on the owning thread; never refreshes the ownership baseline.
+	 * Unknown, invalid or unavailable values fall back to the incarnation in `homeMap()`.
+	 */
+	coordinationIncarnation?(): number | undefined;
+	/**
 	 * Overrides core's cold-start grant quarantine (§4.3). Set it only where a previous incarnation
 	 * of this process provably issued nothing — a fresh database, a first start, or a test. Because the
 	 * same attestation enables the virgin-key freshness fast path, it must prove that no earlier
@@ -1045,10 +1051,14 @@ export class LockCoordinator {
 		try {
 			if (options.transport.ownsCoordination()) {
 				this.#ownedSinceMono = this.#monotonic();
-				// The incarnation it has been coordinating under, so the first grant does not read its own
-				// construction as a takeover. Undefined when there is no map yet, which `#ownershipHorizon`
-				// treats as a takeover — the conservative direction.
-				this.#coordinatingIncarnation = options.transport.homeMap(options.database)?.homeIncarnation;
+				let incarnation: number | undefined;
+				try {
+					incarnation = options.transport.coordinationIncarnation?.();
+				} catch {}
+				this.#coordinatingIncarnation =
+					Number.isSafeInteger(incarnation) && incarnation > 0
+						? incarnation
+						: options.transport.homeMap(options.database)?.homeIncarnation;
 			}
 		} catch {
 			// A transport that cannot answer yet is not owning yet; `#ownershipHorizon` will observe it.

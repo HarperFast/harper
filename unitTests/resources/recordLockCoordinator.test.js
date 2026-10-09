@@ -58,6 +58,7 @@ function coldCoordinator(monotonic, options = {}) {
 			recallDelegation: () => {
 				throw new Error('a single-node home must not send a recall');
 			},
+			...options.transport,
 		},
 		writeControl: () => {},
 		keyIdOf: (key) => String(key),
@@ -2047,6 +2048,134 @@ describe('record lock delegations', () => {
 				leaseMs: LEASE,
 			});
 			assert.strictEqual(granted.granted, true);
+		});
+
+		describe('coordination incarnation before home-map agreement', () => {
+			const horizon = DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
+			let mono, incarnation, owns, ready, reads, coordinators;
+			beforeEach(() => {
+				mono = 1_000;
+				incarnation = 1;
+				owns = true;
+				ready = false;
+				reads = 0;
+				coordinators = [];
+			});
+			afterEach(() => {
+				for (const coordinator of coordinators) coordinator.close();
+			});
+			function create(options = {}) {
+				const coordinator = coldCoordinator(() => mono, {
+					grantableAfterMono: -Infinity,
+					...options,
+					transport: {
+						homeMap: () => (ready ? { generation: 1, homes: ['alpha'], homeIncarnation: incarnation } : undefined),
+						ownsCoordination: () => owns,
+						coordinationIncarnation: () => {
+							reads++;
+							return incarnation;
+						},
+						...options.transport,
+					},
+				});
+				coordinators.push(coordinator);
+				return coordinator;
+			}
+			const request = (coordinator, key = 'bootstrap') =>
+				coordinator.onDelegationRequest({
+					key,
+					requester: 'alpha',
+					generation: 1,
+					leaseMs: LEASE,
+				});
+
+			it('keeps a fresh owner grantable once agreement arrives, reading identity only at construction', async () => {
+				const coordinator = create();
+				assert.strictEqual(reads, 1);
+				assert.strictEqual((await request(coordinator)).reason, 'generation');
+				ready = true;
+				for (let i = 0; i < 3; i++) assert.strictEqual((await request(coordinator, `key-${i}`)).granted, true);
+				assert.strictEqual(reads, 1, 'grants must not refresh the construction baseline');
+			});
+
+			it('grants after a true restart at construction + 365s, not agreement + 365s', async () => {
+				incarnation = 2;
+				const constructed = mono;
+				const coordinator = create({ grantableAfterMono: undefined });
+				mono += 120_000;
+				ready = true;
+				assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+				assert.strictEqual(coordinator.unprovenOwnershipMs(), horizon - 120_000);
+				mono = constructed + horizon - 1;
+				assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+				assert.strictEqual(coordinator.unprovenOwnershipMs(), 1);
+				mono++;
+				assert.strictEqual(mono, constructed + 365_000);
+				assert.strictEqual((await request(coordinator)).granted, true);
+				assert.strictEqual(coordinator.unprovenOwnershipMs(), 0);
+			});
+
+			for (const adopt of [false, true]) {
+				it(`quarantines an incarnation bump while the map is withheld${adopt ? ', including after adoption' : ''}`, async () => {
+					let coordinator = create();
+					incarnation++;
+					mono += 120_000;
+					if (adopt)
+						coordinator = create({ database: coordinator.database, table: coordinator.table, adopt: coordinator });
+					ready = true;
+					assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+					assert.strictEqual(coordinator.unprovenOwnershipMs(), horizon);
+					mono += horizon;
+					assert.strictEqual((await request(coordinator)).granted, true);
+				});
+			}
+
+			it('does not read identity off the owner or let the waiver cover a later takeover', async () => {
+				owns = false;
+				const coordinator = create();
+				assert.strictEqual(reads, 0);
+				mono += horizon * 2;
+				owns = ready = true;
+				assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+				assert.strictEqual(reads, 0);
+			});
+
+			for (const value of [
+				undefined,
+				0,
+				-1,
+				1.5,
+				NaN,
+				Infinity,
+				Number.MAX_SAFE_INTEGER + 1,
+				'1',
+				new Error('unknown'),
+			]) {
+				it(`fails closed with an unavailable map and incarnation ${String(value)}`, async () => {
+					const coordinator = create({
+						transport: {
+							coordinationIncarnation() {
+								if (value instanceof Error) throw value;
+								return value;
+							},
+						},
+					});
+					ready = true;
+					assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+				});
+			}
+
+			it('falls back to an available map when the optional hook throws', async () => {
+				ready = true;
+				const coordinator = create({
+					transport: {
+						coordinationIncarnation() {
+							throw new Error('unknown');
+						},
+					},
+				});
+				assert.strictEqual((await request(coordinator)).granted, true);
+			});
 		});
 
 		it('quarantines a cold home by default, on its own process clock', async () => {

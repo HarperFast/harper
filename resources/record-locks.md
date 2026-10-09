@@ -639,6 +639,15 @@ a home until `DELEGATION_LEASE_MS + skew` has elapsed **since that coordinator w
 its own monotonic clock. It need not remember what it granted, only that everything it could have
 granted has expired.
 
+`ClusterLockTransport.coordinationIncarnation()` supplies the owning coordinator's construction-time
+identity even while `homeMap()` is withheld for activation or peer agreement. Agreement becoming
+available is not a takeover: the first-ever waiver survives, and a restarted home keeps its full
+construction-time quarantine rather than starting another interval at agreement. A real incarnation
+change or ownership gap still re-arms the horizon; adoption preserves the predecessor's known
+incarnation. `recordLockCoordinator.test.js` covers delayed agreement, the exact restart deadline,
+adoption across an incarnation bump, and non-owner takeover. Transports without the optional hook
+retain the conservative `homeMap()` fallback.
+
 **Construction, not process start and not thread start**, because neither of those is sound. A
 worker's `performance.now()` and `timeOrigin` are process-wide, so a process-anchored horizon reads
 as long elapsed in a replacement coordinating worker; and a thread can take coordination ownership
