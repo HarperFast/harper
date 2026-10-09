@@ -13,7 +13,8 @@ const { resolveDatabaseStorageRoot } = require('#src/resources/databases');
 
 const ENV_DIR_PATH = path.join(__dirname, 'envDir') + path.sep;
 const PROBE_OUTPUT_PREFIX = 'PER_PID_ROOT_PROBE:';
-const CONFIG_OVERLAY_ENV_VARS = ['HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'];
+// the source's list, so a config-shaping var added there fails the probe until mocha.init.js scrubs it
+const { CONFIG_SHAPING_ENV_VARS: CONFIG_OVERLAY_ENV_VARS } = require('#src/config/componentEnvPrepass');
 
 describe('unit-test per-PID root isolation', () => {
 	it('neutralizes ambient storage-path and config-overlay env vars', () => {
@@ -73,7 +74,10 @@ describe('unit-test per-PID root isolation', () => {
 			assert.strictEqual(childPid, result.pid);
 			assert.strictEqual(storageEnv, null);
 			assert.strictEqual(schemasEnv, null);
-			assert.deepStrictEqual(overlayEnv, [null, null, null]);
+			assert.deepStrictEqual(
+				overlayEnv,
+				CONFIG_OVERLAY_ENV_VARS.map(() => null)
+			);
 			assert.notStrictEqual(randomAccessFields, true);
 			for (const resolved of [hdbRoot, storagePath, systemRoot, logPath, storageAfterReinit]) {
 				assert.ok(

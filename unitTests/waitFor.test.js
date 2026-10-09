@@ -4,20 +4,22 @@ const assert = require('node:assert');
 const { waitFor } = require('./waitFor.js');
 
 describe('waitFor', () => {
+	const realDateNow = Date.now;
+	// afterEach, not finally: if waitFor regresses to Date.now, the mocha timeout abandons the test
+	// with its promise unsettled, so a finally would leave the clock frozen for later suites
+	afterEach(() => {
+		Date.now = realDateNow;
+	});
+
 	it('times out with its message while Date.now is frozen', async function () {
 		// backstop: a deadline on the frozen clock never arrives, and .mocharc.json sets no timeout
 		this.timeout(5000);
-		const realDateNow = Date.now;
 		const frozenNow = realDateNow();
 		Date.now = () => frozenNow;
-		try {
-			await assert.rejects(
-				waitFor(() => false, { timeout: 50, message: 'never true' }),
-				{ message: 'never true' }
-			);
-		} finally {
-			Date.now = realDateNow;
-		}
+		await assert.rejects(
+			waitFor(() => false, { timeout: 50, message: 'never true' }),
+			{ message: 'never true' }
+		);
 	});
 
 	it('resolves with the truthy condition result', async () => {

@@ -24,6 +24,10 @@
  * properties of any Harper installed on the machine. A test that clears or
  * replaces ROOTPATH any other way must put it back.
  *
+ * The config-overlay env vars (HARPER_DEFAULT_CONFIG, HARPER_CONFIG, HARPER_SET_CONFIG) are
+ * removed before the first config read for the same reason as ROOTPATH: initSync() would merge a
+ * shell's overlay into the per-PID config.
+ *
  * storage.path is pinned to <pid dir>/database (the same layout the config
  * template yields, asserted absolutely so an inherited config can never
  * point the database scan anywhere else). `system` — and any ad-hoc
@@ -132,8 +136,9 @@ process.env.ROOTPATH = PID_DIR_PATH;
 delete process.env.STORAGE_PATH;
 delete process.env.SCHEMAS_DATA_PATH;
 // initSync() below merges these into the per-PID config, so a shell that exports one would
-// silently change defaults the suites assert (e.g. storage.randomAccessFields). Tests that
-// exercise them set and restore their own values.
+// silently change defaults the suites assert (e.g. storage.randomAccessFields). Literal, not
+// config/componentEnvPrepass.ts's CONFIG_SHAPING_ENV_VARS: importing that loads Harper modules
+// before the scrub. isolation.test.js checks the two lists agree.
 const scrubbedConfigEnvVars = ['HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'].filter(
 	(name) => name in process.env
 );
