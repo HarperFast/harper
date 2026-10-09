@@ -1,0 +1,6 @@
+# Fixture for deploy-setup-github-actions.test.ts. FirstTable exists only as the REST readiness-probe
+# route; the test drives the operations API through the real CLI binary.
+type FirstTable @table @export {
+	id: ID @primaryKey
+	value: String
+}

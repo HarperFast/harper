@@ -26,6 +26,7 @@ import chalk from 'chalk';
 import { prompts } from '../utility/interactivePrompts.ts';
 import { execFileSync } from 'node:child_process';
 import { cliOperations, transportContext } from './cliOperations.ts';
+import { setupGithubActions } from './deploySetupGithubActions.ts';
 import { encryptEnvelope } from '../utility/secretEnvelope.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 import {
@@ -148,12 +149,49 @@ export async function storeSealedSecret(
 	return Array.isArray(granted?.grants) ? granted.grants : [component];
 }
 
+/**
+ * The component a setup is for: an explicit `project` or `package`, else asked (defaulting to the
+ * directory name a `harper deploy` from here would send), else that default when nothing can be asked.
+ */
+async function resolveSetupComponent(req: any, message: string): Promise<string> {
+	const component =
+		resolveComponentName(req) ??
+		(process.stdin.isTTY
+			? canonicalProjectName((await prompts.input({ message, default: directoryProjectName() })) ?? '')
+			: directoryProjectName());
+	assertUsableComponentName(component);
+	return component;
+}
+
 export async function deploySetup(req: any): Promise<void> {
 	// Every operation this flow issues rides the caller's connection context — the target, the
 	// explicitly passed credentials, the TLS strictness — so the seal is stored on the instance the
 	// user is talking to, as the identity they authenticated as. Only those fields carry over; the
 	// deploy args that brought us here (`setup`, `token`, `package`) never reach either body.
 	const transport = transportContext(req);
+
+	const provider: string =
+		req.provider ??
+		(await prompts.select({
+			message: 'What do you want to set up?',
+			choices: [
+				{ name: 'GitHub repository (private git clone)', value: 'github' },
+				{ name: 'npm registry (private packages / dependencies)', value: 'npm' },
+				{ name: 'GitHub Actions deploys (OIDC, no stored credential)', value: 'github-actions' },
+			],
+		}));
+
+	if (provider !== 'github' && provider !== 'npm' && provider !== 'github-actions') {
+		throw cliError(
+			`Unsupported provider "${provider}" — supported providers are "github", "npm" and "github-actions".`
+		);
+	}
+
+	// Authenticates CI with an identity token instead of storing one, so it needs no secret custody.
+	if (provider === 'github-actions') {
+		const component = await resolveSetupComponent(req, 'Component (project) name the workflow deploys:');
+		return setupGithubActions(req, transport, component);
+	}
 
 	// 1. Fetch the cluster's public secrets key. Not wrapped in a try/catch: `cliOperations` reports
 	// the failure and exits rather than throwing, so a catch here would be dead code promising a
@@ -168,31 +206,8 @@ export async function deploySetup(req: any): Promise<void> {
 		);
 	}
 
-	// 2. Which private source?
-	const provider: string =
-		req.provider ??
-		(await prompts.select({
-			message: 'What private source needs a credential?',
-			choices: [
-				{ name: 'GitHub repository (private git clone)', value: 'github' },
-				{ name: 'npm registry (private packages / dependencies)', value: 'npm' },
-			],
-		}));
-
-	if (provider !== 'github' && provider !== 'npm') {
-		throw cliError(`Unsupported provider "${provider}" — supported providers are "github" and "npm".`);
-	}
-
-	// 3. Which component is the credential for? (the grant is scoped to it)
-	const component =
-		resolveComponentName(req) ??
-		canonicalProjectName(
-			(await prompts.input({
-				message: 'Component (project) name this credential is for:',
-				default: directoryProjectName(),
-			})) ?? ''
-		);
-	assertUsableComponentName(component);
+	// 2. Which component is the credential for? (the grant is scoped to it)
+	const component = await resolveSetupComponent(req, 'Component (project) name this credential is for:');
 
 	let credentialKey: string; // host (github) or registry (npm) — the credentials-entry discriminator
 	let credentialEntry: Record<string, string>;
@@ -259,10 +274,10 @@ export async function deploySetup(req: any): Promise<void> {
 	token = typeof token === 'string' ? token.trim() : undefined;
 	if (!token) throw cliError('No token was provided; nothing to store.');
 
-	// 4. Seal the token locally. Only ciphertext leaves this machine.
+	// 3. Seal the token locally. Only ciphertext leaves this machine.
 	const envelope = ENV_ENCRYPTED_PREFIX + encryptEnvelope(token, publicKey, fingerprint);
 
-	// 5. Store the sealed token, granted to the component. The server never sees the plaintext. The
+	// 4. Store the sealed token, granted to the component. The server never sees the plaintext. The
 	// derived name is the one the server's literal-token path would use for the same component and
 	// host/registry, so re-running this rotates the same row rather than piling up a second one.
 	const secretName =
@@ -271,7 +286,7 @@ export async function deploySetup(req: any): Promise<void> {
 			: deriveRegistrySecretName(component, credentialKey);
 	const grants = await storeSealedSecret(transport, secretName, envelope, component);
 
-	// 6. Print the credentials reference the deploy should use.
+	// 5. Print the credentials reference the deploy should use.
 	credentialEntry.secret = secretName;
 	console.log(chalk.green(`\n✓ Sealed "${credentialKey}" credential and stored it as secret "${secretName}".`));
 	console.log(chalk.gray("  It was encrypted here with the cluster's public key — only ciphertext was sent."));
