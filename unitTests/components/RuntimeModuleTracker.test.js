@@ -68,9 +68,8 @@ describe('RuntimeModuleTracker', () => {
 		imports: { '#dep': { node: './dep-node.js', default: './dep-default.js' } },
 	};
 
-	// Each case starts a fresh tracker recording the original manifest, because the tracker's
-	// stored digest never updates after the initial recordModule() — finishDeploy() always compares
-	// against that one baseline, not against whatever a prior round wrote.
+	// A fresh tracker per case: finishDeploy() always compares against the digest recordModule()
+	// captured at the start, never against a later write, so there is no "reset to baseline" step.
 	async function digestChanged(directory, rewrittenContent) {
 		const packagePath = join(directory, 'package.json');
 		const original = JSON.stringify(EXPORTS_IMPORTS_MANIFEST);
@@ -113,6 +112,25 @@ describe('RuntimeModuleTracker', () => {
 			exports: EXPORTS_IMPORTS_MANIFEST.exports,
 		};
 		assert.equal(await digestChanged(this.directory, JSON.stringify(reordered)), false);
+	});
+
+	it('ignores reordering of subpath keys, which Node matches by pattern, not declaration order', async () => {
+		const reordered = structuredClone(EXPORTS_IMPORTS_MANIFEST);
+		reordered.exports = { './sub': reordered.exports['./sub'], '.': reordered.exports['.'] };
+		assert.equal(await digestChanged(this.directory, JSON.stringify(reordered)), false);
+	});
+
+	it('ignores an unrelated nested field merely named exports/imports', async () => {
+		const reordered = structuredClone(EXPORTS_IMPORTS_MANIFEST);
+		reordered.publishConfig = { exports: { z: 1, a: 2 } };
+		const original = JSON.parse(JSON.stringify(EXPORTS_IMPORTS_MANIFEST));
+		original.publishConfig = { exports: { a: 2, z: 1 } };
+		const packagePath = join(this.directory, 'package.json');
+		writeFileSync(packagePath, JSON.stringify(original));
+		this.tracker.recordModule(pathToFileURL(packagePath).href, JSON.stringify(original));
+		this.tracker.beginDeploy();
+		writeFileSync(packagePath, JSON.stringify(reordered));
+		assert.equal(await this.tracker.finishDeploy(), false);
 	});
 
 	it('detects a new higher-priority extensionless resolution candidate', async () => {

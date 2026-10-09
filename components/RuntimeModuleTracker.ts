@@ -4,7 +4,7 @@ import { lstat, readFile, readlink } from 'node:fs/promises';
 import { createRequire, Module } from 'node:module';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { canonicalizeJSON } from './canonicalizePackageJSON.ts';
+import { canonicalizePackageJSON } from './canonicalizePackageJSON.ts';
 
 type Source = string | Buffer;
 
@@ -205,7 +205,7 @@ function digest(source: Source): string {
 function moduleDigest(path: string, source: Source): string {
 	if (path.endsWith('package.json')) {
 		try {
-			return digest(JSON.stringify(canonicalizeJSON(JSON.parse(source.toString()))));
+			return digest(JSON.stringify(canonicalizePackageJSON(JSON.parse(source.toString()))));
 		} catch {}
 	}
 	return digest(source);

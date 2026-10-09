@@ -1,25 +1,41 @@
 /**
- * Canonicalize a parsed `package.json` (or any nested value within one) for digesting or
- * equality comparison. Keys are sorted everywhere EXCEPT inside `exports`/`imports`, where
- * declared key order is itself semantically significant: Node resolves conditions first-match
- * (https://nodejs.org/api/packages.html#conditional-exports), so two manifests that only reorder
- * conditions can resolve to different modules and must not canonicalize equal. That exemption
- * applies recursively to every condition map nested under `exports`/`imports`, including within
- * subpath and array entries.
+ * Canonicalize a parsed `package.json` for digesting or equality comparison: keys are sorted
+ * everywhere except within the ROOT `exports`/`imports` fields' own condition maps, where Node
+ * resolves conditions first-match (https://nodejs.org/api/packages.html#conditional-exports), so
+ * reordering them can resolve to a different module and must not canonicalize equal.
  *
- * Shared by every runtime-equivalence comparison that treats `package.json` as parsed JSON
- * (components/RuntimeModuleTracker.ts, components/Application.ts) so the policy can't drift
- * between them the way two independent copies already had.
+ * A subpath map's own keys (`.`, `./sub`, `#dep`) are matched by exact string or pattern
+ * specificity, never by declaration order, so those keys are still sorted; only once inside a
+ * subpath's value — where Node never nests another subpath map — does order become significant,
+ * all the way down.
  */
-export function canonicalizeJSON(value: unknown, preserveOrder = false): unknown {
-	if (Array.isArray(value)) return value.map((item) => canonicalizeJSON(item, preserveOrder));
+export function canonicalizePackageJSON(value: unknown): unknown {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return canonicalize(value, false);
+	const canonical: Record<string, unknown> = Object.create(null);
+	for (const key of Object.keys(value).sort())
+		canonical[key] =
+			key === 'exports' || key === 'imports'
+				? canonicalizeResolutionField((value as Record<string, unknown>)[key])
+				: canonicalize((value as Record<string, unknown>)[key], false);
+	return canonical;
+}
+
+function canonicalizeResolutionField(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map((item) => canonicalize(item, true));
+	if (!value || typeof value !== 'object') return value;
+	const keys = Object.keys(value);
+	const isSubpathMap = keys.some((key) => key.startsWith('.') || key.startsWith('#'));
+	const canonical: Record<string, unknown> = Object.create(null);
+	for (const key of isSubpathMap ? keys.sort() : keys)
+		canonical[key] = canonicalize((value as Record<string, unknown>)[key], true);
+	return canonical;
+}
+
+function canonicalize(value: unknown, preserveOrder: boolean): unknown {
+	if (Array.isArray(value)) return value.map((item) => canonicalize(item, preserveOrder));
 	if (!value || typeof value !== 'object') return value;
 	const canonical: Record<string, unknown> = Object.create(null);
 	const keys = preserveOrder ? Object.keys(value) : Object.keys(value).sort();
-	for (const key of keys)
-		canonical[key] = canonicalizeJSON(
-			(value as Record<string, unknown>)[key],
-			preserveOrder || key === 'exports' || key === 'imports'
-		);
+	for (const key of keys) canonical[key] = canonicalize((value as Record<string, unknown>)[key], preserveOrder);
 	return canonical;
 }
