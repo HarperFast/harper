@@ -108,6 +108,38 @@ describe('RocksDB handle release', function () {
 		);
 	});
 
+	// harper#3120: an insert that adds an attribute redeclares the table at runtime
+	it('closeDatabase releases the handles a runtime redeclare replaced (refCount → 0)', async function () {
+		this.timeout(30000);
+		const Items = table({
+			table: 'Items',
+			database: 'closeredeclare',
+			attributes: [
+				{ attribute: 'id', isPrimaryKey: true },
+				{ attribute: 'name', indexed: true },
+			],
+		});
+		const rootStore = Items.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const dbPath = rootStore.path;
+		await Items.put({ id: 1, name: 'one' });
+		await Items.addAttributes([{ name: 'note' }]);
+		table({
+			table: 'Items',
+			database: 'closeredeclare',
+			attributes: [
+				{ attribute: 'id', isPrimaryKey: true },
+				{ attribute: 'name', indexed: true },
+				{ attribute: 'note' },
+				{ attribute: 'added', indexed: true },
+			],
+		});
+
+		await closeDatabase('closeredeclare');
+
+		assert.strictEqual(refCountFor(dbPath), 0, 'no native handles should remain after closeDatabase');
+	});
+
 	it('keeps database handles open when an outstanding commit misses the drain deadline', async function () {
 		this.timeout(30000);
 		const databaseName = 'close_drain_timeout';
