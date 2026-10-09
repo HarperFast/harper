@@ -13,11 +13,13 @@ const { resolveDatabaseStorageRoot } = require('#src/resources/databases');
 
 const ENV_DIR_PATH = path.join(__dirname, 'envDir') + path.sep;
 const PROBE_OUTPUT_PREFIX = 'PER_PID_ROOT_PROBE:';
+const CONFIG_OVERLAY_ENV_VARS = ['HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'];
 
 describe('unit-test per-PID root isolation', () => {
-	it('neutralizes ambient storage-path env vars', () => {
-		assert.strictEqual(process.env.STORAGE_PATH, undefined);
-		assert.strictEqual(process.env.SCHEMAS_DATA_PATH, undefined);
+	it('neutralizes ambient storage-path and config-overlay env vars', () => {
+		for (const name of CONFIG_OVERLAY_ENV_VARS.concat(['STORAGE_PATH', 'SCHEMAS_DATA_PATH'])) {
+			assert.strictEqual(process.env[name], undefined, name);
+		}
 	});
 
 	it('a fresh process neutralizes ambient env vars and resolves config, storage, and the system database inside its per-PID root', function () {
@@ -30,14 +32,24 @@ describe('unit-test per-PID root isolation', () => {
 			"const { resolveDatabaseStorageRoot } = require('#src/resources/databases');" +
 			'const before = [process.pid, process.env.STORAGE_PATH, process.env.SCHEMAS_DATA_PATH, ' +
 			'env.getHdbBasePath(), getConfigPath(terms.CONFIG_PARAMS.STORAGE_PATH), ' +
-			"resolveDatabaseStorageRoot('system'), getConfigPath(terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY)];" +
+			"resolveDatabaseStorageRoot('system'), getConfigPath(terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY), " +
+			`${JSON.stringify(CONFIG_OVERLAY_ENV_VARS)}.map((name) => process.env[name] ?? null), ` +
+			'env.get(terms.CONFIG_PARAMS.STORAGE_RANDOMACCESSFIELDS)];' +
 			// a re-init through the function preTestPrep() stubs initSync with must keep the
 			// same layout, or it detaches databases seeded under <root>/database
 			'env.initTestEnvironment({});' +
 			`console.log('${PROBE_OUTPUT_PREFIX}' + JSON.stringify(before.concat([getConfigPath(terms.CONFIG_PARAMS.STORAGE_PATH)])));`;
 		const result = spawnSync(process.execPath, ['--require', './unitTests/mocha.init.js', '-e', probe], {
 			cwd: path.join(__dirname, '..'),
-			env: { ...process.env, STORAGE_PATH: '/tmp/ambient-storage', SCHEMAS_DATA_PATH: '/tmp/ambient-schemas' },
+			env: {
+				...process.env,
+				STORAGE_PATH: '/tmp/ambient-storage',
+				SCHEMAS_DATA_PATH: '/tmp/ambient-schemas',
+				// each overlay would flip the storage.randomAccessFields default if it reached initSync()
+				...Object.fromEntries(
+					CONFIG_OVERLAY_ENV_VARS.map((name) => [name, JSON.stringify({ storage: { randomAccessFields: true } })])
+				),
+			},
 			encoding: 'utf8',
 			timeout: 25000,
 		});
@@ -46,11 +58,23 @@ describe('unit-test per-PID root isolation', () => {
 			assert.strictEqual(result.status, 0, result.stderr);
 			const probeOutput = result.stdout.split('\n').find((line) => line.startsWith(PROBE_OUTPUT_PREFIX));
 			assert.ok(probeOutput, result.stdout);
-			const [childPid, storageEnv, schemasEnv, hdbRoot, storagePath, systemRoot, logPath, storageAfterReinit] =
-				JSON.parse(probeOutput.slice(PROBE_OUTPUT_PREFIX.length));
+			const [
+				childPid,
+				storageEnv,
+				schemasEnv,
+				hdbRoot,
+				storagePath,
+				systemRoot,
+				logPath,
+				overlayEnv,
+				randomAccessFields,
+				storageAfterReinit,
+			] = JSON.parse(probeOutput.slice(PROBE_OUTPUT_PREFIX.length));
 			assert.strictEqual(childPid, result.pid);
 			assert.strictEqual(storageEnv, null);
 			assert.strictEqual(schemasEnv, null);
+			assert.deepStrictEqual(overlayEnv, [null, null, null]);
+			assert.notStrictEqual(randomAccessFields, true);
 			for (const resolved of [hdbRoot, storagePath, systemRoot, logPath, storageAfterReinit]) {
 				assert.ok(
 					typeof resolved === 'string' && (resolved === childRoot || resolved.startsWith(childRoot + path.sep)),
