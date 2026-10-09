@@ -70,7 +70,7 @@ export async function stageRestore(backupDir: string, backupId: number, lock: Re
 	await assertRoomToStage(backupDir, backupId, lock);
 	try {
 		mkdirSync(stagingDir);
-		// After a crash between the publication renames, `.replaced` is the only record of that access.
+		// After a crash between the publication renames, `.replaced` is the only record of the database's mode.
 		const modeSource = pathPresent(databaseDir) ? databaseDir : restoreReplacedPath(databaseDir);
 		if (pathPresent(modeSource)) chmodSync(stagingDir, lstatSync(modeSource).mode & 0o7777);
 		await backups.restore(backupDir, stagingDir, { backupId, mode: 'purgeAllFiles' });
@@ -125,7 +125,7 @@ async function assertRoomToStage(backupDir: string, backupId: number, lock: Rest
 /** What a refusal before publication can truthfully say about the destination. */
 function untouched(lock: RestoreLock): string {
 	return lock.preexisting
-		? `${lock.dbPath} is still incomplete from an earlier restore; rerun restore_backup to recover`
+		? `${lock.dbPath} keeps the marker of an earlier restore that did not finish, and may be incomplete; rerun restore_backup to recover`
 		: `${lock.dbPath} was not modified`;
 }
 

@@ -710,8 +710,8 @@ export async function restoreBackup(request: any) {
 		discardRestoreStaging(lock);
 		// Leave the marker (so startup/rescan detection reports an incomplete restore until a rerun
 		// succeeds) when either publication has replaced the database, OR this attempt was itself a
-		// recovery over a pre-existing marker: in that case the directory may already be half-purged
-		// from an earlier failed restore, so clearing the marker and reloading it as healthy would
+		// recovery over a pre-existing marker: in that case the directory may hold an unfinished
+		// publication from an earlier restore, so clearing the marker and reloading it as healthy would
 		// surface partial/corrupt data. Only a *fresh* marker on a *previously healthy* database that
 		// failed before any destruction is safe to clear.
 		if (publication.destroyed || lock.preexisting) {

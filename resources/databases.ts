@@ -1301,7 +1301,11 @@ function databasesBlockedByRestore(databasePath: string): Set<string> {
 	const blocked = new Set<string>();
 	for (const [dbName, state] of scanBlockedRestores(databasePath)) {
 		if (state === 'in-progress') {
-			logger.warn(`A restore of database '${dbName}' is in progress; not loading it`);
+			// An online restore stages beside a database this thread keeps serving (`restoreBlocksLoad`).
+			const serving =
+				rocksdbDatabaseEnvs.has(join(databasePath, dbName)) ||
+				lmdbDatabaseEnvs.has(join(databasePath, `${dbName}.mdb`));
+			if (!serving) logger.warn(`A restore of database '${dbName}' is in progress; not loading it`);
 			blocked.add(dbName);
 		} else if (state === 'incomplete') {
 			logger.error(
