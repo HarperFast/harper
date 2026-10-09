@@ -13,6 +13,12 @@ export const HARPER_CONFIG_FILE = 'harper-config.yaml';
 export const HDB_DEFAULT_CONFIG_FILE = 'defaultConfig.yaml';
 /** Harper Root Directory Name */
 export const HDB_ROOT_DIR_NAME = 'harper';
+
+/**
+ * The peer an operation was forwarded from, set by `server.operation` from its context. A symbol, so a
+ * JSON request body cannot claim it.
+ */
+export const REPLICATED_FROM = Symbol('replicatedFrom');
 /** Harper Component Config File */
 export const HDB_COMPONENT_CONFIG_FILE = 'config.yaml';
 
@@ -142,6 +148,9 @@ export const HDB_HOME_DIR_NAME = '.harperdb';
 
 /** License Key directory */
 export const LICENSE_KEY_DIR_NAME = 'keys';
+
+/** Git deploy key directory under rootPath (keys written by Harper Pro's `add_ssh_key`) */
+export const SSH_KEY_DIR_NAME = 'ssh';
 
 /** Harper Boot Properties file name */
 export const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
@@ -497,7 +506,9 @@ export const LEGACY_CONFIG_PARAMS = {
 /**
  * All configuration parameters for Harper
  *
- * If a param is added to config it must also be added here.
+ * If a param is added to config it must also be added here. `env.get`, per-key env vars, CLI flags and
+ * set_configuration resolve a name only through this registry: an unregistered param reads as `undefined`
+ * even when the config file sets it, and none of the other three can set it by name.
  */
 export const CONFIG_PARAMS = {
 	ANALYTICS_AGGREGATEPERIOD: 'analytics_aggregatePeriod',
@@ -505,6 +516,11 @@ export const CONFIG_PARAMS = {
 	ANALYTICS_RAWRETENTIONMS: 'analytics_rawRetentionMs',
 	ANALYTICS_REPLICATE: 'analytics_replicate',
 	ANALYTICS_STORAGEINTERVAL: 'analytics_storageInterval',
+	ANALYTICS_LOGGING_LEVEL: 'analytics_logging_level',
+	ANALYTICS_LOGGING_PATH: 'analytics_logging_path',
+	ANALYTICS_LOGGING_ROOT: 'analytics_logging_root',
+	ANALYTICS_LOGGING_STDSTREAMS: 'analytics_logging_stdStreams',
+	ANALYTICS_LOGGING_TAG: 'analytics_logging_tag',
 	AUTHENTICATION_AUTHORIZELOCAL: 'authentication_authorizeLocal',
 	AUTHENTICATION_CACHETTL: 'authentication_cacheTTL',
 	AUTHENTICATION_COOKIE_DOMAINS: 'authentication_cookie_domains',
@@ -513,6 +529,11 @@ export const CONFIG_PARAMS = {
 	AUTHENTICATION_OPERATIONTOKENTIMEOUT: 'authentication_operationTokenTimeout',
 	AUTHENTICATION_REFRESHTOKENTIMEOUT: 'authentication_refreshTokenTimeout',
 	AUTHENTICATION_HASHFUNCTION: 'authentication_hashFunction',
+	AUTHENTICATION_LOGGING_LEVEL: 'authentication_logging_level',
+	AUTHENTICATION_LOGGING_PATH: 'authentication_logging_path',
+	AUTHENTICATION_LOGGING_ROOT: 'authentication_logging_root',
+	AUTHENTICATION_LOGGING_STDSTREAMS: 'authentication_logging_stdStreams',
+	AUTHENTICATION_LOGGING_TAG: 'authentication_logging_tag',
 	CUSTOMFUNCTIONS_NETWORK_HTTPS: 'customFunctions_network_https',
 	APPLICATIONS_MODULELOADER: 'applications_moduleLoader',
 	APPLICATIONS_LOCKDOWN: 'applications_lockdown',
@@ -564,6 +585,14 @@ export const CONFIG_PARAMS = {
 	HTTP_REQUESTQUEUELIMIT: 'http_requestQueueLimit',
 	HTTP_MAXREQUESTBODYSIZE: 'http_maxRequestBodySize',
 	HTTP_HTTP2: 'http_http2',
+	HTTP_LOGGING_LEVEL: 'http_logging_level',
+	HTTP_LOGGING_PATH: 'http_logging_path',
+	HTTP_LOGGING_ROOT: 'http_logging_root',
+	HTTP_LOGGING_STDSTREAMS: 'http_logging_stdStreams',
+	HTTP_LOGGING_TAG: 'http_logging_tag',
+	HTTP_LOGGING_TIMING: 'http_logging_timing',
+	HTTP_LOGGING_HEADERS: 'http_logging_headers',
+	HTTP_LOGGING_ID: 'http_logging_id',
 	LICENSE_MODE: 'license_mode',
 	LICENSE_REGION: 'license_region',
 	LOCALSTUDIO_ENABLED: 'localStudio_enabled',
@@ -641,7 +670,9 @@ export const CONFIG_PARAMS = {
 	AGENT_AUTOAPPROVE: 'agent_autoApprove',
 	AGENT_ALLOWDESTRUCTIVE: 'agent_allowDestructive',
 	AGENT_USER: 'agent_user',
+	AGENT_SYSTEMPROMPTAPPEND: 'agent_systemPromptAppend',
 	AGENT_COMPONENTSSCOPE: 'agent_componentsScope',
+	AGENT_CONFIGSCOPE: 'agent_configScope',
 	AGENT_HTTPFETCH: 'agent_httpFetch',
 	AGENT_HTTPFETCH_ALLOW: 'agent_httpFetch_allow',
 	REPLICATION: 'replication',
@@ -690,6 +721,18 @@ export const CONFIG_PARAMS = {
 	REPLICATION_COPYTIMEOUT: 'replication_copyTimeout',
 	REPLICATION_LEADINGDUPLICATESKIP: 'replication_leadingDuplicateSkip',
 	REPLICATION_REPLAYTIMEOUT: 'replication_replayTimeout',
+	REPLICATION_RECEIVEEVENTHIGHWATERMARK: 'replication_receiveEventHighWaterMark',
+	REPLICATION_RECEIVEYIELDINTERVAL: 'replication_receiveYieldInterval',
+	REPLICATION_COPYCHECKPOINTRECORDS: 'replication_copyCheckpointRecords',
+	REPLICATION_COPYCHECKPOINTMAXINTERVALMS: 'replication_copyCheckpointMaxIntervalMs',
+	REPLICATION_SUBSCRIPTIONRESOLVETIMEOUT: 'replication_subscriptionResolveTimeout',
+	REPLICATION_PAUSESTALLTIMEOUT: 'replication_pauseStallTimeout',
+	REPLICATION_RECORDLOCKS: 'replication_recordLocks',
+	REPLICATION_LOGGING_LEVEL: 'replication_logging_level',
+	REPLICATION_LOGGING_PATH: 'replication_logging_path',
+	REPLICATION_LOGGING_ROOT: 'replication_logging_root',
+	REPLICATION_LOGGING_STDSTREAMS: 'replication_logging_stdStreams',
+	REPLICATION_LOGGING_TAG: 'replication_logging_tag',
 	ROOTPATH: 'rootPath',
 	SERIALIZATION_BIGINT: 'serialization_bigInt',
 	STORAGE_WRITEASYNC: 'storage_writeAsync',
@@ -732,6 +775,11 @@ export const CONFIG_PARAMS = {
 	STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE: 'storage_rocks_writeBufferManagerSize',
 	STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE: 'storage_rocks_writeBufferManagerCostToCache',
 	STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL: 'storage_rocks_writeBufferManagerAllowStall',
+	STORAGE_LOGGING_LEVEL: 'storage_logging_level',
+	STORAGE_LOGGING_PATH: 'storage_logging_path',
+	STORAGE_LOGGING_ROOT: 'storage_logging_root',
+	STORAGE_LOGGING_STDSTREAMS: 'storage_logging_stdStreams',
+	STORAGE_LOGGING_TAG: 'storage_logging_tag',
 	DATABASES: 'databases',
 	IGNORE_SCRIPTS: 'ignoreScripts',
 	MQTT_NETWORK_PORT: 'mqtt_network_port',
@@ -742,6 +790,11 @@ export const CONFIG_PARAMS = {
 	MQTT_NETWORK_MTLS_CERTIFICATEAUTHORITY: 'mqtt_network_mtls_certificateAuthority',
 	MQTT_NETWORK_MTLS_USER: 'mqtt_network_mtls_user',
 	MQTT_REQUIREAUTHENTICATION: 'mqtt_requireAuthentication',
+	MQTT_LOGGING_LEVEL: 'mqtt_logging_level',
+	MQTT_LOGGING_PATH: 'mqtt_logging_path',
+	MQTT_LOGGING_ROOT: 'mqtt_logging_root',
+	MQTT_LOGGING_STDSTREAMS: 'mqtt_logging_stdStreams',
+	MQTT_LOGGING_TAG: 'mqtt_logging_tag',
 	COMPONENTSROOT: 'componentsRoot',
 	TLS_CERTIFICATE: 'tls_certificate',
 	TLS_PRIVATEKEY: 'tls_privateKey',

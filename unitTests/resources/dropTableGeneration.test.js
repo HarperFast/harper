@@ -3,6 +3,7 @@
 require('../testUtils');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const { randomUUID } = require('node:crypto');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
 const {
@@ -12,6 +13,8 @@ const {
 	resetDatabases,
 	openRocksDatabase,
 	setDroppedBlobSweepBatchMsForTesting,
+	getTableDrops,
+	markDropInProgress,
 } = require('#src/resources/databases');
 const { createBlob, getFilePathForBlob } = require('#src/resources/blob');
 const { logger } = require('#src/utility/logging/logger');
@@ -89,8 +92,15 @@ describe('dropTable generation-distinct stores', function () {
 		setMainIsWorker(true);
 	});
 
-	it('stamps every physical store of a RocksDB table with the generation on its catalog row', async function () {
+	it('keeps first-time creates readable by legacy readers and stamps every store of a recreate', async function () {
 		if (IS_LMDB) return this.skip();
+		const First = defineTable('GenStamped');
+		assert.equal(dbisDb().getSync('GenStamped/').generation, undefined);
+		assert.equal(First.primaryStore.name, 'GenStamped/');
+		assert.equal(First.indices.str.name, 'GenStamped/str');
+		await First.dropTable();
+		resetDatabases();
+		assert.deepStrictEqual(generationRows(), [], 'the recreate is stamped even after retirement finishes');
 		const Stamped = defineTable('GenStamped');
 		const generation = dbisDb().getSync('GenStamped/').generation;
 		assert.match(generation, /^[0-9a-f-]{36}$/, 'the primary row carries a create-time generation');
@@ -108,6 +118,70 @@ describe('dropTable generation-distinct stores', function () {
 		assert.equal(Plain.primaryStore.name, 'GenPlain/');
 		assert.equal(Plain.indices.str.name, 'GenPlain/str');
 		await Plain.dropTable();
+	});
+
+	it('keeps local-only name history after reclamation without advertising a replicated drop', async function () {
+		if (IS_LMDB) return this.skip();
+		const First = defineTable('GenLocalDrop');
+		assert.equal(First.storageGeneration, undefined);
+		await First.dropTable({ localOnly: true });
+		resetDatabases();
+		assert.ok(dbisDb().getSync('/dropped/GenLocalDrop'));
+		assert.ok(!getTableDrops(TEST_DB).some(({ table }) => table === 'GenLocalDrop'));
+		assert.deepStrictEqual(generationRows(), []);
+		const Fresh = defineTable('GenLocalDrop');
+		assert.match(Fresh.storageGeneration, /^[0-9a-f-]{36}$/);
+		assert.notEqual(Fresh.primaryStore.name, First.primaryStore.name);
+		await Fresh.dropTable();
+	});
+
+	it('persists the local store name when a peer primary attribute carries a generation', async function () {
+		const PeerDefined = table({
+			database: TEST_DB,
+			table: 'GenPeerStamp',
+			origin: 'cluster',
+			attributes: [{ name: 'id', isPrimaryKey: true, generation: randomUUID() }],
+		});
+		assert.equal(dbisDb().getSync('GenPeerStamp/').generation, undefined);
+		await PeerDefined.put({ id: 1 });
+		resetDatabases();
+		const Reloaded = databases[TEST_DB].GenPeerStamp;
+		assert.equal((await Reloaded.get(1)).id, 1);
+		await Reloaded.dropTable();
+	});
+
+	it('does not retire catalog stores after a schema listener completes the drop and recreates the table', async function () {
+		if (IS_LMDB) return this.skip();
+		const First = defineTable('GenListenerRecreate', [{ name: 'blob', type: 'Blob' }]);
+		const blob = await createBlob(Buffer.alloc(50_000, 4));
+		await First.put({ id: 1, str: 'retired', blob });
+		const blobPath = getFilePathForBlob((await First.get(1)).blob);
+		let Fresh;
+		const removeListener = schemaHandler.addListener((message) => {
+			if (message.operation === 'drop_table' && message.table === First.tableName && !Fresh)
+				Fresh = defineTable(First.tableName, [{ name: 'replacementOnly', type: 'String', indexed: true }]);
+		});
+		try {
+			await First.dropTable({ localOnly: true });
+		} finally {
+			removeListener();
+		}
+		assert.ok(Fresh, 'the recreate runs before the old drop resumes from its broadcast');
+		assert.ok(!rootStore().columns.includes(First.primaryStore.name), 'the stale drop retires its bare primary');
+		assert.ok(!rootStore().columns.includes(First.indices.str.name), 'the stale drop retires its bare index');
+		await waitFor(() => !fs.existsSync(blobPath), { timeout: 15_000 });
+		await Fresh.put({ id: 1, str: 'replacement' });
+		assert.equal((await Fresh.get(1)).str, 'replacement');
+		assert.ok(!generationRows().some(({ value }) => value.stores?.includes(Fresh.primaryStore.name)));
+		assert.ok(
+			!generationRows().some(
+				({ value }) =>
+					value.table === Fresh.tableName &&
+					value.stores?.some((name) => name.startsWith(`${Fresh.tableName}/replacementOnly`))
+			),
+			'the resumed drop must not journal the replacement catalog'
+		);
+		await Fresh.dropTable();
 	});
 
 	it('serves nothing from a dropped generation through a same-name recreate, primary or index', async function () {
@@ -150,15 +224,47 @@ describe('dropTable generation-distinct stores', function () {
 		);
 	});
 
+	it('preserves bare stores and blobs recreated by a legacy writer despite a retired journal', async function () {
+		if (IS_LMDB) return this.skip();
+		const First = defineTable('GenLegacyRecreate', [{ name: 'oldOnly', type: 'String', indexed: true }]);
+		await First.put({ id: 1, str: 'retired' });
+		await First.dropTable();
+		const retired = generationRows().find(({ value }) => value.table === First.tableName);
+		assert.ok(retired);
+		// 5.2 ignores the drop marker and journal when it chooses physical names.
+		dbisDb().removeSync(retired.key);
+		dbisDb().removeSync('/dropped/' + First.tableName);
+		const Fresh = defineTable(First.tableName, [{ name: 'blob', type: 'Blob' }]);
+		assert.equal(Fresh.primaryStore.name, First.tableName + '/');
+		const blob = await createBlob(Buffer.alloc(50_000, 3));
+		await Fresh.put({ id: 2, str: 'rollback', blob });
+		const blobPath = getFilePathForBlob((await Fresh.get(2)).blob);
+		openRocksDatabase(rootStore().path, { name: First.tableName + '/oldOnly' }).close();
+		dbisDb().putSync(retired.key, retired.value);
+		resetDatabases();
+		await waitFor(() => !dbisDb().getSync(retired.key), { timeout: 15_000 });
+		const Reloaded = databases[TEST_DB][First.tableName];
+		assert.equal((await Reloaded.get(2)).str, 'rollback');
+		assert.deepStrictEqual(
+			(await fromAsync(Reloaded.search({ conditions: [{ attribute: 'str', value: 'rollback' }] }))).map(({ id }) => id),
+			[2]
+		);
+		assert.ok(fs.existsSync(blobPath), 'reclaiming an old journal must not unlink a live blob');
+		assert.ok(
+			!rootStore().columns.includes(First.tableName + '/oldOnly'),
+			'unowned retired stores still get reclaimed'
+		);
+		await Reloaded.dropTable();
+	});
+
 	it('keeps the retirement journal complete under a redundant concurrent drop', async function () {
 		if (IS_LMDB) return this.skip();
 		const Twice = defineTable('GenDoubleDrop');
 		await Twice.put({ id: 1, str: 'x' });
-		const { generation } = dbisDb().getSync('GenDoubleDrop/');
 		const family = Twice.primaryStore.name;
 		await Promise.all([Twice.dropTable(), Twice.dropTable()]);
 		assert.deepStrictEqual(catalogRows('GenDoubleDrop'), []);
-		const journal = dbisDb().getSync(`${GENERATION_ROW_PREFIX}${generation}`);
+		const journal = generationRows().find(({ value }) => value.table === 'GenDoubleDrop')?.value;
 		assert.ok(journal, 'the retirement row stays until a load confirms the reclaim');
 		assert.ok(journal.stores.includes(family), 'the second drop must not narrow the store list');
 		resetDatabases();
@@ -180,7 +286,6 @@ describe('dropTable generation-distinct stores', function () {
 
 	it('does not dispose a same-name replacement for a delayed old-generation drop event', async function () {
 		const First = defineTable('GenDelayedDrop');
-		const oldGeneration = First.storageGeneration;
 		const oldTableId = First.tableId;
 		let broadcast;
 		const removeListener = schemaHandler.addListener((message) => {
@@ -193,7 +298,7 @@ describe('dropTable generation-distinct stores', function () {
 			removeListener();
 		}
 		assert.equal(broadcast.dropTableId, oldTableId);
-		if (!IS_LMDB) assert.equal(broadcast.dropGeneration, oldGeneration);
+		if (!IS_LMDB) assert.match(broadcast.dropGeneration, /^[0-9a-f-]{36}$/);
 		const Replacement = defineTable('GenDelayedDrop');
 		await Replacement.put({ id: 1, str: 'replacement' });
 		await schemaHandler({
@@ -213,7 +318,7 @@ describe('dropTable generation-distinct stores', function () {
 				operation: 'drop_table',
 				schema: TEST_DB,
 				table: 'GenDelayedDrop',
-				dropGeneration: oldGeneration,
+				dropGeneration: broadcast.dropGeneration,
 				dropTableId: oldTableId,
 			},
 		});
@@ -292,7 +397,7 @@ describe('dropTable generation-distinct stores', function () {
 				await Doomed.put({ id, str: 'old', blob });
 				blobPaths.push(getFilePathForBlob((await Doomed.get(id)).blob));
 			}
-			const { generation } = dbisDb().getSync('GenCrashRetired/');
+			const generation = randomUUID();
 			const family = Doomed.primaryStore.name;
 			// the drop died after writing its journal row and removing the catalog rows, before the
 			// physical drop landed: the family is still on disk under its name
@@ -300,6 +405,7 @@ describe('dropTable generation-distinct stores', function () {
 				table: 'GenCrashRetired',
 				generation,
 				phase: 'retired',
+				stores: [family, Doomed.indices.str.name],
 				primaryStore: family,
 			});
 			for (const key of catalogRows('GenCrashRetired')) dbisDb().removeSync(key);
@@ -349,12 +455,113 @@ describe('dropTable generation-distinct stores', function () {
 			assert.deepStrictEqual(generationRows(), []);
 		});
 
+		it('reclaims primary and index stores of an unpublished legacy create', function () {
+			const generation = randomUUID();
+			const stores = ['GenBareCrash/', 'GenBareCrash/str'];
+			dbisDb().putSync(`${GENERATION_ROW_PREFIX}${generation}`, {
+				table: 'GenBareCrash',
+				generation,
+				phase: 'creating',
+				primaryStore: stores[0],
+				creatingStores: stores,
+			});
+			for (const name of stores) {
+				const orphan = openRocksDatabase(rootStore().path, { name });
+				orphan.putSync(1, { id: 1 });
+				orphan.close();
+			}
+			resetDatabases();
+			assert.ok(stores.every((name) => !rootStore().columns.includes(name)));
+			assert.deepStrictEqual(generationRows(), []);
+		});
+
+		it('preserves a published legacy create whose journal removal was interrupted', async function () {
+			const Published = defineTable('GenBarePublished');
+			assert.equal(Published.primaryStore.name, 'GenBarePublished/');
+			await Published.put({ id: 1, str: 'published' });
+			const generation = randomUUID();
+			const row = {
+				table: Published.tableName,
+				generation,
+				phase: 'creating',
+				primaryStore: Published.primaryStore.name,
+				creatingStores: [Published.primaryStore.name, Published.indices.str.name],
+			};
+			dbisDb().putSync(`${GENERATION_ROW_PREFIX}${generation}`, row);
+			resetDatabases();
+			const Reloaded = databases[TEST_DB].GenBarePublished;
+			assert.equal((await Reloaded.get(1)).str, 'published');
+			assert.deepStrictEqual(generationRows(), []);
+			await Reloaded.dropTable();
+		});
+
+		it('leaves a published legacy family to the dropper when its create journal survived publication', async function () {
+			const Dropping = defineTable('GenPublishedDropping');
+			await Dropping.put({ id: 1, str: 'owned by the dropper' });
+			const generation = randomUUID();
+			dbisDb().putSync(`${GENERATION_ROW_PREFIX}${generation}`, {
+				table: Dropping.tableName,
+				generation,
+				phase: 'creating',
+				primaryStore: Dropping.primaryStore.name,
+				creatingStores: [Dropping.primaryStore.name, Dropping.indices.str.name],
+			});
+			const primary = dbisDb().getSync(`${Dropping.tableName}/`);
+			primary.dropping = true;
+			primary.dropGeneration = randomUUID();
+			dbisDb().putSync(`${Dropping.tableName}/`, primary);
+			const releaseDrop = markDropInProgress(primary.dropGeneration);
+			try {
+				resetDatabases();
+				assert.ok(
+					rootStore().columns.includes(Dropping.primaryStore.name),
+					'create recovery must not retire a live drop'
+				);
+				assert.equal(Dropping.primaryStore.getSync(1).str, 'owned by the dropper');
+			} finally {
+				releaseDrop();
+				resetDatabases();
+			}
+		});
+
+		for (const creatingFirst of [true, false]) {
+			it(`sweeps an interrupted drop before reclaiming its surviving create journal (${creatingFirst ? 'creating' : 'retired'} first)`, async function () {
+				const Doomed = defineTable(`GenOverlap${creatingFirst}`, [{ name: 'blob', type: 'Blob' }]);
+				assert.equal(Doomed.storageGeneration, undefined);
+				const blob = await createBlob(Buffer.alloc(50_000, creatingFirst ? 5 : 6));
+				await Doomed.put({ id: 1, blob });
+				const blobPath = getFilePathForBlob((await Doomed.get(1)).blob);
+				const ids = ['11111111-1111-4111-8111-111111111111', 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'];
+				const [creatingId, retiredId] = creatingFirst ? ids : ids.toReversed();
+				dbisDb().putSync(`${GENERATION_ROW_PREFIX}${creatingId}`, {
+					table: Doomed.tableName,
+					generation: creatingId,
+					phase: 'creating',
+					primaryStore: Doomed.primaryStore.name,
+					creatingStores: [Doomed.primaryStore.name, Doomed.indices.str.name],
+				});
+				const primary = dbisDb().getSync(`${Doomed.tableName}/`);
+				primary.dropping = true;
+				primary.dropGeneration = retiredId;
+				dbisDb().putSync(`${Doomed.tableName}/`, primary);
+				resetDatabases();
+				await waitFor(
+					() =>
+						!dbisDb().getSync(`${GENERATION_ROW_PREFIX}${creatingId}`) &&
+						!dbisDb().getSync(`${GENERATION_ROW_PREFIX}${retiredId}`),
+					{ timeout: 15_000 }
+				);
+				assert.ok(!fs.existsSync(blobPath), 'journal completion must follow blob unlinking');
+				assert.ok(!rootStore().columns.includes(Doomed.primaryStore.name));
+			});
+		}
+
 		it('journals an interrupted legacy catalog whose primary row carries its attribute name', async function () {
 			const Legacy = defineTable('GenLegacyPrimary');
 			const primary = dbisDb().getSync('GenLegacyPrimary/');
-			const { generation } = primary;
+			const generation = randomUUID();
 			const primaryKey = 'GenLegacyPrimary/id';
-			const family = `${primaryKey}@${generation}`;
+			const family = primaryKey;
 			Legacy.primaryStore.dropSync();
 			const legacyStore = openRocksDatabase(rootStore().path, { name: family });
 			legacyStore.putSync(1, { id: 1, str: 'legacy' });
@@ -379,9 +586,9 @@ describe('dropTable generation-distinct stores', function () {
 		it('keeps a migrated bare tombstone until after its named primary descriptor is removed', async function () {
 			const Migrated = defineTable('GenMigratedPrimary');
 			const bare = dbisDb().getSync('GenMigratedPrimary/');
-			const { generation } = bare;
+			const generation = randomUUID();
 			const primaryKey = 'GenMigratedPrimary/id';
-			const family = `${primaryKey}@${generation}`;
+			const family = primaryKey;
 			Migrated.primaryStore.dropSync();
 			const migratedStore = openRocksDatabase(rootStore().path, { name: family });
 			migratedStore.putSync(1, { id: 1, str: 'migrated' });
@@ -407,6 +614,7 @@ describe('dropTable generation-distinct stores', function () {
 		});
 
 		it('completes a tombstoned drop by exact store name, leaving a live same-name generation alone', async function () {
+			await defineTable('GenTombstoneExact').dropTable();
 			const Old = defineTable('GenTombstoneExact', [{ name: 'blob', type: 'Blob' }]);
 			const blob = await createBlob(Buffer.alloc(50_000, 4));
 			await Old.put({ id: 1, str: 'old', blob });

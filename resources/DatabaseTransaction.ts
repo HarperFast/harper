@@ -111,13 +111,18 @@ function allowStuckCommitLog(site: 'shed' | 'abandon', now: number): boolean {
 
 // Which database/table, which native transaction, and which request a stuck commit belongs to —
 // without it a wedge gives no indication of what to investigate (harper#2001).
-function describeCommitIdentity(
+export function describeCommitIdentity(
 	store: any,
 	startedFrom: { resourceName: string; method: string } | undefined,
 	nativeTransaction: any,
 	rootStore = store?.rootStore
 ): string {
-	const nativeTransactionId = nativeTransaction?.id;
+	// `.id` is a native accessor that can throw on an already-closed handle (rocksdb-js); this is a
+	// diagnostic on the failure path and must never itself become the failure.
+	let nativeTransactionId;
+	try {
+		nativeTransactionId = nativeTransaction?.id;
+	} catch {}
 	return (
 		`from table: ${rootStore?.databaseName ?? '?'}.${store?.name ?? '?'}` +
 		(nativeTransactionId !== undefined ? ` (transaction ${nativeTransactionId})` : '') +
@@ -3149,10 +3154,9 @@ function startMonitoringTxns() {
 					// it while the resume cursor advances past it — a permanent divergence (harper-pro#348). For
 					// those, keep the prior force-commit behavior below.
 					harperLogger.error(
-						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, from table: ${
-							(txn.db as any)?.name + (url ? ' path: ' + url : '')
-						}`,
-						...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : []),
+						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, ` +
+							describeCommitIdentity(txn.db, txn.startedFrom, txn.transaction) +
+							(url ? ` path: ${url}` : ''),
 						...(DEBUG_LONG_TXNS ? ['starting stack trace', txn.stackTraces] : [])
 					);
 					try {

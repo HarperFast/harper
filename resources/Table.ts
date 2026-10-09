@@ -89,9 +89,14 @@ import {
 	recordRetiredGeneration,
 	promoteTombstoneToDropMarker,
 	tableLifecycleTime,
+	isDeadGeneration,
+	recordTableDrop,
+	replicateIsFalse,
+	OMIT_LIFECYCLE_STAMPS_FOR_TEST,
 	sweepDroppedTableBlobs,
 	storeNameFor,
 	storeNamesFor,
+	liveStoreNamesFor,
 	isReadOnlyMode,
 } from './databases.ts';
 import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
@@ -563,6 +568,11 @@ const RELOAD_REFUSAL =
 	'A bulk reload after this resume position left rows with no history; resubscribe to resynchronize';
 const UNREADABLE_LOG_REFUSAL =
 	'Part of the transaction log after this resume position could not be read; resubscribe to resynchronize';
+const ID_ALLOCATION_KEY = Symbol.for('id_allocation');
+const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
+function isSameIdAllocation(a: any, b: any): boolean {
+	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
+}
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
@@ -884,8 +894,12 @@ interface TableResourceClass {
 	 * branch owns a schema identity of its own.
 	 */
 	assertSchemaMutable(operation: string): void;
-	/** `localOnly`: a drop the caller asked not to replicate leaves no drop marker for peers. */
-	dropTable(options?: { droppedTime?: number; localOnly?: boolean }): Promise<void>;
+	/**
+	 * `localOnly`: a drop the caller asked not to replicate leaves no drop marker for peers. `peer`: a peer's drop,
+	 * which never retires a `replicate: false` table and, with `droppedTime`, only a generation created before it.
+	 * Resolves false when nothing was dropped.
+	 */
+	dropTable(options?: { droppedTime?: number; localOnly?: boolean; peer?: boolean }): Promise<boolean>;
 	/**
 	 * Record the relocation of an entry (when a record is moved to a different node), return true if it is now located locally
 	 */
@@ -1680,6 +1694,21 @@ export function makeTable(options): TableResourceClass {
 		}
 		return primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 	}
+	// Table-scoped, not nested in getNewId(): a nested declaration is instantiated on every call.
+	function replaceIdAllocation(expectedAllocation, nextAllocation) {
+		const storedAllocation = primaryStore.transactionSync(
+			(transaction) => {
+				const options = transaction && { transaction };
+				const storedAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY, options)?.value;
+				if (storedAllocation && !isSameIdAllocation(storedAllocation, expectedAllocation)) return storedAllocation;
+				primaryStore.put(ID_ALLOCATION_KEY, nextAllocation, options ?? Date.now());
+				return nextAllocation;
+			},
+			isRocksDB ? ID_ALLOCATION_TRANSACTION_OPTIONS : undefined
+		);
+		if (!storedAllocation) throw new Error(`Id range allocation for table ${tableName} was aborted`);
+		return storedAllocation;
+	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -2053,6 +2082,8 @@ export function makeTable(options): TableResourceClass {
 						: runsApplicationCodeSingletons(); // set up by the defining application's code, so it runs where that code does
 					const subscription = hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
 					if (subscription) {
+						const admitsOriginFloors = (event: any) =>
+							event.originFloors?.length > 0 && event.onFailure && event.txnStream !== undefined;
 						// defined once per subscription, so an end_txn allocates no updater
 						const updateRecordedSequenceId = (
 							event: any,
@@ -2060,6 +2091,10 @@ export function makeTable(options): TableResourceClass {
 							committingNodeId: number | undefined
 						) => {
 							const originCursors: [number, number][] | undefined = event.originCursors;
+							// only a stream whose failures this loop can see may certify a floor (resources/DESIGN.md)
+							const originFloors: [number, number, boolean][] | undefined = admitsOriginFloors(event)
+								? event.originFloors
+								: undefined;
 							// the key for tracking the sequence ids and txn times received from this node
 							const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
 							// getSync (not get): dbisDb is the raw __dbis__ store, so on RocksDB get() returns a
@@ -2098,6 +2133,20 @@ export function makeTable(options): TableResourceClass {
 									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
 									if (!(nodeState.originLogKey >= originLogKey)) {
 										nodeState.originLogKey = originLogKey;
+										originCursorsChanged = true;
+									}
+								}
+							if (originFloors)
+								for (const [nodeId, closedFloor, relayable] of originFloors) {
+									if (!(typeof closedFloor === 'number' && Number.isFinite(closedFloor) && closedFloor > 0)) continue;
+									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									if (!(nodeState.closedFloor >= closedFloor)) {
+										nodeState.closedFloor = closedFloor;
+										nodeState.relayable = relayable === true;
+										originCursorsChanged = true;
+									} else if (nodeState.closedFloor === closedFloor && relayable === true && !nodeState.relayable) {
+										nodeState.relayable = true;
 										originCursorsChanged = true;
 									}
 								}
@@ -2283,7 +2332,10 @@ export function makeTable(options): TableResourceClass {
 									}
 									// Only reached when the commit succeeded; a failure propagates to the handler's catch
 									// and the sequence id is intentionally not advanced past the unapplied write.
-									if (event.remoteNodeIds?.length > 0 && (advancesSequence || event.originCursors?.length > 0))
+									if (
+										event.remoteNodeIds?.length > 0 &&
+										(advancesSequence || event.originCursors?.length > 0 || admitsOriginFloors(event))
+									)
 										await updateRecordedSequenceId(event, advancesSequence, committingTxn?.nodeId);
 									continue;
 								}
@@ -2575,8 +2627,7 @@ export function makeTable(options): TableResourceClass {
 			if (type === 'String' || type === 'ID') return super.getNewId();
 			if (!idIncrementer) {
 				// if there is no id incrementer yet, we get or create one
-				const idAllocationEntry = primaryStore.getEntry(Symbol.for('id_allocation'));
-				let idAllocation = idAllocationEntry?.value;
+				let idAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY)?.value;
 				let lastKey;
 				if (
 					idAllocation &&
@@ -2593,7 +2644,7 @@ export function makeTable(options): TableResourceClass {
 					}
 				} else {
 					// we need to create a new id allocation
-					idAllocation = createNewAllocation(idAllocationEntry?.version ?? null);
+					idAllocation = createNewAllocation(idAllocation);
 					lastKey = idAllocation.start;
 				}
 				// all threads will use a shared buffer to atomically increment the id
@@ -2628,7 +2679,7 @@ export function makeTable(options): TableResourceClass {
 						idAfter = key;
 					}
 					readTxn?.done();
-					const { value: updatedIdAllocation, version } = primaryStore.getEntry(Symbol.for('id_allocation'));
+					const updatedIdAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY).value;
 					if (idIncrementer.maxSafeId < idAfter) {
 						// note that this is just a noop/direct callback if we are inside the sync transaction
 						// first check to see if it actually got updated by another thread
@@ -2636,24 +2687,19 @@ export function makeTable(options): TableResourceClass {
 							// the allocation was already updated by another thread
 							return;
 						}
-						logger.info?.('New id allocation', nextId, idIncrementer.maxSafeId, version);
-						primaryStore.put(
-							Symbol.for('id_allocation'),
-							{
-								start: updatedIdAllocation.start,
-								end: idIncrementer.maxSafeId,
-								nodeName: server.hostname,
-								pid: process.pid,
-							},
-							Date.now(),
-							version
-						);
+						logger.info?.('New id allocation', nextId, idIncrementer.maxSafeId);
+						idIncrementer.maxSafeId = replaceIdAllocation(updatedIdAllocation, {
+							start: updatedIdAllocation.start,
+							end: idIncrementer.maxSafeId,
+							nodeName: server.hostname,
+							pid: process.pid,
+						}).end;
 					} else {
 						// indicate that we have run out of ids in the allocated range, so we need to allocate a new range
 						logger.warn?.(
 							`Id conflict detected, starting new id allocation range, attempting to allocate to ${idIncrementer.maxSafeId}, but id of ${idAfter} detected`
 						);
-						const idAllocation = createNewAllocation(version);
+						const idAllocation = createNewAllocation(updatedIdAllocation);
 						// reassign the incrementer to the new range/starting point
 						if (!idAllocation.alreadyUpdated) Atomics.store(idIncrementer, 0, BigInt(idAllocation.start + 1));
 						// and we set the maximum safe id to the end of the allocated range before we check for conflicting ids again
@@ -2676,7 +2722,7 @@ export function makeTable(options): TableResourceClass {
 				//TODO: Add a check to recordUpdate to check if a new id infringes on the allocated id range
 			}
 			return nextId;
-			function createNewAllocation(expectedVersion) {
+			function createNewAllocation(expectedAllocation) {
 				// there is no id allocation (or it is for the wrong node name or used up), so we need to create one
 				// start by determining the max id for the type
 				const maxId = (type === 'Int' ? Math.pow(2, 31) : Math.pow(2, 49)) - 1;
@@ -2721,19 +2767,13 @@ export function makeTable(options): TableResourceClass {
 					}
 					// see if we maintained an adequate distance from the surrounding ids
 				} while (!(safeDistance < idAfter - lastKey && (safeDistance < lastKey - idBefore || idBefore === 0)));
-				// we have to ensure that the id allocation is atomic and multiple threads don't set different ids, so we use a sync transaction
-				return primaryStore.transactionSync(() => {
-					// first check to see if it actually got set by another thread
-					const updatedIdAllocation = primaryStore.getEntry(Symbol.for('id_allocation'));
-					if ((updatedIdAllocation?.version ?? null) == expectedVersion) {
-						logger.info?.('Allocated new id range', idAllocation);
-						primaryStore.put(Symbol.for('id_allocation'), idAllocation, Date.now());
-						return idAllocation;
-					} else {
-						logger.debug?.('Looks like ids were already allocated');
-						return { alreadyUpdated: true, ...updatedIdAllocation.value };
-					}
-				});
+				const committedAllocation = replaceIdAllocation(expectedAllocation, idAllocation);
+				if (committedAllocation === idAllocation) {
+					logger.info?.('Allocated new id range', idAllocation);
+					return idAllocation;
+				}
+				logger.debug?.('Looks like ids were already allocated');
+				return { alreadyUpdated: true, ...committedAllocation };
 			}
 		}
 
@@ -2890,7 +2930,7 @@ export function makeTable(options): TableResourceClass {
 			throw error;
 		}
 
-		static async dropTable(options?: { droppedTime?: number; localOnly?: boolean }) {
+		static async dropTable(options?: { droppedTime?: number; localOnly?: boolean; peer?: boolean }): Promise<boolean> {
 			TableResource.assertSchemaMutable('drop a table');
 			const rootStore = primaryStore.rootStore;
 			if (
@@ -2901,6 +2941,34 @@ export function makeTable(options): TableResourceClass {
 				throw new Error(
 					`Cannot drop ${databaseName}.${TableResource.tableName}: the catalog store's put is asynchronous, so the drop tombstone cannot be made durable before the column families are dropped`
 				);
+			let primaryCatalogKey = TableResource.tableName + '/';
+			const readPrimaryMeta = () => {
+				const primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
+				if (primaryMeta || !primaryKey) return primaryMeta;
+				const legacyPrimaryKey = `${TableResource.tableName}/${primaryKey}`;
+				const legacyPrimaryMeta = (dbisDb as any).getSync(legacyPrimaryKey);
+				if (!legacyPrimaryMeta?.isPrimaryKey) return undefined;
+				primaryCatalogKey = legacyPrimaryKey;
+				return legacyPrimaryMeta;
+			};
+			const isNodeLocal = (primaryMeta: any) => replicateIsFalse(primaryMeta, TableResource);
+			const peerDropTime = options?.peer && Number.isFinite(options.droppedTime) ? options.droppedTime : undefined;
+			const keptFromPeer = (primaryMeta: any) =>
+				Boolean(options?.peer) &&
+				(isNodeLocal(primaryMeta) ||
+					(peerDropTime !== undefined && !isDeadGeneration(primaryMeta?.createdTime, peerDropTime)));
+			// The peer's fact is kept for relay whatever happens to this generation; a legacy per-table store has no
+			// database catalog to hold it.
+			const recordPeerDrop = () => {
+				if (peerDropTime !== undefined && databaseName === databasePath)
+					recordTableDrop(databaseName, TableResource.tableName, peerDropTime);
+			};
+			// Keeping needs no lock; a drop is rechecked under it, and one already in flight is joined, never refused.
+			const currentMeta = readPrimaryMeta();
+			if (!currentMeta?.dropping && keptFromPeer(currentMeta)) {
+				recordPeerDrop();
+				return false;
+			}
 			// Release post-commit derived-index delivery before any destructive work: the runner's
 			// backend must have quiesced before its stores and native file are destroyed, and a
 			// same-name recreate must not race an owner still applying to the old generation.
@@ -2947,7 +3015,8 @@ export function makeTable(options): TableResourceClass {
 				...TableResource.fullTextIndexes,
 			];
 			let dropIdentityConfirmed = databaseName !== databasePath;
-			let primaryCatalogKey = TableResource.tableName + '/';
+			let keptByPeerRule = false;
+			let releaseLmdbDropMark: (() => void) | undefined;
 			let storeGeneration: string | undefined;
 			let dropGeneration: string | undefined;
 			if (databaseName === databasePath) {
@@ -2959,21 +3028,19 @@ export function makeTable(options): TableResourceClass {
 				// the table.
 				let tombstoneWrite: any;
 				const writeTombstone = () => {
-					let primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
-					if (!primaryMeta && primaryKey) {
-						const legacyPrimaryKey = `${TableResource.tableName}/${primaryKey}`;
-						const legacyPrimaryMeta = (dbisDb as any).getSync(legacyPrimaryKey);
-						if (legacyPrimaryMeta?.isPrimaryKey) {
-							primaryCatalogKey = legacyPrimaryKey;
-							primaryMeta = legacyPrimaryMeta;
-						}
-					}
+					const primaryMeta = readPrimaryMeta();
 					if (
 						!primaryMeta ||
 						(primaryMeta.tableId != null && primaryMeta.tableId !== tableId) ||
 						(rootStore instanceof RocksDatabase && primaryMeta.generation !== tableGeneration)
 					)
 						return false;
+					// Against the row under the lock: another thread may have stamped or redeclared this generation.
+					if (!primaryMeta.dropping && keptFromPeer(primaryMeta)) {
+						keptByPeerRule = true;
+						return false;
+					}
+					const leavesMarker = !options?.localOnly && !isNodeLocal(primaryMeta) && !OMIT_LIFECYCLE_STAMPS_FOR_TEST;
 					dropGeneration = primaryMeta.dropGeneration;
 					storeGeneration = primaryMeta.generation;
 					const durableFullTextDefinitions =
@@ -3001,13 +3068,12 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (primaryMeta.dropping) {
 						// A joining drop that replicates stamps a tombstone a local-only drop left bare, or raises it.
-						const joinedTime = options?.localOnly
+						const joinedTime = !leavesMarker
 							? undefined
-							: Number.isFinite(options?.droppedTime)
-								? options.droppedTime
-								: primaryMeta.droppedTime === undefined
-									? tableLifecycleTime(createdTime)
-									: undefined;
+							: (peerDropTime ??
+								(primaryMeta.droppedTime === undefined
+									? tableLifecycleTime(primaryMeta.createdTime ?? createdTime)
+									: undefined));
 						if (joinedTime !== undefined && !(primaryMeta.droppedTime >= joinedTime)) {
 							primaryMeta.droppedTime = joinedTime;
 							tombstoneWrite = (dbisDb as any).put(primaryCatalogKey, primaryMeta);
@@ -3015,10 +3081,8 @@ export function makeTable(options): TableResourceClass {
 						return true;
 					}
 					primaryMeta.dropping = true;
-					if (!options?.localOnly)
-						primaryMeta.droppedTime = Number.isFinite(options?.droppedTime)
-							? options.droppedTime
-							: tableLifecycleTime(createdTime);
+					if (leavesMarker)
+						primaryMeta.droppedTime = peerDropTime ?? tableLifecycleTime(primaryMeta.createdTime ?? createdTime);
 					// Stamps this drop's identity so the interrupted-drop retry budget in
 					// databases.ts can be scoped to THIS drop rather than the table name: a
 					// worker that exhausts the budget for a table can observe the catalog
@@ -3045,18 +3109,30 @@ export function makeTable(options): TableResourceClass {
 						rootStore.transactionSync(() => {
 							dropIdentityConfirmed = writeTombstone();
 						});
+						// as on RocksDB: a schema reload on this thread leaves the tombstone to this drop instead of completing it
+						if (dropIdentityConfirmed && dropGeneration) releaseLmdbDropMark = markDropInProgress(dropGeneration);
 						if (typeof tombstoneWrite?.then === 'function') await tombstoneWrite;
 					}
 				} catch (error) {
+					releaseLmdbDropMark?.();
 					releaseFullTextRetirement();
 					restoreDerivedIndexesAfterFailedDrop();
 					throw error;
 				}
 			}
+			if (keptByPeerRule) {
+				restoreDerivedIndexesAfterFailedDrop();
+				recordPeerDrop();
+				return false;
+			}
 			if (!dropIdentityConfirmed) {
 				releaseFullTextRetirement();
 				abortStaleDrop();
-				return;
+				// the peer's drop judges the generation that replaced this one, once this thread has its class
+				const current = databases[databaseName]?.[tableName];
+				if (options?.peer && current && current !== TableResource) return current.dropTable(options);
+				recordPeerDrop();
+				return false;
 			}
 			TableResource.derivedIndexRuntime = undefined;
 			// A get() against a sourcedFrom table resolves to its caller before the resolved
@@ -3072,17 +3148,21 @@ export function makeTable(options): TableResourceClass {
 			// invisible, and the tombstone guarantees the drop completes on the
 			// next startup (or on a same-name create).
 			if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
-			TableResource.cleanup();
+			try {
+				TableResource.cleanup();
+			} catch (error) {
+				releaseLmdbDropMark?.();
+				releaseFullTextRetirement();
+				derivedIndexRuntime?.completeDrop?.();
+				throw error;
+			}
 			if (databaseName === databasePath && rootStore instanceof RocksDatabase) {
 				try {
 					if (!dropGeneration)
 						throw new Error(`Cannot drop ${databaseName}.${tableName}: its catalog tombstone has no drop generation`);
-					const retired = await retireRocksStores(storeGeneration, dropGeneration);
-					if (!retired) {
-						derivedIndexRuntime?.completeDrop?.();
-						releaseFullTextRetirement();
-						return;
-					}
+					// False when the tombstone stays for a pending full-text retirement, or another thread completed it
+					// first; this drop retired its generation either way.
+					await retireRocksStores(storeGeneration, dropGeneration);
 				} catch (error) {
 					releaseFullTextRetirement();
 					derivedIndexRuntime?.completeDrop?.();
@@ -3090,7 +3170,8 @@ export function makeTable(options): TableResourceClass {
 				}
 				derivedIndexRuntime?.completeDrop?.();
 				releaseFullTextRetirement();
-				return;
+				recordPeerDrop();
+				return true;
 			}
 			try {
 				for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
@@ -3099,6 +3180,7 @@ export function makeTable(options): TableResourceClass {
 					}
 				}
 			} catch (error) {
+				releaseLmdbDropMark?.();
 				releaseFullTextRetirement();
 				derivedIndexRuntime?.completeDrop?.();
 				throw error;
@@ -3134,7 +3216,8 @@ export function makeTable(options): TableResourceClass {
 					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
 					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId)) {
 						abortStaleDrop();
-						return;
+						recordPeerDrop();
+						return true;
 					}
 					const drops = [];
 					for (const attribute of attributes) {
@@ -3152,6 +3235,8 @@ export function makeTable(options): TableResourceClass {
 					releaseFullTextRetirement();
 					derivedIndexRuntime?.completeDrop?.();
 					throw error;
+				} finally {
+					releaseLmdbDropMark?.();
 				}
 				if (!removed) {
 					abortStaleDrop();
@@ -3184,6 +3269,8 @@ export function makeTable(options): TableResourceClass {
 			} finally {
 				releaseFullTextRetirement();
 			}
+			recordPeerDrop();
+			return true;
 
 			async function retireFullTextStorage(): Promise<boolean> {
 				if (fullTextDefinitionsForRetirement.length === 0) return true;
@@ -3206,6 +3293,13 @@ export function makeTable(options): TableResourceClass {
 					// has stopped and the wrapper has retired their storage.
 					if (!(await retireFullTextStorage())) return false;
 					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
+						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+						if (
+							!currentPrimary?.dropping ||
+							(currentPrimary.tableId != null && currentPrimary.tableId !== tableId) ||
+							currentPrimary.dropGeneration !== dropGeneration
+						)
+							return false;
 						const stores = storeNamesFor(dbisDb, tableName, generation);
 						const retiredStores = recordRetiredGeneration(
 							dbisDb,
@@ -3239,11 +3333,11 @@ export function makeTable(options): TableResourceClass {
 							if (!droppedStores.has(columnName) && (rootStore as any).columns.includes(columnName))
 								dropColumnFamily(rootStore, columnName);
 						}
-						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+						const remainingPrimary = (dbisDb as any).getSync(primaryCatalogKey);
 						if (
-							!currentPrimary?.dropping ||
-							(currentPrimary.tableId != null && currentPrimary.tableId !== tableId) ||
-							currentPrimary.dropGeneration !== dropGeneration
+							!remainingPrimary?.dropping ||
+							(remainingPrimary.tableId != null && remainingPrimary.tableId !== tableId) ||
+							remainingPrimary.dropGeneration !== dropGeneration
 						)
 							return false;
 						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
@@ -3253,12 +3347,21 @@ export function makeTable(options): TableResourceClass {
 						dbisDb.remove(primaryCatalogKey);
 						return true;
 					});
-					if (removed) await dbisDb.committed;
+					if (!removed) {
+						withUpdateAttributesLock(rootStore, `retire stale stores of '${databaseName}.${tableName}'`, () => {
+							const owned = liveStoreNamesFor(dbisDb, tableName);
+							const columns = new Set<string>((rootStore as any).columns);
+							for (const store of [primaryStore, ...Object.values(indices)]) {
+								if (store.name && columns.has(store.name) && !owned.has(store.name))
+									dropColumnFamily(rootStore, store.name);
+							}
+						});
+					} else await dbisDb.committed;
 					const label = `${databaseName}.${tableName}`;
 					const settled = await settlePhysicalDrops(rootStore, label);
 					await sweepDroppedTableBlobs(primaryStore, label);
 					if (!settled) finishDroppedTableBlobSweep(rootStore, primaryStore, label);
-					return true;
+					return removed;
 				} finally {
 					releaseDropMark();
 				}
