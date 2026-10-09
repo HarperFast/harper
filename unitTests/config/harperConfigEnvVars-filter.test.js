@@ -4,20 +4,21 @@ const assert = require('node:assert');
 const { filterArgsAgainstRuntimeConfig } = require('#src/config/harperConfigEnvVars');
 
 describe('filterArgsAgainstRuntimeConfig', function () {
+	const ENV_VARS = ['HARPER_SET_CONFIG', 'HARPER_DEFAULT_CONFIG'];
 	let originalEnv;
 
 	beforeEach(function () {
-		// Save original env var
-		originalEnv = process.env.HARPER_SET_CONFIG;
+		originalEnv = ENV_VARS.map((name) => process.env[name]);
 	});
 
 	afterEach(function () {
-		// Restore original env var
-		if (originalEnv !== undefined) {
-			process.env.HARPER_SET_CONFIG = originalEnv;
-		} else {
-			delete process.env.HARPER_SET_CONFIG;
-		}
+		ENV_VARS.forEach((name, i) => {
+			if (originalEnv[i] !== undefined) {
+				process.env[name] = originalEnv[i];
+			} else {
+				delete process.env[name];
+			}
+		});
 	});
 
 	describe('Basic filtering', function () {
