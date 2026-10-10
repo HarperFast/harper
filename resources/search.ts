@@ -1197,8 +1197,9 @@ export function searchByIndex(
 					.map((entry) => {
 						// if the custom index returns an entry with metadata, merge it with the loaded entry
 						if (typeof entry === 'object' && entry) {
-							const { key, loadedEntry: suppliedEntry, ...otherProps } = entry;
+							const key = entry.key;
 							if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
+							const suppliedEntry = entry.loadedEntry;
 							const loadedEntry =
 								suppliedEntry ??
 								Table.primaryStore.getEntry(key, {
@@ -1207,7 +1208,12 @@ export function searchByIndex(
 							if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
 							freezeRecord(loadedEntry?.value);
 							recordRead(loadedEntry);
-							return { ...otherProps, ...loadedEntry };
+							// The hit is the index's own per-hit object (HNSW/full-text allocates one per
+							// result), so the loaded fields merge onto it in place; loadedEntry is the shared
+							// cached Entry. Null out rather than delete the supplied-entry marker: `delete`
+							// would force the hit into V8 dictionary mode when the key isn't last.
+							if (suppliedEntry !== undefined) entry.loadedEntry = undefined;
+							return Object.assign(entry, loadedEntry);
 						}
 						return entry;
 					})
