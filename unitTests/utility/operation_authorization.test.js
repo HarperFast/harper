@@ -1843,3 +1843,81 @@ describe('Test operations permissions', function () {
 		}
 	});
 });
+
+describe('verifyPerms() — replication directives are super-user only (harper#2898)', function () {
+	before(() => {
+		global.hdb_schema = global.hdb_schema || {};
+		testUtils.setGlobalSchema('id', TEST_SCHEMA, TEST_TABLE, TEST_ATTRIBUTES);
+	});
+
+	after(() => {
+		global.hdb_schema = undefined;
+	});
+
+	const DIRECTIVE_DENIAL = ['Can not specify replicateTo or replicatedConfirmation without super user permissions'];
+	const WRITE_OPERATIONS = [
+		terms.OPERATIONS_ENUM.INSERT,
+		terms.OPERATIONS_ENUM.UPDATE,
+		terms.OPERATIONS_ENUM.UPSERT,
+		terms.OPERATIONS_ENUM.PUT,
+		terms.OPERATIONS_ENUM.DELETE,
+	];
+
+	function writerRequest(operation, directives, permission = {}) {
+		const req_json = getRequestJson(TEST_JSON);
+		req_json.operation = operation;
+		Object.assign(req_json.hdb_user.role.permission, permission);
+		return Object.assign(req_json, directives);
+	}
+
+	for (const operation of WRITE_OPERATIONS) {
+		for (const directives of [
+			{ replicateTo: 0 },
+			{ replicateTo: [] },
+			{ replicateTo: ['node-1'] },
+			{ replicatedConfirmation: 1 },
+		]) {
+			it(`denies ${operation} with ${JSON.stringify(directives)} to a role that may write the table`, function () {
+				const handler = dispatchedHandlerName(operation);
+				assert.equal(op_auth.verifyPerms(writerRequest(operation, {}), handler), null);
+				const result = op_auth.verifyPerms(writerRequest(operation, directives), handler);
+				assert.deepEqual(result?.unauthorized_access, DIRECTIVE_DENIAL);
+			});
+		}
+	}
+
+	it('denies a structure user', function () {
+		const result = op_auth.verifyPerms(
+			writerRequest(terms.OPERATIONS_ENUM.INSERT, { replicateTo: 0 }, { structure_user: true }),
+			write.insert.name
+		);
+		assert.deepEqual(result?.unauthorized_access, DIRECTIVE_DENIAL);
+	});
+
+	it('denies a role whose operations allowlist names the write', function () {
+		const result = op_auth.verifyPerms(
+			writerRequest(
+				terms.OPERATIONS_ENUM.INSERT,
+				{ replicatedConfirmation: 1 },
+				{ operations: [terms.OPERATIONS_ENUM.INSERT] }
+			),
+			write.insert.name
+		);
+		assert.deepEqual(result?.unauthorized_access, DIRECTIVE_DENIAL);
+	});
+
+	it('allows a super user, including on a system table', function () {
+		const request = (directives) => {
+			const req_json = getRequestJson(TEST_JSON_SUPER_USER);
+			return Object.assign(req_json, directives);
+		};
+		const directives = { replicateTo: 0, replicatedConfirmation: 1 };
+		assert.equal(op_auth.verifyPerms(request(directives), write.insert.name), null);
+		const systemWrite = (extra) =>
+			op_auth.verifyPerms(
+				request({ schema: terms.SYSTEM_SCHEMA_NAME, table: terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, ...extra }),
+				write.insert.name
+			);
+		assert.deepEqual(systemWrite(directives), systemWrite({}));
+	});
+});

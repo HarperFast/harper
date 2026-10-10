@@ -801,6 +801,13 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 		return null;
 	}
 
+	// Ahead of the structure-user and allowlist grants below, which would otherwise admit them.
+	if (!isSuperUser && (requestJson.replicateTo != undefined || requestJson.replicatedConfirmation != undefined)) {
+		return permsResponse.handleUnauthorizedItem(
+			'Can not specify replicateTo or replicatedConfirmation without super user permissions'
+		);
+	}
+
 	//structureUsers can create/drop schemas if they are not locked down to specific schemas.
 	if (structureUser === true && (op === schema.createSchema.name || op === schema.dropSchema.name)) {
 		return null;
