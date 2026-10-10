@@ -927,8 +927,6 @@ export async function runAggregationCycle(fromPeriod, toPeriod = 60000) {
 
 // A mean of per-sample peaks is not a peak, so peak-named measures fold with max.
 const MAX_MEASURE_NAME = /^max[A-Z]/;
-// Kept on a thread's record by its own fold, beside its measures.
-const THREAD_FOLD_FIELDS = new Set(['count', 'total', 'ratio']);
 
 async function aggregation(fromPeriod, toPeriod = 60000) {
 	const rawAnalyticsTable = getRawAnalyticsTable();
@@ -996,7 +994,8 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 			if (type !== undefined) key += '-' + type;
 			let action = aggregateActions.get(key);
 			if (action) {
-				if (action.threads) {
+				const byThread = action.threads !== undefined;
+				if (byThread) {
 					const actionForThread = action.threads[threadId];
 					if (actionForThread) action = actionForThread;
 					else {
@@ -1024,7 +1023,8 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 					counts[measureName] = (measureCount ?? 0) + count;
 				}
 				action.count += count;
-				if (total >= 0) {
+				// A thread's record is built from measures alone, so it has no total to add to.
+				if (total >= 0 && !byThread) {
 					action.total += total;
 					action.ratio = action.total / action.count;
 				}
@@ -1062,7 +1062,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		for (const thread of threads) {
 			for (const measureName in thread) {
 				const value = thread[measureName];
-				if (typeof value === 'number' && !THREAD_FOLD_FIELDS.has(measureName))
+				if (typeof value === 'number')
 					entry[measureName] = (typeof entry[measureName] === 'number' ? entry[measureName] : 0) + value;
 			}
 		}
