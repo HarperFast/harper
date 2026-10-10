@@ -6,16 +6,28 @@ const { once } = require('node:events');
 const path = require('node:path');
 
 const HARNESS = path.join(__dirname, 'v8Flags-fixtures', 'harness.cjs');
-const DEFAULT_STACK_TRACE_LIMIT = 10;
 
-// Each element of `steps` is a `threads.v8Flags` value the harness assigns before starting one worker.
-async function runHarness(steps) {
-	const harness = spawn(process.execPath, [HARNESS, JSON.stringify(steps)], { stdio: ['ignore', 'pipe', 'inherit'] });
-	let output = '';
-	harness.stdout.on('data', (chunk) => (output += chunk));
-	const [code] = await once(harness, 'close');
-	assert.equal(code, 0, `harness exited with ${code}: ${output}`);
-	return JSON.parse(output.trim().split('\n').at(-1));
+const HARNESS_TIMEOUT_MS = 30000;
+
+async function runHarness(steps, entry) {
+	const args = [HARNESS, JSON.stringify(steps)];
+	if (entry) args.push(entry);
+	const harness = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'inherit'] });
+	const deadline = setTimeout(() => harness.kill('SIGKILL'), HARNESS_TIMEOUT_MS);
+	try {
+		let output = '';
+		harness.stdout.on('data', (chunk) => (output += chunk));
+		const [code, signal] = await once(harness, 'close');
+		assert.equal(code, 0, `harness exited with ${code ?? signal}: ${output}`);
+		const { defaultStackTraceLimit, results } = JSON.parse(output.trim().split('\n').at(-1));
+		// The harness process starts without flags, so its own limit is V8's default.
+		for (const result of results)
+			if (result.stackTraceLimit === defaultStackTraceLimit) result.stackTraceLimit = 'default';
+		return results;
+	} finally {
+		clearTimeout(deadline);
+		if (harness.exitCode === null && harness.signalCode === null) harness.kill('SIGKILL');
+	}
 }
 
 describe('threads.v8Flags', function () {
@@ -35,9 +47,9 @@ describe('threads.v8Flags', function () {
 	});
 
 	it('leaves V8 defaults when unset, null or empty', async () => {
-		for (const unset of [null, []]) {
+		for (const unset of [null, [], '', ['  ']]) {
 			const [result] = await runHarness([unset]);
-			assert.deepStrictEqual(result, { stackTraceLimit: DEFAULT_STACK_TRACE_LIMIT });
+			assert.deepStrictEqual(result, { stackTraceLimit: 'default' });
 		}
 	});
 
@@ -51,8 +63,17 @@ describe('threads.v8Flags', function () {
 		assert.match(refused.error, /threads\.v8Flags/);
 		assert.match(refused.error, /"optimize-for-size"/);
 		assert.strictEqual(refused.workerCount, 0);
-		// The valid entry in the refused list was not applied either.
-		assert.deepStrictEqual(afterFix, { stackTraceLimit: DEFAULT_STACK_TRACE_LIMIT });
+		assert.deepStrictEqual(afterFix, { stackTraceLimit: 'default' });
+	});
+
+	it('trims surrounding whitespace from an entry', async () => {
+		const [result] = await runHarness([' --stack-trace-limit=7 ']);
+		assert.deepStrictEqual(result, { stackTraceLimit: 7 });
+	});
+
+	it('refuses an invalid value at startHTTPThreads entry, before any startup work', async () => {
+		const [refused] = await runHarness(['optimize-for-size'], 'startHTTPThreads');
+		assert.match(refused.error, /threads\.v8Flags.*"optimize-for-size"/);
 	});
 
 	it('refuses a non-string entry', async () => {

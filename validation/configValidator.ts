@@ -4,6 +4,7 @@ import * as fs from 'fs-extra';
 import Joi from 'joi';
 import * as os from 'os';
 const { boolean, string, number, array } = Joi.types();
+const v8Flag = string.trim().allow('').pattern(/^--/, 'V8 flag starting with --');
 import { totalmem } from 'os';
 import * as path from 'path';
 import * as hdbLogger from '../utility/logging/harper_logger.ts';
@@ -503,7 +504,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 				preloadRequire: Joi.alternatives([string, array.items(string)])
 					.allow(null)
 					.optional(),
-				v8Flags: Joi.alternatives([string, array.items(string)])
+				v8Flags: Joi.alternatives([v8Flag, array.items(v8Flag)])
 					.allow(null)
 					.optional(),
 			})

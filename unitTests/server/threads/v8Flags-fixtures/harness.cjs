@@ -1,13 +1,19 @@
 'use strict';
 
 // V8 flags are process-global, so each case runs in its own process instead of mocha's.
-const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { HARPER_CONFIG_FILE, CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 const rootPath = mkdtempSync(join(tmpdir(), 'harper-v8flags-'));
-writeFileSync(join(rootPath, HARPER_CONFIG_FILE), `rootPath: ${JSON.stringify(rootPath)}\n`);
+mkdirSync(join(rootPath, 'database'));
+// A complete config, because loading socketRouter validates it.
+const defaultConfig = readFileSync(join(__dirname, '../../../../static/defaultConfig.yaml'), 'utf8');
+writeFileSync(
+	join(rootPath, HARPER_CONFIG_FILE),
+	defaultConfig.replace(/^rootPath: null$/m, `rootPath: ${JSON.stringify(rootPath)}`)
+);
 process.env.ROOTPATH = rootPath;
 process.on('exit', () => {
 	try {
@@ -16,15 +22,21 @@ process.on('exit', () => {
 });
 
 const envMgr = require('#src/utility/environment/environmentManager');
-envMgr.initTestEnvironment();
 // Loaded before the setting is assigned, as bin/run.ts loads it before install and env-var config are written.
 const { startWorker, workers } = require('#js/server/threads/manageThreads');
+const { startHTTPThreads } = require('#src/server/threads/socketRouter');
 
-// argv[2]: JSON list of `threads.v8Flags` values; each is assigned, then one worker is started.
 async function main() {
 	const results = [];
 	for (const v8Flags of JSON.parse(process.argv[2])) {
 		envMgr.setProperty(CONFIG_PARAMS.THREADS_V8FLAGS, v8Flags);
+		if (process.argv[3] === 'startHTTPThreads') {
+			await startHTTPThreads(0).then(
+				() => results.push({ started: true }),
+				(error) => results.push({ error: error.message })
+			);
+			continue;
+		}
 		let worker;
 		try {
 			worker = startWorker(join(__dirname, 'worker.cjs'), { name: 'v8-flags-test', autoRestart: false });
@@ -41,7 +53,7 @@ async function main() {
 		worker.wasShutdown = true;
 		await worker.terminate();
 	}
-	process.stdout.write(JSON.stringify(results) + '\n');
+	process.stdout.write(JSON.stringify({ defaultStackTraceLimit: Error.stackTraceLimit, results }) + '\n');
 }
 
 main().then(
