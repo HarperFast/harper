@@ -4,6 +4,7 @@
 // from component code (e.g. Next.js's `unhandledRejection` handler) is
 // intercepted in workers.
 const { realExit } = require('./workerProcessGuard.ts');
+const { nativeAddonGuardExecArgv } = require('./nativeAddonGuard.ts');
 
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { spawnSync } = require('node:child_process');
@@ -1256,6 +1257,8 @@ function startWorker(path, options = {}, startOptions = {}) {
 	const execArgv = isBun
 		? []
 		: [
+				// first: --require modules run in order and before every --import, so the guard precedes the preloads below
+				...nativeAddonGuardExecArgv(),
 				'--enable-source-maps',
 				'--experimental-vm-modules', // used for giving applications their own top level scope
 				'--disable-warning=ExperimentalWarning', // yeah, yeah, we know it is experimental
