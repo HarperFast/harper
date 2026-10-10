@@ -53,7 +53,8 @@ by-name sites are handled, all by the same `_scopedToken` short-circuit: the MQT
 (`DurableSubscriptionsSession.ts` persists the scoped role/marker/expiry on the will and skips
 rehydration — and both the restart-replay and the live abnormal-disconnect paths refuse to publish
 a scoped will past `authExpiresAt`), the live-subscription stale-auth recheck (`Resource.ts`
-`registerLiveSubscriptionForContext` keeps the embedded role as the identity), and the MCP
+`registerLiveSubscriptionForContext` keeps the embedded role as the identity, and never puts a scoped
+token in a recheck group shared by username), and the MCP
 `list_changed` session refresh (`components/mcp/listChanged.ts` `refreshSessionUser`). The scoped
 principal also cannot self-mint standing tokens: the passwordless path of `createTokens` rejects an
 `hdb_user._scopedToken` requester. **Any future by-name rehydration must check `_scopedToken`.** A

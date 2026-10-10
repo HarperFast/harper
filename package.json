@@ -84,7 +84,7 @@
 		"test:unit:dataLayer": "mocha \"unitTests/dataLayer/**/*.js\" --exclude \"unitTests/dataLayer/harperBridge/**/*\"",
 		"test:unit:backup": "mocha \"unitTests/dataLayer/rocksdbBackup.test.js\" \"unitTests/dataLayer/blobBackup.test.js\" \"unitTests/dataLayer/restoreMarker.test.js\" \"unitTests/bin/backup.test.js\"",
 		"test:unit:utility": "mocha \"unitTests/utility/**/*.js\" --exclude \"unitTests/utility/logging/**/*\"",
-		"test:unit:server": "mocha \"unitTests/server/**/*.js\"",
+		"test:unit:server": "mocha \"unitTests/server/**/*.js\" --exclude \"unitTests/server/**/*.bench.js\"",
 		"test:unit:config": "mocha \"unitTests/config/**/*.js\"",
 		"test:unit:windows": "node unitTests/windowsGate.mjs",
 		"test:unit:typestrip": "env NODE_OPTIONS=\"--conditions=typestrip\" npm run test:unit",

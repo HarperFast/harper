@@ -183,6 +183,109 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		session.disconnect(true);
 	});
 
+	/** Sessions subscribed to one topic, each holding an unacknowledged delivery its subscription has certified. */
+	async function sessionsAwaitingAcks(label, count) {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const clients = [];
+		for (let i = 0; i < count; i++) {
+			const client = await connect(`${label}-${name}-${i}`);
+			await client.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+			clients.push(client);
+		}
+		await T.put('a', { value: 1 });
+		for (const client of clients) {
+			await waitFor(() => client.received.length >= 1);
+			const state = client.session.topics.get(topic);
+			await waitFor(() => state.subscription.progress() >= state.deliveredKey);
+			// acknowledged, the delivery lets the saved position move up to at least its key
+			client.deliveredKey = state.deliveredKey;
+		}
+		return clients;
+	}
+
+	it('saves the positions that one turn’s acknowledgements allow together, each settling once saved', async () => {
+		const clients = await sessionsAwaitingAcks('grouped-save', 5);
+		const sessions = databases.system.hdb_durable_session;
+		const put = sessions.put;
+		const transactions = new Set();
+		sessions.put = function (record, context) {
+			transactions.add(context?.transaction);
+			return put.apply(this, arguments);
+		};
+		try {
+			await Promise.all(clients.map(({ session, received }) => session.acknowledge(received[0].messageId)));
+		} finally {
+			sessions.put = put;
+		}
+		assert.strictEqual(transactions.size, 1, 'one transaction holds every save');
+		assert.ok([...transactions][0], 'and it is a shared one, not each put’s own');
+		for (const { session, deliveredKey } of clients) {
+			const saved = (await stored(session.sessionId)).subscriptions[0];
+			assert.ok(saved.startTime >= deliveredKey, `${session.sessionId}’s acknowledged delivery is saved by then`);
+			session.disconnect(true);
+		}
+	});
+
+	it('saves each session alone when their shared save fails, so a failing save fails only its own session', async () => {
+		const clients = await sessionsAwaitingAcks('grouped-save-failure', 3);
+		const failing = clients[1].session;
+		const before = (await stored(failing.sessionId)).subscriptions[0].startTime;
+		const sessions = databases.system.hdb_durable_session;
+		const put = sessions.put;
+		sessions.put = function (record) {
+			if (record.id === failing.sessionId) throw new Error('this session’s save fails');
+			return put.apply(this, arguments);
+		};
+		try {
+			await Promise.all(clients.map(({ session, received }) => session.acknowledge(received[0].messageId)));
+		} finally {
+			sessions.put = put;
+		}
+		for (const { session, deliveredKey } of clients) {
+			const saved = (await stored(session.sessionId)).subscriptions[0];
+			if (session === failing) {
+				assert.strictEqual(saved.startTime, before, 'the failed save wrote nothing');
+				assert.ok(session.dirty, 'and the next checkpoint retries it');
+			} else assert.ok(saved.startTime >= deliveredKey, `${session.sessionId} is saved alone`);
+			session.disconnect(true);
+		}
+	});
+
+	it('lands no save after an acknowledgement settles, when a failed save group falls back to saving alone', async () => {
+		const clients = await sessionsAwaitingAcks('grouped-save-straggler', 3);
+		const failing = clients[0].session;
+		const slow = clients[1].session;
+		const sessions = databases.system.hdb_durable_session;
+		const get = sessions.get;
+		const put = sessions.put;
+		let slowReads = 0;
+		let slowPuts = 0;
+		sessions.get = function (id) {
+			if (id === failing.sessionId) return Promise.reject(new Error('this session’s read fails'));
+			// the slow session's first read, the group's, is still pending when the failing one rejects
+			if (id === slow.sessionId && slowReads++ === 0) {
+				return new Promise((resolve) => setTimeout(resolve, 50)).then(() => get.apply(this, arguments));
+			}
+			return get.apply(this, arguments);
+		};
+		sessions.put = function (record) {
+			if (record.id === slow.sessionId) slowPuts++;
+			return put.apply(this, arguments);
+		};
+		try {
+			await Promise.all(clients.map(({ session, received }) => session.acknowledge(received[0].messageId)));
+			const putsWhenSettled = slowPuts;
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.strictEqual(slowPuts, putsWhenSettled, 'a group write still reading must not put alone later');
+		} finally {
+			sessions.get = get;
+			sessions.put = put;
+		}
+		for (const { session } of clients) session.disconnect(true);
+	});
+
 	it('does not move past a transaction until every one of its messages is acknowledged', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
@@ -276,10 +379,12 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		const clientId = `late-queued-${name}`;
 		const { session } = await connect(clientId);
 		const delivered = [];
+		let earlyMessageId;
 		// the late transaction's first message never finishes sending, so its rest stays queued
 		session.setListener((_topic, message, messageId) => {
 			delivered.push(message?.value);
-			if (message?.value !== 'unacked') session.acknowledge(messageId);
+			if (message?.value === 'early') earlyMessageId = messageId;
+			else if (message?.value !== 'unacked') session.acknowledge(messageId);
 			return message?.value === 'late' ? new Promise(() => {}) : true;
 		});
 		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
@@ -290,6 +395,9 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		await commitLate();
 		const state = session.topics.get(topic);
 		await waitFor(() => state.subscription.sentCount >= 4);
+		// acknowledged only now: a position saved while the late transaction is still open can pass its
+		// key, the late-commit gap the durable-session design note lists, not the queued rest this covers
+		await session.acknowledge(earlyMessageId);
 		assert.deepStrictEqual(delivered, ['early', 'unacked', 'late']);
 		const lateKey = state.deliveredKey;
 		session.disconnect(true);
@@ -895,6 +1003,8 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		await first.session.persist();
 		assert.deepStrictEqual(first.closed, ['superseded']);
 		assert.strictEqual((await stored(clientId)).incarnation, second.session.incarnation);
+		// the stubbed transport closes no socket, so the superseded session's subscriptions are ended here
+		first.session.disconnect(true);
 		second.session.disconnect(true);
 	});
 

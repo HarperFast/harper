@@ -10,7 +10,13 @@ const { EventEmitter } = require('node:events');
 // background tick landing mid-test would make _sweepNow() a no-op via the `sweeping` guard.
 process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS = String(24 * 60 * 60 * 1000);
 
-const { registerLiveSubscription, _liveSubscriptionCount, _sweepNow } = require('#src/server/liveSubscriptionAuth');
+const {
+	registerLiveSubscription,
+	_liveSubscriptionCount,
+	_liveSubscriptionGroupCount,
+	_sweepNow,
+} = require('#src/server/liveSubscriptionAuth');
+const { CLOSES_WHEN_ENDED } = require('#src/resources/IterableEventQueue');
 const hdbLogger = require('#src/utility/logging/harper_logger');
 
 // `.calls` is the arg list of each invocation, in order.
@@ -511,5 +517,103 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(laterRecheck.calls.length, 0);
 			assert.strictEqual(_liveSubscriptionCount(), 1);
 		});
+	});
+
+	describe('admissions sharing an authKey', () => {
+		it('share one group and one recheck per sweep, which is given every member context', async () => {
+			const recheck = spyFn(async () => true);
+			const laterRecheck = spyFn(async () => true);
+			const contexts = [{ n: 1 }, { n: 2 }, { n: 3 }];
+			register({ subscription: fakeSubscription(), username: 'ann', authKey: 'k1', context: contexts[0], recheck });
+			for (const context of contexts.slice(1)) {
+				register({ subscription: fakeSubscription(), username: 'ann', authKey: 'k1', context, recheck: laterRecheck });
+			}
+			assert.strictEqual(_liveSubscriptionCount(), 3);
+			assert.strictEqual(_liveSubscriptionGroupCount(), 1);
+			await _sweepNow();
+			assert.strictEqual(recheck.calls.length, 1, 'one recheck for the whole group');
+			assert.deepStrictEqual(recheck.calls[0][0], contexts);
+			assert.strictEqual(laterRecheck.calls.length, 0, "a later registration's recheck is dropped for the group's");
+		});
+
+		it('revokes an expired member alone, and every member once the shared recheck fails', async () => {
+			let authorized = true;
+			const subscriptions = [fakeSubscription(), fakeSubscription(), fakeSubscription()];
+			const originalEnds = subscriptions.map((subscription) => subscription.end);
+			const recheck = spyFn(async () => authorized);
+			register({ subscription: subscriptions[0], username: 'bo', authKey: 'k2', authExpiresAt: 0, recheck });
+			register({ subscription: subscriptions[1], username: 'bo', authKey: 'k2', recheck });
+			register({ subscription: subscriptions[2], username: 'bo', authKey: 'k2', recheck });
+			await _sweepNow();
+			assert.deepStrictEqual(
+				originalEnds.map((end) => end.calls.length),
+				[1, 0, 0]
+			);
+			assert.strictEqual(recheck.calls[0][0].length, 2, 'the expired member is not rechecked');
+			authorized = false;
+			await _sweepNow();
+			assert.deepStrictEqual(
+				originalEnds.map((end) => end.calls.length),
+				[1, 1, 1]
+			);
+			assert.strictEqual(_liveSubscriptionCount(), 0);
+			assert.strictEqual(_liveSubscriptionGroupCount(), 0);
+		});
+
+		it('keeps the group while a member remains and drops it with the last', () => {
+			const first = fakeSubscription();
+			const second = fakeSubscription();
+			register({ subscription: first, username: 'cy', authKey: 'k3', recheck: async () => true });
+			register({ subscription: second, username: 'cy', authKey: 'k3', recheck: async () => true });
+			first.end();
+			assert.strictEqual(_liveSubscriptionCount(), 1);
+			assert.strictEqual(_liveSubscriptionGroupCount(), 1);
+			second.emit('close');
+			assert.strictEqual(_liveSubscriptionCount(), 0);
+			assert.strictEqual(_liveSubscriptionGroupCount(), 0);
+		});
+	});
+
+	it('does not wrap end() on a subscription whose end() closes it, and unregisters it on close', () => {
+		const subscription = fakeSubscription();
+		subscription[CLOSES_WHEN_ENDED] = true;
+		const originalEnd = subscription.end;
+		register({ subscription, username: 'di', recheck: async () => true });
+		assert.strictEqual(subscription.end, originalEnd);
+		subscription.emit('close');
+		assert.strictEqual(_liveSubscriptionCount(), 0);
+	});
+});
+
+describe('live subscriptions to tables', function () {
+	this.timeout(30_000);
+	const { table } = require('#src/resources/databases');
+	const { transaction } = require('#src/resources/transaction');
+	const { RequestTarget } = require('#src/resources/RequestTarget');
+	const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+	before(() => {
+		testUtils.setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	it('share a re-authorization group only where read authorization ignores the context', async () => {
+		const Feed = table({ database: 'liveauthgroups', table: 'Feed', attributes: [{ name: 'id', isPrimaryKey: true }] });
+		class OwnRead extends Feed {
+			allowRead(user, target, context) {
+				return Boolean(context?.user);
+			}
+		}
+		const user = { username: 'live-auth-grouping', role: { permission: { super_user: true } } };
+		const subscribe = (Resource) => {
+			const context = { user };
+			return transaction(context, () => Resource.subscribe(new RequestTarget('/x'), context));
+		};
+		const groupsBefore = _liveSubscriptionGroupCount();
+		const subscriptions = [await subscribe(Feed), await subscribe(Feed)];
+		assert.strictEqual(_liveSubscriptionGroupCount(), groupsBefore + 1, 'the table’s own allowRead groups them');
+		subscriptions.push(await subscribe(OwnRead), await subscribe(OwnRead));
+		assert.strictEqual(_liveSubscriptionGroupCount(), groupsBefore + 3, 'an allowRead of its own registers each alone');
+		for (const subscription of subscriptions) subscription.end();
+		assert.strictEqual(_liveSubscriptionGroupCount(), groupsBefore);
 	});
 });

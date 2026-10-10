@@ -1573,6 +1573,9 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		const usernameStart = decoder.position;
 		const usernameEnd = (decoder.position += length);
 		let value: any;
+		let recordAtTimeValue: any;
+		let recordAtTimeStore: any;
+		let recordAtTime: number | undefined;
 		return {
 			// The entry type is the low nibble of the action byte (1–7 record actions, 8 reload, 9 eviction, 10–15
 			// reserved); the flag bits (HAS_RECORD, HAS_PARTIAL_RECORD, …) sit above it. `& 0xf` is
@@ -1646,8 +1649,15 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 					return value;
 				}
 				if (action & HAS_PARTIAL_RECORD && auditTime) {
-					const recordId = this.recordId;
-					return getRecordAtTime(store.getEntry(recordId), auditTime, store, tableId, recordId);
+					// every subscriber of a key reads this same entry object in one notify pass, so one
+					// reconstruction serves them all, as one decode does for a full record above
+					if (recordAtTimeStore !== store || recordAtTime !== auditTime) {
+						const recordId = this.recordId;
+						recordAtTimeValue = getRecordAtTime(store.getEntry(recordId), auditTime, store, tableId, recordId);
+						recordAtTimeStore = store;
+						recordAtTime = auditTime;
+					}
+					return recordAtTimeValue;
 				} // TODO: If we store a partial and full record, may need to read both sequentially
 			},
 			getBinaryValue() {

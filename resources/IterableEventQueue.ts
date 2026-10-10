@@ -1,13 +1,41 @@
 import { EventEmitter } from 'events';
 
+/**
+ * Set on a queue class whose end() always closes it (emitting 'close'), so a consumer that listens for
+ * 'close' need not also wrap end().
+ */
+export const CLOSES_WHEN_ENDED = Symbol('closesWhenEnded');
+
+/**
+ * Holds an emitter's listeners by event name, as Node's `_events` does. Node creates that as a
+ * `{ __proto__: null }` literal, which V8 keeps in dictionary mode at about 180 bytes per emitter; an
+ * instance of this has the same lookups (its prototype chain is empty) as an ordinary fast object,
+ * and EventEmitter's methods work on it unchanged.
+ */
+function EventSlots() {}
+EventSlots.prototype = Object.create(null);
+
 export class IterableEventQueue<Event extends object = any> extends EventEmitter {
 	resolveNext: null | ((args: IteratorResult<Event>) => void) = null;
 	queue: any[];
-	hasDataListeners: boolean;
+	// fields set only on some paths are declared, not defined, so a queue that never takes those paths
+	// has no slot for them (a live subscription is one of these queues)
+	declare hasDataListeners: boolean;
 	closed = false;
-	closedWith: Event | undefined;
-	drainCloseListener: boolean;
-	currentDrainResolver: null | ((draining: boolean) => void) = null;
+	declare closedWith: Event | undefined;
+	declare drainCloseListener: boolean;
+	declare currentDrainResolver: null | ((draining: boolean) => void);
+	/** Pending waitForDrain calls; with none, an empty read has no one to tell. */
+	drainWaiters = 0;
+	/**
+	 * A consumer that pulls with getNextMessage() rather than iterating: woken when a message is queued
+	 * while the queue was empty, and expected to read until getNextMessage() returns undefined.
+	 */
+	consumer: { wake(): void } | null = null;
+	constructor() {
+		super();
+		(this as any)._events = new (EventSlots as any)();
+	}
 	[Symbol.asyncIterator](): AsyncIterator<Event> {
 		const iterator = new EventQueueIterator<Event>();
 		iterator.queue = this;
@@ -26,7 +54,7 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 			this.emit('data', message);
 		} else {
 			if (!this.queue) this.queue = [];
-			this.queue.push(message);
+			if (this.queue.push(message) === 1) this.consumer?.wake();
 		}
 		return true;
 	}
@@ -55,7 +83,7 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 	}
 	getNextMessage() {
 		const message = this.queue?.shift();
-		if (!message) this.emit('drained');
+		if (!message && this.drainWaiters > 0) this.emit('drained');
 		return message;
 	}
 
@@ -70,12 +98,18 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 				// The queue can also empty through paths that never emit 'drained' (the on('data')
 				// attach loop and the resolveNext bypass), so a waiter relying on the event alone
 				// can hang forever on an already-empty queue. Poll as a fallback wakeup.
+				let settled = false;
 				const settle = (drained: boolean) => {
 					clearInterval(poll);
 					this.removeListener('drained', onDrained);
+					if (!settled) {
+						settled = true;
+						this.drainWaiters--;
+					}
 					resolve(drained);
 				};
 				const onDrained = () => settle(true);
+				this.drainWaiters++;
 				this.once('drained', onDrained);
 				this.currentDrainResolver = settle;
 				const poll = setInterval(() => {

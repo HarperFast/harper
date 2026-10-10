@@ -33,6 +33,43 @@ const authEventLog = loggerWithTag('auth-event');
 const mqttLog = loggerForComponent('mqtt');
 
 let AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
+/** Multiplied by the QoS and added to the protocol version, the frame-cache key of a QoS 1/2 PUBLISH template. */
+const QOS_TEMPLATE_KEY = 0x100;
+/** Where a QoS 1/2 PUBLISH's packet identifier sits: after the fixed header and the length-prefixed topic. */
+function packetIdOffset(packet: Buffer): number {
+	let offset = 1;
+	while (packet[offset++] & 0x80); // the remaining-length varint
+	return offset + 2 + packet.readUInt16BE(offset);
+}
+/** The first byte of each acknowledgement packet (PUBREL's carries its required flags), by its name. */
+const ACKNOWLEDGEMENT_COMMANDS = { 0x40: 'puback', 0x50: 'pubrec', 0x62: 'pubrel', 0x70: 'pubcomp' };
+/**
+ * Whether data is nothing but whole acknowledgements (PUBACK, PUBREC, PUBREL, PUBCOMP) of the 4-byte form
+ * every protocol version shares: success, with no reason code or properties.
+ */
+function onlyAcknowledgements(data: any): boolean {
+	const length = data?.length;
+	if (!(length > 0) || length % 4 !== 0 || !Buffer.isBuffer(data)) return false;
+	for (let offset = 0; offset < length; offset += 4) {
+		if (ACKNOWLEDGEMENT_COMMANDS[data[offset]] === undefined || data[offset + 1] !== 2) return false;
+	}
+	return true;
+}
+/** The packet mqtt-packet's (v5) parser emits for a 4-byte acknowledgement. */
+function acknowledgementPacket(firstByte: number, messageId: number) {
+	return {
+		cmd: ACKNOWLEDGEMENT_COMMANDS[firstByte],
+		retain: false,
+		qos: (firstByte >> 1) & 3,
+		dup: false,
+		length: 2,
+		topic: null,
+		payload: null,
+		messageId,
+		reasonCode: 0,
+	};
+}
+
 export function bypassAuth() {
 	AUTHORIZE_LOCAL = true;
 }
@@ -357,8 +394,20 @@ function onSocket(socket, send, request, user, mqttSettings) {
 	let maximumPacketSize: number | undefined;
 	const mqttOptions = { protocolVersion: 4 };
 	const parser = makeParser({ protocolVersion: 5 });
+	// The parser consumes a packet's fixed header before its body arrives, so holding no bytes does not
+	// mean it is between packets; its state counter returns to 0 only once a packet is complete.
+	let parserBetweenPackets = true;
 	function onMessage(data) {
-		parser.parse(data);
+		// A QoS 1 or 2 subscriber acknowledges every message, and the general parser costs an acknowledgement
+		// many times what handling it does, so data that is only whole 4-byte acknowledgements (success, no
+		// properties) is read here, into the packets the parser would emit for it.
+		if (parserBetweenPackets && onlyAcknowledgements(data)) {
+			for (let offset = 0; offset < data.length; offset += 4) {
+				handlePacket(acknowledgementPacket(data[offset], data.readUInt16BE(offset + 2)));
+			}
+			return;
+		}
+		parserBetweenPackets = parser.parse(data) === 0 && (parser as any)._stateCounter === 0;
 	}
 	function onClose() {
 		numberOfConnections--;
@@ -374,7 +423,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		}
 	}
 
-	parser.on('packet', async (packet: any) => {
+	const handlePacket = async (packet: any) => {
 		try {
 			if (user?.then) user = await user;
 		} catch (error) {
@@ -545,22 +594,49 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						reasonCode: 0,
 						returnCode: 0, // success
 					});
-					const listener = async (topic, message, messageId, subscription, version) => {
+					const failDelivery = (error) => {
+						mqttLog.error?.(error);
+						session?.disconnect(false);
+						mqttSettings.sessions.delete(session);
+						releaseClientSession(session);
+						return false;
+					};
+					// consecutive messages under one topic string (a record's, or one fan-out's) share its first
+					// level, so it is sliced out once rather than per message
+					let lastTopic: string;
+					let lastGeneralTopic: string;
+					// returns a promise only on socket back-pressure, so a delivery costs the session no microtask
+					const deliver = (topic, payload, encoding, messageId, subscription) => {
 						try {
-							if (disconnected) throw new Error('Session disconnected while trying to send message to', topic);
-							const slashIndex = topic.indexOf('/', 1);
-							const generalTopic = slashIndex > 0 ? topic.slice(0, slashIndex) : topic;
+							if (topic !== lastTopic) {
+								const slashIndex = topic.indexOf('/', 1);
+								lastGeneralTopic = slashIndex > 0 ? topic.slice(0, slashIndex) : topic;
+								lastTopic = topic;
+							}
+							const generalTopic = lastGeneralTopic;
 							const qos = subscription.qos || 0;
-							// Every subscriber of a topic serializes the same message to the same bytes, so the
-							// payload is encoded once per (message, content type) and reused across all of them.
-							const encoding = getSharedMessageEncoding(message, request, version);
-							const encoded = encoding.payload;
-							// only pay for a microtask when the serialization is genuinely still pending
-							const payload =
-								typeof (encoded as any)?.then === 'function'
-									? await resolveSharedPayload(encoding, message, request, version)
-									: (encoded as Buffer | string);
-							if (qos > 0) {
+							if (qos > 0 && messageId) {
+								// A QoS 1/2 PUBLISH differs between its subscribers only in the packet identifier, so
+								// one generated frame serves as the template and each subscriber gets a copy with its
+								// own identifier written in, rather than re-encoding the payload into a new packet.
+								// Templates share the frame cache under a key apart from the protocol versions QoS 0
+								// frames use.
+								const key = QOS_TEMPLATE_KEY * qos + mqttOptions.protocolVersion;
+								const template = getSharedFrame(encoding, key, topic);
+								let packet: Buffer;
+								if (template === undefined) {
+									packet = generate(
+										{ cmd: 'publish', topic, payload, messageId, qos, dup: false, retain: false },
+										mqttOptions
+									);
+									if (encoding.hits > 0) setSharedFrame(encoding, key, topic, packet);
+								} else {
+									packet = Buffer.allocUnsafe(template.length);
+									template.copy(packet);
+									packet.writeUInt16BE(messageId, packetIdOffset(template));
+								}
+								sendPacket(packet, qos === 1 ? 'publish,qos=1' : 'publish,qos=' + qos, generalTopic);
+							} else if (qos > 0) {
 								// mqtt-packet requires a numeric message identifier once qos is non-zero
 								const packetData: any = {
 									cmd: 'publish',
@@ -594,11 +670,26 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							}
 							return !rawSocket.closed;
 						} catch (error) {
-							mqttLog.error?.(error);
-							session?.disconnect(false);
-							mqttSettings.sessions.delete(session);
-							releaseClientSession(session);
-							return false;
+							return failDelivery(error);
+						}
+					};
+					const listener = (topic, message, messageId, subscription, version) => {
+						try {
+							if (disconnected) throw new Error('Session disconnected while trying to send message to', topic);
+							// Every subscriber of a topic serializes the same message to the same bytes, so the
+							// payload is encoded once per (message, content type) and reused across all of them.
+							const encoding = getSharedMessageEncoding(message, request, version);
+							const encoded = encoding.payload;
+							// only pay for a promise when the serialization is genuinely still pending
+							if (typeof (encoded as any)?.then === 'function') {
+								return resolveSharedPayload(encoding, message, request, version).then(
+									(payload) => deliver(topic, payload, encoding, messageId, subscription),
+									failDelivery
+								);
+							}
+							return deliver(topic, encoded as Buffer | string, encoding, messageId, subscription);
+						} catch (error) {
+							return failDelivery(error);
 						}
 					};
 					session.setListener(listener);
@@ -732,14 +823,15 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						);
 					}
 					break;
-				case 'pubrec':
-					generateAndSendPacket({
-						// Send a publish response
-						cmd: 'pubrel',
-						messageId: packet.messageId,
-						reasonCode: 0,
-					});
+				case 'pubrec': {
+					// Send a publish response: a successful PUBREL is the same four bytes in every protocol version
+					const pubrel = Buffer.allocUnsafe(4);
+					pubrel[0] = 0x62;
+					pubrel[1] = 2;
+					pubrel.writeUInt16BE(packet.messageId, 2);
+					sendPacket(pubrel, 'pubrel');
 					break;
+				}
 				case 'pubcomp':
 				case 'puback':
 					await session.acknowledge(packet.messageId);
@@ -779,7 +871,8 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		function packetMethodName(packet) {
 			return packet.qos > 0 ? packet.cmd + ',qos=' + packet.qos : packet.cmd;
 		}
-	});
+	};
+	parser.on('packet', handlePacket);
 	parser.on('error', (error) => {
 		mqttLog.warn('MQTT parsing error, closing connection:', error.message);
 		if (socket?.destroy) socket.destroy();

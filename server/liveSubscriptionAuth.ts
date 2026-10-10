@@ -1,5 +1,6 @@
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import { coalesceRefresh } from '../utility/coalesceRefresh.ts';
+import { CLOSES_WHEN_ENDED } from '../resources/IterableEventQueue.ts';
 
 /**
  * Continuous re-authorization for live subscriptions (#1414).
@@ -13,19 +14,40 @@ import { coalesceRefresh } from '../utility/coalesceRefresh.ts';
  * Triggers: (1) promptly on a user or role change (`onUserChange`: hdb_user/hdb_role table
  * subscriptions), and (2) on a fixed interval as a backstop and to catch token expiry, which is not
  * event-signaled.
+ *
+ * Scale: an MQTT fan-out holds 150k+ subscriptions per worker that collapse to a handful of distinct
+ * admissions (resource class, user, target), so a registration may name its admission (`authKey`) and
+ * identical ones share one group: one recheck per group per sweep, and one admitted target and resource
+ * retained per group rather than per subscription. Only the token-expiry comparison stays per
+ * subscription. A registration with no key gets a group of its own, which is the per-subscription behavior.
  */
 
 // Backstop interval; also catches token expiry, which is not event-signaled. Overridable for tests.
 const RECHECK_INTERVAL_MS = Number(process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS) || 30_000;
 
 interface LiveSubscription {
-	username: string;
+	group: RecheckGroup;
 	/** JWT `exp` (seconds since epoch) of the credential the subscription was opened with, if any. */
 	authExpiresAt?: number;
-	/** Returns true if the principal is still authorized for this subscription. */
-	recheck: () => Promise<boolean>;
-	/** Stop delivery and tear down. May be async (e.g. a shared-feed refcount release). */
-	terminate: () => void | Promise<void>;
+	/** The subscription's own context, handed to its group's recheck. */
+	context?: any;
+	/** Torn down by end()/close()/emit('close') unless `revoke` is supplied. */
+	subscription?: any;
+	/** Stop delivery and tear down instead. May be async (e.g. a shared-feed refcount release). */
+	revoke?: () => void | Promise<void>;
+}
+
+interface RecheckGroup {
+	username: string;
+	/** Present for a shared group; a group of its own has none. */
+	key?: string;
+	/**
+	 * Returns true if the principal is still authorized, given the contexts of the members being
+	 * rechecked. A shared group keeps the recheck of its first registration: its members were admitted
+	 * identically.
+	 */
+	recheck: (contexts: any[]) => Promise<boolean>;
+	entries: Set<LiveSubscription>;
 }
 
 function errorMessage(error: unknown): string {
@@ -44,7 +66,13 @@ function safeLog(log: ((message: string) => void) | undefined, message: string):
 	}
 }
 
-const registry = new Set<LiveSubscription>();
+const groups = new Set<RecheckGroup>();
+const groupsByKey = new Map<string, RecheckGroup>();
+let entryCount = 0;
+/** A subscription's registry entries (one, or an array), found by its shared teardown hooks. */
+const ENTRIES = Symbol('liveSubscriptionAuthEntries');
+/** The end() a non-closing subscription had before registration wrapped it. */
+const ORIGINAL_END = Symbol('liveSubscriptionAuthOriginalEnd');
 let sweepTimer: any = null;
 let userChangeListenerInstalled = false;
 let sweeping = false;
@@ -77,7 +105,7 @@ function ensureStarted(): void {
 }
 
 function stopIfIdle(): void {
-	if (registry.size === 0 && sweepTimer) {
+	if (entryCount === 0 && sweepTimer) {
 		clearInterval(sweepTimer);
 		sweepTimer = null;
 	}
@@ -99,12 +127,22 @@ function stopIfIdle(): void {
  * subscribers must not mutate state shared across them: `registerLiveSubscriptionForContext` in
  * resources/Resource.ts mutates `context.user`, which is safe only while each context has exactly
  * one subscriber.
+ *
+ * With an `authKey`, the entry joins the group of earlier registrations with the same key and its
+ * `recheck` is dropped for the group's, which runs once per sweep for all of its members and is given
+ * their contexts. The group also keeps whatever its recheck holds (the first registration's resource
+ * and admitted target) until its last member ends.
  */
 export function registerLiveSubscription(
 	opts: {
 		username: string;
 		authExpiresAt?: number;
-		recheck: () => Promise<boolean>;
+		/** Rechecks this admission; a shared group passes the contexts of the members it rechecks. */
+		recheck: (contexts: any[]) => Promise<boolean>;
+		/** Identity of the admission; registrations with the same key share one group and its recheck. */
+		authKey?: string | null;
+		/** This subscription's context, handed to the group's recheck. */
+		context?: any;
 	} & (
 		| { subscription: any; revoke?: undefined }
 		// requiring one of the two modes stops a caller that supplies neither from type-checking
@@ -112,47 +150,74 @@ export function registerLiveSubscription(
 		| { subscription?: any; revoke: () => void | Promise<void> }
 	)
 ): { unregister: () => void } {
-	const { subscription, username, authExpiresAt, recheck, revoke } = opts;
+	const { subscription, username, authExpiresAt, recheck, authKey, context, revoke } = opts;
 	if (!revoke && (!subscription || typeof subscription !== 'object' || subscription.closed)) return NOOP_HANDLE;
 
-	const entry: LiveSubscription = {
-		username,
-		authExpiresAt,
-		recheck,
-		terminate:
-			revoke ??
-			(() => {
-				// end() removes the subscription from the broadcast loop and closes its iterable queue.
-				if (subscription.end) subscription.end();
-				else if (subscription.close) subscription.close();
-				else subscription.emit?.('close');
-			}),
-	};
-	registry.add(entry);
-
-	const unregister = () => {
-		registry.delete(entry);
-		stopIfIdle();
-	};
+	let group = authKey != null ? groupsByKey.get(authKey) : undefined;
+	if (!group) {
+		group = { username, recheck, entries: new Set() };
+		if (authKey != null) {
+			group.key = authKey;
+			groupsByKey.set(authKey, group);
+		}
+		groups.add(group);
+	}
+	const entry: LiveSubscription = { group, authExpiresAt, context };
+	if (revoke) entry.revoke = revoke;
+	else entry.subscription = subscription;
+	group.entries.add(entry);
+	entryCount++;
 
 	if (!revoke) {
 		// Both transports ultimately call end() on normal teardown (MQTT unsubscribe/disconnect; SSE close
-		// is wired to end()); wrap it so a closed stream never leaks a registry entry. Also listen for
-		// 'close' to cover any iterable that closes without an end(). Skipped when `revoke` is supplied:
-		// the caller owns unregistration, and a subscription shared by many subscribers must not be
-		// mutated once per registrant.
-		const originalEnd = typeof subscription.end === 'function' ? subscription.end.bind(subscription) : null;
-		if (originalEnd) {
-			subscription.end = function (...args: any[]) {
-				unregister();
-				return originalEnd(...args);
-			};
-		}
-		subscription.on?.('close', unregister);
+		// is wired to end()), and a table subscription's end() emits 'close'. Listening for 'close' covers
+		// those and any iterable that closes without an end(); end() is wrapped only on an iterable whose
+		// end() may not close it, so a closed stream never leaks a registry entry. Both hooks are shared
+		// functions that find the entries on the subscription. Skipped when `revoke` is supplied: the caller
+		// owns unregistration, and a subscription shared by many subscribers must not be mutated once per
+		// registrant.
+		const existing = subscription[ENTRIES];
+		if (existing === undefined) {
+			subscription[ENTRIES] = entry;
+			if (!subscription[CLOSES_WHEN_ENDED] && typeof subscription.end === 'function') {
+				subscription[ORIGINAL_END] = subscription.end;
+				subscription.end = endAndUnregister;
+			}
+			subscription.on?.('close', unregisterOnClose);
+		} else if (Array.isArray(existing)) existing.push(entry);
+		else subscription[ENTRIES] = [existing, entry];
 	}
 
 	ensureStarted();
-	return { unregister };
+	return { unregister: () => removeEntry(entry) };
+}
+
+function removeEntry(entry: LiveSubscription): void {
+	const group = entry.group;
+	if (!group.entries.delete(entry)) return; // already gone: end() and 'close' both unregister
+	entryCount--;
+	if (group.entries.size === 0) {
+		groups.delete(group);
+		if (group.key !== undefined) groupsByKey.delete(group.key);
+	}
+	stopIfIdle();
+}
+
+function unregisterSubscription(subscription: any): void {
+	const entries = subscription[ENTRIES];
+	if (Array.isArray(entries)) for (const entry of entries) removeEntry(entry);
+	else if (entries) removeEntry(entries);
+}
+
+/** A registered subscription's 'close' listener (an emitter calls it with `this` bound), one for all of them. */
+function unregisterOnClose(this: any) {
+	unregisterSubscription(this);
+}
+
+/** Replaces end() on a registered subscription whose end() may not close it: unregisters, then ends. */
+function endAndUnregister(this: any, ...args: any[]) {
+	unregisterSubscription(this);
+	return this[ORIGINAL_END](...args);
 }
 
 /** Untrack first: a `terminate` that hangs or fails must not wedge the sweep or be re-entered by a later one. */
@@ -161,19 +226,29 @@ function terminateEntry(
 	reason: string,
 	notice: ((message: string) => void) | undefined = hdbLogger.info
 ): void {
-	registry.delete(entry);
-	safeLog(notice, `liveSubscriptionAuth: revoking subscription for ${entry.username} (${reason})`);
+	removeEntry(entry);
+	const { username } = entry.group;
+	safeLog(notice, `liveSubscriptionAuth: revoking subscription for ${username} (${reason})`);
 	const failed = (error: unknown) =>
 		safeLog(
 			hdbLogger.error,
-			`liveSubscriptionAuth: terminate failed for ${entry.username} (${reason}): ${errorMessage(error)}`
+			`liveSubscriptionAuth: terminate failed for ${username} (${reason}): ${errorMessage(error)}`
 		);
 	try {
 		// an async terminate's rejection would otherwise surface as an unhandled rejection on the timer's stack
-		Promise.resolve(entry.terminate()).catch(failed);
+		Promise.resolve(terminate(entry)).catch(failed);
 	} catch (error) {
 		failed(error);
 	}
+}
+
+function terminate(entry: LiveSubscription): void | Promise<void> {
+	if (entry.revoke) return entry.revoke();
+	// end() removes the subscription from the broadcast loop and closes its iterable queue.
+	const subscription = entry.subscription;
+	if (subscription.end) subscription.end();
+	else if (subscription.close) subscription.close();
+	else subscription.emit?.('close');
 }
 
 async function sweep(): Promise<void> {
@@ -184,23 +259,32 @@ async function sweep(): Promise<void> {
 	const revokedByReason = new Map<string, number>();
 	const countRevocation = (reason: string) => revokedByReason.set(reason, (revokedByReason.get(reason) ?? 0) + 1);
 	try {
-		// snapshot bounds the pass to entries present at its start; the has() guards cover the rest
-		for (const entry of Array.from(registry)) {
-			if (!registry.has(entry)) continue;
+		// snapshots bound the pass to groups and members present at its start; the has() guards cover the rest
+		for (const group of Array.from(groups)) {
+			const members: LiveSubscription[] = [];
+			for (const entry of Array.from(group.entries)) {
+				if (entry.authExpiresAt != null && Date.now() >= entry.authExpiresAt * 1000) {
+					terminateEntry(entry, 'token expired');
+					countRevocation('token expired');
+				} else members.push(entry);
+			}
+			if (members.length === 0) continue;
+			let stillAuthorized = false;
+			let failure: unknown;
 			try {
-				const expired = entry.authExpiresAt != null && Date.now() >= entry.authExpiresAt * 1000;
-				const stillAuthorized = expired ? false : await entry.recheck();
-				if (!registry.has(entry)) continue;
-				if (expired || !stillAuthorized) {
-					const reason = expired ? 'token expired' : 'no longer authorized';
-					terminateEntry(entry, reason);
-					countRevocation(reason);
-				}
+				stillAuthorized = await group.recheck(members.map((entry) => entry.context));
 			} catch (error) {
-				// fail closed: if authorization can't be confirmed, revoke
-				if (registry.has(entry)) {
-					terminateEntry(entry, `recheck error: ${errorMessage(error)}`, hdbLogger.warn);
+				failure = error;
+			}
+			for (const entry of members) {
+				if (!group.entries.has(entry)) continue;
+				if (failure !== undefined) {
+					// fail closed: if authorization can't be confirmed, revoke
+					terminateEntry(entry, `recheck error: ${errorMessage(failure)}`, hdbLogger.warn);
 					countRevocation('recheck error');
+				} else if (!stillAuthorized) {
+					terminateEntry(entry, 'no longer authorized');
+					countRevocation('no longer authorized');
 				}
 			}
 		}
@@ -223,7 +307,12 @@ async function sweep(): Promise<void> {
 
 /** Test-only: current number of tracked subscriptions. */
 export function _liveSubscriptionCount(): number {
-	return registry.size;
+	return entryCount;
+}
+
+/** Test-only: current number of recheck groups. */
+export function _liveSubscriptionGroupCount(): number {
+	return groups.size;
 }
 
 /** Test-only: run a sweep synchronously, bypassing the interval/ITC triggers. */
