@@ -18,6 +18,7 @@ export {
 	findAndValidateUser,
 	getUserWithRole,
 	isCurrentUser,
+	hasRecordProvenance,
 	userRecordVersions,
 	trackUserRecords,
 	cloneUserView,
@@ -559,6 +560,11 @@ function cloneUserView(user: User & { role: UserRole }): User {
 		if (tracked) (clone as any)[PROVENANCE] = tracked;
 	}
 	return clone;
+}
+
+/** Whether `isCurrentUser` can answer for `user`: false for one resolved outside this module and not tracked. */
+function hasRecordProvenance(user: User): boolean {
+	return Boolean((user as any)[PROVENANCE] ?? trackedProvenance.has(user));
 }
 
 /**

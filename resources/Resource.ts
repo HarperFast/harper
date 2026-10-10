@@ -1061,7 +1061,7 @@ function registerLiveSubscriptionForContext(
 	// Internal watchers, replication and local-bypass have no user principal — nothing to re-authorize.
 	if (!username) return subscription;
 	securityUser ??= require('../security/user');
-	const { cloneUserView, isCurrentUser } = securityUser!;
+	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
 	// A select written by authorization names no relationship, so the default allowRead's result still
 	// reads only the role's table permission; a caller's select can reach related tables' allowRead.
 	const sharedDecision = !selectedByCaller && defaultAllowReads.has(resource.allowRead);
@@ -1075,7 +1075,9 @@ function registerLiveSubscriptionForContext(
 		username,
 		// JWT exp of the bearer credential (set by the auth layer); undefined for password/mTLS/session.
 		authExpiresAt: user.authExpiresAt,
-		identityOnly: sharedDecision,
+		// A principal with no record provenance (a component's server.getUser on a path that does not track it)
+		// can't be checked for staleness at admission, so every tick rechecks it.
+		identityOnly: sharedDecision && (user._scopedToken || hasRecordProvenance(user)),
 		recheck: async (pass) => {
 			let fresh: any;
 			let viewer: any;

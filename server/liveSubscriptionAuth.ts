@@ -12,13 +12,9 @@ import type { UserChange } from '../security/user.ts';
  * per-record evaluation — and terminates any that no longer authorize.
  *
  * Targeting invariant: an entry is rechecked after every committed change to its username's hdb_user
- * record or to the hdb_role record that user names (`onUserChange` carries their primary keys; an
- * unknown change rechecks everything), and terminated by a timer at its token's expiry. Entries are
- * indexed by username, and each username by the role id its user record names, re-read whenever that
- * username is rechecked. The periodic tick covers what notifications cannot: an `identityOnly` entry
- * (a decision read only from those records) needs it only when delivery of every change since the
- * last full pass is not certified (`userChangeNotificationEpoch`), or every BACKSTOP_INTERVAL_MS;
- * any other entry may read state no notification covers, so every tick rechecks it.
+ * record or to the hdb_role record that user names, and terminated by a timer at its token's expiry.
+ * The tick rechecks every entry that is not `identityOnly`; an identity-only one only when delivery
+ * since the last full pass is not certified, or every BACKSTOP_INTERVAL_MS. See server/DESIGN.md.
  */
 
 const intervalOverride = Number(process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS) || undefined;
@@ -31,7 +27,6 @@ const SLICE_SIZE = 256;
 // past this many distinct pending identities a full pass is cheaper to track than the ids
 const MAX_PENDING_IDS = 1000;
 
-/** State shared by the rechecks of one pass. */
 export interface RecheckPass {
 	/** `compute(scope, key)` for the first call in this pass with this scope and key; its result after that. */
 	memo<T>(scope: unknown, key: unknown, compute: (scope: any, key: any) => T): T;
@@ -451,7 +446,7 @@ async function runPending(): Promise<void> {
 	}
 }
 
-// #region token expiry: one timer at the earliest authExpiresAt over an indexed binary min-heap
+// token expiry: one timer at the earliest authExpiresAt over an indexed binary min-heap
 
 const expiryHeap: LiveSubscription[] = [];
 let expiryTimer: any = null;
@@ -542,8 +537,6 @@ function expireDue(): void {
 	}
 	if (expiryHeap.length > 0) armExpiryTimer(expiresAtMs(expiryHeap[0]));
 }
-
-// #endregion
 
 /** Test-only: current number of tracked subscriptions. */
 export function _liveSubscriptionCount(): number {

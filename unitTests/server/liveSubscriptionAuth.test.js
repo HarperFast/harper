@@ -24,7 +24,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { waitFor } = require('../waitFor');
 
-// the registry's yield and expiry-batch size (server/liveSubscriptionAuth.ts SLICE_SIZE)
+// server/liveSubscriptionAuth.ts SLICE_SIZE
 const SLICE_SIZE = 256;
 const turn = () => new Promise((resolve) => setImmediate(resolve));
 const change = ({ usernames = [], roleIds = [] } = {}) => ({
@@ -754,7 +754,6 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			epoch = 9;
 			await _sweepNow();
 			const originalNow = Date.now;
-			// past the 24 h interval this file sets
 			Date.now = () => originalNow() + 25 * 60 * 60 * 1000;
 			try {
 				await _tickNow();
@@ -1039,7 +1038,6 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.notStrictEqual(first, second);
 			assert.notStrictEqual(first.role, second.role);
 			assert.notStrictEqual(first.role.permission, second.role.permission);
-			// one context's own change to its view must not reach a sibling or the next decision
 			first.role.permission = { super_user: false };
 			assert.ok(second.role.permission.test.tables.ReauthDocs.read);
 			await _sweepNow();
@@ -1096,6 +1094,24 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 				assert.strictEqual(narrowed.user, narrowedUser, 'a select written by authorization stays identity-only');
 				assert.notStrictEqual(selected.user, selectedUser, 'a caller’s select is rechecked on every tick');
+			} finally {
+				userModule.userChangeNotificationEpoch = originalEpoch;
+			}
+		});
+
+		it('rechecks a principal with no record provenance on every tick', async () => {
+			await testUtils.seedUsers([{ username: 'component_user', active: true, role: readRole('component_role') }]);
+			const resolved = await resolve('component_user');
+			// as a component's server.getUser might build it: no record provenance
+			const componentUser = { username: 'component_user', active: true, role: { ...resolved.role } };
+			const { context } = await subscribe(Docs, componentUser);
+			const originalEpoch = userModule.userChangeNotificationEpoch;
+			userModule.userChangeNotificationEpoch = () => 17;
+			try {
+				await _sweepNow();
+				const afterSweep = context.user;
+				await _tickNow();
+				assert.notStrictEqual(context.user, afterSweep, 'the tick rechecked it');
 			} finally {
 				userModule.userChangeNotificationEpoch = originalEpoch;
 			}
