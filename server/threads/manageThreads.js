@@ -1284,6 +1284,7 @@ function startWorker(path, options = {}, startOptions = {}) {
 
 	const gated = openCertificationsPlacedBy(options);
 	const certify = heldRequests(gated, startOptions.check);
+	const restartNumber = module.exports.restartNumber;
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
 		resourceLimits: {
 			maxOldGenerationSizeMb: maxOldMemory,
@@ -1303,7 +1304,7 @@ function startWorker(path, options = {}, startOptions = {}) {
 			isolatedApplication: options.application,
 			workerPools: activeWorkerPools(),
 			poolIndex: options.poolIndex,
-			restartNumber: module.exports.restartNumber,
+			restartNumber,
 			processIncarnation: module.exports.processIncarnation,
 			ticketKeys: getTicketKeys(),
 			databaseDropPreparations: databaseDropPreparationSnapshot(),
@@ -1372,6 +1373,7 @@ function startWorker(path, options = {}, startOptions = {}) {
 	worker.name = options.name;
 	worker.workerIndex = options.workerIndex;
 	worker.application = options.application; // the isolated application this worker is dedicated to, if any
+	worker.restartNumber = restartNumber;
 	if (certify) holdStart(worker, gated, startOptions);
 	else if (options.name === hdbTerms.THREAD_TYPES.HTTP) admitOnReport(worker, startOptions);
 	return worker;

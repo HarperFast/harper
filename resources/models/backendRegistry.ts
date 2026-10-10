@@ -9,23 +9,7 @@ import type {
 	ToolCall,
 } from './types.ts';
 
-/**
- * Process-wide model backend registry.
- *
- * Stores logical-name → backend-instance mappings for embedding and
- * generative kinds. Boot wiring populates the registry via
- * `setEmbedding(...)` / `setGenerative(...)`; the `Models` facade reads it
- * via `resolveEmbedding(...)` / `resolveGenerative(...)`.
- *
- * Components and apps register their own backends — including in-process /
- * non-HTTP ones — through the public `registerBackend(...)` / `defineBackend(...)`
- * pair (#1325), the same primitive the built-in backends use internally.
- *
- * Module-scope state is intentional — one registry per Harper process,
- * mirroring `contextStorage` at `resources/transaction.ts:6`. Translating
- * a YAML `models:` config block into registry entries (the bootstrapper
- * step) lands in Phase 2 alongside the first real backend.
- */
+/** Per-thread model backend registry. */
 
 const registries: Record<ModelKind, Map<string, ModelBackend>> = {
 	embedding: new Map(),
@@ -44,11 +28,12 @@ interface CaptureSlot {
 	kind: ModelKind;
 	logicalName: string;
 	backend?: ModelBackend;
-	/** Deferred with the primary, so no request observes a new helper next to an old primary. */
 	extras: CapturedInstall[];
-	/** Async work spawned by a factory retains the ALS context past construction; once construction
-	 * ends the scope deactivates so a late same-slot registration installs normally. */
 	active: boolean;
+	exclusive: boolean;
+	refused?: ModelBackendRegistrationError;
+	hold?: (handed: object) => void;
+	handed: Set<unknown>;
 }
 
 const sources = new WeakMap<ModelBackend, string>();
@@ -72,50 +57,87 @@ export function getBackendSource(backend: ModelBackend): string | undefined {
 // concurrent constructions.
 const captureScope = new AsyncLocalStorage<CaptureSlot>();
 
+function handOver(slot: CaptureSlot | undefined, value: unknown): void {
+	if (!slot?.active || !slot.hold || slot.handed.has(value)) return;
+	if ((typeof value === 'object' && value !== null) || typeof value === 'function') {
+		slot.handed.add(value);
+		slot.hold(value);
+	}
+}
+
+const guards = new WeakMap<ModelBackend, (late: unknown) => void>();
+
+/** Guard contract: see resources/models/DESIGN.md. */
+export function guardInstalled(backend: ModelBackend, divert: (late: unknown) => void): void {
+	guards.set(backend, divert);
+}
+
+function diverted(kind: ModelKind, logicalName: string, backend: unknown): boolean {
+	if (!Object.hasOwn(registries, kind)) return false;
+	const current = registries[kind].get(logicalName);
+	if (current === undefined || current === backend) return false;
+	const divert = guards.get(current);
+	if (!divert) return false;
+	divert(backend);
+	return true;
+}
+
 function install(kind: ModelKind, logicalName: string, backend: ModelBackend): void {
 	const slot = captureScope.getStore();
 	if (slot?.active) {
-		if (slot.kind === kind && slot.logicalName === logicalName) slot.backend = backend;
-		else slot.extras.push({ kind, logicalName, backend });
+		handOver(slot, backend);
+		if (slot.kind !== kind || slot.logicalName !== logicalName) slot.extras.push({ kind, logicalName, backend });
+		else if (!slot.exclusive || slot.backend === undefined) slot.backend = backend;
+		else {
+			slot.refused ??= new ModelBackendRegistrationError(
+				`'${kind}.${logicalName}' is already registered by the code constructing it; a second registration under the same key is refused`
+			);
+			throw slot.refused;
+		}
 		return;
 	}
+	if (diverted(kind, logicalName, backend)) return;
 	registries[kind].set(logicalName, backend);
 }
 
-/** Map `logicalName` to a backend for embedding calls. Re-set replaces. */
 export function setEmbedding(logicalName: string, backend: ModelBackend): void {
 	install('embedding', logicalName, backend);
 }
 
-/** Map `logicalName` to a backend for generative calls. Re-set replaces. */
 export function setGenerative(logicalName: string, backend: ModelBackend): void {
 	install('generative', logicalName, backend);
 }
 
-/** Map `logicalName` to a backend for decide calls. Re-set replaces. */
 export function setDecision(logicalName: string, backend: ModelBackend): void {
 	install('decision', logicalName, backend);
 }
 
-/**
- * Build a backend through its normal registration path but return it instead of installing it, so a
- * config reload can install it conditionally. A scratch logical name would be briefly visible
- * through `listBackends`, which backs the public `GET /v1/models`.
- */
+/** Construction capture contract: see resources/models/DESIGN.md. */
 export async function constructBackend(
 	kind: ModelKind,
 	logicalName: string,
-	register: () => void | Promise<void>
-): Promise<{ backend?: ModelBackend; extras: CapturedInstall[] }> {
-	const slot: CaptureSlot = { kind, logicalName, extras: [], active: true };
+	register: () => void | Promise<void>,
+	options: { exclusive?: boolean; hold?: (handed: object) => void } = {}
+): Promise<{ backend?: ModelBackend; extras: CapturedInstall[]; refused?: ModelBackendRegistrationError }> {
+	const slot: CaptureSlot = {
+		kind,
+		logicalName,
+		extras: [],
+		active: true,
+		exclusive: options.exclusive === true,
+		hold: options.hold,
+		handed: new Set(),
+	};
 	try {
 		await captureScope.run(slot, async () => {
 			await register();
 		});
+	} catch (error) {
+		if (!slot.refused) throw error;
 	} finally {
 		slot.active = false;
 	}
-	return { backend: slot.backend, extras: slot.extras };
+	return { backend: slot.backend, extras: slot.extras, refused: slot.refused };
 }
 
 /**
@@ -190,31 +212,20 @@ export function resolveDecision(logicalName: string = 'default'): ModelBackend {
 	return backend;
 }
 
-/**
- * Public registration API (#1325).
- *
- * The supported way for a component or app to add a backend — including
- * in-process / non-HTTP ones — under a logical id. Call it during component
- * load (e.g. `handleApplication`); the registry is process-wide, so each worker
- * thread that loads the component registers its own instance, matching how the
- * config-driven built-ins populate per process.
- *
- * `id` is the logical name callers select with `opts.model` (e.g.
- * `models.embed(text, { model: 'local:bge-small' })`). A provider-namespaced id
- * (`local:bge-small`, `openai:gpt-4o`) avoids collisions when multiple plugins
- * register — convention, not enforced.
- *
- * A hand-rolled backend's `capabilities()` must agree with the methods it
- * implements (the `generate` / `stream` paths gate on it); `defineBackend`
- * derives them for you, so prefer it.
- */
+/** Register a per-thread backend under the logical name selected by `opts.model`. See #1325. */
 export function registerBackend(kind: ModelKind, id: string, backend: ModelBackend): void {
-	if (kind !== 'embedding' && kind !== 'generative' && kind !== 'decision')
-		throw new ModelBackendRegistrationError(
-			`kind must be 'embedding', 'generative' or 'decision', got '${String(kind)}'`
-		);
-	if (typeof id !== 'string' || id.length === 0)
-		throw new ModelBackendRegistrationError('backend id must be a non-empty string');
+	const slot = captureScope.getStore();
+	handOver(slot, backend);
+	if (!slot?.active && diverted(kind, id, backend)) return;
+	assertBackendForKind(kind, id, backend);
+	if (kind === 'embedding') setEmbedding(id, backend);
+	else if (kind === 'decision') setDecision(id, backend);
+	else setGenerative(id, backend);
+}
+
+/** Throw `ModelBackendRegistrationError` unless `kind` and `id` are valid and `backend` can serve `kind`. */
+export function assertBackendForKind(kind: ModelKind, id: string, backend: ModelBackend): void {
+	assertKindAndId(kind, id);
 	if (
 		!backend ||
 		typeof backend.capabilities !== 'function' ||
@@ -225,18 +236,22 @@ export function registerBackend(kind: ModelKind, id: string, backend: ModelBacke
 	if (kind === 'embedding') {
 		if (typeof backend.embed !== 'function')
 			throw new ModelBackendRegistrationError(`embedding backend '${id}' must implement embed()`);
-		setEmbedding(id, backend);
 	} else if (kind === 'decision') {
 		if (typeof backend.decide !== 'function')
 			throw new ModelBackendRegistrationError(`decision backend '${id}' must implement decide()`);
-		setDecision(id, backend);
-	} else {
-		if (typeof backend.generate !== 'function' && typeof backend.generateStream !== 'function')
-			throw new ModelBackendRegistrationError(
-				`generative backend '${id}' must implement generate() or generateStream()`
-			);
-		setGenerative(id, backend);
+	} else if (typeof backend.generate !== 'function' && typeof backend.generateStream !== 'function') {
+		throw new ModelBackendRegistrationError(`generative backend '${id}' must implement generate() or generateStream()`);
 	}
+}
+
+/** Throw `ModelBackendRegistrationError` unless `kind` is a registry kind and `id` a non-empty string. */
+export function assertKindAndId(kind: ModelKind, id: string): void {
+	if (kind !== 'embedding' && kind !== 'generative' && kind !== 'decision')
+		throw new ModelBackendRegistrationError(
+			`kind must be 'embedding', 'generative' or 'decision', got '${String(kind)}'`
+		);
+	if (typeof id !== 'string' || id.length === 0)
+		throw new ModelBackendRegistrationError('backend id must be a non-empty string');
 }
 
 /**
