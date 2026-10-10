@@ -24,6 +24,10 @@
  * properties of any Harper installed on the machine. A test that clears or
  * replaces ROOTPATH any other way must put it back.
  *
+ * The config-overlay env vars (HARPER_DEFAULT_CONFIG, HARPER_CONFIG, HARPER_SET_CONFIG) are
+ * removed before the first config read for the same reason as ROOTPATH: initSync() would merge a
+ * shell's overlay into the per-PID config.
+ *
  * storage.path is pinned to <pid dir>/database (the same layout the config
  * template yields, asserted absolutely so an inherited config can never
  * point the database scan anywhere else). `system` — and any ad-hoc
@@ -131,6 +135,17 @@ process.env.ROOTPATH = PID_DIR_PATH;
 // installed root despite everything above
 delete process.env.STORAGE_PATH;
 delete process.env.SCHEMAS_DATA_PATH;
+// a literal: importing config/componentEnvPrepass.ts's CONFIG_SHAPING_ENV_VARS would load Harper
+// modules before the scrub; isolation.test.js checks the two lists agree
+const scrubbedConfigEnvVars = ['HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'].filter(
+	(name) => name in process.env
+);
+for (const name of scrubbedConfigEnvVars) delete process.env[name];
+if (isMainThread && scrubbedConfigEnvVars.length) {
+	process.stderr.write(
+		`mocha.init.js: ignoring ${scrubbedConfigEnvVars.join(', ')} from the environment; unit runs use the per-PID config\n`
+	);
+}
 
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
