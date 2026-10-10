@@ -1,7 +1,7 @@
 import { getDatabases } from './databases.ts';
 import { alterRole, addRole } from '../security/role.ts';
 import { parseDocument } from 'yaml';
-import { isEqual } from 'lodash';
+import isEqual from 'lodash/isEqual.js';
 import { RESERVED_DATABASE_NAMES } from '../utility/hdbTerms.ts';
 
 // Named permission flags are keyed alongside per-database permissions in a role's

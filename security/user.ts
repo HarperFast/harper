@@ -98,7 +98,8 @@ import * as env from '../utility/environment/environmentManager.ts';
 import systemSchema from '../json/systemSchema.json';
 import { hdbErrors, ClientError } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdbErrors;
-import * as _ from 'lodash';
+import cloneDeep from 'lodash/cloneDeep.js';
+import isEqual from 'lodash/isEqual.js';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 // Need to use `.js` even for other TS files since TS compiler won't replace requires.
@@ -269,7 +270,7 @@ async function userInfo(body): Promise<string | User> {
 		return 'There was no user info in the body';
 	}
 
-	let user = _.cloneDeep(body.hdb_user);
+	let user = cloneDeep(body.hdb_user);
 	let roleData =
 		user.role &&
 		(await search.searchByHash({
@@ -333,7 +334,7 @@ async function listUsers(): Promise<Map<string, User>> {
 
 	const userMap: Map<string, User> = new Map();
 	for (let user of users) {
-		user = _.cloneDeep(user);
+		user = cloneDeep(user);
 		user.role = roleMapObj[user.role];
 		if (!user.role) logger.error(`invalid user role found.`);
 		userMap.set(user.username, user);
@@ -388,7 +389,7 @@ function cacheExpandedOperationsPerms(userRole: UserRole) {
 }
 
 function withSystemTablePermissions(roleRecord: UserRole): UserRole {
-	const role = _.cloneDeep(roleRecord);
+	const role = cloneDeep(roleRecord);
 	appendSystemTablesToRole(role);
 	cacheExpandedOperationsPerms(role);
 	return role;
@@ -450,7 +451,7 @@ function stampOf(entry: RecordEntry | undefined): RecordStamp {
 
 function holdsStamp(entry: RecordEntry | undefined, stamp: RecordStamp): boolean {
 	if (entry === undefined || stamp === null) return entry === undefined && stamp === null;
-	if (typeof stamp === 'object') return _.isEqual(entry.value, stamp);
+	if (typeof stamp === 'object') return isEqual(entry.value, stamp);
 	return !(entry.metadataFlags & VERSION_REUSED) && (entry.version ?? 0) === stamp;
 }
 

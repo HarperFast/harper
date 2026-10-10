@@ -6,7 +6,9 @@
  * process and return results by passing the raw values into the alasql SQL parser
  */
 
-import * as _ from 'lodash';
+import difference from 'lodash/difference.js';
+import pullAt from 'lodash/pullAt.js';
+import uniqBy from 'lodash/uniqBy.js';
 import * as alasql from 'alasql';
 alasql.options.cache = false;
 import alasqlFunctionImporter from '../sqlTranslator/alasqlFunctionImporter.ts';
@@ -198,7 +200,7 @@ class SQLSearch {
 			tbls.push(attribute.table);
 		});
 
-		this.tables = _.uniqBy(tbls, (tbl) => [tbl.databaseid, tbl.tableid, tbl.as].join());
+		this.tables = uniqBy(tbls, (tbl) => [tbl.databaseid, tbl.tableid, tbl.as].join());
 		this.tables.forEach((table) => {
 			const schemaTable = `${table.databaseid}_${table.as ? table.as : table.tableid}`;
 			this.data[schemaTable] = {};
@@ -405,7 +407,7 @@ class SQLSearch {
 		});
 
 		if (this.statement.columns.length > 1 && wildcardIndexes.length > 0) {
-			_.pullAt(this.statement.columns, wildcardIndexes);
+			pullAt(this.statement.columns, wildcardIndexes);
 		}
 	}
 
@@ -591,7 +593,7 @@ class SQLSearch {
 		}
 
 		// do we need this uniqueby, could just use object as map
-		this.fetch_attributes = _.uniqBy(this.fetch_attributes, (attribute) =>
+		this.fetch_attributes = uniqBy(this.fetch_attributes, (attribute) =>
 			[
 				attribute.table.databaseid,
 				attribute.table.as ? attribute.table.as : attribute.table.tableid,
@@ -1021,7 +1023,7 @@ class SQLSearch {
 
 			hashAttributes.forEach((hash) => {
 				let keys = Object.keys(this.data[`${hash.schema}_${hash.table}`].__mergedData);
-				let deleteKeys = _.difference(
+				let deleteKeys = difference(
 					keys,
 					[...hash.keys].map((key) => key.toString())
 				);
@@ -1063,7 +1065,7 @@ class SQLSearch {
 			}
 		}
 
-		allColumns = _.uniqBy(allColumns, (attribute) =>
+		allColumns = uniqBy(allColumns, (attribute) =>
 			[
 				attribute.table.databaseid,
 				attribute.table.as ? attribute.table.as : attribute.table.tableid,

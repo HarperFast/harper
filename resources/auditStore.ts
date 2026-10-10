@@ -11,7 +11,7 @@ import { getRecordAtTime } from './crdt.ts';
 import { decodeFromDatabase } from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
-import { asBinary } from 'lmdb';
+import { asBinary } from './asBinary.ts';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { endSubscriptionsFromEarlierHandles } from './transactionBroadcast.ts';
 import {

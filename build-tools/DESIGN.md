@@ -49,3 +49,24 @@ volume does not refuse to start on a "still running" pid that is now `tini`.
 ## `build.sh` packages only a clean, error-free build (`build.sh`)
 
 `build.sh` deletes `dist/` and stops when `npm run build` fails, so `npm run package` stops at a type error, and with it the release workflow, `npm-package-app-e2e` and the Docker image. It used to run `npm run build || true`. `tsc` emits even while reporting errors, so a failed build was still packaged, and a stale `dist/` could hide a declaration file the compiler had stopped emitting. TypeScript 6.0+ did exactly that for `dist/resources/Table.d.ts` until #2904 gave `makeTable()` an explicit public type. A local `npm run package` over a tree with type errors now fails instead of packaging; fix the error rather than restoring the tolerance.
+
+## Emitted `dist/` JS is comment-free and Latin-1 (`build-tools/build-dist.mjs`)
+
+V8 keeps the full source text of every loaded module on the heap of every thread (Node hands CJS
+source to V8 as a heap string, and V8 needs it for lazy compilation and `Function.prototype.toString`),
+and it stores the whole file as UTF-16 when a single char is above `0xFF`. Before this build, 224
+loaded files held a `—` or `→` (almost always in a comment), which doubled their storage: module
+source was 20.6 MB of a 58 MB idle worker heap, 14.3 MB of it in those files.
+
+So `npm run build` emits JS with `removeComments` and a TypeScript `after` transformer that
+re-creates any string or untagged template literal containing non-Latin-1 text as a synthesized
+node, which the printer escapes (`—`) instead of copying the original text. Doing this in the
+emitter rather than as a text rewrite keeps evaluated values exact (identity escapes, surrogate
+pairs, interpolations) and lets source maps describe the final text. Declarations come from a
+second, declaration-only pass so `.d.ts` keep their JSDoc. The build then fails if any non-Latin-1
+char is left in `dist/**/*.js` — a tagged template is deliberately left untouched because its tag can
+read `.raw`, so that is the case that would trip it.
+
+`npm run build:watch` is plain `tsc --watch`: comments and non-Latin-1 text stay, which only costs
+memory on a development box. harper-pro compiles core into its own `dist/core`, so it runs this
+script with `--project tsconfig.json` rather than core's build.

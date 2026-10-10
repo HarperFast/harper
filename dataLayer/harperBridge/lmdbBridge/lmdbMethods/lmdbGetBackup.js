@@ -3,7 +3,6 @@
 const { Readable } = require('stream');
 const { getDatabases } = require('../../../../resources/databases.ts');
 const { readSync, openSync, createReadStream } = require('fs');
-const { open } = require('lmdb');
 const { OpenDBIObject } = require('../../../../utility/lmdb/OpenDBIObject.ts');
 const OpenEnvironmentObject = require('../../../../utility/lmdb/OpenEnvironmentObject.ts');
 const { AUDIT_STORE_OPTIONS } = require('../../../../resources/auditStore.ts');
@@ -28,7 +27,7 @@ async function getBackup(getBackupObj) {
 		if (!tableClass) throw new Error(`Can not find table ${tables[0]}`);
 		// we use the attribute store to drive this process, finding the right stores to duplicate
 		let attributeStore = tableClass.dbisDB;
-		let backupRoot = open({ noSync: true, maxDbs: OpenEnvironmentObject.MAX_DBS }); // open a temporary database (this
+		let backupRoot = require('lmdb').open({ noSync: true, maxDbs: OpenEnvironmentObject.MAX_DBS }); // open a temporary database (this
 		// will also cause it to
 		// close on completion)
 		let resolution;

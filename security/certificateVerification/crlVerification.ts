@@ -2,7 +2,8 @@
  * CRL (Certificate Revocation List) verification
  */
 
-import * as pkijs from 'pkijs';
+import type * as Pkijs from 'pkijs';
+import { loadPkijs } from './pkijs-ed25519-patch.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { Resource } from '../../resources/Resource.ts';
 import { transaction } from '../../resources/transaction.ts';
@@ -448,6 +449,7 @@ async function downloadAndParseCRL(
 		}
 
 		// Parse and validate the CRL
+		const pkijs = loadPkijs();
 		const crl = pkijs.CertificateRevocationList.fromBER(crlDerBuffer as any);
 
 		// Verify CRL signature
@@ -504,7 +506,7 @@ async function downloadAndParseCRL(
  * @returns The composite ids of the revoked certificates
  */
 async function processRevokedCertificates(
-	crl: pkijs.CertificateRevocationList,
+	crl: Pkijs.CertificateRevocationList,
 	issuerPemStr: string,
 	distributionPoint: string,
 	nextUpdate: number,

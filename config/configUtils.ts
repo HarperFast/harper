@@ -15,7 +15,8 @@ import { isMainThread, threadId } from 'node:worker_threads';
 import { randomBytes } from 'node:crypto';
 import isNumber from 'is-number';
 import propertiesReaderModule from 'properties-reader';
-import _ from 'lodash';
+import getPath from 'lodash/get.js';
+import isEqual from 'lodash/isEqual.js';
 
 // Aliased to a mutable, module-scoped binding so unit tests can swap the
 // implementation via rewire. The compiled default-import binding is otherwise
@@ -1057,7 +1058,7 @@ export function updateConfigValue(
 		let doUpdate = false;
 		for (const arg in parsedArgs) {
 			const castedValue = castConfigValue(arg, parsedArgs[arg]);
-			if (!_.isEqual(castedValue, flatConfigObj[arg.toLowerCase()])) {
+			if (!isEqual(castedValue, flatConfigObj[arg.toLowerCase()])) {
 				doUpdate = true;
 				break;
 			}
@@ -1621,7 +1622,7 @@ export function initOldConfig(oldConfigPath: string) {
  */
 export function getConfigFromFile(param: string) {
 	const config_file = readConfigFile();
-	return _.get(config_file, param.replaceAll('_', '.'));
+	return getPath(config_file, param.replaceAll('_', '.'));
 }
 
 export function getConfigObj() {
