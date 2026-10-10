@@ -64,6 +64,8 @@ export interface AgentToolContext {
 	signal?: AbortSignal;
 	/** Filesystem scope roots accessible to FS tools. Read-only after composition. */
 	scopes: AgentScopes;
+	/** Byte cap the loop applies to each tool result; read tools size their pages to fit under it. */
+	maxResultBytes?: number;
 }
 
 export interface AgentScopes {
@@ -85,6 +87,8 @@ export interface AgentConfig {
 	provider?: string;
 	model?: string;
 	maxTurns: number;
+	/** Largest tool result, in bytes of serialized JSON, the loop appends to the transcript. */
+	maxToolResultBytes: number;
 	maxCostUsd: number;
 	autoApprove: boolean;
 	allowDestructive: boolean;

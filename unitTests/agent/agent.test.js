@@ -17,7 +17,7 @@ const assert = require('node:assert');
 const { mkdtempSync, mkdirSync, writeFileSync, realpathSync, symlinkSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
-const { resolveAgentIdentity, resolveScopes, buildStaticSystemPrompt } = require('#src/agent/agent');
+const { mergeConfig, resolveAgentIdentity, resolveScopes, buildStaticSystemPrompt } = require('#src/agent/agent');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { readFileTool, listDirTool } = require('#src/agent/tools/fsTools');
 
@@ -97,6 +97,27 @@ describe('agent/agent resolveAgentIdentity', () => {
 		const server = serverWith(() => ({ username: DEFAULT_USER, role: {} }));
 		const identity = await resolveAgentIdentity(server, DEFAULT_USER);
 		assert.strictEqual(identity.role.permission.super_user, true);
+	});
+});
+
+describe('agent/agent mergeConfig maxToolResultBytes', () => {
+	it('defaults to 65536', () => {
+		assert.strictEqual(mergeConfig({ server: {} }).maxToolResultBytes, 65536);
+	});
+
+	it('accepts an integer in range, including the numeric string an env var supplies', () => {
+		assert.strictEqual(mergeConfig({ server: {}, maxToolResultBytes: 131072 }).maxToolResultBytes, 131072);
+		assert.strictEqual(mergeConfig({ server: {}, maxToolResultBytes: '16384' }).maxToolResultBytes, 16384);
+	});
+
+	it('falls back to the default rather than running uncapped on a bad value', () => {
+		for (const maxToolResultBytes of [0, 512, 2_000_000_000, 'lots', 4096.5, true]) {
+			assert.strictEqual(
+				mergeConfig({ server: {}, maxToolResultBytes }).maxToolResultBytes,
+				65536,
+				String(maxToolResultBytes)
+			);
+		}
 	});
 });
 

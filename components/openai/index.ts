@@ -21,6 +21,7 @@ import {
 	assignFiniteTokenCount,
 	ChoiceScoringUnsupportedError,
 	composeSignal,
+	isContextWindowRejection,
 	MAX_ERROR_BODY_BYTES,
 	normalizeOrigin,
 	parseJsonResponse,
@@ -364,7 +365,12 @@ export class OpenAIBackend implements ModelBackend {
 			const error = await readErrorEnvelope(res);
 			const translated = translate?.(res.status, error);
 			if (translated) throw translated;
-			throw new OpenAIBackendError(`OpenAI ${path} returned HTTP ${res.status}${errorSuffix(error)}`, res.status);
+			const failure = new OpenAIBackendError(
+				`OpenAI ${path} returned HTTP ${res.status}${errorSuffix(error)}`,
+				res.status
+			);
+			if (isContextWindowRejection(res.status, error.message, error.code)) failure.contextWindowExceeded = true;
+			throw failure;
 		}
 		return res;
 	}
@@ -547,6 +553,7 @@ export class OpenAIBackendError extends ServerError {
 	/** HTTP status returned by the upstream provider, when the failure came from an HTTP response.
 	 * Distinct from ServerError's statusCode, which is Harper's own response status (#1593). */
 	declare upstreamStatus?: number;
+	declare contextWindowExceeded?: boolean;
 	constructor(message: string, upstreamStatus?: number) {
 		super(message);
 		this.name = 'OpenAIBackendError';

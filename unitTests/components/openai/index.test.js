@@ -465,6 +465,37 @@ describe('OpenAIBackend', () => {
 			const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
 			await assert.rejects(() => b.generate('q', { accounting: ACCOUNTING }), /content is not a string/);
 		});
+
+		it("flags a context_length_exceeded rejection, by code or by a compatible server's wording", async () => {
+			for (const error of [
+				{ message: 'Your input exceeds the context window of this model.', code: 'context_length_exceeded' },
+				{ message: "This model's maximum context length is 8192 tokens. However, you requested 9000 tokens." },
+			]) {
+				const fetch = mockFetch(() => jsonResponse({ error }, { status: 400 }));
+				const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+				await assert.rejects(
+					() => b.generate('q', { accounting: ACCOUNTING }),
+					(err) =>
+						err instanceof OpenAIBackendError && err.upstreamStatus === 400 && err.contextWindowExceeded === true,
+					error.message
+				);
+			}
+		});
+
+		it('does not flag other rejections', async () => {
+			for (const [status, error] of [
+				[400, { message: 'Invalid model: gpt-9000' }],
+				[429, { message: "This model's maximum context length is 8192 tokens" }],
+			]) {
+				const fetch = mockFetch(() => jsonResponse({ error }, { status }));
+				const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+				await assert.rejects(
+					() => b.generate('q', { accounting: ACCOUNTING }),
+					(err) => err instanceof OpenAIBackendError && err.contextWindowExceeded === undefined,
+					`HTTP ${status}`
+				);
+			}
+		});
 	});
 
 	describe('scoreChoices', () => {

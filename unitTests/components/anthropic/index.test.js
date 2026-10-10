@@ -220,6 +220,27 @@ describe('AnthropicBackend', () => {
 			const b = new AnthropicBackend({ apiKey: API_KEY, model: 'claude' }, fetch);
 			await assert.rejects(() => b.generate('q', { accounting: ACCOUNTING }), /returned HTTP 400: Invalid model: foo/);
 		});
+
+		it('flags a prompt-too-long rejection, and only that', async () => {
+			for (const [message, flagged] of [
+				['prompt is too long: 215000 tokens > 200000 maximum', true],
+				['input length and `max_tokens` exceed context limit: 188240 + 21333 > 200000', true],
+				['max_tokens: 300000 > 64000, which is the maximum allowed number of output tokens', false],
+			]) {
+				const fetch = mockFetch(() =>
+					jsonResponse({ type: 'error', error: { type: 'invalid_request_error', message } }, { status: 400 })
+				);
+				const b = new AnthropicBackend({ apiKey: API_KEY, model: 'claude' }, fetch);
+				await assert.rejects(
+					() => b.generate('q', { accounting: ACCOUNTING }),
+					(err) =>
+						err instanceof AnthropicBackendError &&
+						err.upstreamStatus === 400 &&
+						(err.contextWindowExceeded === true) === flagged,
+					message
+				);
+			}
+		});
 	});
 
 	describe('generateStream', () => {

@@ -176,6 +176,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 - [`http_fetch` egress is fixed at boot and checked on every hop (`agent/tools/httpFetchTool.ts`)](agent/DESIGN.md#http_fetch-egress-is-fixed-at-boot-and-checked-on-every-hop-agenttoolshttpfetchtoolts) — `agent.httpFetch` is built into the tool once at boot, no runtime path can patch it, and each redirect hop is checked before it is sent.
 - [The fs tools never return key material, and `config` is the config file (`agent/tools/fsTools.ts`)](agent/DESIGN.md#the-fs-tools-never-return-key-material-and-config-is-the-config-file-agenttoolsfstoolsts) — `config` defaults to the config file and is never enumerated; key directories, key file names and PEM private-key text are refused in every scope, against canonical paths.
+- [Tool results are capped where they are stored; a context-window rejection shrinks the newest once (`agent/loop.ts`)](agent/DESIGN.md#tool-results-are-capped-where-they-are-stored-a-context-window-rejection-shrinks-the-newest-once-agentloopts) — no observation over `agent.maxToolResultBytes` reaches the transcript; backends flag a context-window rejection and the loop shrinks the newest results once and retries.
 
 ## config/
 

@@ -29,7 +29,14 @@ import { buildBestPracticeTool, loadBestPracticesOverview } from './bestPractice
 import { composeRegistryTools, ensureOperationsToolsRegistered } from './registryTools.ts';
 import { buildOperations } from './operations.ts';
 import { registerAgentMcpTools } from './mcpTools.ts';
-import { runAgent, _resetInFlightForTests } from './loop.ts';
+import {
+	runAgent,
+	_resetInFlightForTests,
+	DEFAULT_MAX_TOOL_RESULT_BYTES,
+	isValidMaxToolResultBytes,
+	MAX_MAX_TOOL_RESULT_BYTES,
+	MIN_MAX_TOOL_RESULT_BYTES,
+} from './loop.ts';
 import { appendMessage, getSession } from './session.ts';
 import type { AgentConfig, AgentScopes, AgentTool, HttpFetchConfig } from './types.ts';
 
@@ -38,6 +45,7 @@ const log = harperLogger.loggerWithTag('agent');
 const DEFAULT_CONFIG: AgentConfig = {
 	enabled: false,
 	maxTurns: 50,
+	maxToolResultBytes: DEFAULT_MAX_TOOL_RESULT_BYTES,
 	maxCostUsd: 5,
 	autoApprove: false,
 	allowDestructive: false,
@@ -56,6 +64,7 @@ interface StartOpts {
 	provider?: string;
 	model?: string;
 	maxTurns?: number;
+	maxToolResultBytes?: unknown;
 	maxCostUsd?: number;
 	autoApprove?: boolean;
 	allowDestructive?: boolean;
@@ -182,6 +191,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			signal: controller.signal,
 			generateOpts: { model: liveConfig.model },
 			systemPrompt: composeSystemPrompt(staticSystemPrompt, liveConfig.systemPromptAppend),
+			maxToolResultBytes: liveConfig.maxToolResultBytes,
 		})
 			.catch((err) => log.error?.(`Agent run failed for ${sessionId}: ${(err as Error)?.message ?? err}`))
 			.finally(() => {
@@ -364,13 +374,16 @@ export function resolveScopes(
 	};
 }
 
-function mergeConfig(opts: StartOpts): AgentConfig {
+export function mergeConfig(opts: StartOpts): AgentConfig {
 	return {
 		...DEFAULT_CONFIG,
 		...(opts.enabled !== undefined && { enabled: !!opts.enabled }),
 		...(opts.provider !== undefined && { provider: String(opts.provider) }),
 		...(opts.model !== undefined && { model: String(opts.model) }),
 		...(opts.maxTurns !== undefined && { maxTurns: Number(opts.maxTurns) }),
+		...(opts.maxToolResultBytes !== undefined && {
+			maxToolResultBytes: resolveMaxToolResultBytes(opts.maxToolResultBytes),
+		}),
 		...(opts.maxCostUsd !== undefined && { maxCostUsd: Number(opts.maxCostUsd) }),
 		...(opts.autoApprove !== undefined && { autoApprove: !!opts.autoApprove }),
 		...(opts.allowDestructive !== undefined && { allowDestructive: !!opts.allowDestructive }),
@@ -380,6 +393,15 @@ function mergeConfig(opts: StartOpts): AgentConfig {
 		...(opts.httpFetch !== undefined && { httpFetch: resolveHttpFetchOrDisable(opts.httpFetch) }),
 		...(opts.systemPromptAppend !== undefined && { systemPromptAppend: String(opts.systemPromptAppend) }),
 	};
+}
+
+function resolveMaxToolResultBytes(raw: unknown): number {
+	const maxToolResultBytes = typeof raw === 'string' ? Number(raw) : raw;
+	if (isValidMaxToolResultBytes(maxToolResultBytes)) return maxToolResultBytes;
+	log.error?.(
+		`agent.maxToolResultBytes must be an integer from ${MIN_MAX_TOOL_RESULT_BYTES} to ${MAX_MAX_TOOL_RESULT_BYTES}, got ${String(raw)}; using ${DEFAULT_CONFIG.maxToolResultBytes}`
+	);
+	return DEFAULT_CONFIG.maxToolResultBytes;
 }
 
 /** A malformed policy disables the tool rather than the agent: the egress stays closed, the rest stays usable. */
