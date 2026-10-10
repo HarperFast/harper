@@ -927,6 +927,8 @@ export async function runAggregationCycle(fromPeriod, toPeriod = 60000) {
 
 // A mean of per-sample peaks is not a peak, so peak-named measures fold with max.
 const MAX_MEASURE_NAME = /^max[A-Z]/;
+// Kept on a thread's record by its own fold, beside its measures.
+const THREAD_FOLD_FIELDS = new Set(['count', 'total', 'ratio']);
 
 async function aggregation(fromPeriod, toPeriod = 60000) {
 	const rawAnalyticsTable = getRawAnalyticsTable();
@@ -967,8 +969,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	const aggregateActions = new Map();
 	const distributions = new Map();
 	const threadsToAverage = [];
-	// Per fold target (an action, or one thread's record): the count of the samples that carried each
-	// measure, which is the measure's weight and is less than the target's count when samples lacked it.
+	// A measure's weight is the count of only the samples that carried it, per action or thread record.
 	const measureCounts = new Map<object, Record<string, number>>();
 	let lastTime: number | undefined;
 	let stoppedAtWindowEdge = false;
@@ -1061,7 +1062,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		for (const thread of threads) {
 			for (const measureName in thread) {
 				const value = thread[measureName];
-				if (typeof value === 'number')
+				if (typeof value === 'number' && !THREAD_FOLD_FIELDS.has(measureName))
 					entry[measureName] = (typeof entry[measureName] === 'number' ? entry[measureName] : 0) + value;
 			}
 		}
