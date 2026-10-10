@@ -24,7 +24,7 @@ describe('nativeAddonGuard', () => {
 		fs.writeFileSync(nodeApiAddon, buildElf64(NODE_API_SYMBOLS));
 	});
 	after(() => {
-		fs.rmSync(root, { recursive: true, force: true });
+		if (root) fs.rmSync(root, { recursive: true, force: true });
 	});
 
 	function recordingTarget() {
@@ -76,18 +76,35 @@ describe('nativeAddonGuard', () => {
 		assert.strictEqual(target.dlopen, guarded);
 	});
 
-	it("guards Node's own .node loader in a worker thread", async function () {
-		this.timeout(30000);
-		const worker = new Worker(FIXTURE, { workerData: { incompatibleAddon } });
+	async function workerReport(options) {
+		const worker = new Worker(FIXTURE, options);
 		try {
-			const report = await new Promise((resolve, reject) => {
+			return await new Promise((resolve, reject) => {
 				worker.once('message', resolve);
 				worker.once('error', reject);
 				worker.once('exit', (code) => reject(new Error(`fixture worker exited with ${code} before reporting`)));
 			});
-			assert.deepStrictEqual(report, { nodeApi: 'function', incompatible: 'IncompatibleNativeAddonError' });
 		} finally {
 			await worker.terminate();
 		}
+	}
+
+	it("guards Node's own .node loader in a worker thread", async function () {
+		this.timeout(30000);
+		const report = await workerReport({ workerData: { incompatibleAddon, forceInstall: true } });
+		assert.deepStrictEqual(report, { nodeApi: 'function', incompatible: 'IncompatibleNativeAddonError' });
+	});
+
+	it('gives workers an execArgv that requires this module', () => {
+		const [flag, guardPath] = nativeAddonGuardExecArgv(true);
+		assert.strictEqual(flag, '--require');
+		assert.strictEqual(guardPath, require.resolve('#src/server/threads/nativeAddonGuard'));
+	});
+
+	it('installs from execArgv alone in a worker on a pointer-compression runtime', async function () {
+		if (!isPointerCompressionRuntime()) this.skip(); // process.config cannot be overridden
+		this.timeout(30000);
+		const report = await workerReport({ workerData: { incompatibleAddon }, execArgv: nativeAddonGuardExecArgv() });
+		assert.deepStrictEqual(report, { nodeApi: 'function', incompatible: 'IncompatibleNativeAddonError' });
 	});
 });

@@ -781,8 +781,7 @@ Node's `http` client is a misleading probe here: after a complete response arriv
 
 V8 pointer compression changes V8's C++ ABI but not `NODE_MODULE_VERSION`. So an addon that links
 V8's C++ API (NAN or direct `v8::`) built for the standard ABI passes Node's own check, loads, and
-SIGSEGVs the process on first use. Measured: the stock uWS prebuild on a pc Node 24.18 crashes on its
-first served request. Node-API addons are unaffected. On a runtime with
+SIGSEGVs the process on first use. Node-API addons are unaffected. On a runtime with
 `process.config.variables.v8_enable_pointer_compression === 1`, `process.dlopen` (the call behind
 CJS `require`, `createRequire` and ESM addon import alike) is wrapped in every thread, and a `.node`
 loads only when one of these holds:
@@ -795,18 +794,20 @@ loads only when one of these holds:
    failed compile next to a shipped binary must not admit it.
 
 Every other ELF64 is refused with `IncompatibleNativeAddonError`, including one whose symbols cannot
-be read. The error carries `code: 'ERR_DLOPEN_FAILED'`, so fallback-to-JS code treats it like any
+be read. The reader trusts the section headers: this guards against accidental crashes, not against a
+binary crafted so that its section headers disagree with its dynamic segment. The error carries `code: 'ERR_DLOPEN_FAILED'`, so fallback-to-JS code treats it like any
 unloadable addon: cbor-x and msgpackr do that off-image, where `node-gyp-build-optional-packages`
-picks an `abi137` V8-API prebuild before the Node-API one. A file that is not ELF64 is admitted,
-because a 64-bit Linux `dlopen` rejects it itself. Only admissions are cached, keyed by realpath and
+picks an `abi137` V8-API prebuild before the Node-API one. A file that is not ELF64 and has no marker or build evidence is
+admitted, because a 64-bit Linux `dlopen` rejects it itself; pc images are Linux-only. Only admissions are cached, keyed by realpath and
 validated against the binary's dev/ino/size/mtime. Refusals re-check, so rebuilding or adding a
 marker takes effect on retry.
 
 The guard installs when its module loads, and must be the first module of each thread:
 
-- **Main thread:** the first import of `bin/harper.ts` and `index.ts`. `harper_logger.ts` `require`s
-  `segfault-handler` (a V8-API addon) at module load, so installing from `manageThreads.js` would be
-  too late.
+- **Main thread:** the first import of `bin/harper.ts`, `index.ts` and
+  `launchServiceScripts/launchHarperDB.js`. `harper_logger.ts` calls `initLogSettings()` at module
+  scope, which `require`s `segfault-handler` (a V8-API addon) on the main thread, so installing from
+  `manageThreads.js` would be too late.
 - **Workers:** the first `--require` in `startWorker`'s `execArgv`. Argv `--require`s run in order
   and before every `--import`, so the guard precedes `threads.preload`/`threads.preloadRequire`, and
   safe mode keeps it.

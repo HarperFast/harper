@@ -1,12 +1,12 @@
 'use strict';
 
-// Runs inside a Worker for nativeAddonGuard.test.js: installs the guard as if on a
-// pointer-compression runtime, then loads real addons through Node's own .node loader.
+// Runs inside a Worker for nativeAddonGuard.test.js: loads real addons through Node's own .node
+// loader, after installing the guard as if on a pointer-compression runtime unless execArgv did.
 
 const { parentPort, workerData } = require('node:worker_threads');
 const { installNativeAddonGuard } = require('#src/server/threads/nativeAddonGuard');
 
-installNativeAddonGuard(process, true);
+if (workerData.forceInstall) installNativeAddonGuard(process, true);
 
 const report = {};
 try {

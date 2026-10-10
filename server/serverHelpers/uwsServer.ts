@@ -24,7 +24,7 @@ import { Headers } from './Headers.ts';
 import { when } from '../../utility/when.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import {
-	assertNativeAddonLoadable,
+	checkNativeAddon,
 	IncompatibleNativeAddonError,
 	isPointerCompressionRuntime,
 } from '../../utility/nativeAddonAbi.ts';
@@ -84,15 +84,16 @@ const statusText = (s: number) => `${s} ${STATUS_CODES[s] ?? 'Unknown'}`;
 export async function createUwsServer(options: UwsServerOptions): Promise<{ app: UwsApp; close: () => void }> {
 	// The process.dlopen guard refuses a standard-ABI uWS binary too, but uws.js rethrows any load
 	// error as a misleading "supports only Node.js versions …" Error; checking here keeps the real one.
+	// uWS always links V8's C++ API, so a binary the scanner cannot read (Mach-O, PE) needs evidence too.
 	if (isPointerCompressionRuntime()) {
-		const uwsDirectory = dirname(createRequire(__filename).resolve('uWebSockets.js'));
-		try {
-			assertNativeAddonLoadable(
-				join(uwsDirectory, `uws_${process.platform}_${process.arch}_${process.versions.modules}.node`)
-			);
-		} catch (error) {
-			if (error instanceof IncompatibleNativeAddonError)
-				error.message += ' To serve HTTP without uWebSockets.js, unset HARPER_UWS_HTTP and HARPER_UWS_UDS.';
+		const uwsBinary = join(
+			dirname(createRequire(__filename).resolve('uWebSockets.js')),
+			`uws_${process.platform}_${process.arch}_${process.versions.modules}.node`
+		);
+		const verdict = checkNativeAddon(uwsBinary);
+		if (!verdict.loadable || verdict.reason === 'not-elf64') {
+			const error = new IncompatibleNativeAddonError(uwsBinary, verdict);
+			error.message += ' To serve HTTP without uWebSockets.js, unset HARPER_UWS_HTTP and HARPER_UWS_UDS.';
 			throw error;
 		}
 	}

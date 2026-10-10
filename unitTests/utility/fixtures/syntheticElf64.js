@@ -4,7 +4,10 @@
  * Builds a minimal ELF64 shared object: header, .dynstr, .dynsym, and three section headers (null,
  * .dynstr, .dynsym). Each symbol is `{ name, defined }`; an undefined symbol has st_shndx 0.
  */
-function buildElf64(symbols, { littleEndian = true, sectionHeaders = true, elfClass = 2 } = {}) {
+function buildElf64(
+	symbols,
+	{ littleEndian = true, sectionHeaders = true, elfClass = 2, symbolEntrySize = 24, symbolTableSize } = {}
+) {
 	const write16 = (buffer, at, value) =>
 		littleEndian ? buffer.writeUInt16LE(value, at) : buffer.writeUInt16BE(value, at);
 	const write32 = (buffer, at, value) =>
@@ -36,7 +39,7 @@ function buildElf64(symbols, { littleEndian = true, sectionHeaders = true, elfCl
 		write64(sections, at + 0x38, entrySize);
 	};
 	writeSection(1, 3, namesAt, names.length, 0, 0); // SHT_STRTAB
-	writeSection(2, 11, symbolsAt, symbolTable.length, 1, 24); // SHT_DYNSYM
+	writeSection(2, 11, symbolsAt, symbolTableSize ?? symbolTable.length, 1, symbolEntrySize); // SHT_DYNSYM
 
 	const header = Buffer.alloc(64);
 	header.writeUInt32BE(0x7f454c46, 0);
