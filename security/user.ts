@@ -18,9 +18,12 @@ export {
 	findAndValidateUser,
 	getUserWithRole,
 	isCurrentUser,
+	hasRecordProvenance,
 	userRecordVersions,
 	trackUserRecords,
+	cloneUserView,
 	onUserChange,
+	userChangeNotificationEpoch,
 	USERNAME_REQUIRED,
 	ALTERUSER_NOTHING_TO_UPDATE,
 	EMPTY_PASSWORD,
@@ -112,6 +115,7 @@ import { credentialRejectionError } from './credentialRejection.ts';
 import { databases, getDatabases, onUpdatedTable } from '../resources/databases.ts';
 import { VERSION_REUSED } from '../resources/RecordEncoder.ts';
 import { contextStorage } from '../resources/transaction.ts';
+import { deliveryCertified } from '../resources/transactionBroadcast.ts';
 import { writeKey } from 'ordered-binary';
 
 server.getUser = (username: string, password?: string | null): Promise<User> => {
@@ -503,7 +507,9 @@ interface UserProvenance {
 	roleStamp: RecordStamp;
 }
 
-const userProvenance = new WeakMap<User, UserProvenance>();
+// An own property of a user this module built, so a spread copy carries it without a WeakMap write
+const PROVENANCE = Symbol('record provenance');
+// a user resolved outside this module (a component's server.getUser), which may not take a property
 const trackedProvenance = new WeakMap<User, UserProvenance>();
 
 function provenanceOf(username: string, entries: UserEntries): UserProvenance {
@@ -522,7 +528,7 @@ function userView(username: string, entries: UserEntries): User {
 	const role = record && derivedRole(record.role, entries.role);
 	// verifyPerms replaces role.permission on the request's user; the derived role is shared
 	if (role) user.role = { ...role, permission: { ...role.permission } };
-	userProvenance.set(user, provenanceOf(username, entries));
+	(user as any)[PROVENANCE] = provenanceOf(username, entries);
 	return user;
 }
 
@@ -540,7 +546,25 @@ function userRecordVersions(username: string): UserProvenance {
  * before it was resolved; a write in between then shows as a change.
  */
 function trackUserRecords(user: User, versions: UserProvenance): void {
-	if (user && typeof user === 'object' && !userProvenance.has(user)) trackedProvenance.set(user, versions);
+	if (user && typeof user === 'object' && !(user as any)[PROVENANCE]) trackedProvenance.set(user, versions);
+}
+
+/**
+ * A copy whose `role` and `permission` the caller may replace (verifyPerms does) without touching `user`;
+ * `isCurrentUser` checks it against the records `user` was built from.
+ */
+function cloneUserView(user: User & { role: UserRole }): User {
+	const clone: User = { ...user, role: { ...user.role, permission: { ...user.role.permission } } };
+	if (!(clone as any)[PROVENANCE]) {
+		const tracked = trackedProvenance.get(user);
+		if (tracked) (clone as any)[PROVENANCE] = tracked;
+	}
+	return clone;
+}
+
+/** Whether `isCurrentUser` can answer for `user`: false for one resolved outside this module and not tracked. */
+function hasRecordProvenance(user: User): boolean {
+	return Boolean((user as any)[PROVENANCE] ?? trackedProvenance.has(user));
 }
 
 /**
@@ -548,7 +572,7 @@ function trackUserRecords(user: User, versions: UserProvenance): void {
  * no recorded versions (a scoped token, whose role it carries itself) is current.
  */
 function isCurrentUser(user: User): boolean {
-	const provenance = userProvenance.get(user) ?? trackedProvenance.get(user);
+	const provenance: UserProvenance | undefined = (user as any)[PROVENANCE] ?? trackedProvenance.get(user);
 	if (!provenance) return true;
 	if (!isUnchanged(systemStore(USER_TABLE_NAME), provenance.username, provenance.userStamp)) return false;
 	return (
@@ -621,9 +645,23 @@ async function getSuperUser(): Promise<User | undefined> {
 	}
 }
 
-const userChangeListeners: Array<() => void | Promise<void>> = [];
-const userChangeSubscriptions = new Map<string, { table: any; subscription: Promise<any> }>();
-let userChangeNotificationScheduled = false;
+/** Primary keys of the hdb_user and hdb_role records changed since the previous notification. */
+export interface UserChange {
+	usernames: ReadonlySet<unknown>;
+	roleIds: ReadonlySet<unknown>;
+}
+
+type UserChangeListener = (change?: UserChange) => void | Promise<void>;
+
+const userChangeListeners: UserChangeListener[] = [];
+const userChangeSubscriptions = new Map<string, { table: any; subscription: Promise<any>; opened?: any }>();
+// tables whose subscription has been open before, so a new one follows a gap in notifications
+const subscribedBefore = new Set<string>();
+// null while nothing is pending; undefined once the pending batch lost its identities
+let pendingUserChange: { usernames: Set<unknown>; roleIds: Set<unknown> } | null | undefined = null;
+const MAX_CHANGE_IDS = 1000;
+let notificationEpoch = 0;
+let epochsIssued = 0;
 let unauditedUserTableLogged = false;
 const SUBSCRIBE_RETRY_MIN_MS = 1000;
 const SUBSCRIBE_RETRY_MAX_MS = 60_000;
@@ -631,10 +669,12 @@ let subscribeRetryDelay = SUBSCRIBE_RETRY_MIN_MS;
 
 /**
  * Calls `listener` on this thread after `system.hdb_user` or `system.hdb_role` changes, from any thread
- * or a replicated write, at most once per event-loop turn. For consumers already holding a user (live
- * subscriptions, MCP sessions); lookups need no notification because they read the records.
+ * or a replicated write, at most once per event-loop turn, with the changed records' primary keys. With
+ * no `change`, which records changed is unknown: a whole-table event, an oversized batch, or a gap in
+ * the table subscriptions. For consumers already holding a user (live subscriptions, MCP sessions);
+ * lookups need no notification because they read the records.
  */
-function onUserChange(listener: () => void | Promise<void>): void {
+function onUserChange(listener: UserChangeListener): void {
 	userChangeListeners.push(listener);
 	if (userChangeListeners.length > 1) return;
 	onUpdatedTable((table) => {
@@ -646,12 +686,34 @@ function onUserChange(listener: () => void | Promise<void>): void {
 	}
 }
 
+/**
+ * 0 unless the hdb_user and hdb_role subscriptions are both open and have been delivered every record
+ * committed since they opened; otherwise an id that changes each time they become so. A consumer that
+ * saw the same non-zero epoch before and after a period was notified of every change in it. Always 0
+ * where the storage engine cannot certify delivery (LMDB).
+ */
+function userChangeNotificationEpoch(): number {
+	for (const tableName of [USER_TABLE_NAME, ROLE_TABLE_NAME]) {
+		const opened = userChangeSubscriptions.get(tableName)?.opened;
+		if (!opened || !deliveryCertified(opened)) return 0;
+	}
+	return notificationEpoch;
+}
+
+function updateNotificationEpoch(): void {
+	const open =
+		userChangeSubscriptions.get(USER_TABLE_NAME)?.opened && userChangeSubscriptions.get(ROLE_TABLE_NAME)?.opened;
+	if (!open) notificationEpoch = 0;
+	else if (notificationEpoch === 0) notificationEpoch = ++epochsIssued;
+}
+
 function subscribeToUserChanges(table): void {
 	const { tableName } = table;
 	if (tableName !== USER_TABLE_NAME && tableName !== ROLE_TABLE_NAME) return;
 	const previous = userChangeSubscriptions.get(tableName);
 	if (previous?.table === table) return;
 	userChangeSubscriptions.delete(tableName);
+	updateNotificationEpoch();
 	previous?.subscription.then(
 		(subscription) => subscription?.end?.(),
 		() => {}
@@ -666,42 +728,87 @@ function subscribeToUserChanges(table): void {
 		}
 		return;
 	}
+	const noteChange = tableName === USER_TABLE_NAME ? 'usernames' : 'roleIds';
 	// outside any request context, which the subscription would otherwise adopt for its lifetime
 	const subscription = contextStorage.exit(() =>
-		table.subscribe({ listener: scheduleUserChangeNotification, omitCurrent: true })
+		table.subscribe({
+			listener: (event) => scheduleUserChangeNotification(noteChange, event?.id),
+			omitCurrent: true,
+			// certifies to userChangeNotificationEpoch that no committed change was skipped
+			reportProgress: true,
+		})
 	);
-	userChangeSubscriptions.set(tableName, { table, subscription });
+	const state: { table: any; subscription: Promise<any>; opened?: any } = { table, subscription };
+	userChangeSubscriptions.set(tableName, state);
+	const isCurrent = () => userChangeSubscriptions.get(tableName) === state;
+	const resubscribeLater = () => {
+		setTimeout(() => {
+			if (databases.system?.[tableName] === table) subscribeToUserChanges(table);
+		}, subscribeRetryDelay).unref();
+		subscribeRetryDelay = Math.min(subscribeRetryDelay * 2, SUBSCRIBE_RETRY_MAX_MS);
+	};
 	subscription.then(
-		() => (subscribeRetryDelay = SUBSCRIBE_RETRY_MIN_MS),
+		(opened) => {
+			if (!isCurrent()) return;
+			const openedAt = Date.now();
+			const onClosed = () => {
+				if (!isCurrent()) return;
+				userChangeSubscriptions.delete(tableName);
+				updateNotificationEpoch();
+				// one that closes on every event keeps backing off, since each reopen rechecks everything
+				if (Date.now() - openedAt >= SUBSCRIBE_RETRY_MAX_MS) subscribeRetryDelay = SUBSCRIBE_RETRY_MIN_MS;
+				resubscribeLater();
+			};
+			if (opened.closed) return onClosed();
+			// the broadcaster closes subscribers when their database closes or changes generation, and a
+			// progress-reporting one when an event fails to deliver
+			opened.on('close', onClosed);
+			state.opened = opened;
+			updateNotificationEpoch();
+			if (subscribedBefore.has(tableName)) scheduleUserChangeNotification();
+			else subscribedBefore.add(tableName);
+		},
 		(error) => {
-			if (userChangeSubscriptions.get(tableName)?.subscription !== subscription) return;
+			if (!isCurrent()) return;
 			userChangeSubscriptions.delete(tableName);
 			logger.error(`Failed to subscribe to system.${tableName} for user changes; retrying`, error);
-			setTimeout(() => {
-				if (databases.system?.[tableName] === table) subscribeToUserChanges(table);
-			}, subscribeRetryDelay).unref();
-			subscribeRetryDelay = Math.min(subscribeRetryDelay * 2, SUBSCRIBE_RETRY_MAX_MS);
+			resubscribeLater();
 		}
 	);
 }
 
-function scheduleUserChangeNotification(): void {
-	if (userChangeNotificationScheduled) return;
-	userChangeNotificationScheduled = true;
-	setImmediate(notifyUserChangeListeners);
+/** With no `kind`, or an event with no record id, which records changed is unknown. */
+function scheduleUserChangeNotification(kind?: 'usernames' | 'roleIds', id?: unknown): void {
+	if (pendingUserChange === null) {
+		pendingUserChange = { usernames: new Set(), roleIds: new Set() };
+		setImmediate(notifyUserChangeListeners);
+	}
+	if (pendingUserChange === undefined) return;
+	if (kind === undefined || id == null) pendingUserChange = undefined;
+	else {
+		pendingUserChange[kind].add(id);
+		if (pendingUserChange.usernames.size + pendingUserChange.roleIds.size > MAX_CHANGE_IDS)
+			pendingUserChange = undefined;
+	}
 }
 
 function notifyUserChangeListeners(): void {
-	userChangeNotificationScheduled = false;
+	const change = pendingUserChange ?? undefined;
+	pendingUserChange = null;
 	for (const listener of userChangeListeners) {
 		try {
-			const result: any = listener();
+			const result: any = listener(change);
 			if (typeof result?.catch === 'function')
 				result.catch((error) => logger.error('User change listener failed', error));
 		} catch (error) {
 			logger.error('User change listener failed', error);
 		}
 	}
+}
+
+/** Test-only: the open hdb_user or hdb_role subscription behind `onUserChange`. */
+export function _userChangeSubscription(tableName: string): any {
+	return userChangeSubscriptions.get(tableName)?.opened;
 }
 
 let invalidateCallbacks = [];

@@ -163,7 +163,21 @@ function advanceProgress(subscriptions: any, key: number, range: any): boolean {
 function stopProgress(databaseSubscriptions: any) {
 	if (databaseSubscriptions.progressStopped) return;
 	databaseSubscriptions.progressStopped = true;
-	warn('The transaction log could not be read in full; durable subscription positions on it stop advancing');
+	warn(
+		'The transaction log could not be read in full; durable subscription positions on it stop advancing, and on the system database live-subscription revocation falls back to periodic full rechecks'
+	);
+}
+
+/**
+ * Whether every transaction-log record since `subscription` registered was read and routable, so it missed
+ * none addressed to it. Known only for a subscription that tracks progress, and only while it is open.
+ */
+export function deliveryCertified(subscription: any): boolean {
+	const databaseSubscriptions = subscription.subscriptions?.tables?.envs;
+	if (!subscription.reportsProgress || !databaseSubscriptions) return false;
+	// a failed read ends a drain as if the log were exhausted, so no later record may come to latch it
+	if (rangeFailures(databaseSubscriptions.auditStore?.subscriptionLogRange) > 0) stopProgress(databaseSubscriptions);
+	return !databaseSubscriptions.progressStopped;
 }
 
 /**

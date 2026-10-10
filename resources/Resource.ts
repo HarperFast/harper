@@ -599,6 +599,13 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 
 _assignPackageExport('Resource', Resource);
 
+/**
+ * allowRead implementations whose result, for a target with no caller-supplied `select`, reads only the
+ * user's role permission and the resource class, so a live-subscription recheck pass may share it across
+ * subscriptions of one class.
+ */
+export const defaultAllowReads = new WeakSet<(...args: any[]) => unknown>([Resource.prototype.allowRead]);
+
 export function snakeCase(camelCase: string) {
 	return (
 		camelCase[0].toLowerCase() +
@@ -907,6 +914,8 @@ function transactional(
 			// 'subscribe' is the direct MQTT path; 'connect' is the SSE/WebSocket path (REST CONNECT) —
 			// both resolve to the same subscription iterable.
 			const isSubscribeAction = options.method === 'subscribe' || options.method === 'connect';
+			// read before allowRead, which may write a select of its own
+			const selectedByCaller = isSubscribeAction && query?.select != null;
 			const runAction = (data: any) => {
 				// Capture the complete target after the initial allowRead has narrowed it, but before
 				// subscribe/connect implementations can mutate it. Every later recheck gets a fresh clone.
@@ -917,10 +926,9 @@ function transactional(
 				if (loadAsInstance === false && options.method === 'publish') markStaticResourceInstance(resource);
 				const result = action(resource, query, context, data);
 				if (!isSubscribeAction) return result;
-				return when(result, (subscription: any) => {
-					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, context);
-					return subscription;
-				});
+				return when(result, (subscription: any) =>
+					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, selectedByCaller, context)
+				);
 			};
 			let checkPermission = false;
 			if (query.checkPermission) {
@@ -1035,39 +1043,80 @@ function hasPermissionControl(value: any, seen = new WeakSet<object>()): boolean
 	return false;
 }
 
-function registerLiveSubscriptionForContext(subscription: any, resource: any, admittedTarget: any, context: Context) {
+let securityUser: typeof import('../security/user.ts') | undefined;
+
+const resolveUser = (_scope: unknown, username: string) =>
+	securityUser!.findAndValidateUser(username, undefined, false);
+
+/** Returns `subscription`, or a promise of it once a principal stale at admission has been rechecked. */
+function registerLiveSubscriptionForContext(
+	subscription: any,
+	resource: any,
+	admittedTarget: any,
+	selectedByCaller: boolean,
+	context: Context
+) {
 	const user: any = context?.user;
 	const username = user?.username;
 	// Internal watchers, replication and local-bypass have no user principal — nothing to re-authorize.
-	if (!username) return;
-	registerLiveSubscription({
+	if (!username) return subscription;
+	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
+	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
+	securityUser ??= require('../security/user');
+	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
+	// A select written by authorization names no relationship, so the default allowRead's result still
+	// reads only the role's table permission; a caller's select can reach related tables' allowRead.
+	const sharedDecision = !selectedByCaller && defaultAllowReads.has(resource.allowRead);
+	const evaluate = (principal: any) => {
+		const reTarget: any = cloneRequestTarget(admittedTarget);
+		reTarget.checkPermission = principal.role?.permission;
+		return resource.allowRead(principal, reTarget, context);
+	};
+	const handle = registerLiveSubscription({
 		subscription,
 		username,
 		// JWT exp of the bearer credential (set by the auth layer); undefined for password/mTLS/session.
 		authExpiresAt: user.authExpiresAt,
-		recheck: async () => {
+		// A principal with no record provenance (a component's server.getUser on a path that does not track it)
+		// can't be checked for staleness at admission, so every tick rechecks it.
+		identityOnly: sharedDecision && (user._scopedToken || hasRecordProvenance(user)),
+		recheck: async (pass) => {
 			let fresh: any;
+			let viewer: any;
 			if (user._scopedToken) {
 				// A scoped token's identity IS its embedded role — never re-resolve its attribution
 				// username against hdb_user (it may not exist, or may name an unrelated principal
 				// created later). Expiry (authExpiresAt above) is its only revocation.
-				fresh = user;
+				fresh = viewer = user;
 			} else {
-				// Re-read current user state from hdb_user/hdb_role, so a dropped or
-				// role-stripped user no longer authorizes.
-				const { findAndValidateUser } = require('../security/user');
-				fresh = await findAndValidateUser(username, undefined, false);
+				// Re-read current user state from hdb_user/hdb_role, once per username per pass, so a dropped
+				// or role-stripped user no longer authorizes.
+				fresh = await pass.memo(resolveUser, username, resolveUser);
 				if (!fresh?.role) return false;
 				// Advance the subscription's context to the fresh user so downstream checks — context.user
 				// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
-				// not the stale user captured at subscribe time.
-				if (context) (context as any).user = fresh;
+				// not the stale user captured at subscribe time. Each context gets its own view, which its
+				// code may modify.
+				viewer = cloneUserView(fresh);
+				if (context) (context as any).user = viewer;
 			}
 			// Re-run the same operation-level allowRead that granted the subscription.
-			const reTarget: any = cloneRequestTarget(admittedTarget);
-			reTarget.checkPermission = fresh.role?.permission;
-			return !!(await resource.allowRead(fresh, reTarget, context));
+			return !!(await (sharedDecision ? pass.memo(fresh, resource.constructor, evaluate) : evaluate(viewer)));
 		},
+	});
+	let stale: boolean;
+	try {
+		stale = !isCurrentUser(user);
+	} catch {
+		stale = true;
+	}
+	if (!stale) return subscription;
+	// Admitted by records that changed before it registered, so the notification for that change may already
+	// have run without it: recheck before any delivery.
+	return handle.verify().then((outcome) => {
+		if (outcome === 'revoked') throw new AccessViolation(user);
+		// closed by its owner meanwhile, perhaps with a terminal error the caller acts on
+		return subscription;
 	});
 }
 

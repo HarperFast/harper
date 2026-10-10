@@ -1,4 +1,4 @@
-import { getSuperUser, isCurrentUser, trackUserRecords, userRecordVersions } from './user.ts';
+import { cloneUserView, getSuperUser, isCurrentUser, trackUserRecords, userRecordVersions } from './user.ts';
 import { server } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
 import { validateOperationToken, validateRefreshToken, validateLoginToken, decodeJWT } from './tokenAuthentication.ts';
@@ -237,10 +237,10 @@ export async function authentication(request, nextHandler) {
 				cachedUser = undefined;
 			}
 			if (cachedUser?.role) {
-				// Shallow-clone so verifyPerms's `role.permission = fullRolePerms` reassignment
+				// Clone so verifyPerms's `role.permission = fullRolePerms` reassignment
 				// doesn't mutate the cache entry (defense-in-depth; operations and other
 				// meta-permission fields are now preserved through translation in permissionsTranslator).
-				newUser = { ...cachedUser, role: { ...cachedUser.role, permission: { ...cachedUser.role.permission } } };
+				newUser = cloneUserView(cachedUser);
 			} else if (cachedUser) {
 				newUser = cachedUser;
 			}
@@ -318,11 +318,9 @@ export async function authentication(request, nextHandler) {
 					authorizationCache.set(authorization, newUser);
 					if (LOG_AUTH_SUCCESSFUL && newUser != null)
 						authAuditLog(newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
-					// Shallow-clone so verifyPerms's `role.permission = fullRolePerms` reassignment
+					// Clone so verifyPerms's `role.permission = fullRolePerms` reassignment
 					// doesn't mutate the just-stored cache entry (defense-in-depth).
-					if (newUser?.role) {
-						newUser = { ...newUser, role: { ...newUser.role, permission: { ...newUser.role.permission } } };
-					}
+					if (newUser?.role) newUser = cloneUserView(newUser);
 				}
 			}
 
