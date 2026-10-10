@@ -36,3 +36,17 @@ Still open: `findLastAggregationTime` seeds both markers after a restart from th
 analytics record, whose `time` is an end-of-cycle stamp, so a restart mid-drain can skip the rest of
 the backlog; and `storeMetric` discards `table.put()`'s result, so the cursor advances past raw
 records whose aggregate rows failed to commit. Both need a cursor persisted with the rows.
+
+## Aggregation folds each measure over only the samples that carry it (`resources/analytics/write.ts`)
+
+A key's raw samples need not carry the same measures: callback metrics (`recordAction(fn)`) and
+analytics listeners report whatever fields they have, and a raw backlog can come from another
+version. `aggregation()` keeps, per fold target (an action, or one thread's record for `byThread`
+metrics), the count of samples that carried each measure in the cycle-local `measureCounts` map —
+not on the action, which `storeMetric` persists and aggregate listeners receive. A measure's first
+sample seeds it, `max[A-Z]`-named measures fold with `Math.max`, and the rest are a running mean
+weighted by that count. A measure in every sample has a count equal to the target's `count`, so it
+folds exactly as before; keep the running mean, since sum-then-divide rounds differently.
+
+The `byThread` combination sums every thread record's numeric fields into the entry, so a measure
+the key's first sample lacked, or that only some threads carry, is kept.
