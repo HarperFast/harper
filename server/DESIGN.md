@@ -776,3 +776,42 @@ and last-worker duties never land on one. The invariants:
 `releaseUnreadUpload`, an `onResponse` hook that `registerContentHandlers` installs beside the parser, discards the rest of such a request: it unpipes and destroys busboy and resumes the parser's input, so Node reads the remaining bytes without parsing them and the connection stays reusable. Response completion is the point because a route may return a lazy stream that reads the payload while the response is sent; operation settlement is too early. A route keeps the part by reading it before its response finishes (piping, iterating, a `data` or `readable` listener); one it took but never started is discarded, and so is one it destroys before its end, even after the response (the part's `'close'` re-enters the discard). A consumer that stops reading without destroying the part, such as a `.pipe()` whose destination failed, still holds it, and the request timeout bounds it. A busboy error after the hand-off, such as a malformed trailer, discards the rest too, since Node unpipes an errored destination, and so does a file part the parser refuses for its name, which never reaches the route: its 400 goes out and the rest is not parsed. A request still arriving a second after its response is destroyed, unless its body has fully arrived by then (the connection may already carry the next request): a bounded grace period for the client to read the answer, chosen over closing at once (a reset can lose the response, RFC 9112 §9.6) and over draining until the request timeout, which `0` disables. The discarded rest still passes through any `preParsing` transform, such as `@fastify/compress`'s decompressor, for at most that second: its `pump` would destroy the request if the transform were torn down instead. The state is keyed by the Fastify request rather than `request.body.payload`, and the grace targets `request.raw`, which a `preParsing` transform can stand in front of. Every part busboy emits gets an `'error'` listener before anything touches it, so an abort after the hand-off is never an uncaught exception.
 
 Node's `http` client is a misleading probe here: after a complete response arrives while its request waits for `'drain'`, it never resumes writing, although the server has read every byte it sent. The tests use raw sockets: `unitTests/server/serverHelpers/multipartParser.test.js`, the socket cases in `unitTests/server/serverHelpers/contentTypes.test.js`, and `integrationTests/deploy/deploy-multipart-stream.test.ts`.
+
+## On a pointer-compression Node, no standard-V8-ABI addon is dlopen'ed (`server/threads/nativeAddonGuard.ts`, `utility/nativeAddonAbi.ts`)
+
+V8 pointer compression changes V8's C++ ABI but not `NODE_MODULE_VERSION`. So an addon that links
+V8's C++ API (NAN or direct `v8::`) built for the standard ABI passes Node's own check, loads, and
+SIGSEGVs the process on first use. Measured: the stock uWS prebuild on a pc Node 24.18 crashes on its
+first served request. Node-API addons are unaffected. On a runtime with
+`process.config.variables.v8_enable_pointer_compression === 1`, `process.dlopen` (the call behind
+CJS `require`, `createRequire` and ESM addon import alike) is wrapped in every thread, and a `.node`
+loads only when one of these holds:
+
+1. its `.dynsym` has no undefined `_ZN2v8…`/`_ZNK2v8…` symbols (JS ELF64 reader, no binutils);
+2. its package directory has `.pointer-compression-build`. Producers (the harper-pro pc image) must
+   only mark a package whose every loadable binary they replaced;
+3. it sits under a `build/` whose `config.gypi` records `"v8_enable_pointer_compression": 1`, and is
+   not older than that file. node-gyp writes `config.gypi` at configure, before compiling, so a
+   failed compile next to a shipped binary must not admit it.
+
+Every other ELF64 is refused with `IncompatibleNativeAddonError`, including one whose symbols cannot
+be read. The error carries `code: 'ERR_DLOPEN_FAILED'`, so fallback-to-JS code treats it like any
+unloadable addon: cbor-x and msgpackr do that off-image, where `node-gyp-build-optional-packages`
+picks an `abi137` V8-API prebuild before the Node-API one. A file that is not ELF64 is admitted,
+because a 64-bit Linux `dlopen` rejects it itself. Only admissions are cached, keyed by realpath and
+validated against the binary's dev/ino/size/mtime. Refusals re-check, so rebuilding or adding a
+marker takes effect on retry.
+
+The guard installs when its module loads, and must be the first module of each thread:
+
+- **Main thread:** the first import of `bin/harper.ts` and `index.ts`. `harper_logger.ts` `require`s
+  `segfault-handler` (a V8-API addon) at module load, so installing from `manageThreads.js` would be
+  too late.
+- **Workers:** the first `--require` in `startWorker`'s `execArgv`. Argv `--require`s run in order
+  and before every `--import`, so the guard precedes `threads.preload`/`threads.preloadRequire`, and
+  safe mode keeps it.
+
+For the same reason, the guard and `nativeAddonAbi.ts` import only Node builtins. Out of scope:
+`NODE_OPTIONS` preloads. They run in the main thread before Harper's entry module, where no Harper
+code can precede them. `createUwsServer` checks the uWS binary itself, because `uws.js` rethrows
+any load error as a misleading "supports only Node.js versions" message.
