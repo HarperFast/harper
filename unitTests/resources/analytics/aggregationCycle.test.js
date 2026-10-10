@@ -81,6 +81,28 @@ function aggregatedMetric(metric, time) {
 	}
 }
 
+function waitForAggregatedMetric(metric, time) {
+	return waitFor(() => aggregatedMetric(metric, time), {
+		timeout: 10000,
+		message: `${metric} at ${time} was aggregated`,
+	});
+}
+
+// Stop new live reports, then let an in-flight flush finish and consume what it left above the cursor.
+async function drainLiveReports() {
+	analytics.setAnalyticsEnabled(false);
+	await nextPeriod();
+	await runCycle();
+}
+
+function sampleReport(id, threadId, entry) {
+	return { id, time: id, period: PERIOD, threadId, metrics: [entry] };
+}
+
+function assertNoNaN(row) {
+	for (const name in row) assert.ok(!Number.isNaN(row[name]), `${row.metric} ${name} is not NaN`);
+}
+
 describe('analytics aggregation cycle', () => {
 	// Rollups of this path, taken from the cycle itself: no wait on storage can establish that a
 	// second one will never arrive, and the listener runs synchronously inside the cycle. Held by
@@ -164,10 +186,7 @@ describe('analytics aggregation cycle', () => {
 
 	it('takes the peak of each thread over a period and sums those peaks across threads', async function () {
 		this.timeout(30000);
-		// Stop new live reports, then let an in-flight flush finish and consume what it left above the cursor.
-		analytics.setAnalyticsEnabled(false);
-		await nextPeriod();
-		await runCycle();
+		await drainLiveReports();
 		const first = lastRawKey() + 1;
 		const second = first + PERIOD + 1;
 		// Thread 0 and sparse thread 7, two samples each, in two periods. Period one's maxDepth is
@@ -192,10 +211,7 @@ describe('analytics aggregation cycle', () => {
 		];
 		for (const period of periods) {
 			for (const metric of ['write-transaction-queue-depth', 'read-transaction-queue-depth', 'contract-probe']) {
-				await waitFor(() => aggregatedMetric(metric, period.time), {
-					timeout: 10000,
-					message: `${metric} at ${period.time} was aggregated`,
-				});
+				await waitForAggregatedMetric(metric, period.time);
 			}
 			for (const metric of ['write-transaction-queue-depth', 'read-transaction-queue-depth']) {
 				const row = aggregatedMetric(metric, period.time);
@@ -206,5 +222,71 @@ describe('analytics aggregation cycle', () => {
 			assert.strictEqual(probe.maximum, period.maximum);
 			assert.strictEqual(probe.maxCount, period.maxCount);
 		}
+	});
+
+	it('averages a measure over only the samples that carry it, and peaks it from its first sample', async function () {
+		this.timeout(30000);
+		await drainLiveReports();
+		const first = lastRawKey() + 1;
+		const probe = (id, count, measures) => sampleReport(id, 1, { metric: 'sparse-probe', count, ...measures });
+		await seedRawReports([
+			probe(first, 2, { mean: 0.7, rare: 6 }),
+			probe(first + 1, 1, { mean: 0.2, maxLatency: 5, late: 0 }),
+			probe(first + 2, 1, { mean: 0.1 }),
+			probe(first + 3, 2, { mean: 0.1, maxLatency: 9, late: 9, rare: 12 }),
+			probe(first + 4, 1, { mean: 0.1 }),
+		]);
+		await nextPeriod();
+		await runCycle();
+
+		const row = await waitForAggregatedMetric('sparse-probe', first + 4);
+		assertNoNaN(row);
+		assert.strictEqual(row.count, 7);
+		// Summing then dividing would give 0.2857142857142857.
+		assert.strictEqual(row.mean, 0.28571428571428575, 'a measure in every sample folds as a running mean, as before');
+		assert.strictEqual(row.maxLatency, 9, 'a peak first seen mid-period is the largest of its samples');
+		assert.strictEqual(row.late, (9 * 2) / (1 + 2), 'a mean first seen mid-period weighs only its own samples');
+		assert.strictEqual(row.rare, (6 * 2 + 12 * 2) / 4, 'samples lacking a measure do not weigh into its mean');
+	});
+
+	it('combines a measure absent from the first sample or present on only some threads', async function () {
+		this.timeout(30000);
+		await drainLiveReports();
+		const first = lastRawKey() + 1;
+		const gauge = (id, threadId, measures) =>
+			sampleReport(id, threadId, { metric: 'sparse-thread-probe', byThread: true, ...measures });
+		await seedRawReports([
+			gauge(first, 0, { depth: 2 }),
+			gauge(first + 1, 0, { depth: 4, maxDepth: 6, queued: 1 }),
+			gauge(first + 2, 7, { depth: 1, maxDepth: 3, queued: 5, stalled: 2, total: 10, ratio: 0.5 }),
+			gauge(first + 3, 7, { depth: 3, maxDepth: 8, queued: 7, stalled: 4, total: 10, ratio: 0.5 }),
+		]);
+		await nextPeriod();
+		await runCycle();
+
+		const row = await waitForAggregatedMetric('sparse-thread-probe', first + 3);
+		assertNoNaN(row);
+		assert.strictEqual(row.count, 2, 'one per thread');
+		assert.strictEqual(row.depth, 3 + 2);
+		assert.strictEqual(row.maxDepth, 6 + 8, 'per-thread peaks, summed');
+		assert.strictEqual(row.queued, 1 + 6, 'per-thread means, summed');
+		assert.strictEqual(row.stalled, 3, 'only the thread that carries it contributes');
+		assert.strictEqual(row.ratio, 0.5, 'a measure named ratio is summed like any other');
+	});
+
+	it('folds a metric that reports its own field named threads', async function () {
+		this.timeout(30000);
+		await drainLiveReports();
+		const first = lastRawKey() + 1;
+		await seedRawReports([
+			sampleReport(first, 1, { metric: 'threads-field-probe', count: 1, mean: 2, threads: 4 }),
+			sampleReport(first + 1, 1, { metric: 'threads-field-probe', count: 1, mean: 4, threads: 4 }),
+		]);
+		await nextPeriod();
+		await runCycle();
+
+		const row = await waitForAggregatedMetric('threads-field-probe', first + 1);
+		assert.strictEqual(row.mean, 3);
+		assert.strictEqual(row.count, 2);
 	});
 });
