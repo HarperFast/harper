@@ -503,6 +503,9 @@ export function configValidator(configJson, skipFsValidation = false) {
 				preloadRequire: Joi.alternatives([string, array.items(string)])
 					.allow(null)
 					.optional(),
+				v8Flags: Joi.alternatives([string, array.items(string)])
+					.allow(null)
+					.optional(),
 			})
 		),
 		storage: Joi.object({

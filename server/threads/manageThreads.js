@@ -24,6 +24,7 @@ const { _assignPackageExport } = require('../../globals.js');
 const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
 const { resolvePreloadModules } = require('./resolvePreload.ts');
 const { resolveThreadHeapMemoryMb } = require('./threadHeapMemory.ts');
+const { applyConfiguredV8Flags } = require('./v8Flags.ts');
 const { getConfigPath } = require('../../config/configUtils.ts');
 const { resolveWatchTarget } = require('../../utility/watchPath.ts');
 const {
@@ -1218,6 +1219,7 @@ function startWorker(path, options = {}, startOptions = {}) {
 		error.code = 'ERR_HARPER_PROCESS_SHUTTING_DOWN';
 		throw error;
 	}
+	applyConfiguredV8Flags();
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
 	// on the thread count. Generally, it is unrealistic to efficiently use the majority of total memory for a single
 	// NodeJS worker since it would lead to massive swap space usage with other processes and there is significant
