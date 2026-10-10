@@ -273,4 +273,20 @@ describe('analytics aggregation cycle', () => {
 		assert.strictEqual(row.stalled, 3, 'only the thread that carries it contributes');
 		assert.strictEqual(row.ratio, 0.5, 'a measure named ratio is summed like any other');
 	});
+
+	it('folds a metric that reports its own field named threads', async function () {
+		this.timeout(30000);
+		await drainLiveReports();
+		const first = lastRawKey() + 1;
+		await seedRawReports([
+			sampleReport(first, 1, { metric: 'threads-field-probe', count: 1, mean: 2, threads: 4 }),
+			sampleReport(first + 1, 1, { metric: 'threads-field-probe', count: 1, mean: 4, threads: 4 }),
+		]);
+		await nextPeriod();
+		await runCycle();
+
+		const row = await waitForAggregatedMetric('threads-field-probe', first + 1);
+		assert.strictEqual(row.mean, 3);
+		assert.strictEqual(row.count, 2);
+	});
 });
