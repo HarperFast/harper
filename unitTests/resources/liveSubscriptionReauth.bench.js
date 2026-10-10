@@ -50,7 +50,6 @@ function fakeSubscription() {
 	return { closed: false, end() {}, on() {} };
 }
 
-// Counts every user resolution the rechecks make; the registry and Resource.ts read it off the module
 let resolutions = 0;
 const findAndValidateUser = userModule.findAndValidateUser;
 userModule.findAndValidateUser = function (...args) {
@@ -65,7 +64,6 @@ const turn = () => new Promise(setImmediate);
 
 /** Runs `work`, then waits until rechecks stop resolving users for `quietTurns` event-loop turns. */
 async function measure(work, { quietTurns = 5 } = {}) {
-	// the longest gap between consecutive event-loop turns: how long the work held the loop at once
 	let maxStall = 0;
 	let probing = true;
 	let lastTurn = performance.now();

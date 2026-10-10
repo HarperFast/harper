@@ -229,10 +229,11 @@ describe('Certified subscription progress', function () {
 		const uncertified = await T.subscribe({ omitCurrent: true });
 		assert.strictEqual(deliveryCertified(subscription), true);
 		assert.strictEqual(deliveryCertified(uncertified), false, 'only a subscription that tracks progress');
+		// no record follows the failure, so no drain advances progress past it
 		T.auditStore.subscriptionLogRange.failedLogs.add('unreadable');
 		try {
-			await T.put('a', { value: 1 });
-			await waitFor(() => !deliveryCertified(subscription));
+			assert.strictEqual(deliveryCertified(subscription), false);
+			assert.strictEqual(registry(subscription).progressStopped, true);
 		} finally {
 			T.auditStore.subscriptionLogRange.failedLogs.delete('unreadable');
 			subscription.end();

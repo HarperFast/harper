@@ -14,6 +14,9 @@ let token_auth = rewire('#src/security/tokenAuthentication');
 const user = require('#src/security/user');
 const insert = require('#src/dataLayer/insert');
 
+// a resolved user also carries the record versions it was built from, under a symbol key
+const recordFields = (resolved) => Object.fromEntries(Object.entries(resolved));
+
 const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE =
 	'-----BEGIN ENCRYPTED PRIVATE KEY-----\n' +
@@ -563,7 +566,7 @@ describe('test validateOperationToken function', () => {
 		}
 
 		assert.deepStrictEqual(error, undefined);
-		assert.deepStrictEqual(user, { active: true, username: 'HDB_ADMIN' });
+		assert.deepStrictEqual(recordFields(user), { active: true, username: 'HDB_ADMIN' });
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
 		assert(validate_user_stub.callCount === 1);
@@ -600,7 +603,7 @@ describe('test validateOperationToken function', () => {
 			user = await token_auth.validateOperationToken(non_user_tokens.operation_token);
 		} catch {}
 
-		assert.deepStrictEqual(user, { username: 'non_user' });
+		assert.deepStrictEqual(recordFields(user), { username: 'non_user' });
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
 		assert(validate_user_stub.callCount === 1);
@@ -969,7 +972,7 @@ describe('test validateLoginToken function', () => {
 
 	it('test hdb_admin login token', async () => {
 		const result_user = await token_auth.validateLoginToken(hdb_admin_login_token);
-		assert.deepStrictEqual(result_user, { active: true, username: 'HDB_ADMIN' });
+		assert.deepStrictEqual(recordFields(result_user), { active: true, username: 'HDB_ADMIN' });
 	});
 
 	it('test old_user login token', async () => {
@@ -984,7 +987,7 @@ describe('test validateLoginToken function', () => {
 
 	it('test non-existent user login token', async () => {
 		const result_user = await token_auth.validateLoginToken(non_user_login_token);
-		assert.deepStrictEqual(result_user, { username: 'non_user' });
+		assert.deepStrictEqual(recordFields(result_user), { username: 'non_user' });
 	});
 
 	it('test bad login token', async () => {
@@ -1100,7 +1103,7 @@ describe('test validateRefreshToken function', () => {
 		}
 
 		assert.deepStrictEqual(error, undefined);
-		assert.deepStrictEqual(user_data, {
+		assert.deepStrictEqual(recordFields(user_data), {
 			active: true,
 			username: 'HDB_ADMIN',
 			refresh_token: user.getUserWithRole('HDB_ADMIN').refresh_token,

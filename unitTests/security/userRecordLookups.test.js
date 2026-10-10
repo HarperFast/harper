@@ -343,6 +343,24 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			assert.strictEqual(changes.at(-1), undefined);
 		});
 
+		it('re-subscribes after its subscription closes, and notifies an unknown change for the gap', async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			await waitFor(() => user.userChangeNotificationEpoch() !== 0, { message: 'notifications never certified' });
+			const epoch = user.userChangeNotificationEpoch();
+			const changes = [];
+			user.onUserChange((change) => changes.push(change));
+			user._userChangeSubscription('hdb_role').close(new Error('event failed to deliver'));
+			assert.strictEqual(user.userChangeNotificationEpoch(), 0);
+
+			await waitFor(() => user.userChangeNotificationEpoch() !== 0, { timeout: 5000, message: 'never re-subscribed' });
+			assert.notStrictEqual(user.userChangeNotificationEpoch(), epoch);
+			await waitFor(() => changes.includes(undefined), { message: 'the gap was not notified' });
+			await nextUserChange(() =>
+				databases.system.hdb_role.put({ id: 'lookup_role', role: 'lookup_role', permission: {} })
+			);
+			assert.deepStrictEqual([...changes.at(-1).roleIds], ['lookup_role'], 'the new subscription delivers');
+		});
+
 		it('certifies continuous delivery only where the storage engine can', async () => {
 			await waitFor(() => user.userChangeNotificationEpoch() !== 0 || process.env.HARPER_STORAGE_ENGINE === 'lmdb');
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') assert.strictEqual(user.userChangeNotificationEpoch(), 0);

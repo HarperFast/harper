@@ -97,10 +97,11 @@ let pendingFull = false;
 let pendingPolicy = false;
 const pendingUsernames = new Set<unknown>();
 const pendingRoleIds = new Set<unknown>();
+const ANY_ROLE = Symbol('any role');
 /** The notification epoch and start time of the last full pass that completed. */
 let lastFullPass = { epoch: 0, startedAt: 0 };
 
-const NOOP_HANDLE: LiveSubscriptionHandle = { unregister: () => {}, verify: () => Promise.resolve(true) };
+const NOOP_HANDLE: LiveSubscriptionHandle = { unregister: () => {}, verify: () => Promise.resolve(false) };
 
 class Pass implements RecheckPass {
 	sinceYield = 0;
@@ -141,6 +142,7 @@ function onUserChanged(change?: UserChange): void {
 		for (const roleId of change.roleIds) {
 			if (roleHolders.has(roleId)) pendingRoleIds.add(roleId);
 		}
+		if (change.roleIds.size > 0 && roleHolders.has(ANY_ROLE)) pendingRoleIds.add(ANY_ROLE);
 		if (pendingUsernames.size + pendingRoleIds.size > MAX_PENDING_IDS) pendingFull = true;
 	}
 	if (pendingFull) {
@@ -191,14 +193,14 @@ function stopIfIdle(): void {
 	}
 }
 
-/** Reads the role id the username's hdb_user record names; on a failed read the group keeps the one it had. */
+/** Reads the role id the username's hdb_user record names; a group whose read failed is a holder of every role. */
 function indexRole(group: PrincipalGroup): void {
 	let roleId: unknown;
 	try {
 		securityUser ??= require('../security/user');
 		roleId = securityUser!.userRecordVersions(group.username).roleId;
 	} catch {
-		return;
+		roleId = ANY_ROLE;
 	}
 	setRole(group, roleId);
 }
@@ -229,7 +231,8 @@ function track(entry: LiveSubscription): void {
 	entry.group = group;
 	trackedCount++;
 	if (!entry.identityOnly) policyEntries.add(entry);
-	if (entry.authExpiresAt != null) addExpiry(entry);
+	// a non-finite exp never expires (as isExpired reads it) and would disorder the heap
+	if (Number.isFinite(entry.authExpiresAt)) addExpiry(entry);
 }
 
 /** The only way an entry leaves the registry; true if it was tracked. */
@@ -436,7 +439,9 @@ async function runPending(): Promise<void> {
 		}
 		await recheckGroups(pass, targets);
 		if (policy) {
-			for (const entry of Array.from(policyEntries)) await recheckEntry(pass, entry);
+			for (const entry of Array.from(policyEntries)) {
+				if (!targets.has(entry.group!)) await recheckEntry(pass, entry);
+			}
 		}
 	} finally {
 		reportRevocations(pass.revokedByReason);

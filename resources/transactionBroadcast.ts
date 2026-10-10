@@ -172,7 +172,10 @@ function stopProgress(databaseSubscriptions: any) {
  */
 export function deliveryCertified(subscription: any): boolean {
 	const databaseSubscriptions = subscription.subscriptions?.tables?.envs;
-	return Boolean(subscription.reportsProgress && databaseSubscriptions && !databaseSubscriptions.progressStopped);
+	if (!subscription.reportsProgress || !databaseSubscriptions) return false;
+	// a failed read ends a drain as if the log were exhausted, so no later record may come to latch it
+	if (rangeFailures(databaseSubscriptions.auditStore?.subscriptionLogRange) > 0) stopProgress(databaseSubscriptions);
+	return !databaseSubscriptions.progressStopped;
 }
 
 /**

@@ -506,7 +506,9 @@ interface UserProvenance {
 	roleStamp: RecordStamp;
 }
 
-const userProvenance = new WeakMap<User, UserProvenance>();
+// An own property of a user this module built, so a spread copy carries it without a WeakMap write
+const PROVENANCE = Symbol('record provenance');
+// a user resolved outside this module (a component's server.getUser), which may not take a property
 const trackedProvenance = new WeakMap<User, UserProvenance>();
 
 function provenanceOf(username: string, entries: UserEntries): UserProvenance {
@@ -525,7 +527,7 @@ function userView(username: string, entries: UserEntries): User {
 	const role = record && derivedRole(record.role, entries.role);
 	// verifyPerms replaces role.permission on the request's user; the derived role is shared
 	if (role) user.role = { ...role, permission: { ...role.permission } };
-	userProvenance.set(user, provenanceOf(username, entries));
+	(user as any)[PROVENANCE] = provenanceOf(username, entries);
 	return user;
 }
 
@@ -543,17 +545,19 @@ function userRecordVersions(username: string): UserProvenance {
  * before it was resolved; a write in between then shows as a change.
  */
 function trackUserRecords(user: User, versions: UserProvenance): void {
-	if (user && typeof user === 'object' && !userProvenance.has(user)) trackedProvenance.set(user, versions);
+	if (user && typeof user === 'object' && !(user as any)[PROVENANCE]) trackedProvenance.set(user, versions);
 }
 
 /**
  * A copy whose `role` and `permission` the caller may replace (verifyPerms does) without touching `user`;
  * `isCurrentUser` checks it against the records `user` was built from.
  */
-function cloneUserView(user: User): User {
+function cloneUserView(user: User & { role: UserRole }): User {
 	const clone: User = { ...user, role: { ...user.role, permission: { ...user.role.permission } } };
-	const provenance = userProvenance.get(user) ?? trackedProvenance.get(user);
-	if (provenance) trackedProvenance.set(clone, provenance);
+	if (!(clone as any)[PROVENANCE]) {
+		const tracked = trackedProvenance.get(user);
+		if (tracked) trackedProvenance.set(clone, tracked);
+	}
 	return clone;
 }
 
@@ -562,7 +566,7 @@ function cloneUserView(user: User): User {
  * no recorded versions (a scoped token, whose role it carries itself) is current.
  */
 function isCurrentUser(user: User): boolean {
-	const provenance = userProvenance.get(user) ?? trackedProvenance.get(user);
+	const provenance: UserProvenance | undefined = (user as any)[PROVENANCE] ?? trackedProvenance.get(user);
 	if (!provenance) return true;
 	if (!isUnchanged(systemStore(USER_TABLE_NAME), provenance.username, provenance.userStamp)) return false;
 	return (
@@ -731,17 +735,26 @@ function subscribeToUserChanges(table): void {
 	const state: { table: any; subscription: Promise<any>; opened?: any } = { table, subscription };
 	userChangeSubscriptions.set(tableName, state);
 	const isCurrent = () => userChangeSubscriptions.get(tableName) === state;
+	const resubscribeLater = () => {
+		setTimeout(() => {
+			if (databases.system?.[tableName] === table) subscribeToUserChanges(table);
+		}, subscribeRetryDelay).unref();
+		subscribeRetryDelay = Math.min(subscribeRetryDelay * 2, SUBSCRIBE_RETRY_MAX_MS);
+	};
 	subscription.then(
 		(opened) => {
 			subscribeRetryDelay = SUBSCRIBE_RETRY_MIN_MS;
 			if (!isCurrent()) return;
-			// the broadcaster closes subscribers when their database closes or changes generation
-			opened.on('close', () => {
+			const onClosed = () => {
 				if (!isCurrent()) return;
 				userChangeSubscriptions.delete(tableName);
 				updateNotificationEpoch();
-			});
-			if (opened.closed) return void userChangeSubscriptions.delete(tableName);
+				resubscribeLater();
+			};
+			if (opened.closed) return onClosed();
+			// the broadcaster closes subscribers when their database closes or changes generation, and a
+			// progress-reporting one when an event fails to deliver
+			opened.on('close', onClosed);
 			state.opened = opened;
 			updateNotificationEpoch();
 			if (subscribedBefore.has(tableName)) scheduleUserChangeNotification();
@@ -751,10 +764,7 @@ function subscribeToUserChanges(table): void {
 			if (!isCurrent()) return;
 			userChangeSubscriptions.delete(tableName);
 			logger.error(`Failed to subscribe to system.${tableName} for user changes; retrying`, error);
-			setTimeout(() => {
-				if (databases.system?.[tableName] === table) subscribeToUserChanges(table);
-			}, subscribeRetryDelay).unref();
-			subscribeRetryDelay = Math.min(subscribeRetryDelay * 2, SUBSCRIBE_RETRY_MAX_MS);
+			resubscribeLater();
 		}
 	);
 }
@@ -786,6 +796,11 @@ function notifyUserChangeListeners(): void {
 			logger.error('User change listener failed', error);
 		}
 	}
+}
+
+/** Test-only: the open hdb_user or hdb_role subscription behind `onUserChange`. */
+export function _userChangeSubscription(tableName: string): any {
+	return userChangeSubscriptions.get(tableName)?.opened;
 }
 
 let invalidateCallbacks = [];

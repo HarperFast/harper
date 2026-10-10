@@ -21,6 +21,7 @@ const hdbLogger = require('#src/utility/logging/harper_logger');
 const userModule = require('#src/security/user');
 const { databases, table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 const { waitFor } = require('../waitFor');
 
 // the registry's yield and expiry-batch size (server/liveSubscriptionAuth.ts SLICE_SIZE)
@@ -273,6 +274,15 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(revokeForUndefined.calls.length, 1);
 			assert.strictEqual(revokeForClosed.calls.length, 1);
 			assert.strictEqual(_liveSubscriptionCount(), 0);
+		});
+
+		it('reports a registration it did not track as unverified', async () => {
+			const handle = registerLiveSubscription({
+				subscription: { closed: true },
+				username: 'closed',
+				recheck: async () => true,
+			});
+			assert.strictEqual(await handle.verify(), false);
 		});
 
 		it('returns an unregister handle that removes only its own entry', () => {
@@ -625,6 +635,39 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(outsider.calls.length, 1, 'an oversized change set rechecks everything');
 		});
 
+		it('rechecks a user whose role could not be read on any role change', async () => {
+			const original = userModule.userRecordVersions;
+			userModule.userRecordVersions = () => {
+				throw new Error('system store closing');
+			};
+			const recheck = spyFn(async () => true);
+			try {
+				register({ username: 'unreadable_role', recheck, revoke: spyFn() });
+			} finally {
+				userModule.userRecordVersions = original;
+			}
+
+			await _notifyUserChange(change({ roleIds: ['some_other_role'] }));
+
+			assert.strictEqual(recheck.calls.length, 1);
+		});
+
+		it('rechecks a policy entry once when a user change and a tick share a pass', async () => {
+			const originalEpoch = userModule.userChangeNotificationEpoch;
+			userModule.userChangeNotificationEpoch = () => 5;
+			try {
+				const recheck = spyFn(async () => true);
+				register({ username: 'dedupe_policy', recheck, revoke: spyFn() });
+				await _sweepNow();
+
+				await Promise.all([_notifyUserChange(change({ usernames: ['dedupe_policy'] })), _tickNow()]);
+
+				assert.strictEqual(recheck.calls.length, 2, 'once for the sweep, once for the shared pass');
+			} finally {
+				userModule.userChangeNotificationEpoch = originalEpoch;
+			}
+		});
+
 		it('ignores a change to an identity no subscription holds', async () => {
 			const recheck = spyFn(async () => true);
 			register({ username: 'bystander', recheck, revoke: spyFn() });
@@ -790,7 +833,9 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 				handles.length = 0;
 				const perTurn = [];
 				let last = 0;
+				const deadline = Date.now() + 5000;
 				while (revoked < cohort) {
+					assert.ok(Date.now() < deadline, `expiry stalled after ${revoked} of ${cohort}`);
 					await turn();
 					perTurn.push(revoked - last);
 					last = revoked;
@@ -804,6 +849,15 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 				hdbLogger.warn = originalWarn;
 				hdbLogger.info = originalInfo;
 			}
+		});
+
+		it('expires other entries on time beside an entry with a non-finite exp', async () => {
+			const healthy = spyFn();
+			register({ username: 'finite_exp', authExpiresAt: nowSeconds() + 1, recheck: async () => true, revoke: healthy });
+			register({ username: 'nan_exp', authExpiresAt: NaN, recheck: async () => true, revoke: spyFn() });
+
+			await waitFor(() => healthy.calls.length === 1, { timeout: 3000, message: 'the NaN entry blocked expiry' });
+			assert.strictEqual(_liveSubscriptionCount(), 1, 'a non-finite exp does not expire');
 		});
 
 		it('contains throwing, rejecting and never-settling teardown on the expiry path', async () => {
@@ -975,6 +1029,37 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			}
 		});
 
+		it('keeps an authorization-narrowed target on the identity-only cadence, but not a caller’s select', async () => {
+			const attributeRole = readRole('attribute_role');
+			attributeRole.permission.test.tables.ReauthDocs.attribute_permissions = [
+				{ attribute_name: 'id', read: true, insert: false, update: false },
+				{ attribute_name: 'value', read: false, insert: false, update: false },
+			];
+			await testUtils.seedUsers([{ username: 'attribute_user', active: true, role: attributeRole }]);
+			const user = await resolve('attribute_user');
+			const { context: narrowed } = await subscribe(Docs, user);
+			const selected = { user, authorize: true };
+			const target = new RequestTarget('/topic');
+			target.id = 'topic';
+			target.select = ['id'];
+			const selectedSubscription = await Docs.subscribe(target, undefined, selected);
+			handles.push({ unregister: () => selectedSubscription.end() });
+			const originalEpoch = userModule.userChangeNotificationEpoch;
+			userModule.userChangeNotificationEpoch = () => 13;
+			try {
+				await _sweepNow();
+				const narrowedUser = narrowed.user;
+				const selectedUser = selected.user;
+
+				await _tickNow();
+
+				assert.strictEqual(narrowed.user, narrowedUser, 'a select written by authorization stays identity-only');
+				assert.notStrictEqual(selected.user, selectedUser, 'a caller’s select is rechecked on every tick');
+			} finally {
+				userModule.userChangeNotificationEpoch = originalEpoch;
+			}
+		});
+
 		it('rejects a subscription admitted by a user whose records changed before it registered', async () => {
 			await testUtils.seedUsers([{ username: 'stale_user', active: true, role: readRole('stale_role') }]);
 			const user = await resolve('stale_user');
@@ -987,7 +1072,6 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 		it('admits a stale principal that is still authorized, with its context on the current user', async () => {
 			await testUtils.seedUsers([{ username: 'stale_ok', active: true, role: readRole('stale_ok_role') }]);
 			const user = await resolve('stale_ok');
-			// a new version of the same role record
 			await databases.system.hdb_role.put(readRole('stale_ok_role'));
 
 			const { context } = await subscribe(Docs, user);

@@ -600,8 +600,9 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 _assignPackageExport('Resource', Resource);
 
 /**
- * allowRead implementations whose result, for a target with no `select`, reads only the user's role
- * permission and the resource class, so a live-subscription recheck pass may share it across subscriptions.
+ * allowRead implementations whose result, for a target with no caller-supplied `select`, reads only the
+ * user's role permission and the resource class, so a live-subscription recheck pass may share it across
+ * subscriptions.
  */
 export const defaultAllowReads = new WeakSet<(...args: any[]) => unknown>([Resource.prototype.allowRead]);
 
@@ -913,6 +914,8 @@ function transactional(
 			// 'subscribe' is the direct MQTT path; 'connect' is the SSE/WebSocket path (REST CONNECT) —
 			// both resolve to the same subscription iterable.
 			const isSubscribeAction = options.method === 'subscribe' || options.method === 'connect';
+			// read before allowRead, which may write a select of its own
+			const selectedByCaller = isSubscribeAction && query?.select != null;
 			const runAction = (data: any) => {
 				// Capture the complete target after the initial allowRead has narrowed it, but before
 				// subscribe/connect implementations can mutate it. Every later recheck gets a fresh clone.
@@ -924,7 +927,7 @@ function transactional(
 				const result = action(resource, query, context, data);
 				if (!isSubscribeAction) return result;
 				return when(result, (subscription: any) =>
-					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, context)
+					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, selectedByCaller, context)
 				);
 			};
 			let checkPermission = false;
@@ -1046,14 +1049,22 @@ const resolveUser = (_scope: unknown, username: string) =>
 	securityUser!.findAndValidateUser(username, undefined, false);
 
 /** Returns `subscription`, or a promise of it once a principal stale at admission has been rechecked. */
-function registerLiveSubscriptionForContext(subscription: any, resource: any, admittedTarget: any, context: Context) {
+function registerLiveSubscriptionForContext(
+	subscription: any,
+	resource: any,
+	admittedTarget: any,
+	selectedByCaller: boolean,
+	context: Context
+) {
 	const user: any = context?.user;
 	const username = user?.username;
 	// Internal watchers, replication and local-bypass have no user principal — nothing to re-authorize.
 	if (!username) return subscription;
 	securityUser ??= require('../security/user');
 	const { cloneUserView, isCurrentUser } = securityUser!;
-	const sharedDecision = admittedTarget?.select == null && defaultAllowReads.has(resource.allowRead);
+	// A select written by authorization names no relationship, so the default allowRead's result still
+	// reads only the role's table permission; a caller's select can reach related tables' allowRead.
+	const sharedDecision = !selectedByCaller && defaultAllowReads.has(resource.allowRead);
 	const evaluate = (principal: any) => {
 		const reTarget: any = cloneRequestTarget(admittedTarget);
 		reTarget.checkPermission = principal.role?.permission;
