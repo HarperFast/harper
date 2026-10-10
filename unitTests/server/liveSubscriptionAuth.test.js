@@ -275,6 +275,23 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 		});
 
+		it('reports a revocation by another path during verify as a revocation', async () => {
+			let release;
+			const held = new Promise((resolve) => (release = resolve));
+			const revoke = spyFn();
+			const handle = register({
+				username: 'verify_expires',
+				authExpiresAt: Math.floor(Date.now() / 1000) + 1,
+				recheck: () => held.then(() => true),
+				revoke,
+			});
+			const outcome = handle.verify();
+			await waitFor(() => revoke.calls.length === 1, { timeout: 3000, message: 'the token never expired' });
+			release();
+
+			assert.strictEqual(await outcome, 'revoked');
+		});
+
 		it('reports a registration it did not track as unverified', async () => {
 			const handle = registerLiveSubscription({
 				subscription: { closed: true },

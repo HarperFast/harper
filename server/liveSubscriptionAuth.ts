@@ -51,6 +51,8 @@ interface LiveSubscription {
 	group?: PrincipalGroup;
 	/** Position in expiryHeap, or -1, so removal on unregister needs no search. */
 	heapIndex: number;
+	/** Set when re-authorization, rather than its owner, removed it. */
+	revoked?: boolean;
 }
 
 interface LiveSubscriptionHandle {
@@ -326,7 +328,7 @@ export function registerLiveSubscription(
 		await recheckEntry(pass, entry);
 		reportRevocations(pass.revokedByReason);
 		if (entry.group) return 'authorized';
-		return pass.revokedByReason.size > 0 ? 'revoked' : 'closed';
+		return entry.revoked ? 'revoked' : 'closed';
 	};
 	return { unregister, verify };
 }
@@ -338,6 +340,7 @@ function terminateEntry(
 	notice: ((message: string) => void) | undefined = hdbLogger.info
 ): boolean {
 	if (!untrack(entry)) return false;
+	entry.revoked = true;
 	safeLog(notice, `liveSubscriptionAuth: revoking subscription for ${entry.username} (${reason})`);
 	const failed = (error: unknown) =>
 		safeLog(
