@@ -258,8 +258,8 @@ describe('analytics aggregation cycle', () => {
 		await seedRawReports([
 			gauge(first, 0, { depth: 2 }),
 			gauge(first + 1, 0, { depth: 4, maxDepth: 6, queued: 1 }),
-			gauge(first + 2, 7, { depth: 1, maxDepth: 3, queued: 5, stalled: 2, total: 10 }),
-			gauge(first + 3, 7, { depth: 3, maxDepth: 8, queued: 7, stalled: 4, total: 10 }),
+			gauge(first + 2, 7, { depth: 1, maxDepth: 3, queued: 5, stalled: 2, total: 10, ratio: 0.5 }),
+			gauge(first + 3, 7, { depth: 3, maxDepth: 8, queued: 7, stalled: 4, total: 10, ratio: 0.5 }),
 		]);
 		await nextPeriod();
 		await runCycle();
@@ -271,5 +271,6 @@ describe('analytics aggregation cycle', () => {
 		assert.strictEqual(row.maxDepth, 6 + 8, 'per-thread peaks, summed');
 		assert.strictEqual(row.queued, 1 + 6, 'per-thread means, summed');
 		assert.strictEqual(row.stalled, 3, 'only the thread that carries it contributes');
+		assert.strictEqual(row.ratio, 0.5, 'a measure named ratio is summed like any other');
 	});
 });
