@@ -7,6 +7,7 @@ import { getQuotaStatus } from '../../server/storageReclamation.ts';
 import { lmdbGetTableSize } from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize.ts';
 import { getThreadInfo } from '../../server/threads/manageThreads.js';
 import * as env from './environmentManager.ts';
+import { PRODUCT_NAME } from '../packageUtils.js';
 import { getDatabases, type Table } from '../../resources/databases.ts';
 import { TableSizeObject } from '../../dataLayer/harperBridge/TableSizeObject.ts';
 import { RocksDatabase, StatsHistogramData } from '@harperfast/rocksdb-js';
@@ -228,7 +229,7 @@ async function getHdbPid(): Promise<number | null> {
 	} catch (err) {
 		if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT) {
 			logger.warn(
-				`Unable to locate 'hdb.pid' file, try stopping and starting Harper. This could be because Harper is not running.`
+				`Unable to locate 'hdb.pid' file, try stopping and starting ${PRODUCT_NAME}. This could be because ${PRODUCT_NAME} is not running.`
 			);
 		} else {
 			throw err;

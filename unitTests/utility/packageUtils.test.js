@@ -1,8 +1,17 @@
 const { describe, it } = require('mocha');
 
 const assert = require('node:assert');
-const { join } = require('node:path');
-const { readFileSync, realpathSync, symlinkSync, rmSync, mkdtempSync } = require('node:fs');
+const { join, dirname } = require('node:path');
+const {
+	readFileSync,
+	realpathSync,
+	symlinkSync,
+	rmSync,
+	mkdtempSync,
+	mkdirSync,
+	writeFileSync,
+	copyFileSync,
+} = require('node:fs');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 
@@ -59,5 +68,59 @@ describe('packageUtils', () => {
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true });
 		}
+	});
+
+	describe('PRODUCT_NAME', () => {
+		it("is this package's productName", () => {
+			assert.equal(packageUtils.PRODUCT_NAME, 'Harper');
+		});
+
+		function productNameFor(manifests, modulePath) {
+			const tmpDir = mkdtempSync(join(os.tmpdir(), 'harper-product-name-test-'));
+			try {
+				for (const [dir, manifest] of Object.entries(manifests)) {
+					mkdirSync(join(tmpDir, dir), { recursive: true });
+					writeFileSync(join(tmpDir, dir, 'package.json'), JSON.stringify(manifest));
+				}
+				mkdirSync(join(tmpDir, dirname(modulePath)), { recursive: true });
+				copyFileSync(join(__dirname, '../../utility/packageUtils.js'), join(tmpDir, modulePath));
+				return execFileSync(
+					process.execPath,
+					['-e', `console.log(require(${JSON.stringify(join(tmpDir, modulePath))}).PRODUCT_NAME)`],
+					{ encoding: 'utf8', cwd: os.tmpdir() }
+				).trim();
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5 });
+			}
+		}
+
+		it("uses the embedding distribution's productName for its compiled core", () => {
+			// Harper Pro ships core compiled under dist/core with no package.json of its own
+			assert.equal(
+				productNameFor(
+					{ '.': { name: '@harperfast/harper-pro', productName: 'Harper Pro' } },
+					'dist/core/utility/packageUtils.js'
+				),
+				'Harper Pro'
+			);
+		});
+
+		it('uses the nearest package rather than an enclosing application', () => {
+			assert.equal(
+				productNameFor(
+					{
+						'.': { name: 'my-app', productName: 'My App' },
+						'node_modules/harper': { name: 'harper', productName: 'Harper' },
+					},
+					'node_modules/harper/utility/packageUtils.js'
+				),
+				'Harper'
+			);
+		});
+
+		it('falls back to Harper when productName is missing or empty', () => {
+			assert.equal(productNameFor({ '.': { name: 'harper' } }, 'utility/packageUtils.js'), 'Harper');
+			assert.equal(productNameFor({ '.': { name: 'harper', productName: '' } }, 'utility/packageUtils.js'), 'Harper');
+		});
 	});
 });

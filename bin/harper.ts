@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import logger from '../utility/logging/harper_logger.ts';
 import * as cliOperations from './cliOperations.ts';
 import { help } from './help.ts';
-import { packageJson } from '../utility/packageUtils.js';
+import { packageJson, PRODUCT_NAME } from '../utility/packageUtils.js';
 import checkNode from '../launchServiceScripts/utility/checkNodeVersion.js';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 const { SERVICE_ACTIONS_ENUM, OPERATIONS_ENUM } = hdbTerms as any;
@@ -83,7 +83,7 @@ async function harper() {
 			// The require is here to better control the flow of imports when this module is called.
 			return require('./upgrade.js')
 				.upgrade(null)
-				.then(() => 'Your instance of Harper is up to date!');
+				.then(() => `Your instance of ${PRODUCT_NAME} is up to date!`);
 		case SERVICE_ACTIONS_ENUM.STATUS:
 			return (require('./status').default || require('./status'))();
 		case SERVICE_ACTIONS_ENUM.LOGIN: {
@@ -155,12 +155,12 @@ async function harper() {
 				}
 			} else if (fs.existsSync(hdbTerms.HDB_COMPONENT_CONFIG_FILE) || fs.existsSync('schema.graphql')) {
 				console.warn(
-					`It appears you are running Harper in an application directory, but did not specify the path. I'll go ahead and run the application for you since that's probably what you meant. But to avoid this warning in the future, run applications in the current directory like this: "harper ${service} ."`
+					`It appears you are running ${PRODUCT_NAME} in an application directory, but did not specify the path. I'll go ahead and run the application for you since that's probably what you meant. But to avoid this warning in the future, run applications in the current directory like this: "harper ${service} ."`
 				);
 				process.env.RUN_HDB_APP = process.cwd();
 			} else if (fs.existsSync(hdbTerms.HARPER_CONFIG_FILE) || fs.existsSync(hdbTerms.HDB_CONFIG_FILE)) {
 				console.warn(
-					`It appears you are running Harper in a root data directory, but did not specify the path. I'll go ahead and run Harper with its root path set to "." for you since that's probably what you meant. But to avoid this warning in the future, run it like this: "harper ${service} ."`
+					`It appears you are running ${PRODUCT_NAME} in a root data directory, but did not specify the path. I'll go ahead and run ${PRODUCT_NAME} with its root path set to "." for you since that's probably what you meant. But to avoid this warning in the future, run it like this: "harper ${service} ."`
 				);
 				process.env.ROOTPATH = process.cwd();
 			}
