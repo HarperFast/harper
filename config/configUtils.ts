@@ -23,7 +23,7 @@ import _ from 'lodash';
 // through its shared module object the way named exports can.
 // eslint-disable-next-line prefer-const
 let PropertiesReader = propertiesReaderModule;
-import { handleHDBError } from '../utility/errors/hdbError.ts';
+import { handleHDBError, ServerError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES, HDB_ERROR_MSGS } from '../utility/errors/commonErrors.ts';
 import { server } from '../server/Server.ts';
 import { getBackupDirPath } from './configHelpers.ts';
@@ -31,6 +31,7 @@ import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
 import { prepareRuntimeEnvConfig, hasPersistedEnvConfigState, discardConfigState } from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
+import { formatConfigParseErrorDetails } from './parseConfigFile.ts';
 import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
 import { fsyncTolerantSync, isUnsupportedSyncError } from '../utility/fsync.ts';
 
@@ -699,6 +700,12 @@ export function initConfig(force = false) {
 			}
 		}
 
+		if (configDoc.errors?.length > 0) {
+			throw new ServerError(
+				`Error parsing ${configFilePath}: YAMLParseError ${formatConfigParseErrorDetails(configDoc.errors[0])}`
+			);
+		}
+
 		checkForUpdatedConfig(configDoc, configFilePath);
 
 		// Config-shaping env vars delivered via component .env files (loadEnv) cannot take effect —
@@ -784,13 +791,6 @@ function checkForUpdatedConfig(configDoc, configFilePath) {
 
 	if (updateFile) {
 		logger.trace('Updating config file with missing config params');
-		if (configDoc.errors?.length > 0) {
-			throw handleHDBError(
-				new Error(),
-				`Error parsing harperdb-config.yaml ${configDoc.errors}`,
-				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
-			);
-		}
 		persistConfigDuringBoot(configFilePath, () => atomicWriteFile(configFilePath, String(configDoc)));
 	}
 }

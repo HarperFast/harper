@@ -179,6 +179,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 ## config/
 
+- [Root config is adopted only when it parses (`config/configUtils.ts`)](config/DESIGN.md#root-config-is-adopted-only-when-it-parses-configconfigutilsts) — malformed and duplicate-key YAML is rejected before backfill or active-config replacement on boot and forced reload, enforced by `unitTests/config/configUtils-parseErrors.test.js`.
 - [`set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)](config/DESIGN.md#set_configuration-replication-is-opt-in-replicateoperation-is-default-on-configconfigutilsts) — `replicateOperation` is default-on, so `setConfiguration` keeps an explicit opt-in guard and strips `replicated` on both sides.
 - [Root config watchers must read synchronously (`config/readConfigFileSync.ts`)](config/DESIGN.md#root-config-watchers-must-read-synchronously-configreadconfigfilesyncts) — `atomicWriteFile` blocks on Windows rename retries while any read handle is open, so config watchers must read synchronously.
 - [Config is composed and memoized before any component runs (`config/configUtils.ts`)](config/DESIGN.md#config-is-composed-and-memoized-before-any-component-runs-configconfigutilsts) — `getConfigObj()` memoizes per thread before any component loads; a component `.env` can never shape config.
