@@ -24,7 +24,6 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { waitFor } = require('../waitFor');
 
-// server/liveSubscriptionAuth.ts SLICE_SIZE
 const SLICE_SIZE = 256;
 const turn = () => new Promise((resolve) => setImmediate(resolve));
 const change = ({ usernames = [], roleIds = [] } = {}) => ({
@@ -1123,6 +1122,26 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			await databases.system.hdb_user.put({ username: 'stale_user', active: false, role: 'stale_role' });
 
 			await assert.rejects(subscribe(Docs, user), { statusCode: 403 });
+			assert.strictEqual(_liveSubscriptionCount(), 0);
+		});
+
+		it('returns a closed or absent subscription to a stale principal unchanged', async () => {
+			await testUtils.seedUsers([{ username: 'stale_closed', active: true, role: readRole('stale_closed_role') }]);
+			const user = await resolve('stale_closed');
+			await databases.system.hdb_role.put(readRole('stale_closed_role'));
+			const Closed = class extends Docs {
+				subscribe() {
+					return { closed: true, end() {}, on() {} };
+				}
+			};
+			const Absent = class extends Docs {
+				subscribe() {
+					return undefined;
+				}
+			};
+
+			assert.strictEqual((await Closed.subscribe('topic', undefined, { user, authorize: true })).closed, true);
+			assert.strictEqual(await Absent.subscribe('topic', undefined, { user, authorize: true }), undefined);
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 		});
 

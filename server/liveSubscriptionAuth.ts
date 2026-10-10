@@ -22,7 +22,6 @@ const RECHECK_INTERVAL_MS = intervalOverride ?? 30_000;
 const BACKSTOP_INTERVAL_MS = intervalOverride ?? 300_000;
 // a larger setTimeout delay overflows and fires at once
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
-// rechecks, or expiry terminations, per event-loop turn
 const SLICE_SIZE = 256;
 // past this many distinct pending identities a full pass is cheaper to track than the ids
 const MAX_PENDING_IDS = 1000;
@@ -445,8 +444,6 @@ async function runPending(): Promise<void> {
 		);
 	}
 }
-
-// token expiry: one timer at the earliest authExpiresAt over an indexed binary min-heap
 
 const expiryHeap: LiveSubscription[] = [];
 let expiryTimer: any = null;

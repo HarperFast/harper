@@ -60,9 +60,25 @@ userModule.findAndValidateUser = function (...args) {
 let userChanges = 0;
 userModule.onUserChange(() => userChanges++);
 
+// every recheck of a non-scoped principal assigns its context's user, before and after this change alike
+let rechecks = 0;
+function countingContext(user) {
+	let current = user;
+	return {
+		authorize: true,
+		get user() {
+			return current;
+		},
+		set user(value) {
+			rechecks++;
+			current = value;
+		},
+	};
+}
+
 const turn = () => new Promise(setImmediate);
 
-/** Runs `work`, then waits until rechecks stop resolving users for `quietTurns` event-loop turns. */
+/** Runs `work`, then waits until no recheck has run for `quietTurns` event-loop turns (a sliced pass rechecks every turn). */
 async function measure(work, { quietTurns = 5 } = {}) {
 	let maxStall = 0;
 	let probing = true;
@@ -75,16 +91,17 @@ async function measure(work, { quietTurns = 5 } = {}) {
 	};
 	setImmediate(probe);
 	const resolutionsBefore = resolutions;
+	const rechecksBefore = rechecks;
 	const cpuBefore = process.cpuUsage();
 	const start = performance.now();
 	await work();
 	let quiet = 0;
-	let last = resolutions;
+	let last = rechecks;
 	while (quiet < quietTurns) {
 		await turn();
-		if (resolutions === last && resolutions > resolutionsBefore) quiet++;
+		if (rechecks === last) quiet++;
 		else quiet = 0;
-		last = resolutions;
+		last = rechecks;
 	}
 	const wall = performance.now() - start;
 	const cpu = process.cpuUsage(cpuBefore);
@@ -94,6 +111,7 @@ async function measure(work, { quietTurns = 5 } = {}) {
 		cpu: (cpu.user + cpu.system) / 1000,
 		maxStall,
 		resolutions: resolutions - resolutionsBefore,
+		rechecks: rechecks - rechecksBefore,
 	};
 }
 
@@ -101,7 +119,7 @@ function report(label, samples) {
 	const median = (key) => samples.map((s) => s[key]).sort((a, b) => a - b)[Math.floor(samples.length / 2)];
 	console.log(
 		`  ${label.padEnd(28)} wall ${median('wall').toFixed(1).padStart(8)} ms   cpu ${median('cpu').toFixed(1).padStart(8)} ms   ` +
-			`max loop stall ${median('maxStall').toFixed(1).padStart(7)} ms   user resolutions ${String(median('resolutions')).padStart(6)}`
+			`max loop stall ${median('maxStall').toFixed(1).padStart(7)} ms   rechecks ${String(median('rechecks')).padStart(6)}   user resolutions ${String(median('resolutions')).padStart(6)}`
 	);
 }
 
@@ -134,7 +152,7 @@ describe('Benchmark: live subscription re-authorization at scale', function () {
 		for (let index = 0; index < USERS; index++) {
 			const user = await userModule.findAndValidateUser(username(index), undefined, false);
 			for (let n = 0; n < SUBSCRIPTIONS_PER_USER; n++) {
-				await Bench.subscribe(`topic-${n}`, undefined, { user, authorize: true });
+				await Bench.subscribe(`topic-${n}`, undefined, countingContext(user));
 			}
 		}
 		const registered = _liveSubscriptionCount();
@@ -156,7 +174,7 @@ describe('Benchmark: live subscription re-authorization at scale', function () {
 	it('one hdb_user write', async () => {
 		const samples = [];
 		for (let round = 0; round < ROUNDS; round++) {
-			const index = round * 7;
+			const index = (round * 7) % USERS;
 			const before = userChanges;
 			samples.push(
 				await measure(async () => {
@@ -179,7 +197,7 @@ describe('Benchmark: live subscription re-authorization at scale', function () {
 			const before = userChanges;
 			samples.push(
 				await measure(async () => {
-					await databases.system.hdb_role.put(benchRole(round));
+					await databases.system.hdb_role.put(benchRole(round % Math.min(ROLES, USERS)));
 					while (userChanges === before) await turn();
 				})
 			);
