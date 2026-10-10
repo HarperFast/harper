@@ -48,5 +48,6 @@ sample seeds it, `max[A-Z]`-named measures fold with `Math.max`, and the rest ar
 weighted by that count. A measure in every sample has a count equal to the target's `count`, so it
 folds exactly as before; keep the running mean, since sum-then-divide rounds differently.
 
-The `byThread` combination sums every thread record's numeric fields into the entry, so a measure
-the key's first sample lacked, or that only some threads carry, is kept.
+The `byThread` combination sums every thread record's numeric measures into the entry, so a measure
+the key's first sample lacked, or that only some threads carry, is kept. A thread record's `count`,
+`total` and `ratio` are its own fold's (`THREAD_FOLD_FIELDS`), not measures, and are not summed.
