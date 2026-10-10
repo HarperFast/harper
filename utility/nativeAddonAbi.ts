@@ -168,11 +168,12 @@ function isPointerCompressionBuild(file: string, fileStats: Stats, packageDirect
 			const configPath = join(directory, 'config.gypi');
 			const configStats = statSync(configPath, { throwIfNoEntry: false });
 			// strictly newer: configure writes config.gypi before compiling, so a failed compile leaves an older binary
-			if (!configStats || configStats.mtimeMs >= fileStats.mtimeMs) return false;
+			// a regular file only: reading a FIFO by that name would block inside dlopen
+			if (configStats?.isFile() !== true || configStats.mtimeMs >= fileStats.mtimeMs) return false;
 			try {
 				return POINTER_COMPRESSION_CONFIG.test(readFileSync(configPath, 'utf8'));
 			} catch {
-				return false; // an unreadable config.gypi (or a directory by that name) is not evidence
+				return false; // an unreadable config.gypi is not evidence
 			}
 		}
 		const parent = dirname(directory);
