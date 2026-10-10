@@ -79,7 +79,7 @@ interface AggregatedComponentStatusWithName extends AggregatedComponentStatus {
 }
 
 interface AllStatusSummary {
-	systemStatus: Promise<AsyncIterable<StatusRecord>>;
+	systemStatus: StatusRecord[];
 	componentStatus: AggregatedComponentStatusWithName[];
 	restartRequired: boolean;
 	// Only present when the request opts in with `middleware: true`.
@@ -146,7 +146,6 @@ async function getMiddlewareChains(): Promise<MiddlewareChainsSummary | null> {
 
 async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary> {
 	statusLogger.debug?.('getAllStatus');
-	const statusRecords = getStatusTable().search([]);
 
 	// Get aggregated component statuses from all threads
 	const aggregatedStatuses = await statusInternal.query.allThreads();
@@ -160,13 +159,96 @@ async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary
 	// Get restart flag status
 	const restartRequired = restartNeeded();
 
+	// Resolve the availability record the same way the single-id read does, so the aggregate
+	// response never contradicts get_status {id:'availability'} for the same component failure.
+	const derivedAvailability = await getAvailabilityStatus();
+
+	// Materialize the stored records into a plain array (not a generator): the serialized response
+	// relies on toJSON, which an async generator lacks, so a generator emits systemStatus:{} to HTTP
+	// callers. Substitute the derived availability for the stored record, appending it when none is stored.
+	const systemStatus: StatusRecord[] = [];
+	let sawAvailability = false;
+	for await (const record of getStatusTable().search([]) as AsyncIterable<StatusRecord>) {
+		if (record?.id === 'availability') {
+			sawAvailability = true;
+			systemStatus.push((derivedAvailability ?? record) as StatusRecord);
+		} else systemStatus.push(record);
+	}
+	if (!sawAvailability && derivedAvailability) systemStatus.push(derivedAvailability as StatusRecord);
+
 	const summary: AllStatusSummary = {
-		systemStatus: statusRecords as Promise<AsyncIterable<StatusRecord>>,
+		systemStatus,
 		componentStatus: componentStatusArray,
 		restartRequired,
 	};
 	if (includeMiddleware) summary.middlewareChains = await getMiddlewareChains();
 	return summary;
+}
+
+// Cached list of failed component names, so the availability read does not make a cross-thread
+// round trip on every poll (a health endpoint is polled often). The all-threads aggregate is the
+// authoritative source and is correct under worker churn on its own (a dead worker drops out of the
+// broadcast, a restarted one reports its current state), so this only avoids the per-poll cost. The
+// first read refreshes; later reads within the TTL are served locally and refresh once it lapses.
+const COMPONENT_HEALTH_TTL_MS = 2000;
+let componentHealthCache: { failed: string[]; at: number } | undefined;
+// A single in-flight refresh shared by every concurrent stale read, so a burst of polls during one
+// slow aggregate (e.g. a worker taking the collector's full timeout to answer) triggers one round
+// trip rather than one per poll.
+let componentHealthRefresh: Promise<void> | undefined;
+
+function refreshComponentHealth(): Promise<void> {
+	if (!componentHealthRefresh) {
+		componentHealthRefresh = statusInternal.query
+			.allThreads()
+			.then((aggregated) => {
+				const failed = Array.from(aggregated.values())
+					.filter((component) => component.status === statusInternal.COMPONENT_STATUS_LEVELS.ERROR)
+					.map((component) => component.componentName);
+				componentHealthCache = { failed, at: Date.now() };
+			})
+			.finally(() => {
+				componentHealthRefresh = undefined;
+			});
+	}
+	return componentHealthRefresh;
+}
+
+async function failedComponents(): Promise<string[]> {
+	if (!componentHealthCache || Date.now() - componentHealthCache.at > COMPONENT_HEALTH_TTL_MS)
+		await refreshComponentHealth();
+	return componentHealthCache!.failed;
+}
+
+// Drop the cache so the next read re-aggregates immediately; for tests that assert a state change
+// without waiting out the TTL.
+export function resetComponentHealthCache(): void {
+	componentHealthCache = undefined;
+	componentHealthRefresh = undefined;
+}
+
+/**
+ * The availability status routing (GTM) consults, combining the operator-owned record with live
+ * component health (#3184): an operator's Unavailable always wins, otherwise the node reads
+ * Unavailable while any component is in error. Derived at read time so a component that recovers
+ * heals on its own and no automatic write can clobber an operator drain; validation failures divert
+ * to the sink, never the live registry, so a candidate cannot drain the node.
+ *
+ * Component health comes from the all-threads aggregate, not this thread's registry: get_status runs
+ * on the operations thread, which loads with isWorker=false and never runs handleApplication, so a
+ * wedged worker's load failure is only visible across threads. The aggregate is cached (see above) so
+ * this is not a cross-thread round trip on every poll.
+ */
+async function getAvailabilityStatus(): Promise<StatusRecord<'availability'> | undefined> {
+	const record = (await getStatusTable().get('availability')) as StatusRecord<'availability'> | undefined;
+	if (record?.status === 'Unavailable') return record;
+	const failed = await failedComponents();
+	if (failed.length === 0) return record;
+	return {
+		id: 'availability',
+		status: 'Unavailable',
+		message: `Component failure: ${failed.join(', ')}`,
+	};
 }
 
 function getStatus({ id, middleware }: Partial<StatusRequestBody>): Promise<StatusRecord | AllStatusSummary> {
@@ -176,6 +258,7 @@ function getStatus({ id, middleware }: Partial<StatusRequestBody>): Promise<Stat
 	}
 
 	statusLogger.debug?.('getStatus', id);
+	if (id === 'availability') return getAvailabilityStatus() as Promise<StatusRecord>;
 	return getStatusTable().get(id) as unknown as Promise<StatusRecord>;
 }
 
