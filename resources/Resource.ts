@@ -1113,8 +1113,9 @@ function registerLiveSubscriptionForContext(
 	if (!stale) return subscription;
 	// Admitted by records that changed before it registered, so the notification for that change may already
 	// have run without it: recheck before any delivery.
-	return handle.verify().then((authorized) => {
-		if (!authorized) throw new AccessViolation(user);
+	return handle.verify().then((outcome) => {
+		if (outcome === 'revoked') throw new AccessViolation(user);
+		// closed by its owner meanwhile, perhaps with a terminal error the caller acts on
 		return subscription;
 	});
 }

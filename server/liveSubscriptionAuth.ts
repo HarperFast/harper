@@ -57,9 +57,10 @@ interface LiveSubscriptionHandle {
 	unregister: () => void;
 	/**
 	 * Rechecks this subscription now, outside any queued pass, terminating it if it no longer authorizes.
-	 * Resolves whether it is still registered.
+	 * Resolves 'revoked' when this recheck terminated it, and 'closed' when it was not or is no longer
+	 * registered for another reason (its owner closed it).
 	 */
-	verify: () => Promise<boolean>;
+	verify: () => Promise<'authorized' | 'revoked' | 'closed'>;
 }
 
 function errorMessage(error: unknown): string {
@@ -95,7 +96,7 @@ const ANY_ROLE = Symbol('any role');
 /** The notification epoch and start time of the last full pass that completed. */
 let lastFullPass = { epoch: 0, startedAt: 0 };
 
-const NOOP_HANDLE: LiveSubscriptionHandle = { unregister: () => {}, verify: () => Promise.resolve(false) };
+const NOOP_HANDLE: LiveSubscriptionHandle = { unregister: () => {}, verify: () => Promise.resolve('closed') };
 
 class Pass implements RecheckPass {
 	sinceYield = 0;
@@ -320,11 +321,12 @@ export function registerLiveSubscription(
 		subscription.on?.('close', unregister);
 	}
 
-	const verify = async () => {
+	const verify = async (): Promise<'authorized' | 'revoked' | 'closed'> => {
 		const pass = new Pass();
 		await recheckEntry(pass, entry);
 		reportRevocations(pass.revokedByReason);
-		return entry.group !== undefined;
+		if (entry.group) return 'authorized';
+		return pass.revokedByReason.size > 0 ? 'revoked' : 'closed';
 	};
 	return { unregister, verify };
 }

@@ -281,7 +281,7 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 				username: 'closed',
 				recheck: async () => true,
 			});
-			assert.strictEqual(await handle.verify(), false);
+			assert.strictEqual(await handle.verify(), 'closed');
 		});
 
 		it('returns an unregister handle that removes only its own entry', () => {
@@ -1142,6 +1142,34 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 			assert.strictEqual((await Closed.subscribe('topic', undefined, { user, authorize: true })).closed, true);
 			assert.strictEqual(await Absent.subscribe('topic', undefined, { user, authorize: true }), undefined);
+			assert.strictEqual(_liveSubscriptionCount(), 0);
+		});
+
+		it('returns a stale principal’s subscription that its owner closed during the admission recheck', async () => {
+			await testUtils.seedUsers([{ username: 'stale_closing', active: true, role: readRole('stale_closing_role') }]);
+			const user = await resolve('stale_closing');
+			await databases.system.hdb_role.put(readRole('stale_closing_role'));
+			let release;
+			const gate = new Promise((resolve) => (release = resolve));
+			let recheckStarted = false;
+			const subscription = fakeSubscription();
+			const Gated = class extends Docs {
+				subscribe() {
+					return subscription;
+				}
+				allowRead(principal) {
+					// the recheck evaluates the context's fresh view, not the admitting user
+					if (principal === user) return true;
+					recheckStarted = true;
+					return gate.then(() => true);
+				}
+			};
+			const pending = Gated.subscribe('topic', undefined, { user, authorize: true });
+			await waitFor(() => recheckStarted, { message: 'the admission recheck never started' });
+			subscription.emit('close');
+			release();
+
+			assert.strictEqual(await pending, subscription, 'a close is not a denial');
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 		});
 
