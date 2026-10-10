@@ -186,8 +186,12 @@
 					"description": "Module(s) to preload via --require (CJS) before any Harper or app module on each worker thread, for agents that document the require path (e.g. 'dd-trace/init', Dynatrace OneAgent). Bare specifiers resolve against installed components' node_modules; absolute paths are also accepted."
 				},
 				"v8Flags": {
-					"oneOf": [{ "type": "null" }, { "type": "string" }, { "type": "array", "items": { "type": "string" } }],
-					"description": "V8 flag(s), each starting with '--' (e.g. '--optimize-for-size'), applied to the whole process with v8.setFlagsFromString on the main thread before the first worker thread starts, so every worker runs with them. For flags Node refuses in NODE_OPTIONS. Not applied under Bun. Takes effect on process start."
+					"oneOf": [
+						{ "type": "null" },
+						{ "type": "string", "pattern": "^\\s*(--|$)" },
+						{ "type": "array", "items": { "type": "string", "pattern": "^\\s*(--|$)" } }
+					],
+					"description": "V8 flag(s), each starting with '--' (e.g. '--optimize-for-size'), applied with v8.setFlagsFromString on the main thread before the first worker thread starts, so every worker thread runs with them (the main thread's isolate already exists, so flags V8 reads at isolate creation do not change it). For flags Node refuses in NODE_OPTIONS. Unlike the node CLI, this does not apply flags' implications (list implied flags such as --max-semi-space-size=1 for --optimize-for-size), V8 only reports unrecognized flags on stderr, and a contradictory set can abort the process at startup. Not applied under Bun. Takes effect on process start."
 				}
 			}
 		},

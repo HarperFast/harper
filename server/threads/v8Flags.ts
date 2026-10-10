@@ -9,27 +9,27 @@ let applied = false;
 
 /**
  * Applies `threads.v8Flags` to the process. V8 reads most flags when an isolate is created, so this must run before the
- * first Harper worker exists; callers are `startHTTPThreads` (before any startup work) and `startWorker` (for a process
- * whose first worker is not an HTTP thread). Only the first successful call reads the setting: V8 flags cannot be unset,
- * so a later config change takes effect on the next process start.
+ * first Harper worker exists. Only the first successful call reads the setting: V8 flags cannot be unset, so a later
+ * config change takes effect on the next process start.
  */
 export function applyConfiguredV8Flags(): void {
 	if (applied || !isMainThread) return;
 	const configured = envMgr.get(CONFIG_PARAMS.THREADS_V8FLAGS);
-	const flags: unknown[] = configured == null ? [] : Array.isArray(configured) ? configured : [configured];
-	// setFlagsFromString silently ignores an unrecognized flag, so this only rejects values that are not flags at all.
-	const invalid = flags.filter((flag) => typeof flag !== 'string' || !flag.startsWith('--'));
+	const flags = (configured == null ? [] : Array.isArray(configured) ? configured : [configured])
+		.map((flag: unknown) => (typeof flag === 'string' ? flag.trim() : flag))
+		.filter((flag: unknown) => flag !== '');
+	// setFlagsFromString skips an unrecognized flag after printing to stderr, so this only rejects values that are not flags.
+	const invalid = flags.filter((flag: unknown) => typeof flag !== 'string' || !flag.startsWith('--'));
 	if (invalid.length > 0) {
 		throw new Error(
 			`threads.v8Flags entries must be V8 flags starting with "--"; invalid: ${invalid.map((flag) => JSON.stringify(flag)).join(', ')}`
 		);
 	}
-	applied = true;
-	if (flags.length === 0) return;
-	if (typeof globalThis.Bun !== 'undefined') {
+	if (flags.length > 0 && typeof globalThis.Bun !== 'undefined') {
 		harperLogger.warn('threads.v8Flags is ignored under Bun');
-		return;
+	} else if (flags.length > 0) {
+		for (const flag of flags as string[]) setFlagsFromString(flag);
+		harperLogger.notify(`Passed threads.v8Flags to V8: ${flags.join(' ')}`);
 	}
-	for (const flag of flags as string[]) setFlagsFromString(flag);
-	harperLogger.info(`Applied V8 flags from threads.v8Flags: ${flags.join(' ')}`);
+	applied = true;
 }
