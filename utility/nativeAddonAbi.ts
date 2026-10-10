@@ -168,11 +168,12 @@ function isPointerCompressionBuild(file: string, fileStats: Stats, packageDirect
 			const configPath = join(directory, 'config.gypi');
 			const configStats = statSync(configPath, { throwIfNoEntry: false });
 			// strictly newer: configure writes config.gypi before compiling, so a failed compile leaves an older binary
-			return (
-				configStats?.isFile() === true &&
-				configStats.mtimeMs < fileStats.mtimeMs &&
-				POINTER_COMPRESSION_CONFIG.test(readFileSync(configPath, 'utf8'))
-			);
+			if (!configStats || configStats.mtimeMs >= fileStats.mtimeMs) return false;
+			try {
+				return POINTER_COMPRESSION_CONFIG.test(readFileSync(configPath, 'utf8'));
+			} catch {
+				return false; // an unreadable config.gypi (or a directory by that name) is not evidence
+			}
 		}
 		const parent = dirname(directory);
 		if (parent === directory) return false;
@@ -229,6 +230,7 @@ export function assertNativeAddonLoadable(file: string): void {
 	try {
 		// identity of the descriptor that is scanned, so a path swapped mid-check cannot be cached as admitted
 		const fileStats = fstatSync(fd);
+		if (!fileStats.isFile()) return; // dlopen reports a directory or device itself
 		const identity = `${fileStats.dev}:${fileStats.ino}:${fileStats.size}:${fileStats.mtimeMs}`;
 		if (admittedAddons.get(realFile) === identity) return;
 		const verdict = checkDescriptor(realFile, fd, fileStats);
