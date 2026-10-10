@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791537794181,
+  "lastUpdate": 1791617403813,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -7349,6 +7349,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 951.64,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "a4e217abd5ebd917835727c2496a646c03f0cef2",
+          "message": "Keep the writing node's full record under record-based residency, and never store a patch over a residency stub as a complete row (#3128)\n\n* Keep the writer resident on record-based residency writes, and keep a patch over a stub a stub\n\nA write made on a node that a record-based residency function excluded replaced the node's\nfull record with an INVALIDATED indexed-field stub while the log recorded an ordinary upsert,\ndestroying the last complete copy whenever the listed nodes were unavailable or never held a\ncomplete base. The writer now adds itself to the residency list for its own writes and keeps\nthe full record, warning once per table.\n\nA patch merged onto a record-based stub could be stored as a complete row once residency\nincluded the node. Such a patch now stays an INVALIDATED stub and keeps the base stub's\nresidency, which names the complete holders. setResidencyById and replicated/source writes\nwithout a residency list are unchanged. setResidency() with no function now restores the\ndefault residency instead of breaking every later write.\n\nRefs #2257\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kj3j61yyYfJtJpP6qJto57\nDispatch-Task: harper-2257-writer-stays-resident\n\n* Build a residency stub from the merged row, and keep explicit received residency authoritative\n\nAn out-of-order patch over a stub sets the audit payload to the original patch, so projecting\nthe stub from it dropped indexed values the merged row still held. Document that an explicit\nreceived residency overrides the base stub's list, and trim narrating comments.\n\nRefs #2257\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kj3j61yyYfJtJpP6qJto57\nDispatch-Task: harper-2257-writer-stays-resident\n\n* Apply the out-of-order stub-patch test's writes above the RocksDB audit floor\n\nThe older patch sat below the floor RocksDB stamps at open and was dropped, so the test could\nnot tell the stub projections apart. Assert the older patch was applied.\n\nRefs #2257\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kj3j61yyYfJtJpP6qJto57\nDispatch-Task: harper-2257-writer-stays-resident\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-10T04:15:24Z",
+          "url": "https://github.com/HarperFast/harper/commit/a4e217abd5ebd917835727c2496a646c03f0cef2"
+        },
+        "date": 1791617402190,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 5708.65,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8047.8,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8142.61,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 5996.69,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4257.58,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 7891.45,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1014.56,
             "unit": "ops/sec"
           }
         ]
