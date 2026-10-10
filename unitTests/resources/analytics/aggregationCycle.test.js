@@ -228,29 +228,31 @@ describe('analytics aggregation cycle', () => {
 		this.timeout(30000);
 		await drainLiveReports();
 		const first = lastRawKey() + 1;
-		// `maxLatency` and `late` are absent from the first sample, `rare` from the second; `mean` is in all three.
+		const probe = (id, count, measures) => sampleReport(id, 1, { metric: 'sparse-probe', count, ...measures });
 		await seedRawReports([
-			sampleReport(first, 1, { metric: 'sparse-probe', count: 1, mean: 10, rare: 6 }),
-			sampleReport(first + 1, 1, { metric: 'sparse-probe', count: 1, mean: 20, maxLatency: 5, late: 4 }),
-			sampleReport(first + 2, 1, { metric: 'sparse-probe', count: 2, mean: 30, maxLatency: 9, late: 10, rare: 12 }),
+			probe(first, 2, { mean: 0.7, rare: 6 }),
+			probe(first + 1, 1, { mean: 0.2, maxLatency: 5, late: 0 }),
+			probe(first + 2, 1, { mean: 0.1 }),
+			probe(first + 3, 2, { mean: 0.1, maxLatency: 9, late: 9, rare: 12 }),
+			probe(first + 4, 1, { mean: 0.1 }),
 		]);
 		await nextPeriod();
 		await runCycle();
 
-		const row = await waitForAggregatedMetric('sparse-probe', first + 2);
+		const row = await waitForAggregatedMetric('sparse-probe', first + 4);
 		assertNoNaN(row);
-		assert.strictEqual(row.count, 4);
-		assert.strictEqual(row.mean, 22.5, 'a measure in every sample is the count-weighted mean of all of them');
-		assert.strictEqual(row.maxLatency, 9, 'a peak first seen mid-period is the largest sample');
-		assert.strictEqual(row.late, (4 * 1 + 10 * 2) / 3, 'a mean first seen mid-period weighs only its own samples');
-		assert.strictEqual(row.rare, (6 * 1 + 12 * 2) / 3, 'a sample lacking a measure does not weigh into its mean');
+		assert.strictEqual(row.count, 7);
+		// Summing then dividing would give 0.2857142857142857.
+		assert.strictEqual(row.mean, 0.28571428571428575, 'a measure in every sample folds as a running mean, as before');
+		assert.strictEqual(row.maxLatency, 9, 'a peak first seen mid-period is the largest of its samples');
+		assert.strictEqual(row.late, (0 * 1 + 9 * 2) / 3, 'a mean first seen mid-period weighs only its own samples');
+		assert.strictEqual(row.rare, (6 * 2 + 12 * 2) / 4, 'samples lacking a measure do not weigh into its mean');
 	});
 
 	it('combines a measure absent from the first sample or present on only some threads', async function () {
 		this.timeout(30000);
 		await drainLiveReports();
 		const first = lastRawKey() + 1;
-		// The entry is created from thread 0's first sample, which carries only `depth`; `stalled` is on thread 7 only.
 		const gauge = (id, threadId, measures) =>
 			sampleReport(id, threadId, { metric: 'sparse-thread-probe', byThread: true, ...measures });
 		await seedRawReports([
