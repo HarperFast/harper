@@ -1,17 +1,7 @@
 /**
- * Native addon guard for V8 pointer-compression Node.js runtimes.
- *
- * Every `.node` load (CJS require, createRequire, ESM addon import) goes through `process.dlopen`,
- * and each worker thread has its own `process`. On a pointer-compression runtime this wraps
- * `process.dlopen` so an addon built for the standard V8 C++ ABI is refused with an
- * IncompatibleNativeAddonError instead of loading and crashing the process on first use (rules in
- * utility/nativeAddonAbi.ts). On a standard runtime it changes nothing.
- *
- * Installs when loaded, so it must be the first module of every Harper thread: the first import of
- * bin/harper.ts and index.ts on the main thread, and the first `--require` of every worker
- * (`nativeAddonGuardExecArgv()` in startWorker), ahead of `threads.preload`/`threads.preloadRequire`.
- * It imports only Node builtins (through nativeAddonAbi.ts) so that nothing it pulls in loads an
- * addon before the wrapper is in place.
+ * On a V8 pointer-compression runtime, wraps `process.dlopen` (per thread: each worker has its own
+ * `process`) so a standard-ABI addon is refused instead of crashing the process; a no-op otherwise.
+ * Installs when loaded, so it must be the first module of every Harper thread; see server/DESIGN.md.
  */
 import { assertNativeAddonLoadable, isPointerCompressionRuntime } from '../../utility/nativeAddonAbi.ts';
 
@@ -38,8 +28,8 @@ export function installNativeAddonGuard(
 }
 
 /** The `execArgv` entries that install this guard first in a worker thread. */
-export function nativeAddonGuardExecArgv(): string[] {
-	return isPointerCompressionRuntime() ? ['--require', __filename] : [];
+export function nativeAddonGuardExecArgv(pointerCompression = isPointerCompressionRuntime()): string[] {
+	return pointerCompression ? ['--require', __filename] : [];
 }
 
 installNativeAddonGuard();

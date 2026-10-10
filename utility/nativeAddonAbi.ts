@@ -1,21 +1,8 @@
 /**
- * Decides whether a native addon (`.node`) can load on a V8 pointer-compression Node.js runtime.
- *
- * Pointer compression changes V8's C++ ABI without changing NODE_MODULE_VERSION, so an addon that
- * links V8's C++ API for the standard ABI passes Node's own ABI check, loads, and crashes the
- * process on first use. Node-API is ABI-stable across the flag. An addon is loadable when any of:
- *  - its dynamic symbol table has no undefined V8 C++ symbols (a Node-API addon);
- *  - its package directory carries a `.pointer-compression-build` marker (binaries a
- *    pointer-compression image swapped in);
- *  - node-gyp built it under a pointer-compression Node: the binary sits under the `build/`
- *    directory whose `config.gypi` records `"v8_enable_pointer_compression": 1`, and is not older
- *    than that `config.gypi` (a configure followed by a failed compile leaves the old binary).
- * A 64-bit ELF whose dynamic symbols cannot be read is refused unless the marker or build rule
- * admits it. Anything that is not a 64-bit ELF is admitted: a 64-bit Linux dlopen cannot load it,
- * so Node reports its own error.
- *
- * Imports only Node builtins: it runs inside process.dlopen before Harper's logger has loaded (the
- * logger itself loads a V8 C++ API addon), and stays reusable by build-time checks.
+ * Whether a native addon (`.node`) may load on a V8 pointer-compression Node.js runtime. The rules
+ * and why they hold: server/DESIGN.md, "On a pointer-compression Node, no standard-V8-ABI addon is
+ * dlopen'ed". Imports only Node builtins: it runs inside process.dlopen before Harper's logger loads,
+ * and the logger itself loads a V8 C++ API addon.
  */
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
 import type { Stats } from 'node:fs';
@@ -58,59 +45,64 @@ const uninspectable = (detail: string): AddonSymbolScan => ({ kind: 'uninspectab
 export function scanUndefinedV8Symbols(file: string): AddonSymbolScan {
 	const fd = openSync(file, 'r');
 	try {
-		const fileSize = fstatSync(fd).size;
-		const header = readExactly(fd, 0, ELF64_HEADER_SIZE, fileSize);
-		if (
-			!header ||
-			header.readUInt32BE(0) !== ELF_MAGIC ||
-			header[4] !== ELFCLASS64 ||
-			(header[5] !== ELFDATA2LSB && header[5] !== ELFDATA2MSB)
-		)
-			return NOT_ELF64;
-		const littleEndian = header[5] === ELFDATA2LSB;
-		const u16 = (buffer: Buffer, at: number) => (littleEndian ? buffer.readUInt16LE(at) : buffer.readUInt16BE(at));
-		const u32 = (buffer: Buffer, at: number) => (littleEndian ? buffer.readUInt32LE(at) : buffer.readUInt32BE(at));
-		const u64 = (buffer: Buffer, at: number) =>
-			Number(littleEndian ? buffer.readBigUInt64LE(at) : buffer.readBigUInt64BE(at));
-
-		const sectionTableOffset = u64(header, 0x28);
-		const sectionEntrySize = u16(header, 0x3a);
-		const sectionCount = u16(header, 0x3c);
-		if (sectionTableOffset === 0 || sectionCount === 0) return uninspectable('no section headers');
-		if (sectionEntrySize < ELF64_SECTION_HEADER_SIZE) return uninspectable(`section header size ${sectionEntrySize}`);
-		const sections = readExactly(fd, sectionTableOffset, sectionCount * sectionEntrySize, fileSize);
-		if (!sections) return uninspectable('section headers out of bounds');
-
-		let dynsymAt = -1;
-		for (let index = 0; index < sectionCount; index++) {
-			if (u32(sections, index * sectionEntrySize + 4) === SHT_DYNSYM) {
-				dynsymAt = index * sectionEntrySize;
-				break;
-			}
-		}
-		if (dynsymAt < 0) return uninspectable('no .dynsym section');
-		const stringSectionIndex = u32(sections, dynsymAt + 0x28);
-		if (stringSectionIndex >= sectionCount) return uninspectable('.dynsym string table index out of range');
-		const stringsAt = stringSectionIndex * sectionEntrySize;
-		if (u32(sections, stringsAt + 4) !== SHT_STRTAB) return uninspectable('.dynsym string table is not SHT_STRTAB');
-		const symbolEntrySize = u64(sections, dynsymAt + 0x38);
-		if (symbolEntrySize < ELF64_SYMBOL_SIZE) return uninspectable(`.dynsym entry size ${symbolEntrySize}`);
-		const symbols = readExactly(fd, u64(sections, dynsymAt + 0x18), u64(sections, dynsymAt + 0x20), fileSize);
-		const strings = readExactly(fd, u64(sections, stringsAt + 0x18), u64(sections, stringsAt + 0x20), fileSize);
-		if (!symbols || !strings) return uninspectable('.dynsym or its string table out of bounds');
-
-		let v8SymbolCount = 0;
-		// entry 0 is the reserved null symbol
-		for (let at = symbolEntrySize; at + ELF64_SYMBOL_SIZE <= symbols.length; at += symbolEntrySize) {
-			if (u16(symbols, at + 6) !== SHN_UNDEF) continue;
-			const nameAt = u32(symbols, at);
-			if (nameAt >= strings.length) return uninspectable('symbol name out of bounds');
-			if (V8_CXX_SYMBOL_PREFIXES.some((prefix) => startsWithAt(strings, nameAt, prefix))) v8SymbolCount++;
-		}
-		return { kind: 'scanned', v8SymbolCount };
+		return scanDescriptor(fd, fstatSync(fd).size);
 	} finally {
 		closeSync(fd);
 	}
+}
+
+function scanDescriptor(fd: number, fileSize: number): AddonSymbolScan {
+	const header = readExactly(fd, 0, ELF64_HEADER_SIZE, fileSize);
+	if (
+		!header ||
+		header.readUInt32BE(0) !== ELF_MAGIC ||
+		header[4] !== ELFCLASS64 ||
+		(header[5] !== ELFDATA2LSB && header[5] !== ELFDATA2MSB)
+	)
+		return NOT_ELF64;
+	const littleEndian = header[5] === ELFDATA2LSB;
+	const u16 = (buffer: Buffer, at: number) => (littleEndian ? buffer.readUInt16LE(at) : buffer.readUInt16BE(at));
+	const u32 = (buffer: Buffer, at: number) => (littleEndian ? buffer.readUInt32LE(at) : buffer.readUInt32BE(at));
+	const u64 = (buffer: Buffer, at: number) =>
+		Number(littleEndian ? buffer.readBigUInt64LE(at) : buffer.readBigUInt64BE(at));
+
+	const sectionTableOffset = u64(header, 0x28);
+	const sectionEntrySize = u16(header, 0x3a);
+	const sectionCount = u16(header, 0x3c);
+	if (sectionTableOffset === 0 || sectionCount === 0) return uninspectable('no section headers');
+	if (sectionEntrySize < ELF64_SECTION_HEADER_SIZE) return uninspectable(`section header size ${sectionEntrySize}`);
+	const sections = readExactly(fd, sectionTableOffset, sectionCount * sectionEntrySize, fileSize);
+	if (!sections) return uninspectable('section headers out of bounds');
+
+	let dynsymAt = -1;
+	for (let index = 0; index < sectionCount; index++) {
+		if (u32(sections, index * sectionEntrySize + 4) === SHT_DYNSYM) {
+			dynsymAt = index * sectionEntrySize;
+			break;
+		}
+	}
+	if (dynsymAt < 0) return uninspectable('no .dynsym section');
+	const stringSectionIndex = u32(sections, dynsymAt + 0x28);
+	if (stringSectionIndex >= sectionCount) return uninspectable('.dynsym string table index out of range');
+	const stringsAt = stringSectionIndex * sectionEntrySize;
+	if (u32(sections, stringsAt + 4) !== SHT_STRTAB) return uninspectable('.dynsym string table is not SHT_STRTAB');
+	const symbolEntrySize = u64(sections, dynsymAt + 0x38);
+	const symbolTableSize = u64(sections, dynsymAt + 0x20);
+	if (symbolEntrySize !== ELF64_SYMBOL_SIZE || symbolTableSize === 0 || symbolTableSize % ELF64_SYMBOL_SIZE !== 0)
+		return uninspectable(`.dynsym of ${symbolTableSize} bytes in ${symbolEntrySize}-byte entries`);
+	const symbols = readExactly(fd, u64(sections, dynsymAt + 0x18), symbolTableSize, fileSize);
+	const strings = readExactly(fd, u64(sections, stringsAt + 0x18), u64(sections, stringsAt + 0x20), fileSize);
+	if (!symbols || !strings) return uninspectable('.dynsym or its string table out of bounds');
+
+	let v8SymbolCount = 0;
+	// entry 0 is the reserved null symbol
+	for (let at = ELF64_SYMBOL_SIZE; at < symbols.length; at += ELF64_SYMBOL_SIZE) {
+		if (u16(symbols, at + 6) !== SHN_UNDEF) continue;
+		const nameAt = u32(symbols, at);
+		if (nameAt >= strings.length) return uninspectable('symbol name out of bounds');
+		if (V8_CXX_SYMBOL_PREFIXES.some((prefix) => startsWithAt(strings, nameAt, prefix))) v8SymbolCount++;
+	}
+	return { kind: 'scanned', v8SymbolCount };
 }
 
 function readExactly(fd: number, position: number, length: number, fileSize: number): Buffer | undefined {
@@ -140,15 +132,24 @@ export interface NativeAddonVerdict {
 }
 
 /** Applies the pointer-compression load rules to `file` (expected to be a real path). Uncached. */
-export function checkNativeAddon(file: string, fileStats: Stats = statSync(file)): NativeAddonVerdict {
-	const scan = scanUndefinedV8Symbols(file);
-	if (scan.kind === 'not-elf64') return { loadable: true, reason: 'not-elf64', scan };
+export function checkNativeAddon(file: string): NativeAddonVerdict {
+	const fd = openSync(file, 'r');
+	try {
+		return checkDescriptor(file, fd, fstatSync(fd));
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function checkDescriptor(file: string, fd: number, fileStats: Stats): NativeAddonVerdict {
+	const scan = scanDescriptor(fd, fileStats.size);
 	if (scan.kind === 'scanned' && scan.v8SymbolCount === 0) return { loadable: true, reason: 'node-api', scan };
 	const packageDirectory = findPackageDirectory(file);
 	if (existsSync(join(packageDirectory ?? dirname(file), POINTER_COMPRESSION_MARKER)))
 		return { loadable: true, reason: 'pointer-compression-marker', scan, packageDirectory };
 	if (isPointerCompressionBuild(file, fileStats, packageDirectory))
 		return { loadable: true, reason: 'pointer-compression-build', scan, packageDirectory };
+	if (scan.kind === 'not-elf64') return { loadable: true, reason: 'not-elf64', scan, packageDirectory };
 	return { loadable: false, reason: scan.kind === 'scanned' ? 'v8-cxx-abi' : 'uninspectable', scan, packageDirectory };
 }
 
@@ -165,9 +166,11 @@ function isPointerCompressionBuild(file: string, fileStats: Stats, packageDirect
 	for (let directory = dirname(file); directory !== packageDirectory;) {
 		if (basename(directory) === 'build') {
 			const configPath = join(directory, 'config.gypi');
-			if (!existsSync(configPath)) return false;
+			const configStats = statSync(configPath, { throwIfNoEntry: false });
+			// strictly newer: configure writes config.gypi before compiling, so a failed compile leaves an older binary
 			return (
-				statSync(configPath).mtimeMs <= fileStats.mtimeMs &&
+				configStats?.isFile() === true &&
+				configStats.mtimeMs < fileStats.mtimeMs &&
 				POINTER_COMPRESSION_CONFIG.test(readFileSync(configPath, 'utf8'))
 			);
 		}
@@ -216,17 +219,23 @@ const admittedAddons = new Map<string, string>();
 /** Throws IncompatibleNativeAddonError unless `file` may load on a pointer-compression runtime. */
 export function assertNativeAddonLoadable(file: string): void {
 	let realFile: string;
-	let fileStats: Stats;
+	let fd: number;
 	try {
 		realFile = realpathSync(file);
-		fileStats = statSync(realFile);
+		fd = openSync(realFile, 'r');
 	} catch {
 		return; // a missing or unreadable file is reported by dlopen itself
 	}
-	const identity = `${fileStats.dev}:${fileStats.ino}:${fileStats.size}:${fileStats.mtimeMs}`;
-	if (admittedAddons.get(realFile) === identity) return;
-	const verdict = checkNativeAddon(realFile, fileStats);
-	if (!verdict.loadable) throw new IncompatibleNativeAddonError(realFile, verdict);
-	if (verdict.reason === 'not-elf64') debug('admitting %s: not a 64-bit ELF file', realFile);
-	admittedAddons.set(realFile, identity);
+	try {
+		// identity of the descriptor that is scanned, so a path swapped mid-check cannot be cached as admitted
+		const fileStats = fstatSync(fd);
+		const identity = `${fileStats.dev}:${fileStats.ino}:${fileStats.size}:${fileStats.mtimeMs}`;
+		if (admittedAddons.get(realFile) === identity) return;
+		const verdict = checkDescriptor(realFile, fd, fileStats);
+		if (!verdict.loadable) throw new IncompatibleNativeAddonError(realFile, verdict);
+		if (verdict.reason === 'not-elf64') debug('admitting %s: not a 64-bit ELF file', realFile);
+		admittedAddons.set(realFile, identity);
+	} finally {
+		closeSync(fd);
+	}
 }
