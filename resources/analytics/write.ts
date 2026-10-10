@@ -994,7 +994,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 			if (type !== undefined) key += '-' + type;
 			let action = aggregateActions.get(key);
 			if (action) {
-				const byThread = action.threads !== undefined;
+				const byThread = Boolean(action.byThread);
 				if (byThread) {
 					const actionForThread = action.threads[threadId];
 					if (actionForThread) action = actionForThread;
