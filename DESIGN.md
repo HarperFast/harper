@@ -202,6 +202,10 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [An HdbError's `message` is a string; the structured body is `http_resp_msg` (`utility/errors/hdbError.ts`)](utility/DESIGN.md#an-hdberrors-message-is-a-string-the-structured-body-is-http_resp_msg-utilityerrorshdberrorts) — A report object passed to `handleHDBError` is the response body and the job message; `message` is a string derived from it.
 - [Log-file identity is compared as BigInt (`utility/logging/logGenerationCoordinator.ts` `FileIdentity`)](utility/DESIGN.md#log-file-identity-is-compared-as-bigint-utilityloggingloggenerationcoordinatorts-fileidentity) — A Number rounds 64-bit Windows file IDs past 2^53, making neighbouring files look identical.
 
+## integrationTests/ — end-to-end suite and fixtures
+
+- [A deployed fixture must not install from the npm registry (`integrationTests/fixtures/`)](integrationTests/DESIGN.md#a-deployed-fixture-must-not-install-from-the-npm-registry-integrationtestsfixtures) — A fixture with production dependencies and no bundled `node_modules` puts the npm registry on the test's critical path; vendor them or neutralize the install.
+
 ## build-tools/ — packaging and published artifacts
 
 - [Release dependencies are bundled without host binaries (`bundleDependencies.ts`)](build-tools/DESIGN.md#release-dependencies-are-bundled-without-host-binaries-bundledependenciests) — The locked JavaScript closure ships as bytes; native roots install per platform and the actual archive and consumer layout are checked.

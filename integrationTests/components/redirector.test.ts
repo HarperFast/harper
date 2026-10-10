@@ -6,13 +6,31 @@
  * versioning, time-based rules, edge cases, and table CRUD.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert';
+import { strictEqual, ok, doesNotMatch } from 'node:assert';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { waitForLogMatches } from './waitForLog.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
+import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+
+const REQUEST_TIMEOUT_MS = 10_000;
+
+async function fetchWithTimeout(
+	input: string | URL,
+	init?: RequestInit,
+	timeoutMs = REQUEST_TIMEOUT_MS,
+	description = `${init?.method ?? 'GET'} request`
+): Promise<Response> {
+	const signal = AbortSignal.timeout(timeoutMs);
+	try {
+		return await fetch(input, { ...init, signal });
+	} catch (error) {
+		if (!signal.aborted) throw error;
+		throw new Error(`${description} to ${input} timed out after ${timeoutMs}ms`, { cause: error });
+	}
+}
 
 const REDIRECT_CSV = `utcStartTime,utcEndTime,path,host,version,redirectURL,operations,statusCode,regex
 ,,/shop/live-shopping,,0,/s/events,,301,
@@ -33,14 +51,28 @@ const REDIRECT_CSV = `utcStartTime,utcEndTime,path,host,version,redirectURL,oper
 
 suite('Component: redirector', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await startHarper(ctx);
+		// the negative spawn assertion below reads debug-level log lines
+		await startHarper(ctx, { config: { logging: { level: 'debug' } } });
 
-		const deployBody = await sendOperation(ctx.harper, {
-			operation: 'deploy_component',
-			project: 'redirector',
-			package: join(__dirname, '../fixtures/template-redirector-3.0.1.tgz'),
-			restart: true,
-		});
+		const deployResponse = await fetchWithTimeout(
+			ctx.harper.operationsAPIURL,
+			{
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					operation: 'deploy_component',
+					project: 'redirector',
+					package: join(__dirname, '../fixtures/template-redirector-3.0.1-vendored.tgz'),
+					restart: true,
+				}),
+			},
+			// A `restart: true` deploy returns only once the worker roll finishes.
+			90_000,
+			'deploy_component request'
+		);
+		const deployText = await deployResponse.text();
+		strictEqual(deployResponse.status, 200, deployText);
+		const deployBody = JSON.parse(deployText);
 		strictEqual(deployBody.message, 'Successfully deployed: redirector, restarting Harper');
 		ok(typeof deployBody.deployment_id === 'string', `expected deployment_id, got ${deployBody.deployment_id}`);
 
@@ -48,7 +80,7 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 		const deadline = Date.now() + 60_000;
 		while (true) {
 			try {
-				const check = await fetch(`${ctx.harper.httpURL}/Rule/`);
+				const check = await fetchWithTimeout(`${ctx.harper.httpURL}/Rule/`);
 				if (check.status === 200) {
 					console.log('[redirector poll] Server is ready.');
 					break;
@@ -63,7 +95,7 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 		}
 
 		// seed redirect rules via CSV
-		const csvRes = await fetch(`${ctx.harper.httpURL}/redirect`, {
+		const csvRes = await fetchWithTimeout(`${ctx.harper.httpURL}/redirect`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'text/csv' },
 			body: REDIRECT_CSV,
@@ -71,11 +103,18 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 		ok(csvRes.status < 300, `CSV seed failed with ${csvRes.status}: ${await csvRes.text()}`);
 
 		// seed hosts table for host-scoped lookups
-		await fetch(`${ctx.harper.httpURL}/Hosts/`, {
+		await fetchWithTimeout(`${ctx.harper.httpURL}/Hosts/`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ host: 'www.example.com', hostOnly: true }),
 		});
+
+		const logDirectory = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
+		const instanceLog = await waitForLogMatches(join(logDirectory, 'hdb.log'), [
+			/Application redirector already has node_modules; skipping install/,
+		]);
+		doesNotMatch(instanceLog, /Maximum log buffer rate reached/, 'negative spawn assertion requires complete logs');
+		doesNotMatch(instanceLog, /\[redirector:spawn:npm/, 'the vendored fixture must not reach the npm registry');
 	});
 
 	after(async () => {
@@ -83,7 +122,7 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 	});
 
 	test('query param lookup returns correct redirect', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/checkredirect?path=/shop/live-shopping`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?path=/shop/live-shopping`);
 		strictEqual(res.status, 200);
 		const body = await res.json();
 		strictEqual(body.redirectURL, '/s/events');
@@ -91,7 +130,7 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 	});
 
 	test('Path header lookup returns same result', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/checkredirect`, {
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect`, {
 			headers: { Path: '/shop/live-shopping' },
 		});
 		const body = await res.json();
@@ -100,42 +139,42 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 	});
 
 	test('nonexistent path returns 404', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/checkredirect?path=/does-not-exist/`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?path=/does-not-exist/`);
 		strictEqual(res.status, 404);
 	});
 
 	test('same path returns different redirect based on host', async () => {
-		const withHost = await fetch(`${ctx.harper.httpURL}/checkredirect?h=www.example.com&path=/p/shirts/`);
+		const withHost = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?h=www.example.com&path=/p/shirts/`);
 		const withHostBody = await withHost.json();
 		strictEqual(withHostBody.redirectURL, '/shop/mens-clothing/shirts?id=1234');
 
-		const noHost = await fetch(`${ctx.harper.httpURL}/checkredirect?path=/p/shirts/`);
+		const noHost = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?path=/p/shirts/`);
 		const noHostBody = await noHost.json();
 		strictEqual(noHostBody.redirectURL, '/shop/mens-clothing/shirts?id=5678');
 	});
 
 	test('trailing slash distinguishes rules by default', async () => {
-		const noSlash = await fetch(`${ctx.harper.httpURL}/checkredirect?path=/dir3/dir4`);
+		const noSlash = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?path=/dir3/dir4`);
 		const noSlashBody = await noSlash.json();
 		strictEqual(noSlashBody.redirectURL, '/dir3/dir4/dir5');
 
-		const withSlash = await fetch(`${ctx.harper.httpURL}/checkredirect?path=/dir3/dir4/`);
+		const withSlash = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?path=/dir3/dir4/`);
 		const withSlashBody = await withSlash.json();
 		strictEqual(withSlashBody.redirectURL, '/dir3/dir4/dir6');
 	});
 
 	test('si=1 makes slash insensitive', async () => {
-		const noSlash = await fetch(`${ctx.harper.httpURL}/checkredirect?si=1&path=/dir2/file3`);
+		const noSlash = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?si=1&path=/dir2/file3`);
 		const noSlashBody = await noSlash.json();
 		strictEqual(noSlashBody.redirectURL, '/dir2/other3');
 
-		const withSlash = await fetch(`${ctx.harper.httpURL}/checkredirect?si=1&path=/dir2/file3/`);
+		const withSlash = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?si=1&path=/dir2/file3/`);
 		const withSlashBody = await withSlash.json();
 		strictEqual(withSlashBody.redirectURL, '/dir2/other3');
 	});
 
 	test('preserve=1 appends original query string via X-Query-String header', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/checkredirect?path=/dir2/file3`, {
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?path=/dir2/file3`, {
 			headers: { 'X-Query-String': '?arg1=val1&arg2=val2' },
 		});
 		const body = await res.json();
@@ -143,7 +182,7 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 	});
 
 	test('filter removes specified params via X-Query-String header', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/checkredirect?path=/dir2/file4`, {
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?path=/dir2/file4`, {
 			headers: { 'X-Query-String': '?arg1=val1&arg2=val2' },
 		});
 		const body = await res.json();
@@ -151,7 +190,7 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 	});
 
 	test('filter with multiple params removes all specified via X-Query-String header', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/checkredirect?path=/dir2/file5`, {
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?path=/dir2/file5`, {
 			headers: { 'X-Query-String': '?arg1=val1&arg2=val2&arg3=val3' },
 		});
 		const body = await res.json();
@@ -159,19 +198,19 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 	});
 
 	test('wildcard matches any sub-path', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/checkredirect?path=/dir1/fileX`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?path=/dir1/fileX`);
 		const body = await res.json();
 		strictEqual(body.redirectURL, '/dir2/');
 	});
 
 	test('similar prefix correctly disambiguated from regex', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/checkredirect?path=/dir11/special-thing`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?path=/dir11/special-thing`);
 		const body = await res.json();
 		strictEqual(body.redirectURL, '/dir99/');
 	});
 
 	test('regex with query string filter via X-Query-String header', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/checkredirect?path=/dir66/anything/file5`, {
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?path=/dir66/anything/file5`, {
 			headers: { 'X-Query-String': '?top=1&foo=bar&fab=val5' },
 		});
 		const body = await res.json();
@@ -179,42 +218,42 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 	});
 
 	test('default version returns v0 redirect', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/checkredirect?path=/p/shoes/`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?path=/p/shoes/`);
 		const body = await res.json();
 		strictEqual(body.redirectURL, '/shop/shoes/v0?id=1236');
 	});
 
 	test('explicit v=1 returns v1 redirect', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/checkredirect?v=1&path=/p/shoes/`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?v=1&path=/p/shoes/`);
 		const body = await res.json();
 		strictEqual(body.redirectURL, '/shop/shoes/v1?id=1236');
 	});
 
 	test('expired rule returns 404 at current time', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/checkredirect?path=/p/shirts/help/`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?path=/p/shirts/help/`);
 		strictEqual(res.status, 404);
 	});
 
 	test('time override within window returns redirect', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/checkredirect?t=5&path=/p/shirts/help/`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?t=5&path=/p/shirts/help/`);
 		const body = await res.json();
 		strictEqual(body.redirectURL, '/info/finding-the-perfect-shirt');
 	});
 
 	test('empty path returns null', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/checkredirect?path=`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect?path=`);
 		const body = await res.json();
 		strictEqual(body, null);
 	});
 
 	test('no path param returns null', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/checkredirect`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/checkredirect`);
 		const body = await res.json();
 		strictEqual(body, null);
 	});
 
 	test('CSV import with missing path loads 0 rules', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/redirect`, {
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/redirect`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'text/csv' },
 			body: 'redirectURL\n/somewhere',
@@ -224,7 +263,7 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 	});
 
 	test('CSV import with missing redirectURL loads 0 rules', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/redirect`, {
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/redirect`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'text/csv' },
 			body: 'path\n/from-here',
@@ -235,7 +274,7 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 
 	test('Version table CRUD', async () => {
 		// create
-		const createRes = await fetch(`${ctx.harper.httpURL}/Version/`, {
+		const createRes = await fetchWithTimeout(`${ctx.harper.httpURL}/Version/`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ activeVersion: 1 }),
@@ -245,7 +284,7 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 		ok(versionId, 'expected version ID');
 
 		// update
-		const updateRes = await fetch(`${ctx.harper.httpURL}/Version/${versionId}`, {
+		const updateRes = await fetchWithTimeout(`${ctx.harper.httpURL}/Version/${versionId}`, {
 			method: 'PATCH',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ activeVersion: 2 }),
@@ -253,7 +292,7 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 		ok(updateRes.status < 300, `update failed: ${updateRes.status}`);
 
 		// delete
-		const deleteRes = await fetch(`${ctx.harper.httpURL}/Version/${versionId}`, {
+		const deleteRes = await fetchWithTimeout(`${ctx.harper.httpURL}/Version/${versionId}`, {
 			method: 'DELETE',
 		});
 		const deleteBody = await deleteRes.json();
@@ -262,7 +301,7 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 
 	test('Hosts table CRUD', async () => {
 		// create
-		const createRes = await fetch(`${ctx.harper.httpURL}/Hosts/`, {
+		const createRes = await fetchWithTimeout(`${ctx.harper.httpURL}/Hosts/`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ host: 'ci-test-host', hostOnly: true }),
@@ -270,7 +309,7 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 		ok(createRes.status < 300, `create failed: ${createRes.status}`);
 
 		// update
-		const updateRes = await fetch(`${ctx.harper.httpURL}/Hosts/ci-test-host`, {
+		const updateRes = await fetchWithTimeout(`${ctx.harper.httpURL}/Hosts/ci-test-host`, {
 			method: 'PATCH',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ hostOnly: false }),
@@ -278,7 +317,7 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 		ok(updateRes.status < 300, `update failed: ${updateRes.status}`);
 
 		// delete
-		const deleteRes = await fetch(`${ctx.harper.httpURL}/Hosts/ci-test-host`, {
+		const deleteRes = await fetchWithTimeout(`${ctx.harper.httpURL}/Hosts/ci-test-host`, {
 			method: 'DELETE',
 		});
 		const deleteBody = await deleteRes.json();
@@ -286,20 +325,22 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 	});
 
 	test('deleting a rule makes its path return 404', async () => {
-		const listRes = await fetch(`${ctx.harper.httpURL}/Rule/`);
+		const listRes = await fetchWithTimeout(`${ctx.harper.httpURL}/Rule/`);
 		const rules = await listRes.json();
 		ok(Array.isArray(rules) && rules.length > 0, 'expected at least 1 rule');
 
 		const target = rules.find((r: any) => r.path === '/p/shirts/help/iron/');
 		ok(target, 'expected to find specific rule to delete');
 
-		const deleteRes = await fetch(`${ctx.harper.httpURL}/Rule/${target.id}`, {
+		const deleteRes = await fetchWithTimeout(`${ctx.harper.httpURL}/Rule/${target.id}`, {
 			method: 'DELETE',
 		});
 		const deleteBody = await deleteRes.json();
 		strictEqual(deleteBody, true);
 
-		const checkRes = await fetch(`${ctx.harper.httpURL}/checkredirect?path=${encodeURIComponent(target.path)}`);
+		const checkRes = await fetchWithTimeout(
+			`${ctx.harper.httpURL}/checkredirect?path=${encodeURIComponent(target.path)}`
+		);
 		strictEqual(checkRes.status, 404);
 	});
 });
