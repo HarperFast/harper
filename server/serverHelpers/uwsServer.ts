@@ -18,7 +18,7 @@
 import { STATUS_CODES } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { UwsRequest, UwsRequestBody } from './Request.ts';
 import { Headers } from './Headers.ts';
@@ -92,7 +92,7 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 			`uws_${process.platform}_${process.arch}_${process.versions.modules}.node`
 		);
 		// a missing binary is an unsupported Node.js version, which uws.js itself reports accurately
-		const verdict = existsSync(uwsBinary) ? checkNativeAddon(uwsBinary) : undefined;
+		const verdict = statSync(uwsBinary, { throwIfNoEntry: false })?.isFile() ? checkNativeAddon(uwsBinary) : undefined;
 		if (verdict && (!verdict.loadable || verdict.reason === 'not-elf64')) {
 			const error = new IncompatibleNativeAddonError(uwsBinary, verdict);
 			error.message += ' To serve HTTP without uWebSockets.js, unset HARPER_UWS_HTTP and HARPER_UWS_UDS.';
