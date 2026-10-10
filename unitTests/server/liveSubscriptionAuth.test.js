@@ -7,7 +7,7 @@ const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
 
 // The module reads its interval once at import and the first register() starts a real timer; a
-// background tick landing mid-test would make _sweepNow() a no-op via the `sweeping` guard.
+// background tick landing mid-test would add rechecks the test does not count on.
 process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS = String(24 * 60 * 60 * 1000);
 
 const {

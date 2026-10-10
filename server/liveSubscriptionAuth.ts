@@ -26,7 +26,7 @@ const RECHECK_INTERVAL_MS = intervalOverride ?? 30_000;
 const BACKSTOP_INTERVAL_MS = intervalOverride ?? 300_000;
 // a larger setTimeout delay overflows and fires at once
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
-// rechecks (or expiry terminations) between yields to the event loop
+// rechecks, or expiry terminations, per event-loop turn
 const SLICE_SIZE = 256;
 // past this many distinct pending identities a full pass is cheaper to track than the ids
 const MAX_PENDING_IDS = 1000;
@@ -53,9 +53,9 @@ interface LiveSubscription {
 	recheck: (pass: RecheckPass) => Promise<boolean>;
 	/** Stop delivery and tear down. May be async (e.g. a shared-feed refcount release). */
 	terminate: () => void | Promise<void>;
-	/** Set exactly while tracked. */
+	/** Set exactly while tracked: the only membership test. */
 	group?: PrincipalGroup;
-	/** Position in expiryHeap, or -1. */
+	/** Position in expiryHeap, or -1, so removal on unregister needs no search. */
 	heapIndex: number;
 }
 
