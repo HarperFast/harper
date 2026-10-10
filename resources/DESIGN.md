@@ -879,3 +879,17 @@ replay re-encodes the record but never re-appends its audit entry (replay transa
 The row bit reflects its latest mutation, so a caller needing a row to stay local re-asserts it on every
 mutation. Reload and derived-index `evict` markers are always local-only; lock control entries never are.
 Enforced by `unitTests/resources/localOnly.test.js` (both engines; crash + boot replay on RocksDB).
+
+## A record's residency is the listed nodes plus the writer, and a patch over a stub stays a stub (`Table.ts` `_writeUpdate`, harper#2257)
+
+A node outside a record's residency keeps an `INVALIDATED` stub (indexed fields and created time) whose
+`residencyId` names the nodes holding the complete record; a read fetches from one of them. Two rules keep
+a listed node complete. A write made here (not `isNotification`, `sourceApply` or replay) whose record-based
+residency excludes this node adds this node to the list and stores the full record, warning once per table
+per thread: before this, an ordinary write destroyed the writer's copy while the log recorded a plain upsert.
+And a patch whose base (stored, or staged earlier in the transaction) is a record-based stub is stored as a
+stub again on every path. Without an explicit received residency it keeps the base's `residencyId` and does
+not consult the residency function: the merged row lacks the fields a placement decision needs, and the
+base's list is the one naming a complete holder. An explicit received residency stays authoritative, but
+does not make the receiver complete. A replicated or source write with no residency list, and `setResidencyById`, still omit or stub as
+before. Enforced by `unitTests/resources/writerResidency.test.js` (both engines).
