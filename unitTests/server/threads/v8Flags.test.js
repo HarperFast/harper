@@ -48,7 +48,6 @@ describe('threads.v8Flags', function () {
 
 	it('leaves V8 defaults when unset, null or empty', async () => {
 		for (const unset of [null, [], '', ['  ']]) {
-			// The harness process starts without flags, so its own limit is V8's default.
 			const { defaultStackTraceLimit, results } = await runHarness([unset]);
 			assert.deepStrictEqual(results, [{ stackTraceLimit: defaultStackTraceLimit }]);
 		}
