@@ -39,6 +39,12 @@ interface Action {
 }
 
 let activeActions = new Map<string, Action>();
+/**
+ * The same actions by metric → path → method → type, rotated with `activeActions`. A call site passes
+ * constant (or cached) strings, whose hashes V8 keeps, so this finds the action without concatenating
+ * and hashing a fresh key string per call.
+ */
+let actionIndex = new Map<string, Map<string | undefined, Map<string | undefined, Map<string | undefined, Action>>>>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
@@ -105,6 +111,7 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
 		type,
 	};
 	activeActions.set(key, action);
+	return action;
 }
 
 /**
@@ -117,15 +124,24 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
  */
 export function recordAction(value: Value, metric: string, path?: string, method?: string, type?: string) {
 	if (!checkAnalyticsEnabled()) return;
-	// TODO: May want to consider nested paths, as they may yield faster hashing of (fixed) strings that hashing concatenated strings
-	let key = metric + (path ? '-' + path : '');
-	if (method !== undefined) key += '-' + method;
-	if (type !== undefined) key += '-' + type;
-	const action = activeActions.get(key);
+	let byPath = actionIndex.get(metric);
+	if (byPath === undefined) actionIndex.set(metric, (byPath = new Map()));
+	let byMethod = byPath.get(path);
+	if (byMethod === undefined) byPath.set(path, (byMethod = new Map()));
+	let byType = byMethod.get(method);
+	if (byType === undefined) byMethod.set(method, (byType = new Map()));
+	let action = byType.get(type);
 	if (action) {
 		recordExistingAction(value, action);
 	} else {
-		recordNewAction(key, value, metric, path, method, type);
+		// arguments that differ only in form (an empty path, a number for a string) share one action
+		let key = metric + (path ? '-' + path : '');
+		if (method !== undefined) key += '-' + method;
+		if (type !== undefined) key += '-' + type;
+		action = activeActions.get(key);
+		if (action) recordExistingAction(value, action);
+		else action = recordNewAction(key, value, metric, path, method, type);
+		byType.set(type, action);
 	}
 	if (!sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
 }
@@ -165,6 +181,7 @@ function sendAnalytics() {
 		// an entry already reported, and dropped with it.
 		const reportingActions = activeActions;
 		activeActions = new Map();
+		actionIndex = new Map();
 		const period = performance.now() - analyticsStart;
 		analyticsStart = 0;
 		const metrics = [];

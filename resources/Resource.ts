@@ -911,6 +911,9 @@ function transactional(
 				// Capture the complete target after the initial allowRead has narrowed it, but before
 				// subscribe/connect implementations can mutate it. Every later recheck gets a fresh clone.
 				const admittedTarget = isSubscribeAction ? cloneRequestTarget(query) : undefined;
+				// Identical admissions share one re-authorization group (and its one retained snapshot), keyed
+				// on the same pre-mutation target.
+				const admittedKey = isSubscribeAction ? liveSubscriptionAuthKey(resource, context, query) : null;
 				// getResource creates a fresh receiver for this dispatch. Marking that receiver, rather
 				// than caller-owned target identity, preserves the static (target, message) signature when
 				// an override copies the target or delegates asynchronously after its own return settles.
@@ -918,7 +921,7 @@ function transactional(
 				const result = action(resource, query, context, data);
 				if (!isSubscribeAction) return result;
 				return when(result, (subscription: any) => {
-					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, context);
+					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, admittedKey, context);
 					return subscription;
 				});
 			};
@@ -1035,41 +1038,146 @@ function hasPermissionControl(value: any, seen = new WeakSet<object>()): boolean
 	return false;
 }
 
-function registerLiveSubscriptionForContext(subscription: any, resource: any, admittedTarget: any, context: Context) {
+function registerLiveSubscriptionForContext(
+	subscription: any,
+	resource: any,
+	admittedTarget: any,
+	admittedKey: string | null,
+	context: Context
+) {
 	const user: any = context?.user;
 	const username = user?.username;
 	// Internal watchers, replication and local-bypass have no user principal — nothing to re-authorize.
 	if (!username) return;
+	// A scoped token's identity IS its embedded role, not its username, so it never shares a group.
+	const scopedUser = user._scopedToken ? user : undefined;
 	registerLiveSubscription({
 		subscription,
 		username,
 		// JWT exp of the bearer credential (set by the auth layer); undefined for password/mTLS/session.
 		authExpiresAt: user.authExpiresAt,
-		recheck: async () => {
+		authKey: scopedUser ? null : admittedKey,
+		context,
+		// When this registration joins an existing group, this closure, with the admitted-target snapshot and
+		// resource it holds, is dropped for the group's own; that one belongs to the first registration
+		// with the same admission (resource class, user, target).
+		recheck: async (contexts: any[]) => {
 			let fresh: any;
-			if (user._scopedToken) {
+			if (scopedUser) {
 				// A scoped token's identity IS its embedded role — never re-resolve its attribution
 				// username against hdb_user (it may not exist, or may name an unrelated principal
 				// created later). Expiry (authExpiresAt above) is its only revocation.
-				fresh = user;
+				fresh = scopedUser;
 			} else {
 				// Re-read current user state from hdb_user/hdb_role, so a dropped or
 				// role-stripped user no longer authorizes.
 				const { findAndValidateUser } = require('../security/user');
 				fresh = await findAndValidateUser(username, undefined, false);
 				if (!fresh?.role) return false;
-				// Advance the subscription's context to the fresh user so downstream checks — context.user
+				// Advance each subscription's context to the fresh user so downstream checks — context.user
 				// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
 				// not the stale user captured at subscribe time.
-				if (context) (context as any).user = fresh;
+				for (const memberContext of contexts) if (memberContext) memberContext.user = fresh;
 			}
-			// Re-run the same operation-level allowRead that granted the subscription.
+			// Re-run the same operation-level allowRead that granted the subscription; the members were
+			// admitted identically, so one live member's context serves the group.
 			const reTarget: any = cloneRequestTarget(admittedTarget);
 			reTarget.checkPermission = fresh.role?.permission;
-			return !!(await resource.allowRead(fresh, reTarget, context));
+			return !!(await resource.allowRead(fresh, reTarget, contexts[0]));
 		},
 	});
 }
+
+// Class identity component of a live-subscription authKey: a counter per class rather than its name,
+// since two resource classes can share a name.
+const liveAuthClassIds = new WeakMap<Function, number>();
+let nextLiveAuthClassId = 0;
+
+/**
+ * The identity of a subscription admission, (resource class, username, canonical target), that lets
+ * identical admissions share one re-authorization group (server/liveSubscriptionAuth.ts). Null, so the
+ * subscription registers in a group of its own, when the resource's read authorization may depend on the
+ * context (one member's context then could not stand in for another's), or the target has no safe
+ * canonical form (functions, class instances, circular references).
+ */
+function liveSubscriptionAuthKey(resource: any, context: any, query: any): string | null {
+	const username = context?.user?.username;
+	if (!username) return null;
+	const resourceClass = resource?.constructor;
+	if (typeof resourceClass !== 'function') return null;
+	if (!resourceClass.readAuthorizationIgnoresContext?.(resource)) return null;
+	const targetKey = canonicalTargetKey(query);
+	if (targetKey == null) return null;
+	let classId = liveAuthClassIds.get(resourceClass);
+	if (classId === undefined) liveAuthClassIds.set(resourceClass, (classId = ++nextLiveAuthClassId));
+	// the username is JSON-encoded so one containing the separator can't shift segment boundaries
+	return `${classId}|${JSON.stringify(username)}|${targetKey}`;
+}
+
+/**
+ * Canonical string form of a request target, covering exactly what cloneRequestTarget snapshots: the
+ * target string (path and query) plus own enumerable properties, checkPermission excluded. Null for
+ * values the clone would carry by reference (functions, class instances) and for circular structures:
+ * identity matters for those, so such targets must not share a group.
+ */
+function canonicalTargetKey(source: any): string | null {
+	if (source == null || typeof source !== 'object') return null;
+	const seen = new WeakSet<object>();
+	const canonicalValue = (value: any): string | null => {
+		if (value === null) return 'null';
+		switch (typeof value) {
+			case 'string':
+				return JSON.stringify(value);
+			case 'number':
+			case 'boolean':
+				return String(value);
+			case 'bigint':
+				return value + 'n';
+			case 'undefined':
+				return 'undefined';
+			case 'object':
+				break;
+			default:
+				return null; // function or symbol: reference identity, not canonicalizable
+		}
+		if (seen.has(value)) return null; // circular
+		seen.add(value);
+		if (Array.isArray(value)) {
+			// a hole or an own property besides the elements (select's asArray, say) is not in the elements
+			const keys = Object.keys(value);
+			if (keys.length !== value.length) return null;
+			for (let index = 0; index < keys.length; index++) if (keys[index] !== String(index)) return null;
+			const parts: string[] = [];
+			for (const element of value) {
+				const part = canonicalValue(element);
+				if (part == null) return null;
+				parts.push(part);
+			}
+			return `[${parts.join(',')}]`;
+		}
+		const prototype = Object.getPrototypeOf(value);
+		if (prototype !== Object.prototype && prototype !== null) return null; // class instance
+		return canonicalProperties(value);
+	};
+	const canonicalProperties = (value: object): string | null => {
+		const parts: string[] = [];
+		for (const key of Object.keys(value).sort()) {
+			if (key === 'checkPermission') continue; // stripped by cloneRequestTarget; role-dependent
+			const part = canonicalValue((value as any)[key]);
+			if (part == null) return null;
+			parts.push(`${JSON.stringify(key)}:${part}`);
+		}
+		return `{${parts.join(',')}}`;
+	};
+	seen.add(source);
+	const ownProperties = canonicalProperties(source);
+	if (ownProperties == null) return null;
+	const target = source instanceof URLSearchParams ? source.toString() : '';
+	return `${JSON.stringify(target)}|${ownProperties}`;
+}
+
+// Test-only aliases (unitTests/resources/liveSubscriptionAuthKey.test.js)
+export { liveSubscriptionAuthKey as _liveSubscriptionAuthKeyForTest, canonicalTargetKey as _canonicalTargetKeyForTest };
 
 const KNOWN_METHODS = ['get', 'head', 'put', 'post', 'delete', 'patch', 'query', 'move', 'copy'];
 type ClientErrorWithMethods = ClientError & { allow: string[]; method: string };

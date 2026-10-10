@@ -1068,6 +1068,7 @@ interface TableResourceClass {
 	cleanup(): void;
 	closeMaintenance(deadline?: number): Promise<void>;
 	resumeMaintenance(): void;
+	readAuthorizationIgnoresContext(resource: any): boolean;
 	_readTxnForContext(context: any): (LMDBReadTransaction | RocksTransaction) & {
 		openTimer?: number;
 		retryRisk?: number;
@@ -1355,6 +1356,130 @@ function currentEntryForAudit(store: any, id: Id, auditRecord: any): Entry | und
 	return memoizedEntry;
 }
 
+/**
+ * What a `Table.subscribe()` subscription's live listener shares with its replay. The listener lives as
+ * long as the subscription, so it holds only this, never `subscribe()`'s own scope (the request handling,
+ * the replay's state and the resource instance), which is released once the replay ends.
+ */
+type SubscriberState = {
+	subscription: any;
+	thisId: Id;
+	isCollection: boolean;
+	rawEvents: boolean;
+	getFullRecord: boolean;
+	includeSuperseded: boolean;
+	allowsEvent: ((event: any) => boolean) | null;
+	/**
+	 * While the count, !omitCurrent, and non-collection branches replay older messages, real-time
+	 * messages from the listener accumulate here and are drained at the end of the replay so they
+	 * arrive after the replayed history, in order. The startTime branch sets this to null and
+	 * uses dropDuringReplay instead — its snapshot:false cursor picks up the live tail directly.
+	 */
+	pendingRealTimeQueue: any[] | null;
+	/**
+	 * Set during the startTime audit-log replay. The cursor iterates the audit log forward with
+	 * snapshot:false, which catches any commits that land during yield points; dropping in the
+	 * listener avoids duplicate delivery.
+	 */
+	dropDuringReplay: boolean;
+	/** Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener. */
+	reloadResnapshotRunning: boolean;
+	reloadResnapshotPending: boolean;
+	reportingProgress: boolean;
+};
+
+function isSubscriptionActive(subscription: any): boolean {
+	return !subscription.closed && Boolean(subscription.subscriptions);
+}
+
+function failSubscription(subscription: any, error: any) {
+	if (subscription.closed) return;
+	harperLogger.error?.('Error in real-time subscription:', error);
+	try {
+		subscription.close(error);
+	} catch (listenerError) {
+		harperLogger.error?.('Error in real-time subscription listener:', listenerError);
+	}
+}
+
+// A write folded into a newer version by out-of-order resequencing is listed in the record's
+// additionalAuditRefs until the next in-order write replaces the record.
+function wasMergedInto(entry: any, txnLogKey: number, nodeId: number | undefined) {
+	return Boolean(
+		entry.metadataFlags & VERSION_REUSED &&
+		entry.additionalAuditRefs?.some(
+			(ref: { version: number; nodeId?: number }) => ref.version === txnLogKey && (ref.nodeId ?? 0) === (nodeId ?? 0)
+		)
+	);
+}
+
+/** The subscription's rowFilter/eventFilter check, built only for a subscription that has one. */
+function subscriptionEventFilter(
+	state: SubscriberState,
+	rowFilter: Function | undefined,
+	eventFilter: Function | undefined,
+	subContext: any
+): (event: any) => boolean {
+	const evaluateFilter = (filter: Function, value: any, name: string): boolean => {
+		try {
+			const decision = filter(value, subContext);
+			if (decision != null && typeof decision.then === 'function') {
+				decision.then(undefined, () => {});
+				throw new ClientError(`${name} must be synchronous`);
+			}
+			return Boolean(decision);
+		} catch (error) {
+			failSubscription(state.subscription, error);
+			return false;
+		}
+	};
+	return (event: any): boolean => {
+		if (event.type === 'end_txn' || event.type === 'reload') return true;
+		if (event.value != null) freezeRecord(event.value);
+		if (eventFilter && !evaluateFilter(eventFilter, frozenRecordView(event), 'eventFilter')) return false;
+		const hasAuthoritativeRow =
+			!state.rawEvents && (event.type === 'put' || event.type === 'invalidate') && event.value != null;
+		if (!rowFilter) return true;
+		if (!hasAuthoritativeRow) return Boolean(eventFilter);
+		return evaluateFilter(rowFilter, event.value, 'rowFilter');
+	};
+}
+
+/**
+ * Counts what a progress-reporting subscription sends and installs its `progress()`, returning the
+ * function that marks it live once its replay is done.
+ */
+function trackSubscriptionProgress(subscription: any, request: any, resuming: boolean, collection: boolean) {
+	let progressLive = false;
+	let progressFloor: number | undefined;
+	const requestedStartTime = request.startTime;
+	subscription.sentCount = 0;
+	const queueSend = subscription.send;
+	subscription.send = function (event) {
+		this.sentCount++;
+		return queueSend.call(this, event);
+	};
+	const beforeLive = (): number | undefined =>
+		resuming
+			? collection
+				? subscription.startTime
+				: requestedStartTime
+			: requestedStartTime === undefined
+				? subscription.registeredThrough
+				: undefined;
+	subscription.progress = () => {
+		if (!isSubscriptionActive(subscription)) return;
+		if (!progressLive) return beforeLive();
+		const dispatched = dispatchedThrough(subscription);
+		if (progressFloor === undefined) return dispatched;
+		return dispatched === undefined || dispatched < progressFloor ? progressFloor : dispatched;
+	};
+	return () => {
+		progressFloor = beforeLive();
+		progressLive = true;
+	};
+}
+
 // the log store ends a failed or corrupt log's iteration quietly and records it on the range
 function unreadableLogRefusal(range: any): Error | undefined {
 	if (range.failedLogs?.size || range.corruptFrameStop?.breaks) {
@@ -1421,6 +1546,8 @@ export function makeTable(options): TableResourceClass {
 	let hasSourceGet: any;
 	let primaryKeyAttribute: Attribute | undefined;
 	let lastEvictionCompletion: Promise<void> = Promise.resolve();
+	/** Subscription snapshot scans and history replays of this table in flight on this thread. */
+	let catchUpScans = 0;
 	let recordExpirationCompletion: Promise<void> = Promise.resolve();
 	const maintenanceCommits = new Set<Promise<unknown>>();
 	let maintenanceClosed = false;
@@ -1470,6 +1597,8 @@ export function makeTable(options): TableResourceClass {
 	// cyclic) entity at runtime regardless of its declared scalar type, and the static edge graph can't see
 	// it, so such a table takes the guarded serialization path rather than the raw fast path.
 	let hasSurfacedComputed = false;
+	// True when the table has any @computed attribute, whose resolver may read the reader's context.
+	let hasComputed = false;
 	let runningRecordExpiration: boolean;
 	const reportedResolverCollisions = new Set<string>();
 	// Reached from record materialization, so it can never be the reason a record fails to load: the
@@ -3493,6 +3622,14 @@ export function makeTable(options): TableResourceClass {
 			return undefined;
 		}
 		// #section: authz-hooks
+		/**
+		 * Whether `resource`'s read authorization depends on nothing but the user and the target: the table's
+		 * own allowRead does, unless a relationship hands the context on to a related table's. Only then do
+		 * identical live-subscription admissions share one re-authorization (server/liveSubscriptionAuth.ts).
+		 */
+		static readAuthorizationIgnoresContext(resource: any): boolean {
+			return resource.allowRead === TableResource.prototype.allowRead && !hasRelationships;
+		}
 		/**
 		 * Determine if the user is allowed to get/read data from the current resource
 		 * @deprecated Override the resource operation for application-specific authorization.
@@ -6847,21 +6984,21 @@ export function makeTable(options): TableResourceClass {
 				TableResource.assertSchemaMutable('enable auditing for a subscription');
 				table({ table: tableName, database: databaseName, schemaDefined, attributes, audit: true });
 			}
-			const getFullRecord = !request.rawEvents;
-			const includeSuperseded = request.includeSuperseded ?? request.rawEvents ?? false;
-			// While the count, !omitCurrent, and non-collection branches replay older messages, real-time
-			// messages from the listener accumulate here and are drained at the end of the IIFE so they
-			// arrive after the replayed history, in order. The startTime branch sets this to null and
-			// uses dropDuringReplay instead — its snapshot:false cursor picks up the live tail directly.
-			let pendingRealTimeQueue: any[] | null = [];
-			// Set during the startTime audit-log replay. The cursor iterates the audit log forward with
-			// snapshot:false, which catches any commits that land during yield points; dropping in the
-			// listener avoids duplicate delivery.
-			let dropDuringReplay = false;
-			// Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener below.
-			let reloadResnapshotRunning = false;
-			let reloadResnapshotPending = false;
-			let reportingProgress = false;
+			const state: SubscriberState = {
+				subscription: undefined,
+				thisId,
+				isCollection: request.isCollection ?? thisId == null,
+				rawEvents: Boolean(request.rawEvents),
+				getFullRecord: !request.rawEvents,
+				includeSuperseded: request.includeSuperseded ?? request.rawEvents ?? false,
+				allowsEvent: null,
+				pendingRealTimeQueue: [],
+				dropDuringReplay: false,
+				reloadResnapshotRunning: false,
+				reloadResnapshotPending: false,
+				reportingProgress: false,
+			};
+			const { getFullRecord, includeSuperseded } = state;
 			const subContext = this.getContext() as any;
 			const rowFilter = typeof request.rowFilter === 'function' ? request.rowFilter : undefined;
 			const eventFilter = typeof request.eventFilter === 'function' ? request.eventFilter : undefined;
@@ -6871,97 +7008,22 @@ export function makeTable(options): TableResourceClass {
 			if (eventFilter?.constructor?.name === 'AsyncFunction') {
 				throw new ClientError('eventFilter must be synchronous');
 			}
-			const evaluateFilter = (filter: Function, value: any, name: string): boolean => {
-				try {
-					const decision = filter(value, subContext);
-					if (decision != null && typeof decision.then === 'function') {
-						decision.then(undefined, () => {});
-						throw new ClientError(`${name} must be synchronous`);
-					}
-					return Boolean(decision);
-				} catch (error) {
-					failSubscription(error);
-					return false;
-				}
-			};
-			const allowsEvent =
-				rowFilter || eventFilter
-					? (event: any): boolean => {
-							if (event.type === 'end_txn' || event.type === 'reload') return true;
-							if (event.value != null) freezeRecord(event.value);
-							if (eventFilter && !evaluateFilter(eventFilter, frozenRecordView(event), 'eventFilter')) return false;
-							const hasAuthoritativeRow =
-								!request.rawEvents && (event.type === 'put' || event.type === 'invalidate') && event.value != null;
-							if (!rowFilter) return true;
-							if (!hasAuthoritativeRow) return Boolean(eventFilter);
-							return evaluateFilter(rowFilter, event.value, 'rowFilter');
-						}
-					: null;
-			const subscription = addSubscription(
+			const allowsEvent = (state.allowsEvent =
+				rowFilter || eventFilter ? subscriptionEventFilter(state, rowFilter, eventFilter, subContext) : null);
+			const subscription = (state.subscription = addSubscription(
 				TableResource,
 				thisId,
-				function (id: Id, auditRecord?: any, txnLogKey?: any, beginTxn?: any) {
-					if (dropDuringReplay) return;
-					try {
-						if (isLockControlType(auditRecord.type)) return;
-						if (auditRecord.type === 'reload' && !request.rawEvents && databaseName !== 'system') {
-							// back-filled rows have no history, so a progress certificate cannot pass the marker
-							if (reportingProgress) return void this.close(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
-							return scheduleReloadResnapshot();
-						}
-						const event = eventFromAudit(id, auditRecord, txnLogKey, beginTxn, true);
-						if (!event) return;
-						// Queued events are filtered when the queue drains through send() below; events sent
-						// directly (queue already drained) are filtered here. Each event is filtered once.
-						if (pendingRealTimeQueue) pendingRealTimeQueue.push(event);
-						else {
-							if (allowsEvent && !allowsEvent(event)) return;
-							if (databaseName !== 'system') {
-								recordAction(auditRecord.size ?? 1, 'db-message', tableName, null);
-							}
-							this.send(event);
-						}
-					} catch (error) {
-						logger.error?.(error);
-						// a certificate cannot pass an event it failed to deliver
-						if (reportingProgress) this.close(error);
-					}
-				},
+				subscriptionListener,
 				request.startTime || 0,
 				request
-			);
-			const isActive = () => !subscription.closed && Boolean(subscription.subscriptions);
-			let progressLive = false;
-			let progressFloor: number | undefined;
+			));
+			subscription.state = state;
+			const isActive = () => isSubscriptionActive(subscription);
+			const send = (event: any, alreadyFiltered = false) => sendSubscriptionEvent(state, event, alreadyFiltered);
 			let goLive: (() => void) | undefined;
 			if (request.reportProgress && subscription.reportsProgress) {
-				reportingProgress = true;
-				subscription.sentCount = 0;
-				const queueSend = subscription.send;
-				subscription.send = function (event) {
-					this.sentCount++;
-					return queueSend.call(this, event);
-				};
-				const collection = request.isCollection ?? thisId == null;
-				const beforeLive = (): number | undefined =>
-					resuming
-						? collection
-							? subscription.startTime
-							: request.startTime
-						: request.startTime === undefined
-							? subscription.registeredThrough
-							: undefined;
-				subscription.progress = () => {
-					if (!isActive()) return;
-					if (!progressLive) return beforeLive();
-					const dispatched = dispatchedThrough(subscription);
-					if (progressFloor === undefined) return dispatched;
-					return dispatched === undefined || dispatched < progressFloor ? progressFloor : dispatched;
-				};
-				goLive = () => {
-					progressFloor = beforeLive();
-					progressLive = true;
-				};
+				state.reportingProgress = true;
+				goLive = trackSubscriptionProgress(subscription, request, resuming, state.isCollection);
 			}
 			let settleResume: ((verified: boolean) => void) | undefined;
 			if (resuming) subscription.resumeVerified = new Promise<boolean>((resolve) => (settleResume = resolve));
@@ -7006,8 +7068,8 @@ export function makeTable(options): TableResourceClass {
 							throw new ClientError('startTime and previousCount can not be combined for a table level subscription');
 						// start time specified, get the audit history for this time range. We drop real-time
 						// messages during this loop because the snapshot:false cursor will pick them up itself.
-						pendingRealTimeQueue = null;
-						dropDuringReplay = true;
+						state.pendingRealTimeQueue = null;
+						state.dropDuringReplay = true;
 						// subscription.startTime is the resume cursor (exclusive) and RocksDB gives every record of a
 						// transaction the same txnLogKey, so it only moves to a key once all of that key's records are
 						// handled; an early return leaves it before a partly delivered transaction.
@@ -7017,6 +7079,7 @@ export function makeTable(options): TableResourceClass {
 							exclusiveStart: true,
 							snapshot: false, // no need for a snapshot, audits don't change
 						});
+						catchUpScans++;
 						try {
 							for (const auditRecord of replayRange) {
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
@@ -7050,7 +7113,7 @@ export function makeTable(options): TableResourceClass {
 									return;
 								}
 								if (thisId == null || isDescendantId(thisId, id)) {
-									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
+									const event = eventFromAudit(state, id, auditRecord, auditRecord.txnLogKey);
 									if (event) {
 										if (!send(event)) return;
 										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
@@ -7068,8 +7131,9 @@ export function makeTable(options): TableResourceClass {
 							if (handledTxnLogKey !== undefined) subscription!.startTime = handledTxnLogKey;
 							if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
 						} finally {
+							catchUpScans--;
 							// replay is done, we can start sending real-time messages again
-							dropDuringReplay = false;
+							state.dropDuringReplay = false;
 						}
 					} else if (count) {
 						const history = [];
@@ -7100,7 +7164,7 @@ export function makeTable(options): TableResourceClass {
 										break;
 									}
 									cursorMaxTime = Math.max(cursorMaxTime, auditRecord.txnLogKey);
-									const historyEntry = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
+									const historyEntry = eventFromAudit(state, id, auditRecord, auditRecord.txnLogKey);
 									if (!historyEntry) continue;
 									// Filter rows before they consume a previousCount slot.
 									if (allowsEvent && !allowsEvent(historyEntry)) {
@@ -7120,8 +7184,8 @@ export function makeTable(options): TableResourceClass {
 						if (cursorMaxTime) subscription!.startTime = cursorMaxTime;
 						// In-flight pre-subscribe 'committed' callbacks may have queued duplicates of
 						// records the cursor saw while subscription.startTime was still 0. Filter them.
-						if (pendingRealTimeQueue && cursorMaxTime) {
-							pendingRealTimeQueue = pendingRealTimeQueue.filter(
+						if (state.pendingRealTimeQueue && cursorMaxTime) {
+							state.pendingRealTimeQueue = state.pendingRealTimeQueue.filter(
 								(event) => (event.localTime ?? event.version) > cursorMaxTime
 							);
 						}
@@ -7133,45 +7197,52 @@ export function makeTable(options): TableResourceClass {
 						// if a post-subscribe write hits a key the cursor also visits. This is
 						// idempotent for "current state then live updates" — both deliveries land at
 						// the same final state. We don't dedupe.
-						for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
-							start: thisId ?? false,
-							end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
-							versions: true,
-							snapshot: false, // no need for a snapshot, just want the latest data
-						})) {
-							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
-								recordsSinceYield = 0;
-								await rest();
-								if (!isActive()) return;
+						catchUpScans++;
+						try {
+							for (const entry of primaryStore.getRange({
+								start: thisId ?? false,
+								end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
+								versions: true,
+								snapshot: false, // no need for a snapshot, just want the latest data
+							})) {
+								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+									recordsSinceYield = 0;
+									await rest();
+									if (!isActive()) return;
+								}
+								const { key: id, version, localTime, size } = entry;
+								// Update cursorMaxTime BEFORE the !value check so deletion tombstones
+								// (which have null value but a real localTime/version) still raise the gate.
+								const t = localTime ?? version;
+								if (t > cursorMaxTime) cursorMaxTime = t;
+								if (!entry.value) continue;
+								const value = sharedVersionValue(id, version, entry.nodeId, entry) ?? entry.value;
+								const scanned: any = { id, localTime, value, version, type: 'put', size };
+								if (state.reportingProgress) scanned.fromScan = true;
+								if (!send(scanned)) return;
+								if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+									// if we have too many messages, we need to pause and let the client catch up
+									if ((await subscription.waitForDrain()) === false) return;
+								}
 							}
-							// Update cursorMaxTime BEFORE the !value check so deletion tombstones
-							// (which have null value but a real localTime/version) still raise the gate.
-							const t = localTime ?? version;
-							if (t > cursorMaxTime) cursorMaxTime = t;
-							if (!value) continue;
-							const scanned: any = { id, localTime, value, version, type: 'put', size };
-							if (reportingProgress) scanned.fromScan = true;
-							if (!send(scanned)) return;
-							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
-								// if we have too many messages, we need to pause and let the client catch up
-								if ((await subscription.waitForDrain()) === false) return;
-							}
+						} finally {
+							catchUpScans--;
 						}
-						if (includeSuperseded && !reportingProgress) {
+						if (includeSuperseded && !state.reportingProgress) {
 							if (cursorMaxTime) {
 								subscription!.startTime = cursorMaxTime;
-								if (pendingRealTimeQueue) {
-									pendingRealTimeQueue = pendingRealTimeQueue.filter(
+								if (state.pendingRealTimeQueue) {
+									state.pendingRealTimeQueue = state.pendingRealTimeQueue.filter(
 										(event) => (event.localTime ?? event.version) > cursorMaxTime
 									);
 								}
 							}
-						} else if (!includeSuperseded && !reportingProgress && pendingRealTimeQueue) {
+						} else if (!includeSuperseded && !state.reportingProgress && state.pendingRealTimeQueue) {
 							let kept = 0;
-							for (const event of pendingRealTimeQueue) {
-								if (keepCurrentRecordEvent(event)) pendingRealTimeQueue[kept++] = event;
+							for (const event of state.pendingRealTimeQueue) {
+								if (keepCurrentRecordEvent(event, getFullRecord)) state.pendingRealTimeQueue[kept++] = event;
 							}
-							pendingRealTimeQueue.length = kept;
+							state.pendingRealTimeQueue.length = kept;
 						}
 					}
 				} else {
@@ -7216,7 +7287,7 @@ export function makeTable(options): TableResourceClass {
 							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId);
 							if (auditRecord && !(checkResume && auditRecord.type === undefined)) {
 								if (startTime < nextTime) {
-									const event = eventFromAudit(thisId, auditRecord, nextTime);
+									const event = eventFromAudit(state, thisId, auditRecord, nextTime);
 									const historyEntry = event && { ...auditRecord, ...event };
 									if (historyEntry && (!allowsEvent || allowsEvent(historyEntry))) {
 										request.omitCurrent = true;
@@ -7256,168 +7327,25 @@ export function makeTable(options): TableResourceClass {
 					if (!request.omitCurrent && entry?.value) {
 						// if retain and it exists, send the current value first
 						const current: any = { id: thisId, ...entry, type: 'put' };
-						if (reportingProgress) current.fromScan = true;
+						if (state.reportingProgress) current.fromScan = true;
 						if (!send(current)) return;
 					}
 				}
 				// now send any queued messages
-				if (pendingRealTimeQueue) {
-					for (const event of pendingRealTimeQueue) {
+				if (state.pendingRealTimeQueue) {
+					for (const event of state.pendingRealTimeQueue) {
 						if (!send(event)) return;
 					}
-					pendingRealTimeQueue = null;
+					state.pendingRealTimeQueue = null;
 				}
 				settleResume?.(isActive());
 				goLive?.();
 			})();
-			result.catch(failSubscription);
+			result.catch((error) => failSubscription(subscription, error));
 			if (settleResume) {
 				const settleUnverified = () => settleResume?.(false);
 				result.then(settleUnverified, settleUnverified);
 			}
-			function failSubscription(error: any) {
-				if (subscription.closed) return;
-				harperLogger.error?.('Error in real-time subscription:', error);
-				try {
-					subscription.close(error);
-				} catch (listenerError) {
-					harperLogger.error?.('Error in real-time subscription listener:', listenerError);
-				}
-			}
-			// A write folded into a newer version by out-of-order resequencing is listed in the record's
-			// additionalAuditRefs until the next in-order write replaces the record.
-			function wasMergedInto(entry: any, txnLogKey: number, nodeId: number | undefined) {
-				return Boolean(
-					entry.metadataFlags & VERSION_REUSED &&
-					entry.additionalAuditRefs?.some(
-						(ref: { version: number; nodeId?: number }) =>
-							ref.version === txnLogKey && (ref.nodeId ?? 0) === (nodeId ?? 0)
-					)
-				);
-			}
-			function keepCurrentRecordEvent(event: any) {
-				const type = event.type;
-				if (
-					event.id === undefined ||
-					!(type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate')
-				)
-					return true;
-				const entry = primaryStore.getEntry(event.id);
-				if (!entry || entry.version <= event.version) return true;
-				if (!getFullRecord) return false;
-				event.value = entry.value;
-				event.version = entry.version;
-				event.type = entry.metadataFlags & INVALIDATED ? 'invalidate' : entry.value ? 'put' : 'delete';
-				return true;
-			}
-			function eventFromAudit(id: Id, auditRecord: any, localTime: number, beginTxn?: boolean, live?: boolean) {
-				let type = auditRecord.type;
-				let value;
-				let version = auditRecord.version;
-				const isMutation =
-					type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate';
-				if (isMutation && !includeSuperseded) {
-					if (id === undefined) return;
-					const entry = currentEntryForAudit(primaryStore, id, auditRecord);
-					if (!entry) return;
-					if (entry.version !== auditRecord.version) {
-						// The newer version's event may have gone out before this write was merged into it.
-						if (!(live && getFullRecord && wasMergedInto(entry, localTime, auditRecord.nodeId))) return;
-						version = entry.version;
-					}
-					if (getFullRecord) {
-						value = entry?.value;
-						type = entry?.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';
-					} else value = auditRecord.getValue?.(primaryStore, false, localTime);
-				} else {
-					value = auditRecord.getValue?.(primaryStore, getFullRecord, localTime);
-					if (getFullRecord && type === 'patch') type = 'put';
-				}
-				return { id, localTime, value, version, type, beginTxn, size: auditRecord.size };
-			}
-			function send(event: any, alreadyFiltered = false) {
-				if (!isActive()) return false;
-				// Covers the pendingRealTimeQueue drain and the reload re-snapshot (#495) delivery.
-				if (!alreadyFiltered && allowsEvent && !allowsEvent(event)) return isActive();
-				if (!isActive()) return false;
-				if (databaseName !== 'system') {
-					recordAction(event.size ?? 1, 'db-message', tableName, null);
-				}
-				return subscription.send(event);
-			}
-			// #region reload re-snapshot (harper-pro#495)
-			// A copyApply base copy back-fills rows as snapshots with NO per-row audit entries, so the live
-			// listener above never fires for them and an already-connected subscriber would miss them until
-			// the next direct write. After the copy, a whole-table 'reload' marker is delivered here (id=null).
-			// For a user table we react by re-delivering the subscription's current scope as ordinary 'put'
-			// events — so EVERY consumer that funnels through subscribe() (MQTT, SSE, WS) recovers the records
-			// uniformly, with no per-protocol handling. System-DB reloads are NOT re-snapshotted: their
-			// subscribers (knownNodes peer-discovery, hdb_certificate CA install) run a bespoke whole-table
-			// rescan off the raw marker, which a per-row re-emit cannot express (it can't drop stale rows).
-			// Yields the latest committed value (snapshot:false) and skips tombstones, mirroring the
-			// omitCurrent initial-snapshot scan.
-			async function* currentScopeRecords() {
-				const isCollection = request.isCollection ?? thisId == null;
-				if (isCollection) {
-					let sinceYield = 0;
-					for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
-						start: thisId ?? false,
-						end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
-						versions: true,
-						snapshot: false, // no need for a snapshot, just want the latest data
-					})) {
-						if (++sinceYield >= REPLAY_YIELD_INTERVAL) {
-							sinceYield = 0;
-							await rest();
-							if (!isActive()) return;
-						}
-						if (!value) continue; // skip tombstones
-						yield { id, localTime, value, version, type: 'put', size };
-					}
-				} else {
-					const entry = primaryStore.getEntry(thisId);
-					if (entry?.value) yield { id: thisId, ...entry, type: 'put' };
-				}
-			}
-			// Drain the current scope into the subscription with the same back-pressure as the live path.
-			// Coalesced: a marker that arrives while a re-snapshot is running just re-arms it once more (so
-			// markers for several tables, or a marker landing mid-scan, are not lost), and we never run two
-			// scans concurrently. The first thing it does is `await rest()` (a setImmediate macrotask), so the
-			// scan never executes inside the synchronous broadcast listener — which on the same-thread
-			// aftercommit path holds an inter-thread lock that must not span event-loop turns.
-			async function runReloadResnapshot() {
-				reloadResnapshotRunning = true;
-				try {
-					await rest(); // defer off the broadcast listener's stack before scanning
-					while (reloadResnapshotPending) {
-						reloadResnapshotPending = false;
-						// Subscription.end() nulls `subscriptions`; bail the moment it closes — before, between,
-						// or mid-scan — so we never scan + send into a dead queue. pending is already cleared, so
-						// the finally re-arm won't re-loop.
-						if (!subscription.subscriptions) return;
-						for await (const record of currentScopeRecords()) {
-							if (!subscription.subscriptions) return;
-							if (!send(record)) return;
-							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
-								if ((await subscription.waitForDrain()) === false) return;
-							}
-						}
-					}
-				} catch (error) {
-					harperLogger.error?.('Error in reload re-snapshot:', error);
-				} finally {
-					reloadResnapshotRunning = false;
-					// A marker that landed after the last pending-check but before we cleared the flag would
-					// otherwise be dropped — re-arm if so (unless the subscription has since closed).
-					if (subscription.subscriptions && reloadResnapshotPending) scheduleReloadResnapshot();
-				}
-			}
-			function scheduleReloadResnapshot() {
-				if (!subscription.subscriptions) return;
-				reloadResnapshotPending = true;
-				if (!reloadResnapshotRunning) runReloadResnapshot();
-			}
-			// #endregion
 			return subscription;
 		}
 
@@ -8327,6 +8255,7 @@ export function makeTable(options): TableResourceClass {
 			enumerableAttributeNames = [];
 			enumerableRelationDefs.clear();
 			hasSurfacedComputed = false;
+			hasComputed = false;
 			const resolvedAttributeNames: string[] = [];
 			for (const attribute of attributes) {
 				const name = attribute.name;
@@ -8357,6 +8286,7 @@ export function makeTable(options): TableResourceClass {
 					// regardless of its declared scalar type — the static edge graph can't see it — so route it
 					// through the guarded serialization path.
 					if (attribute.computed && !relationDef) hasSurfacedComputed = true;
+					if (attribute.computed) hasComputed = true;
 				}
 			}
 			this.enumerableRelationDefs = enumerableRelationDefs;
@@ -8748,6 +8678,198 @@ export function makeTable(options): TableResourceClass {
 		throw error;
 	}
 	return TableResource;
+	/**
+	 * Every subscription's live listener, one function for the table: the commit broadcast calls it with
+	 * `this` bound to the subscription, which carries its `state`.
+	 */
+	function subscriptionListener(this: any, id: Id, auditRecord?: any, txnLogKey?: any, beginTxn?: any) {
+		const state: SubscriberState = this.state;
+		if (state.dropDuringReplay) return;
+		try {
+			if (isLockControlType(auditRecord.type)) return;
+			if (auditRecord.type === 'reload' && !state.rawEvents && databaseName !== 'system') {
+				// back-filled rows have no history, so a progress certificate cannot pass the marker
+				if (state.reportingProgress) return void this.close(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
+				return scheduleReloadResnapshot(state);
+			}
+			const event = eventFromAudit(state, id, auditRecord, txnLogKey, beginTxn, true);
+			if (!event) return;
+			// Queued events are filtered when the queue drains through send() below; events sent
+			// directly (queue already drained) are filtered here. Each event is filtered once.
+			if (state.pendingRealTimeQueue) state.pendingRealTimeQueue.push(event);
+			else {
+				if (state.allowsEvent && !state.allowsEvent(event)) return;
+				if (databaseName !== 'system') {
+					recordAction(auditRecord.size ?? 1, 'db-message', tableName, null);
+				}
+				this.send(event);
+			}
+		} catch (error) {
+			logger.error?.(error);
+			// a certificate cannot pass an event it failed to deliver
+			if (state.reportingProgress) this.close(error);
+		}
+	}
+	function keepCurrentRecordEvent(event: any, getFullRecord: boolean) {
+		const type = event.type;
+		if (
+			event.id === undefined ||
+			!(type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate')
+		)
+			return true;
+		const entry = primaryStore.getEntry(event.id);
+		if (!entry || entry.version <= event.version) return true;
+		if (!getFullRecord) return false;
+		event.value = entry.value;
+		event.version = entry.version;
+		event.type = entry.metadataFlags & INVALIDATED ? 'invalidate' : entry.value ? 'put' : 'delete';
+		return true;
+	}
+	function eventFromAudit(
+		state: SubscriberState,
+		id: Id,
+		auditRecord: any,
+		localTime: number,
+		beginTxn?: boolean,
+		live?: boolean
+	) {
+		const { getFullRecord } = state;
+		let type = auditRecord.type;
+		let value;
+		let version = auditRecord.version;
+		const isMutation =
+			type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate';
+		if (isMutation && !state.includeSuperseded) {
+			if (id === undefined) return;
+			const entry = currentEntryForAudit(primaryStore, id, auditRecord);
+			if (!entry) return;
+			if (entry.version !== auditRecord.version) {
+				// The newer version's event may have gone out before this write was merged into it.
+				if (!(live && getFullRecord && wasMergedInto(entry, localTime, auditRecord.nodeId))) return;
+				version = entry.version;
+			}
+			if (getFullRecord) {
+				value = entry?.value;
+				type = entry?.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';
+			} else value = auditRecord.getValue?.(primaryStore, false, localTime);
+		} else {
+			if (!live && type === 'put' && getFullRecord && id !== undefined) {
+				value = sharedVersionValue(id, version, auditRecord.nodeId);
+			}
+			if (value === undefined) value = auditRecord.getValue?.(primaryStore, getFullRecord, localTime);
+			if (getFullRecord && type === 'patch') type = 'put';
+		}
+		return { id, localTime, value, version, type, beginTxn, size: auditRecord.size };
+	}
+	/**
+	 * The record's value at `version`, written by `nodeId`, as the record cache holds it, if it holds that
+	 * write: overlapping snapshots and replays (a storm of subscribers catching up) then deliver one object
+	 * per version, and so share its serialization and packets. While scans overlap, a version not cached yet
+	 * is cached for the scans after it, from the `rangeEntry` a snapshot read or else by reading the record;
+	 * a lone scan leaves the cache alone, rather than churning it. Undefined when the cache can not supply it.
+	 */
+	function sharedVersionValue(id: Id, version: number, nodeId: number | undefined, rangeEntry?: any) {
+		// a computed attribute's resolver may read the subscriber's context while the value is serialized
+		if (hasComputed || !primaryStore.cachedEntry) return;
+		// an invalidated or evicted entry holds part of a record, and a reused version no longer identifies one
+		if (rangeEntry && rangeEntry.metadataFlags & (INVALIDATED | EVICTED | VERSION_REUSED)) return;
+		let entry = primaryStore.cachedEntry(id);
+		if (!entry) {
+			if (catchUpScans < 2) return;
+			if (rangeEntry) return void primaryStore.cacheEntry(rangeEntry);
+			entry = primaryStore.getEntry(id);
+		}
+		// The cache is per thread: another thread's write can replace a version it still holds, and two
+		// nodes can write one record at the same timestamp.
+		if (entry?.version !== version || (entry.nodeId ?? 0) !== (nodeId ?? 0)) return;
+		if (entry.metadataFlags & (INVALIDATED | EVICTED | VERSION_REUSED)) return;
+		return entry.value ?? undefined;
+	}
+	function sendSubscriptionEvent(state: SubscriberState, event: any, alreadyFiltered = false) {
+		const { subscription, allowsEvent } = state;
+		if (!isSubscriptionActive(subscription)) return false;
+		// Covers the pendingRealTimeQueue drain and the reload re-snapshot (#495) delivery.
+		if (!alreadyFiltered && allowsEvent && !allowsEvent(event)) return isSubscriptionActive(subscription);
+		if (!isSubscriptionActive(subscription)) return false;
+		if (databaseName !== 'system') {
+			recordAction(event.size ?? 1, 'db-message', tableName, null);
+		}
+		return subscription.send(event);
+	}
+	// #region reload re-snapshot (harper-pro#495)
+	// A copyApply base copy back-fills rows as snapshots with NO per-row audit entries, so the live
+	// listener never fires for them and an already-connected subscriber would miss them until
+	// the next direct write. After the copy, a whole-table 'reload' marker is delivered to it (id=null).
+	// For a user table we react by re-delivering the subscription's current scope as ordinary 'put'
+	// events — so EVERY consumer that funnels through subscribe() (MQTT, SSE, WS) recovers the records
+	// uniformly, with no per-protocol handling. System-DB reloads are NOT re-snapshotted: their
+	// subscribers (knownNodes peer-discovery, hdb_certificate CA install) run a bespoke whole-table
+	// rescan off the raw marker, which a per-row re-emit cannot express (it can't drop stale rows).
+	// Yields the latest committed value (snapshot:false) and skips tombstones, mirroring the
+	// omitCurrent initial-snapshot scan.
+	async function* currentScopeRecords(state: SubscriberState) {
+		const { thisId } = state;
+		if (state.isCollection) {
+			let sinceYield = 0;
+			for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
+				start: thisId ?? false,
+				end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
+				versions: true,
+				snapshot: false, // no need for a snapshot, just want the latest data
+			})) {
+				if (++sinceYield >= REPLAY_YIELD_INTERVAL) {
+					sinceYield = 0;
+					await rest();
+					if (!isSubscriptionActive(state.subscription)) return;
+				}
+				if (!value) continue; // skip tombstones
+				yield { id, localTime, value, version, type: 'put', size };
+			}
+		} else {
+			const entry = primaryStore.getEntry(thisId);
+			if (entry?.value) yield { id: thisId, ...entry, type: 'put' };
+		}
+	}
+	// Drain the current scope into the subscription with the same back-pressure as the live path.
+	// Coalesced: a marker that arrives while a re-snapshot is running just re-arms it once more (so
+	// markers for several tables, or a marker landing mid-scan, are not lost), and we never run two
+	// scans concurrently. The first thing it does is `await rest()` (a setImmediate macrotask), so the
+	// scan never executes inside the synchronous broadcast listener — which on the same-thread
+	// aftercommit path holds an inter-thread lock that must not span event-loop turns.
+	async function runReloadResnapshot(state: SubscriberState) {
+		const { subscription } = state;
+		state.reloadResnapshotRunning = true;
+		try {
+			await rest(); // defer off the broadcast listener's stack before scanning
+			while (state.reloadResnapshotPending) {
+				state.reloadResnapshotPending = false;
+				// Subscription.end() nulls `subscriptions`; bail the moment it closes — before, between,
+				// or mid-scan — so we never scan + send into a dead queue. pending is already cleared, so
+				// the finally re-arm won't re-loop.
+				if (!subscription.subscriptions) return;
+				for await (const record of currentScopeRecords(state)) {
+					if (!subscription.subscriptions) return;
+					if (!sendSubscriptionEvent(state, record)) return;
+					if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+						if ((await subscription.waitForDrain()) === false) return;
+					}
+				}
+			}
+		} catch (error) {
+			harperLogger.error?.('Error in reload re-snapshot:', error);
+		} finally {
+			state.reloadResnapshotRunning = false;
+			// A marker that landed after the last pending-check but before we cleared the flag would
+			// otherwise be dropped — re-arm if so (unless the subscription has since closed).
+			if (subscription.subscriptions && state.reloadResnapshotPending) scheduleReloadResnapshot(state);
+		}
+	}
+	function scheduleReloadResnapshot(state: SubscriberState) {
+		if (!state.subscription.subscriptions) return;
+		state.reloadResnapshotPending = true;
+		if (!state.reloadResnapshotRunning) runReloadResnapshot(state);
+	}
+	// #endregion
 	function updateIndices(id: any, existingRecord: any, record: any, options?: any) {
 		let hasChanges;
 		// iterate the entries from the record

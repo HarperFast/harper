@@ -181,6 +181,27 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		});
 	}
 
+	/**
+	 * The entry the cache holds for a record, unverified: it may be older than the record's current version.
+	 * Its version still identifies its value, unless VERSION_REUSED is set.
+	 */
+	cachedEntry(id: any): Entry | undefined {
+		const cachedValue = this.#cache?.getValue(id);
+		return cachedValue != null && typeof cachedValue === 'object' ? entryMap.get(cachedValue) : undefined;
+	}
+
+	/**
+	 * Caches an entry a range read returned, as getEntry() caches the ones it reads, so reads after it share
+	 * its value. A later getEntry() still verifies the cached version before returning it.
+	 */
+	cacheEntry(entry: any) {
+		const value = entry.value;
+		if (!this.#cache || value == null || typeof value !== 'object' || entry.version == null) return;
+		if (entry.metadataFlags & VERSION_REUSED) return;
+		entryMap.set(value, entry);
+		this.#cache.setValue(entry.key, value, (entry.size ?? 0) >> 10);
+	}
+
 	getSync(id: any, options?: any): any {
 		const entry = this.getEntry(id, options) as Entry;
 		return entry?.value;
