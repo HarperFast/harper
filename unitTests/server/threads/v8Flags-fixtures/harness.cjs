@@ -24,17 +24,18 @@ process.on('exit', () => {
 const envMgr = require('#src/utility/environment/environmentManager');
 // Loaded before the setting is assigned, as bin/run.ts loads it before install and env-var config are written.
 const { startWorker, workers } = require('#js/server/threads/manageThreads');
-const { startHTTPThreads } = require('#src/server/threads/socketRouter');
 
 async function main() {
 	const results = [];
 	for (const v8Flags of JSON.parse(process.argv[2])) {
 		envMgr.setProperty(CONFIG_PARAMS.THREADS_V8FLAGS, v8Flags);
 		if (process.argv[3] === 'startHTTPThreads') {
-			await startHTTPThreads(0).then(
-				() => results.push({ started: true }),
-				(error) => results.push({ error: error.message })
-			);
+			await require('#src/server/threads/socketRouter')
+				.startHTTPThreads(0)
+				.then(
+					() => results.push({ started: true }),
+					(error) => results.push({ error: error.message })
+				);
 			continue;
 		}
 		let worker;
