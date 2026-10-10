@@ -249,6 +249,16 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config).error).to.be.undefined;
 		});
 
+		it('accepts threads.v8Flags as a string, a list of strings or null', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			for (const v8Flags of ['--optimize-for-size', ['--optimize-for-size', '--max-semi-space-size=1'], null]) {
+				config.threads = { count: 1, v8Flags };
+				expect(configValidator(config).error, JSON.stringify(v8Flags)).to.be.undefined;
+			}
+			config.threads = { count: 1, v8Flags: [1] };
+			expect(configValidator(config).error.message).to.include('threads.v8Flags');
+		});
+
 		it('accepts the blob-gap escalation bounds as non-negative integers, 0 meaning disabled', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.replication = { blobGapEscalationCycles: 0, blobGapEscalationMs: 0 };

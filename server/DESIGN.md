@@ -825,3 +825,13 @@ For the same reason, the guard and `nativeAddonAbi.ts` import only Node builtins
 `NODE_OPTIONS` preloads. They run in the main thread before Harper's entry module, where no Harper
 code can precede them. `createUwsServer` checks the uWS binary itself, because `uws.js` rethrows
 any load error as a misleading "supports only Node.js versions" message.
+
+## `threads.v8Flags` is applied once, before the first Harper worker (`server/threads/v8Flags.ts`)
+
+V8 reads most flags when an isolate is created, so `applyConfiguredV8Flags()` runs on the main thread before the first `new Worker`. `startWorker()` holds the only production `new Worker`, and calls it first; `startHTTPThreads()` also calls it at entry, so a bad value fails startup before components load and listeners bind, including under `threads.count: 0`, where the first worker may be a job started long after the server is serving.
+
+It is not applied at `manageThreads.js` module load, as `threads.heapSnapshotNearLimit` is: `bin/run.ts` imports that module before `initialize()` runs the install that first composes `HARPER_SET_CONFIG` into the config file, and before it writes the `THREADS_V8FLAGS` env/CLI form. A module-load read misses the value on a fresh container's first boot. `unitTests/server/threads/v8Flags.test.js` assigns the setting after the module loads, so a move to module load fails it.
+
+The first successful call latches, including on an unset value: V8 flags cannot be unset, so a rolling worker restart keeps the process's flags, and a changed value takes effect when `restart` relaunches the process. Every entry is validated before any is applied, so a refused list leaves V8 untouched.
+
+`v8.setFlagsFromString` does not apply a flag's implications as the CLI does. `--optimize-for-size` from the CLI caps the semi-space at 1 MB; applied at runtime it does not. A worker with Harper's 1 GB limits reports a 536 MB heap limit with runtime `--optimize-for-size`, and 515 MB with that from the CLI or with `--max-semi-space-size=1` added at runtime (Node 26.2.0). Implied flags must be listed explicitly. A contradictory set (e.g. with `--abort-on-contradictory-flags`) aborts the process natively, beyond a JavaScript catch; applying at `startHTTPThreads` entry places that abort before Harper serves.
