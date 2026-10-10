@@ -59,8 +59,8 @@ interface LiveSubscriptionHandle {
 	unregister: () => void;
 	/**
 	 * Rechecks this subscription now, outside any queued pass, terminating it if it no longer authorizes.
-	 * Resolves 'revoked' when this recheck terminated it, and 'closed' when it was not or is no longer
-	 * registered for another reason (its owner closed it).
+	 * Resolves 'revoked' when re-authorization removed it, by this recheck or any other path (expiry, a
+	 * pass), and 'closed' when it was never registered or its owner removed it.
 	 */
 	verify: () => Promise<'authorized' | 'revoked' | 'closed'>;
 }
