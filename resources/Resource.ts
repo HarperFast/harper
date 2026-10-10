@@ -602,7 +602,7 @@ _assignPackageExport('Resource', Resource);
 /**
  * allowRead implementations whose result, for a target with no caller-supplied `select`, reads only the
  * user's role permission and the resource class, so a live-subscription recheck pass may share it across
- * subscriptions.
+ * subscriptions of one class.
  */
 export const defaultAllowReads = new WeakSet<(...args: any[]) => unknown>([Resource.prototype.allowRead]);
 
@@ -1097,7 +1097,7 @@ function registerLiveSubscriptionForContext(
 				if (context) (context as any).user = viewer;
 			}
 			// Re-run the same operation-level allowRead that granted the subscription.
-			return !!(await (sharedDecision ? pass.memo(fresh, resource.allowRead, evaluate) : evaluate(viewer)));
+			return !!(await (sharedDecision ? pass.memo(fresh, resource.constructor, evaluate) : evaluate(viewer)));
 		},
 	});
 	let stale: boolean;

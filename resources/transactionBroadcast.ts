@@ -163,7 +163,9 @@ function advanceProgress(subscriptions: any, key: number, range: any): boolean {
 function stopProgress(databaseSubscriptions: any) {
 	if (databaseSubscriptions.progressStopped) return;
 	databaseSubscriptions.progressStopped = true;
-	warn('The transaction log could not be read in full; durable subscription positions on it stop advancing');
+	warn(
+		'The transaction log could not be read in full; durable subscription positions on it stop advancing, and on the system database live-subscription revocation falls back to periodic full rechecks'
+	);
 }
 
 /**

@@ -556,7 +556,7 @@ function cloneUserView(user: User & { role: UserRole }): User {
 	const clone: User = { ...user, role: { ...user.role, permission: { ...user.role.permission } } };
 	if (!(clone as any)[PROVENANCE]) {
 		const tracked = trackedProvenance.get(user);
-		if (tracked) trackedProvenance.set(clone, tracked);
+		if (tracked) (clone as any)[PROVENANCE] = tracked;
 	}
 	return clone;
 }
@@ -743,12 +743,14 @@ function subscribeToUserChanges(table): void {
 	};
 	subscription.then(
 		(opened) => {
-			subscribeRetryDelay = SUBSCRIBE_RETRY_MIN_MS;
 			if (!isCurrent()) return;
+			const openedAt = Date.now();
 			const onClosed = () => {
 				if (!isCurrent()) return;
 				userChangeSubscriptions.delete(tableName);
 				updateNotificationEpoch();
+				// one that closes on every event keeps backing off, since each reopen rechecks everything
+				if (Date.now() - openedAt >= SUBSCRIBE_RETRY_MAX_MS) subscribeRetryDelay = SUBSCRIBE_RETRY_MIN_MS;
 				resubscribeLater();
 			};
 			if (opened.closed) return onClosed();

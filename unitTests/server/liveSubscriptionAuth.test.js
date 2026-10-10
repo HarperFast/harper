@@ -608,6 +608,33 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(recheck.calls.length, 2, 'the new role targets the user');
 		});
 
+		it('re-indexes a role reassigned while a pass is under way', async () => {
+			await testUtils.seedUsers([
+				{ username: 'mid_mover', active: true, role: targetRole('mid_old') },
+				{ username: 'mid_anchor', active: true, role: targetRole('mid_new') },
+			]);
+			let rechecks = 0;
+			let moved;
+			const recheck = async () => {
+				if (++rechecks === SLICE_SIZE) {
+					moved = databases.system.hdb_user.put({ username: 'mid_mover', active: true, role: 'mid_new' });
+				}
+				return true;
+			};
+			const entries = SLICE_SIZE * 2;
+			for (let index = 0; index < entries; index++) register({ username: 'mid_mover', recheck, revoke: spyFn() });
+
+			await _sweepNow();
+			await moved;
+			await waitFor(() => rechecks >= entries * 2, { message: () => `rechecks after the move: ${rechecks}` });
+			await turn();
+			const settled = rechecks;
+			await _notifyUserChange(change({ roleIds: ['mid_old'] }));
+			assert.strictEqual(rechecks, settled, 'the old role no longer targets the user');
+			await _notifyUserChange(change({ roleIds: ['mid_new'] }));
+			assert.strictEqual(rechecks, settled + entries, 'the new role targets every entry of the user');
+		});
+
 		it('rechecks every subscription for a change whose identity is unknown', async () => {
 			const recheckA = spyFn(async () => true);
 			const recheckB = spyFn(async () => true);
@@ -720,6 +747,22 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			await _tickNow();
 			assert.strictEqual(identity.calls.length, 3, 'the same epoch as that full pass: no full pass');
 		});
+
+		it('rechecks everything once the backstop interval has passed since the last full pass', async () => {
+			const identity = spyFn(async () => true);
+			register({ username: 'tick_backstop', identityOnly: true, recheck: identity, revoke: spyFn() });
+			epoch = 9;
+			await _sweepNow();
+			const originalNow = Date.now;
+			// past the 24 h interval this file sets
+			Date.now = () => originalNow() + 25 * 60 * 60 * 1000;
+			try {
+				await _tickNow();
+			} finally {
+				Date.now = originalNow;
+			}
+			assert.strictEqual(identity.calls.length, 2);
+		});
 	});
 
 	describe('time slicing', () => {
@@ -830,7 +873,6 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 				for (let index = 0; index < cohort; index++) {
 					register({ username: `cohort_${index}`, authExpiresAt: 1, recheck: async () => true, revoke });
 				}
-				handles.length = 0;
 				const perTurn = [];
 				let last = 0;
 				const deadline = Date.now() + 5000;
@@ -885,7 +927,6 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 				revoke: () => new Promise(() => {}),
 			});
 			register({ username: 'expiry_settles', authExpiresAt: 1, recheck: async () => true, revoke: settled });
-			handles.length = 0;
 
 			await waitFor(() => _liveSubscriptionCount() === 0, {
 				message: 'the expiry batch stopped at a failing teardown',
