@@ -790,7 +790,7 @@ loads only when one of these holds:
 2. its package directory has `.pointer-compression-build`. Producers (the harper-pro pc image) must
    only mark a package whose every loadable binary they replaced;
 3. it sits under a `build/` whose `config.gypi` records `"v8_enable_pointer_compression": 1`, and is
-   not older than that file. node-gyp writes `config.gypi` at configure, before compiling, so a
+   strictly newer than that file. node-gyp writes `config.gypi` at configure, before compiling, so a
    failed compile next to a shipped binary must not admit it.
 
 Every other ELF64 is refused with `IncompatibleNativeAddonError`, including one whose symbols cannot
