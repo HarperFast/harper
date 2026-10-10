@@ -245,7 +245,7 @@ describe('analytics aggregation cycle', () => {
 		// Summing then dividing would give 0.2857142857142857.
 		assert.strictEqual(row.mean, 0.28571428571428575, 'a measure in every sample folds as a running mean, as before');
 		assert.strictEqual(row.maxLatency, 9, 'a peak first seen mid-period is the largest of its samples');
-		assert.strictEqual(row.late, (0 * 1 + 9 * 2) / 3, 'a mean first seen mid-period weighs only its own samples');
+		assert.strictEqual(row.late, (9 * 2) / (1 + 2), 'a mean first seen mid-period weighs only its own samples');
 		assert.strictEqual(row.rare, (6 * 2 + 12 * 2) / 4, 'samples lacking a measure do not weigh into its mean');
 	});
 

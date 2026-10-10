@@ -99,6 +99,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 ## resources/analytics/
 
 - [Analytics aggregation resumes from a raw cursor, which is not a clock (`resources/analytics/write.ts`)](resources/analytics/DESIGN.md#analytics-aggregation-resumes-from-a-raw-cursor-which-is-not-a-clock-resourcesanalyticswritets) — `rawCursor` moves only to a record a cycle actually read and is separate from the cadence marker.
+- [Aggregation folds each measure over only the samples that carry it (`resources/analytics/write.ts`)](resources/analytics/DESIGN.md#aggregation-folds-each-measure-over-only-the-samples-that-carry-it-resourcesanalyticswritets) — per-measure sample counts, cycle-local, weight each mean; a measure in every sample folds exactly as before.
 
 ## resources/models/ — model facade, backends, decisions
 
