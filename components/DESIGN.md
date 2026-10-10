@@ -844,7 +844,10 @@ Npm dependencies delegated from the default VM loader to Node's native loader ar
 by the installed package/lock comparison—otherwise the default `dependencyLoader: auto` mode would
 make nearly every application opaque. Explicit `dependencyLoader: native` remains authoritative;
 an application-local import delegated by that setting marks the runtime opaque. `package.json` is compared as parsed JSON so formatting and
-key order are irrelevant, while lockfiles remain exact installed-tree evidence. A module first
+unrelated key order are irrelevant — except inside `exports`/`imports`, where key order is itself a
+first-match condition priority Node resolves by, so it is preserved rather than sorted, recursively
+through nested condition maps (`components/canonicalizePackageJSON.ts`) — while lockfiles remain
+exact installed-tree evidence. A module first
 loaded while a deploy is in flight also invalidates the old runtime rather than letting a mixed
 generation appear equivalent. This is deliberately proof-oriented: an unused new local file need
 not restart a fully observed runtime, but a changed or missing imported helper, changed resolution

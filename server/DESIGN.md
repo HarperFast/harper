@@ -72,6 +72,9 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 > version is therefore correct, not merely disallowed; one that supplies no version is not shared at
 > all. Only mutating an object _without_ changing its version can serve stale bytes, and that is
 > indistinguishable from re-sending the same message.
+>
+> This is also why a custom content-type `serialize` registered into `server.contentTypes` must be
+> pure in its argument alone: see `ContentTypeHandler.serialize`'s doc comment (`server/Server.ts`).
 
 ### Threads
 
