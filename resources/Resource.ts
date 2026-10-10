@@ -599,6 +599,12 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 
 _assignPackageExport('Resource', Resource);
 
+/**
+ * allowRead implementations whose result, for a target with no `select`, reads only the user's role
+ * permission and the resource class, so a live-subscription recheck pass may share it across subscriptions.
+ */
+export const defaultAllowReads = new WeakSet<(...args: any[]) => unknown>([Resource.prototype.allowRead]);
+
 export function snakeCase(camelCase: string) {
 	return (
 		camelCase[0].toLowerCase() +
@@ -917,10 +923,9 @@ function transactional(
 				if (loadAsInstance === false && options.method === 'publish') markStaticResourceInstance(resource);
 				const result = action(resource, query, context, data);
 				if (!isSubscribeAction) return result;
-				return when(result, (subscription: any) => {
-					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, context);
-					return subscription;
-				});
+				return when(result, (subscription: any) =>
+					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, context)
+				);
 			};
 			let checkPermission = false;
 			if (query.checkPermission) {
@@ -1035,39 +1040,67 @@ function hasPermissionControl(value: any, seen = new WeakSet<object>()): boolean
 	return false;
 }
 
+let securityUser: typeof import('../security/user.ts') | undefined;
+
+const resolveUser = (_scope: unknown, username: string) =>
+	securityUser!.findAndValidateUser(username, undefined, false);
+
+/** Returns `subscription`, or a promise of it once a principal stale at admission has been rechecked. */
 function registerLiveSubscriptionForContext(subscription: any, resource: any, admittedTarget: any, context: Context) {
 	const user: any = context?.user;
 	const username = user?.username;
 	// Internal watchers, replication and local-bypass have no user principal — nothing to re-authorize.
-	if (!username) return;
-	registerLiveSubscription({
+	if (!username) return subscription;
+	securityUser ??= require('../security/user');
+	const { cloneUserView, isCurrentUser } = securityUser!;
+	const sharedDecision = admittedTarget?.select == null && defaultAllowReads.has(resource.allowRead);
+	const evaluate = (principal: any) => {
+		const reTarget: any = cloneRequestTarget(admittedTarget);
+		reTarget.checkPermission = principal.role?.permission;
+		return resource.allowRead(principal, reTarget, context);
+	};
+	const handle = registerLiveSubscription({
 		subscription,
 		username,
 		// JWT exp of the bearer credential (set by the auth layer); undefined for password/mTLS/session.
 		authExpiresAt: user.authExpiresAt,
-		recheck: async () => {
+		identityOnly: sharedDecision,
+		recheck: async (pass) => {
 			let fresh: any;
+			let viewer: any;
 			if (user._scopedToken) {
 				// A scoped token's identity IS its embedded role — never re-resolve its attribution
 				// username against hdb_user (it may not exist, or may name an unrelated principal
 				// created later). Expiry (authExpiresAt above) is its only revocation.
-				fresh = user;
+				fresh = viewer = user;
 			} else {
-				// Re-read current user state from hdb_user/hdb_role, so a dropped or
-				// role-stripped user no longer authorizes.
-				const { findAndValidateUser } = require('../security/user');
-				fresh = await findAndValidateUser(username, undefined, false);
+				// Re-read current user state from hdb_user/hdb_role, once per username per pass, so a dropped
+				// or role-stripped user no longer authorizes.
+				fresh = await pass.memo(resolveUser, username, resolveUser);
 				if (!fresh?.role) return false;
 				// Advance the subscription's context to the fresh user so downstream checks — context.user
 				// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
-				// not the stale user captured at subscribe time.
-				if (context) (context as any).user = fresh;
+				// not the stale user captured at subscribe time. Each context gets its own view, which its
+				// code may modify.
+				viewer = cloneUserView(fresh);
+				if (context) (context as any).user = viewer;
 			}
 			// Re-run the same operation-level allowRead that granted the subscription.
-			const reTarget: any = cloneRequestTarget(admittedTarget);
-			reTarget.checkPermission = fresh.role?.permission;
-			return !!(await resource.allowRead(fresh, reTarget, context));
+			return !!(await (sharedDecision ? pass.memo(fresh, resource.allowRead, evaluate) : evaluate(viewer)));
 		},
+	});
+	let stale: boolean;
+	try {
+		stale = !isCurrentUser(user);
+	} catch {
+		stale = true;
+	}
+	if (!stale) return subscription;
+	// Admitted by records that changed before it registered, so the notification for that change may already
+	// have run without it: recheck before any delivery.
+	return handle.verify().then((authorized) => {
+		if (!authorized) throw new AccessViolation(user);
+		return subscription;
 	});
 }
 

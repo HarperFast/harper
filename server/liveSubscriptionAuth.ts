@@ -1,5 +1,6 @@
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import { coalesceRefresh } from '../utility/coalesceRefresh.ts';
+import type { UserChange } from '../security/user.ts';
 
 /**
  * Continuous re-authorization for live subscriptions (#1414).
@@ -10,22 +11,61 @@ import { coalesceRefresh } from '../utility/coalesceRefresh.ts';
  * authorization — at the TABLE/RBAC level, matching how the subscription was granted; there is no
  * per-record evaluation — and terminates any that no longer authorize.
  *
- * Triggers: (1) promptly on a user or role change (`onUserChange`: hdb_user/hdb_role table
- * subscriptions), and (2) on a fixed interval as a backstop and to catch token expiry, which is not
- * event-signaled.
+ * Targeting invariant: an entry is rechecked after every committed change to its username's hdb_user
+ * record or to the hdb_role record that user names (`onUserChange` carries their primary keys; an
+ * unknown change rechecks everything), and terminated by a timer at its token's expiry. Entries are
+ * indexed by username, and each username by the role id its user record names, re-read whenever that
+ * username is rechecked. The periodic tick covers what notifications cannot: an `identityOnly` entry
+ * (a decision read only from those records) needs it only when delivery of every change since the
+ * last full pass is not certified (`userChangeNotificationEpoch`), or every BACKSTOP_INTERVAL_MS;
+ * any other entry may read state no notification covers, so every tick rechecks it.
  */
 
-// Backstop interval; also catches token expiry, which is not event-signaled. Overridable for tests.
-const RECHECK_INTERVAL_MS = Number(process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS) || 30_000;
+const intervalOverride = Number(process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS) || undefined;
+const RECHECK_INTERVAL_MS = intervalOverride ?? 30_000;
+const BACKSTOP_INTERVAL_MS = intervalOverride ?? 300_000;
+// a larger setTimeout delay overflows and fires at once
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+// rechecks (or expiry terminations) between yields to the event loop
+const SLICE_SIZE = 256;
+// past this many distinct pending identities a full pass is cheaper to track than the ids
+const MAX_PENDING_IDS = 1000;
+
+/** State shared by the rechecks of one pass. */
+export interface RecheckPass {
+	/** `compute(scope, key)` for the first call in this pass with this scope and key; its result after that. */
+	memo<T>(scope: unknown, key: unknown, compute: (scope: any, key: any) => T): T;
+}
+
+interface PrincipalGroup {
+	username: string;
+	entries: Set<LiveSubscription>;
+	/** The role id the user's hdb_user record named when last read. */
+	roleId?: unknown;
+}
 
 interface LiveSubscription {
 	username: string;
 	/** JWT `exp` (seconds since epoch) of the credential the subscription was opened with, if any. */
 	authExpiresAt?: number;
+	identityOnly: boolean;
 	/** Returns true if the principal is still authorized for this subscription. */
-	recheck: () => Promise<boolean>;
+	recheck: (pass: RecheckPass) => Promise<boolean>;
 	/** Stop delivery and tear down. May be async (e.g. a shared-feed refcount release). */
 	terminate: () => void | Promise<void>;
+	/** Set exactly while tracked. */
+	group?: PrincipalGroup;
+	/** Position in expiryHeap, or -1. */
+	heapIndex: number;
+}
+
+interface LiveSubscriptionHandle {
+	unregister: () => void;
+	/**
+	 * Rechecks this subscription now, outside any queued pass, terminating it if it no longer authorizes.
+	 * Resolves whether it is still registered.
+	 */
+	verify: () => Promise<boolean>;
 }
 
 function errorMessage(error: unknown): string {
@@ -44,31 +84,99 @@ function safeLog(log: ((message: string) => void) | undefined, message: string):
 	}
 }
 
-const registry = new Set<LiveSubscription>();
-let sweepTimer: any = null;
+const groups = new Map<string, PrincipalGroup>();
+const roleHolders = new Map<unknown, Set<PrincipalGroup>>();
+const policyEntries = new Set<LiveSubscription>();
+let trackedCount = 0;
+
+let securityUser: typeof import('../security/user.ts') | undefined;
+let tickTimer: any = null;
 let userChangeListenerInstalled = false;
-let sweeping = false;
 
-const NOOP_HANDLE = { unregister: () => {} };
+let pendingFull = false;
+let pendingPolicy = false;
+const pendingUsernames = new Set<unknown>();
+const pendingRoleIds = new Set<unknown>();
+/** The notification epoch and start time of the last full pass that completed. */
+let lastFullPass = { epoch: 0, startedAt: 0 };
 
-// A change that lands while a sweep runs gets a sweep of its own; the running one may have rechecked its entry already
-const coalescedSweep = coalesceRefresh(sweep);
+const NOOP_HANDLE: LiveSubscriptionHandle = { unregister: () => {}, verify: () => Promise.resolve(true) };
 
-function triggerSweep(): void {
-	void coalescedSweep().catch((error) =>
-		safeLog(hdbLogger.error, `liveSubscriptionAuth: sweep failed: ${errorMessage(error)}`)
+class Pass implements RecheckPass {
+	sinceYield = 0;
+	rechecked = 0;
+	revokedByReason = new Map<string, number>();
+	#memos = new Map<unknown, Map<unknown, unknown>>();
+
+	memo<T>(scope: unknown, key: unknown, compute: (scope: any, key: any) => T): T {
+		let values = this.#memos.get(scope);
+		if (!values) this.#memos.set(scope, (values = new Map()));
+		if (values.has(key)) return values.get(key) as T;
+		const value = compute(scope, key);
+		values.set(key, value);
+		return value;
+	}
+
+	countRevocation(reason: string): void {
+		this.revokedByReason.set(reason, (this.revokedByReason.get(reason) ?? 0) + 1);
+	}
+}
+
+// A change that lands while a pass runs gets a pass of its own; the running one may have rechecked its entry already
+const runPendingCoalesced = coalesceRefresh(runPending);
+
+function schedulePending(): Promise<void> {
+	return runPendingCoalesced().catch((error) =>
+		safeLog(hdbLogger.error, `liveSubscriptionAuth: recheck pass failed: ${errorMessage(error)}`)
 	);
 }
 
+function onUserChanged(change?: UserChange): void {
+	if (!change) pendingFull = true;
+	else if (!pendingFull) {
+		// only identities tracked now: a later registration is checked at admission (`verify`)
+		for (const username of change.usernames) {
+			if (groups.has(username as string)) pendingUsernames.add(username);
+		}
+		for (const roleId of change.roleIds) {
+			if (roleHolders.has(roleId)) pendingRoleIds.add(roleId);
+		}
+		if (pendingUsernames.size + pendingRoleIds.size > MAX_PENDING_IDS) pendingFull = true;
+	}
+	if (pendingFull) {
+		pendingUsernames.clear();
+		pendingRoleIds.clear();
+	} else if (pendingUsernames.size === 0 && pendingRoleIds.size === 0) return;
+	void schedulePending();
+}
+
+function notificationEpoch(): number {
+	try {
+		return userChangeListenerInstalled ? securityUser!.userChangeNotificationEpoch() : 0;
+	} catch {
+		return 0;
+	}
+}
+
+function tick(): void {
+	const epoch = notificationEpoch();
+	if (epoch === 0 || epoch !== lastFullPass.epoch || Date.now() - lastFullPass.startedAt >= BACKSTOP_INTERVAL_MS)
+		pendingFull = true;
+	else if (policyEntries.size > 0) pendingPolicy = true;
+	else return;
+	void schedulePending();
+}
+
 function ensureStarted(): void {
-	if (!sweepTimer) {
-		sweepTimer = setInterval(triggerSweep, RECHECK_INTERVAL_MS);
+	if (!tickTimer) {
+		tickTimer = setInterval(tick, RECHECK_INTERVAL_MS);
 		// don't keep the worker alive solely for the recheck timer
-		sweepTimer.unref?.();
+		tickTimer.unref?.();
 	}
 	if (!userChangeListenerInstalled) {
 		try {
-			require('../security/user').onUserChange(triggerSweep);
+			securityUser ??= require('../security/user');
+			securityUser!.onUserChange(onUserChanged);
 			userChangeListenerInstalled = true;
 		} catch (error) {
 			hdbLogger.trace?.(`liveSubscriptionAuth: user change notifications unavailable: ${(error as Error).message}`);
@@ -77,10 +185,68 @@ function ensureStarted(): void {
 }
 
 function stopIfIdle(): void {
-	if (registry.size === 0 && sweepTimer) {
-		clearInterval(sweepTimer);
-		sweepTimer = null;
+	if (trackedCount === 0 && tickTimer) {
+		clearInterval(tickTimer);
+		tickTimer = null;
 	}
+}
+
+/** Reads the role id the username's hdb_user record names; on a failed read the group keeps the one it had. */
+function indexRole(group: PrincipalGroup): void {
+	let roleId: unknown;
+	try {
+		securityUser ??= require('../security/user');
+		roleId = securityUser!.userRecordVersions(group.username).roleId;
+	} catch {
+		return;
+	}
+	setRole(group, roleId);
+}
+
+function setRole(group: PrincipalGroup, roleId: unknown): void {
+	if (group.roleId === roleId) return;
+	if (group.roleId != null) {
+		const holders = roleHolders.get(group.roleId);
+		holders?.delete(group);
+		if (holders?.size === 0) roleHolders.delete(group.roleId);
+	}
+	group.roleId = roleId;
+	if (roleId != null) {
+		let holders = roleHolders.get(roleId);
+		if (!holders) roleHolders.set(roleId, (holders = new Set()));
+		holders.add(group);
+	}
+}
+
+function track(entry: LiveSubscription): void {
+	let group = groups.get(entry.username);
+	if (!group) {
+		group = { username: entry.username, entries: new Set() };
+		groups.set(entry.username, group);
+		indexRole(group);
+	}
+	group.entries.add(entry);
+	entry.group = group;
+	trackedCount++;
+	if (!entry.identityOnly) policyEntries.add(entry);
+	if (entry.authExpiresAt != null) addExpiry(entry);
+}
+
+/** The only way an entry leaves the registry; true if it was tracked. */
+function untrack(entry: LiveSubscription): boolean {
+	const group = entry.group;
+	if (!group) return false;
+	entry.group = undefined;
+	trackedCount--;
+	group.entries.delete(entry);
+	if (group.entries.size === 0 && groups.get(group.username) === group) {
+		groups.delete(group.username);
+		setRole(group, undefined);
+	}
+	policyEntries.delete(entry);
+	removeExpiry(entry);
+	stopIfIdle();
+	return true;
 }
 
 /**
@@ -93,31 +259,36 @@ function stopIfIdle(): void {
  * no 'close' listener — because a feed shared by many subscribers must stay revocable per subscriber,
  * so the registry can neither own the shared object nor let every registrant mutate it. A `revoke`
  * caller owns the entry's lifetime: nothing detects a leaked registration, and a forgotten
- * `unregister()` degrades sweep latency for every other tracked subscriber. It also owns teardown
+ * `unregister()` degrades pass latency for every other tracked subscriber. It also owns teardown
  * recovery — the entry is untracked before `revoke` runs and `revoke` is invoked exactly once, so one
  * that throws, rejects or never settles is logged and never retried. A `recheck` shared across
  * subscribers must not mutate state shared across them: `registerLiveSubscriptionForContext` in
  * resources/Resource.ts mutates `context.user`, which is safe only while each context has exactly
  * one subscriber.
+ *
+ * `identityOnly` declares that `recheck`'s decision reads nothing but the principal's hdb_user and
+ * hdb_role records, so certified change notifications cover it and the periodic pass need not.
  */
 export function registerLiveSubscription(
 	opts: {
 		username: string;
 		authExpiresAt?: number;
-		recheck: () => Promise<boolean>;
+		identityOnly?: boolean;
+		recheck: (pass: RecheckPass) => Promise<boolean>;
 	} & (
 		| { subscription: any; revoke?: undefined }
 		// requiring one of the two modes stops a caller that supplies neither from type-checking
 		// into a silent no-op registration; a revoke-only registrant may own no subscription object
 		| { subscription?: any; revoke: () => void | Promise<void> }
 	)
-): { unregister: () => void } {
-	const { subscription, username, authExpiresAt, recheck, revoke } = opts;
+): LiveSubscriptionHandle {
+	const { subscription, username, authExpiresAt, identityOnly, recheck, revoke } = opts;
 	if (!revoke && (!subscription || typeof subscription !== 'object' || subscription.closed)) return NOOP_HANDLE;
 
 	const entry: LiveSubscription = {
 		username,
 		authExpiresAt,
+		identityOnly: identityOnly === true,
 		recheck,
 		terminate:
 			revoke ??
@@ -127,12 +298,13 @@ export function registerLiveSubscription(
 				else if (subscription.close) subscription.close();
 				else subscription.emit?.('close');
 			}),
+		heapIndex: -1,
 	};
-	registry.add(entry);
+	ensureStarted();
+	track(entry);
 
 	const unregister = () => {
-		registry.delete(entry);
-		stopIfIdle();
+		untrack(entry);
 	};
 
 	if (!revoke) {
@@ -151,17 +323,22 @@ export function registerLiveSubscription(
 		subscription.on?.('close', unregister);
 	}
 
-	ensureStarted();
-	return { unregister };
+	const verify = async () => {
+		const pass = new Pass();
+		await recheckEntry(pass, entry);
+		reportRevocations(pass.revokedByReason);
+		return entry.group !== undefined;
+	};
+	return { unregister, verify };
 }
 
-/** Untrack first: a `terminate` that hangs or fails must not wedge the sweep or be re-entered by a later one. */
+/** Untrack first: a `terminate` that hangs or fails must not wedge a pass or be re-entered by a later one. */
 function terminateEntry(
 	entry: LiveSubscription,
 	reason: string,
 	notice: ((message: string) => void) | undefined = hdbLogger.info
-): void {
-	registry.delete(entry);
+): boolean {
+	if (!untrack(entry)) return false;
 	safeLog(notice, `liveSubscriptionAuth: revoking subscription for ${entry.username} (${reason})`);
 	const failed = (error: unknown) =>
 		safeLog(
@@ -174,59 +351,214 @@ function terminateEntry(
 	} catch (error) {
 		failed(error);
 	}
+	return true;
 }
 
-async function sweep(): Promise<void> {
-	if (sweeping) return; // a slow recheck must not overlap with the next tick/event
-	sweeping = true;
-	// the per-subscriber lines are info, which the shipped default (logging.level: warn) drops; one
-	// aggregate keeps the pass visible without making a mass role change a warn per subscriber
-	const revokedByReason = new Map<string, number>();
-	const countRevocation = (reason: string) => revokedByReason.set(reason, (revokedByReason.get(reason) ?? 0) + 1);
+// the per-subscriber lines are info, which the shipped default (logging.level: warn) drops; one
+// aggregate keeps a pass visible without making a mass role change a warn per subscriber
+function reportRevocations(revokedByReason: Map<string, number>): void {
+	if (revokedByReason.size === 0) return;
+	let total = 0;
+	for (const count of revokedByReason.values()) total += count;
+	const breakdown = Array.from(revokedByReason, ([reason, count]) => `${reason}: ${count}`).join(', ');
+	safeLog(
+		hdbLogger.warn,
+		// "revoking", like the per-subscriber line: teardown is dispatched, not awaited, and a
+		// failure surfaces on its own error line
+		`liveSubscriptionAuth: revoking ${total} live subscription${total === 1 ? '' : 's'} (${breakdown})`
+	);
+}
+
+const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+function isExpired(entry: LiveSubscription): boolean {
+	return entry.authExpiresAt != null && Date.now() >= entry.authExpiresAt * 1000;
+}
+
+async function recheckEntry(pass: Pass, entry: LiveSubscription): Promise<void> {
+	if (++pass.sinceYield >= SLICE_SIZE) {
+		pass.sinceYield = 0;
+		await yieldTurn();
+	}
+	if (!entry.group) return;
+	pass.rechecked++;
 	try {
-		// snapshot bounds the pass to entries present at its start; the has() guards cover the rest
-		for (const entry of Array.from(registry)) {
-			if (!registry.has(entry)) continue;
-			try {
-				const expired = entry.authExpiresAt != null && Date.now() >= entry.authExpiresAt * 1000;
-				const stillAuthorized = expired ? false : await entry.recheck();
-				if (!registry.has(entry)) continue;
-				if (expired || !stillAuthorized) {
-					const reason = expired ? 'token expired' : 'no longer authorized';
-					terminateEntry(entry, reason);
-					countRevocation(reason);
-				}
-			} catch (error) {
-				// fail closed: if authorization can't be confirmed, revoke
-				if (registry.has(entry)) {
-					terminateEntry(entry, `recheck error: ${errorMessage(error)}`, hdbLogger.warn);
-					countRevocation('recheck error');
-				}
-			}
+		const expired = isExpired(entry);
+		const stillAuthorized = expired ? false : await entry.recheck(pass);
+		if (!entry.group) return;
+		if (expired || !stillAuthorized) {
+			const reason = expired ? 'token expired' : 'no longer authorized';
+			if (terminateEntry(entry, reason)) pass.countRevocation(reason);
 		}
-	} finally {
-		sweeping = false;
-		stopIfIdle();
-		if (revokedByReason.size > 0) {
-			let total = 0;
-			for (const count of revokedByReason.values()) total += count;
-			const breakdown = Array.from(revokedByReason, ([reason, count]) => `${reason}: ${count}`).join(', ');
-			safeLog(
-				hdbLogger.warn,
-				// "revoking", like the per-subscriber line: teardown is dispatched, not awaited, and a
-				// failure surfaces on its own error line
-				`liveSubscriptionAuth: revoking ${total} live subscription${total === 1 ? '' : 's'} (${breakdown})`
-			);
-		}
+	} catch (error) {
+		// fail closed: if authorization can't be confirmed, revoke
+		if (terminateEntry(entry, `recheck error: ${errorMessage(error)}`, hdbLogger.warn))
+			pass.countRevocation('recheck error');
 	}
 }
 
-/** Test-only: current number of tracked subscriptions. */
-export function _liveSubscriptionCount(): number {
-	return registry.size;
+async function recheckGroups(pass: Pass, scope: Iterable<PrincipalGroup>): Promise<void> {
+	// snapshots bound the pass to what is present when it reaches each group; entry.group guards the rest
+	for (const group of Array.from(scope)) {
+		if (groups.get(group.username) !== group) continue;
+		// a role reassignment is an hdb_user change for this username, so this pass re-reads it
+		indexRole(group);
+		for (const entry of Array.from(group.entries)) await recheckEntry(pass, entry);
+	}
 }
 
-/** Test-only: run a sweep synchronously, bypassing the interval/ITC triggers. */
+async function runPending(): Promise<void> {
+	const full = pendingFull;
+	const policy = pendingPolicy;
+	const usernames = Array.from(pendingUsernames);
+	const roleIds = Array.from(pendingRoleIds);
+	pendingFull = pendingPolicy = false;
+	pendingUsernames.clear();
+	pendingRoleIds.clear();
+	if (!full && !policy && usernames.length === 0 && roleIds.length === 0) return;
+	const pass = new Pass();
+	const startedAt = Date.now();
+	try {
+		if (full) {
+			// captured at the start: what was notified before it is covered by this pass
+			const epoch = notificationEpoch();
+			await recheckGroups(pass, groups.values());
+			lastFullPass = { epoch, startedAt };
+			return;
+		}
+		const targets = new Set<PrincipalGroup>();
+		for (const username of usernames) {
+			const group = groups.get(username as string);
+			if (group) targets.add(group);
+		}
+		for (const roleId of roleIds) {
+			for (const group of roleHolders.get(roleId) ?? []) targets.add(group);
+		}
+		await recheckGroups(pass, targets);
+		if (policy) {
+			for (const entry of Array.from(policyEntries)) await recheckEntry(pass, entry);
+		}
+	} finally {
+		reportRevocations(pass.revokedByReason);
+		hdbLogger.trace?.(
+			`liveSubscriptionAuth: ${full ? 'full' : policy ? 'policy' : 'targeted'} pass rechecked ${pass.rechecked} subscription(s) in ${Date.now() - startedAt} ms`
+		);
+	}
+}
+
+// #region token expiry: one timer at the earliest authExpiresAt over an indexed binary min-heap
+
+const expiryHeap: LiveSubscription[] = [];
+let expiryTimer: any = null;
+let expiryTimerAt = Infinity;
+let expiredInCohort = 0;
+
+const expiresAtMs = (entry: LiveSubscription) => entry.authExpiresAt! * 1000;
+
+function placeInHeap(entry: LiveSubscription, index: number): void {
+	expiryHeap[index] = entry;
+	entry.heapIndex = index;
+}
+
+function siftUp(index: number): void {
+	const entry = expiryHeap[index];
+	while (index > 0) {
+		const parentIndex = (index - 1) >> 1;
+		const parent = expiryHeap[parentIndex];
+		if (expiresAtMs(parent) <= expiresAtMs(entry)) break;
+		placeInHeap(parent, index);
+		index = parentIndex;
+	}
+	placeInHeap(entry, index);
+}
+
+function siftDown(index: number): void {
+	const entry = expiryHeap[index];
+	const length = expiryHeap.length;
+	while (true) {
+		let childIndex = 2 * index + 1;
+		if (childIndex >= length) break;
+		if (childIndex + 1 < length && expiresAtMs(expiryHeap[childIndex + 1]) < expiresAtMs(expiryHeap[childIndex]))
+			childIndex++;
+		if (expiresAtMs(expiryHeap[childIndex]) >= expiresAtMs(entry)) break;
+		placeInHeap(expiryHeap[childIndex], index);
+		index = childIndex;
+	}
+	placeInHeap(entry, index);
+}
+
+function addExpiry(entry: LiveSubscription): void {
+	expiryHeap.push(entry);
+	siftUp(expiryHeap.length - 1);
+	if (expiresAtMs(entry) < expiryTimerAt) armExpiryTimer(expiresAtMs(entry));
+}
+
+function removeExpiry(entry: LiveSubscription): void {
+	const index = entry.heapIndex;
+	if (index < 0) return;
+	entry.heapIndex = -1;
+	const last = expiryHeap.pop()!;
+	if (last !== entry) {
+		placeInHeap(last, index);
+		siftDown(index);
+		siftUp(last.heapIndex);
+	}
+	// a timer armed for an earlier head than the new one just fires and re-arms
+	if (expiryHeap.length === 0 && expiryTimer) {
+		clearTimeout(expiryTimer);
+		expiryTimer = null;
+		expiryTimerAt = Infinity;
+	}
+}
+
+function armExpiryTimer(deadline: number): void {
+	if (expiryTimer) clearTimeout(expiryTimer);
+	expiryTimerAt = deadline;
+	expiryTimer = setTimeout(expireDue, Math.min(Math.max(deadline - Date.now(), 0), MAX_TIMEOUT_MS));
+	expiryTimer.unref?.();
+}
+
+function expireDue(): void {
+	expiryTimer = null;
+	expiryTimerAt = Infinity;
+	const now = Date.now();
+	let terminated = 0;
+	while (expiryHeap.length > 0 && expiresAtMs(expiryHeap[0]) <= now) {
+		if (terminated++ >= SLICE_SIZE) {
+			// a cohort sharing one exp would otherwise hold the event loop for its whole teardown
+			armExpiryTimer(now);
+			return;
+		}
+		if (terminateEntry(expiryHeap[0], 'token expired')) expiredInCohort++;
+	}
+	if (expiredInCohort > 0) {
+		reportRevocations(new Map([['token expired', expiredInCohort]]));
+		expiredInCohort = 0;
+	}
+	if (expiryHeap.length > 0) armExpiryTimer(expiresAtMs(expiryHeap[0]));
+}
+
+// #endregion
+
+/** Test-only: current number of tracked subscriptions. */
+export function _liveSubscriptionCount(): number {
+	return trackedCount;
+}
+
+/** Test-only: recheck every subscription now, after any pass already running. */
 export function _sweepNow(): Promise<void> {
-	return sweep();
+	pendingFull = true;
+	return schedulePending();
+}
+
+/** Test-only: deliver a user-change notification as `onUserChange` would; resolves after the pass it queues. */
+export function _notifyUserChange(change?: UserChange): Promise<void> {
+	onUserChanged(change);
+	return runPendingCoalesced();
+}
+
+/** Test-only: run the periodic tick now; resolves after the pass it queues, if any. */
+export function _tickNow(): Promise<void> {
+	tick();
+	return runPendingCoalesced();
 }

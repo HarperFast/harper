@@ -4,6 +4,7 @@ const { table } = require('#src/resources/databases');
 const { getDatabaseGeneration, readAuditEntry } = require('#src/resources/auditStore');
 const { transaction } = require('#src/resources/transaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
+const { deliveryCertified } = require('#src/resources/transactionBroadcast');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
@@ -219,6 +220,25 @@ describe('Certified subscription progress', function () {
 			T.auditStore.subscriptionLogRange.failedLogs.delete('unreadable');
 			subscription.end();
 		}
+	});
+
+	it('stops certifying delivery once its log range records a failed read', async () => {
+		const T = tableInOwnDatabase();
+		await T.put('seed', { value: 0 });
+		const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true });
+		const uncertified = await T.subscribe({ omitCurrent: true });
+		assert.strictEqual(deliveryCertified(subscription), true);
+		assert.strictEqual(deliveryCertified(uncertified), false, 'only a subscription that tracks progress');
+		T.auditStore.subscriptionLogRange.failedLogs.add('unreadable');
+		try {
+			await T.put('a', { value: 1 });
+			await waitFor(() => !deliveryCertified(subscription));
+		} finally {
+			T.auditStore.subscriptionLogRange.failedLogs.delete('unreadable');
+			subscription.end();
+			uncertified.end();
+		}
+		assert.strictEqual(deliveryCertified(subscription), false, 'an ended subscription');
 	});
 
 	it('stops advancing at an entry it cannot decode', async () => {

@@ -10,8 +10,26 @@ const { EventEmitter } = require('node:events');
 // background tick landing mid-test would make _sweepNow() a no-op via the `sweeping` guard.
 process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS = String(24 * 60 * 60 * 1000);
 
-const { registerLiveSubscription, _liveSubscriptionCount, _sweepNow } = require('#src/server/liveSubscriptionAuth');
+const {
+	registerLiveSubscription,
+	_liveSubscriptionCount,
+	_sweepNow,
+	_notifyUserChange,
+	_tickNow,
+} = require('#src/server/liveSubscriptionAuth');
 const hdbLogger = require('#src/utility/logging/harper_logger');
+const userModule = require('#src/security/user');
+const { databases, table } = require('#src/resources/databases');
+const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { waitFor } = require('../waitFor');
+
+// the registry's yield and expiry-batch size (server/liveSubscriptionAuth.ts SLICE_SIZE)
+const SLICE_SIZE = 256;
+const turn = () => new Promise((resolve) => setImmediate(resolve));
+const change = ({ usernames = [], roleIds = [] } = {}) => ({
+	usernames: new Set(usernames),
+	roleIds: new Set(roleIds),
+});
 
 // `.calls` is the arg list of each invocation, in order.
 function spyFn(impl) {
@@ -510,6 +528,473 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 			assert.strictEqual(laterRecheck.calls.length, 0);
 			assert.strictEqual(_liveSubscriptionCount(), 1);
+		});
+	});
+
+	describe('targeted rechecks', () => {
+		before(async () => {
+			testUtils.setupTestDBPath();
+			setMainIsWorker(true);
+			await testUtils.ensureSystemTables();
+		});
+
+		afterEach(() => testUtils.seedUsers());
+
+		const targetRole = (id) => ({ id, role: id, permission: { super_user: false } });
+
+		it('rechecks only the changed user’s subscriptions after an hdb_user write', async () => {
+			await testUtils.seedUsers([
+				{ username: 'target_a', active: true, role: targetRole('target_role_a') },
+				{ username: 'target_b', active: true, role: targetRole('target_role_b') },
+			]);
+			const recheckA = spyFn(async () => true);
+			const recheckB = spyFn(async () => true);
+			register({ username: 'target_a', recheck: recheckA, revoke: spyFn() });
+			register({ username: 'target_a', recheck: recheckA, revoke: spyFn() });
+			register({ username: 'target_b', recheck: recheckB, revoke: spyFn() });
+
+			await databases.system.hdb_user.put({ username: 'target_a', active: true, role: 'target_role_a' });
+
+			await waitFor(() => recheckA.calls.length === 2, { message: () => `A rechecks: ${recheckA.calls.length}` });
+			await turn();
+			assert.strictEqual(recheckB.calls.length, 0, 'a write to user A must not recheck user B');
+		});
+
+		it('rechecks only holders of the changed role after an hdb_role write', async () => {
+			await testUtils.seedUsers([
+				{ username: 'holder_a', active: true, role: targetRole('held_role') },
+				{ username: 'holder_b', active: true, role: targetRole('held_role') },
+				{ username: 'other_c', active: true, role: targetRole('other_role') },
+			]);
+			const recheckHolders = spyFn(async () => true);
+			const recheckOther = spyFn(async () => true);
+			register({ username: 'holder_a', recheck: recheckHolders, revoke: spyFn() });
+			register({ username: 'holder_b', recheck: recheckHolders, revoke: spyFn() });
+			register({ username: 'other_c', recheck: recheckOther, revoke: spyFn() });
+
+			await databases.system.hdb_role.put(targetRole('held_role'));
+
+			await waitFor(() => recheckHolders.calls.length === 2, {
+				message: () => `holder rechecks: ${recheckHolders.calls.length}`,
+			});
+			await turn();
+			assert.strictEqual(recheckOther.calls.length, 0, 'a role change must not recheck users without that role');
+		});
+
+		it('follows a role reassignment: the new role targets the user, the old one no longer does', async () => {
+			await testUtils.seedUsers([
+				{ username: 'mover', active: true, role: targetRole('old_role') },
+				{ username: 'new_role_anchor', active: true, role: targetRole('new_role') },
+			]);
+			const recheck = spyFn(async () => true);
+			register({ username: 'mover', recheck, revoke: spyFn() });
+
+			await databases.system.hdb_user.put({ username: 'mover', active: true, role: 'new_role' });
+			await waitFor(() => recheck.calls.length === 1, { message: 'the reassignment rechecks the user' });
+
+			await _notifyUserChange(change({ roleIds: ['old_role'] }));
+			assert.strictEqual(recheck.calls.length, 1, 'the old role no longer targets the user');
+			await _notifyUserChange(change({ roleIds: ['new_role'] }));
+			assert.strictEqual(recheck.calls.length, 2, 'the new role targets the user');
+		});
+
+		it('rechecks every subscription for a change whose identity is unknown', async () => {
+			const recheckA = spyFn(async () => true);
+			const recheckB = spyFn(async () => true);
+			register({ username: 'unknown_a', recheck: recheckA, revoke: spyFn() });
+			register({ username: 'unknown_b', recheck: recheckB, revoke: spyFn() });
+
+			await _notifyUserChange(undefined);
+
+			assert.strictEqual(recheckA.calls.length, 1);
+			assert.strictEqual(recheckB.calls.length, 1);
+		});
+
+		it('falls back to a full pass once pending identities exceed the bound', async () => {
+			const recheck = spyFn(async () => true);
+			const usernames = [];
+			for (let index = 0; index <= 1000; index++) {
+				usernames.push(`bulk_${index}`);
+				register({ username: `bulk_${index}`, recheck, revoke: spyFn() });
+			}
+			const outsider = spyFn(async () => true);
+			register({ username: 'bulk_outsider', recheck: outsider, revoke: spyFn() });
+
+			await _notifyUserChange(change({ usernames }));
+
+			assert.strictEqual(outsider.calls.length, 1, 'an oversized change set rechecks everything');
+		});
+
+		it('ignores a change to an identity no subscription holds', async () => {
+			const recheck = spyFn(async () => true);
+			register({ username: 'bystander', recheck, revoke: spyFn() });
+
+			await _notifyUserChange(change({ usernames: ['nobody_subscribed'], roleIds: ['no_holders'] }));
+
+			assert.strictEqual(recheck.calls.length, 0);
+		});
+	});
+
+	describe('periodic tick', () => {
+		let epoch;
+		const originalEpoch = userModule.userChangeNotificationEpoch;
+		beforeEach(() => {
+			userModule.userChangeNotificationEpoch = () => epoch;
+		});
+		afterEach(() => {
+			userModule.userChangeNotificationEpoch = originalEpoch;
+		});
+
+		it('rechecks only policy entries while delivery since the last full pass is certified', async () => {
+			const identity = spyFn(async () => true);
+			const policy = spyFn(async () => true);
+			register({ username: 'tick_identity', identityOnly: true, recheck: identity, revoke: spyFn() });
+			register({ username: 'tick_policy', recheck: policy, revoke: spyFn() });
+			epoch = 7;
+			await _sweepNow();
+			assert.strictEqual(identity.calls.length, 1);
+
+			await _tickNow();
+
+			assert.strictEqual(policy.calls.length, 2, 'a policy entry is rechecked on every tick');
+			assert.strictEqual(identity.calls.length, 1, 'an identity-only entry waits for the backstop');
+		});
+
+		it('rechecks everything when delivery is not certified, or was interrupted since the last full pass', async () => {
+			const identity = spyFn(async () => true);
+			register({ username: 'tick_uncertified', identityOnly: true, recheck: identity, revoke: spyFn() });
+			epoch = 3;
+			await _sweepNow();
+
+			epoch = 0;
+			await _tickNow();
+			assert.strictEqual(identity.calls.length, 2, 'uncertified delivery: full pass');
+
+			epoch = 4;
+			await _tickNow();
+			assert.strictEqual(identity.calls.length, 3, 'a new epoch since the last full pass: full pass');
+
+			await _tickNow();
+			assert.strictEqual(identity.calls.length, 3, 'the same epoch as that full pass: no full pass');
+		});
+	});
+
+	describe('time slicing', () => {
+		it('yields to the event loop during a pass', async () => {
+			let rechecks = 0;
+			const recheck = async () => {
+				rechecks++;
+				return true;
+			};
+			for (let index = 0; index < SLICE_SIZE * 3; index++)
+				register({ username: `slice_${index % 7}`, recheck, revoke: spyFn() });
+			let seenMidPass;
+			setImmediate(() => (seenMidPass = rechecks));
+
+			await _sweepNow();
+
+			assert.ok(seenMidPass > 0 && seenMidPass < SLICE_SIZE * 3, `a turn ran mid-pass after ${seenMidPass} rechecks`);
+			assert.strictEqual(rechecks, SLICE_SIZE * 3);
+		});
+	});
+
+	describe('token expiry', () => {
+		const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+		it('terminates at the token’s exp without a sweep', async () => {
+			const recheck = spyFn(async () => true);
+			const revoke = spyFn();
+			register({ username: 'expires_soon', authExpiresAt: nowSeconds() + 1, recheck, revoke });
+			handles.pop();
+
+			await waitFor(() => revoke.calls.length === 1, { timeout: 3000, message: 'expiry did not terminate' });
+
+			assert.strictEqual(recheck.calls.length, 0, 'expiry needs no recheck');
+			assert.strictEqual(_liveSubscriptionCount(), 0);
+		});
+
+		it('does not fire early for an exp beyond the setTimeout range', async () => {
+			const warnings = [];
+			const onWarning = (warning) => warnings.push(warning.name);
+			process.on('warning', onWarning);
+			const originalSetTimeout = global.setTimeout;
+			const delays = [];
+			global.setTimeout = function (callback, delay, ...args) {
+				delays.push(delay);
+				return originalSetTimeout(callback, delay, ...args);
+			};
+			try {
+				const revoke = spyFn();
+				register({
+					username: 'long_lived',
+					authExpiresAt: nowSeconds() + 30 * 24 * 60 * 60,
+					recheck: async () => true,
+					revoke,
+				});
+				for (let index = 0; index < 5; index++) await new Promise((resolve) => originalSetTimeout(resolve, 5));
+
+				assert.strictEqual(revoke.calls.length, 0);
+				assert.strictEqual(_liveSubscriptionCount(), 1);
+				assert.ok(delays.length > 0 && delays.every((delay) => delay <= 2 ** 31 - 1), `armed delays: ${delays}`);
+				assert.ok(!warnings.includes('TimeoutOverflowWarning'));
+			} finally {
+				global.setTimeout = originalSetTimeout;
+				process.off('warning', onWarning);
+			}
+		});
+
+		it('re-arms for an earlier exp and skips removed entries, at the root or below it', async () => {
+			const late = spyFn();
+			const removedRoot = spyFn();
+			const removedInner = spyFn();
+			const early = spyFn();
+			register({ username: 'heap_late', authExpiresAt: nowSeconds() + 3600, recheck: async () => true, revoke: late });
+			const rootHandle = register({
+				username: 'heap_root',
+				authExpiresAt: nowSeconds() + 1,
+				recheck: async () => true,
+				revoke: removedRoot,
+			});
+			const innerHandle = register({
+				username: 'heap_inner',
+				authExpiresAt: nowSeconds() + 2,
+				recheck: async () => true,
+				revoke: removedInner,
+			});
+			register({ username: 'heap_early', authExpiresAt: nowSeconds() + 1, recheck: async () => true, revoke: early });
+			rootHandle.unregister();
+			innerHandle.unregister();
+
+			await waitFor(() => early.calls.length === 1, { timeout: 3000, message: 'the earlier exp re-armed the timer' });
+			await new Promise((resolve) => setTimeout(resolve, 1100));
+
+			assert.strictEqual(removedRoot.calls.length, 0);
+			assert.strictEqual(removedInner.calls.length, 0);
+			assert.strictEqual(late.calls.length, 0);
+			assert.strictEqual(_liveSubscriptionCount(), 1, 'only the late entry is still tracked');
+		});
+
+		it('terminates a cohort sharing one exp in slices, with one aggregate warn', async () => {
+			const originalWarn = hdbLogger.warn;
+			const originalInfo = hdbLogger.info;
+			const warnMessages = [];
+			hdbLogger.warn = (message) => warnMessages.push(message);
+			hdbLogger.info = () => {};
+			try {
+				let revoked = 0;
+				const revoke = () => revoked++;
+				const cohort = SLICE_SIZE * 3;
+				for (let index = 0; index < cohort; index++) {
+					register({ username: `cohort_${index}`, authExpiresAt: 1, recheck: async () => true, revoke });
+				}
+				handles.length = 0;
+				const perTurn = [];
+				let last = 0;
+				while (revoked < cohort) {
+					await turn();
+					perTurn.push(revoked - last);
+					last = revoked;
+				}
+
+				assert.ok(Math.max(...perTurn) <= SLICE_SIZE, `terminations per turn: ${perTurn.filter(Boolean)}`);
+				assert.deepStrictEqual(warnMessages, [
+					`liveSubscriptionAuth: revoking ${cohort} live subscriptions (token expired: ${cohort})`,
+				]);
+			} finally {
+				hdbLogger.warn = originalWarn;
+				hdbLogger.info = originalInfo;
+			}
+		});
+
+		it('contains throwing, rejecting and never-settling teardown on the expiry path', async () => {
+			const settled = spyFn();
+			register({
+				username: 'expiry_throws',
+				authExpiresAt: 1,
+				recheck: async () => true,
+				revoke: () => {
+					throw new Error('revoke threw');
+				},
+			});
+			register({
+				username: 'expiry_rejects',
+				authExpiresAt: 1,
+				recheck: async () => true,
+				revoke: async () => {
+					throw new Error('revoke rejected');
+				},
+			});
+			register({
+				username: 'expiry_hangs',
+				authExpiresAt: 1,
+				recheck: async () => true,
+				revoke: () => new Promise(() => {}),
+			});
+			register({ username: 'expiry_settles', authExpiresAt: 1, recheck: async () => true, revoke: settled });
+			handles.length = 0;
+
+			await waitFor(() => _liveSubscriptionCount() === 0, {
+				message: 'the expiry batch stopped at a failing teardown',
+			});
+			await turn();
+
+			assert.strictEqual(settled.calls.length, 1);
+		});
+
+		it('keeps expiring while a recheck is held', async () => {
+			let release;
+			const held = new Promise((resolve) => (release = resolve));
+			register({ username: 'held_recheck', recheck: () => held.then(() => true), revoke: spyFn() });
+			const revoke = spyFn();
+			register({ username: 'expires_during_hold', authExpiresAt: nowSeconds() + 1, recheck: async () => true, revoke });
+			handles.pop();
+			const pass = _sweepNow();
+			try {
+				await waitFor(() => revoke.calls.length === 1, {
+					timeout: 3000,
+					message: 'expiry waited for the held recheck',
+				});
+			} finally {
+				release();
+				await pass;
+			}
+		});
+	});
+
+	describe('Resource subscriptions', () => {
+		let Docs;
+		let Overridden;
+		let overriddenReads = 0;
+
+		before(async () => {
+			testUtils.setupTestDBPath();
+			setMainIsWorker(true);
+			await testUtils.ensureSystemTables();
+			const Table = table({
+				table: 'ReauthDocs',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+			});
+			Docs = class extends Table {
+				subscribe() {
+					return fakeSubscription();
+				}
+			};
+			Overridden = class extends Docs {
+				allowRead() {
+					overriddenReads++;
+					return true;
+				}
+			};
+		});
+
+		afterEach(() => testUtils.seedUsers());
+
+		const readRole = (id) => ({
+			id,
+			role: id,
+			permission: {
+				super_user: false,
+				test: {
+					tables: {
+						ReauthDocs: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+					},
+				},
+			},
+		});
+		const resolve = (username) => userModule.findAndValidateUser(username, undefined, false);
+
+		async function subscribe(Resource, user) {
+			const context = { user, authorize: true };
+			const subscription = await Resource.subscribe('topic', undefined, context);
+			handles.push({ unregister: () => subscription.end() });
+			return { context, subscription };
+		}
+
+		function countResolutions() {
+			const counter = { calls: [] };
+			const original = userModule.findAndValidateUser;
+			userModule.findAndValidateUser = function (...args) {
+				counter.calls.push(args[0]);
+				return original.apply(this, args);
+			};
+			counter.restore = () => (userModule.findAndValidateUser = original);
+			return counter;
+		}
+
+		it('resolves each username once per pass and gives every context its own user view', async () => {
+			await testUtils.seedUsers([
+				{ username: 'grouped_a', active: true, role: readRole('grouped_role') },
+				{ username: 'grouped_b', active: true, role: readRole('grouped_role') },
+			]);
+			const userA = await resolve('grouped_a');
+			const userB = await resolve('grouped_b');
+			const subscriptions = [];
+			for (const user of [userA, userA, userA, userB, userB]) subscriptions.push(await subscribe(Docs, user));
+			const resolutions = countResolutions();
+			try {
+				await _sweepNow();
+			} finally {
+				resolutions.restore();
+			}
+
+			assert.deepStrictEqual(resolutions.calls.sort(), ['grouped_a', 'grouped_b']);
+			assert.strictEqual(_liveSubscriptionCount(), 5);
+			const [first, second] = subscriptions.map(({ context }) => context.user);
+			assert.notStrictEqual(first, second);
+			assert.notStrictEqual(first.role, second.role);
+			assert.notStrictEqual(first.role.permission, second.role.permission);
+			// one context's own change to its view must not reach a sibling or the next decision
+			first.role.permission = { super_user: false };
+			assert.ok(second.role.permission.test.tables.ReauthDocs.read);
+			await _sweepNow();
+			assert.strictEqual(_liveSubscriptionCount(), 5);
+		});
+
+		it('evaluates an overridden allowRead per subscription, on every tick', async () => {
+			await testUtils.seedUsers([{ username: 'override_user', active: true, role: readRole('override_role') }]);
+			const user = await resolve('override_user');
+			await subscribe(Overridden, user);
+			await subscribe(Overridden, user);
+			await subscribe(Docs, user);
+			const originalEpoch = userModule.userChangeNotificationEpoch;
+			userModule.userChangeNotificationEpoch = () => 11;
+			try {
+				await _sweepNow();
+				overriddenReads = 0;
+				const resolutions = countResolutions();
+				try {
+					await _tickNow();
+				} finally {
+					resolutions.restore();
+				}
+				assert.strictEqual(overriddenReads, 2, 'each overridden subscription is evaluated on the tick');
+				assert.deepStrictEqual(resolutions.calls, ['override_user']);
+			} finally {
+				userModule.userChangeNotificationEpoch = originalEpoch;
+			}
+		});
+
+		it('rejects a subscription admitted by a user whose records changed before it registered', async () => {
+			await testUtils.seedUsers([{ username: 'stale_user', active: true, role: readRole('stale_role') }]);
+			const user = await resolve('stale_user');
+			await databases.system.hdb_user.put({ username: 'stale_user', active: false, role: 'stale_role' });
+
+			await assert.rejects(subscribe(Docs, user), { statusCode: 403 });
+			assert.strictEqual(_liveSubscriptionCount(), 0);
+		});
+
+		it('admits a stale principal that is still authorized, with its context on the current user', async () => {
+			await testUtils.seedUsers([{ username: 'stale_ok', active: true, role: readRole('stale_ok_role') }]);
+			const user = await resolve('stale_ok');
+			// a new version of the same role record
+			await databases.system.hdb_role.put(readRole('stale_ok_role'));
+
+			const { context } = await subscribe(Docs, user);
+
+			assert.strictEqual(_liveSubscriptionCount(), 1);
+			assert.notStrictEqual(context.user, user);
+			assert.ok(userModule.isCurrentUser(context.user));
 		});
 	});
 });

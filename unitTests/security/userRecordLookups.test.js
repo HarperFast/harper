@@ -218,6 +218,17 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 		it('treats a user this module did not build as current', () => {
 			assert.strictEqual(user.isCurrentUser({ username: 'scoped', role: { permission: {} } }), true);
 		});
+
+		it('checks a cloned view against the records the original was built from', async () => {
+			await testUtils.seedUsers([lookupUser()]);
+			const found = await user.findAndValidateUser('lookup_user', PASSWORD);
+			const view = user.cloneUserView(found);
+			assert.notStrictEqual(view.role.permission, found.role.permission);
+			assert.strictEqual(user.isCurrentUser(view), true);
+			await databases.system.hdb_role.put({ id: 'lookup_role', role: 'lookup_role', permission: {} });
+			assert.strictEqual(user.isCurrentUser(view), false);
+			assert.strictEqual(user.isCurrentUser(user.cloneUserView(view)), false, 'a clone of a clone');
+		});
 	});
 
 	describe('authentication() authorization cache', () => {
@@ -248,6 +259,17 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			await databases.system.hdb_user.put(lookupUser({ role: 'lookup_role', password: hashOf('changed') }));
 			assert.strictEqual((await authenticate(header)).status, 401);
 			assert.strictEqual((await authenticate(basic('lookup_user', 'changed'))).status, 200);
+		});
+
+		it('hands the request a user that isCurrentUser checks against its records, cached or not', async () => {
+			await testUtils.seedUsers([lookupUser()]);
+			const header = basic('lookup_user', PASSWORD);
+			const resolved = (await authenticate(header)).user;
+			const cached = (await authenticate(header)).user;
+			assert.strictEqual(user.isCurrentUser(resolved), true);
+			await databases.system.hdb_user.put(lookupUser({ role: 'lookup_role' }));
+			assert.strictEqual(user.isCurrentUser(resolved), false, 'the clone made on a cache miss');
+			assert.strictEqual(user.isCurrentUser(cached), false, 'the clone made on a cache hit');
 		});
 
 		it('rejects a cached Basic credential once the user is deactivated', async () => {
@@ -294,6 +316,37 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			await nextUserChange(() =>
 				databases.system.hdb_role.put({ id: 'lookup_role', role: 'lookup_role', permission: {} })
 			);
+		});
+
+		it('names the changed user and role records', async () => {
+			const changes = [];
+			user.onUserChange((change) => changes.push(change));
+			await testUtils.seedUsers([lookupUser()]);
+			changes.length = 0;
+			await nextUserChange(() => databases.system.hdb_user.put(lookupUser({ role: 'lookup_role' })));
+			await nextUserChange(() =>
+				databases.system.hdb_role.put({ id: 'lookup_role', role: 'lookup_role', permission: {} })
+			);
+			assert.deepStrictEqual(
+				changes.map((change) => change && { usernames: [...change.usernames], roleIds: [...change.roleIds] }),
+				[
+					{ usernames: ['lookup_user'], roleIds: [] },
+					{ usernames: [], roleIds: ['lookup_role'] },
+				]
+			);
+		});
+
+		it('notifies an unknown change for a whole-table reload', async () => {
+			const changes = [];
+			user.onUserChange((change) => changes.push(change));
+			await nextUserChange(() => databases.system.hdb_role.writeReloadMarker());
+			assert.strictEqual(changes.at(-1), undefined);
+		});
+
+		it('certifies continuous delivery only where the storage engine can', async () => {
+			await waitFor(() => user.userChangeNotificationEpoch() !== 0 || process.env.HARPER_STORAGE_ENGINE === 'lmdb');
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') assert.strictEqual(user.userChangeNotificationEpoch(), 0);
+			else assert.ok(user.userChangeNotificationEpoch() > 0);
 		});
 
 		it('keeps notifying the other listeners when one throws or rejects', async () => {

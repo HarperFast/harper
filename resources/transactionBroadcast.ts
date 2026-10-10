@@ -167,6 +167,15 @@ function stopProgress(databaseSubscriptions: any) {
 }
 
 /**
+ * Whether every transaction-log record since `subscription` registered was read and routable, so it missed
+ * none addressed to it. Known only for a subscription that tracks progress, and only while it is open.
+ */
+export function deliveryCertified(subscription: any): boolean {
+	const databaseSubscriptions = subscription.subscriptions?.tables?.envs;
+	return Boolean(subscription.reportsProgress && databaseSubscriptions && !databaseSubscriptions.progressStopped);
+}
+
+/**
  * The key of the newest transaction every record of which has been dispatched to every subscriber
  * registered at the time, or undefined before any has been since progress tracking began.
  */
