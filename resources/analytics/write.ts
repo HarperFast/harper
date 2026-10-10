@@ -14,6 +14,11 @@ import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
 import { METRIC } from './metadata.ts';
+import {
+	readEventLoopDelay,
+	startEventLoopDelayMonitor,
+	stopEventLoopDelayMonitor,
+} from '../../server/eventLoopDelay.ts';
 import { getTransactionQueueDepths, setCommitLatencyRecorder } from '../DatabaseTransaction.ts';
 import { contextStorage } from '../transaction.ts';
 import { RocksDatabase, type TransactionLogStats } from '@harperfast/rocksdb-js';
@@ -42,6 +47,7 @@ let activeActions = new Map<string, Action>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
+if (analyticsEnabled) startEventLoopDelayMonitor();
 
 // Check read-only mode lazily to avoid circular dependency at module load time
 function checkAnalyticsEnabled(): boolean {
@@ -49,6 +55,7 @@ function checkAnalyticsEnabled(): boolean {
 		analyticsReadOnlyChecked = true;
 		if (isReadOnlyMode()) {
 			analyticsEnabled = false;
+			stopEventLoopDelayMonitor();
 		}
 	}
 	return analyticsEnabled;
@@ -56,6 +63,8 @@ function checkAnalyticsEnabled(): boolean {
 
 export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsEnabled = enabled;
+	if (enabled) startEventLoopDelayMonitor();
+	else stopEventLoopDelayMonitor();
 	clearTimeout(sendAnalyticsTimeout); // reset this
 	sendAnalyticsTimeout = null;
 }
@@ -225,6 +234,15 @@ function sendAnalytics() {
 			byThread: true,
 			...memoryUsage,
 		});
+		const eventLoopDelay = readEventLoopDelay();
+		if (eventLoopDelay) {
+			metrics.push({
+				metric: METRIC.EVENT_LOOP_DELAY,
+				threadId,
+				perThread: true,
+				...eventLoopDelay,
+			});
+		}
 		// Transaction queue depth gauges. `depth` is the instantaneous depth at emit time; `maxDepth` is
 		// the high-water mark over this sampling window (the queue can fill and drain within a single
 		// period, so the instantaneous sample alone would miss short spikes). Reported per-thread and
@@ -927,6 +945,8 @@ export async function runAggregationCycle(fromPeriod, toPeriod = 60000) {
 
 // A mean of per-sample peaks is not a peak, so peak-named measures fold with max.
 const MAX_MEASURE_NAME = /^max[A-Z]/;
+// Sampled metrics that are also rolled up one row per thread, under the name those rows carry.
+const PER_THREAD_METRICS = new Map<string, string>([['duration', METRIC.DURATION_BY_THREAD]]);
 
 async function aggregation(fromPeriod, toPeriod = 60000) {
 	const rawAnalyticsTable = getRawAnalyticsTable();
@@ -983,13 +1003,25 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		} else firstForPeriod = key;
 		lastTime = key;
 		const { metrics, threadId } = value;
-		for (const entry of metrics || []) {
-			// eslint-disable-next-line no-unused-vars
-			let { path, method, type, metric, count, total, distribution, threads, ...measures } = entry;
+		const aggregateEntry = (entry) => {
+			let {
+				path,
+				method,
+				type,
+				metric,
+				count,
+				total,
+				distribution,
+				threads: _threads,
+				threadId: _threadId,
+				perThread,
+				...measures
+			} = entry;
 			if (!count) count = 1;
 			let key = metric + (path ? '-' + path : '');
 			if (method !== undefined) key += '-' + method;
 			if (type !== undefined) key += '-' + type;
+			if (perThread) key += '-thread-' + threadId;
 			let action = aggregateActions.get(key);
 			if (action) {
 				if (action.threads) {
@@ -997,7 +1029,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 					if (actionForThread) action = actionForThread;
 					else {
 						action.threads[threadId] = { ...measures };
-						continue;
+						return;
 					}
 				}
 				if (!action.count) action.count = 1;
@@ -1018,8 +1050,12 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 			} else {
 				action = { period: toPeriod, ...entry };
 				delete action.distribution;
+				delete action.threadId;
 				aggregateActions.set(key, action);
-				if (action.byThread) {
+				if (perThread) {
+					delete action.perThread;
+					action.thread = threadId;
+				} else if (action.byThread) {
 					action.threads = [];
 					action.threads[threadId] = { ...measures };
 					threadsToAverage.push(action);
@@ -1033,23 +1069,28 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 					existingDistribution.push(...distribution);
 				}
 			}
+		};
+		for (const entry of metrics || []) {
+			aggregateEntry(entry);
+			const perThreadMetric = PER_THREAD_METRICS.get(entry.metric);
+			if (perThreadMetric)
+				aggregateEntry({ ...entry, metric: perThreadMetric, perThread: true, distribution: undefined });
 		}
 		await rest();
 	}
 	// Peak-named measures sum per-thread peaks, which bounds concurrent depth only over intervals that
 	// every relevant thread's samples fully cover; the peaks need not coincide.
 	for (const entry of threadsToAverage) {
-		// eslint-disable-next-line @typescript-eslint/no-unused-vars
-		let { path, method, type, metric, count, total, distribution, threads, ...measures } = entry;
-		threads = threads.filter((thread) => thread);
-		for (const measureName in measures) {
-			if (typeof entry[measureName] !== 'number') continue;
+		const threads = entry.threads.filter((thread) => thread);
+		const measureNames = new Set<string>();
+		for (const thread of threads) {
+			for (const measureName in thread) if (typeof thread[measureName] === 'number') measureNames.add(measureName);
+		}
+		for (const measureName of measureNames) {
 			let total = 0;
 			for (const thread of threads) {
 				const value = thread[measureName];
-				if (typeof value === 'number') {
-					total += value;
-				}
+				if (typeof value === 'number') total += value;
 			}
 			entry[measureName] = total;
 		}

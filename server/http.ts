@@ -40,6 +40,8 @@ import {
 } from './serverHelpers/proxyProtocol.ts';
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
+import { METRIC } from '../resources/analytics/metadata.ts';
+import { startRequestTimer, watchRequestArrival } from './serverHelpers/requestTiming.ts';
 import { Readable, Writable, pipeline } from 'node:stream';
 import { mkdirSync, unlinkSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
@@ -733,6 +735,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		}
 		const requestHandler = async (nodeRequest: IncomingMessage, nodeResponse: any) => {
 			const startTime = performance.now();
+			const receivedAt = (nodeRequest as any).receivedAt ?? startTime;
 			let requestId = 0;
 			try {
 				const request = new Request(nodeRequest, nodeResponse);
@@ -834,13 +837,10 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				}
 				const handlerPath = request.handlerPath;
 				const method = request.method;
-				recordAction(
-					executionTime,
-					'duration',
-					handlerPath,
-					method,
-					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
-				);
+				const cacheType =
+					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
+				recordAction(executionTime, 'duration', handlerPath, method, cacheType);
+				recordAction(endTime - receivedAt, METRIC.REQUEST_TIME, handlerPath, method, cacheType);
 				recordActionBinary(status < 400, 'success', handlerPath, method);
 				recordActionBinary(1, 'response_' + status, handlerPath, method);
 				logRequest(nodeRequest, status, requestId, executionTime);
@@ -902,15 +902,17 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			env.get(serverPrefix + '_requestQueueLimit'),
 			`HTTP request queue on port ${port}`
 		);
-		const server = (httpServers[port] = (
-			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
-		)(options, (nodeRequest: IncomingMessage, nodeResponse: any) => {
+		const dispatchRequest = (nodeRequest: IncomingMessage, nodeResponse: any) => {
+			startRequestTimer(nodeRequest as any);
 			// throttle the requests that can make data modifications because they are more likely to be slow and we don't
 			// want to block or slow down other activity
 			const method = nodeRequest.method;
 			if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
 			else throttledRequestHandler(nodeRequest, nodeResponse);
-		}));
+		};
+		const server = (httpServers[port] = (
+			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
+		)(options, dispatchRequest));
 
 		// Node v16 and earlier required setting this as a property; but carefully, we must only set if it is actually a
 		// number or it will actually crash the server
@@ -934,9 +936,10 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			server.on('secureConnection', (socket) => {
 				if (socket._parent.startTime) recordAction(performance.now() - socket._parent.startTime, 'tls-handshake', port);
 				recordAction(socket.isSessionReused(), 'tls-reused', port);
+				watchRequestArrival(socket);
 			});
 			server.isSecure = true;
-		}
+		} else server.on('connection', watchRequestArrival);
 		registerServer(server, port);
 		// macOS doesn't support SO_REUSEPORT on all socket types; operations API also doesn't need it
 		if (isOperationsServer || process.platform === 'darwin') server.noReusePort = true;
@@ -981,13 +984,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 						...socketOptionDefaults,
 						maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 					},
-					(nodeRequest: IncomingMessage, nodeResponse: any) => {
-						const method = nodeRequest.method;
-						if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD')
-							requestHandler(nodeRequest, nodeResponse);
-						else throttledRequestHandler(nodeRequest, nodeResponse);
-					}
+					dispatchRequest
 				);
+				udsServer.on('connection', watchRequestArrival);
 
 				udsServer.isPerThreadSocket = true;
 				// Mirror the secure server's mTLS config so a client cert forwarded by the
@@ -1023,11 +1022,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				const udsPathH2 = join(socketsDir, `${socketName}-h2.sock`);
 				const yamlPathH2 = join(socketsDir, `${socketName}-h2.yaml`);
 				if (threadType) claimListener(udsPathH2, threadType);
-				const h2Server = createH2CServer({}, (nodeRequest: any, nodeResponse: any) => {
-					const method = nodeRequest.method;
-					if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
-					else throttledRequestHandler(nodeRequest, nodeResponse);
-				});
+				const h2Server = createH2CServer({}, dispatchRequest);
 				// A stray non-h2 client (or a truncated preface) fails the session, not the worker.
 				h2Server.on('sessionError', (error: Error) => {
 					harperLogger.debug('h2c UDS session error:', error);
@@ -1134,18 +1129,22 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 		}
 		if (universalHeaders.length > 0) applyUniversalHeaders(headers);
 		const status = response.status || 200;
-		const executionTime = performance.now() - startTime;
+		const endTime = performance.now();
+		const executionTime = endTime - startTime;
 		if (!response.handlesHeaders) {
 			let serverTiming = `hdb;dur=${executionTime.toFixed(2)}`;
 			if (response.wasCacheMiss) serverTiming += ', miss';
 			appendHeader(headers, 'Server-Timing', serverTiming, true);
 		}
+		const cacheType =
+			response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
+		recordAction(executionTime, 'duration', request.handlerPath, request.method, cacheType);
 		recordAction(
-			executionTime,
-			'duration',
+			endTime - (request.receivedAt ?? startTime),
+			METRIC.REQUEST_TIME,
 			request.handlerPath,
 			request.method,
-			response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
+			cacheType
 		);
 		recordActionBinary(status < 400, 'success', request.handlerPath, request.method);
 		recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
@@ -1179,6 +1178,7 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 		`HTTP request queue on port ${port}`
 	);
 	return (request: any) => {
+		request.receivedAt = performance.now();
 		const method = request.method;
 		if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') return handle(request);
 		return throttledHandle(request);
@@ -1362,13 +1362,10 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				}
 				const handlerPath = request.handlerPath;
 				const method = request.method;
-				recordAction(
-					executionTime,
-					'duration',
-					handlerPath,
-					method,
-					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
-				);
+				const cacheType =
+					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
+				recordAction(executionTime, 'duration', handlerPath, method, cacheType);
+				recordAction(endTime - startTime, METRIC.REQUEST_TIME, handlerPath, method, cacheType);
 				recordActionBinary(status < 400, 'success', handlerPath, method);
 				recordActionBinary(1, 'response_' + status, handlerPath, method);
 				logHttpRequest(request, status, requestId, executionTime);
