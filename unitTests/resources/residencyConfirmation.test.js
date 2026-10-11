@@ -24,7 +24,7 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 		Records = table({
 			table: 'ResidencyConfirmation',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'homes' }, { name: 'body' }],
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'homes' }, { name: 'body', indexed: true }],
 			audit: true,
 		});
 		Unplaced = table({
@@ -128,6 +128,9 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 			);
 		});
 		assert.equal(Records.primaryStore.getEntry('caught-refused'), undefined);
+		const indexed = Array.from(Records.indices.body.getRange({ start: null }), ({ key }) => key);
+		assert.ok(!indexed.includes('refused'), `the refused write left an index entry: ${JSON.stringify(indexed)}`);
+		assert.ok(indexed.includes('ok'));
 		assert.equal((await Records.get('caught-ok')).body, 'ok');
 		assert.deepEqual(calls[0].residentPeerLists, [[PEER_A]]);
 	});

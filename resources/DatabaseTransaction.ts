@@ -1370,7 +1370,7 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * What a `replicatedConfirmation` commit waits for: the version peers must have applied (as in
 	 * lastConfirmableEntry, or the version written by a write that stored no local record), and one list
-	 * of other residents per distinct residency among the writes (harper-pro#1031). A write placed by no
+	 * of other residents per distinct residency among the writes, in no meaningful order (harper-pro#1031). A write placed by no
 	 * residency adds no list: N confirmations from any list already come from N distinct peers.
 	 */
 	confirmationTarget(): { version: number; residentPeerLists?: string[][] } | undefined {

@@ -5406,6 +5406,15 @@ export function makeTable(options): TableResourceClass {
 						}
 						residencyId = getResidencyId(residency);
 					}
+					// refused before this write stages anything, so a caller that catches it cannot commit it
+					if (residencyId && committedBy?.replicatedConfirmation && !transaction?.isRetry) {
+						try {
+							confirmingResidents(primaryStore, residencyId, committedBy.replicatedConfirmation, id);
+						} catch (error) {
+							write.skipped = true;
+							throw error;
+						}
+					}
 					if (omitLocalRecord) {
 						auditRecordToStore ??= recordToStore;
 						recordToStore = TableResource.getResidencyById ? undefined : residencyStub(recordToStore);
@@ -5504,9 +5513,6 @@ export function makeTable(options): TableResourceClass {
 						// RocksDB uses a singular version/local time, so it must be most recent
 						const writtenVersion = isRocksDB ? Math.max(txnTime, existingEntry?.version ?? 0) : txnTime;
 						const appendsAudit = !transaction?.isRetry;
-						// refused before anything is staged, so a caller that catches it cannot commit the write
-						if (appendsAudit && residencyId && committedBy?.replicatedConfirmation)
-							confirmingResidents(primaryStore, residencyId, committedBy.replicatedConfirmation, id);
 						// we need to write the commit. if storeRecord then we need to store the record, otherwise we just need to store the audit record
 						updateRecord(
 							id,
