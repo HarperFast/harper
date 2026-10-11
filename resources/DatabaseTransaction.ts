@@ -1378,11 +1378,13 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	confirmationTarget(): { version: number; residentPeerLists?: string[][] } | undefined {
 		let version: number | undefined;
+		let latestPosition = 0;
 		let residentPeerLists: Map<number, string[]> | undefined;
 		for (let i = this.writes.length - 1; i >= 0; i--) {
 			const write = this.writes[i];
 			if (!write || write.skipReplicationConfirmation) continue;
-			version ??= write.replicationPosition ?? write.store.getEntry(write.key)?.version;
+			if (write.replicationPosition) latestPosition = Math.max(latestPosition, write.replicationPosition);
+			else version ??= write.store.getEntry(write.key)?.version;
 			if (write.residencyId && !residentPeerLists?.has(write.residencyId)) {
 				(residentPeerLists ??= new Map()).set(
 					write.residencyId,
@@ -1390,11 +1392,11 @@ export class DatabaseTransaction implements Transaction {
 				);
 			}
 		}
+		if (latestPosition) version = Math.max(version ?? 0, latestPosition);
 		if (version === undefined) return;
 		return { version, residentPeerLists: residentPeerLists && Array.from(residentPeerLists.values()) };
 	}
 
-	/** Refuse, before native submission, a count some written record's residents cannot meet. */
 	assertResidentsCanConfirm(): void {
 		for (const write of this.writes) {
 			if (write?.residencyId && !write.skipReplicationConfirmation)

@@ -6,6 +6,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { DatabaseTransaction, replicationConfirmation } = require('#src/resources/DatabaseTransaction');
+const { certifyOriginFloor, publishOriginFloor } = require('#src/resources/originClosedFloor');
 
 const SELF = global.server.hostname || hostname();
 const PEER_A = 'residency-confirmation-a';
@@ -76,6 +77,25 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 		});
 		assert.equal(calls.length, 1);
 		assert.deepEqual(sorted(calls[0].residentPeerLists), [[PEER_A], [PEER_B]]);
+	});
+
+	it('waits for the log position of a placed write whose record version is below the origin floor', async () => {
+		const rootStore = Records.primaryStore.rootStore;
+		let floor = certifyOriginFloor(rootStore);
+		for (let retry = 0; floor === null && retry < 100; retry++) floor = certifyOriginFloor(rootStore);
+		publishOriginFloor(rootStore, floor);
+		const timestamp = floor - 1000;
+		for (const placedFirst of [true, false]) {
+			calls = [];
+			const placed = () => Records.put(`floor-${placedFirst}`, { id: `floor-${placedFirst}`, homes: [SELF, PEER_A] });
+			const unplaced = () => Unplaced.put(`floor-${placedFirst}`, { id: `floor-${placedFirst}` });
+			await confirmed({ replicatedConfirmation: 1, timestamp }, async () => {
+				await (placedFirst ? placed : unplaced)();
+				await (placedFirst ? unplaced : placed)();
+			});
+			assert.equal(Records.primaryStore.getEntry(`floor-${placedFirst}`).version, timestamp);
+			assert.ok(calls[0].version >= floor, `confirmed on ${calls[0].version}, below the log key floor ${floor}`);
+		}
 	});
 
 	it('places a replicateTo list like a residency list', async () => {
