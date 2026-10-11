@@ -60,6 +60,7 @@ async function firstValues(subscription, count) {
 	const iterator = subscription[Symbol.asyncIterator]();
 	const deadline = new AbortController();
 	const timedOut = delay(5000, { done: true }, { signal: deadline.signal });
+	timedOut.catch(() => {});
 	const values = [];
 	try {
 		while (values.length < count) {
@@ -545,11 +546,15 @@ describe('Subscribe read gate: caller impact', () => {
 		beforeEach(() => (grant = true));
 
 		async function revokedBySweep(subscription) {
-			await _sweepNow();
-			assert.strictEqual(subscription.closed, false, 'still authorized');
-			grant = false;
-			await _sweepNow();
-			assert.strictEqual(subscription.closed, true, 'ended by the recheck');
+			try {
+				await _sweepNow();
+				assert.strictEqual(subscription.closed, false, 'still authorized');
+				grant = false;
+				await _sweepNow();
+				assert.strictEqual(subscription.closed, true, 'ended by the recheck');
+			} finally {
+				subscription.end();
+			}
 		}
 
 		it('an admitted subscription ends when a later recheck of the same allowRead denies', async function () {
