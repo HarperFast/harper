@@ -5406,7 +5406,7 @@ export function makeTable(options): TableResourceClass {
 						}
 						residencyId = getResidencyId(residency);
 					}
-					// inert once refused: a caller that catches the refusal must not commit it, even on a retry
+					// a caller that catches the refusal must not be able to commit it, even on a retry
 					if (residencyId && committedBy?.replicatedConfirmation && !transaction?.isRetry) {
 						try {
 							confirmingResidents(primaryStore, residencyId, committedBy.replicatedConfirmation, id);
@@ -5547,7 +5547,7 @@ export function makeTable(options): TableResourceClass {
 							false,
 							storeRecord ? auditRecordToStore : (auditRecordToStore ?? recordUpdate)
 						);
-						if (appendsAudit && (residencyId || write.residencyId)) {
+						if (appendsAudit && (residencyId || write.residencyId || committedBy?.replicatedConfirmation)) {
 							write.residencyId = residencyId;
 							write.replicationPosition = Math.max(writtenVersion, appendedLogKey);
 						}

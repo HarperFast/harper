@@ -100,6 +100,11 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 			assert.equal(Records.primaryStore.getEntry(`floor-${placedFirst}`).version, timestamp);
 			assert.ok(calls[0].version >= floor, `confirmed on ${calls[0].version}, below the log key floor ${floor}`);
 		}
+		calls = [];
+		await confirmed({ replicatedConfirmation: 1, timestamp }, () =>
+			Unplaced.put('floor-unplaced', { id: 'floor-unplaced' })
+		);
+		assert.ok(calls[0].version >= floor, `an unplaced write confirmed on ${calls[0].version}, below ${floor}`);
 	});
 
 	it('places a replicateTo list like a residency list', async () => {

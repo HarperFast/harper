@@ -676,7 +676,8 @@ export type TransactionWrite = {
 	// of the audit entry this write appended; a coordinated retry appends nothing and keeps them, so
 	// confirmation counts the residents the replicated entry names
 	residencyId?: number;
-	// the later of its record version and its log key: peers acknowledge log positions
+	// the later of its record version and its log key (peers acknowledge log positions); recorded for
+	// residency-placed writes and for every write of a transaction that requests confirmation
 	replicationPosition?: number;
 	baseReadTxn?: any;
 	writeGeneration?: WriteGeneration;
