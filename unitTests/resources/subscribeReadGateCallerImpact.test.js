@@ -1,7 +1,7 @@
 // Caller impact of the subscribe read gate: the built-in Table.subscribe() of a `loadAsInstance = false`
 // table runs allowRead before any subscription setup (v5.1.24: 2691413dd, harper#1914; main: harper#1915,
-// first released in v5.2.0). Through v5.1.23 that handler ran no read check, so every "refused" case on
-// a false-mode table below was admitted. Instance-mode tables were already gated once by Resource's
+// first released in v5.2.0). Through v5.1.23 that handler ran no read check, so every subscribe refused
+// on a false-mode table below was admitted. Instance-mode tables were already gated once by Resource's
 // transactional wrapper and are unchanged.
 const testUtils = require('../testUtils');
 const assert = require('node:assert');
@@ -16,6 +16,7 @@ const { handleApplication: handleRest } = require('#src/server/REST');
 const { _sweepNow } = require('#src/server/liveSubscriptionAuth');
 const userModule = require('#src/security/user');
 const { generate, parser: mqttParser } = require('mqtt-packet');
+const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -54,11 +55,22 @@ async function admitted(subscriptionPromise) {
 	return subscription;
 }
 
+// bounded, so a regression that delivers fewer events fails the assertion instead of hanging (mocha timeout is 0)
 async function firstValues(subscription, count) {
 	const iterator = subscription[Symbol.asyncIterator]();
+	const deadline = new AbortController();
+	const timedOut = delay(5000, { done: true }, { signal: deadline.signal });
 	const values = [];
-	while (values.length < count) values.push((await iterator.next()).value);
-	subscription.end();
+	try {
+		while (values.length < count) {
+			const next = await Promise.race([iterator.next(), timedOut]);
+			if (next.done) break;
+			values.push(next.value);
+		}
+	} finally {
+		deadline.abort();
+		subscription.end();
+	}
 	return values;
 }
 
@@ -88,7 +100,7 @@ describe('Subscribe read gate: caller impact', () => {
 			await admitted(FalseModeRecords.subscribe({ omitCurrent: true }, undefined, armed(reader)));
 		});
 
-		it('a role without table read is refused with 403 (admitted through v5.1.23)', async function () {
+		it('a role without table read is refused with 403', async function () {
 			await refused(() => FalseModeRecords.subscribe({ omitCurrent: true }, undefined, armed(nonReader)));
 		});
 
@@ -96,7 +108,7 @@ describe('Subscribe read gate: caller impact', () => {
 			await admitted(FalseModeRecords.subscribe({ omitCurrent: true }, undefined, armed(superUser)));
 		});
 
-		it('a request with no principal is refused with 401 (admitted through v5.1.23)', async function () {
+		it('a request with no principal is refused with 401', async function () {
 			await refused(() => FalseModeRecords.subscribe({ omitCurrent: true }, undefined, armed(undefined)), 401);
 		});
 	});
@@ -218,7 +230,7 @@ describe('Subscribe read gate: caller impact', () => {
 			]);
 		});
 
-		it('instance mode: the same `this`-reading override sees the loaded record (gate unchanged by v5.1.24)', async function () {
+		it('instance mode: the same `this`-reading override sees the loaded record, gated once by the transactional wrapper', async function () {
 			let allowReadCalls = 0;
 			class InstanceOwnerViaThis extends Records {
 				allowRead(user) {
@@ -274,6 +286,7 @@ describe('Subscribe read gate: caller impact', () => {
 			if (!Resources.resources) Resources.resetResources();
 			Resources.resources.set('GateEntry', GatedRecords);
 		});
+		after(() => Resources.resources.delete('GateEntry'));
 		beforeEach(() => (seen.length = 0));
 
 		function restListeners() {
@@ -305,8 +318,8 @@ describe('Subscribe read gate: caller impact', () => {
 		it('SSE: a refused event-stream GET answers 403; the override sees the URL query and method GET', async function () {
 			const { http } = restListeners();
 			const accept = { accept: 'text/event-stream' };
-			const refused = await http(httpRequest('/GateEntry/?tenant=t1', reader, accept), () => {});
-			assert.strictEqual(refused.status, 403);
+			const refusal = await http(httpRequest('/GateEntry/?tenant=t1', reader, accept), () => {});
+			assert.strictEqual(refusal.status, 403);
 			const [{ target, context }] = seen;
 			assert.ok(target instanceof RequestTarget);
 			assert.strictEqual(target.id, null);
@@ -315,8 +328,11 @@ describe('Subscribe read gate: caller impact', () => {
 			assert.strictEqual(context.method, 'GET');
 
 			const stream = await http(httpRequest('/GateEntry/', superUser, accept), () => {});
-			assert.strictEqual(stream.status, 200);
-			stream.body.destroy();
+			try {
+				assert.strictEqual(stream.status, 200);
+			} finally {
+				stream.body?.destroy();
+			}
 		});
 
 		it('WebSocket: a refused upgrade closes with 3003; the override sees method GET and no isCollection on a record URL', async function () {
@@ -329,11 +345,16 @@ describe('Subscribe read gate: caller impact', () => {
 				on: (event, handler) => (handlers[event] = handler),
 				_socket: {},
 			};
-			await wsListener(
-				socket,
-				httpRequest('/GateEntry/rec-alice', reader, {}, { isWebSocket: true }),
-				Promise.resolve(undefined)
-			);
+			try {
+				await wsListener(
+					socket,
+					httpRequest('/GateEntry/rec-alice', reader, {}, { isWebSocket: true }),
+					Promise.resolve(undefined)
+				);
+			} finally {
+				// the socket's own close event is what releases REST's connection count
+				handlers.close?.();
+			}
 			assert.strictEqual(closes[0].code, 3003);
 			const [{ target, context }] = seen;
 			assert.strictEqual(target.id, 'rec-alice');
@@ -362,23 +383,27 @@ describe('Subscribe read gate: caller impact', () => {
 				() => {}
 			);
 			const topics = ['GateEntry/#', 'GateEntry/rec-alice', 'GateEntry/?tenant=t1'];
-			socket.handlers.message(
-				Buffer.concat([
-					generate({ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId: 'gate-mqtt', clean: true }),
-					generate(
-						{ cmd: 'subscribe', messageId: 1, subscriptions: topics.map((topic) => ({ topic, qos: 0 })) },
-						{ protocolVersion: 5 }
-					),
-				])
-			);
-			const suback = await waitFor(() => {
-				const packets = [];
-				const parser = mqttParser({ protocolVersion: 5 });
-				parser.on('packet', (packet) => packets.push(packet));
-				for (const sent of socket.sends) parser.parse(sent);
-				return packets.find((packet) => packet.cmd === 'suback');
-			});
-			socket.handlers.close();
+			let suback;
+			try {
+				socket.handlers.message(
+					Buffer.concat([
+						generate({ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId: 'gate-mqtt', clean: true }),
+						generate(
+							{ cmd: 'subscribe', messageId: 1, subscriptions: topics.map((topic) => ({ topic, qos: 0 })) },
+							{ protocolVersion: 5 }
+						),
+					])
+				);
+				suback = await waitFor(() => {
+					const packets = [];
+					const parser = mqttParser({ protocolVersion: 5 });
+					parser.on('packet', (packet) => packets.push(packet));
+					for (const sent of socket.sends) parser.parse(sent);
+					return packets.find((packet) => packet.cmd === 'suback');
+				});
+			} finally {
+				socket.handlers.close?.();
+			}
 			assert.deepStrictEqual(suback.granted, [0x87, 0x87, 0x87]);
 			assert.deepStrictEqual(
 				seen.map(({ target }) => [target.id, target.isCollection, target.get('tenant')]),
@@ -391,6 +416,8 @@ describe('Subscribe read gate: caller impact', () => {
 			for (const { context } of seen) {
 				assert.ok(context.session, 'an MQTT session context');
 				assert.strictEqual(context.method, undefined);
+				// present only because this session rides a WebSocket upgrade; an MQTT-over-TCP session has none
+				assert.strictEqual(context.headers.get('sec-websocket-protocol'), 'mqtt');
 			}
 		});
 
@@ -483,7 +510,8 @@ describe('Subscribe read gate: caller impact', () => {
 		});
 	});
 
-	describe('live re-authorization (main since v5.2.0; v5.1.x has none)', () => {
+	// since v5.2.0; v5.1.x has no live re-authorization
+	describe('live re-authorization', () => {
 		const ROLE_ID = 'subscribe_read_gate_role';
 		let grant;
 		let Revocable;
