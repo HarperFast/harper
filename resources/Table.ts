@@ -5494,14 +5494,18 @@ export function makeTable(options): TableResourceClass {
 						}
 					}
 					function writeCommit(storeRecord: boolean) {
+						// RocksDB uses a singular version/local time, so it must be most recent
+						const writtenVersion = isRocksDB ? Math.max(txnTime, existingEntry?.version ?? 0) : txnTime;
+						if (!transaction?.isRetry) {
+							write.residencyId = residencyId;
+							write.writtenVersion = writtenVersion;
+						}
 						// we need to write the commit. if storeRecord then we need to store the record, otherwise we just need to store the audit record
 						updateRecord(
 							id,
 							storeRecord ? recordToStore : undefined,
 							storeRecord ? existingEntry : { ...existingEntry, value: undefined },
-							isRocksDB
-								? Math.max(txnTime, existingEntry?.version ?? 0) // RocksDB uses a singular version/local time, so it must be most recent
-								: txnTime,
+							writtenVersion,
 							omitLocalRecord ? INVALIDATED : 0,
 							// copy-apply rows are snapshots, not transactions: write the record + indices but no audit entry
 							isCopyApply ? false : audit,

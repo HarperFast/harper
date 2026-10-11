@@ -893,3 +893,16 @@ not consult the residency function: the merged row lacks the fields a placement 
 base's list is the one naming a complete holder. An explicit received residency stays authoritative, but
 does not make the receiver complete. A replicated or source write with no residency list, and `setResidencyById`, still omit or stub as
 before. Enforced by `unitTests/resources/writerResidency.test.js` (both engines).
+
+## `replicatedConfirmation` counts only the residents of each written record (`DatabaseTransaction` `confirmationTarget`, harper-pro#1031)
+
+Peers acknowledge a database-wide applied position, and a non-resident peer passes that position after
+receiving only an invalidation stub, or nothing. So the commit tells the confirmation callback, besides the
+version, one list of other residents (writer removed, duplicates removed) per distinct `residencyId` among
+its confirmable writes; the waiter needs the full count from each list. A write with no residency adds no
+list. The commit handler stamps `write.residencyId`/`writtenVersion` on every round that appends the audit
+entry and keeps them on a coordinated retry, which appends nothing, so the residents counted are the ones
+the replicated entry names. A count larger than a list fails in `save()`, before the native commit, so the
+transaction writes nothing; confirmation requested after a write was saved fails the same way at commit,
+after the write landed. `writtenVersion` lets a write that stored no local record (`setResidencyById`
+excluding the writer) still be confirmed. Enforced by `unitTests/resources/residencyConfirmation.test.js`.

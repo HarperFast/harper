@@ -2,6 +2,7 @@ import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
 import { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import {
+	ClientError,
 	DatabaseClosingError,
 	DatabaseDrainTimeoutError,
 	ServerError,
@@ -21,6 +22,7 @@ const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
+import { server } from '../server/Server.ts';
 import {
 	createLongLivedHolderReportBudget,
 	describeHolderCandidates,
@@ -635,6 +637,11 @@ export type TransactionWrite = {
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
 	reloadCommitBase?: boolean;
+	// the residency id and record version of the audit entry this write appended: written by the commit
+	// handler on every round that appends one, and kept on a coordinated retry, whose appends are skipped,
+	// so confirmation counts the residents the replicated entry names
+	residencyId?: number;
+	writtenVersion?: number;
 	baseReadTxn?: any;
 	writeGeneration?: WriteGeneration;
 	instanceClosed?: boolean;
@@ -1331,6 +1338,47 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
+	 * What a `replicatedConfirmation` commit waits for: the version peers must have applied (from the last
+	 * confirmable write, as in lastConfirmableEntry, falling back to the version a write with no local
+	 * record wrote), and the distinct resident lists of the writes placed by residency. A peer counts
+	 * toward a write only if it is resident for it, so each list needs the full count from its own members
+	 * (harper-pro#1031). Writes without a residency list reach every peer and add no list: any list's
+	 * confirmations already come from that many distinct peers.
+	 */
+	confirmationTarget(): { version: number; residentPeerLists?: string[][] } | undefined {
+		let version: number | undefined;
+		let residentPeerLists: Map<number, string[]> | undefined;
+		for (let i = this.writes.length - 1; i >= 0; i--) {
+			const write = this.writes[i];
+			if (!write || write.skipReplicationConfirmation) continue;
+			version ??= write.store.getEntry(write.key)?.version ?? write.writtenVersion;
+			if (write.residencyId && !residentPeerLists?.has(write.residencyId)) {
+				(residentPeerLists ??= new Map()).set(write.residencyId, this.residentsCanConfirm(write));
+			}
+		}
+		if (version === undefined) return;
+		return { version, residentPeerLists: residentPeerLists && Array.from(residentPeerLists.values()) };
+	}
+
+	/**
+	 * The other nodes resident for `write`'s record, throwing when they are fewer than the requested
+	 * confirmation count: such a write can never be confirmed, so it fails now rather than at the timeout.
+	 */
+	residentsCanConfirm(write: TransactionWrite): string[] {
+		const residency: string[] | undefined = write.store.rootStore.dbisDb.getSync([
+			Symbol.for('residency_by_id'),
+			write.residencyId,
+		]);
+		const residents = residency ? Array.from(new Set(residency)).filter((name) => name !== server.hostname) : [];
+		if (this.replicatedConfirmation > residents.length) {
+			throw new ClientError(
+				`Cannot confirm replication to ${this.replicatedConfirmation} node(s) for record ${JSON.stringify(write.key)} in database "${write.store.rootStore.databaseName}": it is resident on ${residents.length} other node(s)${residents.length ? ` (${residents.join(', ')})` : ''}`
+			);
+		}
+		return residents;
+	}
+
+	/**
 	 * The stored entry of the last write eligible for replication confirmation. Two kinds of write are
 	 * skipped (rather than ending the search) so a trailing one cannot suppress confirmation for
 	 * replicable writes staged earlier: writes that explicitly opt out (audit-only markers, which stage
@@ -1580,6 +1628,9 @@ export class DatabaseTransaction implements Transaction {
 			} finally {
 				closeWriteInstance(operation);
 			}
+			// before the native commit, so a write no residents can confirm is never written
+			if (this.replicatedConfirmation && operation.residencyId && !(transaction as RocksTransactionWithRetry)?.isRetry)
+				this.residentsCanConfirm(operation);
 		} catch (error) {
 			// A handle created for an immediate commit is owned by nobody else: a throw before its commit
 			// is submitted must release it, and the floor reservation it carries, rather than leak both.
@@ -2145,10 +2196,15 @@ export class DatabaseTransaction implements Transaction {
 								// if we want to wait for replication confirmation, we need to track the transaction times
 								// and when replication notifications come in, we count the number of confirms until we reach the desired number
 								const databaseName = this.writes[0]?.store.rootStore.databaseName;
-								const lastEntry = this.lastConfirmableEntry();
-								if (confirmReplication && databaseName && lastEntry) {
+								const target = confirmReplication && databaseName ? this.confirmationTarget() : undefined;
+								if (target) {
 									completions.push(
-										confirmReplication(databaseName, (lastEntry as any).version, this.replicatedConfirmation)
+										confirmReplication(
+											databaseName,
+											target.version,
+											this.replicatedConfirmation,
+											target.residentPeerLists
+										)
 									);
 								}
 							}
