@@ -46,6 +46,7 @@ import {
 	getDatabaseCommitDrainTimeoutMilliseconds,
 	type WriteGeneration,
 	type Transaction as DatabaseTransactionRecord,
+	confirmingResidents,
 } from './DatabaseTransaction.ts';
 import { releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
 import {
@@ -2885,7 +2886,11 @@ export function makeTable(options): TableResourceClass {
 				const replicateTo = [server.hostname]; // start with ourselves, we should always be in the list
 				if (context.previousResidency) {
 					// if we have a previous residency, we should preserve it
-					replicateTo.push(...context.previousResidency.slice(0, count));
+					// the stored list already names the node that wrote it; repeating this one would shed a replica
+					for (const name of context.previousResidency) {
+						if (replicateTo.length > count) break;
+						if (name !== server.hostname) replicateTo.push(name);
+					}
 				} else {
 					// otherwise need to create a new list of nodes to replicate to, based on available nodes
 					// randomize this to ensure distribution of data
@@ -4821,7 +4826,13 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 				before: writeToSource(),
-				commit: (txnTime: number, existingEntry: Entry, retry: boolean, transaction: any) => {
+				commit: (
+					txnTime: number,
+					existingEntry: Entry,
+					retry: boolean,
+					transaction: any,
+					committedBy?: DatabaseTransaction
+				) => {
 					// Whether a prior attempt of THIS write appended its own audit entry (sticky, set in
 					// save(); log entries are not part of the aborted rocks transaction, so they survive).
 					// Only such a write can find its own orphaned entry in the dedup lookups below and must
@@ -5399,6 +5410,19 @@ export function makeTable(options): TableResourceClass {
 						}
 						residencyId = getResidencyId(residency);
 					}
+					// a caller that catches the refusal must not be able to commit it, even on a retry
+					if (residencyId && committedBy?.replicatedConfirmation && !transaction?.isRetry) {
+						try {
+							confirmingResidents(primaryStore, residencyId, committedBy.replicatedConfirmation, id);
+						} catch (error) {
+							write.skipped = true;
+							write.skipReplicationConfirmation = true;
+							write.commit = () => {
+								write.skipped = true;
+							};
+							throw error;
+						}
+					}
 					if (omitLocalRecord) {
 						auditRecordToStore ??= recordToStore;
 						recordToStore = TableResource.getResidencyById ? undefined : residencyStub(recordToStore);
@@ -5526,6 +5550,8 @@ export function makeTable(options): TableResourceClass {
 							false,
 							storeRecord ? auditRecordToStore : (auditRecordToStore ?? recordUpdate)
 						);
+						if ((residencyId || write.residencyId) && audit && !isCopyApply && !transaction?.isRetry)
+							write.residencyId = residencyId;
 						// publish what this write left for the key, for any later write to it in this
 						// transaction (an audit-only commit stored no record, so it stages nothing and the
 						// earlier staged record, if any, remains the basis)
@@ -5663,6 +5689,7 @@ export function makeTable(options): TableResourceClass {
 					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
 					write.superseded = false; // reset per round, as in the update path
 					write.skipped = false;
+					if (!transaction?.isRetry) write.skipReplicationConfirmation = false;
 					// what a preceding write in this transaction left for this key is what gets removed
 					// from the indices here, not the pre-transaction record (harper#1968)
 					const priorStagedOp = priorStagedWrite(write);
@@ -5682,6 +5709,7 @@ export function makeTable(options): TableResourceClass {
 					// write (a concurrent transaction observed on a retry round, or an out-of-order delivery)
 					// that a chained delete must not destroy.
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+						write.skipped = true;
 						return;
 					}
 					const stagedRemoval = { value: undefined, localTime: txnLogKey, nodeId: options?.nodeId };
@@ -5721,6 +5749,7 @@ export function makeTable(options): TableResourceClass {
 					} else {
 						// Only RocksDB's remove() takes an options object; on LMDB the 2nd arg is ifVersion, and its writes already join the batched txn.
 						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
+						write.skipReplicationConfirmation = true;
 					}
 					write.stagedEntry = stagedRemoval; // the key holds no record for the rest of this transaction
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
@@ -10200,12 +10229,25 @@ export function makeTable(options): TableResourceClass {
 			// return the Promise as the residencyId and skip minting a new one, corrupting the mapping.
 			let residencyId = (dbisDb as any).getSync([Symbol.for('residency_by_set'), setKey]);
 			if (residencyId) return residencyId;
-			dbisDb.put(
-				[Symbol.for('residency_by_set'), setKey],
-				(residencyId = Math.floor(Math.random() * 0x7fff0000) + 0xffff)
+			// An id names one list for good (readers cache it), so it is claimed in one transaction: a
+			// concurrent mint of the same set or the same candidate id conflicts and retries instead of
+			// overwriting. (LMDB's sync transaction is exclusive and passes no handle.)
+			const claimed = (dbisDb as any).transactionSync(
+				(transaction: any) => {
+					const db = transaction ?? dbisDb;
+					const minted = db.getSync([Symbol.for('residency_by_set'), setKey]);
+					if (minted) return minted;
+					let candidate: number;
+					do candidate = Math.floor(Math.random() * 0x7fff0000) + 0xffff;
+					while (db.getSync([Symbol.for('residency_by_id'), candidate]) !== undefined);
+					db.putSync([Symbol.for('residency_by_id'), candidate], ownerNodeNames);
+					db.putSync([Symbol.for('residency_by_set'), setKey], candidate);
+					return candidate;
+				},
+				isRocksDB ? { retryOnBusy: true } : undefined
 			);
-			dbisDb.put([Symbol.for('residency_by_id'), residencyId], ownerNodeNames);
-			return residencyId;
+			if (claimed === undefined) throw new Error(`Unable to claim a residency id for ${setKey}`);
+			return claimed;
 		}
 	}
 	function preCommitBlobsForRecordBefore(
