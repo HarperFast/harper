@@ -10231,7 +10231,7 @@ export function makeTable(options): TableResourceClass {
 			// An id names one list for good (readers cache it), so it is claimed in one transaction: a
 			// concurrent mint of the same set or the same candidate id conflicts and retries instead of
 			// overwriting. (LMDB's sync transaction is exclusive and passes no handle.)
-			return (dbisDb as any).transactionSync(
+			const claimed = (dbisDb as any).transactionSync(
 				(transaction: any) => {
 					const db = transaction ?? dbisDb;
 					const minted = db.getSync([Symbol.for('residency_by_set'), setKey]);
@@ -10245,6 +10245,8 @@ export function makeTable(options): TableResourceClass {
 				},
 				isRocksDB ? { retryOnBusy: true } : undefined
 			);
+			if (claimed === undefined) throw new Error(`Unable to claim a residency id for ${setKey}`);
+			return claimed;
 		}
 	}
 	function preCommitBlobsForRecordBefore(

@@ -901,13 +901,14 @@ receiving only an invalidation stub, or nothing. So the commit hands the confirm
 position, one list of other residents (writer and duplicates removed) per distinct `residencyId` among its
 confirmable writes (`residentPeerLists`); the waiter needs the full count from each list. A write with no
 residency adds no list. The position is the committed transaction's reserved log key (`confirmationTarget`),
-never a record version: a record version can sit below the key (an explicit timestamp under the origin
-floor) or above it (a remote-origin version kept by a merge).
+not a record version, which can sit below the key (an explicit timestamp under the origin floor) or above it
+(a remote-origin version kept by a merge). Only when no confirmable write appended to the committed handle
+(every write lost to a newer entry) does it fall back to the stored entry's version, as before.
 
 The commit handler stamps `write.residencyId` on each round that appends an audit entry and keeps it on a
 coordinated retry, which appends nothing, so the residents counted are the ones the replicated entry names.
-Ids are resolved once per database handle (`confirmingResidents`); `getResidencyId` never reuses an id
-and writes the id-to-list mapping before the set-to-id one, so a discovered id always resolves to its one
+Ids are resolved through a bounded per-database cache of frozen lists (`confirmingResidents`);
+`getResidencyId` claims a new id and both mappings in one transaction, so an id always resolves to its one
 list. Count-based placement (`replicateTo: N`) keeps the writer out of the carried-over previous residency,
 or every update would repeat it and shed a replica.
 

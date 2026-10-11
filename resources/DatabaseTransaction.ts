@@ -440,7 +440,9 @@ export function confirmingResidents(store: any, residencyId: number, confirmatio
 	if (!residents) {
 		if (residentsById.size >= MAX_CACHED_RESIDENCIES) residentsById.clear();
 		const residency: string[] | undefined = dbisDb.getSync([Symbol.for('residency_by_id'), residencyId]);
-		residents = residency ? Array.from(new Set(residency)).filter((name) => name !== server.hostname) : [];
+		residents = Object.freeze(
+			residency ? Array.from(new Set(residency)).filter((name) => name !== server.hostname) : []
+		) as string[];
 		if (residency) residentsById.set(residencyId, residents);
 	}
 	if (confirmationCount > residents.length) {
@@ -684,6 +686,7 @@ export type TransactionWrite = {
 	// of the audit entry this write appended; a coordinated retry appends nothing and keeps it, so
 	// confirmation counts the residents the replicated entry names
 	residencyId?: number;
+	appendedTo?: RocksTransaction;
 	baseReadTxn?: any;
 	writeGeneration?: WriteGeneration;
 	instanceClosed?: boolean;
@@ -1382,19 +1385,24 @@ export class DatabaseTransaction implements Transaction {
 
 	/**
 	 * What a `replicatedConfirmation` commit waits for: the log position peers must acknowledge (the
-	 * committed transaction's own log key when a confirmable write appended an audit entry in any round,
+	 * committed transaction's own log key when a confirmable write appended an audit entry to it,
 	 * else the last confirmable write's entry version as in lastConfirmableEntry), and the residents of its
 	 * writes, as checked before submission.
 	 */
-	confirmationTarget(committedLogKey?: number): { version: number; residentPeerLists?: string[][] } | undefined {
+	confirmationTarget(
+		committedLogKey?: number,
+		committedTransaction?: RocksTransaction
+	): { version: number; residentPeerLists?: string[][] } | undefined {
 		const residentPeerLists =
 			this.checkedResidentPeerLists === undefined
 				? this.residentPeerLists()
 				: (this.checkedResidentPeerLists ?? undefined);
 		this.checkedResidentPeerLists = undefined;
-		// writes that lost to newer entries in every round appended nothing at the key, which peers would
-		// then pass only when some later write replicates
-		let version = this.writes.some((write) => write && !write.skipReplicationConfirmation && write.appendedAuditEntry)
+		// writes that lost to newer entries appended nothing at the key, which peers would then pass only
+		// when some later write replicates
+		let version = this.writes.some(
+			(write) => write && !write.skipReplicationConfirmation && write.appendedTo === committedTransaction
+		)
 			? committedLogKey
 			: undefined;
 		for (let i = this.writes.length - 1; i >= 0 && version === undefined; i--) {
@@ -1727,6 +1735,8 @@ export class DatabaseTransaction implements Transaction {
 		// retries where a recommit round self-skips before a fresh-transaction replay.
 		if (!operation.skipped && !(transaction as RocksTransactionWithRetry).isRetry) {
 			operation.appendedAuditEntry = true;
+			// unlike the sticky flag, names the handle: an iterator replay discards the original's batch
+			if (this.replicatedConfirmation) operation.appendedTo = transaction;
 		}
 		if (immediateCommit) {
 			// immediately commit if the harper transaction is closed
@@ -2246,6 +2256,7 @@ export class DatabaseTransaction implements Transaction {
 								return this.commit({ ...options, transaction });
 							}
 							const committedLogKey = this.replicatedConfirmation ? reservedLocalKey(transaction) : undefined;
+							const committedTransaction = transaction;
 							releaseLocalKey(transaction);
 							// onCommit may be async (e.g. RocksTransactionLogStore emits 'aftercommit'). Surface a
 							// rejection — or a synchronous throw — via logging rather than failing the commit, since
@@ -2281,7 +2292,9 @@ export class DatabaseTransaction implements Transaction {
 								// the write has landed: a refusal here is this commit's outcome, after the bookkeeping below
 								try {
 									const target =
-										confirmReplication && databaseName ? this.confirmationTarget(committedLogKey) : undefined;
+										confirmReplication && databaseName
+											? this.confirmationTarget(committedLogKey, committedTransaction)
+											: undefined;
 									if (target) {
 										completions.push(
 											confirmReplication(
