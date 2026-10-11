@@ -17,7 +17,7 @@ import { convertToMS } from '../utility/common_utils.ts';
 import { settleBeforeDeadline, when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
-import { releaseLocalKey, reserveLocalKey, transferLocalKey } from './originClosedFloor.ts';
+import { releaseLocalKey, reserveLocalKey, reservedLocalKey, transferLocalKey } from './originClosedFloor.ts';
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
@@ -440,7 +440,7 @@ export function confirmingResidents(store: any, residencyId: number, confirmatio
 	if (!residents) {
 		const residency: string[] | undefined = dbisDb.getSync([Symbol.for('residency_by_id'), residencyId]);
 		residents = residency ? Array.from(new Set(residency)).filter((name) => name !== server.hostname) : [];
-		if (residency) residentsById.set(residencyId, residents); // a miss is not an answer worth keeping
+		if (residency) residentsById.set(residencyId, residents);
 	}
 	if (confirmationCount > residents.length) {
 		throw new ClientError(
@@ -1381,7 +1381,7 @@ export class DatabaseTransaction implements Transaction {
 	 * meaningful order (harper-pro#1031). A write placed by no residency adds no list: N confirmations from
 	 * any list already come from N distinct peers.
 	 */
-	confirmationTarget(): { version: number; residentPeerLists?: string[][] } | undefined {
+	confirmationTarget(committedLogKey?: number): { version: number; residentPeerLists?: string[][] } | undefined {
 		let version: number | undefined;
 		let latestPosition = 0;
 		let residentPeerLists: Map<number, string[]> | undefined;
@@ -1397,8 +1397,8 @@ export class DatabaseTransaction implements Transaction {
 				);
 			}
 		}
-		if (latestPosition) version = Math.max(version ?? 0, latestPosition);
-		if (version === undefined) return;
+		if (version === undefined && !latestPosition) return;
+		version = Math.max(version ?? 0, latestPosition, committedLogKey ?? 0);
 		return { version, residentPeerLists: residentPeerLists && Array.from(residentPeerLists.values()) };
 	}
 
@@ -2215,6 +2215,7 @@ export class DatabaseTransaction implements Transaction {
 								}
 								return this.commit({ ...options, transaction });
 							}
+							const committedLogKey = this.replicatedConfirmation ? reservedLocalKey(transaction) : undefined;
 							releaseLocalKey(transaction);
 							// onCommit may be async (e.g. RocksTransactionLogStore emits 'aftercommit'). Surface a
 							// rejection — or a synchronous throw — via logging rather than failing the commit, since
@@ -2249,7 +2250,8 @@ export class DatabaseTransaction implements Transaction {
 								const databaseName = this.writes[0]?.store.rootStore.databaseName;
 								// the write has landed: a refusal here is this commit's outcome, after the bookkeeping below
 								try {
-									const target = confirmReplication && databaseName ? this.confirmationTarget() : undefined;
+									const target =
+										confirmReplication && databaseName ? this.confirmationTarget(committedLogKey) : undefined;
 									if (target) {
 										completions.push(
 											confirmReplication(

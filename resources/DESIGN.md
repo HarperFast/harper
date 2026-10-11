@@ -902,8 +902,10 @@ version, one list of other residents (writer removed, duplicates removed) per di
 its confirmable writes; the waiter needs the full count from each list. A write with no residency adds no
 list. The commit handler stamps `write.residencyId`/`replicationPosition` on every round that appends an
 audit entry and keeps them on a coordinated retry, which appends nothing, so the residents counted are the
-ones the replicated entry names. The position is the later of the record version and the log key, since
-peers acknowledge log positions. A count larger than a list (`confirmingResidents`) is refused in the commit
+ones the replicated entry names. Peers acknowledge log positions, so the target is the latest of the
+recorded positions (each the later of its record version and log key), the stored entries' versions, and
+the committed transaction's own log key. Count-based placement (`replicateTo: N`) keeps the writer out of
+the carried-over previous residency, or every update would repeat it and shed a replica. A count larger than a list (`confirmingResidents`) is refused in the commit
 handler before the write stages anything, and the refused write turns inert, so even a caller that catches
 the refusal cannot commit it. A table source's `before` hook (`source.put`/`patch`) has already run by then,
 because record-based placement needs the merged record; the guarantee covers Harper's stored data, not the

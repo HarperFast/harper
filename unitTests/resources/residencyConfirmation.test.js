@@ -87,6 +87,7 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 		const rootStore = Records.primaryStore.rootStore;
 		let floor = certifyOriginFloor(rootStore);
 		for (let retry = 0; floor === null && retry < 100; retry++) floor = certifyOriginFloor(rootStore);
+		assert.ok(floor > 0, 'no origin floor was certified');
 		publishOriginFloor(rootStore, floor);
 		const timestamp = floor - 1000;
 		for (const placedFirst of [true, false]) {
@@ -105,6 +106,26 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 			Unplaced.put('floor-unplaced', { id: 'floor-unplaced' })
 		);
 		assert.ok(calls[0].version >= floor, `an unplaced write confirmed on ${calls[0].version}, below ${floor}`);
+		calls = [];
+		await confirmed({ replicatedConfirmation: 1, timestamp }, () => Unplaced.delete('floor-unplaced'));
+		assert.ok(calls[0].version >= floor, `a delete confirmed on ${calls[0].version}, below ${floor}`);
+	});
+
+	it('keeps a count-based placement at its count when a record is updated', async () => {
+		Records.setResidency(undefined);
+		const previousNodes = global.server.nodes;
+		global.server.nodes = [{ name: PEER_A }, { name: PEER_B }];
+		try {
+			for (const body of ['first', 'second', 'third']) {
+				calls = [];
+				await confirmed({ replicatedConfirmation: 2, replicateTo: 2 }, () =>
+					Records.put('counted', { id: 'counted', body })
+				);
+				assert.deepEqual(sorted(calls[0].residentPeerLists), [[PEER_A, PEER_B]], `after the ${body} write`);
+			}
+		} finally {
+			global.server.nodes = previousNodes;
+		}
 	});
 
 	it('places a replicateTo list like a residency list', async () => {

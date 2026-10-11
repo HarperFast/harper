@@ -2886,7 +2886,10 @@ export function makeTable(options): TableResourceClass {
 				const replicateTo = [server.hostname]; // start with ourselves, we should always be in the list
 				if (context.previousResidency) {
 					// if we have a previous residency, we should preserve it
-					replicateTo.push(...context.previousResidency.slice(0, count));
+					// the stored list already names the node that wrote it; repeating this one would shed a replica
+					replicateTo.push(
+						...context.previousResidency.filter((name: string) => name !== server.hostname).slice(0, count)
+					);
 				} else {
 					// otherwise need to create a new list of nodes to replicate to, based on available nodes
 					// randomize this to ensure distribution of data
@@ -10227,8 +10230,8 @@ export function makeTable(options): TableResourceClass {
 			if (residencyId) return residencyId;
 			residencyId = Math.floor(Math.random() * 0x7fff0000) + 0xffff;
 			// the list first: an id another worker can discover through the set must already resolve
-			dbisDb.put([Symbol.for('residency_by_id'), residencyId], ownerNodeNames);
-			dbisDb.put([Symbol.for('residency_by_set'), setKey], residencyId);
+			(dbisDb as any).putSync([Symbol.for('residency_by_id'), residencyId], ownerNodeNames);
+			(dbisDb as any).putSync([Symbol.for('residency_by_set'), setKey], residencyId);
 			return residencyId;
 		}
 	}
