@@ -358,7 +358,7 @@ describe('Caching', () => {
 		const fillSettled = () => {
 			if (CachingTable.primaryStore.hasLock(23)) return false;
 			const version = CachingTable.primaryStore.getEntry(23)?.version;
-			return events.some((event) => event.version === version);
+			return events.some((event) => event.type === 'put' && event.version === version);
 		};
 		events = [];
 		await CachingTable.invalidate(23);
@@ -611,14 +611,17 @@ describe('Caching', () => {
 		await ConflictCachingTable.put(id, { id, name: 'seed' });
 		await ConflictCachingTable.invalidate(id);
 		conflictSourceRequest = null;
+		// bounded so a hang still reaches the finally below; mocha's own timeout would leave this body suspended
+		const settles = (promise, what) =>
+			Promise.race([promise, delay(2000, undefined, { ref: false }).then(() => assert.fail(`${what} should settle`))]);
 		const fill = ConflictCachingTable.get(id);
 		fill.catch(() => {});
 		try {
 			await waitFor(() => conflictSourceRequest?.id === id);
-			await ConflictCachingTable.invalidate(id);
+			await settles(ConflictCachingTable.invalidate(id), 'an invalidation during the fill');
 			const invalidatedVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
 			conflictSourceRequest.respond({ id, name: 'pre-invalidation' });
-			assert.equal((await fill).name, 'pre-invalidation');
+			assert.equal((await settles(fill, 'the fill')).name, 'pre-invalidation');
 			await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
 			const entry = ConflictCachingTable.primaryStore.getEntry(id);
 			assert(entry.metadataFlags & INVALIDATED, 'the fill must not overwrite the later invalidation');
@@ -632,14 +635,13 @@ describe('Caching', () => {
 			await waitFor(() => conflictSourceRequest?.id === id);
 			conflictSourceRequest.respond({ id, name: 'post-invalidation' });
 			conflictSourceRequest = null;
-			assert.equal((await reload).name, 'post-invalidation');
+			assert.equal((await settles(reload, 'the reload')).name, 'post-invalidation');
 			assert.equal(target.loadedFromSource, true);
 			await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
 			const refilled = ConflictCachingTable.primaryStore.getEntry(id);
 			assert.equal(refilled.value.name, 'post-invalidation');
 			assert(!(refilled.metadataFlags & INVALIDATED));
 		} finally {
-			// release a source request an earlier failure left open, so its fill lock does not outlive the test
 			if (conflictSourceRequest?.id === id) conflictSourceRequest.respond(null);
 		}
 	});
