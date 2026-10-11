@@ -1735,8 +1735,9 @@ export class DatabaseTransaction implements Transaction {
 		// retries where a recommit round self-skips before a fresh-transaction replay.
 		if (!operation.skipped && !(transaction as RocksTransactionWithRetry).isRetry) {
 			operation.appendedAuditEntry = true;
-			// unlike the sticky flag, names the handle: an iterator replay discards the original's batch
-			if (this.replicatedConfirmation) operation.appendedTo = transaction;
+			// unlike the sticky flag, names the handle (an iterator replay discards the original's batch);
+			// recorded whether or not confirmation is requested yet, since it can be requested later
+			operation.appendedTo = transaction;
 		}
 		if (immediateCommit) {
 			// immediately commit if the harper transaction is closed

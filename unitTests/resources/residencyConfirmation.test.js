@@ -329,6 +329,21 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 		);
 	});
 
+	it('confirms a late-requested update that omits the writer on its log key, not the entry it leaves', async () => {
+		Records.setResidency(undefined);
+		await Records.put('late-left-behind', { id: 'late-left-behind', body: 'old' });
+		const oldVersion = Records.primaryStore.getEntry('late-left-behind').version;
+		Records.setResidencyById(() => [PEER_A]);
+		const context = { transaction: new DatabaseTransaction() };
+		await Records.put('late-left-behind', { id: 'late-left-behind', body: 'new' }, context);
+		context.transaction.replicatedConfirmation = 1;
+		await context.transaction.commit({ doneWriting: true });
+		assert.ok(
+			calls[0].version > oldVersion,
+			`confirmed on ${calls[0].version}, the entry left behind is ${oldVersion}`
+		);
+	});
+
 	it('confirms a write whose residency omits the writer, which stores no local record', async () => {
 		Records.setResidency(undefined);
 		Records.setResidencyById(() => [PEER_A]);
