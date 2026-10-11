@@ -1,9 +1,9 @@
-// Caller shapes of the Resource-API `delete`, grouped by the implementation the call reaches, one test per shape.
+// Caller shapes of the Resource-API `delete`, pinned for upgrade-impact checks.
 // v5.2.0 (commit 672fd5b61, harper#1837, first tagged v5.2.0-beta.1) made the inherited static delete throw for a
 // bare null/undefined first argument. Before it, `transactional()` normalized that argument into a
-// whole-collection target with no conditions: every shape below that now throws or rejects with that error
-// resolved `true` on v5.1.26 after deleting every record (a non-table Resource's instance delete got a
-// `{ isCollection: true }` target instead).
+// whole-collection target with no conditions: on v5.1.26 each inherited-static or static-override shape here that
+// now throws or rejects resolved `true` after deleting every record (a non-table Resource's instance delete got a
+// `{ isCollection: true }` target instead). The request-contract resources did not exist yet.
 const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { transaction } = require('#src/resources/transaction');
@@ -24,8 +24,7 @@ function nullIdRejection(value, method = 'delete') {
 	};
 }
 
-// mirrors the target server/REST.ts builds (new RequestTarget(entry.relativeURL), async, checkPermission); it
-// exercises dispatch only, not HTTP routing or authentication
+// the target server/REST.ts builds; exercises dispatch only, not HTTP routing or authentication
 function restTarget(relativeURL) {
 	const target = new RequestTarget(relativeURL);
 	target.async = true;
@@ -122,8 +121,7 @@ describe('Resource-API delete caller shapes', function () {
 			});
 
 			it('Table.delete(undefined, context) uncaught after another write in the same transaction', async () => {
-				// v5.1.26: both the put and the delete-everything committed, leaving only id 9. Now the error escapes
-				// the transaction callback, which rolls the put back with it.
+				// v5.1.26: both the put and the delete-everything committed, leaving only id 9
 				await assert.rejects(
 					transaction(async (context) => {
 						await Shapes.put({ id: 9, name: 'z' }, context);
@@ -145,13 +143,13 @@ describe('Resource-API delete caller shapes', function () {
 
 			it('CustomResource.delete() on a non-table Resource with an instance delete', () => {
 				const targets = [];
-				class Recorder extends Resource {
+				class CustomResource extends Resource {
 					delete(target) {
 						targets.push(target);
 						return true;
 					}
 				}
-				assert.throws(() => Recorder.delete(), nullIdRejection(undefined));
+				assert.throws(() => CustomResource.delete(), nullIdRejection(undefined));
 				assert.deepStrictEqual(targets, []);
 			});
 		});
@@ -173,7 +171,7 @@ describe('Resource-API delete caller shapes', function () {
 			});
 
 			it('Table.delete({ id: undefined }) deletes every record', async () => {
-				// an object whose id is nullish is a collection target; the v5.2.0 guard covers only a bare argument
+				// a known gap, not a contract: the v5.2.0 guard covers only a bare argument
 				assert.strictEqual(await Shapes.delete({ id: undefined }), true);
 				assert.deepStrictEqual(await liveIds(), []);
 			});
@@ -195,13 +193,13 @@ describe('Resource-API delete caller shapes', function () {
 
 			it('CustomResource.delete({}) hands the instance delete a collection target', async () => {
 				const targets = [];
-				class Recorder extends Resource {
+				class CustomResource extends Resource {
 					delete(target) {
 						targets.push(target);
 						return true;
 					}
 				}
-				assert.strictEqual(await Recorder.delete({}), true);
+				assert.strictEqual(await CustomResource.delete({}), true);
 				assert.strictEqual(targets.length, 1);
 				assert.strictEqual(targets[0].isCollection, true);
 			});
@@ -283,7 +281,7 @@ describe('Resource-API delete caller shapes', function () {
 			assert.deepStrictEqual(await liveIds(), [1, 3]);
 		});
 
-		it('instance delete(target) override calling super.delete(target) deletes the addressed record', async () => {
+		it('Table.delete(id) on a class whose instance delete(target) override calls super.delete(target)', async () => {
 			const ids = [];
 			class Audited extends Shapes {
 				delete(target) {
@@ -327,21 +325,22 @@ describe('Resource-API delete caller shapes', function () {
 	});
 
 	describe('static get', () => {
-		it('Table.get() and Table.get(undefined) throw ClientError 400', () => {
+		it('Table.get(), Table.get(undefined) and Table.get(null) throw ClientError 400', () => {
 			// already rejected before v5.2.0, but as a plain Error with no statusCode (672fd5b61)
 			assert.throws(() => Shapes.get(), nullIdRejection(undefined, 'get'));
 			assert.throws(() => Shapes.get(undefined), nullIdRejection(undefined, 'get'));
+			assert.throws(() => Shapes.get(null), nullIdRejection(null, 'get'));
 		});
 	});
 
 	describe('request-contract resources (new in v5.2.0)', () => {
 		it('Resource.withSchema subclass: SchemaResource.delete() throws ClientError 400', () => {
-			class Contracted extends Resource.withSchema({ path: '/contracted', delete: {} }) {
+			class SchemaResource extends Resource.withSchema({ path: '/contracted', delete: {} }) {
 				delete() {
 					return true;
 				}
 			}
-			assert.throws(() => Contracted.delete(), nullIdRejection(undefined));
+			assert.throws(() => SchemaResource.delete(), nullIdRejection(undefined));
 		});
 
 		it('defineResource object: resource.delete() calls the handler with an undefined target', () => {
