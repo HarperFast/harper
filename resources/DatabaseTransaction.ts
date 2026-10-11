@@ -1368,10 +1368,11 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * What a `replicatedConfirmation` commit waits for: the version peers must have applied (as in
-	 * lastConfirmableEntry, or the version written by a write that stored no local record), and one list
-	 * of other residents per distinct residency among the writes, in no meaningful order (harper-pro#1031). A write placed by no
-	 * residency adds no list: N confirmations from any list already come from N distinct peers.
+	 * What a `replicatedConfirmation` commit waits for: the version peers must have applied (the version a
+	 * residency-placed write wrote, which its stored entry need not hold; otherwise as in
+	 * lastConfirmableEntry), and one list of other residents per distinct residency among the writes, in no
+	 * meaningful order (harper-pro#1031). A write placed by no residency adds no list: N confirmations from
+	 * any list already come from N distinct peers.
 	 */
 	confirmationTarget(): { version: number; residentPeerLists?: string[][] } | undefined {
 		let version: number | undefined;
@@ -1379,7 +1380,7 @@ export class DatabaseTransaction implements Transaction {
 		for (let i = this.writes.length - 1; i >= 0; i--) {
 			const write = this.writes[i];
 			if (!write || write.skipReplicationConfirmation) continue;
-			version ??= write.store.getEntry(write.key)?.version ?? write.writtenVersion;
+			version ??= write.writtenVersion ?? write.store.getEntry(write.key)?.version;
 			if (write.residencyId && !residentPeerLists?.has(write.residencyId)) {
 				(residentPeerLists ??= new Map()).set(
 					write.residencyId,

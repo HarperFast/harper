@@ -11,8 +11,6 @@ const SELF = global.server.hostname || hostname();
 const PEER_A = 'residency-confirmation-a';
 const PEER_B = 'residency-confirmation-b';
 
-// replicatedConfirmation counts only peers resident for the written records (harper-pro#1031): the
-// commit hands the confirmation callback the other residents of each distinct residency list
 describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 	let Records, Unplaced, calls;
 
@@ -102,7 +100,6 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 		);
 		assert.equal(Records.primaryStore.getEntry('too-few'), undefined);
 		assert.equal(calls.length, 0);
-		// nothing was left locked or staged: the same key writes normally afterwards
 		await Records.put('too-few', { id: 'too-few', homes: [SELF, PEER_A], body: 'later' });
 		assert.equal((await Records.get('too-few')).body, 'later');
 	});
@@ -141,10 +138,24 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 		context.transaction.replicatedConfirmation = 1;
 		await assert.rejects(context.transaction.commit({ doneWriting: true }), /resident on 0 other node\(s\)$/);
 		assert.equal(calls.length, 0);
-		// the write landed and its commit finished its bookkeeping: the key is not left locked or staged
 		assert.equal((await Records.get('late')).body, 'complete');
 		await Records.put('late', { id: 'late', homes: [SELF], body: 'again' });
 		assert.equal((await Records.get('late')).body, 'again');
+	});
+
+	it('confirms an update that omits the writer on its own version, not the older entry it leaves', async () => {
+		Records.setResidency(undefined);
+		await Records.put('left-behind', { id: 'left-behind', body: 'old' });
+		const oldVersion = Records.primaryStore.getEntry('left-behind').version;
+		Records.setResidencyById(() => [PEER_A]);
+		await confirmed({ replicatedConfirmation: 1 }, () =>
+			Records.put('left-behind', { id: 'left-behind', body: 'new' })
+		);
+		assert.equal(calls.length, 1);
+		assert.ok(
+			calls[0].version > oldVersion,
+			`confirmed on ${calls[0].version}, the entry left behind is ${oldVersion}`
+		);
 	});
 
 	it('confirms a write whose residency omits the writer, which stores no local record', async () => {
