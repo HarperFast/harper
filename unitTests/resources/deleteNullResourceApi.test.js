@@ -1,9 +1,9 @@
 // Caller shapes of the Resource-API `delete`, pinned for upgrade-impact checks.
 // v5.2.0 (commit 672fd5b61, harper#1837, first tagged v5.2.0-beta.1) made the inherited static delete throw for a
 // bare null/undefined first argument. Before it, `transactional()` normalized that argument into a
-// whole-collection target with no conditions: on v5.1.26 each inherited-static or static-override shape here that
-// now throws or rejects resolved `true` after deleting every record (a non-table Resource's instance delete got a
-// `{ isCollection: true }` target instead). The request-contract resources did not exist yet.
+// whole-collection target with no conditions: on v5.1.26 each shape here that now fails with the "value of
+// undefined/null for delete" ClientError resolved `true` after deleting every record (a non-table Resource's
+// instance delete got a `{ isCollection: true }` target instead). The request-contract resources did not exist yet.
 const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { transaction } = require('#src/resources/transaction');
