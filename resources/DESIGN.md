@@ -905,7 +905,10 @@ audit entry and keeps them on a coordinated retry, which appends nothing, so the
 ones the replicated entry names. The position is the later of the record version and the log key, since
 peers acknowledge log positions. A count larger than a list (`confirmingResidents`) is refused in the commit
 handler before the write stages anything, and the refused write turns inert, so even a caller that catches
-the refusal cannot commit it. Confirmation requested after a write was saved is checked again before native
+the refusal cannot commit it. A table source's `before` hook (`source.put`/`patch`) has already run by then,
+because record-based placement needs the merged record; the guarantee covers Harper's stored data, not the
+source. `getResidencyId` publishes the id-to-list mapping before the set-to-id one, so any id a writer can
+discover resolves. Confirmation requested after a write was saved is checked again before native
 submission, aborting the transaction. An error after the native commit (from the callback, say) becomes a
 rejected completion, so the commit's bookkeeping still runs. The recorded position lets a write that stored
 no local record (`setResidencyById` excluding the writer) still be confirmed. LMDB is untouched: its

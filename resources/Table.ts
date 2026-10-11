@@ -5406,7 +5406,7 @@ export function makeTable(options): TableResourceClass {
 						}
 						residencyId = getResidencyId(residency);
 					}
-					// inert once refused, so a caller that catches the refusal cannot commit it, even on a retry
+					// inert once refused: a caller that catches the refusal must not commit it, even on a retry
 					if (residencyId && committedBy?.replicatedConfirmation && !transaction?.isRetry) {
 						try {
 							confirmingResidents(primaryStore, residencyId, committedBy.replicatedConfirmation, id);
@@ -10225,11 +10225,10 @@ export function makeTable(options): TableResourceClass {
 			// return the Promise as the residencyId and skip minting a new one, corrupting the mapping.
 			let residencyId = (dbisDb as any).getSync([Symbol.for('residency_by_set'), setKey]);
 			if (residencyId) return residencyId;
-			dbisDb.put(
-				[Symbol.for('residency_by_set'), setKey],
-				(residencyId = Math.floor(Math.random() * 0x7fff0000) + 0xffff)
-			);
+			residencyId = Math.floor(Math.random() * 0x7fff0000) + 0xffff;
+			// the list first: an id another worker can discover through the set must already resolve
 			dbisDb.put([Symbol.for('residency_by_id'), residencyId], ownerNodeNames);
+			dbisDb.put([Symbol.for('residency_by_set'), setKey], residencyId);
 			return residencyId;
 		}
 	}

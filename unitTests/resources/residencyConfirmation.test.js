@@ -5,7 +5,11 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { DatabaseTransaction, replicationConfirmation } = require('#src/resources/DatabaseTransaction');
+const {
+	DatabaseTransaction,
+	replicationConfirmation,
+	confirmingResidents,
+} = require('#src/resources/DatabaseTransaction');
 const { certifyOriginFloor, publishOriginFloor } = require('#src/resources/originClosedFloor');
 
 const SELF = global.server.hostname || hostname();
@@ -122,6 +126,15 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 		assert.equal(calls.length, 0);
 		await Records.put('too-few', { id: 'too-few', homes: [SELF, PEER_A], body: 'later' });
 		assert.equal((await Records.get('too-few')).body, 'later');
+	});
+
+	it('names a BigInt key in the refusal', async () => {
+		await Records.put('self-only', { id: 'self-only', homes: [SELF] });
+		const { residencyId } = Records.primaryStore.getEntry('self-only');
+		assert.throws(
+			() => confirmingResidents(Records.primaryStore, residencyId, 1, ['composite', 12n]),
+			/for record \["composite",12\] in database "test"/
+		);
 	});
 
 	it('rolls back the whole transaction when a later record cannot be confirmed', async () => {

@@ -423,10 +423,15 @@ export function getTransactionQueueDepths() {
 // a residency id names one list for the life of its database, so its residents are resolved once
 const residentsByResidencyId = new WeakMap<object, Map<number, string[]>>();
 
-/**
- * The nodes other than this one holding a complete copy of a record `store` placed by `residencyId`. A
- * `replicatedConfirmation` count larger than that can never be met, so it is refused.
- */
+// BigInt.toJSON throws (and runs before any JSON.stringify replacer)
+const describeKey = (key: Id): string =>
+	Array.isArray(key)
+		? `[${key.map(describeKey).join(',')}]`
+		: typeof key === 'bigint'
+			? String(key)
+			: JSON.stringify(key);
+
+/** The nodes other than this one holding a complete copy of a record `store` placed by `residencyId`. */
 export function confirmingResidents(store: any, residencyId: number, confirmationCount: number, key: Id): string[] {
 	const dbisDb = store.rootStore.dbisDb;
 	let residentsById = residentsByResidencyId.get(dbisDb);
@@ -434,13 +439,12 @@ export function confirmingResidents(store: any, residencyId: number, confirmatio
 	let residents = residentsById.get(residencyId);
 	if (!residents) {
 		const residency: string[] | undefined = dbisDb.getSync([Symbol.for('residency_by_id'), residencyId]);
-		// getResidencyId publishes the set-to-id mapping before the id-to-list one, so a miss may be transient
 		residents = residency ? Array.from(new Set(residency)).filter((name) => name !== server.hostname) : [];
-		if (residency) residentsById.set(residencyId, residents);
+		if (residency) residentsById.set(residencyId, residents); // a miss is not an answer worth keeping
 	}
 	if (confirmationCount > residents.length) {
 		throw new ClientError(
-			`Cannot confirm replication to ${confirmationCount} node(s) for record ${JSON.stringify(key)} in database "${store.rootStore.databaseName}": it is resident on ${residents.length} other node(s)${residents.length ? ` (${residents.join(', ')})` : ''}`
+			`Cannot confirm replication to ${confirmationCount} node(s) for record ${describeKey(key)} in database "${store.rootStore.databaseName}": it is resident on ${residents.length} other node(s)${residents.length ? ` (${residents.join(', ')})` : ''}`
 		);
 	}
 	return residents;
