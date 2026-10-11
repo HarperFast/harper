@@ -207,6 +207,20 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 		assert.equal(Records.primaryStore.getEntry('infeasible'), undefined);
 	});
 
+	it('refuses an asynchronous feasibility check rather than submitting past it', async () => {
+		replicationConfirmation(
+			() => Promise.resolve(),
+			async () => {}
+		);
+		await assert.rejects(
+			confirmed({ replicatedConfirmation: 1 }, () =>
+				Records.put('async-check', { id: 'async-check', homes: [SELF, PEER_A], body: 'no' })
+			),
+			/feasibility check must be synchronous/
+		);
+		assert.equal(Records.primaryStore.getEntry('async-check'), undefined);
+	});
+
 	it('neither waits on nor checks a commit that appends nothing to replicate', async () => {
 		const checked = [];
 		replicationConfirmation(

@@ -820,6 +820,8 @@ export class DatabaseTransaction implements Transaction {
 	overloadChecked: boolean;
 	open = TRANSACTION_STATE.OPEN;
 	replicatedConfirmation: number;
+	// the resident lists refuseUnconfirmable checked for the commit being submitted
+	checkedResidentPeerLists?: string[][];
 	// Set when this transaction is applying data from a canonical source of truth (replication peer
 	// or external caching source); its commits retry transient conflicts without the request-path
 	// retry cap. Propagated to chained (multi-store) transactions in txnForContext.
@@ -1382,13 +1384,16 @@ export class DatabaseTransaction implements Transaction {
 
 	/**
 	 * What a `replicatedConfirmation` commit waits for: the log position peers must acknowledge (the
-	 * committed transaction's own log key when a confirmable write staged, else the last confirmable
-	 * write's entry version as in lastConfirmableEntry), and the residents of its writes.
+	 * committed transaction's own log key when a confirmable write appended an audit entry in any round,
+	 * else the last confirmable write's entry version as in lastConfirmableEntry), and the residents of its
+	 * writes, as checked before submission.
 	 */
 	confirmationTarget(committedLogKey?: number): { version: number; residentPeerLists?: string[][] } | undefined {
-		// a commit whose writes all lost to newer entries appended nothing at its key, which peers would
+		const residentPeerLists = this.checkedResidentPeerLists ?? this.residentPeerLists();
+		this.checkedResidentPeerLists = undefined;
+		// writes that lost to newer entries in every round appended nothing at the key, which peers would
 		// then pass only when some later write replicates
-		let version = this.writes.some((write) => write && !write.skipReplicationConfirmation && !write.skipped)
+		let version = this.writes.some((write) => write && !write.skipReplicationConfirmation && write.appendedAuditEntry)
 			? committedLogKey
 			: undefined;
 		for (let i = this.writes.length - 1; i >= 0 && version === undefined; i--) {
@@ -1397,7 +1402,7 @@ export class DatabaseTransaction implements Transaction {
 			version = write.store.getEntry(write.key)?.version;
 		}
 		if (version === undefined) return;
-		return { version, residentPeerLists: this.residentPeerLists() };
+		return { version, residentPeerLists };
 	}
 
 	/**
@@ -1420,15 +1425,20 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * Refuse, before `transaction` is submitted, a confirmation this commit could never get, aborting it.
 	 * Confirmation requested after a write was saved skipped that write's own refusal, so the lists are
-	 * checked again here.
+	 * checked again here, and kept for the waiter.
 	 */
 	refuseUnconfirmable(transaction: RocksTransaction): void {
+		this.checkedResidentPeerLists = undefined;
 		if (!this.replicatedConfirmation || !this.writes.some((write) => write && !write.skipReplicationConfirmation))
 			return;
 		try {
 			const residentPeerLists = this.residentPeerLists();
 			const databaseName = this.writes[0]?.store.rootStore.databaseName;
-			if (databaseName) confirmationFeasibility?.(databaseName, this.replicatedConfirmation, residentPeerLists);
+			if (databaseName) {
+				const result: any = confirmationFeasibility?.(databaseName, this.replicatedConfirmation, residentPeerLists);
+				if (result?.then) throw new TypeError('A replication confirmation feasibility check must be synchronous');
+			}
+			this.checkedResidentPeerLists = residentPeerLists;
 		} catch (error) {
 			abortNativeTransaction(transaction, 'aborting a transaction whose confirmation was refused');
 			try {
