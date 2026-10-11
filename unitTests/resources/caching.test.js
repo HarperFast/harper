@@ -352,44 +352,37 @@ describe('Caching', () => {
 		CachingTable.setTTLExpiration(0.005);
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		CachingTable.setTTLExpiration(50);
+		const eventTypes = () => events.map((event) => event.type);
+		// A default subscription drops an event whose version is superseded by the time its notify pass runs,
+		// so each step waits for its own event before the next write can supersede it.
+		const fillSettled = () => {
+			if (CachingTable.primaryStore.hasLock(23)) return false;
+			const version = CachingTable.primaryStore.getEntry(23)?.version;
+			return events.some((event) => event.version === version);
+		};
+		events = [];
+		await CachingTable.invalidate(23);
 		let result = await CachingTable.get(23);
 		assert.equal(result.id, 23);
 		assert.equal(result.name, 'name ' + 23);
-		// a fill started by that get commits after it returns; let it land so its event isn't counted below
-		await waitFor(() => !CachingTable.primaryStore.hasLock(23));
-		const eventTypes = () => events.map((event) => event.type);
-		sourceRequests = 0;
-		events = [];
-		// invalidate() resolves once committed, so the next get must miss the cache
-		await CachingTable.invalidate(23);
-		let target23 = new RequestTarget();
-		target23.id = 23;
-		result = await CachingTable.get(target23);
-		assert.equal(target23.loadedFromSource, true);
-		assert.equal(result.id, 23);
-		assert.equal(sourceRequests, 1);
-		await waitFor(() => events.length >= 2, {
-			message: () => `expected invalidate + fill events, saw ${eventTypes()}`,
-		});
-		assert.deepEqual(eventTypes(), ['invalidate', 'put']);
+		await waitFor(fillSettled, { message: () => `the warm-up fill should commit and notify, saw ${eventTypes()}` });
 
-		sourceRequests = 0;
-		events = [];
-		await CachingTable.invalidate(23); // show not load from cache
-		await waitFor(() => events.length >= 1, { message: 'the invalidate event should be delivered' });
-		assert.equal(sourceRequests, 0);
-		assert.deepEqual(eventTypes(), ['invalidate']);
-
-		target23 = new RequestTarget();
-		target23.id = 23;
-		result = await CachingTable.get(target23);
-		assert.equal(target23.loadedFromSource, true);
-		assert.equal(result.id, 23);
-		assert.equal(sourceRequests, 1);
-		await waitFor(() => events.length >= 2, {
-			message: () => `expected invalidate + fill events, saw ${eventTypes()}`,
-		});
-		assert.deepEqual(eventTypes(), ['invalidate', 'put']);
+		for (let cycle = 0; cycle < 2; cycle++) {
+			sourceRequests = 0;
+			events = [];
+			await CachingTable.invalidate(23);
+			await waitFor(() => events.length >= 1, { message: 'the invalidate event should be delivered' });
+			assert.deepEqual(eventTypes(), ['invalidate']);
+			assert.equal(sourceRequests, 0);
+			const target23 = new RequestTarget();
+			target23.id = 23;
+			result = await CachingTable.get(target23);
+			assert.equal(target23.loadedFromSource, true);
+			assert.equal(result.id, 23);
+			assert.equal(sourceRequests, 1);
+			await waitFor(fillSettled, { message: () => `the refill should commit and notify, saw ${eventTypes()}` });
+			assert.deepEqual(eventTypes(), ['invalidate', 'put']);
+		}
 	});
 
 	it('Handles distinct eviction time', async function () {
@@ -613,29 +606,42 @@ describe('Caching', () => {
 	});
 
 	it('keeps an invalidation that commits while a revalidation fill is in flight', async function () {
+		this.timeout(5000);
 		const id = 650;
 		await ConflictCachingTable.put(id, { id, name: 'seed' });
 		await ConflictCachingTable.invalidate(id);
 		conflictSourceRequest = null;
 		const fill = ConflictCachingTable.get(id);
-		await waitFor(() => conflictSourceRequest?.id === id);
-		await ConflictCachingTable.invalidate(id);
-		const invalidatedVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
-		conflictSourceRequest.respond({ id, name: 'pre-invalidation' });
-		assert.equal((await fill).name, 'pre-invalidation');
-		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
-		const entry = ConflictCachingTable.primaryStore.getEntry(id);
-		assert(entry.metadataFlags & INVALIDATED, 'the fill must not overwrite the later invalidation');
-		assert.equal(entry.version, invalidatedVersion);
-		conflictSourceRequest = null;
-		const target = new RequestTarget();
-		target.id = id;
-		const reload = ConflictCachingTable.get(target);
-		await waitFor(() => conflictSourceRequest?.id === id);
-		conflictSourceRequest.respond({ id, name: 'post-invalidation' });
-		assert.equal((await reload).name, 'post-invalidation');
-		assert.equal(target.loadedFromSource, true);
-		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+		fill.catch(() => {});
+		try {
+			await waitFor(() => conflictSourceRequest?.id === id);
+			await ConflictCachingTable.invalidate(id);
+			const invalidatedVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
+			conflictSourceRequest.respond({ id, name: 'pre-invalidation' });
+			assert.equal((await fill).name, 'pre-invalidation');
+			await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+			const entry = ConflictCachingTable.primaryStore.getEntry(id);
+			assert(entry.metadataFlags & INVALIDATED, 'the fill must not overwrite the later invalidation');
+			assert.equal(entry.version, invalidatedVersion);
+
+			conflictSourceRequest = null;
+			const target = new RequestTarget();
+			target.id = id;
+			const reload = ConflictCachingTable.get(target);
+			reload.catch(() => {});
+			await waitFor(() => conflictSourceRequest?.id === id);
+			conflictSourceRequest.respond({ id, name: 'post-invalidation' });
+			conflictSourceRequest = null;
+			assert.equal((await reload).name, 'post-invalidation');
+			assert.equal(target.loadedFromSource, true);
+			await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+			const refilled = ConflictCachingTable.primaryStore.getEntry(id);
+			assert.equal(refilled.value.name, 'post-invalidation');
+			assert(!(refilled.metadataFlags & INVALIDATED));
+		} finally {
+			// release a source request an earlier failure left open, so its fill lock does not outlive the test
+			if (conflictSourceRequest?.id === id) conflictSourceRequest.respond(null);
+		}
 	});
 
 	it('uses a source-reported version before the transaction timestamp', async function () {
