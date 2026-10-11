@@ -10,11 +10,10 @@ const { RELEASED_TRANSACTION } = require('#src/resources/DatabaseTransaction');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
-// What application code observes on `context.transaction` once the transaction it held has completed, one
-// test per caller shape. The slot's history: v5.2.0 left the completed transaction there; v5.2.1–v5.2.3 set
-// it to `null` (#2030); v5.2.4 onward leaves RELEASED_TRANSACTION, a shared frozen placeholder (#2230). Shapes
-// already pinned elsewhere: transaction.test.js ("Releasing the context back-reference…"),
-// resumeAfterMidScopeCommit.test.js and releasedSlotScope.test.js.
+// Slot history: v5.2.0 left the completed transaction there; v5.2.1–v5.2.3 set it to `null` (#2030); v5.2.4
+// onward leaves RELEASED_TRANSACTION, a shared frozen placeholder (#2230). Other caller shapes are pinned in
+// transaction.test.js ("Releasing the context back-reference…"), resumeAfterMidScopeCommit.test.js and
+// releasedSlotScope.test.js.
 describe('context.transaction after its transaction completes: caller shapes', function () {
 	let Shape, ShapeOther;
 	let nextId = 1;
@@ -63,7 +62,6 @@ describe('context.transaction after its transaction completes: caller shapes', f
 			await complete(context);
 			assert.ok(context.transaction === RELEASED_TRANSACTION, route);
 		}
-		// The ambient (request/operation) context is released the same way, including by the no-context form.
 		await serverUtilities.processLocalTransaction(
 			{ body: { operation: 'caller_shape_op', hdb_user: { username: 'shape_user' } } },
 			async () => {
@@ -102,7 +100,7 @@ describe('context.transaction after its transaction completes: caller shapes', f
 		assert.equal((await Shape.get(written))?.name, 'committed by its own scope');
 	});
 
-	// v5.2.1–v5.2.3 skipped the guarded call; either way nothing is committed or aborted.
+	// v5.2.1–v5.2.3 skipped the guarded call.
 	it('a truthiness-guarded commit() or abort() now runs, and is a no-op', async function () {
 		let context = await releasedContext();
 		let committed;
@@ -165,7 +163,7 @@ describe('context.transaction after its transaction completes: caller shapes', f
 		assert.throws(() => structuredClone(context), { name: 'DataCloneError' });
 	});
 
-	// The release targets the slot, not the instance the callback received (v5.2.0 left that instance in the slot).
+	// v5.2.0 also left this instance in the slot.
 	it('the transaction handed to the transaction() callback stays a callable, completed transaction afterwards', async function () {
 		const context = {};
 		let callbackTransaction;
@@ -178,8 +176,7 @@ describe('context.transaction after its transaction completes: caller shapes', f
 		assert.deepEqual(await callbackTransaction.commit(), { txnTime: 0 });
 	});
 
-	// While the method runs, unchanged since v5.2.0. A context kept past its return holds whatever that version
-	// leaves in a released slot (see the first test).
+	// The live slot is unchanged since v5.2.0.
 	it('a resource method sees the live transaction in its context, and a context it caches is released after it returns', async function () {
 		let cachedContext, liveSlot;
 		class Caching extends Shape {
@@ -235,10 +232,10 @@ describe('context.transaction after its transaction completes: caller shapes', f
 		assert.ok(context.transaction === RELEASED_TRANSACTION, 'draining the iterator completes the release');
 	});
 
-	// The two-argument form detects "is this a context?" by `context.transaction || context.getContext`
-	// (Resource.ts, transactional()), for the methods that declare no hasContent: update and subscribe.
-	// v5.2.1–v5.2.3: a released context read as DATA — update() wrote its fields into the record and the call
-	// ran without the caller's context. v5.2.0 and v5.2.4+: it reads as the context.
+	// update and subscribe declare no hasContent, so transactional() (Resource.ts) reads a second argument as a
+	// context only when `context.transaction || context.getContext` is truthy. v5.2.1–v5.2.3: a released
+	// context read as data — update() wrote its fields into the record, and both ran without the caller's
+	// context. v5.2.0 and v5.2.4+: it reads as the context.
 	it('update(id, context) and subscribe(id, context) treat a released context as the context', async function () {
 		const id = newId();
 		await Shape.put(id, { name: 'original' });
@@ -266,7 +263,7 @@ describe('context.transaction after its transaction completes: caller shapes', f
 		subscription.end();
 	});
 
-	// The contrast that makes the previous shape depend on the slot: unchanged in every version.
+	// Unchanged in every version.
 	it('update(id, context) treats a context that never had a transaction as update data', async function () {
 		const id = newId();
 		await Shape.put(id, { name: 'original' });
