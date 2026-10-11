@@ -132,13 +132,31 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 		assert.deepEqual(calls[0].residentPeerLists, [[PEER_A]]);
 	});
 
-	it('rejects at commit when confirmation is requested after the write was staged', async () => {
+	it("confirms on the accepted write's version, not a refused update's older entry", async () => {
+		await Records.put('refused-existing', { id: 'refused-existing', body: 'old' });
+		const oldVersion = Records.primaryStore.getEntry('refused-existing').version;
+		await confirmed({ replicatedConfirmation: 1 }, async () => {
+			await Records.put('accepted', { id: 'accepted', homes: [SELF, PEER_A], body: 'ok' });
+			await assert.rejects(
+				async () => Records.put('refused-existing', { id: 'refused-existing', homes: [SELF], body: 'refused' }),
+				/resident on 0 other node\(s\)$/
+			);
+		});
+		assert.equal((await Records.get('refused-existing')).body, 'old');
+		assert.equal(calls[0].version, Records.primaryStore.getEntry('accepted').version);
+		assert.notEqual(calls[0].version, oldVersion);
+	});
+
+	it('refuses before committing when confirmation is requested after the write was staged', async () => {
 		const context = { transaction: new DatabaseTransaction() };
 		await Records.put('late', { id: 'late', homes: [SELF], body: 'complete' }, context);
 		context.transaction.replicatedConfirmation = 1;
-		await assert.rejects(context.transaction.commit({ doneWriting: true }), /resident on 0 other node\(s\)$/);
+		await assert.rejects(
+			async () => context.transaction.commit({ doneWriting: true }),
+			/resident on 0 other node\(s\)$/
+		);
 		assert.equal(calls.length, 0);
-		assert.equal((await Records.get('late')).body, 'complete');
+		assert.equal(Records.primaryStore.getEntry('late'), undefined);
 		await Records.put('late', { id: 'late', homes: [SELF], body: 'again' });
 		assert.equal((await Records.get('late')).body, 'again');
 	});

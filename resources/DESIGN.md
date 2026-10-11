@@ -900,12 +900,14 @@ Peers acknowledge a database-wide applied position, and a non-resident peer pass
 receiving only an invalidation stub, or nothing. So the commit tells the confirmation callback, besides the
 version, one list of other residents (writer removed, duplicates removed) per distinct `residencyId` among
 its confirmable writes; the waiter needs the full count from each list. A write with no residency adds no
-list. The commit handler stamps `write.residencyId`/`writtenVersion` on every round that appends the audit
-entry and keeps them on a coordinated retry, which appends nothing, so the residents counted are the ones
-the replicated entry names. A count larger than a list (`confirmingResidents`) is refused in the commit
-handler before the write stages anything, so even a caller that catches the refusal cannot commit it.
-Confirmation requested after a write was saved is checked at commit instead, after the write landed; that
-refusal is a rejected completion, so the commit's bookkeeping still runs. `writtenVersion` lets a write that
-stored no local record (`setResidencyById` excluding the writer) still be confirmed. LMDB is untouched: its
+list. The commit handler stamps `write.residencyId`/`replicationPosition` on every round that appends an
+audit entry and keeps them on a coordinated retry, which appends nothing, so the residents counted are the
+ones the replicated entry names. The position is the later of the record version and the log key, since
+peers acknowledge log positions. A count larger than a list (`confirmingResidents`) is refused in the commit
+handler before the write stages anything, and the refused write turns inert, so even a caller that catches
+the refusal cannot commit it. Confirmation requested after a write was saved is checked again before native
+submission, aborting the transaction. An error after the native commit (from the callback, say) becomes a
+rejected completion, so the commit's bookkeeping still runs. The recorded position lets a write that stored
+no local record (`setResidencyById` excluding the writer) still be confirmed. LMDB is untouched: its
 commit never reaches a registered confirmation callback. Enforced by
 `unitTests/resources/residencyConfirmation.test.js`.

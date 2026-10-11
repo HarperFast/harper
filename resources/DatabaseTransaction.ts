@@ -434,8 +434,9 @@ export function confirmingResidents(store: any, residencyId: number, confirmatio
 	let residents = residentsById.get(residencyId);
 	if (!residents) {
 		const residency: string[] | undefined = dbisDb.getSync([Symbol.for('residency_by_id'), residencyId]);
+		// getResidencyId publishes the set-to-id mapping before the id-to-list one, so a miss may be transient
 		residents = residency ? Array.from(new Set(residency)).filter((name) => name !== server.hostname) : [];
-		residentsById.set(residencyId, residents);
+		if (residency) residentsById.set(residencyId, residents);
 	}
 	if (confirmationCount > residents.length) {
 		throw new ClientError(
@@ -671,7 +672,8 @@ export type TransactionWrite = {
 	// of the audit entry this write appended; a coordinated retry appends nothing and keeps them, so
 	// confirmation counts the residents the replicated entry names
 	residencyId?: number;
-	writtenVersion?: number;
+	// the later of its record version and its log key: peers acknowledge log positions
+	replicationPosition?: number;
 	baseReadTxn?: any;
 	writeGeneration?: WriteGeneration;
 	instanceClosed?: boolean;
@@ -1368,8 +1370,8 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * What a `replicatedConfirmation` commit waits for: the version peers must have applied (the version a
-	 * residency-placed write wrote, which its stored entry need not hold; otherwise as in
+	 * What a `replicatedConfirmation` commit waits for: the position peers must have applied (the one a
+	 * residency-placed write recorded, which its stored entry need not hold; otherwise as in
 	 * lastConfirmableEntry), and one list of other residents per distinct residency among the writes, in no
 	 * meaningful order (harper-pro#1031). A write placed by no residency adds no list: N confirmations from
 	 * any list already come from N distinct peers.
@@ -1380,7 +1382,7 @@ export class DatabaseTransaction implements Transaction {
 		for (let i = this.writes.length - 1; i >= 0; i--) {
 			const write = this.writes[i];
 			if (!write || write.skipReplicationConfirmation) continue;
-			version ??= write.writtenVersion ?? write.store.getEntry(write.key)?.version;
+			version ??= write.replicationPosition ?? write.store.getEntry(write.key)?.version;
 			if (write.residencyId && !residentPeerLists?.has(write.residencyId)) {
 				(residentPeerLists ??= new Map()).set(
 					write.residencyId,
@@ -1390,6 +1392,14 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (version === undefined) return;
 		return { version, residentPeerLists: residentPeerLists && Array.from(residentPeerLists.values()) };
+	}
+
+	/** Refuse, before native submission, a count some written record's residents cannot meet. */
+	assertResidentsCanConfirm(): void {
+		for (const write of this.writes) {
+			if (write?.residencyId && !write.skipReplicationConfirmation)
+				confirmingResidents(write.store, write.residencyId, this.replicatedConfirmation, write.key);
+		}
 	}
 
 	/**
@@ -2111,6 +2121,23 @@ export class DatabaseTransaction implements Transaction {
 							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
 							// sentinel (a number) is why commitResolution is typed
 							// Promise<number | void>; it is handled in the resolve callback below.
+							// confirmation requested after a write was saved skipped that write's own refusal
+							if (this.replicatedConfirmation) {
+								try {
+									this.assertResidentsCanConfirm();
+								} catch (error) {
+									releaseLocalKey(transaction);
+									try {
+										transaction.abort();
+									} catch {}
+									try {
+										this.abort();
+									} catch (abortError) {
+										harperLogger.debug?.('cleaning up a transaction whose confirmation was refused', abortError);
+									}
+									throw error;
+								}
+							}
 							this.assertDatabaseCommitAllowed(transaction);
 							this.markNativeCommitSubmitted();
 							commitResolution = transaction.commit();
@@ -2227,7 +2254,9 @@ export class DatabaseTransaction implements Transaction {
 										);
 									}
 								} catch (error) {
-									completions.push(Promise.reject(error));
+									const refusal = Promise.reject(error);
+									refusal.catch(() => {}); // surfaces through Promise.all(completions), even if bookkeeping throws first
+									completions.push(refusal);
 								}
 							}
 							// commit succeeded; clean up files for any writes whose commit-handler took an early-return,

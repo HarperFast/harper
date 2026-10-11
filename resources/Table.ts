@@ -5406,12 +5406,16 @@ export function makeTable(options): TableResourceClass {
 						}
 						residencyId = getResidencyId(residency);
 					}
-					// refused before this write stages anything, so a caller that catches it cannot commit it
+					// inert once refused, so a caller that catches the refusal cannot commit it, even on a retry
 					if (residencyId && committedBy?.replicatedConfirmation && !transaction?.isRetry) {
 						try {
 							confirmingResidents(primaryStore, residencyId, committedBy.replicatedConfirmation, id);
 						} catch (error) {
 							write.skipped = true;
+							write.skipReplicationConfirmation = true;
+							write.commit = () => {
+								write.skipped = true;
+							};
 							throw error;
 						}
 					}
@@ -5512,7 +5516,7 @@ export function makeTable(options): TableResourceClass {
 					function writeCommit(storeRecord: boolean) {
 						// RocksDB uses a singular version/local time, so it must be most recent
 						const writtenVersion = isRocksDB ? Math.max(txnTime, existingEntry?.version ?? 0) : txnTime;
-						const appendsAudit = !transaction?.isRetry;
+						const appendsAudit = Boolean(audit) && !isCopyApply && !transaction?.isRetry;
 						// we need to write the commit. if storeRecord then we need to store the record, otherwise we just need to store the audit record
 						updateRecord(
 							id,
@@ -5545,7 +5549,7 @@ export function makeTable(options): TableResourceClass {
 						);
 						if (appendsAudit && (residencyId || write.residencyId)) {
 							write.residencyId = residencyId;
-							write.writtenVersion = writtenVersion;
+							write.replicationPosition = Math.max(writtenVersion, appendedLogKey);
 						}
 						// publish what this write left for the key, for any later write to it in this
 						// transaction (an audit-only commit stored no record, so it stages nothing and the
