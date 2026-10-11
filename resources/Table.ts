@@ -46,6 +46,7 @@ import {
 	getDatabaseCommitDrainTimeoutMilliseconds,
 	type WriteGeneration,
 	type Transaction as DatabaseTransactionRecord,
+	confirmingResidents,
 } from './DatabaseTransaction.ts';
 import { releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
 import {
@@ -4821,7 +4822,13 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 				before: writeToSource(),
-				commit: (txnTime: number, existingEntry: Entry, retry: boolean, transaction: any) => {
+				commit: (
+					txnTime: number,
+					existingEntry: Entry,
+					retry: boolean,
+					transaction: any,
+					committedBy?: DatabaseTransaction
+				) => {
 					// Whether a prior attempt of THIS write appended its own audit entry (sticky, set in
 					// save(); log entries are not part of the aborted rocks transaction, so they survive).
 					// Only such a write can find its own orphaned entry in the dedup lookups below and must
@@ -5496,10 +5503,10 @@ export function makeTable(options): TableResourceClass {
 					function writeCommit(storeRecord: boolean) {
 						// RocksDB uses a singular version/local time, so it must be most recent
 						const writtenVersion = isRocksDB ? Math.max(txnTime, existingEntry?.version ?? 0) : txnTime;
-						if (!transaction?.isRetry) {
-							write.residencyId = residencyId;
-							write.writtenVersion = writtenVersion;
-						}
+						const appendsAudit = !transaction?.isRetry;
+						// refused before anything is staged, so a caller that catches it cannot commit the write
+						if (appendsAudit && residencyId && committedBy?.replicatedConfirmation)
+							confirmingResidents(primaryStore, residencyId, committedBy.replicatedConfirmation, id);
 						// we need to write the commit. if storeRecord then we need to store the record, otherwise we just need to store the audit record
 						updateRecord(
 							id,
@@ -5530,6 +5537,10 @@ export function makeTable(options): TableResourceClass {
 							false,
 							storeRecord ? auditRecordToStore : (auditRecordToStore ?? recordUpdate)
 						);
+						if (appendsAudit && (residencyId || write.residencyId)) {
+							write.residencyId = residencyId;
+							write.writtenVersion = writtenVersion;
+						}
 						// publish what this write left for the key, for any later write to it in this
 						// transaction (an audit-only commit stored no record, so it stages nothing and the
 						// earlier staged record, if any, remains the basis)

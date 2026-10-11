@@ -119,12 +119,29 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 		assert.equal(Records.primaryStore.getEntry('rollback-self'), undefined);
 	});
 
+	it('does not commit a refused write whose refusal the caller caught', async () => {
+		await confirmed({ replicatedConfirmation: 1 }, async () => {
+			await Records.put('caught-ok', { id: 'caught-ok', homes: [SELF, PEER_A], body: 'ok' });
+			await assert.rejects(
+				async () => Records.put('caught-refused', { id: 'caught-refused', homes: [SELF], body: 'refused' }),
+				/resident on 0 other node\(s\)$/
+			);
+		});
+		assert.equal(Records.primaryStore.getEntry('caught-refused'), undefined);
+		assert.equal((await Records.get('caught-ok')).body, 'ok');
+		assert.deepEqual(calls[0].residentPeerLists, [[PEER_A]]);
+	});
+
 	it('rejects at commit when confirmation is requested after the write was staged', async () => {
 		const context = { transaction: new DatabaseTransaction() };
 		await Records.put('late', { id: 'late', homes: [SELF], body: 'complete' }, context);
 		context.transaction.replicatedConfirmation = 1;
 		await assert.rejects(context.transaction.commit({ doneWriting: true }), /resident on 0 other node\(s\)$/);
 		assert.equal(calls.length, 0);
+		// the write landed and its commit finished its bookkeeping: the key is not left locked or staged
+		assert.equal((await Records.get('late')).body, 'complete');
+		await Records.put('late', { id: 'late', homes: [SELF], body: 'again' });
+		assert.equal((await Records.get('late')).body, 'again');
 	});
 
 	it('confirms a write whose residency omits the writer, which stores no local record', async () => {

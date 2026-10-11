@@ -902,7 +902,10 @@ version, one list of other residents (writer removed, duplicates removed) per di
 its confirmable writes; the waiter needs the full count from each list. A write with no residency adds no
 list. The commit handler stamps `write.residencyId`/`writtenVersion` on every round that appends the audit
 entry and keeps them on a coordinated retry, which appends nothing, so the residents counted are the ones
-the replicated entry names. A count larger than a list fails in `save()`, before the native commit, so the
-transaction writes nothing; confirmation requested after a write was saved fails the same way at commit,
-after the write landed. `writtenVersion` lets a write that stored no local record (`setResidencyById`
-excluding the writer) still be confirmed. Enforced by `unitTests/resources/residencyConfirmation.test.js`.
+the replicated entry names. A count larger than a list (`confirmingResidents`) is refused in the commit
+handler before the write stages anything, so even a caller that catches the refusal cannot commit it.
+Confirmation requested after a write was saved is checked at commit instead, after the write landed; that
+refusal is a rejected completion, so the commit's bookkeeping still runs. `writtenVersion` lets a write that
+stored no local record (`setResidencyById` excluding the writer) still be confirmed. LMDB is untouched: its
+commit never reaches a registered confirmation callback. Enforced by
+`unitTests/resources/residencyConfirmation.test.js`.

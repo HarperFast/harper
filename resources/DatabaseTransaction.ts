@@ -420,6 +420,31 @@ export function getTransactionQueueDepths() {
 	return depths;
 }
 
+// a residency id names one list for the life of its database, so its residents are resolved once
+const residentsByResidencyId = new WeakMap<object, Map<number, string[]>>();
+
+/**
+ * The nodes other than this one holding a complete copy of a record `store` placed by `residencyId`. A
+ * `replicatedConfirmation` count larger than that can never be met, so it is refused.
+ */
+export function confirmingResidents(store: any, residencyId: number, confirmationCount: number, key: Id): string[] {
+	const dbisDb = store.rootStore.dbisDb;
+	let residentsById = residentsByResidencyId.get(dbisDb);
+	if (!residentsById) residentsByResidencyId.set(dbisDb, (residentsById = new Map()));
+	let residents = residentsById.get(residencyId);
+	if (!residents) {
+		const residency: string[] | undefined = dbisDb.getSync([Symbol.for('residency_by_id'), residencyId]);
+		residents = residency ? Array.from(new Set(residency)).filter((name) => name !== server.hostname) : [];
+		residentsById.set(residencyId, residents);
+	}
+	if (confirmationCount > residents.length) {
+		throw new ClientError(
+			`Cannot confirm replication to ${confirmationCount} node(s) for record ${JSON.stringify(key)} in database "${store.rootStore.databaseName}": it is resident on ${residents.length} other node(s)${residents.length ? ` (${residents.join(', ')})` : ''}`
+		);
+	}
+	return residents;
+}
+
 let confirmReplication;
 export function replicationConfirmation(callback) {
 	confirmReplication = callback;
@@ -568,7 +593,13 @@ export type TransactionWrite = {
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
-	commit?: (txnTime: number, existingEntry: Partial<Entry>, retry: boolean, transaction: any) => MaybePromise<void>;
+	commit?: (
+		txnTime: number,
+		existingEntry: Partial<Entry>,
+		retry: boolean,
+		transaction: any,
+		committedBy?: DatabaseTransaction
+	) => MaybePromise<void>;
 	// Once a write has been taken over, the transaction committing it is not the one that staged it, and
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
 	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
@@ -637,9 +668,8 @@ export type TransactionWrite = {
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
 	reloadCommitBase?: boolean;
-	// the residency id and record version of the audit entry this write appended: written by the commit
-	// handler on every round that appends one, and kept on a coordinated retry, whose appends are skipped,
-	// so confirmation counts the residents the replicated entry names
+	// of the audit entry this write appended; a coordinated retry appends nothing and keeps them, so
+	// confirmation counts the residents the replicated entry names
 	residencyId?: number;
 	writtenVersion?: number;
 	baseReadTxn?: any;
@@ -1338,12 +1368,10 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * What a `replicatedConfirmation` commit waits for: the version peers must have applied (from the last
-	 * confirmable write, as in lastConfirmableEntry, falling back to the version a write with no local
-	 * record wrote), and the distinct resident lists of the writes placed by residency. A peer counts
-	 * toward a write only if it is resident for it, so each list needs the full count from its own members
-	 * (harper-pro#1031). Writes without a residency list reach every peer and add no list: any list's
-	 * confirmations already come from that many distinct peers.
+	 * What a `replicatedConfirmation` commit waits for: the version peers must have applied (as in
+	 * lastConfirmableEntry, or the version written by a write that stored no local record), and one list
+	 * of other residents per distinct residency among the writes (harper-pro#1031). A write placed by no
+	 * residency adds no list: N confirmations from any list already come from N distinct peers.
 	 */
 	confirmationTarget(): { version: number; residentPeerLists?: string[][] } | undefined {
 		let version: number | undefined;
@@ -1353,29 +1381,14 @@ export class DatabaseTransaction implements Transaction {
 			if (!write || write.skipReplicationConfirmation) continue;
 			version ??= write.store.getEntry(write.key)?.version ?? write.writtenVersion;
 			if (write.residencyId && !residentPeerLists?.has(write.residencyId)) {
-				(residentPeerLists ??= new Map()).set(write.residencyId, this.residentsCanConfirm(write));
+				(residentPeerLists ??= new Map()).set(
+					write.residencyId,
+					confirmingResidents(write.store, write.residencyId, this.replicatedConfirmation, write.key)
+				);
 			}
 		}
 		if (version === undefined) return;
 		return { version, residentPeerLists: residentPeerLists && Array.from(residentPeerLists.values()) };
-	}
-
-	/**
-	 * The other nodes resident for `write`'s record, throwing when they are fewer than the requested
-	 * confirmation count: such a write can never be confirmed, so it fails now rather than at the timeout.
-	 */
-	residentsCanConfirm(write: TransactionWrite): string[] {
-		const residency: string[] | undefined = write.store.rootStore.dbisDb.getSync([
-			Symbol.for('residency_by_id'),
-			write.residencyId,
-		]);
-		const residents = residency ? Array.from(new Set(residency)).filter((name) => name !== server.hostname) : [];
-		if (this.replicatedConfirmation > residents.length) {
-			throw new ClientError(
-				`Cannot confirm replication to ${this.replicatedConfirmation} node(s) for record ${JSON.stringify(write.key)} in database "${write.store.rootStore.databaseName}": it is resident on ${residents.length} other node(s)${residents.length ? ` (${residents.join(', ')})` : ''}`
-			);
-		}
-		return residents;
 	}
 
 	/**
@@ -1624,13 +1637,16 @@ export class DatabaseTransaction implements Transaction {
 			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
 			try {
-				completion = operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>;
+				completion = operation.commit(
+					writeVersion,
+					operation.entry,
+					this.retries > 0,
+					transaction,
+					this
+				) as Promise<void>;
 			} finally {
 				closeWriteInstance(operation);
 			}
-			// before the native commit, so a write no residents can confirm is never written
-			if (this.replicatedConfirmation && operation.residencyId && !(transaction as RocksTransactionWithRetry)?.isRetry)
-				this.residentsCanConfirm(operation);
 		} catch (error) {
 			// A handle created for an immediate commit is owned by nobody else: a throw before its commit
 			// is submitted must release it, and the floor reservation it carries, rather than leak both.
@@ -2196,16 +2212,21 @@ export class DatabaseTransaction implements Transaction {
 								// if we want to wait for replication confirmation, we need to track the transaction times
 								// and when replication notifications come in, we count the number of confirms until we reach the desired number
 								const databaseName = this.writes[0]?.store.rootStore.databaseName;
-								const target = confirmReplication && databaseName ? this.confirmationTarget() : undefined;
-								if (target) {
-									completions.push(
-										confirmReplication(
-											databaseName,
-											target.version,
-											this.replicatedConfirmation,
-											target.residentPeerLists
-										)
-									);
+								// the write has landed: a refusal here is this commit's outcome, after the bookkeeping below
+								try {
+									const target = confirmReplication && databaseName ? this.confirmationTarget() : undefined;
+									if (target) {
+										completions.push(
+											confirmReplication(
+												databaseName,
+												target.version,
+												this.replicatedConfirmation,
+												target.residentPeerLists
+											)
+										);
+									}
+								} catch (error) {
+									completions.push(Promise.reject(error));
 								}
 							}
 							// commit succeeded; clean up files for any writes whose commit-handler took an early-return,
