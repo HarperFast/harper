@@ -606,12 +606,11 @@ describe('Caching', () => {
 	});
 
 	it('keeps an invalidation that commits while a revalidation fill is in flight', async function () {
-		this.timeout(5000);
 		const id = 650;
 		await ConflictCachingTable.put(id, { id, name: 'seed' });
 		await ConflictCachingTable.invalidate(id);
 		conflictSourceRequest = null;
-		// bounded so a hang still reaches the finally below; mocha's own timeout would leave this body suspended
+		// every await below is bounded in-body: a mocha timeout would leave this body suspended, skipping the finally
 		const settles = (promise, what) =>
 			Promise.race([promise, delay(2000, undefined, { ref: false }).then(() => assert.fail(`${what} should settle`))]);
 		const fill = ConflictCachingTable.get(id);
