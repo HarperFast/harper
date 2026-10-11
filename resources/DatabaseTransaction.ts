@@ -1442,7 +1442,7 @@ export class DatabaseTransaction implements Transaction {
 			return;
 		try {
 			const residentPeerLists = this.residentPeerLists();
-			const databaseName = this.writes[0]?.store.rootStore.databaseName;
+			const databaseName = this.writes.find((write) => write)?.store.rootStore.databaseName;
 			if (databaseName) {
 				const result: any = confirmationFeasibility?.(databaseName, this.replicatedConfirmation, residentPeerLists);
 				if (result?.then) {
