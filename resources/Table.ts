@@ -5748,7 +5748,7 @@ export function makeTable(options): TableResourceClass {
 					} else {
 						// Only RocksDB's remove() takes an options object; on LMDB the 2nd arg is ifVersion, and its writes already join the batched txn.
 						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
-						write.skipReplicationConfirmation = true; // no audit entry: nothing replicates to confirm
+						write.skipReplicationConfirmation = true;
 					}
 					write.stagedEntry = stagedRemoval; // the key holds no record for the rest of this transaction
 					if (write.trackRecordVersion) write.recordVersionApplied = true;

@@ -208,16 +208,27 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 	});
 
 	it('refuses an asynchronous feasibility check rather than submitting past it', async () => {
-		replicationConfirmation(
-			() => Promise.resolve(),
-			async () => {}
-		);
-		await assert.rejects(
-			confirmed({ replicatedConfirmation: 1 }, () =>
-				Records.put('async-check', { id: 'async-check', homes: [SELF, PEER_A], body: 'no' })
-			),
-			/feasibility check must be synchronous/
-		);
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			replicationConfirmation(
+				() => Promise.resolve(),
+				async () => {
+					throw new Error('asynchronous refusal');
+				}
+			);
+			await assert.rejects(
+				confirmed({ replicatedConfirmation: 1 }, () =>
+					Records.put('async-check', { id: 'async-check', homes: [SELF, PEER_A], body: 'no' })
+				),
+				/feasibility check must be synchronous/
+			);
+			await new Promise((resolve) => setImmediate(resolve));
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
+		assert.deepEqual(unhandled, []);
 		assert.equal(Records.primaryStore.getEntry('async-check'), undefined);
 	});
 

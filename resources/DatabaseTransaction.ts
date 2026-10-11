@@ -422,7 +422,6 @@ export function getTransactionQueueDepths() {
 
 // a residency id names one list for the life of its database, so its residents are resolved once
 const residentsByResidencyId = new WeakMap<object, Map<number, string[]>>();
-// record-based placement can mint a list per distinct placement, so the cache is bounded
 const MAX_CACHED_RESIDENCIES = 10_000;
 
 // BigInt.toJSON throws (and runs before any JSON.stringify replacer)
@@ -820,8 +819,7 @@ export class DatabaseTransaction implements Transaction {
 	overloadChecked: boolean;
 	open = TRANSACTION_STATE.OPEN;
 	replicatedConfirmation: number;
-	// the resident lists refuseUnconfirmable checked for the commit being submitted
-	checkedResidentPeerLists?: string[][];
+	checkedResidentPeerLists?: string[][] | null;
 	// Set when this transaction is applying data from a canonical source of truth (replication peer
 	// or external caching source); its commits retry transient conflicts without the request-path
 	// retry cap. Propagated to chained (multi-store) transactions in txnForContext.
@@ -1389,7 +1387,10 @@ export class DatabaseTransaction implements Transaction {
 	 * writes, as checked before submission.
 	 */
 	confirmationTarget(committedLogKey?: number): { version: number; residentPeerLists?: string[][] } | undefined {
-		const residentPeerLists = this.checkedResidentPeerLists ?? this.residentPeerLists();
+		const residentPeerLists =
+			this.checkedResidentPeerLists === undefined
+				? this.residentPeerLists()
+				: (this.checkedResidentPeerLists ?? undefined);
 		this.checkedResidentPeerLists = undefined;
 		// writes that lost to newer entries in every round appended nothing at the key, which peers would
 		// then pass only when some later write replicates
@@ -1436,9 +1437,12 @@ export class DatabaseTransaction implements Transaction {
 			const databaseName = this.writes[0]?.store.rootStore.databaseName;
 			if (databaseName) {
 				const result: any = confirmationFeasibility?.(databaseName, this.replicatedConfirmation, residentPeerLists);
-				if (result?.then) throw new TypeError('A replication confirmation feasibility check must be synchronous');
+				if (result?.then) {
+					result.then(null, () => {});
+					throw new TypeError('A replication confirmation feasibility check must be synchronous');
+				}
 			}
-			this.checkedResidentPeerLists = residentPeerLists;
+			this.checkedResidentPeerLists = residentPeerLists ?? null;
 		} catch (error) {
 			abortNativeTransaction(transaction, 'aborting a transaction whose confirmation was refused');
 			try {
