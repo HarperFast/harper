@@ -320,7 +320,12 @@ describe('Subscribe read gate: caller impact', () => {
 			const { http } = restListeners();
 			const accept = { accept: 'text/event-stream' };
 			const refusal = await http(httpRequest('/GateEntry/?tenant=t1', reader, accept), () => {});
-			assert.strictEqual(refusal.status, 403);
+			try {
+				assert.strictEqual(refusal.status, 403);
+			} finally {
+				refusal.body?.destroy?.();
+			}
+			assert.strictEqual(seen.length, 1, 'allowRead decided the refusal');
 			const [{ target, context }] = seen;
 			assert.ok(target instanceof RequestTarget);
 			assert.strictEqual(target.id, null);
@@ -346,17 +351,21 @@ describe('Subscribe read gate: caller impact', () => {
 				on: (event, handler) => (handlers[event] = handler),
 				_socket: {},
 			};
+			// an admitted upgrade streams until the socket closes, so wait for the refusal rather than the listener
+			const listening = wsListener(
+				socket,
+				httpRequest('/GateEntry/rec-alice', reader, {}, { isWebSocket: true }),
+				Promise.resolve(undefined)
+			);
 			try {
-				await wsListener(
-					socket,
-					httpRequest('/GateEntry/rec-alice', reader, {}, { isWebSocket: true }),
-					Promise.resolve(undefined)
-				);
+				await waitFor(() => closes.length > 0, { message: 'the upgrade was not refused' });
 			} finally {
-				// the socket's own close event is what releases REST's connection count
+				// the socket's own close event ends any stream and releases REST's connection count
 				handlers.close?.();
+				await listening;
 			}
 			assert.strictEqual(closes[0].code, 3003);
+			assert.strictEqual(seen.length, 1, 'allowRead decided the refusal');
 			const [{ target, context }] = seen;
 			assert.strictEqual(target.id, 'rec-alice');
 			assert.strictEqual(target.isCollection, undefined);
