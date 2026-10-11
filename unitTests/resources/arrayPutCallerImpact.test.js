@@ -629,14 +629,13 @@ describe('Array PUT: caller impact', () => {
 		// v5.2.15 (Promise.all): the first failure in time, "index 1 failed first".
 		it('several elements fail: the earliest index is reported, not the first in time', async function () {
 			let laterIndexRejected;
+			let gateTimer;
 			// bounded, so a regression that never dispatches index 1 fails here instead of hanging (mocha timeout is 0)
 			const afterLaterIndex = new Promise((resolve, reject) => {
-				const timer = setTimeout(() => reject(new Error('index 1 was never dispatched')), 5000);
-				laterIndexRejected = () => {
-					clearTimeout(timer);
-					resolve();
-				};
+				gateTimer = setTimeout(() => reject(new Error('index 1 was never dispatched')), 5000);
+				laterIndexRejected = resolve;
 			});
+			afterLaterIndex.catch(() => {});
 			class Rejecting extends Docs {
 				put(data, target) {
 					// index 0 rejects only once index 1 has, whatever order their resources resolved in
@@ -648,15 +647,19 @@ describe('Array PUT: caller impact', () => {
 					return super.put(data, target);
 				}
 			}
-			await assert.rejects(
-				async () =>
-					Rejecting.put(collectionTarget(), [
-						{ id: 'two-a', kind: 'two' },
-						{ id: 'two-b', kind: 'two' },
-						{ id: 'two-c', kind: 'two' },
-					]),
-				{ message: 'index 0 failed last' }
-			);
+			try {
+				await assert.rejects(
+					async () =>
+						Rejecting.put(collectionTarget(), [
+							{ id: 'two-a', kind: 'two' },
+							{ id: 'two-b', kind: 'two' },
+							{ id: 'two-c', kind: 'two' },
+						]),
+					{ message: 'index 0 failed last' }
+				);
+			} finally {
+				clearTimeout(gateTimer);
+			}
 			assert.deepStrictEqual(await storedOf('two'), []);
 		});
 
