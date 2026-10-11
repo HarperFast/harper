@@ -5708,6 +5708,7 @@ export function makeTable(options): TableResourceClass {
 					// write (a concurrent transaction observed on a retry round, or an out-of-order delivery)
 					// that a chained delete must not destroy.
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+						write.skipped = true;
 						return;
 					}
 					const stagedRemoval = { value: undefined, localTime: txnLogKey, nodeId: options?.nodeId };
@@ -10226,13 +10227,23 @@ export function makeTable(options): TableResourceClass {
 			// return the Promise as the residencyId and skip minting a new one, corrupting the mapping.
 			let residencyId = (dbisDb as any).getSync([Symbol.for('residency_by_set'), setKey]);
 			if (residencyId) return residencyId;
-			// an id names one list for good (readers cache it), so never claim one already in use
-			do residencyId = Math.floor(Math.random() * 0x7fff0000) + 0xffff;
-			while ((dbisDb as any).getSync([Symbol.for('residency_by_id'), residencyId]) !== undefined);
-			// the list first: an id another worker can discover through the set must already resolve
-			(dbisDb as any).putSync([Symbol.for('residency_by_id'), residencyId], ownerNodeNames);
-			(dbisDb as any).putSync([Symbol.for('residency_by_set'), setKey], residencyId);
-			return residencyId;
+			// An id names one list for good (readers cache it), so it is claimed in one transaction: a
+			// concurrent mint of the same set or the same candidate id conflicts and retries instead of
+			// overwriting. (LMDB's sync transaction is exclusive and passes no handle.)
+			return (dbisDb as any).transactionSync(
+				(transaction: any) => {
+					const db = transaction ?? dbisDb;
+					const minted = db.getSync([Symbol.for('residency_by_set'), setKey]);
+					if (minted) return minted;
+					let candidate: number;
+					do candidate = Math.floor(Math.random() * 0x7fff0000) + 0xffff;
+					while (db.getSync([Symbol.for('residency_by_id'), candidate]) !== undefined);
+					db.putSync([Symbol.for('residency_by_id'), candidate], ownerNodeNames);
+					db.putSync([Symbol.for('residency_by_set'), setKey], candidate);
+					return candidate;
+				},
+				isRocksDB ? { retryOnBusy: true } : undefined
+			);
 		}
 	}
 	function preCommitBlobsForRecordBefore(

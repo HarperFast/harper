@@ -112,6 +112,14 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 		assert.ok(calls[0].version >= floor, `a delete confirmed on ${calls[0].version}, below ${floor}`);
 	});
 
+	it('confirms a commit whose only write lost to a newer entry on that entry, not its unused log key', async () => {
+		await Unplaced.put('newer', { id: 'newer', body: 'kept' });
+		const { version } = Unplaced.primaryStore.getEntry('newer');
+		await confirmed({ replicatedConfirmation: 1, timestamp: version - 60_000 }, () => Unplaced.delete('newer'));
+		assert.equal((await Unplaced.get('newer')).body, 'kept');
+		assert.equal(calls[0].version, version);
+	});
+
 	it('keeps a count-based placement at its count when a record is updated', async () => {
 		Records.setResidency(undefined);
 		const previousNodes = global.server.nodes;

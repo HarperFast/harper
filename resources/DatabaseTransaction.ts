@@ -422,6 +422,8 @@ export function getTransactionQueueDepths() {
 
 // a residency id names one list for the life of its database, so its residents are resolved once
 const residentsByResidencyId = new WeakMap<object, Map<number, string[]>>();
+// record-based placement can mint a list per distinct placement, so the cache is bounded
+const MAX_CACHED_RESIDENCIES = 10_000;
 
 // BigInt.toJSON throws (and runs before any JSON.stringify replacer)
 const describeKey = (key: Id): string =>
@@ -437,6 +439,7 @@ export function confirmingResidents(store: any, residencyId: number, confirmatio
 	if (!residentsById) residentsByResidencyId.set(dbisDb, (residentsById = new Map()));
 	let residents = residentsById.get(residencyId);
 	if (!residents) {
+		if (residentsById.size >= MAX_CACHED_RESIDENCIES) residentsById.clear();
 		const residency: string[] | undefined = dbisDb.getSync([Symbol.for('residency_by_id'), residencyId]);
 		residents = residency ? Array.from(new Set(residency)).filter((name) => name !== server.hostname) : [];
 		if (residency) residentsById.set(residencyId, residents);
