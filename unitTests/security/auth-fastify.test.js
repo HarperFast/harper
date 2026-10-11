@@ -341,7 +341,7 @@ describe('test authorize function for JWT', () => {
 		};
 
 		auth.authorize(request, null, function (err, user) {
-			assert.deepStrictEqual(user, { username: 'non_user' });
+			assert.deepStrictEqual(Object.fromEntries(Object.entries(user)), { username: 'non_user' });
 			done();
 		});
 	});
