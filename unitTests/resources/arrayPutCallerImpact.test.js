@@ -1,13 +1,12 @@
 // Caller impact of the built-in array PUT change: e13ff3e17 (harper#2097), first released in v5.3.0 and in
-// no v5.2.x release. Each test pins main's behavior for one caller shape; where v5.2.15 behaved differently,
-// the comment says how. v5.3.0, v5.3.2 and main behave identically for every shape here.
+// no v5.2.x release. A `v5.2.15:` comment gives that release's result for a shape that differed; v5.3.0, v5.3.2
+// and main agree on every shape.
 // The change reaches only classes whose `loadAsInstance` is not `false`: static-mode classes, which include
 // every `Resource.withSchema` and `defineResource` class, are unchanged in every shape.
 // On LMDB, v5.2.15 also handed the request or context, as the target, to any element whose record read resolved
 // asynchronously. Every instance-mode Table fan-out (REST, Table.put(array), Table.put(target, array),
 // Table.put(null, array)) therefore intermittently answered 500 "Cannot encode a promise", sometimes after
 // committing earlier elements, or resolved successfully having stored the context object as an element's record.
-require('../testUtils');
 const assert = require('node:assert');
 const { Readable } = require('node:stream');
 const { setupTestDBPath } = require('../testUtils');
@@ -56,7 +55,8 @@ describe('Array PUT: caller impact', () => {
 		handleRest({
 			resources: Resources.resources,
 			options: { getAll: () => ({ webSocket: false }) },
-			routeFor: () => ({ host: undefined, urlPath: '/array-put-caller-impact' }),
+			// REST dedupes mounts by route for the life of the process, so a repeated setup needs a fresh one
+			routeFor: () => ({ host: undefined, urlPath: `/array-put-caller-impact-${Date.now()}` }),
 			server: { http: (listener) => (restHttp = listener), ws: () => [] },
 		});
 	});
@@ -190,7 +190,6 @@ describe('Array PUT: caller impact', () => {
 			const response = await restPut(`/${mount(Custom)}/?flag=1`, [{ id: 'custom-a' }, { id: 'custom-b' }]);
 			assert.strictEqual(response.status, 200);
 			assert.deepStrictEqual(response.body, [{ stored: 'custom-a' }, { stored: 'custom-b' }]);
-			// no `static primaryKey`, so the element target carries no id
 			assert.deepStrictEqual(calls, [
 				{ data: { id: 'custom-a' }, target: { id: undefined, isCollection: false }, flag: '1' },
 				{ data: { id: 'custom-b' }, target: { id: undefined, isCollection: false }, flag: '1' },
@@ -592,8 +591,9 @@ describe('Array PUT: caller impact', () => {
 			assert.strictEqual(calls, 0);
 		});
 
-		// No pre-dispatch guard in static mode: Table.put's own array branch dereferences the element.
-		it('static-mode Table, null element: 500 TypeError, nothing written, as before', async function () {
+		// A known gap, not the contract: the pre-dispatch element guard is instance-mode only, so this still breaks the
+		// malformed-body rule in resources/DESIGN.md. Same on v5.2.15.
+		it('static-mode Table, null element: still a 500 TypeError (known gap), nothing written', async function () {
 			const response = await restPut(`/${mount(StaticDocs)}/`, [{ id: 'static-null-a', kind: 'static-null' }, null]);
 			assert.strictEqual(response.status, 500);
 			assert.strictEqual(response.body.code, 'TypeError');
@@ -625,12 +625,21 @@ describe('Array PUT: caller impact', () => {
 			assert.deepStrictEqual(await storedOf('mid'), []);
 		});
 
-		// v5.2.15 (Promise.all): the first failure in time, "index 1 failed early".
+		// v5.2.15 (Promise.all): the first failure in time, "index 1 failed first".
 		it('several elements fail: the earliest index is reported, not the first in time', async function () {
-			const Rejecting = rejectingFor({
-				'two-a': { message: 'index 0 failed late', delay: 80 },
-				'two-b': { message: 'index 1 failed early', delay: 0 },
-			});
+			let laterIndexRejected;
+			const afterLaterIndex = new Promise((resolve) => (laterIndexRejected = resolve));
+			class Rejecting extends Docs {
+				put(data, target) {
+					// index 0 rejects only once index 1 has, whatever order their resources resolved in
+					if (data.id === 'two-a') return afterLaterIndex.then(() => Promise.reject(new Error('index 0 failed last')));
+					if (data.id === 'two-b') {
+						setImmediate(laterIndexRejected);
+						return Promise.reject(new Error('index 1 failed first'));
+					}
+					return super.put(data, target);
+				}
+			}
 			await assert.rejects(
 				async () =>
 					Rejecting.put(collectionTarget(), [
@@ -638,14 +647,14 @@ describe('Array PUT: caller impact', () => {
 						{ id: 'two-b', kind: 'two' },
 						{ id: 'two-c', kind: 'two' },
 					]),
-				{ message: 'index 0 failed late' }
+				{ message: 'index 0 failed last' }
 			);
 			assert.deepStrictEqual(await storedOf('two'), []);
 		});
 
 		// v5.2.15: the batch reported the later element's synchronous 400, and the earlier rejection was
 		// abandoned as an unhandled rejection.
-		it('a synchronous failure after an earlier element rejected: earliest index, no unhandled rejection', async function () {
+		it('a synchronous failure while an earlier element is still pending: earliest index, no unhandled rejection', async function () {
 			const unhandled = [];
 			const listener = (reason) => unhandled.push(reason);
 			process.on('unhandledRejection', listener);
