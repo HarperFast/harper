@@ -3,7 +3,7 @@
 // first released in v5.2.0). Through v5.1.23 that handler ran no read check, so every subscribe refused
 // on a false-mode table below was admitted. Instance-mode tables were already gated once by Resource's
 // transactional wrapper and are unchanged.
-const testUtils = require('../testUtils');
+const testUtils = require('../testUtils.js');
 const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
 const { table } = require('#src/resources/databases');
@@ -17,7 +17,7 @@ const { _sweepNow } = require('#src/server/liveSubscriptionAuth');
 const userModule = require('#src/security/user');
 const { generate, parser: mqttParser } = require('mqtt-packet');
 const { setTimeout: delay } = require('node:timers/promises');
-const { waitFor } = require('../waitFor');
+const { waitFor } = require('../waitFor.js');
 require('#src/server/serverHelpers/serverUtilities');
 
 const DATABASE = 'subscribe_read_gate';
