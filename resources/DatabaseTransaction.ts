@@ -1423,7 +1423,8 @@ export class DatabaseTransaction implements Transaction {
 	 * checked again here.
 	 */
 	refuseUnconfirmable(transaction: RocksTransaction): void {
-		if (!this.replicatedConfirmation) return;
+		if (!this.replicatedConfirmation || !this.writes.some((write) => write && !write.skipReplicationConfirmation))
+			return;
 		try {
 			const residentPeerLists = this.residentPeerLists();
 			const databaseName = this.writes[0]?.store.rootStore.databaseName;

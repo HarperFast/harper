@@ -207,6 +207,31 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 		assert.equal(Records.primaryStore.getEntry('infeasible'), undefined);
 	});
 
+	it('neither waits on nor checks a commit that appends nothing to replicate', async () => {
+		const checked = [];
+		replicationConfirmation(
+			(...args) => {
+				calls.push(args);
+				return Promise.resolve();
+			},
+			(...args) => checked.push(args)
+		);
+		const NoAudit = table({
+			table: 'ResidencyConfirmationNoAudit',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+			audit: false,
+		});
+		await NoAudit.put(1, { id: 1 });
+		await confirmed({ replicatedConfirmation: 1 }, () => NoAudit.delete(1));
+		const context = { transaction: new DatabaseTransaction() };
+		Records.writeReloadMarker(context);
+		context.transaction.replicatedConfirmation = 1;
+		await context.transaction.commit({ doneWriting: true });
+		assert.deepEqual(calls, []);
+		assert.deepEqual(checked, []);
+	});
+
 	it('rolls back the whole transaction when a later record cannot be confirmed', async () => {
 		await assert.rejects(
 			confirmed({ replicatedConfirmation: 1 }, async () => {
