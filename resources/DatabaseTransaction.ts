@@ -823,6 +823,7 @@ export class DatabaseTransaction implements Transaction {
 	open = TRANSACTION_STATE.OPEN;
 	replicatedConfirmation: number;
 	checkedResidentPeerLists?: string[][] | null;
+	checkedFor?: RocksTransaction;
 	// Set when this transaction is applying data from a canonical source of truth (replication peer
 	// or external caching source); its commits retry transient conflicts without the request-path
 	// retry cap. Propagated to chained (multi-store) transactions in txnForContext.
@@ -1394,7 +1395,7 @@ export class DatabaseTransaction implements Transaction {
 		committedTransaction?: RocksTransaction
 	): { version: number; residentPeerLists?: string[][] } | undefined {
 		const residentPeerLists =
-			this.checkedResidentPeerLists === undefined
+			this.checkedResidentPeerLists === undefined || this.checkedFor !== committedTransaction
 				? this.residentPeerLists(committedTransaction)
 				: (this.checkedResidentPeerLists ?? undefined);
 		this.checkedResidentPeerLists = undefined;
@@ -1439,9 +1440,10 @@ export class DatabaseTransaction implements Transaction {
 	 * checked again here, and kept for the waiter.
 	 */
 	refuseUnconfirmable(transaction: RocksTransaction): void {
-		// a retry of a submitted attempt must reach its native outcome; its batch may already be written
-		if (this.nativeCommitSubmitted) return;
+		// a retry of a submitted attempt (the same handle) must reach its native outcome
+		if ((transaction as RocksTransactionWithRetry).isRetry) return;
 		this.checkedResidentPeerLists = undefined;
+		this.checkedFor = transaction;
 		if (!this.replicatedConfirmation || !this.writes.some((write) => write && !write.skipReplicationConfirmation))
 			return;
 		try {
