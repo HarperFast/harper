@@ -10,7 +10,7 @@
 const assert = require('node:assert');
 const { randomUUID } = require('node:crypto');
 const { Readable } = require('node:stream');
-const { setupTestDBPath } = require('../testUtils');
+const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { RequestTarget } = require('#src/resources/RequestTarget');
