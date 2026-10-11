@@ -1379,15 +1379,19 @@ export class DatabaseTransaction implements Transaction {
 
 	/**
 	 * What a `replicatedConfirmation` commit waits for: the log position peers must acknowledge (the
-	 * committed transaction's own log key, else the last confirmable write's entry version as in
-	 * lastConfirmableEntry), and the residents of its writes (residentPeerLists).
+	 * committed transaction's own log key when a confirmable write staged, else the last confirmable
+	 * write's entry version as in lastConfirmableEntry), and the residents of its writes.
 	 */
 	confirmationTarget(committedLogKey?: number): { version: number; residentPeerLists?: string[][] } | undefined {
-		let version: number | undefined;
+		// a commit whose writes all lost to newer entries appended nothing at its key, which peers would
+		// then pass only when some later write replicates
+		let version = this.writes.some((write) => write && !write.skipReplicationConfirmation && !write.skipped)
+			? committedLogKey
+			: undefined;
 		for (let i = this.writes.length - 1; i >= 0 && version === undefined; i--) {
 			const write = this.writes[i];
 			if (!write || write.skipReplicationConfirmation) continue;
-			version = committedLogKey ?? write.store.getEntry(write.key)?.version;
+			version = write.store.getEntry(write.key)?.version;
 		}
 		if (version === undefined) return;
 		return { version, residentPeerLists: this.residentPeerLists() };
@@ -1410,11 +1414,26 @@ export class DatabaseTransaction implements Transaction {
 		return lists && Array.from(lists.values());
 	}
 
-	/** Refuse, before native submission, a confirmation this commit could never get. */
-	assertConfirmable(): void {
-		const residentPeerLists = this.residentPeerLists();
-		const databaseName = this.writes[0]?.store.rootStore.databaseName;
-		if (databaseName) confirmationFeasibility?.(databaseName, this.replicatedConfirmation, residentPeerLists);
+	/**
+	 * Refuse, before `transaction` is submitted, a confirmation this commit could never get, aborting it.
+	 * Confirmation requested after a write was saved skipped that write's own refusal, so the lists are
+	 * checked again here.
+	 */
+	refuseUnconfirmable(transaction: RocksTransaction): void {
+		if (!this.replicatedConfirmation) return;
+		try {
+			const residentPeerLists = this.residentPeerLists();
+			const databaseName = this.writes[0]?.store.rootStore.databaseName;
+			if (databaseName) confirmationFeasibility?.(databaseName, this.replicatedConfirmation, residentPeerLists);
+		} catch (error) {
+			abortNativeTransaction(transaction, 'aborting a transaction whose confirmation was refused');
+			try {
+				this.abort();
+			} catch (abortError) {
+				harperLogger.debug?.('cleaning up a transaction whose confirmation was refused', abortError);
+			}
+			throw error;
+		}
 	}
 
 	/**
@@ -2081,6 +2100,7 @@ export class DatabaseTransaction implements Transaction {
 						}
 						// with options.transaction set this is a retry round — the save loop above already
 						// re-staged the writes into it
+						this.refuseUnconfirmable(transaction);
 						this.assertDatabaseCommitAllowed(transaction);
 						this.markNativeCommitSubmitted();
 						commitResolution = transaction.commit() as Promise<void>;
@@ -2132,27 +2152,11 @@ export class DatabaseTransaction implements Transaction {
 								}
 								throw lockNotHeldError(lapsed);
 							}
+							this.refuseUnconfirmable(transaction);
 							// The transaction was created with coordinatedRetry:true (see
 							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
 							// sentinel (a number) is why commitResolution is typed
 							// Promise<number | void>; it is handled in the resolve callback below.
-							// confirmation requested after a write was saved skipped that write's own refusal
-							if (this.replicatedConfirmation) {
-								try {
-									this.assertConfirmable();
-								} catch (error) {
-									releaseLocalKey(transaction);
-									try {
-										transaction.abort();
-									} catch {}
-									try {
-										this.abort();
-									} catch (abortError) {
-										harperLogger.debug?.('cleaning up a transaction whose confirmation was refused', abortError);
-									}
-									throw error;
-								}
-							}
 							this.assertDatabaseCommitAllowed(transaction);
 							this.markNativeCommitSubmitted();
 							commitResolution = transaction.commit();
