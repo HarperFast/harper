@@ -163,7 +163,7 @@ describe('context.transaction after its transaction completes: caller shapes', f
 		assert.throws(() => structuredClone(context), { name: 'DataCloneError' });
 	});
 
-	// v5.2.0 also left this instance in the slot.
+	// v5.2.0 left this instance in the slot; since v5.2.1 the release replaces it.
 	it('the transaction handed to the transaction() callback stays a callable, completed transaction afterwards', async function () {
 		const context = {};
 		let callbackTransaction;
