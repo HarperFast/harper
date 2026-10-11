@@ -8,6 +8,7 @@
 // Table.put(null, array)) therefore intermittently answered 500 "Cannot encode a promise", sometimes after
 // committing earlier elements, or resolved successfully having stored the context object as an element's record.
 const assert = require('node:assert');
+const { randomUUID } = require('node:crypto');
 const { Readable } = require('node:stream');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
@@ -56,7 +57,7 @@ describe('Array PUT: caller impact', () => {
 			resources: Resources.resources,
 			options: { getAll: () => ({ webSocket: false }) },
 			// REST dedupes mounts by route for the life of the process, so a repeated setup needs a fresh one
-			routeFor: () => ({ host: undefined, urlPath: `/array-put-caller-impact-${Date.now()}` }),
+			routeFor: () => ({ host: undefined, urlPath: `/array-put-caller-impact-${randomUUID()}` }),
 			server: { http: (listener) => (restHttp = listener), ws: () => [] },
 		});
 	});
@@ -628,7 +629,14 @@ describe('Array PUT: caller impact', () => {
 		// v5.2.15 (Promise.all): the first failure in time, "index 1 failed first".
 		it('several elements fail: the earliest index is reported, not the first in time', async function () {
 			let laterIndexRejected;
-			const afterLaterIndex = new Promise((resolve) => (laterIndexRejected = resolve));
+			// bounded, so a regression that never dispatches index 1 fails here instead of hanging (mocha timeout is 0)
+			const afterLaterIndex = new Promise((resolve, reject) => {
+				const timer = setTimeout(() => reject(new Error('index 1 was never dispatched')), 5000);
+				laterIndexRejected = () => {
+					clearTimeout(timer);
+					resolve();
+				};
+			});
 			class Rejecting extends Docs {
 				put(data, target) {
 					// index 0 rejects only once index 1 has, whatever order their resources resolved in
