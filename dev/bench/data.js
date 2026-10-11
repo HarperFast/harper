@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791623737587,
+  "lastUpdate": 1791703885684,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -7406,6 +7406,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1014.56,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "765a1abc18c1a892175c710729def3a63866fb24",
+          "message": "Recheck live subscriptions by principal and expire tokens on a timer, so re-authorization scales to 100k+ subscriptions (#3141)\n\n* Recheck live subscriptions by principal, expire tokens on a timer, and slice passes\n\nA user or role write rechecked every live subscription on the worker, and the 30 s sweep did the\nsame; at 100k subscriptions each cost ~0.7 s of CPU and blocked the event loop for as long.\n\nonUserChange now names the changed hdb_user/hdb_role primary keys (no argument when unknown:\nreload marker, oversized batch, re-established subscription), and userChangeNotificationEpoch\nreports whether delivery has been continuous and certified by the broadcaster's progress\ntracking. The registry indexes subscriptions by username and each username by its role, so a\nchange rechecks only that principal's subscriptions. Token expiry is one timer over an indexed\nmin-heap. The tick keeps rechecking policy-dependent entries every 30 s; identity-only entries\n(default RBAC allowRead, no select) get a full pass every 5 minutes, or at the next tick when\ndelivery was not certified. A pass resolves each username once, shares a default allowRead\nresult, gives each context its own user view, and yields every 256 entries.\n\nauth.ts request clones now carry record provenance (cloneUserView), so a subscription admitted\nby a principal whose records changed before it registered is rechecked before it is returned.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01P1LVs2DZo1kpuvH4J3ESgP\nDispatch-Task: harper-subscription-reauth-scale\n\n* Certify user-change delivery through a quiet failed read, keep provenance off the request path's WeakMap\n\ndeliveryCertified now latches a transaction-log read failure itself: a drain that ends at the failure\nas if the log were exhausted never reaches a record that would. A closed user-change watcher\nre-subscribes with backoff, as a failed subscribe already did.\n\nUser provenance is an own symbol-keyed property of a user this module built, so cloneUserView's\nspread carries it; the per-request WeakMap write measured ~200 ns at 2 GHz, the symbol ~10 ns, and\nfindAndValidateUser and isCurrentUser lose their WeakMap set and get.\n\nThe registry skips a non-finite exp, reports an untracked registration as unverified, treats a\nuser whose role could not be read as a holder of every role, and rechecks a policy entry once\nwhen a targeted change and a tick share a pass. A select written by authorization no longer moves\na subscription off the identity-only cadence; only a caller's select does.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01P1LVs2DZo1kpuvH4J3ESgP\nDispatch-Task: harper-subscription-reauth-scale\n\n* Fix a stale test comment; say why the registry tracks heap position and group\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01P1LVs2DZo1kpuvH4J3ESgP\nDispatch-Task: harper-subscription-reauth-scale\n\n* Key a shared allowRead decision by resource class, and back off a watcher that keeps closing\n\nA shared default decision is keyed by the resource class rather than the allowRead function, so it\nno longer relies on each table having its own closure. A component-built user's clone carries\nprovenance as the symbol property too. A user-change watcher that closes soon after opening keeps\nbacking off, since every reopen rechecks every subscription; the read-loss warning names that\neffect. Tests: the backstop interval elapsing, a role reassigned mid-pass, and cleanup of expiry\ncohorts on failure.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01P1LVs2DZo1kpuvH4J3ESgP\nDispatch-Task: harper-subscription-reauth-scale\n\n* Recheck a principal with no record provenance on every tick\n\nA user a component's server.getUser returns on the MQTT, mTLS or session paths carries no record\nprovenance, so isCurrentUser cannot say whether it changed before its subscription registered.\nSuch a subscription is now a policy entry, rechecked on the 30 s tick, which keeps the bound it had\nbefore targeting. Shorter registry header; the invariant's detail lives in server/DESIGN.md.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01P1LVs2DZo1kpuvH4J3ESgP\nDispatch-Task: harper-subscription-reauth-scale\n\n* Note the policy cadence for provenance-less principals in server/DESIGN.md\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01P1LVs2DZo1kpuvH4J3ESgP\nDispatch-Task: harper-subscription-reauth-scale\n\n* Return an absent or closed subscription to a stale principal unchanged; count bench rechecks directly\n\nA subscribe that yields no subscription, or one already closed (a refused durable resume), has\nnothing to deliver, so registration returns it before the stale-admission check instead of\nrefusing it with 403. The benchmark ends a sample when no context has been rechecked for five\nturns, so a user with many subscriptions is measured to the end of its pass.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01P1LVs2DZo1kpuvH4J3ESgP\nDispatch-Task: harper-subscription-reauth-scale\n\n* Tell a revoked admission from one its owner closed during the recheck\n\nverify() resolves 'authorized', 'revoked' or 'closed'. Only 'revoked' refuses a stale principal's\nsubscribe with 403; a stream its owner closed while the recheck waited (a client disconnect, an\nasynchronously refused durable resume) goes back to the caller with its own terminal result.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01P1LVs2DZo1kpuvH4J3ESgP\nDispatch-Task: harper-subscription-reauth-scale\n\n* Report a revocation by another path during verify as a revocation\n\nterminateEntry marks the entry revoked, so verify() tells an owner close from an expiry or a\nconcurrent pass that revoked the entry while its recheck waited, and the stale admission still\nfails closed.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01P1LVs2DZo1kpuvH4J3ESgP\nDispatch-Task: harper-subscription-reauth-scale\n\n* Say in verify()'s contract that any re-authorization path reports revoked\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01P1LVs2DZo1kpuvH4J3ESgP\nDispatch-Task: harper-subscription-reauth-scale\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-11T01:33:40Z",
+          "url": "https://github.com/HarperFast/harper/commit/765a1abc18c1a892175c710729def3a63866fb24"
+        },
+        "date": 1791703883797,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 5503.11,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8289.79,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 7778.98,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 5934.57,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4302.7,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8395.21,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1078.19,
             "unit": "ops/sec"
           }
         ]
