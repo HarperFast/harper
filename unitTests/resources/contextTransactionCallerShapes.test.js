@@ -77,8 +77,7 @@ describe('context.transaction after its transaction completes: caller shapes', f
 		);
 	});
 
-	// The flip the 5.2.4 grading flagged. v5.2.1–v5.2.3: falsy and `null`. v5.2.0: truthy (the completed
-	// transaction). The placeholder is a plain frozen object that is never OPEN (`open === 0`).
+	// v5.2.1–v5.2.3: falsy and `null`. v5.2.0: truthy (the completed transaction itself).
 	it('truthiness and nullish checks on the slot see a non-null object after completion', async function () {
 		const context = await releasedContext();
 		assert.equal(Boolean(context.transaction), true);
