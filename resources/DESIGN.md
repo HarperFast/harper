@@ -896,23 +896,28 @@ before. Enforced by `unitTests/resources/writerResidency.test.js` (both engines)
 
 ## `replicatedConfirmation` counts only the residents of each written record (`DatabaseTransaction` `confirmationTarget`, harper-pro#1031)
 
-Peers acknowledge a database-wide applied position, and a non-resident peer passes that position after
-receiving only an invalidation stub, or nothing. So the commit tells the confirmation callback, besides the
-version, one list of other residents (writer removed, duplicates removed) per distinct `residencyId` among
-its confirmable writes; the waiter needs the full count from each list. A write with no residency adds no
-list. The commit handler stamps `write.residencyId`/`replicationPosition` on every round that appends an
-audit entry and keeps them on a coordinated retry, which appends nothing, so the residents counted are the
-ones the replicated entry names. Peers acknowledge log positions, so the target is the latest of the
-recorded positions (each the later of its record version and log key), the stored entries' versions, and
-the committed transaction's own log key. Count-based placement (`replicateTo: N`) keeps the writer out of
-the carried-over previous residency, or every update would repeat it and shed a replica. A count larger than a list (`confirmingResidents`) is refused in the commit
-handler before the write stages anything, and the refused write turns inert, so even a caller that catches
-the refusal cannot commit it. A table source's `before` hook (`source.put`/`patch`) has already run by then,
-because record-based placement needs the merged record; the guarantee covers Harper's stored data, not the
-source. `getResidencyId` publishes the id-to-list mapping before the set-to-id one, so any id a writer can
-discover resolves. Confirmation requested after a write was saved is checked again before native
-submission, aborting the transaction. An error after the native commit (from the callback, say) becomes a
-rejected completion, so the commit's bookkeeping still runs. The recorded position lets a write that stored
-no local record (`setResidencyById` excluding the writer) still be confirmed. LMDB is untouched: its
-commit never reaches a registered confirmation callback. Enforced by
+Peers acknowledge a database-wide log position, and a non-resident peer passes that position after
+receiving only an invalidation stub, or nothing. So the commit hands the confirmation callback, besides the
+position, one list of other residents (writer and duplicates removed) per distinct `residencyId` among its
+confirmable writes (`residentPeerLists`); the waiter needs the full count from each list. A write with no
+residency adds no list. The position is the committed transaction's reserved log key (`confirmationTarget`),
+never a record version: a record version can sit below the key (an explicit timestamp under the origin
+floor) or above it (a remote-origin version kept by a merge).
+
+The commit handler stamps `write.residencyId` on each round that appends an audit entry and keeps it on a
+coordinated retry, which appends nothing, so the residents counted are the ones the replicated entry names.
+Ids are resolved once per database handle (`confirmingResidents`); `getResidencyId` never reuses an id
+and writes the id-to-list mapping before the set-to-id one, so a discovered id always resolves to its one
+list. Count-based placement (`replicateTo: N`) keeps the writer out of the carried-over previous residency,
+or every update would repeat it and shed a replica.
+
+Every deterministic refusal precedes native submission, so the refused write never lands. A count larger
+than a record's list is refused in the commit handler before the write stages anything, and the refused
+write turns inert, so a caller that catches the refusal cannot commit it, even on a retry. Before native
+submission the commit rechecks the lists (confirmation may have been requested after a write was saved)
+and runs the feasibility check the replication layer registered with `replicationConfirmation` (harper-pro:
+the recipient bound). A table source's `before` hook (`source.put`/`patch`) has already run by then, because
+record-based placement needs the merged record; the guarantee covers Harper's stored data, not the source.
+An error after the native commit becomes a rejected completion, so the commit's bookkeeping still runs.
+LMDB is untouched: its commit never reaches a registered confirmation callback. Enforced by
 `unitTests/resources/residencyConfirmation.test.js`.

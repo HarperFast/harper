@@ -5,6 +5,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
+const { ClientError } = require('#src/utility/errors/hdbError');
 const {
 	DatabaseTransaction,
 	replicationConfirmation,
@@ -161,6 +162,33 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 			() => confirmingResidents(Records.primaryStore, residencyId, 1, ['composite', 12n]),
 			/for record \["composite",12\] in database "test"/
 		);
+	});
+
+	it('consults the registered feasibility check before committing, and writes nothing when it refuses', async () => {
+		const checked = [];
+		replicationConfirmation(
+			() => Promise.resolve(),
+			(databaseName, confirmationCount, residentPeerLists) => {
+				checked.push({ databaseName, confirmationCount, residentPeerLists });
+				if (residentPeerLists?.some((residents) => residents.includes('unreachable')))
+					throw new ClientError('not reachable from here');
+			}
+		);
+		await confirmed({ replicatedConfirmation: 1 }, () =>
+			Records.put('feasible', { id: 'feasible', homes: [SELF, PEER_A], body: 'ok' })
+		);
+		await assert.rejects(
+			confirmed({ replicatedConfirmation: 1 }, () =>
+				Records.put('infeasible', { id: 'infeasible', homes: [SELF, 'unreachable'], body: 'no' })
+			),
+			/not reachable from here/
+		);
+		assert.deepEqual(checked, [
+			{ databaseName: 'test', confirmationCount: 1, residentPeerLists: [[PEER_A]] },
+			{ databaseName: 'test', confirmationCount: 1, residentPeerLists: [['unreachable']] },
+		]);
+		assert.equal((await Records.get('feasible')).body, 'ok');
+		assert.equal(Records.primaryStore.getEntry('infeasible'), undefined);
 	});
 
 	it('rolls back the whole transaction when a later record cannot be confirmed', async () => {

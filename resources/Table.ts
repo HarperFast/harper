@@ -2887,9 +2887,10 @@ export function makeTable(options): TableResourceClass {
 				if (context.previousResidency) {
 					// if we have a previous residency, we should preserve it
 					// the stored list already names the node that wrote it; repeating this one would shed a replica
-					replicateTo.push(
-						...context.previousResidency.filter((name: string) => name !== server.hostname).slice(0, count)
-					);
+					for (const name of context.previousResidency) {
+						if (replicateTo.length > count) break;
+						if (name !== server.hostname) replicateTo.push(name);
+					}
 				} else {
 					// otherwise need to create a new list of nodes to replicate to, based on available nodes
 					// randomize this to ensure distribution of data
@@ -5517,15 +5518,14 @@ export function makeTable(options): TableResourceClass {
 						}
 					}
 					function writeCommit(storeRecord: boolean) {
-						// RocksDB uses a singular version/local time, so it must be most recent
-						const writtenVersion = isRocksDB ? Math.max(txnTime, existingEntry?.version ?? 0) : txnTime;
-						const appendsAudit = Boolean(audit) && !isCopyApply && !transaction?.isRetry;
 						// we need to write the commit. if storeRecord then we need to store the record, otherwise we just need to store the audit record
 						updateRecord(
 							id,
 							storeRecord ? recordToStore : undefined,
 							storeRecord ? existingEntry : { ...existingEntry, value: undefined },
-							writtenVersion,
+							isRocksDB
+								? Math.max(txnTime, existingEntry?.version ?? 0) // RocksDB uses a singular version/local time, so it must be most recent
+								: txnTime,
 							omitLocalRecord ? INVALIDATED : 0,
 							// copy-apply rows are snapshots, not transactions: write the record + indices but no audit entry
 							isCopyApply ? false : audit,
@@ -5550,10 +5550,8 @@ export function makeTable(options): TableResourceClass {
 							false,
 							storeRecord ? auditRecordToStore : (auditRecordToStore ?? recordUpdate)
 						);
-						if (appendsAudit && (residencyId || write.residencyId || committedBy?.replicatedConfirmation)) {
+						if ((residencyId || write.residencyId) && audit && !isCopyApply && !transaction?.isRetry)
 							write.residencyId = residencyId;
-							write.replicationPosition = Math.max(writtenVersion, appendedLogKey);
-						}
 						// publish what this write left for the key, for any later write to it in this
 						// transaction (an audit-only commit stored no record, so it stages nothing and the
 						// earlier staged record, if any, remains the basis)
@@ -10228,7 +10226,9 @@ export function makeTable(options): TableResourceClass {
 			// return the Promise as the residencyId and skip minting a new one, corrupting the mapping.
 			let residencyId = (dbisDb as any).getSync([Symbol.for('residency_by_set'), setKey]);
 			if (residencyId) return residencyId;
-			residencyId = Math.floor(Math.random() * 0x7fff0000) + 0xffff;
+			// an id names one list for good (readers cache it), so never claim one already in use
+			do residencyId = Math.floor(Math.random() * 0x7fff0000) + 0xffff;
+			while ((dbisDb as any).getSync([Symbol.for('residency_by_id'), residencyId]) !== undefined);
 			// the list first: an id another worker can discover through the set must already resolve
 			(dbisDb as any).putSync([Symbol.for('residency_by_id'), residencyId], ownerNodeNames);
 			(dbisDb as any).putSync([Symbol.for('residency_by_set'), setKey], residencyId);

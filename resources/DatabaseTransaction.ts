@@ -431,7 +431,6 @@ const describeKey = (key: Id): string =>
 			? String(key)
 			: JSON.stringify(key);
 
-/** The nodes other than this one holding a complete copy of a record `store` placed by `residencyId`. */
 export function confirmingResidents(store: any, residencyId: number, confirmationCount: number, key: Id): string[] {
 	const dbisDb = store.rootStore.dbisDb;
 	let residentsById = residentsByResidencyId.get(dbisDb);
@@ -451,8 +450,15 @@ export function confirmingResidents(store: any, residencyId: number, confirmatio
 }
 
 let confirmReplication;
-export function replicationConfirmation(callback) {
+let confirmationFeasibility:
+	((databaseName: string, confirmationCount: number, residentPeerLists?: string[][]) => void) | undefined;
+/**
+ * Register the replication layer's confirmation waiter, and optionally a check that runs before native
+ * submission and throws when the requested confirmation can never be met, so the write never lands.
+ */
+export function replicationConfirmation(callback, feasibility?: typeof confirmationFeasibility) {
 	confirmReplication = callback;
+	confirmationFeasibility = feasibility;
 }
 let txnExpiration = envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONOPENTIME) ?? 30000;
 
@@ -673,12 +679,9 @@ export type TransactionWrite = {
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
 	reloadCommitBase?: boolean;
-	// of the audit entry this write appended; a coordinated retry appends nothing and keeps them, so
+	// of the audit entry this write appended; a coordinated retry appends nothing and keeps it, so
 	// confirmation counts the residents the replicated entry names
 	residencyId?: number;
-	// the later of its record version and its log key (peers acknowledge log positions); recorded for
-	// residency-placed writes and for every write of a transaction that requests confirmation
-	replicationPosition?: number;
 	baseReadTxn?: any;
 	writeGeneration?: WriteGeneration;
 	instanceClosed?: boolean;
@@ -1375,38 +1378,43 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * What a `replicatedConfirmation` commit waits for: the position peers must have applied (the one a
-	 * residency-placed write recorded, which its stored entry need not hold; otherwise as in
-	 * lastConfirmableEntry), and one list of other residents per distinct residency among the writes, in no
-	 * meaningful order (harper-pro#1031). A write placed by no residency adds no list: N confirmations from
-	 * any list already come from N distinct peers.
+	 * What a `replicatedConfirmation` commit waits for: the log position peers must acknowledge (the
+	 * committed transaction's own log key, else the last confirmable write's entry version as in
+	 * lastConfirmableEntry), and the residents of its writes (residentPeerLists).
 	 */
 	confirmationTarget(committedLogKey?: number): { version: number; residentPeerLists?: string[][] } | undefined {
 		let version: number | undefined;
-		let latestPosition = 0;
-		let residentPeerLists: Map<number, string[]> | undefined;
-		for (let i = this.writes.length - 1; i >= 0; i--) {
+		for (let i = this.writes.length - 1; i >= 0 && version === undefined; i--) {
 			const write = this.writes[i];
 			if (!write || write.skipReplicationConfirmation) continue;
-			if (write.replicationPosition) latestPosition = Math.max(latestPosition, write.replicationPosition);
-			else version ??= write.store.getEntry(write.key)?.version;
-			if (write.residencyId && !residentPeerLists?.has(write.residencyId)) {
-				(residentPeerLists ??= new Map()).set(
-					write.residencyId,
-					confirmingResidents(write.store, write.residencyId, this.replicatedConfirmation, write.key)
-				);
-			}
+			version = committedLogKey ?? write.store.getEntry(write.key)?.version;
 		}
-		if (version === undefined && !latestPosition) return;
-		version = Math.max(version ?? 0, latestPosition, committedLogKey ?? 0);
-		return { version, residentPeerLists: residentPeerLists && Array.from(residentPeerLists.values()) };
+		if (version === undefined) return;
+		return { version, residentPeerLists: this.residentPeerLists() };
 	}
 
-	assertResidentsCanConfirm(): void {
+	/**
+	 * One list of other residents per distinct residency among the confirmable writes, in no meaningful
+	 * order, refusing a count any one list cannot meet (harper-pro#1031). A write placed by no residency
+	 * adds no list: N confirmations from any list already come from N distinct peers.
+	 */
+	residentPeerLists(): string[][] | undefined {
+		let lists: Map<number, string[]> | undefined;
 		for (const write of this.writes) {
-			if (write?.residencyId && !write.skipReplicationConfirmation)
-				confirmingResidents(write.store, write.residencyId, this.replicatedConfirmation, write.key);
+			if (!write?.residencyId || write.skipReplicationConfirmation || lists?.has(write.residencyId)) continue;
+			(lists ??= new Map()).set(
+				write.residencyId,
+				confirmingResidents(write.store, write.residencyId, this.replicatedConfirmation, write.key)
+			);
 		}
+		return lists && Array.from(lists.values());
+	}
+
+	/** Refuse, before native submission, a confirmation this commit could never get. */
+	assertConfirmable(): void {
+		const residentPeerLists = this.residentPeerLists();
+		const databaseName = this.writes[0]?.store.rootStore.databaseName;
+		if (databaseName) confirmationFeasibility?.(databaseName, this.replicatedConfirmation, residentPeerLists);
 	}
 
 	/**
@@ -2131,7 +2139,7 @@ export class DatabaseTransaction implements Transaction {
 							// confirmation requested after a write was saved skipped that write's own refusal
 							if (this.replicatedConfirmation) {
 								try {
-									this.assertResidentsCanConfirm();
+									this.assertConfirmable();
 								} catch (error) {
 									releaseLocalKey(transaction);
 									try {
