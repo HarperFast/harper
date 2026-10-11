@@ -1395,7 +1395,7 @@ export class DatabaseTransaction implements Transaction {
 	): { version: number; residentPeerLists?: string[][] } | undefined {
 		const residentPeerLists =
 			this.checkedResidentPeerLists === undefined
-				? this.residentPeerLists()
+				? this.residentPeerLists(committedTransaction)
 				: (this.checkedResidentPeerLists ?? undefined);
 		this.checkedResidentPeerLists = undefined;
 		// writes that lost to newer entries appended nothing at the key, which peers would then pass only
@@ -1419,10 +1419,12 @@ export class DatabaseTransaction implements Transaction {
 	 * order, refusing a count any one list cannot meet (harper-pro#1031). A write placed by no residency
 	 * adds no list: N confirmations from any list already come from N distinct peers.
 	 */
-	residentPeerLists(): string[][] | undefined {
+	residentPeerLists(submitted?: RocksTransaction): string[][] | undefined {
 		let lists: Map<number, string[]> | undefined;
 		for (const write of this.writes) {
 			if (!write?.residencyId || write.skipReplicationConfirmation || lists?.has(write.residencyId)) continue;
+			// a residency recorded in a round whose batch an iterator replay discarded names no append
+			if (submitted && write.appendedTo !== submitted) continue;
 			(lists ??= new Map()).set(
 				write.residencyId,
 				confirmingResidents(write.store, write.residencyId, this.replicatedConfirmation, write.key)
@@ -1437,11 +1439,13 @@ export class DatabaseTransaction implements Transaction {
 	 * checked again here, and kept for the waiter.
 	 */
 	refuseUnconfirmable(transaction: RocksTransaction): void {
+		// a retry of a submitted attempt must reach its native outcome; its batch may already be written
+		if (this.nativeCommitSubmitted) return;
 		this.checkedResidentPeerLists = undefined;
 		if (!this.replicatedConfirmation || !this.writes.some((write) => write && !write.skipReplicationConfirmation))
 			return;
 		try {
-			const residentPeerLists = this.residentPeerLists();
+			const residentPeerLists = this.residentPeerLists(transaction);
 			const databaseName = this.writes.find((write) => write)?.store.rootStore.databaseName;
 			if (databaseName) {
 				const result: any = confirmationFeasibility?.(databaseName, this.replicatedConfirmation, residentPeerLists);
