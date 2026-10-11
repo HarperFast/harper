@@ -160,7 +160,7 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 		const { residencyId } = Records.primaryStore.getEntry('self-only');
 		assert.throws(
 			() => confirmingResidents(Records.primaryStore, residencyId, 1, ['composite', 12n]),
-			/for record \["composite",12\] in database "test"/
+			new RegExp(`for record \\["composite",12\\] in database "${Records.primaryStore.rootStore.databaseName}"`)
 		);
 	});
 
@@ -184,8 +184,16 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 			/not reachable from here/
 		);
 		assert.deepEqual(checked, [
-			{ databaseName: 'test', confirmationCount: 1, residentPeerLists: [[PEER_A]] },
-			{ databaseName: 'test', confirmationCount: 1, residentPeerLists: [['unreachable']] },
+			{
+				databaseName: Records.primaryStore.rootStore.databaseName,
+				confirmationCount: 1,
+				residentPeerLists: [[PEER_A]],
+			},
+			{
+				databaseName: Records.primaryStore.rootStore.databaseName,
+				confirmationCount: 1,
+				residentPeerLists: [['unreachable']],
+			},
 		]);
 		assert.equal((await Records.get('feasible')).body, 'ok');
 		assert.equal(Records.primaryStore.getEntry('infeasible'), undefined);
