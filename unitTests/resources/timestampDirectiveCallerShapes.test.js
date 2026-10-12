@@ -1,8 +1,5 @@
-// Pins the current @updatedTime / @createdTime behavior per caller shape, for the upgrade-impact rule
-// on the v5.1.26 -> v5.2.0 release step. That step added the code-first `types.date.updatedTime` /
-// `.createdTime` builders (resources/defineTable.ts, 182971ad1, #1767); the stamping code in
-// resources/Table.ts is identical between v5.1.26 and v5.2.0. Two later changes (v5.3.0) are marked
-// where they apply.
+// The v5.1.26 -> v5.2.0 step added only the code-first `types.date.updatedTime` / `.createdTime`
+// builders (182971ad1, #1767); the Table.ts stamping these tests exercise is identical in both tags.
 
 require('../testUtils');
 const assert = require('assert');
@@ -15,6 +12,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { defineTable, types } = require('#src/resources/defineTable');
 const { defineResource, schemaOf } = require('#src/resources/defineResource');
 const { RequestTarget } = require('#src/resources/RequestTarget');
+const { waitFor } = require('../waitFor.js');
 
 const DB = 'timestamp_shapes';
 
@@ -28,7 +26,7 @@ async function rejection(promiseOrFn) {
 }
 
 describe('@updatedTime / @createdTime caller shapes', () => {
-	let DateStamped, FloatStamped, StringStamped, LegacyStamped;
+	let DateStamped, FloatStamped, LongStamped, StringStamped, LegacyStamped;
 
 	before(async function () {
 		setupTestDBPath();
@@ -46,6 +44,11 @@ describe('@updatedTime / @createdTime caller shapes', () => {
 				createdAt: Float @createdTime
 				updatedAt: Float @updatedTime
 			}
+			type TsLong @table(database: "${DB}") {
+				id: ID @primaryKey
+				name: String
+				updatedAt: Long @updatedTime
+			}
 			type TsString @table(database: "${DB}") {
 				id: ID @primaryKey
 				name: String
@@ -55,6 +58,7 @@ describe('@updatedTime / @createdTime caller shapes', () => {
 		`);
 		DateStamped = databases[DB].TsDate;
 		FloatStamped = databases[DB].TsFloat;
+		LongStamped = databases[DB].TsLong;
 		StringStamped = databases[DB].TsString;
 		// Operations-API create_table tables carry untyped __createdtime__/__updatedtime__ attributes.
 		LegacyStamped = table({
@@ -85,6 +89,12 @@ describe('@updatedTime / @createdTime caller shapes', () => {
 			assert.strictEqual(typeof record.updatedAt, 'number');
 			assert.strictEqual(record.updatedAt, record.getUpdatedTime());
 			assert.strictEqual(record.createdAt, record.updatedAt);
+		});
+
+		it('Long column: put stamps the raw record version, unrounded (the Long type is not enforced on the stamp)', async () => {
+			await LongStamped.put('n1', { id: 'n1', name: 'a' });
+			const record = await LongStamped.get('n1');
+			assert.strictEqual(record.updatedAt, record.getUpdatedTime());
 		});
 
 		it('String column: put stamps an ISO-8601 string of the record version', async () => {
@@ -123,11 +133,35 @@ describe('@updatedTime / @createdTime caller shapes', () => {
 			assert.strictEqual(second.createdAt, first.createdAt);
 		});
 
-		it('patch of a missing record creates it and stamps both times', async () => {
-			await FloatStamped.patch('f4', { name: 'new' });
+		it('patch of a missing record creates it and stamps both times, overwriting caller values', async () => {
+			await FloatStamped.patch('f4', { name: 'new', createdAt: 5, updatedAt: 6 });
 			const record = await FloatStamped.get('f4');
 			assert.strictEqual(record.updatedAt, record.getUpdatedTime());
 			assert.strictEqual(record.createdAt, record.updatedAt);
+		});
+
+		it('create (POST to the collection) stamps both times, overwriting caller values', async () => {
+			const created = await FloatStamped.create({ name: 'posted', createdAt: 5, updatedAt: 6 });
+			const record = await FloatStamped.get(created.id);
+			assert.strictEqual(record.updatedAt, record.getUpdatedTime());
+			assert.strictEqual(record.createdAt, record.updatedAt);
+		});
+
+		it('patch with unchanged values still re-stamps updatedTime', async () => {
+			await FloatStamped.put('f10', { id: 'f10', name: 'same' });
+			const first = await FloatStamped.get('f10');
+			await FloatStamped.patch('f10', { name: 'same' });
+			const second = await FloatStamped.get('f10');
+			assert.ok(second.updatedAt > first.updatedAt);
+		});
+
+		it('an empty patch writes nothing and leaves updatedTime unchanged', async () => {
+			await FloatStamped.put('f11', { id: 'f11', name: 'a' });
+			const first = await FloatStamped.get('f11');
+			await FloatStamped.patch('f11', {});
+			const second = await FloatStamped.get('f11');
+			assert.strictEqual(second.updatedAt, first.updatedAt);
+			assert.strictEqual(second.getUpdatedTime(), first.getUpdatedTime());
 		});
 	});
 
@@ -147,13 +181,32 @@ describe('@updatedTime / @createdTime caller shapes', () => {
 			assert.strictEqual(record.createdAt, record.getUpdatedTime());
 		});
 
-		it('a createdTime on put or patch of an existing record is replaced by the stored createdTime', async () => {
+		it('a createdTime on put (any value) or a truthy one on patch of an existing record is replaced by the stored createdTime', async () => {
 			await FloatStamped.put('f7', { id: 'f7', name: 'a' });
 			const original = (await FloatStamped.get('f7')).createdAt;
 			await FloatStamped.put('f7', { id: 'f7', name: 'b', createdAt: 1 });
 			assert.strictEqual((await FloatStamped.get('f7')).createdAt, original);
+			await FloatStamped.put('f7', { id: 'f7', name: 'c', createdAt: null });
+			assert.strictEqual((await FloatStamped.get('f7')).createdAt, original);
 			await FloatStamped.patch('f7', { createdAt: 2 });
 			assert.strictEqual((await FloatStamped.get('f7')).createdAt, original);
+		});
+
+		it('a falsy createdTime (0 or null) on patch of an existing record overwrites the stored createdTime', async () => {
+			// The patch retention guard tests the supplied value's truthiness; same in v5.1.26 and v5.2.0.
+			await FloatStamped.put('f12', { id: 'f12', name: 'a' });
+			await FloatStamped.patch('f12', { createdAt: 0 });
+			assert.strictEqual((await FloatStamped.get('f12')).createdAt, 0);
+			await FloatStamped.patch('f12', { createdAt: null });
+			assert.strictEqual((await FloatStamped.get('f12')).createdAt, null);
+		});
+
+		it('a null updatedTime on put or patch is replaced by the record version', async () => {
+			await FloatStamped.put('f13', { id: 'f13', name: 'a', updatedAt: null });
+			assert.strictEqual((await FloatStamped.get('f13')).updatedAt, (await FloatStamped.get('f13')).getUpdatedTime());
+			await FloatStamped.patch('f13', { updatedAt: null });
+			const record = await FloatStamped.get('f13');
+			assert.strictEqual(record.updatedAt, record.getUpdatedTime());
 		});
 
 		it('a wrongly-typed timestamp value is rejected by validation before the stamp would replace it', async () => {
@@ -169,18 +222,19 @@ describe('@updatedTime / @createdTime caller shapes', () => {
 		});
 	});
 
-	describe('replicated writes (context.source set)', () => {
+	describe('replicated writes', () => {
 		it('keep the timestamps the originating node stamped; nothing is re-stamped locally', async () => {
-			const originUpdated = 1_700_000_000_000.5;
-			const originCreated = 1_600_000_000_000;
-			const context = { source: {}, timestamp: Date.now() };
+			const originUpdated = Date.now() - 60_000;
+			const originCreated = originUpdated - 60_000;
+			// the replication receive path (same shape as dualClockAuditRecord.test.js applyFromOrigin)
+			const context = { source: {}, sourceApply: true, timestamp: originUpdated };
 			await transaction(context, async () => {
 				const resource = await FloatStamped.getResource('f9', context);
 				return resource._writeUpdate(
 					'f9',
 					{ id: 'f9', name: 'replicated', createdAt: originCreated, updatedAt: originUpdated },
 					true,
-					{ isNotification: true }
+					{ isNotification: true, nodeId: 1, version: originUpdated }
 				);
 			});
 			const record = await FloatStamped.get('f9');
@@ -191,7 +245,8 @@ describe('@updatedTime / @createdTime caller shapes', () => {
 	});
 });
 
-describe('code-first types.date.updatedTime / createdTime (added in v5.2.0 by 182971ad1, #1767)', () => {
+// Added in v5.2.0 by 182971ad1 (#1767).
+describe('code-first types.date.updatedTime / createdTime', () => {
 	let CodeFirst;
 
 	before(function () {
@@ -240,13 +295,19 @@ describe('code-first types.date.updatedTime / createdTime (added in v5.2.0 by 18
 			}
 		);
 		const error = await rejection(() =>
-			Api.post(new RequestTarget(), { name: 'a', updatedAt: new Date().toISOString() })
+			Api.post(new RequestTarget(), {
+				name: 'a',
+				createdAt: new Date().toISOString(),
+				updatedAt: new Date().toISOString(),
+			})
 		);
 		assert.strictEqual(error.name, 'ValidationError');
-		assert.ok(
-			error.errors.some((issue) => issue.path === 'body.updatedAt'),
-			JSON.stringify(error.errors)
-		);
+		for (const path of ['body.createdAt', 'body.updatedAt']) {
+			assert.ok(
+				error.errors.some((issue) => issue.path === path),
+				JSON.stringify(error.errors)
+			);
+		}
 		assert.strictEqual(ran, false);
 	});
 });
@@ -278,10 +339,9 @@ describe('GraphQL non-null timestamp field (`Date! @updatedTime`)', () => {
 	});
 });
 
-// Through v5.2.x (v5.1.26, v5.2.0 and v5.2.15 measured) a fill stamped updatedTime with the local commit
-// time, and the record the filling get() returned reported getUpdatedTime() 0 unless the source set
-// lastModified. Since v5.3.0 (ba81e7b04, #2065) the fill writes at the source's lastModified, capped
-// at now, else at the fill's start timestamp, and stamps updatedTime with that version.
+// Through v5.2.x a fill stamped updatedTime with the local commit time. Since v5.3.0 (ba81e7b04, #2065)
+// the fill writes at the source's lastModified, capped at now, else at the fill's start timestamp, and
+// stamps updatedTime with that version.
 describe('caching table (sourcedFrom) fill', () => {
 	let Cached;
 	let sourceLastModified;
@@ -308,10 +368,17 @@ describe('caching table (sourcedFrom) fill', () => {
 		});
 	});
 
+	// The filling get() can resolve before the fill commits, so assert on the stored record.
+	async function fill(id) {
+		await Cached.get(id);
+		await waitFor(() => Cached.primaryStore.getSync(id));
+		return Cached.get(id);
+	}
+
 	it('source sets context.lastModified: updatedTime is that time, not the local write time', async () => {
 		sourceLastModified = Date.now() - 3_600_000;
 		sourceRecord = { name: 'from source' };
-		const record = await Cached.get('k1');
+		const record = await fill('k1');
 		assert.strictEqual(record.updatedAt, sourceLastModified);
 		assert.strictEqual(record.getUpdatedTime(), sourceLastModified);
 		assert.strictEqual(record.createdAt, sourceLastModified);
@@ -320,17 +387,24 @@ describe('caching table (sourcedFrom) fill', () => {
 	it('source sets no lastModified: updatedTime is the fill version', async () => {
 		sourceLastModified = undefined;
 		sourceRecord = { name: 'from source' };
-		const before = Date.now();
-		const record = await Cached.get('k2');
+		const record = await fill('k2');
+		assert.ok(record.updatedAt > 0);
 		assert.strictEqual(record.updatedAt, record.getUpdatedTime());
-		assert.ok(record.updatedAt >= before - 1);
 	});
 
 	it('source-returned updatedTime is overwritten; source-returned createdTime is kept', async () => {
 		sourceLastModified = undefined;
 		sourceRecord = { name: 'from source', createdAt: 123, updatedAt: 456 };
-		const record = await Cached.get('k3');
+		const record = await fill('k3');
 		assert.strictEqual(record.createdAt, 123);
+		assert.strictEqual(record.updatedAt, record.getUpdatedTime());
+	});
+
+	it('source sets a future lastModified: updatedTime is capped at the fill time', async () => {
+		sourceLastModified = Date.now() + 3_600_000;
+		sourceRecord = { name: 'from source' };
+		const record = await fill('k4');
+		assert.ok(record.updatedAt < sourceLastModified - 3_000_000);
 		assert.strictEqual(record.updatedAt, record.getUpdatedTime());
 	});
 });
