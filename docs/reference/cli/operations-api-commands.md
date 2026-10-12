@@ -94,8 +94,6 @@ This is just a brief overview of all operations available as CLI commands. Revie
 | `restart`                        | Restart Harper instance               | [System](../operations-api/operations.md#registration--licensing)      | v4.3.0          |
 | `system_information`             | Get system information                | [System](../operations-api/operations.md#registration--licensing)      | v4.3.0          |
 | `registration_info`              | Get registration information          | [Licensing](../operations-api/operations.md#registration--licensing)   | v4.3.0          |
-| `get_fingerprint`                | Get instance fingerprint              | [Licensing](../operations-api/operations.md#registration--licensing)   | v4.3.0          |
-| `set_license`                    | Set license key                       | [Licensing](../operations-api/operations.md#registration--licensing)   | v4.3.0          |
 | `get_usage_licenses`             | Get usage and license info            | [Licensing](../operations-api/operations.md#registration--licensing)   | v4.7.3          |
 | `create_backup`                  | Create a managed database backup      | [Backups](../backups/operations.md)                                    | v5.2.0          |
 | `list_backups`                   | List managed backups                  | [Backups](../backups/operations.md)                                    | v5.2.0          |

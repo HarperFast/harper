@@ -2100,8 +2100,6 @@ Operations for license management.
 | `registration_info`     | Returns registration and version information       | any           |
 | `install_usage_license` | Installs a Harper usage license block              | super_user    |
 | `get_usage_licenses`    | Returns all usage licenses with consumption counts | super_user    |
-| `get_fingerprint`       | _(Deprecated)_ Returns the machine fingerprint     | super_user    |
-| `set_license`           | _(Deprecated)_ Sets a license key                  | super_user    |
 
 ### `registration_info`
 
@@ -2161,8 +2159,8 @@ For modern equivalents, see [Components Overview](../components/overview.md).
 | Operation              | Replaced By                                                         |
 | ---------------------- | ------------------------------------------------------------------- |
 | `install_node_modules` | Handled automatically by `deploy_component` and `restart`           |
-| `get_fingerprint`      | Use `registration_info`                                             |
-| `set_license`          | Use `install_usage_license`                                         |
+| `get_fingerprint`      | Removed in v5.0.0, with no replacement                              |
+| `set_license`          | Removed in v5.0.0; use `install_usage_license` (Harper Pro)         |
 | `search_by_hash`       | Use `search_by_id`                                                  |
 | `search_attribute`     | Use `attribute` field in `search_by_value` / `search_by_conditions` |
 | `search_value`         | Use `value` field in `search_by_value` / `search_by_conditions`     |
