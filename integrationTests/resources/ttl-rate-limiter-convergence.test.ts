@@ -165,8 +165,12 @@ suite(
 			for (const [index, window] of shortWindows.entries()) {
 				let { chain, error } = chains[index];
 				// an increment applied after the capture (a client-side abort the server still applied)
-				// is missing from it; the key may still be live for one more read
-				if (chain.length > 0 && patchesIn(chain) !== window.finalHits) ({ chain, error } = await readChain(window.id));
+				// is missing from it; the key may still be live for one more read, and an expired key's
+				// empty answer must not replace the captured evidence
+				if (chain.length > 0 && patchesIn(chain) !== window.finalHits) {
+					const again = await readChain(window.id);
+					if (again.chain.length > 0) ({ chain, error } = again);
+				}
 				const errors = [error].filter(Boolean);
 				const rangeForKey = forId(window.id);
 				const rangePatches = rangeForKey.filter((entry) => entry.operation === 'patch').length;
