@@ -14,6 +14,8 @@ describe('agent/operations set_agent_config', () => {
 			},
 			startRun: () => {},
 			cancelRun: () => false,
+			admitRun: () => 0,
+			isRunInFlight: () => false,
 		};
 		const operation = buildOperations(deps).find((op) => op.name === 'set_agent_config');
 		return { execute: operation.execute, patches };
@@ -63,6 +65,8 @@ describe('agent/operations budgets (#3040)', () => {
 			},
 			startRun: () => {},
 			cancelRun: () => false,
+			admitRun: () => 0,
+			isRunInFlight: () => false,
 			...deps,
 		});
 		return { execute: all.find((op) => op.name === name).execute, patches };
@@ -190,6 +194,40 @@ describe('agent/operations budgets (#3040)', () => {
 			});
 			assert.deepStrictEqual(started, []);
 			assert.strictEqual((await session.getSession(created.session_id)).messages.length, 0);
+		});
+
+		it('agent_prompt and approve_agent_action start the run with the token taken before their first await', async () => {
+			let cancels = 0;
+			const starts = [];
+			const deps = {
+				getConfig: () => ({ enabled: true }),
+				startRun: (id, admitted) => starts.push(admitted),
+				admitRun: () => cancels,
+				isRunInFlight: () => false,
+			};
+			const created = await session.createSession({ user: 'admin' });
+			const table = session.getAgentSessionTable();
+			const put = table.put.bind(table);
+			table.put = async (row) => {
+				cancels++;
+				return put(row);
+			};
+			await operation('agent_prompt', deps).execute({ session_id: created.session_id, message: 'again' });
+			assert.deepStrictEqual(starts, [0], 'a cancel during the append fences out the run');
+
+			const approval = await session.addPendingApproval(created.session_id, {
+				toolName: 'drop',
+				arguments: {},
+				toolCallId: 'c1',
+				reason: 'destructive',
+			});
+			cancels = 0;
+			starts.length = 0;
+			await operation('approve_agent_action', deps).execute({
+				session_id: created.session_id,
+				approval_id: approval.id,
+			});
+			assert.deepStrictEqual(starts, [0], 'a cancel during the resolve fences out the run');
 		});
 
 		it('get_agent_session returns the row plus its usage', async () => {

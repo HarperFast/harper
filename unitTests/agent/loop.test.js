@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { runAgent, _resetInFlightForTests } = require('#src/agent/loop');
+const { runAgent, admitRun, fenceRuns, _resetInFlightForTests } = require('#src/agent/loop');
 const session = require('#src/agent/session');
 
 function deepFreeze(o) {
@@ -1050,6 +1050,26 @@ describe('agent/loop never overwrites a cancel', () => {
 			['c1', 'c2']
 		);
 		assert.equal(JSON.parse(responses[1].content).error, 'cancelled_by_operator');
+	});
+
+	it('starts no run for a request admitted before a cancel that arrived while it was writing', async () => {
+		const sessionId = await newSession();
+		const admitted = admitRun(sessionId);
+		fenceRuns(sessionId);
+		await cancel(sessionId);
+		let generateCalls = 0;
+		const models = {
+			async generate() {
+				generateCalls++;
+				return { content: 'unreached', finishReason: 'stop' };
+			},
+		};
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, admitted });
+		assert.equal(generateCalls, 0);
+		await expectStillAborted(sessionId);
+
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, admitted: admitRun(sessionId) });
+		assert.equal(generateCalls, 1, 'a request admitted after the cancel runs');
 	});
 
 	it('does not mark a run that was cancelled before it started as running', async () => {

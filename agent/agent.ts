@@ -29,7 +29,7 @@ import { buildBestPracticeTool, loadBestPracticesOverview } from './bestPractice
 import { composeRegistryTools, ensureOperationsToolsRegistered } from './registryTools.ts';
 import { buildOperations } from './operations.ts';
 import { registerAgentMcpTools } from './mcpTools.ts';
-import { isRunInFlight, runAgent, _resetInFlightForTests } from './loop.ts';
+import { admitRun, fenceRuns, isRunInFlight, runAgent, _resetInFlightForTests } from './loop.ts';
 import { parseBudgetCap, parseMaxTurns } from './budget.ts';
 import { appendMessage, getSession } from './session.ts';
 import type { AgentConfig, AgentScopes, AgentTool, HttpFetchConfig } from './types.ts';
@@ -147,20 +147,22 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	}
 
 	async function handleFollowup(sessionId: string, prompt: string): Promise<void> {
+		const admitted = admitRun(sessionId);
 		const session = await getSession(sessionId);
 		if (!session) {
 			log.warn?.(`schedule_followup target session ${sessionId} not found`);
 			return;
 		}
+		if (admitRun(sessionId) !== admitted) return;
 		await appendMessage(sessionId, { role: 'user', content: prompt, createdAt: Date.now() });
-		startRun(sessionId);
+		startRun(sessionId, admitted);
 	}
 
 	function currentTools(): AgentTool[] {
 		return composed.tools;
 	}
 
-	function startRun(sessionId: string): void {
+	function startRun(sessionId: string, admitted?: number): void {
 		// A run is already active for this session. `runAgent` coalesces concurrent starts onto the
 		// existing in-flight promise (bound to the existing controller), so creating a second
 		// controller here would orphan it — `cancelRun` would then abort a controller nothing is
@@ -179,6 +181,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			maxCostUsd: liveConfig.maxCostUsd,
 			autoApprove: liveConfig.autoApprove,
 			signal: controller.signal,
+			admitted,
 			generateOpts: { model: liveConfig.model },
 			systemPrompt: composeSystemPrompt(staticSystemPrompt, liveConfig.systemPromptAppend),
 		})
@@ -189,6 +192,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	}
 
 	function cancelRun(sessionId: string): boolean {
+		fenceRuns(sessionId);
 		// Clear any scheduled followups first. Without this, a timer set via `schedule_followup`
 		// would fire after the operator cancelled, silently re-injecting a user prompt and kicking
 		// the loop off again — surprising behavior and avoidable LLM cost.
@@ -224,6 +228,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		setConfig,
 		startRun,
 		cancelRun,
+		admitRun,
 		isRunInFlight,
 	});
 	for (const op of operations) opts.server.registerOperation(op);

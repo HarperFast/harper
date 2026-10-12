@@ -28,9 +28,11 @@ import type { AgentConfig, AgentMessage, AgentRunStatus, AgentSessionRow, AgentS
 export interface OperationDeps {
 	getConfig: () => AgentConfig;
 	setConfig: (patch: Partial<AgentConfig>) => AgentConfig;
-	startRun: (sessionId: string) => void;
+	/** `admitted` is the `admitRun` token taken before the request's first await. */
+	startRun: (sessionId: string, admitted?: number) => void;
 	cancelRun: (sessionId: string) => boolean;
-	isRunInFlight?: (sessionId: string) => boolean;
+	admitRun: (sessionId: string) => number;
+	isRunInFlight: (sessionId: string) => boolean;
 }
 
 export function buildOperations(deps: OperationDeps): OperationDefinition[] {
@@ -77,6 +79,7 @@ async function agentPrompt(op: any, deps: OperationDeps) {
 	if (!message) throw new ClientError('message is required', 400);
 
 	let sessionId: string = op?.session_id;
+	const admitted = sessionId ? deps.admitRun(sessionId) : undefined;
 	if (sessionId) {
 		const existing = await getSession(sessionId);
 		if (!existing) throw new ClientError(`Unknown session ${sessionId}`, 404);
@@ -88,7 +91,7 @@ async function agentPrompt(op: any, deps: OperationDeps) {
 		}
 		// A cancelled run can still be finishing a model call or a handler; a prompt appended now would land
 		// between that call's tool calls and their results, or be folded into the cancelled run and lost.
-		if (deps.isRunInFlight?.(sessionId)) {
+		if (deps.isRunInFlight(sessionId)) {
 			throw new ClientError(
 				`Session ${sessionId} is still finishing a cancelled run; send the prompt again shortly`,
 				409
@@ -105,7 +108,7 @@ async function agentPrompt(op: any, deps: OperationDeps) {
 		sessionId = created.session_id;
 	}
 
-	deps.startRun(sessionId);
+	deps.startRun(sessionId, admitted);
 	return { session_id: sessionId, status: 'running' satisfies AgentRunStatus };
 }
 
@@ -152,10 +155,11 @@ async function approveAgentAction(op: any, deps: OperationDeps) {
 		throw new ClientError('session_id and approval_id are required', 400);
 	}
 	const approved = op?.approved !== false;
+	const admitted = deps.admitRun(sessionId);
 	const resolved = await resolveApproval(sessionId, approvalId, approved);
 	// Either decision should resume the loop: an approval means execute the saved tool call;
 	// a denial means hand the operator-rejection observation back to the model so it can adjust.
-	deps.startRun(sessionId);
+	deps.startRun(sessionId, admitted);
 	return resolved;
 }
 

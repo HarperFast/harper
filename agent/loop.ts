@@ -38,6 +38,8 @@ export interface RunAgentOpts {
 	/** Per-session caps, measured from the transcript, so an approval resume or a new prompt cannot reset them. */
 	maxSessionTokens?: number;
 	maxCostUsd?: number;
+	/** From `admitRun` when the request that starts this run was admitted; a cancel since then fences it out. */
+	admitted?: number;
 	/** When false, destructive tools pause the loop with a pending approval instead of executing. */
 	autoApprove?: boolean;
 	signal?: AbortSignal;
@@ -47,8 +49,23 @@ export interface RunAgentOpts {
 }
 
 const inFlight = new Map<string, Promise<void>>();
+const cancels = new Map<string, number>();
+
+/** A token for a run admitted now. Take it before the request's first await. */
+export function admitRun(sessionId: string): number {
+	return cancels.get(sessionId) ?? 0;
+}
+
+/**
+ * Called on every cancel, including one that finds no live run to abort: a request admitted before it,
+ * still writing when the cancel arrived, must not start a run that writes `running` over `aborted`.
+ */
+export function fenceRuns(sessionId: string): void {
+	cancels.set(sessionId, admitRun(sessionId) + 1);
+}
 
 export function runAgent(opts: RunAgentOpts): Promise<void> {
+	if (opts.admitted !== undefined && opts.admitted !== admitRun(opts.sessionId)) return Promise.resolve();
 	const existing = inFlight.get(opts.sessionId);
 	if (existing) return existing;
 	const run = doRun(opts).finally(() => {
@@ -305,4 +322,5 @@ function toModelMessages(items: AgentMessage[], systemPrompt: string | undefined
 /** Test-only: clear the in-flight tracking map. */
 export function _resetInFlightForTests(): void {
 	inFlight.clear();
+	cancels.clear();
 }
