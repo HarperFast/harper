@@ -1239,9 +1239,8 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
-	// Pins the caller-impact rule for #1877/#1880's rotation-inheritance fix: which `logger`
-	// usage shapes it changes and which it doesn't. The affected shape itself (a component/
-	// external logger with its own path and no rotation block) is pinned above.
+	// The affected shape itself is pinned above; these pin the unaffected shapes plus one
+	// operational risk the fix introduces for logs that previously never rotated.
 	describe('Test caller-impact shapes for the logger rotation-inheritance fix (#1877/#1880)', () => {
 		const CALLER_SHAPES_DIR = path.join(__dirname, 'callerImpactShapesTest');
 		let shapeCaseDir;
@@ -1315,7 +1314,6 @@ describe('Test harper_logger module', () => {
 			const componentLogPath = path.join(shapeCaseDir, 'tailed-component.log');
 			const componentLogger = testMainLogger.forComponent('tailed');
 			shapeLoggersToCleanup.push(componentLogger);
-			// The #1877 shape: its own path, no rotation block of its own.
 			updateLogger(componentLogger, { path: componentLogPath }, 'tailed', testMainLogger);
 			assert.deepStrictEqual(componentLogger.rotation, mainRotation);
 
@@ -1377,12 +1375,17 @@ describe('Test harper_logger module', () => {
 
 		it('shape: a logger with no level of its own resolves it via mainLoggerRef, the same fallback this fix left in place — only the mainLogger -> mainLoggerRef parameter name changed on that line', () => {
 			const mainLogPath = path.join(shapeCaseDir, 'hdb.log');
-			const testMainLogger = createLogger({ path: mainLogPath, level: 'trace' });
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
 			shapeLoggersToCleanup.push(testMainLogger);
-			updateLogger(testMainLogger, { path: mainLogPath, level: 'trace' }, undefined, testMainLogger);
+			updateLogger(testMainLogger, { path: mainLogPath, level: 'info' }, undefined, testMainLogger);
 
+			// Created while main is still at 'info', so forComponent's own copy-at-creation of
+			// `protoLogger.level` (unrelated to this fix) cannot be what delivers 'trace' below —
+			// only updateLogger's mainLoggerRef fallback, with no level of its own, can.
 			const probe = testMainLogger.forComponent('levelProbe');
 			shapeLoggersToCleanup.push(probe);
+
+			updateLogger(testMainLogger, { path: mainLogPath, level: 'trace' }, undefined, testMainLogger);
 			updateLogger(probe, { path: path.join(shapeCaseDir, 'probe.log') }, 'levelProbe', testMainLogger);
 
 			assert.strictEqual(probe.level, testMainLogger.level);
