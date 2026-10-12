@@ -4,18 +4,18 @@
  * burst (cold reads re-seed the VerificationTable), and per-window convergence classification —
  * CONVERGED_LATE (a read raced still-landing merges) vs STUCK_SHORT (a durably lost increment).
  *
- * A round with a short window ends by printing what harper#3163 needs to be diagnosed from the CI
- * log alone: each short key's live audit chain and the round's audit range, the slowest increments
- * to that key, writes that reached the fixture's fallback key `default`, and the server log
- * directory. The key's chain is read the moment its poll ends — the record expires 500 ms after its
- * last write, so that is the only time it can still be read; the round's timestamp read waits until
- * every window has been measured, because longer I/O between two windows' reads can expire the next
- * key and hide its own short count.
+ * A short window also prints the audit evidence harper#3163 needs (its live chain, the round's
+ * audit range, its slowest increments, writes to the fixture's fallback key `default`). The chain
+ * is read inside the key's own burst worker, only when a GET there already reads short: the record
+ * expires 500 ms after its last write and the windows are measured one after another, so by a later
+ * window's turn its record is often gone, while reading every window's chain would delay the whole
+ * round's measurement. The round's timestamp read runs after every window has been measured, so no
+ * audit I/O sits between two windows' reads.
  *
- * EXPIRED_RECREATED is a short window whose record was evicted at its 500 ms TTL and recreated by a
- * late increment, proven from the live chain: the seed PUT succeeded, the chain has no `upsert`, and
- * it starts with a `patch` stamped after the round began. An empty or failed keyed read proves
- * nothing and leaves the window STUCK_SHORT.
+ * EXPIRED_RECREATED: the record was evicted at its TTL and recreated by a late increment, proven from
+ * the live chain alone — seed PUT succeeded, no `upsert`, first entry a `patch` stamped after the
+ * round began, and as many patches as the record's final count (every post-recreate increment
+ * added 1 to 0). An empty or failed chain proves nothing and leaves the window STUCK_SHORT.
  */
 
 import { suite, test, before, after } from 'node:test';
@@ -109,16 +109,14 @@ suite(
 				body: JSON.stringify({ operation: 'read_audit_log', database: 'data', table: 'RateCounter', ...search }),
 				signal: AbortSignal.timeout(10_000),
 			});
-			const body = await r.json();
-			if (r.status !== 200)
-				throw new Error(`read_audit_log ${search.search_type} → ${r.status} ${JSON.stringify(body)}`);
-			return body;
+			const text = await r.text();
+			if (!r.ok) throw new Error(`read_audit_log ${search.search_type} → ${r.status} ${text.slice(0, 300)}`);
+			return JSON.parse(text);
 		}
 		const operations = (entries: AuditEntry[]) => entries.map((entry) => entry.operation).join(',');
 
-		// The live chain of one key, read while its record still exists; an empty or failed read is
-		// unknown evidence, never proof.
-		async function readChain(id: string): Promise<{ chain: AuditEntry[]; error?: string }> {
+		type Chain = { chain: AuditEntry[]; error?: string };
+		async function readChain(id: string): Promise<Chain> {
 			try {
 				const result = (await readAuditLog({ search_type: 'hash_value', search_values: [id] })) as Record<
 					string,
@@ -130,37 +128,34 @@ suite(
 			}
 		}
 
-		type ShortWindow = {
-			id: string;
-			acked: number;
-			label: string;
-			detail: string;
-			chain: AuditEntry[];
-			error?: string;
-		};
-		// One timestamp read for the round after every window has been measured. It is the only
-		// source for `default` writes (a keyed read of an expired key is empty) and corroborates the
-		// short keys' chains; harper#3164 ends it at the first entry whose record has expired, so it
-		// is labelled incomplete rather than trusted as the full history.
+		type ShortWindow = { id: string; acked: number; finalHits: number | null; label: string; detail: string } & Chain;
+		// The timestamp range is the only source for `default` writes (a keyed read of an expired key is
+		// empty). harper#3164 ends it at the first entry whose record has expired; the stream then
+		// carries a terminal `{ error }` element, so a truncated range is detected, not inferred.
 		async function diagnoseShortWindows(
 			shortWindows: ShortWindow[],
 			roundStart: number,
 			seeded: Set<string>
-		): Promise<Array<ShortWindow & { recreated: boolean }>> {
-			let range: AuditEntry[] = [];
+		): Promise<{ strayWrites: string; windows: Array<ShortWindow & { recreated: boolean }> }> {
+			let range: Array<AuditEntry & { error?: unknown }> = [];
 			let rangeError: string | undefined;
 			try {
 				const result = await readAuditLog({ search_type: 'timestamp', search_values: [roundStart, Date.now()] });
-				if (Array.isArray(result)) range = result as AuditEntry[];
+				if (Array.isArray(result)) range = result;
 				else rangeError = `timestamp read returned ${typeof result}`;
 			} catch (error) {
 				rangeError = (error as Error).message;
 			}
+			const terminal = range.at(-1);
+			if (terminal && !terminal.ids && terminal.error !== undefined) {
+				rangeError = `range truncated: ${String(terminal.error)}`;
+				range = range.slice(0, -1);
+			}
 			const forId = (id: string) => range.filter((entry) => entry.ids?.includes(id));
-			const strayWrites = forId('default').length;
-			return shortWindows.map((window) => {
+			const strayWrites = rangeError ? `>=${forId('default').length} (${rangeError})` : String(forId('default').length);
+			const windows = shortWindows.map((window) => {
 				const { chain } = window;
-				const errors = [window.error, rangeError].filter(Boolean);
+				const errors = [window.error].filter(Boolean);
 				const rangeForKey = forId(window.id);
 				const rangePatches = rangeForKey.filter((entry) => entry.operation === 'patch').length;
 				const recreated =
@@ -168,7 +163,8 @@ suite(
 					chain.length > 0 &&
 					chain[0].operation === 'patch' &&
 					chain[0].timestamp >= roundStart &&
-					!chain.some((entry) => entry.operation === 'upsert');
+					!chain.some((entry) => entry.operation === 'upsert') &&
+					chain.filter((entry) => entry.operation === 'patch').length === window.finalHits;
 				const slowest = (settledIncrements.get(window.id) ?? [])
 					.slice()
 					.sort((a, b) => b.ms - a.ms)
@@ -176,11 +172,12 @@ suite(
 					.map((settled) => `${settled.ms}ms:${settled.status}`);
 				const detail =
 					`${window.detail} chain=[${operations(chain)}] ` +
-					`round-range=[${operations(rangeForKey)}]${rangePatches < window.acked ? ' (incomplete, see harper#3164)' : ''} ` +
-					`default-writes=${strayWrites} slowest=[${slowest.join(' ')}]` +
-					(errors.length ? ` audit-errors=${JSON.stringify(errors)}` : '');
+					`round-range=[${operations(rangeForKey)}] patches=${rangePatches}/${window.acked}${rangeError ? ' (range truncated, see harper#3164)' : ''} ` +
+					`slowest=[${slowest.join(' ')}]` +
+					(errors.length ? ` chain-error=${JSON.stringify(errors)}` : '');
 				return { ...window, recreated, detail };
 			});
+			return { strayWrites, windows };
 		}
 
 		async function put(id: string, hits: number): Promise<number | 'error'> {
@@ -223,6 +220,7 @@ suite(
 			for (let round = 0; round < ROUNDS; round++) {
 				const ids = Array.from({ length: WINDOWS }, (_, w) => `r${round}w${w}`);
 				const roundStart = Date.now();
+				settledIncrements.clear();
 				const seedStatuses = await Promise.all(ids.map((id) => put(id, 0)));
 				const seeded = new Set(ids.filter((_, index) => seedStatuses[index] === 204));
 				const shortWindows: ShortWindow[] = [];
@@ -236,15 +234,18 @@ suite(
 						const results = await Promise.all(Array.from({ length: HITS }, () => increment(id)));
 						bursting = false;
 						await reader;
+						const acked = results.filter((s) => s === 200).length;
+						const early = await getHits(id);
 						return {
 							id,
-							acked: results.filter((s) => s === 200).length,
+							acked,
 							errs: results.filter((s) => s === 'error').length,
+							...(early.status === 200 && early.hits! < acked ? await readChain(id) : { chain: [] }),
 						};
 					})
 				);
 
-				for (const { id, acked, errs } of perWindow) {
+				for (const { id, acked, errs, chain, error } of perWindow) {
 					// a window whose burst was wholly rejected measures nothing
 					if (acked === 0) {
 						inconclusive++;
@@ -295,33 +296,37 @@ suite(
 							`${id}: OVER-LATE final=${finalHits} acked=${acked} errs=${errs} seen=[${seen.join(',')}]`
 						);
 					} else if (expired) {
-						inconclusive++;
 						shortWindows.push({
 							id,
 							acked,
+							finalHits,
 							label: 'EXPIRED-WHILE-SHORT',
 							detail: `acked=${acked} seen=[${seen.join(',')}]`,
-							...(await readChain(id)),
+							chain,
+							error,
 						});
 					} else {
 						shortWindows.push({
 							id,
 							acked,
+							finalHits,
 							label: 'STUCK_SHORT',
 							detail: `final=${finalHits} acked=${acked} seen=[${seen.join(',')}]`,
-							...(await readChain(id)),
+							chain,
+							error,
 						});
 					}
 				}
 				if (shortWindows.length) {
-					for (const window of await diagnoseShortWindows(shortWindows, roundStart, seeded)) {
+					const { strayWrites, windows } = await diagnoseShortWindows(shortWindows, roundStart, seeded);
+					anomalyLogs.push(`round ${round}: default-writes=${strayWrites}`);
+					for (const window of windows) {
 						let label = window.label;
-						if (label === 'STUCK_SHORT') {
-							if (window.recreated) {
-								expiredRecreated++;
-								label = 'EXPIRED_RECREATED';
-							} else stuckShort++;
-						}
+						if (window.recreated) {
+							expiredRecreated++;
+							label = 'EXPIRED_RECREATED';
+						} else if (label === 'STUCK_SHORT') stuckShort++;
+						else inconclusive++;
 						anomalyLogs.push(`${window.id}: ${label} ${window.detail}`);
 					}
 				}
