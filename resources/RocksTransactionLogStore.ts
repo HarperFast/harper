@@ -226,19 +226,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 			if (recordId === undefined) {
 				throw new Error('recordId must be provided');
 			}
-			// this a request for a transaction log entry by a timestamp
-			let keyFound = false;
-			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId })) {
-				if (entry.txnLogKey !== key) break; // no longer in this transaction
+			// Every entry at exactly this key, not the first transaction an exact start reaches: explicit
+			// timestamps let unrelated transactions of one origin share a key, anywhere in the log.
+			for (const entry of this.getRange({ start: key, end: nextLogKey(key), log: nodeId })) {
 				if (entry.recordId === recordId && entry.tableId === tableId) return entry;
-				keyFound = true;
-			}
-			// Explicit timestamps let unrelated transactions of one origin share a key, and an exact start
-			// only reaches the first of them.
-			if (keyFound) {
-				for (const entry of this.getRange({ start: key, end: nextLogKey(key), log: nodeId })) {
-					if (entry.txnLogKey === key && entry.recordId === recordId && entry.tableId === tableId) return entry;
-				}
 			}
 		} else {
 			// Harper puts some metadata in the database, we will just put this in the root store instead

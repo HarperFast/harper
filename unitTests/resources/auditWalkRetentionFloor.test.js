@@ -21,7 +21,7 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 	// key appearing in `getSyncKeys` is what proves it ran.
 	function spyAuditStore(auditStore) {
 		const getSyncKeys = [];
-		const exactStartRanges = [];
+		const keyedRanges = [];
 		const origGetSync = auditStore.getSync.bind(auditStore);
 		const origGetRange = auditStore.getRange.bind(auditStore);
 		auditStore.getSync = function (key, ...rest) {
@@ -29,12 +29,12 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 			return origGetSync(key, ...rest);
 		};
 		auditStore.getRange = function (options, ...rest) {
-			if (options?.exactStart) exactStartRanges.push({ start: options.start, log: options.log });
+			if (options?.end !== undefined) keyedRanges.push({ start: options.start, log: options.log });
 			return origGetRange(options, ...rest);
 		};
 		return {
 			getSyncKeys,
-			exactStartRanges,
+			keyedRanges,
 			restore() {
 				auditStore.getSync = origGetSync;
 				auditStore.getRange = origGetRange;
@@ -293,8 +293,8 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 
 		const spy = await applyAndSpy(T, () => T.patch('logs', { count: 1 }, { timestamp: headKey - 10 }));
 
-		const headLookup = spy.exactStartRanges.find((range) => range.start === headKey);
-		assert.ok(headLookup, `the walk should look up the head; got ${JSON.stringify(spy.exactStartRanges)}`);
+		const headLookup = spy.keyedRanges.find((range) => range.start === headKey);
+		assert.ok(headLookup, `the walk should look up the head; got ${JSON.stringify(spy.keyedRanges)}`);
 		// `log: undefined` means "aggregate over every per-origin log", which is what pegged the field
 		// receivers. A local head resolves to log 0.
 		assert.strictEqual(headLookup.log, 0, 'the head lookup must name the local log, not aggregate');
@@ -302,8 +302,8 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 		// unknown and must keep aggregating — moving the `?? 0` to the lookup call site would send it to
 		// the local log alone and truncate a cross-origin chain.
 		assert.ok(
-			spy.exactStartRanges.some((range) => range.start !== headKey && range.log === undefined),
-			`a predecessor step must still aggregate; got ${JSON.stringify(spy.exactStartRanges)}`
+			spy.keyedRanges.some((range) => range.start !== headKey && range.log === undefined),
+			`a predecessor step must still aggregate; got ${JSON.stringify(spy.keyedRanges)}`
 		);
 	});
 });

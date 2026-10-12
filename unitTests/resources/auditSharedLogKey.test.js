@@ -17,13 +17,13 @@ describe('Keyed audit lookup when transactions share a log key', () => {
 		setMainIsWorker(true);
 		Shared = table({
 			table: 'SharedLogKey',
-			database: 'test',
+			database: 'auditSharedLogKey',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'count' }],
 			audit: true,
 		});
 		Other = table({
 			table: 'SharedLogKeyOther',
-			database: 'test',
+			database: 'auditSharedLogKey',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 			audit: true,
 		});
@@ -33,8 +33,8 @@ describe('Keyed audit lookup when transactions share a log key', () => {
 		if (isLMDB) this.skip();
 	});
 
-	// far enough ahead that the origin-closed floor admits the key unchanged
-	const futureKey = (offset = 0) => Date.now() + 60_000 + offset;
+	// ahead of the clock, so the origin-closed floor admits the key unchanged
+	const futureKey = (offset = 0) => Date.now() + 1000 + offset;
 	const lookup = (key, id, nodeId = 0, Resource = Shared) => Resource.auditStore.get(key, Resource.tableId, id, nodeId);
 	function transactionsAt(key) {
 		const transactions = new Set();
