@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { describeTable } = require('#src/dataLayer/schemaDescribe');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker, getWorkerIndex } = require('#js/server/threads/manageThreads');
 
 describe('Table.getRecordCount caller impact', () => {
 	const LIVE_ROWS = 3000;
@@ -16,9 +16,9 @@ describe('Table.getRecordCount caller impact', () => {
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 		});
-		let last;
-		for (let i = 0; i < rows; i++) last = built.put({ id: rowId(i), name: 'name-' + i });
-		await last;
+		const puts = [];
+		for (let i = 0; i < rows; i++) puts.push(built.put({ id: rowId(i), name: 'name-' + i }));
+		await Promise.all(puts);
 		built.primaryStore.flushSync?.();
 		return built;
 	}
@@ -26,14 +26,20 @@ describe('Table.getRecordCount caller impact', () => {
 	let SmallTable;
 	let BelowFloorTable;
 	let EstimatorTable;
+	let originalWasWorker;
 
 	before(async function () {
 		this.timeout(120000);
 		setupTestDBPath();
+		originalWasWorker = getWorkerIndex() !== undefined;
 		setMainIsWorker(true);
 		SmallTable = await buildTable('RecordCountImpactSmall', 25);
 		BelowFloorTable = await buildTable('RecordCountImpactBelowFloor', 900);
 		EstimatorTable = await buildTable('RecordCountImpactEstimator', LIVE_ROWS);
+	});
+
+	after(() => {
+		setMainIsWorker(originalWasWorker);
 	});
 
 	it('a bare `Table.getRecordCount()` call (no options object at all) returns an exact count on a small table', async () => {
