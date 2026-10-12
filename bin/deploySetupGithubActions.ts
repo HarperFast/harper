@@ -15,7 +15,10 @@ import { cliOperations, resolveGitRepo } from './cliOperations.ts';
 import { normalizeTarget } from './cliCredentials.ts';
 
 export const GITHUB_ACTIONS_ISSUER = 'https://token.actions.githubusercontent.com';
-export const CI_DEPLOY_OPERATIONS = ['deploy_component', 'get_job'];
+// `get_job` lets the workflow wait for the rollout. `registration_info` (which returns only Harper's
+// version) is the CLI's check before a deploy: refused, the deploy still works, but the cluster logs a
+// denial on every run.
+export const CI_DEPLOY_OPERATIONS = ['deploy_component', 'get_job', 'registration_info'];
 const DEFAULT_WORKFLOW = '.github/workflows/deploy.yaml';
 const DEFAULT_BRANCH = 'main';
 const DEFAULT_ENVIRONMENT = 'production';
@@ -486,7 +489,7 @@ export async function setupGithubActions(req: any, transport: any, component: st
 		chalk.gray(
 			`  ${created.length > 0 ? `Created ${created.join(', ')}.` : 'Everything already matched; nothing was changed.'}\n` +
 				`  Runs of ${workflow} on ${branch}, in the ${environment} environment, act as ${names.user}, which can ` +
-				`run ${CI_DEPLOY_OPERATIONS.join(' and ')} — for any component on this cluster, not only ${component}.`
+				`run ${CI_DEPLOY_OPERATIONS.slice(0, -1).join(', ')} and ${CI_DEPLOY_OPERATIONS.at(-1)} — for any component on this cluster, not only ${component}.`
 		)
 	);
 	for (const note of notes) console.log(chalk.yellow(`  ${note}`));

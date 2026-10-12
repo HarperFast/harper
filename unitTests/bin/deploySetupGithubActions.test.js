@@ -235,8 +235,14 @@ jobs:
 
 		it('treats operation lists as sets', () => {
 			const role = matchingRole();
-			role.permission = { ...role.permission, operations: ['get_job', 'deploy_component'] };
+			role.permission = { ...role.permission, operations: [...CI_DEPLOY_OPERATIONS].reverse() };
 			assert.strictEqual(roleDifference(role, desired().role), undefined);
+		});
+
+		it('flags a role missing one of the operations', () => {
+			const role = matchingRole();
+			role.permission = { ...role.permission, operations: ['deploy_component', 'get_job'] };
+			assert.match(roleDifference(role, desired().role), /its operations are/);
 		});
 
 		it('flags a role with more authority than deploying', () => {
@@ -248,7 +254,7 @@ jobs:
 			);
 			assert.match(
 				roleDifference(
-					{ ...role, permission: { ...role.permission, operations: ['deploy_component', 'get_job', 'add_user'] } },
+					{ ...role, permission: { ...role.permission, operations: [...CI_DEPLOY_OPERATIONS, 'add_user'] } },
 					desired().role
 				),
 				/its operations are/
