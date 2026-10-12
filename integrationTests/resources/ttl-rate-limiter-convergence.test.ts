@@ -5,11 +5,11 @@
  * CONVERGED_LATE (a read raced still-landing merges) vs STUCK_SHORT (a durably lost increment).
  *
  * A short window also prints the audit evidence harper#3163 needs. Its live chain is requested from
- * inside the key's own burst worker, only when a GET there already reads short, and never awaited
- * before the round is measured: the record expires 500 ms after its last write and the windows are
- * measured one after another, so by a later window's turn its record is often gone, while any audit
- * wait ahead of a measurement can expire the keys still to be read. The round's timestamp read runs
- * after every window has been measured.
+ * inside the key's own burst worker, behind a GET that already reads short, and nothing in that
+ * sequence is awaited before the round is measured: the record expires 500 ms after its last write
+ * and the windows are measured one after another, so by a later window's turn its record is often
+ * gone, while any wait ahead of a measurement can expire the keys still to be read. The round's
+ * timestamp read runs after every window has been measured.
  *
  * EXPIRED_RECREATED: the record was evicted at its TTL and recreated by a late increment, proven from
  * the live chain alone — seed PUT succeeded, no `upsert`, first entry a `patch` stamped after the
@@ -160,8 +160,13 @@ suite(
 			}
 			const forId = (id: string) => range.filter((entry) => entry.ids?.includes(id));
 			const strayWrites = rangeError ? `>=${forId('default').length} (${rangeError})` : String(forId('default').length);
-			const windows = shortWindows.map((window, index) => {
-				const { chain, error } = chains[index];
+			const patchesIn = (chain: AuditEntry[]) => chain.filter((entry) => entry.operation === 'patch').length;
+			const windows: Array<ShortWindow & { recreated: boolean }> = [];
+			for (const [index, window] of shortWindows.entries()) {
+				let { chain, error } = chains[index];
+				// an increment applied after the capture (a client-side abort the server still applied)
+				// is missing from it; the key may still be live for one more read
+				if (chain.length > 0 && patchesIn(chain) !== window.finalHits) ({ chain, error } = await readChain(window.id));
 				const errors = [error].filter(Boolean);
 				const rangeForKey = forId(window.id);
 				const rangePatches = rangeForKey.filter((entry) => entry.operation === 'patch').length;
@@ -171,7 +176,7 @@ suite(
 					chain[0].operation === 'patch' &&
 					chain[0].timestamp >= roundStart &&
 					!chain.some((entry) => entry.operation === 'upsert') &&
-					chain.filter((entry) => entry.operation === 'patch').length === window.finalHits;
+					patchesIn(chain) === window.finalHits;
 				const slowest = (settledIncrements.get(window.id) ?? [])
 					.slice()
 					.sort((a, b) => b.ms - a.ms)
@@ -182,8 +187,8 @@ suite(
 					`round-range=[${operations(rangeForKey)}] patches=${rangePatches}/${window.acked}${rangeError ? ' (range truncated, see harper#3164)' : ''} ` +
 					`slowest=[${slowest.join(' ')}]` +
 					(errors.length ? ` chain-error=${JSON.stringify(errors)}` : '');
-				return { ...window, recreated, detail };
-			});
+				windows.push({ ...window, recreated, detail });
+			}
 			return { strayWrites, windows };
 		}
 
@@ -242,13 +247,13 @@ suite(
 						bursting = false;
 						await reader;
 						const acked = results.filter((s) => s === 200).length;
-						const early = await getHits(id);
 						return {
 							id,
 							acked,
 							errs: results.filter((s) => s === 'error').length,
-							pendingChain:
-								early.status === 200 && early.hits! < acked ? readChain(id) : Promise.resolve({ chain: [] }),
+							pendingChain: getHits(id).then((early) =>
+								early.status === 200 && early.hits! < acked ? readChain(id) : { chain: [] }
+							),
 						};
 					})
 				);
