@@ -7,7 +7,7 @@
 // Registration goes through the real `Scope` proxy and lands in the real router (`makeCallbackChain`, the
 // builder `server/http.ts` uses for every port), so each test observes the route and the URL a handler sees.
 const assert = require('node:assert');
-const { join, basename } = require('node:path');
+const { join, basename, dirname } = require('node:path');
 const { tmpdir } = require('node:os');
 const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
 const { randomUUID } = require('node:crypto');
@@ -21,15 +21,12 @@ const { Request } = require('#src/server/serverHelpers/Request');
 const { toScopeMount } = require('#src/components/scopeMount');
 const { waitFor } = require('../waitFor.js');
 const { server } = require('#src/server/Server');
-const httpModule = require('#src/server/http');
-const { describeMiddlewareChains } = httpModule;
+const { describeMiddlewareChains } = require('#src/server/http');
 const { handleApplication: handleRest } = require('#src/server/REST');
 // fastifyRoutes builds one fastify app per module instance; a fresh instance keeps another file's app out of this one
 delete require.cache[require.resolve('#src/server/fastifyRoutes')];
 const { handleApplication: handleFastifyRoutes } = require('#src/server/fastifyRoutes');
 const { loadComponent, loadedPaths, TRUSTED_RESOURCE_PLUGINS } = require('#src/components/componentLoader');
-const env = require('#src/utility/environment/environmentManager');
-const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 const PORT = 'mount-caller-impact';
 
@@ -515,24 +512,31 @@ describe('server.http under application mounts: caller impact', () => {
 			);
 			openScopes.push(scope);
 			await scope.ready;
-			let fastifyApp;
-			const originalRegister = httpModule.registerFastifyInstance;
-			httpModule.registerFastifyInstance = (port, instance) => (fastifyApp = instance);
-			// the app is handed over once per configured http port, so there must be one
-			const configuredPort = env.get(CONFIG_PARAMS.HTTP_PORT);
-			if (configuredPort == null) env.setProperty(CONFIG_PARAMS.HTTP_PORT, 19521);
+			// fastify hands its http.Server to the bare server.http; that server's 'request' listener is the handler
+			// fastify.inject() drives through light-my-request
+			let fastifyHttpServer;
+			const originalHttp = server.http;
+			server.http = (listener) => (fastifyHttpServer = listener);
 			try {
 				handleFastifyRoutes(scope);
-				await waitFor(() => fastifyApp, { timeout: 10000, message: 'the fastify app was never registered' });
-				// the entry handler registers the route folder after it has handed the app to the port
+				await waitFor(() => fastifyHttpServer, { timeout: 10000, message: 'fastify never registered its server' });
+				// the entry handler registers the route folder, then boots the app
 				await scope.waitForInitialLoads();
 			} finally {
-				httpModule.registerFastifyInstance = originalRegister;
-				if (configuredPort == null) env.setProperty(CONFIG_PARAMS.HTTP_PORT, configuredPort);
+				server.http = originalHttp;
 			}
-			assert.ok(fastifyApp, 'the fastify app was registered for the http port');
-			assert.strictEqual((await fastifyApp.inject({ method: 'GET', url: '/v1/hello' })).statusCode, 200);
-			assert.strictEqual((await fastifyApp.inject({ method: 'GET', url: '/hello' })).statusCode, 404);
+			const inject = require(require.resolve('light-my-request', { paths: [dirname(require.resolve('fastify'))] }));
+			const [fastifyHandler] = fastifyHttpServer.listeners('request');
+			// a fastify miss is passed on to Harper's next server as 'unhandled'; the stub above removed that cascade
+			const unhandled = [];
+			fastifyHttpServer.on('unhandled', (request, response) => {
+				unhandled.push(request.url);
+				response.statusCode = 404;
+				response.end();
+			});
+			assert.strictEqual((await inject(fastifyHandler, { method: 'GET', url: '/v1/hello' })).statusCode, 200);
+			assert.strictEqual((await inject(fastifyHandler, { method: 'GET', url: '/hello' })).statusCode, 404);
+			assert.deepStrictEqual(unhandled, ['/hello']);
 		});
 	});
 });
