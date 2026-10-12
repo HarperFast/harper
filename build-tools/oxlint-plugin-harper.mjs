@@ -1,13 +1,15 @@
 const ASSERT_MODULES = new Set(['assert', 'node:assert', 'assert/strict', 'node:assert/strict']);
 const TEST_MODULES = new Set(['test', 'node:test']);
-const TEST_FUNCTIONS = new Set(['test', 'it']);
+// The node:test functions whose callback receives a TestContext (before/after/describe get none).
+const TEST_FUNCTIONS = new Set(['test', 'it', 'beforeEach', 'afterEach']);
 const TEST_MODIFIERS = new Set(['skip', 'only', 'todo']);
 const TS_WRAPPERS = new Set(['TSAsExpression', 'TSSatisfiesExpression', 'TSNonNullExpression', 'TSTypeAssertion']);
 
 // What an expression resolves to, as far as this rule cares:
 //   'module'        a callable truthiness assertion that also carries `.ok`: the assert module itself
 //                   and its `default` and `strict` exports
-//   'testFunction'  node:test's `test`/`it`, whose callback receives a TestContext
+//   'testFunction'  one of TEST_FUNCTIONS; the module object (default or namespace import) counts too,
+//                   since `test.it(...)` and `ns.test(...)` resolve through it
 //   'context'       that TestContext
 //   'contextAssert' `context.assert`, an object of assert methods (not callable)
 //   any other string: the named assert method it resolves to, e.g. 'ok'
@@ -34,8 +36,10 @@ function unwrap(node) {
 
 function memberValueOf(object, name) {
 	if (object === 'module') return exportOrModule(name);
-	if (object === 'testFunction' && TEST_MODIFIERS.has(name)) return 'testFunction';
-	if (object === 'context') return name === 'assert' ? 'contextAssert' : name === 'test' ? 'testFunction' : undefined;
+	if (object === 'testFunction')
+		return TEST_MODIFIERS.has(name) || TEST_FUNCTIONS.has(name) ? 'testFunction' : undefined;
+	if (object === 'context')
+		return name === 'assert' ? 'contextAssert' : TEST_FUNCTIONS.has(name) ? 'testFunction' : undefined;
 	if (object === 'contextAssert') return name;
 }
 

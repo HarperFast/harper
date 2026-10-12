@@ -11,7 +11,8 @@ const RULE_CODE = 'harper(no-literal-true-assertion)';
 const FIXTURE = `import assert, { ok, ok as check, strict } from 'node:assert';
 import * as assertNamespace from 'node:assert';
 import strictAssert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, beforeEach, before } from 'node:test';
+import * as testNamespace from 'node:test';
 const { ok: destructured } = assert;
 const required = require('assert');
 const aliased = assert;
@@ -55,6 +56,12 @@ test('context assert', (t) => {
 test.skip('skipped context assert', (t) => {
 	t.assert.ok(true); // flagged
 });
+testNamespace.test('namespace import', (t) => {
+	t.assert.ok(true); // flagged
+});
+beforeEach((t) => {
+	t.assert.ok(true); // flagged
+});
 
 const observed = true;
 ok(observed);
@@ -69,6 +76,9 @@ function shadowed(ok) {
 	ok(true);
 }
 shadowed(() => {});
+before((suiteContext) => {
+	suiteContext.assert.ok(true);
+});
 const local = { assert: { ok(_value) {} } };
 local.assert.ok(true);
 var selfReference = selfReference;
