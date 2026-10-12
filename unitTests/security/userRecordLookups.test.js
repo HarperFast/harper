@@ -351,9 +351,8 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			user.onUserChange((change) => changes.push(change));
 			user._userChangeSubscription('hdb_role').close(new Error('event failed to deliver'));
 			assert.strictEqual(user.userChangeNotificationEpoch(), 0);
-			// The error the subscription closes with reaches the listener as an unknown change of its own,
-			// which would satisfy the gap check below before the re-subscription's notification lands.
-			await new Promise(setImmediate);
+			// only the reopen's notification may satisfy the gap check below
+			await waitFor(() => changes.includes(undefined), { message: 'the close was not notified' });
 			changes.length = 0;
 
 			await waitFor(() => user.userChangeNotificationEpoch() !== 0, { timeout: 5000, message: 'never re-subscribed' });
