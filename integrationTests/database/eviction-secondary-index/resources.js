@@ -24,23 +24,18 @@ import { setTimeout as delay } from 'node:timers/promises';
 //   GET  /DumpE/     — [{ id, bucket, seq }] every Expiring base row (base oracle).
 //   GET  /DumpP/     — [{ id, bucket, seq }] every Permanent base row (base oracle).
 //
-// Direct-store oracle (D-242 protocol): search_by_value (what the old checkConsistency() used)
-// joins every hit back through the primary record and silently drops any hit whose record is
-// gone, so it cannot see a dangling/phantom secondary-index entry -- exactly the F-149/F-175
-// defect class this suite exists to catch. The routes below read the raw secondary-index dbi
-// directly instead, and bind the raw primary scan + raw index scan to ONE shared read
-// transaction (Table._readTxnForContext) so a concurrent eviction commit cannot land between
-// the two reads and manufacture a false phantom/missing.
+// Direct-store oracle: search_by_value joins every hit back through the primary record and
+// silently drops any hit whose record is gone, so it cannot see a dangling/phantom secondary-
+// index entry. The routes below read the raw secondary-index dbi directly instead, and bind the
+// raw primary scan + raw index scan to ONE shared read transaction (Table._readTxnForContext)
+// so a concurrent eviction commit cannot land between the two reads.
 //
-//   GET  /RawSnapshot/?table=X&attr=bucket — { rows, indexEntries } for table X, both read
-//                        under one transaction: rows is a raw primaryStore scan (physical
-//                        presence, not Table.search()'s logical/expiration-filtered view);
-//                        indexEntries is a raw index.getRange({start:null}) scan (D-242-safe,
-//                        includes null-keyed entries).
+//   GET  /RawSnapshot/?table=X&attr=bucket — { rows, indexEntries }, both read under one
+//                        transaction: rows is a raw primaryStore scan (physical presence, not
+//                        Table.search()'s logical/expiration-filtered view); indexEntries is a
+//                        raw index.getRange({start:null}) scan (includes null-keyed entries).
 //   POST /PlantDangling/   { table, attr, value, key } — writes DIRECTLY into the raw index dbi
-//                        (index.put(value, key)) with no corresponding primary row. Used only to
-//                        prove the RawSnapshot oracle can see a dangling/phantom entry before
-//                        trusting a "0 entries" result elsewhere.
+//                        with no corresponding primary row, to prove RawSnapshot can see one.
 //   POST /RemoveIndexEntry/ { table, attr, value, key } — cleans up a planted entry.
 
 function pad(n) {
@@ -48,7 +43,7 @@ function pad(n) {
 }
 
 function getTable(name) {
-	const t = tables[name === 'Permanent' ? 'Permanent' : 'Expiring'];
+	const t = tables[name];
 	if (!t) throw new Error(`unknown table "${name}"`);
 	return t;
 }

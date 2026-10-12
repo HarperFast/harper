@@ -9,17 +9,14 @@
 //   Deletes the row and returns normally (no throw) — the regression guard confirming the
 //   fix didn't break an ordinary committed delete.
 //
-// Direct-store oracle (D-242 protocol, matching eviction-index-phantom-null-keys/resources.js):
+// Direct-store oracle (matching eviction-index-phantom-null-keys/resources.js):
 // GET /IndexDump/?attr=bucket reads the raw secondary-index dbi via index.getRange({start:null})
-// — an unqualified getRange() on LMDB starts *after* `null` and silently skips null-keyed
-// entries, which is exactly the F-175 phantom shape. search_by_value cannot see this: it joins
-// each hit back through the primary record and drops any hit whose record is gone, so it is
-// blind by construction to the dangling/phantom entries this suite exists to catch.
+// — an unqualified getRange() starts after `null` and would silently skip null-keyed entries.
 //
 // POST /PlantDangling/ { attr, value, key } writes DIRECTLY into the raw index dbi
-// (index.put(value, key)) with no corresponding primary row — used only to prove the IndexDump
-// oracle can see a dangling/phantom entry before trusting a "0 entries" result elsewhere.
-// POST /RemoveIndexEntry/ { attr, value, key } cleans up such a planted entry (index.remove()).
+// (index.put(value, key)) with no corresponding primary row — proves IndexDump can see a
+// dangling entry before trusting a "0 entries" result elsewhere.
+// POST /RemoveIndexEntry/ { attr, value, key } cleans up such a planted entry.
 
 export class IndexDump extends Resource {
 	static loadAsInstance = false;

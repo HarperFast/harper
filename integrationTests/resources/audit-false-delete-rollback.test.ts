@@ -23,16 +23,11 @@
  * The index-entry half of both checks reads the raw secondary-index store directly
  * (`index.getRange({ start: null })`, resources.js's `IndexDump`), never `search_by_value`:
  * `search_by_value` joins each hit back through its primary record (resources/Table.ts,
- * `if (record == null) return canSkip ? SKIP : record`) and silently drops any hit whose
- * record is gone — exactly the dangling/phantom shape this suite exists to catch, and exactly
- * what a committed delete that skipped the index cleanup would produce. A raw-index check must
- * also not be scoped to the expected bucket value alone: a regression that leaves a null-keyed
- * phantom (`[null, id]`, the F-175 shape in eviction-index-phantom-null-keys.test.ts) would
- * still pass a check scoped to `bucket=X`, so the oracle here asks "no entry under *any*
- * value", not "zero entries under the one value this test used". `Q0` below plants both a
- * real-valued and a null-keyed dangling entry (bypassing the record layer, like
- * table-clear-secondary-index.test.ts's Q0) to prove the raw read actually sees both shapes
- * before any of P1/P2's "0 entries" results are trusted.
+ * `if (record == null) return canSkip ? SKIP : record`) and drops any hit whose record is
+ * gone, so it cannot see the dangling/phantom entry a bad delete would leave. The check also
+ * asks "no entry under *any* indexed value", not "zero entries under the bucket this test
+ * used", so a null-keyed phantom can't hide behind a value-scoped check. `Q0` plants both
+ * shapes directly into the raw index before P1/P2 run, proving the read actually sees them.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/resources/audit-false-delete-rollback.test.ts"
@@ -141,24 +136,25 @@ suite(
 			'Q0 oracle self-proof: a planted real-valued AND null-keyed dangling entry are both visible',
 			{ timeout: 15_000 },
 			async () => {
-				// Table is empty at this point. Write directly into the raw bucket index dbi with no
-				// corresponding primary row -- the F-149 (real-valued) and F-175 (null-keyed) phantom
-				// shapes this suite's P1/P2 assertions must both be able to detect.
-				const plantReal = await postJSON('/PlantDangling/', { attr: 'bucket', value: 'GHOST', key: 'ghost-real' });
-				strictEqual(plantReal.status, 200, `PlantDangling(real) should return 200, got ${plantReal.status}`);
-				const plantNull = await postJSON('/PlantDangling/', { attr: 'bucket', value: null, key: 'ghost-null' });
-				strictEqual(plantNull.status, 200, `PlantDangling(null) should return 200, got ${plantNull.status}`);
+				// Table is empty at this point. Plant directly into the raw index, with no
+				// corresponding primary row, in `finally` so a failed assertion below can't leave a
+				// stray entry for P1/P2 (or Q2 in the sibling suite) to misattribute as their own defect.
+				try {
+					const plantReal = await postJSON('/PlantDangling/', { attr: 'bucket', value: 'GHOST', key: 'ghost-real' });
+					strictEqual(plantReal.status, 200, `PlantDangling(real) should return 200, got ${plantReal.status}`);
+					const plantNull = await postJSON('/PlantDangling/', { attr: 'bucket', value: null, key: 'ghost-null' });
+					strictEqual(plantNull.status, 200, `PlantDangling(null) should return 200, got ${plantNull.status}`);
 
-				const realEntries = await indexEntriesForId('ghost-real');
-				const nullEntries = await indexEntriesForId('ghost-null');
-				strictEqual(realEntries.length, 1, 'IndexDump must see the planted real-valued dangling entry');
-				strictEqual(realEntries[0].indexedValue, 'GHOST', 'planted real-valued entry must report its value');
-				strictEqual(nullEntries.length, 1, 'IndexDump must see the planted null-keyed dangling entry (F-175)');
-				strictEqual(nullEntries[0].indexedValue, null, 'planted null-keyed entry must report indexedValue=null');
-
-				// Clean up before P1/P2 seed their own ids, so no stray planted entry skews their counts.
-				await postJSON('/RemoveIndexEntry/', { attr: 'bucket', value: 'GHOST', key: 'ghost-real' });
-				await postJSON('/RemoveIndexEntry/', { attr: 'bucket', value: null, key: 'ghost-null' });
+					const realEntries = await indexEntriesForId('ghost-real');
+					const nullEntries = await indexEntriesForId('ghost-null');
+					strictEqual(realEntries.length, 1, 'IndexDump must see the planted real-valued dangling entry');
+					strictEqual(realEntries[0].indexedValue, 'GHOST', 'planted real-valued entry must report its value');
+					strictEqual(nullEntries.length, 1, 'IndexDump must see the planted null-keyed dangling entry');
+					strictEqual(nullEntries[0].indexedValue, null, 'planted null-keyed entry must report indexedValue=null');
+				} finally {
+					await postJSON('/RemoveIndexEntry/', { attr: 'bucket', value: 'GHOST', key: 'ghost-real' });
+					await postJSON('/RemoveIndexEntry/', { attr: 'bucket', value: null, key: 'ghost-null' });
+				}
 				ok((await indexEntriesForId('ghost-real')).length === 0, 'cleanup must remove the real-valued entry');
 				ok((await indexEntriesForId('ghost-null')).length === 0, 'cleanup must remove the null-keyed entry');
 			}

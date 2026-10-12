@@ -19,22 +19,17 @@
  * leaving either a PHANTOM (index hit whose base row is gone) or a MISSING (surviving base row
  * absent from the index).
  *
- * Oracle: raw secondary-index reads, never search_by_value. search_by_value joins every hit
+ * Oracle: raw secondary-index reads, never search_by_value — search_by_value joins every hit
  * back through the primary record (resources/Table.ts, `if (record == null) return canSkip ?
- * SKIP : record`) and silently drops any hit whose record is gone — the exact dangling/phantom
- * shape this suite exists to catch. A value-scoped raw check is also insufficient on its own: a
- * regression that leaves a null-keyed phantom (`[null, id]`, the F-175 shape in
- * eviction-index-phantom-null-keys.test.ts) would pass a check scoped to one bucket value. And
- * reading the raw index and the raw primary rows as two separate requests races the live
- * background sweep: a row can be atomically evicted between the two reads and get misreported as
- * a phantom despite correct atomic behavior. `/RawSnapshot/` (resources.js) closes both gaps: one
- * request reads the whole index (including null keys) and the whole primary store under ONE
- * shared transaction (`Table._readTxnForContext`), so the two reads reflect the same instant.
+ * SKIP : record`) and drops any hit whose record is gone, so it cannot see the dangling/phantom
+ * entry a split eviction would leave. `/RawSnapshot/` (resources.js) reads the whole index
+ * (including null keys, not scoped to one bucket value) and the whole primary store under ONE
+ * shared transaction (`Table._readTxnForContext`), so the two reads reflect the same instant and
+ * can't straddle a concurrent evict() commit.
  *   Phantom: a raw index entry (any value, incl. null) whose (id, value) has no matching base row.
  *   Missing: a surviving base row whose (id, value) has no matching raw index entry.
- * `Q(-1)` plants both a real-valued and a null-keyed dangling entry (bypassing the record layer,
- * like table-clear-secondary-index.test.ts's Q0) to prove the raw oracle actually sees both
- * shapes before any of Q1/Q2's "0 phantom/missing" results are trusted.
+ * `Q(-1)` plants both shapes directly into the raw index before Q1/Q2 run, proving the oracle
+ * actually sees them.
  *
  * We mix rows that EXPIRE (table Expiring, expiration:4s) with CONTROL rows that DON'T
  * (table Permanent, no TTL). The index should retain exactly the survivors: after the sweep,
@@ -194,13 +189,7 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 		indexEntries: RawIndexEntry[];
 	}
 
-	/**
-	 * One table's primary rows + raw secondary-index entries, read under ONE shared transaction
-	 * (resources.js's RawSnapshot) — never joins through the primary record like search_by_value,
-	 * and the two reads cannot straddle a concurrent eviction commit. `rows` is physical-presence
-	 * truth (unlike `dumpBase`'s `Table.search()`, which applies expiration semantics);
-	 * `indexEntries` includes null-keyed phantoms (an unqualified getRange() would skip them).
-	 */
+	/** See file header — resources.js's RawSnapshot, one table, under one shared transaction. */
 	async function rawSnapshot(table: string): Promise<TableSnapshot> {
 		const r = await fetch(`${httpURL}/RawSnapshot/?table=${table}&attr=bucket`, { headers: client.headers });
 		strictEqual(r.status, 200, `/RawSnapshot/?table=${table} should return 200`);
@@ -208,9 +197,6 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 	}
 
 	/**
-	 * Whole-table consistency, over EVERY stored value including null — not scoped to one
-	 * bucket, so a null-keyed phantom (F-175) cannot hide from a check that only looked at the
-	 * bucket value a test happened to load.
 	 *  phantom: a raw index entry whose (indexedValue, primaryKey) has no matching live base row.
 	 *  missing: a surviving base row whose (bucket, id) has no matching raw index entry.
 	 */
@@ -242,38 +228,38 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 		'Q(-1) oracle self-proof: a planted real-valued AND null-keyed dangling entry are both visible',
 		{ timeout: 15_000 },
 		async () => {
-			// Tables are empty at this point. Write directly into the raw bucket index dbi with no
-			// corresponding primary row -- the F-149 (real-valued) and F-175 (null-keyed) phantom
-			// shapes Q1/Q2's assertions below must both be able to detect.
-			const plantReal = await postJSON('/PlantDangling/', {
-				table: 'Expiring',
-				attr: 'bucket',
-				value: 'GHOST',
-				key: 'ghost-real',
-			});
-			strictEqual(plantReal.status, 200, `PlantDangling(real) should return 200, got ${plantReal.status}`);
-			const plantNull = await postJSON('/PlantDangling/', {
-				table: 'Expiring',
-				attr: 'bucket',
-				value: null,
-				key: 'ghost-null',
-			});
-			strictEqual(plantNull.status, 200, `PlantDangling(null) should return 200, got ${plantNull.status}`);
+			// Tables are empty at this point. Plant in `finally` so a failed assertion below can't
+			// leave a stray entry for Q0/Q1/Q2 to misattribute as an eviction-path defect.
+			try {
+				const plantReal = await postJSON('/PlantDangling/', {
+					table: 'Expiring',
+					attr: 'bucket',
+					value: 'GHOST',
+					key: 'ghost-real',
+				});
+				strictEqual(plantReal.status, 200, `PlantDangling(real) should return 200, got ${plantReal.status}`);
+				const plantNull = await postJSON('/PlantDangling/', {
+					table: 'Expiring',
+					attr: 'bucket',
+					value: null,
+					key: 'ghost-null',
+				});
+				strictEqual(plantNull.status, 200, `PlantDangling(null) should return 200, got ${plantNull.status}`);
 
-			const snap = await rawSnapshot('Expiring');
-			const { phantom } = analyzeSnapshot(snap);
-			ok(
-				phantom.some((p) => p.primaryKey === 'ghost-real' && p.indexedValue === 'GHOST'),
-				`oracle must see the planted real-valued dangling entry; phantom=${JSON.stringify(phantom)}`
-			);
-			ok(
-				phantom.some((p) => p.primaryKey === 'ghost-null' && p.indexedValue === null),
-				`oracle must see the planted null-keyed dangling entry (F-175); phantom=${JSON.stringify(phantom)}`
-			);
-
-			// Clean up before Q0 seeds its own rows, so no stray planted entry skews later counts.
-			await postJSON('/RemoveIndexEntry/', { table: 'Expiring', attr: 'bucket', value: 'GHOST', key: 'ghost-real' });
-			await postJSON('/RemoveIndexEntry/', { table: 'Expiring', attr: 'bucket', value: null, key: 'ghost-null' });
+				const snap = await rawSnapshot('Expiring');
+				const { phantom } = analyzeSnapshot(snap);
+				ok(
+					phantom.some((p) => p.primaryKey === 'ghost-real' && p.indexedValue === 'GHOST'),
+					`oracle must see the planted real-valued dangling entry; phantom=${JSON.stringify(phantom)}`
+				);
+				ok(
+					phantom.some((p) => p.primaryKey === 'ghost-null' && p.indexedValue === null),
+					`oracle must see the planted null-keyed dangling entry; phantom=${JSON.stringify(phantom)}`
+				);
+			} finally {
+				await postJSON('/RemoveIndexEntry/', { table: 'Expiring', attr: 'bucket', value: 'GHOST', key: 'ghost-real' });
+				await postJSON('/RemoveIndexEntry/', { table: 'Expiring', attr: 'bucket', value: null, key: 'ghost-null' });
+			}
 			const after = await rawSnapshot('Expiring');
 			ok(
 				!after.indexEntries.some((e) => e.primaryKey === 'ghost-real' || e.primaryKey === 'ghost-null'),
@@ -318,9 +304,7 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 	test('Q1 mid-eviction: index/base stay consistent during the sweep', { timeout: 60_000 }, async () => {
 		// expiration:4s, scanInterval:2s. Rows become evictable at ~t=4s after load; the sweep
 		// fires every ~2s. Sample partway through the sweep (some evicted, some not) so a split
-		// force-committed eviction would surface as a phantom/missing right here. One RawSnapshot
-		// call covers all 4 buckets under one shared transaction, so this sample cannot straddle
-		// a concurrent evict() commit the way 4 separate search_by_value calls could.
+		// force-committed eviction would surface as a phantom/missing right here.
 		await sleep(5_000);
 		const snap = await rawSnapshot('Expiring');
 		const { phantom, missing, baseCount, indexCount } = analyzeSnapshot(snap);
@@ -354,10 +338,8 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 		'Q2 post-settle: expiring fully evicted (base+index), permanent fully retained',
 		{ timeout: 90_000 },
 		async () => {
-			// Poll on PHYSICAL presence (RawSnapshot's raw primaryStore scan), not dumpBase's
-			// Table.search() (which applies expiration semantics) — a row that is logically expired
-			// but not yet physically evicted would otherwise read as "drained" early and manufacture
-			// a residual-index false positive below.
+			// Poll on physical presence, not dumpBase's logical/expiration-filtered view, so a row
+			// that's expired but not yet evicted can't read as "drained" early.
 			const deadline = Date.now() + 60_000;
 			let settled: TableSnapshot | undefined;
 			while (Date.now() < deadline) {
