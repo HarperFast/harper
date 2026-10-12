@@ -1,4 +1,5 @@
 const assert = require('node:assert');
+const { runInNewContext } = require('node:vm');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
@@ -98,6 +99,27 @@ describe('Replication confirmation failure after a local commit', () => {
 			return true;
 		});
 		assert.strictEqual((await First.get(id)).id, id);
+	});
+
+	it('preserves the public code and status of an error from another JavaScript realm', async () => {
+		const failure = runInNewContext(`
+			class ForeignConfirmationError extends Error {
+				constructor() {
+					super('Foreign peer failure');
+					this.status = 504;
+				}
+			}
+			new ForeignConfirmationError();
+		`);
+		assert.strictEqual(failure instanceof Error, false);
+		registerConfirmation(() => Promise.reject(failure));
+		await assert.rejects(confirmedWrite(nextId()), (error) => {
+			assert.strictEqual(error.replicationUnconfirmed, true);
+			assert.strictEqual(error.statusCode, 504);
+			assert.strictEqual(error.code, 'ForeignConfirmationError');
+			assert.strictEqual(error.cause, failure);
+			return true;
+		});
 	});
 
 	it('does not mark a shared error later thrown by a local operation', async () => {

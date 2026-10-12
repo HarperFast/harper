@@ -105,11 +105,12 @@ export class ReplicationConfirmationError extends ServerError {
 			typeof cause?.message === 'string'
 				? cause.message
 				: 'Replication confirmation failed after the local write committed',
-			cause?.statusCode
+			cause?.statusCode ?? cause?.status
 		);
 		this.name = 'ReplicationConfirmationError';
 		this.cause = cause;
-		this.code = cause?.code ?? (cause instanceof Error ? cause.constructor.name : this.name);
+		this.code =
+			cause?.code ?? (cause !== null && typeof cause === 'object' ? cause.constructor?.name : undefined) ?? this.name;
 		this.http_resp_msg = cause?.http_resp_msg;
 		this.detail = cause?.detail;
 	}
