@@ -369,6 +369,20 @@ describe('change-landed.sh', function () {
 		assert.strictEqual(result.status, 2, result.stderr);
 		assert.match(result.stdout, /^::warning::/m);
 	});
+
+	it('exits 1 on an edit-then-delete pair even once the target has both', function () {
+		const base = git('rev-parse', 'HEAD');
+		writeFileSync(join(dir, 'gone.txt'), 'edited\n');
+		git('commit', '-qam', 'Edit');
+		const edit = git('rev-parse', 'HEAD');
+		git('rm', '-q', 'gone.txt');
+		git('commit', '-qm', 'Delete');
+		const head = git('rev-parse', 'HEAD');
+		git('checkout', '-qb', 'target', base);
+		git('cherry-pick', edit, head);
+		const result = landed('target', base, head, [edit, head]);
+		assert.strictEqual(result.status, 1, result.stdout + result.stderr);
+	});
 });
 
 function isolatedGitEnv(dir) {
