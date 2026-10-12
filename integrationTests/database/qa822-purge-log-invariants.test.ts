@@ -110,10 +110,14 @@ import {
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'qa822-purge-log-invariants');
 // Windows is skipped on harper#2401 — `delete_transaction_logs_before` takes the process down
-// there, the same reason `qa816-purge-blast-radius.test.ts` skips it. Remove the skip when that
-// issue closes, and do NOT instead make the suite tolerate the restart: tolerating it would hide
-// the defect behind a suite whose whole subject is what a purge leaves behind.
-const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
+// there, the same reason `qa816-purge-blast-radius.test.ts` skips it. uWS HTTP is skipped on
+// harper#3176 — shutdown itself aborts (SIGABRT) there, a worker-thread uv_loop_close assertion
+// with open uWS poll handles, caught here because this file is the first to check a killed
+// process's exit status. Remove either skip when its issue closes, and do NOT instead make the
+// suite tolerate the restart: tolerating it would hide the defect behind a suite whose whole
+// subject is what a purge leaves behind.
+const skipSuite =
+	process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32' || process.env.HARPER_UWS_HTTP === '1';
 
 const ARM_CONFIG = {
 	threads: { count: 1 },
