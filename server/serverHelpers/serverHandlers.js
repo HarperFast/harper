@@ -81,6 +81,7 @@ function serverErrorHandler(error, req, resp) {
 	if (error.statusCode) {
 		if (typeof error.http_resp_msg !== 'object') {
 			const body = { error: error.http_resp_msg || error.message };
+			if (error.replicationUnconfirmed === true) body.replicationUnconfirmed = true;
 			// surface the machine-readable signal for errors that declare retryability (e.g. a
 			// still-building index, IndexRebuildingError) so API callers can distinguish and retry
 			if (error.retryable !== undefined) {
@@ -89,13 +90,22 @@ function serverErrorHandler(error, req, resp) {
 			}
 			return resp.code(error.statusCode).send(body);
 		}
-		return resp.code(error.statusCode).send(error.http_resp_msg);
+		return resp
+			.code(error.statusCode)
+			.send(
+				error.replicationUnconfirmed === true
+					? { ...error.http_resp_msg, replicationUnconfirmed: true, retryable: false }
+					: error.http_resp_msg
+			);
 	}
 	const statusCode = error.statusCode ? error.statusCode : hdbErrors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
 	if (typeof error === 'string') {
 		return resp.code(statusCode).send({ error: error });
 	}
-	return resp.code(statusCode).send(error.message ? { error: error.message } : error);
+	const body = error.message ? { error: error.message } : error;
+	return resp
+		.code(statusCode)
+		.send(error.replicationUnconfirmed === true ? { ...body, replicationUnconfirmed: true } : body);
 }
 
 function reqBodyValidationHandler(req, resp, done) {

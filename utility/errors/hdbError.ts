@@ -93,6 +93,28 @@ export class ServerError extends Error {
 	}
 }
 
+export class ReplicationConfirmationError extends ServerError {
+	replicationUnconfirmed = true;
+	retryable = false;
+	code: string;
+	http_resp_msg: unknown;
+	detail: unknown;
+
+	constructor(cause: any) {
+		super(
+			typeof cause?.message === 'string'
+				? cause.message
+				: 'Replication confirmation failed after the local write committed',
+			cause?.statusCode
+		);
+		this.name = 'ReplicationConfirmationError';
+		this.cause = cause;
+		this.code = cause?.code ?? (cause instanceof Error ? cause.constructor.name : this.name);
+		this.http_resp_msg = cause?.http_resp_msg;
+		this.detail = cause?.detail;
+	}
+}
+
 /** Retryable admission failure when a derived index cannot meet a write or query lag budget. */
 export class DerivedIndexLagError extends ServerError {
 	code: string;

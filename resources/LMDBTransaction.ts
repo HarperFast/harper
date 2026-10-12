@@ -7,6 +7,8 @@ import {
 	shouldSpareCommitPhase,
 	requestAbortedError,
 	transactionOpenTooLongError,
+	confirmReplicationAfterCommit,
+	settleCommitCompletions,
 	type CommitOptions,
 	type TransactionWrite,
 	type CommitResolution,
@@ -329,6 +331,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		if (resolution) {
 			return resolution.then((resolution) => {
 				if (resolution) {
+					const hasNext = Boolean(this.next);
 					if (this.next) {
 						completions.push(this.next.commit({ ...options, continuation: true }));
 					}
@@ -336,13 +339,14 @@ export class LMDBTransaction extends DatabaseTransaction {
 						const store = this.writes[0]?.store;
 						if (store) completions.push(store.flushed);
 					}
+					let confirmation: Promise<void>;
 					if (this.replicatedConfirmation) {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
 						const databaseName = this.writes[0]?.store.rootStore.databaseName;
 						const lastEntry = this.lastConfirmableEntry();
 						if (confirmReplication && databaseName && lastEntry)
-							completions.push(
+							confirmation = confirmReplicationAfterCommit(() =>
 								confirmReplication(databaseName, (lastEntry as any).localTime, this.replicatedConfirmation)
 							);
 					}
@@ -359,7 +363,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 					this.clearWrites();
 					this.timestamp = 0;
 					this.next = null;
-					return Promise.all(completions).then(() => {
+					const completed =
+						confirmation || hasNext ? settleCommitCompletions(completions, confirmation) : Promise.all(completions);
+					return completed.then(() => {
 						return {
 							txnTime,
 						};
