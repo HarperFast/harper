@@ -1239,6 +1239,154 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
+	// Pins the caller-impact rule for the v5.2.15 -> v5.3.0 change above (#1877/#1880): which
+	// `logger` usage shapes see a behavior change and which don't. The describe block above
+	// already pins the affected shape itself (a component/external logger with its own path and
+	// no rotation block, reached through updateLogger); these pin the shapes the rule says are
+	// unaffected, plus the one operational risk the fix itself introduces for existing rotation.
+	describe('Test caller-impact shapes for the v5.2.15 -> v5.3.0 rotation-inheritance change (#1877/#1880)', () => {
+		const CALLER_SHAPES_DIR = path.join(__dirname, 'callerImpactShapesTest');
+		let shapeCaseDir;
+		let shapeCase = 0;
+		let shapeLoggersToCleanup;
+
+		beforeEach(() => {
+			shapeCaseDir = path.join(CALLER_SHAPES_DIR, `case${shapeCase++}`);
+			fs.mkdirpSync(shapeCaseDir);
+			shapeLoggersToCleanup = [];
+		});
+
+		afterEach(async () => {
+			for (const logger of shapeLoggersToCleanup) {
+				const currentPath = logger.path;
+				updateLogger(logger, { path: currentPath }, undefined, logger);
+				logger.closeLogFile?.();
+			}
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			fs.removeSync(shapeCaseDir);
+		});
+
+		it("shape: plain logger.info/warn/error sharing main's default log path were already bound by main's rotation before this fix — getFileLogger caches one sink per path, so no updateLogger call on this logger was ever needed", async () => {
+			const mainRotation = { enabled: true, maxSize: '1K' };
+			const mainLogPath = path.join(shapeCaseDir, 'hdb.log');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			shapeLoggersToCleanup.push(testMainLogger);
+			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation }, undefined, testMainLogger);
+
+			// This is exactly how the real externalLogger (what logger.info/warn/error write
+			// through) is built when no `logging.external:` block has ever been configured:
+			// forComponent copies main's path, and updateLogger is never called on it at all. The
+			// v5.2.15 -> v5.3.0 fix lives entirely inside updateLogger, so this caller never reaches
+			// the changed code.
+			const externalLikeLogger = testMainLogger.forComponent('external');
+			shapeLoggersToCleanup.push(externalLikeLogger);
+
+			for (let i = 0; i < 30; i++) externalLikeLogger.info('x'.repeat(80));
+			// Writes through this logger alone must still trip main's maxSize: getFileLogger's
+			// fileLoggers cache is keyed by path, so a logger sharing main's path shares its
+			// write-path size guard too, regardless of its own stale/absent `.rotation` property.
+			const rotatedDir = path.join(shapeCaseDir, 'rotated');
+			await waitFor(() => fs.pathExistsSync(rotatedDir) && fs.readdirSync(rotatedDir).length > 0, {
+				timeout: 5000,
+				message: "expected writes through the shared default path to already be bound by main's rotation",
+			});
+		});
+
+		it("shape: logger.withTag()/tagged loggers write through their underlying logger's sink and never resolve rotation themselves", async () => {
+			const logPath = path.join(shapeCaseDir, 'component.log');
+			const underlying = createLogger({ path: logPath, level: 'info' });
+			shapeLoggersToCleanup.push(underlying);
+			// Install a real rotation policy the same way updateLogger always does, so there is an
+			// actual policy for withTag to (not) disturb, rather than two undefineds matching
+			// trivially.
+			updateLogger(underlying, { path: logPath, rotation: { enabled: true, maxSize: '1K' } }, undefined, underlying);
+			const rotationBefore = underlying.rotation;
+
+			const tagged = harperLoggerModule.loggerWithTag('shapeTwo', false, underlying);
+			tagged.info('tagged line');
+
+			await waitFor(() => fs.existsSync(logPath) && fs.readFileSync(logPath, 'utf8').includes('tagged line'));
+			const log = fs.readFileSync(logPath, 'utf8');
+			assert.ok(log.includes('[shapeTwo]'), 'the tag is prefixed onto the line written through the underlying sink');
+			assert.strictEqual(
+				underlying.rotation,
+				rotationBefore,
+				'withTag must never touch the rotation policy of the logger it wraps'
+			);
+		});
+
+		it('shape: tooling tailing a component log file by an already-open descriptor stops seeing new writes once inherited rotation renames the file out from under it', async () => {
+			const mainRotation = { enabled: true, maxSize: '1K' };
+			const mainLogPath = path.join(shapeCaseDir, 'hdb.log');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			shapeLoggersToCleanup.push(testMainLogger);
+			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation }, undefined, testMainLogger);
+
+			const componentLogPath = path.join(shapeCaseDir, 'tailed-component.log');
+			const componentLogger = testMainLogger.forComponent('tailed');
+			shapeLoggersToCleanup.push(componentLogger);
+			// The #1877 shape: its own path, no rotation block of its own — this now inherits main's.
+			updateLogger(componentLogger, { path: componentLogPath }, 'tailed', testMainLogger);
+			assert.deepStrictEqual(componentLogger.rotation, mainRotation);
+
+			componentLogger.info('before rotation, line one');
+			await waitFor(
+				() => fs.existsSync(componentLogPath) && fs.readFileSync(componentLogPath, 'utf8').includes('line one')
+			);
+
+			// Simulate a naive tailer (e.g. `tail -f`'s default fd-follow mode) that opened the file
+			// before rotation happened.
+			const tailerFd = fs.openSync(componentLogPath, 'r');
+
+			for (let i = 0; i < 30; i++) componentLogger.info(`padding ${i} ${'x'.repeat(80)}`);
+			const rotatedDir = path.join(shapeCaseDir, 'rotated');
+			await waitFor(() => fs.pathExistsSync(rotatedDir) && fs.readdirSync(rotatedDir).length > 0, {
+				timeout: 5000,
+				message: 'expected the inherited main maxSize to rotate the component log',
+			});
+
+			componentLogger.info('after rotation, line two');
+			await waitFor(
+				() =>
+					fs.existsSync(componentLogPath) &&
+					fs.readFileSync(componentLogPath, 'utf8').includes('after rotation, line two'),
+				{ timeout: 5000, message: 'expected a fresh file at the same path to receive post-rotation writes' }
+			);
+
+			const staleRead = fs.readFileSync(tailerFd, 'utf8');
+			fs.closeSync(tailerFd);
+			assert.ok(staleRead.includes('line one'), 'the stale descriptor still reads the pre-rotation generation');
+			assert.ok(
+				!staleRead.includes('after rotation, line two'),
+				'a descriptor opened before rotation never sees a post-rotation write'
+			);
+
+			const freshRead = fs.readFileSync(componentLogPath, 'utf8');
+			assert.ok(freshRead.includes('after rotation, line two'));
+			assert.ok(
+				!freshRead.includes('line one'),
+				'pre-rotation content moved to the archive, not the fresh file created at the same path'
+			);
+		});
+
+		it('shape: level filtering is unaffected — production call sites omit mainLoggerRef, and the fix only changed how that default is spelled, not what it resolves to', () => {
+			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+			const mainLoggerPrivate = harper_logger.__get__('mainLogger');
+			mainLoggerPrivate.level = 1; // trace; distinct from createLogger's 'info' default below
+
+			const probeDefault = harper_logger.createLogger({ level: 'info' });
+			const probeExplicit = harper_logger.createLogger({ level: 'info' });
+			const probePath = path.join(shapeCaseDir, 'unused.log');
+			// Every production call site (applyLogSettings, forComponent) omits the 4th argument;
+			// this is that shape, compared against spelling the same default out explicitly.
+			harper_logger.updateLogger(probeDefault, { path: `${probePath}.a` });
+			harper_logger.updateLogger(probeExplicit, { path: `${probePath}.b` }, undefined, mainLoggerPrivate);
+
+			assert.strictEqual(probeDefault.level, mainLoggerPrivate.level);
+			assert.strictEqual(probeDefault.level, probeExplicit.level);
+		});
+	});
+
 	it('Test suppressLogging function', () => {
 		const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 		const fake_func = sandbox.stub().callsFake(() => {});
