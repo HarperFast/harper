@@ -289,7 +289,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 					request.data = getDeserializer(
 						headersObject['content-type'] as any,
 						true,
-						resource?.streamRequestBody?.includes(method.toLowerCase()) === true
+						true
 					)(request.body, request.signal);
 				} catch (error) {
 					throw new ClientError(error, 400);

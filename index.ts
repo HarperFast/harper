@@ -41,6 +41,7 @@ export type {
 	RequestTargetOrId,
 	ResourceInterface,
 	ResourceBody,
+	ResourceBodyPart,
 	WritableRecord,
 } from './resources/ResourceInterface.ts';
 export type { User } from './security/user.ts';

@@ -1,4 +1,4 @@
-import type { ResourceBody } from '../../dist/index.js';
+import { Resource, type ResourceBody, type ResourceBodyPart } from '../../dist/index.js';
 import type { HttpListener } from '../../dist/server/Server.js';
 import type { Request } from '../../dist/server/serverHelpers/Request.js';
 import { getDeserializer } from '../../dist/server/serverHelpers/contentTypes.js';
@@ -25,4 +25,19 @@ export function decoderDefaults(streaming: boolean, optionalStreaming?: boolean)
 	getDeserializer('application/json', streaming);
 	getDeserializer('application/json', optionalStreaming);
 	getDeserializer(undefined, optionalStreaming);
+}
+
+export class FormResource extends Resource<{ title: string }> {
+	allowCreate(_user: any, formData: { title: string }) {
+		return formData.title === 'allowed';
+	}
+}
+export const promisedParts: ResourceBody<{ title: string }> = Promise.resolve(
+	(async function* () {
+		yield { name: 'title', value: 'allowed' };
+	})()
+);
+
+export function delegateForm(target: any, formData: AsyncIterable<ResourceBodyPart>) {
+	return Resource.post(target, formData);
 }

@@ -199,9 +199,9 @@ describe('REST multipart form decoding', function () {
 		);
 		const first = await body.next();
 		assert.equal(first.done, false);
-		assert(first.value.file instanceof Blob);
+		assert(first.value.value instanceof Blob);
 		assert.equal(input.writableEnded, false);
-		const saving = Uploads.put({ id: 'streamed', file: first.value.file });
+		const saving = Uploads.put({ id: 'streamed', file: first.value.value });
 		input.end(Buffer.from(`--${boundary}--\r\n`));
 		await saving;
 		assert.equal((await body.next()).done, true);
@@ -222,7 +222,7 @@ describe('REST multipart form decoding', function () {
 			(error) =>
 				error instanceof ServerError && error.statusCode === 500 && /Consume each multipart Blob/.test(error.message)
 		);
-		await assert.rejects(Uploads.put({ id: 'unread', file: first.value.file }), /Consume each multipart Blob/);
+		await assert.rejects(Uploads.put({ id: 'unread', file: first.value.value }), /Consume each multipart Blob/);
 		assert.equal(await Uploads.get('unread'), undefined);
 	});
 
@@ -231,9 +231,9 @@ describe('REST multipart form decoding', function () {
 		const body = getDeserializer(contentType, true, true)(input);
 		input.write(encodeForm([{ name: 'file', filename: 'abandoned.txt', value: 'initial bytes' }], false));
 		const first = await body.next();
-		const saving = Uploads.put({ id: 'abandoned-save', file: first.value.file });
+		const saving = Uploads.put({ id: 'abandoned-save', file: first.value.value });
 		const failed = assert.rejects(saving, (error) => error instanceof ServerError && error.statusCode === 500);
-		await waitFor(() => !!isSaving(first.value.file));
+		await waitFor(() => !!isSaving(first.value.value));
 		assert.equal(await completeMultipartBody(body, 'handler returned'), 'handler returned');
 		input.end();
 		await failed;
@@ -245,7 +245,7 @@ describe('REST multipart form decoding', function () {
 		const body = getDeserializer(contentType, true, true)(input);
 		input.write(encodeForm([{ name: 'file', filename: 'failed.txt', value: 'partial' }], false));
 		const first = await body.next();
-		const saving = Uploads.put({ id: 'failed', file: first.value.file });
+		const saving = Uploads.put({ id: 'failed', file: first.value.value });
 		const failedSave = assert.rejects(saving, /source failed/);
 		input.destroy(new Error('source failed'));
 		await failedSave;
@@ -283,10 +283,10 @@ describe('REST multipart form decoding', function () {
 		input.write(encodeForm([{ name: 'file', filename: 'write-failure.txt', value: 'initial bytes' }], false));
 		const first = await body.next();
 		const diskFault = Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
-		const saving = Uploads.put({ id: 'write-failure', file: first.value.file });
+		const saving = Uploads.put({ id: 'write-failure', file: first.value.value });
 		const failed = assert.rejects(saving, (error) => error === diskFault && error.statusCode !== 400);
-		await waitFor(() => !!isSaving(first.value.file));
-		saveBlob(first.value.file).source.destroy(diskFault);
+		await waitFor(() => !!isSaving(first.value.value));
+		saveBlob(first.value.value).source.destroy(diskFault);
 		input.end();
 		await failed;
 		await assert.rejects(body.next(), (error) => error === diskFault && error.statusCode !== 400);
@@ -298,7 +298,7 @@ describe('REST multipart form decoding', function () {
 		const body = getDeserializer(contentType, true, true)(input);
 		input.write(encodeForm([{ name: 'file', filename: 'incomplete.txt', value: 'initial bytes' }], false));
 		const first = await body.next();
-		const saving = Uploads.put({ id: 'incomplete-file', file: first.value.file });
+		const saving = Uploads.put({ id: 'incomplete-file', file: first.value.value });
 		const failed = assert.rejects(saving, (error) => error.statusCode === 400);
 		input.end();
 		await failed;
@@ -362,7 +362,7 @@ describe('REST multipart form decoding', function () {
 		input.write(
 			Buffer.concat([encodeForm([{ name: 'title', value: 'first' }], false), Buffer.from(`--${boundary}\r\n`)])
 		);
-		assert.deepStrictEqual((await body.next()).value, { title: 'first' });
+		assert.deepStrictEqual((await body.next()).value, { name: 'title', value: 'first' });
 		await body.return();
 		input.end(encodeForm([{ name: 'file', filename: 'ignored.bin', value: Buffer.alloc(65536) }]));
 		await waitFor(() => input.readableEnded);
@@ -380,7 +380,7 @@ describe('REST multipart form decoding', function () {
 				false
 			)
 		);
-		assert.deepStrictEqual((await body.next()).value, { title: 'first' });
+		assert.deepStrictEqual((await body.next()).value, { name: 'title', value: 'first' });
 		await body.return();
 		await nextTurn();
 		input.end();
@@ -415,7 +415,7 @@ describe('REST multipart form decoding', function () {
 			if (streaming) {
 				let received = 0;
 				for await (const part of body) {
-					const value = Object.values(part)[0];
+					const { value } = part;
 					if (value instanceof Blob) await Uploads.put({ id: `part-limit-${received}`, file: value });
 					received++;
 				}
@@ -471,7 +471,9 @@ describe('REST multipart form decoding', function () {
 		uwsBody.push(bytes);
 		uwsBody.push(null);
 		for (const input of [nodeBody, bunBody, uwsBody]) {
-			assert.deepStrictEqual(await collect(getDeserializer(contentType, true, true)(input)), [{ title: 'adapter' }]);
+			assert.deepStrictEqual(await collect(getDeserializer(contentType, true, true)(input)), [
+				{ name: 'title', value: 'adapter' },
+			]);
 		}
 	});
 
@@ -529,7 +531,7 @@ describe('REST multipart form decoding', function () {
 		}
 	});
 
-	it('keeps ordinary JSON bodies as promises for opted-in methods', async function () {
+	it('keeps ordinary JSON bodies as promises for static methods', async function () {
 		const body = getDeserializer('application/json', true, true)(Readable.from([Buffer.from('{"value":1}')]));
 		assert.equal(typeof body.then, 'function');
 		assert.deepStrictEqual(await body, { value: 1 });
@@ -587,7 +589,7 @@ describe('REST multipart form decoding', function () {
 				const body = getDeserializer(contentType, true, streamValues)(Readable.from([bytes]));
 				assert.deepStrictEqual(
 					streamValues ? await collect(body) : await body,
-					streamValues ? [{ title: 'request form' }] : { title: 'request form' }
+					streamValues ? [{ name: 'title', value: 'request form' }] : { title: 'request form' }
 				);
 			}
 		} finally {

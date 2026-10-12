@@ -1,34 +1,71 @@
+import { t } from 'harper';
+
 const progress = new Map();
 const responses = new Map();
 
 export class StreamingUpload extends tables.StoredUpload {
-	static streamRequestBody = ['post'];
-
-	async post(data, target) {
+	static async post(target, data, context) {
 		data = await data;
 		if (!data?.[Symbol.asyncIterator]) {
 			throw Object.assign(new Error('Expected multipart/form-data'), { statusCode: 415 });
 		}
 		const fields = {};
 		const saved = [];
-		const context = this.getContext();
 		try {
-			for await (const part of data) {
-				for (const [name, value] of Object.entries(part)) {
-					if (value instanceof Blob) {
-						progress.set(target.id, { received: true, name: value.name });
-						const id = `${target.id}-${saved.length}`;
-						await tables.StoredUpload.put({ id, file: value }, { ...context, signal: context.signal, authorize: true });
-						await context.transaction.commit();
-						saved.push(id);
-					} else fields[name] = value;
-				}
+			for await (const { name, value } of data) {
+				if (value instanceof Blob) {
+					progress.set(target.id, { received: true, name: value.name });
+					const id = `${target.id}-${saved.length}`;
+					await tables.StoredUpload.put({ id, file: value }, { ...context, signal: context.signal, authorize: true });
+					await context.transaction.commit();
+					saved.push(id);
+				} else fields[name] = value;
 			}
 		} catch (error) {
 			progress.set(target.id, { failed: true, message: error.message });
 			throw error;
 		}
 		return { fields, saved };
+	}
+}
+
+export class DelegatedUpload extends Resource {
+	static post(target, data) {
+		progress.set(target.id, { streamed: typeof data?.[Symbol.asyncIterator] === 'function' });
+		return super.post(target, data).catch((error) => {
+			progress.set(target.id, { failed: true });
+			throw error;
+		});
+	}
+
+	async allowCreate(_user, data) {
+		this.authorized = data;
+		return (
+			data.title === 'allowed' &&
+			!(data instanceof Promise) &&
+			(!data.file || (await data.file.text()).startsWith('payload'))
+		);
+	}
+
+	async post(data, target) {
+		if (data !== this.authorized) throw new Error('Authorization and post must share the body');
+		if (data.file) await tables.StoredUpload.put({ id: target.id, title: data.title, file: data.file });
+		return {
+			title: data.title,
+			tag: data.tag,
+			streamed: progress.get(target.id).streamed,
+			files: await Promise.all(
+				(data.attachments ?? []).map(async (file) => ({ name: file.name, text: await file.text() }))
+			),
+		};
+	}
+}
+
+export class SchemaUpload extends Resource.withSchema({
+	post: { body: t.object({ title: t.string }) },
+}) {
+	post(_target, data) {
+		return data;
 	}
 }
 
@@ -48,36 +85,28 @@ export class ReadUpload extends Resource {
 }
 
 export class RefusedUpload extends Resource {
-	static streamRequestBody = ['post'];
-
 	allowCreate() {
 		return false;
 	}
-
 	post() {
 		throw new Error('A refused upload must not reach its method');
 	}
 }
 
 export class IgnoredUpload extends Resource {
-	static streamRequestBody = ['post', 'delete'];
-
-	post() {
+	static post() {
 		return { ignored: true };
 	}
-
-	delete() {
+	static delete() {
 		return true;
 	}
 }
 
 export class SelectedFieldUpload extends Resource {
-	static streamRequestBody = ['post'];
-
-	async post(data, target) {
+	static async post(target, data) {
 		let title;
-		for await (const part of data) {
-			title = part.title;
+		for await (const { name, value } of data) {
+			if (name === 'title') title = value;
 			break;
 		}
 		progress.set(target.id, { returned: true });
@@ -87,25 +116,23 @@ export class SelectedFieldUpload extends Resource {
 }
 
 export class UncommittedUpload extends StreamingUpload {
-	async post(data, target) {
-		for await (const part of data) {
-			if (part.file) await tables.StoredUpload.put({ id: target.id, file: part.file });
+	static async post(target, data) {
+		for await (const { name, value } of data) {
+			if (name === 'file') await tables.StoredUpload.put({ id: target.id, file: value });
 		}
 	}
 }
 
 export class UncommittedReturnUpload extends StreamingUpload {
-	async post(data, target) {
-		const { value } = await data.next();
-		await tables.StoredUpload.put({ id: target.id, file: value.file });
+	static async post(target, data) {
+		const { value: part } = await data.next();
+		await tables.StoredUpload.put({ id: target.id, file: part.value });
 		return { ok: true };
 	}
 }
 
 export class SlowResponseUpload extends Resource {
-	static streamRequestBody = ['post'];
-
-	post(data, target) {
+	static post(target) {
 		return (async function* () {
 			yield { message: 'first' };
 			await new Promise((resolve) => responses.set(target.id, resolve));

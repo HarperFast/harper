@@ -7,7 +7,8 @@ import { RequestTarget } from './RequestTarget.ts';
 import type { RecordLockOptions } from './recordLock.ts';
 import { FULL_TEXT_COMPARATORS } from './indexes/fullTextQueryProtocol.ts';
 
-export type ResourceBody<T> = T | Promise<T> | AsyncIterable<T>;
+export type ResourceBodyPart<Value = unknown> = { name: string; value: Value };
+export type ResourceBody<T> = T | AsyncIterable<ResourceBodyPart> | Promise<T | AsyncIterable<ResourceBodyPart>>;
 
 export interface ResourceInterface<Record extends object = any>
 	extends Partial<RecordObject>, Pick<UpdatableRecord<Record>, 'addTo' | 'subtractFrom'> {
@@ -21,7 +22,7 @@ export interface ResourceInterface<Record extends object = any>
 		| Promise<AsyncIterable<Record & Partial<RecordObject>>>;
 	search?(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>>;
 
-	allowCreate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean>;
+	allowCreate(user: User, record: Record, context: Context): boolean | Promise<boolean>;
 	create?(
 		target: RequestTargetOrId,
 		newRecord: Partial<Record & RecordObject>
@@ -31,7 +32,7 @@ export interface ResourceInterface<Record extends object = any>
 		newRecord: Partial<Record & RecordObject>
 	): void | (Record & Partial<RecordObject>) | Promise<Record & Partial<RecordObject>>;
 
-	allowUpdate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean>;
+	allowUpdate(user: User, record: Record, context: Context): boolean | Promise<boolean>;
 	put?(
 		record: Record & RecordObject,
 		target?: RequestTargetOrId

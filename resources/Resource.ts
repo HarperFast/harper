@@ -27,6 +27,7 @@ import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
+import { resolveBody } from './resolveBody.ts';
 
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
@@ -64,11 +65,6 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static path?: string;
 	static directURLMapping = false;
 	static loadAsInstance: boolean;
-	/**
-	 * Lowercase REST methods whose custom implementations consume decoded request-body iterables.
-	 * Authorize decoded fields and finish or stop iteration before returning a response.
-	 */
-	static streamRequestBody?: readonly string[];
 	static description?: string;
 	static properties?: { [name: string]: JsonSchemaFragment };
 	static outputSchemas?: { [verb: string]: JsonSchemaFragment };
@@ -535,12 +531,12 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	}
 	/** @deprecated Override the resource operation to perform application authorization with the complete request. */
 	// eslint-disable-next-line no-unused-vars
-	allowUpdate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean> {
+	allowUpdate(user: User, record: Record, context: Context): boolean | Promise<boolean> {
 		return user?.role.permission.super_user;
 	}
 	/** @deprecated Override the resource operation to perform application authorization with the complete request. */
 	// eslint-disable-next-line no-unused-vars
-	allowCreate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean> {
+	allowCreate(user: User, record: Record, context: Context): boolean | Promise<boolean> {
 		return user?.role.permission.super_user;
 	}
 	/** @deprecated Override the resource operation to perform application authorization with the complete request. */
@@ -678,6 +674,7 @@ function transactional(
 ) {
 	applyContext.reliesOnPrototype = true;
 	const hasContent = options.hasContent;
+	const collectForms = ['post', 'put', 'patch', 'query'].includes(options.method);
 	return applyContext;
 	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
 		let id, query, isCollection;
@@ -745,11 +742,14 @@ function transactional(
 				data = dataOrContext;
 			}
 		}
-		if (options.method === 'query' && typeof (data as any)?.then === 'function') {
+		if (
+			options.method === 'query' &&
+			(typeof data?.then === 'function' || typeof data?.[Symbol.asyncIterator] === 'function')
+		) {
 			// HTTP request bodies are resolved asynchronously. QUERY projection and permission-control
 			// sanitization must happen before resource resolution and allowRead, not later in runAction.
 			const dataWasFirstArgument = data === idOrQuery;
-			return (data as Promise<any>).then((resolvedData) =>
+			return resolveBody(data).then((resolvedData: any) =>
 				dataWasFirstArgument
 					? applyContext.call(this, resolvedData, context)
 					: applyContext.call(this, idOrQuery, resolvedData, context)
@@ -938,51 +938,53 @@ function transactional(
 				context.authorize = false;
 				query.checkPermission = true;
 			}
-			if (checkPermission) {
-				if (loadAsInstance !== false) {
-					// do permission checks, with allow methods
-					let allowed;
-					try {
-						allowed =
-							options.type === 'read'
-								? resource.allowRead(context.user, query, context)
-								: options.type === 'update'
-									? resource.doesExist?.() === false
-										? resource.allowCreate(context.user, data, context)
-										: resource.allowUpdate(context.user, data, context)
-									: options.type === 'create'
-										? resource.allowCreate(context.user, data, context)
-										: resource.allowDelete(context.user, query, context);
-					} catch {
-						// allow* threw — fail closed rather than letting the request proceed
-						throw new AccessViolation(context.user);
-					}
-					if ((allowed as any)?.then) {
-						return (allowed as any).then(
-							(allowed) => {
-								query.checkPermission = false;
-								if (!allowed) {
+			const resolved = resolveBody(data, collectForms);
+			return typeof resolved?.then === 'function'
+				? resolved.then(authorizeResolvedBody)
+				: authorizeResolvedBody(resolved);
+			function authorizeResolvedBody(data: any) {
+				if (checkPermission) {
+					if (loadAsInstance !== false) {
+						// do permission checks, with allow methods
+						let allowed;
+						try {
+							allowed =
+								options.type === 'read'
+									? resource.allowRead(context.user, query, context)
+									: options.type === 'update'
+										? resource.doesExist?.() === false
+											? resource.allowCreate(context.user, data, context)
+											: resource.allowUpdate(context.user, data, context)
+										: options.type === 'create'
+											? resource.allowCreate(context.user, data, context)
+											: resource.allowDelete(context.user, query, context);
+						} catch {
+							// allow* threw — fail closed rather than letting the request proceed
+							throw new AccessViolation(context.user);
+						}
+						if ((allowed as any)?.then) {
+							return (allowed as any).then(
+								(allowed) => {
+									query.checkPermission = false;
+									if (!allowed) {
+										throw new AccessViolation(context.user);
+									}
+									return runAction(data);
+								},
+								() => {
+									// async allow* rejected — fail closed
 									throw new AccessViolation(context.user);
 								}
-								return when(data, (data) => {
-									return runAction(data);
-								});
-							},
-							() => {
-								// async allow* rejected — fail closed
-								throw new AccessViolation(context.user);
-							}
-						);
-					}
-					query.checkPermission = false;
-					if (!allowed) {
-						throw new AccessViolation(context.user);
+							);
+						}
+						query.checkPermission = false;
+						if (!allowed) {
+							throw new AccessViolation(context.user);
+						}
 					}
 				}
-			}
-			return when(data, (data) => {
 				return runAction(data);
-			});
+			}
 		}
 	}
 }
