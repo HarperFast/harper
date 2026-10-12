@@ -59,6 +59,7 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 	const logKeyOf = (Table, id, type) => {
 		for (const entry of Table.primaryStore.rootStore.auditStore.getRange({ start: 1, log: 0 }))
 			if (entry.tableId === Table.tableId && entry.recordId === id && entry.type === type) return entry.txnLogKey;
+		assert.fail(`no ${type} audit entry for ${id}`);
 	};
 
 	it('passes the other residents of a record placed by a residency list', async () => {
@@ -156,15 +157,18 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 		const { version, value } = Unplaced.primaryStore.getEntry('relocated-evicted');
 		const context = { replicatedConfirmation: 1, timestamp: version - 60_000 };
 		let iterator;
-		await confirmed(context, async () => {
-			// the open iterator makes the commit re-stage every write on a fresh transaction
-			iterator = Unplaced.search({ conditions: [] })[Symbol.iterator]();
-			iterator.next();
-			const resource = await Unplaced.getResource('relocated-evicted', context);
-			resource._writeRelocate('relocated-evicted', {});
-			await Unplaced.evict('relocated-evicted', value, version);
-		});
-		iterator.return?.();
+		try {
+			await confirmed(context, async () => {
+				// the open iterator makes the commit re-stage every write on a fresh transaction
+				iterator = Unplaced.search({ conditions: [] })[Symbol.iterator]();
+				iterator.next();
+				const resource = await Unplaced.getResource('relocated-evicted', context);
+				resource._writeRelocate('relocated-evicted', {});
+				await Unplaced.evict('relocated-evicted', value, version);
+			});
+		} finally {
+			iterator?.return?.();
+		}
 		assert.equal(Unplaced.primaryStore.getEntry('relocated-evicted'), undefined);
 		assert.equal(calls.length, 1);
 		assert.equal(calls[0].version, logKeyOf(Unplaced, 'relocated-evicted', 'relocate'));
