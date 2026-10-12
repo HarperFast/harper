@@ -2,6 +2,19 @@
 // Merged jsResource fixture for QA-196, QA-162, QA-195 — shared Harper instance
 // (instance-affinity consolidation; see relationship-and-status-contract.test.ts).
 
+export class JsonProjection extends Resource {
+	static loadAsInstance = true;
+	get() {
+		return {
+			id: 'json',
+			metadata: JSON.parse(
+				'{"then":"ordinary data","getRecord":"ordinary data","getChanges":"ordinary data","hasOwnProperty":"ordinary data","city":"Denver","details":{"level":{"kept":true,"hidden":"omit"}},"constructor":{"city":"Denver","hidden":"omit"},"__proto__":{"city":"Denver","hidden":"omit"}}'
+			),
+			notes: [{ city: 'Denver', hidden: 'omit' }, null, 'literal', {}],
+		};
+	}
+}
+
 // =============================================================================
 // QA-196 — Single-snapshot FK consistency oracle.
 //

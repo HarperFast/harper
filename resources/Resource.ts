@@ -1148,7 +1148,7 @@ export function allowedMethods(resource: any) {
  */
 function selectFromObject(object, propertyResolvers, context) {
 	// TODO: eventually we will do aggregate functions here
-	const record = object.getRecord?.();
+	const record = typeof object.getRecord === 'function' ? object.getRecord() : undefined;
 	if (record) {
 		const ownData = object.getChanges?.();
 		return (property) => {
@@ -1158,26 +1158,30 @@ function selectFromObject(object, propertyResolvers, context) {
 			}
 			if (ownData && property in ownData) {
 				return ownData[property];
-			} else if ((resolver = propertyResolvers?.[property])) {
+			} else if (
+				propertyResolvers &&
+				Object.hasOwn(propertyResolvers, property) &&
+				(resolver = propertyResolvers[property])
+			) {
 				return resolver(object, context);
 			} else return record[property];
 		};
 	} else if (propertyResolvers) {
 		return (property) => {
-			const resolver = propertyResolvers[property];
+			const resolver = Object.hasOwn(propertyResolvers, property) ? propertyResolvers[property] : undefined;
 			return resolver ? resolver(object, context) : object[property];
 		};
 	} else return (property) => object[property];
 }
 export function transformForSelect(select, resource) {
-	const propertyResolvers = resource.propertyResolvers;
-	const context = resource.getContext?.();
+	const propertyResolvers = resource?.propertyResolvers;
+	const context = resource?.getContext?.();
 	let subTransforms;
 	if (typeof select === 'string')
 		// if select is a single string then return property value
 		return function transform(object) {
-			if (object == null) return object;
-			if (object.then) return object.then(transform);
+			if (object == null || (!resource && typeof object !== 'object')) return object;
+			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object)) return object.map(transform);
 			return selectFromObject(object, propertyResolvers, context)(select);
 		};
@@ -1185,8 +1189,8 @@ export function transformForSelect(select, resource) {
 		// if it is an array, return an array
 		if (select.asArray)
 			return function transform(object) {
-				if (object == null) return object;
-				if (object.then) return object.then(transform);
+				if (object == null || (!resource && typeof object !== 'object')) return object;
+				if (typeof object.then === 'function') return object.then(transform);
 				if (Array.isArray(object)) return object.map(transform);
 				const results = [];
 				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
@@ -1197,8 +1201,8 @@ export function transformForSelect(select, resource) {
 			};
 		const forceNulls = select.forceNulls;
 		return function transform(object) {
-			if (object == null) return object;
-			if (object.then) return object.then(transform);
+			if (object == null || (!resource && typeof object !== 'object')) return object;
+			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object))
 				return object.map((value) => (value && typeof value === 'object' ? transform(value) : value));
 			// finally the case of returning objects
@@ -1207,8 +1211,15 @@ export function transformForSelect(select, resource) {
 			let promises;
 			for (const property of select) {
 				let value = getProperty(property);
+				if ((property.name || property) === '__proto__')
+					Object.defineProperty(selectedData, '__proto__', {
+						value: undefined,
+						writable: true,
+						enumerable: true,
+						configurable: true,
+					});
 				if (value === undefined && forceNulls) value = null;
-				if (value?.then) {
+				if (typeof value?.then === 'function') {
 					if (!promises) promises = [];
 					promises.push(value.then((value) => (selectedData[property.name || property] = value)));
 				} else selectedData[property.name || property] = value;
@@ -1225,12 +1236,15 @@ export function transformForSelect(select, resource) {
 				// TODO: Handle aggregate functions
 				if (property.name) {
 					const value = getProperty(property.name);
-					if (!value || typeof value !== 'object') return value;
-					if (!subTransforms) subTransforms = {};
+					if (!value || typeof value !== 'object' || value instanceof Date) return value;
+					if (!subTransforms) subTransforms = Object.create(null);
 					// TODO: Get the resource, cache this transform, and apply above
 					let transform = subTransforms[property.name];
 					if (!transform) {
-						const resource = propertyResolvers[property.name]?.definition?.tableClass;
+						const resource =
+							propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
+								? propertyResolvers[property.name]?.definition?.tableClass
+								: undefined;
 						transform = subTransforms[property.name] = transformForSelect(property.select || property, resource);
 					}
 					return transform(value);

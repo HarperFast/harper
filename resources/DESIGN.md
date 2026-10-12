@@ -264,6 +264,18 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
 
 ## Conventions
 
+- Single-record nested selections use `Resource.transformForSelect`; searches use
+  `Table.transformEntryForSelect`. Generic recursion needs no target table for plain JSON;
+  classless primitive array items and whole selected Dates keep their values. Missing targets
+  preserve `undefined`/`null`; `forceNulls` stays local to its object projection. Promise and
+  `getRecord` detection requires callable values; ordinary method-like JSON keys are data.
+- The native missing-value contract is pinned by
+  `../unitTests/resources/nestedSelectMissingValues.test.js` and
+  `../integrationTests/resources/relationship-and-status-contract.test.ts`.
+  Resolver dictionaries use own entries, the private transform cache has no prototype, and
+  a selected own `__proto__` is a data property on a normal response object.
+  [REST select projection crashes on missing targets and non-relationship fields](https://github.com/HarperFast/harper/issues/1415)
+  remains open for singleton-selector parsing and invalid-subselect policy outside this helper.
 - A record's `toJSON` is a response projection, not durable state. `recordUpdater` (and the cache-fill
   and audit paths feeding it) projects records to stored fields via `storedFieldsOnly`, so no durable
   form carries a resolver-owned (`@computed`/`@relationship`) name; materialization skips such names
