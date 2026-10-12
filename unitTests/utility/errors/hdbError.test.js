@@ -149,6 +149,25 @@ describe('HdbError built from a structured response message', () => {
 		assert.ok(!err.message.includes('super-secret-token'), err.message);
 	});
 
+	it('masks a credential-shaped key in a structured message that is not a report', () => {
+		const err = handleHDBError(
+			new Error(),
+			{ detail: { aws_secret_access_key: 'aws-secret-value', region: 'us-east-1' } },
+			400
+		);
+		assert.ok(!err.message.includes('aws-secret-value'), err.message);
+		assert.ok(err.message.includes('us-east-1'), err.message);
+	});
+
+	it('keeps a report reason listed under a credential-shaped field name', () => {
+		const err = handleHDBError(
+			new Error(),
+			{ error: 'Invalid user', password: 'Password must be at least 8 characters' },
+			400
+		);
+		assert.strictEqual(err.message, 'Invalid user: Password must be at least 8 characters');
+	});
+
 	it('does not throw when reading the response message throws', () => {
 		const report = {
 			get error() {

@@ -14,6 +14,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 - [The lock file must pass `npm ci` under npm 10 and npm 11 (`workflows/lockfile-npm-compat.yml`)](.github/DESIGN.md#the-lock-file-must-pass-npm-ci-under-npm-10-and-npm-11-workflowslockfile-npm-compatyml) — npm 11 writes the lock but accepts some that npm 10's `npm ci` rejects; fix the conflict at its source, never by regenerating with npm 10.
 - [A release copies to Docker Hub only the image it booted (`workflows/docker-smoke.yml`, `workflows/publish-docker.yaml`)](.github/DESIGN.md#a-release-copies-to-docker-hub-only-the-image-it-booted-workflowsdocker-smokeyml-workflowspublish-dockeryaml) — The release builds once into a runner-local registry, smoke-tests that digest and copies the same index to Docker Hub; never a rebuild.
+- [Unit-test fixtures don't spend `Unit tests: lmdb` on one durable commit per row (`workflows/unit-test.yml`)](.github/DESIGN.md#unit-test-fixtures-dont-spend-unit-tests-lmdb-on-one-durable-commit-per-row-workflowsunit-testyml) — Every resources suite re-runs on LMDB, where each awaited commit syncs; fixtures batch their writes, and the step cap is the only detector.
 
 ## resources/ — records, transactions, tables, blobs, audit
 
@@ -101,6 +102,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 ## resources/analytics/
 
 - [Analytics aggregation resumes from a raw cursor, which is not a clock (`resources/analytics/write.ts`)](resources/analytics/DESIGN.md#analytics-aggregation-resumes-from-a-raw-cursor-which-is-not-a-clock-resourcesanalyticswritets) — `rawCursor` moves only to a record a cycle actually read and is separate from the cadence marker.
+- [Aggregation folds each measure over only the samples that carry it (`resources/analytics/write.ts`)](resources/analytics/DESIGN.md#aggregation-folds-each-measure-over-only-the-samples-that-carry-it-resourcesanalyticswritets) — per-measure sample counts, cycle-local, weight each mean; a measure in every sample folds exactly as before.
 
 ## resources/models/ — model facade, backends, decisions
 
@@ -204,6 +206,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [Interactive CLI prompts go through `utility/interactivePrompts.ts`](utility/DESIGN.md#interactive-cli-prompts-go-through-utilityinteractivepromptsts) — Every `@inquirer` prompt uses this seam, which lazy-loads packages off the boot path, exits 130 on Ctrl-C and gives tests a stubbable raw layer.
 - [An HdbError's `message` is a string; the structured body is `http_resp_msg` (`utility/errors/hdbError.ts`)](utility/DESIGN.md#an-hdberrors-message-is-a-string-the-structured-body-is-http_resp_msg-utilityerrorshdberrorts) — A report object passed to `handleHDBError` is the response body and the job message; `message` is a string derived from it.
 - [Log-file identity is compared as BigInt (`utility/logging/logGenerationCoordinator.ts` `FileIdentity`)](utility/DESIGN.md#log-file-identity-is-compared-as-bigint-utilityloggingloggenerationcoordinatorts-fileidentity) — A Number rounds 64-bit Windows file IDs past 2^53, making neighbouring files look identical.
+- [`inspectForLog` bounds its whole render and masks credential-shaped keys (`utility/logging/harper_logger.ts`)](utility/DESIGN.md#inspectforlog-bounds-its-whole-render-and-masks-credential-shaped-keys-utilityloggingharper_loggerts) — The walk charges what util.inspect will print, in order, hooks included; a final cut makes the cap exact; one credential-key list shared with the MCP audit log.
 
 ## build-tools/ — packaging, published artifacts and local lint rules
 

@@ -355,36 +355,37 @@ describe('Caching', () => {
 		CachingTable.setTTLExpiration(0.005);
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		CachingTable.setTTLExpiration(50);
+		const eventTypes = () => events.map((event) => event.type);
+		// A default subscription drops an event whose version is superseded by the time its notify pass runs,
+		// so each step waits for its own event before the next write can supersede it.
+		const fillSettled = () => {
+			if (CachingTable.primaryStore.hasLock(23)) return false;
+			const version = CachingTable.primaryStore.getEntry(23)?.version;
+			return events.some((event) => event.type === 'put' && event.version === version);
+		};
+		events = [];
+		await CachingTable.invalidate(23);
 		let result = await CachingTable.get(23);
 		assert.equal(result.id, 23);
 		assert.equal(result.name, 'name ' + 23);
-		sourceRequests = 0;
-		events = [];
-		CachingTable.invalidate(23);
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		let target23 = new RequestTarget();
-		target23.id = 23;
-		result = await CachingTable.get(target23);
-		assert.equal(target23.loadedFromSource, true);
-		await new Promise((resolve) => setTimeout(resolve, 10));
-		assert.equal(result.id, 23);
-		assert.equal(sourceRequests, 1);
-		if (events.length > 2) console.log(events);
-		assert(events.length <= 2);
+		await waitFor(fillSettled, { message: () => `the warm-up fill should commit and notify, saw ${eventTypes()}` });
 
-		sourceRequests = 0;
-		events = [];
-		CachingTable.invalidate(23); // show not load from cache
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		assert.equal(sourceRequests, 0);
-		assert.equal(events.length, 1);
-
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		result = await CachingTable.get(23);
-		await new Promise((resolve) => setTimeout(resolve, 10));
-		assert.equal(result.id, 23);
-		assert.equal(sourceRequests, 1);
-		assert(events.length <= 2);
+		for (let cycle = 0; cycle < 2; cycle++) {
+			sourceRequests = 0;
+			events = [];
+			await CachingTable.invalidate(23);
+			await waitFor(() => events.length >= 1, { message: 'the invalidate event should be delivered' });
+			assert.deepEqual(eventTypes(), ['invalidate']);
+			assert.equal(sourceRequests, 0);
+			const target23 = new RequestTarget();
+			target23.id = 23;
+			result = await CachingTable.get(target23);
+			assert.equal(target23.loadedFromSource, true);
+			assert.equal(result.id, 23);
+			assert.equal(sourceRequests, 1);
+			await waitFor(fillSettled, { message: () => `the refill should commit and notify, saw ${eventTypes()}` });
+			assert.deepEqual(eventTypes(), ['invalidate', 'put']);
+		}
 	});
 
 	it('Handles distinct eviction time', async function () {
@@ -392,8 +393,7 @@ describe('Caching', () => {
 			expiration: 0.005,
 			eviction: 0.01,
 		});
-		CachingTable.invalidate(23); // reset the entry
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await CachingTable.invalidate(23); // reset the entry
 		await CachingTable.get(23);
 		sourceRequests = 0;
 		events = [];
@@ -417,8 +417,7 @@ describe('Caching', () => {
 			expiration: 0.005,
 			eviction: 0.01,
 		});
-		CachingTable.invalidate(23); // reset the entry
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await CachingTable.invalidate(23); // reset the entry
 		await CachingTable.get(23);
 		sourceRequests = 0;
 		sourceResponses = 0;
@@ -536,8 +535,7 @@ describe('Caching', () => {
 			expiration: 0.005,
 			eviction: 0.01,
 		});
-		CachingTable.invalidate(23); // reset the entry
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await CachingTable.invalidate(23); // reset the entry
 		await CachingTable.get(23);
 		sourceRequests = 0;
 		sourceResponses = 0;
@@ -608,6 +606,46 @@ describe('Caching', () => {
 		const refreshedEntry = ConflictCachingTable.primaryStore.getEntry(id);
 		assert.equal(refreshedEntry.version, invalidatedVersion);
 		assert(refreshedEntry.metadataFlags & VERSION_REUSED);
+	});
+
+	it('keeps an invalidation that commits while a revalidation fill is in flight', async function () {
+		const id = 650;
+		await ConflictCachingTable.put(id, { id, name: 'seed' });
+		await ConflictCachingTable.invalidate(id);
+		conflictSourceRequest = null;
+		// every await below is bounded in-body: a mocha timeout would leave this body suspended, skipping the finally
+		const settles = (promise, what) =>
+			Promise.race([promise, delay(2000, undefined, { ref: false }).then(() => assert.fail(`${what} should settle`))]);
+		const fill = ConflictCachingTable.get(id);
+		fill.catch(() => {});
+		try {
+			await waitFor(() => conflictSourceRequest?.id === id);
+			await settles(ConflictCachingTable.invalidate(id), 'an invalidation during the fill');
+			const invalidatedVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
+			conflictSourceRequest.respond({ id, name: 'pre-invalidation' });
+			assert.equal((await settles(fill, 'the fill')).name, 'pre-invalidation');
+			await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+			const entry = ConflictCachingTable.primaryStore.getEntry(id);
+			assert(entry.metadataFlags & INVALIDATED, 'the fill must not overwrite the later invalidation');
+			assert.equal(entry.version, invalidatedVersion);
+
+			conflictSourceRequest = null;
+			const target = new RequestTarget();
+			target.id = id;
+			const reload = ConflictCachingTable.get(target);
+			reload.catch(() => {});
+			await waitFor(() => conflictSourceRequest?.id === id);
+			conflictSourceRequest.respond({ id, name: 'post-invalidation' });
+			conflictSourceRequest = null;
+			assert.equal((await settles(reload, 'the reload')).name, 'post-invalidation');
+			assert.equal(target.loadedFromSource, true);
+			await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+			const refilled = ConflictCachingTable.primaryStore.getEntry(id);
+			assert.equal(refilled.value.name, 'post-invalidation');
+			assert(!(refilled.metadataFlags & INVALIDATED));
+		} finally {
+			if (conflictSourceRequest?.id === id) conflictSourceRequest.respond(null);
+		}
 	});
 
 	it('uses a source-reported version before the transaction timestamp', async function () {
