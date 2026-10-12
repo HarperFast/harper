@@ -87,7 +87,7 @@ describe('packageUtils', () => {
 				return execFileSync(
 					process.execPath,
 					['-e', `console.log(require(${JSON.stringify(join(tmpDir, modulePath))}).PRODUCT_NAME)`],
-					{ encoding: 'utf8', cwd: os.tmpdir() }
+					{ encoding: 'utf8', cwd: os.tmpdir(), timeout: 10000 }
 				).trim();
 			} finally {
 				rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5 });

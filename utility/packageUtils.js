@@ -46,8 +46,6 @@ const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
  */
 const PACKAGE_ROOT = realpathSync(dirname(packageJsonPath));
 
-// Embedding distributions (Harper Pro, whose root package.json is the one found above when core
-// runs compiled under its dist/core) brand local messages by setting productName.
 const PRODUCT_NAME = packageJson.productName || 'Harper';
 
 module.exports = { packageJson, PACKAGE_ROOT, PRODUCT_NAME };
