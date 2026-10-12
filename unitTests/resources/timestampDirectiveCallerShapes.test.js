@@ -193,7 +193,8 @@ describe('@updatedTime / @createdTime caller shapes', () => {
 		});
 
 		it('a falsy createdTime (0 or null) on patch of an existing record overwrites the stored createdTime', async () => {
-			// The patch retention guard tests the supplied value's truthiness; same in v5.1.26 and v5.2.0.
+			// Known defect, same in v5.1.26 and v5.2.0: the patch retention guard tests the supplied value's
+			// truthiness, not its presence. Flip these assertions when that guard is fixed.
 			await FloatStamped.put('f12', { id: 'f12', name: 'a' });
 			await FloatStamped.patch('f12', { createdAt: 0 });
 			assert.strictEqual((await FloatStamped.get('f12')).createdAt, 0);
@@ -328,6 +329,7 @@ describe('GraphQL non-null timestamp field (`Date! @updatedTime`)', () => {
 	});
 
 	it('rejects a put that omits the field: validation runs before the stamp is applied', async () => {
+		// Known defect, same in v5.1.26 and v5.2.0; code-first never marks a server-managed field required.
 		const error = await rejection(() => RequiredStamp.put('r1', { id: 'r1' }));
 		assert.match(error.message, /updatedAt is required/);
 	});
