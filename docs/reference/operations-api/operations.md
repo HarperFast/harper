@@ -1768,7 +1768,7 @@ Response:
 { "session_id": "3f7c...", "status": "running" }
 ```
 
-A session that is `running` or `awaiting_approval` rejects a new prompt with a 409 — resolve the pending approval or cancel the run first.
+A session that is `running` or `awaiting_approval` rejects a new prompt with a 409 — resolve the pending approval or cancel the run first. From v5.4.0 a session also answers 409 while a cancelled run is still finishing its current model call or tool; send the prompt again shortly.
 
 ### `get_agent_session`
 
@@ -1839,7 +1839,7 @@ Whether a tool is treated as destructive at all is governed by `agent.allowDestr
 
 Cancels a session's run, clears any followups it scheduled, and marks the session `aborted`. Works on a paused (`awaiting_approval`) or `idle` session as well as an actively running one.
 
-From v5.4.0 the cancel also answers every pending approval, decided or not, with a `cancelled_by_operator` result, in the same write that marks the session `aborted`. An approved action that has not started by then never runs, neither in the cancelled run nor when you next prompt the session, and nothing is left awaiting a decision. One already running finishes, and its result is recorded. The session stays `aborted`: a run caught mid-step finishes that step without marking the session `completed`, `error` or `awaiting_approval`, a tool call it then asks to have approved is answered `cancelled_by_operator` instead, and it makes no further model call.
+From v5.4.0 the cancel also answers every pending approval, decided or not, with a `cancelled_by_operator` result, in the same write that marks the session `aborted`. An approved action that has not started by then never runs, neither in the cancelled run nor when you next prompt the session, and nothing is left awaiting a decision. One already running finishes, and its result is recorded. A cancel between a turn's tool calls answers the rest of that turn `cancelled_by_operator`. The session stays `aborted`: a run caught mid-step finishes that step without marking the session `completed`, `error` or `awaiting_approval`, a tool call it then asks to have approved is answered `cancelled_by_operator` instead, and it makes no further model call.
 
 ```json
 { "operation": "cancel_agent_run", "session_id": "3f7c..." }
