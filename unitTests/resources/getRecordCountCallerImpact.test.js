@@ -45,25 +45,25 @@ describe('Table.getRecordCount caller impact', () => {
 	it('a bare `Table.getRecordCount()` call (no options object at all) returns an exact count on a small table', async () => {
 		const result = await SmallTable.getRecordCount();
 		assert.equal(result.recordCount, 25);
-		assert.equal(result.estimatedRange, undefined);
+		assert.strictEqual(result.estimatedRange, undefined);
 	});
 
 	it('a table below the sampling floor stays exact even when the time budget is already exhausted', async () => {
 		const result = await BelowFloorTable.getRecordCount({ timeLimit: -1 });
 		assert.equal(result.recordCount, 900);
-		assert.equal(result.estimatedRange, undefined, 'a table below the floor must never report an estimate');
+		assert.strictEqual(result.estimatedRange, undefined, 'a table below the floor must never report an estimate');
 	});
 
 	it('`exactCount: true` forces an exact count above the floor, even with an exhausted time budget', async () => {
 		const result = await EstimatorTable.getRecordCount({ timeLimit: -1, exactCount: true });
 		assert.equal(result.recordCount, LIVE_ROWS);
-		assert.equal(result.estimatedRange, undefined);
+		assert.strictEqual(result.estimatedRange, undefined);
 	});
 
 	it('a caller that treats recordCount as exact can be far off, even when estimatedRange brackets the truth', async function () {
 		this.timeout(120000);
 		const store = EstimatorTable.primaryStore;
-		if (typeof store.createCountEstimator !== 'function') return this.skip(); // LMDB has no estimator path
+		if (typeof store.createCountEstimator !== 'function') return this.skip(); // LMDB's base comes from getStats(), not this seam
 		const originalEstimator = store.createCountEstimator;
 		const originalCount = store.estimateCount;
 		const ownedEstimator = Object.hasOwn(store, 'createCountEstimator');
@@ -95,7 +95,7 @@ describe('Table.getRecordCount caller impact', () => {
 	it('estimatedRange is a heuristic, not a guarantee -- it can also fail to contain the live count', async function () {
 		this.timeout(120000);
 		const store = EstimatorTable.primaryStore;
-		if (typeof store.createCountEstimator !== 'function') return this.skip(); // LMDB has no estimator path
+		if (typeof store.createCountEstimator !== 'function') return this.skip(); // LMDB's base comes from getStats(), not this seam
 		const originalEstimator = store.createCountEstimator;
 		const originalCount = store.estimateCount;
 		const ownedEstimator = Object.hasOwn(store, 'createCountEstimator');
@@ -139,7 +139,7 @@ describe('Table.getRecordCount caller impact', () => {
 			});
 			assert.equal(receivedOptions[1]?.exactCount, true);
 			assert.equal(forcedExact.record_count, LIVE_ROWS);
-			assert.equal(forcedExact.estimated_record_range, undefined);
+			assert.strictEqual(forcedExact.estimated_record_range, undefined);
 		} finally {
 			EstimatorTable.getRecordCount = original;
 		}
