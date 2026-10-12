@@ -30,7 +30,7 @@ import { composeRegistryTools, ensureOperationsToolsRegistered } from './registr
 import { buildOperations } from './operations.ts';
 import { registerAgentMcpTools } from './mcpTools.ts';
 import { runAgent, _resetInFlightForTests } from './loop.ts';
-import { parseBudgetCap } from './budget.ts';
+import { parseBudgetCap, parseMaxTurns } from './budget.ts';
 import { appendMessage, getSession } from './session.ts';
 import type { AgentConfig, AgentScopes, AgentTool, HttpFetchConfig } from './types.ts';
 
@@ -55,7 +55,7 @@ interface StartOpts {
 	enabled?: boolean;
 	provider?: string;
 	model?: string;
-	maxTurns?: number;
+	maxTurns?: unknown;
 	maxSessionTokens?: unknown;
 	maxCostUsd?: unknown;
 	autoApprove?: boolean;
@@ -73,7 +73,8 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		log.info?.('Agent component disabled (agent.enabled=false); skipping registration');
 		return;
 	}
-	// A malformed cap fails the agent's start rather than running it uncapped.
+	// A malformed limit fails the agent's start rather than running it uncapped or turnless.
+	if (opts.maxTurns != null) config.maxTurns = parseMaxTurns(opts.maxTurns);
 	config.maxSessionTokens = parseBudgetCap('maxSessionTokens', opts.maxSessionTokens);
 	config.maxCostUsd = parseBudgetCap('maxCostUsd', opts.maxCostUsd);
 
@@ -368,7 +369,6 @@ function mergeConfig(opts: StartOpts): AgentConfig {
 		...(opts.enabled !== undefined && { enabled: !!opts.enabled }),
 		...(opts.provider !== undefined && { provider: String(opts.provider) }),
 		...(opts.model !== undefined && { model: String(opts.model) }),
-		...(opts.maxTurns !== undefined && { maxTurns: Number(opts.maxTurns) }),
 		...(opts.autoApprove !== undefined && { autoApprove: !!opts.autoApprove }),
 		...(opts.allowDestructive !== undefined && { allowDestructive: !!opts.allowDestructive }),
 		...(opts.user !== undefined && { user: String(opts.user) }),

@@ -891,3 +891,139 @@ describe('agent/loop per-session budgets (#3040)', () => {
 		assert.match(reloaded.lastError, /cannot be enforced/);
 	});
 });
+
+describe('agent/loop never overwrites a cancel', () => {
+	beforeEach(() => {
+		session._setTableForTests(makeMockTable());
+		_resetInFlightForTests();
+	});
+	afterEach(() => {
+		session._setTableForTests(undefined);
+	});
+
+	const cancel = (sessionId) => session.setStatus(sessionId, 'aborted', 'Cancelled by operator');
+	const toolCall = (id, name) => ({
+		content: '',
+		finishReason: 'tool_calls',
+		toolCalls: [{ id, name, arguments: {} }],
+	});
+	const tool = (name, { destructive = false, handler } = {}) => ({
+		def: { name, description: name, parameters: { type: 'object' } },
+		destructive,
+		handler: handler ?? (async () => ({ ok: true })),
+	});
+
+	async function newSession() {
+		const created = await session.createSession({ user: 'admin' });
+		await session.appendMessage(created.session_id, { role: 'user', content: 'go', createdAt: Date.now() });
+		return created.session_id;
+	}
+
+	async function expectStillAborted(sessionId) {
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'aborted');
+		assert.equal(reloaded.lastError, 'Cancelled by operator');
+		return reloaded;
+	}
+
+	it('keeps a cancel that lands while the final answer is generated', async () => {
+		const sessionId = await newSession();
+		const models = {
+			async generate() {
+				await cancel(sessionId);
+				return { content: 'done', finishReason: 'stop' };
+			},
+		};
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5 });
+		await expectStillAborted(sessionId);
+	});
+
+	it('keeps a cancel that lands before the maxTurns ceiling is written', async () => {
+		const sessionId = await newSession();
+		const models = {
+			async generate() {
+				await cancel(sessionId);
+				return toolCall('c1', 'read');
+			},
+		};
+		await runAgent({ sessionId, models, tools: [tool('read')], scopes, maxTurns: 1 });
+		await expectStillAborted(sessionId);
+	});
+
+	it('keeps a cancel that lands while a run pauses on another pending approval', async () => {
+		const sessionId = await newSession();
+		const drop = tool('drop', { destructive: true, handler: async () => cancel(sessionId) });
+		await runAgent({
+			sessionId,
+			models: stubModels([
+				{
+					content: '',
+					finishReason: 'tool_calls',
+					toolCalls: [
+						{ id: 'c1', name: 'drop', arguments: {} },
+						{ id: 'c2', name: 'drop', arguments: {} },
+					],
+				},
+			]),
+			tools: [drop],
+			scopes,
+			maxTurns: 5,
+			autoApprove: false,
+		});
+		const paused = await session.getSession(sessionId);
+		await session.resolveApproval(sessionId, paused.pendingApprovals[0].id, true);
+		await runAgent({ sessionId, models: stubModels([]), tools: [drop], scopes, maxTurns: 5, autoApprove: false });
+		await expectStillAborted(sessionId);
+	});
+
+	it('keeps a cancel that lands before a failed run writes its error', async () => {
+		const sessionId = await newSession();
+		const models = {
+			async generate() {
+				await cancel(sessionId);
+				throw new Error('provider down');
+			},
+		};
+		await assert.rejects(runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5 }), /provider down/);
+		await expectStillAborted(sessionId);
+	});
+
+	it('answers a gated call as cancelled instead of reopening a cancelled session for approval', async () => {
+		const sessionId = await newSession();
+		const models = {
+			async generate() {
+				await cancel(sessionId);
+				return toolCall('c1', 'drop');
+			},
+		};
+		await runAgent({
+			sessionId,
+			models,
+			tools: [tool('drop', { destructive: true })],
+			scopes,
+			maxTurns: 5,
+			autoApprove: false,
+		});
+		const reloaded = await expectStillAborted(sessionId);
+		assert.equal(reloaded.pendingApprovals.length, 0);
+		const response = reloaded.messages.find((m) => m.role === 'tool' && m.toolCallId === 'c1');
+		assert.equal(JSON.parse(response.content).error, 'cancelled_by_operator');
+	});
+
+	it('does not mark a run that was cancelled before it started as running', async () => {
+		const sessionId = await newSession();
+		await cancel(sessionId);
+		const controller = new AbortController();
+		controller.abort();
+		let generateCalls = 0;
+		const models = {
+			async generate() {
+				generateCalls++;
+				return { content: 'unreached', finishReason: 'stop' };
+			},
+		};
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, signal: controller.signal });
+		assert.equal(generateCalls, 0);
+		await expectStillAborted(sessionId);
+	});
+});

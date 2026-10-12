@@ -22,7 +22,7 @@ import {
 	listSessions,
 	resolveApproval,
 } from './session.ts';
-import { parseBudgetCap, summarizeSessionUsage } from './budget.ts';
+import { parseBudgetCap, parseMaxTurns, summarizeSessionUsage } from './budget.ts';
 import type { AgentConfig, AgentMessage, AgentRunStatus, AgentSessionRow, AgentSessionUsage } from './types.ts';
 
 export interface OperationDeps {
@@ -158,17 +158,10 @@ async function setAgentConfig(op: any, deps: OperationDeps) {
 		}
 	}
 	const patch: Partial<AgentConfig> = {};
-	for (const key of [
-		'enabled',
-		'provider',
-		'model',
-		'maxTurns',
-		'autoApprove',
-		'allowDestructive',
-		'systemPromptAppend',
-	]) {
+	for (const key of ['enabled', 'provider', 'model', 'autoApprove', 'allowDestructive', 'systemPromptAppend']) {
 		if (op?.[key] !== undefined) (patch as any)[key] = op[key];
 	}
+	if (op?.maxTurns !== undefined) patch.maxTurns = parseMaxTurns(op.maxTurns);
 	for (const key of ['maxSessionTokens', 'maxCostUsd'] as const) {
 		if (op?.[key] !== undefined) patch[key] = parseBudgetCap(key, op[key]);
 	}

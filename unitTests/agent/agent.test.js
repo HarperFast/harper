@@ -203,6 +203,7 @@ describe('agent/agent startOnMainThread budget caps (#3040)', () => {
 			return true;
 		});
 		await assert.rejects(startOnMainThread({ server, enabled: true, maxCostUsd: -1 }), /agent\.maxCostUsd must be/);
+		await assert.rejects(startOnMainThread({ server, enabled: true, maxTurns: 'lots' }), /agent\.maxTurns must be/);
 		assert.deepStrictEqual(registered, []);
 	});
 

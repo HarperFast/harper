@@ -75,6 +75,19 @@ describe('agent/operations budgets (#3040)', () => {
 		assert.deepStrictEqual(patches, [{ maxSessionTokens: 200000, maxCostUsd: 1.5 }, { maxCostUsd: undefined }]);
 	});
 
+	it('set_agent_config rejects a maxTurns that is not a positive integer, applying nothing', async () => {
+		const { execute, patches } = operation('set_agent_config');
+		for (const maxTurns of [null, 0, -1, 2.5, 'many', '']) {
+			await assert.rejects(execute({ operation: 'set_agent_config', maxTurns, autoApprove: true }), (err) => {
+				assert.strictEqual(err.statusCode, 400);
+				assert.match(err.message, /agent\.maxTurns must be a positive integer/);
+				return true;
+			});
+		}
+		await execute({ operation: 'set_agent_config', maxTurns: '20' });
+		assert.deepStrictEqual(patches, [{ maxTurns: 20 }]);
+	});
+
 	it('set_agent_config rejects a malformed cap and applies nothing from that request', async () => {
 		const { execute, patches } = operation('set_agent_config');
 		await assert.rejects(execute({ operation: 'set_agent_config', maxTurns: 3, maxSessionTokens: -5 }), (err) => {

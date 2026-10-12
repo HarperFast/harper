@@ -16,7 +16,15 @@
  */
 
 import type { GenerateOpts, GenerateResult, Message, Models, ToolCall, ToolDef } from '../resources/models/types.ts';
-import { addPendingApproval, appendMessage, claimApproval, endRun, getSession, setStatus } from './session.ts';
+import {
+	addPendingApproval,
+	appendMessage,
+	cancelledObservation,
+	claimApproval,
+	endRun,
+	getSession,
+	setStatus,
+} from './session.ts';
 import type { AgentMessage, AgentScopes, AgentTool, AgentToolContext, ApprovalRequest } from './types.ts';
 import { toolMapByName } from './toolset.ts';
 import { budgetViolation, callUsage, hasBudget, summarizeSessionUsage } from './budget.ts';
@@ -53,6 +61,9 @@ export function runAgent(opts: RunAgentOpts): Promise<void> {
 async function doRun(opts: RunAgentOpts): Promise<void> {
 	const toolMap = toolMapByName(opts.tools);
 	const toolDefs: ToolDef[] = opts.tools.map((t) => t.def);
+	// The cancel path already wrote `aborted`; `running` must not replace it. Every later status write
+	// goes through `endRun`, which keeps `aborted` under the session lock.
+	if (opts.signal?.aborted) return;
 	await setStatus(opts.sessionId, 'running');
 	const ctx: AgentToolContext = { sessionId: opts.sessionId, signal: opts.signal, scopes: opts.scopes };
 
@@ -73,7 +84,7 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 		// call for this turn is resolved (each `approve_agent_action` re-runs this path).
 		const afterConsume = await getSession(opts.sessionId);
 		if (afterConsume?.pendingApprovals.some((a) => !a.resolved)) {
-			await setStatus(opts.sessionId, 'awaiting_approval');
+			await endRun(opts.sessionId, { status: 'awaiting_approval' });
 			return;
 		}
 
@@ -112,20 +123,23 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 			await appendMessage(opts.sessionId, assistantMessage);
 
 			if (!result.toolCalls || result.toolCalls.length === 0) {
-				await setStatus(opts.sessionId, 'completed');
+				await endRun(opts.sessionId, { status: 'completed' });
 				return;
 			}
 
 			const paused = await dispatchToolCalls(result.toolCalls, toolMap, ctx, opts);
 			if (paused || opts.signal?.aborted) return;
 		}
-		await setStatus(opts.sessionId, 'completed', `Reached maxTurns=${opts.maxTurns} without a final answer.`);
+		await endRun(opts.sessionId, {
+			status: 'completed',
+			lastError: `Reached maxTurns=${opts.maxTurns} without a final answer.`,
+		});
 	} catch (err) {
 		// If the abort signal fired, the cancel path already set the session to `aborted` —
 		// don't clobber that with `error`. The rejection here is just the awaited generate/tool
 		// honoring the signal, not a real failure.
 		if (opts.signal?.aborted) return;
-		await setStatus(opts.sessionId, 'error', err instanceof Error ? err.message : String(err));
+		await endRun(opts.sessionId, { status: 'error', lastError: err instanceof Error ? err.message : String(err) });
 		throw err;
 	}
 }
@@ -223,7 +237,7 @@ async function consumeResolvedApprovals(
 		if (ctx.signal?.aborted) {
 			await appendMessage(sessionId, {
 				role: 'tool',
-				content: JSON.stringify({ ok: false, error: 'cancelled_by_operator', tool: approval.toolName }),
+				content: cancelledObservation(approval.toolName),
 				toolCallId: approval.toolCallId,
 				createdAt: Date.now(),
 			});

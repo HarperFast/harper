@@ -1,7 +1,13 @@
 'use strict';
 
 const assert = require('node:assert');
-const { summarizeSessionUsage, budgetViolation, parseBudgetCap, callUsage } = require('#src/agent/budget');
+const {
+	summarizeSessionUsage,
+	budgetViolation,
+	parseBudgetCap,
+	parseMaxTurns,
+	callUsage,
+} = require('#src/agent/budget');
 
 const assistant = (usage) => ({ role: 'assistant', content: '', createdAt: 0, ...(usage && { usage }) });
 const user = { role: 'user', content: 'hi', createdAt: 0 };
@@ -119,6 +125,23 @@ describe('agent/budget', () => {
 					() => parseBudgetCap(name, value),
 					(err) => err.statusCode === 400 && err.message.startsWith(`agent.${name} must be`),
 					`${name}=${String(value)}`
+				);
+			}
+		});
+	});
+
+	describe('parseMaxTurns', () => {
+		it('accepts a positive integer, also as a config string', () => {
+			assert.strictEqual(parseMaxTurns(50), 50);
+			assert.strictEqual(parseMaxTurns('7'), 7);
+		});
+
+		it('refuses null and anything that would make every run turnless', () => {
+			for (const value of [null, 0, -3, 1.5, Number.NaN, 'many', '', true]) {
+				assert.throws(
+					() => parseMaxTurns(value),
+					(err) => err.statusCode === 400 && /agent\.maxTurns must be a positive integer/.test(err.message),
+					String(value)
 				);
 			}
 		});

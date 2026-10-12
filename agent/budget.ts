@@ -1,5 +1,6 @@
 /**
- * Per-session spend caps for the built-in agent (#3040). Usage is never stored as a running total:
+ * Per-session spend caps for the built-in agent (#3040), and validation of the agent's numeric limits.
+ * Usage is never stored as a running total:
  * each assistant message carries what its model call reported, and the session's usage is folded
  * from the transcript, so a total cannot drift from the calls it summarizes.
  */
@@ -75,7 +76,7 @@ export function budgetViolation(usage: AgentSessionUsage, caps: BudgetCaps): str
 /** Refuses rather than coerces: a cap coerced to `NaN` would compare false forever and silently uncap. */
 export function parseBudgetCap(name: keyof BudgetCaps, value: unknown): number | undefined {
 	if (value === undefined || value === null) return undefined;
-	const cap = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+	const cap = configNumber(value);
 	const valid =
 		typeof cap === 'number' &&
 		Number.isFinite(cap) &&
@@ -85,4 +86,16 @@ export function parseBudgetCap(name: keyof BudgetCaps, value: unknown): number |
 		throw new ClientError(`agent.${name} must be ${expected} or null, got ${JSON.stringify(value)}`, 400);
 	}
 	return cap;
+}
+
+/** `maxTurns` has a default rather than an "off", so `null` is refused like any other non-integer. */
+export function parseMaxTurns(value: unknown): number {
+	const turns = configNumber(value);
+	if (typeof turns === 'number' && Number.isInteger(turns) && turns >= 1) return turns;
+	throw new ClientError(`agent.maxTurns must be a positive integer, got ${JSON.stringify(value)}`, 400);
+}
+
+/** Env vars and CLI flags arrive as strings. */
+function configNumber(value: unknown): unknown {
+	return typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
 }

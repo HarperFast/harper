@@ -136,10 +136,10 @@ export function setStatus(sessionId: string, status: AgentRunStatus, lastError?:
 }
 
 /**
- * End a run in one write: append its closing messages, answer and close every approval still open under
- * the lock, set the terminal status. One write, so a crash cannot persist an assistant's tool calls
- * without the responses a provider requires before the next call. A cancel that landed first keeps its
- * `aborted` status.
+ * Every status the loop writes after `running` goes through here, in one write with its closing messages
+ * and any open approvals answered under the lock: a crash cannot persist an assistant's tool calls
+ * without the responses a provider requires before the next call, and a cancel that landed first keeps
+ * its `aborted` status.
  */
 export function endRun(
 	sessionId: string,
@@ -173,11 +173,7 @@ export function cancelSession(sessionId: string): Promise<AgentSessionRow> {
 	return withSessionLock(sessionId, async () => {
 		const session = await requireSession(sessionId);
 		const now = Date.now();
-		closeOpenApprovals(
-			session,
-			(approval) => JSON.stringify({ ok: false, error: 'cancelled_by_operator', tool: approval.toolName }),
-			now
-		);
+		closeOpenApprovals(session, (approval) => cancelledObservation(approval.toolName), now);
 		session.status = 'aborted';
 		session.lastError = 'Cancelled by operator';
 		session.updatedAt = now;
@@ -202,19 +198,38 @@ function closeOpenApprovals(
 	}
 }
 
+/**
+ * Park a gated tool call for the operator. On a session a cancel already marked `aborted`, the call is
+ * answered `cancelled_by_operator` instead, so the cancel is not undone and the call is not left open.
+ */
 export function addPendingApproval(
 	sessionId: string,
 	approval: Omit<ApprovalRequest, 'id' | 'createdAt'>
-): Promise<ApprovalRequest> {
+): Promise<ApprovalRequest | undefined> {
 	return withSessionLock(sessionId, async () => {
 		const session = await requireSession(sessionId);
-		const entry: ApprovalRequest = { ...approval, id: randomUUID(), createdAt: Date.now() };
-		session.pendingApprovals.push(entry);
-		session.status = 'awaiting_approval';
-		session.updatedAt = Date.now();
+		const now = Date.now();
+		let entry: ApprovalRequest | undefined;
+		if (session.status === 'aborted') {
+			session.messages.push({
+				role: 'tool',
+				content: cancelledObservation(approval.toolName),
+				toolCallId: approval.toolCallId,
+				createdAt: now,
+			});
+		} else {
+			entry = { ...approval, id: randomUUID(), createdAt: now };
+			session.pendingApprovals.push(entry);
+			session.status = 'awaiting_approval';
+		}
+		session.updatedAt = now;
 		await getAgentSessionTable().put(session);
 		return entry;
 	});
+}
+
+export function cancelledObservation(toolName: string): string {
+	return JSON.stringify({ ok: false, error: 'cancelled_by_operator', tool: toolName });
 }
 
 /**
