@@ -15,6 +15,9 @@ const PORT = 19418;
 const OTHER_PORT = 19419;
 
 const passThrough = (request, next) => next(request);
+// Upgrade middleware has its own signature; an http-shaped handler registered on 'all' would throw on any real
+// upgrade a later test file dispatches in this mocha process.
+const upgradePassThrough = (request, socket, head, next) => next(request, socket, head);
 
 /**
  * The resolved order of the default (unmounted) route for `port`, restricted to this file's own
@@ -59,11 +62,11 @@ describe('http middleware chains and the "all" pseudo-port', () => {
 	});
 
 	it('synchronizes upgrade chains on the same terms as http chains', () => {
-		server.upgrade(passThrough, { port: PORT, name: 'chainSyncUpgrade' });
+		server.upgrade(upgradePassThrough, { port: PORT, name: 'chainSyncUpgrade' });
 
 		assert.deepStrictEqual(orderFor('upgrade', PORT), ['chainSyncUpgrade']);
 
-		server.upgrade(passThrough, { port: 'all', name: 'chainSyncUpgradeCatchAll', after: 'chainSyncUpgrade' });
+		server.upgrade(upgradePassThrough, { port: 'all', name: 'chainSyncUpgradeCatchAll', after: 'chainSyncUpgrade' });
 
 		assert.deepStrictEqual(orderFor('upgrade', PORT), ['chainSyncUpgrade', 'chainSyncUpgradeCatchAll']);
 	});
