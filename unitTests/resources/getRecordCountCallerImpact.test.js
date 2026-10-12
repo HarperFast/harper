@@ -5,9 +5,6 @@ const { table } = require('#src/resources/databases');
 const { describeTable } = require('#src/dataLayer/schemaDescribe');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
-// Pins `Table.getRecordCount()`'s CALLER-visible contract (return shape, the sampling floor, the
-// `exactCount` escape, and the `describe_table` pass-through) -- as distinct from
-// `getRecordCount.test.js`, which pins the estimator's internal mechanics.
 describe('Table.getRecordCount caller impact', () => {
 	const LIVE_ROWS = 3000;
 
@@ -35,7 +32,6 @@ describe('Table.getRecordCount caller impact', () => {
 		setupTestDBPath();
 		setMainIsWorker(true);
 		SmallTable = await buildTable('RecordCountImpactSmall', 25);
-		// Comfortably below MIN_ESTIMATOR_SAMPLE, so this discriminates the floor itself, not a 1-row edge.
 		BelowFloorTable = await buildTable('RecordCountImpactBelowFloor', 900);
 		EstimatorTable = await buildTable('RecordCountImpactEstimator', LIVE_ROWS);
 	});
@@ -57,10 +53,6 @@ describe('Table.getRecordCount caller impact', () => {
 		assert.equal(result.recordCount, LIVE_ROWS);
 		assert.equal(result.estimatedRange, undefined);
 	});
-
-	// Both of the next two force the native estimator's answers rather than relying on a churn
-	// pattern that happens to produce a given outcome: one case where the base overshoots and the
-	// range brackets the truth, one where it undershoots and does not.
 
 	it('a caller that treats recordCount as exact can be far off, even when estimatedRange brackets the truth', async function () {
 		this.timeout(120000);
@@ -123,15 +115,11 @@ describe('Table.getRecordCount caller impact', () => {
 	});
 
 	it('describe_table reports record_count/estimated_record_range from getRecordCount, and forwards exact_count as exactCount', async () => {
-		// The default call being exact would prove nothing about forwarding on its own -- a 3,000-row
-		// scan usually finishes inside the default 500ms budget regardless. Capturing the options
-		// describe_table actually passes, while substituting a generous timeLimit so the assertion
-		// below isn't racing the scan under CI contention, isolates the forwarding claim from timing.
 		const original = EstimatorTable.getRecordCount;
 		const receivedOptions = [];
 		EstimatorTable.getRecordCount = function (options) {
 			receivedOptions.push(options);
-			return original.call(this, { ...options, timeLimit: Infinity });
+			return original.call(this, { ...options, timeLimit: Infinity }); // scan time must not decide this assertion
 		};
 		try {
 			const exact = await describeTable({ database: 'test', table: 'RecordCountImpactEstimator' });
@@ -152,8 +140,6 @@ describe('Table.getRecordCount caller impact', () => {
 	});
 
 	it('describe_table also passes through an estimated_record_range when getRecordCount returns one', async () => {
-		// No real scan reliably lands on the sampling path here, so this stubs getRecordCount's
-		// return directly rather than its inputs.
 		const original = EstimatorTable.getRecordCount;
 		EstimatorTable.getRecordCount = async () => ({ recordCount: 12345, estimatedRange: [10000, 20000] });
 		try {
@@ -166,9 +152,6 @@ describe('Table.getRecordCount caller impact', () => {
 	});
 
 	it('describe_table with skip_record_count never calls getRecordCount, so the field is simply absent', async () => {
-		// Spying on getRecordCount itself (rather than the store methods it may call) keeps this
-		// independent of which engine-specific stats source getSize()/getAuditSize() legitimately
-		// call on their own.
 		const original = EstimatorTable.getRecordCount;
 		let calls = 0;
 		EstimatorTable.getRecordCount = function (...args) {
