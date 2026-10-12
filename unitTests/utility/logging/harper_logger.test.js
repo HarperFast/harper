@@ -1269,9 +1269,9 @@ describe('Test harper_logger module', () => {
 			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
 			shapeLoggersToCleanup.push(testMainLogger);
 
-			// Created before main's own rotation is installed, so forComponent's copy-at-creation
-			// of `protoLogger.rotation` (unrelated to this fix) cannot be what delivers rotation
-			// below — only the shared file sink at mainLogPath can.
+			// Created before main's own rotation is installed, so forComponent's own copy-at-creation
+			// of `protoLogger.rotation` cannot be what delivers rotation below — only the shared file
+			// sink at mainLogPath can.
 			const externalLikeLogger = testMainLogger.forComponent('external');
 			shapeLoggersToCleanup.push(externalLikeLogger);
 			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation }, undefined, testMainLogger);
@@ -1380,15 +1380,20 @@ describe('Test harper_logger module', () => {
 			updateLogger(testMainLogger, { path: mainLogPath, level: 'info' }, undefined, testMainLogger);
 
 			// Created while main is still at 'info', so forComponent's own copy-at-creation of
-			// `protoLogger.level` (unrelated to this fix) cannot be what delivers 'trace' below —
-			// only updateLogger's mainLoggerRef fallback, with no level of its own, can.
+			// `protoLogger.level` cannot be what delivers 'trace' below — only updateLogger's
+			// mainLoggerRef fallback, with no level of its own, can.
 			const probe = testMainLogger.forComponent('levelProbe');
 			shapeLoggersToCleanup.push(probe);
+			const levelBeforeFallback = probe.level;
 
 			updateLogger(testMainLogger, { path: mainLogPath, level: 'trace' }, undefined, testMainLogger);
 			updateLogger(probe, { path: path.join(shapeCaseDir, 'probe.log') }, 'levelProbe', testMainLogger);
 
 			assert.strictEqual(probe.level, testMainLogger.level);
+			// Guards against a mutant that drops the whole level assignment rather than just its
+			// fallback: main's own level would then also never move off its starting value, so the
+			// equality above would hold trivially without the fallback ever running.
+			assert.notStrictEqual(probe.level, levelBeforeFallback);
 		});
 	});
 
