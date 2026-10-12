@@ -138,7 +138,7 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 		assert.match(stderr, new RegExp(`gh variable set HARPER_CLI_TARGET --repo ${REPO} --body ${audience}`));
 
 		const role = await findRole();
-		assert.deepStrictEqual(role.permission.operations.sort(), ['deploy_component', 'get_job']);
+		assert.deepStrictEqual(role.permission.operations.sort(), ['deploy_component', 'get_job', 'registration_info']);
 		assert.notStrictEqual(role.permission.super_user, true);
 
 		const user = await findUser();
@@ -154,7 +154,7 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 			workflow_ref: `${REPO}/.github/workflows/deploy.yaml@refs/heads/main`,
 			environment: 'production',
 		});
-		assert.deepStrictEqual(policy.operations.sort(), ['deploy_component', 'get_job']);
+		assert.deepStrictEqual(policy.operations.sort(), ['deploy_component', 'get_job', 'registration_info']);
 		assert.strictEqual(policy.enabled, true);
 		assert.ok(!policy.invalid_reason, `unexpected invalid_reason: ${policy.invalid_reason}`);
 	});
@@ -175,13 +175,18 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 			request(ctx.harper.operationsAPIURL).post('/').set('Authorization', header).send(body);
 
 		assert.strictEqual((await call({ operation: 'get_job', id: '00000000-0000-4000-8000-000000000000' })).status, 200);
+		// The CLI's version check before a deploy.
+		assert.strictEqual((await call({ operation: 'registration_info' })).status, 200);
 		assert.strictEqual((await call({ operation: 'describe_all' })).status, 403);
 		assert.strictEqual((await call({ operation: 'search_by_id', table: 'FirstTable', ids: ['1'] })).status, 403);
 	});
 
 	test('a role that grants more stops setup before it writes, and is left as it was', async () => {
 		const role = await findRole();
-		const widened = { ...role.permission, operations: ['deploy_component', 'get_job', 'add_user'] };
+		const widened = {
+			...role.permission,
+			operations: ['deploy_component', 'get_job', 'registration_info', 'add_user'],
+		};
 		await op({ operation: 'alter_role', id: role.id, role: NAME, permission: widened });
 		const policyBefore = await findPolicy();
 
@@ -193,6 +198,7 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 			'add_user',
 			'deploy_component',
 			'get_job',
+			'registration_info',
 		]);
 		assert.deepStrictEqual(await findPolicy(), policyBefore);
 
