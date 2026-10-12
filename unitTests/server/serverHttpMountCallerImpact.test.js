@@ -9,7 +9,7 @@
 const assert = require('node:assert');
 const { join, basename } = require('node:path');
 const { tmpdir } = require('node:os');
-const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
+const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { stringify } = require('yaml');
 const { Scope } = require('#src/components/Scope');
@@ -17,35 +17,34 @@ const { ApplicationScope } = require('#src/components/ApplicationScope');
 const { Resources } = require('#src/resources/Resources');
 const { Resource } = require('#src/resources/Resource');
 const { makeCallbackChain } = require('#src/server/middlewareChain');
+const { Request } = require('#src/server/serverHelpers/Request');
 const { toScopeMount } = require('#src/components/scopeMount');
 const { waitFor } = require('../waitFor.js');
 const { server } = require('#src/server/Server');
-const { describeMiddlewareChains } = require('#src/server/http');
+const httpModule = require('#src/server/http');
+const { describeMiddlewareChains } = httpModule;
 const { handleApplication: handleRest } = require('#src/server/REST');
 const { handleApplication: handleFastifyRoutes } = require('#src/server/fastifyRoutes');
 const { loadComponent, loadedPaths, TRUSTED_RESOURCE_PLUGINS } = require('#src/components/componentLoader');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 const PORT = 'mount-caller-impact';
 
 const passThrough = (request, next) => next(request);
 
-/**
- * A request as the router sees it. HTTP/1 carries the authority in `Host`; HTTP/2 in `:authority`, which
- * Harper's `Request.host` getter resolves for both.
- */
+// Node's HTTP/2 compatibility layer sends no Host header; it exposes `:authority` as `request.authority`.
 function request(url, { host = 'localhost:9926', http2 = false } = {}) {
-	const pathname = url.split('?')[0];
-	const headers = http2 ? { ':authority': host } : { host };
-	return { url, pathname, host, headers: { asObject: headers } };
+	const nodeRequest = http2
+		? { method: 'GET', url, authority: host, headers: { ':authority': host } }
+		: { method: 'GET', url, headers: { host } };
+	return new Request(nodeRequest);
 }
 
-/**
- * Builds one port's chain from `entries` the way `server/http.ts` does and dispatches `req` through it.
- * Returns which handler answered and the url/pathname it saw, or 'unhandled' when the chain fell through.
- */
+// Entries are what `server.http(listener, options)` records; `server/http.ts` builds each port's chain this way.
 function dispatch(entries, req) {
 	const chain = makeCallbackChain(
-		entries.map((entry) => ({ port: PORT, ...entry })),
+		entries.map((entry) => ({ ...entry, port: PORT })),
 		PORT,
 		() => 'unhandled'
 	);
@@ -74,10 +73,6 @@ describe('server.http under application mounts: caller impact', () => {
 		rmSync(directory, { recursive: true, force: true });
 	});
 
-	/**
-	 * Registers `listener` through a plugin scope's `server.http`, exactly as a `handleApplication(scope)`
-	 * plugin does, and returns the entry the router receives.
-	 */
 	async function registerThroughScope(pluginConfig, mount, listener, options) {
 		writeFileSync(configFilePath, stringify({ [pluginName]: pluginConfig }));
 		let entry;
@@ -135,8 +130,8 @@ describe('server.http under application mounts: caller impact', () => {
 		});
 
 		it('scope.server.http(handler, { urlPath: "./x" }): namespaced under the plugin name', async () => {
-			// v5.1.26: passed through raw; the router built the route '/./x', which no client sends (WHATWG
-			// URL parsing removes '.' segments), so the handler was unreachable. Fixed by 79325af60.
+			// v5.1.26: passed through raw; the router built the route '/./x'. Browsers and fetch remove '.' segments
+			// before sending, so only a client sending the raw path (curl --path-as-is) reached it. Changed by 79325af60.
 			const entry = await registerThroughScope({}, undefined, answering('scoped'), { urlPath: './x' });
 			assert.strictEqual(entry.urlPath, `/${pluginName}/x/`);
 			assert.strictEqual(dispatch([entry], request(`/${pluginName}/x/thing`)).pathname, '/thing');
@@ -167,21 +162,21 @@ describe('server.http under application mounts: caller impact', () => {
 			assert.strictEqual(entry.host, undefined);
 		});
 
-		it('server.http(handler, { host }): matches the Host header case-insensitively', () => {
+		it('host-routed handler: matches the Host header case-insensitively', () => {
 			// v5.1.26: an exact, case-sensitive compare of the Host header minus its port, so 'API.Example.com'
 			// never matched the lowercased host clients send. Changed by b9f99b1a5.
 			const entry = { name: 'hosted', listener: answering('hosted'), host: 'API.Example.com' };
 			assert.strictEqual(dispatch([entry], request('/', { host: 'api.example.com:9926' })).name, 'hosted');
 		});
 
-		it('server.http(handler, { host }): matches an HTTP/2 request by its :authority', () => {
+		it('host-routed handler: matches an HTTP/2 request by its :authority', () => {
 			// v5.1.26: read only the Host header, which HTTP/2 clients do not send, so every HTTP/2 request
 			// fell through to the default chain. Changed by 39ecddd52.
 			const entry = { name: 'hosted', listener: answering('hosted'), host: 'api.example.com' };
 			assert.strictEqual(dispatch([entry], request('/', { host: 'api.example.com', http2: true })).name, 'hosted');
 		});
 
-		it('server.http(handler, { host }): matches a trailing-dot or bracketed-IPv6 Host header', () => {
+		it('host-routed handler: matches a trailing-dot or bracketed-IPv6 Host header', () => {
 			// v5.1.26: neither matched ('api.example.com.' compared unequal; '[::1]:9926' split on the first ':').
 			// Changed by b9f99b1a5 (IPv6) and 39ecddd52 (trailing dot).
 			const named = { name: 'hosted', listener: answering('hosted'), host: 'api.example.com' };
@@ -253,7 +248,8 @@ describe('server.http under application mounts: caller impact', () => {
 			// v5.1.26: answered every path on the dedicated port.
 			const entry = await registerThroughScope({}, { urlPath: '/v1' }, answering('scoped'), { port: 9999 });
 			assert.strictEqual(entry.port, 9999);
-			assert.strictEqual(entry.urlPath, '/v1/');
+			assert.strictEqual(dispatch([entry], request('/v1/thing')).pathname, '/thing');
+			assert.strictEqual(dispatch([entry], request('/thing')), 'unhandled');
 		});
 
 		it('unrouted server.http(handler) middleware does not run for requests the mounted route answers', () => {
@@ -276,7 +272,7 @@ describe('server.http under application mounts: caller impact', () => {
 			assert.deepStrictEqual(seen, ['/Thing']);
 		});
 
-		it('invalid mounts throw, so the loader skips the application', () => {
+		it('invalid mount values throw at parse, which tryRootConfigMount turns into skipping the application', () => {
 			// v5.1.26: these values were inert and the application loaded at '/'.
 			assert.throws(() => toScopeMount({ host: 'api.example.com:9926' }), /bare hostname/);
 			assert.throws(() => toScopeMount({ host: 9926 }), /bare hostname/);
@@ -292,7 +288,7 @@ describe('server.http under application mounts: caller impact', () => {
 		afterEach(() => {
 			delete TRUSTED_RESOURCE_PLUGINS.mountCallerImpactProbe;
 			loadedPaths.clear();
-			rmSync(componentDir, { recursive: true, force: true });
+			if (componentDir) rmSync(componentDir, { recursive: true, force: true });
 		});
 
 		it('gets the bare server: its handlers stay unrouted while the application plugins move under the mount', async () => {
@@ -320,7 +316,10 @@ describe('server.http under application mounts: caller impact', () => {
 
 			const routeOf = (name) =>
 				(describeMiddlewareChains().http[probePort] ?? []).find((route) => route.order.includes(name));
-			await waitFor(() => routeOf(`module-${tag}`), { timeout: 5000, message: 'resources.js never registered' });
+			await waitFor(() => routeOf(`module-${tag}`) && routeOf(`scoped-${tag}`), {
+				timeout: 5000,
+				message: 'resources.js or the probe plugin never registered',
+			});
 			assert.strictEqual(routeOf(`scoped-${tag}`).urlPath, '/v1');
 			assert.strictEqual(routeOf(`module-${tag}`).urlPath, undefined);
 			assert.strictEqual(routeOf(`module-${tag}`).host, undefined);
@@ -332,7 +331,7 @@ describe('server.http under application mounts: caller impact', () => {
 
 		afterEach(() => {
 			loadedPaths.clear();
-			rmSync(packageDir, { recursive: true, force: true });
+			if (packageDir) rmSync(packageDir, { recursive: true, force: true });
 		});
 
 		it('a package that ships no config file loads the default plugins, REST included, under the mount', async () => {
@@ -457,25 +456,71 @@ describe('server.http under application mounts: caller impact', () => {
 	});
 
 	describe('fastifyRoutes (`routes/*.js` legacy plugin)', () => {
-		function fastifyScope(mount, options = {}) {
-			return { appName: 'fastify-app', mount, options: { getAll: () => options }, handleEntry: () => {} };
-		}
+		let fastifyDir;
 
-		it('an application without a mount loads its fastify routes', () => {
-			assert.doesNotThrow(() => handleFastifyRoutes(fastifyScope(undefined)));
+		after(() => {
+			if (fastifyDir) rmSync(fastifyDir, { recursive: true, force: true });
 		});
 
-		it('an application with a host mount refuses its fastify routes', () => {
+		function fastifyScope(appName, mount, onEntry = () => {}) {
+			return { appName, mount, options: { getAll: () => ({}) }, handleEntry: onEntry, requestRestart() {} };
+		}
+
+		it('an application without a mount: the plugin loads', () => {
+			assert.doesNotThrow(() => handleFastifyRoutes(fastifyScope('fastify-app', undefined)));
+		});
+
+		it('an application with a host mount: the plugin refuses to load', () => {
 			// v5.1.26: no mount existed; fastify routes answered on every host. The rest of the application
 			// still loads: the loader contains a plugin's throw to that plugin.
 			assert.throws(
-				() => handleFastifyRoutes(fastifyScope({ host: 'api.example.com' })),
+				() => handleFastifyRoutes(fastifyScope('fastify-app', { host: 'api.example.com' })),
 				/cannot be constrained by host/
 			);
 		});
 
-		it('an application with only a urlPath mount loads its fastify routes', () => {
-			assert.doesNotThrow(() => handleFastifyRoutes(fastifyScope({ urlPath: '/v1' })));
+		it('an application with only a urlPath mount serves its fastify routes under the mount', async () => {
+			// v5.1.26: the mount was inert, so this route answered at '/hello'. Fastify registers on the bare
+			// server, so nothing strips the mount: the route prefix carries it. The process builds one fastify
+			// app and its routes are fixed once it boots, so this file exercises a single route folder.
+			fastifyDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.mount-caller-impact-fastify-'));
+			mkdirSync(join(fastifyDir, 'routes'));
+			const fastifyConfig = join(fastifyDir, 'config.yaml');
+			writeFileSync(fastifyConfig, stringify({ fastifyRoutes: { files: 'routes/*.js' } }));
+			writeFileSync(
+				join(fastifyDir, 'routes', 'hello.js'),
+				`module.exports = async (server) => server.get('/hello', async () => ({ ok: true }));`
+			);
+			const scope = new Scope(
+				basename(fastifyDir),
+				'fastifyRoutes',
+				fastifyDir,
+				fastifyConfig,
+				new ApplicationScope(basename(fastifyDir), new Resources(), server),
+				undefined,
+				undefined,
+				{ urlPath: '/v1' }
+			);
+			openScopes.push(scope);
+			await scope.ready;
+			let fastifyApp;
+			const originalRegister = httpModule.registerFastifyInstance;
+			httpModule.registerFastifyInstance = (port, instance) => (fastifyApp = instance);
+			// the app is handed over once per configured http port, so there must be one
+			const configuredPort = env.get(CONFIG_PARAMS.HTTP_PORT);
+			if (configuredPort == null) env.setProperty(CONFIG_PARAMS.HTTP_PORT, 19521);
+			try {
+				handleFastifyRoutes(scope);
+				await waitFor(() => fastifyApp, { timeout: 10000, message: 'the fastify app was never registered' });
+				// the entry handler registers the route folder after it has handed the app to the port
+				await scope.waitForInitialLoads();
+			} finally {
+				httpModule.registerFastifyInstance = originalRegister;
+				if (configuredPort == null) env.setProperty(CONFIG_PARAMS.HTTP_PORT, configuredPort);
+			}
+			assert.ok(fastifyApp, 'the fastify app was registered for the http port');
+			assert.strictEqual((await fastifyApp.inject({ method: 'GET', url: '/v1/hello' })).statusCode, 200);
+			assert.strictEqual((await fastifyApp.inject({ method: 'GET', url: '/hello' })).statusCode, 404);
 		});
 	});
 });
