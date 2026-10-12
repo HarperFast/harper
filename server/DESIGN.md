@@ -72,6 +72,9 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 > version is therefore correct, not merely disallowed; one that supplies no version is not shared at
 > all. Only mutating an object _without_ changing its version can serve stale bytes, and that is
 > indistinguishable from re-sending the same message.
+>
+> This is also why a custom content-type `serialize` registered into `server.contentTypes` must be
+> pure in its argument alone: see `ContentTypeHandler.serialize`'s doc comment (`server/Server.ts`).
 
 ### Threads
 
@@ -370,6 +373,12 @@ A persisted QoS 1/2 entry is `{ qos, topic, startTime, databaseGeneration? }`, a
 - **One terminal path** (`subscriptionFailed`): a refused resume subscribe, a final `Error` value (observed through the subscription's `close` as well as the consumer loop, which may be parked on socket back-pressure), or an iterator failure. Only a 410 (pruned history) discards the session — writers fenced, siblings ended, a v5 DISCONNECT (0x83, the client-error message when problem information is allowed) and a socket close that never waits on storage, then a deletion only if the record still carries this incarnation. Anything else, a 409 from a restored or copied database included, saves positions and closes the connection so the client resumes.
 - **Only the current generation is checked.** A position bound to another generation, another node's (`hdb_durable_session` replicates, and each node mints its own generations) or this database's before a restore or copy, resumes best-effort: it is not checked before CONNACK, replays unchecked from where it is, and binds again at the first certified position. Until a live write gives it a watermark, that replay saves no position, so a reconnect on a quiet database replays it again.
 - **Not covered:** concurrent connections for one client id on different threads, together with crash replay of a failed conditional write (harper#2940); late commits below a saved position, including a late transaction still queued behind the message being sent, which the session cannot see (harper#2928); a replay from another generation, which is unchecked.
+
+## Live subscriptions are rechecked by principal, not by sweep (`server/liveSubscriptionAuth.ts`)
+
+The registry indexes each live subscription by username, and each username by the role id its `hdb_user` record names (re-read whenever that username is rechecked, so a reassignment re-indexes it). An `onUserChange` naming a username or role rechecks only those subscriptions; an unknown change, or more than 1,000 pending identities, rechecks all. Token expiry is one unref'd timer over an indexed min-heap of `authExpiresAt`, clamped to the 2^31-1 ms `setTimeout` range and re-armed, so expiry needs no pass. The 30 s tick (`HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS` overrides it and the backstop) rechecks every entry not registered `identityOnly`, because its decision may read state no notification covers (an overridden `allowRead`, a caller's `select` reaching related tables, an opaque `recheck`). An identity-only entry is rechecked by a full pass only every 5 minutes, or at the next tick once the notification epoch is 0 or differs from the one captured when the last full pass started.
+
+Within a pass, `Resource.ts` resolves each username once (`RecheckPass.memo`) and shares a default-RBAC `allowRead` result (`defaultAllowReads`, no caller-supplied `select`: one written by authorization names no relationship) per resolved user, but still gives each context its own `cloneUserView`. Passes and expiry batches yield every 256 entries. A registration admitted by a principal that is no longer current (`isCurrentUser`, or that check failing) is rechecked by `verify()` before the subscription is returned, because the notification for that change may have run before it registered. A principal with no record provenance (a component's `server.getUser` on a path that does not track it) cannot be checked that way, so it registers as a policy entry. Enforced by `unitTests/server/liveSubscriptionAuth.test.js` and `integrationTests/security/subscription-revocation.test.ts`, which runs with no periodic pass so every revocation comes from a targeted recheck or the expiry timer; `unitTests/resources/liveSubscriptionReauth.bench.js` measures it at 100k subscriptions.
 
 ## "Where is X" cheat sheet
 

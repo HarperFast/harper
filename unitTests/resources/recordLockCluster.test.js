@@ -97,6 +97,8 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 	 */
 	function useSoloTransport(overrides = {}) {
 		registerClusterLockTransport('test', {
+			// These transport swaps retain the same owner, even in the mapless refusal test.
+			coordinationIncarnation: () => overrides.homeIncarnation ?? 1,
 			homeMap: () =>
 				overrides.mapless
 					? undefined

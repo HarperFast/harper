@@ -101,6 +101,13 @@ export interface HttpOptions extends ServerOptions {
 	securityHeaders?: Record<string, string | number | boolean>;
 }
 export interface ContentTypeHandler {
+	/**
+	 * Every serializer registered here is reachable from event/message delivery (MQTT,
+	 * subscriptions), not only HTTP responses, and that path caches and reuses `serialize(data)`'s
+	 * result across every subscriber negotiating this content type — called with only `data`. A
+	 * `serialize` whose output varies by anything that call can't see would leak across
+	 * subscribers there.
+	 */
 	serialize(data: any): Buffer | string;
 	serializeStream(data: any): Buffer | string;
 	deserialize(data: any): Buffer | string;
