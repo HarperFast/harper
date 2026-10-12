@@ -1,29 +1,28 @@
 'use strict';
 
-// Pins what application code using the `server` global observes from two listener changes:
-//  - v5.1.26 (e7f6d456e, #2019 / main c28e5f83f, #2015): a secure port's per-worker UDS mirror gets the same
-//    'upgrade' dispatch as the port, and the port's server object carries a `udsMirror` reference.
-//  - v5.2.0 (56a2bace9 #1841, 0f0771b60 #1858, 1f59addc7 #2010): TLS listeners resolve ciphers per usage type and
-//    carry `appliedCiphers`, `verifiesClientCerts`, `mtlsRequired` (and `udsMirrorUwsConfig` under HARPER_UWS_UDS).
-// Each `it` is named for the caller code shape it represents.
+// What application code using the `server` global observes from two listener changes:
+//  - v5.1.26 (#2019, backport of #2015): a secure port's per-worker Node UDS mirror gets the port's 'upgrade'
+//    dispatch, and the port's server carries `udsMirror`. v5.1.x has no uWS backend.
+//  - v5.2.0 (#1841, #1858, #2010): TLS listeners carry `appliedCiphers`, `verifiesClientCerts`, `mtlsRequired`.
+//    v5.2.0 also first ships the opt-in uWS mirror (HARPER_UWS_UDS, `udsMirrorUwsConfig`).
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
 const assert = require('node:assert');
 const net = require('node:net');
-const sinon = require('sinon');
+const EventEmitter = require('node:events');
 const WebSocket = require('ws');
 
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { server } = require('#src/server/Server');
-require('#src/server/http'); // side effect: server.http / server.ws / server.upgrade
 require('#src/server/threads/threadServer'); // side effect: server.socket
-const { SERVERS } = require('#src/server/serverRegistry');
+const { uwsServeConfigs } = require('#src/server/http'); // loading it installs server.http / ws / upgrade
+const { SERVERS, portServer } = require('#src/server/serverRegistry');
 
-// Never bound by threadServer here: these tests construct listeners through the server global and listen the
-// objects themselves on ephemeral loopback ports.
+// threadServer never binds these; the tests listen the registered objects on loopback themselves, and teardown
+// restores the registries so a later listenOnPorts() test does not start them.
 let nextPort = 19470;
 const STAMPS = ['udsMirror', 'udsMirrorUwsConfig', 'appliedCiphers', 'verifiesClientCerts', 'mtlsRequired'];
 const UPGRADE_REQUEST =
@@ -46,12 +45,34 @@ function mirrorKeyOf(securePort) {
 
 const listening = [];
 function listenOnLoopback(httpServer) {
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
+		httpServer.once('error', reject);
 		httpServer.listen(0, '127.0.0.1', () => {
 			listening.push(httpServer);
 			resolve(httpServer.address().port);
 		});
 	});
+}
+
+function withDeadline(promise, what, ms = 5000) {
+	let timer;
+	return Promise.race([
+		promise,
+		new Promise((resolve, reject) => {
+			timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), ms);
+		}),
+	]).finally(() => clearTimeout(timer));
+}
+
+function withUwsUnixDomainSockets(register) {
+	const before = process.env.HARPER_UWS_UDS;
+	process.env.HARPER_UWS_UDS = '1';
+	try {
+		return withUnixDomainSockets(true, register);
+	} finally {
+		if (before === undefined) delete process.env.HARPER_UWS_UDS;
+		else process.env.HARPER_UWS_UDS = before;
+	}
 }
 
 // Raw socket: reports the bytes the server sent before it closed, sent a complete response head, or `ms` elapsed.
@@ -78,14 +99,25 @@ function sendUpgradeAndCollect(port, ms = 2000) {
 }
 
 describe('server global caller impact: UDS mirror upgrade dispatch (v5.1.26) and TLS listener stamps (v5.2.0)', () => {
+	let savedServers, savedUwsConfigs, savedPortServer;
+	before(() => {
+		savedServers = { ...SERVERS };
+		savedUwsConfigs = { ...uwsServeConfigs };
+		savedPortServer = new Map(portServer);
+	});
 	after(() => {
 		for (const httpServer of listening) httpServer.close();
+		for (const key of Object.keys(SERVERS)) delete SERVERS[key];
+		Object.assign(SERVERS, savedServers);
+		for (const key of Object.keys(uwsServeConfigs)) delete uwsServeConfigs[key];
+		Object.assign(uwsServeConfigs, savedUwsConfigs);
+		portServer.clear();
+		for (const [key, value] of savedPortServer) portServer.set(key, value);
 	});
 
 	describe('server.ws / server.upgrade registration (behavior change only, deployment-dependent)', () => {
 		it('server.ws(listener, { securePort }) receives WebSocket connections that arrive on the UDS mirror', async () => {
-			// Before v5.1.26 the mirror had no 'upgrade' listener, so this handshake got a zero-byte close and the
-			// listener never ran; only clients reaching the TLS port directly were served.
+			// v5.1.25: the mirror had no 'upgrade' listener, so this handshake got a zero-byte close.
 			const securePort = nextPort++;
 			const connected = new Promise((resolve) => {
 				withUnixDomainSockets(true, () =>
@@ -100,24 +132,27 @@ describe('server global caller impact: UDS mirror upgrade dispatch (v5.1.26) and
 			});
 			const mirror = SERVERS[mirrorKeyOf(securePort)];
 			assert.ok(mirror, 'the secure port got a UDS mirror');
+			assert.strictEqual(SERVERS[securePort].listenerCount('upgrade'), 1);
 			assert.strictEqual(mirror.listenerCount('upgrade'), 1);
 			const port = await listenOnLoopback(mirror);
 			const client = new WebSocket(`ws://127.0.0.1:${port}/impact`);
 			try {
-				const message = await new Promise((resolve, reject) => {
-					client.once('message', (data) => resolve(data.toString()));
-					client.once('error', reject);
-				});
+				const message = await withDeadline(
+					new Promise((resolve, reject) => {
+						client.once('message', (data) => resolve(data.toString()));
+						client.once('error', reject);
+					}),
+					'a message from the server.ws listener'
+				);
 				assert.strictEqual(message, 'from-listener');
-				assert.strictEqual(await connected, '/impact');
+				assert.strictEqual(await withDeadline(connected, 'the server.ws listener'), '/impact');
 			} finally {
 				client.terminate();
 			}
 		});
 
 		it('server.upgrade(middleware, { securePort }) runs for UDS-mirror handshakes when server.ws is registered on the same port', async () => {
-			// Same v5.1.26 change: the mirror now dispatches into the port's upgrade chain, so upgrade middleware that
-			// previously only saw TCP-port handshakes also sees mirror handshakes.
+			// v5.1.25: upgrade middleware saw only handshakes on the TLS port.
 			const securePort = nextPort++;
 			const seen = [];
 			withUnixDomainSockets(true, () => {
@@ -137,7 +172,6 @@ describe('server global caller impact: UDS mirror upgrade dispatch (v5.1.26) and
 		});
 
 		it('server.upgrade(middleware) alone creates no listener at all (unchanged)', () => {
-			// onUpgrade() only registers a chain entry; it never constructs the port's server or its mirror.
 			const securePort = nextPort++;
 			withUnixDomainSockets(true, () =>
 				server.upgrade((request, socket, head, next) => next(request, socket, head), { securePort })
@@ -147,16 +181,26 @@ describe('server global caller impact: UDS mirror upgrade dispatch (v5.1.26) and
 		});
 
 		it('server.http + server.upgrade with no server.ws on that port: neither the port nor its mirror dispatches upgrades (unchanged)', async () => {
-			// The 'upgrade' listener is attached only by onWebSocket(). That was true of the TCP port before v5.1.26 and
-			// is true of both listeners now. The handshake gets a zero-byte close rather than reaching the server.http
-			// listener: Harper's IncomingMessage.prototype.upgrade override (server/http.ts) defeats Node's fallback of
-			// handling an un-listened upgrade as a plain request.
+			// Only onWebSocket() attaches the 'upgrade' listener. Plain Node would hand an un-listened upgrade to the
+			// request listener; Harper's IncomingMessage.prototype.upgrade override (server/http.ts) prevents that.
 			const securePort = nextPort++;
-			const middleware = sinon.spy((request, socket, head, next) => next(request, socket, head));
-			const httpListener = sinon.spy((request, next) => next(request));
+			let middlewareCalls = 0;
+			let httpListenerCalls = 0;
 			withUnixDomainSockets(true, () => {
-				server.http(httpListener, { securePort });
-				server.upgrade(middleware, { securePort });
+				server.http(
+					(request, next) => {
+						httpListenerCalls++;
+						return next(request);
+					},
+					{ securePort }
+				);
+				server.upgrade(
+					(request, socket, head, next) => {
+						middlewareCalls++;
+						return next(request, socket, head);
+					},
+					{ securePort }
+				);
 			});
 			const mirror = SERVERS[mirrorKeyOf(securePort)];
 			assert.strictEqual(SERVERS[securePort].listenerCount('upgrade'), 0);
@@ -164,8 +208,8 @@ describe('server global caller impact: UDS mirror upgrade dispatch (v5.1.26) and
 			const { received, closed } = await sendUpgradeAndCollect(await listenOnLoopback(mirror), 1000);
 			assert.strictEqual(received, '');
 			assert.strictEqual(closed, true);
-			assert.strictEqual(middleware.callCount, 0);
-			assert.strictEqual(httpListener.callCount, 0);
+			assert.strictEqual(middlewareCalls, 0);
+			assert.strictEqual(httpListenerCalls, 0);
 		});
 
 		it('server.ws(listener, { port }) on a plain port: no mirror exists, so nothing changed', () => {
@@ -184,19 +228,39 @@ describe('server global caller impact: UDS mirror upgrade dispatch (v5.1.26) and
 		});
 
 		it('server.ws(listener, { securePort }) under HARPER_UWS_UDS: the uWS mirror config gets the WebSocket handler', () => {
-			// v5.1.26 also closed this gap for the uWS-served mirror; before it, udsMirrorUwsConfig had no wsHandler.
+			// New with v5.2.0's opt-in uWS backend.
 			const securePort = nextPort++;
-			const before = process.env.HARPER_UWS_UDS;
-			process.env.HARPER_UWS_UDS = '1';
-			let httpServer;
-			try {
-				[httpServer] = withUnixDomainSockets(true, () => server.ws(() => {}, { securePort }));
-			} finally {
-				if (before === undefined) delete process.env.HARPER_UWS_UDS;
-				else process.env.HARPER_UWS_UDS = before;
-			}
+			const [httpServer] = withUwsUnixDomainSockets(() => server.ws(() => {}, { securePort }));
 			assert.strictEqual(httpServer.udsMirror, undefined);
 			assert.strictEqual(typeof httpServer.udsMirrorUwsConfig?.wsHandler, 'function');
+		});
+
+		it('server.upgrade(middleware) under HARPER_UWS_UDS: the uWS mirror runs server.ws listeners but not upgrade middleware', async () => {
+			// New with v5.2.0's opt-in uWS backend: uWS accepts the handshake natively, so the upgrade chain is never
+			// consulted (warnIfUpgradeMiddlewareUnreachable only logs).
+			const securePort = nextPort++;
+			let middlewareCalls = 0;
+			let reached;
+			const listenerReached = new Promise((resolve) => (reached = resolve));
+			const [httpServer] = withUwsUnixDomainSockets(() => {
+				server.upgrade(
+					(request, socket, head, next) => {
+						middlewareCalls++;
+						return next(request, socket, head);
+					},
+					{ securePort, name: 'callerImpactUwsUpgradeMiddleware' }
+				);
+				return server.ws((ws, request) => reached(request.url), { securePort });
+			});
+			const ws = new EventEmitter();
+			ws.close = () => {};
+			httpServer.udsMirrorUwsConfig.wsHandler(ws, {
+				url: '/impact-uws',
+				headers: { host: 'localhost' },
+				ip: '127.0.0.1',
+			});
+			assert.strictEqual(await withDeadline(listenerReached, 'the server.ws listener'), '/impact-uws');
+			assert.strictEqual(middlewareCalls, 0);
 		});
 	});
 
@@ -211,7 +275,7 @@ describe('server global caller impact: UDS mirror upgrade dispatch (v5.1.26) and
 				)
 			);
 			const port = await listenOnLoopback(SERVERS[mirrorKeyOf(securePort)]);
-			const response = await fetch(`http://127.0.0.1:${port}/impact-http`);
+			const response = await fetch(`http://127.0.0.1:${port}/impact-http`, { signal: AbortSignal.timeout(5000) });
 			assert.strictEqual(response.status, 200);
 			assert.strictEqual(await response.text(), 'from-http-listener');
 		});
@@ -219,7 +283,7 @@ describe('server global caller impact: UDS mirror upgrade dispatch (v5.1.26) and
 
 	describe('return values of server.http / server.ws / server.socket (behavior change only for code that reads or enumerates them)', () => {
 		it('const [s] = server.http(listener, { securePort }); s.udsMirror is the registered mirror http.Server', () => {
-			// Added in v5.1.26; undefined before.
+			// v5.1.25: undefined.
 			const securePort = nextPort++;
 			const [httpServer] = withUnixDomainSockets(true, () => server.http(() => {}, { securePort }));
 			assert.strictEqual(httpServer.udsMirror, SERVERS[mirrorKeyOf(securePort)]);
@@ -234,7 +298,7 @@ describe('server global caller impact: UDS mirror upgrade dispatch (v5.1.26) and
 		});
 
 		it('reading s.appliedCiphers / s.verifiesClientCerts / s.mtlsRequired on a server.http({ securePort }) result', () => {
-			// Added in v5.2.0; all three were undefined on v5.1.x.
+			// v5.1.x: all three undefined.
 			const securePort = nextPort++;
 			const [httpServer] = server.http(() => {}, { securePort });
 			assert.ok(httpServer.appliedCiphers === null || typeof httpServer.appliedCiphers === 'string');
@@ -252,7 +316,6 @@ describe('server global caller impact: UDS mirror upgrade dispatch (v5.1.26) and
 				assert.ok(keys.includes(stamp), `${stamp} is an own enumerable key`);
 				assert.ok(iterated.includes(stamp), `${stamp} is visited by for..in`);
 			}
-			// Serializing still succeeds; it now nests the mirror server.
 			const serialized = JSON.parse(JSON.stringify(httpServer));
 			assert.strictEqual(typeof serialized.udsMirror, 'object');
 			assert.strictEqual(serialized.mtlsRequired, false);
@@ -261,29 +324,19 @@ describe('server global caller impact: UDS mirror upgrade dispatch (v5.1.26) and
 		it('const s = server.socket(listener, { securePort }); s carries the v5.2.0 stamps', () => {
 			const securePort = nextPort++;
 			const socketServer = withUnixDomainSockets(false, () => server.socket(() => {}, { securePort }));
-			try {
-				assert.ok(socketServer.appliedCiphers === null || typeof socketServer.appliedCiphers === 'string');
-				assert.strictEqual(socketServer.verifiesClientCerts, false);
-				assert.strictEqual(socketServer.mtlsRequired, false);
-			} finally {
-				delete SERVERS[securePort];
-			}
+			assert.ok(socketServer.appliedCiphers === null || typeof socketServer.appliedCiphers === 'string');
+			assert.strictEqual(socketServer.verifiesClientCerts, false);
+			assert.strictEqual(socketServer.mtlsRequired, false);
 		});
 
 		it('const s = server.socket(listener, { port, securePort }); s is the plain TCP server, with no stamps', () => {
-			// The return value is the last listener created, which is the plain one when both ports are given; the
-			// stamps live on the TLS server registered in SERVERS[securePort], which the caller does not receive.
+			// onSocket returns the last listener it created; the stamped TLS server is only in SERVERS[securePort].
 			const port = nextPort++;
 			const securePort = nextPort++;
 			const socketServer = withUnixDomainSockets(false, () => server.socket(() => {}, { port, securePort }));
-			try {
-				assert.strictEqual(socketServer, SERVERS[port]);
-				for (const stamp of STAMPS) assert.ok(!(stamp in socketServer), `${stamp} is not on the plain server`);
-				assert.strictEqual(SERVERS[securePort].mtlsRequired, false);
-			} finally {
-				delete SERVERS[port];
-				delete SERVERS[securePort];
-			}
+			assert.strictEqual(socketServer, SERVERS[port]);
+			for (const stamp of STAMPS) assert.ok(!(stamp in socketServer), `${stamp} is not on the plain server`);
+			assert.strictEqual(SERVERS[securePort].mtlsRequired, false);
 		});
 	});
 
@@ -304,13 +357,19 @@ describe('server global caller impact: UDS mirror upgrade dispatch (v5.1.26) and
 
 	describe('fastifyRoutes hand-over (unaffected by v5.2.0)', () => {
 		it('a fastifyRoutes app: server.http receives the built fastify http.Server once, never a pending build', async () => {
-			// v5.1.26: `server.http((await fastifyServer).server)`; v5.2.0+: `const built = await fastifyServer;
-			// server.http(built.server)`. Both await the build before the hand-over and both hand over before
-			// fastify's ready(); the timing did not change.
+			// v5.1.26 `server.http((await fastifyServer).server)` and v5.2.0 `server.http(built.server)` after
+			// `await fastifyServer` hand over at the same point. A fresh module instance keeps a fastify server another
+			// file built from hiding the hand-over; the real server.http is replaced so only the argument is observed.
 			const modulePath = require.resolve('#src/server/fastifyRoutes');
+			const originalModule = require.cache[modulePath];
 			delete require.cache[modulePath];
 			const fastifyRoutes = require('#src/server/fastifyRoutes');
-			const handOver = sinon.stub(server, 'http');
+			const originalHttp = server.http;
+			const handedOver = [];
+			server.http = (listener) => handedOver.push(listener);
+			// No configured http ports, so the hand-over registers no fastify fallback instance that outlives the test.
+			const savedPorts = [CONFIG_PARAMS.HTTP_PORT, CONFIG_PARAMS.HTTP_SECUREPORT].map((key) => [key, env.get(key)]);
+			for (const [key] of savedPorts) env.setProperty(key, null);
 			try {
 				let onEntry;
 				const scope = {
@@ -324,13 +383,14 @@ describe('server global caller impact: UDS mirror upgrade dispatch (v5.1.26) and
 				fastifyRoutes.handleApplication(scope);
 				await onEntry({ eventType: 'add', absolutePath: '/nonexistent/caller-impact-a/routes/a.js' });
 				await onEntry({ eventType: 'add', absolutePath: '/nonexistent/caller-impact-b/routes/b.js' });
-				assert.strictEqual(handOver.callCount, 1);
-				const [handedOver] = handOver.firstCall.args;
-				assert.ok(handedOver instanceof net.Server, 'a Node http.Server, not a promise');
-				assert.strictEqual(typeof handedOver.then, 'undefined');
+				assert.strictEqual(handedOver.length, 1);
+				assert.ok(handedOver[0] instanceof net.Server, 'a Node http.Server, not a promise');
+				assert.strictEqual(typeof handedOver[0].then, 'undefined');
 			} finally {
-				handOver.restore();
-				delete require.cache[modulePath];
+				server.http = originalHttp;
+				for (const [key, value] of savedPorts) env.setProperty(key, value);
+				if (originalModule) require.cache[modulePath] = originalModule;
+				else delete require.cache[modulePath];
 			}
 		});
 	});

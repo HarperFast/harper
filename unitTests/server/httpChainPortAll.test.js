@@ -15,8 +15,7 @@ const PORT = 19418;
 const OTHER_PORT = 19419;
 
 const passThrough = (request, next) => next(request);
-// Upgrade middleware has its own signature; an http-shaped handler registered on 'all' would throw on any real
-// upgrade a later test file dispatches in this mocha process.
+// Registered on 'all', which real upgrades in later files of this mocha process dispatch through.
 const upgradePassThrough = (request, socket, head, next) => next(request, socket, head);
 
 /**
