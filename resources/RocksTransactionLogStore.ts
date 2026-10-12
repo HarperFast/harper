@@ -46,7 +46,7 @@ const reportCorruptFrame = createCorruptFrameReporter(harperLogger);
 
 const KEY_SCRATCH = new Float64Array(1);
 const KEY_BITS = new BigInt64Array(KEY_SCRATCH.buffer);
-/** The next float64 above a positive log key: +1 on its bit pattern. */
+/** Log keys are positive (`assertValidTimestamp`), so +1 on the bit pattern is the next double. */
 function nextLogKey(key: number): number {
 	KEY_SCRATCH[0] = key;
 	KEY_BITS[0]++;

@@ -6,9 +6,6 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
-// An origin's explicit timestamps can give unrelated transactions one log key. The keyed audit lookup
-// (`auditStore.get(key, tableId, recordId, nodeId)`) must still find the record's entry when another
-// transaction at that key comes first in the log, and must never answer with an entry at another key.
 describe('Keyed audit lookup when transactions share a log key', () => {
 	let Shared, Other;
 	let nextId = 1;
@@ -60,7 +57,7 @@ describe('Keyed audit lookup when transactions share a log key', () => {
 		assert.strictEqual(entry.tableId, Shared.tableId);
 		assert.strictEqual(entry.getValue(Shared.primaryStore).name, 'second');
 		assert.strictEqual(lookup(key, first)?.recordId, first);
-		assert.strictEqual(lookup(key, second, undefined)?.recordId, second, 'across every origin log');
+		assert.strictEqual(Shared.auditStore.get(key, Shared.tableId, second, undefined)?.recordId, second, 'any log');
 	});
 
 	it('finds it past an intervening transaction at a higher key', async () => {
