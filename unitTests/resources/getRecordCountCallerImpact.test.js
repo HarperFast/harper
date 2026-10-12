@@ -84,7 +84,6 @@ describe('Table.getRecordCount caller impact', () => {
 				`expected the forced base to pull recordCount (${result.recordCount}) well above the ${LIVE_ROWS} live rows`
 			);
 			assert.ok(lower <= LIVE_ROWS && LIVE_ROWS <= upper, `[${lower}, ${upper}] happens to bracket ${LIVE_ROWS} here`);
-			// A page-count UI built on the point estimate alone disagrees with the true page count here.
 			const pageSize = 100;
 			assert.notEqual(Math.ceil(result.recordCount / pageSize), Math.ceil(LIVE_ROWS / pageSize));
 		} finally {
@@ -103,8 +102,8 @@ describe('Table.getRecordCount caller impact', () => {
 		const originalCount = store.estimateCount;
 		const ownedEstimator = Object.hasOwn(store, 'createCountEstimator');
 		const ownedCount = Object.hasOwn(store, 'estimateCount');
-		// An underestimated base: the table truly has LIVE_ROWS (3000) rows, but both estimates
-		// confidently claim fewer than half that.
+		// An underestimated base: 2,100 is enough below LIVE_ROWS (3000) that the halfway escape still
+		// fires, but the resulting upper bound undershoots the true count.
 		store.createCountEstimator = () => ({ advance() {}, estimate: () => ({ count: 2100, confidence: 0.9 }) });
 		store.estimateCount = () => ({ count: 1000, confidence: 0.9 });
 		try {
@@ -124,14 +123,15 @@ describe('Table.getRecordCount caller impact', () => {
 	});
 
 	it('describe_table reports record_count/estimated_record_range from getRecordCount, and forwards exact_count as exactCount', async () => {
-		// A 3,000-row scan finishes well inside the default 500ms budget on its own, so the default
-		// call being exact proves nothing about whether exact_count is actually forwarded. Spying on
-		// the options getRecordCount receives isolates that specific claim.
+		// The default call being exact would prove nothing about forwarding on its own -- a 3,000-row
+		// scan usually finishes inside the default 500ms budget regardless. Capturing the options
+		// describe_table actually passes, while substituting a generous timeLimit so the assertion
+		// below isn't racing the scan under CI contention, isolates the forwarding claim from timing.
 		const original = EstimatorTable.getRecordCount;
 		const receivedOptions = [];
 		EstimatorTable.getRecordCount = function (options) {
 			receivedOptions.push(options);
-			return original.call(this, options);
+			return original.call(this, { ...options, timeLimit: Infinity });
 		};
 		try {
 			const exact = await describeTable({ database: 'test', table: 'RecordCountImpactEstimator' });
@@ -152,11 +152,8 @@ describe('Table.getRecordCount caller impact', () => {
 	});
 
 	it('describe_table also passes through an estimated_record_range when getRecordCount returns one', async () => {
-		// describe_table exposes no timeLimit knob, and a 3,000-row scan easily finishes inside the
-		// default budget -- so landing this deterministically on the sampling path means not relying
-		// on real scan timing at all. Stubbing getRecordCount itself isolates exactly the claim this
-		// test makes: that schemaDescribe.ts's pass-through forwards estimatedRange, not just
-		// recordCount, whatever getRecordCount actually returns.
+		// No real scan reliably lands on the sampling path here, so this stubs getRecordCount's
+		// return directly rather than its inputs.
 		const original = EstimatorTable.getRecordCount;
 		EstimatorTable.getRecordCount = async () => ({ recordCount: 12345, estimatedRange: [10000, 20000] });
 		try {
