@@ -251,6 +251,24 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
 
 ## Conventions
 
+- Single-record nested selections use `Resource.transformForSelect`; searches use
+  `Table.transformEntryForSelect`. Generic recursion needs no target table for plain JSON;
+  classless primitive array items and whole selected Dates keep their values; Date-array
+  subselects retain the existing search projection policy. Missing targets
+  preserve `undefined`/`null`; synchronous `forceNulls` stays local to its object projection. Promise and
+  `getRecord` detection requires callable values; ordinary method-like JSON keys are data.
+  Generic fallback projections treat function values as absent while retaining inherited data and getters;
+  registered resolver results stay unchanged.
+- The native missing-value contract is pinned by
+  `../unitTests/resources/nestedSelectMissingValues.test.js` and
+  `../integrationTests/resources/relationship-and-status-contract.test.ts`.
+  `Resource.transformForSelect` resolver dictionaries use own entries, the private transform cache has no prototype, and
+  a selected own `__proto__` is a data property on a normal response object.
+  [REST select projection crashes on missing targets and non-relationship fields](https://github.com/HarperFast/harper/issues/1415)
+  remains open for singleton-selector parsing and invalid-subselect policy outside this helper.
+  [Nested Resource projection fails to settle asynchronous arrays and forceNulls](https://github.com/HarperFast/harper/issues/3168)
+  and [Prototype-chain key/attribute names: one **proto** PK poisons SQL/index reads table-wide; proto-named attributes falsely rejected at insert](https://github.com/HarperFast/harper/issues/1295)
+  track separate asynchronous projection and table-wide key boundaries.
 - A record's `toJSON` is a response projection, not durable state. `recordUpdater` (and the cache-fill
   and audit paths feeding it) projects records to stored fields via `storedFieldsOnly`, so no durable
   form carries a resolver-owned (`@computed`/`@relationship`) name; materialization skips such names
