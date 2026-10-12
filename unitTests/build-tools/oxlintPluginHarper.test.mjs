@@ -49,6 +49,9 @@ test('context assert', (t) => {
 	contextDestructured(true); // flagged
 	const { assert: contextAssert } = t;
 	contextAssert.ok(true); // flagged
+	const optionalAssert = t?.assert;
+	optionalAssert.ok(true); // flagged
+	t?.assert.ok(true); // flagged
 	t.test('subtest', (subtest) => {
 		subtest.assert.ok(true); // flagged
 	});

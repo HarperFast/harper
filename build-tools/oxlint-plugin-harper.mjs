@@ -4,7 +4,13 @@ const TEST_MODULES = new Set(['test', 'node:test']);
 // SuiteContext instead, which has no `assert`, so `.assert.ok(true)` there throws rather than passing.
 const TEST_FUNCTIONS = new Set(['test', 'it', 'before', 'after', 'beforeEach', 'afterEach']);
 const TEST_MODIFIERS = new Set(['skip', 'only', 'todo']);
-const TS_WRAPPERS = new Set(['TSAsExpression', 'TSSatisfiesExpression', 'TSNonNullExpression', 'TSTypeAssertion']);
+const TRANSPARENT_WRAPPERS = new Set([
+	'TSAsExpression',
+	'TSSatisfiesExpression',
+	'TSNonNullExpression',
+	'TSTypeAssertion',
+	'ChainExpression',
+]);
 
 // What an expression resolves to, as far as this rule cares:
 //   'module'        a callable truthiness assertion that also carries `.ok`: the assert module itself
@@ -31,7 +37,7 @@ function exportOrModule(name) {
 }
 
 function unwrap(node) {
-	while (TS_WRAPPERS.has(node.type)) node = node.expression;
+	while (TRANSPARENT_WRAPPERS.has(node.type)) node = node.expression;
 	return node;
 }
 
