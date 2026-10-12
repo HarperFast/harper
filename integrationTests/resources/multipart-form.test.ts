@@ -7,7 +7,12 @@ import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { once } from 'node:events';
 import type { IncomingMessage } from 'node:http';
-import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import {
+	setupHarperWithFixture,
+	teardownHarper,
+	HARPER_RUNTIME,
+	type ContextWithHarper,
+} from '@harperfast/integration-testing';
 import { createApiClient } from '../apiTests/utils/client.mjs';
 import { waitFor } from '../../unitTests/waitFor.js';
 
@@ -84,6 +89,28 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 			size: 12,
 			text: 'posted bytes',
 		});
+	});
+
+	test('preserves uploaded file metadata when another record field is patched', async () => {
+		const form = new FormData();
+		form.append('file', new Blob(['metadata bytes'], { type: 'text/plain' }), 'retained.txt');
+		const response = await fetch(`${ctx.harper.httpURL}/StoredUpload/retained-metadata`, {
+			method: 'PUT',
+			headers: { Authorization: authorization },
+			body: form,
+			signal: AbortSignal.timeout(10000),
+		});
+		assert.equal(response.status, 204, await response.text());
+		const before = await read('/ReadUpload/retained-metadata');
+		assert.equal(before.name, 'retained.txt');
+		const patch = await fetch(`${ctx.harper.httpURL}/StoredUpload/retained-metadata`, {
+			method: 'PATCH',
+			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ title: 'changed' }),
+			signal: AbortSignal.timeout(10000),
+		});
+		assert.equal(patch.status, 204, await patch.text());
+		assert.deepStrictEqual(await read('/ReadUpload/retained-metadata'), before);
 	});
 
 	for (const method of ['POST', 'PUT']) {
@@ -468,7 +495,9 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 			sending.catch(() => {});
 			await waitFor(() => sent >= 32, { timeout: 5000 });
 			await delay(1000);
-			assert(sent < 1024, 'The whole discarded upload drained while the response remained open');
+			// Native transports buffer independently; unit tests bound the decoder's consumed bytes.
+			if (HARPER_RUNTIME !== 'bun' && !process.env.HARPER_UWS_HTTP)
+				assert(sent < 1024, 'The whole discarded upload drained while the response remained open');
 			assert.equal(response.destroyed, false);
 			await read('/ReleaseUpload/capped');
 			let remaining = '';
