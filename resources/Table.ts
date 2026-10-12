@@ -3981,7 +3981,7 @@ export function makeTable(options): TableResourceClass {
 					const txnLogKey = isRocksDB
 						? (reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime)
 						: txnTime;
-					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
+					write.skipped = false;
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
 						write.skipped = true;
 						return;

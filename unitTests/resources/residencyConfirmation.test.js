@@ -56,6 +56,10 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 
 	const confirmed = (context, write) => transaction(context, write);
 	const sorted = (lists) => lists.map((list) => [...list].sort()).sort();
+	const logKeyOf = (Table, id, type) => {
+		for (const entry of Table.primaryStore.rootStore.auditStore.getRange({ start: 1, log: 0 }))
+			if (entry.tableId === Table.tableId && entry.recordId === id && entry.type === type) return entry.txnLogKey;
+	};
 
 	it('passes the other residents of a record placed by a residency list', async () => {
 		await confirmed({ replicatedConfirmation: 1 }, () =>
@@ -128,8 +132,42 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 			const resource = await Unplaced.getResource('relocated', context);
 			resource._writeRelocate('relocated', {});
 		});
+		assert.equal((await Unplaced.get('relocated')).body, 'kept');
 		assert.equal(Unplaced.primaryStore.getEntry('relocated').version, version);
+		assert.equal(calls.length, 1);
 		assert.equal(calls[0].version, version);
+	});
+
+	it('confirms on the log key when a losing relocation shares the commit with an applied write', async () => {
+		await Unplaced.put('relocated-mixed', { id: 'relocated-mixed', body: 'kept' });
+		const { version } = Unplaced.primaryStore.getEntry('relocated-mixed');
+		const context = { replicatedConfirmation: 1, timestamp: version - 60_000 };
+		await confirmed(context, async () => {
+			const resource = await Unplaced.getResource('relocated-mixed', context);
+			resource._writeRelocate('relocated-mixed', {});
+			await Unplaced.put('relocated-mixed-new', { id: 'relocated-mixed-new' });
+		});
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0].version, logKeyOf(Unplaced, 'relocated-mixed-new', 'put'));
+	});
+
+	it('confirms a relocation that lost when staged but applied when re-staged past an open iterator', async () => {
+		await Unplaced.put('relocated-evicted', { id: 'relocated-evicted', body: 'kept' });
+		const { version, value } = Unplaced.primaryStore.getEntry('relocated-evicted');
+		const context = { replicatedConfirmation: 1, timestamp: version - 60_000 };
+		let iterator;
+		await confirmed(context, async () => {
+			// the open iterator makes the commit re-stage every write on a fresh transaction
+			iterator = Unplaced.search({ conditions: [] })[Symbol.iterator]();
+			iterator.next();
+			const resource = await Unplaced.getResource('relocated-evicted', context);
+			resource._writeRelocate('relocated-evicted', {});
+			await Unplaced.evict('relocated-evicted', value, version);
+		});
+		iterator.return?.();
+		assert.equal(Unplaced.primaryStore.getEntry('relocated-evicted'), undefined);
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0].version, logKeyOf(Unplaced, 'relocated-evicted', 'relocate'));
 	});
 
 	it('keeps a count-based placement at its count when a record is updated', async () => {
