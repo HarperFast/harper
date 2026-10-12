@@ -627,9 +627,8 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 	// (f) SQL date-literal filter — behavior probe (see #1397, SQL engine rewrite)
 	// ==========================================================================
 
-	// A SQL `WHERE date > 'ISO-literal'` filter is silent-wrong (returns []); tracked under the SQL
-	// umbrella #1397. This pins that known defect so the fix has to update it to the oracle; epoch-ms
-	// numeric bounds work correctly (covered by f2/f3).
+	// A SQL `WHERE date > 'ISO-literal'` filter is silent-wrong (returns []), tracked under the SQL
+	// umbrella #1397; the fix for it must replace this pin with the oracle. Epoch-ms bounds work (f2/f3).
 	test('(f1) SQL date-literal filter returns no rows (known defect #1397)', async () => {
 		const AFTER = '2021-01-01T00:00:00.000Z';
 		const { status, body } = await rawSql(ctx, `SELECT id FROM ${SCHEMA}.Event WHERE createdAt > '${AFTER}'`);

@@ -37,7 +37,7 @@ const SEED_VALUE_AB = 1; // Ledger rows in bucket Q185A
 const SEED_VALUE_B = 42; // Ledger rows in bucket Q185B (long-scan test)
 const OVERWRITE_VALUE = 99; // value used in the concurrent overwrite (Q5)
 
-const LEDGER_A_COUNT = 50; // Ledger rows seeded in bucket Q185A
+const LEDGER_A_COUNT = 50;
 
 const N_ACCOUNTS = 8;
 const EACH_BALANCE = 1000;
@@ -125,7 +125,6 @@ suite(
 			const r2 = await postJSON('/SeedAccount/', { n: N_ACCOUNTS, each: EACH_BALANCE });
 			strictEqual(r2.status, 200, 'SeedAccount should succeed');
 
-			// Verify LedgerSnap returns the seeded rows with consistent values
 			const rSnap = await getJSON('/LedgerSnap/?bucket=Q185A');
 			strictEqual(rSnap.status, 200, 'LedgerSnap Q185A should succeed');
 			const snap = (await rSnap.json()) as { bucket: string; count: number; vals: number[] };
@@ -161,15 +160,25 @@ suite(
 			let stopWriter = false;
 			let writes = 0;
 			const writerStatuses = new Set<number>();
-			const writerLoop = (async () => {
+			// Settles to the writer's error (or undefined) so a failure is observed at once, not left unhandled.
+			const writerFailure = (async () => {
 				while (!stopWriter) {
-					const response = await postJSON('/LedgerMutate/', { bucket: 'Q185A', count: 10 });
+					const response = await fetch(`${httpURL}/LedgerMutate/`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+						body: JSON.stringify({ bucket: 'Q185A', count: 10 }),
+						signal: AbortSignal.timeout(10_000),
+					});
 					await response.arrayBuffer();
 					writerStatuses.add(response.status);
 					writes++;
 				}
-			})();
+			})().then(
+				() => undefined,
+				(error: unknown) => error ?? new Error('LedgerMutate writer failed')
+			);
 			let reads = 0;
+			let writerError: unknown;
 			try {
 				const deadline = Date.now() + 1_500;
 				while (Date.now() < deadline) {
@@ -178,8 +187,9 @@ suite(
 				}
 			} finally {
 				stopWriter = true;
-				await writerLoop;
+				writerError = await writerFailure;
 			}
+			if (writerError) throw writerError;
 			ok(reads > 0, 'no read completed');
 			ok(writes > 0, 'the concurrent writer never completed a request');
 			strictEqual([...writerStatuses].join(','), '200', 'LedgerMutate statuses');

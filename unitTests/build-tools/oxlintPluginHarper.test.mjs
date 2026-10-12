@@ -15,6 +15,8 @@ import { test } from 'node:test';
 const { ok: destructured } = assert;
 const required = require('assert');
 const aliased = assert;
+const okAlias = ok;
+const memberAlias = assert.ok;
 
 ok(true); // flagged
 check(true, 'aliased import'); // flagged
@@ -29,6 +31,9 @@ strictAssert.ok(true); // flagged
 destructured(true); // flagged
 required.ok(true); // flagged
 aliased(true); // flagged
+okAlias(true); // flagged
+memberAlias(true); // flagged
+ok(true as const); // flagged
 ok( // flagged
 	true,
 	'multi-line call'
@@ -67,7 +72,6 @@ describe('oxlint harper/no-literal-true-assertion', function () {
 
 	before(function () {
 		workDir = mkdtempSync(join(tmpdir(), 'oxlint-harper-plugin-'));
-		// The real config, with its plugin paths re-rooted so it loads from the scratch directory.
 		const config = JSON.parse(readFileSync(join(REPO_ROOT, '.oxlintrc.json'), 'utf8'));
 		delete config.$schema;
 		config.jsPlugins = config.jsPlugins.map((plugin) => resolve(REPO_ROOT, plugin));
@@ -79,14 +83,15 @@ describe('oxlint harper/no-literal-true-assertion', function () {
 		const result = spawnSync(
 			process.execPath,
 			[join(REPO_ROOT, 'node_modules/oxlint/bin/oxlint'), '--format', 'json', '-c', '.oxlintrc.json', '.'],
-			{ cwd: workDir, encoding: 'utf8' }
+			{ cwd: workDir, encoding: 'utf8', timeout: 30_000 }
 		);
+		assert.ifError(result.error);
 		assert.ok(result.stdout, `oxlint produced no output (status ${result.status}): ${result.stderr}`);
 		diagnostics = JSON.parse(result.stdout).diagnostics.filter((diagnostic) => diagnostic.code === RULE_CODE);
 	});
 
 	after(function () {
-		rmSync(workDir, { recursive: true, force: true });
+		if (workDir) rmSync(workDir, { recursive: true, force: true });
 	});
 
 	it('reports every literal-true assertion form under integrationTests', function () {
