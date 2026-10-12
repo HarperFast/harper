@@ -1,0 +1,53 @@
+name: Diag txn audit refs flake
+
+# Temporary diagnostic: loop `Unit tests: resources (core)` and print the walk trace and transaction-log
+# state when transaction.test.js "Traverse multiple audit logs using additional refs" loses its refs.
+# Not for merge.
+on:
+  push:
+    branches: [diag/txn-audit-refs-flake]
+
+permissions:
+  contents: read
+
+jobs:
+  loop:
+    name: core loop (Node.js v${{ matrix.node-version }}, ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24, 26]
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          package-manager-cache: false
+      - run: npm install --ignore-scripts
+      - run: npm run build
+      - name: Setup Harper
+        env:
+          DEFAULTS_MODE: 'dev'
+          HDB_ADMIN_USERNAME: 'admin'
+          HDB_ADMIN_PASSWORD: 'password'
+          ROOTPATH: '/tmp/hdb'
+          NODE_HOSTNAME: 'localhost'
+          LOGGING_LEVEL: 'info'
+        run: node --enable-source-maps ./dist/bin/harper.js install
+      - name: Loop resources (core)
+        timeout-minutes: 32
+        env:
+          DBG_TXN: '1'
+        run: |
+          deadline=$(( $(date +%s) + 1500 ))
+          for i in $(seq 1 10); do
+            [ $(date +%s) -lt $deadline ] || break
+            rc=0
+            npm run test:unit:resources:core > /tmp/run.log 2>&1 || rc=$?
+            echo "iteration $i rc=$rc $(grep -a -E '^\s+[0-9]+ (passing|failing)' /tmp/run.log | tr '\n' ' ')"
+            grep -a -E '^\s+[0-9]+\) ' /tmp/run.log | head -6 || true
+            grep -a 'DBG_TXN' /tmp/run.log || true
+          done

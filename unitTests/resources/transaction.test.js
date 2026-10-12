@@ -476,6 +476,7 @@ describe('Transactions', () => {
 				TxnTest.put(63, { name: 'original', count: 0 }, context);
 			});
 			let now = Date.now();
+			globalThis.__dbgTxn = [];
 
 			// Create a complex out-of-order scenario
 			// Timeline: original -> update1 (t+20) -> update2 (t+40) -> update3 (t+60) -> update4 (t+80)
@@ -504,6 +505,33 @@ describe('Transactions', () => {
 
 			// Verify additional audit refs exist
 			let entry = TxnTest.primaryStore.getEntry(63);
+			if (!entry.additionalAuditRefs || process.env.DBG_FORCE) {
+				const auditStore = TxnTest.auditStore;
+				const fresh = TxnTest.primaryStore.getEntry(63, { uncachedRead: true });
+				const audit = [];
+				for (const e of auditStore.getRange({ start: now - 5000, includeLogName: true })) {
+					if (e.recordId === 63 && e.tableId === TxnTest.tableId)
+						audit.push({ v: e.version, k: e.txnLogKey, type: e.type, node: e.nodeId, log: e.logName, pv: e.previousVersion, prefs: e.previousAdditionalAuditRefs });
+				}
+				const log = auditStore.logById(0);
+				const decodePosition = (float) => {
+					const view = new DataView(new ArrayBuffer(8));
+					view.setFloat64(0, float, true);
+					return { logId: view.getUint32(4, true), position: view.getUint32(0, true) };
+				};
+				const lookups = audit.map((a) => ({
+					k: a.k,
+					found: !!auditStore.get(a.k, TxnTest.tableId, 63, 0),
+					pos: log && decodePosition(log._findPosition(a.k)),
+				}));
+				let stats;
+				try {
+					stats = log?.getStats();
+				} catch (error) {
+					stats = String(error);
+				}
+				console.log('DBG_TXN', JSON.stringify({ trace: globalThis.__dbgTxn, now, wall: Date.now(), cached: { v: entry.version, f: entry.metadataFlags, refs: entry.additionalAuditRefs, n: entry.nodeId }, fresh: { v: fresh.version, f: fresh.metadataFlags, refs: fresh.additionalAuditRefs, n: fresh.nodeId }, audit, lookups, logName: log?.name, sameAsLocal: log === auditStore.log, stats }));
+			}
 			assert(entry.additionalAuditRefs, 'Additional audit refs should exist for complex resequencing');
 		});
 

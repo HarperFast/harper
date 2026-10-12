@@ -4898,6 +4898,7 @@ export function makeTable(options): TableResourceClass {
 					// round, and must still go through the out-of-order merge below or its changes would be
 					// silently overwritten.
 					let precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					if (process.env.DBG_TXN && tableName === 'TxnTest' && id === 63) ((globalThis as any).__dbgTxn ??= []).push({ step: 'start', txnTime, appendedLogKey, receivedLogKey, precedesExisting, ev: existingEntry?.version, en: existingEntry?.nodeId, erefs: existingEntry?.additionalAuditRefs, ef: existingEntry?.metadataFlags, optNode: options?.nodeId, host: server.hostname, thisNode: getThisNodeId(auditStore), retry, wall: Date.now() });
 					if (priorStaged && precedesExisting >= 0) precedesExisting = 1;
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
 					const type = fullUpdate ? 'put' : 'patch';
@@ -5153,6 +5154,7 @@ export function makeTable(options): TableResourceClass {
 										break;
 									}
 									const auditRecord = auditStore.get(localTime, tableId, id, nodeId);
+									if (process.env.DBG_TXN && tableName === 'TxnTest' && id === 63) ((globalThis as any).__dbgTxn ??= []).push({ step: 'walk', txnTime, localTime, nodeId, found: !!auditRecord, av: auditRecord?.version, at: auditRecord?.type });
 									if (!auditRecord) break;
 									queuePreviousAuditRefs(auditRecord);
 									if (
