@@ -154,8 +154,9 @@ suite(
 				rangeError = (error as Error).message;
 			}
 			const terminal = range.at(-1);
-			if (terminal && !terminal.ids && terminal.error !== undefined) {
-				rangeError = `range truncated: ${String(terminal.error)}`;
+			const truncated = Boolean(terminal && !terminal.ids && terminal.error !== undefined);
+			if (truncated) {
+				rangeError = `range truncated: ${String(terminal!.error)}`;
 				range = range.slice(0, -1);
 			}
 			const forId = (id: string) => range.filter((entry) => entry.ids?.includes(id));
@@ -189,7 +190,7 @@ suite(
 					.map((settled) => `${settled.ms}ms:${settled.status}`);
 				const detail =
 					`${window.detail} chain=[${operations(chain)}] ` +
-					`round-range=[${operations(rangeForKey)}] patches=${rangePatches}/${window.acked}${rangeError ? ' (range truncated, see harper#3164)' : ''} ` +
+					`round-range=[${operations(rangeForKey)}] patches=${rangePatches}/${window.acked}${truncated ? ' (range truncated, see harper#3164)' : rangeError ? ' (range unavailable)' : ''} ` +
 					`slowest=[${slowest.join(' ')}]` +
 					(errors.length ? ` chain-error=${JSON.stringify(errors)}` : '');
 				windows.push({ ...window, recreated, detail });
@@ -346,7 +347,8 @@ suite(
 						anomalyLogs.push(`${window.id}: ${label} ${window.detail}`);
 					}
 				}
-				// let the round's records expire so rounds stay independent
+				// let the round's records expire so rounds stay independent, with no chain read still in flight
+				await Promise.all(perWindow.map((window) => window.pendingChain));
 				await sleep(700);
 			}
 
