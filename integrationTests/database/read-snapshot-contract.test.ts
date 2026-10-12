@@ -10,8 +10,9 @@
  *       exactly the seeded rows (val=1) — never a row of that uncommitted transaction.
  *
  *   (b) SNAPSHOT STABILITY (Q4 SQL SELECT, Q5 long scan): while a concurrent request overwrites
- *       a whole bucket in one transaction, each response must hold one snapshot — all-original
- *       or all-overwrite values, never a mix.
+ *       a whole bucket's values in one transaction, each response must show all-original or
+ *       all-overwrite values, never a mix. SQL's WHERE scan and its column fetch are separate read
+ *       transactions; the overwrite changes only `val`, so Q4 covers the column fetch's snapshot.
  *
  * RUNS: default RocksDB (single-worker), LMDB (single-worker).
  *

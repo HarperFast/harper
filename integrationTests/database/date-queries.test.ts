@@ -535,7 +535,9 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		ok(instantOk, `(e3) far-future instant not preserved: ${JSON.stringify(stored)}`);
 	});
 
-	test('(e4) Invalid date string is accepted and stored as null', async () => {
+	// Pins current behavior that is likely a defect (no tracking issue yet): table validation accepts an
+	// Invalid Date and stores null. A fix that rejects it with a 4xx should flip this test to assert that.
+	test('(e4) Invalid date string is accepted and stored as null (pinned)', async () => {
 		const { status } = await restPut(ctx, 'Event', {
 			id: 'invalid-date',
 			label: 'invalid',

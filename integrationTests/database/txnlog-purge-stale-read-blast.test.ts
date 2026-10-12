@@ -37,7 +37,7 @@
  *     index-independent full primary-store scan.
  *   - CONTRAST ARM: run the audit purge that reproduced F-225 (`delete_transaction_logs_before`)
  *     against the same database (and table for LMDB) in the SAME process and check `read_audit_log` for the deleted
- *     range -- asserts no purged (pre-cutoff) entry is still returned; F-225 no longer reproduces.
+ *     range -- asserts no purged (pre-cutoff) entry is still returned.
  *   - RESTART DISCRIMINATOR: `killHarper` + `startHarper` on the identical `dataRootDir`,
  *     then re-measure. If pre-restart reads were already clean, post-restart must also be
  *     clean -- that agreement is the confirmation the bound holds.
