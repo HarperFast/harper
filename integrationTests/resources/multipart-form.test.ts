@@ -503,6 +503,11 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 			let remaining = '';
 			for await (const chunk of { [Symbol.asyncIterator]: () => iterator }) remaining += chunk;
 			assert.match(remaining, /last/);
+			if (!process.env.HARPER_UWS_HTTP)
+				await waitFor(() => stop.signal.aborted, {
+					timeout: 5000,
+					message: 'The server must close the abandoned upload after completing the response',
+				});
 		} finally {
 			uploading.destroy();
 			await sending?.catch(() => {});
