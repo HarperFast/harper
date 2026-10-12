@@ -398,21 +398,63 @@ suite(
 							const jsonExpected = storedPrototype
 								? { metadata: { constructor: { city: 'Denver' }, ['__proto__']: {} } }
 								: expected;
-							const binaryExpected = storedPrototype
-								? { metadata: { constructor: { city: 'Denver' }, __proto_: { city: undefined } } }
-								: selection === 'metadata{constructor{city},__proto__{city}}'
-									? { metadata: { constructor: { city: 'Denver' }, __proto_: { city: 'Denver' } } }
-									: selection === 'notes{city}'
-										? { notes: [{ city: 'Denver' }, null, 'literal', { city: undefined }] }
-										: selection === 'metadata{toString}'
-											? { metadata: { toString: undefined } }
-											: expected;
+							const binaryExpectations = {
+								'metadata{constructor{city},__proto__{city}}': {
+									metadata: {
+										constructor: { city: 'Denver' },
+										__proto_: { city: storedPrototype ? undefined : 'Denver' },
+									},
+								},
+								'notes{city}': { notes: [{ city: 'Denver' }, null, 'literal', { city: undefined }] },
+								'metadata{toString}': { metadata: { toString: undefined } },
+							};
+							const binaryExpected = binaryExpectations[selection] || expected;
 							deepStrictEqual(
 								body,
 								{ id: 'json', ...(accept === 'application/json' ? jsonExpected : binaryExpected) },
 								`${path} ${selection} ${accept}`
 							);
 						}
+					}
+				}
+			});
+
+			test('classless nested projections omit function values across native encoders', async () => {
+				const expectations = [
+					['application/json', { id: 'json', metadata: {} }],
+					['application/x-msgpack', { id: 'json', metadata: { callback: undefined, toString: undefined } }],
+					['text/csv', '"id","metadata"\n"json","{}"\n'],
+				] as const;
+				for (const [accept, expected] of expectations) {
+					const response = await fetch(`${httpURL}/JsonProjection/json?select(id,metadata{callback,toString})`, {
+						headers: { Accept: accept, Authorization: auth },
+					});
+					strictEqual(response.status, 200);
+					const body =
+						accept === 'application/json'
+							? await response.json()
+							: accept === 'text/csv'
+								? await response.text()
+								: unpack(Buffer.from(await response.arrayBuffer()));
+					deepStrictEqual(body, expected);
+				}
+			});
+
+			test('nested selection preserves whole Date values through JSON and MessagePack', async () => {
+				const createdAt = '2026-01-01T00:00:00.000Z';
+				strictEqual((await restPut('/OrderItem/date-json', { id: 'date-json', createdAt })).status, 204);
+				for (const [path, id] of [
+					['/OrderItem/date-json', 'date-json'],
+					['/JsonProjection/json', 'json'],
+				]) {
+					for (const accept of ['application/json', 'application/x-msgpack']) {
+						const response = await fetch(`${httpURL}${path}?select(id,createdAt{x})`, {
+							headers: { Accept: accept, Authorization: auth },
+						});
+						strictEqual(response.status, 200);
+						const body =
+							accept === 'application/json' ? await response.json() : unpack(Buffer.from(await response.arrayBuffer()));
+						deepStrictEqual(body, { id, createdAt: accept === 'application/json' ? createdAt : new Date(createdAt) });
 					}
 				}
 			});
@@ -485,12 +527,11 @@ suite(
 				}
 			});
 
-			test('singleton nested selectors retain the existing parser behavior', async () => {
+			test('known singleton nested-selector misparse remains outside the fix (issue #1415)', async () => {
 				for (const selection of ['order{name}', 'nonExistentRel{x}', 'name{x}']) {
 					const response = await restGet(`/OrderItem/json?select(${selection})`);
 					strictEqual(response.status, 200);
 					deepStrictEqual(response.body, {});
-					console.log(`singleton ${selection}: ${response.status} ${JSON.stringify(response.body)}`);
 				}
 			});
 

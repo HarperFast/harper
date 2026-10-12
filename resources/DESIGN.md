@@ -269,6 +269,8 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
   classless primitive array items and whole selected Dates keep their values. Missing targets
   preserve `undefined`/`null`; `forceNulls` stays local to its object projection. Promise and
   `getRecord` detection requires callable values; ordinary method-like JSON keys are data.
+  Generic fallback projections treat function values as absent while retaining inherited data and getters;
+  registered resolver results stay unchanged.
 - The native missing-value contract is pinned by
   `../unitTests/resources/nestedSelectMissingValues.test.js` and
   `../integrationTests/resources/relationship-and-status-contract.test.ts`.

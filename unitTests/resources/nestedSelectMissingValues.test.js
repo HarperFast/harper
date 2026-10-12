@@ -218,6 +218,25 @@ describe('nested select over missing relationship values', function () {
 		assert.deepStrictEqual(result, projectedJson);
 	});
 
+	for (const forceNulls of [false, true]) {
+		it(`treats classless function values as absent with forceNulls=${forceNulls}`, async function () {
+			class FunctionJson extends Resource {
+				static loadAsInstance = true;
+				get() {
+					return { metadata: { callback() {}, label: 'kept' } };
+				}
+			}
+			const nested = ['callback', 'toString', 'label'];
+			nested.forceNulls = forceNulls;
+			const target = new RequestTarget();
+			target.id = 'json';
+			target.select = [{ name: 'metadata', select: nested }];
+			assert.deepStrictEqual(await FunctionJson.get(target), {
+				metadata: { callback: forceNulls ? null : undefined, toString: forceNulls ? null : undefined, label: 'kept' },
+			});
+		});
+	}
+
 	it('keeps read denial before projecting custom Resource JSON', async function () {
 		let read = false;
 		class DeniedJsonResource extends Resource {

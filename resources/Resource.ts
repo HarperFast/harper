@@ -1169,9 +1169,15 @@ function selectFromObject(object, propertyResolvers, context) {
 	} else if (propertyResolvers) {
 		return (property) => {
 			const resolver = Object.hasOwn(propertyResolvers, property) ? propertyResolvers[property] : undefined;
-			return resolver ? resolver(object, context) : object[property];
+			if (resolver) return resolver(object, context);
+			const value = object[property];
+			return typeof value === 'function' ? undefined : value;
 		};
-	} else return (property) => object[property];
+	} else
+		return (property) => {
+			const value = object[property];
+			return typeof value === 'function' ? undefined : value;
+		};
 }
 export function transformForSelect(select, resource) {
 	const propertyResolvers = resource?.propertyResolvers;
@@ -1200,6 +1206,7 @@ export function transformForSelect(select, resource) {
 				return results;
 			};
 		const forceNulls = select.forceNulls;
+		const selectsPrototype = select.some((property) => (property.name || property) === '__proto__');
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
@@ -1208,16 +1215,16 @@ export function transformForSelect(select, resource) {
 			// finally the case of returning objects
 			const selectedData = {};
 			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
+			if (selectsPrototype)
+				Object.defineProperty(selectedData, '__proto__', {
+					value: undefined,
+					writable: true,
+					enumerable: true,
+					configurable: true,
+				});
 			let promises;
 			for (const property of select) {
 				let value = getProperty(property);
-				if ((property.name || property) === '__proto__')
-					Object.defineProperty(selectedData, '__proto__', {
-						value: undefined,
-						writable: true,
-						enumerable: true,
-						configurable: true,
-					});
 				if (value === undefined && forceNulls) value = null;
 				if (typeof value?.then === 'function') {
 					if (!promises) promises = [];
