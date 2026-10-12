@@ -167,11 +167,12 @@ suite(
 				// an increment applied after the capture (a client-side abort the server still applied)
 				// is missing from it; the key may still be live for one more read, and an expired key's
 				// empty answer must not replace the captured evidence
+				const errors = [error].filter(Boolean);
 				if (chain.length > 0 && patchesIn(chain) !== window.finalHits) {
 					const again = await readChain(window.id);
-					if (again.chain.length > 0) ({ chain, error } = again);
+					if (again.chain.length > 0) chain = again.chain;
+					else errors.push(again.error ?? 're-read found no live record');
 				}
-				const errors = [error].filter(Boolean);
 				const rangeForKey = forId(window.id);
 				const rangePatches = rangeForKey.filter((entry) => entry.operation === 'patch').length;
 				const recreated =
