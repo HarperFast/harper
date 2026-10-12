@@ -1,4 +1,5 @@
-import * as _ from 'lodash';
+import filter from 'lodash/filter.js';
+import some from 'lodash/some.js';
 import * as validator from './validationWrapper.ts';
 import Joi from 'joi';
 import * as hdbUtils from '../utility/common_utils.ts';
@@ -143,7 +144,7 @@ export default function (searchObject: any, type: any) {
 			addConditions(searchObject);
 		}
 
-		let unknownAttributes = _.filter(
+		let unknownAttributes = filter(
 			checkAttributes,
 			(attribute) =>
 				attribute !== '*' &&
@@ -151,7 +152,7 @@ export default function (searchObject: any, type: any) {
 				attribute.attribute !== '*' && // skip check for asterisk attribute
 				!Array.isArray(attribute) &&
 				!attribute.name && // nested attribute
-				!_.some(
+				!some(
 					allTableAttributes,
 					(
 						tableAttribute: any // attribute should match one of the attribute in global

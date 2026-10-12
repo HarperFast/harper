@@ -5,7 +5,8 @@
  * purpose of this module is to hold custom functions for alasql
  */
 
-const _ = require('lodash');
+const isEqual = require('lodash/isEqual');
+const uniqWith = require('lodash/uniqWith');
 const mathjs = require('mathjs');
 const jsonata = require('jsonata');
 const hdbUtils = require('../../common_utils.ts');
@@ -18,7 +19,7 @@ module.exports = {
 	 */
 	distinct_array: (array) => {
 		if (Array.isArray(array) && array.length > 1) {
-			return _.uniqWith(array, _.isEqual);
+			return uniqWith(array, isEqual);
 		}
 
 		return array;

@@ -1,6 +1,5 @@
 'use strict';
 
-const _ = require('lodash');
 const terms = require('../utility/hdbTerms.ts');
 const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
