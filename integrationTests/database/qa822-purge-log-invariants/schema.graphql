@@ -18,3 +18,13 @@ type QuietTarget @table(audit: true) @export {
 	seq: Int
 	marker: String
 }
+
+# QA-1730's clean no-write reopen sample needs the window between its purge and its restart to
+# never see a write, which the `data` database above cannot guarantee once the other arms resume
+# writing to it — and a RocksDB transaction log is per-database anyway, so a second database makes
+# the isolation structural rather than a timing coincidence.
+type ReopenTarget @table(database: "qa1730", audit: true) @export {
+	id: ID @primaryKey
+	seq: Int
+	marker: String
+}

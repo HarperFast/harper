@@ -6,7 +6,7 @@
  * the blast radius of that (a purge destroys audit history and only audit history); this file pins
  * the state the log itself is left in, and the durability of everything written afterwards.
  *
- * The three invariants, each asserted once and each able to fail for exactly one reason:
+ * The four invariants, each asserted once and each able to fail for exactly one reason:
  *
  *   1. A PURGE NEVER STRANDS THE FLUSH POSITION. After a purge that really deleted files, the
  *      log's `lastFlushedPosition` still names a file the purge retained — never the
@@ -18,7 +18,8 @@
  *      process before it restarts, and those writes are themselves enough to rewrite flush state,
  *      so a regression visible only on a no-write reopen would be masked there. The first sample —
  *      taken in the purging process with zero writes since the purge — is the one that isolates it,
- *      and it is the sample that fails on a pre-#799 binding.
+ *      and it is the sample that fails on a pre-#799 binding. Invariant 4 below supplies the no-write
+ *      reopen sample this one cannot: a second, otherwise-idle database's restart.
  *   2. COMMIT GROUPING IS IRRELEVANT. The same 260 records advance the log's write cursor by the
  *      same number of bytes whether they arrive as 260 single-row commits or as one 260-row commit.
  *      The log's byte layout is a function of the records, not of how a client grouped them into
@@ -36,6 +37,14 @@
  *      then two more across a write ramp. The failure mode this forbids is the expensive one: a
  *      silent prefix of the window being dropped while later rows survive, which no operator could
  *      detect from the outside.
+ *   4. A CLEAN, WRITE-FREE REOPEN LEAVES THE FLUSH POSITION UNTOUCHED (QA-1730, promoted separately
+ *      from P-584 as its own candidate). Invariant 1's second sample is a reopen AFTER writes, for
+ *      the reason given above; this invariant supplies the missing no-write sample from an isolated
+ *      second database (`qa1730`.`ReopenTarget`) that never takes a write after its own purge, so its
+ *      restart really is clean — the position must come back byte-identical, not merely non-sentinel.
+ *      It also checks what no self-report can: that the retained floor file is physically ON DISK
+ *      WHILE THE PROCESS IS DOWN, between the kill and the reopen, rather than inferring persistence
+ *      from how the reopened process's own recomputation happens to look.
  *
  * WHY INVARIANT 1 IS STATED AS "NEVER WEDGES" RATHER THAN "HEALS". The QA-822 exploration measured
  * the opposite world. On `@harperfast/rocksdb-js` 2.8.0 this same purge left `lastFlushedPosition`
@@ -77,13 +86,18 @@
  *     "integrationTests/database/qa822-purge-log-invariants.test.ts"
  *
  * Promoted from QA-822 (qa-explorer), snapshot P-584, trimmed to the invariants: the snapshot's
- * threshold/event/exposure sweeps measured the healing boundary and asserted nothing.
- * Related: `qa816-purge-blast-radius.test.ts`, rocksdb-js#799 (the retention floor invariant 1
- * pins), rocksdb-js#808 (the wedge it removed), harper#846.
+ * threshold/event/exposure sweeps measured the healing boundary and asserted nothing. Invariant 4
+ * is promoted separately from QA-1730, the same P-584 lineage, after hardening its oracle: the
+ * banked snapshot's `assertReopen` never checked that the shutdown-time file inventory contained
+ * the retained floor file (only that removed files were absent), and its post-`killHarper` check
+ * only ruled out SIGKILL rather than requiring the documented graceful exit.
+ * Related: `qa816-purge-blast-radius.test.ts`, rocksdb-js#799 (the retention floor invariant 1 and
+ * 4 pin), rocksdb-js#808 (the wedge it removed), harper#846.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual, deepStrictEqual } from 'node:assert';
-import { resolve } from 'node:path';
+import { ok, strictEqual, deepStrictEqual, throws } from 'node:assert';
+import { resolve, join } from 'node:path';
+import { readdirSync, statSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
 	setupHarperWithFixture,
@@ -124,6 +138,11 @@ const SHAPE_PAD = 'x'.repeat(4000);
 const MARKER_ROWS = 20;
 const MARKER_PAD = 'x'.repeat(300);
 
+// QA-1730's clean-reopen sample lives in its own database so the no-write window its invariant
+// needs is structural, not a timing coincidence with the arms above that keep writing to `data`.
+const CLEAN_REOPEN_DB = 'qa1730';
+const CLEAN_REOPEN_TABLE = 'ReopenTarget';
+
 interface LogPosition {
 	sequence: number;
 	offset: number;
@@ -132,6 +151,7 @@ interface LogPosition {
 interface LogSnapshot {
 	available: boolean;
 	engine: string;
+	path: string;
 	fileCount: number;
 	currentSequenceNumber: number;
 	oldestSequenceNumber: number;
@@ -174,15 +194,19 @@ async function rawOp(
 	return { status: res.status, body, text };
 }
 
-async function logStats(ctx: ContextWithHarper, table: string): Promise<LogSnapshot> {
-	const res = await fetch(`${ctx.harper.httpURL}/LogStats/?table=${table}`, {
+async function logStats(ctx: ContextWithHarper, table: string, database = 'data'): Promise<LogSnapshot> {
+	const res = await fetch(`${ctx.harper.httpURL}/LogStats/?database=${database}&table=${table}`, {
 		headers: { Authorization: authHeader(ctx) },
 		signal: AbortSignal.timeout(30_000),
 	});
 	const text = await res.text();
-	strictEqual(res.status, 200, `/LogStats/?table=${table} expected 200, got ${res.status}: ${text.slice(0, 300)}`);
+	strictEqual(
+		res.status,
+		200,
+		`/LogStats/?database=${database}&table=${table} expected 200, got ${res.status}: ${text.slice(0, 300)}`
+	);
 	const stats = JSON.parse(text) as LogSnapshot;
-	ok(stats.available, `QA-822: no native transaction log for ${table} (engine=${stats.engine})`);
+	ok(stats.available, `QA-822: no native transaction log for ${database}.${table} (engine=${stats.engine})`);
 	return stats;
 }
 
@@ -240,8 +264,8 @@ async function pollJob(ctx: ContextWithHarper, jobId: string, timeoutMs = 180_00
 	throw new Error(`QA-822: job ${jobId} did not settle within ${timeoutMs}ms; last=${last}`);
 }
 
-async function insertRows(ctx: ContextWithHarper, table: string, records: Row[]): Promise<void> {
-	const r = await rawOp(ctx, { operation: 'insert', database: 'data', table, records });
+async function insertRows(ctx: ContextWithHarper, table: string, records: Row[], database = 'data'): Promise<void> {
+	const r = await rawOp(ctx, { operation: 'insert', database, table, records });
 	strictEqual(r.status, 200, `insert ${records.length} row(s) into ${table} expected 200: ${r.text.slice(0, 300)}`);
 }
 
@@ -324,19 +348,60 @@ async function assertMarkersIntact(ctx: ContextWithHarper, label: string, rows: 
 // Rotation is observed asynchronously, so exhausting the seed budget is not yet proof it happened.
 // Without it the purge has no sealed file to delete and the arming below fails for a reason that
 // has nothing to do with what this suite asserts.
-async function waitForRotation(ctx: ContextWithHarper, before: number): Promise<number> {
+async function waitForRotation(
+	ctx: ContextWithHarper,
+	before: number,
+	table = 'PurgeVictim',
+	database = 'data'
+): Promise<number> {
 	const deadline = Date.now() + 60_000;
 	let rotations = before;
 	while (Date.now() < deadline) {
-		rotations = (await logStats(ctx, 'PurgeVictim')).rotations;
+		rotations = (await logStats(ctx, table, database)).rotations;
 		if (rotations > before) return rotations;
 		await sleep(250);
 	}
 	throw new Error(`ORACLE ARMING: the seed never rotated the transaction log (rotations still ${rotations})`);
 }
 
-async function restart(ctx: ContextWithHarper): Promise<void> {
+// QA-1730's second oracle gap: a reopened process's self-report cannot distinguish a floor file
+// that was truly persisted from one a clean recomputation on open happened to reproduce. Reading
+// the log directory directly WHILE THE PROCESS IS DOWN (between the kill and the next start) can.
+function diskLogFiles(logDirPath: string): { seq: number; bytes: number }[] {
+	return readdirSync(logDirPath)
+		.filter((name) => /^\d+\.txnlog$/.test(name))
+		.map((name) => ({ seq: Number(name.slice(0, -'.txnlog'.length)), bytes: statSync(join(logDirPath, name)).size }));
+}
+
+function assertRetainedFloorOnDisk(files: { seq: number; bytes: number }[], floor: LogPosition, label: string): void {
+	ok(
+		files.some((file) => file.seq === floor.sequence && file.bytes >= floor.offset),
+		`${label}: the file covering the retained floor (seq:${floor.sequence}, offset:${floor.offset}) must physically ` +
+			`exist on disk while the process is down; got files=${JSON.stringify(files)}`
+	);
+}
+
+interface ExitStatus {
+	exitCode: number | null;
+	signalCode: NodeJS.Signals | null;
+}
+
+// Harper's SIGTERM/SIGINT/SIGQUIT handler (bin/run.ts addExitListeners) calls process.exit(0)
+// after beginProcessShutdown(), so a graceful shutdown reads exitCode:0, signalCode:null — not
+// merely "didn't get SIGKILLed". A process that was killed BY an uncaught signal instead reads
+// exitCode:null, signalCode:'SIGTERM', and never ran that clean-shutdown path.
+function assertGracefulExit(status: ExitStatus, label: string): void {
+	ok(
+		status.exitCode === 0 && status.signalCode === null,
+		`${label}: expected a graceful exit (exitCode:0, signalCode:null), got exitCode:${status.exitCode} signalCode:${status.signalCode}`
+	);
+}
+
+// `onShutdown` runs after the process is confirmed dead and before the next one starts — the only
+// window in which disk state can be inspected without a live process racing it.
+async function restart(ctx: ContextWithHarper, onShutdown?: () => Promise<void> | void): Promise<void> {
 	await killHarper(ctx as any, { graceMs: 30_000 });
+	if (onShutdown) await onShutdown();
 	await startHarper(ctx, { config: ARM_CONFIG, env: ARM_ENV });
 	await pollReadiness(ctx);
 }
@@ -357,6 +422,10 @@ suite(
 		let oneCommitBytes = Number.NaN;
 		let purged = false;
 		let ramped = false;
+		let cleanReopenBoundary: LogSnapshot;
+		let cleanReopenDiskFiles: { seq: number; bytes: number }[];
+		let cleanReopenReopened: LogSnapshot;
+		let cleanReopened = false;
 
 		before(async () => {
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: ARM_CONFIG, env: ARM_ENV });
@@ -541,6 +610,127 @@ suite(
 				await assertMarkersIntact(ctx, `5. POST-RESTART ${checkpoint.label}`, checkpoint.rows);
 				findings.push(`5. ${checkpoint.label}: ${checkpoint.rows.length}/${checkpoint.rows.length} survived`);
 			}
+		});
+
+		test(
+			'6. arm (QA-1730): seed an isolated database past rotation, purge it, and restart with zero further writes to it',
+			{ timeout: 600_000 },
+			async () => {
+				const seedStart = await logStats(ctx, CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB);
+				const maxFileSize = seedStart.maxFileSize > 0 ? seedStart.maxFileSize : DEFAULT_MAX_FILE_SIZE;
+				const seedRows = Math.ceil((maxFileSize * VICTIM_OVERSHOOT) / VICTIM_PAD.length);
+				for (let start = 0; start < seedRows; start += VICTIM_BATCH) {
+					const records = Array.from({ length: Math.min(VICTIM_BATCH, seedRows - start) }, (_, i) => ({
+						id: `rt_${start + i}`,
+						seq: start + i,
+						marker: VICTIM_PAD,
+					}));
+					await insertRows(ctx, CLEAN_REOPEN_TABLE, records, CLEAN_REOPEN_DB);
+				}
+
+				const rotations = await waitForRotation(ctx, seedStart.rotations, CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB);
+				findings.push(
+					`6. seeded ${seedRows} rows x ${VICTIM_PAD.length}B against maxFileSize=${maxFileSize}; rotations ${seedStart.rotations} -> ${rotations}`
+				);
+
+				const cutoffTimestamp = Date.now();
+				await flushPrimaryStores(ctx);
+
+				const ack = await rawOp(ctx, {
+					operation: 'delete_transaction_logs_before',
+					database: CLEAN_REOPEN_DB,
+					timestamp: cutoffTimestamp,
+				});
+				strictEqual(
+					ack.status,
+					200,
+					`delete_transaction_logs_before expected 200, got ${ack.status}: ${ack.text.slice(0, 300)}`
+				);
+				ok(ack.body?.job_id, `delete_transaction_logs_before must return a job_id, got ${ack.text.slice(0, 300)}`);
+
+				const job = await pollJob(ctx, ack.body.job_id);
+				findings.push(`6. purge job ${job.status} result=${JSON.stringify(job.result)}`);
+				strictEqual(job.status, 'COMPLETE', `purge job must COMPLETE, got ${job.status}: ${job.message}`);
+				ok(
+					Number(job.result?.entries_deleted) > 0,
+					`NON-VACUOUS PRECONDITION: the purge must delete audit entries, got entries_deleted=${job.result?.entries_deleted}`
+				);
+				ok(
+					Number(job.result?.log_files_deleted) > 0,
+					`NON-VACUOUS PRECONDITION: the purge must delete whole log files, got log_files_deleted=${job.result?.log_files_deleted}`
+				);
+
+				cleanReopenBoundary = await logStats(ctx, CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB);
+				findings.push(`6. boundary (last sample before the no-write restart) ${fmt(cleanReopenBoundary)}`);
+
+				// Nothing below ever writes to CLEAN_REOPEN_DB again — that absence is what makes this
+				// restart's reopen sample "clean", unlike invariant 1's second sample.
+				const dyingProcess = ctx.harper.process;
+				await restart(ctx, () => {
+					cleanReopenDiskFiles = diskLogFiles(cleanReopenBoundary.path);
+				});
+				assertGracefulExit(
+					{ exitCode: dyingProcess.exitCode, signalCode: dyingProcess.signalCode },
+					'6. shutdown before the clean-reopen restart'
+				);
+
+				cleanReopenReopened = await logStats(ctx, CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB);
+				findings.push(`6. reopened (clean, no-write restart) ${fmt(cleanReopenReopened)}`);
+				cleanReopened = true;
+			}
+		);
+
+		test('7. INVARIANT 4 (QA-1730): a clean, write-free reopen leaves the flush position exactly where the purge left it, with the retained floor physically on disk', () => {
+			ok(cleanReopened, 'PRECONDITION: the clean-reopen restart (test 6) must have run first');
+			for (const [when, stats] of [
+				['immediately after the purge', cleanReopenBoundary],
+				['after a clean, write-free restart', cleanReopenReopened],
+			] as const) {
+				const preamble =
+					`CLEAN-REOPEN INVARIANT (${when}): the purge must retain the log file lastFlushedPosition names, ` +
+					`the same contract invariant 1 pins — this is that contract's missing no-write sample.`;
+				ok(!isSentinel(stats.lastFlushedPosition), `${preamble} Got ${fmt(stats)}`);
+				ok(stats.fileCount > 0, `${preamble} The purge left no log files at all. Got ${fmt(stats)}`);
+				ok(
+					stats.lastFlushedPosition.sequence >= stats.oldestSequenceNumber &&
+						stats.lastFlushedPosition.sequence <= stats.currentSequenceNumber,
+					`${preamble} The position names a sequence outside the range of files the purge kept. Got ${fmt(stats)}`
+				);
+			}
+			deepStrictEqual(
+				cleanReopenReopened.lastFlushedPosition,
+				cleanReopenBoundary.lastFlushedPosition,
+				`CLEAN-REOPEN INVARIANT: with zero writes to ${CLEAN_REOPEN_DB} between the purge and the restart, the reopened ` +
+					`flush position must be byte-identical to the pre-restart position. Got boundary=${fmt(cleanReopenBoundary)} ` +
+					`reopened=${fmt(cleanReopenReopened)}`
+			);
+			// The HTTP samples above only prove the reopened process's own self-report; this proves the
+			// floor file the position names was actually ON DISK while the process was down, which a
+			// clever recomputation on open could satisfy without ever having persisted it.
+			assertRetainedFloorOnDisk(
+				cleanReopenDiskFiles,
+				cleanReopenBoundary.lastFlushedPosition,
+				'CLEAN-REOPEN INVARIANT (on disk, process down)'
+			);
+		});
+
+		test('8. PREDICATE CONTROL (synthetic inputs, no real crash observed): the graceful-exit check used by test 6 rejects a nonzero exit, a fatal signal, and a still-running process', () => {
+			assertGracefulExit({ exitCode: 0, signalCode: null }, 'sanity: the real graceful shape must still pass');
+			throws(
+				() => assertGracefulExit({ exitCode: 1, signalCode: null }, 'synthetic nonzero exit'),
+				/exitCode:1/,
+				'must reject a nonzero exit code'
+			);
+			throws(
+				() => assertGracefulExit({ exitCode: null, signalCode: 'SIGSEGV' }, 'synthetic fatal signal'),
+				/SIGSEGV/,
+				'must reject a fatal signal'
+			);
+			throws(
+				() => assertGracefulExit({ exitCode: null, signalCode: null }, 'synthetic unresolved (still running)'),
+				/exitCode:null signalCode:null/,
+				'must reject a process that never reported an exit'
+			);
 		});
 	}
 );
