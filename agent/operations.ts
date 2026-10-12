@@ -29,7 +29,8 @@ export interface OperationDeps {
 	getConfig: () => AgentConfig;
 	setConfig: (patch: Partial<AgentConfig>) => AgentConfig;
 	/** `admitted` is the `admitRun` token taken before the request's first await. */
-	startRun: (sessionId: string, admitted?: number) => void;
+	/** Returns false when a cancel since `admitted` fenced the run out. */
+	startRun: (sessionId: string, admitted?: number) => boolean;
 	cancelRun: (sessionId: string) => boolean;
 	admitRun: (sessionId: string) => number;
 	isRunInFlight: (sessionId: string) => boolean;
@@ -108,7 +109,12 @@ async function agentPrompt(op: any, deps: OperationDeps) {
 		sessionId = created.session_id;
 	}
 
-	deps.startRun(sessionId, admitted);
+	if (!deps.startRun(sessionId, admitted)) {
+		throw new ClientError(
+			`A cancel for session ${sessionId} arrived while this prompt was being accepted; the prompt was recorded but not run`,
+			409
+		);
+	}
 	return { session_id: sessionId, status: 'running' satisfies AgentRunStatus };
 }
 

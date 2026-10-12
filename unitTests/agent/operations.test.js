@@ -12,7 +12,7 @@ describe('agent/operations set_agent_config', () => {
 				patches.push(patch);
 				return patch;
 			},
-			startRun: () => {},
+			startRun: () => true,
 			cancelRun: () => false,
 			admitRun: () => 0,
 			isRunInFlight: () => false,
@@ -63,7 +63,7 @@ describe('agent/operations budgets (#3040)', () => {
 				patches.push(patch);
 				return patch;
 			},
-			startRun: () => {},
+			startRun: () => true,
 			cancelRun: () => false,
 			admitRun: () => 0,
 			isRunInFlight: () => false,
@@ -184,7 +184,7 @@ describe('agent/operations budgets (#3040)', () => {
 			const started = [];
 			const { execute } = operation('agent_prompt', {
 				getConfig: () => ({ enabled: true }),
-				startRun: (id) => started.push(id),
+				startRun: (id) => started.push(id) > 0,
 				isRunInFlight: () => true,
 			});
 			await assert.rejects(execute({ session_id: created.session_id, message: 'again' }), (err) => {
@@ -201,7 +201,7 @@ describe('agent/operations budgets (#3040)', () => {
 			const starts = [];
 			const deps = {
 				getConfig: () => ({ enabled: true }),
-				startRun: (id, admitted) => starts.push(admitted),
+				startRun: (id, admitted) => starts.push(admitted) > 0,
 				admitRun: () => cancels,
 				isRunInFlight: () => false,
 			};
@@ -228,6 +228,21 @@ describe('agent/operations budgets (#3040)', () => {
 				approval_id: approval.id,
 			});
 			assert.deepStrictEqual(starts, [0], 'a cancel during the resolve fences out the run');
+		});
+
+		it('agent_prompt answers 409 when a cancel fenced out the run it would start', async () => {
+			const created = await session.createSession({ user: 'admin' });
+			const { execute } = operation('agent_prompt', {
+				getConfig: () => ({ enabled: true }),
+				startRun: () => false,
+				admitRun: () => 0,
+				isRunInFlight: () => false,
+			});
+			await assert.rejects(execute({ session_id: created.session_id, message: 'again' }), (err) => {
+				assert.strictEqual(err.statusCode, 409);
+				assert.match(err.message, /recorded but not run/);
+				return true;
+			});
 		});
 
 		it('get_agent_session returns the row plus its usage', async () => {

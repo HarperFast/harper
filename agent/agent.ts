@@ -162,13 +162,15 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		return composed.tools;
 	}
 
-	function startRun(sessionId: string, admitted?: number): void {
+	/** Returns false when a cancel since the request was admitted fenced the run out. */
+	function startRun(sessionId: string, admitted?: number): boolean {
+		if (admitted !== undefined && admitted !== admitRun(sessionId)) return false;
 		// A run is already active for this session. `runAgent` coalesces concurrent starts onto the
 		// existing in-flight promise (bound to the existing controller), so creating a second
 		// controller here would orphan it — `cancelRun` would then abort a controller nothing is
 		// listening to, leaving the live run uncancellable. Any message appended before this call
 		// (e.g. by a scheduled followup) is picked up by the in-flight loop on its next turn.
-		if (abortControllers.has(sessionId)) return;
+		if (abortControllers.has(sessionId)) return true;
 		const controller = new AbortController();
 		abortControllers.set(sessionId, controller);
 		runAgent({
@@ -189,6 +191,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			.finally(() => {
 				if (abortControllers.get(sessionId) === controller) abortControllers.delete(sessionId);
 			});
+		return true;
 	}
 
 	function cancelRun(sessionId: string): boolean {
