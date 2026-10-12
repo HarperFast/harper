@@ -102,7 +102,8 @@ describe('Subscription superseded versions', () => {
 				if (!options.rawEvents) assert.ok(events.every((event) => event.type === 'put'));
 			});
 		}
-		// harper#2735: a replayed delete must never be reported as 'put', in any replay variant.
+		// harper#2735: a replayed delete must never be reported as 'put'. Covers the default
+		// (superseded-skip), includeSuperseded, and rawEvents replay paths.
 		it(`preserves deletion and skips pre-delete versions for ${JSON.stringify(scope)}`, async () => {
 			await versions();
 			await T.delete('A');
