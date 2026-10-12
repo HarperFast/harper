@@ -987,8 +987,9 @@ the recipient bound). A table source's `before` hook (`source.put`/`patch`) has 
 record-based placement needs the merged record; the guarantee covers Harper's stored data, not the source.
 A confirmation-hook error after the native commit is observed after local completions, so bookkeeping and chained commits
 finish before a confirmation failure surfaces. LMDB's production registry is unregistered and its write-bearing
-child does not inherit the root's confirmation count. Enforced by
-`unitTests/resources/residencyConfirmation.test.js`.
+child does not inherit the root's confirmation count. Feasibility and residency are pinned by
+`unitTests/resources/residencyConfirmation.test.js`; post-hook ordering is pinned by
+`unitTests/resources/replicationConfirmationOutcome.test.js`.
 
 ## Replication confirmation failure means the linked writes committed locally
 

@@ -10,15 +10,16 @@ const BIGINT_SERIALIZATION = { message: 'Cannot serialize BigInt to JSON' };
 };
 const { errorToString } = harperLogger;
 function streamError(error) {
-	return {
-		error: errorToString(error),
-		...(error?.replicationUnconfirmed === true
-			? { replicationUnconfirmed: true, retryable: false }
-			: error?.retryable === false
-				? { retryable: false }
-				: {}),
-	};
+	const record: { error: string; replicationUnconfirmed?: true; retryable?: false } = { error: errorToString(error) };
+	try {
+		if (error?.replicationUnconfirmed === true) {
+			record.replicationUnconfirmed = true;
+			record.retryable = false;
+		} else if (error?.retryable === false) record.retryable = false;
+	} catch {}
+	return record;
 }
+
 export function streamAsJSON(value) {
 	return new JSONStream({ value });
 }

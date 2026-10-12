@@ -854,3 +854,36 @@ describe('contentTypes – a multipart upload its route answers without reading'
 		}
 	});
 });
+
+describe('contentTypes – JSON terminal metadata', () => {
+	for (const asynchronous of [false, true]) {
+		for (const property of ['replicationUnconfirmed', 'retryable']) {
+			it(`finishes valid JSON when ${property} throws in a ${asynchronous ? 'async' : 'sync'} iterator error`, async function () {
+				this.timeout(2000);
+				const failure = new Proxy(new Error('Iterator failed'), {
+					get(target, key, receiver) {
+						if (key === property) throw new Error('Metadata is unreadable');
+						return Reflect.get(target, key, receiver);
+					},
+				});
+				function* syncSource() {
+					yield { id: 'first' };
+					throw failure;
+				}
+				async function* asyncSource() {
+					yield { id: 'first' };
+					throw failure;
+				}
+				const readable = contentTypes
+					.get('application/json')
+					.serializeStream(asynchronous ? asyncSource() : syncSource());
+				try {
+					const result = JSON.parse(await streamToString(readable));
+					assert.deepStrictEqual(result, [{ id: 'first' }, { error: 'Error: Iterator failed' }]);
+				} finally {
+					readable.destroy();
+				}
+			});
+		}
+	}
+});
