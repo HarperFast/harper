@@ -62,6 +62,9 @@ testNamespace.test('namespace import', (t) => {
 beforeEach((t) => {
 	t.assert.ok(true); // flagged
 });
+before((t) => {
+	t.assert.ok(true); // flagged
+});
 
 const observed = true;
 ok(observed);
@@ -76,9 +79,6 @@ function shadowed(ok) {
 	ok(true);
 }
 shadowed(() => {});
-before((suiteContext) => {
-	suiteContext.assert.ok(true);
-});
 const local = { assert: { ok(_value) {} } };
 local.assert.ok(true);
 var selfReference = selfReference;

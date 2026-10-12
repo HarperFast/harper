@@ -1,7 +1,8 @@
 const ASSERT_MODULES = new Set(['assert', 'node:assert', 'assert/strict', 'node:assert/strict']);
 const TEST_MODULES = new Set(['test', 'node:test']);
-// The node:test functions whose callback receives a TestContext (before/after/describe get none).
-const TEST_FUNCTIONS = new Set(['test', 'it', 'beforeEach', 'afterEach']);
+// The node:test functions whose callback can receive a TestContext. Inside a suite, before/after get a
+// SuiteContext instead, which has no `assert`, so `.assert.ok(true)` there throws rather than passing.
+const TEST_FUNCTIONS = new Set(['test', 'it', 'before', 'after', 'beforeEach', 'afterEach']);
 const TEST_MODIFIERS = new Set(['skip', 'only', 'todo']);
 const TS_WRAPPERS = new Set(['TSAsExpression', 'TSSatisfiesExpression', 'TSNonNullExpression', 'TSTypeAssertion']);
 
