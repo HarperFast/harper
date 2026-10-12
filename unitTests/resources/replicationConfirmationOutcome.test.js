@@ -331,6 +331,23 @@ describe('Replication confirmation failure after a local commit', () => {
 		assert.equal(await Second.get(`outer-${id}`), null);
 	});
 
+	it('retains a nested commit outcome before any later application step was issued', async () => {
+		const id = nextId();
+		let laterStepRan = false;
+		registerConfirmation(() => Promise.reject(new ServerError('Nested peer timeout', 504)));
+		await assert.rejects(
+			transaction({}, async () => {
+				await confirmedWrite(id);
+				laterStepRan = true;
+				await Second.put({ id: `later-${id}` });
+			}),
+			(error) => error.replicationUnconfirmed === true && error.retryable === false
+		);
+		assert.strictEqual(laterStepRan, false);
+		assert.strictEqual((await First.get(id)).id, id);
+		assert.equal(await Second.get(`later-${id}`), null);
+	});
+
 	it('preserves the flag when the callback awaited its own failed commit', async () => {
 		const id = nextId();
 		const context = { replicatedConfirmation: 1 };
@@ -363,77 +380,94 @@ describe('Replication confirmation failure after a local commit', () => {
 		assert.equal(await Second.get(`outer-source-${id}`), null);
 	});
 
-	for (const type of ['application/json', 'application/x-ndjson', 'text/event-stream']) {
-		it(`retains a post-commit confirmation flag in a terminal ${type} record`, async () => {
-			const id = nextId();
-			registerConfirmation(() => Promise.reject(new ServerError('Stream peer timeout', 504)));
-			async function* source() {
-				yield { stage: 'before-write' };
-				await confirmedWrite(id);
-			}
-			const stream = contentTypes.get(type).serializeStream(source(), undefined, { method: 'GET' });
-			const chunks = [];
-			for await (const chunk of stream) chunks.push(Buffer.from(chunk));
-			const text = Buffer.concat(chunks).toString();
-			const records =
-				type === 'application/json'
-					? JSON.parse(text)
-					: type === 'text/event-stream'
-						? text
-								.split('\n')
-								.filter((line) => line.startsWith('data: '))
-								.map((line) => JSON.parse(line.slice(6)))
-						: text
-								.trim()
-								.split('\n')
-								.map((line) => JSON.parse(line));
-			assert.deepStrictEqual(records[0], { stage: 'before-write' });
-			const failure = records[1].$harperStreamError ?? records[1];
-			assert.strictEqual(failure.replicationUnconfirmed, true);
-			assert.strictEqual(failure.retryable, false);
-			if (type === 'application/json') assert.match(failure.error, /^ReplicationConfirmationError:/);
-			else {
-				assert.strictEqual(failure.error, 'ServerError');
-				assert.strictEqual(failure.status, 504);
-			}
-			assert.strictEqual((await First.get(id)).id, id);
-		});
+	for (const rollback of [false, true]) {
+		for (const type of ['application/json', 'application/x-ndjson', 'text/event-stream']) {
+			it(`retains a post-commit confirmation flag in a terminal ${type} record${rollback ? ' after outer rollback' : ''}`, async () => {
+				const id = nextId();
+				registerConfirmation(() => Promise.reject(new ServerError('Stream peer timeout', 504)));
+				async function* source() {
+					yield { stage: 'before-write' };
+					if (rollback) {
+						await transaction({}, async () => {
+							await Second.put({ id: `outer-stream-${id}` });
+							await confirmedWrite(id);
+						});
+					} else await confirmedWrite(id);
+				}
+				const stream = contentTypes.get(type).serializeStream(source(), undefined, { method: 'GET' });
+				const chunks = [];
+				for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+				const text = Buffer.concat(chunks).toString();
+				const records =
+					type === 'application/json'
+						? JSON.parse(text)
+						: type === 'text/event-stream'
+							? text
+									.split('\n')
+									.filter((line) => line.startsWith('data: '))
+									.map((line) => JSON.parse(line.slice(6)))
+							: text
+									.trim()
+									.split('\n')
+									.map((line) => JSON.parse(line));
+				assert.deepStrictEqual(records[0], { stage: 'before-write' });
+				const failure = records[1].$harperStreamError ?? records[1];
+				assert.strictEqual(failure.replicationUnconfirmed, rollback ? undefined : true);
+				assert.strictEqual(failure.retryable, false);
+				if (type === 'application/json')
+					assert.match(failure.error, rollback ? /^ServerError:/ : /^ReplicationConfirmationError:/);
+				else {
+					assert.strictEqual(failure.error, 'ServerError');
+					assert.strictEqual(failure.status, 504);
+				}
+				assert.strictEqual((await First.get(id)).id, id);
+				if (rollback) assert.equal(await Second.get(`outer-stream-${id}`), null);
+			});
+		}
 	}
 
-	it('publishes the flag in REST problem details while retaining the original public code', async () => {
-		const id = nextId();
-		registerConfirmation(() => Promise.reject(new ServerError('Peer timeout', 504)));
-		class Signup extends Resource {
-			static loadAsInstance = false;
-			async post(target) {
-				await First.put({ id: target.id });
-				requestConfirmation(contextStorage.getStore());
-				return 'created';
+	for (const rollback of [false, true]) {
+		it(`publishes the REST outcome${rollback ? ' after outer rollback' : ''} while retaining the original public code`, async () => {
+			const id = nextId();
+			registerConfirmation(() => Promise.reject(new ServerError('Peer timeout', 504)));
+			class Signup extends Resource {
+				static loadAsInstance = false;
+				async post(target) {
+					if (rollback) {
+						await Second.put({ id: `outer-rest-${target.id}` });
+						await confirmedWrite(target.id);
+					} else {
+						await First.put({ id: target.id });
+						requestConfirmation(contextStorage.getStore());
+					}
+					return 'created';
+				}
 			}
-		}
-		const resources = new Resources();
-		resources.set('Signup', Signup);
-		let listener;
-		handleApplication({
-			resources,
-			options: { getAll: () => ({ webSocket: false }) },
-			routeFor: () => ({ urlPath: '/confirmation-outcome' }),
-			server: { http: (handler) => (listener = handler) },
+			const resources = new Resources();
+			resources.set('Signup', Signup);
+			let listener;
+			handleApplication({
+				resources,
+				options: { getAll: () => ({ webSocket: false }) },
+				routeFor: () => ({ urlPath: `/confirmation-outcome-${rollback}` }),
+				server: { http: (handler) => (listener = handler) },
+			});
+			const response = await listener({
+				method: 'POST',
+				url: `/Signup/${id}`,
+				pathname: `/Signup/${id}`,
+				ip: '203.0.113.7',
+				user: { username: 'admin', role: { permission: { super_user: true } } },
+				headers: { asObject: {}, get: () => undefined },
+			});
+			assert.strictEqual(response.status, 504);
+			const body = JSON.parse(response.body);
+			assert.strictEqual(body.replicationUnconfirmed, rollback ? undefined : true);
+			assert.strictEqual(body.retryable, false);
+			assert.strictEqual(body.code, 'ServerError');
+			assert.strictEqual(body.title, 'Peer timeout');
+			assert.strictEqual((await First.get(id)).id, id);
+			if (rollback) assert.equal(await Second.get(`outer-rest-${id}`), null);
 		});
-		const response = await listener({
-			method: 'POST',
-			url: `/Signup/${id}`,
-			pathname: `/Signup/${id}`,
-			ip: '203.0.113.7',
-			user: { username: 'admin', role: { permission: { super_user: true } } },
-			headers: { asObject: {}, get: () => undefined },
-		});
-		assert.strictEqual(response.status, 504);
-		const body = JSON.parse(response.body);
-		assert.strictEqual(body.replicationUnconfirmed, true);
-		assert.strictEqual(body.retryable, false);
-		assert.strictEqual(body.code, 'ServerError');
-		assert.strictEqual(body.title, 'Peer timeout');
-		assert.strictEqual((await First.get(id)).id, id);
-	});
+	}
 });

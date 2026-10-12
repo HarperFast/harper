@@ -118,7 +118,9 @@ export class ReplicationConfirmationError extends ServerError {
 
 export function withoutReplicationUnconfirmed(error: any): ServerError {
 	let responseMessage = error.http_resp_msg;
-	if (responseMessage && typeof responseMessage === 'object' && !Array.isArray(responseMessage)) {
+	if (Array.isArray(responseMessage)) {
+		responseMessage = { error: responseMessage, code: error.code, retryable: false };
+	} else if (responseMessage && typeof responseMessage === 'object') {
 		responseMessage = { ...responseMessage, retryable: false };
 		delete responseMessage.replicationUnconfirmed;
 	}

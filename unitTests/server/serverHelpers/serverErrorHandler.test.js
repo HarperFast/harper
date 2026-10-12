@@ -2,7 +2,13 @@
 
 const assert = require('assert');
 const fastify = require('fastify');
-const { hdbErrors, ReplicationConfirmationError, ServerError, HdbError } = require('#src/utility/errors/hdbError');
+const {
+	hdbErrors,
+	ReplicationConfirmationError,
+	ServerError,
+	HdbError,
+	withoutReplicationUnconfirmed,
+} = require('#src/utility/errors/hdbError');
 const { serverErrorHandler, handlePostRequest } = require('#js/server/serverHelpers/serverHandlers');
 const { setupTestDBPath } = require('../../testUtils');
 const { table } = require('#src/resources/databases');
@@ -67,22 +73,34 @@ describe('serverErrorHandler', function () {
 		}
 	});
 
-	for (const marked of [false, true]) {
-		it(`preserves array error details${marked ? ' in a flagged envelope' : ' without a flag'}`, async () => {
+	for (const outcome of ['plain', 'committed', 'stripped']) {
+		it(`preserves array error details${outcome === 'plain' ? ' without a flag' : ` in a ${outcome} envelope`}`, async () => {
 			const app = fastify();
 			app.setErrorHandler(serverErrorHandler);
 			const details = ['Peer timeout'];
 			const cause = new HdbError(new Error('Peer timeout'), details, 504);
 			cause.code = 'PEER_TIMEOUT';
 			app.post('/', async () => {
-				throw marked ? new ReplicationConfirmationError(cause) : cause;
+				const committed = new ReplicationConfirmationError(cause);
+				throw outcome === 'plain'
+					? cause
+					: outcome === 'stripped'
+						? withoutReplicationUnconfirmed(committed)
+						: committed;
 			});
 			try {
 				const response = await app.inject({ method: 'POST', url: '/' });
 				assert.strictEqual(response.statusCode, 504);
 				assert.deepStrictEqual(
 					response.json(),
-					marked ? { error: details, code: 'PEER_TIMEOUT', replicationUnconfirmed: true, retryable: false } : details
+					outcome === 'plain'
+						? details
+						: {
+								error: details,
+								code: 'PEER_TIMEOUT',
+								retryable: false,
+								...(outcome === 'committed' ? { replicationUnconfirmed: true } : {}),
+							}
 				);
 				assert.deepStrictEqual(cause.http_resp_msg, details);
 			} finally {
