@@ -180,7 +180,12 @@ describe('Resource request body resolution', function () {
 		);
 	});
 
-	for (const invalid of [null, { title: 'wrong shape' }, { name: '__proto__', value: 'unsafe' }]) {
+	for (const invalid of [
+		null,
+		{ title: 'wrong shape' },
+		{ name: '__proto__', value: 'unsafe' },
+		{ name: 'a', value: 1, extra: 2 },
+	]) {
 		it(`rejects invalid named parts (${JSON.stringify(invalid)}) before either hook`, async function () {
 			let called = false;
 			let returned = false;
@@ -207,6 +212,42 @@ describe('Resource request body resolution', function () {
 			assert.equal(returned, true);
 		});
 	}
+
+	it('passes Node and Web byte streams to instance handlers without pulling them', async function () {
+		let pulls = 0;
+		const nodeStream = new Readable({
+			read() {
+				pulls++;
+			},
+		});
+		const webStream = new ReadableStream(
+			{
+				pull() {
+					pulls++;
+				},
+			},
+			{ highWaterMark: 0 }
+		);
+		try {
+			for (const stream of [nodeStream, webStream]) {
+				class Receiver extends Resource {
+					allowUpdate(_user, data) {
+						assert.strictEqual(data, stream);
+						return true;
+					}
+					put(data) {
+						assert.strictEqual(data, stream);
+						return 'received';
+					}
+				}
+				assert.equal(await Receiver.put(new RequestTarget('/bytes'), stream, { authorize: true }), 'received');
+			}
+			assert.equal(pulls, 0);
+		} finally {
+			nodeStream.destroy();
+			await webStream.cancel();
+		}
+	});
 
 	it('preserves decode errors before invoking an authorization hook', async function () {
 		const { ClientError } = require('#src/utility/errors/hdbError');

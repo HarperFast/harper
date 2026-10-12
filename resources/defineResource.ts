@@ -560,11 +560,10 @@ function wrapStaticVerb(original: Function, compiled: CompiledVerb): Function {
 	}
 	return function (this: any, target: any, ...rest: any[]) {
 		if (target instanceof URLSearchParams) {
-			const body = hasBody && bodyFragment ? resolveBody(rest[0]) : rest[0];
-			if (hasBody && bodyFragment && typeof body?.then === 'function') {
-				return body.then((resolvedBody: any) => validateAndDispatch.call(this, target, rest, resolvedBody));
+			if (hasBody && bodyFragment) {
+				return resolveBody(rest[0], true, (body: any) => validateAndDispatch.call(this, target, rest, body));
 			}
-			return validateAndDispatch.call(this, target, rest, body);
+			return validateAndDispatch.call(this, target, rest, rest[0]);
 		}
 		return original.call(this, target, ...rest);
 	};

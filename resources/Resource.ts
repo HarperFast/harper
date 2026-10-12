@@ -749,7 +749,7 @@ function transactional(
 			// HTTP request bodies are resolved asynchronously. QUERY projection and permission-control
 			// sanitization must happen before resource resolution and allowRead, not later in runAction.
 			const dataWasFirstArgument = data === idOrQuery;
-			return resolveBody(data).then((resolvedData: any) =>
+			return resolveBody(data, true, (resolvedData: any) =>
 				dataWasFirstArgument
 					? applyContext.call(this, resolvedData, context)
 					: applyContext.call(this, idOrQuery, resolvedData, context)
@@ -938,10 +938,7 @@ function transactional(
 				context.authorize = false;
 				query.checkPermission = true;
 			}
-			const resolved = resolveBody(data, collectForms);
-			return typeof resolved?.then === 'function'
-				? resolved.then(authorizeResolvedBody)
-				: authorizeResolvedBody(resolved);
+			return resolveBody(data, collectForms, authorizeResolvedBody);
 			function authorizeResolvedBody(data: any) {
 				if (checkPermission) {
 					if (loadAsInstance !== false) {
