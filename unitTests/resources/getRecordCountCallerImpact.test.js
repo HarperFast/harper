@@ -5,18 +5,9 @@ const { table } = require('#src/resources/databases');
 const { describeTable } = require('#src/dataLayer/schemaDescribe');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
-// `Table.getRecordCount()`'s shape -- `{ recordCount: number, estimatedRange?: [number, number] }` --
-// and its decision to estimate rather than scan exactly have not changed recently: the estimator-based
-// escape (sampling + a confidence-interval range instead of scanning to completion) dates to 30f4df609
-// (2023-10-19), and the specific internal data source that feeds that escape on RocksDB -- an exact
-// `getKeysCount()` scan versus a cheap `createCountEstimator`/`estimateCount` sample -- was swapped by
-// 921a635c2 ("Size describe record counts with a calibrated estimate instead of a second full key scan",
-// 2026-09-14, merged to the v5.3.x line) and independently by #2612/f96c27488 on the v5.2.x line the next
-// day; both land on the code this suite exercises, and v5.2.15, v5.3.0 and main are byte-identical here.
-// `unitTests/resources/getRecordCount.test.js` pins that estimator's internal mechanics (checkpointing,
-// fallbacks, range validity). This file pins the CALLER-visible contract instead: what a piece of
-// application code built against `getRecordCount()` -- directly, through `describe_table`, or through
-// pagination/equality logic layered on top of the returned count -- actually observes.
+// Pins `Table.getRecordCount()`'s CALLER-visible contract (return shape, the sampling floor, the
+// `exactCount` escape, and the `describe_table` pass-through) -- as distinct from
+// `getRecordCount.test.js`, which pins the estimator's internal mechanics.
 describe('Table.getRecordCount caller impact', () => {
 	const LIVE_ROWS = 3000;
 
@@ -44,122 +35,143 @@ describe('Table.getRecordCount caller impact', () => {
 		setupTestDBPath();
 		setMainIsWorker(true);
 		SmallTable = await buildTable('RecordCountImpactSmall', 25);
-		// Below MIN_ESTIMATOR_SAMPLE by a comfortable margin, so a scan that clears the floor with room to
-		// spare (not just a 1-row edge case) still has to finish exactly.
+		// Comfortably below MIN_ESTIMATOR_SAMPLE, so this discriminates the floor itself, not a 1-row edge.
 		BelowFloorTable = await buildTable('RecordCountImpactBelowFloor', 900);
 		EstimatorTable = await buildTable('RecordCountImpactEstimator', LIVE_ROWS);
 	});
 
 	it('a bare `Table.getRecordCount()` call (no options object at all) returns an exact count on a small table', async () => {
-		// The common shape in application code: no options, defaults apply. `options?.exactCount` and
-		// `options?.timeLimit ?? 500` must both tolerate `options` being `undefined`, not just `{}`.
 		const result = await SmallTable.getRecordCount();
 		assert.equal(result.recordCount, 25);
 		assert.equal(result.estimatedRange, undefined);
 	});
 
 	it('a table below the sampling floor stays exact even when the time budget is already exhausted', async () => {
-		// Answers the rule's "is the estimate exact below some size?" question directly, with enough
-		// margin above the 1-row edge case that it discriminates the floor itself, not just the edge.
 		const result = await BelowFloorTable.getRecordCount({ timeLimit: -1 });
 		assert.equal(result.recordCount, 900);
 		assert.equal(result.estimatedRange, undefined, 'a table below the floor must never report an estimate');
 	});
 
 	it('`exactCount: true` forces an exact count above the floor, even with an exhausted time budget', async () => {
-		// The one caller-controlled escape hatch from estimation entirely: `options.exactCount` short-
-		// circuits the budget check unconditionally (`if (exactCount || entriesScanned < MIN_ESTIMATOR_SAMPLE)
-		// continue`), so it is unaffected by anything that changes how the *estimate* is computed.
 		const result = await EstimatorTable.getRecordCount({ timeLimit: -1, exactCount: true });
 		assert.equal(result.recordCount, LIVE_ROWS);
 		assert.equal(result.estimatedRange, undefined);
 	});
 
-	it(
-		'a caller that treats the sampled recordCount as exact can be far off, though estimatedRange still ' +
-			'brackets the live count -- which is the actual contract',
-		async function () {
-			this.timeout(120000);
-			// This is the caller hazard behind "counts compared for equality in tests or business logic" and
-			// "counts used for pagination math": the single published number is a rounded point estimate, not
-			// a bound. Only the pair [lower, upper] is guaranteed to contain the true count. Forcing a
-			// confidently wrong base (rather than waiting for a churn pattern that happens to produce one)
-			// makes the divergence deterministic instead of a matter of luck.
-			const store = EstimatorTable.primaryStore;
-			if (typeof store.createCountEstimator !== 'function') return this.skip(); // LMDB has no estimator path
-			const originalEstimator = store.createCountEstimator;
-			const originalCount = store.estimateCount;
-			const ownedEstimator = Object.hasOwn(store, 'createCountEstimator');
-			const ownedCount = Object.hasOwn(store, 'estimateCount');
-			// A confidently wrong base: the table truly has LIVE_ROWS (3000) rows, but the (feature-detected)
-			// estimator insists there are 10x that, with high confidence on both the prefix and the remainder.
-			store.createCountEstimator = () => ({
-				advance() {},
-				estimate: () => ({ count: LIVE_ROWS * 10, confidence: 0.9 }),
-			});
-			store.estimateCount = () => ({ count: LIVE_ROWS * 9, confidence: 0.9 });
-			try {
-				const result = await EstimatorTable.getRecordCount({ timeLimit: -1 });
-				assert.ok(Array.isArray(result.estimatedRange), 'expected the sampling estimator to engage');
-				const [lower, upper] = result.estimatedRange;
-				assert.ok(
-					result.recordCount > LIVE_ROWS * 2,
-					`expected the forced-wrong base to pull recordCount (${result.recordCount}) well above the ` +
-						`${LIVE_ROWS} live rows -- demonstrating the point estimate is not authoritative`
-				);
-				assert.ok(
-					lower <= LIVE_ROWS && LIVE_ROWS <= upper,
-					`the live count (${LIVE_ROWS}) must still fall inside [${lower}, ${upper}] -- that containment, ` +
-						`not the point estimate, is the documented guarantee`
-				);
-				// Pagination math built on the point estimate: `Math.ceil(recordCount / pageSize)` can disagree
-				// with the true page count, but the SAME computation over [lower, upper] still brackets it.
-				const pageSize = 100;
-				const pagesFromEstimate = Math.ceil(result.recordCount / pageSize);
-				const truePages = Math.ceil(LIVE_ROWS / pageSize);
-				assert.notEqual(
-					pagesFromEstimate,
-					truePages,
-					'expected the forced-wrong estimate to also mislead a naive total-pages calculation'
-				);
-				const pagesFromLower = Math.ceil(lower / pageSize);
-				const pagesFromUpper = Math.ceil(upper / pageSize);
-				assert.ok(
-					pagesFromLower <= truePages && truePages <= pagesFromUpper,
-					`the true page count (${truePages}) must still lie within [${pagesFromLower}, ${pagesFromUpper}] ` +
-						`derived from estimatedRange, even though recordCount alone (${pagesFromEstimate} pages) does not`
-				);
-			} finally {
-				if (ownedEstimator) store.createCountEstimator = originalEstimator;
-				else delete store.createCountEstimator;
-				if (ownedCount) store.estimateCount = originalCount;
-				else delete store.estimateCount;
-			}
-		}
-	);
+	// Both of the next two force the native estimator's answers rather than relying on a churn
+	// pattern that happens to produce a given outcome: one case where the base overshoots and the
+	// range brackets the truth, one where it undershoots and does not.
 
-	it('describe_table reports record_count/estimated_record_range from getRecordCount, and honors exact_count', async () => {
-		// The `describe_table`/`describe_all` operations surface (dataLayer/schemaDescribe.ts) is a thin
-		// pass-through: `record_count`/`estimated_record_range` are exactly `getRecordCount()`'s
-		// `recordCount`/`estimatedRange`, and `exact_count` maps straight to `options.exactCount`.
-		const exact = await describeTable({ database: 'test', table: 'RecordCountImpactSmall' });
-		assert.equal(exact.record_count, 25);
-		assert.equal(exact.estimated_record_range, undefined);
-
-		const forcedExactOnLarge = await describeTable({
-			database: 'test',
-			table: 'RecordCountImpactEstimator',
-			exact_count: true,
+	it('a caller that treats recordCount as exact can be far off, even when estimatedRange brackets the truth', async function () {
+		this.timeout(120000);
+		const store = EstimatorTable.primaryStore;
+		if (typeof store.createCountEstimator !== 'function') return this.skip(); // LMDB has no estimator path
+		const originalEstimator = store.createCountEstimator;
+		const originalCount = store.estimateCount;
+		const ownedEstimator = Object.hasOwn(store, 'createCountEstimator');
+		const ownedCount = Object.hasOwn(store, 'estimateCount');
+		store.createCountEstimator = () => ({
+			advance() {},
+			estimate: () => ({ count: LIVE_ROWS * 10, confidence: 0.9 }),
 		});
-		assert.equal(forcedExactOnLarge.record_count, LIVE_ROWS);
-		assert.equal(forcedExactOnLarge.estimated_record_range, undefined);
+		store.estimateCount = () => ({ count: LIVE_ROWS * 9, confidence: 0.9 });
+		try {
+			const result = await EstimatorTable.getRecordCount({ timeLimit: -1 });
+			assert.ok(Array.isArray(result.estimatedRange), 'expected the sampling estimator to engage');
+			const [lower, upper] = result.estimatedRange;
+			assert.ok(
+				result.recordCount > LIVE_ROWS * 2,
+				`expected the forced base to pull recordCount (${result.recordCount}) well above the ${LIVE_ROWS} live rows`
+			);
+			assert.ok(lower <= LIVE_ROWS && LIVE_ROWS <= upper, `[${lower}, ${upper}] happens to bracket ${LIVE_ROWS} here`);
+			// A page-count UI built on the point estimate alone disagrees with the true page count here.
+			const pageSize = 100;
+			assert.notEqual(Math.ceil(result.recordCount / pageSize), Math.ceil(LIVE_ROWS / pageSize));
+		} finally {
+			if (ownedEstimator) store.createCountEstimator = originalEstimator;
+			else delete store.createCountEstimator;
+			if (ownedCount) store.estimateCount = originalCount;
+			else delete store.estimateCount;
+		}
+	});
+
+	it('estimatedRange is a heuristic, not a guarantee -- it can also fail to contain the live count', async function () {
+		this.timeout(120000);
+		const store = EstimatorTable.primaryStore;
+		if (typeof store.createCountEstimator !== 'function') return this.skip(); // LMDB has no estimator path
+		const originalEstimator = store.createCountEstimator;
+		const originalCount = store.estimateCount;
+		const ownedEstimator = Object.hasOwn(store, 'createCountEstimator');
+		const ownedCount = Object.hasOwn(store, 'estimateCount');
+		// An underestimated base: the table truly has LIVE_ROWS (3000) rows, but both estimates
+		// confidently claim fewer than half that.
+		store.createCountEstimator = () => ({ advance() {}, estimate: () => ({ count: 2100, confidence: 0.9 }) });
+		store.estimateCount = () => ({ count: 1000, confidence: 0.9 });
+		try {
+			const result = await EstimatorTable.getRecordCount({ timeLimit: -1 });
+			assert.ok(Array.isArray(result.estimatedRange), 'expected the sampling estimator to engage');
+			const [, upper] = result.estimatedRange;
+			assert.ok(
+				upper < LIVE_ROWS,
+				`expected the underestimated base to produce an upper bound (${upper}) below the ${LIVE_ROWS} live rows`
+			);
+		} finally {
+			if (ownedEstimator) store.createCountEstimator = originalEstimator;
+			else delete store.createCountEstimator;
+			if (ownedCount) store.estimateCount = originalCount;
+			else delete store.estimateCount;
+		}
+	});
+
+	it('describe_table reports record_count/estimated_record_range from getRecordCount, and forwards exact_count as exactCount', async () => {
+		// A 3,000-row scan finishes well inside the default 500ms budget on its own, so the default
+		// call being exact proves nothing about whether exact_count is actually forwarded. Spying on
+		// the options getRecordCount receives isolates that specific claim.
+		const original = EstimatorTable.getRecordCount;
+		const receivedOptions = [];
+		EstimatorTable.getRecordCount = function (options) {
+			receivedOptions.push(options);
+			return original.call(this, options);
+		};
+		try {
+			const exact = await describeTable({ database: 'test', table: 'RecordCountImpactEstimator' });
+			assert.equal(receivedOptions[0]?.exactCount, false);
+			assert.equal(exact.record_count, LIVE_ROWS);
+
+			const forcedExact = await describeTable({
+				database: 'test',
+				table: 'RecordCountImpactEstimator',
+				exact_count: true,
+			});
+			assert.equal(receivedOptions[1]?.exactCount, true);
+			assert.equal(forcedExact.record_count, LIVE_ROWS);
+			assert.equal(forcedExact.estimated_record_range, undefined);
+		} finally {
+			EstimatorTable.getRecordCount = original;
+		}
+	});
+
+	it('describe_table also passes through an estimated_record_range when getRecordCount returns one', async () => {
+		// describe_table exposes no timeLimit knob, and a 3,000-row scan easily finishes inside the
+		// default budget -- so landing this deterministically on the sampling path means not relying
+		// on real scan timing at all. Stubbing getRecordCount itself isolates exactly the claim this
+		// test makes: that schemaDescribe.ts's pass-through forwards estimatedRange, not just
+		// recordCount, whatever getRecordCount actually returns.
+		const original = EstimatorTable.getRecordCount;
+		EstimatorTable.getRecordCount = async () => ({ recordCount: 12345, estimatedRange: [10000, 20000] });
+		try {
+			const result = await describeTable({ database: 'test', table: 'RecordCountImpactEstimator' });
+			assert.equal(result.record_count, 12345);
+			assert.deepEqual(result.estimated_record_range, [10000, 20000]);
+		} finally {
+			EstimatorTable.getRecordCount = original;
+		}
 	});
 
 	it('describe_table with skip_record_count never calls getRecordCount, so the field is simply absent', async () => {
-		// A caller asking only for schema/metadata (`skip_record_count: true`) must not pay for the scan at
-		// all, and the field it would have populated must not appear -- not `null`, not `0`, absent. Spying
-		// on getRecordCount itself (rather than the store methods it may call) keeps this independent of
-		// which engine-specific stats source `getSize()`/`getAuditSize()` legitimately call on their own.
+		// Spying on getRecordCount itself (rather than the store methods it may call) keeps this
+		// independent of which engine-specific stats source getSize()/getAuditSize() legitimately
+		// call on their own.
 		const original = EstimatorTable.getRecordCount;
 		let calls = 0;
 		EstimatorTable.getRecordCount = function (...args) {
