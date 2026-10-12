@@ -48,6 +48,7 @@ function listenOnLoopback(httpServer) {
 	return new Promise((resolve, reject) => {
 		httpServer.once('error', reject);
 		httpServer.listen(0, '127.0.0.1', () => {
+			httpServer.off('error', reject);
 			listening.push(httpServer);
 			resolve(httpServer.address().port);
 		});
