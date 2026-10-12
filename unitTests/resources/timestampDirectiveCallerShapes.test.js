@@ -228,7 +228,8 @@ describe('@updatedTime / @createdTime caller shapes', () => {
 			const originUpdated = Date.now() - 60_000;
 			const originCreated = originUpdated - 60_000;
 			// The receiver's context carries source/sourceApply; context.source is what skips the stamp.
-			const context = { source: {}, sourceApply: true, timestamp: originUpdated };
+			// A local log key distinct from the origin version, so a local re-stamp would be visible.
+			const context = { source: {}, sourceApply: true, timestamp: Date.now() };
 			await transaction(context, async () => {
 				const resource = await FloatStamped.getResource('f9', context);
 				return resource._writeUpdate(
