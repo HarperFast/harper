@@ -3022,7 +3022,7 @@ export class DatabaseTransaction implements Transaction {
 									}
 								} catch (error) {
 									const refusal = Promise.reject(error);
-									refusal.catch(() => {}); // surfaces through Promise.all(completions), even if bookkeeping throws first
+									refusal.catch(() => {}); // surfaces through local completions, even if bookkeeping throws first
 									completions.push(refusal);
 								}
 							}
@@ -3379,7 +3379,10 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	protected abortAfterCommitError(error, targetTransaction?: RocksTransaction): never {
-		if (error?.replicationUnconfirmed === true && this.hasPendingWrites()) error = withoutReplicationUnconfirmed(error);
+		try {
+			if (error?.replicationUnconfirmed === true && this.hasPendingWrites())
+				error = withoutReplicationUnconfirmed(error);
+		} catch {}
 		try {
 			const retryTxn = targetTransaction as RocksTransactionWithRetry | undefined;
 			const retryTxnCommitted = this.isHandleCommitted(retryTxn);

@@ -102,6 +102,27 @@ describe('Replication confirmation failure after a local commit', () => {
 		assert.strictEqual((await First.get(id)).id, id);
 	});
 
+	for (const property of ['message', 'statusCode', 'code', 'constructor', 'http_resp_msg', 'detail']) {
+		it(`retains the committed outcome when the confirmation error's ${property} getter throws`, async () => {
+			const id = nextId();
+			const failure = new ServerError('Peer failure', 504);
+			Object.defineProperty(failure, property, {
+				get() {
+					throw new Error('Error metadata is unreadable');
+				},
+			});
+			registerConfirmation(() => Promise.reject(failure));
+			await assert.rejects(confirmedWrite(id), (error) => {
+				assert.ok(error instanceof ReplicationConfirmationError);
+				assert.strictEqual(error.cause, failure);
+				assert.strictEqual(error.replicationUnconfirmed, true);
+				assert.strictEqual(error.retryable, false);
+				return true;
+			});
+			assert.strictEqual((await First.get(id)).id, id);
+		});
+	}
+
 	it('preserves the public code and status of an error from another JavaScript realm', async () => {
 		const failure = runInNewContext(`
 			class ForeignConfirmationError extends Error {
@@ -136,6 +157,54 @@ describe('Replication confirmation failure after a local commit', () => {
 			(error) => error === failure && error.replicationUnconfirmed === undefined
 		);
 	});
+
+	for (const sourceFailure of [false, true]) {
+		it(`rolls back when outcome metadata throws in ${sourceFailure ? 'pre-commit source work' : 'the callback'}`, async () => {
+			const id = nextId();
+			const failure = new Error('Application failure');
+			Object.defineProperty(failure, 'replicationUnconfirmed', {
+				get() {
+					throw new Error('Outcome metadata is unreadable');
+				},
+			});
+			const context = {};
+			const links = [];
+			function rememberLinks() {
+				for (let link = context.transaction; link; link = link.next) {
+					if (!links.includes(link)) links.push(link);
+				}
+			}
+			class FailingSource extends First {}
+			FailingSource.sourcedFrom({
+				get() {},
+				put() {
+					rememberLinks();
+					throw failure;
+				},
+			});
+			try {
+				await assert.rejects(
+					transaction(context, async () => {
+						await First.put({ id });
+						rememberLinks();
+						await (sourceFailure ? FailingSource : Second).put({ id: sourceFailure ? `source-${id}` : id });
+						rememberLinks();
+						if (!sourceFailure) throw failure;
+					}),
+					(error) => error === failure
+				);
+				for (const link of links) {
+					assert.strictEqual(link.hasPendingWrites(), false);
+					assert.ok(!link.transaction);
+					assert.ok(!link.readTxn);
+				}
+				assert.equal(await First.get(id), null);
+				assert.equal(await (sourceFailure ? First : Second).get(sourceFailure ? `source-${id}` : id), null);
+			} finally {
+				context.transaction?.abort();
+			}
+		});
+	}
 
 	it('retains successful confirmation and the existing callback arguments', async () => {
 		const id = nextId();
@@ -324,6 +393,32 @@ describe('Replication confirmation failure after a local commit', () => {
 				assert.strictEqual(error.statusCode, 504);
 				assert.strictEqual(error.code, 'ServerError');
 				assert.strictEqual(error.retryable, false);
+				return true;
+			}
+		);
+		assert.strictEqual((await First.get(`inner-${id}`)).id, `inner-${id}`);
+		assert.equal(await Second.get(`outer-${id}`), null);
+	});
+
+	it('removes a nested outcome flag even when structured error details cannot be copied', async () => {
+		const id = nextId();
+		const failure = new ServerError('Nested peer timeout', 504);
+		failure.http_resp_msg = {
+			get detail() {
+				throw new Error('Details are unreadable');
+			},
+		};
+		registerConfirmation(() => Promise.reject(failure));
+		await assert.rejects(
+			transaction({}, async () => {
+				await Second.put({ id: `outer-${id}` });
+				await confirmedWrite(`inner-${id}`);
+			}),
+			(error) => {
+				assert.strictEqual(error.replicationUnconfirmed, undefined);
+				assert.strictEqual(error.cause.replicationUnconfirmed, true);
+				assert.strictEqual(error.retryable, false);
+				assert.strictEqual(error.http_resp_msg, undefined);
 				return true;
 			}
 		);

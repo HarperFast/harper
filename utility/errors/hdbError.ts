@@ -93,6 +93,12 @@ export class ServerError extends Error {
 	}
 }
 
+function readErrorProperty(error: any, property: string) {
+	try {
+		return error?.[property];
+	} catch {}
+}
+
 export class ReplicationConfirmationError extends ServerError {
 	replicationUnconfirmed = true;
 	retryable = false;
@@ -101,28 +107,35 @@ export class ReplicationConfirmationError extends ServerError {
 	detail: unknown;
 
 	constructor(cause: any) {
+		const message = readErrorProperty(cause, 'message');
 		super(
-			typeof cause?.message === 'string'
-				? cause.message
-				: 'Replication confirmation failed after the local write committed',
-			cause?.statusCode ?? cause?.status
+			typeof message === 'string' ? message : 'Replication confirmation failed after the local write committed',
+			readErrorProperty(cause, 'statusCode') ?? readErrorProperty(cause, 'status')
 		);
 		this.name = 'ReplicationConfirmationError';
 		this.cause = cause;
 		this.code =
-			cause?.code ?? (cause !== null && typeof cause === 'object' ? cause.constructor?.name : undefined) ?? this.name;
-		this.http_resp_msg = cause?.http_resp_msg;
-		this.detail = cause?.detail;
+			readErrorProperty(cause, 'code') ??
+			(cause !== null && typeof cause === 'object'
+				? readErrorProperty(readErrorProperty(cause, 'constructor'), 'name')
+				: undefined) ??
+			this.name;
+		this.http_resp_msg = readErrorProperty(cause, 'http_resp_msg');
+		this.detail = readErrorProperty(cause, 'detail');
 	}
 }
 
 export function withoutReplicationUnconfirmed(error: any): ServerError {
 	let responseMessage = error.http_resp_msg;
-	if (Array.isArray(responseMessage)) {
-		responseMessage = { error: responseMessage, code: error.code, retryable: false };
-	} else if (responseMessage && typeof responseMessage === 'object') {
-		responseMessage = { ...responseMessage, retryable: false };
-		delete responseMessage.replicationUnconfirmed;
+	try {
+		if (Array.isArray(responseMessage)) {
+			responseMessage = { error: responseMessage, code: error.code, retryable: false };
+		} else if (responseMessage && typeof responseMessage === 'object') {
+			responseMessage = { ...responseMessage, retryable: false };
+			delete responseMessage.replicationUnconfirmed;
+		}
+	} catch {
+		responseMessage = undefined;
 	}
 	return Object.assign(new ServerError(error.message, error.statusCode), {
 		cause: error,

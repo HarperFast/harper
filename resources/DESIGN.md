@@ -1013,6 +1013,8 @@ steps that never ran after a rejection; a nested flag can remain when there are 
 Programmatic errors are `ReplicationConfirmationError` wrappers, not the original instance; inspect
 `cause` for its class and identity. String-only errors (native HTTP handlers and WebSocket close reasons)
 render the new class name. Object responses preserve the original public code alongside the flag.
+Unreadable error properties are omitted rather than obscuring the commit outcome or preventing rollback;
+unreadable structured details fall back to the ordinary error response when an outer rollback strips the flag.
 
 ## This node's short id is 0, confirmed per audit store (`nodeIdMapping.ts` `getThisNodeId`)
 
