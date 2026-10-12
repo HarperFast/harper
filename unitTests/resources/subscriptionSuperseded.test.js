@@ -102,6 +102,7 @@ describe('Subscription superseded versions', () => {
 				if (!options.rawEvents) assert.ok(events.every((event) => event.type === 'put'));
 			});
 		}
+		// harper#2735: a replayed delete must never be reported as 'put', in any replay variant.
 		it(`preserves deletion and skips pre-delete versions for ${JSON.stringify(scope)}`, async () => {
 			await versions();
 			await T.delete('A');
@@ -114,6 +115,11 @@ describe('Subscription superseded versions', () => {
 			assert.deepStrictEqual(
 				history.events.map((event) => event.type),
 				['put', 'put', 'put', 'delete']
+			);
+			const raw = await subscribe({ startTime: 1, rawEvents: true, ...scope });
+			assert.deepStrictEqual(
+				raw.events.map((event) => event.type),
+				['put', 'patch', 'patch', 'delete']
 			);
 		});
 		it(`skips obsolete deletion after recreation for ${JSON.stringify(scope)}`, async () => {
