@@ -180,7 +180,7 @@
 	"dependencies": {
 		"@endo/static-module-record": "^1.1.2",
 		"@fastify/autoload": "^6.3.1",
-		"@fastify/compress": "^8.3.1",
+		"@fastify/compress": "^9.0.0",
 		"@fastify/cors": "^11.2.0",
 		"@fastify/static": "^9.1.3",
 		"@harperfast/extended-iterable": "1.0.3",
