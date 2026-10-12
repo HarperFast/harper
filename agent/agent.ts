@@ -29,7 +29,8 @@ import { buildBestPracticeTool, loadBestPracticesOverview } from './bestPractice
 import { composeRegistryTools, ensureOperationsToolsRegistered } from './registryTools.ts';
 import { buildOperations } from './operations.ts';
 import { registerAgentMcpTools } from './mcpTools.ts';
-import { runAgent, _resetInFlightForTests } from './loop.ts';
+import { admitRun, fenceRuns, isRunInFlight, runAgent, _resetInFlightForTests } from './loop.ts';
+import { parseBudgetCap, parseMaxTurns } from './budget.ts';
 import { appendMessage, getSession } from './session.ts';
 import type { AgentConfig, AgentScopes, AgentTool, HttpFetchConfig } from './types.ts';
 
@@ -38,7 +39,6 @@ const log = harperLogger.loggerWithTag('agent');
 const DEFAULT_CONFIG: AgentConfig = {
 	enabled: false,
 	maxTurns: 50,
-	maxCostUsd: 5,
 	autoApprove: false,
 	allowDestructive: false,
 	user: 'hdb_agent',
@@ -55,8 +55,9 @@ interface StartOpts {
 	enabled?: boolean;
 	provider?: string;
 	model?: string;
-	maxTurns?: number;
-	maxCostUsd?: number;
+	maxTurns?: unknown;
+	maxSessionTokens?: unknown;
+	maxCostUsd?: unknown;
 	autoApprove?: boolean;
 	allowDestructive?: boolean;
 	user?: string;
@@ -72,6 +73,10 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		log.info?.('Agent component disabled (agent.enabled=false); skipping registration');
 		return;
 	}
+	// A malformed limit fails the agent's start rather than running it uncapped or turnless.
+	if (opts.maxTurns != null) config.maxTurns = parseMaxTurns(opts.maxTurns);
+	config.maxSessionTokens = parseBudgetCap('maxSessionTokens', opts.maxSessionTokens);
+	config.maxCostUsd = parseBudgetCap('maxCostUsd', opts.maxCostUsd);
 
 	// Lazily imported to avoid pulling configUtils at module-eval time for tests.
 	const { getConfigPath, getConfigFilePath } = await import('../config/configUtils.ts');
@@ -141,35 +146,31 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		}
 	}
 
-	// Only warn when the operator explicitly configured `maxCostUsd`. Logging on the default
-	// every boot would flood the log without telling anyone anything actionable.
-	if (opts.maxCostUsd !== undefined) {
-		log.warn?.(
-			`agent.maxCostUsd=${liveConfig.maxCostUsd} is advertised but not yet enforced; cost-cap wiring depends on #612 telemetry.`
-		);
-	}
-
 	async function handleFollowup(sessionId: string, prompt: string): Promise<void> {
+		const admitted = admitRun(sessionId);
 		const session = await getSession(sessionId);
 		if (!session) {
 			log.warn?.(`schedule_followup target session ${sessionId} not found`);
 			return;
 		}
+		if (admitRun(sessionId) !== admitted) return;
 		await appendMessage(sessionId, { role: 'user', content: prompt, createdAt: Date.now() });
-		startRun(sessionId);
+		startRun(sessionId, admitted);
 	}
 
 	function currentTools(): AgentTool[] {
 		return composed.tools;
 	}
 
-	function startRun(sessionId: string): void {
+	/** Returns false when a cancel since the request was admitted fenced the run out. */
+	function startRun(sessionId: string, admitted?: number): boolean {
+		if (admitted !== undefined && admitted !== admitRun(sessionId)) return false;
 		// A run is already active for this session. `runAgent` coalesces concurrent starts onto the
 		// existing in-flight promise (bound to the existing controller), so creating a second
 		// controller here would orphan it — `cancelRun` would then abort a controller nothing is
 		// listening to, leaving the live run uncancellable. Any message appended before this call
 		// (e.g. by a scheduled followup) is picked up by the in-flight loop on its next turn.
-		if (abortControllers.has(sessionId)) return;
+		if (abortControllers.has(sessionId)) return true;
 		const controller = new AbortController();
 		abortControllers.set(sessionId, controller);
 		runAgent({
@@ -178,8 +179,11 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			tools: currentTools(),
 			scopes,
 			maxTurns: liveConfig.maxTurns,
+			maxSessionTokens: liveConfig.maxSessionTokens,
+			maxCostUsd: liveConfig.maxCostUsd,
 			autoApprove: liveConfig.autoApprove,
 			signal: controller.signal,
+			admitted,
 			generateOpts: { model: liveConfig.model },
 			systemPrompt: composeSystemPrompt(staticSystemPrompt, liveConfig.systemPromptAppend),
 		})
@@ -187,9 +191,11 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			.finally(() => {
 				if (abortControllers.get(sessionId) === controller) abortControllers.delete(sessionId);
 			});
+		return true;
 	}
 
 	function cancelRun(sessionId: string): boolean {
+		fenceRuns(sessionId);
 		// Clear any scheduled followups first. Without this, a timer set via `schedule_followup`
 		// would fire after the operator cancelled, silently re-injecting a user prompt and kicking
 		// the loop off again — surprising behavior and avoidable LLM cost.
@@ -225,6 +231,8 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		setConfig,
 		startRun,
 		cancelRun,
+		admitRun,
+		isRunInFlight,
 	});
 	for (const op of operations) opts.server.registerOperation(op);
 
@@ -370,8 +378,6 @@ function mergeConfig(opts: StartOpts): AgentConfig {
 		...(opts.enabled !== undefined && { enabled: !!opts.enabled }),
 		...(opts.provider !== undefined && { provider: String(opts.provider) }),
 		...(opts.model !== undefined && { model: String(opts.model) }),
-		...(opts.maxTurns !== undefined && { maxTurns: Number(opts.maxTurns) }),
-		...(opts.maxCostUsd !== undefined && { maxCostUsd: Number(opts.maxCostUsd) }),
 		...(opts.autoApprove !== undefined && { autoApprove: !!opts.autoApprove }),
 		...(opts.allowDestructive !== undefined && { allowDestructive: !!opts.allowDestructive }),
 		...(opts.user !== undefined && { user: String(opts.user) }),

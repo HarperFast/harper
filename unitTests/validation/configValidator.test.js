@@ -999,6 +999,52 @@ describe('Test configValidator module', () => {
 			expect(result.error).to.be.undefined;
 		});
 
+		describe('pricing', () => {
+			const PRICING = { inputPerMtok: 3, outputPerMtok: 15 };
+			const validate = (models) => {
+				const config = baseConfig();
+				config.models = models;
+				return configValidator(config, true).error;
+			};
+
+			it('accepts pricing on generative entries, built-in or module-backed, including zero rates', () => {
+				for (const backend of ['ollama', 'openai', 'anthropic', 'bedrock', '@acme/harper-llm']) {
+					const entry = { backend, model: 'm', pricing: PRICING };
+					if (backend === 'openai' || backend === 'anthropic') entry.apiKey = 'k';
+					expect(validate({ generative: { default: entry } }), backend).to.be.undefined;
+				}
+				expect(
+					validate({
+						generative: { default: { backend: 'ollama', pricing: { inputPerMtok: 0, outputPerMtok: 0 } } },
+					})
+				).to.be.undefined;
+			});
+
+			it('rejects a partial, negative, non-numeric or extended price', () => {
+				for (const pricing of [
+					{ inputPerMtok: 3 },
+					{ outputPerMtok: 15 },
+					{ inputPerMtok: -1, outputPerMtok: 15 },
+					{ inputPerMtok: 'three', outputPerMtok: 15 },
+					{ ...PRICING, cachedInputPerMtok: 0.3 },
+				]) {
+					expect(validate({ generative: { default: { backend: 'ollama', pricing } } }), JSON.stringify(pricing)).to.not
+						.be.undefined;
+				}
+			});
+
+			it('refuses pricing on embedding and decision entries, which nothing prices', () => {
+				for (const models of [
+					{ embedding: { default: { backend: 'ollama', pricing: PRICING } } },
+					{ embedding: { default: { backend: '@acme/harper-embed', pricing: PRICING } } },
+					{ decision: { default: { backend: 'generative', pricing: PRICING } } },
+					{ decision: { default: { backend: '@acme/harper-decision', pricing: PRICING } } },
+				]) {
+					expect(validate(models), JSON.stringify(models)).to.not.be.undefined;
+				}
+			});
+		});
+
 		it('accepts a generative entry with requestTimeoutMs', () => {
 			const config = baseConfig();
 			config.models = {

@@ -448,6 +448,12 @@ export type ModelCallResult<T> =
 	| { status: 'completed'; output: T; usage?: TokenUsage }
 	| { status: 'pending'; operationId: string; resumeAfter?: number };
 
+/** What an operator pays for a generative model, in USD per million tokens (`models.generative.<name>.pricing`). */
+export interface ModelPricing {
+	inputPerMtok: number;
+	outputPerMtok: number;
+}
+
 export interface TokenUsage {
 	promptTokens?: number;
 	completionTokens?: number;
@@ -485,16 +491,22 @@ export interface GenerateResult {
 	/** Why generation stopped. Backend-agnostic; backends map their native reasons. */
 	finishReason: 'stop' | 'length' | 'tool_calls' | 'content_filter';
 	/**
-	 * Token / cost usage for this call. Pass-through from the backend's
+	 * Token usage for this call. Pass-through from the backend's
 	 * `ModelCallResult.usage` so callers (and the `toolMode: 'auto'` loop) can
 	 * cap cumulative budgets without re-querying analytics.
 	 *
-	 * Backends MUST NOT set this field on the `output` they return — the framework
-	 * (`Models.generate`) injects it from `ModelCallResult.usage`, which is the
-	 * authoritative source. A backend that sets both gets the framework's value;
-	 * easy to miss but unambiguous: usage lives at the call-result layer.
+	 * Set only by the framework (`Models.generate`) from `ModelCallResult.usage`,
+	 * the authoritative source. A value a backend puts on its `output` is dropped,
+	 * as is `costUsd`.
 	 */
 	usage?: TokenUsage;
+	/**
+	 * USD cost of this call, from the `pricing` declared on the model entry that
+	 * served it (a fallback is priced at its own rate). Absent when that entry
+	 * declares no pricing or the backend did not report both token counts. With
+	 * `toolMode: 'auto'` it covers the final round only, like `usage`.
+	 */
+	costUsd?: number;
 	/**
 	 * `toolMode: 'auto'` only, and only when `includeToolTrace: true` (or when an
 	 * error path attaches `partialTrace` via `BudgetExceededError`). One entry per

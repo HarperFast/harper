@@ -16,9 +16,18 @@
  */
 
 import type { GenerateOpts, GenerateResult, Message, Models, ToolCall, ToolDef } from '../resources/models/types.ts';
-import { addPendingApproval, appendMessage, getSession, markApprovalConsumed, setStatus } from './session.ts';
-import type { AgentMessage, AgentScopes, AgentTool, AgentToolContext } from './types.ts';
+import {
+	addPendingApproval,
+	appendMessage,
+	cancelledObservation,
+	claimApproval,
+	endRun,
+	getSession,
+	setStatus,
+} from './session.ts';
+import type { AgentMessage, AgentScopes, AgentTool, AgentToolContext, ApprovalRequest } from './types.ts';
 import { toolMapByName } from './toolset.ts';
+import { budgetViolation, callUsage, hasBudget, summarizeSessionUsage } from './budget.ts';
 
 export interface RunAgentOpts {
 	sessionId: string;
@@ -26,6 +35,11 @@ export interface RunAgentOpts {
 	tools: AgentTool[];
 	scopes: AgentScopes;
 	maxTurns: number;
+	/** Per-session caps, measured from the transcript, so an approval resume or a new prompt cannot reset them. */
+	maxSessionTokens?: number;
+	maxCostUsd?: number;
+	/** From `admitRun` when the request that starts this run was admitted; a cancel since then fences it out. */
+	admitted?: number;
 	/** When false, destructive tools pause the loop with a pending approval instead of executing. */
 	autoApprove?: boolean;
 	signal?: AbortSignal;
@@ -35,8 +49,23 @@ export interface RunAgentOpts {
 }
 
 const inFlight = new Map<string, Promise<void>>();
+const cancels = new Map<string, number>();
+
+/** A token for a run admitted now. Take it before the request's first await. */
+export function admitRun(sessionId: string): number {
+	return cancels.get(sessionId) ?? 0;
+}
+
+/**
+ * Called on every cancel, including one that finds no live run to abort: a request admitted before it,
+ * still writing when the cancel arrived, must not start a run that writes `running` over `aborted`.
+ */
+export function fenceRuns(sessionId: string): void {
+	cancels.set(sessionId, admitRun(sessionId) + 1);
+}
 
 export function runAgent(opts: RunAgentOpts): Promise<void> {
+	if (opts.admitted !== undefined && opts.admitted !== admitRun(opts.sessionId)) return Promise.resolve();
 	const existing = inFlight.get(opts.sessionId);
 	if (existing) return existing;
 	const run = doRun(opts).finally(() => {
@@ -46,13 +75,25 @@ export function runAgent(opts: RunAgentOpts): Promise<void> {
 	return run;
 }
 
+/** Includes a cancelled run still finishing a model call or a handler. */
+export function isRunInFlight(sessionId: string): boolean {
+	return inFlight.has(sessionId);
+}
+
 async function doRun(opts: RunAgentOpts): Promise<void> {
 	const toolMap = toolMapByName(opts.tools);
 	const toolDefs: ToolDef[] = opts.tools.map((t) => t.def);
+	// The cancel path already wrote `aborted`; `running` must not replace it. Every later status write
+	// goes through `endRun`, which keeps `aborted` under the session lock.
+	if (opts.signal?.aborted) return;
 	await setStatus(opts.sessionId, 'running');
 	const ctx: AgentToolContext = { sessionId: opts.sessionId, signal: opts.signal, scopes: opts.scopes };
 
 	try {
+		// Before the approvals below can execute anything: a cap lowered while a run sat awaiting
+		// approval must stop the approved action, not just the next model call.
+		if (await stopIfOverBudget(opts)) return;
+
 		// First, drain any resolved-but-unconsumed approvals from a prior pause. Either execute
 		// or refuse each saved call, recording an observation, so the next model turn sees the
 		// result of the operator decision.
@@ -65,7 +106,7 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 		// call for this turn is resolved (each `approve_agent_action` re-runs this path).
 		const afterConsume = await getSession(opts.sessionId);
 		if (afterConsume?.pendingApprovals.some((a) => !a.resolved)) {
-			await setStatus(opts.sessionId, 'awaiting_approval');
+			await endRun(opts.sessionId, { status: 'awaiting_approval' });
 			return;
 		}
 
@@ -79,30 +120,84 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 				{ ...opts.generateOpts, toolMode: 'return', signal: opts.signal }
 			);
 
-			await appendMessage(opts.sessionId, {
+			const assistantMessage: AgentMessage = {
 				role: 'assistant',
 				content: result.content ?? '',
 				toolCalls: result.toolCalls,
 				createdAt: Date.now(),
-			});
+			};
+			const usage = callUsage(result.usage, result.costUsd);
+			if (usage) assistantMessage.usage = usage;
+
+			const violation = hasBudget(opts)
+				? budgetViolation(summarizeSessionUsage([...session.messages, assistantMessage]), opts)
+				: undefined;
+			if (violation) {
+				const refusals = (result.toolCalls ?? []).map((call) => budgetRefusal(call.id, violation));
+				await endRun(opts.sessionId, {
+					append: [assistantMessage, ...refusals],
+					status: refusals.length > 0 ? 'error' : 'completed',
+					lastError: violation,
+				});
+				return;
+			}
+
+			await appendMessage(opts.sessionId, assistantMessage);
 
 			if (!result.toolCalls || result.toolCalls.length === 0) {
-				await setStatus(opts.sessionId, 'completed');
+				await endRun(opts.sessionId, { status: 'completed' });
 				return;
 			}
 
 			const paused = await dispatchToolCalls(result.toolCalls, toolMap, ctx, opts);
 			if (paused || opts.signal?.aborted) return;
 		}
-		await setStatus(opts.sessionId, 'completed', `Reached maxTurns=${opts.maxTurns} without a final answer.`);
+		await endRun(opts.sessionId, {
+			status: 'completed',
+			lastError: `Reached maxTurns=${opts.maxTurns} without a final answer.`,
+		});
 	} catch (err) {
 		// If the abort signal fired, the cancel path already set the session to `aborted` —
 		// don't clobber that with `error`. The rejection here is just the awaited generate/tool
 		// honoring the signal, not a real failure.
 		if (opts.signal?.aborted) return;
-		await setStatus(opts.sessionId, 'error', err instanceof Error ? err.message : String(err));
+		await endRun(opts.sessionId, { status: 'error', lastError: err instanceof Error ? err.message : String(err) });
 		throw err;
 	}
+}
+
+/**
+ * Every open approval, resolved or not, is answered without executing it, so no tool call is left
+ * without a response once the session leaves `awaiting_approval`.
+ */
+async function stopIfOverBudget(opts: RunAgentOpts): Promise<boolean> {
+	if (!hasBudget(opts)) return false;
+	const session = await getSession(opts.sessionId);
+	if (!session) return false;
+	const violation = budgetViolation(summarizeSessionUsage(session.messages), opts);
+	if (!violation) return false;
+	await endRun(opts.sessionId, {
+		answerOpenApprovals: (approval) => approvalRefusal(approval, violation),
+		status: 'error',
+		lastError: violation,
+	});
+	return true;
+}
+
+function budgetRefusal(toolCallId: string, reason: string): AgentMessage {
+	return { role: 'tool', content: budgetExceeded(reason), toolCallId, createdAt: Date.now() };
+}
+
+function budgetExceeded(reason: string): string {
+	return JSON.stringify({ ok: false, error: 'budget_exceeded', reason });
+}
+
+function approvalRefusal(approval: ApprovalRequest, reason: string): string {
+	return !approval.resolved || approval.approved ? budgetExceeded(reason) : deniedObservation(approval);
+}
+
+function deniedObservation(approval: ApprovalRequest): string {
+	return JSON.stringify({ ok: false, error: 'denied_by_operator', tool: approval.toolName });
 }
 
 /**
@@ -120,8 +215,21 @@ async function dispatchToolCalls(
 	opts: RunAgentOpts
 ): Promise<boolean> {
 	let needsApproval = false;
-	for (const call of calls) {
-		if (opts.signal?.aborted) return true;
+	for (const [index, call] of calls.entries()) {
+		if (opts.signal?.aborted) {
+			// Answer the rest of the turn in one write, so the transcript stays sendable after the cancel.
+			await endRun(opts.sessionId, {
+				append: calls.slice(index).map((unanswered) => ({
+					role: 'tool',
+					content: cancelledObservation(unanswered.name),
+					toolCallId: unanswered.id,
+					createdAt: Date.now(),
+				})),
+				status: 'aborted',
+				lastError: 'Cancelled by operator',
+			});
+			return true;
+		}
 		const tool = toolMap.get(call.name);
 		const destructiveAndGated = tool?.destructive && !opts.autoApprove;
 		if (destructiveAndGated) {
@@ -157,20 +265,32 @@ async function consumeResolvedApprovals(
 	if (!session) return;
 	const toConsume = session.pendingApprovals.filter((a) => a.resolved && !a.consumed);
 	for (const approval of toConsume) {
+		if (ctx.signal?.aborted) return;
+		if (!(await claimApproval(sessionId, approval.id))) continue;
+		// The claim makes this run the only writer that can answer the call; a cancel that landed during
+		// the claim gets that answer instead of the action.
+		if (ctx.signal?.aborted) {
+			await appendMessage(sessionId, {
+				role: 'tool',
+				content: cancelledObservation(approval.toolName),
+				toolCallId: approval.toolCallId,
+				createdAt: Date.now(),
+			});
+			return;
+		}
 		const observation = approval.approved
 			? await invokeTool(
 					{ id: approval.toolCallId, name: approval.toolName, arguments: approval.arguments },
 					toolMap,
 					ctx
 				)
-			: JSON.stringify({ ok: false, error: 'denied_by_operator', tool: approval.toolName });
+			: deniedObservation(approval);
 		await appendMessage(sessionId, {
 			role: 'tool',
 			content: observation,
 			toolCallId: approval.toolCallId,
 			createdAt: Date.now(),
 		});
-		await markApprovalConsumed(sessionId, approval.id);
 	}
 }
 
@@ -202,4 +322,5 @@ function toModelMessages(items: AgentMessage[], systemPrompt: string | undefined
 /** Test-only: clear the in-flight tracking map. */
 export function _resetInFlightForTests(): void {
 	inFlight.clear();
+	cancels.clear();
 }

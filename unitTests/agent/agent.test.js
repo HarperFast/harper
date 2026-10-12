@@ -191,3 +191,23 @@ describe('agent/agent buildStaticSystemPrompt config scope line', () => {
 		assert.match(buildStaticSystemPrompt(base, false), /- config — unavailable/);
 	});
 });
+
+describe('agent/agent startOnMainThread budget caps (#3040)', () => {
+	const { startOnMainThread } = require('#src/agent/agent');
+
+	it('refuses to start an enabled agent with a malformed cap, before registering anything', async () => {
+		const registered = [];
+		const server = { registerOperation: (op) => registered.push(op.name) };
+		await assert.rejects(startOnMainThread({ server, enabled: true, maxSessionTokens: 'lots' }), (err) => {
+			assert.match(err.message, /agent\.maxSessionTokens must be a positive integer/);
+			return true;
+		});
+		await assert.rejects(startOnMainThread({ server, enabled: true, maxCostUsd: -1 }), /agent\.maxCostUsd must be/);
+		await assert.rejects(startOnMainThread({ server, enabled: true, maxTurns: 'lots' }), /agent\.maxTurns must be/);
+		assert.deepStrictEqual(registered, []);
+	});
+
+	it('ignores a malformed cap while the agent is disabled', async () => {
+		await startOnMainThread({ server: { registerOperation: () => {} }, enabled: false, maxSessionTokens: 'lots' });
+	});
+});
