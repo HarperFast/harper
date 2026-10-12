@@ -1,17 +1,19 @@
 import { ClientError } from '../utility/errors/hdbError.ts';
-import { Readable } from 'node:stream';
 import type { ResourceBodyPart } from './ResourceInterface.ts';
 
 export const RESOLVE_BODY = Symbol('resolveBody');
 
+export function isFormDataIterable(data: any): data is AsyncIterable<ResourceBodyPart> {
+	return (
+		typeof data?.[Symbol.asyncIterator] === 'function' &&
+		typeof data.pipe !== 'function' &&
+		typeof data.getReader !== 'function'
+	);
+}
+
 export function resolveBody(data: any, collectForms = true, onResolved?: (data: any) => any): any {
 	if (typeof data?.then === 'function') return data.then((value: any) => resolveBody(value, collectForms, onResolved));
-	if (
-		collectForms &&
-		typeof data?.[Symbol.asyncIterator] === 'function' &&
-		!(data instanceof Readable) &&
-		!(data instanceof ReadableStream)
-	) {
+	if (collectForms && isFormDataIterable(data)) {
 		const resolved = typeof data[RESOLVE_BODY] === 'function' ? data[RESOLVE_BODY]() : collectFormData(data);
 		return onResolved ? resolved.then(onResolved) : resolved;
 	}

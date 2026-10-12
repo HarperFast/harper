@@ -1,5 +1,8 @@
 const assert = require('node:assert');
 const { Readable, PassThrough } = require('node:stream');
+const { IncomingMessage } = require('node:http');
+const { Socket } = require('node:net');
+const { Request, BunRequest, UwsRequestBody } = require('#src/server/serverHelpers/Request');
 const { Resource } = require('#src/resources/Resource');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { getDeserializer } = require('#src/server/serverHelpers/contentTypes');
@@ -246,6 +249,70 @@ describe('Resource request body resolution', function () {
 		} finally {
 			nodeStream.destroy();
 			await webStream.cancel();
+		}
+	});
+
+	it('passes raw stream QUERY bodies through without recursive resolution', async function () {
+		const nodeStream = new Readable({ read() {} });
+		const webStream = new ReadableStream({}, { highWaterMark: 0 });
+		try {
+			for (const stream of [nodeStream, webStream]) {
+				class Receiver extends Resource {
+					search(data) {
+						assert.strictEqual(data, stream);
+						return [];
+					}
+				}
+				await Receiver.query(new RequestTarget('/'), stream);
+				await Receiver.query(new RequestTarget('/'), Promise.resolve(stream));
+			}
+		} finally {
+			nodeStream.destroy();
+			await webStream.cancel();
+		}
+	});
+
+	it('preserves Node, Bun and uWS request-body adapters without reading them', async function () {
+		const socket = new Socket();
+		const incoming = new IncomingMessage(socket);
+		incoming.method = 'PUT';
+		incoming.url = '/bytes';
+		incoming.push(Buffer.from('node bytes'));
+		incoming.push(null);
+		const nodeBody = new Request(incoming).body;
+		const webRequest = new globalThis.Request('http://localhost/bytes', { method: 'PUT', body: 'bun bytes' });
+		const bunBody = new BunRequest(webRequest).body;
+		const uwsBody = new UwsRequestBody();
+		uwsBody.push(Buffer.from('uws bytes'));
+		uwsBody.push(null);
+		try {
+			for (const stream of [nodeBody, bunBody, uwsBody]) {
+				class Receiver extends Resource {
+					allowUpdate(_user, data) {
+						assert.strictEqual(data, stream);
+						return true;
+					}
+					put(data) {
+						assert.strictEqual(data, stream);
+						return 'received';
+					}
+					search(data) {
+						assert.strictEqual(data, stream);
+						return [];
+					}
+				}
+				assert.equal(await Receiver.put(new RequestTarget('/bytes'), stream, { authorize: true }), 'received');
+				await Receiver.query(new RequestTarget('/'), Promise.resolve(stream));
+			}
+			assert.equal(incoming.readableLength, Buffer.byteLength('node bytes'));
+			assert.equal(webRequest.bodyUsed, false);
+			assert.equal(webRequest.body.locked, false);
+			assert.equal(uwsBody.readableLength, Buffer.byteLength('uws bytes'));
+		} finally {
+			incoming.destroy();
+			socket.destroy();
+			await webRequest.body.cancel();
+			uwsBody.destroy();
 		}
 	});
 

@@ -28,7 +28,7 @@ import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
-import { resolveBody } from './resolveBody.ts';
+import { isFormDataIterable, resolveBody } from './resolveBody.ts';
 
 // Only table-backed classes are refused here: a custom resource's put/post/delete may be a non-storage call that a
 // read-only server must still answer. post, publish, copy and move are left to the transaction's write admission.
@@ -156,6 +156,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 
 	/**
 	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
+	 * A static override receives the {@link ResourceBody} and owns its resolution and authorization.
 	 */
 	static put = transactional(
 		function (resource: any, query: RequestTarget, request: Context, data: any) {
@@ -219,6 +220,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 		{ hasContent: true, type: 'update', method: 'put' }
 	);
 
+	/** A static override receives the {@link ResourceBody} and owns its resolution and authorization. */
 	static patch = transactional(
 		function (resource: any, query: RequestTarget, _request: Context, data: any) {
 			// TODO: Allow array like put?
@@ -303,6 +305,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 		{ hasContent: false, type: 'update', method: 'invalidate' }
 	);
 
+	/** A static override receives the {@link ResourceBody} and owns its resolution and authorization. */
 	static post = transactional(
 		function (resource: any, query: RequestTarget, _request: Context, data: any) {
 			if (resource.#id != null) resource.update?.(); // save any changes made during post
@@ -764,10 +767,7 @@ function transactional(
 				data = dataOrContext;
 			}
 		}
-		if (
-			options.method === 'query' &&
-			(typeof data?.then === 'function' || typeof data?.[Symbol.asyncIterator] === 'function')
-		) {
+		if (options.method === 'query' && (typeof data?.then === 'function' || isFormDataIterable(data))) {
 			// HTTP request bodies are resolved asynchronously. QUERY projection and permission-control
 			// sanitization must happen before resource resolution and allowRead, not later in runAction.
 			const dataWasFirstArgument = data === idOrQuery;
