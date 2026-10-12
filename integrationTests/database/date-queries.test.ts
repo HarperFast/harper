@@ -342,7 +342,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 	// (c) Sort by date
 	// ==========================================================================
 
-	// REST sort requires @indexed on the sort attribute; an unindexed one is rejected with 404.
+	// A query whose only clause is a sort on an unindexed attribute is rejected with 404, not full-scanned.
 	test('(c1) REST sort: ?sort(createdAt) ASC (unindexed) is rejected', async () => {
 		const { status } = await restSearch(ctx, 'Event', '?sort(+createdAt)&limit(50)');
 		record('(c1) REST sort createdAt ASC unindexed', 'EDGE', `HTTP ${status}`);

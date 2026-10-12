@@ -338,7 +338,6 @@ suite(`concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWithHarpe
 			);
 			strictEqual(patchRes.status, 204, `[c2:r${round}] PATCH`);
 			strictEqual(putRes.status, 204, `[c2:r${round}] PUT`);
-			// PATCH-then-PUT leaves only the PUT's fields; PUT-then-PATCH adds the patched title to them.
 			strictEqual(doc?.body, `put-body-r${round}`, `[c2:r${round}] body must be the PUT's: ${JSON.stringify(doc)}`);
 			ok(
 				doc?.title == null || doc.title === `patch-title-r${round}`,

@@ -17,6 +17,7 @@ const required = require('assert');
 const aliased = assert;
 const okAlias = ok;
 const memberAlias = assert.ok;
+const { ['ok']: computedKey } = assert;
 
 ok(true); // flagged
 check(true, 'aliased import'); // flagged
@@ -34,11 +35,24 @@ aliased(true); // flagged
 okAlias(true); // flagged
 memberAlias(true); // flagged
 ok(true as const); // flagged
+computedKey(true); // flagged
 ok( // flagged
 	true,
 	'multi-line call'
 );
 test('context assert', (t) => {
+	t.assert.ok(true); // flagged
+	const contextOk = t.assert.ok;
+	contextOk(true); // flagged
+	const { ok: contextDestructured } = t.assert;
+	contextDestructured(true); // flagged
+	const { assert: contextAssert } = t;
+	contextAssert.ok(true); // flagged
+	t.test('subtest', (subtest) => {
+		subtest.assert.ok(true); // flagged
+	});
+});
+test.skip('skipped context assert', (t) => {
 	t.assert.ok(true); // flagged
 });
 
@@ -55,6 +69,11 @@ function shadowed(ok) {
 	ok(true);
 }
 shadowed(() => {});
+const local = { assert: { ok(_value) {} } };
+local.assert.ok(true);
+var selfReference = selfReference;
+selfReference = (_value) => {};
+selfReference(true);
 console.log(text);
 `;
 

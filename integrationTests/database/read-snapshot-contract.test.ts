@@ -161,7 +161,8 @@ suite(
 			let stopWriter = false;
 			let writes = 0;
 			const writerStatuses = new Set<number>();
-			// Settles to the writer's error (or undefined) so a failure is observed at once, not left unhandled.
+			// Settles to the writer's error (or undefined) so a writer failure is never an unhandled rejection;
+			// it is rethrown once the reads finish.
 			const writerFailure = (async () => {
 				while (!stopWriter) {
 					const response = await fetch(`${httpURL}/LedgerMutate/`, {
