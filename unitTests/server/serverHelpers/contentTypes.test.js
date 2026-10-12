@@ -269,6 +269,77 @@ describe('contentTypes – text/event-stream (SSE)', function () {
 		);
 	});
 
+	it('strips CR and LF from event and id so they cannot start new fields or events', function () {
+		assert.strictEqual(
+			handler.serialize({ event: 'update\ndata: forged', data: 'x', id: '7\r\nevent: admin' }),
+			'event: updatedata: forged\ndata: x\nid: 7event: admin\n\n'
+		);
+		assert.strictEqual(
+			handler.serialize({ event: 'update', data: 'x', id: '7\r\n\r\ndata: forged-event' }),
+			'event: update\ndata: x\nid: 7data: forged-event\n\n'
+		);
+		assert.strictEqual(
+			handler.serialize({ event: '\r\nup\rdate\n\n', data: 'x', id: '\n\r' }),
+			'event: update\ndata: x\nid: \n\n'
+		);
+		assert.strictEqual(
+			handler.serialize({ event: 'a: b ü', data: 'x', id: 'rec:1 ü' }),
+			'event: a: b ü\ndata: x\nid: rec:1 ü\n\n'
+		);
+	});
+
+	it('writes retry only when it is all ASCII digits', function () {
+		for (const [retry, line] of [
+			[0, 'retry: 0\n'],
+			['0', 'retry: 0\n'],
+			[3000, 'retry: 3000\n'],
+			['007', 'retry: 007\n'],
+		]) {
+			assert.strictEqual(handler.serialize({ data: 'x', retry }), 'data: x\n' + line + '\n');
+		}
+		for (const retry of [
+			'soon',
+			'1000\n\ndata: forged-event',
+			'1000\r',
+			'',
+			' 1000',
+			'-1',
+			-1,
+			1.5,
+			'1e3',
+			1e21,
+			NaN,
+			Infinity,
+			'١٢٣',
+		]) {
+			assert.strictEqual(handler.serialize({ data: 'x', retry }), 'data: x\n\n', `retry ${JSON.stringify(retry)}`);
+		}
+	});
+
+	it('keeps the default coercion of event, id and retry values', function () {
+		const coerced = (primitive) => ({
+			valueOf: () => primitive,
+			toString() {
+				throw new Error('toString must not be called');
+			},
+		});
+		assert.strictEqual(
+			handler.serialize({ event: coerced('update'), data: 'x', id: coerced(7), retry: coerced(1000) }),
+			'event: update\ndata: x\nid: 7\nretry: 1000\n\n'
+		);
+	});
+
+	it('keeps streaming after a frame whose fields carried line breaks', async function () {
+		const readable = handler.serializeStream([
+			{ event: 'update\nevent: forged', data: 'a', id: '1\r2', retry: '5\n' },
+			{ event: 'update', data: 'b', id: 2 },
+		]);
+		assert.strictEqual(
+			await streamToString(readable),
+			'event: updateevent: forged\ndata: a\nid: 12\n\nevent: update\ndata: b\nid: 2\n\n'
+		);
+	});
+
 	// #1628: a finite async generator streamed to natural completion must close the SSE
 	// stream cleanly. transformIterable used to hand the terminal `{ value: undefined,
 	// done: true }` step to serialize(), which threw on `undefined.acknowledge` — hanging

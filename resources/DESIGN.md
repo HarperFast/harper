@@ -365,6 +365,8 @@ The mitigations live in three places:
 
 When adding a new commit-handler early-return path: reset `write.skipped = false` at the top of the handler if you don't already, then set `write.skipped = true` immediately before the `return`. Decide first whether the audit log will reference the blob (via `auditRecordToStore`) — if it does, leave `skipped` unset. `cleanupOrphans` is the periodic safety net; don't rely on it for transactional correctness.
 
+**A removed record's blob files go only once its removal commits.** `removeEntry` (`RecordEncoder.ts`) decides from what `store.remove` returns: a promise gates the unlink on its resolution, anything else is taken as already durable. A RocksDB removal staged in a transaction (`{ transaction }`) returns nothing, so through `removeEntry` its blobs are queued for reclamation at staging time, and an abort leaves the record pointing at files reclaimed `storage.blobRetention` later. `getFromSource()`'s source-miss removal therefore stages `primaryStore.remove(id, { transaction })` itself and deletes the removed record's blobs from the fill's commit completion, keeping any file the record now stored at that key references (queueing a file for reclamation clears its re-reference signal); `_writeDelete`, RocksDB `evict()` and `updateRecord`'s superseded-blob deletion still go through the staging-time path ([#2861](https://github.com/HarperFast/harper/issues/2861)).
+
 **Source-unavailable blobs must not abort the commit.** `startPreCommitBlobsForRecord().complete()` awaits each blob's `saving` promise; a rejection there propagates up and aborts the record's apply (the replication subscription loop catches and logs it as `error in subscription handler`). For a blob the replication source can no longer provide — evicted/expired at the origin, the receiver having flagged the rejection `sourceBlobUnavailable` (harper-pro#403) — that abort permanently wedged a replication copy stream on an expiration cache table whose TTL-evicted blobs are gone everywhere: every orphaned record's apply re-threw, the copy never advanced, and backpressure pinned at ~100%. `complete()` therefore tolerates a `sourceBlobUnavailable` rejection (`isSourceBlobUnavailable`): the record commits with a diverged blob reference, left for proactive backfill (harper-pro#388). Local/transient save faults stay unmarked and still reject, so the write aborts and a reconnect retries it — no silent loss. This is the apply/commit-side complement to the replication receiver's resume-cursor advance (harper-pro#403/#405), which handles the durability-watermark side of the same missing blob.
 
 ## Blob compression: policy at `saveBlob`, completeness via the writer lock, codec is per-file truth
@@ -393,6 +395,15 @@ Opt-in deflate compression for file-backed blobs (harper#2443) has three load-be
 `PrimaryRocksDatabase.getRange` and `RocksIndexStore.getRange` pass native ranges through `trackReadRange`. The native transaction's owner is captured once when constructing the range; each `next()` records activity before native access, including entries later discarded by filters. The transaction monitor consumes that activity at its existing cadence and applies the same read-only idle policy as point reads. It never renews a pending write holder merely because a scan advances. Iterator references still own the original snapshot; the wrapper does not reopen or rotate it. When a handle with no outstanding reader references is handed to the native commit/retry loop, its read-owner association is removed: retry handlers can construct new synchronous ranges on that still-live write handle without being mistaken for expired readers. Existing wrapped ranges retain their captured owner and cannot resume after their read ownership ends.
 
 RocksDB 2.9.0 binds ranges to their supplied transaction and invalidates them when that transaction ends. An abandoned range is still bounded by the idle monitor. Resuming after its snapshot has been released throws an `ReadSnapshotExpiredError` (503) before accessing the native iterator; retry only the read, without replaying previously committed writes. A poisoned write-bearing transaction retains its existing 422 error and rollback behavior. Early iterator return remains a cleanup operation, including after expiration.
+
+## Auto-increment id ranges are claimed by compare-and-replace (`Table.getNewId`)
+
+Worker threads in a process share one id counter (`getUserSharedBuffer('id')`), but each thread decides on its own when the range in the `id_allocation` record is exhausted, so two threads can extend or re-allocate it at the same moment. `replaceIdAllocation` lets exactly one of them install the new range: it writes only while the stored allocation still equals the one the caller read (or none is stored), and a loser bounds its ids by the stored range instead of its own proposal. A losing re-allocation (`alreadyUpdated`) leaves the counter for the winner to move, so between the winner's commit and its `Atomics.store` the loser's limit and the counter can briefly name different ranges. Two properties make this hold on RocksDB:
+
+- **The comparison token is the allocation value, not `entry.version`.** The record is a bare `putSync` with no Harper record metadata, so RocksDB returns no version for it; a version check compares `undefined` with `undefined` and always passes.
+- **The read and the write take `{ transaction }` from the `transactionSync` callback, with `retryOnBusy`.** rocksdb-js only joins operations that are given the transaction. When a sibling thread commits between the read and the commit, the commit fails with an optimistic conflict, and the retry reads the sibling's allocation. lmdb-js serializes write transactions and passes no transaction to the callback; its second argument is numeric flags, so the options are passed only on RocksDB.
+
+`unitTests/resources/idAllocation.test.js` commits a sibling write between the read and the commit, for both re-allocation and extension.
 
 ## Replicated apply failure listeners (`resources/replicatedApplyFailure.ts`)
 
@@ -445,7 +456,7 @@ A transaction-log entry's identity is (`txnLogKey`, `nodeId`): the key alone rep
 
 A failed transaction on a tagged stream (a non-retryable commit failure, including a segment closed by a later `beginTxn`) is reported at that stream's next `end_txn`: when the `end_txn` carries `onFailure(error, txnLogKey)`, neither its `onCommit` nor its sequence id passes the failure, and `onFailure` returning true _holds_ the stream — every later `end_txn` on it commits its writes without `onCommit` or a cursor, because the source is reconnecting to replay from its durable cursor under a new token (a held token is never reused). A held failure is not reported to the apply-failure listeners, since the replay applies it; a failure the source moves past (`onFailure` false, or no `onFailure`) is. An `end_txn` without `onFailure` keeps the older behavior of recording its cursor, so holding is opt-in per source. `txnStream` must be an object: streams are held in a `WeakMap`, so a closed connection's state is collected with its token.
 
-An `end_txn` can also carry `originCursors: [nodeId, originLogKey][]`, the highest origin log key the source has durably applied for each origin. The apply loop merges them, keeping the max, into the connection's `[seq, remoteNodeIds[0]]` row as `nodes[].originLogKey`, even when `localTime` did not move (harper-pro#989; the per-origin cursor vector of harper-pro's replication workstream W4, harper-pro#434). A source may attach the array from `onCommit`, and the loop reads it only after awaiting `onCommit`. A held stream records neither the sequence id nor origin cursors. A source that sends origin cursors must tag its stream and pass `onFailure`: without them, a failed segment's later `end_txn` still merges its vector, so a cursor would pass the failed transaction.
+An `end_txn` can also carry `originCursors: [nodeId, originLogKey][]`, the highest origin log key the source has durably applied for each origin. The apply loop merges them, keeping the max, into the connection's `[seq, remoteNodeIds[0]]` row as `nodes[].originLogKey`, even when `localTime` did not move (harper-pro#989; the per-origin cursor vector of harper-pro's replication workstream W4, harper-pro#434). A source may attach the array from `onCommit`, and the loop reads it only after awaiting `onCommit`. A held stream records neither the sequence id, origin cursors nor origin floors. A source that sends origin cursors must tag its stream and pass `onFailure`: without them, a failed segment's later `end_txn` still merges its cursor vector, so a cursor would pass the failed transaction; floors from such a source are dropped (below). The same `end_txn` can carry `originFloors: [nodeId, closedFloor, relayable][]` — an origin's closed timestamp floor (harper-pro#922 item 2; the producer is "Origin-closed timestamp floor" above), merged by max into `nodes[].closedFloor` with `nodes[].relayable` (whether the source received that origin directly with full table coverage, so a relay may forward the floor). It is kept apart from `originLogKey`: an applied position can sit above a transaction still open at the origin, a floor cannot, so only the floor is proof that resume may start there. A floor-only `end_txn` writes the row like a cursor-only one. Floors are merged only from a tagged stream that passes `onFailure` — core enforces for floors what it only documents for cursors, since a stored floor is what resume trusts — and an entry whose floor is not a positive finite number is skipped.
 
 ## Repeat writes to the same key in one transaction carry their state forward (`DatabaseTransaction`/`Table`)
 
@@ -632,12 +643,64 @@ instead of re-opening the surviving rows with create-if-missing, which resurrect
 **Lifecycle stamps (harper#1212).** The tombstone is node-local, so a peer offline for a replicated
 `drop_table` would bring the table back through the schema handshake. Two durable facts give every node
 one rule: the primary row carries `createdTime` from create (`declareTable`, kept from a peer's propagated
-definition), and the tombstone carries `droppedTime` (`dropTable({ droppedTime })` applies a peer's), which
+definition), and the tombstone carries `droppedTime` (`dropTable({ peer: true, droppedTime })` applies a peer's), which
 every completion path promotes to a `/dropped/<table>` row (`promoteTombstoneToDropMarker`) before removing
 the tombstone — no second-write crash cut. Both come from `tableLifecycleTime()`, the record-version clock;
 `isDeadGeneration(createdTime, droppedTime)` is strict (equal survives, a missing stamp is 0). The marker
 outlives a same-name recreate, only a newer drop overwrites it, the load parser skips `/dropped/` rows, and
-`getTableDrops` / `recordTableDrop` / `onTableDropRecorded` serve replication. `unitTests/resources/dropTableLifecycle.test.js`.
+`getTableDrops` / `recordTableDrop` / `onTableDropRecorded` serve replication; a recorded marker is announced on every
+thread (each owns its own replication connections) and advances that thread's `tableDropEpoch`.
+
+A drop with no `droppedTime` (a node-local table's, a `localOnly` one, or a tombstone written before the stamps
+existed) is never given one at completion: a time invented then could postdate a peer's live recreate. On RocksDB
+its completion leaves an untimed `/dropped/<table>` row instead, name history for the store naming below. Every
+reader of a drop time skips that row (`getTableDrops`, `pendingOrRecordedDropTime`, `isDroppedPeerGeneration`
+and the create checks), so peers never learn of the drop, and a timed drop overwrites it.
+
+The rule is enforced where a generation becomes or stops being live, under the lock that publishes the primary
+row or writes the tombstone, so no peer path can check it and then act on a catalog another thread changed:
+
+- A create carrying a peer's generation (`origin: 'cluster'`, or a supplied `createdTime`) throws
+  `TableGenerationDroppedError` (409) when a marker here retires it, and so does a stamped one for a name live here,
+  before its attributes merge into the newer generation. The check precedes the create journal and every store
+  open, so a refused create leaves nothing to reclaim. A peer that kept no stamp is stored at `0`: any drop retires
+  it and nothing backfills it. `undefined` is left to tables created on a pre-stamp build.
+- A peer's drop (`dropTable({ peer: true, droppedTime })`) never retires a `replicate: false` table, and with a
+  time only a generation created before it; `writeTombstone` re-checks the row it locked. A kept generation
+  resolves `false` and writes no tombstone or retirement journal, and the peer's time is recorded as a marker
+  either way. A tombstone is written only after the rule passed, so the recovery that completes one judges
+  nothing again. The operation bridge treats a drop as a peer's only through `REPLICATED_FROM`, which
+  `server.operation` sets from its context: a JSON body cannot claim it, and `schema.dropTable` discards a
+  client's `droppedTime`.
+- A node-local table's own drop leaves no `droppedTime` and is not forwarded. A marker from an earlier,
+  replicated generation of the name is kept and still sent.
+- `dropTableMeta` removes a name's rows only when no primary row, live or still dropping, exists.
+- A table with no stamp was created by a build that stored none, so before the first load on a build that stamps;
+  that load writes the bound as `createdBefore` on its primary row (`catalogCreatedBefore`). A drop recorded after
+  the bound retires the table outright, and only an older drop leaves the replication layer's upgrade heuristic
+  anything to decide. A table created during a rollback to such a build gets its own bound at the next load.
+- The legacy per-table layout (`databasePath` is not the database name) has no database catalog for a marker,
+  so its drops leave none.
+
+`unitTests/resources/dropTableLifecycle.test.js`.
+
+**Store names and 5.2 rollback (harper#3102).** A RocksDB table's store names are distinct from its `createdTime`
+stamp: a generation suffix (`T/@<generation>`) on the primary row, which `writeTombstone` also checks as identity.
+First-time creates use bare primary/index names only when this node has no `/dropped/` row of the name (timed or
+untimed, including one recorded for a peer's drop this node kept or never held), no journal row for the table,
+and no `T/` column family. Any name history requires a suffix, including after local-only reclamation. Incoming
+primary-attribute suffixes are replaced by this node's physical naming choice, while a peer's `createdTime` is
+kept. Create journals have their own identity; when a creating and retired journal name the same primary, the
+creating row leaves that primary to the retired row's blob sweep. Recovery reads their current phases under the
+catalog lock. Their `creatingStores` field must stay separate from `stores`, which shipped 5.3 readers
+destructively reclaim without recognizing a published bare primary. Reclamation always preserves stores owned by
+the live, non-dropping catalog and never sweeps that primary's blobs: a 5.2 writer can reuse bare names while
+ignoring the retired journal. A drop whose tombstone another thread completed first retires only its own stores
+that the live catalog does not own, and still resolves `true`. Tables with suffixed names keep them and remain
+outside 5.2 rollback support, as do suffixed recreates. During interrupted-drop recovery, a bare predecessor can
+remain until its asynchronous reclamation finishes; 5.2 ignores that recovery state and can expose predecessor
+rows through a recreate. `unitTests/resources/dropTableGeneration.test.js` enforces naming, crash recovery, and
+live-store ownership; `integrationTests/upgrade/first-create-downgrade.test.ts` exercises the real 5.2 round trip.
 
 ## The exclusive `update-attributes` lock is a bounded synchronous wait, and drop-then-recreate needs the column-family eviction fix (`Table.ts`)
 
@@ -818,3 +881,46 @@ replay re-encodes the record but never re-appends its audit entry (replay transa
 The row bit reflects its latest mutation, so a caller needing a row to stay local re-asserts it on every
 mutation. Reload and derived-index `evict` markers are always local-only; lock control entries never are.
 Enforced by `unitTests/resources/localOnly.test.js` (both engines; crash + boot replay on RocksDB).
+
+## A record's residency is the listed nodes plus the writer, and a patch over a stub stays a stub (`Table.ts` `_writeUpdate`, harper#2257)
+
+A node outside a record's residency keeps an `INVALIDATED` stub (indexed fields and created time) whose
+`residencyId` names the nodes holding the complete record; a read fetches from one of them. Two rules keep
+a listed node complete. A write made here (not `isNotification`, `sourceApply` or replay) whose record-based
+residency excludes this node adds this node to the list and stores the full record, warning once per table
+per thread: before this, an ordinary write destroyed the writer's copy while the log recorded a plain upsert.
+And a patch whose base (stored, or staged earlier in the transaction) is a record-based stub is stored as a
+stub again on every path. Without an explicit received residency it keeps the base's `residencyId` and does
+not consult the residency function: the merged row lacks the fields a placement decision needs, and the
+base's list is the one naming a complete holder. An explicit received residency stays authoritative, but
+does not make the receiver complete. A replicated or source write with no residency list, and `setResidencyById`, still omit or stub as
+before. Enforced by `unitTests/resources/writerResidency.test.js` (both engines).
+
+## `replicatedConfirmation` counts only the residents of each written record (`DatabaseTransaction` `confirmationTarget`, harper-pro#1031)
+
+Peers acknowledge a database-wide log position, and a non-resident peer passes that position after
+receiving only an invalidation stub, or nothing. So the commit hands the confirmation callback, besides the
+position, one list of other residents (writer and duplicates removed) per distinct `residencyId` among its
+confirmable writes (`residentPeerLists`); the waiter needs the full count from each list. A write with no
+residency adds no list. The position is the committed transaction's reserved log key (`confirmationTarget`),
+not a record version, which can sit below the key (an explicit timestamp under the origin floor) or above it
+(a remote-origin version kept by a merge). Only when no confirmable write appended to the committed handle
+(every write lost to a newer entry) does it fall back to the stored entry's version, as before.
+
+The commit handler stamps `write.residencyId` on each round that appends an audit entry and keeps it on a
+coordinated retry, which appends nothing, so the residents counted are the ones the replicated entry names.
+Ids are resolved through a bounded per-database cache of frozen lists (`confirmingResidents`);
+`getResidencyId` claims a new id and both mappings in one transaction, so an id always resolves to its one
+list. Count-based placement (`replicateTo: N`) keeps the writer out of the carried-over previous residency,
+or every update would repeat it and shed a replica.
+
+Every deterministic refusal precedes native submission, so the refused write never lands. A count larger
+than a record's list is refused in the commit handler before the write stages anything, and the refused
+write turns inert, so a caller that catches the refusal cannot commit it, even on a retry. Before native
+submission the commit rechecks the lists (confirmation may have been requested after a write was saved)
+and runs the feasibility check the replication layer registered with `replicationConfirmation` (harper-pro:
+the recipient bound). A table source's `before` hook (`source.put`/`patch`) has already run by then, because
+record-based placement needs the merged record; the guarantee covers Harper's stored data, not the source.
+An error after the native commit becomes a rejected completion, so the commit's bookkeeping still runs.
+LMDB is untouched: its commit never reaches a registered confirmation callback. Enforced by
+`unitTests/resources/residencyConfirmation.test.js`.

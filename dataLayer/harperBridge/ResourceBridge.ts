@@ -21,6 +21,7 @@ import {
 	VALUE_SEARCH_COMPARATORS,
 	VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP,
 	READ_AUDIT_LOG_SEARCH_TYPES_ENUM,
+	REPLICATED_FROM,
 } from '../../utility/hdbTerms.ts';
 import * as signalling from '../../utility/signalling.ts';
 import { SchemaEventMsg } from '../../server/threads/itc.js';
@@ -192,14 +193,12 @@ export class ResourceBridge extends BridgeMethods {
 		return `successfully deleted ${dropAttributeObj.schema}.${dropAttributeObj.table}.${dropAttributeObj.attribute}`;
 	}
 
-	dropTable(dropTableObject) {
-		// `replicated: false` from a client is this node's business only. The replication layer stamps
-		// `replicatedFrom` on a peer's forwarded drop, which must leave its marker, carrying the origin's
-		// drop time so every node retires the same generations; a time without that stamp is a client's.
-		const { replicated, replicatedFrom, droppedTime } = dropTableObject;
-		if (replicatedFrom && Number.isFinite(droppedTime)) return getTable(dropTableObject).dropTable({ droppedTime });
-		const localOnly = replicated === false && !replicatedFrom;
-		return getTable(dropTableObject).dropTable(localOnly ? { localOnly } : undefined);
+	dropTable(dropTableObject): Promise<boolean> {
+		// A peer's forwarded drop arrives with `replicated: false` (so it is not re-broadcast) and carries the origin's
+		// drop time; a client's `replicated: false` is this node's business only.
+		if (dropTableObject[REPLICATED_FROM])
+			return getTable(dropTableObject).dropTable({ peer: true, droppedTime: dropTableObject.droppedTime });
+		return getTable(dropTableObject).dropTable(dropTableObject.replicated === false ? { localOnly: true } : undefined);
 	}
 
 	createSchema(createSchemaObj) {

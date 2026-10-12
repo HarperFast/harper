@@ -169,6 +169,17 @@ function serializeSSEData(data: any) {
 	return 'data: ' + String(data).replace(/\r\n|\r|\n/g, '\ndata: ') + '\n';
 }
 
+const SSE_LINE_BREAK = /[\r\n]/;
+const SSE_LINE_BREAKS = /[\r\n]/g;
+const SSE_RETRY = /^\d+$/;
+
+// SSE has no escape for a field value: a CR or LF in one would start a new field or event
+function serializeSSEFieldValue(value: any) {
+	if (typeof value === 'number') return value;
+	const text = '' + value;
+	return SSE_LINE_BREAK.test(text) ? text.replace(SSE_LINE_BREAKS, '') : text;
+}
+
 mediaTypes.set('text/event-stream', {
 	// Server-Sent Events (SSE)
 	serializeStream: function (iterable, _response?: Response, request?: any) {
@@ -195,12 +206,16 @@ mediaTypes.set('text/event-stream', {
 		// database record) to safely treat as an SSE-envelope signal.
 		if (message.data != null || message.event) {
 			let serialized = '';
-			if (message.event) serialized += 'event: ' + message.event + '\n';
+			if (message.event) serialized += 'event: ' + serializeSSEFieldValue(message.event) + '\n';
 			if (message.data != null) {
 				serialized += serializeSSEData(message.data);
 			}
-			if (message.id != null) serialized += 'id: ' + message.id + '\n';
-			if (message.retry != null) serialized += 'retry: ' + message.retry + '\n';
+			if (message.id != null) serialized += 'id: ' + serializeSSEFieldValue(message.id) + '\n';
+			if (message.retry != null) {
+				const retry = '' + message.retry;
+				// clients ignore a retry that is not all ASCII digits, so omitting it also keeps out line breaks
+				if (SSE_RETRY.test(retry)) serialized += 'retry: ' + retry + '\n';
+			}
 			return serialized + '\n';
 		} else {
 			return serializeSSEData(message) + '\n';

@@ -31,6 +31,18 @@ describe('agent/operations set_agent_config', () => {
 		assert.deepStrictEqual(patches, []);
 	});
 
+	it('rejects a componentsScope or configScope patch, applying nothing from the request', async () => {
+		const { execute, patches } = setAgentConfig();
+		for (const key of ['componentsScope', 'configScope']) {
+			await assert.rejects(execute({ operation: 'set_agent_config', [key]: '.', maxTurns: 3 }), (err) => {
+				assert.strictEqual(err.statusCode, 400);
+				assert.ok(err.message.startsWith(`agent.${key} is fixed at startup`), err.message);
+				return true;
+			});
+		}
+		assert.deepStrictEqual(patches, []);
+	});
+
 	it('still applies the runtime-tunable keys', async () => {
 		const { execute, patches } = setAgentConfig();
 		await execute({ operation: 'set_agent_config', maxTurns: 3, allowDestructive: true });

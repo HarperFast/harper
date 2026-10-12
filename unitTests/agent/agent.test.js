@@ -14,7 +14,12 @@
  */
 
 const assert = require('node:assert');
-const { resolveAgentIdentity } = require('#src/agent/agent');
+const { mkdtempSync, mkdirSync, writeFileSync, realpathSync, symlinkSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
+const { resolveAgentIdentity, resolveScopes, buildStaticSystemPrompt } = require('#src/agent/agent');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+const { readFileTool, listDirTool } = require('#src/agent/tools/fsTools');
 
 const DEFAULT_USER = 'hdb_agent';
 
@@ -92,5 +97,97 @@ describe('agent/agent resolveAgentIdentity', () => {
 		const server = serverWith(() => ({ username: DEFAULT_USER, role: {} }));
 		const identity = await resolveAgentIdentity(server, DEFAULT_USER);
 		assert.strictEqual(identity.role.permission.super_user, true);
+	});
+});
+
+describe('agent/agent resolveScopes (harper#3041)', () => {
+	let root;
+	beforeEach(() => {
+		root = realpathSync.native(mkdtempSync(join(tmpdir(), 'agent-scopes-')));
+		writeFileSync(join(root, 'harper-config.yaml'), 'http: {}\n');
+		mkdirSync(join(root, 'components'));
+		mkdirSync(join(root, 'etc'));
+		writeFileSync(join(root, 'etc', 'extra.yaml'), '');
+	});
+
+	function scopesFor(agentConfig, rootPath = root) {
+		const paths = {
+			[CONFIG_PARAMS.ROOTPATH]: rootPath,
+			[CONFIG_PARAMS.COMPONENTSROOT]: join(rootPath, 'components'),
+			[CONFIG_PARAMS.LOGGING_ROOT]: join(rootPath, 'log'),
+		};
+		return resolveScopes(
+			agentConfig,
+			(param) => paths[param],
+			() => join(rootPath, 'harper-config.yaml')
+		);
+	}
+
+	it('defaults the config scope to the config file alone, not its directory', () => {
+		const scopes = scopesFor({});
+		assert.equal(scopes.configDir, root);
+		assert.equal(scopes.configFile, 'harper-config.yaml');
+	});
+
+	it('takes agent.configScope as a directory, relative to rootPath or absolute', () => {
+		for (const configScope of ['etc', join(root, 'etc')]) {
+			const scopes = scopesFor({ configScope });
+			assert.equal(scopes.configDir, join(root, 'etc'));
+			assert.equal(scopes.configFile, undefined);
+		}
+	});
+
+	it('takes agent.configScope naming a file as a single-file scope', () => {
+		const scopes = scopesFor({ configScope: 'etc/extra.yaml' });
+		assert.equal(scopes.configDir, join(root, 'etc'));
+		assert.equal(scopes.configFile, 'extra.yaml');
+	});
+
+	it('leaves the config scope unavailable when agent.configScope names nothing', () => {
+		const scopes = scopesFor({ configScope: 'missing' });
+		assert.equal(scopes.configDir, undefined);
+		assert.equal(scopes.configFile, undefined);
+	});
+
+	it('names the keys and ssh directories under rootPath as the key directories', () => {
+		assert.deepEqual(scopesFor({}).keyDirs, [join(root, 'keys'), join(root, 'ssh')]);
+	});
+
+	it('admits a symlinked config file as its target, and the tools read it through those scopes', async () => {
+		const realConfig = join(mkdtempSync(join(tmpdir(), 'agent-scopes-cfg-')), 'harper-config.yaml');
+		writeFileSync(realConfig, 'http: {}\n');
+		const linkedRoot = realpathSync.native(mkdtempSync(join(tmpdir(), 'agent-scopes-linkcfg-')));
+		try {
+			symlinkSync(realConfig, join(linkedRoot, 'harper-config.yaml'), 'file');
+		} catch (err) {
+			if (err.code === 'EPERM' || err.code === 'ENOTSUP') return;
+			throw err;
+		}
+		const scopes = scopesFor({}, linkedRoot);
+		assert.equal(join(scopes.configDir, scopes.configFile), realpathSync.native(realConfig));
+		const ctx = { sessionId: 's', scopes };
+		const { content } = await readFileTool.handler({ root: 'config' }, ctx);
+		assert.equal(content, 'http: {}\n');
+		const { entries } = await listDirTool.handler({ root: 'config' }, ctx);
+		assert.deepEqual(entries, [{ name: 'harper-config.yaml', kind: 'file' }]);
+	});
+
+	it('still resolves a relative componentsScope against rootPath', () => {
+		assert.equal(scopesFor({ componentsScope: 'components/app' }).componentsRoot, join(root, 'components', 'app'));
+	});
+});
+
+describe('agent/agent buildStaticSystemPrompt config scope line', () => {
+	const base = { componentsRoot: '/h/components', logDir: '/h/log', keyDirs: ['/h/keys'] };
+
+	it('names the single config file and the key-material refusal', () => {
+		const prompt = buildStaticSystemPrompt({ ...base, configDir: '/h', configFile: 'harper-config.yaml' }, false);
+		assert.match(prompt, /- config — read-only, a single file — address it as "harper-config.yaml"/);
+		assert.match(prompt, /Key material is refused in every scope/);
+	});
+
+	it('names a directory override as a directory, and an unavailable scope as unavailable', () => {
+		assert.match(buildStaticSystemPrompt({ ...base, configDir: '/h/etc' }, false), /- config — read-only: \/h\/etc\n/);
+		assert.match(buildStaticSystemPrompt(base, false), /- config — unavailable/);
 	});
 });

@@ -2,7 +2,7 @@
 
 const { isMainThread, parentPort, threadId, workerData } = require('node:worker_threads');
 const { createServer: createSocketServer } = require('node:net');
-const { unlinkSync, existsSync, mkdirSync, renameSync } = require('node:fs');
+const { unlinkSync, existsSync, renameSync } = require('node:fs');
 const { join, dirname } = require('node:path');
 let componentsLoadedResolve;
 exports.whenComponentsLoaded = new Promise((resolve) => {
@@ -286,6 +286,9 @@ function startServers() {
 	const started = loaded
 		.then(() => listening)
 		.then(() => {
+			// An isolated worker is reachable only through a bound mirror.
+			if (thisThreadsIsolatedApplication() && !httpComponent.hasUdsMirror())
+				throw new Error(`Isolated application ${thisThreadsIsolatedApplication()} has no UDS mirror`);
 			reportStartupPhase('ready');
 			if (getWorkerIndex() === 0) {
 				try {
@@ -630,9 +633,11 @@ async function listenOnPortsBun() {
 			}
 
 			// Create a corresponding Unix Domain Socket mirror for secure ports
-			if (config.isSecure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
-				const socketsDir = join(env.getHdbBasePath(), 'sockets');
-				mkdirSync(socketsDir, { recursive: true });
+			const socketsDir =
+				config.isSecure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)
+					? httpComponent.ensureSocketsDirectory()
+					: undefined;
+			if (socketsDir) {
 				const isolatedApplication = thisThreadsIsolatedApplication();
 				const socketName = isolatedApplication
 					? applicationSocketName(isolatedApplication, port)
@@ -786,9 +791,11 @@ function onSocket(listener, options) {
 		SERVERS[options.securePort] = secureSocketServer;
 
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
-		if (env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(options.securePort)) {
-			const socketsDir = join(env.getHdbBasePath(), 'sockets');
-			mkdirSync(socketsDir, { recursive: true });
+		const socketsDir =
+			env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(options.securePort)
+				? httpComponent.ensureSocketsDirectory()
+				: undefined;
+		if (socketsDir) {
 			const isolatedApplication = thisThreadsIsolatedApplication();
 			const socketName = isolatedApplication
 				? applicationSocketName(isolatedApplication, options.securePort)

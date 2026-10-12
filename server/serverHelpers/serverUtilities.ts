@@ -520,8 +520,13 @@ _assignPackageExport('operation', operation);
 /**
  * Standalone function to execute an operation
  */
-export function operation(operation: OperationRequestBody, context: Context, authorize: boolean) {
+export function operation(
+	operation: OperationRequestBody,
+	context: Context & { replicatedFrom?: string },
+	authorize: boolean
+) {
 	operation.hdb_user = context?.user;
+	if (context?.replicatedFrom) (operation as any)[terms.REPLICATED_FROM] = context.replicatedFrom;
 	const bypassAuth = !authorize;
 	return runWithOperationAuthorizationBypass(bypassAuth, () => {
 		const operation_function = chooseOperation(operation, bypassAuth);
