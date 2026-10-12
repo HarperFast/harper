@@ -24,6 +24,8 @@ const { server } = require('#src/server/Server');
 const httpModule = require('#src/server/http');
 const { describeMiddlewareChains } = httpModule;
 const { handleApplication: handleRest } = require('#src/server/REST');
+// fastifyRoutes builds one fastify app per module instance; a fresh instance keeps another file's app out of this one
+delete require.cache[require.resolve('#src/server/fastifyRoutes')];
 const { handleApplication: handleFastifyRoutes } = require('#src/server/fastifyRoutes');
 const { loadComponent, loadedPaths, TRUSTED_RESOURCE_PLUGINS } = require('#src/components/componentLoader');
 const env = require('#src/utility/environment/environmentManager');
@@ -32,6 +34,19 @@ const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const PORT = 'mount-caller-impact';
 
 const passThrough = (request, next) => next(request);
+
+// A loaded application keeps fs watchers on its directory that nothing here can close, and Windows raises EPERM
+// from a watcher whose directory is deleted, so loaded application directories are removed at exit.
+const loadedApplicationDirs = [];
+process.once('exit', () => {
+	for (const dir of loadedApplicationDirs) {
+		try {
+			rmSync(dir, { recursive: true, force: true });
+		} catch {
+			// best effort: the OS temp directory is cleaned up regardless
+		}
+	}
+});
 
 // Node's HTTP/2 compatibility layer sends no Host header; it exposes `:authority` as `request.authority`.
 function request(url, { host = 'localhost:9926', http2 = false } = {}) {
@@ -283,17 +298,16 @@ describe('server.http under application mounts: caller impact', () => {
 
 	describe('application module code (`import { server } from "harper"`)', () => {
 		const probePort = 19520;
-		let componentDir;
 
 		afterEach(() => {
 			delete TRUSTED_RESOURCE_PLUGINS.mountCallerImpactProbe;
 			loadedPaths.clear();
-			if (componentDir) rmSync(componentDir, { recursive: true, force: true });
 		});
 
 		it('gets the bare server: its handlers stay unrouted while the application plugins move under the mount', async () => {
 			const tag = randomUUID().slice(0, 8);
-			componentDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.mount-caller-impact-app-'));
+			const componentDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.mount-caller-impact-app-'));
+			loadedApplicationDirs.push(componentDir);
 			writeFileSync(
 				join(componentDir, 'config.yaml'),
 				stringify({ mountCallerImpactProbe: { files: '*.txt' }, jsResource: { files: 'resources.js' } })
@@ -327,11 +341,8 @@ describe('server.http under application mounts: caller impact', () => {
 	});
 
 	describe('root-config `package` entry with a urlPath', () => {
-		let packageDir;
-
 		afterEach(() => {
 			loadedPaths.clear();
-			if (packageDir) rmSync(packageDir, { recursive: true, force: true });
 		});
 
 		it('a package that ships no config file loads the default plugins, REST included, under the mount', async () => {
@@ -339,7 +350,8 @@ describe('server.http under application mounts: caller impact', () => {
 			// directory without a config file loads DEFAULT_CONFIG (`rest: true`, `static`, ...). REST registers
 			// once per resolved route, so the mount adds a second REST route serving every exported resource.
 			// v5.1.26: the same plugins registered unrouted, where REST had already registered once per process.
-			packageDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.mount-caller-impact-pkg-'));
+			const packageDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.mount-caller-impact-pkg-'));
+			loadedApplicationDirs.push(packageDir);
 			writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: 'mount-caller-impact-pkg' }));
 			const urlPath = `/pkg-${randomUUID().slice(0, 8)}`;
 			const registered = [];
