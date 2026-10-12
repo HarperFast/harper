@@ -619,6 +619,60 @@ describe('Blob test', () => {
 		await BlobTest.delete(306);
 		setDeletionDelay(500); // restore the default
 	});
+	it('bytes()/text() take no hold, unlike stream() — a late call past the window still races (#2134)', async () => {
+		// holdBlobFile() is only called from the stream() ReadableStream constructor (ensureStream
+		// below the FileBackedBlob class). bytes()/text() go straight to readFile() and rely solely on
+		// the retention window; resolving the record and sitting on the Blob handle does not protect a
+		// bytes()/text() call that happens after the window has already lapsed, the way an in-progress
+		// stream() read is protected past the window (see the in-progress-stream test above). This is
+		// the fix's one caller-visible asymmetry: stream() got a structural guarantee, bytes()/text()
+		// got a bigger — but still finite — cushion.
+		setAuditRetention(10);
+		setDeletionDelay(50); // short window: isolates "no hold" from "window not yet elapsed"
+		const payload = randomBytes(20000);
+		await BlobTest.put({ id: 307, blob: await createBlob(payload) });
+		const reader = await BlobTest.get(307); // resolves the record/Blob handle; does not open the file
+		const filePath = getFilePathForBlob(reader.blob);
+		const fileId = getFileId(reader.blob);
+		const { table, slot } = getBlobHoldStateForTesting(BlobTest.primaryStore.rootStore, fileId);
+		assert.equal(Atomics.load(table, slot), 0, 'resolving the record must not itself take a hold');
+
+		await BlobTest.put({ id: 307, blob: await createBlob(randomBytes(20000)) }); // supersedes
+		await waitFor(() => !existsSync(filePath), {
+			message: 'superseded blob should be reclaimed once the short window lapses',
+		});
+
+		// The window has lapsed and nothing held the file, so a bytes() call now sees the same ENOENT
+		// a reader would have hit before this fix — bytes()/text() narrow the race, they do not close it.
+		await assert.rejects(reader.blob.bytes(), (error) => {
+			assert.equal(error.statusCode, 404);
+			assert.equal(error.code, 'ENOENT');
+			return true;
+		});
+
+		await BlobTest.delete(307);
+		setDeletionDelay(500); // restore the default
+	});
+	it('an invalid storage.blobRetention falls back to the 2000ms default, not 0 (#2134)', async () => {
+		// getReclamationDelay() coerces the configured value with Number(); a non-numeric or negative
+		// override logs a warning (once per process) and falls back to DEFAULT_RECLAMATION_DELAY rather
+		// than collapsing to an unprotected 0ms window.
+		setAuditRetention(10);
+		setDeletionDelay(undefined); // exercise the configured value, not a test override
+		env.setProperty(CONFIG_PARAMS.STORAGE_BLOBRETENTION, 'not-a-number');
+		try {
+			await BlobTest.put({ id: 308, blob: await createBlob(randomBytes(20000)) });
+			const filePath = getFilePathForBlob((await BlobTest.get(308)).blob);
+			await BlobTest.put({ id: 308, blob: await createBlob(randomBytes(20000)) }); // supersedes
+			await delay(1500); // inside the 2000ms default; an invalid value must not collapse to 0
+			assert(existsSync(filePath), 'an invalid storage.blobRetention must fall back to the default window, not 0');
+			await waitFor(() => !existsSync(filePath), { timeout: 6000 });
+		} finally {
+			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBRETENTION, undefined);
+			setDeletionDelay(500); // restore the default
+			await BlobTest.delete(308).catch(() => {});
+		}
+	});
 	it('blob unlink is gated on the removal committing (#1364)', async () => {
 		// removeEntry must only unlink the old blobs once the record removal commits. An
 		// expiration scan whose transaction is force-committed without the delete (or an
