@@ -1839,7 +1839,7 @@ Whether a tool is treated as destructive at all is governed by `agent.allowDestr
 
 Cancels a session's run, clears any followups it scheduled, and marks the session `aborted`. Works on a paused (`awaiting_approval`) or `idle` session as well as an actively running one.
 
-From v5.4.0 the cancel also answers every pending approval, decided or not, with a `cancelled_by_operator` result, in the same write that marks the session `aborted`. An approved action that has not started by then never runs, neither in the cancelled run nor when you next prompt the session, and nothing is left awaiting a decision. One already running finishes, and its result is recorded. The session stays `aborted`: a run caught mid-step finishes that step without marking the session `completed`, `error` or `awaiting_approval`, and a tool call it then asks to have approved is answered `cancelled_by_operator` instead.
+From v5.4.0 the cancel also answers every pending approval, decided or not, with a `cancelled_by_operator` result, in the same write that marks the session `aborted`. An approved action that has not started by then never runs, neither in the cancelled run nor when you next prompt the session, and nothing is left awaiting a decision. One already running finishes, and its result is recorded. The session stays `aborted`: a run caught mid-step finishes that step without marking the session `completed`, `error` or `awaiting_approval`, a tool call it then asks to have approved is answered `cancelled_by_operator` instead, and it makes no further model call.
 
 ```json
 { "operation": "cancel_agent_run", "session_id": "3f7c..." }
@@ -1866,7 +1866,7 @@ Updates agent settings and returns the resulting configuration. Accepts any of `
 Three limits are worth knowing:
 
 - **The change is in-memory and not persisted.** It applies for the life of the process and is lost on restart; edit `harper-config.yaml` for a durable change.
-- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, `systemPromptAppend` and spend caps are all captured at start. Changes take effect on the next run. To stop a run immediately, use `cancel_agent_run`.
+- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, `maxTurns`, `systemPromptAppend` and spend caps are all captured at start. Changes take effect on the next run. To stop a run immediately, use `cancel_agent_run`.
 - **`enabled` is not a kill switch.** It cannot turn the agent on — if it was off at startup, this operation does not exist. Setting it to `false` only makes subsequent `agent_prompt` calls return 409; a run already in flight continues, and `approve_agent_action` still resumes a paused one. Use `cancel_agent_run` to stop a run.
 
 ### MCP access
