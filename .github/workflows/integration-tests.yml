@@ -281,7 +281,8 @@ jobs:
     name: Integration Tests ${{matrix.shard}}/6 (Bun)
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    needs: [build]
+    needs: [generate-node-version-matrix, build]
+    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.generate-node-version-matrix.outputs.node-versions), 24)
     strategy:
       fail-fast: false
       matrix:
@@ -333,7 +334,8 @@ jobs:
     name: Integration Tests ${{matrix.shard}}/6 (uWS HTTP)
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    needs: [build]
+    needs: [generate-node-version-matrix, build]
+    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.generate-node-version-matrix.outputs.node-versions), 24)
     strategy:
       fail-fast: false
       matrix:

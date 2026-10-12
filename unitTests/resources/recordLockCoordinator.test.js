@@ -4,6 +4,9 @@ const {
 	LOCK_LEASE_SKEW_MS,
 	DELEGATION_LEASE_MS,
 	RECALL_RETRY_MS,
+	receiveLockControlEntry,
+	registerClusterLockTransport,
+	unregisterClusterLockTransport,
 	compareTokens,
 	decodeLockControlPayload,
 	encodeLockControlPayload,
@@ -18,6 +21,7 @@ const {
 } = require('#src/resources/recordLockCoordinator');
 const { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS, makeKeyLockHandle } = require('#src/resources/recordLock');
 const { toBufferKey } = require('ordered-binary');
+const { ClientError } = require('#src/utility/errors/hdbError');
 const { waitFor } = require('../waitFor');
 
 /** A real lock handle over a fake store, so revocation is tested through production code. */
@@ -54,6 +58,7 @@ function coldCoordinator(monotonic, options = {}) {
 			recallDelegation: () => {
 				throw new Error('a single-node home must not send a recall');
 			},
+			...options.transport,
 		},
 		writeControl: () => {},
 		keyIdOf: (key) => String(key),
@@ -2045,6 +2050,197 @@ describe('record lock delegations', () => {
 			assert.strictEqual(granted.granted, true);
 		});
 
+		describe('coordination incarnation before home-map agreement', () => {
+			const horizon = DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
+			let mono, incarnation, owns, ready, reads, coordinators;
+			beforeEach(() => {
+				mono = 1_000;
+				incarnation = 1;
+				owns = true;
+				ready = false;
+				reads = 0;
+				coordinators = [];
+			});
+			afterEach(() => {
+				if (coordinators) {
+					for (const coordinator of coordinators) coordinator.close();
+				}
+			});
+			function create(options = {}) {
+				const coordinator = coldCoordinator(() => mono, {
+					grantableAfterMono: -Infinity,
+					...options,
+					transport: {
+						homeMap: () => (ready ? { generation: 1, homes: ['alpha'], homeIncarnation: incarnation } : undefined),
+						ownsCoordination: () => owns,
+						coordinationIncarnation: () => {
+							reads++;
+							return incarnation;
+						},
+						...options.transport,
+					},
+				});
+				coordinators.push(coordinator);
+				return coordinator;
+			}
+			const request = (coordinator, key = 'bootstrap') =>
+				coordinator.onDelegationRequest({
+					key,
+					requester: 'alpha',
+					generation: 1,
+					leaseMs: LEASE,
+				});
+
+			it('keeps a fresh owner grantable once agreement arrives, reading identity only at construction', async () => {
+				const coordinator = create();
+				assert.strictEqual(reads, 1);
+				assert.strictEqual((await request(coordinator)).reason, 'generation');
+				ready = true;
+				for (let i = 0; i < 3; i++) assert.strictEqual((await request(coordinator, `key-${i}`)).granted, true);
+				assert.strictEqual(reads, 1, 'grants must not refresh the construction baseline');
+			});
+
+			it('grants after a true restart at construction + 365s, not agreement + 365s', async () => {
+				incarnation = 2;
+				const constructed = mono;
+				const coordinator = create({ grantableAfterMono: undefined });
+				mono += 120_000;
+				ready = true;
+				assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+				assert.strictEqual(coordinator.unprovenOwnershipMs(), horizon - 120_000);
+				mono = constructed + horizon - 1;
+				assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+				assert.strictEqual(coordinator.unprovenOwnershipMs(), 1);
+				mono++;
+				assert.strictEqual(mono, constructed + 365_000);
+				assert.strictEqual((await request(coordinator)).granted, true);
+				assert.strictEqual(coordinator.unprovenOwnershipMs(), 0);
+			});
+
+			for (const adopt of [false, true]) {
+				it(`quarantines an incarnation bump while the map is withheld${adopt ? ', including after adoption' : ''}`, async () => {
+					let coordinator = create();
+					incarnation++;
+					mono += 120_000;
+					if (adopt)
+						coordinator = create({ database: coordinator.database, table: coordinator.table, adopt: coordinator });
+					ready = true;
+					assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+					assert.strictEqual(coordinator.unprovenOwnershipMs(), horizon);
+					mono += horizon;
+					assert.strictEqual((await request(coordinator)).granted, true);
+				});
+			}
+
+			it('does not read identity when not the owner or let the waiver cover a later takeover', async () => {
+				owns = false;
+				const coordinator = create();
+				assert.strictEqual(reads, 0);
+				mono += horizon * 2;
+				owns = ready = true;
+				assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+				assert.strictEqual(reads, 0);
+			});
+
+			for (const waived of [false, true]) {
+				it(`quarantines adoption of an unknown incarnation with an ${waived ? 'explicitly waived' : 'expired'} clock`, async () => {
+					const predecessor = create({
+						grantableAfterMono: waived ? -Infinity : undefined,
+						transport: { coordinationIncarnation: () => undefined },
+					});
+					mono += horizon;
+					// Another owner can have granted while the idle predecessor could not observe identity.
+					const homes = ['alpha', 'beta'];
+					let key = 'bootstrap';
+					while (homeFor(ringKeyFor(predecessor.database, predecessor.table, key), homes) !== 'alpha') key += 'x';
+					incarnation = 2;
+					ready = true;
+					const sibling = create({
+						database: predecessor.database,
+						table: predecessor.table,
+						grantableAfterMono: undefined,
+						transport: { homeMap: () => ({ generation: 1, homes, homeIncarnation: 2 }) },
+					});
+					mono += horizon;
+					const grantedAt = mono;
+					const prior = await sibling.onDelegationRequest({
+						key,
+						requester: 'beta',
+						generation: 1,
+						leaseMs: LEASE,
+					});
+					assert.strictEqual(prior.granted, true);
+					incarnation = 3;
+					ready = false;
+					mono++;
+					const successor = create({
+						database: predecessor.database,
+						table: predecessor.table,
+						adopt: predecessor,
+						transport: { homeMap: () => (ready ? { generation: 1, homes, homeIncarnation: 3 } : undefined) },
+					});
+					ready = true;
+					assert.ok(grantedAt + prior.leaseMs > mono, 'the prior delegation must still be live');
+					assert.strictEqual((await request(successor, key)).reason, 'quarantine');
+					assert.strictEqual(successor.unprovenOwnershipMs(), horizon);
+					mono += horizon - 1;
+					assert.strictEqual((await request(successor, key)).reason, 'quarantine');
+					mono++;
+					assert.ok(mono >= grantedAt + prior.leaseMs);
+					assert.strictEqual((await request(successor, key)).granted, true);
+				});
+			}
+
+			it('carries a known incarnation and its construction deadline through adoption before agreement', async () => {
+				const constructed = mono;
+				const predecessor = create({ grantableAfterMono: undefined });
+				mono += 120_000;
+				const successor = create({ database: predecessor.database, table: predecessor.table, adopt: predecessor });
+				ready = true;
+				assert.strictEqual((await request(successor)).reason, 'quarantine');
+				assert.strictEqual(successor.unprovenOwnershipMs(), horizon - 120_000);
+				mono = constructed + horizon;
+				assert.strictEqual((await request(successor)).granted, true);
+			});
+
+			for (const value of [
+				undefined,
+				0,
+				-1,
+				1.5,
+				NaN,
+				Infinity,
+				Number.MAX_SAFE_INTEGER + 1,
+				'1',
+				new Error('unknown'),
+			]) {
+				it(`fails closed with an unavailable map and incarnation ${String(value)}`, async () => {
+					const coordinator = create({
+						transport: {
+							coordinationIncarnation() {
+								if (value instanceof Error) throw value;
+								return value;
+							},
+						},
+					});
+					ready = true;
+					assert.strictEqual((await request(coordinator)).reason, 'quarantine');
+				});
+				it(`falls back to an available map with incarnation ${String(value)}`, async () => {
+					ready = true;
+					const coordinator = create({
+						transport: {
+							coordinationIncarnation() {
+								if (value instanceof Error) throw value;
+								return value;
+							},
+						},
+					});
+					assert.strictEqual((await request(coordinator)).granted, true);
+				});
+			}
+		});
+
 		it('quarantines a cold home by default, on its own process clock', async () => {
 			// §4.3: the home map is immutable, so a restart advances no generation and nothing external
 			// bounds what a previous incarnation granted. Neither process start nor thread start is a
@@ -2546,6 +2742,109 @@ describe('record lock delegations', () => {
 			});
 			beta.owns = false;
 			beta.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha');
+			assert.strictEqual(beta.coordinator.stats.granted, 1);
+			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 1);
+		});
+
+		it('is relayed off the coordinating thread when the transport can, with author and position', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta');
+			const granted = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			const relayed = [];
+			beta.coordinator.transport.relayControlEntry = (...args) => relayed.push(args);
+			beta.owns = false;
+			const entry = { type: 'lockRelease', key, requester: 'alpha', token: granted.token, dependencies: null };
+			beta.coordinator.applyEntry(entry, 'alpha', 42);
+			assert.deepStrictEqual(relayed, [[cluster.database, cluster.table, entry, 'alpha', 42]]);
+			assert.strictEqual(beta.coordinator.stats.granted, 1, 'the non-owner applied nothing itself');
+			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 0);
+			beta.owns = true;
+			beta.coordinator.applyEntry(...relayed[0].slice(2));
+			assert.strictEqual(beta.coordinator.stats.granted, 0);
+		});
+
+		it('counts a drop when an asynchronous relay rejects, and never leaves an unhandled rejection', async () => {
+			const rejections = [];
+			const onUnhandled = (reason) => rejections.push(reason);
+			process.on('unhandledRejection', onUnhandled);
+			try {
+				const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+				const key = cluster.keyHomedOn('beta');
+				const beta = cluster.node('beta');
+				const granted = await beta.coordinator.onDelegationRequest({
+					key,
+					requester: 'alpha',
+					generation: 1,
+					leaseMs: LEASE,
+				});
+				beta.coordinator.transport.relayControlEntry = async () => {
+					throw new Error('owner port closed');
+				};
+				beta.owns = false;
+				beta.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha');
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.deepStrictEqual(rejections, []);
+				assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 1);
+			} finally {
+				process.removeListener('unhandledRejection', onUnhandled);
+			}
+		});
+
+		it('relays through the registered transport on a thread that never built a coordinator for the table', () => {
+			const relayed = [];
+			const transport = {
+				homeMap: () => undefined,
+				ownsCoordination: () => false,
+				requestDelegation: async () => ({ granted: false, reason: 'not-home' }),
+				recallDelegation: async () => undefined,
+				establishLockFreshness: async () => undefined,
+				relayControlEntry: (...args) => relayed.push(args),
+			};
+			setLockCoordinatorResolver(
+				() => undefined,
+				() => undefined
+			);
+			registerClusterLockTransport('cold-db', transport);
+			try {
+				const entry = { type: 'lockRelease', key: 'k', requester: 'alpha', token: [1, 1, 1], dependencies: null };
+				receiveLockControlEntry('cold-db', 'cold-table', entry, 'alpha', 9);
+				assert.deepStrictEqual(relayed, [['cold-db', 'cold-table', entry, 'alpha', 9]]);
+				transport.onControlEntry('cold-db', 'cold-table', entry, 'alpha', 12);
+				assert.strictEqual(relayed.length, 2, 'the registered receive callback takes the same boundary');
+				receiveLockControlEntry('cold-db', 'cold-table', { type: 'lockBarrier', nonce: 1 }, 'alpha', 10);
+				assert.strictEqual(relayed.length, 2, 'only releases are relayed');
+				transport.ownsCoordination = () => true;
+				receiveLockControlEntry('cold-db', 'cold-table', entry, 'alpha', 11);
+				assert.strictEqual(relayed.length, 2, 'the owner thread with no coordinator holds no grant to clear');
+			} finally {
+				unregisterClusterLockTransport('cold-db', true);
+				setLockCoordinatorResolver(() => undefined);
+			}
+		});
+
+		it('counts a drop when the relay throws, and never surfaces the throw', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta');
+			const granted = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			beta.coordinator.transport.relayControlEntry = () => {
+				throw new Error('port closed');
+			};
+			beta.owns = false;
+			assert.doesNotThrow(() =>
+				beta.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha')
+			);
 			assert.strictEqual(beta.coordinator.stats.granted, 1);
 			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 1);
 		});
@@ -3172,6 +3471,33 @@ describe('relayed admissions across worker threads (harper-pro#852)', () => {
 		await caller.revokeRemoteAdmission(5);
 		assert.strictEqual(liveFenced, 1, 'the revoke did not reach the live handle');
 		assert.strictEqual(staleFenced, 1, 'the stale handle was fenced a second time');
+	});
+
+	it("passes the owner's 423 through, and turns any other relay failure into a retryable 503", async () => {
+		let failure;
+		const caller = makeCoordinator('relay-verdict', {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => false,
+			establishLockFreshness: async (_d, _t, _k, dep) => dep ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+			acquireOnOwner: async () => {
+				throw failure;
+			},
+			releaseOnOwner: () => {},
+		});
+		// the shape harper-pro's relay rethrows (recordLockRpc.ts: ClientError with the owner's statusCode)
+		failure = new ClientError('Record is locked and was not released in time', 423);
+		await assert.rejects(caller.acquire('k', LEASE, WAIT), (error) => error.statusCode === 423);
+		failure = new Error('the owner worker is not reachable');
+		await assert.rejects(
+			caller.acquire('k', LEASE, WAIT),
+			(error) => error.statusCode === 503 && error.code === 'LOCK_UNAVAILABLE'
+		);
 	});
 
 	it('carries a remote admission to a successor across a transport swap', async () => {

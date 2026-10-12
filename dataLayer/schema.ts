@@ -19,6 +19,7 @@ import {
 	getDatabases,
 	dropTableMeta,
 	isBranchIdentity,
+	isNodeLocalTable,
 	recordTableDrop,
 } from '../resources/databases.ts';
 import { transformReq } from '../utility/common_utils.ts';
@@ -220,6 +221,13 @@ export async function dropTable(dropTableObject: any) {
 	if (validation) throw new ClientError(validation.message);
 
 	transformReq(dropTableObject);
+	const fromPeer = Boolean(dropTableObject[hdbTerms.REPLICATED_FROM]);
+	if (!fromPeer) delete dropTableObject.droppedTime;
+	else if (
+		dropTableObject.droppedTime !== undefined &&
+		!(Number.isFinite(dropTableObject.droppedTime) && dropTableObject.droppedTime > 0)
+	)
+		throw new ClientError(`Invalid droppedTime in a forwarded drop of '${dropTableObject.table}'`);
 
 	let invalidSchemaTableMsg = await schemaMetadataValidator.checkSchemaTableExists(
 		dropTableObject.schema,
@@ -227,7 +235,7 @@ export async function dropTable(dropTableObject: any) {
 	);
 	if (invalidSchemaTableMsg) {
 		// A peer's forwarded drop of a table already gone here still carries a drop time every node must hold.
-		if (dropTableObject.replicatedFrom && Number.isFinite(dropTableObject.droppedTime)) {
+		if (fromPeer && dropTableObject.droppedTime !== undefined) {
 			recordTableDrop(dropTableObject.schema, dropTableObject.table, dropTableObject.droppedTime);
 			return { message: `table '${dropTableObject.schema}.${dropTableObject.table}' was already dropped` };
 		}
@@ -241,9 +249,20 @@ export async function dropTable(dropTableObject: any) {
 		);
 	}
 
-	await harperBridge.dropTable(dropTableObject);
+	// Peers never learn of a node-local table's drop: their table of that name is theirs alone.
+	const dropping = getDatabases()[dropTableObject.schema]?.[dropTableObject.table];
+	if (dropping && isNodeLocalTable(dropping)) dropTableObject.replicated = false;
+	if (!(await harperBridge.dropTable(dropTableObject)))
+		return {
+			message: `table '${dropTableObject.schema}.${dropTableObject.table}' was not dropped: the generation here postdates the drop, does not replicate, or was replaced`,
+		};
 
-	await dropTableMeta({ table: dropTableObject.table, database: dropTableObject.schema });
+	try {
+		dropTableMeta({ table: dropTableObject.table, database: dropTableObject.schema });
+	} catch (error) {
+		// the drop is done; a later create of the name removes the rows this left
+		logger.warn(`Could not clean up the metadata of '${dropTableObject.schema}.${dropTableObject.table}'`, error);
+	}
 
 	let response = await server.replication.replicateOperation(dropTableObject);
 	response.message = `successfully deleted table '${dropTableObject.schema}.${dropTableObject.table}'`;

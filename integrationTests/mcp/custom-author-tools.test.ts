@@ -61,7 +61,7 @@ suite('MCP application profile: component-author static mcpTools/mcpPrompts (#14
 		ok(names.includes('wi_progress'), `expected the custom 'wi_progress' tool, got: ${names.join(', ')}`);
 		// Sanity: the auto-generated CRUD verbs still register too (the rebuild is additive).
 		ok(
-			names.some((n) => /^create_WorkItem/.test(n)),
+			names.some((n) => n.startsWith('create_WorkItem')),
 			`expected create_WorkItem to remain, got: ${names.join(', ')}`
 		);
 		await transport.close();

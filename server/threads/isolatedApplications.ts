@@ -15,6 +15,7 @@ import { getConfigObj, getConfigPath } from '../../config/configUtils.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { isDomainSocketPathTooLong } from '../../utility/domainSocket.ts';
+import { isDedicatedPoolWorker } from './workerPools.ts';
 import { existsSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
@@ -79,15 +80,18 @@ export function isolatedApplicationCapacityRefusal(
 /**
  * Whether the calling thread is the one that loads the application `appName` (an application: a
  * directory under componentsRoot, or a root-config entry with `package`). A dedicated worker loads
- * only its own application; every other thread -- pool workers and the main thread alike -- loads only
- * the applications that are not isolated. Decided before any of the application's modules are
- * imported, so a skipped application has no side effects on the thread that skipped it.
+ * only its own application; a dedicated-pool worker (e.g. `replication`) loads no application; every
+ * other thread -- HTTP pool workers and the main thread alike -- loads only the applications that are
+ * not isolated. Decided before any of the application's modules are imported, so a skipped
+ * application has no side effects on the thread that skipped it.
  */
 export function shouldLoadApplicationHere(
 	appName: string,
 	owner: string | undefined = thisThreadsIsolatedApplication(),
-	config: Record<string, any> | undefined = getConfigObj()
+	config: Record<string, any> | undefined = getConfigObj(),
+	dedicatedPoolWorker: boolean = isDedicatedPoolWorker()
 ): boolean {
+	if (dedicatedPoolWorker) return false;
 	if (owner !== undefined) return appName === owner;
 	return !isIsolatedApplication(appName, config);
 }

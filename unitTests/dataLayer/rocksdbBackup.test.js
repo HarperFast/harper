@@ -20,11 +20,13 @@ const {
 	purgeBackupsOffline,
 	restoreBackup,
 	restoreBackupOffline,
+	restorePinId,
 	validateCreateBackup,
 	validateDatabaseName,
 	validateRestoreBackup,
 	validateVerifyBackup,
 	verifyBackup,
+	assertBackupStillPresent,
 	verifyBackupOffline,
 	createBackupStream,
 } = require('#src/dataLayer/rocksdbBackup');
@@ -37,7 +39,7 @@ const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 // managed-backup ops self-enforce super_user (see requireSuperUser in rocksdbBackup.ts); requests
 // in the online-operation tests below must therefore carry a super_user role.
 const SU = { hdb_user: { role: { permission: { super_user: true } } } };
-const { beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
+const { abandonRestore, beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
 const { pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } = require('#src/dataLayer/backupRepository');
 const { backups } = require('@harperfast/rocksdb-js');
 const { closeLoadedDatabases } = require('#src/resources/databases');
@@ -67,7 +69,14 @@ describe('rocksdbBackup', function () {
 	after(function () {
 		// blob roots resolve outside storageDir (under the hdb base / configured blobPaths), so clean
 		// them explicitly for every database name these tests touch
-		for (const name of [DB_NAME, `${DB_NAME}-restored`, `${DB_NAME}-occupied`, `${DB_NAME}-blobs`]) {
+		for (const name of [
+			DB_NAME,
+			`${DB_NAME}-restored`,
+			`${DB_NAME}-occupied`,
+			`${DB_NAME}-blobs`,
+			`${DB_NAME}-interrupted`,
+			`${DB_NAME}-foreign`,
+		]) {
 			for (const root of getBlobPathsForDatabaseName(name)) rmSync(root, { recursive: true, force: true });
 			rmSync(backupDirForDatabase(name), { recursive: true, force: true });
 		}
@@ -242,6 +251,63 @@ describe('rocksdbBackup', function () {
 				(error) => error.statusCode === 400 && /already exists/.test(error.message)
 			);
 			await purgeBackupsOffline(DB_NAME, 0);
+		});
+
+		// An interrupted restore leaves its target populated and marked. Refusing the rerun on occupancy
+		// grounds wedges it for good: drop_database refuses a marked directory too, and the marker keeps
+		// the pin live, so every purge of the source the rerun needs 409s as well.
+		it('reruns an interrupted restore into the same target instead of wedging it', async function () {
+			this.timeout(30000);
+			const TARGET = `${DB_NAME}-interrupted`;
+			writeRecords([['alpha', { n: 1 }]]);
+			const first = await createBackupOffline(DB_NAME);
+			await restoreBackupOffline(DB_NAME, first.backup_id, TARGET);
+
+			const targetDir = join(storageDir, TARGET);
+			const backupDir = backupDirForDatabase(DB_NAME);
+			// leave the target exactly as a killed restore would: populated, marked, its source pinned
+			await withBackupRepositoryLock(backupDir, DB_NAME, async () => {
+				pinBackup(backupDir, restorePinId(targetDir), first.backup_id, 'an interrupted restore', targetDir);
+			});
+			// abandon, not hold: the lock must be free, or the rerun is refused for contention instead
+			abandonRestore(beginRestore(targetDir));
+			assert.strictEqual(readBackupPins(backupDir).length, 1, 'precondition: the interrupted restore holds its source');
+
+			try {
+				const second = await createBackupOffline(DB_NAME);
+				await assert.doesNotReject(restoreBackupOffline(DB_NAME, second.backup_id, TARGET));
+				assert.strictEqual(checkRestoreState(targetDir), 'clear', 'the rerun must clear the marker it inherited');
+				assert.deepStrictEqual(readBackupPins(backupDir), [], 'and release the pin that was blocking every purge');
+			} finally {
+				rmSync(targetDir, { recursive: true, force: true });
+				await purgeBackupsOffline(DB_NAME, 0).catch(() => {});
+			}
+		});
+
+		it("refuses a marked target when the marker is not this source's own interrupted restore", async function () {
+			this.timeout(30000);
+			const TARGET = `${DB_NAME}-foreign`;
+			writeRecords([['alpha', { n: 1 }]]);
+			const first = await createBackupOffline(DB_NAME);
+			await restoreBackupOffline(DB_NAME, first.backup_id, TARGET);
+
+			const targetDir = join(storageDir, TARGET);
+			const backupDir = backupDirForDatabase(DB_NAME);
+			// a marker with no pin in THIS source's repository: debris of a restore out of some other
+			// repository. The marker records only the directory name, so it is not proof of ownership,
+			// and purging on the strength of it would destroy a database this source never claimed.
+			abandonRestore(beginRestore(targetDir));
+			assert.deepStrictEqual(readBackupPins(backupDir), [], 'precondition: this source claims nothing here');
+
+			try {
+				await assert.rejects(restoreBackupOffline(DB_NAME, first.backup_id, TARGET), (error) =>
+					/already exists/.test(error.message)
+				);
+			} finally {
+				completeRestore(beginRestore(targetDir));
+				rmSync(targetDir, { recursive: true, force: true });
+				await purgeBackupsOffline(DB_NAME, 0).catch(() => {});
+			}
 		});
 
 		it('refuses to back up a database with an incomplete restore pending', async function () {
@@ -606,6 +672,11 @@ describe('rocksdbBackup', function () {
 				await assert.rejects(operation(databaseName), (error) => error.statusCode === 404);
 				assert.ok(!existsSync(backupDir), `${suffix} must not create ${backupDir}`);
 			}
+			// the 404 must still be there the second time round, and still name a missing repository
+			await assert.rejects(
+				listBackups({ ...SU, database: `${MISSING}-delete` }),
+				(error) => error.statusCode === 404 && /no backup repository/.test(error.message)
+			);
 		});
 	});
 
@@ -823,13 +894,31 @@ describe('rocksdbBackup', function () {
 
 		it('refuses to publish a backup the engine no longer has by the time it finalizes', async function () {
 			this.timeout(30000);
+			const { first } = await seedTwoBackups();
+			const backupDir = backupDirForDatabase(PINNED);
+
+			// what finalization faces when a writer outside the management lock removes the backup: the
+			// id it holds no longer exists
+			await assertBackupStillPresent(backupDir, first.backup_id, PINNED);
+			await backups.delete(backupDir, first.backup_id);
+			await assert.rejects(
+				assertBackupStillPresent(backupDir, first.backup_id, PINNED),
+				(error) => error.statusCode === 404 && /removed while it was being finalized/.test(error.message)
+			);
+		});
+
+		// The check above is only worth having if finalizeBackup runs it. This covers the post-snapshot
+		// call — the one that decides whether a manifest gets published for engine files that are gone.
+		// The pre-snapshot call only saves wasted copying, and no test distinguishes its absence.
+		it('does not publish a manifest when the engine backup disappears mid-finalization', async function () {
+			this.timeout(30000);
 			const database = RocksDatabase.open(join(storageDir, PINNED));
 			try {
 				database.putSync('rec', { n: 1 });
 			} finally {
 				database.close();
 			}
-			// stand in for a purge admitted while the blob snapshot is being written
+			// stand in for a writer outside Harper's management lock removing the backup under us
 			const original = blobBackupModule.snapshotBlobs;
 			blobBackupModule.snapshotBlobs = async (dir) => {
 				for (const backup of await listBackupsInDir(dir)) await backups.delete(dir, backup.backupId);

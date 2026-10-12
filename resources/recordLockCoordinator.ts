@@ -293,6 +293,13 @@ export interface ClusterLockTransport {
 	 */
 	homeMap(database: string): LockHomeMap | undefined;
 	/**
+	 * Current positive safe-integer coordination incarnation, independent of home-map readiness.
+	 * Read once at construction, only on the owning thread; never refreshes the ownership baseline.
+	 * Must use the same incarnation as `homeMap()` whenever that map is available.
+	 * Unknown, invalid or unavailable values fall back to the incarnation in `homeMap()`.
+	 */
+	coordinationIncarnation?(): number | undefined;
+	/**
 	 * Overrides core's cold-start grant quarantine (§4.3). Set it only where a previous incarnation
 	 * of this process provably issued nothing — a fresh database, a first start, or a test. Because the
 	 * same attestation enables the virgin-key freshness fast path, it must prove that no earlier
@@ -350,6 +357,20 @@ export interface ClusterLockTransport {
 	): Promise<LockDependencySet | void>;
 	/** Emit a control entry and return the committed entry's local origin-log position when available. */
 	writeControl?(table: string, entry: LockControlEntry): Promise<number | void> | number | void;
+	/**
+	 * A control entry this thread applied from a peer's stream while another thread owns coordination:
+	 * hand it to the owner, which receives it through its own `onControlEntry`. Idempotent by exact
+	 * token on the owner, so a relay that is late, reordered or lost can only delay a re-grant. May
+	 * return a promise; a throw or rejection counts as a drop (`droppedOffOwner`) and never escapes.
+	 * Absent, the entry is dropped and counted.
+	 */
+	relayControlEntry?(
+		database: string,
+		table: string,
+		entry: LockControlEntry,
+		author: string,
+		position: number | undefined
+	): void | Promise<void>;
 	/**
 	 * Assigned at registration so a transport can push a received entry in directly. `author` and
 	 * `position` come from the authenticated origin-log header, never from the payload.
@@ -816,6 +837,27 @@ function noRevoke() {}
 function isPromiseLike(value: unknown): value is Promise<unknown> {
 	return value != null && typeof (value as Promise<unknown>).then === 'function';
 }
+function relayControlEntryContained(
+	transport: ClusterLockTransport,
+	database: string,
+	table: string,
+	entry: LockControlEntry,
+	author: string,
+	position: number | undefined,
+	onFailure: () => void
+): void {
+	try {
+		const outcome = transport.relayControlEntry!(database, table, entry, author, position);
+		if (isPromiseLike(outcome))
+			outcome.then(undefined, (error) => {
+				warnOnce('failed to relay a record lock control entry to the coordinating thread', error);
+				onFailure();
+			});
+	} catch (error) {
+		warnOnce('failed to relay a record lock control entry to the coordinating thread', error);
+		onFailure();
+	}
+}
 function fireRevokeAndForget(revoke: () => void | Promise<void>): void {
 	try {
 		const outcome = revoke();
@@ -1010,10 +1052,14 @@ export class LockCoordinator {
 		try {
 			if (options.transport.ownsCoordination()) {
 				this.#ownedSinceMono = this.#monotonic();
-				// The incarnation it has been coordinating under, so the first grant does not read its own
-				// construction as a takeover. Undefined when there is no map yet, which `#ownershipHorizon`
-				// treats as a takeover — the conservative direction.
-				this.#coordinatingIncarnation = options.transport.homeMap(options.database)?.homeIncarnation;
+				let incarnation: number | undefined;
+				try {
+					incarnation = options.transport.coordinationIncarnation?.();
+				} catch {}
+				this.#coordinatingIncarnation =
+					Number.isSafeInteger(incarnation) && incarnation > 0
+						? incarnation
+						: options.transport.homeMap(options.database)?.homeIncarnation;
 			}
 		} catch {
 			// A transport that cannot answer yet is not owning yet; `#ownershipHorizon` will observe it.
@@ -1093,15 +1139,15 @@ export class LockCoordinator {
 		// off the new transport and would otherwise re-waive a horizon this coordinator had already lost
 		// to a takeover.
 		//
-		// Only what this coordinator actually OBSERVED may override that, though. `undefined` on either
-		// of these means "never saw it" — a coordinator built on a non-owning thread, or before a map
-		// was available — and the successor has just read the new transport, which is not less current.
-		// Carrying the blank over it re-armed a quarantine on a node that had never stopped coordinating.
+		// Carry the clock and its incarnation as one baseline, including an unknown incarnation. The
+		// successor's freshly sampled identity cannot vouch for an older, unproven ownership interval.
+		// If this coordinator observed neither ownership nor identity, keep the successor's baseline.
 		if (this.#ownedSinceMono !== undefined) {
 			successor.#ownedSinceMono = this.#ownedSinceMono;
 			successor.#quarantineWaived = this.#quarantineWaived;
 		}
-		if (this.#coordinatingIncarnation !== undefined) successor.#coordinatingIncarnation = this.#coordinatingIncarnation;
+		if (this.#ownedSinceMono !== undefined || this.#coordinatingIncarnation !== undefined)
+			successor.#coordinatingIncarnation = this.#coordinatingIncarnation;
 		successor.#dependencySets = this.#dependencySets;
 		successor.#everDelegated.copyFrom(this.#everDelegated);
 		successor.#freshnessGeneration = this.#freshnessGeneration;
@@ -1451,7 +1497,9 @@ export class LockCoordinator {
 			'the coordinating worker did not answer'
 		).catch((error) => {
 			backstopWon = true;
-			throw error instanceof LockUnavailableError
+			// The owner's 423 is its definitive "contended past the wait" answer, the same one a local
+			// acquire gives; only a failure to reach a verdict becomes the retryable 503.
+			throw error instanceof LockUnavailableError || error?.statusCode === 423
 				? error
 				: new LockUnavailableError(
 						`Could not obtain a cluster record lock on ${this.database}.${this.table} from the coordinating worker: ${(error as Error)?.message ?? error}`
@@ -1783,16 +1831,11 @@ export class LockCoordinator {
 		if (entry.type !== 'lockRelease' || !isNodeName(author)) return;
 		if (entry.requester !== author) return;
 		if (!this.transport.ownsCoordination()) {
-			this.#droppedOffOwner++;
-			const now = this.#monotonic();
-			if (now - this.#lastOffOwnerWarn > WARN_INTERVAL_MS) {
-				this.#lastOffOwnerWarn = now;
-				harperLogger.warn?.('record lock control entries are reaching a non-coordinating thread', {
-					database: this.database,
-					table: this.table,
-					dropped: this.#droppedOffOwner,
-				});
-			}
+			if (this.transport.relayControlEntry)
+				relayControlEntryContained(this.transport, this.database, this.table, entry, author, position, () =>
+					this.#noteOffOwnerDrop()
+				);
+			else this.#noteOffOwnerDrop();
 			return;
 		}
 		if (!isFencingToken(entry.token)) return;
@@ -1828,6 +1871,19 @@ export class LockCoordinator {
 			}
 		} else if (grant.renewed) this.#dependencySets.delete(keyId);
 		this.#clearGrant(keyId, grant);
+	}
+
+	#noteOffOwnerDrop(): void {
+		this.#droppedOffOwner++;
+		const now = this.#monotonic();
+		if (now - this.#lastOffOwnerWarn > WARN_INTERVAL_MS) {
+			this.#lastOffOwnerWarn = now;
+			harperLogger.warn?.('record lock control entries are reaching a non-coordinating thread', {
+				database: this.database,
+				table: this.table,
+				dropped: this.#droppedOffOwner,
+			});
+		}
 	}
 
 	/**
@@ -2931,7 +2987,7 @@ export function registerClusterLockTransport(database: string, transport: Cluste
 			'A cluster lock transport must provide homeMap(), ownsCoordination(), requestDelegation(), recallDelegation() and establishLockFreshness()'
 		);
 	transport.onControlEntry = (db: string, table: string, entry: LockControlEntry, author: string, position: number) =>
-		deliverLockControlEntry(db, table, entry, author, position);
+		receiveLockControlEntry(db, table, entry, author, position);
 	transport.onDelegationRequest = (db: string, table: string, request: DelegationRequest) =>
 		deliverDelegationRequest(db, table, request);
 	transport.onDelegationRecall = (db: string, table: string, recall: DelegationRecall) =>
@@ -2986,6 +3042,42 @@ export function deliverLockControlEntry(
 	position: number
 ): void {
 	coordinatorFor(database, table, admittingResolver)?.applyEntry(entry, author, position);
+}
+
+/**
+ * The replication sink's receive boundary for a control entry. A thread that never built a
+ * coordinator for the table holds no grant the entry could clear, so the entry is for the owning
+ * thread: relay it through the registered transport rather than let it vanish — with round-robin
+ * subscription placement a release routinely lands on a worker that has never served a lock.
+ */
+export function receiveLockControlEntry(
+	database: string,
+	table: string,
+	entry: LockControlEntry,
+	author: string,
+	position?: number
+): void {
+	const coordinator = coordinatorFor(database, table, admittingResolver);
+	if (coordinator) return coordinator.applyEntry(entry, author, position);
+	if (entry?.type !== 'lockRelease') return;
+	const transport = clusterLockTransports.get(database);
+	if (!transport) return;
+	let owns: boolean;
+	try {
+		owns = transport.ownsCoordination();
+	} catch (error) {
+		warnOnce('could not tell whether this thread coordinates a database with a received release', error);
+		return;
+	}
+	if (owns) return;
+	if (!transport.relayControlEntry) {
+		// Nothing here holds a grant, so the drop is logged rather than counted — see record-locks.md §14.
+		warnOnce('a record lock release reached a thread with no coordinator and no relay; it is dropped');
+		return;
+	}
+	relayControlEntryContained(transport, database, table, entry, author, position, () =>
+		warnOnce('a record lock release could not be relayed from a thread without a coordinator')
+	);
 }
 
 export async function deliverDelegationRequest(

@@ -12,12 +12,14 @@
  * a multi-GB body through CI would be impractical.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { request } from 'node:http';
+import { connect } from 'node:net';
+import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -68,8 +70,125 @@ function postMultipart(
 	});
 }
 
+function firstResponseBody(response: string): string {
+	const headEnd = response.indexOf('\r\n\r\n');
+	const head = response.slice(0, headEnd).toLowerCase();
+	let rest = response.slice(headEnd + 4);
+	if (!head.includes('transfer-encoding: chunked')) {
+		const length = Number(/content-length: (\d+)/.exec(head)?.[1] ?? rest.length);
+		return rest.slice(0, length);
+	}
+	let body = '';
+	for (;;) {
+		const lineEnd = rest.indexOf('\r\n');
+		const size = parseInt(rest.slice(0, lineEnd), 16);
+		if (!size) return body;
+		body += rest.slice(lineEnd + 2, lineEnd + 2 + size);
+		rest = rest.slice(lineEnd + 2 + size + 2);
+	}
+}
+
+function sseErrors(body: string): Array<{ message?: string; code?: number }> {
+	return body
+		.split('\n\n')
+		.filter((block) => block.split('\n').includes('event: error'))
+		.map((block) =>
+			JSON.parse(
+				block
+					.split('\n')
+					.filter((line) => line.startsWith('data: '))
+					.map((line) => line.slice(6))
+					.join('\n')
+			)
+		);
+}
+
+interface RawUpload {
+	response: string;
+	statuses: string[];
+}
+
+// Node's own client stops writing after an early complete answer, so this uses a raw socket. The rest of the upload
+// waits for the answer, since a check made when the upload finishes races a server that drains it quickly.
+function uploadOnRawSocket(
+	ctx: ContextWithHarper,
+	fields: Record<string, unknown>,
+	answered: (response: string) => boolean,
+	{ sse = false, fileBytes = 16 * 1024 * 1024, deadlineMs = 30_000 } = {}
+): Promise<RawUpload> {
+	const url = new URL(ctx.harper.operationsAPIURL);
+	const chunk = randomBytes(64 * 1024);
+	async function* fileChunks() {
+		for (let sent = 0; sent < fileBytes; sent += chunk.length) yield chunk;
+	}
+	const multipart = buildMultipartBody(fields, {
+		name: 'payload',
+		filename: 'package.tar.gz',
+		contentType: 'application/gzip',
+		stream: Readable.from(fileChunks()),
+	});
+	const auth = Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64');
+	return new Promise((resolve, reject) => {
+		const socket = connect(Number(url.port), url.hostname);
+		let response = '';
+		let stage = 'sending the first megabyte';
+		let settled = false;
+		let onAnswer!: () => void;
+		const answer = new Promise<void>((resolveAnswer) => (onAnswer = () => resolveAnswer()));
+		const statuses = () => response.match(/HTTP\/1\.1 \d{3}/g) ?? [];
+		const finish = (error?: Error) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(deadline);
+			socket.destroy();
+			if (error) reject(error);
+			else resolve({ response, statuses: statuses() });
+		};
+		const unfinished = (why: string) => new Error(`${why} while ${stage}; received: ${response.slice(0, 300)}`);
+		const deadline = setTimeout(() => finish(unfinished(`unfinished after ${deadlineMs}ms`)), deadlineMs);
+		socket.on('error', finish);
+		socket.on('close', () => finish(unfinished('the connection closed')));
+		socket.on('data', (data) => {
+			response += data;
+			if (answered(response)) onAnswer();
+			if (stage === 'waiting for the second answer' && statuses().length >= 2) finish();
+		});
+		socket.once('connect', async () => {
+			try {
+				socket.write(
+					`POST / HTTP/1.1\r\nHost: ${url.host}\r\nAuthorization: Basic ${auth}\r\nContent-Type: ${multipart.contentType}\r\n` +
+						(sse ? 'Accept: text/event-stream\r\n' : '') +
+						'Transfer-Encoding: chunked\r\n\r\n'
+				);
+				let sent = 0;
+				for await (const part of multipart.stream) {
+					if (socket.destroyed) return;
+					if (stage === 'sending the first megabyte' && sent >= 1024 * 1024) {
+						stage = 'waiting for the answer';
+						await answer;
+						if (socket.destroyed) return;
+						stage = 'sending the rest of the upload';
+					}
+					const frame = Buffer.concat([Buffer.from(`${part.length.toString(16)}\r\n`), part, Buffer.from('\r\n')]);
+					if (!socket.write(frame)) await new Promise((resume) => socket.once('drain', resume));
+					sent += part.length;
+				}
+				if (socket.destroyed) return;
+				socket.write('0\r\n\r\n', (error) => {
+					if (error || socket.destroyed) return;
+					stage = 'waiting for the second answer';
+					socket.write(`GET /health HTTP/1.1\r\nHost: ${url.host}\r\n\r\n`);
+				});
+			} catch (error) {
+				finish(error as Error);
+			}
+		});
+	});
+}
+
 suite('Multipart streaming deploy_component', (ctx: ContextWithHarper) => {
 	let fixtureDir: string;
+	let blob: Buffer;
 
 	before(async () => {
 		await startHarper(ctx);
@@ -88,11 +207,9 @@ suite('Multipart streaming deploy_component', (ctx: ContextWithHarper) => {
 		writeFileSync(join(fixtureDir, 'schema.graphql'), 'type Query { hello: String }\n');
 		mkdirSync(join(fixtureDir, 'web'), { recursive: true });
 		writeFileSync(join(fixtureDir, 'web', 'index.html'), '<h1>Hello, Multipart!</h1>');
-		// 4 MB of pseudo-random data — non-compressible enough that gzip can't trivialize it,
-		// large enough that the multipart parser definitely sees several busboy chunks
-		// before the file part ends.
-		const blob = Buffer.alloc(4 * 1024 * 1024);
-		for (let i = 0; i < blob.length; i++) blob[i] = (i * 1103515245 + 12345) & 0xff;
+		// 4 MB of random data — incompressible, so the gzipped payload stays as large as the
+		// file, and the multipart parser sees many busboy chunks before the file part ends.
+		blob = randomBytes(4 * 1024 * 1024);
 		writeFileSync(join(fixtureDir, 'web', 'blob.bin'), blob);
 	});
 
@@ -130,8 +247,8 @@ suite('Multipart streaming deploy_component', (ctx: ContextWithHarper) => {
 		await sleep(5000);
 		ok(existsSync(join(ctx.harper.dataRootDir, 'components', project)));
 		ok(
-			existsSync(join(ctx.harper.dataRootDir, 'components', project, 'web', 'blob.bin')),
-			'large file part should have been extracted intact'
+			readFileSync(join(ctx.harper.dataRootDir, 'components', project, 'web', 'blob.bin')).equals(blob),
+			'the large file part was extracted byte for byte'
 		);
 	});
 
@@ -140,4 +257,48 @@ suite('Multipart streaming deploy_component', (ctx: ContextWithHarper) => {
 		strictEqual(response.status, 200);
 		ok((await response.text()).includes('<h1>Hello, Multipart!</h1>'));
 	});
+
+	// Under Bun, Harper reads the whole body before Fastify sees the request, so no upload can stall behind an unread part.
+	const skip = process.env.HARPER_RUNTIME === 'bun' && 'the body is buffered before Fastify under Bun';
+	const refusals: Array<[string, Record<string, unknown>, boolean, string, string]> = [
+		[
+			'a payload deploy it refuses',
+			{ operation: 'deploy_component', project: 'refused-multipart', isolated: true },
+			false,
+			'HTTP/1.1 400',
+			"'isolated' is only supported for package deployments",
+		],
+		[
+			'a payload deploy it refuses in its event stream',
+			{ operation: 'deploy_component', project: 'refused-multipart-sse', isolated: true },
+			true,
+			'HTTP/1.1 200',
+			"'isolated' is only supported for package deployments",
+		],
+		[
+			'a request with no operation',
+			{ project: 'no-operation' },
+			false,
+			'HTTP/1.1 400',
+			"Request body must include an 'operation' property",
+		],
+	];
+	for (const [description, fields, sse, status, message] of refusals) {
+		test(
+			`reads the rest of the upload of ${description}, then serves the next request on that connection`,
+			{ skip },
+			async () => {
+				const upload = await uploadOnRawSocket(ctx, fields, (response) => response.includes(message), { sse });
+				const body = firstResponseBody(upload.response);
+				if (sse) {
+					const [error] = sseErrors(body);
+					ok(error?.message?.includes(message), body);
+					strictEqual(error.code, 400);
+				} else {
+					ok(JSON.parse(body).error.includes(message), body);
+				}
+				deepStrictEqual(upload.statuses, [status, 'HTTP/1.1 200']);
+			}
+		);
+	}
 });

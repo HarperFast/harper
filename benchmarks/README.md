@@ -266,6 +266,9 @@ Compares the RocksDB block/blob codecs on identical data and an identical worklo
 is a per-column-family property that RocksDB fixes while the family is open, so each codec gets
 its own Harper instance on a fresh data directory.
 
+**Run manually.** This benchmark is not part of [`perf-benchmarks-nightly.yml`](../.github/workflows/perf-benchmarks-nightly.yml),
+which runs only `indexed-write`, `ttl-churn` and `concurrent-rw`, and it publishes no trend data. Run it by hand with the commands below.
+
 ```sh
 node benchmarks/compression/run.mts                                   # 200k records, realistic data
 node benchmarks/compression/run.mts --scale=large --dataset=both      # 1M records, + incompressible control

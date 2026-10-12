@@ -3,8 +3,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import * as pkijs from 'pkijs';
-import * as asn1js from 'asn1js';
+import type * as Asn1js from 'asn1js';
+import { loadPkijs } from './pkijs-ed25519-patch.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { declareCertificateCacheTable } from './verificationTables.ts';
 import type { PeerCertificate, CertificateChainEntry } from './types.ts';
@@ -69,6 +69,8 @@ export function extractCRLDistributionPoints(certPem: string): string[] {
 	try {
 		// Parse the certificate using PKI.js
 		const certBuffer = pemToBuffer(certPem);
+		const pkijs = loadPkijs();
+		const asn1js = require('asn1js') as typeof Asn1js;
 		const cert = pkijs.Certificate.fromBER(certBuffer);
 
 		// Look for CRL Distribution Points extension (OID: 2.5.29.31)
@@ -127,6 +129,8 @@ export function extractCRLDistributionPoints(certPem: string): string[] {
  */
 export function extractRevocationUrls(certPem: string): { crlUrls: string[]; ocspUrls: string[] } {
 	try {
+		const pkijs = loadPkijs();
+		const asn1js = require('asn1js') as typeof Asn1js;
 		// Parse the certificate using PKI.js (single parse for both URL types)
 		const certBuffer = pemToBuffer(certPem);
 		const cert = pkijs.Certificate.fromBER(certBuffer);
@@ -220,6 +224,8 @@ export function extractOCSPUrls(certPem: string): string[] {
 	try {
 		// Parse the certificate using PKI.js
 		const certBuffer = pemToBuffer(certPem);
+		const pkijs = loadPkijs();
+		const asn1js = require('asn1js') as typeof Asn1js;
 		const cert = pkijs.Certificate.fromBER(certBuffer);
 
 		// Look for Authority Information Access extension (OID: 1.3.6.1.5.5.7.1.1)
@@ -354,6 +360,7 @@ export function createRevokedCertificateId(issuerKeyId: string, serialNumber: st
 export function extractSerialNumber(certPem: string): string {
 	try {
 		const certBuffer = pemToBuffer(certPem);
+		const pkijs = loadPkijs();
 		const cert = pkijs.Certificate.fromBER(certBuffer);
 
 		// Convert serial number to string
@@ -375,6 +382,8 @@ export function extractSerialNumber(certPem: string): string {
 export function extractIssuerKeyId(certPem: string): string {
 	try {
 		const certBuffer = pemToBuffer(certPem);
+		const pkijs = loadPkijs();
+		const asn1js = require('asn1js') as typeof Asn1js;
 		const cert = pkijs.Certificate.fromBER(certBuffer);
 
 		// Look for Authority Key Identifier extension (OID: 2.5.29.35)

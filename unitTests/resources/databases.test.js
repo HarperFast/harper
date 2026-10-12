@@ -19,6 +19,8 @@ const {
 	beginRestore,
 	completeRestore,
 	abandonRestore,
+	acquireRestoreLock,
+	releaseRestoreLock,
 	restoringMarkerPath,
 	RESTORE_META_DIR,
 } = require('#src/dataLayer/restoreMarker');
@@ -199,6 +201,47 @@ describe('dropDatabase restore serialization', () => {
 		table({ table: 'Two', database: MULTI, attributes: [{ name: 'id', isPrimaryKey: true }] });
 		if (!(T1.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
 		await assert.doesNotReject(dropDatabase(MULTI));
+	});
+
+	it('refuses an open while the restore lock is held, with no marker to fall back on', async function () {
+		this.timeout(30000);
+		// An anchor gives us the databases root and tells us which engine's path shape to build, so this
+		// runs on both. There is deliberately NO marker: before the exclusion, throwIfBlockedByRestore
+		// read 'clear' without probing the lock and the open went straight through, so the lock alone
+		// has to be what stops it. Reverting either open site to a bare open fails this.
+		const anchor = table({
+			table: 'Anchor',
+			database: 'exclusion-anchor-test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = anchor.primaryStore.rootStore;
+		const BLOCKED = 'exclusion-blocked-test';
+		const blockedPath = join(dirname(rootStore.path), rootStore instanceof RocksDatabase ? BLOCKED : `${BLOCKED}.mdb`);
+
+		const lock = acquireRestoreLock(blockedPath);
+		try {
+			assert.throws(
+				() =>
+					table({
+						table: 'Blocked',
+						database: BLOCKED,
+						attributes: [{ name: 'id', isPrimaryKey: true }],
+					}),
+				(error) => error.statusCode === 409
+			);
+		} finally {
+			releaseRestoreLock(lock);
+		}
+
+		// and the exclusion is the lock dropDatabase takes, so a held lock refuses the drop too
+		const held = acquireRestoreLock(rootStore.path);
+		try {
+			await assert.rejects(dropDatabase('exclusion-anchor-test'), (error) => error.statusCode === 409);
+		} finally {
+			releaseRestoreLock(held);
+		}
+		table({ table: 'Anchor', database: 'exclusion-anchor-test', attributes: [{ name: 'id', isPrimaryKey: true }] });
+		await assert.doesNotReject(dropDatabase('exclusion-anchor-test'));
 	});
 
 	it('never loads the reserved restore-metadata directory as a database', function () {

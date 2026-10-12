@@ -3,7 +3,6 @@
 import bulkDeleteValidator from '../validation/bulkDeleteValidator.ts';
 import deleteValidator from '../validation/deleteValidator.ts';
 import * as commonUtils from '../utility/common_utils.ts';
-import moment from 'moment';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { promisify, callbackify } from 'util';
 import * as terms from '../utility/hdbTerms.ts';
@@ -35,6 +34,7 @@ export async function deleteFilesBefore(deleteObj: any) {
 
 	commonUtils.transformReq(deleteObj);
 
+	const moment = require('moment') as typeof import('moment');
 	let parsedDate = moment(deleteObj.date, moment.ISO_8601);
 	if (!parsedDate.isValid()) {
 		throw handleHDBError(

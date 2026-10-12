@@ -11,13 +11,14 @@ import harperLogger from '../utility/logging/harper_logger.ts';
 import { parentPort } from 'node:worker_threads';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
-import { getConfigPath } from '../config/configUtils.ts';
+import { atomicWriteFile, getConfigPath } from '../config/configUtils.ts';
 import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
 import {
 	applicationSocketName,
 	isolatedApplicationRoute,
 	thisThreadsIsolatedApplication,
 } from './threads/isolatedApplications.ts';
+import { claimListener, listenerOwner, shouldBindListenerHere } from './threads/workerPools.ts';
 import { createTLSSelector, getEffectiveTlsCiphers } from '../security/keys.ts';
 import { createSecureServer, createServer as createH2CServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
@@ -40,7 +41,7 @@ import {
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import { Readable, Writable, pipeline } from 'node:stream';
-import { mkdirSync, writeFileSync, unlinkSync, readdirSync, statSync } from 'node:fs';
+import { mkdirSync, unlinkSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.ts';
 import { setPortServerMap, SERVERS, socketOptionDefaults } from './serverRegistry.ts';
@@ -96,6 +97,10 @@ const failedUdsPaths = new Set<string>();
 
 export function registerUdsCleanupPaths(socketPath: string, yamlPath: string) {
 	udsCleanupPaths.push({ socketPath, yamlPath });
+}
+
+export function hasUdsMirror(): boolean {
+	return udsCleanupPaths.some((entry) => !failedUdsPaths.has(entry.socketPath));
 }
 
 /**
@@ -261,9 +266,26 @@ export function writeUdsMetadata(
 		}
 	}
 	try {
-		writeFileSync(yamlPath, yaml);
+		atomicWriteFile(yamlPath, yaml, { maxRetries: 0 });
 	} catch (error) {
 		harperLogger.error('Error writing UDS metadata to ' + yamlPath, error);
+	}
+}
+
+export function ensureSocketsDirectory(): string | undefined {
+	const socketsDir = join(env.getHdbBasePath(), 'sockets');
+	try {
+		mkdirSync(socketsDir, { recursive: true, mode: 0o700 });
+		if (process.platform === 'win32') return socketsDir;
+		const mode = statSync(socketsDir).mode & 0o777;
+		if (mode !== 0o700) {
+			chmodSync(socketsDir, 0o700);
+			harperLogger.warn(`Set UDS sockets directory ${socketsDir} to mode 700 (was ${mode.toString(8)})`);
+		}
+		return socketsDir;
+	} catch (error) {
+		harperLogger.error('Unable to secure UDS sockets directory ' + socketsDir + ', skipping UDS mirrors', error);
+		return undefined;
 	}
 }
 
@@ -620,7 +642,27 @@ function hasConnectionToken(tokens: string[], wanted: string) {
 	return false;
 }
 
+/**
+ * A `threadType` registration makes the port that worker type's own (see server/threads/workerPools.ts).
+ * Owned and unowned listeners never share a port: the unowned ones expect every HTTP worker to bind it,
+ * and an owned port is bound only by its pool, which loads no application.
+ */
+function claimPortForThreadType(port: number | string, options: ServerOptions | undefined) {
+	const threadType = options?.threadType;
+	const owner = listenerOwner(port);
+	if (!threadType) {
+		if (owner !== undefined)
+			throw new Error(`Port ${port} is owned by '${owner}' workers, so it cannot serve listeners on every worker`);
+		return;
+	}
+	if (httpServers[port] && owner === undefined)
+		throw new Error(`Port ${port} already serves listeners on every worker, so '${threadType}' workers cannot own it`);
+	claimListener(port, threadType);
+}
+
 function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
+	claimPortForThreadType(port, options);
+	const threadType = options?.threadType;
 	const { mtls: isMtls, usageType } = options || {};
 	const isOperationsServer = usageType === 'operations-api';
 	setPortServerMap(port, { protocol_name: secure ? 'HTTPS' : 'HTTP', name: getComponentName() });
@@ -902,16 +944,19 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		// Operations API domain socket connections bypass auth (equivalent to local access)
 		if (isOperationsServer && String(port).includes('/')) server.bypassLocalAuth = true;
 
-		// Create a corresponding Unix Domain Socket mirror for secure ports
-		if (secure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
-			const socketsDir = join(env.getHdbBasePath(), 'sockets');
-			mkdirSync(socketsDir, { recursive: true });
+		// Create a corresponding Unix Domain Socket mirror for secure ports, on the threads that bind the port
+		const socketsDir =
+			secure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(port)
+				? ensureSocketsDirectory()
+				: undefined;
+		if (socketsDir) {
 			const isolatedApplication = thisThreadsIsolatedApplication();
 			const socketName = isolatedApplication
 				? applicationSocketName(isolatedApplication, port)
 				: `${getWorkerIndex()}-${port}`;
 			const udsPath = join(socketsDir, `${socketName}.sock`);
 			const yamlPath = join(socketsDir, `${socketName}.yaml`);
+			if (threadType) claimListener(udsPath, threadType);
 
 			if (process.env.HARPER_UWS_UDS) {
 				// uWS backend (#914): serve the UDS mirror with uWebSockets.js instead of a Node http
@@ -977,6 +1022,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			if (process.env.HARPER_H2C_UDS) {
 				const udsPathH2 = join(socketsDir, `${socketName}-h2.sock`);
 				const yamlPathH2 = join(socketsDir, `${socketName}-h2.yaml`);
+				if (threadType) claimListener(udsPathH2, threadType);
 				const h2Server = createH2CServer({}, (nodeRequest: any, nodeResponse: any) => {
 					const method = nodeRequest.method;
 					if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
@@ -1231,6 +1277,7 @@ async function normalizeUwsBody(
  * that will be passed to Bun.serve() when listenOnPorts() is called in threadServer.js.
  */
 function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions) {
+	claimPortForThreadType(port, options);
 	const { usageType } = options || {};
 	const isOperationsServer = usageType === 'operations-api';
 	setPortServerMap(port, { protocol_name: secure ? 'HTTPS' : 'HTTP', name: getComponentName() });
@@ -1728,6 +1775,7 @@ type OnWebSocketOptions = {
 	securePort?: number;
 	maxPayload?: number;
 	usageType?: string;
+	threadType?: string;
 	mtls?: boolean;
 	runFirst?: boolean;
 	name?: string;

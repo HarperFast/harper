@@ -647,6 +647,15 @@ instant core can prove nothing else was granting under. Where a predecessor's au
 an adopted transport swap, or an unregister and re-register inside one thread — the horizon is
 waived or carried rather than recomputed.
 
+`ClusterLockTransport.coordinationIncarnation()` supplies the owning coordinator's construction-time
+identity even while `homeMap()` is withheld for activation or peer agreement. Agreement becoming
+available is not a takeover: the first-ever waiver survives, and a restarted home keeps its full
+construction-time quarantine rather than starting another interval at agreement. A real incarnation
+change or ownership gap still re-arms the horizon. Adoption carries the predecessor's ownership clock
+and its incarnation together, including an unknown incarnation: a successor's new identity cannot
+prove the older interval was safe. Transports without the optional hook retain the conservative
+`homeMap()` fallback.
+
 That quarantine costs availability, and the cost is real: for keys a node homes, the first cluster
 lock after a cold start waits out the interval. It does not affect keys homed elsewhere — the node
 acquires those immediately — and it is bounded by the delegation lease, not by an operator's response
@@ -1312,8 +1321,10 @@ route in §10, which the contract already states, so the gap is disclosed rather
 must not be read as fully implemented. Closing it means hanging the release hook off
 logical-transaction settlement rather than off the last admission unlocking. harper-pro#822 supplies
 the operator-agreed home map and `establishLockFreshness()`; the feature is opt-in
-(`replication.recordLocks: true`). Still missing: relaying a `lockRelease` that reaches a
-non-coordinating thread (`applyEntry` counts, warns and drops it). **The measurement gate
+(`replication.recordLocks: true`). A `lockRelease` that reaches a non-coordinating thread is handed
+to the transport's `relayControlEntry` (harper-pro#977). Without the hook, a thread that has a
+coordinator counts and warns (`droppedOffOwner`); a thread with none only warns once — it holds no
+grant and no counter. **The measurement gate
 (harper-pro#824) has loopback results only** (`replication/RECORD_LOCK_COST_DELEGATIONS.md`) and
 remains open, and the decision to implement ahead of it was the human's, recorded here so the
 sequence is not mistaken for the one this note recommends.

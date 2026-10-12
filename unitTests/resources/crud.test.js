@@ -132,6 +132,22 @@ describe('CRUD operations with the Resource API', () => {
 		}
 		return largest === -Infinity ? undefined : largest;
 	}
+	it('names only the computed indexes whose resolver this thread lacks', function () {
+		assert.deepStrictEqual(CRUDTable.unresolvedComputedIndexes(), []);
+		const Unresolved = table({
+			table: 'CRUDUnresolvedComputed',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'upper', computed: true, indexed: true },
+				{ name: 'lower', computed: true },
+			],
+		});
+		assert.deepStrictEqual(Unresolved.unresolvedComputedIndexes(), ['upper']);
+		Unresolved.setComputedAttribute('upper', (record) => record.name?.toUpperCase());
+		assert.deepStrictEqual(Unresolved.unresolvedComputedIndexes(), []);
+	});
 	it('reads the largest single write from a distribution rather than the window mean', function () {
 		const diluted = { mean: 8.333333333333334, count: 3, distribution: [{ value: 1, count: 2 }, 23] };
 		assert(!(diluted.mean > 20));

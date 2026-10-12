@@ -6,7 +6,7 @@ const env = require('../../../../utility/environment/environmentManager.ts');
 const path = require('path');
 const minimist = require('minimist');
 const fs = require('fs-extra');
-const _ = require('lodash');
+const setPath = require('lodash/set');
 const { getConfigPath, updateConfigObject } = require('../../../../config/configUtils.ts');
 env.initSync();
 
@@ -110,7 +110,7 @@ function initSystemSchemaPaths(schema, table) {
 			// If path var exists for system table add it to schemas prop and return path.
 			const systemTablePath = systemSchemaConf?.tables?.[table]?.[DATABASES_PARAM_CONFIG.PATH];
 			if (systemTablePath) {
-				_.set(
+				setPath(
 					schemasObj,
 					[SYSTEM_SCHEMA_NAME, DATABASES_PARAM_CONFIG.TABLES, table, DATABASES_PARAM_CONFIG.PATH],
 					systemTablePath
@@ -122,7 +122,7 @@ function initSystemSchemaPaths(schema, table) {
 			// If path exists for system schema add it to schemas prop and return path.
 			const systemSchemaPath = systemSchemaConf?.[DATABASES_PARAM_CONFIG.PATH];
 			if (systemSchemaPath) {
-				_.set(schemasObj, [SYSTEM_SCHEMA_NAME, DATABASES_PARAM_CONFIG.PATH], systemSchemaPath);
+				setPath(schemasObj, [SYSTEM_SCHEMA_NAME, DATABASES_PARAM_CONFIG.PATH], systemSchemaPath);
 				updateConfigObject(CONFIG_PARAMS.DATABASES, schemasObj);
 				return systemSchemaPath;
 			}

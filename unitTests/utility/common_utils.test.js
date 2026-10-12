@@ -174,10 +174,6 @@ describe('Test common_utils module', () => {
 		it(`Pass in false, expect true`, function () {
 			assert.equal(cu.isBoolean(false), true);
 		});
-
-		it(`Pass in evaluation, expect true`, function () {
-			assert.equal(cu.isBoolean(2 > 1), true);
-		});
 	});
 
 	describe(`Test autoCast`, function () {

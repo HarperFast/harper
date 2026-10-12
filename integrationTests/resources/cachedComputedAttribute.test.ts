@@ -18,8 +18,7 @@ suite('cache table with a computed attribute', (ctx: ContextWithHarper) => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH);
 		const { admin, httpURL } = ctx.harper;
 		const authorization = 'Basic ' + Buffer.from(`${admin.username}:${admin.password}`).toString('base64');
-		request = (path, init = {}) =>
-			fetch(`${httpURL}${path}`, { ...init, headers: { authorization, ...(init.headers ?? {}) } });
+		request = (path, init = {}) => fetch(`${httpURL}${path}`, { ...init, headers: { authorization, ...init.headers } });
 	});
 
 	after(async () => {

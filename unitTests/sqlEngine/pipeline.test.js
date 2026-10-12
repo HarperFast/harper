@@ -533,7 +533,7 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 	function makeThrowingTable(error) {
 		const table = makeMockTable({ primaryKey: 'id', attributes: [{ name: 'id', indexed: true }], rows: [] });
 		table.search = async function* () {
-			throw error;
+			yield Promise.reject(error);
 		};
 		binder._setDatabasesLoader(() => ({ dev: { user: table } }));
 	}
