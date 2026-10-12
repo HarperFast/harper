@@ -10,9 +10,6 @@ import { packageJson } from '../utility/packageUtils.js';
 import checkNode from '../launchServiceScripts/utility/checkNodeVersion.js';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 const { SERVICE_ACTIONS_ENUM, OPERATIONS_ENUM } = hdbTerms as any;
-if (typeof process.setSourceMapsEnabled === 'function') {
-	process.setSourceMapsEnabled(true); // this is necessary for source maps to work, at least on the main thread.
-}
 
 /**
  * Format a CLI error for the terminal. Expected, user-facing errors (a `ClientError` from an

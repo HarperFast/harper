@@ -101,6 +101,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 ## resources/analytics/
 
 - [Analytics aggregation resumes from a raw cursor, which is not a clock (`resources/analytics/write.ts`)](resources/analytics/DESIGN.md#analytics-aggregation-resumes-from-a-raw-cursor-which-is-not-a-clock-resourcesanalyticswritets) — `rawCursor` moves only to a record a cycle actually read and is separate from the cadence marker.
+- [Aggregation folds each measure over only the samples that carry it (`resources/analytics/write.ts`)](resources/analytics/DESIGN.md#aggregation-folds-each-measure-over-only-the-samples-that-carry-it-resourcesanalyticswritets) — per-measure sample counts, cycle-local, weight each mean; a measure in every sample folds exactly as before.
 
 ## resources/models/ — model facade, backends, decisions
 
@@ -210,3 +211,4 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [Release dependencies are bundled without host binaries (`bundleDependencies.ts`)](build-tools/DESIGN.md#release-dependencies-are-bundled-without-host-binaries-bundledependenciests) — The locked JavaScript closure ships as bytes; native roots install per platform and the actual archive and consumer layout are checked.
 - [The published image runs `tini -g` as PID 1, not Harper (`Dockerfile`)](build-tools/DESIGN.md#the-published-image-runs-tini--g-as-pid-1-not-harper-dockerfile) — `tini -g` is PID 1 so the restart watchdog can arm and `docker stop` reaches the whole process group.
 - [`build.sh` packages only a clean, error-free build (`build.sh`)](build-tools/DESIGN.md#buildsh-packages-only-a-clean-error-free-build-buildsh) — Packaging clears `dist/` and fails on `tsc` errors, so a failed or partial build is never shipped.
+- [Emitted `dist/` JS is comment-free and Latin-1 (`build-tools/build-dist.mjs`)](build-tools/DESIGN.md#emitted-dist-js-is-comment-free-and-latin-1-build-toolsbuild-distmjs) — V8 keeps every loaded module's source on each thread's heap and stores a file as UTF-16 when one char is above `0xFF`, so the build strips comments and escapes non-Latin-1 literals in the emitter.
