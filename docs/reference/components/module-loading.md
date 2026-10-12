@@ -51,7 +51,7 @@ The `moduleLoader` change matters most: on v5.0.x an application runs under `vm`
 | `native`                       | Shared       | Shared with Harper | Harper's       | No                                       | No                          |
 | `compartment`                  | Per app\*    | SES-managed        | Custom per app | Yes                                      | No                          |
 
-\* Applies to modules the application loader handles. Dependencies routed to the native loader share Node's process-wide cache — see [Dependency Loading](#dependency-loading).
+\* Applies to modules the application loader handles. Dependencies routed to the native loader share Node's module cache within the same worker; different workers have separate caches — see [Dependency Loading](#dependency-loading).
 
 ### `vm-current-context` (default)
 
@@ -61,7 +61,7 @@ The VM module loader running in Harper's own context, and the default since v5.1
 
 Sharing intrinsics gives the best compatibility with packages that perform `instanceof` or other identity checks on values crossing the application/Harper boundary. It is the right choice for almost every application.
 
-Because there is no separate global object, `tables`, `databases`, and the other Harper APIs are the same live, process-wide objects whether you reach them as globals or as `harper` imports. See [JavaScript Environment](./javascript-environment.md#module-formats) for what that means in practice.
+Applications in the same worker share its global object. An [isolated application](./applications.md#isolated-applications) runs in its own worker with separate globals. Also, [branched databases](./applications.md#branched-databases) make the application's `harper` imports of `databases` and `tables` resolve its forks, while the bare globals still reach the base databases. See [JavaScript Environment](./javascript-environment.md#module-formats) for the data-sharing rules.
 
 ### `vm`
 

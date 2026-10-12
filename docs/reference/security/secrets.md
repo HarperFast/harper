@@ -13,7 +13,7 @@ This is the production-grade alternative to committing a `.env` file. For the si
 
 Every secret is a named row in `system.hdb_secret`. Only ciphertext is ever stored — a plaintext value submitted to `set_secret` is encrypted immediately and the plaintext is discarded. Values are never returned by any read operation, never written to the operations log, and never travel in the replication payload as plaintext; rows reach peers as encrypted envelopes through normal system-table replication.
 
-Secret names may contain word characters, dots, and dashes (e.g. `STRIPE_KEY`, `deploy.my-app.git.github_com`).
+Secret names may contain word characters, dots, and dashes (e.g. `STRIPE_KEY`, `deploy.my-app.git.github.com`).
 
 ### Custody (Harper Pro)
 

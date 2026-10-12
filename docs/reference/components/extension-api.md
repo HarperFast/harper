@@ -36,12 +36,12 @@ extensionModule: ./dist/index.js
 
 A Resource Extension processes specific files or directories. It is comprised of four function exports:
 
-| Method              | Thread             | Timing                    |
-| ------------------- | ------------------ | ------------------------- |
-| `handleFile()`      | All worker threads | Executed on every restart |
-| `handleDirectory()` | All worker threads | Executed on every restart |
-| `setupFile()`       | Main thread only   | Once, at initial start    |
-| `setupDirectory()`  | Main thread only   | Once, at initial start    |
+| Method              | Thread                  | Timing                    |
+| ------------------- | ----------------------- | ------------------------- |
+| `handleFile()`      | Workers loading the app | Executed on every restart |
+| `handleDirectory()` | Workers loading the app | Executed on every restart |
+| `setupFile()`       | Main thread only        | Once, at initial start    |
+| `setupDirectory()`  | Main thread only        | Once, at initial start    |
 
 > **Important**: `harper restart` only restarts worker threads. Code in `setupFile()` and `setupDirectory()` runs only when Harper fully shuts down and starts again—not on `deploy` or `restart`.
 
@@ -165,10 +165,10 @@ Example Protocol Extension configuration:
 
 A Protocol Extension defines up to two methods:
 
-| Method                | Thread             | Timing                    |
-| --------------------- | ------------------ | ------------------------- |
-| `start()`             | All worker threads | Executed on every restart |
-| `startOnMainThread()` | Main thread only   | Once, at initial start    |
+| Method                | Thread                  | Timing                    |
+| --------------------- | ----------------------- | ------------------------- |
+| `start()`             | Workers loading the app | Executed on every restart |
+| `startOnMainThread()` | Main thread only        | Once, at initial start    |
 
 Both methods receive the same `options` object and can return a Resource Extension (an object with any of the Resource Extension methods).
 

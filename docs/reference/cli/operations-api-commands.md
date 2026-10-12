@@ -261,7 +261,7 @@ harper deploy target=https://server.com:9925
 
 **Deploy to clustered environment**:
 
-For clustered environments, use the `replicated=true` parameter to ensure the deployment is replicated to all nodes:
+On Harper Pro and Fabric, a deploy is replicated to every node in the cluster unless you pass `replicated=false`. Passing `replicated=true` makes that explicit:
 
 ```bash
 harper deploy target=https://server.com:9925 replicated=true
