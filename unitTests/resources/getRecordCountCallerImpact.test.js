@@ -30,8 +30,8 @@ describe('Table.getRecordCount caller impact', () => {
 
 	before(async function () {
 		this.timeout(120000);
-		setupTestDBPath();
 		originalWasWorker = getWorkerIndex() !== undefined;
+		setupTestDBPath();
 		setMainIsWorker(true);
 		SmallTable = await buildTable('RecordCountImpactSmall', 25);
 		BelowFloorTable = await buildTable('RecordCountImpactBelowFloor', 900);
