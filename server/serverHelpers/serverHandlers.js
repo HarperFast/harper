@@ -90,22 +90,22 @@ function serverErrorHandler(error, req, resp) {
 			}
 			return resp.code(error.statusCode).send(body);
 		}
-		return resp
-			.code(error.statusCode)
-			.send(
-				error.replicationUnconfirmed === true
-					? { ...error.http_resp_msg, replicationUnconfirmed: true, retryable: false }
-					: error.http_resp_msg
-			);
+		if (error.replicationUnconfirmed === true) {
+			const body = Array.isArray(error.http_resp_msg) ? { error: error.http_resp_msg } : error.http_resp_msg;
+			return resp.code(error.statusCode).send({
+				...body,
+				code: body?.code ?? error.code,
+				replicationUnconfirmed: true,
+				retryable: false,
+			});
+		}
+		return resp.code(error.statusCode).send(error.http_resp_msg);
 	}
 	const statusCode = error.statusCode ? error.statusCode : hdbErrors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
 	if (typeof error === 'string') {
 		return resp.code(statusCode).send({ error: error });
 	}
-	const body = error.message ? { error: error.message } : error;
-	return resp
-		.code(statusCode)
-		.send(error.replicationUnconfirmed === true ? { ...body, replicationUnconfirmed: true } : body);
+	return resp.code(statusCode).send(error.message ? { error: error.message } : error);
 }
 
 function reqBodyValidationHandler(req, resp, done) {

@@ -6,6 +6,7 @@ import {
 	DatabaseClosingError,
 	DatabaseDrainTimeoutError,
 	ReplicationConfirmationError,
+	withoutReplicationUnconfirmed,
 	ServerError,
 	TransactionCommitConflictTimeoutError,
 } from '../utility/errors/hdbError.ts';
@@ -3056,7 +3057,7 @@ export class DatabaseTransaction implements Transaction {
 							)
 								this.timestamp = 0; // reset the timestamp as well
 							const completed =
-								confirmation || this.next
+								confirmation || (this.root ?? this).replicatedConfirmation
 									? settleCommitCompletions(completions, confirmation)
 									: Promise.all(completions);
 							return completed.then(
@@ -3377,6 +3378,7 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	protected abortAfterCommitError(error, targetTransaction?: RocksTransaction): never {
+		if (error?.replicationUnconfirmed === true && this.hasPendingWrites()) error = withoutReplicationUnconfirmed(error);
 		try {
 			const retryTxn = targetTransaction as RocksTransactionWithRetry | undefined;
 			const retryTxnCommitted = this.isHandleCommitted(retryTxn);

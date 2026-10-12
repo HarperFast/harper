@@ -985,8 +985,9 @@ submission the commit rechecks the lists (confirmation may have been requested a
 and runs the feasibility check the replication layer registered with `replicationConfirmation` (harper-pro:
 the recipient bound). A table source's `before` hook (`source.put`/`patch`) has already run by then, because
 record-based placement needs the merged record; the guarantee covers Harper's stored data, not the source.
-An error after the native commit is observed after local completions, so bookkeeping and chained commits
-finish before a confirmation failure surfaces. LMDB's production confirmation registry remains unregistered. Enforced by
+A confirmation-hook error after the native commit is observed after local completions, so bookkeeping and chained commits
+finish before a confirmation failure surfaces. LMDB's production registry is unregistered and its write-bearing
+child does not inherit the root's confirmation count. Enforced by
 `unitTests/resources/residencyConfirmation.test.js`.
 
 ## Replication confirmation failure means the linked writes committed locally
@@ -996,11 +997,19 @@ failure. `confirmReplicationAfterCommit` observes the hook immediately, and `set
 waits for local work first, deferring even a child's confirmation failure. Local write/flush failures
 remain prompt and unmarked. The wrapper retains the original public code, message and status through
 `cause`, without mutating a shared rejection, and advertises `retryable: false`: replay could repeat
-committed writes. REST problem details and operations error bodies expose the flag. This is local commit,
+committed writes. REST problem details, operations error bodies and terminal stream records expose the flag. This is local commit,
 the same durability as success, not a peer or fsync guarantee. A failed commit ends its scope; it cannot
 resume writes. Confirmation registration and count propagation are unchanged (LMDB and later databases
 are still not automatically confirmed). Pinned by `unitTests/resources/replicationConfirmationOutcome.test.js`
 and `unitTests/server/serverHelpers/serverErrorHandler.test.js`.
+
+A confirmation error from an independent nested transaction cannot attest to an enclosing scope's
+pending writes: the commit and callback failure funnels remove its flag before aborting those writes,
+keeping the original error in `cause` and refusing automatic retry because the nested write did land.
+
+Programmatic errors are `ReplicationConfirmationError` wrappers, not the original instance; inspect
+`cause` for its class and identity. String-only errors (native HTTP handlers and WebSocket close reasons)
+render the new class name. Object responses preserve the original public code alongside the flag.
 
 ## This node's short id is 0, confirmed per audit store (`nodeIdMapping.ts` `getThisNodeId`)
 

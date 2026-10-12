@@ -33,6 +33,7 @@ describe('serverErrorHandler', function () {
 				? new HdbError(new Error('Peer timeout'), { error: 'Peer timeout', peers: ['node-a'], retryable: true }, 504)
 				: new ServerError('Peer timeout', 504);
 			cause.retryable = true;
+			cause.code = 'PEER_TIMEOUT';
 			const failure = new ReplicationConfirmationError(cause);
 			app.post('/', async () => {
 				throw failure;
@@ -41,6 +42,7 @@ describe('serverErrorHandler', function () {
 				const response = await app.inject({ method: 'POST', url: '/' });
 				assert.strictEqual(response.statusCode, 504);
 				assert.strictEqual(response.json().replicationUnconfirmed, true);
+				assert.strictEqual(response.json().code, 'PEER_TIMEOUT');
 				assert.notEqual(response.json().retryable, true);
 				assert.strictEqual(response.json().error, 'Peer timeout');
 				if (structured) assert.deepStrictEqual(response.json().peers, ['node-a']);
@@ -65,7 +67,32 @@ describe('serverErrorHandler', function () {
 		}
 	});
 
-	it('retains the flag through the real operations insert dispatch and a local commit', async () => {
+	for (const marked of [false, true]) {
+		it(`preserves array error details${marked ? ' in a flagged envelope' : ' without a flag'}`, async () => {
+			const app = fastify();
+			app.setErrorHandler(serverErrorHandler);
+			const details = ['Peer timeout'];
+			const cause = new HdbError(new Error('Peer timeout'), details, 504);
+			cause.code = 'PEER_TIMEOUT';
+			app.post('/', async () => {
+				throw marked ? new ReplicationConfirmationError(cause) : cause;
+			});
+			try {
+				const response = await app.inject({ method: 'POST', url: '/' });
+				assert.strictEqual(response.statusCode, 504);
+				assert.deepStrictEqual(
+					response.json(),
+					marked ? { error: details, code: 'PEER_TIMEOUT', replicationUnconfirmed: true, retryable: false } : details
+				);
+				assert.deepStrictEqual(cause.http_resp_msg, details);
+			} finally {
+				await app.close();
+			}
+		});
+	}
+
+	it('retains the flag through the real operations insert dispatch and a local commit', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 		setupTestDBPath();
 		setMainIsWorker(true);
 		const Records = table({

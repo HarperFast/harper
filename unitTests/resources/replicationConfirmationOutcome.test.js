@@ -14,6 +14,7 @@ const { ReplicationConfirmationError, ServerError } = require('#src/utility/erro
 const { Resource } = require('#src/resources/Resource');
 const { Resources } = require('#src/resources/Resources');
 const { handleApplication } = require('#src/server/REST');
+const { contentTypes } = require('#src/server/serverHelpers/contentTypes');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const registerConfirmation = isLMDB ? lmdbConfirmation : rocksConfirmation;
@@ -309,6 +310,96 @@ describe('Replication confirmation failure after a local commit', () => {
 		assert.strictEqual((await Second.get(id)).id, id);
 	});
 
+	it('removes a nested commit flag when the enclosing callback aborts pending writes', async () => {
+		const id = nextId();
+		registerConfirmation(() => Promise.reject(new ServerError('Nested peer timeout', 504)));
+		await assert.rejects(
+			transaction({}, async () => {
+				await Second.put({ id: `outer-${id}` });
+				await confirmedWrite(`inner-${id}`);
+			}),
+			(error) => {
+				assert.strictEqual(error.replicationUnconfirmed, undefined);
+				assert.strictEqual(error.cause.replicationUnconfirmed, true);
+				assert.strictEqual(error.statusCode, 504);
+				assert.strictEqual(error.code, 'ServerError');
+				assert.strictEqual(error.retryable, false);
+				return true;
+			}
+		);
+		assert.strictEqual((await First.get(`inner-${id}`)).id, `inner-${id}`);
+		assert.equal(await Second.get(`outer-${id}`), null);
+	});
+
+	it('preserves the flag when the callback awaited its own failed commit', async () => {
+		const id = nextId();
+		const context = { replicatedConfirmation: 1 };
+		registerConfirmation(() => Promise.reject(new ServerError('Own peer timeout', 504)));
+		await assert.rejects(
+			transaction(context, async (scope) => {
+				await First.put({ id });
+				requestConfirmation(context);
+				await scope.commit();
+			}),
+			(error) => error.replicationUnconfirmed === true
+		);
+		assert.strictEqual((await First.get(id)).id, id);
+	});
+
+	it('does not defer a foreign confirmation error from local pre-commit work', async () => {
+		const id = nextId();
+		registerConfirmation(() => Promise.reject(new ServerError('Nested peer timeout', 504)));
+		class NestedSource extends Second {}
+		NestedSource.sourcedFrom({ get() {}, put: () => confirmedWrite(`inner-source-${id}`) });
+		await assert.rejects(
+			transaction({}, () => NestedSource.put({ id: `outer-source-${id}` })),
+			(error) => {
+				assert.strictEqual(error.replicationUnconfirmed, undefined);
+				assert.strictEqual(error.cause.replicationUnconfirmed, true);
+				return true;
+			}
+		);
+		assert.strictEqual((await First.get(`inner-source-${id}`)).id, `inner-source-${id}`);
+		assert.equal(await Second.get(`outer-source-${id}`), null);
+	});
+
+	for (const type of ['application/json', 'application/x-ndjson', 'text/event-stream']) {
+		it(`retains a post-commit confirmation flag in a terminal ${type} record`, async () => {
+			const id = nextId();
+			registerConfirmation(() => Promise.reject(new ServerError('Stream peer timeout', 504)));
+			async function* source() {
+				yield { stage: 'before-write' };
+				await confirmedWrite(id);
+			}
+			const stream = contentTypes.get(type).serializeStream(source(), undefined, { method: 'GET' });
+			const chunks = [];
+			for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+			const text = Buffer.concat(chunks).toString();
+			const records =
+				type === 'application/json'
+					? JSON.parse(text)
+					: type === 'text/event-stream'
+						? text
+								.split('\n')
+								.filter((line) => line.startsWith('data: '))
+								.map((line) => JSON.parse(line.slice(6)))
+						: text
+								.trim()
+								.split('\n')
+								.map((line) => JSON.parse(line));
+			assert.deepStrictEqual(records[0], { stage: 'before-write' });
+			const failure = records[1].$harperStreamError ?? records[1];
+			assert.strictEqual(failure.replicationUnconfirmed, true);
+			assert.strictEqual(failure.retryable, false);
+			if (type === 'application/json') assert.match(failure.error, /^ReplicationConfirmationError:/);
+			else {
+				assert.strictEqual(failure.error, 'ServerError');
+				assert.strictEqual(failure.status, 504);
+			}
+			assert.strictEqual((await First.get(id)).id, id);
+		});
+	}
+
 	it('publishes the flag in REST problem details while retaining the original public code', async () => {
 		const id = nextId();
 		registerConfirmation(() => Promise.reject(new ServerError('Peer timeout', 504)));
@@ -340,6 +431,7 @@ describe('Replication confirmation failure after a local commit', () => {
 		assert.strictEqual(response.status, 504);
 		const body = JSON.parse(response.body);
 		assert.strictEqual(body.replicationUnconfirmed, true);
+		assert.strictEqual(body.retryable, false);
 		assert.strictEqual(body.code, 'ServerError');
 		assert.strictEqual(body.title, 'Peer timeout');
 		assert.strictEqual((await First.get(id)).id, id);
