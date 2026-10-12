@@ -116,6 +116,21 @@ export class ReplicationConfirmationError extends ServerError {
 	}
 }
 
+export function withoutReplicationUnconfirmed(error: any): ServerError {
+	let responseMessage = error.http_resp_msg;
+	if (responseMessage && typeof responseMessage === 'object' && !Array.isArray(responseMessage)) {
+		responseMessage = { ...responseMessage, retryable: false };
+		delete responseMessage.replicationUnconfirmed;
+	}
+	return Object.assign(new ServerError(error.message, error.statusCode), {
+		cause: error,
+		code: error.code ?? error.constructor?.name,
+		http_resp_msg: responseMessage,
+		detail: error.detail,
+		retryable: false,
+	});
+}
+
 /** Retryable admission failure when a derived index cannot meet a write or query lag budget. */
 export class DerivedIndexLagError extends ServerError {
 	code: string;

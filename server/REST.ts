@@ -480,7 +480,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			status,
 			detail: error.detail,
 			instance: request.url,
-			...(error.replicationUnconfirmed === true ? { replicationUnconfirmed: true } : {}),
+			...(error.replicationUnconfirmed === true ? { replicationUnconfirmed: true, retryable: false } : {}),
 		};
 
 		const responseObject = {

@@ -6,6 +6,7 @@ import {
 	DatabaseClosingError,
 	DatabaseDrainTimeoutError,
 	ReplicationConfirmationError,
+	withoutReplicationUnconfirmed,
 	ServerError,
 	TransactionCommitConflictTimeoutError,
 } from '../utility/errors/hdbError.ts';
@@ -2371,7 +2372,7 @@ export class DatabaseTransaction implements Transaction {
 							let txnTime = this.timestamp;
 							this.timestamp = 0; // reset the timestamp as well
 							const completed =
-								confirmation || this.next
+								confirmation || (this.root ?? this).replicatedConfirmation
 									? settleCommitCompletions(completions, confirmation)
 									: Promise.all(completions);
 							return completed.then(
@@ -2623,6 +2624,7 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	protected abortAfterCommitError(error): never {
+		if (error?.replicationUnconfirmed === true && this.hasPendingWrites()) error = withoutReplicationUnconfirmed(error);
 		try {
 			// Not "always retain": abort(true) keeps the native handle only while read iterators still
 			// own it. resources/transaction.ts's own post-error abort passes the same argument, so the

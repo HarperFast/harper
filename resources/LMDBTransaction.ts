@@ -14,7 +14,7 @@ import {
 	type CommitResolution,
 } from './DatabaseTransaction';
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
-import { ServerError } from '../utility/errors/hdbError.ts';
+import { ServerError, withoutReplicationUnconfirmed } from '../utility/errors/hdbError.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context } from './ResourceInterface.ts';
@@ -331,7 +331,6 @@ export class LMDBTransaction extends DatabaseTransaction {
 		if (resolution) {
 			return resolution.then((resolution) => {
 				if (resolution) {
-					const hasNext = Boolean(this.next);
 					if (this.next) {
 						completions.push(this.next.commit({ ...options, continuation: true }));
 					}
@@ -364,7 +363,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 					this.timestamp = 0;
 					this.next = null;
 					const completed =
-						confirmation || hasNext ? settleCommitCompletions(completions, confirmation) : Promise.all(completions);
+						confirmation || (this.root ?? this).replicatedConfirmation
+							? settleCommitCompletions(completions, confirmation)
+							: Promise.all(completions);
 					return completed.then(() => {
 						return {
 							txnTime,
@@ -400,6 +401,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	}
 
 	private abortCommitFailure(error, next: DatabaseTransaction | undefined): never {
+		if (error?.replicationUnconfirmed === true && this.hasPendingWrites()) error = withoutReplicationUnconfirmed(error);
 		const nextWasAttached = Boolean(next && this.next === next);
 		try {
 			this.abort(true);
