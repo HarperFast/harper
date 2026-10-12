@@ -276,7 +276,7 @@ describe('POST caller shapes across the v5.2.0 bare-collection gate', () => {
 		});
 	});
 
-	describe('in-process X.post(data, context) with no primary key builds the same target as POST /Name', () => {
+	describe('in-process X.post(data, context) with no primary key reaches the same gate as POST /Name', () => {
 		it('table without a post override rejects with the trailing-slash 404 (v5.1.26: 405)', async () => {
 			class TableNoPost extends PostShapes {}
 			await assert.rejects(async () => TableNoPost.post({ value: 'x' }, {}), TRAILING_SLASH_404);
