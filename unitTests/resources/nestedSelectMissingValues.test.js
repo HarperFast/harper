@@ -3,10 +3,10 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { Resource, transformForSelect } = require('#src/resources/Resource');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { getWorkerIndex, setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 describe('nested select over missing relationship values', function () {
-	let Parent, Child;
+	let Parent, Child, previousMainIsWorker;
 	const jsonRecord = {
 		id: 'plain-json',
 		metadata: { label: 'kept', details: { flag: true, hidden: 'omit' }, hidden: 'omit' },
@@ -33,6 +33,7 @@ describe('nested select over missing relationship values', function () {
 
 	before(async function () {
 		setupTestDBPath();
+		previousMainIsWorker = getWorkerIndex() === 0;
 		setMainIsWorker(true);
 		Child = table({
 			database: 'nested_select_missing',
@@ -86,8 +87,12 @@ describe('nested select over missing relationship values', function () {
 	});
 
 	after(async function () {
-		await Parent?.dropTable();
-		await Child?.dropTable();
+		try {
+			await Parent?.dropTable();
+			await Child?.dropTable();
+		} finally {
+			setMainIsWorker(previousMainIsWorker);
+		}
 	});
 
 	for (const projection of projections) {

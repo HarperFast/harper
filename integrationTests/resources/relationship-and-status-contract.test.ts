@@ -528,10 +528,11 @@ suite(
 			});
 
 			test('known singleton nested-selector misparse remains outside the fix (issue #1415)', async () => {
+				strictEqual((await restPut('/OrderItem/singleton-json', { id: 'singleton-json' })).status, 204);
 				for (const selection of ['order{name}', 'nonExistentRel{x}', 'name{x}']) {
-					const response = await restGet(`/OrderItem/json?select(${selection})`);
+					const response = await restGet(`/OrderItem/singleton-json?select(${selection})`);
 					strictEqual(response.status, 200);
-					deepStrictEqual(response.body, {});
+					deepStrictEqual(response.body, {}, 'Known parser defect tracked in issue #1415');
 				}
 			});
 
