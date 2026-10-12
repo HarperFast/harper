@@ -1548,7 +1548,9 @@ function inheritedInspectHook(proto: object): Function | undefined {
 
 function callInspectHook(hook: Function, self: object, depth: number, budget: SanitizeBudget): any {
 	try {
-		return hook.call(self, budget.renderDepth - depth, budget.renderOptions, inspect);
+		// Mirror util.inspect: pass a hook `null`, not Infinity, when the caller's depth is unlimited.
+		const remainingDepth = budget.renderOptions.depth === null ? null : budget.renderDepth - depth;
+		return hook.call(self, remainingDepth, budget.renderOptions, inspect);
 	} catch (err) {
 		return `[Unrenderable value: ${errorToString(err)}]`;
 	}

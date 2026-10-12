@@ -2045,6 +2045,13 @@ describe('Test harper_logger module', () => {
 			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
 		});
 
+		it("passes a custom inspect hook null depth, not Infinity, when the caller's depth is unlimited", () => {
+			let seenDepth = 'unset';
+			const value = { [util.inspect.custom]: (depth) => ((seenDepth = depth), 'hooked') };
+			render(value, { depth: null });
+			assert.strictEqual(seenDepth, null);
+		});
+
 		it('sanitizes, masks and charges what an inherited custom inspect hook returns, and calls it once', () => {
 			let calls = 0;
 			class Report {
