@@ -2350,7 +2350,7 @@ export class DatabaseTransaction implements Transaction {
 									}
 								} catch (error) {
 									const refusal = Promise.reject(error);
-									refusal.catch(() => {}); // surfaces through Promise.all(completions), even if bookkeeping throws first
+									refusal.catch(() => {}); // surfaces through local completions, even if bookkeeping throws first
 									completions.push(refusal);
 								}
 							}
@@ -2625,7 +2625,10 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	protected abortAfterCommitError(error): never {
-		if (error?.replicationUnconfirmed === true && this.hasPendingWrites()) error = withoutReplicationUnconfirmed(error);
+		try {
+			if (error?.replicationUnconfirmed === true && this.hasPendingWrites())
+				error = withoutReplicationUnconfirmed(error);
+		} catch {}
 		try {
 			// Not "always retain": abort(true) keeps the native handle only while read iterators still
 			// own it. resources/transaction.ts's own post-error abort passes the same argument, so the

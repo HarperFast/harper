@@ -401,7 +401,10 @@ export class LMDBTransaction extends DatabaseTransaction {
 	}
 
 	private abortCommitFailure(error, next: DatabaseTransaction | undefined): never {
-		if (error?.replicationUnconfirmed === true && this.hasPendingWrites()) error = withoutReplicationUnconfirmed(error);
+		try {
+			if (error?.replicationUnconfirmed === true && this.hasPendingWrites())
+				error = withoutReplicationUnconfirmed(error);
+		} catch {}
 		const nextWasAttached = Boolean(next && this.next === next);
 		try {
 			this.abort(true);

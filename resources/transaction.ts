@@ -105,12 +105,14 @@ export function transaction<T>(
 		abortAndThrow(error, true);
 	}
 	function abortAndThrow(error, callbackThrew: boolean): never {
-		if (
-			callbackThrew &&
-			error?.replicationUnconfirmed === true &&
-			(transaction.hasPendingWrites() || transaction.isChainCommitting())
-		)
-			error = withoutReplicationUnconfirmed(error);
+		try {
+			if (
+				callbackThrew &&
+				error?.replicationUnconfirmed === true &&
+				(transaction.hasPendingWrites() || transaction.isChainCommitting())
+			)
+				error = withoutReplicationUnconfirmed(error);
+		} catch {}
 		// A commit attempt that has not reached its native outcome owns its own teardown — a handler that
 		// fired txn.commit() without awaiting it can get here while it is still running, and aborting
 		// would clear the writes it is committing and abort the handle it is committing them through.
