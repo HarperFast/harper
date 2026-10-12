@@ -136,9 +136,8 @@ suite(
 			'Q0 oracle self-proof: a planted real-valued AND null-keyed dangling entry are both visible',
 			{ timeout: 15_000 },
 			async () => {
-				// Table is empty at this point. Plant directly into the raw index, with no
-				// corresponding primary row, in `finally` so a failed assertion below can't leave a
-				// stray entry for P1/P2 (or Q2 in the sibling suite) to misattribute as their own defect.
+				// Table is empty at this point. Cleanup runs in `finally` so a failed assertion below
+				// can't leave a stray entry for P1/P2 to misattribute as their own defect.
 				try {
 					const plantReal = await postJSON('/PlantDangling/', { attr: 'bucket', value: 'GHOST', key: 'ghost-real' });
 					strictEqual(plantReal.status, 200, `PlantDangling(real) should return 200, got ${plantReal.status}`);

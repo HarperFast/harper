@@ -228,8 +228,8 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 		'Q(-1) oracle self-proof: a planted real-valued AND null-keyed dangling entry are both visible',
 		{ timeout: 15_000 },
 		async () => {
-			// Tables are empty at this point. Plant in `finally` so a failed assertion below can't
-			// leave a stray entry for Q0/Q1/Q2 to misattribute as an eviction-path defect.
+			// Tables are empty at this point. Cleanup runs in `finally` so a failed assertion below
+			// can't leave a stray entry for Q0/Q1/Q2 to misattribute as an eviction-path defect.
 			try {
 				const plantReal = await postJSON('/PlantDangling/', {
 					table: 'Expiring',
