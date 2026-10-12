@@ -40,7 +40,7 @@ process.once('exit', () => {
 		try {
 			rmSync(dir, { recursive: true, force: true });
 		} catch {
-			// best effort: the OS temp directory is cleaned up regardless
+			// best effort: a directory a watcher still holds open may not delete
 		}
 	}
 });
