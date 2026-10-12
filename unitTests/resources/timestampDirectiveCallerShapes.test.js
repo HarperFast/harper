@@ -1,12 +1,11 @@
 // The v5.1.26 -> v5.2.0 step added only the code-first `types.date.updatedTime` / `.createdTime`
 // builders (182971ad1, #1767); the Table.ts stamping these tests exercise is identical in both tags.
 
-require('../testUtils');
-const assert = require('assert');
-const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+require('../testUtils.js');
+const assert = require('node:assert');
+const { setupTestDBPath } = require('../testUtils.js');
+const { table, databases } = require('#src/resources/databases');
 const { loadGQLSchema } = require('#src/resources/graphql');
-const { databases } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { defineTable, types } = require('#src/resources/defineTable');
