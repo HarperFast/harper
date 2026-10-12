@@ -1239,8 +1239,6 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
-	// The affected shape itself is pinned above; these pin the unaffected shapes plus one
-	// operational risk the fix introduces for logs that previously never rotated.
 	describe('Test caller-impact shapes for the logger rotation-inheritance fix (#1877/#1880)', () => {
 		const CALLER_SHAPES_DIR = path.join(__dirname, 'callerImpactShapesTest');
 		let shapeCaseDir;
@@ -1322,8 +1320,6 @@ describe('Test harper_logger module', () => {
 				() => fs.existsSync(componentLogPath) && fs.readFileSync(componentLogPath, 'utf8').includes('line one')
 			);
 
-			// Simulates a tailer that follows the descriptor (e.g. `tail -f`'s default mode),
-			// opened before rotation renames the file out from under it.
 			const tailerFd = fs.openSync(componentLogPath, 'r');
 			try {
 				for (let i = 0; i < 30; i++) componentLogger.info(`padding ${i} ${'x'.repeat(80)}`);
@@ -1334,8 +1330,7 @@ describe('Test harper_logger module', () => {
 				});
 				// The 30-line burst against a 1K cap rotates several times in a fast cascade; writing
 				// line two the instant the first archive appears can still land it in an
-				// intermediate generation that itself rotates again moments later. Wait for the
-				// archive count to hold steady across a poll before writing past the cascade.
+				// intermediate generation that itself rotates again moments later.
 				let lastRotatedCount = -1;
 				await waitFor(
 					() => {
@@ -1390,9 +1385,7 @@ describe('Test harper_logger module', () => {
 			updateLogger(probe, { path: path.join(shapeCaseDir, 'probe.log') }, 'levelProbe', testMainLogger);
 
 			assert.strictEqual(probe.level, testMainLogger.level);
-			// Guards against a mutant that drops the whole level assignment rather than just its
-			// fallback: main's own level would then also never move off its starting value, so the
-			// equality above would hold trivially without the fallback ever running.
+			// Main's level comes from the same assignment, so equality alone can't detect its removal.
 			assert.notStrictEqual(probe.level, levelBeforeFallback);
 		});
 	});
