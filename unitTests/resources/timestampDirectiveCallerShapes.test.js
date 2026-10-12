@@ -193,8 +193,8 @@ describe('@updatedTime / @createdTime caller shapes', () => {
 		});
 
 		it('a falsy createdTime (0 or null) on patch of an existing record overwrites the stored createdTime', async () => {
-			// Known defect, same in v5.1.26 and v5.2.0: the patch retention guard tests the supplied value's
-			// truthiness, not its presence. Flip these assertions when that guard is fixed.
+			// Known defect: the patch retention guard tests the supplied value's truthiness, not its
+			// presence. Flip these assertions when that guard is fixed.
 			await FloatStamped.put('f12', { id: 'f12', name: 'a' });
 			await FloatStamped.patch('f12', { createdAt: 0 });
 			assert.strictEqual((await FloatStamped.get('f12')).createdAt, 0);
@@ -227,7 +227,7 @@ describe('@updatedTime / @createdTime caller shapes', () => {
 		it('keep the timestamps the originating node stamped; nothing is re-stamped locally', async () => {
 			const originUpdated = Date.now() - 60_000;
 			const originCreated = originUpdated - 60_000;
-			// the replication receive path (same shape as dualClockAuditRecord.test.js applyFromOrigin)
+			// the context and options the replication receiver passes to _writeUpdate
 			const context = { source: {}, sourceApply: true, timestamp: originUpdated };
 			await transaction(context, async () => {
 				const resource = await FloatStamped.getResource('f9', context);
@@ -329,7 +329,7 @@ describe('GraphQL non-null timestamp field (`Date! @updatedTime`)', () => {
 	});
 
 	it('rejects a put that omits the field: validation runs before the stamp is applied', async () => {
-		// Known defect, same in v5.1.26 and v5.2.0; code-first never marks a server-managed field required.
+		// Known defect; code-first never marks a server-managed field required.
 		const error = await rejection(() => RequiredStamp.put('r1', { id: 'r1' }));
 		assert.match(error.message, /updatedAt is required/);
 	});
@@ -370,6 +370,11 @@ describe('caching table (sourcedFrom) fill', () => {
 		});
 	});
 
+	// The version clock and Date.now() are different clock sources; the slack absorbs their drift.
+	function assertNearNow(value, before) {
+		assert.ok(value >= before - 1000 && value <= Date.now() + 1000, `${value} is not near now (${before})`);
+	}
+
 	// The filling get() can resolve before the fill commits, so assert on the stored record.
 	async function fill(id) {
 		await Cached.get(id);
@@ -389,8 +394,9 @@ describe('caching table (sourcedFrom) fill', () => {
 	it('source sets no lastModified: updatedTime is the fill version', async () => {
 		sourceLastModified = undefined;
 		sourceRecord = { name: 'from source' };
+		const before = Date.now();
 		const record = await fill('k2');
-		assert.ok(record.updatedAt > 0);
+		assertNearNow(record.updatedAt, before);
 		assert.strictEqual(record.updatedAt, record.getUpdatedTime());
 	});
 
@@ -405,8 +411,9 @@ describe('caching table (sourcedFrom) fill', () => {
 	it('source sets a future lastModified: updatedTime is capped at the fill time', async () => {
 		sourceLastModified = Date.now() + 3_600_000;
 		sourceRecord = { name: 'from source' };
+		const before = Date.now();
 		const record = await fill('k4');
-		assert.ok(record.updatedAt < sourceLastModified - 3_000_000);
+		assertNearNow(record.updatedAt, before);
 		assert.strictEqual(record.updatedAt, record.getUpdatedTime());
 	});
 });
