@@ -18,8 +18,7 @@
  *      process before it restarts, and those writes are themselves enough to rewrite flush state,
  *      so a regression visible only on a no-write reopen would be masked there. The first sample —
  *      taken in the purging process with zero writes since the purge — is the one that isolates it,
- *      and it is the sample that fails on a pre-#799 binding. Invariant 4 below supplies the no-write
- *      reopen sample this one cannot: a second, otherwise-idle database's restart.
+ *      and it is the sample that fails on a pre-#799 binding. Invariant 4 below supplies that sample.
  *   2. COMMIT GROUPING IS IRRELEVANT. The same 260 records advance the log's write cursor by the
  *      same number of bytes whether they arrive as 260 single-row commits or as one 260-row commit.
  *      The log's byte layout is a function of the records, not of how a client grouped them into
@@ -75,8 +74,9 @@
  * to preserve it, and neither commit shape may rotate the log — an offset delta across a rotation
  * would measure the rotation instead of the records.
  *
- * Proof boundary. Clean shutdowns only; an unclean `kill -9` inside the post-purge window is not
- * covered. RocksDB only, pinned by this suite's own config and env rather than inherited from the
+ * Proof boundary. Clean shutdowns only — every restart asserts exitCode:0/signalCode:null, so an
+ * escalation to SIGKILL fails loudly here instead of silently invalidating what the restart was
+ * supposed to prove; an unclean `kill -9` inside the post-purge window is not covered. RocksDB only, pinned by this suite's own config and env rather than inherited from the
  * run, so an `HARPER_STORAGE_ENGINE=lmdb` pass of the suite exercises the same RocksDB behaviour
  * instead of going vacuous. LMDB is excluded by construction, not by omission: it keeps a
  * transaction log per table with no native `txn.state`, so it has no flush position to strand.
@@ -216,7 +216,12 @@ async function flushPrimaryStores(ctx: ContextWithHarper): Promise<void> {
 		headers: { Authorization: authHeader(ctx) },
 		signal: AbortSignal.timeout(120_000),
 	});
-	strictEqual(res.status, 200, `/Flush/ expected 200, got ${res.status}`);
+	const text = await res.text();
+	strictEqual(res.status, 200, `/Flush/ expected 200, got ${res.status}: ${text.slice(0, 300)}`);
+	const body = JSON.parse(text) as { flushed: Record<string, boolean> };
+	for (const [key, flushed] of Object.entries(body.flushed)) {
+		ok(flushed, `ORACLE ARMING: /Flush/ reported ${key} did not flush (no RocksDB primaryStore?)`);
+	}
 }
 
 // `/LogStats/` resolves a fixture table out of `tables`, so only a 200 proves the databases are
@@ -397,11 +402,18 @@ function assertGracefulExit(status: ExitStatus, label: string): void {
 	);
 }
 
-// `onShutdown` runs after the process is confirmed dead and before the next one starts — the only
-// window in which disk state can be inspected without a live process racing it.
-async function restart(ctx: ContextWithHarper, onShutdown?: () => Promise<void> | void): Promise<void> {
+// Every restart in this file backs a "clean shutdown" claim (the header's proof boundary at
+// :78-80, or invariant 4's own), so every restart checks it here once rather than at each call
+// site. `onShutdown` runs after the process is confirmed dead and before the next one starts — the
+// only window in which disk state can be inspected without a live process racing it.
+async function restart(ctx: ContextWithHarper, label: string, onShutdown?: () => Promise<void> | void): Promise<void> {
+	const dyingProcess = ctx.harper.process;
 	await killHarper(ctx as any, { graceMs: 30_000 });
 	if (onShutdown) await onShutdown();
+	assertGracefulExit(
+		{ exitCode: dyingProcess.exitCode, signalCode: dyingProcess.signalCode },
+		`${label}: shutdown before restart`
+	);
 	await startHarper(ctx, { config: ARM_CONFIG, env: ARM_ENV });
 	await pollReadiness(ctx);
 }
@@ -504,7 +516,7 @@ suite(
 				await insertRows(ctx, 'QuietTarget', sameProcess.rows);
 				await assertMarkersIntact(ctx, '1. POSITIVE CONTROL same-process', sameProcess.rows);
 
-				await restart(ctx);
+				await restart(ctx, '1.');
 				postPurgeRestart = await logStats(ctx, 'QuietTarget');
 				findings.push(`1. post-purge ${fmt(postPurge)}`);
 				findings.push(`1. post-purge restart ${fmt(postPurgeRestart)}`);
@@ -585,7 +597,7 @@ suite(
 						`one ${SHAPE_ROWS}-row commit advanced it ${oneCommitBytes}B`
 				);
 
-				await restart(ctx);
+				await restart(ctx, '3.');
 				findings.push(`3. post-ramp restart ${fmt(await logStats(ctx, 'QuietTarget'))}`);
 				ramped = true;
 			}
@@ -665,14 +677,9 @@ suite(
 
 				// Nothing below ever writes to CLEAN_REOPEN_DB again — that absence is what makes this
 				// restart's reopen sample "clean", unlike invariant 1's second sample.
-				const dyingProcess = ctx.harper.process;
-				await restart(ctx, () => {
+				await restart(ctx, '6.', () => {
 					cleanReopenDiskFiles = diskLogFiles(cleanReopenBoundary.path);
 				});
-				assertGracefulExit(
-					{ exitCode: dyingProcess.exitCode, signalCode: dyingProcess.signalCode },
-					'6. shutdown before the clean-reopen restart'
-				);
 
 				cleanReopenReopened = await logStats(ctx, CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB);
 				findings.push(`6. reopened (clean, no-write restart) ${fmt(cleanReopenReopened)}`);
@@ -714,7 +721,7 @@ suite(
 			);
 		});
 
-		test('8. PREDICATE CONTROL (synthetic inputs, no real crash observed): the graceful-exit check used by test 6 rejects a nonzero exit, a fatal signal, and a still-running process', () => {
+		test('8. PREDICATE CONTROL (synthetic inputs, no real crash observed): the graceful-exit check every restart() call runs rejects a nonzero exit, a fatal signal, and a still-running process', () => {
 			assertGracefulExit({ exitCode: 0, signalCode: null }, 'sanity: the real graceful shape must still pass');
 			throws(
 				() => assertGracefulExit({ exitCode: 1, signalCode: null }, 'synthetic nonzero exit'),
