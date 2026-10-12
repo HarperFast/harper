@@ -404,7 +404,7 @@ agent:
 - `enabled` — Enable the agent component; _Default_: `false`
 - `provider` — Recorded on the session but **not yet used to route the model call** — only `model` reaches the provider. Set the provider through the [`models`](../models/overview.md#configuration) configuration instead
 - `model` — Model id override, passed through to the model call; _Default_: the [`models`](../models/overview.md#configuration) generative default
-- `maxTurns` — Maximum tool-call iterations in a single run; _Default_: `50`
+- `maxTurns` — Maximum tool-call iterations in a single run; a positive integer, validated from v5.4.0. A bare `maxTurns:` keeps the default; _Default_: `50`
 - `maxSessionTokens` <VersionBadge version="v5.4.0" /> — Per-session cap on prompt plus completion tokens, summed over every model call in the session that returns; a positive integer. See [Spend caps](#agent-spend-caps); _Default_: none
 - `maxCostUsd` <VersionBadge type="changed" version="v5.4.0" /> — Per-session cap in USD, priced from the [`pricing`](../models/overview.md#pricing) on the `models.generative` entry that served each call; a number of `0` or more, and `0` stops every session before its first call. See [Spend caps](#agent-spend-caps). Before v5.4.0 this setting was stored but never enforced, and defaulted to `5.00`; _Default_: none
 - `autoApprove` — Run without per-action approval gates; _Default_: `false`
@@ -431,7 +431,7 @@ A cap is checked when a run starts, before it executes an approved action, and a
 
 A cap is a threshold checked after each call, not a guarantee: the call that reaches it can overshoot it. Only calls that return are counted. A call that fails, for example on a timeout or a provider error and whether or not another model then serves it, is not, even if the provider billed it.
 
-A cap that is not a usable number fails the agent's start: Harper logs the error and registers no agent operation. Through `set_agent_config` the same value is rejected with a 400.
+A cap, or a `maxTurns`, that is not a usable number fails the agent's start: Harper logs the error and registers no agent operation. Through `set_agent_config` the same value is rejected with a 400.
 
 If you upgrade with `maxCostUsd` already set in your configuration, it starts being enforced, and needs `pricing` on the generative entry the agent uses.
 
