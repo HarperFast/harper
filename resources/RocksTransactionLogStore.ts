@@ -229,7 +229,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// this a request for a transaction log entry by a timestamp
 			let keyFound = false;
 			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId })) {
-				if (entry.txnLogKey !== key) break; // past this key
+				if (entry.txnLogKey !== key) break;
 				if (entry.recordId === recordId && entry.tableId === tableId) return entry;
 				keyFound = true;
 			}

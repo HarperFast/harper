@@ -141,6 +141,7 @@ describe('Keyed audit lookup when transactions share a log key', () => {
 		await Shared.patch(newId(), { name: 'unrelated' }, { timestamp: base + 80 });
 		await Shared.put(newId(), { name: 'between' });
 		await Shared.patch(id, { name: 'newer' }, { timestamp: base + 80 });
+		assert.strictEqual(transactionsAt(base + 80), 2, 'two transactions share the head key');
 		await Shared.patch(id, { name: 'older', count: { __op__: 'add', value: 1 } }, { timestamp: base + 40 });
 
 		const record = await Shared.get(id);
@@ -157,6 +158,7 @@ describe('Keyed audit lookup when transactions share a log key', () => {
 		await Shared.patch(newId(), { name: 'unrelated' }, { timestamp: base + 40 });
 		await Shared.put(newId(), { name: 'between' });
 		await Shared.patch(id, { count: { __op__: 'add', value: 1 } }, { timestamp: base + 40 });
+		assert.strictEqual(transactionsAt(base + 40), 2, 'two transactions share the key');
 		// an in-order write drops the record's refs, so only the log can recognize the re-delivery
 		await Shared.patch(id, { name: 'latest' }, { timestamp: base + 100 });
 		assert.strictEqual(Shared.primaryStore.getEntry(id).additionalAuditRefs, undefined);
