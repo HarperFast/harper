@@ -168,17 +168,19 @@ export function endRun(
 /**
  * Cancel a session and answer every open approval in the same write, so the cancel is acknowledged only
  * once no approved action is left to run on a later prompt, and no tool call is left without a response.
+ * Decided under the lock: a session a run already finished is left as it is. Returns whether it cancelled.
  */
-export function cancelSession(sessionId: string): Promise<AgentSessionRow> {
+export function cancelSession(sessionId: string): Promise<boolean> {
 	return withSessionLock(sessionId, async () => {
 		const session = await requireSession(sessionId);
+		if (session.status === 'completed' || session.status === 'aborted' || session.status === 'error') return false;
 		const now = Date.now();
 		closeOpenApprovals(session, (approval) => cancelledObservation(approval.toolName), now);
 		session.status = 'aborted';
 		session.lastError = 'Cancelled by operator';
 		session.updatedAt = now;
 		await getAgentSessionTable().put(session);
-		return session;
+		return true;
 	});
 }
 

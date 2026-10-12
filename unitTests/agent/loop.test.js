@@ -1010,6 +1010,48 @@ describe('agent/loop never overwrites a cancel', () => {
 		assert.equal(JSON.parse(response.content).error, 'cancelled_by_operator');
 	});
 
+	it('leaves a session a run already finished as it is', async () => {
+		const sessionId = await newSession();
+		await session.setStatus(sessionId, 'completed');
+		assert.equal(await session.cancelSession(sessionId), false);
+		assert.equal((await session.getSession(sessionId)).status, 'completed');
+	});
+
+	it('answers the rest of the turn when a cancel lands between its tool calls', async () => {
+		const sessionId = await newSession();
+		const controller = new AbortController();
+		const ran = [];
+		const first = tool('first', {
+			handler: async () => {
+				ran.push('first');
+				controller.abort();
+				await cancel(sessionId);
+				return { ok: true };
+			},
+		});
+		const second = tool('second', { handler: async () => ran.push('second') });
+		const models = stubModels([
+			{
+				content: '',
+				finishReason: 'tool_calls',
+				toolCalls: [
+					{ id: 'c1', name: 'first', arguments: {} },
+					{ id: 'c2', name: 'second', arguments: {} },
+				],
+			},
+		]);
+		await runAgent({ sessionId, models, tools: [first, second], scopes, maxTurns: 5, signal: controller.signal });
+
+		assert.deepStrictEqual(ran, ['first']);
+		const reloaded = await expectStillAborted(sessionId);
+		const responses = reloaded.messages.filter((m) => m.role === 'tool');
+		assert.deepStrictEqual(
+			responses.map((m) => m.toolCallId),
+			['c1', 'c2']
+		);
+		assert.equal(JSON.parse(responses[1].content).error, 'cancelled_by_operator');
+	});
+
 	it('does not mark a run that was cancelled before it started as running', async () => {
 		const sessionId = await newSession();
 		await cancel(sessionId);

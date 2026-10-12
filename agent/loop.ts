@@ -58,6 +58,11 @@ export function runAgent(opts: RunAgentOpts): Promise<void> {
 	return run;
 }
 
+/** Includes a cancelled run still finishing a model call or a handler. */
+export function isRunInFlight(sessionId: string): boolean {
+	return inFlight.has(sessionId);
+}
+
 async function doRun(opts: RunAgentOpts): Promise<void> {
 	const toolMap = toolMapByName(opts.tools);
 	const toolDefs: ToolDef[] = opts.tools.map((t) => t.def);
@@ -193,8 +198,21 @@ async function dispatchToolCalls(
 	opts: RunAgentOpts
 ): Promise<boolean> {
 	let needsApproval = false;
-	for (const call of calls) {
-		if (opts.signal?.aborted) return true;
+	for (const [index, call] of calls.entries()) {
+		if (opts.signal?.aborted) {
+			// Answer the rest of the turn in one write, so the transcript stays sendable after the cancel.
+			await endRun(opts.sessionId, {
+				append: calls.slice(index).map((unanswered) => ({
+					role: 'tool',
+					content: cancelledObservation(unanswered.name),
+					toolCallId: unanswered.id,
+					createdAt: Date.now(),
+				})),
+				status: 'aborted',
+				lastError: 'Cancelled by operator',
+			});
+			return true;
+		}
 		const tool = toolMap.get(call.name);
 		const destructiveAndGated = tool?.destructive && !opts.autoApprove;
 		if (destructiveAndGated) {

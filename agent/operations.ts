@@ -30,6 +30,7 @@ export interface OperationDeps {
 	setConfig: (patch: Partial<AgentConfig>) => AgentConfig;
 	startRun: (sessionId: string) => void;
 	cancelRun: (sessionId: string) => boolean;
+	isRunInFlight?: (sessionId: string) => boolean;
 }
 
 export function buildOperations(deps: OperationDeps): OperationDefinition[] {
@@ -85,6 +86,14 @@ async function agentPrompt(op: any, deps: OperationDeps) {
 				409
 			);
 		}
+		// A cancelled run can still be finishing a model call or a handler; a prompt appended now would land
+		// between that call's tool calls and their results, or be folded into the cancelled run and lost.
+		if (deps.isRunInFlight?.(sessionId)) {
+			throw new ClientError(
+				`Session ${sessionId} is still finishing a cancelled run; send the prompt again shortly`,
+				409
+			);
+		}
 		await appendMessage(sessionId, asUserMessage(message));
 	} else {
 		const created = await createSession({
@@ -132,9 +141,8 @@ async function cancelAgentRun(op: any, deps: OperationDeps) {
 	// in `awaiting_approval` or sitting `idle` between turns). Always update the persisted
 	// status so a paused session can still be terminated by the operator.
 	const signalledLiveRun = deps.cancelRun(sessionId);
-	const wasTerminal = session.status === 'completed' || session.status === 'aborted' || session.status === 'error';
-	if (!wasTerminal) await cancelSession(sessionId);
-	return { cancelled: !wasTerminal, signalledLiveRun };
+	const cancelled = await cancelSession(sessionId);
+	return { cancelled, signalledLiveRun };
 }
 
 async function approveAgentAction(op: any, deps: OperationDeps) {

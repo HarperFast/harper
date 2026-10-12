@@ -174,6 +174,24 @@ describe('agent/operations budgets (#3040)', () => {
 			assert.ok(responses.every((m) => JSON.parse(m.content).error === 'cancelled_by_operator'));
 		});
 
+		it('agent_prompt refuses a session whose cancelled run is still finishing, appending nothing', async () => {
+			const created = await session.createSession({ user: 'admin' });
+			await session.cancelSession(created.session_id);
+			const started = [];
+			const { execute } = operation('agent_prompt', {
+				getConfig: () => ({ enabled: true }),
+				startRun: (id) => started.push(id),
+				isRunInFlight: () => true,
+			});
+			await assert.rejects(execute({ session_id: created.session_id, message: 'again' }), (err) => {
+				assert.strictEqual(err.statusCode, 409);
+				assert.match(err.message, /still finishing a cancelled run/);
+				return true;
+			});
+			assert.deepStrictEqual(started, []);
+			assert.strictEqual((await session.getSession(created.session_id)).messages.length, 0);
+		});
+
 		it('get_agent_session returns the row plus its usage', async () => {
 			const sessionId = await seed();
 			const result = await operation('get_agent_session').execute({ session_id: sessionId });

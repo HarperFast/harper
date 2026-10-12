@@ -29,7 +29,7 @@ import { buildBestPracticeTool, loadBestPracticesOverview } from './bestPractice
 import { composeRegistryTools, ensureOperationsToolsRegistered } from './registryTools.ts';
 import { buildOperations } from './operations.ts';
 import { registerAgentMcpTools } from './mcpTools.ts';
-import { runAgent, _resetInFlightForTests } from './loop.ts';
+import { isRunInFlight, runAgent, _resetInFlightForTests } from './loop.ts';
 import { parseBudgetCap, parseMaxTurns } from './budget.ts';
 import { appendMessage, getSession } from './session.ts';
 import type { AgentConfig, AgentScopes, AgentTool, HttpFetchConfig } from './types.ts';
@@ -224,6 +224,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		setConfig,
 		startRun,
 		cancelRun,
+		isRunInFlight,
 	});
 	for (const op of operations) opts.server.registerOperation(op);
 
