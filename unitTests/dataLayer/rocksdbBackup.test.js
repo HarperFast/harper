@@ -51,7 +51,7 @@ const SU = { hdb_user: { role: { permission: { super_user: true } } } };
 const { abandonRestore, beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
 const { pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } = require('#src/dataLayer/backupRepository');
 const { backups } = require('@harperfast/rocksdb-js');
-const { closeLoadedDatabases, resetDatabases } = require('#src/resources/databases');
+const { closeLoadedDatabases } = require('#src/resources/databases');
 const {
 	ARCHIVE_MANIFEST_ENTRY,
 	ARCHIVE_SCHEMA_VERSION,
@@ -455,6 +455,15 @@ describe('rocksdbBackup', function () {
 				});
 			}
 
+			it(`${mode}: leaves an interrupted restore's marker as it was when verification refuses`, async function () {
+				this.timeout(30000);
+				const backupId = await seed();
+				abandonRestore(beginRestore(verifiedDir()));
+				corruptBackupFile(backupId);
+				await assert.rejects(restore(backupId), /was not modified/);
+				assert.strictEqual(checkRestoreState(verifiedDir()), 'incomplete');
+			});
+
 			it(`${mode}: restores a backup that verifies`, async function () {
 				this.timeout(30000);
 				const backupId = await seed();
@@ -470,32 +479,6 @@ describe('rocksdbBackup', function () {
 			const backupId = await seed();
 			writeUnsupportedTableFormat(backupId);
 			await assert.rejects(verifyBackupOffline(VERIFIED, backupId), /format_version 99/);
-		});
-
-		it('online: a rescan during verification keeps the live database closable', async function () {
-			this.timeout(30000);
-			const backupId = await seed();
-			const realVerify = backups.verify;
-			let release;
-			let parked;
-			const verifying = new Promise((resolve) => (parked = resolve));
-			backups.verify = async (...args) => {
-				parked();
-				await new Promise((resolve) => (release = resolve));
-				return realVerify.apply(backups, args);
-			};
-			try {
-				assert.ok(resetDatabases()[VERIFIED], 'precondition: the database is loaded and serving');
-				const restoring = restoreBackup({ ...SU, database: VERIFIED, backup_id: backupId });
-				await verifying;
-				resetDatabases();
-				release();
-				await restoring;
-			} finally {
-				backups.verify = realVerify;
-			}
-			await closeLoadedDatabases();
-			assertRestoredFromBackup();
 		});
 	});
 

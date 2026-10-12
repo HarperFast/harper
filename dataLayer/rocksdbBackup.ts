@@ -530,7 +530,8 @@ files by hand.
 ## Restore
 
 Restore is destructive: once the backup passes verification, it purges and rewrites the database
-directory — and every blob root — from the backup (blobs are restored automatically). Restore the latest backup in place:
+directory — and every blob root — from the backup (blobs are restored automatically). Restore the
+latest backup in place:
 
     harper restore_backup database=${databaseName}
 
@@ -617,7 +618,8 @@ export async function validateRestoreBackup(request: any) {
 /**
  * Online restore of a user database (see the design's restore lock + marker protocol):
  * take the per-database restore lock, write the restoring marker, verify the backup, close the
- * database across all worker threads, restore, delete the marker, release the lock, and reload everywhere.
+ * database across all worker threads, restore, delete the marker, release the lock, and reload
+ * everywhere.
  */
 export async function restoreBackup(request: any) {
 	const databaseName = getDatabaseName(request);
@@ -656,6 +658,7 @@ export async function restoreBackup(request: any) {
 	// Once is enough: the decision reads the manifest and the opt-in, never the destination, so no
 	// concurrent writer can change the answer between here and the purge.
 	assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
+	await assertBackupReadable(backupDir, backupId, databaseName);
 	const pinId = restorePinId(databaseDir);
 	const restoreToken = randomUUID();
 	let destructionStarted = false;
@@ -668,8 +671,6 @@ export async function restoreBackup(request: any) {
 		);
 	});
 	try {
-		// While the database is still open and serving, so verification is not downtime.
-		await assertBackupReadable(backupDir, backupId, lock);
 		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
 		// Each thread also rescans, and the restoring marker keeps it from reloading mid-restore.
 		try {
@@ -1272,6 +1273,7 @@ export async function restoreBackupOffline(
 	const blobRoots = getBlobPathsForDatabaseName(targetDatabase ?? databaseName);
 	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
 	assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
+	await assertBackupReadable(backupDir, backupId, targetDatabase ?? databaseName);
 	const pinId = restorePinId(databaseDir);
 	let destructionStarted = false;
 	// As online, claim before marking under both locks, and mark before probing the destination.
@@ -1305,7 +1307,6 @@ export async function restoreBackupOffline(
 		});
 	});
 	try {
-		await assertBackupReadable(backupDir, backupId, lock);
 		// The offline path is entered only when the CLI sees no running server (getHdbPid), but that is
 		// a heuristic: the PID file is briefly absent mid-`harper restart`, and backups.restore's
 		// purgeAllFiles never takes RocksDB's own lock. Probe that lock by opening the database — a live
@@ -1368,20 +1369,15 @@ export async function restoreBackupOffline(
 	};
 }
 
-/**
- * `purgeAllFiles` deletes the destination before it copies, so a backup this build cannot read must be
- * refused before that (harper#2965). Checked in place, in the repository, so a restore needs no more
- * disk than the copy itself: checksums, the transaction-log snapshot, and every table's format and
- * compression. The restore's pin keeps the backup from being deleted or purged before the copy.
- */
-async function assertBackupReadable(backupDir: string, backupId: number, lock: RestoreLock): Promise<void> {
+/** Before the restore claims the database, so a crash mid-verify leaves it loadable (dataLayer/DESIGN.md). */
+async function assertBackupReadable(backupDir: string, backupId: number, databaseName: string): Promise<void> {
 	try {
 		await backups.verify(backupDir, backupId, { verifyWithChecksum: true, verifyTables: true });
 	} catch (error: any) {
-		const destination = lock.preexisting
-			? `${lock.dbPath} still holds an earlier restore that did not finish; restore a readable backup to recover it`
-			: `${lock.dbPath} was not modified`;
-		throw new Error(`Backup ${backupId} failed verification, so ${destination}: ${error.message}`, { cause: error });
+		throw new Error(
+			`Backup ${backupId} failed verification, so database '${databaseName}' was not modified: ${error.message}`,
+			{ cause: error }
+		);
 	}
 }
 

@@ -1073,7 +1073,7 @@ export function getDatabases(): Databases {
 				blockedByDrop.databaseNames.has(dbName)
 			)
 				continue;
-			if (restoreBlocksLoad(blockedByRestore, dbName, dbPath)) continue;
+			if (blockedByRestore.has(dbName)) continue;
 			if (isOpenBranchPath(dbPath)) continue;
 
 			if (
@@ -1141,8 +1141,8 @@ export function getDatabases(): Databases {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
 					if (databaseEntry.name === BRANCH_ROOT_DIR) continue; // reserved branch root
+					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
 					const dbPath = join(databasePath, databaseEntry.name);
-					if (restoreBlocksLoad(blockedByRestore, basename(databaseEntry.name, '.mdb'), dbPath)) continue;
 					if (databaseRootUnavailable(dbPath)) continue;
 					if (blockedByDrop.rootPaths.has(dbPath) || blockedByDrop.databaseNames.has(dbName)) continue;
 					if (isOpenBranchPath(dbPath)) continue;
@@ -1390,15 +1390,6 @@ function reportRelationshipError(key: string, message: string): void {
 }
 
 /**
- * A marked root this thread already has open is the live database an online restore is verifying
- * a backup for: it keeps serving and stays loaded until the restore's close broadcast closes it. Dropping
- * it here would orphan the handle, since `closeDatabase` only reaches loaded databases.
- */
-function restoreBlocksLoad(blockedByRestore: Set<string>, dbName: string, dbPath: string): boolean {
-	return blockedByRestore.has(dbName) && !rocksdbDatabaseEnvs.has(dbPath) && !lmdbDatabaseEnvs.has(dbPath);
-}
-
-/**
  * Scan a databases directory's entries for restore lock/marker files and return the names of
  * databases that must not be loaded: a held restore lock means a restore is in progress in some
  * process; an unheld lock with a surviving `.restoring` marker means a restore was interrupted
@@ -1409,11 +1400,7 @@ function databasesBlockedByRestore(databasePath: string): Set<string> {
 	const blocked = new Set<string>();
 	for (const [dbName, state] of scanBlockedRestores(databasePath)) {
 		if (state === 'in-progress') {
-			// An online restore verifies while this thread keeps serving the database (`restoreBlocksLoad`).
-			const serving =
-				rocksdbDatabaseEnvs.has(join(databasePath, dbName)) ||
-				lmdbDatabaseEnvs.has(join(databasePath, `${dbName}.mdb`));
-			if (!serving) logger.warn(`A restore of database '${dbName}' is in progress; not loading it`);
+			logger.warn(`A restore of database '${dbName}' is in progress; not loading it`);
 			blocked.add(dbName);
 		} else if (state === 'incomplete') {
 			logger.error(

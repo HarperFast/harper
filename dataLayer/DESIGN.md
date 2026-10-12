@@ -62,17 +62,19 @@ worker threads, purging its directory (`backups.restore` with `purgeAllFiles`), 
 Several non-obvious mechanics keep that safe:
 
 - **Nothing is purged until the backup verifies in place (harper#2965, `assertBackupReadable`).**
-  `purgeAllFiles` deletes the destination before it copies, so an unreadable backup used to destroy
-  the database it was meant to restore. Both paths now run `backups.verify` with checksums and
+  `purgeAllFiles` deletes the destination before it copies, so an unreadable backup would destroy
+  the database it was meant to restore. Both paths run `backups.verify` with checksums and
   `verifyTables` against the repository first: that covers a corrupt file, a transaction-log snapshot
   this build cannot read (validated strictly, since snapshots are cut on entry boundaries), and a
   table whose `format_version` or compression this build does not support — opened one at a time, so
   it reaches tables a database open would leave in the table cache's cold set. Checked in the
   repository rather than in a staged copy, so a restore still needs no disk beyond the copy itself; a
-  restore is often run when space is already short. The restore's pin keeps a delete or purge off the
-  backup between the verify and the copy. Not covered: blob files (rocksdb-js has no reader for them),
-  and anything that fails only once the copy runs (`ENOSPC`, a crash) — those still leave the marker
-  and need a rerun, which the intact backup allows.
+  restore is often run when space is already short. Verification runs _before_ the restore claims
+  the database (lock, marker, pin): a full checksum read can take minutes, and a marker held across
+  it would leave an intact database unloadable after a crash. The claim's `findBackup` re-checks
+  under the repository lock that the verified backup is still there. Not covered: blob files
+  (rocksdb-js has no reader for them), and anything that fails only once the copy runs (`ENOSPC`, a
+  crash) — those still leave the marker and need a rerun, which the intact backup allows.
 
 - **Two files in an isolated `` `restore` `` directory beside (never inside) the database directory**,
   each keyed by `sha256(basename(dbPath)).slice(0,32)`: `<key>.lock`, an OS-level exclusive flock
@@ -111,10 +113,7 @@ Several non-obvious mechanics keep that safe:
   would re-open the race the barrier exists to close. A destructive purge still
   verifies closure independently: `restoreBackup` polls rocksdb-js `registryStatus()` (process-global
   across worker threads) until the database path has no open instance, and aborts with a 409 —
-  _cleaning up the marker, since nothing was destroyed_ — if handles remain. The close can only reach
-  a loaded database, and online verification holds the marker while the database keeps serving, so a
-  rescan during it keeps a marked root this thread already has open (`restoreBlocksLoad`) instead of
-  unloading it and orphaning the handle.
+  _cleaning up the marker, since nothing was destroyed_ — if handles remain.
 - **The close acknowledgement fences blob saves, deferred reclamation and orphan cleanup, not just
   database handles.** A store
   handle can close while a `saveBlob` file pipeline it started is still pending, because blob roots
