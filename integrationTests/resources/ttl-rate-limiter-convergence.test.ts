@@ -4,13 +4,12 @@
  * burst (cold reads re-seed the VerificationTable), and per-window convergence classification —
  * CONVERGED_LATE (a read raced still-landing merges) vs STUCK_SHORT (a durably lost increment).
  *
- * A short window also prints the audit evidence harper#3163 needs (its live chain, the round's
- * audit range, its slowest increments, writes to the fixture's fallback key `default`). The chain
- * is read inside the key's own burst worker, only when a GET there already reads short: the record
- * expires 500 ms after its last write and the windows are measured one after another, so by a later
- * window's turn its record is often gone, while reading every window's chain would delay the whole
- * round's measurement. The round's timestamp read runs after every window has been measured, so no
- * audit I/O sits between two windows' reads.
+ * A short window also prints the audit evidence harper#3163 needs. Its live chain is requested from
+ * inside the key's own burst worker, only when a GET there already reads short, and never awaited
+ * before the round is measured: the record expires 500 ms after its last write and the windows are
+ * measured one after another, so by a later window's turn its record is often gone, while any audit
+ * wait ahead of a measurement can expire the keys still to be read. The round's timestamp read runs
+ * after every window has been measured.
  *
  * EXPIRED_RECREATED: the record was evicted at its TTL and recreated by a late increment, proven from
  * the live chain alone — seed PUT succeeded, no `upsert`, first entry a `patch` stamped after the
@@ -128,7 +127,14 @@ suite(
 			}
 		}
 
-		type ShortWindow = { id: string; acked: number; finalHits: number | null; label: string; detail: string } & Chain;
+		type ShortWindow = {
+			id: string;
+			acked: number;
+			finalHits: number | null;
+			label: string;
+			detail: string;
+			pendingChain: Promise<Chain>;
+		};
 		// The timestamp range is the only source for `default` writes (a keyed read of an expired key is
 		// empty). harper#3164 ends it at the first entry whose record has expired; the stream then
 		// carries a terminal `{ error }` element, so a truncated range is detected, not inferred.
@@ -137,6 +143,7 @@ suite(
 			roundStart: number,
 			seeded: Set<string>
 		): Promise<{ strayWrites: string; windows: Array<ShortWindow & { recreated: boolean }> }> {
+			const chains = await Promise.all(shortWindows.map((window) => window.pendingChain));
 			let range: Array<AuditEntry & { error?: unknown }> = [];
 			let rangeError: string | undefined;
 			try {
@@ -153,9 +160,9 @@ suite(
 			}
 			const forId = (id: string) => range.filter((entry) => entry.ids?.includes(id));
 			const strayWrites = rangeError ? `>=${forId('default').length} (${rangeError})` : String(forId('default').length);
-			const windows = shortWindows.map((window) => {
-				const { chain } = window;
-				const errors = [window.error].filter(Boolean);
+			const windows = shortWindows.map((window, index) => {
+				const { chain, error } = chains[index];
+				const errors = [error].filter(Boolean);
 				const rangeForKey = forId(window.id);
 				const rangePatches = rangeForKey.filter((entry) => entry.operation === 'patch').length;
 				const recreated =
@@ -240,12 +247,13 @@ suite(
 							id,
 							acked,
 							errs: results.filter((s) => s === 'error').length,
-							...(early.status === 200 && early.hits! < acked ? await readChain(id) : { chain: [] }),
+							pendingChain:
+								early.status === 200 && early.hits! < acked ? readChain(id) : Promise.resolve({ chain: [] }),
 						};
 					})
 				);
 
-				for (const { id, acked, errs, chain, error } of perWindow) {
+				for (const { id, acked, errs, pendingChain } of perWindow) {
 					// a window whose burst was wholly rejected measures nothing
 					if (acked === 0) {
 						inconclusive++;
@@ -302,8 +310,7 @@ suite(
 							finalHits,
 							label: 'EXPIRED-WHILE-SHORT',
 							detail: `acked=${acked} seen=[${seen.join(',')}]`,
-							chain,
-							error,
+							pendingChain,
 						});
 					} else {
 						shortWindows.push({
@@ -312,8 +319,7 @@ suite(
 							finalHits,
 							label: 'STUCK_SHORT',
 							detail: `final=${finalHits} acked=${acked} seen=[${seen.join(',')}]`,
-							chain,
-							error,
+							pendingChain,
 						});
 					}
 				}
