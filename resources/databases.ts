@@ -1390,8 +1390,8 @@ function reportRelationshipError(key: string, message: string): void {
 }
 
 /**
- * A marked root this thread already has open is the live database an online restore is staging
- * beside: it keeps serving and stays loaded until the restore's close broadcast closes it. Dropping
+ * A marked root this thread already has open is the live database an online restore is verifying
+ * a backup for: it keeps serving and stays loaded until the restore's close broadcast closes it. Dropping
  * it here would orphan the handle, since `closeDatabase` only reaches loaded databases.
  */
 function restoreBlocksLoad(blockedByRestore: Set<string>, dbName: string, dbPath: string): boolean {
@@ -1409,7 +1409,7 @@ function databasesBlockedByRestore(databasePath: string): Set<string> {
 	const blocked = new Set<string>();
 	for (const [dbName, state] of scanBlockedRestores(databasePath)) {
 		if (state === 'in-progress') {
-			// An online restore stages beside a database this thread keeps serving (`restoreBlocksLoad`).
+			// An online restore verifies while this thread keeps serving the database (`restoreBlocksLoad`).
 			const serving =
 				rocksdbDatabaseEnvs.has(join(databasePath, dbName)) ||
 				lmdbDatabaseEnvs.has(join(databasePath, `${dbName}.mdb`));

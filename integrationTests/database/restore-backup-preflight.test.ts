@@ -9,7 +9,7 @@ import { startHarper, killHarper, teardownHarper, type ContextWithHarper } from 
 
 const run = promisify(execFile);
 const HARPER_BIN = resolve(import.meta.dirname, '../../dist/bin/harper.js');
-const DATABASE = 'restore_staging';
+const DATABASE = 'restore_preflight';
 const TABLE = 'Items';
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 const JOB_TIMEOUT_MS = 120_000;
@@ -178,9 +178,9 @@ suite('restore_backup verifies before it replaces (harper#2965)', { skip: skipSu
 		await expectIds(before, 'after offline refusal and restart');
 	});
 
-	// The success path runs offline: online, the restore stages but is then refused at the closure check
+	// The success path runs offline: online, the restore verifies but is then refused at the closure check
 	// while leaked handles stay open (harper#3120).
-	test('offline CLI: a valid backup is staged, swapped in, and survives a restart', async () => {
+	test('offline CLI: a valid backup is restored and survives a restart', async () => {
 		const validId = await createBackup();
 		const kept = await readIds();
 		await insert(['after-valid-backup']);
