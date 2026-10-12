@@ -10,7 +10,8 @@ function keyName(key) {
 	return key.type === 'Identifier' ? key.name : key.value;
 }
 
-// The callable module object is 'module'; its `default` and `strict` exports are the same function.
+// 'module' marks a callable truthiness assertion that also carries `.ok`: the module object itself,
+// and its `default` and `strict` exports.
 function exportOrModule(name) {
 	return name === 'default' || name === 'strict' ? 'module' : name;
 }

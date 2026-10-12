@@ -1,9 +1,9 @@
 /**
  * QA-185 — Within-request read-snapshot contract.
  *
- * Pins that a SINGLE Harper response presents a self-consistent snapshot across four read
- * surfaces — REST collection GET, GraphQL query, ops search_by_value, SQL SELECT — while
- * concurrent writers mutate the same data mid-request.
+ * Pins that a SINGLE Harper response is self-consistent while concurrent writers mutate the
+ * same data mid-request, on four read surfaces: REST collection GET, GraphQL query, ops
+ * search_by_value, and SQL SELECT (for the selected column values; see (b)).
  *
  *   (a) SINGLE-RESPONSE SELF-CONSISTENCY (Q1–Q3): while one client inserts and deletes rows
  *       within one transaction, every REST / GraphQL / search_by_value response must contain
