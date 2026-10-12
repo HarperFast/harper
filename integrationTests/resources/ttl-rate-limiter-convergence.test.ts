@@ -3,6 +3,19 @@
  * ingredients that make version-reuse cache staleness reproducible: GET pressure DURING each
  * burst (cold reads re-seed the VerificationTable), and per-window convergence classification —
  * CONVERGED_LATE (a read raced still-landing merges) vs STUCK_SHORT (a durably lost increment).
+ *
+ * A round with a short window ends by printing what harper#3163 needs to be diagnosed from the CI
+ * log alone: each short key's live audit chain and the round's audit range, the slowest increments
+ * to that key, writes that reached the fixture's fallback key `default`, and the server log
+ * directory. The key's chain is read the moment its poll ends — the record expires 500 ms after its
+ * last write, so that is the only time it can still be read; the round's timestamp read waits until
+ * every window has been measured, because longer I/O between two windows' reads can expire the next
+ * key and hide its own short count.
+ *
+ * EXPIRED_RECREATED is a short window whose record was evicted at its 500 ms TTL and recreated by a
+ * late increment, proven from the live chain: the seed PUT succeeded, the chain has no `upsert`, and
+ * it starts with a `patch` stamped after the round began. An empty or failed keyed read proves
+ * nothing and leaves the window STUCK_SHORT.
  */
 
 import { suite, test, before, after } from 'node:test';
@@ -26,6 +39,7 @@ suite(
 	{ skip: skipSuite },
 	(ctx: ContextWithHarper) => {
 		let httpURL: string;
+		let operationsURL: string;
 		let auth: string;
 
 		before(async () => {
@@ -35,6 +49,7 @@ suite(
 			});
 			const client = createApiClient(ctx.harper);
 			httpURL = ctx.harper.httpURL;
+			operationsURL = ctx.harper.operationsAPIURL;
 			auth = client.headers.Authorization;
 			const deadline = Date.now() + 30_000;
 			let ready = false;
@@ -64,7 +79,11 @@ suite(
 			return { 'Content-Type': 'application/json', 'Authorization': auth };
 		}
 
+		type Settled = { ms: number; status: number | 'error' };
+		const settledIncrements = new Map<string, Settled[]>();
 		async function increment(id: string): Promise<number | 'error'> {
+			const started = performance.now();
+			let status: number | 'error';
 			try {
 				const r = await fetch(`${httpURL}/RateIncrement/`, {
 					method: 'POST',
@@ -72,10 +91,96 @@ suite(
 					body: JSON.stringify({ id }),
 					signal: AbortSignal.timeout(6_000),
 				});
-				return r.status;
+				status = r.status;
 			} catch {
-				return 'error';
+				status = 'error';
 			}
+			let settled = settledIncrements.get(id);
+			if (!settled) settledIncrements.set(id, (settled = []));
+			settled.push({ ms: Math.round(performance.now() - started), status });
+			return status;
+		}
+
+		type AuditEntry = { operation: string; timestamp: number; ids?: string[] };
+		async function readAuditLog(search: { search_type: string; search_values: unknown[] }): Promise<unknown> {
+			const r = await fetch(operationsURL, {
+				method: 'POST',
+				headers: hdrs(),
+				body: JSON.stringify({ operation: 'read_audit_log', database: 'data', table: 'RateCounter', ...search }),
+				signal: AbortSignal.timeout(10_000),
+			});
+			const body = await r.json();
+			if (r.status !== 200)
+				throw new Error(`read_audit_log ${search.search_type} → ${r.status} ${JSON.stringify(body)}`);
+			return body;
+		}
+		const operations = (entries: AuditEntry[]) => entries.map((entry) => entry.operation).join(',');
+
+		// The live chain of one key, read while its record still exists; an empty or failed read is
+		// unknown evidence, never proof.
+		async function readChain(id: string): Promise<{ chain: AuditEntry[]; error?: string }> {
+			try {
+				const result = (await readAuditLog({ search_type: 'hash_value', search_values: [id] })) as Record<
+					string,
+					AuditEntry[]
+				>;
+				return { chain: Array.isArray(result?.[id]) ? result[id] : [] };
+			} catch (error) {
+				return { chain: [], error: (error as Error).message };
+			}
+		}
+
+		type ShortWindow = {
+			id: string;
+			acked: number;
+			label: string;
+			detail: string;
+			chain: AuditEntry[];
+			error?: string;
+		};
+		// One timestamp read for the round after every window has been measured. It is the only
+		// source for `default` writes (a keyed read of an expired key is empty) and corroborates the
+		// short keys' chains; harper#3164 ends it at the first entry whose record has expired, so it
+		// is labelled incomplete rather than trusted as the full history.
+		async function diagnoseShortWindows(
+			shortWindows: ShortWindow[],
+			roundStart: number,
+			seeded: Set<string>
+		): Promise<Array<ShortWindow & { recreated: boolean }>> {
+			let range: AuditEntry[] = [];
+			let rangeError: string | undefined;
+			try {
+				const result = await readAuditLog({ search_type: 'timestamp', search_values: [roundStart, Date.now()] });
+				if (Array.isArray(result)) range = result as AuditEntry[];
+				else rangeError = `timestamp read returned ${typeof result}`;
+			} catch (error) {
+				rangeError = (error as Error).message;
+			}
+			const forId = (id: string) => range.filter((entry) => entry.ids?.includes(id));
+			const strayWrites = forId('default').length;
+			return shortWindows.map((window) => {
+				const { chain } = window;
+				const errors = [window.error, rangeError].filter(Boolean);
+				const rangeForKey = forId(window.id);
+				const rangePatches = rangeForKey.filter((entry) => entry.operation === 'patch').length;
+				const recreated =
+					seeded.has(window.id) &&
+					chain.length > 0 &&
+					chain[0].operation === 'patch' &&
+					chain[0].timestamp >= roundStart &&
+					!chain.some((entry) => entry.operation === 'upsert');
+				const slowest = (settledIncrements.get(window.id) ?? [])
+					.slice()
+					.sort((a, b) => b.ms - a.ms)
+					.slice(0, 5)
+					.map((settled) => `${settled.ms}ms:${settled.status}`);
+				const detail =
+					`${window.detail} chain=[${operations(chain)}] ` +
+					`round-range=[${operations(rangeForKey)}]${rangePatches < window.acked ? ' (incomplete, see harper#3164)' : ''} ` +
+					`default-writes=${strayWrites} slowest=[${slowest.join(' ')}]` +
+					(errors.length ? ` audit-errors=${JSON.stringify(errors)}` : '');
+				return { ...window, recreated, detail };
+			});
 		}
 
 		async function put(id: string, hits: number): Promise<number | 'error'> {
@@ -110,13 +215,17 @@ suite(
 			let clean = 0;
 			let convergedLate = 0;
 			let stuckShort = 0;
+			let expiredRecreated = 0;
 			let over = 0;
 			let inconclusive = 0;
 			const anomalyLogs: string[] = [];
 
 			for (let round = 0; round < ROUNDS; round++) {
 				const ids = Array.from({ length: WINDOWS }, (_, w) => `r${round}w${w}`);
-				await Promise.all(ids.map((id) => put(id, 0)));
+				const roundStart = Date.now();
+				const seedStatuses = await Promise.all(ids.map((id) => put(id, 0)));
+				const seeded = new Set(ids.filter((_, index) => seedStatuses[index] === 204));
+				const shortWindows: ShortWindow[] = [];
 
 				const perWindow = await Promise.all(
 					ids.map(async (id) => {
@@ -187,10 +296,33 @@ suite(
 						);
 					} else if (expired) {
 						inconclusive++;
-						anomalyLogs.push(`${id}: EXPIRED-WHILE-SHORT acked=${acked} seen=[${seen.join(',')}]`);
+						shortWindows.push({
+							id,
+							acked,
+							label: 'EXPIRED-WHILE-SHORT',
+							detail: `acked=${acked} seen=[${seen.join(',')}]`,
+							...(await readChain(id)),
+						});
 					} else {
-						stuckShort++;
-						anomalyLogs.push(`${id}: STUCK_SHORT final=${finalHits} acked=${acked} seen=[${seen.join(',')}]`);
+						shortWindows.push({
+							id,
+							acked,
+							label: 'STUCK_SHORT',
+							detail: `final=${finalHits} acked=${acked} seen=[${seen.join(',')}]`,
+							...(await readChain(id)),
+						});
+					}
+				}
+				if (shortWindows.length) {
+					for (const window of await diagnoseShortWindows(shortWindows, roundStart, seeded)) {
+						let label = window.label;
+						if (label === 'STUCK_SHORT') {
+							if (window.recreated) {
+								expiredRecreated++;
+								label = 'EXPIRED_RECREATED';
+							} else stuckShort++;
+						}
+						anomalyLogs.push(`${window.id}: ${label} ${window.detail}`);
 					}
 				}
 				// let the round's records expire so rounds stay independent
@@ -199,15 +331,18 @@ suite(
 
 			console.log(
 				`\n[QA-431-CONVERGENCE] ${ROUNDS}×${WINDOWS}×${HITS} (${WORKERS} workers)\n` +
-					`  clean=${clean} converged-late=${convergedLate} stuck-short=${stuckShort} over=${over} inconclusive=${inconclusive}\n` +
-					(anomalyLogs.length ? `  ${anomalyLogs.join('\n  ')}` : '  (no anomalies)')
+					`  clean=${clean} converged-late=${convergedLate} stuck-short=${stuckShort} expired-recreated=${expiredRecreated} over=${over} inconclusive=${inconclusive}\n` +
+					(anomalyLogs.length
+						? `  ${anomalyLogs.join('\n  ')}\n  server log: ${ctx.harper.logDir ?? '(not kept: HARPER_INTEGRATION_TEST_LOG_DIR unset)'}`
+						: '  (no anomalies)')
 			);
 
 			ok(stuckShort === 0, `QA-431-CONVERGENCE: ${stuckShort} window(s) with durably lost increments`);
 			ok(over === 0, `QA-431-CONVERGENCE: ${over} window(s) over-counted (double-apply)`);
+			const measurable = clean + convergedLate + stuckShort + expiredRecreated + over;
 			ok(
-				clean + convergedLate + stuckShort + over >= (ROUNDS * WINDOWS) / 2,
-				`QA-431-CONVERGENCE: only ${clean + convergedLate + stuckShort + over}/${ROUNDS * WINDOWS} windows measurable`
+				measurable >= (ROUNDS * WINDOWS) / 2,
+				`QA-431-CONVERGENCE: only ${measurable}/${ROUNDS * WINDOWS} windows measurable`
 			);
 		});
 	}
