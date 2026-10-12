@@ -256,11 +256,11 @@ async function flushUntilPurgeable(ctx: ContextWithHarper, table: string, databa
 // half-started server would read as ready and resurface later as an opaque failure. Both databases
 // are checked, not just `data`, so a `qa1730` access later never races its own database's load.
 async function pollReadiness(ctx: ContextWithHarper): Promise<void> {
-	const deadline = Date.now() + 90_000;
 	for (const [table, database] of [
 		['QuietTarget', 'data'],
 		[CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB],
 	] as const) {
+		const deadline = Date.now() + 90_000;
 		let last = 'no response';
 		while (Date.now() < deadline) {
 			try {
