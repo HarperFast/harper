@@ -619,16 +619,18 @@ describe('Blob test', () => {
 		await BlobTest.delete(306);
 		setDeletionDelay(500); // restore the default
 	});
-	it('bytes()/text() take no hold, unlike stream() — a late call past the window still races (#2134)', async () => {
-		// holdBlobFile() is only called from the stream() ReadableStream constructor (ensureStream
-		// below the FileBackedBlob class). bytes()/text() go straight to readFile() and rely solely on
-		// the retention window; resolving the record and sitting on the Blob handle does not protect a
-		// bytes()/text() call that happens after the window has already lapsed, the way an in-progress
-		// stream() read is protected past the window (see the in-progress-stream test above). This is
-		// the fix's one caller-visible asymmetry: stream() got a structural guarantee, bytes()/text()
-		// got a bigger — but still finite — cushion.
+	it('a stale bytes()/text() handle still 404s once reclaimed, same as before this fix (#2134)', async () => {
+		// Only two call sites take the explicit hold: stream()'s ReadableStream constructor and the
+		// replication-send path, openStoredBlobBody() (resources/blob.ts:3786) — neither is bytes()/
+		// text(), which go straight to readFile() with no hold at all. That is a static fact, not one a
+		// single bytes() call (readFile of a small buffer has no observable "in flight") can pin by
+		// itself; what this test pins is the consequence once the window has fully lapsed with nothing
+		// outstanding: a Blob handle resolved before supersession, read after reclamation, still gets
+		// the plain ENOENT/404 a pre-fix reader would have gotten at the old 500ms mark — bytes()/text()
+		// narrow this race via the larger default window, they do not structurally close it the way an
+		// in-progress stream() read is closed (see the in-progress-stream test above).
 		setAuditRetention(10);
-		setDeletionDelay(50); // short window: isolates "no hold" from "window not yet elapsed"
+		setDeletionDelay(50); // short window: reach "fully reclaimed" quickly rather than waiting out 2000ms
 		const payload = randomBytes(20000);
 		await BlobTest.put({ id: 307, blob: await createBlob(payload) });
 		const reader = await BlobTest.get(307); // resolves the record/Blob handle; does not open the file
@@ -642,8 +644,6 @@ describe('Blob test', () => {
 			message: 'superseded blob should be reclaimed once the short window lapses',
 		});
 
-		// The window has lapsed and nothing held the file, so a bytes() call now sees the same ENOENT
-		// a reader would have hit before this fix — bytes()/text() narrow the race, they do not close it.
 		await assert.rejects(reader.blob.bytes(), (error) => {
 			assert.equal(error.statusCode, 404);
 			assert.equal(error.code, 'ENOENT');
@@ -664,7 +664,9 @@ describe('Blob test', () => {
 			await BlobTest.put({ id: 308, blob: await createBlob(randomBytes(20000)) });
 			const filePath = getFilePathForBlob((await BlobTest.get(308)).blob);
 			await BlobTest.put({ id: 308, blob: await createBlob(randomBytes(20000)) }); // supersedes
-			await delay(1500); // inside the 2000ms default; an invalid value must not collapse to 0
+			// The 2000ms deadline starts at supersession (above), not here, so leave the same ~800ms
+			// margin the sibling retention test uses rather than racing the boundary on a loaded runner.
+			await delay(800);
 			assert(existsSync(filePath), 'an invalid storage.blobRetention must fall back to the default window, not 0');
 			await waitFor(() => !existsSync(filePath), { timeout: 6000 });
 		} finally {
