@@ -1176,6 +1176,7 @@ export function transformForSelect(select, resource) {
 	if (typeof select === 'string')
 		// if select is a single string then return property value
 		return function transform(object) {
+			if (object == null) return object;
 			if (object.then) return object.then(transform);
 			if (Array.isArray(object)) return object.map(transform);
 			return selectFromObject(object, propertyResolvers, context)(select);
@@ -1184,6 +1185,7 @@ export function transformForSelect(select, resource) {
 		// if it is an array, return an array
 		if (select.asArray)
 			return function transform(object) {
+				if (object == null) return object;
 				if (object.then) return object.then(transform);
 				if (Array.isArray(object)) return object.map(transform);
 				const results = [];
@@ -1195,6 +1197,7 @@ export function transformForSelect(select, resource) {
 			};
 		const forceNulls = select.forceNulls;
 		return function transform(object) {
+			if (object == null) return object;
 			if (object.then) return object.then(transform);
 			if (Array.isArray(object))
 				return object.map((value) => (value && typeof value === 'object' ? transform(value) : value));
@@ -1221,6 +1224,8 @@ export function transformForSelect(select, resource) {
 			} else if (typeof property === 'object') {
 				// TODO: Handle aggregate functions
 				if (property.name) {
+					const value = getProperty(property.name);
+					if (!value || typeof value !== 'object') return value;
 					if (!subTransforms) subTransforms = {};
 					// TODO: Get the resource, cache this transform, and apply above
 					let transform = subTransforms[property.name];
@@ -1228,7 +1233,6 @@ export function transformForSelect(select, resource) {
 						const resource = propertyResolvers[property.name]?.definition?.tableClass;
 						transform = subTransforms[property.name] = transformForSelect(property.select || property, resource);
 					}
-					const value = getProperty(property.name);
 					return transform(value);
 				} else return getProperty(property);
 			} else return property;

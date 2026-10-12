@@ -41,6 +41,7 @@
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
+import { unpack } from 'msgpackr';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
@@ -301,7 +302,6 @@ suite(
 					console.log(`  Forward @rel status=${relStatus} resolvedOrder=${JSON.stringify(resolvedOrder)}`);
 
 					if (relStatus >= 500) {
-						// Known open defect F-030/#1415: accessing orphaned child.order 500s; treating as known-behavior until #1415 lands
 						relResult = `ERROR (HTTP ${relStatus})`;
 					} else if (!resolvedOrder || resolvedOrder === null) {
 						relResult = 'NULL (graceful null for missing parent)';
@@ -325,14 +325,34 @@ suite(
 					}
 
 					console.log(`  >>> Forward @rel of orphaned child: ${relResult}`);
-					// Until #1415 lands, a 500 on orphaned forward-ref is expected behavior; then assert clean null.
-					ok(
-						relStatus !== 500 || true,
-						'F-030/#1415: known 500 on orphaned child.order; expected to become 404/null after fix'
-					);
+					strictEqual(relStatus, 200, 'An orphaned relationship must remain readable');
+					strictEqual(resolvedOrder, null);
 				}
 
 				console.log(`  >>> Forward @rel of orphaned child: ${relResult}`);
+			});
+
+			test('nested REST select preserves optional and missing relationship targets', async () => {
+				await clearAll();
+				for (const [id, record, expected] of [
+					['optional-absent', {}, undefined],
+					['optional-null', { orderId: null }, null],
+					['optional-orphan', { orderId: 'missing-parent' }, undefined],
+				] as const) {
+					strictEqual((await restPut(`/OrderItem/${id}`, { id, ...record })).status, 204);
+					for (const accept of ['application/json', 'application/x-msgpack']) {
+						const response = await fetch(`${httpURL}/OrderItem/${id}?select(id,order{id,total})`, {
+							headers: { Accept: accept, Authorization: auth },
+						});
+						strictEqual(response.status, 200, `${id} ${accept}`);
+						ok(response.headers.get('content-type')?.startsWith(accept));
+						const body =
+							accept === 'application/json' ? await response.json() : unpack(Buffer.from(await response.arrayBuffer()));
+						strictEqual(body.id, id);
+						strictEqual(body.order, expected);
+						ok(!Object.hasOwn(body, 'orderId'), 'Projection must not echo its foreign key');
+					}
+				}
 			});
 
 			// ---- P3: FK index consistency (single-snapshot oracle) --------------------------------
