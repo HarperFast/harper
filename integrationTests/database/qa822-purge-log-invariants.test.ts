@@ -116,8 +116,10 @@ const FIXTURE_PATH = resolve(import.meta.dirname, 'qa822-purge-log-invariants');
 // process's exit status. Remove either skip when its issue closes, and do NOT instead make the
 // suite tolerate the restart: tolerating it would hide the defect behind a suite whose whole
 // subject is what a purge leaves behind.
-const skipSuite =
-	process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32' || process.env.HARPER_UWS_HTTP === '1';
+// `server/http.ts`'s uWS activation guard is a plain JS truthiness check on the env var
+// (`process.env.HARPER_UWS_HTTP && ...`), not a `=== '1'` comparison — match it exactly, or a
+// truthy-but-not-'1' value (`true`, even `'0'`) would run this suite on uWS anyway.
+const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32' || !!process.env.HARPER_UWS_HTTP;
 
 const ARM_CONFIG = {
 	threads: { count: 1 },
