@@ -19,6 +19,7 @@ const { Resource } = require('#src/resources/Resource');
 const { makeCallbackChain } = require('#src/server/middlewareChain');
 const { toScopeMount } = require('#src/components/scopeMount');
 const { waitFor } = require('../waitFor.js');
+const { server } = require('#src/server/Server');
 const { describeMiddlewareChains } = require('#src/server/http');
 const { handleApplication: handleRest } = require('#src/server/REST');
 const { handleApplication: handleFastifyRoutes } = require('#src/server/fastifyRoutes');
@@ -152,7 +153,7 @@ describe('server.http under application mounts: caller impact', () => {
 		});
 
 		it('scope.server.http(handler, { urlPath: "../x" }): throws at registration', async () => {
-			// v5.1.26: registered the route '/../x'.
+			// v5.1.26: registered the route '/../x'. Changed by 79325af60.
 			await assert.rejects(
 				registerThroughScope({}, undefined, answering('scoped'), { urlPath: '../x' }),
 				/urlPath must not contain '\.\.'/
@@ -182,6 +183,7 @@ describe('server.http under application mounts: caller impact', () => {
 
 		it('server.http(handler, { host }): matches a trailing-dot or bracketed-IPv6 Host header', () => {
 			// v5.1.26: neither matched ('api.example.com.' compared unequal; '[::1]:9926' split on the first ':').
+			// Changed by b9f99b1a5 (IPv6) and 39ecddd52 (trailing dot).
 			const named = { name: 'hosted', listener: answering('hosted'), host: 'api.example.com' };
 			assert.strictEqual(dispatch([named], request('/', { host: 'api.example.com.' })).name, 'hosted');
 			const ipv6 = { name: 'hosted', listener: answering('hosted'), host: '::1' };
@@ -325,6 +327,43 @@ describe('server.http under application mounts: caller impact', () => {
 		});
 	});
 
+	describe('root-config `package` entry with a urlPath', () => {
+		let packageDir;
+
+		afterEach(() => {
+			loadedPaths.clear();
+			rmSync(packageDir, { recursive: true, force: true });
+		});
+
+		it('a package that ships no config file loads the default plugins, REST included, under the mount', async () => {
+			// The loader hands the entry's own host/urlPath to the package directory's load as its mount, and a
+			// directory without a config file loads DEFAULT_CONFIG (`rest: true`, `static`, ...). REST registers
+			// once per resolved route, so the mount adds a second REST route serving every exported resource.
+			// v5.1.26: the same plugins registered unrouted, where REST had already registered once per process.
+			packageDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.mount-caller-impact-pkg-'));
+			writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: 'mount-caller-impact-pkg' }));
+			const urlPath = `/pkg-${randomUUID().slice(0, 8)}`;
+			const registered = [];
+			const originalHttp = server.http;
+			server.http = (listener, options) => registered.push(options);
+			try {
+				await loadComponent(packageDir, Object.assign(new Resources(), { isWorker: true }), 'test-origin', {
+					appName: 'mount-caller-impact-pkg',
+					mount: { urlPath },
+				});
+			} finally {
+				server.http = originalHttp;
+			}
+			assert.deepStrictEqual(
+				registered.map(({ name, urlPath }) => ({ name, urlPath })),
+				[
+					{ name: 'rest', urlPath: `${urlPath}/` },
+					{ name: 'static', urlPath: `${urlPath}/` },
+				]
+			);
+		});
+	});
+
 	describe('REST (`rest:` plugin)', () => {
 		class LastModifiedProbe extends Resource {
 			static get(target, request) {
@@ -356,6 +395,35 @@ describe('server.http under application mounts: caller impact', () => {
 				() => assert.fail('no resource matched')
 			);
 		}
+
+		it('a resource under a mounted REST route reads its request URL mount-relative', async () => {
+			// v5.1.26: the root-config mount was inert, so the resource answered '/ContextUrlProbe/1' and read that.
+			class ContextUrlProbe extends Resource {
+				static get(target, request) {
+					return { url: request.url, pathname: request.pathname, originalPathname: request.originalPathname };
+				}
+			}
+			const registered = [];
+			const urlPath = `/v-${randomUUID().slice(0, 8)}/`;
+			const scope = restScope({ webSocket: false }, () => ({ urlPath }), registered);
+			scope.resources.set('ContextUrlProbe', ContextUrlProbe);
+			handleRest(scope);
+			const url = `${urlPath}ContextUrlProbe/1?x=1`;
+			const headerObject = {};
+			const response = await dispatch([{ name: 'rest', urlPath, listener: registered[0].listener }], {
+				method: 'GET',
+				url,
+				pathname: url.split('?')[0],
+				headers: { asObject: headerObject, get: (name) => headerObject[name.toLowerCase()] },
+			});
+			const chunks = [];
+			for await (const chunk of response.body) chunks.push(Buffer.from(chunk));
+			assert.deepStrictEqual(JSON.parse(Buffer.concat(chunks).toString()), {
+				url: '/ContextUrlProbe/1?x=1',
+				pathname: '/ContextUrlProbe/1',
+				originalPathname: `${urlPath}ContextUrlProbe/1`,
+			});
+		});
 
 		it('two applications mounted at different paths each get a REST chain', () => {
 			// v5.1.26: REST registered once per process; the second application's REST API 404'd.
