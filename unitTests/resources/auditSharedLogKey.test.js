@@ -60,6 +60,30 @@ describe('Keyed audit lookup when transactions share a log key', () => {
 		assert.strictEqual(Shared.auditStore.get(key, Shared.tableId, second, undefined)?.recordId, second, 'any log');
 	});
 
+	it('answers an ordinary hit from the exact-start pass alone', async () => {
+		const key = futureKey();
+		const id = newId();
+		await Shared.put(id, { name: 'only' }, { timestamp: key });
+		const auditStore = Shared.auditStore;
+		const getRange = auditStore.getRange;
+		const ranges = [];
+		auditStore.getRange = function (options, ...rest) {
+			ranges.push(options);
+			return getRange.call(this, options, ...rest);
+		};
+		try {
+			assert.strictEqual(lookup(key, id)?.recordId, id);
+			assert.strictEqual(auditStore.get(key, Shared.tableId, id, undefined)?.recordId, id);
+		} finally {
+			auditStore.getRange = getRange;
+		}
+		// a range pass reads to the end of the log, and an aggregate lookup reads ahead into it
+		assert.deepStrictEqual(
+			ranges.map((options) => options.exactStart === true && options.end === undefined),
+			[true, true]
+		);
+	});
+
 	it('finds it past an intervening transaction at a higher key', async () => {
 		const key = futureKey();
 		const [first, between, second] = [newId(), newId(), newId()];

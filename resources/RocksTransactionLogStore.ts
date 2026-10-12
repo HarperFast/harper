@@ -46,7 +46,7 @@ const reportCorruptFrame = createCorruptFrameReporter(harperLogger);
 
 const KEY_SCRATCH = new Float64Array(1);
 const KEY_BITS = new BigInt64Array(KEY_SCRATCH.buffer);
-/** Log keys are positive (`assertValidTimestamp`), so +1 on the bit pattern is the next double. */
+/** Relies on log keys being positive (`assertValidTimestamp`). */
 function nextLogKey(key: number): number {
 	KEY_SCRATCH[0] = key;
 	KEY_BITS[0]++;
@@ -226,10 +226,20 @@ export class RocksTransactionLogStore extends EventEmitter {
 			if (recordId === undefined) {
 				throw new Error('recordId must be provided');
 			}
-			// Every entry at exactly this key, not the first transaction an exact start reaches: explicit
-			// timestamps let unrelated transactions of one origin share a key, anywhere in the log.
-			for (const entry of this.getRange({ start: key, end: nextLogKey(key), log: nodeId })) {
+			// this a request for a transaction log entry by a timestamp
+			let keyFound = false;
+			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId })) {
+				if (entry.txnLogKey !== key) break; // no longer in this transaction
 				if (entry.recordId === recordId && entry.tableId === tableId) return entry;
+				keyFound = true;
+			}
+			// Explicit timestamps let unrelated transactions of one origin share a key, and an exact start
+			// only reaches the first of them. The range pass is not the default: it reads to the end of the
+			// log, which an aggregate lookup's read-ahead turns into the cost of every hit.
+			if (keyFound) {
+				for (const entry of this.getRange({ start: key, end: nextLogKey(key), log: nodeId })) {
+					if (entry.recordId === recordId && entry.tableId === tableId) return entry;
+				}
 			}
 		} else {
 			// Harper puts some metadata in the database, we will just put this in the root store instead
