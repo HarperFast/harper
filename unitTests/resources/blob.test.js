@@ -620,38 +620,34 @@ describe('Blob test', () => {
 		setDeletionDelay(500); // restore the default
 	});
 	it('a stale bytes()/text() handle still 404s once reclaimed, same as before this fix (#2134)', async () => {
-		// Only two call sites take the explicit hold: stream()'s ReadableStream constructor and the
-		// replication-send path, openStoredBlobBody() (resources/blob.ts:3786) — neither is bytes()/
-		// text(), which go straight to readFile() with no hold at all. That is a static fact, not one a
-		// single bytes() call (readFile of a small buffer has no observable "in flight") can pin by
-		// itself; what this test pins is the consequence once the window has fully lapsed with nothing
-		// outstanding: a Blob handle resolved before supersession, read after reclamation, still gets
-		// the plain ENOENT/404 a pre-fix reader would have gotten at the old 500ms mark — bytes()/text()
-		// narrow this race via the larger default window, they do not structurally close it the way an
-		// in-progress stream() read is closed (see the in-progress-stream test above).
+		// bytes()/text() never take the explicit hold — only stream() and the replication-send path
+		// (openStoredBlobBody) do. A Blob handle resolved before supersession, read after full
+		// reclamation, gets the plain ENOENT/404 a pre-fix reader would have gotten at the old 500ms
+		// mark: the larger default window narrows this race, it does not structurally close it the
+		// way an in-progress stream() read is (see the in-progress-stream test above).
 		setAuditRetention(10);
-		setDeletionDelay(50); // short window: reach "fully reclaimed" quickly rather than waiting out 2000ms
-		const payload = randomBytes(20000);
-		await BlobTest.put({ id: 307, blob: await createBlob(payload) });
-		const reader = await BlobTest.get(307); // resolves the record/Blob handle; does not open the file
-		const filePath = getFilePathForBlob(reader.blob);
-		const fileId = getFileId(reader.blob);
-		const { table, slot } = getBlobHoldStateForTesting(BlobTest.primaryStore.rootStore, fileId);
-		assert.equal(Atomics.load(table, slot), 0, 'resolving the record must not itself take a hold');
+		setDeletionDelay(50); // short window
+		try {
+			const payload = randomBytes(20000);
+			await BlobTest.put({ id: 307, blob: await createBlob(payload) });
+			const reader = await BlobTest.get(307);
+			const filePath = getFilePathForBlob(reader.blob);
+			const fileId = getFileId(reader.blob);
+			const { table, slot } = getBlobHoldStateForTesting(BlobTest.primaryStore.rootStore, fileId);
+			assert.equal(Atomics.load(table, slot), 0, 'resolving the record must not itself take a hold');
 
-		await BlobTest.put({ id: 307, blob: await createBlob(randomBytes(20000)) }); // supersedes
-		await waitFor(() => !existsSync(filePath), {
-			message: 'superseded blob should be reclaimed once the short window lapses',
-		});
+			await BlobTest.put({ id: 307, blob: await createBlob(randomBytes(20000)) }); // supersedes
+			await waitFor(() => !existsSync(filePath));
 
-		await assert.rejects(reader.blob.bytes(), (error) => {
-			assert.equal(error.statusCode, 404);
-			assert.equal(error.code, 'ENOENT');
-			return true;
-		});
-
-		await BlobTest.delete(307);
-		setDeletionDelay(500); // restore the default
+			await assert.rejects(reader.blob.bytes(), (error) => {
+				assert.equal(error.statusCode, 404);
+				assert.equal(error.code, 'ENOENT');
+				return true;
+			});
+		} finally {
+			await BlobTest.delete(307).catch(() => {});
+			setDeletionDelay(500); // restore the default
+		}
 	});
 	it('an invalid storage.blobRetention falls back to the 2000ms default, not 0 (#2134)', async () => {
 		// getReclamationDelay() coerces the configured value with Number(); a non-numeric or negative
