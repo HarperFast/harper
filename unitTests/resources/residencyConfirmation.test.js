@@ -120,6 +120,18 @@ describe('replicatedConfirmation residency (harper-pro#1031)', () => {
 		assert.equal(calls[0].version, version);
 	});
 
+	it('confirms a commit whose only write is a relocation that lost to a newer entry on that entry (harper#3182)', async () => {
+		await Unplaced.put('relocated', { id: 'relocated', body: 'kept' });
+		const { version } = Unplaced.primaryStore.getEntry('relocated');
+		const context = { replicatedConfirmation: 1, timestamp: version - 60_000 };
+		await confirmed(context, async () => {
+			const resource = await Unplaced.getResource('relocated', context);
+			resource._writeRelocate('relocated', {});
+		});
+		assert.equal(Unplaced.primaryStore.getEntry('relocated').version, version);
+		assert.equal(calls[0].version, version);
+	});
+
 	it('keeps a count-based placement at its count when a record is updated', async () => {
 		Records.setResidency(undefined);
 		const previousNodes = global.server.nodes;
