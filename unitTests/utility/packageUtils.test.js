@@ -95,7 +95,6 @@ describe('packageUtils', () => {
 		}
 
 		it("uses the embedding distribution's productName for its compiled core", () => {
-			// Harper Pro ships core compiled under dist/core with no package.json of its own
 			assert.equal(
 				productNameFor(
 					{ '.': { name: '@harperfast/harper-pro', productName: 'Harper Pro' } },
