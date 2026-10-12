@@ -1005,7 +1005,9 @@ and `unitTests/server/serverHelpers/serverErrorHandler.test.js`.
 
 A confirmation error from an independent nested transaction cannot attest to an enclosing scope's
 pending writes: the commit and callback failure funnels remove its flag before aborting those writes,
-keeping the original error in `cause` and refusing automatic retry because the nested write did land.
+keeping the original error in `cause` and `retryable: false` in programmatic and HTTP errors because
+the nested write did land. The flag attests to the reported commit's issued writes, not later application
+steps that never ran after a rejection; a nested flag can remain when there are no enclosing writes to abort.
 
 Programmatic errors are `ReplicationConfirmationError` wrappers, not the original instance; inspect
 `cause` for its class and identity. String-only errors (native HTTP handlers and WebSocket close reasons)

@@ -55,7 +55,7 @@ function streamErrorRecord(error: any) {
 		if (error?.replicationUnconfirmed === true) {
 			record.replicationUnconfirmed = true;
 			record.retryable = false;
-		}
+		} else if (error?.retryable === false) record.retryable = false;
 	} catch {}
 	return record;
 }

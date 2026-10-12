@@ -12,7 +12,11 @@ const { errorToString } = harperLogger;
 function streamError(error) {
 	return {
 		error: errorToString(error),
-		...(error?.replicationUnconfirmed === true ? { replicationUnconfirmed: true, retryable: false } : {}),
+		...(error?.replicationUnconfirmed === true
+			? { replicationUnconfirmed: true, retryable: false }
+			: error?.retryable === false
+				? { retryable: false }
+				: {}),
 	};
 }
 export function streamAsJSON(value) {

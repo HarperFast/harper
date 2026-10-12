@@ -508,6 +508,7 @@ export function confirmReplicationAfterCommit(callback: () => unknown): Promise<
 }
 
 export function settleCommitCompletions(completions: unknown[], confirmation?: Promise<void>): Promise<void> {
+	if (completions.length === 0) return confirmation ?? Promise.resolve();
 	let deferredConfirmationError: ReplicationConfirmationError;
 	const localCompletions = completions.map((completion) =>
 		Promise.resolve(completion).catch((error) => {
