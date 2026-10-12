@@ -17,7 +17,6 @@
  *   (c) PATCH vs PUT semantics: PATCH merges (unspecified fields preserved); PUT replaces
  *       (unspecified fields dropped). Confirm under concurrency.
  *   (d) Engine divergence: run both RocksDB and LMDB, compare disjoint-field merge outcome.
- *   (e) ifVersion / optimistic-concurrency: does adding ifVersion change outcome (conflict→retry)?
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/database/concurrentPatchMerge.test.ts"
@@ -25,7 +24,7 @@
  */
 
 import { suite, test, before, after } from 'node:test';
-import { ok } from 'node:assert';
+import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -148,7 +147,7 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 		}
 
 		ok(patchMerges, `PATCH should merge fields; got: ${JSON.stringify(afterPatch)}`);
-		ok(true, 'PUT replace check is characterization');
+		ok(putReplaces, `PUT should replace the record, dropping unspecified fields; got: ${JSON.stringify(afterPut)}`);
 	});
 
 	// ── (a) Disjoint-field concurrency: N clients each PATCH a DIFFERENT field ──
@@ -328,11 +327,10 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 		ok(bodyPreserved, `Same-field PATCH clobbered unrelated body field: got "${doc?.body}"`);
 	});
 
-	// ── (c2) Concurrent PATCH vs concurrent PUT: does PUT clobber PATCH? ─────────
-	test('(c2) Concurrent PATCH vs PUT race — does PATCH win merge or get clobbered?', async () => {
+	// ── (c2) Concurrent PATCH vs concurrent PUT: either may win, but serially ───────
+	test('(c2) Concurrent PATCH vs PUT race ends in one of the two serial outcomes', async () => {
 		const id = `qa328-c2-${ENGINE}-${Date.now()}`;
 		const ROUNDS = 5;
-		const results: Array<{ round: number; bodyPreserved: boolean; titleFinal: string | null }> = [];
 
 		for (let round = 0; round < ROUNDS; round++) {
 			const runId = `${id}-r${round}`;
@@ -348,79 +346,18 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 			await sleep(30);
 			const doc = await getDoc(runId);
 
-			const bodyPresent = doc?.body != null && (doc.body as string).length > 0;
-
 			log(
 				`[c2:r${round}] PUT.status=${putRes.status} PATCH.status=${patchRes.status} title="${doc?.title}" body="${doc?.body}"`
 			);
-			results.push({ round, bodyPreserved: bodyPresent, titleFinal: (doc?.title as string) ?? null });
+			strictEqual(patchRes.status, 204, `[c2:r${round}] PATCH`);
+			strictEqual(putRes.status, 204, `[c2:r${round}] PUT`);
+			// PATCH-then-PUT leaves only the PUT's fields; PUT-then-PATCH adds the patched title to them.
+			strictEqual(doc?.body, `put-body-r${round}`, `[c2:r${round}] body must be the PUT's: ${JSON.stringify(doc)}`);
+			ok(
+				doc?.title == null || doc.title === `patch-title-r${round}`,
+				`[c2:r${round}] title must be absent (PATCH first) or the PATCH's (PUT first): ${JSON.stringify(doc)}`
+			);
 		}
-
-		log(`[c2] PATCH+PUT race across ${ROUNDS} rounds:`);
-		for (const r of results) {
-			log(`  round ${r.round}: body=${r.bodyPreserved} title="${r.titleFinal}"`);
-		}
-		ok(true, 'characterization probe — PUT+PATCH race, see findings');
-	});
-
-	// ── (e) ifVersion / optimistic concurrency ────────────────────────────────────
-	test('(e) ifVersion optimistic concurrency on PATCH — does conflict error + retry preserve fields?', async () => {
-		const id = `qa328-e-${ENGINE}-${Date.now()}`;
-
-		// Seed initial record, capture version from response header
-		const seedRes = await putDoc(id, {
-			id,
-			title: 'original',
-			body: 'original-body',
-			status: 'initial',
-		});
-		const version = seedRes.headers.get('x-harper-version') ?? seedRes.headers.get('etag');
-		log(`[e] seed version="${version}" (status=${seedRes.status})`);
-
-		if (!version) {
-			log(`[e] No version header from PUT — ifVersion probe skipped (Harper may not expose this on PUT response)`);
-			ok(true, 'ifVersion: version header not available, probe skipped');
-			return;
-		}
-
-		// Try PATCH with correct version (should succeed)
-		const patchGood = await fetch(
-			`${httpURL}/CollabDoc/${encodeURIComponent(id)}?ifVersion=${encodeURIComponent(version)}`,
-			{
-				method: 'PATCH',
-				headers: { 'Content-Type': 'application/json', 'Authorization': auth },
-				body: JSON.stringify({ title: 'conditional-update' }),
-				signal: AbortSignal.timeout(10_000),
-			}
-		);
-		log(`[e] PATCH with correct ifVersion: status=${patchGood.status}`);
-
-		// Try PATCH with stale version (should fail with 409/412)
-		const staleVersion = '1'; // guaranteed stale
-		const patchStale = await fetch(
-			`${httpURL}/CollabDoc/${encodeURIComponent(id)}?ifVersion=${encodeURIComponent(staleVersion)}`,
-			{
-				method: 'PATCH',
-				headers: { 'Content-Type': 'application/json', 'Authorization': auth },
-				body: JSON.stringify({ title: 'stale-update-should-reject' }),
-				signal: AbortSignal.timeout(10_000),
-			}
-		);
-		log(`[e] PATCH with stale ifVersion="${staleVersion}": status=${patchStale.status}`);
-
-		const doc = await getDoc(id);
-		log(`[e] final doc: title="${doc?.title}" body="${doc?.body}"`);
-
-		const goodAccepted = patchGood.status === 200 || patchGood.status === 204;
-		const staleRejected = patchStale.status === 409 || patchStale.status === 412 || patchStale.status === 428;
-
-		if (goodAccepted) log(`[e] Correct ifVersion accepted`);
-		else log(`[e] ifVersion-correct PATCH rejected (status=${patchGood.status}) — unexpected`);
-
-		if (staleRejected) log(`[e] Stale ifVersion rejected with ${patchStale.status} (correct)`);
-		else log(`[e] Stale ifVersion NOT rejected (status=${patchStale.status}) — ifVersion may not be enforced on PATCH`);
-
-		ok(true, 'ifVersion characterization — see findings');
 	});
 
 	// ── (a3) Stress: 40 concurrent PATCHes of 9 different fields over 10 rounds ──

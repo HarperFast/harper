@@ -38,7 +38,7 @@
  * Harper SHA: 7aaa5a152
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { strictEqual } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -322,8 +322,6 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 			strictEqual(rP.baseCount, ROWS_PERMANENT, `permanent base rows should all survive: ${rP.baseCount}`);
 			strictEqual(rP.missing.length, 0, `permanent missing index entries (base->no index): ${rP.missing.length}`);
 			strictEqual(rP.phantom.length, 0, `permanent phantom index entries (index->no base): ${rP.phantom.length}`);
-			// Soft signal: did the force-commit actually fire on this engine?
-			ok(true, `over-time fired=${fired} count=${otCount}`);
 		}
 	);
 });

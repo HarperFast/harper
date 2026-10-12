@@ -1,0 +1,106 @@
+import assert from 'node:assert';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+const REPO_ROOT = resolve(import.meta.dirname, '../..');
+const RULE_CODE = 'harper(no-literal-true-assertion)';
+
+// Lines ending in `// flagged` are the calls the rule must report; every other line must stay clean.
+const FIXTURE = `import assert, { ok, ok as check, strict } from 'node:assert';
+import * as assertNamespace from 'node:assert';
+import strictAssert from 'node:assert/strict';
+import { test } from 'node:test';
+const { ok: destructured } = assert;
+const required = require('assert');
+const aliased = assert;
+
+ok(true); // flagged
+check(true, 'aliased import'); // flagged
+assert(true); // flagged
+assert.ok(true); // flagged
+assert['ok'](true); // flagged
+assert.strict(true); // flagged
+assert.strict.ok(true); // flagged
+strict(true); // flagged
+assertNamespace.ok(true); // flagged
+strictAssert.ok(true); // flagged
+destructured(true); // flagged
+required.ok(true); // flagged
+aliased(true); // flagged
+ok( // flagged
+	true,
+	'multi-line call'
+);
+test('context assert', (t) => {
+	t.assert.ok(true); // flagged
+});
+
+const observed = true;
+ok(observed);
+ok(1 > 0, 'computed');
+assert.strictEqual(observed, true);
+ok(false);
+// ok(true) in a comment
+const text = 'ok(true) in a string';
+const response = { ok(_value) {} };
+response.ok(true);
+function shadowed(ok) {
+	ok(true);
+}
+shadowed(() => {});
+console.log(text);
+`;
+
+function flaggedLines(source) {
+	return source
+		.split('\n')
+		.flatMap((line, index) => (line.endsWith('// flagged') ? [index + 1] : []))
+		.sort((a, b) => a - b);
+}
+
+describe('oxlint harper/no-literal-true-assertion', function () {
+	this.timeout(60_000);
+	let workDir;
+	let diagnostics;
+
+	before(function () {
+		workDir = mkdtempSync(join(tmpdir(), 'oxlint-harper-plugin-'));
+		// The real config, with its plugin paths re-rooted so it loads from the scratch directory.
+		const config = JSON.parse(readFileSync(join(REPO_ROOT, '.oxlintrc.json'), 'utf8'));
+		delete config.$schema;
+		config.jsPlugins = config.jsPlugins.map((plugin) => resolve(REPO_ROOT, plugin));
+		writeFileSync(join(workDir, '.oxlintrc.json'), JSON.stringify(config));
+		for (const directory of ['integrationTests', 'unitTests']) {
+			mkdirSync(join(workDir, directory));
+			writeFileSync(join(workDir, directory, 'fixture.test.ts'), FIXTURE);
+		}
+		const result = spawnSync(
+			process.execPath,
+			[join(REPO_ROOT, 'node_modules/oxlint/bin/oxlint'), '--format', 'json', '-c', '.oxlintrc.json', '.'],
+			{ cwd: workDir, encoding: 'utf8' }
+		);
+		assert.ok(result.stdout, `oxlint produced no output (status ${result.status}): ${result.stderr}`);
+		diagnostics = JSON.parse(result.stdout).diagnostics.filter((diagnostic) => diagnostic.code === RULE_CODE);
+	});
+
+	after(function () {
+		rmSync(workDir, { recursive: true, force: true });
+	});
+
+	it('reports every literal-true assertion form under integrationTests', function () {
+		const reported = diagnostics
+			.filter((diagnostic) => diagnostic.filename.replaceAll('\\', '/').startsWith('integrationTests/'))
+			.map((diagnostic) => diagnostic.labels[0].span.line)
+			.sort((a, b) => a - b);
+		assert.deepStrictEqual(reported, flaggedLines(FIXTURE));
+	});
+
+	it('is scoped to integrationTests', function () {
+		const outside = diagnostics.filter(
+			(diagnostic) => !diagnostic.filename.replaceAll('\\', '/').startsWith('integrationTests/')
+		);
+		assert.deepStrictEqual(outside, []);
+	});
+});

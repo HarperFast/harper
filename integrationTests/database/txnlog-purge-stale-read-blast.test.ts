@@ -35,10 +35,9 @@
  *     proves the delete was scoped) across FIVE ordinary surfaces: REST record GET, REST
  *     collection query (`?bucket=`), `search_by_value` (ops API), SQL (ops API), and a raw
  *     index-independent full primary-store scan.
- *   - CONTRAST ARM: run the KNOWN-reproducing audit purge (`delete_transaction_logs_before`)
+ *   - CONTRAST ARM: run the audit purge that reproduced F-225 (`delete_transaction_logs_before`)
  *     against the same database (and table for LMDB) in the SAME process and check `read_audit_log` for the deleted
- *     range -- documents (not hard-asserted, since it's independently filed as F-225) whether
- *     the audit phantom reproduces here too, for the sharpest possible same-process contrast.
+ *     range -- asserts no purged (pre-cutoff) entry is still returned; F-225 no longer reproduces.
  *   - RESTART DISCRIMINATOR: `killHarper` + `startHarper` on the identical `dataRootDir`,
  *     then re-measure. If pre-restart reads were already clean, post-restart must also be
  *     clean -- that agreement is the confirmation the bound holds.
@@ -713,7 +712,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 			);
 
 			test(
-				'5. CONTRAST ARM (known-reproducing): audit purge in the SAME process -- does the F-225 phantom appear here too?',
+				'5. CONTRAST ARM: an audit purge in the SAME process leaves no purged entry readable (F-225)',
 				{ timeout: 120_000 },
 				async () => {
 					assertSeedCompleted();
@@ -725,7 +724,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					// cache that was never populated can't go stale, so reading only AFTER the purge
 					// (as this arm previously did) can pass "clean" for having nothing to go stale,
 					// not because the purge correctly invalidated a live cache entry. That would make
-					// the "known-reproducing" claim vacuous.
+					// this arm's assertion vacuous.
 					const preWarm = await rawOp(ctx, {
 						operation: 'read_audit_log',
 						schema: SCHEMA,
@@ -835,9 +834,11 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						`5. CONTRAST: ordinary-reads verdict (test 4) vs audit-read verdict (this test) -- ` +
 							`if 4 is clean and this is PHANTOM, that is the sharpest possible bound: staleness is confined to the audit/txnlog path, not ordinary table reads, in the identical process.`
 					);
-					// Informational only -- F-225 is independently filed; this arm documents contrast,
-					// it does not re-litigate a known, already-tracked defect.
-					ok(true, `audit contrast arm recorded (phantom=${phantomAudit})`);
+					strictEqual(
+						stalePreCutoffEntries.length,
+						0,
+						`F-225: read_audit_log(${sampleId}) still returns purged pre-cutoff entries: ${JSON.stringify(stalePreCutoffEntries)}`
+					);
 				}
 			);
 
