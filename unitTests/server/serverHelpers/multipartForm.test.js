@@ -530,6 +530,45 @@ describe('REST multipart form decoding', function () {
 			env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, previous);
 		}
 	});
+	it('bounds chunks pulled through the Bun request-body adapter during discard', async function () {
+		const previous = env.get(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE);
+		env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, 2 * 65536);
+		const gate = Promise.withResolvers();
+		let reads = 0;
+		let canceled = false;
+		const input = new ReadableStream(
+			{
+				async pull(controller) {
+					await gate.promise;
+					reads++;
+					controller.enqueue(Buffer.alloc(65536));
+					if (reads === 256) controller.close();
+				},
+				cancel() {
+					canceled = true;
+				},
+			},
+			{ highWaterMark: 0 }
+		);
+		const request = new BunRequest(
+			new globalThis.Request('http://localhost/', { method: 'POST', body: input, duplex: 'half' }),
+			null,
+			false
+		);
+		try {
+			const body = getDeserializer(contentType, true, true)(request.body);
+			assert.equal(await completeMultipartBody(body, 'response'), 'response');
+			gate.resolve();
+			await waitFor(() => reads >= 2);
+			await nextTurn();
+			assert(reads <= 6, `Bun discard pulled ${reads} chunks despite the byte limit`);
+			await waitFor(() => canceled, { timeout: 3000 });
+		} finally {
+			gate.resolve();
+			request.body.destroy();
+			env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, previous);
+		}
+	});
 
 	it('keeps ordinary JSON bodies as promises for static methods', async function () {
 		const body = getDeserializer('application/json', true, true)(Readable.from([Buffer.from('{"value":1}')]));

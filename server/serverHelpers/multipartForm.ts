@@ -14,6 +14,11 @@ type MultipartInput = AsyncIterable<Uint8Array> & {
 	afterResponse?: (callback: () => void) => () => void;
 };
 
+function withFileName(blob: Blob, name?: string): Blob {
+	// Bun's inherited name setter does not create the own property copied by the record encoder.
+	return Object.defineProperty(blob, 'name', { value: name, enumerable: true, writable: true, configurable: true });
+}
+
 export async function deserializeMultipartForm(data: Buffer, contentType = ''): Promise<object> {
 	return collectFormData(new MultipartFormBody(Readable.from([data]), contentType, false));
 }
@@ -158,14 +163,15 @@ class MultipartFormBody implements AsyncIterableIterator<ResourceBodyPart<FormVa
 				file.destroy(this.error);
 				return;
 			}
-			const decorate = (blob: Blob) => Object.assign(blob, { name: info.filename });
 			let value: Blob | Promise<Blob>;
-			if (streamFiles) value = decorate(createBlob(file, { type: info.mimeType }));
+			if (streamFiles) value = withFileName(createBlob(file, { type: info.mimeType }), info.filename);
 			else {
 				value = new Promise<Blob>((resolve, reject) => {
 					const chunks: Buffer[] = [];
 					file.on('data', (chunk) => chunks.push(chunk));
-					file.on('end', () => resolve(decorate(createBlob(Buffer.concat(chunks), { type: info.mimeType }))));
+					file.on('end', () =>
+						resolve(withFileName(createBlob(Buffer.concat(chunks), { type: info.mimeType }), info.filename))
+					);
 					file.on('error', reject);
 				});
 				value.catch(() => {});
@@ -218,7 +224,7 @@ class MultipartFormBody implements AsyncIterableIterator<ResourceBodyPart<FormVa
 			if (!this.#previousFile) return value;
 			const chunks: Buffer[] = [];
 			for await (const chunk of this.#previousFile) chunks.push(chunk);
-			return Object.assign(createBlob(Buffer.concat(chunks), { type: value.type }), { name: value.name });
+			return withFileName(createBlob(Buffer.concat(chunks), { type: value.type }), value.name);
 		});
 	}
 
