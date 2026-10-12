@@ -227,7 +227,7 @@ describe('@updatedTime / @createdTime caller shapes', () => {
 		it('keep the timestamps the originating node stamped; nothing is re-stamped locally', async () => {
 			const originUpdated = Date.now() - 60_000;
 			const originCreated = originUpdated - 60_000;
-			// the context and options the replication receiver passes to _writeUpdate
+			// The receiver's context carries source/sourceApply; context.source is what skips the stamp.
 			const context = { source: {}, sourceApply: true, timestamp: originUpdated };
 			await transaction(context, async () => {
 				const resource = await FloatStamped.getResource('f9', context);
@@ -246,7 +246,6 @@ describe('@updatedTime / @createdTime caller shapes', () => {
 	});
 });
 
-// Added in v5.2.0 by 182971ad1 (#1767).
 describe('code-first types.date.updatedTime / createdTime', () => {
 	let CodeFirst;
 
