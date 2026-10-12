@@ -4,6 +4,8 @@ import { Blob, createBlob } from '../../resources/blob.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import { get } from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
+import { collectFormData, RESOLVE_BODY } from '../../resources/resolveBody.ts';
+import type { ResourceBodyPart } from '../../resources/ResourceInterface.ts';
 
 type FormValue = string | Blob;
 type FormPart = { name: string; value: FormValue | Promise<Blob>; file?: Readable };
@@ -13,18 +15,7 @@ type MultipartInput = AsyncIterable<Uint8Array> & {
 };
 
 export async function deserializeMultipartForm(data: Buffer, contentType = ''): Promise<object> {
-	const form = {};
-	for await (const part of new MultipartFormBody(Readable.from([data]), contentType, false)) {
-		for (const name of Object.keys(part)) {
-			const value = part[name];
-			if (Object.hasOwn(form, name)) {
-				const previous = form[name];
-				if (Array.isArray(previous)) previous.push(value);
-				else form[name] = [previous, value];
-			} else form[name] = value;
-		}
-	}
-	return form;
+	return collectFormData(new MultipartFormBody(Readable.from([data]), contentType, false));
 }
 
 export function deserializeMultipartStream(
@@ -55,7 +46,7 @@ export function cancelMultipartBody(data: unknown): void {
 	if (data instanceof MultipartFormBody) data.cancel();
 }
 
-class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValue>> {
+class MultipartFormBody implements AsyncIterableIterator<ResourceBodyPart<FormValue>> {
 	#error?: Error;
 	#stopped = false;
 	#parts: Readable;
@@ -202,7 +193,7 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 		return this.#error;
 	}
 
-	async next(): Promise<IteratorResult<Record<string, FormValue>>> {
+	async next(): Promise<IteratorResult<ResourceBodyPart<FormValue>>> {
 		if (this.#error) throw this.#error;
 		if (this.#stopped || (this.#parts.destroyed && !this.#parts.readableEnded)) return { value: undefined, done: true };
 		if (this.#previousFile && !this.#previousFile.readableEnded) {
@@ -219,10 +210,19 @@ class MultipartFormBody implements AsyncIterableIterator<Record<string, FormValu
 		const value = await part.value.value;
 		if (this.#error) throw this.#error;
 		if (this.#stopped) return { value: undefined, done: true };
-		return { value: { [part.value.name]: value }, done: false };
+		return { value: { name: part.value.name, value }, done: false };
 	}
 
-	async return(): Promise<IteratorResult<Record<string, FormValue>>> {
+	async [RESOLVE_BODY](): Promise<Record<string, unknown>> {
+		return collectFormData(this, async (value: Blob & { name?: string }) => {
+			if (!this.#previousFile) return value;
+			const chunks: Buffer[] = [];
+			for await (const chunk of this.#previousFile) chunks.push(chunk);
+			return Object.assign(createBlob(Buffer.concat(chunks), { type: value.type }), { name: value.name });
+		});
+	}
+
+	async return(): Promise<IteratorResult<ResourceBodyPart<FormValue>>> {
 		this.cancel();
 		return { value: undefined, done: true };
 	}

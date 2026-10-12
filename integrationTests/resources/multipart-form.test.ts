@@ -46,7 +46,7 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 	}
 
 	for (const route of ['StoredUpload', 'StreamingUpload']) {
-		test(`uploads a form through the buffered ${route} PUT method`, async () => {
+		test(`uploads a form through the inherited ${route} PUT method`, async () => {
 			const form = new FormData();
 			form.append('title', 'a web form');
 			form.append('file', new Blob(['default bytes'], { type: 'text/plain' }), 'café.txt');
@@ -84,6 +84,137 @@ suite('REST multipart forms', (ctx: ContextWithHarper) => {
 			size: 12,
 			text: 'posted bytes',
 		});
+	});
+
+	for (const method of ['POST', 'PUT']) {
+		test(`collects and persists a multi-chunk file through inherited ${method}`, async () => {
+			const payload = 'payload' + 'x'.repeat(200000);
+			const id = `large-inherited-${method}`;
+			const form = new FormData();
+			form.append('id', id);
+			form.append('title', 'allowed');
+			form.append('file', new Blob([payload], { type: 'text/plain' }), 'large.txt');
+			const response = await fetch(`${ctx.harper.httpURL}/StoredUpload/${method === 'POST' ? '' : id}`, {
+				method,
+				headers: { Authorization: authorization },
+				body: form,
+				signal: AbortSignal.timeout(10000),
+			});
+			assert.equal(response.status, method === 'POST' ? 201 : 204, await response.text());
+			assert.deepStrictEqual(await read(`/ReadUpload/${id}`), {
+				name: 'large.txt',
+				type: 'text/plain',
+				size: payload.length,
+				text: payload,
+			});
+		});
+	}
+
+	test('delegates a streamed form to super.post with replayable files and repeated names', async () => {
+		const form = new FormData();
+		form.append('title', 'allowed');
+		form.append('tag', 'one');
+		form.append('attachments', new Blob(['first']), 'first.txt');
+		form.append('tag', 'two');
+		form.append('attachments', new Blob(['second']), 'second.txt');
+		form.append('file', new Blob(['payload saved'], { type: 'text/plain' }), 'saved.txt');
+		const response = await fetch(`${ctx.harper.httpURL}/DelegatedUpload/delegated`, {
+			method: 'POST',
+			headers: { Authorization: authorization },
+			body: form,
+			signal: AbortSignal.timeout(10000),
+		});
+		const text = await response.text();
+		assert.equal(response.status, 200, text);
+		assert.deepStrictEqual(JSON.parse(text), {
+			title: 'allowed',
+			tag: ['one', 'two'],
+			streamed: true,
+			files: [
+				{ name: 'first.txt', text: 'first' },
+				{ name: 'second.txt', text: 'second' },
+			],
+		});
+		assert.deepStrictEqual(await read('/ReadUpload/delegated'), {
+			name: 'saved.txt',
+			type: 'text/plain',
+			size: 13,
+			text: 'payload saved',
+		});
+	});
+
+	test('gives allowCreate the resolved JSON object when a static method delegates', async () => {
+		const response = await fetch(`${ctx.harper.httpURL}/DelegatedUpload/json-delegated`, {
+			method: 'POST',
+			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ title: 'allowed', tag: ['json'] }),
+			signal: AbortSignal.timeout(10000),
+		});
+		assert.equal(response.status, 200, await response.clone().text());
+		assert.deepStrictEqual(await response.json(), { title: 'allowed', tag: ['json'], streamed: false, files: [] });
+	});
+
+	test('denies a delegated form based on resolved fields before writing', async () => {
+		const form = new FormData();
+		form.append('title', 'denied');
+		form.append('file', new Blob(['payload denied']), 'denied.txt');
+		const response = await fetch(`${ctx.harper.httpURL}/DelegatedUpload/denied-delegated`, {
+			method: 'POST',
+			headers: { Authorization: authorization },
+			body: form,
+			signal: AbortSignal.timeout(10000),
+		});
+		assert.equal(response.status, 403, await response.text());
+		const record = await fetch(`${ctx.harper.httpURL}/StoredUpload/denied-delegated`, {
+			headers: { Authorization: authorization },
+			signal: AbortSignal.timeout(10000),
+		});
+		assert.equal(record.status, 404);
+		await record.text();
+	});
+
+	for (const valid of [true, false]) {
+		test(`validates a ${valid ? 'valid' : 'missing-field'} multipart request contract`, async () => {
+			const form = new FormData();
+			form.append(valid ? 'title' : 'other', 'schema form');
+			const response = await fetch(`${ctx.harper.httpURL}/SchemaUpload/`, {
+				method: 'POST',
+				headers: { Authorization: authorization },
+				body: form,
+				signal: AbortSignal.timeout(10000),
+			});
+			const text = await response.text();
+			assert.equal(response.status, valid ? 200 : 400, text);
+			if (valid) assert.deepStrictEqual(JSON.parse(text), { title: 'schema form' });
+		});
+	}
+
+	test('settles inherited form collection when the client disconnects mid-file', async () => {
+		const uploading = httpRequest(`${ctx.harper.httpURL}/DelegatedUpload/disconnected-inherited`, {
+			method: 'POST',
+			headers: { 'Authorization': authorization, 'Content-Type': 'multipart/form-data; boundary=disconnect' },
+		});
+		uploading.on('error', () => {});
+		uploading.write('--disconnect\r\nContent-Disposition: form-data; name="file"; filename="partial.txt"\r\n\r\n');
+		uploading.write(Buffer.alloc(32768, 'x'));
+		try {
+			await waitFor(async () => (await read('/UploadProgress/disconnected-inherited')).streamed, {
+				timeout: 10000,
+				interval: 50,
+			});
+		} finally {
+			uploading.destroy();
+		}
+		await waitFor(async () => (await read('/UploadProgress/disconnected-inherited')).failed, {
+			timeout: 10000,
+			interval: 50,
+		});
+		const record = await fetch(`${ctx.harper.httpURL}/StoredUpload/disconnected-inherited`, {
+			headers: { Authorization: authorization },
+			signal: AbortSignal.timeout(10000),
+		});
+		assert.equal(record.status, 404);
+		await record.text();
 	});
 
 	test('lets a multipart-only streaming consumer reject ordinary JSON with 415', async () => {
