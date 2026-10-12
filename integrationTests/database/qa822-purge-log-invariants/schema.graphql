@@ -1,6 +1,7 @@
-# One database, because a RocksDB transaction log is per-database: all three tables share the one
-# log the suite samples. They are separate tables so the seed that arms the purge, the post-purge
-# write volume, and the rows read back as the survival oracle can never be confused for each other.
+# One database (`data`), because a RocksDB transaction log is per-database: these three tables
+# share the one log the main arms sample. They are separate tables so the seed that arms the purge,
+# the post-purge write volume, and the rows read back as the survival oracle can never be confused
+# for each other. `ReopenTarget` below lives in a second, isolated database — see its own comment.
 type PurgeVictim @table(audit: true) @export {
 	id: ID @primaryKey
 	seq: Int

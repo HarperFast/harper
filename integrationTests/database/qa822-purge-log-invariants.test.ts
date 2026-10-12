@@ -18,7 +18,8 @@
  *      process before it restarts, and those writes are themselves enough to rewrite flush state,
  *      so a regression visible only on a no-write reopen would be masked there. The first sample —
  *      taken in the purging process with zero writes since the purge — is the one that isolates it,
- *      and it is the sample that fails on a pre-#799 binding. Invariant 4 below supplies that sample.
+ *      and it is the sample that fails on a pre-#799 binding. Invariant 4 below supplies the
+ *      missing no-write sample.
  *   2. COMMIT GROUPING IS IRRELEVANT. The same 260 records advance the log's write cursor by the
  *      same number of bytes whether they arrive as 260 single-row commits or as one 260-row commit.
  *      The log's byte layout is a function of the records, not of how a client grouped them into
@@ -224,26 +225,64 @@ async function flushPrimaryStores(ctx: ContextWithHarper): Promise<void> {
 	}
 }
 
-// `/LogStats/` resolves a fixture table out of `tables`, so only a 200 proves the databases are
-// open. A 404 is the component still loading, and a 500 from a half-started server would read as
-// ready and resurface later as an opaque failure.
+/**
+ * Flush until the log's oldest file is both sealed and fully applied to RocksDB — the two
+ * conditions that make it eligible for the native purge. The last-flushed position cannot pass an
+ * unflushed column family, and RocksDB's own size-triggered flushes race one explicit flush, so
+ * this polls rather than asserts after a single call — the same reason
+ * `qa816-purge-blast-radius.test.ts`'s `flushUntilPurgeable` does.
+ */
+async function flushUntilPurgeable(ctx: ContextWithHarper, table: string, database = 'data'): Promise<LogSnapshot> {
+	const deadline = Date.now() + 60_000;
+	let stats: LogSnapshot;
+	do {
+		await flushPrimaryStores(ctx);
+		stats = await logStats(ctx, table, database);
+		if (
+			stats.oldestSequenceNumber < stats.currentSequenceNumber &&
+			stats.lastFlushedPosition.sequence > stats.oldestSequenceNumber
+		)
+			return stats;
+		await sleep(250);
+	} while (Date.now() < deadline);
+	throw new Error(
+		`ORACLE ARMING: ${database}.${table}'s oldest transaction-log file never became sealed and fully flushed ` +
+			`within 60s (oldest=${stats.oldestSequenceNumber} current=${stats.currentSequenceNumber} lastFlushed=${stats.lastFlushedPosition.sequence})`
+	);
+}
+
+// `/LogStats/` resolves a fixture table out of `tables`/`databases`, so a 200 for a given
+// database.table proves that one is open. A 404 is the component still loading, and a 500 from a
+// half-started server would read as ready and resurface later as an opaque failure. Both databases
+// are checked, not just `data`, so a `qa1730` access later never races its own database's load.
 async function pollReadiness(ctx: ContextWithHarper): Promise<void> {
 	const deadline = Date.now() + 90_000;
-	let last = 'no response';
-	while (Date.now() < deadline) {
-		try {
-			const res = await fetch(`${ctx.harper.httpURL}/LogStats/?table=QuietTarget`, {
-				headers: { Authorization: authHeader(ctx) },
-				signal: AbortSignal.timeout(5_000),
-			});
-			if (res.status === 200) return;
-			last = `HTTP ${res.status}`;
-		} catch (error) {
-			last = String((error as Error)?.message ?? error);
+	for (const [table, database] of [
+		['QuietTarget', 'data'],
+		[CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB],
+	] as const) {
+		let last = 'no response';
+		while (Date.now() < deadline) {
+			try {
+				const res = await fetch(`${ctx.harper.httpURL}/LogStats/?database=${database}&table=${table}`, {
+					headers: { Authorization: authHeader(ctx) },
+					signal: AbortSignal.timeout(5_000),
+				});
+				if (res.status === 200) {
+					last = '';
+					break;
+				}
+				last = `HTTP ${res.status}`;
+			} catch (error) {
+				last = String((error as Error)?.message ?? error);
+			}
+			await sleep(250);
 		}
-		await sleep(250);
+		if (last)
+			throw new Error(
+				`QA-822: /LogStats/?database=${database}&table=${table} never answered 200 within 90s; last=${last}`
+			);
 	}
-	throw new Error(`QA-822: /LogStats/ never answered 200 within 90s; last=${last}`);
 }
 
 // A job record can be briefly unreadable right after the ack, so a non-200 or malformed tick is a
@@ -402,10 +441,11 @@ function assertGracefulExit(status: ExitStatus, label: string): void {
 	);
 }
 
-// Every restart in this file backs a "clean shutdown" claim (the header's proof boundary at
-// :78-80, or invariant 4's own), so every restart checks it here once rather than at each call
-// site. `onShutdown` runs after the process is confirmed dead and before the next one starts — the
-// only window in which disk state can be inspected without a live process racing it.
+// Every restart in this file backs a "clean shutdown" claim (the header's proof boundary, or
+// invariant 4's own), so every restart checks it here once rather than at each call site.
+// `onShutdown` runs after the process has exited and before the next one starts, so it can inspect
+// disk state without a live process racing it — before the graceful-exit check itself, so a bad
+// onShutdown still surfaces as its own error rather than masking an ungraceful exit underneath it.
 async function restart(ctx: ContextWithHarper, label: string, onShutdown?: () => Promise<void> | void): Promise<void> {
 	const dyingProcess = ctx.harper.process;
 	await killHarper(ctx as any, { graceMs: 30_000 });
@@ -480,8 +520,8 @@ suite(
 					`1. seeded ${victimRows} rows x ${VICTIM_PAD.length}B against maxFileSize=${maxFileSize}; rotations ${seedStart.rotations} -> ${rotations}`
 				);
 
+				await flushUntilPurgeable(ctx, 'PurgeVictim');
 				const cutoffTimestamp = Date.now();
-				await flushPrimaryStores(ctx);
 
 				// Database-scoped on purpose: a RocksDB transaction log is per-database, so a `table`-scoped
 				// request is refused outright (`ResourceBridge.deleteTransactionLogsBefore`, harper#2049).
@@ -645,8 +685,8 @@ suite(
 					`6. seeded ${seedRows} rows x ${VICTIM_PAD.length}B against maxFileSize=${maxFileSize}; rotations ${seedStart.rotations} -> ${rotations}`
 				);
 
+				await flushUntilPurgeable(ctx, CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB);
 				const cutoffTimestamp = Date.now();
-				await flushPrimaryStores(ctx);
 
 				const ack = await rawOp(ctx, {
 					operation: 'delete_transaction_logs_before',
