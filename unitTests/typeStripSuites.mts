@@ -34,12 +34,11 @@ function needsCompiled(file: string, seen = new Set<string>()): boolean {
 		)
 			compiled = true;
 		if (
-			file !== resolve(unitRoot, 'rocksdbBindings.mts') &&
 			ts.isCallExpression(node) &&
 			node.expression.getText(parsed) === 'require' &&
 			node.arguments[0] &&
 			ts.isStringLiteralLike(node.arguments[0]) &&
-			node.arguments[0].text === '@harperfast/rocksdb-js'
+			['@harperfast/rocksdb-js', 'msgpackr'].includes(node.arguments[0].text)
 		)
 			compiled = true;
 		if (

@@ -397,7 +397,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			if (isLMDB) return this.skip();
 			const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 			const { encodeLockControlPayload } = require('#src/resources/recordLockCoordinator');
-			const { unpack } = require('msgpackr');
+			const { unpack } = require('../packageBindings.mts').packageBindings('msgpackr');
 			const peerId = getIdOfRemoteNode('peer-barrier', ClusterLockTest.auditStore);
 			useSoloTransport({ homes: [NODE_NAME, 'peer-barrier'] });
 			const events = new IterableEventQueue();
@@ -555,7 +555,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			if (isLMDB) return this.skip();
 			const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 			const { encodeLockControlPayload } = require('#src/resources/recordLockCoordinator');
-			const { unpack } = require('msgpackr');
+			const { unpack } = require('../packageBindings.mts').packageBindings('msgpackr');
 			const peerId = getIdOfRemoteNode('peer-sink', ClusterLockTest.auditStore);
 			useSoloTransport({ homes: [NODE_NAME, 'peer-sink'] });
 			// A source is how replication attaches, so this is the path applyLockControlEvent sits on:
@@ -625,7 +625,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 				encodeLockControlPayload,
 				deliverLockControlEntry,
 			} = require('#src/resources/recordLockCoordinator');
-			const { unpack } = require('msgpackr');
+			const { unpack } = require('../packageBindings.mts').packageBindings('msgpackr');
 			useSoloTransport({ homes: [NODE_NAME, 'peer-1'] });
 			// Through `idHomedHere`, which hashes `ringKeyFor(database, table, writeKeyId(id))` exactly as
 			// Table.ts hands it to the coordinator. Hashing the raw id here picked a home under a
@@ -661,7 +661,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 				encodeLockControlPayload,
 				deliverLockControlEntry,
 			} = require('#src/resources/recordLockCoordinator');
-			const { unpack } = require('msgpackr');
+			const { unpack } = require('../packageBindings.mts').packageBindings('msgpackr');
 			const homes = [NODE_NAME, 'peer-1'];
 			useSoloTransport({ homes });
 			let recordId;
@@ -1185,7 +1185,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 
 		it('picks up a node admitted after this worker cached the mapping', async function () {
 			if (isLMDB) return this.skip();
-			const { pack } = require('msgpackr');
+			const { pack } = require('../packageBindings.mts').packageBindings('msgpackr');
 			const { getNodeNameForId } = require('#src/resources/nodeIdMapping');
 			// Ids are minted by whichever worker first talks to a peer, and invalidation only reaches
 			// that worker. Every other one holds a map that predates the new node, so a miss has to be
@@ -1201,7 +1201,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 
 		it('reads the store once per window for an id it will never resolve', async function () {
 			if (isLMDB) return this.skip();
-			const { pack } = require('msgpackr');
+			const { pack } = require('../packageBindings.mts').packageBindings('msgpackr');
 			const { getNodeNameForId } = require('#src/resources/nodeIdMapping');
 			// `rebuildOnMiss` bypassed the refresh window on EVERY call, so a replayed run of control
 			// entries naming an id this database never minted — a purged node, an origin relayed from
@@ -1233,7 +1233,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 
 		it('resolves a node id to a name per database, not process-wide', function () {
 			if (isLMDB) return this.skip();
-			const { pack } = require('msgpackr');
+			const { pack } = require('../packageBindings.mts').packageBindings('msgpackr');
 			const { getNodeNameForId } = require('#src/resources/nodeIdMapping');
 			// Short ids are minted per database in first-seen order, so id 1 names a different node in
 			// each one. A process-global inversion would attribute an entry to the wrong node.

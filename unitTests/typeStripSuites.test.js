@@ -173,6 +173,7 @@ describe('unit runtime selection', function () {
 					true,
 				],
 				["require('@harperfast/rocksdb-js');", true],
+				["require('msgpackr');", true],
 			]) {
 				writeFileSync(file, code);
 				assert.strictEqual(partitionSuites([file]).compiled.length, Number(compiled), code);

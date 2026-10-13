@@ -7,6 +7,10 @@ describe('compiled lane fixture', () => {
 	it('uses the same mutable namespace for both aliases', () => {
 		assert.strictEqual(require('#src/utility/environment/environmentManager'), env);
 		assert(!types.isModuleNamespaceObject(env));
+		assert.strictEqual(
+			require('../../packageBindings.mts').packageBindings('msgpackr').Packr,
+			require('msgpackr').Packr
+		);
 		assert(require.resolve('#js/utility/hdbTerms').includes(`${sep}dist${sep}`));
 	});
 });

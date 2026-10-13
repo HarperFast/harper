@@ -11,6 +11,10 @@ describe('native lane fixture', () => {
 		assert.strictEqual(process.env.HARPER_UNIT_SELECTION_CONFIG, undefined);
 		assert(types.isModuleNamespaceObject(env));
 		assert(require.resolve('#src/utility/hdbTerms').endsWith('.ts'));
+		assert.strictEqual(
+			require('../../packageBindings.mts').packageBindings('msgpackr').Packr,
+			(await import('msgpackr')).Packr
+		);
 		assert.throws(() => require('#' + 'js/utility/hdbTerms'), { code: 'ERR_PACKAGE_IMPORT_NOT_DEFINED' });
 		const child = spawnSync(process.execPath, ['-p', "require.resolve('#src/utility/hdbTerms')"], {
 			encoding: 'utf8',

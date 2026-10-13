@@ -9,7 +9,7 @@ const path = require('node:path');
 const fs = require('fs-extra');
 const { setupTestDBPath } = require('../testUtils');
 const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
-const { Packr } = require('msgpackr');
+const { Packr } = require('../packageBindings.mts').packageBindings('msgpackr');
 const { RecordEncoder, RecordObject, setNextEncoding } = require('#src/resources/RecordEncoder');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 

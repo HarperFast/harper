@@ -58,7 +58,7 @@ const {
 	rmSync,
 } = require('fs');
 const { dirname, join } = require('path');
-const { pack } = require('msgpackr');
+const { pack } = require('../packageBindings.mts').packageBindings('msgpackr');
 const { randomBytes } = require('crypto');
 const { waitFor } = require('../waitFor.js');
 const env = require('#src/utility/environment/environmentManager');

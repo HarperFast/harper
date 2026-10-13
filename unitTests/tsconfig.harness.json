@@ -6,6 +6,12 @@
 		"module": "ESNext",
 		"moduleResolution": "Bundler"
 	},
-	"include": ["runTypeStripTests.mts", "typeStripSuites.mts", "nativeModules.mts", "rocksdbBindings.mts"],
+	"include": [
+		"runTypeStripTests.mts",
+		"typeStripSuites.mts",
+		"nativeModules.mts",
+		"rocksdbBindings.mts",
+		"packageBindings.mts"
+	],
 	"exclude": []
 }

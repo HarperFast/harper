@@ -26,7 +26,7 @@ const {
 	databases,
 } = require('#src/resources/databases');
 const { registryStatus, RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
-const { schema: schemaHandler } = require('#src/server/itc/serverHandlers');
+const { schemaHandler } = require('#src/server/itc/serverHandlers');
 const { OPERATIONS_ENUM } = require('#src/utility/hdbTerms');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 const { dropSchema } = require('#src/dataLayer/schema');
