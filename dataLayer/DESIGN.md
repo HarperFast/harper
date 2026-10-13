@@ -77,8 +77,9 @@ Several non-obvious mechanics keep that safe:
   same id before the pin lands. The lock coordinates Harper's own operations only; a process writing
   the repository directly is outside it. Other management operations on that repository wait up to 30s for it, then 409, as
   they already do behind a long `create_backup`. A backup whose manifest declares blobs must also
-  still have its blob snapshot. Not covered: blob files
-  (rocksdb-js has no reader for them), and anything that fails only once the copy runs (`ENOSPC`, a
+  still have its blob snapshot. Not covered: blob file contents
+  (rocksdb-js has no reader for them; one unreadable at copy time fails after the purge, and the rerun
+  needs a backup whose blobs read), and anything that fails only once the copy runs (`ENOSPC`, a
   crash) — those still leave the marker and need a rerun, which the intact backup allows.
 
 - **Two files in an isolated `` `restore` `` directory beside (never inside) the database directory**,

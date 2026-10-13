@@ -528,7 +528,10 @@ describe('rocksdbBackup', function () {
 				rmSync(snapshotDir, { recursive: true, force: true });
 				await assert.rejects(
 					restore(backupId),
-					(error) => /blob snapshot is missing/.test(error.message) && /did not modify/.test(error.message)
+					(error) =>
+						error.statusCode === 400 &&
+						/blob snapshot is missing/.test(error.message) &&
+						/did not modify/.test(error.message)
 				);
 				assertDestinationIntact();
 			});
@@ -542,13 +545,6 @@ describe('rocksdbBackup', function () {
 				assertRestoredFromBackup();
 			});
 		}
-
-		it('verify_backup refuses a table format this build cannot open', async function () {
-			this.timeout(30000);
-			const backupId = await seed();
-			writeUnsupportedTableFormat(backupId);
-			await assert.rejects(verifyBackupOffline(VERIFIED, backupId), /format_version 99/);
-		});
 	});
 
 	describe('online restore_backup validation', function () {

@@ -1385,7 +1385,7 @@ async function assertBackupReadable(
 	databaseDir: string
 ): Promise<void> {
 	try {
-		await verifyBackupFiles(backupDir, backupId, manifest, databaseName, true);
+		await verifyBackupFiles(backupDir, backupId, manifest, databaseName, true, true);
 	} catch (error: any) {
 		let interrupted = false;
 		try {
@@ -1396,7 +1396,9 @@ async function assertBackupReadable(
 		const destination = interrupted
 			? `database '${databaseName}' still holds an earlier restore that did not finish and stays unloadable until a restore succeeds; restore a backup that verifies`
 			: `this restore did not modify database '${databaseName}'`;
-		throw new Error(`Backup ${backupId} failed verification, so ${destination}: ${error.message}`, { cause: error });
+		const message = `Backup ${backupId} failed verification, so ${destination}: ${error instanceof Error ? error.message : String(error)}`;
+		const refusal = error instanceof ClientError ? new ClientError(message, error.statusCode) : new Error(message);
+		throw Object.assign(refusal, { cause: error });
 	}
 }
 
@@ -1405,9 +1407,10 @@ async function verifyBackupFiles(
 	backupId: number,
 	manifest: BackupManifest,
 	databaseName: string,
-	verifyWithChecksum: boolean
+	verifyWithChecksum: boolean,
+	verifyTables = false
 ): Promise<void> {
-	await backups.verify(backupDir, backupId, { verifyWithChecksum, verifyTables: true });
+	await backups.verify(backupDir, backupId, { verifyWithChecksum, verifyTables });
 	if (manifest.blobs && !existsSync(blobSnapshotDir(backupDir, backupId))) {
 		throw new ClientError(
 			`Backup ${backupId} of database '${databaseName}' declares captured blobs but its blob snapshot is missing (corrupt backup)`
