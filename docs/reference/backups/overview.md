@@ -38,12 +38,12 @@ The offline path matters for restore. RocksDB is single-writer, so an in-place r
 - **Backups live on the node that created them.** The backup repository is a local directory. RocksDB shares files across backup IDs (a backup ID is not a self-contained folder), so disaster-recovery copies must take the entire per-database repository — `<backupPath>/<database>` — not an individual backup, and must do so while no backup operation is running, or from an atomic filesystem snapshot. A live recursive copy can race `create_backup`/`delete_backup`/`purge_backups` and produce an unrestorable copy. Alternatively, use `get_backup` to pull a snapshot from a running server.
 - **`get_backup` always streams the current state.** It cannot download a historical managed backup; to move a retained backup off-host, copy its whole per-database repository as above.
 - **A restore is a point-in-time rollback.** In a replicated cluster, coordinate a restore with replication before bringing the node back.
-- **A restore stages a copy first.** <VersionBadge type="changed" version="v5.3.2" /> A restore stages the backup's database files beside the database directory and checks them before replacing the database, so the parent directory's filesystem needs room for them, plus headroom, or the restore is refused with status code 507. An online restore keeps serving the database while it stages, and writes made during staging are replaced by the restore. Blobs are not staged or checked. A database directory that is a symbolic link or a mount point cannot be restored in place. See [`restore_backup`](./operations.md#restore_backup).
-- **An interrupted restore leaves the database unloadable.** If `restore_backup` is interrupted before completing (crash, power loss), Harper marks the database as incompletely restored and skips loading it on the next start, logging an incomplete-restore error. Rerun `restore_backup` for the same database and `backup_id` to recover; do not load or hand-repair the directory.
+- **A restore checks the backup before it deletes anything.** <VersionBadge type="changed" version="v5.4.0" /> A backup with a corrupt file, or one this version of Harper cannot read, is refused and the database is left as it was. The check reads the whole backup, which adds to how long an online restore keeps the database unavailable. Blob file contents are not checked. See [`restore_backup`](./operations.md#restore_backup).
+- **An interrupted restore leaves the database unloadable.** If `restore_backup` is interrupted after it has started replacing the database's files (crash, power loss), Harper marks the database as incompletely restored and skips loading it on the next start, logging an incomplete-restore error. Rerun `restore_backup` for the same database and `backup_id` to recover; do not load or hand-repair the directory.
 
 ### When can a database be restored?
 
-An in-place restore replaces the database's files, which requires the database to be fully closed first. Whether a restore can run online depends on what is holding the database open:
+An in-place restore purges and rewrites the database's files, which requires the database to be fully closed first. Whether a restore can run online depends on what is holding the database open:
 
 | Database                                           | Online `restore_backup` (server running) | Offline `harper restore_backup` (server stopped) |
 | -------------------------------------------------- | ---------------------------------------- | ------------------------------------------------ |
@@ -82,7 +82,7 @@ Restore the latest backup, or pass `backup_id=<id>` for an earlier one:
 harper restore_backup database=data
 ```
 
-With the server running, this restores the database in place — Harper stages and checks the backup while the database keeps serving, then closes the database across its worker threads, swaps the staged copy in, and reloads it — as long as nothing is holding the database open (see [when can a database be restored?](#when-can-a-database-be-restored)). With the server stopped, the same command restores the files directly and works for any database.
+With the server running, this restores the database in place — Harper closes the database across its worker threads, checks the backup, restores it, and reloads it — as long as nothing is holding the database open (see [when can a database be restored?](#when-can-a-database-be-restored)). With the server stopped, the same command restores the files directly and works for any database.
 
 ## Example: download a snapshot and restore it manually
 
