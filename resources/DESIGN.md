@@ -371,6 +371,12 @@ the record it replaces (`recordUpdater` in `RecordEncoder.ts`), not just this so
 ordinary resequenced (out-of-order CRDT-merged) write gets it too. Those records remain ineligible
 for VerificationTable fast-path confirmation until a later write advances their version.
 
+The native layer reads the stored bytes itself: the big-endian version at offset 0, then a big-endian
+metadata word at offset 8 tagged `0x0E` (`ACTION_32_BIT`), with the flag at literal bit `0x10000`. The
+bit is persisted, so it cannot follow a renumbered rocksdb-js constant without a migration.
+`unitTests/resources/caching-rocks-database.test.js` ('marks a record whose version was reused…') pins
+the layout against raw stored values.
+
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 
 Blobs flagged with `saveBeforeCommit` (or `saveInRecord`) are written to disk in the `beforeIntermediate` phase of a `TransactionWrite`, _before_ the LMDB/RocksDB write commits. The write's commit callback can still skip the actual record write — for older versions, supersedence by future updates, residency mismatches, or full transaction abort. In every such path the file is on disk but no record references it.

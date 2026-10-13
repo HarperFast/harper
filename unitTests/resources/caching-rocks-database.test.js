@@ -9,6 +9,17 @@ const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
+// Mirrors rocksdb-js's VerificationTable::valueVersionIsNotUnique, which reads this header from the
+// stored value itself:
+// https://github.com/HarperFast/rocksdb-js/blob/v2.11.0/src/binding/core/verification_table.h#L59-L74
+// Literals, not imported constants: records already on disk carry these exact bits.
+const VERSION_HEADER_TAG = 0x0e;
+const VERSION_NOT_UNIQUE_FLAG = 0x10000;
+function nativeReadsVersionNotUnique(value) {
+	if (value.length < 12 || value[8] !== VERSION_HEADER_TAG) return false;
+	return (((value[9] << 16) | (value[10] << 8) | value[11]) & VERSION_NOT_UNIQUE_FLAG) !== 0;
+}
+
 describe('PrimaryRocksDatabase', function () {
 	let TestTable;
 
@@ -116,15 +127,32 @@ describe('PrimaryRocksDatabase', function () {
 		assert.equal(result.name, 'eight updated');
 	});
 
-	it('marks a record whose version was reused by a resequenced write, preserving its expiresAt', async function () {
-		const now = Date.now();
-		const expiresAt = now + 60_000;
+	it('marks a record whose version was reused by a resequenced write in the stored header the VT reads, preserving its expiresAt', async function () {
+		const store = TestTable.primaryStore;
+		// Raw stored bytes: Harper's own decoder would follow a layout change it made itself.
 		await TestTable.put(13, { name: 'base', count: 0 });
-		await TestTable.patch(13, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
-		const inOrder = TestTable.primaryStore.getEntry(13);
-		await TestTable.patch(13, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50, expiresAt });
-		const resequenced = TestTable.primaryStore.getEntry(13);
-		assert.equal(resequenced.version, inOrder.version);
+		const baseVersion = store.getBinarySync(13).readDoubleBE(0);
+		const expiresAt = baseVersion + 60_000;
+		await TestTable.patch(13, { count: { __op__: 'add', value: 1 } }, { timestamp: baseVersion + 100 });
+		const inOrder = store.getBinarySync(13);
+		const inOrderVersion = inOrder.readDoubleBE(0);
+		assert(inOrderVersion > baseVersion, 'the in-order write advances the big-endian version at offset 0');
+		assert.equal(inOrder[8], VERSION_HEADER_TAG, 'the metadata word starts at offset 8 with its tag byte');
+		assert.equal(nativeReadsVersionNotUnique(inOrder), false, 'an advancing write is not flagged');
+
+		await TestTable.patch(13, { count: { __op__: 'add', value: 1 } }, { timestamp: baseVersion + 50, expiresAt });
+		const resequencedBytes = store.getBinarySync(13);
+		assert.equal(resequencedBytes.readDoubleBE(0), inOrderVersion, 'the resequenced write keeps the existing version');
+		assert.equal(resequencedBytes[8], VERSION_HEADER_TAG, 'the metadata word starts at offset 8 with its tag byte');
+		assert.equal(
+			nativeReadsVersionNotUnique(resequencedBytes),
+			true,
+			'the reused version is flagged where the VT reads it'
+		);
+		assert.equal(VERSION_REUSED, VERSION_NOT_UNIQUE_FLAG, 'VERSION_REUSED is the bit records already on disk carry');
+
+		const resequenced = store.getEntry(13);
+		assert.equal(resequenced.version, inOrderVersion);
 		assert.equal(resequenced.value.count, 2);
 		assert.equal(resequenced.expiresAt, expiresAt);
 		assert(resequenced.metadataFlags & VERSION_REUSED);
