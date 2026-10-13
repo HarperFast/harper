@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import { warn } from '../utility/logging/harper_logger.js';
+import { warn } from '../utility/logging/harper_logger.ts';
 import { DatabaseClosingError, DatabaseGenerationChangedError } from '../utility/errors/hdbError.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { keyArrayToString } from './Resources.ts';

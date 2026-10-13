@@ -5,8 +5,8 @@ import { validateStatus } from '../../validation/statusValidator.ts';
 import { type StatusId, type StatusValueMap, type StatusRecord, DEFAULT_STATUS_ID } from './definitions.ts';
 import { internal as statusInternal, type AggregatedComponentStatus } from '../../components/status/index.ts';
 import { restartNeeded } from '../../components/requestRestart.ts';
-import { sendItcEvent } from '../threads/itc.js';
-import { onMessageByType, workers } from '../threads/manageThreads.js';
+import { sendItcEvent } from '../threads/itc.ts';
+import { onMessageByType, workers } from '../threads/manageThreads.ts';
 import { ITC_EVENT_TYPES, THREAD_TYPES } from '../../utility/hdbTerms.ts';
 
 export { clearStatus as clear, getStatus as get, setStatus as set };
@@ -17,7 +17,6 @@ export type { StatusId, StatusRecord, StatusValueMap } from './definitions.ts';
 export { STATUS_IDS, DEFAULT_STATUS_ID } from './definitions.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
-
 // For direct function calls, we don't need the operation fields
 type StatusRequestBody = {
 	id: StatusId;

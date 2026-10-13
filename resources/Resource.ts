@@ -1,15 +1,16 @@
+import * as userRuntimeModule from '../security/user.ts';
 import type { User } from '../security/user.ts';
 import type { RecordObject } from './RecordEncoder.ts';
 import {
-	ResourceInterface,
-	SubscriptionRequest,
-	Id,
-	Context,
-	Query,
-	SourceContext,
-	RequestTargetOrId,
+	type ResourceInterface,
+	type SubscriptionRequest,
+	type Id,
+	type Context,
+	type Query,
+	type SourceContext,
+	type RequestTargetOrId,
 } from './ResourceInterface.ts';
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 import {
 	DatabaseTransaction,
 	isJoinableScope,
@@ -1062,7 +1063,7 @@ function registerLiveSubscriptionForContext(
 	if (!username) return subscription;
 	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
-	securityUser ??= require('../security/user');
+	securityUser ??= userRuntimeModule;
 	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
 	// A select written by authorization names no relationship, so the default allowRead's result still
 	// reads only the role's table permission; a caller's select can reach related tables' allowRead.

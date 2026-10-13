@@ -1,6 +1,7 @@
 'use strict';
 const { join, dirname } = require('node:path');
 const { existsSync, readFileSync, realpathSync } = require('node:fs');
+const { pathToFileURL } = require('node:url');
 
 /**
  * A naive find-up implementation to find the root package.json, and
@@ -46,4 +47,36 @@ const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
  */
 const PACKAGE_ROOT = realpathSync(dirname(packageJsonPath));
 
-module.exports = { packageJson, PACKAGE_ROOT };
+/**
+ * Canonical directory containing core's runtime modules, independent of the
+ * metadata owner: the source root, standalone dist, or an embedded dist/core.
+ */
+const RUNTIME_SRC_ROOT = realpathSync(join(__dirname, '..'));
+
+/**
+ * Source layouts carry hdbTerms.ts beside this helper; compiled layouts carry
+ * hdbTerms.js. Use that local marker for core worker and helper filenames.
+ */
+const RUNTIME_FILE_EXT = existsSync(join(__dirname, 'hdbTerms.ts')) ? '.ts' : '.js';
+
+function loadNativePackage(name) {
+	return require(name);
+}
+
+function loadRuntimeModule(relativePath) {
+	return require(join(__dirname, '..', relativePath + RUNTIME_FILE_EXT));
+}
+
+function getRuntimeModuleURL(relativePath) {
+	return pathToFileURL(join(__dirname, '..', relativePath + RUNTIME_FILE_EXT)).href;
+}
+
+module.exports = {
+	packageJson,
+	PACKAGE_ROOT,
+	RUNTIME_SRC_ROOT,
+	RUNTIME_FILE_EXT,
+	loadNativePackage,
+	loadRuntimeModule,
+	getRuntimeModuleURL,
+};

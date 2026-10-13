@@ -1,11 +1,12 @@
 'use strict';
 
-import * as os from 'os';
+import * as os from 'node:os';
 import { prompts } from '../interactivePrompts.ts';
-import * as fs from 'fs-extra';
-import PropertiesReader from 'properties-reader';
+import fs from 'fs-extra';
+import _PropertiesReader from 'properties-reader';
+const PropertiesReader = _PropertiesReader;
 import chalk from 'chalk';
-import * as path from 'path';
+import * as path from 'node:path';
 let ora; // Will be loaded dynamically as it's an ES module
 import * as YAML from 'yaml';
 
@@ -17,15 +18,18 @@ import * as hdbInfoController from '../../dataLayer/hdbInfoController.ts';
 import { packageJson } from '../packageUtils.js';
 import * as hdbTerms from '../hdbTerms.ts';
 const { CONFIG_PARAMS } = hdbTerms;
-import installValidator from '../../validation/installValidator.ts';
-import mountHdb from '../mount_hdb.ts';
+import _installValidator from '../../validation/installValidator.ts';
+const installValidator = _installValidator;
+import _mountHdb from '../mount_hdb.ts';
+const mountHdb = _mountHdb;
 import { composeConfigFromEnv } from '../../config/harperConfigEnvVars.ts';
 import * as configUtils from '../../config/configUtils.ts';
 import * as userOps from '../../security/user.ts';
 import * as roleOps from '../../security/role.ts';
-import checkJwtTokens from './checkJWTTokensExist.js';
+import _checkJwtTokens from './checkJWTTokensExist.ts';
+const checkJwtTokens = _checkJwtTokens;
 import * as globalSchema from '../globalSchema.ts';
-import { promisify } from 'util';
+import { promisify } from 'node:util';
 const pSchemaToGlobal = promisify(globalSchema.setSchemaDataToGlobal);
 import * as keys from '../../security/keys.ts';
 import { resolveConfiguredPath } from '../../config/componentEnvPrepass.ts';

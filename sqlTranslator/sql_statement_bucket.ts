@@ -4,9 +4,10 @@
  * AST SQL values such as attributes, tables, etc.
  **/
 
-import * as alasql from 'alasql';
+import alasql from 'alasql';
 import RecursiveIterator from 'recursive-iterator';
-const harperLogger = require('../utility/logging/harper_logger').default || require('../utility/logging/harper_logger');
+import _harperLogger from '../utility/logging/harper_logger.ts';
+const harperLogger = _harperLogger;
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { findDatabasesWithTable, loadDatabaseRegistry } from '../sqlEngine/binder/defaultDatabase.ts';

@@ -227,7 +227,7 @@ describe.skip('Test bulkLoad.js', () => {
 
 		it('Test csvDataLoad with attr-level perms issues - returns errors', async function () {
 			PermissionResponseObject_rw.prototype.getPermsResponse = () => get_perms_resp_stub();
-			const getPermsError_rw = bulkLoad_rewire.__set__('PermissionResponseObject_js_1', {
+			const getPermsError_rw = bulkLoad_rewire.__set__('PermissionResponseObject_ts_1', {
 				default: PermissionResponseObject_rw,
 			});
 			let result;

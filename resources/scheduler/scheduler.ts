@@ -1,5 +1,5 @@
 import { isAbsolute, join } from 'node:path';
-import { isApplicationPrimaryWorker } from '../../server/threads/manageThreads.js';
+import { isApplicationPrimaryWorker } from '../../server/threads/manageThreads.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import { convertToMS } from '../../utility/common_utils.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';

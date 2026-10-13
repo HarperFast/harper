@@ -186,7 +186,7 @@ describe('Tests for delete.js', () => {
 			// and silently delete every record in the table (reported as "1 of 1"). The validator must
 			// reject it up front, before deleteRecords is ever reached.
 			let bridge_spy = sandbox.stub().resolves();
-			let revert = _delete.__set__('harperBridge', { deleteRecords: bridge_spy });
+			let revert = _delete.__set__('harperBridge_ts_1', { default: { deleteRecords: bridge_spy } });
 			let delete_obj = testUtils.deepClone(DELETE_OBJ_TEST);
 			delete_obj.hash_values = [8, null, 9];
 			let test_err_result = await testUtils.testError(
@@ -209,7 +209,7 @@ describe('Tests for delete.js', () => {
 			expected_response.deleted_hashes = [];
 			expected_response.skipped_hashes = [8, 9];
 			let delete_records_stub = sandbox.stub().resolves(expected_response);
-			let revert = _delete.__set__('harperBridge', { deleteRecords: delete_records_stub });
+			let revert = _delete.__set__('harperBridge_ts_1', { default: { deleteRecords: delete_records_stub } });
 			let result = await _delete.deleteRecord(DELETE_RECORDS_TEST);
 
 			expect(delete_records_stub).to.have.been.calledWith(DELETE_RECORDS_TEST);

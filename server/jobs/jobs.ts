@@ -1,4 +1,5 @@
-'use strict';
+import { loadNativePackage } from '../../utility/packageUtils.js';
+import { loadRuntimeModule } from '../../utility/packageUtils.js';
 
 /**
  * The jobs class is used to enable operations on the jobs system table.  The jobHandler function is the only
@@ -18,7 +19,7 @@ import UpdateObject from '../../dataLayer/UpdateObject.ts';
 import log from '../../utility/logging/harper_logger.ts';
 import Insert_Object from '../../dataLayer/InsertObject.ts';
 import * as hdbUtil from '../../utility/common_utils.ts';
-import { promisify } from 'util';
+import { promisify } from 'node:util';
 import * as fileLoadValidator from '../../validation/fileLoadValidator.ts';
 import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
 import bulkDeleteValidator from '../../validation/bulkDeleteValidator.ts';
@@ -58,7 +59,7 @@ export async function handleGetJobsByStartDate(jsonBody: any) {
 		let result = await getJobsInDateRange(jsonBody);
 		log.trace(`Searching for jobs from ${jsonBody.from_date} to ${jsonBody.to_date}`);
 		if (result && result.length > 0) {
-			const moment = require('moment') as typeof import('moment');
+			const moment = loadNativePackage('moment') as typeof import('moment');
 			for (let currRes of result) {
 				if (currRes.start_datetime) {
 					currRes.start_datetime_converted = moment(currRes.start_datetime);
@@ -243,7 +244,7 @@ export async function addJob(jsonBody: any) {
  * @returns {Promise<*>}
  */
 export async function getJobsInDateRange(jsonBody: any) {
-	const moment = require('moment') as typeof import('moment');
+	const moment = loadNativePackage('moment') as typeof import('moment');
 	let parsedFromDate = moment(jsonBody.from_date, moment.ISO_8601);
 	let parsedToDate = moment(jsonBody.to_date, moment.ISO_8601);
 
@@ -259,7 +260,7 @@ export async function getJobsInDateRange(jsonBody: any) {
 
 	try {
 		if (!pSqlEvaluate) {
-			const hdbSql = require('../../sqlTranslator/index');
+			const hdbSql = loadRuntimeModule('sqlTranslator/index');
 			pSqlEvaluate = promisify(hdbSql.evaluateSQL);
 		}
 		// Harper's own statement, not the caller's. A carrier is not equivalent here — see DESIGN.md.

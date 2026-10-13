@@ -1,3 +1,3 @@
 'use strict';
 
-require('../server/operationsServer.ts').hdbServer();
+require('../utility/packageUtils.js').loadRuntimeModule('launchServiceScripts/startHarperDB');

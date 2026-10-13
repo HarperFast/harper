@@ -1,9 +1,10 @@
 import { realpathSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { Scope } from '../components/Scope';
+import { Scope } from '../components/Scope.ts';
 import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
 import { convertToMS } from '../utility/common_utils.ts';
-import { isMatch } from 'micromatch';
+import _typestrip_micromatch from 'micromatch';
+const { isMatch } = _typestrip_micromatch;
 import send from 'send';
 import { settleDeferredCredentialRejection } from '../security/deferredAuthentication.ts';
 

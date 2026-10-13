@@ -8,6 +8,10 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
+## Core runtime and product paths (`packageUtils.js`)
+
+Core-owned files resolve from their runtime module tree, including lazy plugin URLs and the shared compiler-emitted `systemSchema.js` JSON asset. Package metadata, public relative-worker paths and compiled product startup keep their package owner. `packageUtils.test.js` and `typestrip-runtime.test.mjs` enforce these boundaries with standalone/embedded builds, real workers and one product CLI invocation.
+
 ## Every path handed to a native file watch must be canonicalized (`utility/watchPath.ts`)
 
 libuv's Windows fs-event callback rebuilds each event's absolute path, expands it with

@@ -5,12 +5,12 @@
  * and aggregating it into a unified view.
  */
 
-import { sendItcEvent } from '../../server/threads/itc.js';
+import { sendItcEvent } from '../../server/threads/itc.ts';
 import {
 	getWorkerIndex,
 	onMessageByType,
 	getEligibleBroadcastRecipientThreadIds,
-} from '../../server/threads/manageThreads.js';
+} from '../../server/threads/manageThreads.ts';
 import { ITC_EVENT_TYPES } from '../../utility/hdbTerms.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { ComponentStatusRegistry } from './ComponentStatusRegistry.ts';
