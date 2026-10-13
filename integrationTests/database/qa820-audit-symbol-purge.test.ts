@@ -1,11 +1,9 @@
 /** QA-820 / P-573: LMDB table-scoped public purge must leave symbol-key metadata unread
- * (https://github.com/HarperFast/harper/pull/2472).
- * With start: 0, deleteHistory can log a corrupt-header warning yet still report one deletion after
- * skipping the sentinel, so captured server logs are the regression oracle. The unit test at
- * unitTests/resources/auditLog.test.js:395 hooks errors only and misses that warning.
- * Twelve serial jobs each remove one entry and preserve the 8-byte marker.
- * requires-isolation: QA promotion gate marker; purge advances the database-wide audit floor, so
- * this scenario stays in its own Harper instance.
+ * (https://github.com/HarperFast/harper/pull/2472). With start: 0, deleteHistory can skip the
+ * misdecoded marker and still report one deletion, so captured logs are the regression oracle.
+ * The unit test "deleteHistory does not misdecode the last-removed marker as a corrupt audit entry"
+ * checks errors only and misses the corrupt-header warning.
+ * requires-isolation: QA promotion gate marker; purge advances the database-wide audit floor.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
@@ -15,9 +13,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const fixture = resolve(import.meta.dirname, 'qa820-audit-symbol-purge');
-const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 // Match neighboring purge suites: Windows remains skipped while harper#2401 tracks process death;
 // Bun follows their runtime-support boundary.
+const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
 function auth(ctx: ContextWithHarper) {
 	const { username, password } = ctx.harper.admin;
@@ -126,7 +124,7 @@ suite('QA-820 LMDB public purge skips symbol metadata', { skip: skipSuite }, (ct
 			(logs) => {
 				const counts = classifyLogs(logs);
 				return (
-					counts.auditEntryErrors + counts.corruptHeaders ===
+					counts.auditEntryErrors + counts.corruptHeaders >=
 					beforeControl.auditEntryErrors + beforeControl.corruptHeaders + 1
 				);
 			},
@@ -135,8 +133,9 @@ suite('QA-820 LMDB public purge skips symbol metadata', { skip: skipSuite }, (ct
 		const controlBaseline = classifyLogs(controlledLogs);
 		const controlErrors = controlBaseline.auditEntryErrors - beforeControl.auditEntryErrors;
 		const controlWarnings = controlBaseline.corruptHeaders - beforeControl.corruptHeaders;
-		assert.ok(
-			(controlErrors === 1 && controlWarnings === 0) || (controlErrors === 0 && controlWarnings === 1),
+		assert.strictEqual(
+			controlErrors + controlWarnings,
+			1,
 			`decoded-marker control must emit exactly one classified diagnostic: ${JSON.stringify({ controlErrors, controlWarnings })}`
 		);
 		for (let round = 1; round <= 12; round++) {
