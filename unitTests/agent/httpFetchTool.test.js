@@ -7,6 +7,7 @@ const {
 	buildHttpFetchTool,
 	checkHttpFetchTarget,
 	compileAllowList,
+	operationsApiPortsFrom,
 	resolveHttpFetchConfig,
 } = require('#src/agent/tools/httpFetchTool');
 const { waitFor } = require('../waitFor');
@@ -312,6 +313,12 @@ describe('agent/httpFetchTool request handling', () => {
 		await assert.rejects(call(redirectTool, { url: `${allowedBase}/to?url=${target}` }), /operations API port/);
 	});
 
+	it('refuses operations API ports given as environment-placeholder strings', async () => {
+		const operationsApiPort = String(allowedServer.address().port);
+		const tool = buildHttpFetchTool({ allow: [allowedBase.slice(7)] }, operationsApiPortsFrom([operationsApiPort]));
+		await assert.rejects(call(tool, { url: `${allowedBase}/hello` }), /operations API port/);
+	});
+
 	it('follows an allowed redirect, resolving a relative Location', async () => {
 		const result = await call(restricted(), {
 			url: `${allowedBase}/to?status=301&url=${encodeURIComponent('/final')}`,
@@ -389,6 +396,19 @@ describe('agent/httpFetchTool request handling', () => {
 	it('applies one timeout across every hop', async () => {
 		const url = `${allowedBase}/to?url=${encodeURIComponent('/hang')}`;
 		await assert.rejects(call(restricted(), { url, timeoutMs: 300 }), /timed out after 300ms/);
+	});
+});
+
+describe('agent/httpFetchTool operationsApiPortsFrom', () => {
+	it('keeps numeric ports and numeric strings from environment placeholders', () => {
+		assert.deepStrictEqual(operationsApiPortsFrom([9926, '9927', ' 9928 ']), [9926, 9927, 9928]);
+	});
+
+	it('drops values that are not a valid port', () => {
+		assert.deepStrictEqual(
+			operationsApiPortsFrom([undefined, null, '', 'abc', '9926abc', '0', '65536', 1.5, true]),
+			[]
+		);
 	});
 });
 
