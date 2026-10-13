@@ -64,20 +64,24 @@ Several non-obvious mechanics keep that safe:
 - **Nothing is purged until the backup verifies in place (harper#2965, `assertBackupReadable`).**
   `purgeAllFiles` deletes the destination before it copies, so an unreadable backup would destroy
   the database it was meant to restore. Both paths run `backups.verify` with checksums and
-  `verifyTables` against the repository first: that covers a corrupt file, a transaction-log snapshot
+  `verifyTables` against the repository before the purge: that covers a corrupt file, a transaction-log snapshot
   this build cannot read (validated strictly, since snapshots are cut on entry boundaries), and a
   table whose `format_version` or compression this build does not support — opened one at a time, so
   it reaches tables a database open would leave in the table cache's cold set. Checked in the
   repository rather than in a staged copy, so a restore still needs no disk beyond the copy itself; a
-  restore is often run when space is already short. Selection, every check derived from the selected
-  manifest, and verification all run under the repository lock, _before_ the restore claims the
-  database (marker, pin): a full checksum read can take minutes, and
-  a marker held across it would leave an intact database unloadable after a crash, while the lock
-  keeps a delete plus `create_backup` from swapping in a different backup (or manifest) under the
-  same id before the pin lands. The lock coordinates Harper's own operations only; a process writing
-  the repository directly is outside it. Other management operations on that repository wait up to 30s for it, then 409, as
-  they already do behind a long `create_backup`. A backup whose manifest declares blobs must also
-  still have its blob snapshot. Not covered: blob file contents
+  restore is often run when space is already short. Selection and every check derived from the
+  selected manifest run under the repository lock and before the claim (marker, pin), so they apply
+  to the backup that gets pinned: a delete plus `create_backup` cannot swap a different backup (or
+  manifest) in under the same id, and once pinned it cannot be deleted. The lock coordinates
+  Harper's own operations only; a process writing the repository directly is outside it. _Where_
+  verification runs differs by path. **Online**, it runs after the close and `verifyDatabaseClosed`:
+  verifying while the database still served would acknowledge writes for minutes that the purge
+  then discards, where the close makes them fail with `DatabaseClosingError` instead. The cost is
+  that downtime includes the verification read, and a crash during it leaves the marker, so the
+  database stays unloadable until a rerun, as a crash during the copy always did. **Offline**, with
+  no live writers, it runs under the repository lock _before_ the claim, so a crash mid-verify
+  leaves the database loadable. A backup whose manifest declares blobs must also still have its blob
+  snapshot. Not covered: blob file contents
   (rocksdb-js has no reader for them; one unreadable at copy time fails after the purge, and the rerun
   needs a backup whose blobs read), and anything that fails only once the copy runs (`ENOSPC`, a
   crash) — those still leave the marker and need a rerun, which the intact backup allows.

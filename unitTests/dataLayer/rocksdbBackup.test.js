@@ -16,7 +16,7 @@ const { tmpdir } = require('node:os');
 const { spawn } = require('node:child_process');
 const { setTimeout: delay } = require('node:timers/promises');
 const { extract } = require('tar-stream');
-const { RocksDatabase, fileLockRelease, tryFileLock } = require('@harperfast/rocksdb-js');
+const { RocksDatabase, fileLockRelease, registryStatus, tryFileLock } = require('@harperfast/rocksdb-js');
 const {
 	backupDirForDatabase,
 	createBackupOffline,
@@ -443,6 +443,18 @@ describe('rocksdbBackup', function () {
 			offline: (backupId) => restoreBackupOffline(VERIFIED, backupId),
 			online: (backupId) => restoreBackup({ ...SU, database: VERIFIED, backup_id: backupId }),
 		};
+		const verificationPoint = {
+			// no live writers: verified before the claim, so a crash mid-verify leaves the database loadable
+			offline: {
+				title: 'verifies under the repository lock, before claiming the database',
+				expected: { repositoryLocked: true, restoreState: 'clear', open: false },
+			},
+			// a write acknowledged during verification would be lost to the purge
+			online: {
+				title: 'verifies only once the database is claimed and closed',
+				expected: { repositoryLocked: false, restoreState: 'in-progress', open: false },
+			},
+		};
 		const unreadable = [
 			['a corrupt backup', corruptBackupFile, /checksum/i],
 			['a table format this build cannot open', writeUnsupportedTableFormat, /format_version 99/],
@@ -471,7 +483,7 @@ describe('rocksdbBackup', function () {
 				assert.strictEqual(checkRestoreState(verifiedDir()), 'incomplete');
 			});
 
-			it(`${mode}: verifies under the repository lock, before claiming the database`, async function () {
+			it(`${mode}: ${verificationPoint[mode].title}`, async function () {
 				this.timeout(30000);
 				const backupId = await seed();
 				const realVerify = backups.verify;
@@ -479,7 +491,11 @@ describe('rocksdbBackup', function () {
 				backups.verify = async (...args) => {
 					const token = tryFileLock(managementLockPath(backupDirForDatabase(VERIFIED)));
 					if (token) fileLockRelease(token);
-					observed.push({ repositoryLocked: token === 0, restoreState: checkRestoreState(verifiedDir()) });
+					observed.push({
+						repositoryLocked: token === 0,
+						restoreState: checkRestoreState(verifiedDir()),
+						open: registryStatus().some((entry) => entry.path === verifiedDir() && entry.refCount > 0),
+					});
 					return realVerify.apply(backups, args);
 				};
 				try {
@@ -487,7 +503,7 @@ describe('rocksdbBackup', function () {
 				} finally {
 					backups.verify = realVerify;
 				}
-				assert.deepStrictEqual(observed, [{ repositoryLocked: true, restoreState: 'clear' }]);
+				assert.deepStrictEqual(observed, [verificationPoint[mode].expected]);
 			});
 
 			it(`${mode}: selects the backup under the repository lock`, async function () {
