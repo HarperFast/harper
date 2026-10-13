@@ -40,6 +40,7 @@ const {
 	resumeBlobSavesAfterRestore,
 	blobRestoreGeneration,
 	blobRestoreGenerationChanged,
+	getRootBlobPathsForDB,
 } = require('#src/resources/blob');
 const {
 	existsSync,
@@ -56,7 +57,7 @@ const {
 	renameSync,
 	rmSync,
 } = require('fs');
-const { dirname } = require('path');
+const { dirname, join } = require('path');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
 const { waitFor } = require('../waitFor.js');
@@ -1218,8 +1219,23 @@ describe('Blob test', () => {
 		unlinkSync(getFilePathForBlob(completeBlob));
 	});
 	it('cleanupOrphans', async () => {
-		let orphansDeleted = await cleanupOrphans(getDatabases().test);
-		assert.equal(orphansDeleted, 0);
+		const roots = getRootBlobPathsForDB(BlobTest.primaryStore.rootStore);
+		const before = roots.flatMap((root) =>
+			existsSync(root)
+				? readdirSync(root, { recursive: true, withFileTypes: true })
+						.filter((entry) => entry.isFile())
+						.map((entry) => join(entry.parentPath, entry.name))
+				: []
+		);
+		const orphansDeleted = await cleanupOrphans(getDatabases().test);
+		if (orphansDeleted !== 0) {
+			// the count includes unlinks that failed, so a file can be counted without disappearing
+			const disappeared = before.filter((path) => !existsSync(path));
+			assert.fail(
+				`cleanupOrphans counted ${orphansDeleted} unreferenced blob file(s). Gone after the sweep:\n` +
+					`${disappeared.join('\n') || '(none)'}\nRoots searched: ${roots.join(', ')}`
+			);
+		}
 	});
 
 	// harper#2412: the orphan sweep skips scanning an audit entry's value only when the primary record

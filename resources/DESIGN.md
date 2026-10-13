@@ -66,6 +66,8 @@ Static methods are protocol entry points (each wrapped in `transactional()`); in
 | `missingMethod` / `allowedMethods` | 405 response helpers                                                                                                                                    |
 | `transformForSelect`               | Select-clause expansion                                                                                                                                 |
 
+**A bare nullish id is never a collection target for `get` or `delete`.** `transactional()` throws `ClientError` 400 synchronously for `Class.get()` / `Class.delete()` whose first argument is a bare `null`/`undefined` (harper#1837; the delete used to remove every record). Collection delete takes an object target. Known gap, not a contract: an object whose `id` is nullish (`{ id: undefined }`) is still a collection target and deletes every record. A function-form `defineResource` object never passes through `transactional()`, so its `delete` handler receives the `undefined` target. Caller shapes are pinned in `unitTests/resources/deleteNullResourceApi.test.js`.
+
 ---
 
 ## `Table.ts` — section map

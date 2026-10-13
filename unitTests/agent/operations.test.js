@@ -45,7 +45,19 @@ describe('agent/operations set_agent_config', () => {
 
 	it('still applies the runtime-tunable keys', async () => {
 		const { execute, patches } = setAgentConfig();
-		await execute({ operation: 'set_agent_config', maxTurns: 3, allowDestructive: true });
-		assert.deepStrictEqual(patches, [{ maxTurns: 3, allowDestructive: true }]);
+		await execute({ operation: 'set_agent_config', maxTurns: 3, allowDestructive: true, maxTokens: 32000 });
+		assert.deepStrictEqual(patches, [{ maxTurns: 3, allowDestructive: true, maxTokens: 32000 }]);
+	});
+
+	it('rejects a maxTokens that is not a positive integer, applying nothing from the request', async () => {
+		const { execute, patches } = setAgentConfig();
+		for (const maxTokens of [0, -1, 1.5, '8192', null, Number.NaN]) {
+			await assert.rejects(execute({ operation: 'set_agent_config', maxTokens, maxTurns: 3 }), (err) => {
+				assert.strictEqual(err.statusCode, 400);
+				assert.match(err.message, /maxTokens/);
+				return true;
+			});
+		}
+		assert.deepStrictEqual(patches, []);
 	});
 });

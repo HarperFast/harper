@@ -10,7 +10,7 @@
  * stricter PII handling configure `mcp.audit.argumentRedactor` to a custom
  * function via a future component-author hook (v1.1).
  */
-import harperLogger from '../../utility/logging/harper_logger.ts';
+import harperLogger, { CREDENTIAL_KEY_PATTERN } from '../../utility/logging/harper_logger.ts';
 
 export interface AuditEntry {
 	timestamp: string;
@@ -24,7 +24,6 @@ export interface AuditEntry {
 	errorMessage?: string;
 }
 
-const REDACTION_PATTERN = /(secret|password|token|api[-_]?key|credentials?|auth)/i;
 // Both secret tools carry all three fields, not just the ones each declares: MCP forwards arguments
 // as-is and audits them after the handler, so a field the tool rejects is still logged. Mirrors what
 // the REST operations log strips unconditionally (UNLOGGABLE_OPERATION_FIELDS).
@@ -54,7 +53,7 @@ export function redactArgs(value: unknown, depth = 0, redactionFields?: Readonly
 	}
 	const out: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(value)) {
-		if (REDACTION_PATTERN.test(k) || redactionFields?.has(k.toLowerCase())) {
+		if (CREDENTIAL_KEY_PATTERN.test(k) || redactionFields?.has(k.toLowerCase())) {
 			out[k] = REDACTION_PLACEHOLDER;
 		} else {
 			out[k] = redactArgs(v, depth + 1, redactionFields);

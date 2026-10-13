@@ -163,6 +163,22 @@ Export the value from the module that _defines_ it rather than re-exporting it t
 so a component-created value shares that module's private symbols. `markCredentialRejection` depends on
 this: its tag is a module-private `Symbol` that `isCredentialRejection` checks by identity.
 
+## Both application loaders resolve through one `resolveModule` (`security/jsLoader.ts`)
+
+The VM loader and the compartment `resolveHook` call the same module-scope `resolveModule`, so a
+dependency that resolves in one `applications.moduleLoader` mode resolves in the other. It resolves
+CommonJS-first (a dual package keeps its `require` target) and falls back to the package's `exports`
+map only for a bare specifier the CommonJS resolver rejects: `ERR_PACKAGE_PATH_NOT_EXPORTED`, or
+`MODULE_NOT_FOUND` on Bun. A fallback resolution records the `package.json` and entry-file digests, not
+a resolution edge, because `RuntimeModuleTracker` re-resolves edges with `createRequire` and would read
+the import-only package as changed on every deploy.
+
+SES loads from the ESM shims `ses/index.js` composes, through `loadSES`, never `require('ses')`: that
+bundle is CommonJS, Bun drops function-level `'use strict'` in CommonJS, and SES's sloppy-mode self-check
+then throws `SES_NO_SLOPPY`. Lockdown and the compartment share that one SES instance. Enforced by the
+`pure-ESM package resolution` blocks in `unitTests/security/jsLoader/jsLoader.test.js` (both modes) and
+`integrationTests/components/compartment-pure-esm-dependency.test.ts` (Node and Bun shards).
+
 ## Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)
 
 `authentication()` resolves a principal from three sources — an mTLS certificate CN, the `Authorization`

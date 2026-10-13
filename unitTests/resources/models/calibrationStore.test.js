@@ -62,33 +62,38 @@ async function waitFor(condition, what, timeoutMs = 2000) {
 	}
 }
 
-async function clearTable(tbl) {
-	const ids = [];
-	await transaction({}, async () => {
-		for await (const row of tbl.search({
-			conditions: [{ attribute: 'expiresAt', comparator: 'greater_than', value: 0 }],
-		}))
-			ids.push(row.id);
-	});
-	for (const id of ids) await transaction({}, () => tbl.delete(id));
-}
-
 async function clearAll() {
 	const { decisions, outcomes } = getDecisionTables();
-	await clearTable(decisions);
-	await clearTable(outcomes);
-	await clearTable(getCalibrationsTable());
+	await decisions.clear();
+	await outcomes.clear();
+	await getCalibrationsTable().clear();
 	resetCalibrationCache();
 }
 
-/** Record `count` decisions starting at case `from`, each with its truth. */
-async function recordCases(models, from, count, opts = {}) {
+function truthReport(i) {
+	return { truth: { kind: 'value', value: truthOf(i) } };
+}
+
+/**
+ * Record `count` decisions starting at case `from`, each with its truth. Decisions stay one at a time: discovery
+ * reads their order. Outcomes are not awaited in between, so the two can share a commit.
+ */
+async function recordCases(models, from, count, opts = {}, { schema = SCHEMA, outcomeOf = truthReport } = {}) {
 	const ids = [];
-	for (let i = from; i < from + count; i++) {
-		const d = await models.decide(`case-${i}`, SCHEMA, { persist: true, ...opts });
-		await models.recordOutcome(d.id, { truth: { kind: 'value', value: truthOf(i) } });
-		ids.push(d.id);
+	const recorded = [];
+	try {
+		for (let i = from; i < from + count; i++) {
+			const { id } = await models.decide(`case-${i}`, schema, { persist: true, ...opts });
+			ids.push(id);
+			const outcome = models.recordOutcome(id, outcomeOf(i));
+			outcome.catch(() => {});
+			recorded.push(outcome);
+		}
+	} finally {
+		// none may commit into the next test
+		await Promise.allSettled(recorded);
 	}
+	await Promise.all(recorded);
 	return ids;
 }
 
@@ -208,15 +213,13 @@ describe('calibration store and facade (#2841)', function () {
 				}),
 			})
 		);
-		for (let i = 0; i < 300; i++) {
-			const d = await models.decide(`case-${i}`, OBJECT, { persist: true });
-			await models.recordOutcome(d.id, {
-				fields: {
-					first: { truth: { kind: 'value', value: truthOf(i) } },
-					second: { truth: { kind: 'value', value: truthOf(i) } },
-				},
-			});
-		}
+		await recordCases(
+			models,
+			0,
+			300,
+			{},
+			{ schema: OBJECT, outcomeOf: (i) => ({ fields: { first: truthReport(i), second: truthReport(i) } }) }
+		);
 		const run = await models.calibrate();
 		assert.strictEqual(run.written, 2);
 		assert.strictEqual(run.eligible, 2);
@@ -841,10 +844,7 @@ describe('calibration store and facade (#2841)', function () {
 				}),
 			})
 		);
-		for (let i = 0; i < 300; i++) {
-			const d = await models.decide(`case-${i}`, NM, { persist: true });
-			await models.recordOutcome(d.id, { truth: { kind: 'value', value: truthOf(i) } });
-		}
+		await recordCases(models, 0, 300, {}, { schema: NM });
 		await models.calibrate();
 		const [summary] = await models.getCalibrations();
 		assert.strictEqual(summary.eligible, false);
