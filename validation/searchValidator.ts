@@ -1,5 +1,7 @@
 import filter from 'lodash/filter.js';
 import some from 'lodash/some.js';
+import uniqWith from 'lodash/uniqWith.js';
+import isEqual from 'lodash/isEqual.js';
 import * as validator from './validationWrapper.ts';
 import Joi from 'joi';
 import * as hdbUtils from '../utility/common_utils.ts';
@@ -162,6 +164,9 @@ export default function (searchObject: any, type: any) {
 						tableAttribute.attribute === (attribute as any).attribute
 				)
 		);
+		// the same attribute can be named by both the search attribute and a condition (or more
+		// than one condition); dedupe so the error message lists it once
+		unknownAttributes = uniqWith(unknownAttributes, isEqual);
 
 		// if any unknown attributes present in the search request then list all indicated as unknown attribute to error message at once split in well format
 		// for instance "unknown attribute a, b and c" or "unknown attribute a"
