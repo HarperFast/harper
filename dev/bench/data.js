@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791877234057,
+  "lastUpdate": 1791877237388,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -17740,6 +17740,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 189.62,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3fd9ae9d6bd7afb48a75c1588caf6f1b99ab09f6",
+          "message": "Document the thread-global absolute-count test antipattern (#2622)\n\n* Document the thread-global absolute-count test antipattern\n\nThree separate fixes on main within three days (PR #2579, #2590, #2596)\ncorrected the same shape: a test swaps in a process-global collector\n(harperLogger.warn/.error, or a thread-global counter) and asserts an\nabsolute count against it, so unrelated traffic from any other suite\nin the same mocha worker can flip it red.\n\nAdd unitTests/AGENTS.md naming the antipattern (including its\npositional-indexing disguise) and both remedies already in the tree —\ntrackedAcross() (delta across a synchronous window) in\noutstandingCommitTracking.test.js, and shedLinesFor() (filter by the\nfixture's own identity) in longLivedTransactions.test.js, including the\nasync drain helper's empirical (not by-construction) soundness — with\na pointer from the repo-root AGENTS.md. Also lists still-unguarded\ncall sites of both the absolute-length and positional-index shapes,\neach with a durable test-title anchor, without claiming they are\nknown-flaky, and separately notes one syntactic grep match that is\nprovably not exposed (fully synchronous, no interleaving possible).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Link the commit citation to its GitHub page\n\nAddresses gemini-code-assist review suggestion for consistency with\nthe PR links directly above it.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-13T01:31:31Z",
+          "url": "https://github.com/HarperFast/harper/commit/3fd9ae9d6bd7afb48a75c1588caf6f1b99ab09f6"
+        },
+        "date": 1791877236640,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 17.64,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 18.06,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 23.51,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 19.95,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 28.11,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 20.2,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 41.16,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 18.03,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 22.83,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 194.14,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 45.38,
             "unit": "ms"
           }
         ]
