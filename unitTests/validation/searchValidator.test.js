@@ -4,19 +4,14 @@ const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
 const assert = require('node:assert');
-const sinon = require('sinon');
 const searchValidator = require('#src/validation/searchValidator').default;
 const { getDatabases } = require('#src/resources/databases');
-const common_utils = require('#src/utility/common_utils');
 
 /**
  *  Unit tests for validation/searchValidator.ts
  */
 describe('Test searchValidator module', () => {
-	let check_global_schema_table_stub;
-
 	before(() => {
-		check_global_schema_table_stub = sinon.stub(common_utils, 'checkGlobalSchemaTable').returns(undefined);
 		getDatabases().searchValidatorTest = {
 			test: {
 				attributes: [{ attribute: 'id' }, { attribute: 'name' }],
@@ -25,10 +20,26 @@ describe('Test searchValidator module', () => {
 	});
 
 	after(() => {
-		check_global_schema_table_stub?.restore();
+		delete getDatabases().searchValidatorTest;
 	});
 
-	it('names an unknown attribute once when it appears as both the search attribute and a condition attribute', () => {
+	it('names an unknown attribute once when search_by_value names it as both the search attribute and a get_attributes entry', () => {
+		const result = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				attribute: 'bogus',
+				value: 'x',
+				get_attributes: ['bogus'],
+			},
+			'value'
+		);
+
+		assert.ok(result instanceof Error);
+		assert.strictEqual(result.message, "unknown attribute 'bogus'");
+	});
+
+	it('names an unknown attribute once when search_by_conditions names it as both a get_attributes entry and a condition', () => {
 		const result = searchValidator(
 			{
 				schema: 'searchValidatorTest',
@@ -36,6 +47,24 @@ describe('Test searchValidator module', () => {
 				operator: 'and',
 				get_attributes: ['bogus'],
 				conditions: [{ attribute: 'bogus', comparator: 'equals', value: 'x' }],
+			},
+			'conditions'
+		);
+
+		assert.ok(result instanceof Error);
+		assert.strictEqual(result.message, "unknown attribute 'bogus'");
+	});
+
+	it('names an unknown attribute once when two conditions both name it', () => {
+		const result = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				operator: 'or',
+				conditions: [
+					{ attribute: 'bogus', comparator: 'equals', value: 'x' },
+					{ attribute: 'bogus', comparator: 'equals', value: 'y' },
+				],
 			},
 			'conditions'
 		);
