@@ -25,7 +25,6 @@ describe('native compiled-core guard', () => {
 			guard();
 			assert.doesNotThrow(nativeCoreGuard(path.join(root, 'dist', 'resources', 'databases.js')));
 		} finally {
-			delete require.cache[compiled];
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
