@@ -658,14 +658,14 @@ export async function restoreBackup(request: any) {
 	// Once is enough: the decision reads the manifest and the opt-in, never the destination, so no
 	// concurrent writer can change the answer between here and the purge.
 	assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
-	const verified = await assertBackupReadable(backupDir, backupId, databaseName, databaseDir);
 	const pinId = restorePinId(databaseDir);
 	const restoreToken = randomUUID();
 	let destructionStarted = false;
 	// Re-check before replacing a previous attempt's claim; publish the new claim before the marker
 	// under both locks, so a crash cannot leave a marked database with an unprotected source.
 	const lock = await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		assertBackupUnchanged(verified, await findBackup(backupDir, backupId, databaseName), databaseName);
+		await findBackup(backupDir, backupId, databaseName);
+		await assertBackupReadable(backupDir, backupId, manifest, databaseName, databaseDir);
 		return beginRestoreForDatabase(databaseDir, databaseName, () =>
 			pinBackup(backupDir, pinId, backupId, `restore of database '${databaseName}'`, databaseDir)
 		);
@@ -1273,12 +1273,12 @@ export async function restoreBackupOffline(
 	const blobRoots = getBlobPathsForDatabaseName(targetDatabase ?? databaseName);
 	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
 	assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
-	const verified = await assertBackupReadable(backupDir, backupId, targetDatabase ?? databaseName, databaseDir);
 	const pinId = restorePinId(databaseDir);
 	let destructionStarted = false;
 	// As online, claim before marking under both locks, and mark before probing the destination.
 	const lock = await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		assertBackupUnchanged(verified, await findBackup(backupDir, backupId as number, databaseName), databaseName);
+		await findBackup(backupDir, backupId as number, databaseName);
+		await assertBackupReadable(backupDir, backupId as number, manifest, targetDatabase ?? databaseName, databaseDir);
 		return beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName, (preexisting) => {
 			// Inside the reservation, so a create_database racing this restore cannot pass the absence
 			// check and then lose the database it just made. Debris this source left is exempt, or the
@@ -1369,37 +1369,46 @@ export async function restoreBackupOffline(
 	};
 }
 
-/** The restore-ordering invariant this serves is in dataLayer/DESIGN.md (harper#2965). */
+/**
+ * Run under the repository lock and before the restore claims the database, so the verified backup is
+ * the one pinned and a crash mid-verify leaves the database loadable (dataLayer/DESIGN.md).
+ */
 async function assertBackupReadable(
 	backupDir: string,
 	backupId: number,
+	manifest: BackupManifest,
 	databaseName: string,
 	databaseDir: string
-): Promise<BackupInfo> {
-	const verified = await findBackup(backupDir, backupId, databaseName);
+): Promise<void> {
 	try {
-		await backups.verify(backupDir, backupId, { verifyWithChecksum: true, verifyTables: true });
+		await verifyBackupFiles(backupDir, backupId, manifest, databaseName, true);
 	} catch (error: any) {
-		const destination =
-			checkRestoreState(databaseDir) === 'incomplete'
-				? `database '${databaseName}' still holds an earlier restore that did not finish and stays unloadable until a restore succeeds; restore a backup that verifies`
-				: `database '${databaseName}' was not modified`;
+		let interrupted = false;
+		try {
+			interrupted = checkRestoreState(databaseDir) === 'incomplete';
+		} catch {
+			// the verification failure is the diagnosis; an unreadable marker must not replace it
+		}
+		const destination = interrupted
+			? `database '${databaseName}' still holds an earlier restore that did not finish and stays unloadable until a restore succeeds; restore a backup that verifies`
+			: `database '${databaseName}' was not modified`;
 		throw new Error(`Backup ${backupId} failed verification, so ${destination}: ${error.message}`, { cause: error });
 	}
-	return verified;
 }
 
-/** Verification ran unpinned, and deleting the newest backup frees its id for the next create_backup. */
-function assertBackupUnchanged(verified: BackupInfo, current: BackupInfo, databaseName: string): void {
-	const same =
-		current.timestamp === verified.timestamp &&
-		current.size === verified.size &&
-		current.numberFiles === verified.numberFiles &&
-		current.appMetadata === verified.appMetadata;
-	if (same) return;
-	throw new BackupInProgressError(
-		`Backup ${verified.backupId} of database '${databaseName}' was replaced while it was being verified; retry the restore`
-	);
+async function verifyBackupFiles(
+	backupDir: string,
+	backupId: number,
+	manifest: BackupManifest,
+	databaseName: string,
+	verifyWithChecksum: boolean
+): Promise<void> {
+	await backups.verify(backupDir, backupId, { verifyWithChecksum, verifyTables: true });
+	if (manifest.blobs && !existsSync(blobSnapshotDir(backupDir, backupId))) {
+		throw new ClientError(
+			`Backup ${backupId} of database '${databaseName}' declares captured blobs but its blob snapshot is missing (corrupt backup)`
+		);
+	}
 }
 
 function isMissingOrEmptyDir(path: string): boolean {
@@ -1430,12 +1439,7 @@ export async function verifyBackupOffline(databaseName: string, backupId: number
 	const backupDir = backupDirForDatabase(databaseName);
 	await findBackup(backupDir, backupId, databaseName);
 	const manifest = await requireBackupComplete(backupDir, backupId, databaseName);
-	await backups.verify(backupDir, backupId, { verifyWithChecksum, verifyTables: true });
-	if (manifest.blobs && !existsSync(blobSnapshotDir(backupDir, backupId))) {
-		throw new ClientError(
-			`Backup ${backupId} of database '${databaseName}' declares captured blobs but its blob snapshot is missing (corrupt backup)`
-		);
-	}
+	await verifyBackupFiles(backupDir, backupId, manifest, databaseName, verifyWithChecksum);
 	return { database: databaseName, backup_id: backupId, ok: true, blobs: manifest.blobs };
 }
 

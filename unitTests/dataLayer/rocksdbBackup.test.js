@@ -15,7 +15,7 @@ const { dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { spawn } = require('node:child_process');
 const { extract } = require('tar-stream');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase, fileLockRelease, tryFileLock } = require('@harperfast/rocksdb-js');
 const {
 	backupDirForDatabase,
 	createBackupOffline,
@@ -49,7 +49,13 @@ const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 // in the online-operation tests below must therefore carry a super_user role.
 const SU = { hdb_user: { role: { permission: { super_user: true } } } };
 const { abandonRestore, beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
-const { pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } = require('#src/dataLayer/backupRepository');
+const {
+	managementLockPath,
+	pinBackup,
+	readBackupPins,
+	unpinBackup,
+	withBackupRepositoryLock,
+} = require('#src/dataLayer/backupRepository');
 const { backups } = require('@harperfast/rocksdb-js');
 const { closeLoadedDatabases } = require('#src/resources/databases');
 const {
@@ -464,24 +470,35 @@ describe('rocksdbBackup', function () {
 				assert.strictEqual(checkRestoreState(verifiedDir()), 'incomplete');
 			});
 
-			it(`${mode}: refuses a backup replaced under the same id while it was verified`, async function () {
+			it(`${mode}: verifies under the repository lock, before claiming the database`, async function () {
 				this.timeout(30000);
 				const backupId = await seed();
 				const realVerify = backups.verify;
+				const observed = [];
 				backups.verify = async (...args) => {
-					await realVerify.apply(backups, args);
-					await deleteBackupOffline(VERIFIED, backupId);
-					const { backup_id: replacementId } = await createBackupOffline(VERIFIED);
-					assert.strictEqual(replacementId, backupId, 'precondition: the id is reused');
+					const token = tryFileLock(managementLockPath(backupDirForDatabase(VERIFIED)));
+					if (token) fileLockRelease(token);
+					observed.push({ repositoryLocked: token === 0, restoreState: checkRestoreState(verifiedDir()) });
+					return realVerify.apply(backups, args);
 				};
 				try {
-					await assert.rejects(
-						restore(backupId),
-						(error) => error.statusCode === 409 && /was replaced while it was being verified/.test(error.message)
-					);
+					await restore(backupId);
 				} finally {
 					backups.verify = realVerify;
 				}
+				assert.deepStrictEqual(observed, [{ repositoryLocked: true, restoreState: 'clear' }]);
+			});
+
+			it(`${mode}: refuses a backup whose declared blob snapshot is missing`, async function () {
+				this.timeout(30000);
+				const backupId = await seed();
+				const snapshotDir = blobSnapshotDir(backupDirForDatabase(VERIFIED), backupId);
+				assert.ok(existsSync(snapshotDir), 'precondition: the backup captured a blob snapshot');
+				rmSync(snapshotDir, { recursive: true, force: true });
+				await assert.rejects(
+					restore(backupId),
+					(error) => /blob snapshot is missing/.test(error.message) && /was not modified/.test(error.message)
+				);
 				assertDestinationIntact();
 			});
 
