@@ -7285,7 +7285,7 @@ export function makeTable(options): TableResourceClass {
 							// a first version may be a record recreated after retention pruned its tombstone
 							if (!(nextTime > 0) && !checkResume()) return;
 						}
-						for (let i = history.length; i > 0; ) {
+						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
 						}
 						// with no entry, a pruned tombstone may have taken the history with it
