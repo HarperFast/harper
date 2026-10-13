@@ -1708,7 +1708,7 @@ Anyone who can call `agent_prompt` can direct whatever the agent does. Understan
 
 - `agent.user` (default: a `super_user` bootstrap identity) governs only the **operations** tools. Setting it to a restricted user narrows those, and nothing else.
 - The agent's other tools — scoped filesystem access, outbound `http_fetch`, followup scheduling, and the V8 inspector — run at the Harper process's own privilege, whatever `agent.user` is. (The inspector tools additionally need `threads.debug`, and fail with an explanatory error without it.)
-- By default, `http_fetch` blocks only cloud-metadata hosts and the IPv4 link-local range `169.254.0.0/16`, and it checks host names, not resolved addresses: a name that resolves to a blocked address is not caught. Since v5.3.2, it also checks every redirect hop before following it. Every other host, including anything private or internal the server can route to, is reachable. Reading is ungated too: `read_file` covers the log and configuration directories as well as the component tree, so an enabled agent puts a read path and an egress path in the same toolset. Unless the agent needs the network, set [`agent.httpFetch`](../configuration/options.md#restricting-http_fetch) to `false` to remove the tool, or to an allow-list of the hosts it needs. Otherwise, treat it as an outbound network client and apply egress policy to the host.
+- By default, `http_fetch` blocks only cloud-metadata hosts and the IPv4 link-local range `169.254.0.0/16`, and it checks host names, not resolved addresses: a name that resolves to a blocked address is not caught. Since v5.4.0, it also checks every redirect hop before following it. Every other host, including anything private or internal the server can route to, is reachable. Reading is ungated too: `read_file` covers the log and configuration directories as well as the component tree, so an enabled agent puts a read path and an egress path in the same toolset. Unless the agent needs the network, set [`agent.httpFetch`](../configuration/options.md#restricting-http_fetch) to `false` to remove the tool, or to an allow-list of the hosts it needs. Otherwise, treat it as an outbound network client and apply egress policy to the host.
 - With the default `agent.allowDestructive: false`, destructive tools (including filesystem writes) are removed from the toolset entirely. Turning it on admits component writes, and component code is executed by the Harper process — a write is effectively code execution at process privilege.
 - Leave `agent.autoApprove` off so any destructive call that is admitted still pauses for [approval](#approve_agent_action). The gate covers only the tools marked destructive — filesystem writes, the inspector's code-evaluation tools, and the operations on MCP's [curated destructive set](../mcp/tool-metadata.md) (`drop_table`, `delete`, `restart`, `set_configuration`, ...). `http_fetch` and followup scheduling are not gated, so an outbound POST and a self-rescheduling run proceed without an approval prompt.
 - That set is an explicit list in core rather than a prefix match, and it is not a list of every damaging operation, so `allowDestructive` and `autoApprove` are not a boundary by themselves. The component operations are the ones to know about: `drop_component` and `deploy_component` are both off the set, so opting either into [`mcp.operations.allow`](../mcp/configuration.md#mcpoperationsallow) puts it in the agent's toolset where `allowDestructive: false` does not remove it and no approval gates it — and `deploy_component` writes code the Harper process then executes. Vet anything you add to that allow list on its own merits rather than assuming these two settings cover it.
@@ -1735,16 +1735,18 @@ A run does not resume across a restart, and nothing reconciles session status at
 
 A session's `status` is one of:
 
-| Status              | Meaning                                                                                       |
-| ------------------- | --------------------------------------------------------------------------------------------- |
-| `idle`              | Created, or resumable — no run in flight                                                      |
-| `running`           | A run is in progress                                                                          |
-| `awaiting_approval` | Paused on one or more destructive tool calls; see `pendingApprovals`                          |
-| `completed`         | The run ended without throwing — a final answer, or the `maxTurns` ceiling; check `lastError` |
-| `aborted`           | Cancelled by an operator via `cancel_agent_run`                                               |
-| `error`             | The run failed; `lastError` carries the message                                               |
+| Status              | Meaning                                                                            |
+| ------------------- | ---------------------------------------------------------------------------------- |
+| `idle`              | Created, or resumable — no run in flight                                           |
+| `running`           | A run is in progress                                                               |
+| `awaiting_approval` | Paused on one or more destructive tool calls; see `pendingApprovals`               |
+| `completed`         | The run ended with a final answer, or at the `maxTurns` ceiling; check `lastError` |
+| `aborted`           | Cancelled by an operator via `cancel_agent_run`                                    |
+| `error`             | The run failed; `lastError` carries the message                                    |
 
 `completed` also covers hitting the `agent.maxTurns` ceiling — in that case `lastError` reads `Reached maxTurns=<n> without a final answer.`, so check it before treating a completed session as finished.
+
+As of v5.4.0, a model reply that did not finish ends the run `error`, never `completed`, and `lastError` says why. That covers a reply cut off at [`agent.maxTokens`](../configuration/options.md#agent) or at the model's context window, one stopped by the provider's content filter or a model refusal, one that asks for tool calls of which none could be parsed, and one with neither text nor tool calls. Nothing from that reply is added to `messages`: its text is dropped, and its tool calls are neither run nor queued for approval. The session can be prompted again. Earlier versions ended such a run `completed`, often with an empty final message, and ran a cut-off tool call with its cut-off arguments.
 
 ### `agent_prompt`
 
@@ -1843,7 +1845,7 @@ One gap is worth knowing: changing `allowDestructive` with [`set_agent_config`](
 
 ### `set_agent_config`
 
-Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Each field is described under [`agent`](../configuration/options.md#agent). A request that includes `httpFetch` is rejected with a 400 and nothing in it is applied: the [`http_fetch` policy](../configuration/options.md#restricting-http_fetch) is read at startup only.
+Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Each field is described under [`agent`](../configuration/options.md#agent). A request that includes `httpFetch` is rejected with a 400 and nothing in it is applied: the [`http_fetch` policy](../configuration/options.md#restricting-http_fetch) is read at startup only. A `maxTokens` that is not a positive integer is rejected the same way.
 
 ```json
 { "operation": "set_agent_config", "autoApprove": false, "maxTurns": 20 }
@@ -1852,7 +1854,7 @@ Updates agent settings and returns the resulting configuration. Accepts any of `
 Three limits are worth knowing:
 
 - **The change is in-memory and not persisted.** It applies for the life of the process and is lost on restart; edit `harper-config.yaml` for a durable change.
-- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, and `systemPromptAppend` are all captured at start. Changes take effect on the next run. To stop a run immediately, use `cancel_agent_run`.
+- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, `maxTokens`, and `systemPromptAppend` are all captured at start. Changes take effect on the next run, and a paused run that `approve_agent_action` resumes counts as a new one: it picks up the current settings. To stop a run immediately, use `cancel_agent_run`.
 - **`enabled` is not a kill switch.** It cannot turn the agent on — if it was off at startup, this operation does not exist. Setting it to `false` only makes subsequent `agent_prompt` calls return 409; a run already in flight continues, and `approve_agent_action` still resumes a paused one. Use `cancel_agent_run` to stop a run.
 
 ### MCP access
