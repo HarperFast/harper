@@ -168,8 +168,6 @@ export default function (searchObject: any, type: any) {
 		// if any unknown attributes present in the search request then list all indicated as unknown attribute to error message at once split in well format
 		// for instance "unknown attribute a, b and c" or "unknown attribute a"
 		if (unknownAttributes && unknownAttributes.length > 0) {
-			// the same attribute can be named by both get_attributes and a condition (or more than
-			// one condition); dedupe so the error message lists it once
 			unknownAttributes = uniqWith(unknownAttributes, isEqual);
 			// return error with proper message - replace last comma with and
 			let errorMsg = unknownAttributes.join(', ');
