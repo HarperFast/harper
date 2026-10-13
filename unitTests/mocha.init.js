@@ -65,7 +65,6 @@ let pendingResults;
 let activeRuns = 0;
 let resultFiles;
 delete process.env.HARPER_UNIT_RESULTS;
-delete process.env.HARPER_UNIT_SELECTION_CONFIG;
 
 module.exports.mochaHooks = () => {
 	runStarted = true;
@@ -76,21 +75,13 @@ module.exports.mochaHooks = () => {
 			observedTotal = root.total();
 			installPerFileDatabaseTeardown(root);
 		},
-		afterAll() {
-			assertNativeCoreTree();
-			// Register the root removal here, not in the preload below: 'exit' listeners fire in
-			// registration order, and the one that flushes and closes every open database
-			// (RocksTransactionLogStore's shutdown()) is registered when the data layer loads —
-			// after the preload, before this hook. Removing the root any earlier deletes the
-			// database files out from under that flush, which rocksdb-js reports as
-			// "Failed to flush database during close: IO error ... 000NNN.log" — a throw out of an
-			// exit listener, so the run exits 7 with every test passing.
-			if (isMainThread) process.on('exit', removePerPidRoot);
-		},
 	};
 };
 
 module.exports.mochaGlobalTeardown = function () {
+	// Register after storage shutdown listeners, including for runs with no matching tests.
+	if (isMainThread) process.on('exit', removePerPidRoot);
+	assertNativeCoreTree();
 	if (resultsPath) {
 		pendingResults = { total: this.stats?.tests ?? observedTotal };
 	}

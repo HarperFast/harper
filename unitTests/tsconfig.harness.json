@@ -11,7 +11,8 @@
 		"typeStripSuites.mts",
 		"nativeModules.mts",
 		"rocksdbBindings.mts",
-		"packageBindings.mts"
+		"packageBindings.mts",
+		"fixtures/nativeTeardown/writeSettled.mts"
 	],
 	"exclude": []
 }

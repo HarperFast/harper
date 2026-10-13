@@ -143,6 +143,13 @@ describe('unit runtime selection', function () {
 			const result = run(['source', 'compiled'], ['--reporter', 'xunit', '--reporter-option', `output=${output}`]);
 			assert.notStrictEqual(result.status, 0);
 			assert.match(result.stderr, /Run lanes separately/);
+			const external = ['--reporter', join(fixtures, 'fileReporter.cjs'), '--reporter-option', `destination=${output}`];
+			succeeds(run(['source'], external));
+			assert.strictEqual(readFileSync(output, 'utf8'), 'completed');
+			const mixed = run(['source', 'compiled'], external);
+			assert.notStrictEqual(mixed.status, 0);
+			assert.match(mixed.stderr, /Run lanes separately/);
+			assert(!mixed.stdout.includes('Unit runtime:'));
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
@@ -184,25 +191,32 @@ describe('unit runtime selection', function () {
 	});
 	for (const grep of [undefined, 'DOES_NOT_MATCH'])
 		it(`finishes ordinary parallel workers with grep ${grep}`, () => {
-			const result = spawnSync(
-				process.execPath,
-				[
-					require.resolve('mocha/bin/mocha.js'),
-					join(fixtures, 'parallel.js'),
-					'--no-config',
-					'--require',
-					join(__dirname, 'mocha.init.js'),
-					'--parallel',
-					'--jobs',
-					'2',
-					'--exit',
-					...(grep ? ['--grep', grep] : []),
-				],
-				{ cwd: root, encoding: 'utf8', timeout: 20000 }
-			);
-			succeeds(result);
-			assert.match(result.stdout, grep ? /0 passing/ : /1 passing/);
-			assert(!result.stderr.includes('without finishing'));
+			const directory = mkdtempSync(join(root, 'unitTests/envDir/parallel-'));
+			const results = join(directory, 'results.json');
+			try {
+				const result = spawnSync(
+					process.execPath,
+					[
+						require.resolve('mocha/bin/mocha.js'),
+						join(fixtures, 'parallel.js'),
+						'--no-config',
+						'--require',
+						join(__dirname, 'mocha.init.js'),
+						'--parallel',
+						'--jobs',
+						'2',
+						'--exit',
+						...(grep ? ['--grep', grep] : []),
+					],
+					{ cwd: root, encoding: 'utf8', timeout: 20000, env: { ...process.env, HARPER_UNIT_RESULTS: results } }
+				);
+				succeeds(result);
+				assert.match(result.stdout, grep ? /0 passing/ : /1 passing/);
+				assert(!result.stderr.includes('without finishing'));
+				assert.strictEqual(JSON.parse(readFileSync(results, 'utf8')).total, grep ? 0 : 1);
+			} finally {
+				rmSync(directory, { recursive: true, force: true });
+			}
 		});
 	it('stops the real Mocha process on POSIX when interrupted through the node-option wrapper', async function () {
 		if (process.platform === 'win32') return this.skip();

@@ -6,7 +6,7 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
+const { mkdtempSync, mkdirSync, writeFileSync, rmSync, cpSync, symlinkSync, readdirSync } = require('node:fs');
 const { nativeCoreGuard } = require('./nativeModules.mts');
 
 const FIXTURES = path.join(__dirname, 'perFileDatabaseTeardownFixtures');
@@ -24,6 +24,76 @@ describe('native compiled-core guard', () => {
 			assert.throws(guard, (error) => error.message.includes(compiled));
 			guard();
 			assert.doesNotThrow(nativeCoreGuard(path.join(root, 'dist', 'resources', 'databases.js')));
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+	it('fails empty and filtered runs through final teardown and removes their roots', function () {
+		this.timeout(30000);
+		const root = mkdtempSync(path.join(__dirname, 'envDir', 'guard-project-'));
+		try {
+			for (const entry of [
+				'bin',
+				'components',
+				'config',
+				'dataLayer',
+				'json',
+				'launchServiceScripts',
+				'resources',
+				'security',
+				'server',
+				'sqlTranslator',
+				'static',
+				'upgrade',
+				'utility',
+				'validation',
+				'globals.js',
+				'package.json',
+			])
+				cpSync(path.join(__dirname, '..', entry), path.join(root, entry), { recursive: true });
+			mkdirSync(path.join(root, 'unitTests'));
+			for (const entry of [
+				'mocha.init.js',
+				'perPidRoot.js',
+				'perFileDatabaseTeardown.js',
+				'nativeModules.mts',
+				'rocksdbBindings.mts',
+				'packageBindings.mts',
+			])
+				cpSync(path.join(__dirname, entry), path.join(root, 'unitTests', entry));
+			symlinkSync(path.join(__dirname, '..', 'node_modules'), path.join(root, 'node_modules'), 'junction');
+			mkdirSync(path.join(root, 'dist'));
+			writeFileSync(path.join(root, 'dist', 'marker.cjs'), 'module.exports = true;');
+			const fixture = path.join(root, 'probe.cjs');
+			for (const filtered of [false, true]) {
+				writeFileSync(
+					fixture,
+					"require('./dist/marker.cjs'); describe('guard', () => {" +
+						(filtered ? "it('ignored', () => {});" : '') +
+						'});'
+				);
+				const result = spawnSync(
+					process.execPath,
+					[
+						require.resolve('mocha/bin/mocha.js'),
+						fixture,
+						'--no-config',
+						'--require',
+						path.join(root, 'unitTests/mocha.init.js'),
+						'--exit',
+						...(filtered ? ['--grep', 'DOES_NOT_MATCH'] : []),
+					],
+					{
+						cwd: root,
+						encoding: 'utf8',
+						timeout: 10000,
+						env: { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --conditions=typestrip` },
+					}
+				);
+				assert.notStrictEqual(result.status, 0, result.stdout + result.stderr);
+				assert.match(result.stderr, /Native unit tests loaded compiled core/);
+				assert.deepStrictEqual(readdirSync(path.join(root, 'unitTests/envDir')), []);
+			}
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -58,6 +128,7 @@ describe('native ESM database teardown', () => {
 					path.join(__dirname, 'fixtures/nativeTeardown/create.mjs'),
 					path.join(__dirname, 'fixtures/nativeTeardown/close.mjs'),
 					path.join(__dirname, 'fixtures/nativeTeardown/check.mjs'),
+					path.join(__dirname, 'fixtures/nativeTeardown/afterRescan.mjs'),
 					'--no-config',
 					'--require',
 					path.join(__dirname, 'mocha.init.js'),
@@ -75,7 +146,7 @@ describe('native ESM database teardown', () => {
 				}
 			);
 			assert.strictEqual(result.status, 0, result.stdout + result.stderr);
-			assert.match(result.stdout, /3 passing/);
+			assert.match(result.stdout, /4 passing/);
 		});
 	}
 });

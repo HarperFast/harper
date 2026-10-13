@@ -8,7 +8,6 @@ const env = require('#src/utility/environment/environmentManager');
 describe('native lane fixture', () => {
 	it('loads source with one environment and propagates it to children', async () => {
 		assert.strictEqual(process.env.HARPER_UNIT_RESULTS, undefined);
-		assert.strictEqual(process.env.HARPER_UNIT_SELECTION_CONFIG, undefined);
 		assert(types.isModuleNamespaceObject(env));
 		assert(require.resolve('#src/utility/hdbTerms').endsWith('.ts'));
 		assert.strictEqual(

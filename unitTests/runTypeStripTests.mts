@@ -44,6 +44,8 @@ if (list) {
 	console.log(JSON.stringify(lanes, null, 2));
 } else {
 	const selected: [string, string[]][] = sourceOnly ? [['source', lanes.source]] : Object.entries(lanes);
+	if (sourceOnly && lanes.compiled.length)
+		console.log(`Skipped ${lanes.compiled.length} compiled suites; run the combined selection after npm run build.`);
 	if (!selected.some(([, paths]) => paths.length))
 		throw new Error('No source-compatible files selected; use ordinary mocha for compiled suites.');
 	if (selected.some(([mode, paths]) => mode === 'compiled' && paths.length)) {
@@ -56,9 +58,10 @@ if (list) {
 		}
 		if (
 			selected.filter(([, paths]) => paths.length).length > 1 &&
-			options['reporter-option']?.some((option) => /^(?:output|reporterOutput)=/.test(option))
+			(options['reporter-option']?.some((option) => /^(?:output|reporterOutput)=/.test(option)) ||
+				!Object.hasOwn(require('mocha/lib/reporters/index.cjs'), options.reporter || 'spec'))
 		)
-			throw new Error('Run lanes separately when writing reporter output files.');
+			throw new Error('Run lanes separately for reporter output files or external reporters.');
 	}
 	const root = resolve('unitTests/envDir');
 	mkdirSync(root, { recursive: true });

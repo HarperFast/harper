@@ -112,7 +112,7 @@ function census() {
 	};
 }
 
-async function dropCreatedSince(atStart, file) {
+async function dropCreatedSince(atStart, file, runStartEntries) {
 	const databasesModule = loadedDatabasesModule();
 	const entries = storageEntries();
 	if (!databasesModule && ![...entries].some((entry) => !atStart.entries.has(entry))) return;
@@ -137,7 +137,7 @@ async function dropCreatedSince(atStart, file) {
 			const relativeRoots = [name, `${name}.mdb`].map(
 				(entry) => path.relative(STORAGE_ROOT, path.join(root, entry)).split(path.sep)[0]
 			);
-			if (relativeRoots.some((entry) => atStart.entries.has(entry))) continue;
+			if (relativeRoots.some((entry) => runStartEntries.has(entry))) continue;
 			if (!isDisposable(databasesModule, configuredDatabases, name)) continue;
 			await databasesModule.dropDatabase(name);
 		} catch (error) {
@@ -193,12 +193,13 @@ function installPerFileDatabaseTeardown(rootSuite) {
 		if (suite.file && !suite.isPending() && suite.total() > 0) lastSuiteOfFile.set(suite.file, suite);
 	}
 	let atStart = census();
+	const runStartEntries = atStart.entries;
 	assertNativeCoreTree();
 	for (const [file, suite] of lastSuiteOfFile) {
 		suite.afterAll('drop the databases this file created', async () => {
 			const failures = [];
 			try {
-				await dropCreatedSince(atStart, path.relative(process.cwd(), file));
+				await dropCreatedSince(atStart, path.relative(process.cwd(), file), runStartEntries);
 			} catch (error) {
 				failures.push(error);
 			}
