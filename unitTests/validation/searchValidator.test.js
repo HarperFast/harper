@@ -89,8 +89,6 @@ describe('Test searchValidator module', () => {
 		);
 
 		assert.ok(result instanceof Error);
-		// don't pin the exact (pre-existing, unrelated-to-this-fix) "[object Object]" rendering -
-		// just confirm the pair collapsed to one entry, which a single-entry message never joins with "and"
 		assert.match(result.message, /^unknown attribute '[^,]+'$/);
 		assert.ok(!result.message.includes(' and '));
 	});

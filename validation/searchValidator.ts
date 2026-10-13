@@ -181,8 +181,8 @@ export default function (searchObject: any, type: any) {
 						)
 					);
 				} catch {
-					// anything else that can't be stringified (e.g. a circular object) is simply never
-					// deduped, rather than throwing
+					// anything else that can't be stringified (e.g. a circular object) dedupes only by
+					// reference identity, never by structural equality, rather than throwing
 					return value;
 				}
 			});
