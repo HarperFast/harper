@@ -1410,12 +1410,12 @@ async function verifyBackupFiles(
 	verifyWithChecksum: boolean,
 	verifyTables = false
 ): Promise<void> {
-	await backups.verify(backupDir, backupId, { verifyWithChecksum, verifyTables });
 	if (manifest.blobs && !existsSync(blobSnapshotDir(backupDir, backupId))) {
 		throw new ClientError(
 			`Backup ${backupId} of database '${databaseName}' declares captured blobs but its blob snapshot is missing (corrupt backup)`
 		);
 	}
+	await backups.verify(backupDir, backupId, { verifyWithChecksum, verifyTables });
 }
 
 function isMissingOrEmptyDir(path: string): boolean {
