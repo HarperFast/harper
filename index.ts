@@ -1,3 +1,5 @@
+// first, before anything that can load a native addon
+import './server/threads/nativeAddonGuard.ts';
 // Prevents server from starting in worker threads if this was directly imported from a non-server user thread
 import workerThreads from 'node:worker_threads';
 if (!workerThreads.isMainThread) {

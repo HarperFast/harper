@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
+// first, before anything that can load a native addon (the logger loads one)
+import '../server/threads/nativeAddonGuard.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import logger from '../utility/logging/harper_logger.ts';
