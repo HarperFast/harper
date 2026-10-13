@@ -146,6 +146,20 @@ function effectivePort(url: URL): number {
 	return url.protocol === 'https:' ? 443 : 80;
 }
 
+/**
+ * Normalizes the Operations API port settings for the policy. An environment placeholder in config
+ * yields a string such as '9926', so a numeric string counts as its port; any other value that is
+ * not a valid port is dropped.
+ */
+export function operationsApiPortsFrom(values: readonly unknown[]): number[] {
+	const ports: number[] = [];
+	for (const value of values) {
+		const port = typeof value === 'string' && /^\s*\d+\s*$/.test(value) ? Number(value) : value;
+		if (typeof port === 'number' && Number.isInteger(port) && port >= 1 && port <= 65_535) ports.push(port);
+	}
+	return ports;
+}
+
 export function buildHttpFetchTool(
 	config: HttpFetchConfig = true,
 	operationsApiPorts: readonly number[] = []
