@@ -51,14 +51,16 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 	let cliHome: string;
 	let audience: string;
 
+	const adminAuth = (): Record<string, string> => ({
+		HARPER_CLI_USERNAME: ctx.harper.admin.username,
+		HARPER_CLI_PASSWORD: ctx.harper.admin.password,
+	});
+
 	/** A child process: cliOperations() calls process.exit(). */
 	async function runSetup(
 		args: string[],
 		cwd = cliHome,
-		auth: Record<string, string> = {
-			HARPER_CLI_USERNAME: ctx.harper.admin.username,
-			HARPER_CLI_PASSWORD: ctx.harper.admin.password,
-		},
+		auth: Record<string, string> = adminAuth(),
 		target: string[] = [`target=${ctx.harper.operationsAPIURL}`]
 	): Promise<CliResult> {
 		const base: Record<string, string | undefined> = { ...process.env };
@@ -69,6 +71,8 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 		delete base.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
 		delete base.NODE_OPTIONS;
 		delete base.DOTENV_CONFIG_PATH;
+		// A CI runner sets it, and it names the checkout's repository; each test names its own.
+		delete base.GITHUB_REPOSITORY;
 		const setupArgs = [
 			'deploy',
 			'setup=true',
@@ -240,10 +244,24 @@ suite('harper deploy setup=true provider=github-actions', { skip: skipSuite }, (
 			join(checkout, '.github', 'workflows', 'deploy.yaml'),
 			'on:\n  push:\n    branches: [release]\njobs:\n  deploy:\n    environment: production\n'
 		);
-		const { code, stderr } = await runSetup(['project=other'], checkout);
+		// No git on the child's PATH, so the checkout names its repository the way a CI runner does.
+		const { code, stderr } = await runSetup(['project=other'], checkout, { ...adminAuth(), GITHUB_REPOSITORY: REPO });
 		assert.strictEqual(code, 1);
 		assert.match(stderr, /deploy\.yaml cannot match the trust policy: it deploys on pushes to release, not "main"/);
 		const roles = (await op({ operation: 'list_roles' })) as any[];
 		assert.ok(!roles.some((r) => r.role === 'other-ci-deploy'), 'no role should have been created');
+	});
+
+	test("another repository's checkout is not taken as evidence about this one", async () => {
+		const checkout = join(cliHome, 'other-repository-checkout');
+		await mkdir(join(checkout, '.github', 'workflows'), { recursive: true });
+		await writeFile(join(checkout, '.github', 'workflows', 'deploy.yaml'), 'on:\n  push:\n    branches: [release]\n');
+		const { code, stdout } = await runSetup(['project=elsewhere'], checkout, {
+			...adminAuth(),
+			GITHUB_REPOSITORY: 'deploy_setup_fixture/other',
+		});
+		assert.strictEqual(code, 1, 'exit 1 only for the unset variable (no gh)');
+		assert.match(stdout, /This checkout is deploy_setup_fixture\/other, not deploy_setup_fixture\/web/);
+		assert.match(stdout, /Created role elsewhere-ci-deploy/);
 	});
 });
