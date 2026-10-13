@@ -171,12 +171,18 @@ export default function (searchObject: any, type: any) {
 			unknownAttributes = uniqBy(unknownAttributes, (value: any) => {
 				if (typeof value !== 'object') return value;
 				try {
-					// a bigint-valued property (reachable via msgpack/cbor) throws here; fall back to
-					// the value itself so that one entry is simply never deduped, rather than a 500
-					return JSON.stringify(value, (_key, propValue) =>
-						typeof propValue === 'bigint' ? propValue.toString() : propValue
+					// bigint properties (reachable via msgpack/cbor) are converted rather than left to
+					// throw; the leading NUL can't collide with a string attribute name (schemaRegex
+					// forbids control characters), so an object key never matches a primitive one
+					return (
+						'\0' +
+						JSON.stringify(value, (_key, propValue) =>
+							typeof propValue === 'bigint' ? propValue.toString() : propValue
+						)
 					);
 				} catch {
+					// anything else that can't be stringified (e.g. a circular object) is simply never
+					// deduped, rather than throwing
 					return value;
 				}
 			});

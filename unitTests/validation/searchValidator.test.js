@@ -91,10 +91,28 @@ describe('Test searchValidator module', () => {
 		assert.ok(result instanceof Error);
 		// don't pin the exact (pre-existing, unrelated-to-this-fix) "[object Object]" rendering -
 		// just confirm the pair collapsed to one entry, which a single-entry message never joins with "and"
+		assert.match(result.message, /^unknown attribute '[^,]+'$/);
 		assert.ok(!result.message.includes(' and '));
 	});
 
-	it('does not throw when an unknown object attribute specifier is unserializable (e.g. holds a BigInt)', () => {
+	it('does not merge a string attribute name with an unrelated object specifier that stringifies to the same text', () => {
+		const objectEntry = { attribute: 'bogus' };
+		const result = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				attribute: 'id',
+				value: 'x',
+				get_attributes: [JSON.stringify(objectEntry), objectEntry],
+			},
+			'value'
+		);
+
+		assert.ok(result instanceof Error);
+		assert.ok(result.message.includes(' and '));
+	});
+
+	it('converts a BigInt-valued property instead of throwing (e.g. from a msgpack/cbor body)', () => {
 		const result = searchValidator(
 			{
 				schema: 'searchValidatorTest',
@@ -102,6 +120,24 @@ describe('Test searchValidator module', () => {
 				attribute: 'id',
 				value: 'x',
 				get_attributes: [{ attribute: 'bogus', n: 1n }],
+			},
+			'value'
+		);
+
+		assert.ok(result instanceof Error);
+		assert.match(result.message, /^unknown attribute '/);
+	});
+
+	it('does not throw when an unknown object attribute specifier cannot be serialized at all (e.g. is circular)', () => {
+		const circular = { attribute: 'bogus' };
+		circular.self = circular;
+		const result = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				attribute: 'id',
+				value: 'x',
+				get_attributes: [circular],
 			},
 			'value'
 		);
