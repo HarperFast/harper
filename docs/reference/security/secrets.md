@@ -260,7 +260,7 @@ enc:v1:<base64url( JSON )>
 
 `kid` lets multiple keypairs coexist during rotation: the decryptor selects the matching private key, or rejects the value if it holds no key for that `kid`.
 
-The same `enc:v1:` envelope format is used for encrypted `.env` values, so a value encrypted once can be used with either the secrets store or `loadEnv`.
+The same `enc:v1:` envelope format is used for [encrypted `.env` values](../environment-variables/encrypted-values.md), so a value encrypted once can be used with either the secrets store or `loadEnv`.
 
 ### Reference client (Node.js)
 

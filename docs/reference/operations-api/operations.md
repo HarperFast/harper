@@ -854,6 +854,9 @@ Detailed documentation: [Components Overview](../components/overview.md)
 | `get_components`            | Lists all component files and config                                    | super_user    |
 | `get_component_file`        | Returns the contents of a file within a component                       | super_user    |
 | `set_component_file`        | Creates or updates a file within a component                            | super_user    |
+| `get_env_keys`              | Lists the key names in a component's `.env` file (never values)         | super_user    |
+| `set_env_value`             | Sets one or many `.env` keys, preserving the rest of the file           | super_user    |
+| `delete_env_value`          | Removes one or many `.env` keys, leaving the rest intact                | super_user    |
 | `list_deployments`          | Lists deployment records with optional filters                          | super_user    |
 | `get_deployment`            | Fetches a single deployment record by ID; supports SSE streaming        | super_user    |
 | `get_deployment_payload`    | Returns the tarball stored for a deployment                             | super_user    |
@@ -1174,6 +1177,114 @@ A `deploy_component` request that accepts `text/event-stream` gets its progress 
 From v5.4.0, the `load` phase brackets the [canary's decision](#certifying-a-release-in-a-canary-worker), so a deploy that does not restart, or whose `certification` is `unavailable`, sends no `load` phase. Before v5.4.0, every deploy sends one.
 
 Every event but `done` is also appended to the deployment's `event_log`, which [`get_deployment`](#get_deployment) replays as a stream. A replayed log can also contain `truncated`, `{ dropped_events }`, where the log reached its 200-entry bound and dropped entries from its middle, keeping the start and the most recent, and a `payload_dropped` carrying `deleted_by` instead of `max_size` when [`delete_deployment_payload`](#delete_deployment_payload) reclaimed the tarball.
+
+### Environment File Operations
+
+<VersionBadge version="v5.2.0" />
+
+Three operations edit a component's `.env` file without ever returning a value. They let an editor (Studio, CI, your own tooling) rotate one key without seeing — or accidentally clobbering — the other secrets in the file.
+
+| Operation          | Description                                                     | Role Required |
+| ------------------ | --------------------------------------------------------------- | ------------- |
+| `get_env_keys`     | Lists the key names in a component's `.env` file — never values | super_user    |
+| `set_env_value`    | Sets one or many keys, preserving the rest of the file          | super_user    |
+| `delete_env_value` | Removes one or many keys, leaving the rest intact               | super_user    |
+
+All three take a `project` (the component directory name) and an optional `file`, which defaults to `.env`. `file` must name an env file — `.env` or `.env.<suffix>` such as `.env.local` — and is rejected otherwise. Key names must match `[A-Za-z0-9_.-]+`, the character set the `.env` parser accepts.
+
+`set_env_value` and `delete_env_value` replicate. The node that receives the request edits its own file, then sends the edit once to each peer. The response's `replicated` array has one entry per peer, naming it in `node`. A peer that could not be reached, or that answered with an error, is listed with `"status": "failed"` and a `reason`. Harper does not retry it, so that node's file may not have the edit. The request still succeeds, so check `replicated` for a `failed` entry. Once that peer is back, send the affected keys' current state again: their current values, or a delete for keys that should still be absent. A resend reaches every node, so resending the original request is safe only if no later edit changed those keys. Deleting a key that is not present is not an error.
+
+An edit changes the file, not the running components. [`loadEnv`](../environment-variables/overview.md) reads a `.env` file into `process.env` when the component loads, and reads only the files its `files` option names. When a file it has already loaded changes, it does not reload the values. It flags the node as needing a restart instead, so `get_status` reports `restartRequired: true`. Until the node's worker threads restart, running code still sees the old value of a changed key, and still sees a deleted key. To apply an edit, restart the workers on every node, for example with [`restart_service`](#restart_service) using `"service": "http_workers"` and `"replicated": true`, which restarts the nodes one at a time. When `harper dev` runs an application directory, it restarts the workers on its own when the flag is set.
+
+:::note
+`get_component_file` on a `.env` file returns a **masked** body: `protected: true`, the `keys` array, and a `message` of one `KEY=********` line per key. `get_components` likewise flags such files with `protected: true`. Template files — `.env.example`, `.env.sample`, `.env.template` — hold placeholders rather than secrets, so they are returned verbatim and are not masked.
+
+`set_component_file` is **not** blocked on a `.env` file. It overwrites the file verbatim with whatever payload you send. Use `set_env_value` when you want to change one key and keep the others.
+
+This is disclosure protection for the editor surface, not a security boundary — component code can still read the real values from `process.env`.
+:::
+
+#### `get_env_keys`
+
+```json
+{
+	"operation": "get_env_keys",
+	"project": "my-app",
+	"file": ".env"
+}
+```
+
+Response:
+
+```json
+{
+	"file": ".env",
+	"keys": ["API_KEY", "DB_URL"],
+	"size": 62,
+	"mtime": "2026-02-11T18:04:22.000Z"
+}
+```
+
+Returns an error if the file does not exist.
+
+#### `set_env_value`
+
+Supply exactly one of `key` + `value` (a single entry) or `values` (a key-to-value map). Every other line in the file — comments, blank lines, untouched keys, and their formatting — is left exactly as it was; existing keys are replaced in place and new keys are appended. The file (and the project directory) is created if it does not exist.
+
+```json
+{
+	"operation": "set_env_value",
+	"project": "my-app",
+	"key": "API_KEY",
+	"value": "rotated-value"
+}
+```
+
+```json
+{
+	"operation": "set_env_value",
+	"project": "my-app",
+	"values": { "API_KEY": "rotated-value", "DB_URL": "postgres://user:pass@host/db" }
+}
+```
+
+Response:
+
+```json
+{
+	"message": "Successfully set env value(s) in .env",
+	"keys": ["API_KEY", "DB_URL"]
+}
+```
+
+`keys` is the file's key list after the write — the request value is never echoed back. With Harper Pro, the response of both `set_env_value` and `delete_env_value` also carries the [`replicated` array](#environment-file-operations).
+
+Harper quotes the value as needed so the `.env` parser reads back exactly what you sent, including spaces, `#`, quotes, backslashes, and newlines. A carriage return is the exception: the parser reads `\r\n` and a lone `\r` back as `\n`. One combination cannot be represented: a value containing a single quote (`'`) together with a double quote, a backslash, or a carriage return is rejected with a `400`.
+
+A value may also be an `enc:v1:` ciphertext envelope rather than plaintext — see [Encrypted Environment Values](../environment-variables/encrypted-values.md).
+
+#### `delete_env_value`
+
+Supply exactly one of `key` (a single name) or `keys` (an array of names).
+
+```json
+{
+	"operation": "delete_env_value",
+	"project": "my-app",
+	"keys": ["API_KEY", "DB_URL"]
+}
+```
+
+Response:
+
+```json
+{
+	"message": "Successfully deleted env value(s) from .env",
+	"keys": []
+}
+```
+
+Returns an error if the file does not exist. Removing a key that is not present is not an error.
 
 ### Deployment Operations
 
@@ -1682,12 +1793,12 @@ With an `id`, it returns that one status record:
 { "operation": "get_status" }
 ```
 
-| Field              | Description                                                                                                                                                               |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `systemStatus`     | Every status record set with `set_status`                                                                                                                                 |
-| `componentStatus`  | Per-component health, aggregated across threads: `name` plus a `status` of `healthy`, `warning`, `error`, `loading`, or `unknown`                                         |
-| `restartRequired`  | Whether a restart is pending on this node — set by a deploy that did not restart (see [Deploying without a restart](#deploying-without-a-restart)) and cleared on restart |
-| `middlewareChains` | The resolved HTTP, upgrade, and WebSocket middleware order (v5.2.0). Present only when the request passes `middleware: true`                                              |
+| Field              | Description                                                                                                                                                                                                                                                                                                                     |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `systemStatus`     | Every status record set with `set_status`                                                                                                                                                                                                                                                                                       |
+| `componentStatus`  | Per-component health, aggregated across threads: `name` plus a `status` of `healthy`, `warning`, `error`, `loading`, or `unknown`                                                                                                                                                                                               |
+| `restartRequired`  | Whether a restart is pending on this node — set by a change that needs one to take effect, such as a deploy that did not restart (see [Deploying without a restart](#deploying-without-a-restart)) or an edit to a loaded `.env` file (see [Environment File Operations](#environment-file-operations)), and cleared on restart |
+| `middlewareChains` | The resolved HTTP, upgrade, and WebSocket middleware order (v5.2.0). Present only when the request passes `middleware: true`                                                                                                                                                                                                    |
 
 `restartRequired` is per node: it reports the node that served the request, not the cluster.
 
