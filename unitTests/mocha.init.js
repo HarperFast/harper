@@ -42,7 +42,7 @@ const path = require('path');
 const fs = require('fs-extra');
 const { isMainThread } = require('worker_threads');
 const { materializePerPidRoot, removePerPidRoot, ENV_DIR_PATH, PID_DIR_PATH } = require('./perPidRoot.js');
-const { installPerFileDatabaseTeardown } = require('./perFileDatabaseTeardown.js');
+const { installPerFileDatabaseTeardown, assertNativeCoreTree } = require('./perFileDatabaseTeardown.js');
 
 /**
  * Fail a mocha run that dies mid-flight instead of letting it look like a pass.
@@ -77,6 +77,7 @@ module.exports.mochaHooks = () => {
 			installPerFileDatabaseTeardown(root);
 		},
 		afterAll() {
+			assertNativeCoreTree();
 			// Register the root removal here, not in the preload below: 'exit' listeners fire in
 			// registration order, and the one that flushes and closes every open database
 			// (RocksTransactionLogStore's shutdown()) is registered when the data layer loads —
@@ -96,7 +97,8 @@ module.exports.mochaGlobalTeardown = function () {
 };
 
 {
-	const Mocha = require('mocha');
+	const mocha = require('node:module').createRequire(__filename)('mocha');
+	const Mocha = mocha.default ?? mocha;
 	const run = Mocha.prototype.run;
 	Mocha.prototype.run = function (callback) {
 		activeRuns++;

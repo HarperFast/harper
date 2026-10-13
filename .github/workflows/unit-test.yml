@@ -149,7 +149,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ${{ (github.event.inputs.node-version == 'all' || github.event.inputs.node-version == '') && fromJSON('[22, 24, 26]') || fromJSON(format('[{0}]', github.event.inputs.node-version)) }}
+        node-version: ${{ (github.event.inputs.node-version == 'all' || github.event.inputs.node-version == '') && fromJSON('["22.18.0", "24.0.0", 22, 24, 26]') || fromJSON(format('[{0}]', github.event.inputs.node-version)) }}
     steps:
       - name: Checkout code
         timeout-minutes: 3
