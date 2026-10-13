@@ -561,6 +561,24 @@ describe('rocksdbBackup', function () {
 				assertRestoredFromBackup();
 			});
 		}
+
+		it('online: refuses when something reopens the database directly while the backup verifies', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realVerify = backups.verify;
+			let reopened;
+			backups.verify = async (...args) => {
+				await realVerify.apply(backups, args);
+				reopened = RocksDatabase.open(verifiedDir());
+			};
+			try {
+				await assert.rejects(restores.online(backupId), (error) => error.statusCode === 409);
+			} finally {
+				backups.verify = realVerify;
+				reopened?.close();
+			}
+			assertDestinationIntact();
+		});
 	});
 
 	describe('online restore_backup validation', function () {

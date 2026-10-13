@@ -682,6 +682,8 @@ export async function restoreBackup(request: any) {
 		await verifyDatabaseClosed(databaseDir, databaseName);
 		// Only once writes are refused: a write acknowledged during verification would be lost to the purge.
 		await assertBackupReadable(backupDir, backupId, manifest, databaseName, databaseName, () => lock.preexisting);
+		// The marker keeps Harper from reopening it, but a component opening the path directly could have.
+		await verifyDatabaseClosed(databaseDir, databaseName);
 		destructionStarted = true;
 		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
 		// restore blobs only for a backup that captured them (an engine-only backup leaves the live
@@ -1264,8 +1266,8 @@ export async function restoreBackupOffline(
 	const blobRoots = getBlobPathsForDatabaseName(targetDatabase ?? databaseName);
 	const pinId = restorePinId(databaseDir);
 	let destructionStarted = false;
-	// As online: select, check and verify under the repository lock, claim before marking under both
-	// locks, and mark before probing the destination.
+	// Unlike online, verify before the claim: with no live writers to refuse, a crash mid-verify then
+	// leaves the database loadable. Claim before marking under both locks, and mark before probing.
 	const { lock, backupId, manifest } = await withBackupRepositoryLock(backupDir, databaseName, async () => {
 		// resolve to the latest complete backup (or the requested id, rejected if incomplete)
 		const selected = await resolveCompleteBackup(backupDir, requestedBackupId, databaseName);

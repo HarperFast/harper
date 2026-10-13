@@ -77,9 +77,12 @@ Several non-obvious mechanics keep that safe:
   verification runs differs by path. **Online**, it runs after the close and `verifyDatabaseClosed`:
   verifying while the database still served would acknowledge writes for minutes that the purge
   then discards, where the close makes them fail with `DatabaseClosingError` instead. The cost is
-  that downtime includes the verification read, and a crash during it leaves the marker, so the
-  database stays unloadable until a rerun, as a crash during the copy always did. **Offline**, with
-  no live writers, it runs under the repository lock _before_ the claim, so a crash mid-verify
+  that downtime includes the verification read, and a crash during it leaves the marker over
+  database files that are still intact: the database stays unloadable until a restore succeeds, and
+  if the backup is the unreadable one, that means restoring an older backup over newer data still
+  on disk. `verifyDatabaseClosed` runs again after verification, since a component opening the path
+  directly is not held off by the marker. **Offline**, with no live writers, it runs under the
+  repository lock _before_ the claim, so a crash mid-verify
   leaves the database loadable. A backup whose manifest declares blobs must also still have its blob
   snapshot. Not covered: blob file contents
   (rocksdb-js has no reader for them; one unreadable at copy time fails after the purge, and the rerun
