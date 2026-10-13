@@ -319,6 +319,15 @@ describe('agent/httpFetchTool request handling', () => {
 		await assert.rejects(call(tool, { url: `${allowedBase}/hello` }), /operations API port/);
 	});
 
+	it('refuses operations API ports given as host:port settings, without connecting', async () => {
+		const operationsApiPort = allowedServer.address().port;
+		for (const setting of [`127.0.0.1:${operationsApiPort}`, `localhost:${operationsApiPort}`]) {
+			const tool = buildHttpFetchTool({ allow: [allowedBase.slice(7)] }, operationsApiPortsFrom([setting]));
+			await assert.rejects(call(tool, { url: `${allowedBase}/hello` }), /operations API port/, setting);
+		}
+		assert.strictEqual(allowedHits, 0);
+	});
+
 	it('follows an allowed redirect, resolving a relative Location', async () => {
 		const result = await call(restricted(), {
 			url: `${allowedBase}/to?status=301&url=${encodeURIComponent('/final')}`,
@@ -404,9 +413,15 @@ describe('agent/httpFetchTool operationsApiPortsFrom', () => {
 		assert.deepStrictEqual(operationsApiPortsFrom([9926, '9927', ' 9928 ']), [9926, 9927, 9928]);
 	});
 
+	it('takes the port from host:port settings, as the listener does', () => {
+		assert.deepStrictEqual(operationsApiPortsFrom(['127.0.0.2:9925']), [9925]);
+		assert.deepStrictEqual(operationsApiPortsFrom(['[::1]:9925']), [9925]);
+		assert.deepStrictEqual(operationsApiPortsFrom(['localhost:9925', '127.0.0.1:9926']), [9925, 9926]);
+	});
+
 	it('drops values that are not a valid port', () => {
 		assert.deepStrictEqual(
-			operationsApiPortsFrom([undefined, null, '', 'abc', '9926abc', '0', '65536', 1.5, true]),
+			operationsApiPortsFrom([undefined, null, '', 'abc', '9926abc', '0', '65536', '127.0.0.1:0', 1.5, true]),
 			[]
 		);
 	});

@@ -147,17 +147,23 @@ function effectivePort(url: URL): number {
 }
 
 /**
- * Normalizes the Operations API port settings for the policy. An environment placeholder in config
- * yields a string such as '9926', so a numeric string counts as its port; any other value that is
- * not a valid port is dropped.
+ * Normalizes the Operations API port settings for the policy. A setting may be a number, a numeric
+ * string from an environment placeholder ('9926'), or a host:port pair ('127.0.0.2:9925', '[::1]:9925').
+ * As the listener does, the port is the digits after the last colon; any other value that is not a
+ * valid port is dropped.
  */
 export function operationsApiPortsFrom(values: readonly unknown[]): number[] {
 	const ports: number[] = [];
 	for (const value of values) {
-		const port = typeof value === 'string' && /^\s*\d+\s*$/.test(value) ? Number(value) : value;
+		const port = typeof value === 'string' ? portAfterLastColon(value) : value;
 		if (typeof port === 'number' && Number.isInteger(port) && port >= 1 && port <= 65_535) ports.push(port);
 	}
 	return ports;
+}
+
+function portAfterLastColon(text: string): number | undefined {
+	const digits = text.slice(text.lastIndexOf(':') + 1);
+	return /^\s*\d+\s*$/.test(digits) ? Number(digits) : undefined;
 }
 
 export function buildHttpFetchTool(
