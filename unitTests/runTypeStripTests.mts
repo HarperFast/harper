@@ -17,6 +17,8 @@ if (args.some((arg) => ['--help', '-h', '--version', '-V'].includes(arg)))
 const sourceOnly = args.includes('--source-only');
 const list = args.includes('--list');
 const options = loadOptions(args.filter((arg) => arg !== '--source-only' && arg !== '--list'));
+if (!list && !options.require?.some((file: string) => resolve(file) === resolve('unitTests/mocha.init.js')))
+	throw new Error('Require unitTests/mocha.init.js to record lane completion.');
 options.ignore ??= [];
 if (options.watch) throw new Error('Use ordinary mocha for watch mode; this launcher runs a fixed selection.');
 if (options.parallel)
@@ -65,7 +67,7 @@ if (list) {
 	let child: ReturnType<typeof spawn> | undefined;
 	const forward = (signal: NodeJS.Signals) => {
 		interrupted = signal;
-		child?.kill(signal);
+		child?.kill('SIGINT');
 	};
 	const onTerm = () => forward('SIGTERM');
 	const onHangup = () => forward('SIGHUP');
@@ -96,7 +98,6 @@ if (list) {
 			};
 			delete env.MOCHA_OPTIONS;
 			if (mode === 'source') env.NODE_OPTIONS = `${env.NODE_OPTIONS || ''} --conditions=typestrip`.trim();
-			// Mocha's --timeout and the enclosing CI/test invocation own execution deadlines.
 			const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((done, reject) => {
 				child = spawn(process.execPath, [require.resolve('mocha/bin/mocha.js'), '--config', config, '--no-package'], {
 					stdio: 'inherit',

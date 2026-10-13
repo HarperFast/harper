@@ -53,18 +53,17 @@ const { installPerFileDatabaseTeardown } = require('./perFileDatabaseTeardown.js
  * and the process exits 0 having printed no epilogue and no failure. Every runner reads that as
  * success. harper_logger.test.js did exactly this to any `dot`/`tap` run before it was fixed.
  *
- * Plugin loading and the final callback bracket a launcher run; root hooks bracket a parallel worker.
- * Report "started but never finished" on fd 2
- * with writeSync, since an unwritable stdout is one of the ways to get here.
+ * Plugin loading and Mocha's final callback bracket the run. Report "started but never finished"
+ * on fd 2 with writeSync, since an unwritable stdout is one of the ways to get here.
  */
 let runStarted = false;
 let runFinished = false;
 
 let observedTotal = 0;
-let observedFiles = [];
 const resultsPath = process.env.HARPER_UNIT_RESULTS;
-const selectionPath = process.env.HARPER_UNIT_SELECTION_CONFIG;
 let pendingResults;
+let activeRuns = 0;
+let resultFiles;
 delete process.env.HARPER_UNIT_RESULTS;
 delete process.env.HARPER_UNIT_SELECTION_CONFIG;
 
@@ -74,19 +73,10 @@ module.exports.mochaHooks = () => {
 	return {
 		beforeAll() {
 			const root = this.test.parent;
-			const files = new Set();
-			function collect(suite) {
-				if (suite.file) files.add(suite.file);
-				for (const test of suite.tests) if (test.file) files.add(test.file);
-				for (const child of suite.suites) collect(child);
-			}
-			collect(root);
 			observedTotal = root.total();
-			observedFiles = [...files];
 			installPerFileDatabaseTeardown(root);
 		},
 		afterAll() {
-			if (process.env.MOCHA_WORKER_ID !== undefined) runFinished = true;
 			// Register the root removal here, not in the preload below: 'exit' listeners fire in
 			// registration order, and the one that flushes and closes every open database
 			// (RocksTransactionLogStore's shutdown()) is registered when the data layer loads —
@@ -100,28 +90,22 @@ module.exports.mochaHooks = () => {
 };
 
 module.exports.mochaGlobalTeardown = function () {
-	if (!resultsPath) runFinished = true;
 	if (resultsPath) {
-		const files = new Set(observedFiles);
-		function collect(suite) {
-			if (suite.file) files.add(suite.file);
-			for (const test of suite.tests) if (test.file) files.add(test.file);
-			for (const child of suite.suites) collect(child);
-		}
-		if (this.suite) collect(this.suite);
-		const selection = JSON.parse(fs.readFileSync(selectionPath, 'utf8')).spec;
-		for (const file of selection) if (require.cache[file]) files.add(file);
-		pendingResults = { total: this.stats?.tests ?? observedTotal, files: [...files] };
+		pendingResults = { total: this.stats?.tests ?? observedTotal };
 	}
 };
 
-if (resultsPath) {
+{
 	const Mocha = require('mocha');
 	const run = Mocha.prototype.run;
 	Mocha.prototype.run = function (callback) {
+		activeRuns++;
+		runFinished = false;
+		if (resultsPath && !resultFiles) resultFiles = [...this.files];
 		return run.call(this, (failures) => {
-			runFinished = true;
-			if (pendingResults) fs.writeFileSync(resultsPath, JSON.stringify(pendingResults));
+			runFinished = --activeRuns === 0;
+			if (runFinished && pendingResults)
+				fs.writeFileSync(resultsPath, JSON.stringify({ ...pendingResults, files: resultFiles }));
 			callback?.(failures);
 		});
 	};

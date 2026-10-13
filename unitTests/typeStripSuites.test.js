@@ -1,7 +1,9 @@
 const assert = require('node:assert');
 const { resolve, join } = require('node:path');
-const { mkdtempSync, writeFileSync, readFileSync, rmSync } = require('node:fs');
-const { spawnSync } = require('node:child_process');
+const { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } = require('node:fs');
+const { spawnSync, spawn } = require('node:child_process');
+const { once } = require('node:events');
+const { waitFor } = require('./waitFor.js');
 const { partitionSuites } = require('./typeStripSuites.mts');
 const { loadOptions } = require('mocha/lib/cli/options.cjs');
 const collectFiles = require('mocha/lib/cli/collect-files.cjs');
@@ -76,6 +78,24 @@ describe('unit runtime selection', function () {
 		const sourceOnly = run(['noDatabases'], [...args, '--source-only']);
 		assert.notStrictEqual(sourceOnly.status, 0);
 		assert.match(sourceOnly.stderr, /Compiled --file setup cannot run/);
+	});
+	it('records an ESM setup file that registers hooks without defining a suite', () => {
+		succeeds(run(['noDatabases'], ['--file', join(fixtures, 'setup.mjs')]));
+		succeeds(run(['noDatabases', 'compiled'], ['--file', join(fixtures, 'setup.mjs')]));
+	});
+	it('requires completion hooks before running a custom configuration', () => {
+		const result = spawnSync(
+			process.execPath,
+			['unitTests/runTypeStripTests.mts', '--no-config', join(fixtures, 'noDatabases.js')],
+			{
+				cwd: root,
+				encoding: 'utf8',
+				timeout: 20000,
+			}
+		);
+		assert.notStrictEqual(result.status, 0);
+		assert.match(result.stderr, /Require unitTests\/mocha.init.js/);
+		assert(!result.stdout.includes('Unit runtime:'));
 	});
 	it('prints help and version without starting tests, and rejects parallel mode', () => {
 		for (const flag of ['--help', '--version']) {
@@ -161,24 +181,69 @@ describe('unit runtime selection', function () {
 			rmSync(directory, { recursive: true, force: true });
 		}
 	});
-	it('keeps ordinary parallel Mocha workers from reporting a false unfinished run', () => {
-		const result = spawnSync(
+	for (const grep of [undefined, 'DOES_NOT_MATCH'])
+		it(`finishes ordinary parallel workers with grep ${grep}`, () => {
+			const result = spawnSync(
+				process.execPath,
+				[
+					require.resolve('mocha/bin/mocha.js'),
+					join(fixtures, 'noDatabases.js'),
+					'--no-config',
+					'--require',
+					join(__dirname, 'mocha.init.js'),
+					'--parallel',
+					'--jobs',
+					'1',
+					'--exit',
+					...(grep ? ['--grep', grep] : []),
+				],
+				{ cwd: root, encoding: 'utf8', timeout: 20000 }
+			);
+			succeeds(result);
+			assert.match(result.stdout, grep ? /0 passing/ : /1 passing/);
+			assert(!result.stderr.includes('without finishing'));
+		});
+	it('stops the real Mocha process on POSIX when interrupted through the node-option wrapper', async function () {
+		if (process.platform === 'win32') return this.skip();
+		const directory = mkdtempSync(join(root, 'unitTests/envDir/interrupt-'));
+		const pidFile = join(directory, 'pid');
+		const child = spawn(
 			process.execPath,
 			[
-				require.resolve('mocha/bin/mocha.js'),
-				join(fixtures, 'noDatabases.js'),
+				'unitTests/runTypeStripTests.mts',
+				join(fixtures, 'waitForInterrupt.js'),
 				'--no-config',
 				'--require',
 				join(__dirname, 'mocha.init.js'),
-				'--parallel',
-				'--jobs',
-				'1',
-				'--exit',
+				'--node-option',
+				'expose-internals',
 			],
-			{ cwd: root, encoding: 'utf8', timeout: 20000 }
+			{ cwd: root, env: { ...process.env, HARPER_TEST_PROCESS_PID: pidFile }, stdio: 'ignore' }
 		);
-		succeeds(result);
-		assert.match(result.stdout, /1 passing/);
-		assert(!result.stderr.includes('without finishing'));
+		let testPid;
+		const closed = once(child, 'close', { signal: AbortSignal.timeout(20000) });
+		closed.catch(() => {});
+		function stopped() {
+			try {
+				process.kill(testPid, 0);
+				return false;
+			} catch (error) {
+				if (error.code === 'ESRCH') return true;
+				throw error;
+			}
+		}
+		try {
+			await waitFor(() => existsSync(pidFile), 10000);
+			testPid = Number(readFileSync(pidFile, 'utf8'));
+			assert(Number.isInteger(testPid) && testPid > 0);
+			child.kill('SIGTERM');
+			const [code] = await closed;
+			assert.strictEqual(code, 143);
+			await waitFor(stopped, 5000);
+		} finally {
+			child.kill('SIGINT');
+			if (testPid && !stopped()) process.kill(testPid, 'SIGKILL');
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 });
