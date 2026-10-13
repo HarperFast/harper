@@ -1,7 +1,11 @@
-/** QA-820: LMDB table-scoped public purge must leave symbol-key metadata unread.
- * Each of 12 serial jobs removes one entry, preserves the 8-byte marker, and emits no audit decoder
- * errors or corrupt-header warnings.
- * requires-isolation: this purge raises the database-wide audit retention floor.
+/** QA-820 / P-573: LMDB table-scoped public purge must leave symbol-key metadata unread
+ * (https://github.com/HarperFast/harper/pull/2472).
+ * With start: 0, deleteHistory can log a corrupt-header warning yet still report one deletion after
+ * skipping the sentinel, so captured server logs are the regression oracle. The unit test at
+ * unitTests/resources/auditLog.test.js:395 hooks errors only and misses that warning.
+ * Twelve serial jobs each remove one entry and preserve the 8-byte marker.
+ * requires-isolation: QA promotion gate marker; purge advances the database-wide audit floor, so
+ * this scenario stays in its own Harper instance.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
@@ -12,6 +16,8 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 
 const fixture = resolve(import.meta.dirname, 'qa820-audit-symbol-purge');
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
+// Match neighboring purge suites: Windows remains skipped while harper#2401 tracks process death;
+// Bun follows their runtime-support boundary.
 
 function auth(ctx: ContextWithHarper) {
 	const { username, password } = ctx.harper.admin;
@@ -30,8 +36,10 @@ async function operation(ctx: ContextWithHarper, body: any) {
 	return JSON.parse(raw);
 }
 
-async function snapshot(ctx: ContextWithHarper) {
-	const response = await fetch(`${ctx.harper.httpURL}/Snapshot/`, {
+async function snapshot(ctx: ContextWithHarper, decodeMarker = false) {
+	const url = new URL('/Snapshot/', ctx.harper.httpURL);
+	if (decodeMarker) url.searchParams.set('decodeMarker', 'true');
+	const response = await fetch(url, {
 		headers: { Authorization: auth(ctx) },
 		signal: AbortSignal.timeout(20_000),
 	});
@@ -104,18 +112,33 @@ suite('QA-820 LMDB public purge skips symbol metadata', { skip: skipSuite }, (ct
 		await teardownHarper(ctx);
 	});
 
-	test('twelve serial jobs remove entries without audit metadata diagnostics', { timeout: 180_000 }, async () => {
+	test('twelve serial jobs remove entries without purge diagnostics', { timeout: 180_000 }, async () => {
 		const baseline = await snapshot(ctx);
 		assert.match(baseline.enginePath, /\.mdb$/, 'LMDB engine must be active');
 		assert.strictEqual(baseline.markerByteLength, 8, 'last-removed marker must exist as eight raw bytes');
 		assert.strictEqual(baseline.entries.length, 0, 'new table must start without audit entries');
-		const rangeErrorSample = 'Reading audit entry error RangeError: Offset is outside the bounds of the DataView';
-		const genericErrorSample = 'Reading audit entry error Error: malformed audit entry';
-		const corruptionSample = 'Audit entry header begins with neither an action nor a previousVersion';
-		assert.strictEqual(classifyLogs(rangeErrorSample).auditEntryErrors, 1);
-		assert.strictEqual(classifyLogs(genericErrorSample).auditEntryErrors, 1);
-		assert.strictEqual(classifyLogs(corruptionSample).auditEntryErrors, 0);
-		assert.strictEqual(classifyLogs(corruptionSample).corruptHeaders, 1);
+		const logDir = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
+		const beforeControl = classifyLogs(readLogs(logDir));
+		const control = await snapshot(ctx, true);
+		assert.strictEqual(control.decodeMarker, true, 'decoded-marker positive control did not run');
+		const controlledLogs = await poll(
+			async () => readLogs(logDir),
+			(logs) => {
+				const counts = classifyLogs(logs);
+				return (
+					counts.auditEntryErrors + counts.corruptHeaders ===
+					beforeControl.auditEntryErrors + beforeControl.corruptHeaders + 1
+				);
+			},
+			'decoded-marker positive control diagnostic'
+		);
+		const controlBaseline = classifyLogs(controlledLogs);
+		const controlErrors = controlBaseline.auditEntryErrors - beforeControl.auditEntryErrors;
+		const controlWarnings = controlBaseline.corruptHeaders - beforeControl.corruptHeaders;
+		assert.ok(
+			(controlErrors === 1 && controlWarnings === 0) || (controlErrors === 0 && controlWarnings === 1),
+			`decoded-marker control must emit exactly one classified diagnostic: ${JSON.stringify({ controlErrors, controlWarnings })}`
+		);
 		for (let round = 1; round <= 12; round++) {
 			const id = `qa820-${round}`;
 			await operation(ctx, { operation: 'insert', schema: 'data', table: 'Purge820', records: [{ id, seq: round }] });
@@ -131,9 +154,21 @@ suite('QA-820 LMDB public purge skips symbol metadata', { skip: skipSuite }, (ct
 			const entry = matching[0];
 			assert.ok(Number.isFinite(entry.key) && entry.key > 1, `round ${round}: invalid raw audit key ${entry.key}`);
 			assert.strictEqual(seeded.markerByteLength, 8, `round ${round}: marker disappeared`);
+			const beforePurge = classifyLogs(readLogs(logDir));
 			const result = await purge(ctx, entry.key + 1);
 			const afterState = await snapshot(ctx);
+			const afterPurge = classifyLogs(readLogs(logDir));
 			assert.strictEqual(result.entriesDeleted, 1, `round ${round}: job did not report one deletion`);
+			assert.strictEqual(
+				afterPurge.auditEntryErrors,
+				beforePurge.auditEntryErrors,
+				`round ${round}: purge emitted audit entry decoder errors`
+			);
+			assert.strictEqual(
+				afterPurge.corruptHeaders,
+				beforePurge.corruptHeaders,
+				`round ${round}: purge emitted corrupt-header warnings`
+			);
 			assert.strictEqual(
 				afterState.entries.some((row: any) => row.key === entry.key),
 				false,
@@ -143,11 +178,18 @@ suite('QA-820 LMDB public purge skips symbol metadata', { skip: skipSuite }, (ct
 			assert.strictEqual(afterState.markerByteLength, 8, `round ${round}: marker missing after purge`);
 		}
 
-		const logDir = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
-		const logs = readLogs(logDir);
-		const classified = classifyLogs(logs);
-		assert.ok(logs.length > 0, 'server log oracle must inspect nonempty captured logs');
-		assert.strictEqual(classified.auditEntryErrors, 0, 'purge logged audit entry decoder errors');
-		assert.strictEqual(classified.corruptHeaders, 0, 'purge decoded symbol metadata as a corrupt audit header');
+		const finalLogs = readLogs(logDir);
+		const classified = classifyLogs(finalLogs);
+		assert.ok(finalLogs.length > 0, 'server log oracle must inspect nonempty captured logs');
+		assert.strictEqual(
+			classified.auditEntryErrors,
+			controlBaseline.auditEntryErrors,
+			'purge logged audit entry decoder errors'
+		);
+		assert.strictEqual(
+			classified.corruptHeaders,
+			controlBaseline.corruptHeaders,
+			'purge logged corrupt-header warnings'
+		);
 	});
 });
