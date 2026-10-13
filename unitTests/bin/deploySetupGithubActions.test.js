@@ -16,6 +16,7 @@ const {
 	roleDifference,
 	userDifference,
 	CI_DEPLOY_OPERATIONS,
+	variableAction,
 	GITHUB_ACTIONS_ISSUER,
 } = require('#src/bin/deploySetupGithubActions');
 const { buildRequest } = require('#src/bin/cliOperations');
@@ -138,7 +139,10 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: ${JSON.stringify(environment)}
+    permissions:
+      id-token: write
 `;
+		const ID_TOKEN = '    permissions:\n      id-token: write\n';
 
 		it('accepts a workflow that deploys from the branch, in the environment', () => {
 			assert.deepStrictEqual(checkWorkflowFile(workflow(['main'], 'production'), 'main', 'production'), {
@@ -168,7 +172,8 @@ jobs:
 		// A manual run can still deploy from the branch the push filter leaves out.
 		it('reports a branch only workflow_dispatch can reach as unverified', () => {
 			const content =
-				'on:\n  push:\n    branches: [release]\n  workflow_dispatch:\njobs:\n  deploy:\n    environment: production\n';
+				'on:\n  push:\n    branches: [release]\n  workflow_dispatch:\njobs:\n  deploy:\n    environment: production\n' +
+				ID_TOKEN;
 			const { problems, unverified } = checkWorkflowFile(content, 'main', 'production');
 			assert.deepStrictEqual(problems, []);
 			assert.match(unverified[0], /only workflow_dispatch can run it there/);
@@ -176,7 +181,8 @@ jobs:
 
 		it('reports a branch a scheduled or dispatched run can reach as unverified', () => {
 			const content =
-				'on:\n  push:\n    branches: [release]\n  schedule:\n    - cron: "0 0 * * *"\njobs:\n  deploy:\n    environment: production\n';
+				'on:\n  push:\n    branches: [release]\n  schedule:\n    - cron: "0 0 * * *"\njobs:\n  deploy:\n    environment: production\n' +
+				ID_TOKEN;
 			const { problems, unverified } = checkWorkflowFile(content, 'main', 'production');
 			assert.deepStrictEqual(problems, []);
 			assert.match(unverified[0], /only schedule can run it there/);
@@ -198,7 +204,7 @@ jobs:
 
 		// YAML reads an unquoted 1.0 as a number; GitHub matches it as the branch name it spells.
 		it('compares branch entries as text', () => {
-			const content = 'on:\n  push:\n    branches: [1.0]\njobs:\n  deploy:\n    environment: production\n';
+			const content = 'on:\n  push:\n    branches: [1.0]\njobs:\n  deploy:\n    environment: production\n' + ID_TOKEN;
 			assert.deepStrictEqual(checkWorkflowFile(content, '1.0', 'production').problems, []);
 		});
 
@@ -209,7 +215,7 @@ jobs:
 
 		it('reads an environment given as { name }', () => {
 			const content =
-				'on:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    environment:\n      name: production\n';
+				'on:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    environment:\n      name: production\n' + ID_TOKEN;
 			assert.deepStrictEqual(checkWorkflowFile(content, 'main', 'production').problems, []);
 		});
 
@@ -219,6 +225,30 @@ jobs:
 			const { problems, unverified } = checkWorkflowFile(content, 'main', 'production');
 			assert.deepStrictEqual(problems, []);
 			assert.strictEqual(unverified.length, 2);
+		});
+
+		// Without `id-token: write` the CLI can't request a token, so the policy is never used.
+		it('refuses when no job in the environment may request an identity token', () => {
+			const content = 'on:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    environment: production\n';
+			assert.match(checkWorkflowFile(content, 'main', 'production').problems[0], /permissions: id-token: write/);
+		});
+
+		it("takes the workflow's permissions for a job with none of its own", () => {
+			const content =
+				'on:\n  push:\n    branches: [main]\npermissions:\n  id-token: write\njobs:\n  deploy:\n    environment: production\n';
+			assert.deepStrictEqual(checkWorkflowFile(content, 'main', 'production').problems, []);
+		});
+
+		it("lets a job's own permissions replace the workflow's", () => {
+			const content =
+				'on:\n  push:\n    branches: [main]\npermissions:\n  id-token: write\njobs:\n  deploy:\n    environment: production\n    permissions:\n      contents: read\n';
+			assert.match(checkWorkflowFile(content, 'main', 'production').problems[0], /id-token: write/);
+		});
+
+		it('accepts write-all', () => {
+			const content =
+				'on:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    environment: production\n    permissions: write-all\n';
+			assert.deepStrictEqual(checkWorkflowFile(content, 'main', 'production').problems, []);
 		});
 
 		it('reports a file it cannot parse', () => {
@@ -325,6 +355,32 @@ jobs:
 			);
 			assert.strictEqual(plan.conflicts.length, 3);
 			assert.match(plan.conflicts[2], /harper drop_oidc_trust id=github-actions-web/);
+		});
+	});
+
+	describe('variableAction', () => {
+		const audience = 'https://cluster.example.com:9925/';
+
+		it('sets a variable the repository does not have', () => {
+			assert.strictEqual(variableAction({ state: 'absent' }, audience), 'set');
+		});
+
+		it('keeps one that already names this cluster, however it is spelled', () => {
+			assert.strictEqual(variableAction({ state: 'set', value: audience }, audience), 'keep');
+			assert.strictEqual(variableAction({ state: 'set', value: 'https://cluster.example.com:9925' }, audience), 'keep');
+		});
+
+		// The repository deploys there today; replacing it would move every workflow that reads it.
+		it('leaves one that names another cluster', () => {
+			assert.strictEqual(
+				variableAction({ state: 'set', value: 'https://other.example.com:9925/' }, audience),
+				'conflict'
+			);
+			assert.strictEqual(variableAction({ state: 'set', value: 'not a url' }, audience), 'conflict');
+		});
+
+		it('does not write a variable it could not read', () => {
+			assert.strictEqual(variableAction({ state: 'unknown', reason: 'HTTP 403' }, audience), 'unknown');
 		});
 	});
 });

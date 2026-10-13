@@ -90,6 +90,15 @@ function asList(value: unknown): unknown[] {
 
 const isExpression = (value: unknown) => typeof value === 'string' && value.includes('${{');
 
+const environmentName = (job: any) => (typeof job?.environment === 'object' ? job.environment?.name : job?.environment);
+
+/** A job's own `permissions` replace the workflow's; with neither, GitHub's defaults grant no identity token. */
+function grantsIdToken(job: any, workflow: any): boolean {
+	const permissions = job?.permissions ?? workflow?.permissions;
+	if (permissions === 'write-all') return true;
+	return typeof permissions === 'object' && permissions !== null && permissions['id-token'] === 'write';
+}
+
 /**
  * Checks the workflow file against the branch and environment the policy will pin. A literal value
  * that disagrees is a problem — no run of that workflow could match the policy. A value this cannot
@@ -127,13 +136,18 @@ export function checkWorkflowFile(content: string, branch: string, environment: 
 	}
 
 	const jobs: any[] = Object.values(workflow?.jobs ?? {});
-	const environments = jobs
-		.map((job: any) => (typeof job?.environment === 'object' ? job.environment?.name : job?.environment))
-		.filter((name) => name !== undefined && name !== null);
+	const environments = jobs.map(environmentName).filter((name) => name !== undefined && name !== null);
 	const literal = environments.filter((name) => !isExpression(name));
 	// A reusable workflow (`uses:`) can set the environment in the file it calls, out of sight here.
 	const callsReusable = jobs.some((job: any) => typeof job?.uses === 'string');
-	if (literal.includes(environment)) return { problems, unverified };
+	if (literal.includes(environment)) {
+		if (!jobs.some((job: any) => environmentName(job) === environment && grantsIdToken(job, workflow))) {
+			problems.push(
+				`no job in the "${environment}" environment has \`permissions: id-token: write\`, so no run can request a token`
+			);
+		}
+		return { problems, unverified };
+	}
 	if (environments.length === 0 && !callsReusable) {
 		// GitHub omits the environment claim for a job with none, so the policy could never match.
 		problems.push(`no job sets an environment, so no run's token carries "${environment}"`);
@@ -334,6 +348,41 @@ async function resolveRepositoryId(req: any, info: RepositoryInfo | undefined, i
 	return id;
 }
 
+export type VariableState =
+	{ state: 'absent' } | { state: 'set'; value: string } | { state: 'unknown'; reason: string };
+
+function readGithubVariable(repository: string): VariableState {
+	const result = spawnSync(
+		'gh',
+		['api', '--hostname', 'github.com', `repos/${repository}/actions/variables/HARPER_CLI_TARGET`, '--jq', '.value'],
+		{ encoding: 'utf8', timeout: CHILD_PROCESS_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] }
+	);
+	if (result.error) {
+		return {
+			state: 'unknown',
+			reason: (result.error as any).code === 'ENOENT' ? 'the gh CLI is not installed' : result.error.message,
+		};
+	}
+	if (result.status === 0) return { state: 'set', value: result.stdout.trim() };
+	if (/HTTP 404/.test(result.stderr)) return { state: 'absent' };
+	return { state: 'unknown', reason: result.stderr.trim() || `gh exited with ${result.status}` };
+}
+
+/**
+ * Like the cluster records, the variable is only created: one that already points at another cluster
+ * is how this repository deploys today, and replacing it would move every run of every workflow that
+ * reads it. An unreadable variable is left alone too, since it may hold a value.
+ */
+export function variableAction(current: VariableState, audience: string): 'keep' | 'set' | 'conflict' | 'unknown' {
+	if (current.state === 'absent') return 'set';
+	if (current.state === 'unknown') return 'unknown';
+	let normalized: string | undefined;
+	try {
+		normalized = normalizeTarget(current.value);
+	} catch {}
+	return normalized === audience ? 'keep' : 'conflict';
+}
+
 function setGithubVariable(repository: string, value: string): { ok: boolean; reason?: string } {
 	const result = spawnSync(
 		'gh',
@@ -391,8 +440,20 @@ export async function setupGithubActions(req: any, transport: any, component: st
 	if (info?.defaultBranch && info.defaultBranch !== branch) {
 		notes.push(`The repository's default branch is "${info.defaultBranch}"; the policy pins "${branch}".`);
 	}
+	let checkoutRepository: string | undefined;
+	try {
+		checkoutRepository = resolveGitRepo();
+	} catch {}
+	// A workflow file is only evidence about the repository it was checked out from.
+	const isTargetCheckout = [fullName, repository].some(
+		(name) => checkoutRepository?.toLowerCase() === name.toLowerCase()
+	);
 	const workflowPath = join(gitTopLevel(), workflow);
-	if (existsSync(workflowPath)) {
+	if (!isTargetCheckout) {
+		notes.push(
+			`This checkout is ${checkoutRepository ?? 'not a GitHub repository'}, not ${fullName}, so ${workflow} was not checked.`
+		);
+	} else if (existsSync(workflowPath)) {
 		let content: string;
 		try {
 			content = readFileSync(workflowPath, 'utf8');
@@ -500,11 +561,28 @@ export async function setupGithubActions(req: any, transport: any, component: st
 		)
 	);
 
-	const variable = setGithubVariable(fullName, audience);
+	const setCommand = `  gh variable set HARPER_CLI_TARGET --repo ${fullName} --body ${audience}`;
+	const current = readGithubVariable(fullName);
+	const action = variableAction(current, audience);
+	if (action === 'keep') {
+		console.log(chalk.green(`✓ The HARPER_CLI_TARGET variable on ${fullName} is already ${audience}.`));
+		return;
+	}
+	if (action === 'conflict') {
+		throw cliError(
+			`The cluster is set up, but the HARPER_CLI_TARGET variable on ${fullName} is ` +
+				`${(current as { value: string }).value}, so its workflows deploy there; setup left it as it is. ` +
+				`To deploy to ${audience} instead, set it with:\n${setCommand}`
+		);
+	}
+	const variable =
+		action === 'set'
+			? setGithubVariable(fullName, audience)
+			: { ok: false, reason: (current as { reason: string }).reason };
 	if (!variable.ok) {
 		throw cliError(
 			`The cluster is set up, but the HARPER_CLI_TARGET repository variable was not set (${variable.reason}). Set it with:\n` +
-				`  gh variable set HARPER_CLI_TARGET --repo ${fullName} --body ${audience}`
+				setCommand
 		);
 	}
 	console.log(chalk.green(`✓ Set the HARPER_CLI_TARGET variable on ${fullName} to ${audience}.`));
