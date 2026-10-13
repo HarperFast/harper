@@ -660,7 +660,14 @@ export async function restoreBackup(request: any) {
 		// restoring it would mis-address blobs (records persist their root index)
 		await assertBlobSnapshotRestorable(backupDir, selected.backupId, blobRoots);
 		assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: selected.manifest.blobs, allowEngineOnly });
-		await assertBackupReadable(backupDir, selected.backupId, selected.manifest, databaseName, databaseDir);
+		await assertBackupReadable(
+			backupDir,
+			selected.backupId,
+			selected.manifest,
+			databaseName,
+			databaseName,
+			databaseDir
+		);
 		const claimed = await beginRestoreForDatabase(databaseDir, databaseName, () =>
 			pinBackup(backupDir, pinId, selected.backupId, `restore of database '${databaseName}'`, databaseDir)
 		);
@@ -1279,6 +1286,7 @@ export async function restoreBackupOffline(
 			backupDir,
 			selected.backupId,
 			selected.manifest,
+			databaseName,
 			targetDatabase ?? databaseName,
 			databaseDir
 		);
@@ -1381,11 +1389,12 @@ async function assertBackupReadable(
 	backupDir: string,
 	backupId: number,
 	manifest: BackupManifest,
+	sourceDatabaseName: string,
 	databaseName: string,
 	databaseDir: string
 ): Promise<void> {
 	try {
-		await verifyBackupFiles(backupDir, backupId, manifest, databaseName, true, true);
+		await verifyBackupFiles(backupDir, backupId, manifest, sourceDatabaseName, true, true);
 	} catch (error: any) {
 		let interrupted = false;
 		try {
