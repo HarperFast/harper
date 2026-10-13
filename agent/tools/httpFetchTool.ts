@@ -168,7 +168,7 @@ function portAfterLastColon(text: string): number | undefined {
 
 export function buildHttpFetchTool(
 	config: HttpFetchConfig = true,
-	operationsApiPorts: readonly number[] = []
+	operationsApiPorts: readonly number[]
 ): AgentTool | undefined {
 	if (config === false) return undefined;
 	const allowEntries = config === true ? undefined : config.allow;
