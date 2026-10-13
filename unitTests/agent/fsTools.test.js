@@ -623,8 +623,8 @@ describe('agent/fsTools key material and the single-file config scope (harper#30
 		});
 
 		it('tail_file still sees a BEGIN line that lies before its read window', async () => {
-			// 40 KiB of body: past the 32 KiB page, inside the 32 KiB look-back before it.
-			const body = `${'A'.repeat(63)}\n`.repeat(640);
+			// 64 KiB of body, the size of a FrodoKEM-1344 key: past the 32 KiB page, inside the 128 KiB look-back.
+			const body = `${'A'.repeat(63)}\n`.repeat(1024);
 			writeFileSync(join(root, 'log', 'hdb.log'), `start\n-----BEGIN PRIVATE KEY-----\n${body}`);
 			await assert.rejects(
 				tailFileTool.handler({ root: 'logs', path: 'hdb.log', lines: 5 }, ctx(defaultScopes())),

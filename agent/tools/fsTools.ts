@@ -58,8 +58,9 @@ const KEY_FILE_NAME = /\.(?:pem|key)$|^\.jwtPass$/i;
 // rules are the guarantee.
 const PRIVATE_KEY_ARMOR = /-----(BEGIN|END) [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
 const ARMOR_LINE_OVERLAP_BYTES = 64;
-// Longer than any PEM private-key block, so a window whose start lies inside a key sees its BEGIN line.
-const KEY_LOOKBACK_BYTES = 32 * 1024;
+// Longer than any PEM private-key block, post-quantum ones included (FrodoKEM-1344 is ~57 KB), so a window
+// whose start lies inside a key sees its BEGIN line.
+const KEY_LOOKBACK_BYTES = 128 * 1024;
 
 type Access = 'read' | 'write';
 type Scope = 'components' | 'logs' | 'config';

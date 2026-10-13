@@ -1028,6 +1028,28 @@ describe('agent/loop observation size and context window', () => {
 		);
 	});
 
+	it('keeps the aborted status when a cancel lands while the answer is being recorded', async () => {
+		const table = makeMockTable();
+		session._setTableForTests(table);
+		const sessionId = await sessionWith({ role: 'user', content: 'go' });
+		const controller = new AbortController();
+		let cancelWrite;
+		const put = table.put.bind(table);
+		table.put = async (record) => {
+			await put(record);
+			if (record.messages.at(-1)?.role === 'assistant' && !controller.signal.aborted) {
+				controller.abort();
+				cancelWrite = session.setStatus(sessionId, 'aborted', 'Cancelled by operator');
+			}
+		};
+		const { models } = scriptedModels([{ content: 'answer', finishReason: 'stop' }]);
+
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, signal: controller.signal });
+		await cancelWrite;
+
+		assert.equal((await session.getSession(sessionId)).status, 'aborted');
+	});
+
 	it('recovers through the real OpenAI backend and Models when the server rejects the request as too long', async () => {
 		require('#src/resources/databases');
 		const { OpenAIBackend } = require('#src/components/openai/index');
