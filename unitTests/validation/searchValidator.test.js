@@ -25,7 +25,7 @@ describe('Test searchValidator module', () => {
 	});
 
 	after(() => {
-		check_global_schema_table_stub.restore();
+		check_global_schema_table_stub?.restore();
 	});
 
 	it('names an unknown attribute once when it appears as both the search attribute and a condition attribute', () => {
