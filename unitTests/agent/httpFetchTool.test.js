@@ -294,21 +294,22 @@ describe('agent/httpFetchTool request handling', () => {
 		await assert.rejects(call(buildHttpFetchTool(true), { url: `${allowedBase}/to?url=${target}` }), /metadata-host/);
 	});
 
-	it('refuses the configured operations API port even when the operator allows that host', async () => {
+	it('refuses requests to configured operations API ports, including redirects', async () => {
 		const operationsApiPort = allowedServer.address().port;
 		const tool = buildHttpFetchTool({ allow: [allowedBase.slice(7)] }, [operationsApiPort]);
 		await assert.rejects(
 			call(tool, { method: 'POST', body: '{"operation":"delete"}', url: `${allowedBase}/hello` }),
-			/operations API port/
+			/operations API port/,
+			'http_fetch must block configured operations API ports'
 		);
 		assert.strictEqual(allowedHits, 0);
-	});
 
-	it('refuses a redirect to the configured operations API port before connecting', async () => {
-		const operationsApiPort = secondAllowedServer.address().port;
-		const tool = buildHttpFetchTool({ allow: [allowedBase.slice(7), secondAllowedBase.slice(7)] }, [operationsApiPort]);
+		const redirectPort = secondAllowedServer.address().port;
+		const redirectTool = buildHttpFetchTool({ allow: [allowedBase.slice(7), secondAllowedBase.slice(7)] }, [
+			redirectPort,
+		]);
 		const target = encodeURIComponent(`${secondAllowedBase}/secret`);
-		await assert.rejects(call(tool, { url: `${allowedBase}/to?url=${target}` }), /operations API port/);
+		await assert.rejects(call(redirectTool, { url: `${allowedBase}/to?url=${target}` }), /operations API port/);
 	});
 
 	it('follows an allowed redirect, resolving a relative Location', async () => {
