@@ -16,7 +16,7 @@ For the full list of configurable options, see [Configuration Options](./options
 
 ## Set Configuration
 
-Modifies one or more Harper configuration parameters. **Requires a [restart](../operations-api/operations.md#restart) or [restart_service](../operations-api/operations.md#restart_service) to take effect.** A change to `replication.threads` takes effect only on a full `restart`.
+Modifies one or more Harper configuration parameters. **Requires a [restart](../operations-api/operations.md#restart) or [restart_service](../operations-api/operations.md#restart_service) to take effect** (a [restart](../operations-api/operations.md#restart) for `threads.v8Flags`). A change to `replication.threads` takes effect only on a full `restart`.
 
 `operation` _(required)_ — must be `set_configuration`
 
@@ -81,6 +81,8 @@ To restart the whole cluster afterward, follow with [restart_service](../operati
 	"replicated": true
 }
 ```
+
+`restart_service` restarts only worker threads, which keep the process's V8 flags. A change to [`threads.v8Flags`](./options.md#applying-v8-flags) takes effect only after a [restart](../operations-api/operations.md#restart), sent to each node in turn.
 
 ---
 
