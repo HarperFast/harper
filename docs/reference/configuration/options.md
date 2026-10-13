@@ -469,16 +469,18 @@ Some behavior worth knowing:
 
 ## `deployment`
 
-Retention for what `deploy_component` leaves behind. See [`deploy_component`](../operations-api/operations.md#deploy_component).
+Retention for what `deploy_component` leaves behind, and how long startup waits for component installs. See [`deploy_component`](../operations-api/operations.md#deploy_component).
 
 ```yaml
 deployment:
+  startupInstallTimeout: 600000
   payloadRetention:
     maxSize: 10485760
   stagingRetention:
     maxCount: 5
 ```
 
+- `startupInstallTimeout` <VersionBadge version="v5.3.0" /> — Milliseconds. The longest startup waits for component installs before it opens listeners. While waiting, it logs every 60 seconds which ones remain outstanding — including throughout `0`'s unbounded wait — unless every install settles first, which always ends the wait before that first log, whatever the timeout; a failed install logs immediately regardless of the timeout. A component whose install is still running at the deadline keeps installing in the background, and the node serves the version already installed meanwhile, or nothing for a component that was never installed. When that install succeeds, the swap lands on disk immediately and Harper flags a restart as needed (`restartRequired` in [`get_status`](../operations-api/operations.md#set_status--get_status--clear_status) called with no `id`) — any one component's late success sets it, even while others are still installing. Code already loaded keeps running until that restart, but some component plugins apply an added or changed file on their own rather than waiting for one; content served straight from disk, such as static files, can also reflect the new version before the restart. Outside `harper dev`, which restarts automatically soon after any restart request, Harper does not restart on its own. An install that fails after the deadline does not set the flag; Harper only logs an error naming the component. `0` waits indefinitely, which was the behavior before v5.3.0. An empty value uses the default. A negative, non-finite, or otherwise unparseable value also falls back to it, with a warning in the log; _Default_: `600000` (10 minutes)
 - `payloadRetention.maxSize` <VersionBadge version="v5.1.15" /> — Bytes. After a successful deploy, a payload larger than this has its stored tarball (`payload_blob`) dropped from the `hdb_deployment` row; the row and its metadata stay. Set it very high to retain every payload; _Default_: `10485760` (10 MiB)
 - `stagingRetention.maxCount` <VersionBadge version="v5.3.0" /> — How many complete builds that are not live may remain per component under `<componentsRoot>/.deploy-staging`: builds staged with `activate: false`, and [releases replaced by a later deploy](../operations-api/operations.md#going-back-to-a-previous-release), which `deployment_id` can make live again. The newest survive; older ones are removed when that component next deploys and at startup. `drop_component` removes all of them. Each is a full installed copy of the component, `node_modules` included. `0` keeps none, and no replaced release is kept. This bounds dormant builds only, not a disk quota: staging directories that belong to an in-flight or unsettled deploy are never touched; _Default_: `5`
 
