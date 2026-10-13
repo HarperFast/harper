@@ -1016,8 +1016,8 @@ Programmatic errors are `ReplicationConfirmationError` wrappers, not the origina
 render `ReplicationConfirmationError`. Object responses preserve the original public code alongside the flag.
 Confirmation wrapping and flag removal copy diagnostics best-effort, preserving the cause and outcome when getters fail.
 Unreadable structured confirmation details fall back to the ordinary error response. HTTP guards cover the
-`replicationUnconfirmed`/`retryable` extensions and structured confirmation details; existing top-level diagnostic reads in HTTP error renderers
-are not hardened for arbitrary application errors.
+`replicationUnconfirmed`/`retryable` extensions and structured confirmation details. REST and operations renderers'
+base reads of `statusCode`, `code`, `message` and `detail` are not hardened for arbitrary application errors.
 
 ## This node's short id is 0, confirmed per audit store (`nodeIdMapping.ts` `getThisNodeId`)
 

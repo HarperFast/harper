@@ -49,7 +49,7 @@ describe('serverErrorHandler', function () {
 				assert.strictEqual(response.statusCode, 504);
 				assert.strictEqual(response.json().replicationUnconfirmed, true);
 				assert.strictEqual(response.json().code, 'PEER_TIMEOUT');
-				assert.notEqual(response.json().retryable, true);
+				assert.strictEqual(response.json().retryable, false);
 				assert.strictEqual(response.json().error, 'Peer timeout');
 				if (structured) assert.deepStrictEqual(response.json().peers, ['node-a']);
 				assert.strictEqual(cause.replicationUnconfirmed, undefined);
