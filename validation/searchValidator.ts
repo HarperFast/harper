@@ -167,11 +167,19 @@ export default function (searchObject: any, type: any) {
 		// if any unknown attributes present in the search request then list all indicated as unknown attribute to error message at once split in well format
 		// for instance "unknown attribute a, b and c" or "unknown attribute a"
 		if (unknownAttributes && unknownAttributes.length > 0) {
-			// an unbounded get_attributes/conditions list makes this attacker-reachable, so dedupe in
-			// O(n) rather than pairwise; JSON.stringify gives object-shaped entries a stable key
-			unknownAttributes = uniqBy(unknownAttributes, (value: any) =>
-				typeof value === 'object' ? JSON.stringify(value) : value
-			);
+			// get_attributes/conditions impose no length limit, so this must stay O(n)
+			unknownAttributes = uniqBy(unknownAttributes, (value: any) => {
+				if (typeof value !== 'object') return value;
+				try {
+					// a bigint-valued property (reachable via msgpack/cbor) throws here; fall back to
+					// the value itself so that one entry is simply never deduped, rather than a 500
+					return JSON.stringify(value, (_key, propValue) =>
+						typeof propValue === 'bigint' ? propValue.toString() : propValue
+					);
+				} catch {
+					return value;
+				}
+			});
 			// return error with proper message - replace last comma with and
 			let errorMsg = unknownAttributes.join(', ');
 			errorMsg = errorMsg.replace(/,([^,]*)$/, ' and$1');

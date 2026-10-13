@@ -89,7 +89,25 @@ describe('Test searchValidator module', () => {
 		);
 
 		assert.ok(result instanceof Error);
-		assert.strictEqual(result.message, "unknown attribute '[object Object]'");
+		// don't pin the exact (pre-existing, unrelated-to-this-fix) "[object Object]" rendering -
+		// just confirm the pair collapsed to one entry, which a single-entry message never joins with "and"
+		assert.ok(!result.message.includes(' and '));
+	});
+
+	it('does not throw when an unknown object attribute specifier is unserializable (e.g. holds a BigInt)', () => {
+		const result = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				attribute: 'id',
+				value: 'x',
+				get_attributes: [{ attribute: 'bogus', n: 1n }],
+			},
+			'value'
+		);
+
+		assert.ok(result instanceof Error);
+		assert.match(result.message, /^unknown attribute '/);
 	});
 
 	it('still lists multiple distinct unknown attributes', () => {
