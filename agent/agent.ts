@@ -128,7 +128,11 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	const extraTools: AgentTool[] = bestPracticeTool ? [bestPracticeTool] : [];
 
 	// Built from the boot config, never `liveConfig`: no runtime config change can widen what it reaches.
-	const httpFetchTool = buildHttpFetchTool(config.httpFetch);
+	const operationsApiPorts = [
+		env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT),
+		env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT),
+	].filter((port): port is number => typeof port === 'number');
+	const httpFetchTool = buildHttpFetchTool(config.httpFetch, operationsApiPorts);
 
 	// The grounding + best-practices portion of the system prompt is static for the component's
 	// lifetime (scopes don't change), so build it once here; only the operator's per-run
