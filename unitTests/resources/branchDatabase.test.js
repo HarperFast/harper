@@ -785,7 +785,7 @@ describeUnlessLmdb('declaring a table from a branched application (harper#2264)'
 
 	it('reloads the branch on a schema-change signal that names it, where the branch is open', async function () {
 		const { branch, declare } = await branchedFactory();
-		const { schema: schemaHandler } = require('#src/server/itc/serverHandlers');
+		const { schemaHandler } = require('#src/server/itc/serverHandlers');
 		const ITCEventObject = require('#src/server/itc/utility/ITCEventObject.js');
 		const { SchemaEventMsg } = require('#src/server/threads/itc');
 		const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
