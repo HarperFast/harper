@@ -25,15 +25,21 @@ function runHarness(harness, size) {
 }
 
 describe('libuv thread pool sizing', () => {
-	it('is the first import in bin/harper.ts', () => {
+	it('is the first import in bin/harper.ts after the native-addon guard', () => {
 		const source = readFileSync(path.join(PACKAGE_ROOT, 'bin/harper.ts'), 'utf8');
-		const firstImport = /^import\s.*$/m.exec(source);
-		assert.ok(firstImport, 'bin/harper.ts has no import statements');
+		const imports = source.match(/^import\s.*$/gm) ?? [];
+		assert.ok(imports.length, 'bin/harper.ts has no import statements');
+		// The native-addon guard installs by wrapping process.dlopen and must load before anything
+		// that can load a native addon; it does no filesystem/async work itself, so it may precede
+		// uvThreadPool without reopening the race this test guards against.
+		const [first, ...rest] = imports;
+		const poolImport = /nativeAddonGuard\.ts'/.test(first) ? rest[0] : first;
+		assert.ok(poolImport, 'bin/harper.ts has no import after the native-addon guard');
 		assert.match(
-			firstImport[0],
+			poolImport,
 			/'\.\/uvThreadPool\.ts'/,
-			"uvThreadPool must stay bin/harper.ts's first import — anything evaluated before it can " +
-				"initialize libuv's pool at the default of 4"
+			"uvThreadPool must stay bin/harper.ts's first import after the native-addon guard (if " +
+				"present) — anything else evaluated before it can initialize libuv's pool at the default of 4"
 		);
 	});
 
