@@ -28,7 +28,9 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
 import {
-	beginRestore,
+	claimRestore,
+	markRestoreDestructive,
+	restoreLockHeldExclusively,
 	clearRestoringMarker,
 	abandonRestore,
 	checkRestoreState,
@@ -682,8 +684,9 @@ export async function restoreBackup(request: any) {
 		await verifyDatabaseClosed(databaseDir, databaseName);
 		// Only once writes are refused: a write acknowledged during verification would be lost to the purge.
 		await assertBackupReadable(backupDir, backupId, manifest, databaseName, databaseName, () => lock.preexisting);
-		// The marker keeps Harper from reopening it, but a component opening the path directly could have.
+		// The claim keeps Harper from reopening it, but a component opening the path directly could have.
 		await verifyDatabaseClosed(databaseDir, databaseName);
+		markRestoreDestructive(lock);
 		destructionStarted = true;
 		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
 		// restore blobs only for a backup that captured them (an engine-only backup leaves the live
@@ -822,7 +825,7 @@ export function restorePinId(databaseDir: string): string {
 }
 
 /**
- * beginRestore's own error message carries the filesystem path (useful in CLI/server logs);
+ * claimRestore's own error message carries the filesystem path (useful in CLI/server logs);
  * client-facing operations report by database name instead.
  */
 function beginRestoreForDatabase(
@@ -831,7 +834,7 @@ function beginRestoreForDatabase(
 	beforePublishMarker: (preexisting: boolean) => void
 ): RestoreLock {
 	try {
-		return beginRestore(databaseDir, beforePublishMarker);
+		return claimRestore(databaseDir, beforePublishMarker);
 	} catch (error) {
 		if (error.statusCode === 409) {
 			throw new BackupInProgressError(
@@ -1208,7 +1211,9 @@ export async function createBackupOffline(databaseName: string, excludeBlobs = f
 	if (!existsSync(join(databaseDir, 'CURRENT'))) {
 		throw new BackupNotFoundError(`No RocksDB database found at ${databaseDir}`);
 	}
-	const restoreState = checkRestoreState(databaseDir);
+	// A claimed restore publishes no marker until it purges, so its held lock counts as active too.
+	const marked = checkRestoreState(databaseDir);
+	const restoreState = marked === 'clear' && restoreLockHeldExclusively(databaseDir) ? 'in-progress' : marked;
 	if (restoreState !== 'clear') {
 		throw new BackupInProgressError(
 			`Database '${databaseName}' has an ${restoreState === 'in-progress' ? 'active' : 'incomplete'} restore; rerun restore_backup before backing up`
@@ -1336,6 +1341,7 @@ export async function restoreBackupOffline(
 			}
 			handle?.close();
 		}
+		markRestoreDestructive(lock);
 		destructionStarted = true;
 		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
 		// restore blobs only for a backup that captured them (per the manifest, not snapshot presence)

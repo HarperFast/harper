@@ -49,7 +49,14 @@ const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 // managed-backup ops self-enforce super_user (see requireSuperUser in rocksdbBackup.ts); requests
 // in the online-operation tests below must therefore carry a super_user role.
 const SU = { hdb_user: { role: { permission: { super_user: true } } } };
-const { abandonRestore, beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
+const {
+	abandonRestore,
+	beginRestore,
+	completeRestore,
+	checkRestoreState,
+	restoreLockHeldExclusively,
+	restoreMarkerPresent,
+} = require('#src/dataLayer/restoreMarker');
 const {
 	managementLockPath,
 	pinBackup,
@@ -447,12 +454,13 @@ describe('rocksdbBackup', function () {
 			// no live writers: verified before the claim, so a crash mid-verify leaves the database loadable
 			offline: {
 				title: 'verifies under the repository lock, before claiming the database',
-				expected: { repositoryLocked: true, restoreState: 'clear', open: false },
+				expected: { repositoryLocked: true, claimed: false, marked: false, open: false },
 			},
-			// a write acknowledged during verification would be lost to the purge
+			// a write acknowledged during verification would be lost to the purge, and a marker published
+			// before it would leave the intact database unloadable after a crash mid-verify
 			online: {
-				title: 'verifies only once the database is claimed and closed',
-				expected: { repositoryLocked: false, restoreState: 'in-progress', open: false },
+				title: 'verifies only once the database is claimed and closed, before it is marked',
+				expected: { repositoryLocked: false, claimed: true, marked: false, open: false },
 			},
 		};
 		const unreadable = [
@@ -493,7 +501,8 @@ describe('rocksdbBackup', function () {
 					if (token) fileLockRelease(token);
 					observed.push({
 						repositoryLocked: token === 0,
-						restoreState: checkRestoreState(verifiedDir()),
+						claimed: restoreLockHeldExclusively(verifiedDir()),
+						marked: restoreMarkerPresent(verifiedDir()),
 						open: registryStatus().some((entry) => entry.path === verifiedDir() && entry.refCount > 0),
 					});
 					return realVerify.apply(backups, args);
@@ -552,6 +561,24 @@ describe('rocksdbBackup', function () {
 				assertDestinationIntact();
 			});
 
+			it(`${mode}: marks the database before the purge, so a failure past it blocks the load`, async function () {
+				this.timeout(30000);
+				const backupId = await seed();
+				const realRestore = backups.restore;
+				let markedAtPurge;
+				backups.restore = async () => {
+					markedAtPurge = restoreMarkerPresent(verifiedDir());
+					throw new Error('injected copy failure');
+				};
+				try {
+					await assert.rejects(restore(backupId), /rerun restore_backup to recover/);
+				} finally {
+					backups.restore = realRestore;
+				}
+				assert.strictEqual(markedAtPurge, true);
+				assert.strictEqual(checkRestoreState(verifiedDir()), 'incomplete');
+			});
+
 			it(`${mode}: restores a backup that verifies`, async function () {
 				this.timeout(30000);
 				const backupId = await seed();
@@ -578,6 +605,26 @@ describe('rocksdbBackup', function () {
 				reopened?.close();
 			}
 			assertDestinationIntact();
+		});
+
+		it('online: keeps the backup from being deleted while it verifies', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const realVerify = backups.verify;
+			let deletion;
+			backups.verify = async (...args) => {
+				deletion = await deleteBackupOffline(VERIFIED, backupId).then(
+					() => 'deleted',
+					(error) => error
+				);
+				return realVerify.apply(backups, args);
+			};
+			try {
+				await restores.online(backupId);
+			} finally {
+				backups.verify = realVerify;
+			}
+			assert.strictEqual(deletion?.statusCode, 409, `the claimed backup must be pinned, got ${deletion}`);
 		});
 	});
 
