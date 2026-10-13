@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791883665241,
+  "lastUpdate": 1791883670033,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -27773,6 +27773,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 2994.7,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3fd9ae9d6bd7afb48a75c1588caf6f1b99ab09f6",
+          "message": "Document the thread-global absolute-count test antipattern (#2622)\n\n* Document the thread-global absolute-count test antipattern\n\nThree separate fixes on main within three days (PR #2579, #2590, #2596)\ncorrected the same shape: a test swaps in a process-global collector\n(harperLogger.warn/.error, or a thread-global counter) and asserts an\nabsolute count against it, so unrelated traffic from any other suite\nin the same mocha worker can flip it red.\n\nAdd unitTests/AGENTS.md naming the antipattern (including its\npositional-indexing disguise) and both remedies already in the tree —\ntrackedAcross() (delta across a synchronous window) in\noutstandingCommitTracking.test.js, and shedLinesFor() (filter by the\nfixture's own identity) in longLivedTransactions.test.js, including the\nasync drain helper's empirical (not by-construction) soundness — with\na pointer from the repo-root AGENTS.md. Also lists still-unguarded\ncall sites of both the absolute-length and positional-index shapes,\neach with a durable test-title anchor, without claiming they are\nknown-flaky, and separately notes one syntactic grep match that is\nprovably not exposed (fully synchronous, no interleaving possible).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Link the commit citation to its GitHub page\n\nAddresses gemini-code-assist review suggestion for consistency with\nthe PR links directly above it.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-13T01:31:31Z",
+          "url": "https://github.com/HarperFast/harper/commit/3fd9ae9d6bd7afb48a75c1588caf6f1b99ab09f6"
+        },
+        "date": 1791883668586,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 3922.56,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 3922.56,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 146.5,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 760.6,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 999.5,
             "unit": "ms"
           }
         ]
