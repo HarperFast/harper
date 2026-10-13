@@ -71,8 +71,10 @@ Several non-obvious mechanics keep that safe:
   repository rather than in a staged copy, so a restore still needs no disk beyond the copy itself; a
   restore is often run when space is already short. Verification runs _before_ the restore claims
   the database (lock, marker, pin): a full checksum read can take minutes, and a marker held across
-  it would leave an intact database unloadable after a crash. The claim's `findBackup` re-checks
-  under the repository lock that the verified backup is still there. Not covered: blob files
+  it would leave an intact database unloadable after a crash. The cost is that the backup is unpinned
+  while it verifies, so the claim re-checks under the repository lock that it is still the same
+  backup (`assertBackupUnchanged`), not just the same id: deleting the newest backup frees its id for
+  the next `create_backup`. Not covered: blob files
   (rocksdb-js has no reader for them), and anything that fails only once the copy runs (`ENOSPC`, a
   crash) — those still leave the marker and need a rerun, which the intact backup allows.
 

@@ -460,8 +460,29 @@ describe('rocksdbBackup', function () {
 				const backupId = await seed();
 				abandonRestore(beginRestore(verifiedDir()));
 				corruptBackupFile(backupId);
-				await assert.rejects(restore(backupId), /was not modified/);
+				await assert.rejects(restore(backupId), /earlier restore that did not finish/);
 				assert.strictEqual(checkRestoreState(verifiedDir()), 'incomplete');
+			});
+
+			it(`${mode}: refuses a backup replaced under the same id while it was verified`, async function () {
+				this.timeout(30000);
+				const backupId = await seed();
+				const realVerify = backups.verify;
+				backups.verify = async (...args) => {
+					await realVerify.apply(backups, args);
+					await deleteBackupOffline(VERIFIED, backupId);
+					const { backup_id: replacementId } = await createBackupOffline(VERIFIED);
+					assert.strictEqual(replacementId, backupId, 'precondition: the id is reused');
+				};
+				try {
+					await assert.rejects(
+						restore(backupId),
+						(error) => error.statusCode === 409 && /was replaced while it was being verified/.test(error.message)
+					);
+				} finally {
+					backups.verify = realVerify;
+				}
+				assertDestinationIntact();
 			});
 
 			it(`${mode}: restores a backup that verifies`, async function () {

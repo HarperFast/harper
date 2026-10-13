@@ -617,7 +617,7 @@ export async function validateRestoreBackup(request: any) {
 
 /**
  * Online restore of a user database (see the design's restore lock + marker protocol):
- * take the per-database restore lock, write the restoring marker, verify the backup, close the
+ * verify the backup, take the per-database restore lock, write the restoring marker, close the
  * database across all worker threads, restore, delete the marker, release the lock, and reload
  * everywhere.
  */
@@ -658,14 +658,14 @@ export async function restoreBackup(request: any) {
 	// Once is enough: the decision reads the manifest and the opt-in, never the destination, so no
 	// concurrent writer can change the answer between here and the purge.
 	assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
-	await assertBackupReadable(backupDir, backupId, databaseName);
+	const verified = await assertBackupReadable(backupDir, backupId, databaseName, databaseDir);
 	const pinId = restorePinId(databaseDir);
 	const restoreToken = randomUUID();
 	let destructionStarted = false;
 	// Re-check before replacing a previous attempt's claim; publish the new claim before the marker
 	// under both locks, so a crash cannot leave a marked database with an unprotected source.
 	const lock = await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		await findBackup(backupDir, backupId, databaseName);
+		assertBackupUnchanged(verified, await findBackup(backupDir, backupId, databaseName), databaseName);
 		return beginRestoreForDatabase(databaseDir, databaseName, () =>
 			pinBackup(backupDir, pinId, backupId, `restore of database '${databaseName}'`, databaseDir)
 		);
@@ -1273,12 +1273,12 @@ export async function restoreBackupOffline(
 	const blobRoots = getBlobPathsForDatabaseName(targetDatabase ?? databaseName);
 	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
 	assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
-	await assertBackupReadable(backupDir, backupId, targetDatabase ?? databaseName);
+	const verified = await assertBackupReadable(backupDir, backupId, targetDatabase ?? databaseName, databaseDir);
 	const pinId = restorePinId(databaseDir);
 	let destructionStarted = false;
 	// As online, claim before marking under both locks, and mark before probing the destination.
 	const lock = await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		await findBackup(backupDir, backupId as number, databaseName);
+		assertBackupUnchanged(verified, await findBackup(backupDir, backupId as number, databaseName), databaseName);
 		return beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName, (preexisting) => {
 			// Inside the reservation, so a create_database racing this restore cannot pass the absence
 			// check and then lose the database it just made. Debris this source left is exempt, or the
@@ -1369,16 +1369,37 @@ export async function restoreBackupOffline(
 	};
 }
 
-/** Before the restore claims the database, so a crash mid-verify leaves it loadable (dataLayer/DESIGN.md). */
-async function assertBackupReadable(backupDir: string, backupId: number, databaseName: string): Promise<void> {
+/** The restore-ordering invariant this serves is in dataLayer/DESIGN.md (harper#2965). */
+async function assertBackupReadable(
+	backupDir: string,
+	backupId: number,
+	databaseName: string,
+	databaseDir: string
+): Promise<BackupInfo> {
+	const verified = await findBackup(backupDir, backupId, databaseName);
 	try {
 		await backups.verify(backupDir, backupId, { verifyWithChecksum: true, verifyTables: true });
 	} catch (error: any) {
-		throw new Error(
-			`Backup ${backupId} failed verification, so database '${databaseName}' was not modified: ${error.message}`,
-			{ cause: error }
-		);
+		const destination =
+			checkRestoreState(databaseDir) === 'incomplete'
+				? `database '${databaseName}' still holds an earlier restore that did not finish and stays unloadable until a restore succeeds; restore a backup that verifies`
+				: `database '${databaseName}' was not modified`;
+		throw new Error(`Backup ${backupId} failed verification, so ${destination}: ${error.message}`, { cause: error });
 	}
+	return verified;
+}
+
+/** Verification ran unpinned, and deleting the newest backup frees its id for the next create_backup. */
+function assertBackupUnchanged(verified: BackupInfo, current: BackupInfo, databaseName: string): void {
+	const same =
+		current.timestamp === verified.timestamp &&
+		current.size === verified.size &&
+		current.numberFiles === verified.numberFiles &&
+		current.appMetadata === verified.appMetadata;
+	if (same) return;
+	throw new BackupInProgressError(
+		`Backup ${verified.backupId} of database '${databaseName}' was replaced while it was being verified; retry the restore`
+	);
 }
 
 function isMissingOrEmptyDir(path: string): boolean {
