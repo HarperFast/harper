@@ -8,6 +8,10 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
+## Core runtime and product paths (`packageUtils.js`)
+
+`packageUtils.test.js` pins canonical core paths independently of package metadata and verifies compiler emission of the shared `systemSchema.js` JSON asset. `typestrip-runtime.test.mjs` checks embedded workers, one product CLI invocation and main's public relative-worker base/default extension; core job entries are absolute and the compiled daemon entry remains product-owned.
+
 ## Every path handed to a native file watch must be canonicalized (`utility/watchPath.ts`)
 
 libuv's Windows fs-event callback rebuilds each event's absolute path, expands it with

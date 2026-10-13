@@ -47,24 +47,16 @@ const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
 const PACKAGE_ROOT = realpathSync(dirname(packageJsonPath));
 
 /**
- * The directory that holds source files at runtime: `PACKAGE_ROOT` in
- * type-strip mode (where `node bin/harper.ts` runs the .ts sources directly)
- * and `PACKAGE_ROOT/dist` in dist mode (where transpiled .js files live).
- *
- * This CJS file's canonical location is either `<PACKAGE_ROOT>/utility`
- * (source) or `<PACKAGE_ROOT>/dist/utility` (dist), including when Node
- * preserves symlinks. Compare canonical paths to detect the mode.
+ * Canonical directory containing core's runtime modules, independent of the
+ * metadata owner: the source root, standalone dist, or an embedded dist/core.
  */
-const RUNTIME_SRC_ROOT = realpathSync(__dirname).startsWith(join(PACKAGE_ROOT, 'dist'))
-	? join(PACKAGE_ROOT, 'dist')
-	: PACKAGE_ROOT;
+const RUNTIME_SRC_ROOT = realpathSync(join(__dirname, '..'));
 
 /**
- * File extension of the running modules: `.ts` in type-strip mode, `.js` in
- * dist mode. Use this when constructing file paths for `new Worker(...)` or
- * similar APIs that need the on-disk filename.
+ * Source layouts carry hdbTerms.ts beside this helper; compiled layouts carry
+ * hdbTerms.js. Use that local marker for core worker and helper filenames.
  */
-const RUNTIME_FILE_EXT = RUNTIME_SRC_ROOT === PACKAGE_ROOT ? '.ts' : '.js';
+const RUNTIME_FILE_EXT = existsSync(join(__dirname, 'hdbTerms.ts')) ? '.ts' : '.js';
 
 function loadNativePackage(name) {
 	return require(name);

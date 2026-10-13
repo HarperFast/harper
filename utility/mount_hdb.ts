@@ -9,11 +9,8 @@ import bridge from '../dataLayer/harperBridge/harperBridge.ts';
 import CreateTableObject from '../dataLayer/CreateTableObject.ts';
 import * as initPaths from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-const systemSchema: Record<string, any> = JSON.parse(
-	readFileSync(join(PACKAGE_ROOT, 'json/systemSchema.json'), 'utf-8')
-);
+import { systemSchema as builtinSystemSchema } from './systemSchema.js';
+const systemSchema: Record<string, any> = builtinSystemSchema;
 
 export default async function mountHdb(hdbPath: string) {
 	hdbLogger.trace('Mounting Harper');

@@ -14,12 +14,7 @@ import * as CreateTableObjectCjsModule from '../../dataLayer/CreateTableObject.t
 // dependent code means it never fires and the table is missing on upgraded installs
 // (see the mis-tagging history documented in 5-1-0.ts).
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
-const systemSchema: Record<string, any> = JSON.parse(
-	readFileSync(join(PACKAGE_ROOT, 'json/systemSchema.json'), 'utf-8')
-);
+import { systemSchema } from '../../utility/systemSchema.js';
 import { databases } from '../../resources/databases.ts';
 import * as terms from '../../utility/hdbTerms.ts';
 import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';

@@ -973,6 +973,79 @@ describe('TypeStrip runtime boundaries', () => {
 	});
 });
 
+describe('TypeStrip core packaging', () => {
+	it('links every schema reader and shares the schema in both runtimes', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const prefix = mode === 'compiled' ? 'dist/' : '';
+			const extension = mode === 'compiled' ? 'js' : 'ts';
+			const readers = [
+				'security/user',
+				'utility/globalSchema',
+				'utility/mount_hdb',
+				'upgrade/directives/5-1-0',
+				'upgrade/directives/5-2-0',
+				'upgrade/directives/5-3-0',
+				'dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbDropAttribute',
+				'dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbSearch',
+			];
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert')).default;
+				const schema = await import(${JSON.stringify(pathToFileURL(resolve(root, prefix + 'utility/systemSchema.js')).href)});
+				for (const url of ${JSON.stringify(readers.map((path) => pathToFileURL(resolve(root, prefix + path + '.' + extension)).href))}) await import(url);
+				const { getSystemSchema } = await import(${JSON.stringify(pathToFileURL(resolve(root, prefix + 'utility/globalSchema.' + extension)).href)});
+				assert.strictEqual(getSystemSchema(), schema.systemSchema);
+				const { closeLoadedDatabases } = await import(${JSON.stringify(pathToFileURL(resolve(root, prefix + 'resources/databases.' + extension)).href)});
+				await closeLoadedDatabases();
+				console.log('schema readers linked');
+			`
+			);
+			assert.strictEqual(output, 'schema readers linked', mode);
+		}
+	});
+
+	it('preserves the public base and default extension for relative worker paths', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const prefix = mode === 'compiled' ? 'dist/' : '';
+			const extension = mode === 'compiled' ? 'js' : 'ts';
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert')).default;
+				const { writeFileSync } = await import('node:fs');
+				const { join, relative } = await import('node:path');
+				const { once } = await import('node:events');
+				const filename = join(process.env.ROOTPATH, 'relative-worker.js');
+				writeFileSync(filename, "require('node:worker_threads').parentPort.postMessage('default js worker');");
+				const { startWorker } = await import(${JSON.stringify(pathToFileURL(resolve(root, prefix + 'server/threads/manageThreads.' + extension)).href)});
+				const worker = startWorker(relative(${JSON.stringify(root)}, filename).slice(0, -3), { name: 'relative-path-probe', autoRestart: false });
+				try {
+					const [message] = await once(worker, 'message', { signal: AbortSignal.timeout(10000) });
+					assert.strictEqual(message, 'default js worker');
+				} finally { if (worker.threadId !== -1) await worker.terminate(); }
+				console.log('relative worker contract preserved');
+			`
+			);
+			assert.strictEqual(output, 'relative worker contract preserved', mode);
+		}
+	});
+
+	it('boots embedded core workers and invokes the product CLI only once', () => {
+		for (const engine of ['rocksdb', 'lmdb']) {
+			const output = runWithIsolatedRoot(
+				'compiled',
+				`
+				process.env.HARPER_STORAGE_ENGINE = ${JSON.stringify(engine)};
+				await require(${JSON.stringify(resolve(import.meta.dirname, 'fixtures/embedded-layout.cjs'))}).probeEmbeddedRuntime(${JSON.stringify(root)});
+				console.log('embedded runtime preserved');
+			`
+			);
+			assert.strictEqual(output, 'embedded runtime preserved', engine);
+		}
+	});
+});
+
 describe('TypeStrip canary admission', () => {
 	for (const scenario of ['admitted', 'refused', 'shutdown-during-load', 'bind-retry']) {
 		it(`preserves cleanup and readiness when ${scenario}`, () => {

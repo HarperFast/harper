@@ -15,7 +15,10 @@ function generateMainServerConfig() {
 
 	return {
 		name: hdbTerms.PROCESS_DESCRIPTORS.HDB,
-		script: path.join(RUNTIME_SRC_ROOT, `bin/harper${RUNTIME_FILE_EXT}`),
+		script:
+			RUNTIME_FILE_EXT === '.ts'
+				? path.join(RUNTIME_SRC_ROOT, 'bin/harper.ts')
+				: path.join(PACKAGE_ROOT, hdbTerms.LAUNCH_SERVICE_SCRIPTS.MAIN),
 		exec_mode: 'fork',
 		env: envVars,
 		execArgv: process.execArgv,

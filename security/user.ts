@@ -100,12 +100,7 @@ const validate: any = (_validate as any).default ?? _validate;
 import * as logger from '../utility/logging/harper_logger.ts';
 import { promisify } from 'node:util';
 import * as env from '../utility/environment/environmentManager.ts';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { PACKAGE_ROOT } from '../utility/packageUtils.js';
-const systemSchema: Record<string, any> = JSON.parse(
-	readFileSync(join(PACKAGE_ROOT, 'json/systemSchema.json'), 'utf-8')
-);
+import { systemSchema } from '../utility/systemSchema.js';
 import { hdbErrors, ClientError } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdbErrors;
 import cloneDeep from 'lodash/cloneDeep.js';

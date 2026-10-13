@@ -28,7 +28,7 @@ import * as envMgr from '../../utility/environment/environmentManager.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { randomBytes } from 'node:crypto';
 import { _assignPackageExport } from '../../globals.js';
-import { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
+import { PACKAGE_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
 import { resolvePreloadModules } from './resolvePreload.ts';
 import { resolveThreadHeapMemoryMb } from './threadHeapMemory.ts';
 import { getConfigPath } from '../../config/configUtils.ts';
@@ -1255,7 +1255,7 @@ function startWorker(path?: any, options: any = {}, startOptions: any = {}) {
 		portsToSend.push(channel.port2);
 	}
 
-	if (!extname(path)) path += RUNTIME_FILE_EXT;
+	if (!extname(path)) path += '.js';
 
 	const isBun = typeof globalThis.Bun !== 'undefined';
 	const execArgv = isBun
@@ -1291,7 +1291,7 @@ function startWorker(path?: any, options: any = {}, startOptions: any = {}) {
 
 	const gated = openCertificationsPlacedBy(options);
 	const certify = heldRequests(gated, startOptions.check);
-	const worker: any = new Worker(isAbsolute(path) ? path : join(RUNTIME_SRC_ROOT, path), {
+	const worker: any = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
 		resourceLimits: {
 			maxOldGenerationSizeMb: maxOldMemory,
 			maxYoungGenerationSizeMb: maxYoungMemory,

@@ -12,10 +12,7 @@ import * as CreateTableObjectCjsModule from '../../dataLayer/CreateTableObject.t
 // happens when it does not, and DESIGN.md "System table bootstrap" for the three touchpoints.
 
 import { databases } from '../../resources/databases.ts';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
-const systemSchema = JSON.parse(readFileSync(join(PACKAGE_ROOT, 'json/systemSchema.json'), 'utf8'));
+import { systemSchema } from '../../utility/systemSchema.js';
 import * as terms from '../../utility/hdbTerms.ts';
 import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 import bridge from '../../dataLayer/harperBridge/harperBridge.ts';
