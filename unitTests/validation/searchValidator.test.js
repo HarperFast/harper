@@ -73,6 +73,25 @@ describe('Test searchValidator module', () => {
 		assert.strictEqual(result.message, "unknown attribute 'bogus'");
 	});
 
+	it('dedupes two structurally-equal but distinct unknown object attribute specifiers', () => {
+		const result = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				attribute: 'id',
+				value: 'x',
+				get_attributes: [
+					{ attribute: 'bogus', as: 'alias' },
+					{ attribute: 'bogus', as: 'alias' },
+				],
+			},
+			'value'
+		);
+
+		assert.ok(result instanceof Error);
+		assert.strictEqual(result.message, "unknown attribute '[object Object]'");
+	});
+
 	it('still lists multiple distinct unknown attributes', () => {
 		const result = searchValidator(
 			{

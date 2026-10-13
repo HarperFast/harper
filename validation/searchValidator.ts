@@ -1,7 +1,6 @@
 import filter from 'lodash/filter.js';
 import some from 'lodash/some.js';
-import uniqWith from 'lodash/uniqWith.js';
-import isEqual from 'lodash/isEqual.js';
+import uniqBy from 'lodash/uniqBy.js';
 import * as validator from './validationWrapper.ts';
 import Joi from 'joi';
 import * as hdbUtils from '../utility/common_utils.ts';
@@ -168,7 +167,11 @@ export default function (searchObject: any, type: any) {
 		// if any unknown attributes present in the search request then list all indicated as unknown attribute to error message at once split in well format
 		// for instance "unknown attribute a, b and c" or "unknown attribute a"
 		if (unknownAttributes && unknownAttributes.length > 0) {
-			unknownAttributes = uniqWith(unknownAttributes, isEqual);
+			// an unbounded get_attributes/conditions list makes this attacker-reachable, so dedupe in
+			// O(n) rather than pairwise; JSON.stringify gives object-shaped entries a stable key
+			unknownAttributes = uniqBy(unknownAttributes, (value: any) =>
+				typeof value === 'object' ? JSON.stringify(value) : value
+			);
 			// return error with proper message - replace last comma with and
 			let errorMsg = unknownAttributes.join(', ');
 			errorMsg = errorMsg.replace(/,([^,]*)$/, ' and$1');
