@@ -931,7 +931,8 @@ child does not inherit the root's confirmation count. Feasibility and residency 
 
 `ReplicationConfirmationError.replicationUnconfirmed` is true only for a post-commit confirmation-hook
 failure. `confirmReplicationAfterCommit` observes the hook immediately, and `settleCommitCompletions`
-waits for local work first, deferring even a child's confirmation failure. Local write/flush failures
+waits for local work first (a child's own confirmation failure, requiring an explicitly assigned link count,
+is deferred too). Local write/flush failures
 remain prompt and unmarked. The wrapper retains the original public code, message and status through
 `cause`, without mutating a shared rejection, and advertises `retryable: false`: replay could repeat
 committed writes. REST problem details, operations error bodies and terminal stream records expose the flag. This is local commit,
@@ -949,8 +950,10 @@ steps that never ran after a rejection; a nested flag can remain when there are 
 Programmatic errors are `ReplicationConfirmationError` wrappers, not the original instance; inspect
 `cause` for its class and identity. String-only errors (native HTTP handlers and WebSocket close reasons)
 render the new class name. Object responses preserve the original public code alongside the flag.
-Unreadable error properties are omitted rather than obscuring the commit outcome or preventing rollback;
-unreadable structured details fall back to the ordinary error response when an outer rollback strips the flag.
+Confirmation wrapping and flag removal copy diagnostics best-effort, preserving the cause and outcome when getters fail.
+Unreadable structured confirmation details fall back to the ordinary error response. HTTP guards cover the new
+outcome extensions and structured confirmation details; existing top-level diagnostic reads in HTTP error renderers
+are not hardened for arbitrary application errors.
 
 ## This node's short id is 0, confirmed per audit store (`nodeIdMapping.ts` `getThisNodeId`)
 

@@ -73,6 +73,33 @@ describe('serverErrorHandler', function () {
 		}
 	});
 
+	for (const property of ['replicationUnconfirmed', 'retryable']) {
+		it(`retains an operations error response when ${property} cannot be read`, async () => {
+			const app = fastify();
+			app.setErrorHandler(serverErrorHandler);
+			const failure = new ServerError('Diagnostic failure', 504);
+			failure.code = 'DIAGNOSTIC_FAILURE';
+			failure.retryable = false;
+			Object.defineProperty(failure, property, {
+				get() {
+					throw new Error('Outcome metadata is unreadable');
+				},
+			});
+			app.post('/', async () => {
+				throw failure;
+			});
+			try {
+				const response = await app.inject({ method: 'POST', url: '/' });
+				assert.strictEqual(response.statusCode, 504);
+				assert.strictEqual(response.json().error, 'Diagnostic failure');
+				assert.strictEqual(response.json().code, 'DIAGNOSTIC_FAILURE');
+				assert.strictEqual(response.json().replicationUnconfirmed, undefined);
+			} finally {
+				await app.close();
+			}
+		});
+	}
+
 	for (const outcome of ['plain', 'committed', 'stripped']) {
 		it(`preserves array error details${outcome === 'plain' ? ' without a flag' : ` in a ${outcome} envelope`}`, async () => {
 			const app = fastify();
@@ -109,40 +136,53 @@ describe('serverErrorHandler', function () {
 		});
 	}
 
-	it('retains the flag through the real operations insert dispatch and a local commit', async function () {
-		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
-		setupTestDBPath();
-		setMainIsWorker(true);
-		const Records = table({
-			database: 'confirmation-outcome-operations',
-			table: 'Records',
-			attributes: [{ name: 'id', isPrimaryKey: true }],
-		});
-		const app = fastify();
-		app.setErrorHandler(serverErrorHandler);
-		app.addHook('preHandler', async (request) => {
-			request.body.hdb_user = { username: 'admin', role: { permission: { super_user: true } } };
-		});
-		app.post('/', handlePostRequest);
-		replicationConfirmation(() => Promise.reject(new ServerError('Peer timeout', 504)));
-		try {
-			const response = await app.inject({
-				method: 'POST',
-				url: '/',
-				payload: {
-					operation: 'insert',
-					schema: 'confirmation-outcome-operations',
-					table: 'Records',
-					records: [{ id: 'committed' }],
-					replicatedConfirmation: 1,
-				},
+	for (const unreadable of [false, true]) {
+		it(`retains the flag through the real operations insert dispatch and a local commit${unreadable ? ' with unreadable structured details' : ''}`, async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			setupTestDBPath();
+			setMainIsWorker(true);
+			const Records = table({
+				database: 'confirmation-outcome-operations',
+				table: 'Records',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
 			});
-			assert.strictEqual(response.statusCode, 504, response.body);
-			assert.strictEqual(response.json().replicationUnconfirmed, true);
-			assert.strictEqual((await Records.get('committed')).id, 'committed');
-		} finally {
-			replicationConfirmation(undefined);
-			await app.close();
-		}
-	});
+			const id = unreadable ? 'committed-unreadable' : 'committed';
+			const app = fastify();
+			app.setErrorHandler(serverErrorHandler);
+			app.addHook('preHandler', async (request) => {
+				request.body.hdb_user = { username: 'admin', role: { permission: { super_user: true } } };
+			});
+			app.post('/', handlePostRequest);
+			const failure = new ServerError('Peer timeout', 504);
+			if (unreadable) {
+				failure.http_resp_msg = {
+					get detail() {
+						throw new Error('Details are unreadable');
+					},
+				};
+			}
+			replicationConfirmation(() => Promise.reject(failure));
+			try {
+				const response = await app.inject({
+					method: 'POST',
+					url: '/',
+					payload: {
+						operation: 'insert',
+						schema: 'confirmation-outcome-operations',
+						table: 'Records',
+						records: [{ id }],
+						replicatedConfirmation: 1,
+					},
+				});
+				assert.strictEqual(response.statusCode, 504, response.body);
+				assert.strictEqual(response.json().replicationUnconfirmed, true);
+				assert.strictEqual(response.json().retryable, false);
+				assert.strictEqual(response.json().error, 'Peer timeout');
+				assert.strictEqual((await Records.get(id)).id, id);
+			} finally {
+				replicationConfirmation(undefined);
+				await app.close();
+			}
+		});
+	}
 });

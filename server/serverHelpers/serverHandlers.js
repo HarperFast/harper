@@ -78,23 +78,38 @@ function serverErrorHandler(error, req, resp) {
 	// Fastify passes a handler's reason through as-is, so a rejection with none arrives here as nullish.
 	error ??= handleHDBError(new Error('The request failed without an error'), undefined, 500);
 	if (!errorsLoggedByRequest.get(req)?.has(error)) harperLogger[error.logLevel || 'info'](error);
+	let replicationUnconfirmed = false;
+	try {
+		replicationUnconfirmed = error.replicationUnconfirmed === true;
+	} catch {}
 	if (error.statusCode) {
 		if (typeof error.http_resp_msg !== 'object') {
 			const body = { error: error.http_resp_msg || error.message };
-			if (error.replicationUnconfirmed === true) body.replicationUnconfirmed = true;
+			if (replicationUnconfirmed) body.replicationUnconfirmed = true;
 			// surface the machine-readable signal for errors that declare retryability (e.g. a
 			// still-building index, IndexRebuildingError) so API callers can distinguish and retry
-			if (error.retryable !== undefined) {
-				body.code = error.code;
-				body.retryable = error.retryable;
+			try {
+				if (replicationUnconfirmed || error.retryable !== undefined) {
+					body.retryable = replicationUnconfirmed ? false : error.retryable;
+					body.code = error.code;
+				}
+			} catch {
+				try {
+					body.code = error.code;
+				} catch {}
 			}
 			return resp.code(error.statusCode).send(body);
 		}
-		if (error.replicationUnconfirmed === true) {
-			const body = Array.isArray(error.http_resp_msg) ? { error: error.http_resp_msg } : error.http_resp_msg;
+		if (replicationUnconfirmed) {
+			let body;
+			try {
+				body = Array.isArray(error.http_resp_msg) ? { error: error.http_resp_msg } : { ...error.http_resp_msg };
+				body.code ??= error.code;
+			} catch {
+				body = { error: error.message, code: error.code };
+			}
 			return resp.code(error.statusCode).send({
 				...body,
-				code: body?.code ?? error.code,
 				replicationUnconfirmed: true,
 				retryable: false,
 			});
