@@ -620,7 +620,7 @@ A CI runner can authenticate to Harper with **no stored credential**. It present
 
 The alternative is a `HARPER_CLI_REFRESH_TOKEN` secret: a 30-day credential, one per user, that expires on a schedule nobody tracks. A trust policy replaces it with a rule you configure once, and revoke with `drop_oidc_trust`.
 
-The workflow needs `permissions: id-token: write` and the `HARPER_CLI_TARGET` variable, and no secret at all, since the target is not sensitive. [Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci#let-the-workflow-authenticate-with-oidc) has a complete workflow, with the trust policy and deploy-only role it needs. See [CLI Authentication](../cli/authentication.md#workload-identity-oidc) for the client half and where the exchange sits in credential precedence.
+The workflow needs `permissions: id-token: write` and the `HARPER_CLI_TARGET` variable, and no secret at all, since the target is not sensitive. Nothing in it names the policy: every `harper` command in the job authenticates through it by itself, and may do what the policy's user's role allows — see [Using it in a workflow](../cli/authentication.md#using-it-in-a-workflow). For a workflow that deploys from a branch, [`harper deploy setup=true provider=github-actions`](../cli/commands.md#github-actions-deploys-oidc) (v5.4.0) creates a deploy-only role and user and the policy, and sets the repository's `HARPER_CLI_TARGET` variable, in one command. [Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci#let-the-workflow-authenticate-with-oidc) has a complete workflow, with the trust policy and deploy-only role it needs. See [CLI Authentication](../cli/authentication.md#workload-identity-oidc) for the client half and where the exchange sits in credential precedence.
 
 Policies live in the replicated `system.hdb_oidc_trust` table, so configuring one on any node applies cluster-wide.
 
@@ -674,7 +674,7 @@ harper add_oidc_trust \
 harper list_oidc_trust
 ```
 
-`claims` is a JSON object, so quote it as a single shell argument — the CLI parses each value as JSON, which is what turns that string into the nested object the operation expects. `operations` works the same way if you scope the policy: `operations='["deploy_component","get_job","get_deployment"]'`.
+`claims` is a JSON object, so quote it as a single shell argument — the CLI parses each value as JSON, which is what turns that string into the nested object the operation expects. `operations` works the same way if you scope the policy: `operations='["deploy_component","get_job","get_deployment","registration_info"]'`.
 
 `harper login` stores a token for that target, so step 2 needs no credentials of its own. If you would rather not store one, pass the target and credentials explicitly instead:
 
@@ -697,7 +697,7 @@ The user the policy names is the privilege boundary: a matching run gets that us
 	"issuer": "https://token.actions.githubusercontent.com",
 	"audience": "https://my-instance.harperdb.io:9925/",
 	"user": "ci-deploy",
-	"operations": ["deploy_component", "get_job", "get_deployment"],
+	"operations": ["deploy_component", "get_job", "get_deployment", "registration_info"],
 	"claims": {
 		"repository_id": "67890",
 		"workflow_ref": "HarperFast/my-app/.github/workflows/deploy.yml@refs/heads/main",
@@ -723,12 +723,12 @@ A deploy user does not need `super_user`. A role that lists the operations the p
 	"operation": "add_role",
 	"role": "ci_deploy",
 	"permission": {
-		"operations": ["deploy_component", "get_job", "get_deployment"]
+		"operations": ["deploy_component", "get_job", "get_deployment", "registration_info"]
 	}
 }
 ```
 
-`get_job` is what a pipeline polls to wait for a `"restart": "rolling"` deploy to reach every node, and `get_deployment` reads the deployment record. Both have to be listed: an `operations` allowlist, and a policy's `operations` scope, refuse every operation they don't name, including ones like `get_job` that any role may otherwise call. `restart_service` is not needed, since Harper starts the rolling restart's job itself.
+`get_job` is what a pipeline polls to wait for a `"restart": "rolling"` deploy to reach every node, `get_deployment` reads the deployment record, and `registration_info` is the version check `harper deploy` makes before it uploads; without that one the deploy still works, but the node logs a refused operation on every run. Each has to be listed: an `operations` allowlist, and a policy's `operations` scope, refuse every operation they don't name, including ones like `get_job` that any role may otherwise call. `restart_service` is not needed, since Harper starts the rolling restart's job itself.
 
 Deploying is still administrative authority, since the deployed component runs inside the Harper process. A deploy that passes a literal registry or git `token` in `credentials` needs `super_user` on a node that holds secret custody, because Harper seals that token into the secrets store. Give a least-privilege role a `secret` reference instead.
 
@@ -854,6 +854,9 @@ Detailed documentation: [Components Overview](../components/overview.md)
 | `get_components`            | Lists all component files and config                                    | super_user    |
 | `get_component_file`        | Returns the contents of a file within a component                       | super_user    |
 | `set_component_file`        | Creates or updates a file within a component                            | super_user    |
+| `get_env_keys`              | Lists the key names in a component's `.env` file (never values)         | super_user    |
+| `set_env_value`             | Sets one or many `.env` keys, preserving the rest of the file           | super_user    |
+| `delete_env_value`          | Removes one or many `.env` keys, leaving the rest intact                | super_user    |
 | `list_deployments`          | Lists deployment records with optional filters                          | super_user    |
 | `get_deployment`            | Fetches a single deployment record by ID; supports SSE streaming        | super_user    |
 | `get_deployment_payload`    | Returns the tarball stored for a deployment                             | super_user    |
@@ -1130,6 +1133,8 @@ Two kinds of deploy set it:
 - A component that had no directory before this deploy. It has never been loaded, so its routes cannot be live until Harper restarts.
 - A redeploy whose package metadata changed (v5.2.1) — a dependency or module-entry change invalidates loaded code, and package metadata sits outside most plugin file globs, so the component's own watcher does not see it.
 
+A third source is not a deploy at all: a component install still running when [`deployment.startupInstallTimeout`](../configuration/options.md#deployment) expires at startup sets the flag if it later succeeds (v5.3.0).
+
 An ordinary redeploy sets nothing: the component's watched files are handled by its file watcher, which requests a restart only when the update needs one.
 
 The flag is evaluated per node. A peer applying the replicated deploy checks its own directory state, since whether the component was already active can differ from node to node.
@@ -1174,6 +1179,114 @@ A `deploy_component` request that accepts `text/event-stream` gets its progress 
 From v5.4.0, the `load` phase brackets the [canary's decision](#certifying-a-release-in-a-canary-worker), so a deploy that does not restart, or whose `certification` is `unavailable`, sends no `load` phase. Before v5.4.0, every deploy sends one.
 
 Every event but `done` is also appended to the deployment's `event_log`, which [`get_deployment`](#get_deployment) replays as a stream. A replayed log can also contain `truncated`, `{ dropped_events }`, where the log reached its 200-entry bound and dropped entries from its middle, keeping the start and the most recent, and a `payload_dropped` carrying `deleted_by` instead of `max_size` when [`delete_deployment_payload`](#delete_deployment_payload) reclaimed the tarball.
+
+### Environment File Operations
+
+<VersionBadge version="v5.2.0" />
+
+Three operations edit a component's `.env` file without ever returning a value. They let an editor (Studio, CI, your own tooling) rotate one key without seeing — or accidentally clobbering — the other secrets in the file.
+
+| Operation          | Description                                                     | Role Required |
+| ------------------ | --------------------------------------------------------------- | ------------- |
+| `get_env_keys`     | Lists the key names in a component's `.env` file — never values | super_user    |
+| `set_env_value`    | Sets one or many keys, preserving the rest of the file          | super_user    |
+| `delete_env_value` | Removes one or many keys, leaving the rest intact               | super_user    |
+
+All three take a `project` (the component directory name) and an optional `file`, which defaults to `.env`. `file` must name an env file — `.env` or `.env.<suffix>` such as `.env.local` — and is rejected otherwise. Key names must match `[A-Za-z0-9_.-]+`, the character set the `.env` parser accepts.
+
+`set_env_value` and `delete_env_value` replicate. The node that receives the request edits its own file, then sends the edit once to each peer. The response's `replicated` array has one entry per peer, naming it in `node`. A peer that could not be reached, or that answered with an error, is listed with `"status": "failed"` and a `reason`. Harper does not retry it, so that node's file may not have the edit. The request still succeeds, so check `replicated` for a `failed` entry. Once that peer is back, send the affected keys' current state again: their current values, or a delete for keys that should still be absent. A resend reaches every node, so resending the original request is safe only if no later edit changed those keys. Deleting a key that is not present is not an error.
+
+An edit changes the file, not the running components. [`loadEnv`](../environment-variables/overview.md) reads a `.env` file into `process.env` when the component loads, and reads only the files its `files` option names. When a file it has already loaded changes, it does not reload the values. It flags the node as needing a restart instead, so `get_status` reports `restartRequired: true`. Until the node's worker threads restart, running code still sees the old value of a changed key, and still sees a deleted key. To apply an edit, restart the workers on every node, for example with [`restart_service`](#restart_service) using `"service": "http_workers"` and `"replicated": true`, which restarts the nodes one at a time. When `harper dev` runs an application directory, it restarts the workers on its own when the flag is set.
+
+:::note
+`get_component_file` on a `.env` file returns a **masked** body: `protected: true`, the `keys` array, and a `message` of one `KEY=********` line per key. `get_components` likewise flags such files with `protected: true`. Template files — `.env.example`, `.env.sample`, `.env.template` — hold placeholders rather than secrets, so they are returned verbatim and are not masked.
+
+`set_component_file` is **not** blocked on a `.env` file. It overwrites the file verbatim with whatever payload you send. Use `set_env_value` when you want to change one key and keep the others.
+
+This is disclosure protection for the editor surface, not a security boundary — component code can still read the real values from `process.env`.
+:::
+
+#### `get_env_keys`
+
+```json
+{
+	"operation": "get_env_keys",
+	"project": "my-app",
+	"file": ".env"
+}
+```
+
+Response:
+
+```json
+{
+	"file": ".env",
+	"keys": ["API_KEY", "DB_URL"],
+	"size": 62,
+	"mtime": "2026-02-11T18:04:22.000Z"
+}
+```
+
+Returns an error if the file does not exist.
+
+#### `set_env_value`
+
+Supply exactly one of `key` + `value` (a single entry) or `values` (a key-to-value map). Every other line in the file — comments, blank lines, untouched keys, and their formatting — is left exactly as it was; existing keys are replaced in place and new keys are appended. The file (and the project directory) is created if it does not exist.
+
+```json
+{
+	"operation": "set_env_value",
+	"project": "my-app",
+	"key": "API_KEY",
+	"value": "rotated-value"
+}
+```
+
+```json
+{
+	"operation": "set_env_value",
+	"project": "my-app",
+	"values": { "API_KEY": "rotated-value", "DB_URL": "postgres://user:pass@host/db" }
+}
+```
+
+Response:
+
+```json
+{
+	"message": "Successfully set env value(s) in .env",
+	"keys": ["API_KEY", "DB_URL"]
+}
+```
+
+`keys` is the file's key list after the write — the request value is never echoed back. With Harper Pro, the response of both `set_env_value` and `delete_env_value` also carries the [`replicated` array](#environment-file-operations).
+
+Harper quotes the value as needed so the `.env` parser reads back exactly what you sent, including spaces, `#`, quotes, backslashes, and newlines. A carriage return is the exception: the parser reads `\r\n` and a lone `\r` back as `\n`. One combination cannot be represented: a value containing a single quote (`'`) together with a double quote, a backslash, or a carriage return is rejected with a `400`.
+
+A value may also be an `enc:v1:` ciphertext envelope rather than plaintext — see [Encrypted Environment Values](../environment-variables/encrypted-values.md).
+
+#### `delete_env_value`
+
+Supply exactly one of `key` (a single name) or `keys` (an array of names).
+
+```json
+{
+	"operation": "delete_env_value",
+	"project": "my-app",
+	"keys": ["API_KEY", "DB_URL"]
+}
+```
+
+Response:
+
+```json
+{
+	"message": "Successfully deleted env value(s) from .env",
+	"keys": []
+}
+```
+
+Returns an error if the file does not exist. Removing a key that is not present is not an error.
 
 ### Deployment Operations
 
@@ -1575,7 +1688,7 @@ Detailed documentation: [Configuration Overview](../configuration/overview.md)
 
 Updates configuration parameters in `harper-config.yaml`. A restart (`restart` or `restart_service`) is required for changes to take effect.
 
-Supports `"replicated": true` <VersionBadge version="v5.2.0" /> to apply the same change to all cluster nodes in one call; per-node outcomes are returned in the response's `replicated` array. Only send cluster-appropriate parameters when replicating — node-local parameters (ports, `node.hostname`, file paths, TLS material, `replication.hostname`/`url`/`routes`) would overwrite every peer's local values. To apply the change cluster-wide, follow with `restart_service` using `"replicated": true` (which restarts nodes one at a time). See [Configuration Operations](../configuration/operations.md#set-configuration) for details.
+Supports `"replicated": true` <VersionBadge version="v5.2.0" /> to apply the same change to all cluster nodes in one call; per-node outcomes are returned in the response's `replicated` array. Only send cluster-appropriate parameters when replicating — node-local parameters (ports, `node.hostname`, file paths, TLS material, `replication.hostname`/`url`/`routes`) would overwrite every peer's local values. To apply the change cluster-wide, follow with `restart_service` using `"replicated": true` (which restarts nodes one at a time); `restart_service` restarts only worker threads, though, so a change to [`threads.v8Flags`](../configuration/options.md#applying-v8-flags) takes effect only after a `restart` sent to each node in turn (`restart` does not replicate). See [Configuration Operations](../configuration/operations.md#set-configuration) for details.
 
 ```json
 {
@@ -1636,7 +1749,7 @@ Restarts all Harper processes. May take up to 60 seconds.
 
 ### `restart_service`
 
-Restarts a specific service. `service` must be one of: `http`, `http_workers`, `custom_functions`, `harperdb` (all currently restart the HTTP workers). Supports `"replicated": true` for a rolling cluster restart.
+Restarts a specific service. `service` must be one of: `http`, `http_workers`, `custom_functions`, `harperdb` (all currently restart the HTTP workers). Supports `"replicated": true` for a rolling cluster restart. Without a `scope`, it also restarts any [dedicated replication threads](../replication/overview.md#dedicated-replication-threads) (v5.4.0).
 
 ```json
 { "operation": "restart_service", "service": "http_workers" }
@@ -1682,12 +1795,12 @@ With an `id`, it returns that one status record:
 { "operation": "get_status" }
 ```
 
-| Field              | Description                                                                                                                                                               |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `systemStatus`     | Every status record set with `set_status`                                                                                                                                 |
-| `componentStatus`  | Per-component health, aggregated across threads: `name` plus a `status` of `healthy`, `warning`, `error`, `loading`, or `unknown`                                         |
-| `restartRequired`  | Whether a restart is pending on this node — set by a deploy that did not restart (see [Deploying without a restart](#deploying-without-a-restart)) and cleared on restart |
-| `middlewareChains` | The resolved HTTP, upgrade, and WebSocket middleware order (v5.2.0). Present only when the request passes `middleware: true`                                              |
+| Field              | Description                                                                                                                                                                                                                                                                                                                                         |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `systemStatus`     | Every status record set with `set_status`                                                                                                                                                                                                                                                                                                           |
+| `componentStatus`  | Per-component health, aggregated across threads: `name` plus a `status` of `healthy`, `warning`, `error`, `loading`, or `unknown`                                                                                                                                                                                                                   |
+| `restartRequired`  | Whether a restart is pending on this node — set by a deploy that did not restart (see [Deploying without a restart](#deploying-without-a-restart)) or by a component install that succeeded after startup stopped waiting for it (v5.3.0; see [`deployment.startupInstallTimeout`](../configuration/options.md#deployment)), and cleared on restart |
+| `middlewareChains` | The resolved HTTP, upgrade, and WebSocket middleware order (v5.2.0). Present only when the request passes `middleware: true`                                                                                                                                                                                                                        |
 
 `restartRequired` is per node: it reports the node that served the request, not the cluster.
 
@@ -1708,7 +1821,7 @@ Anyone who can call `agent_prompt` can direct whatever the agent does. Understan
 
 - `agent.user` (default: a `super_user` bootstrap identity) governs only the **operations** tools. Setting it to a restricted user narrows those, and nothing else.
 - The agent's other tools — scoped filesystem access, outbound `http_fetch`, followup scheduling, and the V8 inspector — run at the Harper process's own privilege, whatever `agent.user` is. (The inspector tools additionally need `threads.debug`, and fail with an explanatory error without it.)
-- By default, `http_fetch` blocks only cloud-metadata hosts and the IPv4 link-local range `169.254.0.0/16`, and it checks host names, not resolved addresses: a name that resolves to a blocked address is not caught. Since v5.3.2, it also checks every redirect hop before following it. Every other host, including anything private or internal the server can route to, is reachable. Reading is ungated too: `read_file` covers the log and configuration directories as well as the component tree, so an enabled agent puts a read path and an egress path in the same toolset. Unless the agent needs the network, set [`agent.httpFetch`](../configuration/options.md#restricting-http_fetch) to `false` to remove the tool, or to an allow-list of the hosts it needs. Otherwise, treat it as an outbound network client and apply egress policy to the host.
+- By default, `http_fetch` blocks only cloud-metadata hosts and the IPv4 link-local range `169.254.0.0/16`. It checks host names, not resolved addresses, so a name that resolves to a blocked address is not caught. Since v5.4.0, it also checks every redirect hop before following it. Every other host is reachable, including anything private or internal the server can route to. Reading is ungated too. By default, `read_file` covers the component tree, the log directory, and the Harper config file. Before v5.4.0, it covered the whole directory holding the config file. `componentsScope` and `configScope` can point it elsewhere, including somewhere wider. Every scope refuses Harper's key directories, key file names, and PEM private keys. See [Filesystem scopes](../configuration/options.md#filesystem-scopes). An enabled agent therefore has a read path and an egress path in the same toolset. Unless the agent needs the network, set [`agent.httpFetch`](../configuration/options.md#restricting-http_fetch) to `false` to remove the tool, or to an allow-list of the hosts it needs. Otherwise, treat it as an outbound network client and apply egress policy to the host.
 - With the default `agent.allowDestructive: false`, destructive tools (including filesystem writes) are removed from the toolset entirely. Turning it on admits component writes, and component code is executed by the Harper process — a write is effectively code execution at process privilege.
 - Leave `agent.autoApprove` off so any destructive call that is admitted still pauses for [approval](#approve_agent_action). The gate covers only the tools marked destructive — filesystem writes, the inspector's code-evaluation tools, and the operations on MCP's [curated destructive set](../mcp/tool-metadata.md) (`drop_table`, `delete`, `restart`, `set_configuration`, ...). `http_fetch` and followup scheduling are not gated, so an outbound POST and a self-rescheduling run proceed without an approval prompt.
 - That set is an explicit list in core rather than a prefix match, and it is not a list of every damaging operation, so `allowDestructive` and `autoApprove` are not a boundary by themselves. The component operations are the ones to know about: `drop_component` and `deploy_component` are both off the set, so opting either into [`mcp.operations.allow`](../mcp/configuration.md#mcpoperationsallow) puts it in the agent's toolset where `allowDestructive: false` does not remove it and no approval gates it — and `deploy_component` writes code the Harper process then executes. Vet anything you add to that allow list on its own merits rather than assuming these two settings cover it.
@@ -1735,16 +1848,29 @@ A run does not resume across a restart, and nothing reconciles session status at
 
 A session's `status` is one of:
 
-| Status              | Meaning                                                                                       |
-| ------------------- | --------------------------------------------------------------------------------------------- |
-| `idle`              | Created, or resumable — no run in flight                                                      |
-| `running`           | A run is in progress                                                                          |
-| `awaiting_approval` | Paused on one or more destructive tool calls; see `pendingApprovals`                          |
-| `completed`         | The run ended without throwing — a final answer, or the `maxTurns` ceiling; check `lastError` |
-| `aborted`           | Cancelled by an operator via `cancel_agent_run`                                               |
-| `error`             | The run failed; `lastError` carries the message                                               |
+| Status              | Meaning                                                                            |
+| ------------------- | ---------------------------------------------------------------------------------- |
+| `idle`              | Created, or resumable — no run in flight                                           |
+| `running`           | A run is in progress                                                               |
+| `awaiting_approval` | Paused on one or more destructive tool calls; see `pendingApprovals`               |
+| `completed`         | The run ended with a final answer, or at the `maxTurns` ceiling; check `lastError` |
+| `aborted`           | Cancelled by an operator via `cancel_agent_run`                                    |
+| `error`             | The run failed; `lastError` carries the message                                    |
 
 `completed` also covers hitting the `agent.maxTurns` ceiling — in that case `lastError` reads `Reached maxTurns=<n> without a final answer.`, so check it before treating a completed session as finished.
+
+As of v5.4.0, a model reply that did not finish ends the run `error`, never `completed`, and `lastError` says why. That covers a reply cut off at [`agent.maxTokens`](../configuration/options.md#agent) or at the model's context window, one stopped by the provider's content filter or a model refusal, one that asks for tool calls of which none could be parsed, and one with neither text nor tool calls. Nothing from that reply is added to `messages`: its text is dropped, and its tool calls are neither run nor queued for approval. The session can be prompted again. Earlier versions ended such a run `completed`, often with an empty final message, and ran a cut-off tool call with its cut-off arguments.
+
+### When a conversation outgrows the model's context window
+
+<VersionBadge version="v5.4.0" />
+
+Every model request replays the session's whole conversation, so a single large tool result can fill the model's context window, and then every later request is rejected. Two rules keep a session usable:
+
+- **Tool results are capped where they are stored.** A result larger than [`agent.maxToolResultBytes`](../configuration/options.md#agent) (default 64 KiB) is cut to that size before it is added to `messages`, ending with a note that gives its original size and tells the model how to ask for less. Only the cut form is kept, so `get_agent_session` shows what the model saw. The file-reading tools return pages sized to fit under the cap, measured as JSON, unless the file's path alone takes up most of it: `read_file` returns up to `lineCount` whole lines from `startLine`, and while the file continues it gives `nextLine` and `nextOffset`, which the agent passes back as `startLine` and `offset` to read the next page without rescanning the file. So it can work through a log of any size one page at a time. A line longer than a page comes back in parts, continued the same way, with every part but the last flagged `lineTruncated`.
+- **A rejected request is retried once.** When the provider rejects a request because it does not fit the model's context window (detected for the OpenAI, Anthropic and Bedrock backends), the agent cuts every result over 2 KiB to 2 KiB, in the most recent group of tool results that has one, keeping its beginning plus a note saying it was cut, records the cut in `messages`, and sends the request again. If nothing is left to cut, or the retry is rejected as well, the run ends `error` with a `lastError` that starts `The conversation no longer fits the model's context window`. Shorten the prompt, or start a new session. With fallback models configured, a context-window rejection from a fallback that follows an unrelated failure of the first model is reported as that first failure, and is not retried.
+
+Earlier versions added every tool result in full, so one large result left the session unusable. Prompting such a session again usually recovers it, because its oversized result is cut on the first rejection; if it still ends `error`, start a new session.
 
 ### `agent_prompt`
 
@@ -1843,7 +1969,9 @@ One gap is worth knowing: changing `allowDestructive` with [`set_agent_config`](
 
 ### `set_agent_config`
 
-Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Each field is described under [`agent`](../configuration/options.md#agent). A request that includes `httpFetch` is rejected with a 400 and nothing in it is applied: the [`http_fetch` policy](../configuration/options.md#restricting-http_fetch) is read at startup only.
+<VersionBadge type="changed" version="v5.4.0" />
+
+Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxToolResultBytes`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Each field is described under [`agent`](../configuration/options.md#agent). A request that includes `httpFetch`, `componentsScope`, or `configScope` is rejected with a 400 and nothing in it is applied: the [`http_fetch` policy](../configuration/options.md#restricting-http_fetch) and the [filesystem scopes](../configuration/options.md#filesystem-scopes) are read at startup only. A `maxTokens` that is not a positive integer is rejected the same way. A `maxToolResultBytes` that is not an integer from `1024` to `1048576` is rejected the same way.
 
 ```json
 { "operation": "set_agent_config", "autoApprove": false, "maxTurns": 20 }
@@ -1852,7 +1980,7 @@ Updates agent settings and returns the resulting configuration. Accepts any of `
 Three limits are worth knowing:
 
 - **The change is in-memory and not persisted.** It applies for the life of the process and is lost on restart; edit `harper-config.yaml` for a durable change.
-- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, and `systemPromptAppend` are all captured at start. Changes take effect on the next run. To stop a run immediately, use `cancel_agent_run`.
+- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, `maxTokens`, `maxToolResultBytes`, and `systemPromptAppend` are all captured at start. Changes take effect on the next run, and a paused run that `approve_agent_action` resumes counts as a new one: it picks up the current settings. To stop a run immediately, use `cancel_agent_run`.
 - **`enabled` is not a kill switch.** It cannot turn the agent on — if it was off at startup, this operation does not exist. Setting it to `false` only makes subsequent `agent_prompt` calls return 409; a run already in flight continues, and `approve_agent_action` still resumes a paused one. Use `cancel_agent_run` to stop a run.
 
 ### MCP access
@@ -2097,18 +2225,20 @@ Operations for license management.
 
 | Operation               | Description                                        | Role Required |
 | ----------------------- | -------------------------------------------------- | ------------- |
-| `registration_info`     | Returns registration and version information       | any           |
+| `registration_info`     | Returns the Harper version                         | any           |
 | `install_usage_license` | Installs a Harper usage license block              | super_user    |
 | `get_usage_licenses`    | Returns all usage licenses with consumption counts | super_user    |
-| `get_fingerprint`       | _(Deprecated)_ Returns the machine fingerprint     | super_user    |
-| `set_license`           | _(Deprecated)_ Sets a license key                  | super_user    |
 
 ### `registration_info`
 
-Returns the instance registration status, version, RAM allocation, and license expiration.
+Returns the instance's Harper version, and `deprecated: true`. It no longer returns registration details. `harper deploy` calls it to check the target's version before it uploads, so a role with an `operations` allowlist that runs `harper deploy` should list it.
 
 ```json
 { "operation": "registration_info" }
+```
+
+```json
+{ "version": "5.3.2", "deprecated": true }
 ```
 
 ### `install_usage_license`
@@ -2161,8 +2291,8 @@ For modern equivalents, see [Components Overview](../components/overview.md).
 | Operation              | Replaced By                                                         |
 | ---------------------- | ------------------------------------------------------------------- |
 | `install_node_modules` | Handled automatically by `deploy_component` and `restart`           |
-| `get_fingerprint`      | Use `registration_info`                                             |
-| `set_license`          | Use `install_usage_license`                                         |
+| `get_fingerprint`      | Removed in v5.0.0, with no replacement                              |
+| `set_license`          | Removed in v5.0.0; use `install_usage_license` (Harper Pro)         |
 | `search_by_hash`       | Use `search_by_id`                                                  |
 | `search_attribute`     | Use `attribute` field in `search_by_value` / `search_by_conditions` |
 | `search_value`         | Use `value` field in `search_by_value` / `search_by_conditions`     |

@@ -311,8 +311,6 @@ Setting `read: false` on an attribute prevents the **value** from appearing in r
 | Operation           | Restricted to Super User |
 | ------------------- | :----------------------: |
 | `registration_info` |                          |
-| `get_fingerprint`   |            X             |
-| `set_license`       |            X             |
 
 ### Jobs
 

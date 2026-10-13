@@ -261,13 +261,39 @@ There is no operation that revokes a refresh token directly. To invalidate one, 
 
 On a runner that can prove its own identity, the CLI needs **no stored credential at all**. It asks the runtime for an identity token addressed to your instance and trades it for a one-hour operation token. Nothing durable is stored in your CI provider, and there is no 30-day token to rotate.
 
-Configure the instance to trust the workflow once with [`add_oidc_trust`](../operations-api/operations.md#add_oidc_trust), then grant the token permission in the workflow.
+Configure the instance to trust the workflow once with [`add_oidc_trust`](../operations-api/operations.md#add_oidc_trust). For a GitHub Actions workflow that deploys from a branch, [`harper deploy setup=true provider=github-actions`](./commands.md#github-actions-deploys-oidc) (v5.4.0) does it in one command: a deploy-only role and user, the policy, and the repository's `HARPER_CLI_TARGET` variable.
 
-On **GitHub Actions**, a job opts into requesting an identity token with `permissions: id-token: write`. Other CI systems expose the same idea differently, and Harper currently detects GitHub Actions only; an unrecognized runtime is not an error, the CLI simply falls through to its other credential sources.
+###### Using it in a workflow
 
-[Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci#path-a-deploy-a-tagged-release-from-your-repository) has a complete workflow that runs as written, with the trust policy and deploy-only role it needs. In it, `HARPER_CLI_TARGET` is the only variable the job is given, and it is not sensitive — hence `vars` rather than `secrets`.
+**Nothing in the workflow names the policy, and no `harper` command takes an option for it.** Once the policy exists, every `harper` command in a job authenticates through it by itself — `harper deploy`, `harper get_job`, or any other operation — when all four of these hold. What each command may then do is up to the role of the user the policy names: one that lists only `deploy_component`, `get_job` and `registration_info`, like the role setup creates, refuses anything else with a `403`.
 
-**With a trust policy in place you need nothing else** — no `HARPER_CLI_REFRESH_TOKEN`, no password, no credentials on the command. That is the point of it: the workflow holds no Harper secret at all.
+1. **The job may request an identity token.** On GitHub Actions that is `permissions: id-token: write` on the job.
+2. **`HARPER_CLI_TARGET` is the policy's `audience`.** The CLI requests its token for the target it connects to, so the target must be the URL the policy names, with its port and trailing slash (`https://my-instance.harperdb.io:9925/`). It is not sensitive, so a repository variable (`vars`) rather than a secret.
+3. **The run matches the policy's claims**: its repository, its workflow file and branch, and its environment.
+4. **Nothing else is configured to authenticate.** `auth_username=`/`auth_password=`, credentials in the target URL, `HARPER_CLI_USERNAME`/`HARPER_CLI_PASSWORD`, `HARPER_CLI_REFRESH_TOKEN` or `HARPER_CLI_OPERATION_TOKEN` (or their `CLI_TARGET_` forms), and a saved `harper login` all outrank the exchange — see [Authentication Precedence](#authentication-precedence).
+
+For example, this job deploys with nothing but the target:
+
+```yaml
+deploy:
+  runs-on: ubuntu-latest
+  environment: production
+  permissions:
+    contents: read
+    id-token: write
+  env:
+    HARPER_CLI_TARGET: ${{ vars.HARPER_CLI_TARGET }}
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - run: npm install --global harper@^5.3
+    - run: harper deploy project=my-app restart=rolling
+```
+
+It is one job, not a whole workflow. [Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci#path-a-deploy-a-tagged-release-from-your-repository) has complete workflows that run as written, including the step that waits for a rolling deploy to reach every node.
+
+Harper currently detects GitHub Actions only. Other CI systems expose the same idea differently; on one Harper does not recognize, the CLI falls through to its other credential sources rather than failing.
 
 If your pipeline already sets a token or password, remove it. Leaving it in place is not harmful but it does keep winning — a configured credential outranks the exchange, deliberately, so that enabling this does not silently re-point an existing pipeline at a different user. See [Authentication Precedence](#authentication-precedence) if you need the full order for a mixed setup.
 
