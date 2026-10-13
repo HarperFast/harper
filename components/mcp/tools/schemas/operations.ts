@@ -277,6 +277,10 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 				type: 'string',
 				description: 'Status entry id. When omitted, returns aggregated status across threads.',
 			},
+			components: {
+				type: 'boolean',
+				description: 'When true (and no id), include the component status tree with parent status rollups.',
+			},
 			middleware: {
 				type: 'boolean',
 				description:

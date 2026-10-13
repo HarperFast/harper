@@ -1369,7 +1369,9 @@ function startWorker(path, options = {}, startOptions = {}) {
 				const restart = () => startWorker(path, options);
 				if (!deferStartBehindCertification(options, restart)) restart();
 			} else {
-				harperLogger.status({ problem: 'threads.restart-limit' }).error(`Thread has been restarted ${worker.unexpectedRestarts} times and will not be restarted`);
+				harperLogger
+					.status({ problem: 'threads.restart-limit' })
+					.error(`Thread has been restarted ${worker.unexpectedRestarts} times and will not be restarted`);
 				options.onRestartExhausted?.(worker);
 			}
 		}
