@@ -9,6 +9,23 @@ function agg(status, extra = {}) {
 }
 
 describe('buildHierarchy', function () {
+	it('keeps prototype-like component names as own keys without mutating prototypes', function () {
+		const names = ['__proto__.x', 'constructor', 'toString', 'app.__proto__.constructor'];
+		const before = Object.getOwnPropertyDescriptors(Object.prototype);
+		const tree = buildHierarchy(new Map(names.map((name) => [name, agg(COMPONENT_STATUS_LEVELS.ERROR)])));
+		assert.ok(Object.hasOwn(tree, '__proto__'));
+		assert.equal(tree.__proto__.children.x.status, 'error');
+		assert.ok(Object.hasOwn(tree, 'constructor'));
+		assert.equal(tree.constructor.status, 'error');
+		assert.ok(Object.hasOwn(tree, 'toString'));
+		assert.equal(tree.toString.status, 'error');
+		assert.equal(tree.app.children.__proto__.children.constructor.status, 'error');
+		assert.deepStrictEqual(Object.getOwnPropertyDescriptors(Object.prototype), before);
+		const serialized = JSON.parse(JSON.stringify(tree));
+		assert.ok(Object.hasOwn(serialized, '__proto__'));
+		assert.equal(serialized.__proto__.children.x.status, 'error');
+	});
+
 	it('builds a single-level leaf node for a name with no dots', function () {
 		const statuses = new Map([['replication', agg(COMPONENT_STATUS_LEVELS.ERROR, { latestMessage: 'down' })]]);
 

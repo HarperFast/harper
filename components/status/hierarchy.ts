@@ -48,10 +48,13 @@ export function buildHierarchy(statuses: Map<string, AggregatedComponentStatus>)
 
 		for (let i = 0; i < parts.length; i++) {
 			const part = parts[i];
-			if (!currentLevel[part]) {
-				currentLevel[part] = {
-					status: COMPONENT_STATUS_LEVELS.HEALTHY,
-				};
+			if (!Object.hasOwn(currentLevel, part)) {
+				Object.defineProperty(currentLevel, part, {
+					value: { status: COMPONENT_STATUS_LEVELS.HEALTHY },
+					enumerable: true,
+					writable: true,
+					configurable: true,
+				});
 			}
 			const node = currentLevel[part];
 

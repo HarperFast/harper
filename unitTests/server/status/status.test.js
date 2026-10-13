@@ -276,11 +276,8 @@ describe('server.status', function () {
 			// Check restart flag
 			assert.equal(result.restartRequired, true);
 
-			// Check hierarchy - built from the same aggregated statuses as componentStatus
-			assert.ok(result.hierarchy, 'hierarchy should be defined');
-			assert.equal(result.hierarchy['test-component'].status, 'healthy');
-			assert.equal(result.hierarchy['another-component'].status, 'error');
-			assert.equal(result.hierarchy['another-component'].message, 'Failed to start');
+			assert.ok(!('components' in result), 'components should be absent by default');
+			assert.ok(!('hierarchy' in result), 'hierarchy should not be returned');
 		});
 
 		it('includes middlewareChains only when middleware:true is requested (#1573)', async function () {
@@ -302,7 +299,7 @@ describe('server.status', function () {
 			getAggregatedStub.resolves(new Map());
 			restartNeededStub.returns(false);
 
-			const result = await status.get({});
+			const result = await status.get({ components: true });
 
 			// Check structure
 			assert.ok(result.systemStatus !== undefined);
@@ -316,8 +313,7 @@ describe('server.status', function () {
 			// Restart should be false
 			assert.equal(result.restartRequired, false);
 
-			// Hierarchy should be an empty object, not undefined
-			assert.deepStrictEqual(result.hierarchy, {});
+			assert.deepStrictEqual(result.components, {});
 		});
 
 		it('should serialize Error instances and abnormalities Maps in componentStatus for JSON wire output', async function () {
