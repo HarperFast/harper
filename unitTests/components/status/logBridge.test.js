@@ -35,6 +35,31 @@ describe('logBridge', function () {
 		assert.equal(componentStatusRegistry.getStatus('test.harper-372-filtered').occurrenceCount, 1);
 	});
 
+	it('reports status even when log formatting throws', async function () {
+		const failure = new Error('Log formatting failed');
+		const value = {
+			[Symbol.for('nodejs.util.inspect.custom')]() {
+				throw failure;
+			},
+		};
+		const logger = createLogger({ level: 'error', writeToLog: () => {} }).withTag('failed-formatter');
+		try {
+			assert.throws(
+				() => logger.status({ problem: 'test.harper-372-format-failure' }).error('boom', value),
+				(error) => error === failure
+			);
+			await Promise.resolve();
+			const status = componentStatusRegistry.getStatus('test.harper-372-format-failure');
+			assert.ok(status, 'a failed log call should still report status');
+			assert.equal(status.status, COMPONENT_STATUS_LEVELS.ERROR);
+			assert.ok(status.message.startsWith('boom'));
+			assert.equal(status.occurrenceCount, 1);
+		} finally {
+			// Formatting failed before the logger could restore its shared level.
+			createLogger({ level: 'error', writeToLog: () => {} }).info('');
+		}
+	});
+
 	// Regression for #372: statusLogger() used to fire the level===null (status-only) dispatch
 	// immediately and unconditionally, so a chained call like .status({problem}).error(msg) always
 	// dispatched twice, doubling occurrenceCount for nearly every problem key this feature reports.
