@@ -126,7 +126,7 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 - **`build-tools/`** — build-pipeline scripts. [build-tools/DESIGN.md](build-tools/DESIGN.md) covers the published artifacts. Tests: `unitTests/build-tools/`; run `npm run test:unit:main` after changes.
 - **`dev/`** — single dev utility (`sync-commits.js`) for cross-repo commit syncing. Not runtime.
 - **`integrationTests/`** — end-to-end tests against a built distribution. Run with `npm run test:integration` / `npm run test:integration:all`. Subdirs mirror source. See `integrationTests/README.md`.
-- **`unitTests/`** — Mocha unit tests; subdir per source layer. Run with `npm run test:unit:<layer>`.
+- **`unitTests/`** — Mocha unit tests; subdir per source layer. Run with `npm run test:unit:<layer>`. **See [unitTests/AGENTS.md](unitTests/AGENTS.md)** for test-writing pitfalls (thread-global capture + absolute count).
 - **`static/`** — assets only: `defaultConfig.yaml`, `ascii_logo.txt`.
 
 ### Top-level docs to consult
@@ -171,6 +171,8 @@ For megafiles and complex subsystems, jump to the section index instead of readi
 **Minimal dependencies** — `dependencies.md` documents the rationale for every dependency. Adding a new dependency requires justification; implementing something ourselves is often preferred.
 
 **An error's class name is its error code, and it is public** — Harper's error taxonomy (`ClientError`, `ServerError`, and the rest of `utility/errors/hdbError.ts`) is a contract clients code against: the class name is documented, clients branch on it, and it guides support. So `errorToString`'s `ClassName: message` rendering is deliberate wherever a client reads it — terminal HTTP error bodies (`server/http.ts`), REST WebSocket close reasons — and `streamErrorRecord` (`server/serverHelpers/contentTypes.ts`) publishes the class name in its own `error` field for the same reason. Do not "sanitize" it away as an internal implementation detail, and treat renaming an error class as a breaking change. What must not reach a client is an internal fault's _message_ — see `AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL`, which replaces the text while keeping the code.
+
+**Use error constructors, never `handleHDBError`** — Do not use the legacy `handleHDBError` helper. Throw `new ClientError(...)`, `new ServerError(...)`, or a descriptive error subclass with the appropriate `statusCode`, and let the top-level handler report it. Preserve an original error as `cause` only when its message and stack are safe to expose; YAML parser errors can contain credentials.
 
 ---
 

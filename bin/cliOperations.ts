@@ -306,6 +306,7 @@ export {
 	refreshExpiredOperationToken,
 	transportContext,
 	resolveGitTarget,
+	resolveGitRepo,
 	resolveCredentialHost,
 	deriveGitSecretName,
 };
@@ -628,12 +629,18 @@ const PREPARE_OPERATION: any = {
  */
 function buildRequest(): any {
 	const req: any = {};
+	// Each value as typed, before JSON parsing, for a client-side flow whose arguments are opaque text
+	// (`harper deploy setup=true branch=1.0`). Non-enumerable so it never reaches a request body or a
+	// log: the raw strings include `auth_password=` and every other credential argument.
+	const rawArgs: Record<string, string> = {};
+	Object.defineProperty(req, '_rawArgs', { value: rawArgs, enumerable: false, writable: true });
 	for (const arg of process.argv.slice(2)) {
 		if (OP_ALIASES.hasOwnProperty(arg)) {
 			req.operation = OP_ALIASES[arg];
 		} else if (arg.includes('=')) {
 			let [first, ...rest] = arg.split('=');
 			let restStr: any = rest.join('=');
+			rawArgs[first] = restStr;
 
 			if (!RAW_STRING_FIELDS.has(first)) {
 				try {
