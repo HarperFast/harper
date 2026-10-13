@@ -94,7 +94,6 @@ if (list) {
 			const env: NodeJS.ProcessEnv = {
 				...process.env,
 				HARPER_UNIT_RESULTS: results,
-				HARPER_UNIT_SELECTION_CONFIG: config,
 			};
 			delete env.MOCHA_OPTIONS;
 			if (mode === 'source') env.NODE_OPTIONS = `${env.NODE_OPTIONS || ''} --conditions=typestrip`.trim();
