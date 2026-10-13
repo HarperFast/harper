@@ -426,6 +426,56 @@ describe('Replication confirmation failure after a local commit', () => {
 		assert.equal(await Second.get(`outer-${id}`), null);
 	});
 
+	for (const property of [
+		'message',
+		'statusCode',
+		'code',
+		'constructor',
+		'http_resp_msg',
+		'detail',
+		'message-symbol',
+		'message-object',
+	]) {
+		it(`removes a nested flag with ${property} diagnostics`, async () => {
+			const id = nextId();
+			registerConfirmation(() => Promise.reject(new ServerError('Nested peer timeout', 504)));
+			let innerError;
+			await assert.rejects(
+				transaction({}, async () => {
+					await Second.put({ id: `outer-${id}` });
+					try {
+						await confirmedWrite(`inner-${id}`);
+					} catch (error) {
+						innerError = error;
+						if (property === 'constructor') error.code = undefined;
+						if (property === 'message-symbol') error.message = Symbol('unreadable');
+						else if (property === 'message-object')
+							error.message = {
+								toString() {
+									throw new Error('Coercion failed');
+								},
+							};
+						else
+							Object.defineProperty(error, property, {
+								get() {
+									throw new Error('Diagnostic is unreadable');
+								},
+							});
+						throw error;
+					}
+				}),
+				(error) => {
+					assert.strictEqual(error.replicationUnconfirmed, undefined);
+					assert.strictEqual(error.retryable, false);
+					assert.strictEqual(error.cause, innerError);
+					return true;
+				}
+			);
+			assert.strictEqual((await First.get(`inner-${id}`)).id, `inner-${id}`);
+			assert.equal(await Second.get(`outer-${id}`), null);
+		});
+	}
+
 	it('retains a nested commit outcome before any later application step was issued', async () => {
 		const id = nextId();
 		let laterStepRan = false;
@@ -441,6 +491,29 @@ describe('Replication confirmation failure after a local commit', () => {
 		assert.strictEqual(laterStepRan, false);
 		assert.strictEqual((await First.get(id)).id, id);
 		assert.equal(await Second.get(`later-${id}`), null);
+	});
+
+	it('keeps an inner flag with unreadable diagnostics when there are no outer writes to abort', async () => {
+		const id = nextId();
+		registerConfirmation(() => Promise.reject(new ServerError('Nested peer timeout', 504)));
+		let innerError;
+		await assert.rejects(
+			transaction({}, async () => {
+				try {
+					await confirmedWrite(id);
+				} catch (error) {
+					innerError = error;
+					Object.defineProperty(error, 'message', {
+						get() {
+							throw new Error('Diagnostic is unreadable');
+						},
+					});
+					throw error;
+				}
+			}),
+			(error) => error === innerError && error.replicationUnconfirmed === true && error.retryable === false
+		);
+		assert.strictEqual((await First.get(id)).id, id);
 	});
 
 	it('preserves the flag when the callback awaited its own failed commit', async () => {
@@ -519,6 +592,45 @@ describe('Replication confirmation failure after a local commit', () => {
 				if (rollback) assert.equal(await Second.get(`outer-stream-${id}`), null);
 			});
 		}
+	}
+
+	for (const property of ['replicationUnconfirmed', 'retryable']) {
+		it(`retains a REST error response when ${property} cannot be read`, async () => {
+			const failure = new ServerError('Diagnostic failure', 504);
+			failure.code = 'DIAGNOSTIC_FAILURE';
+			Object.defineProperty(failure, property, {
+				get() {
+					throw new Error('Outcome metadata is unreadable');
+				},
+			});
+			class Diagnostic extends Resource {
+				static loadAsInstance = false;
+				async post() {
+					throw failure;
+				}
+			}
+			const resources = new Resources();
+			resources.set('Diagnostic', Diagnostic);
+			let listener;
+			handleApplication({
+				resources,
+				options: { getAll: () => ({ webSocket: false }) },
+				routeFor: () => ({ urlPath: `/diagnostic-outcome-${property}` }),
+				server: { http: (handler) => (listener = handler) },
+			});
+			const response = await listener({
+				method: 'POST',
+				url: '/Diagnostic/error',
+				pathname: '/Diagnostic/error',
+				ip: '203.0.113.7',
+				user: { username: 'admin', role: { permission: { super_user: true } } },
+				headers: { asObject: {}, get: () => undefined },
+			});
+			assert.strictEqual(response.status, 504);
+			assert.strictEqual(JSON.parse(response.body).title, 'Diagnostic failure');
+			assert.strictEqual(JSON.parse(response.body).code, 'DIAGNOSTIC_FAILURE');
+			assert.strictEqual(JSON.parse(response.body).replicationUnconfirmed, undefined);
+		});
 	}
 
 	for (const rollback of [false, true]) {

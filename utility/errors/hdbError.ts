@@ -126,10 +126,12 @@ export class ReplicationConfirmationError extends ServerError {
 }
 
 export function withoutReplicationUnconfirmed(error: any): ServerError {
-	let responseMessage = error.http_resp_msg;
+	const message = readErrorProperty(error, 'message');
+	const code = readErrorProperty(error, 'code') ?? readErrorProperty(readErrorProperty(error, 'constructor'), 'name');
+	let responseMessage = readErrorProperty(error, 'http_resp_msg');
 	try {
 		if (Array.isArray(responseMessage)) {
-			responseMessage = { error: responseMessage, code: error.code, retryable: false };
+			responseMessage = { error: responseMessage, code, retryable: false };
 		} else if (responseMessage && typeof responseMessage === 'object') {
 			responseMessage = { ...responseMessage, retryable: false };
 			delete responseMessage.replicationUnconfirmed;
@@ -137,13 +139,19 @@ export function withoutReplicationUnconfirmed(error: any): ServerError {
 	} catch {
 		responseMessage = undefined;
 	}
-	return Object.assign(new ServerError(error.message, error.statusCode), {
-		cause: error,
-		code: error.code ?? error.constructor?.name,
-		http_resp_msg: responseMessage,
-		detail: error.detail,
-		retryable: false,
-	});
+	return Object.assign(
+		new ServerError(
+			typeof message === 'string' ? message : 'Replication confirmation failed',
+			readErrorProperty(error, 'statusCode')
+		),
+		{
+			cause: error,
+			code,
+			http_resp_msg: responseMessage,
+			detail: readErrorProperty(error, 'detail'),
+			retryable: false,
+		}
+	);
 }
 
 /** Retryable admission failure when a derived index cannot meet a write or query lag budget. */
