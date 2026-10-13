@@ -104,7 +104,11 @@ function parseAllowEntry(entry: unknown): HostRule {
  * with an allow-list, only a matching host. The metadata checks run first, so listing a metadata
  * host does not admit it.
  */
-export function checkHttpFetchTarget(url: URL, allow?: readonly HostRule[]): void {
+export function checkHttpFetchTarget(
+	url: URL,
+	allow?: readonly HostRule[],
+	operationsApiPorts: readonly number[] = []
+): void {
 	if (url.protocol !== 'http:' && url.protocol !== 'https:') {
 		throw new Error(`http_fetch requires an http(s) URL; got ${url.protocol}`);
 	}
@@ -118,7 +122,11 @@ export function checkHttpFetchTarget(url: URL, allow?: readonly HostRule[]): voi
 	if (family && LINK_LOCAL_ADDRESSES.check(address, addressType)) {
 		throw new Error(`http_fetch blocked by link-local policy: ${host}`);
 	}
-	if (allow && !allow.some((rule) => hostRuleMatches(rule, host, effectivePort(url)))) {
+	const port = effectivePort(url);
+	if (operationsApiPorts.includes(port)) {
+		throw new Error(`http_fetch blocked by operations API port policy: ${port}`);
+	}
+	if (allow && !allow.some((rule) => hostRuleMatches(rule, host, port))) {
 		throw new Error(`http_fetch refused by policy: ${url.host} is not in agent.httpFetch.allow`);
 	}
 }
@@ -138,14 +146,21 @@ function effectivePort(url: URL): number {
 	return url.protocol === 'https:' ? 443 : 80;
 }
 
-export function buildHttpFetchTool(config: HttpFetchConfig = true): AgentTool | undefined {
+export function buildHttpFetchTool(
+	config: HttpFetchConfig = true,
+	operationsApiPorts: readonly number[] = []
+): AgentTool | undefined {
 	if (config === false) return undefined;
 	const allowEntries = config === true ? undefined : config.allow;
 	if (allowEntries?.length === 0) return undefined;
 	const allow = allowEntries && compileAllowList(allowEntries);
+	const blockedOperationsApiPorts = [...new Set(operationsApiPorts)].filter(
+		(port) => Number.isInteger(port) && port >= 1 && port <= 65_535
+	);
+	const operationsApiPolicy = "The instance's Operations API ports are always refused, including through redirects.";
 	const description = allowEntries
-		? `Issue an HTTP request from the Harper server. Operator policy limits it to these hosts: ${allowEntries.join(', ')} (a "*." entry covers subdomains; an entry without a port covers any port). Requests to any other host, including redirects to one, are refused.`
-		: "Issue an HTTP request from the Harper server. Useful for hitting the agent's own components on localhost and pulling reference pages.";
+		? `Issue an HTTP request from the Harper server. Operator policy limits it to these hosts: ${allowEntries.join(', ')} (a "*." entry covers subdomains; an entry without a port covers any port). Requests to any other host, including redirects to one, are refused. ${operationsApiPolicy}`
+		: `Issue an HTTP request from the Harper server. Useful for hitting the agent's own components on localhost and pulling reference pages. ${operationsApiPolicy}`;
 	return {
 		def: {
 			name: HTTP_FETCH_TOOL_NAME,
@@ -162,11 +177,16 @@ export function buildHttpFetchTool(config: HttpFetchConfig = true): AgentTool | 
 				required: ['url'],
 			},
 		},
-		handler: (args: any, ctx: AgentToolContext) => httpFetch(args, ctx, allow),
+		handler: (args: any, ctx: AgentToolContext) => httpFetch(args, ctx, allow, blockedOperationsApiPorts),
 	};
 }
 
-async function httpFetch(args: any, ctx: AgentToolContext, allow: readonly HostRule[] | undefined) {
+async function httpFetch(
+	args: any,
+	ctx: AgentToolContext,
+	allow: readonly HostRule[] | undefined,
+	operationsApiPorts: readonly number[]
+) {
 	const url = String(args.url ?? '');
 	if (!/^https?:\/\//i.test(url)) throw new Error('http_fetch requires an http(s) URL');
 	let parsed: URL;
@@ -175,7 +195,7 @@ async function httpFetch(args: any, ctx: AgentToolContext, allow: readonly HostR
 	} catch {
 		throw new Error(`http_fetch could not parse URL: ${url}`);
 	}
-	checkHttpFetchTarget(parsed, allow);
+	checkHttpFetchTarget(parsed, allow, operationsApiPorts);
 	const timeoutMs = Math.min(args.timeoutMs ?? DEFAULT_TIMEOUT_MS, 120_000);
 	const localAbort = new AbortController();
 	const timer = setTimeout(() => localAbort.abort(new Error(`http_fetch timed out after ${timeoutMs}ms`)), timeoutMs);
@@ -189,7 +209,8 @@ async function httpFetch(args: any, ctx: AgentToolContext, allow: readonly HostR
 				body: args.body,
 				signal,
 			},
-			allow
+			allow,
+			operationsApiPorts
 		);
 		const buffer = await readCapped(response, MAX_BYTES);
 		return {
@@ -217,7 +238,8 @@ interface HopRequest {
 async function fetchCheckingRedirects(
 	initial: URL,
 	request: HopRequest,
-	allow: readonly HostRule[] | undefined
+	allow: readonly HostRule[] | undefined,
+	operationsApiPorts: readonly number[]
 ): Promise<Response> {
 	let url = initial;
 	let { method, body } = request;
@@ -234,7 +256,7 @@ async function fetchCheckingRedirects(
 		} catch {
 			throw new Error(`http_fetch could not parse redirect Location: ${location}`);
 		}
-		checkHttpFetchTarget(next, allow);
+		checkHttpFetchTarget(next, allow, operationsApiPorts);
 		if (
 			((response.status === 301 || response.status === 302) && method === 'POST') ||
 			(response.status === 303 && method !== 'GET' && method !== 'HEAD')
