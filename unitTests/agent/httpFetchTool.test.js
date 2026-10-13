@@ -306,10 +306,7 @@ describe('agent/httpFetchTool request handling', () => {
 
 	it('refuses a redirect to the configured operations API port before connecting', async () => {
 		const operationsApiPort = secondAllowedServer.address().port;
-		const tool = buildHttpFetchTool(
-			{ allow: [allowedBase.slice(7), secondAllowedBase.slice(7)] },
-			[operationsApiPort]
-		);
+		const tool = buildHttpFetchTool({ allow: [allowedBase.slice(7), secondAllowedBase.slice(7)] }, [operationsApiPort]);
 		const target = encodeURIComponent(`${secondAllowedBase}/secret`);
 		await assert.rejects(call(tool, { url: `${allowedBase}/to?url=${target}` }), /operations API port/);
 	});
