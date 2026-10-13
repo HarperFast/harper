@@ -202,6 +202,64 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 		}
 	});
 
+	it('merges certified origin floors apart from the applied cursors, writing on a floor-only rise', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		const txnStream = {};
+		const endTxn = (localTime, cursors, floors, withoutOnFailure = false) => {
+			const event = { type: 'end_txn', localTime, timestamp: localTime, remoteNodeIds: [46], txnStream };
+			if (!withoutOnFailure) event.onFailure = () => false;
+			event.onCommit = () => {
+				event.originCursors = cursors;
+				event.originFloors = floors;
+			};
+			return event;
+		};
+		const ReplicatedTable = makeReplicatedTable(
+			'SeqCursorFloorTable',
+			[
+				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
+				endTxn(now, [[7, now - 5]], [[7, now - 20, true]]),
+				endTxn(now, undefined, [[7, now - 10, false]]),
+				endTxn(now, undefined, [[7, now - 10, true]]),
+				endTxn(now, undefined, [
+					[7, now - 15, true],
+					[8, now - 30, false],
+				]),
+				endTxn(now, undefined, [[8, now - 30, false]]),
+				endTxn(now, undefined, [[8, now - 1, true]], true),
+				endTxn(now, undefined, [[8, NaN, true]]),
+				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now + 1 },
+				endTxn(now + 1, undefined, undefined),
+			],
+			held
+		);
+		const spy = spyOnCursorWrites(ReplicatedTable);
+		try {
+			await waitFor(() => readCursor(ReplicatedTable, 46)?.seqId === now + 1, {
+				timeout: 5000,
+				message: 'the frame after the floor frames recorded its sequence id',
+			});
+			const cursor = readCursor(ReplicatedTable, 46);
+			assert.deepEqual(
+				cursor.nodes.map((node) => ({ ...node })),
+				[
+					{ id: 7, originLogKey: now - 5, closedFloor: now - 10, relayable: true },
+					{ id: 8, closedFloor: now - 30, relayable: false },
+				]
+			);
+			assert.equal(
+				spy.staged.length,
+				5,
+				'an unchanged floor, a stream without onFailure and a malformed floor each write no cursor'
+			);
+		} finally {
+			spy.restore();
+			release();
+		}
+	});
+
 	it('repairs a scalar whose write failed, on a repeat frame whose origin cursors did not change', async function () {
 		let release;
 		const held = new Promise((resolve) => (release = resolve));

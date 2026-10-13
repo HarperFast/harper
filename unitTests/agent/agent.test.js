@@ -212,3 +212,20 @@ describe('agent/agent buildStaticSystemPrompt config scope line', () => {
 		assert.match(buildStaticSystemPrompt(base, false), /- config — unavailable/);
 	});
 });
+
+describe('agent/agent mergeConfig maxTokens', () => {
+	it('defaults to 16384', () => {
+		assert.strictEqual(mergeConfig({}).maxTokens, 16384);
+	});
+
+	it('accepts a positive integer from YAML or an env string', () => {
+		assert.strictEqual(mergeConfig({ maxTokens: 32000 }).maxTokens, 32000);
+		assert.strictEqual(mergeConfig({ maxTokens: '8000' }).maxTokens, 8000);
+	});
+
+	it('falls back to the default for anything else', () => {
+		for (const maxTokens of [0, -5, 1.5, true, [8192], '', 'abc', null, 8n, { value: 1 }]) {
+			assert.strictEqual(mergeConfig({ maxTokens }).maxTokens, 16384, String(maxTokens));
+		}
+	});
+});

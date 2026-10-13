@@ -1,0 +1,6 @@
+# Ops-API tables are not REST-exported; this one is.
+type Gadget @table @export {
+	id: ID @primaryKey
+	name: String @indexed
+	phase: String
+}

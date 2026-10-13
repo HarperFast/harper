@@ -184,6 +184,14 @@
 				"preloadRequire": {
 					"oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
 					"description": "Module(s) to preload via --require (CJS) before any Harper or app module on each worker thread, for agents that document the require path (e.g. 'dd-trace/init', Dynatrace OneAgent). Bare specifiers resolve against installed components' node_modules; absolute paths are also accepted."
+				},
+				"v8Flags": {
+					"oneOf": [
+						{ "type": "null" },
+						{ "type": "string", "pattern": "^\\s*(--|$)" },
+						{ "type": "array", "items": { "type": "string", "pattern": "^\\s*(--|$)" } }
+					],
+					"description": "V8 flag(s), each starting with '--' (e.g. '--optimize-for-size'), applied with v8.setFlagsFromString on the main thread before the first worker thread starts, so every worker thread runs with them (the main thread's isolate already exists, so flags V8 reads at isolate creation do not change it). For flags Node refuses in NODE_OPTIONS. Unlike the node CLI, this does not apply flags' implications (list implied flags such as --max-semi-space-size=1 for --optimize-for-size), V8 only reports unrecognized flags on stderr, and a contradictory set can abort the process at startup. Not applied under Bun. Takes effect on process start."
 				}
 			}
 		},
@@ -714,6 +722,11 @@
 					"type": "integer",
 					"minimum": 1,
 					"description": "Maximum tool-call iterations per agent run. Default: 50"
+				},
+				"maxTokens": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Output-token cap sent with every model request the agent makes. Must not exceed the model's own output limit, or the provider rejects the request. A reply cut off at this cap ends the run with status error. Tunable at runtime via set_agent_config; a change applies from the next run. Default: 16384"
 				},
 				"maxToolResultBytes": {
 					"type": "integer",

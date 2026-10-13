@@ -14,8 +14,8 @@ Harper is a Node.js unified development platform that fuses a document database 
 
 ```bash
 # Build
-npm run build              # TypeScript → dist/ via tsconfig.build.json
-npm run build:watch        # Incremental watch build
+npm run build              # TypeScript → dist/ via build-tools/build-dist.mjs (comment-free, Latin-1 JS; .d.ts keep JSDoc)
+npm run build:watch        # Incremental watch build (plain tsc: keeps comments and non-Latin-1 text)
 
 # Lint / Format
 npm run lint               # oxlint (warnings = errors)
@@ -126,7 +126,7 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 - **`build-tools/`** — build-pipeline scripts. [build-tools/DESIGN.md](build-tools/DESIGN.md) covers the published artifacts. Tests: `unitTests/build-tools/`; run `npm run test:unit:main` after changes.
 - **`dev/`** — single dev utility (`sync-commits.js`) for cross-repo commit syncing. Not runtime.
 - **`integrationTests/`** — end-to-end tests against a built distribution. Run with `npm run test:integration` / `npm run test:integration:all`. Subdirs mirror source. See `integrationTests/README.md`.
-- **`unitTests/`** — Mocha unit tests; subdir per source layer. Run with `npm run test:unit:<layer>`.
+- **`unitTests/`** — Mocha unit tests; subdir per source layer. Run with `npm run test:unit:<layer>`. **See [unitTests/AGENTS.md](unitTests/AGENTS.md)** for test-writing pitfalls (thread-global capture + absolute count).
 - **`static/`** — assets only: `defaultConfig.yaml`, `ascii_logo.txt`.
 
 ### Top-level docs to consult
@@ -164,13 +164,15 @@ For megafiles and complex subsystems, jump to the section index instead of readi
 
 **Resource discovery** — A component's config file maps glob patterns to URL paths. Files matching a pattern become routable resources automatically; no explicit route registration is needed.
 
-**Lazy loading** — GraphQL, secure sandboxing, and tarball extraction are imported on demand. Do not add top-level imports for these modules.
+**Lazy loading** — GraphQL, secure sandboxing, and tarball extraction are imported on demand. Do not add top-level imports for these modules. Every thread loads the startup module graph, so packages only some features need are also loaded on first use: lmdb (`require('lmdb')` where an LMDB environment is opened; type imports must be `import type`, since type stripping keeps `import { type X }` as a load), PKI.js/asn1js/easy-ocsp (only through `loadPkijs()`, which applies the Ed25519 patch first), node-forge, systeminformation and moment; lodash is imported per method (`lodash/cloneDeep.js`). `unitTests/server/startupDependencies.test.js` fails if one of the startup modules it loads (those that used to import them) loads one of them again. Source maps are off by default (`NODE_OPTIONS=--enable-source-maps` turns them on in every thread).
 
 **TypeScript + type stripping** — Source files are `.ts` but Node.js runs them directly via type stripping in development. The `dist/` directory is the compiled production artifact. Both `.ts` and legacy `.js` files coexist; new code should be `.ts`.
 
 **Minimal dependencies** — `dependencies.md` documents the rationale for every dependency. Adding a new dependency requires justification; implementing something ourselves is often preferred.
 
 **An error's class name is its error code, and it is public** — Harper's error taxonomy (`ClientError`, `ServerError`, and the rest of `utility/errors/hdbError.ts`) is a contract clients code against: the class name is documented, clients branch on it, and it guides support. So `errorToString`'s `ClassName: message` rendering is deliberate wherever a client reads it — terminal HTTP error bodies (`server/http.ts`), REST WebSocket close reasons — and `streamErrorRecord` (`server/serverHelpers/contentTypes.ts`) publishes the class name in its own `error` field for the same reason. Do not "sanitize" it away as an internal implementation detail, and treat renaming an error class as a breaking change. What must not reach a client is an internal fault's _message_ — see `AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL`, which replaces the text while keeping the code.
+
+**Use error constructors, never `handleHDBError`** — Do not use the legacy `handleHDBError` helper. Throw `new ClientError(...)`, `new ServerError(...)`, or a descriptive error subclass with the appropriate `statusCode`, and let the top-level handler report it. Preserve an original error as `cause` only when its message and stack are safe to expose; YAML parser errors can contain credentials.
 
 ---
 

@@ -217,6 +217,23 @@ async function connectAll(cmd: ConnectCommand) {
 	await Promise.all(Array.from({ length: cmd.concurrency }, worker));
 }
 
+function disconnectAll(mode: 'graceful' | 'abrupt') {
+	return Promise.all(
+		[...sockets].map(
+			(ws) =>
+				new Promise<void>((resolve) => {
+					if (ws.readyState === WebSocket.CLOSED) return resolve();
+					ws.once('close', () => resolve());
+					if (mode === 'abrupt') return ws.terminate();
+					// a slow consumer's paused socket would never read the server's close frame
+					(ws as any)._socket?.resume();
+					if (ws.protocol === 'mqtt') ws.send(mqttPacket.generate({ cmd: 'disconnect' } as any));
+					ws.close(1000);
+				})
+		)
+	);
+}
+
 let padding = '';
 function makePayload(bytes: number, seq: number) {
 	const prefix = `{"t":${nowMs().toFixed(3)},"s":${seq},"p":"`;
@@ -342,6 +359,9 @@ process.on('message', async (message: any) => {
 			case 'topics':
 				process.send!({ reply: message.cmd, topicSubscribers: Array.from(topicSubscribers, (count) => count ?? 0) });
 				return;
+			case 'disconnect':
+				await disconnectAll(message.mode);
+				break;
 			case 'close':
 				for (const ws of sockets) ws.terminate();
 				publisherSocket?.terminate();

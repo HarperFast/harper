@@ -27,7 +27,7 @@ import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 import * as crypto from 'node:crypto';
-import { cloneDeep } from 'lodash';
+import cloneDeep from 'lodash/cloneDeep.js';
 import { getBackupDirPath } from './configHelpers.ts';
 import { atomicWriteFile, renameWithRetry } from './configUtils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';

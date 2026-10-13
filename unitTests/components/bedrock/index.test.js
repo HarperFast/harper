@@ -111,6 +111,22 @@ describe('BedrockBackend', () => {
 			assert.ok(body.max_tokens > 0);
 		});
 
+		it('reports an Anthropic reply cut short by the context window or a refusal as not finished', async () => {
+			for (const [stopReason, finishReason] of [
+				['max_tokens', 'length'],
+				['model_context_window_exceeded', 'length'],
+				['refusal', 'content_filter'],
+			]) {
+				const { sdk } = fakeSdk(() =>
+					jsonBodyResponse({ content: [{ type: 'text', text: 'partial' }], stop_reason: stopReason, usage: {} })
+				);
+				_injectSdkForTests(sdk);
+				const b = new BedrockBackend({ region: 'us-east-1', model: 'anthropic.claude-opus-4-v1:0' });
+				const result = await b.generate('hello', { accounting: ACCOUNTING });
+				assert.strictEqual(result.output.finishReason, finishReason, stopReason);
+			}
+		});
+
 		it('dispatches meta.* models to Llama prompt shape', async () => {
 			const { sdk, sent } = fakeSdk(() =>
 				jsonBodyResponse({

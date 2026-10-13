@@ -139,6 +139,9 @@ async function setAgentConfig(op: any, deps: OperationDeps) {
 			throw new ClientError(`agent.${key} is fixed at startup; change it in the config file and restart`, 400);
 		}
 	}
+	if (op?.maxTokens !== undefined && !(Number.isSafeInteger(op.maxTokens) && op.maxTokens > 0)) {
+		throw new ClientError('maxTokens must be a positive integer', 400);
+	}
 	if (op?.maxToolResultBytes !== undefined && !isValidMaxToolResultBytes(op.maxToolResultBytes)) {
 		throw new ClientError(
 			`maxToolResultBytes must be an integer from ${MIN_MAX_TOOL_RESULT_BYTES} to ${MAX_MAX_TOOL_RESULT_BYTES}`,
@@ -151,6 +154,7 @@ async function setAgentConfig(op: any, deps: OperationDeps) {
 		'provider',
 		'model',
 		'maxTurns',
+		'maxTokens',
 		'maxToolResultBytes',
 		'maxCostUsd',
 		'autoApprove',

@@ -49,14 +49,8 @@ export async function installModules(req: any) {
 				() => nonInteractiveSpawn(project, 'npm', args, projectPath),
 				{ isOwnerAlive: (owner) => owner.pid !== process.pid || isThreadRunning(owner.threadId) }
 			);
-			stdout = stdout ? stdout.replace('\n', '') : null;
+			responseObject[project].npm_output = stdout ? parseNpmReport(stdout) : null;
 			stderr = stderr ? stderr.replace('\n', '') : null;
-
-			try {
-				responseObject[project].npm_output = JSON.parse(stdout);
-			} catch {
-				responseObject[project].npm_output = stdout;
-			}
 
 			try {
 				responseObject[project].npm_error = JSON.parse(stderr);
@@ -76,6 +70,22 @@ export async function installModules(req: any) {
 	harperLogger.info(`finished installModules with response ${responseObject}`);
 	responseObject.warning = deprecationWarning;
 	return responseObject;
+}
+
+// npm before 11.20 prints its human-readable dry-run diff ("add <name> <version>") ahead of the --json
+// report; the report is the last document that starts a line with '{'
+function parseNpmReport(stdout: string) {
+	try {
+		return JSON.parse(stdout);
+	} catch {
+		const reportStart = stdout.lastIndexOf('\n{') + 1;
+		if (reportStart > 0) {
+			try {
+				return JSON.parse(stdout.slice(reportStart));
+			} catch {}
+		}
+		return stdout.replace('\n', '');
+	}
 }
 
 function parseNPMStdErr(stderr: string) {

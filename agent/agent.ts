@@ -45,6 +45,7 @@ const log = harperLogger.loggerWithTag('agent');
 const DEFAULT_CONFIG: AgentConfig = {
 	enabled: false,
 	maxTurns: 50,
+	maxTokens: 16384,
 	maxToolResultBytes: DEFAULT_MAX_TOOL_RESULT_BYTES,
 	maxCostUsd: 5,
 	autoApprove: false,
@@ -64,6 +65,7 @@ interface StartOpts {
 	provider?: string;
 	model?: string;
 	maxTurns?: number;
+	maxTokens?: unknown;
 	maxToolResultBytes?: unknown;
 	maxCostUsd?: number;
 	autoApprove?: boolean;
@@ -189,7 +191,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			maxTurns: liveConfig.maxTurns,
 			autoApprove: liveConfig.autoApprove,
 			signal: controller.signal,
-			generateOpts: { model: liveConfig.model },
+			generateOpts: { model: liveConfig.model, maxTokens: liveConfig.maxTokens },
 			systemPrompt: composeSystemPrompt(staticSystemPrompt, liveConfig.systemPromptAppend),
 			maxToolResultBytes: liveConfig.maxToolResultBytes,
 		})
@@ -381,6 +383,7 @@ export function mergeConfig(opts: StartOpts): AgentConfig {
 		...(opts.provider !== undefined && { provider: String(opts.provider) }),
 		...(opts.model !== undefined && { model: String(opts.model) }),
 		...(opts.maxTurns !== undefined && { maxTurns: Number(opts.maxTurns) }),
+		...(opts.maxTokens !== undefined && { maxTokens: resolveMaxTokens(opts.maxTokens) }),
 		...(opts.maxToolResultBytes !== undefined && {
 			maxToolResultBytes: resolveMaxToolResultBytes(opts.maxToolResultBytes),
 		}),
@@ -393,6 +396,13 @@ export function mergeConfig(opts: StartOpts): AgentConfig {
 		...(opts.httpFetch !== undefined && { httpFetch: resolveHttpFetchOrDisable(opts.httpFetch) }),
 		...(opts.systemPromptAppend !== undefined && { systemPromptAppend: String(opts.systemPromptAppend) }),
 	};
+}
+
+function resolveMaxTokens(raw: unknown): number {
+	const maxTokens = typeof raw === 'string' ? Number(raw) : raw;
+	if (Number.isSafeInteger(maxTokens) && (maxTokens as number) > 0) return maxTokens as number;
+	log.error?.(`agent.maxTokens must be a positive integer, got ${String(raw)}; using ${DEFAULT_CONFIG.maxTokens}`);
+	return DEFAULT_CONFIG.maxTokens;
 }
 
 function resolveMaxToolResultBytes(raw: unknown): number {

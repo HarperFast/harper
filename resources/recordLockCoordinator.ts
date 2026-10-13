@@ -293,6 +293,13 @@ export interface ClusterLockTransport {
 	 */
 	homeMap(database: string): LockHomeMap | undefined;
 	/**
+	 * Current positive safe-integer coordination incarnation, independent of home-map readiness.
+	 * Read once at construction, only on the owning thread; never refreshes the ownership baseline.
+	 * Must use the same incarnation as `homeMap()` whenever that map is available.
+	 * Unknown, invalid or unavailable values fall back to the incarnation in `homeMap()`.
+	 */
+	coordinationIncarnation?(): number | undefined;
+	/**
 	 * Overrides core's cold-start grant quarantine (§4.3). Set it only where a previous incarnation
 	 * of this process provably issued nothing — a fresh database, a first start, or a test. Because the
 	 * same attestation enables the virgin-key freshness fast path, it must prove that no earlier
@@ -1045,10 +1052,14 @@ export class LockCoordinator {
 		try {
 			if (options.transport.ownsCoordination()) {
 				this.#ownedSinceMono = this.#monotonic();
-				// The incarnation it has been coordinating under, so the first grant does not read its own
-				// construction as a takeover. Undefined when there is no map yet, which `#ownershipHorizon`
-				// treats as a takeover — the conservative direction.
-				this.#coordinatingIncarnation = options.transport.homeMap(options.database)?.homeIncarnation;
+				let incarnation: number | undefined;
+				try {
+					incarnation = options.transport.coordinationIncarnation?.();
+				} catch {}
+				this.#coordinatingIncarnation =
+					Number.isSafeInteger(incarnation) && incarnation > 0
+						? incarnation
+						: options.transport.homeMap(options.database)?.homeIncarnation;
 			}
 		} catch {
 			// A transport that cannot answer yet is not owning yet; `#ownershipHorizon` will observe it.
@@ -1128,15 +1139,15 @@ export class LockCoordinator {
 		// off the new transport and would otherwise re-waive a horizon this coordinator had already lost
 		// to a takeover.
 		//
-		// Only what this coordinator actually OBSERVED may override that, though. `undefined` on either
-		// of these means "never saw it" — a coordinator built on a non-owning thread, or before a map
-		// was available — and the successor has just read the new transport, which is not less current.
-		// Carrying the blank over it re-armed a quarantine on a node that had never stopped coordinating.
+		// Carry the clock and its incarnation as one baseline, including an unknown incarnation. The
+		// successor's freshly sampled identity cannot vouch for an older, unproven ownership interval.
+		// If this coordinator observed neither ownership nor identity, keep the successor's baseline.
 		if (this.#ownedSinceMono !== undefined) {
 			successor.#ownedSinceMono = this.#ownedSinceMono;
 			successor.#quarantineWaived = this.#quarantineWaived;
 		}
-		if (this.#coordinatingIncarnation !== undefined) successor.#coordinatingIncarnation = this.#coordinatingIncarnation;
+		if (this.#ownedSinceMono !== undefined || this.#coordinatingIncarnation !== undefined)
+			successor.#coordinatingIncarnation = this.#coordinatingIncarnation;
 		successor.#dependencySets = this.#dependencySets;
 		successor.#everDelegated.copyFrom(this.#everDelegated);
 		successor.#freshnessGeneration = this.#freshnessGeneration;

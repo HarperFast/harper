@@ -17,21 +17,15 @@ describe('certificateVerification/pkijs-ed25519-patch.ts', function () {
 	const RSA_OID = '1.2.840.113549.1.1.1'; // RSA for comparison
 
 	before(function () {
-		// Load PKI.js before the patch module (patch applies on load)
-		pkijs = require('pkijs');
 		patchModule = require('#src/security/certificateVerification/pkijs-ed25519-patch');
+		pkijs = patchModule.loadPkijs();
 	});
 
 	describe('patch module exports', function () {
-		it('should export applyEd25519Patch function', function () {
-			assert.strictEqual(typeof patchModule.applyEd25519Patch, 'function');
-		});
-
-		it('should apply patch without errors', function () {
-			// The patch should be idempotent - can be called multiple times safely
-			assert.doesNotThrow(() => {
-				patchModule.applyEd25519Patch();
-			});
+		it('should load the same patched PKI.js module on every call', function () {
+			const originalGetHashAlgorithm = pkijs.CryptoEngine.prototype.getHashAlgorithm;
+			assert.strictEqual(patchModule.loadPkijs(), require('pkijs'));
+			assert.strictEqual(pkijs.CryptoEngine.prototype.getHashAlgorithm, originalGetHashAlgorithm);
 		});
 	});
 

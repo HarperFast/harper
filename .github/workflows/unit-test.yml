@@ -47,6 +47,9 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
+          # As in integration-tests.yml: the 26 leg floats to the newest 26.x rather than a cached one, so
+          # tests that only fail on the newest runtime (nodeAdapterMiddleware's pipe fast-path case) run there.
+          check-latest: ${{ matrix.node-version == 26 }}
 
       - name: Install dependencies
         timeout-minutes: 6

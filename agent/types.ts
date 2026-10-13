@@ -87,6 +87,7 @@ export interface AgentConfig {
 	provider?: string;
 	model?: string;
 	maxTurns: number;
+	maxTokens: number;
 	/** Largest tool result, in bytes of serialized JSON, the loop appends to the transcript. */
 	maxToolResultBytes: number;
 	maxCostUsd: number;
