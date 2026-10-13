@@ -32,9 +32,11 @@ npm link harper
 
 All installed components have `harper` automatically linked.
 
-Whether you reach them as globals or as `harper` imports, `tables`, `databases`, and the other APIs are the **same live, process-wide objects** — Harper runs as a single process, so a record written through one component is immediately visible to every other. The automatic link points `harper` at the **running** installation (not a separately-installed copy), so `import { tables } from 'harper'` resolves to that live runtime from any module Harper loads. Under the default `vm-current-context` loader (and under `native`), application module contexts are seeded from the same process globals rather than given an isolated set of these objects. The `vm` and `compartment` loaders build a custom global object per application — see [Module Loader Modes](./module-loading.md#module-loader-modes).
+Harper APIs normally reach the shared instance data, whether used as globals or as `harper` imports. The automatic link points `harper` at the **running** installation, so an import resolves to that live runtime from modules Harper loads. Under the default `vm-current-context` loader (and under `native`), applications in the same worker share its globals. The `vm` and `compartment` loaders build a custom global object per application — see [Module Loader Modes](./module-loading.md#module-loader-modes).
 
-This includes bundler-built code. A Vite **server-side-render** entry, for example, can read data straight from Harper and render it into the HTML (no client-side fetch):
+Two exceptions matter in v5.3.0 and later. An [isolated application](./applications.md#isolated-applications) has its own worker and globals, while still using shared databases by default. With [branched databases](./applications.md#branched-databases), the application's `harper` import of `databases` resolves branched names to its private forks, and its `tables` import follows a fork of `data`. Bare `databases` and `tables` globals still reach the base databases. Records are shared only between applications accessing the same base database; forked writes stay private to that fork.
+
+Bundler-built server code can also import Harper APIs from the running installation. A Vite **server-side-render** entry, for example, can read data straight from Harper and render it into the HTML (no client-side fetch):
 
 ```typescript
 import { tables } from 'harper';
@@ -253,7 +255,7 @@ Every call except `fork` is checked against [`applications.allowedSpawnCommands`
 
 ### One process per node: the `name` option
 
-Harper runs a pool of worker threads, and component code runs on each of them. Without coordination, a component that spawns a sidecar would start one per thread. Harper prevents that with a PID-file lock, which is why `name` is mandatory:
+Harper runs a pool of worker threads, and component code runs on each thread that loads its application; an isolated application runs only on its dedicated worker. Without coordination, a component that spawns a sidecar would start one per thread. Harper prevents that with a PID-file lock, which is why `name` is mandatory:
 
 - **`name` (string, required).** Spawning without it throws, on `fork` as well as the allowlisted functions.
 - The lock file is `<rootPath>/pids/<name>.pid`. Line 1 is the child's PID; line 2, when `version` was passed, is the version.

@@ -34,7 +34,7 @@ http:
 ```
 
 - `sessionAffinity` — Route requests from same client to same worker thread (`ip` or header name)
-- `compressionThreshold` — Response size threshold for Brotli compression; _Default_: `1200` (bytes)
+- `compressionThreshold` — Response size threshold (bytes) for Brotli compression; `0` disables compression; _Default_: `0`
 - `cors` — Enable CORS; _Default_: `true`
 - `corsAccessList` — Allowed domains for CORS requests
 - `corsAccessControlAllowHeaders` — `Access-Control-Allow-Headers` value for OPTIONS preflight
@@ -62,7 +62,8 @@ threads:
 ```
 
 - `count` — Number of worker threads; _Default_: CPU count minus one
-- `maxHeapMemory` — Heap limit per thread (MB)
+- `maxHeapMemory` — Heap limit per thread (MB). When unset, each thread's limit is derived from available memory and the number of HTTP worker threads, including isolated applications' threads
+- `maxIsolated` <VersionBadge version="v5.3.0" /> — How many [isolated applications](../components/applications.md#isolated-applications) may run, each in a dedicated worker thread; _Default_: `8`. An isolated application past this limit is not loaded anywhere, and a `deploy_component` that would exceed it is refused with a `409`. `0` admits none. Dedicated threads are added to `count`, not taken from it, so a node runs up to `count` + `maxIsolated` HTTP worker threads. When `maxHeapMemory` is unset, they all count when Harper divides available memory into each thread's default heap limit. Each one lowers that limit for threads started afterward, until it reaches its 512 MB floor, after which more threads add to the total heap the node may use
 - `heapSnapshotNearLimit` — Write a `.heapsnapshot` file when a thread nears its heap limit (loadable in Chrome DevTools Memory tab); _Default_: `false`. See [Worker Thread Debugging](./debugging.md#heap-snapshots-near-the-limit)
 - `debug` — Enable Node.js inspector; sub-options: `port`, `startingPort`, `host`, `waitForDebugger`. See [Worker Thread Debugging](./debugging.md)
 - `preload` <VersionBadge version="v5.2.0" /> — Module, or list of modules, to load via Node's `--import` before any Harper or application module on each worker thread. Intended for instrumentation and APM agents. Worker threads only (not under Bun).
@@ -167,6 +168,17 @@ tls:
 - `certificateAuthority` — Path to CA file; _Default_: `<rootPath>/keys/ca.pem`
 - `privateKey` — Path to private key; _Default_: `<rootPath>/keys/privateKey.pem`
 - `ciphers` — Allowed TLS cipher suites
+- `unixDomainSockets` <VersionBadge version="v5.1.0" /> — `true` makes each HTTP worker thread also listen on a Unix domain socket under `<rootPath>/sockets` for each secure port, for a proxy on the same host to forward to. [Isolated applications](../components/applications.md#isolated-applications) are reachable only this way, so they require it; _Default_: `false`
+
+With `tls` as a single object, put `unixDomainSockets: true` inside it. With an SNI certificate array, put `tls_unixDomainSockets: true` at the root of `harper-config.yaml`, alongside `tls`; placing `unixDomainSockets` inside an array entry does not enable the global setting. On v5.3.0, a standalone `TLS_UNIXDOMAINSOCKETS=true` environment variable does not enable this SNI configuration; use the root YAML setting:
+
+```yaml
+tls_unixDomainSockets: true
+tls:
+  - host: app.example.com
+    certificate: ~/hdb/keys/app-certificate.pem
+    privateKey: ~/hdb/keys/app-private-key.pem
+```
 
 ---
 
@@ -384,6 +396,7 @@ agent:
   enabled: true
   model: default
   maxTurns: 50
+  maxTokens: 16384
   autoApprove: false
   allowDestructive: false
   user: hdb_agent
@@ -393,16 +406,17 @@ agent:
 - `provider` — Recorded on the session but **not yet used to route the model call** — only `model` reaches the provider. Set the provider through the [`models`](../models/overview.md#configuration) configuration instead
 - `model` — Model id override, passed through to the model call; _Default_: the [`models`](../models/overview.md#configuration) generative default
 - `maxTurns` — Maximum tool-call iterations in a single run; _Default_: `50`
+- `maxTokens` <VersionBadge version="v5.4.0" /> — Output-token cap sent with every model request the agent makes. A reply cut off at this cap ends the run with status `error`, not `completed`, and `lastError` says it was cut off; raise the cap if replies keep hitting it. A cut-off reply can also mean the session's transcript filled the model's context window, which a higher cap does not fix; start a new session instead. Keep it within the model's own output limit: most providers reject a larger value on every request, and the run then ends `error` with the provider's message, so lower it for a model with a small output limit (some older models allow 4096 or 8192). Before v5.4.0 the agent sent no cap: Anthropic models, called directly or through Bedrock, then used 4096, and the other backends sent none; _Default_: `16384`
 - `maxCostUsd` — Intended per-run cost ceiling. **Not enforced** — it is a stored setting only, and nothing checks spend against it; _Default_: `5.00`
 - `autoApprove` — Run without per-action approval gates; _Default_: `false`
 - `allowDestructive` — Include the tools marked destructive in the agent's toolset: `write_file`, the inspector's code-evaluation tools, and any operations tool carrying MCP's [`destructiveHint`](../mcp/tool-metadata.md) (`drop_table`, `delete`, `restart`, `set_configuration`, ...). When `false` they are removed entirely rather than gated. That hint comes from a curated set in core which does not cover every damaging operation, so this is not a complete safety boundary on its own — see [Agent operations](../operations-api/operations.md#agent); _Default_: `false`
 - `user` — Harper user the agent's **operations** tools run as; the filesystem, HTTP, schedule, and inspector tools always run at process privilege regardless. If it cannot be resolved and it is not the default, the agent fails closed and runs with no operations tools; _Default_: `hdb_agent`, which falls back to a `super_user` bootstrap identity
 - `componentsScope` — The agent's `components` filesystem scope, which it reads and, with `allowDestructive`, writes; absolute or relative to `rootPath`. Read at startup only; _Default_: the full `componentsRoot`
 - `configScope` <VersionBadge version="v5.4.0" /> — The agent's read-only `config` filesystem scope: a file or a directory, absolute or relative to `rootPath`. Read at startup only. See [Filesystem scopes](#filesystem-scopes); _Default_: the Harper config file only
-- `httpFetch` <VersionBadge version="v5.3.2" /> — Whether the agent has its `http_fetch` tool, and which hosts it may reach: `true`, `false`, or `{ allow: [...] }`. Read at startup only. See [Restricting `http_fetch`](#restricting-http_fetch); _Default_: `true`
+- `httpFetch` <VersionBadge version="v5.4.0" /> — Whether the agent has its `http_fetch` tool, and which hosts it may reach: `true`, `false`, or `{ allow: [...] }`. Read at startup only. See [Restricting `http_fetch`](#restricting-http_fetch); _Default_: `true`
 - `systemPromptAppend` — Operator text appended to the agent's system prompt
 
-`enabled`, `provider`, `model`, `maxTurns`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend` can also be changed at runtime with [`set_agent_config`](../operations-api/operations.md#set_agent_config), which applies in memory only. `enabled` is the exception worth knowing: it cannot switch the agent on, because with the agent disabled at startup no agent operation is registered at all. `httpFetch`, `componentsScope`, and `configScope` are read at startup only, and `set_agent_config` rejects them.
+`enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend` can also be changed at runtime with [`set_agent_config`](../operations-api/operations.md#set_agent_config), which applies in memory only. `enabled` is the exception worth knowing: it cannot switch the agent on, because with the agent disabled at startup no agent operation is registered at all. `httpFetch`, `componentsScope`, and `configScope` are read at startup only, and `set_agent_config` rejects them.
 
 ### Filesystem scopes
 
@@ -438,7 +452,7 @@ The config file can still hold secrets that are not PEM keys, such as a model `a
 
 ### Restricting `http_fetch`
 
-<VersionBadge version="v5.3.2" />
+<VersionBadge version="v5.4.0" />
 
 `http_fetch` lets the agent send HTTP requests from the Harper process: to its own REST endpoints while it builds an app, or to pull a reference page. The same agent reads table rows, logs, and component source, and text in any of them can steer it, so an enabled agent has a read path and an egress path in one toolset. `agent.httpFetch` bounds that tool. It is not a bound on every way the agent can reach the network: with `allowDestructive` on, for example, the agent can write component code, and the Harper process runs that code.
 
