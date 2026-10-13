@@ -1,6 +1,6 @@
 /**
- * QA-767: previous-minor records retain exact JSON values and types through upgrade,
- * mixed classic/typed writes, and cold restart on RocksDB. 5.3.x is a same-minor reopen.
+ * QA-767: previous-minor records retain exact returned JSON values and types through upgrade,
+ * new writes, and cold restart on RocksDB with random-access fields enabled.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
@@ -182,7 +182,7 @@ if (previousMinorInstalls.length === 0)
 
 for (const previousMinor of previousMinorInstalls) {
 	suite(
-		`QA-767 v${previousMinor.version} → current byte/type fidelity [rocksdb]`,
+		`QA-767 v${previousMinor.version} → current JSON value/type fidelity [rocksdb]`,
 		{ skip: skipCrossVersion, timeout: SUITE_TIMEOUT_MS },
 		(ctx: ContextWithHarper) => {
 			before(
@@ -224,7 +224,7 @@ for (const previousMinor of previousMinorInstalls) {
 				await teardownHarper(ctx);
 			});
 
-			test('upgrade preserves every old value and type and enables typed writes', async () => {
+			test('upgrade preserves every old value and type with random-access fields enabled', async () => {
 				await checkEncoder(ctx, true);
 				await checkTable(ctx, 'FidelityCheck', MANIFEST);
 				await checkTable(ctx, 'WidthShapes', OLD_RECORDS);
