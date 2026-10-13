@@ -701,9 +701,12 @@ function statusLogger(options: any, logger: any, tag?: string) {
 	for (const level of ['notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace']) {
 		wrapper[level] = function (...args: any[]) {
 			chained = true;
-			logger[level]?.(...args);
-			if (statusHandler) {
-				statusHandler(options, level, tag || logger.tag || currentTag, args);
+			try {
+				logger[level]?.(...args);
+			} finally {
+				if (statusHandler) {
+					statusHandler(options, level, tag || logger.tag || currentTag, args);
+				}
 			}
 		};
 	}
