@@ -1,0 +1,4 @@
+type Purge820 @table(audit: true) @export {
+	id: ID @primaryKey
+	seq: Int
+}
