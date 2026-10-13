@@ -24,7 +24,7 @@ import type { AuthedUser } from '../components/mcp/toolRegistry.ts';
 import { workers } from '../server/threads/manageThreads.js';
 import { composeToolset } from './toolset.ts';
 import { buildInspectorTools } from './tools/inspectorTool.ts';
-import { buildHttpFetchTool, resolveHttpFetchConfig } from './tools/httpFetchTool.ts';
+import { buildHttpFetchTool, operationsApiPortsFrom, resolveHttpFetchConfig } from './tools/httpFetchTool.ts';
 import { buildBestPracticeTool, loadBestPracticesOverview } from './bestPractices.ts';
 import { composeRegistryTools, ensureOperationsToolsRegistered } from './registryTools.ts';
 import { buildOperations } from './operations.ts';
@@ -108,10 +108,10 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	const extraTools: AgentTool[] = bestPracticeTool ? [bestPracticeTool] : [];
 
 	// Built from the boot config, never `liveConfig`: no runtime config change can widen what it reaches.
-	const operationsApiPorts = [
+	const operationsApiPorts = operationsApiPortsFrom([
 		env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT),
 		env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT),
-	].filter((port): port is number => typeof port === 'number');
+	]);
 	const httpFetchTool = buildHttpFetchTool(config.httpFetch, operationsApiPorts);
 
 	// The grounding + best-practices portion of the system prompt is static for the component's
