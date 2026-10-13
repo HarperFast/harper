@@ -17,6 +17,7 @@ const {
 	userDifference,
 	CI_DEPLOY_OPERATIONS,
 	variableAction,
+	withoutCredentials,
 	GITHUB_ACTIONS_ISSUER,
 } = require('#src/bin/deploySetupGithubActions');
 const { buildRequest } = require('#src/bin/cliOperations');
@@ -245,6 +246,15 @@ jobs:
 			assert.match(checkWorkflowFile(content, 'main', 'production').problems[0], /id-token: write/);
 		});
 
+		// The deploy may be a reusable workflow that sets the environment and the permission itself.
+		it('reports the token permission as unverified when a job calls a reusable workflow', () => {
+			const content =
+				'on:\n  push:\n    branches: [main]\njobs:\n  gate:\n    environment: production\n  deploy:\n    needs: gate\n    uses: ./.github/workflows/release.yaml\n';
+			const { problems, unverified } = checkWorkflowFile(content, 'main', 'production');
+			assert.deepStrictEqual(problems, []);
+			assert.match(unverified[0], /id-token: write/);
+		});
+
 		it('accepts write-all', () => {
 			const content =
 				'on:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    environment: production\n    permissions: write-all\n';
@@ -381,6 +391,20 @@ jobs:
 
 		it('does not write a variable it could not read', () => {
 			assert.strictEqual(variableAction({ state: 'unknown', reason: 'HTTP 403' }, audience), 'unknown');
+		});
+	});
+
+	describe('withoutCredentials', () => {
+		it('drops a user and password from a URL it prints', () => {
+			assert.strictEqual(
+				withoutCredentials('https://admin:secret@other.example.com:9925/'),
+				'https://other.example.com:9925/'
+			);
+		});
+
+		it('leaves anything else as it is', () => {
+			assert.strictEqual(withoutCredentials('https://other.example.com:9925/'), 'https://other.example.com:9925/');
+			assert.strictEqual(withoutCredentials('not a url'), 'not a url');
 		});
 	});
 });
