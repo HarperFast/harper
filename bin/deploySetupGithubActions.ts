@@ -550,8 +550,9 @@ export async function setupGithubActions(req: any, transport: any, component: st
 		created.push(`user ${names.user}`);
 	}
 	if (plan.policy === 'create') {
-		// add_oidc_trust replaces a policy, so one created or disabled since the preflight would be
-		// overwritten. Checking again narrows that window; it can't close it without a server-side guard.
+		// add_oidc_trust replaces a policy, so one another super user creates (enabled or not) since the
+		// preflight would be overwritten. Checking again narrows that window to one round trip. An existing
+		// policy is never written, so this can't undo a disable or a drop.
 		if (await policyNow()) {
 			throw cliError(`Trust policy "${names.policy}" was created while setup ran. Run setup again to check it.`);
 		}
