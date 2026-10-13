@@ -398,6 +398,7 @@ agent:
   model: default
   maxTurns: 50
   maxTokens: 16384
+  maxToolResultBytes: 65536
   autoApprove: false
   allowDestructive: false
   user: hdb_agent
@@ -408,6 +409,7 @@ agent:
 - `model` — Model id override, passed through to the model call; _Default_: the [`models`](../models/overview.md#configuration) generative default
 - `maxTurns` — Maximum tool-call iterations in a single run; _Default_: `50`
 - `maxTokens` <VersionBadge version="v5.4.0" /> — Output-token cap sent with every model request the agent makes. A reply cut off at this cap ends the run with status `error`, not `completed`, and `lastError` says it was cut off; raise the cap if replies keep hitting it. A cut-off reply can also mean the session's transcript filled the model's context window, which a higher cap does not fix; start a new session instead. Keep it within the model's own output limit: most providers reject a larger value on every request, and the run then ends `error` with the provider's message, so lower it for a model with a small output limit (some older models allow 4096 or 8192). Before v5.4.0 the agent sent no cap: Anthropic models, called directly or through Bedrock, then used 4096, and the other backends sent none; _Default_: `16384`
+- `maxToolResultBytes` <VersionBadge version="v5.4.0" /> — Largest tool result, in bytes of JSON, the agent adds to its conversation. A larger result is cut to this size, ending with a note that gives the original size and tells the model how to ask for less. The file-reading tools return pages of at most half this size, measured as JSON, so a page arrives whole unless the file's path alone takes up most of the cap. Lower it for a model with a small context window. It must be an integer from `1024` to `1048576`; at startup an invalid value is logged and the default is used. See [When a conversation outgrows the model's context window](../operations-api/operations.md#when-a-conversation-outgrows-the-models-context-window); _Default_: `65536`
 - `maxCostUsd` — Intended per-run cost ceiling. **Not enforced** — it is a stored setting only, and nothing checks spend against it; _Default_: `5.00`
 - `autoApprove` — Run without per-action approval gates; _Default_: `false`
 - `allowDestructive` — Include the tools marked destructive in the agent's toolset: `write_file`, the inspector's code-evaluation tools, and any operations tool carrying MCP's [`destructiveHint`](../mcp/tool-metadata.md) (`drop_table`, `delete`, `restart`, `set_configuration`, ...). When `false` they are removed entirely rather than gated. That hint comes from a curated set in core which does not cover every damaging operation, so this is not a complete safety boundary on its own — see [Agent operations](../operations-api/operations.md#agent); _Default_: `false`
@@ -417,7 +419,7 @@ agent:
 - `httpFetch` <VersionBadge version="v5.4.0" /> — Whether the agent has its `http_fetch` tool, and which hosts it may reach: `true`, `false`, or `{ allow: [...] }`. Read at startup only. See [Restricting `http_fetch`](#restricting-http_fetch); _Default_: `true`
 - `systemPromptAppend` — Operator text appended to the agent's system prompt
 
-`enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend` can also be changed at runtime with [`set_agent_config`](../operations-api/operations.md#set_agent_config), which applies in memory only. `enabled` is the exception worth knowing: it cannot switch the agent on, because with the agent disabled at startup no agent operation is registered at all. `httpFetch`, `componentsScope`, and `configScope` are read at startup only, and `set_agent_config` rejects them.
+`enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxToolResultBytes`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend` can also be changed at runtime with [`set_agent_config`](../operations-api/operations.md#set_agent_config), which applies in memory only. `enabled` is the exception worth knowing: it cannot switch the agent on, because with the agent disabled at startup no agent operation is registered at all. `httpFetch`, `componentsScope`, and `configScope` are read at startup only, and `set_agent_config` rejects them.
 
 ### Filesystem scopes
 
@@ -445,7 +447,7 @@ Whatever `componentsScope` and `configScope` say, every scope refuses:
 
 - **Harper's key directories**, `<rootPath>/keys` (TLS and JWT keys) and `<rootPath>/ssh` (git deploy keys): nothing in them is read, listed, or written. Paths are compared after resolving symlinks.
 - **Key file names**, `*.pem`, `*.key`, and `.jwtPass`: not read. `list_dir` still shows the names, and `write_file` can still create such a file outside the key directories.
-- **Text holding a PEM private key** (`-----BEGIN ... PRIVATE KEY-----`), such as an inline `tls.privateKey` in the config file: `read_file` refuses the file, `tail_file` refuses lines that hold one or a file that ends partway through one, and `grep_files` skips the file.
+- **Text holding a PEM private key** (`-----BEGIN ... PRIVATE KEY-----`), such as an inline `tls.privateKey` in the config file: `read_file` refuses a page that holds one or starts partway through one (it looks back 128 KiB for the BEGIN line, more than any PEM key spans, post-quantum ones included), `tail_file` refuses lines that hold one or a file that ends partway through one, and `grep_files` skips the file.
 
 A key with neither a key file name nor PEM armor, such as a `.p12` bundle or raw DER, is not recognized outside the key directories.
 
