@@ -149,7 +149,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: [22, 24, 26]
+        node-version: ${{ (github.event.inputs.node-version == 'all' || github.event.inputs.node-version == '') && fromJSON('[22, 24, 26]') || fromJSON(format('[{0}]', github.event.inputs.node-version)) }}
     steps:
       - name: Checkout code
         timeout-minutes: 3
@@ -163,7 +163,7 @@ jobs:
           check-latest: ${{ matrix.node-version == 26 }}
       - name: Install dependencies
         timeout-minutes: 6
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Verify no compiled distribution
         timeout-minutes: 1
         run: test ! -d dist

@@ -4,17 +4,19 @@ import { resolve, relative, sep } from 'node:path';
 import ts from 'typescript';
 
 const unitRoot = resolve(import.meta.dirname);
+const distRoot = resolve(unitRoot, '../dist') + sep;
 
-export function needsCompiled(file: string, seen = new Set<string>()): boolean {
+function needsCompiled(file: string, seen = new Set<string>()): boolean {
 	file = resolve(file);
 	if (seen.has(file)) return false;
 	seen.add(file);
 	const source = readFileSync(file, 'utf8');
 	const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
 	const localRequire = createRequire(file);
-	let compiled = source.includes('require.cache') && source.includes('#src/');
+	let compiled = false;
 	const dependencies: string[] = [];
 	function dependency(specifier: string) {
+		if (specifier.startsWith(distRoot)) compiled = true;
 		try {
 			const target = localRequire.resolve(specifier);
 			const path = relative(unitRoot, target);
@@ -23,6 +25,23 @@ export function needsCompiled(file: string, seen = new Set<string>()): boolean {
 	}
 	function visit(node: ts.Node) {
 		if (ts.isStringLiteralLike(node) && node.text.includes('#js/')) compiled = true;
+		if (
+			(ts.isDeleteExpression(node) && node.expression.getText(parsed).startsWith('require.cache')) ||
+			(ts.isBinaryExpression(node) &&
+				node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+				node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+				node.left.getText(parsed).startsWith('require.cache'))
+		)
+			compiled = true;
+		if (
+			file !== resolve(unitRoot, 'rocksdbBindings.mts') &&
+			ts.isCallExpression(node) &&
+			node.expression.getText(parsed) === 'require' &&
+			node.arguments[0] &&
+			ts.isStringLiteralLike(node.arguments[0]) &&
+			node.arguments[0].text === '@harperfast/rocksdb-js'
+		)
+			compiled = true;
 		if (
 			(ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
 			node.moduleSpecifier &&
@@ -35,7 +54,7 @@ export function needsCompiled(file: string, seen = new Set<string>()): boolean {
 			['join', 'resolve'].includes(
 				ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : node.expression.getText(parsed)
 			) &&
-			node.arguments[0]?.getText(parsed) === '__dirname' &&
+			['__dirname', 'import.meta.dirname'].includes(node.arguments[0]?.getText(parsed)) &&
 			node.arguments.slice(1).every(ts.isStringLiteralLike)
 		) {
 			const parts = node.arguments.slice(1) as ts.StringLiteralLike[];

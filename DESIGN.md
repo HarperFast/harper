@@ -2,14 +2,6 @@
 
 Index of the design notes for the harper core: one line per note, grouped by the `DESIGN.md` that holds it. A note records an invariant the code cannot state itself and why it holds. Complements [AGENTS.md](AGENTS.md) (architecture map) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## unitTests/ — test runtimes
-
-- [Source and compiled test lanes](unitTests/DESIGN.md#source-and-compiled-test-lanes) — Isolate native source from mutable compiled exports and preserve ESM database teardown.
-
-## sqlTranslator/ — legacy SQL integration
-
-- [CommonJS date functions](sqlTranslator/DESIGN.md#commonjs-date-functions) — Both runtimes use the same CommonJS helper object, enforced by `alasqlFunctionImporter.test.js`.
-
 ## Where a note goes
 
 - A note lives in the `DESIGN.md` of the directory that owns the code it describes. This file is an index only: one line per note, no bodies.
@@ -17,6 +9,14 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - Once the code enforces the invariant itself (a type, an assertion, a named test), shrink the note to one line that names the enforcement.
 - Budget, checked by `npm run check:design-docs`: this index stays under 250 lines and each per-directory `DESIGN.md` under 1000. Adding to a file near its ceiling means pruning that file first.
 - User-facing behavior is documented in [HarperFast/documentation](https://github.com/HarperFast/documentation), never here.
+
+## unitTests/ — test runtimes
+
+- [Source and compiled test lanes](unitTests/DESIGN.md#source-and-compiled-test-lanes) — Isolate native source from mutable compiled exports and preserve ESM database teardown.
+
+## sqlTranslator/ — legacy SQL integration
+
+- [CommonJS date functions](sqlTranslator/DESIGN.md#commonjs-date-functions) — Both runtimes use the same CommonJS helper object, enforced by `alasqlFunctionImporter.test.js`.
 
 ## .github/ — CI workflows
 

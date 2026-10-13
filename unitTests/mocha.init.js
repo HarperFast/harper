@@ -53,7 +53,8 @@ const { installPerFileDatabaseTeardown } = require('./perFileDatabaseTeardown.js
  * and the process exits 0 having printed no epilogue and no failure. Every runner reads that as
  * success. harper_logger.test.js did exactly this to any `dot`/`tap` run before it was fixed.
  *
- * Root hooks bracket the run, so "started but never finished" is the signal. Report it on fd 2
+ * Plugin loading and the final callback bracket a launcher run; root hooks bracket a parallel worker.
+ * Report "started but never finished" on fd 2
  * with writeSync, since an unwritable stdout is one of the ways to get here.
  */
 let runStarted = false;
@@ -61,9 +62,15 @@ let runFinished = false;
 
 let observedTotal = 0;
 let observedFiles = [];
+const resultsPath = process.env.HARPER_UNIT_RESULTS;
+const selectionPath = process.env.HARPER_UNIT_SELECTION_CONFIG;
+let pendingResults;
+delete process.env.HARPER_UNIT_RESULTS;
+delete process.env.HARPER_UNIT_SELECTION_CONFIG;
 
 module.exports.mochaHooks = () => {
 	runStarted = true;
+	runFinished = false;
 	return {
 		beforeAll() {
 			const root = this.test.parent;
@@ -79,6 +86,7 @@ module.exports.mochaHooks = () => {
 			installPerFileDatabaseTeardown(root);
 		},
 		afterAll() {
+			if (process.env.MOCHA_WORKER_ID !== undefined) runFinished = true;
 			// Register the root removal here, not in the preload below: 'exit' listeners fire in
 			// registration order, and the one that flushes and closes every open database
 			// (RocksTransactionLogStore's shutdown()) is registered when the data layer loads —
@@ -92,8 +100,8 @@ module.exports.mochaHooks = () => {
 };
 
 module.exports.mochaGlobalTeardown = function () {
-	runFinished = true;
-	if (process.env.HARPER_UNIT_RESULTS) {
+	if (!resultsPath) runFinished = true;
+	if (resultsPath) {
 		const files = new Set(observedFiles);
 		function collect(suite) {
 			if (suite.file) files.add(suite.file);
@@ -101,14 +109,23 @@ module.exports.mochaGlobalTeardown = function () {
 			for (const child of suite.suites) collect(child);
 		}
 		if (this.suite) collect(this.suite);
-		const selection = JSON.parse(fs.readFileSync(process.env.HARPER_UNIT_SELECTION_CONFIG, 'utf8')).spec;
+		const selection = JSON.parse(fs.readFileSync(selectionPath, 'utf8')).spec;
 		for (const file of selection) if (require.cache[file]) files.add(file);
-		fs.writeFileSync(
-			process.env.HARPER_UNIT_RESULTS,
-			JSON.stringify({ total: this.stats?.tests ?? observedTotal, files: [...files] })
-		);
+		pendingResults = { total: this.stats?.tests ?? observedTotal, files: [...files] };
 	}
 };
+
+if (resultsPath) {
+	const Mocha = require('mocha');
+	const run = Mocha.prototype.run;
+	Mocha.prototype.run = function (callback) {
+		return run.call(this, (failures) => {
+			runFinished = true;
+			if (pendingResults) fs.writeFileSync(resultsPath, JSON.stringify(pendingResults));
+			callback?.(failures);
+		});
+	};
+}
 
 process.on('exit', (code) => {
 	if (!runStarted || runFinished || code !== 0) return;

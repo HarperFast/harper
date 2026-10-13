@@ -88,7 +88,7 @@
 		"test:unit:config": "mocha \"unitTests/config/**/*.js\"",
 		"test:unit:windows": "node unitTests/windowsGate.mjs",
 		"test:unit:typestrip": "node unitTests/runTypeStripTests.mts --source-only",
-		"test:unit:typestrip:all": "node unitTests/runTypeStripTests.mts unitTests",
+		"test:unit:typestrip:all": "node unitTests/runTypeStripTests.mts \"unitTests/**/*test.*js\"",
 		"test:unit:typestrip:resources": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
 		"test:unit:typestrip:main": "node unitTests/runTypeStripTests.mts",
 		"test:unit:typestrip:resources:core": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",

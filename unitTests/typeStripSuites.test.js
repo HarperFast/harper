@@ -50,8 +50,10 @@ describe('unit runtime selection', function () {
 		assert(lanes.compiled.includes(require.resolve('./server/threads/threadServerStartupLiveness.test.js')));
 		assert(lanes.compiled.includes(require.resolve('./server/threads/terminalShutdown.test.js')));
 		assert(lanes.compiled.includes(require.resolve('./utility/logging/logFileIdentity.test.js')));
+		assert(lanes.compiled.includes(require.resolve('./utility/interactivePrompts.test.js')));
 		assert(partitionSuites([require.resolve('./resources/debugLongTransactionsReads.test.js')]).compiled.length);
 		assert(lanes.source.includes(require.resolve('./components/deploymentRecorder.test.js')));
+		assert(lanes.source.includes(require.resolve('./perFileDatabaseTeardown.test.js')));
 	});
 	it('executes both lanes, observes their files and propagates native resolution across processes', () => {
 		const result = run(['source', 'compiled']);
@@ -102,6 +104,16 @@ describe('unit runtime selection', function () {
 			assert.notStrictEqual(result.status, 0, result.stdout + result.stderr);
 		});
 	}
+	it('rejects unfinished later teardown and reporter completion', () => {
+		for (const args of [
+			['--require', join(fixtures, 'laterTeardown.cjs')],
+			['--reporter', join(fixtures, 'unfinishedReporter.cjs')],
+		]) {
+			const result = run(['noDatabases'], args);
+			assert.notStrictEqual(result.status, 0, result.stdout + result.stderr);
+			assert.match(result.stderr, /without finishing|did not complete/);
+		}
+	});
 	it('supports a single-lane file reporter and prevents two lanes overwriting it', () => {
 		const directory = mkdtempSync(join(root, 'unitTests/envDir/reporter-'));
 		try {
@@ -127,5 +139,46 @@ describe('unit runtime selection', function () {
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
+	});
+	it('distinguishes cache reads, cache mutation, compiled artifacts and bare addon wrappers', () => {
+		const directory = mkdtempSync(join(root, 'unitTests/envDir/classification-'));
+		try {
+			const file = join(directory, 'test.js');
+			for (const [code, compiled] of [
+				["require.cache[require.resolve('#src/utility/hdbTerms')];", false],
+				["delete require.cache[require.resolve('#src/utility/hdbTerms')];", true],
+				["require.cache[require.resolve('#src/utility/hdbTerms')] = {};", true],
+				[
+					`require('node:path').resolve(__dirname, ${JSON.stringify(require('node:path').relative(directory, join(root, 'dist/utility/hdbTerms.js')))});`,
+					true,
+				],
+				["require('@harperfast/rocksdb-js');", true],
+			]) {
+				writeFileSync(file, code);
+				assert.strictEqual(partitionSuites([file]).compiled.length, Number(compiled), code);
+			}
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+	it('keeps ordinary parallel Mocha workers from reporting a false unfinished run', () => {
+		const result = spawnSync(
+			process.execPath,
+			[
+				require.resolve('mocha/bin/mocha.js'),
+				join(fixtures, 'noDatabases.js'),
+				'--no-config',
+				'--require',
+				join(__dirname, 'mocha.init.js'),
+				'--parallel',
+				'--jobs',
+				'1',
+				'--exit',
+			],
+			{ cwd: root, encoding: 'utf8', timeout: 20000 }
+		);
+		succeeds(result);
+		assert.match(result.stdout, /1 passing/);
+		assert(!result.stderr.includes('without finishing'));
 	});
 });

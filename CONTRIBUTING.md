@@ -33,11 +33,11 @@ npm run test:unit -- unitTests/config/configUtils.test.js
 npm run test:unit:typestrip:main
 ```
 
-The combined `:typestrip:main` command covers the same selection as `test:unit:main` in two sequential processes. Each has its own isolated configuration and databases. `--list` on `node unitTests/runTypeStripTests.mts` shows the partition. `:typestrip:all` selects the complete unit tree, including the API and legacy storage suites; stop a conflicting server before API tests as for the ordinary API gate.
+The combined `:typestrip:main` command covers the same selection as `test:unit:main` in two sequential processes. Each has its own isolated configuration and databases. `--list` on `node unitTests/runTypeStripTests.mts` shows the partition. `:typestrip:all` selects all `*test.*js` suites, including the API and legacy storage suites; stop a conflicting server before API tests as for the ordinary API gate.
 
 A source process denies `#js`, and the test preload rejects this checkout's compiled core; route an existing mutable-export suite to the compiled lane instead of mixing trees. The combined launcher rejects a globally enabled `typestrip` condition; let it choose each lane. Ordinary compiled CI still runs all tests, while native CI never builds `dist`.
 
-The launcher runs each lane in one process, so use ordinary Mocha for watch or parallel mode. Mixed selections with global `--file` setup run compiled to preserve ordering. File reporters must run separately per lane to avoid overwriting their output. A killed process can leave its isolated root for the existing stale-root sweep. No runtime-speed improvement is claimed: the source workflow avoids the build step, while the full selection still needs a current build for legacy and artifact checks.
+The launcher runs each lane in one process, so use ordinary Mocha for watch or parallel mode. Mixed selections with global `--file` setup run compiled to preserve ordering. File reporters must run separately per lane to avoid overwriting their output. Ctrl-C removes the launcher's temporary configuration; a force-killed process can leave that directory and its isolated database root. The existing stale-root sweep reclaims only the database root. Mocha's per-test timeout and the enclosing CI/test command bound execution. No runtime-speed improvement is claimed: the source workflow avoids the build step, while the full selection still needs a current build for legacy and artifact checks.
 
 ## Code Formatting & Linting
 

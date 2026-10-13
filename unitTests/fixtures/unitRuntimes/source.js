@@ -7,10 +7,15 @@ const env = require('#src/utility/environment/environmentManager');
 
 describe('native lane fixture', () => {
 	it('loads source with one environment and propagates it to children', async () => {
+		assert.strictEqual(process.env.HARPER_UNIT_RESULTS, undefined);
+		assert.strictEqual(process.env.HARPER_UNIT_SELECTION_CONFIG, undefined);
 		assert(types.isModuleNamespaceObject(env));
 		assert(require.resolve('#src/utility/hdbTerms').endsWith('.ts'));
 		assert.throws(() => require('#' + 'js/utility/hdbTerms'), { code: 'ERR_PACKAGE_IMPORT_NOT_DEFINED' });
-		const child = spawnSync(process.execPath, ['-p', "require.resolve('#src/utility/hdbTerms')"], { encoding: 'utf8' });
+		const child = spawnSync(process.execPath, ['-p', "require.resolve('#src/utility/hdbTerms')"], {
+			encoding: 'utf8',
+			timeout: 5000,
+		});
 		assert.strictEqual(child.status, 0, child.stderr);
 		assert(child.stdout.trim().endsWith('.ts'));
 		const worker = new Worker(

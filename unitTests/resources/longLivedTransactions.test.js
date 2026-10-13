@@ -858,7 +858,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 			const dbPath = path.join(os.tmpdir(), `harper-2471-${process.pid}-${Date.now()}`);
 			const worker = new Worker(
-				`const { RocksDatabase, Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+				`const { RocksDatabase, Transaction } = require(${JSON.stringify(require.resolve('../rocksdbBindings.mts'))}).rocksdbBindings();
 				const { parentPort } = require('node:worker_threads');
 				const db = RocksDatabase.open(${JSON.stringify(dbPath)});
 				const txn = new Transaction(db.store, { coordinatedRetry: true });

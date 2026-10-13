@@ -60,6 +60,7 @@ const tempSSHDirs = (dir) => fs.readdirSync(dir).filter((entry) => entry.startsW
 // the same pattern). Callers must mkdtemp anything meant to live under the stub (e.g. rootDir
 // below) only after calling this, so restore()'s single recursive rm covers it.
 function scopeTmpdir() {
+	const previousRoot = env.get(terms.CONFIG_PARAMS.ROOTPATH);
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitssh-suite-'));
 	const original = os.tmpdir;
 	os.tmpdir = () => dir;
@@ -67,6 +68,7 @@ function scopeTmpdir() {
 	return {
 		dir,
 		restore() {
+			env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, previousRoot);
 			os.tmpdir = original;
 			syncBuiltinESMExports();
 			fs.rmSync(dir, { recursive: true, force: true });
@@ -101,12 +103,6 @@ describe('materializeGitSSH', () => {
 
 	beforeEach(() => {
 		scopedTmpdir = scopeTmpdir();
-		const previousRoot = env.get(terms.CONFIG_PARAMS.ROOTPATH);
-		const restoreTmpdir = scopedTmpdir.restore;
-		scopedTmpdir.restore = () => {
-			env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, previousRoot);
-			restoreTmpdir();
-		};
 		rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-ssh-test-'));
 		sshDir = path.join(rootDir, 'ssh');
 		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, rootDir);
@@ -123,7 +119,7 @@ describe('materializeGitSSH', () => {
 		logger.error = originalError;
 		logger.warn = originalWarn;
 		secretDecryptor.clearSecretDecryptor();
-		scopedTmpdir.restore();
+		scopedTmpdir?.restore();
 	});
 
 	it('returns undefined when the node has no ssh dir', async () => {
@@ -368,12 +364,6 @@ describe('nonInteractiveSpawn transient ssh lifetime', () => {
 
 	beforeEach(() => {
 		scopedTmpdir = scopeTmpdir();
-		const previousRoot = env.get(terms.CONFIG_PARAMS.ROOTPATH);
-		const restoreTmpdir = scopedTmpdir.restore;
-		scopedTmpdir.restore = () => {
-			env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, previousRoot);
-			restoreTmpdir();
-		};
 		rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-ssh-spawn-test-'));
 		sshDir = path.join(rootDir, 'ssh');
 		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, rootDir);
@@ -387,7 +377,7 @@ describe('nonInteractiveSpawn transient ssh lifetime', () => {
 	});
 
 	afterEach(() => {
-		scopedTmpdir.restore();
+		scopedTmpdir?.restore();
 	});
 
 	it('exposes GIT_SSH_COMMAND to the child and removes the key material once it exits', async () => {

@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { constants } from 'node:os';
@@ -11,7 +11,8 @@ const collectFiles = require('mocha/lib/cli/collect-files.cjs');
 const args = process.argv.slice(2);
 if (args.some((arg) => ['--help', '-h', '--version', '-V'].includes(arg)))
 	process.exit(
-		spawnSync(process.execPath, [require.resolve('mocha/bin/mocha.js'), ...args], { stdio: 'inherit' }).status ?? 1
+		spawnSync(process.execPath, [require.resolve('mocha/bin/mocha.js'), ...args], { stdio: 'inherit', timeout: 30000 })
+			.status ?? 1
 	);
 const sourceOnly = args.includes('--source-only');
 const list = args.includes('--list');
@@ -68,8 +69,10 @@ if (list) {
 	};
 	const onTerm = () => forward('SIGTERM');
 	const onHangup = () => forward('SIGHUP');
+	const onInterrupt = () => forward('SIGINT');
 	process.on('SIGTERM', onTerm);
 	process.on('SIGHUP', onHangup);
+	process.on('SIGINT', onInterrupt);
 	try {
 		let total = 0;
 		for (const [mode, paths] of selected) {
@@ -93,6 +96,7 @@ if (list) {
 			};
 			delete env.MOCHA_OPTIONS;
 			if (mode === 'source') env.NODE_OPTIONS = `${env.NODE_OPTIONS || ''} --conditions=typestrip`.trim();
+			// Mocha's --timeout and the enclosing CI/test invocation own execution deadlines.
 			const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((done, reject) => {
 				child = spawn(process.execPath, [require.resolve('mocha/bin/mocha.js'), '--config', config, '--no-package'], {
 					stdio: 'inherit',
@@ -108,7 +112,6 @@ if (list) {
 			}
 			if (result.code) process.exitCode = result.code;
 			try {
-				const { readFileSync } = await import('node:fs');
 				const data = JSON.parse(readFileSync(results, 'utf8'));
 				total += data.total;
 				const missing = paths.filter((file) => !data.files.includes(file));
@@ -123,6 +126,7 @@ if (list) {
 	} finally {
 		process.off('SIGTERM', onTerm);
 		process.off('SIGHUP', onHangup);
+		process.off('SIGINT', onInterrupt);
 		rmSync(directory, { recursive: true, force: true });
 	}
 }
