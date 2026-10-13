@@ -17,6 +17,24 @@ describe('logBridge', function () {
 		componentStatusRegistry.reset();
 	});
 
+	it('preserves tagged status logs and still reports status at filtered log levels', async function () {
+		const output = [];
+		const logger = createLogger({ level: 'error', writeToLog: (line) => output.push(line) }).withTag('test tagged');
+		logger.status({ problem: 'test.harper-372-tagged' }).error('boom');
+		await Promise.resolve();
+		assert.equal(output.length, 1);
+		assert.ok(output[0].includes('[test-tagged]'), 'status logs should preserve their logger tag');
+		assert.ok(output[0].includes('boom'));
+		assert.equal(componentStatusRegistry.getStatus('test.harper-372-tagged').status, COMPONENT_STATUS_LEVELS.ERROR);
+		assert.equal(componentStatusRegistry.getStatus('test.harper-372-tagged').occurrenceCount, 1);
+
+		logger.status({ problem: 'test.harper-372-filtered' }).debug('not logged');
+		await Promise.resolve();
+		assert.equal(output.length, 1);
+		assert.equal(componentStatusRegistry.getStatus('test.harper-372-filtered').status, COMPONENT_STATUS_LEVELS.WARNING);
+		assert.equal(componentStatusRegistry.getStatus('test.harper-372-filtered').occurrenceCount, 1);
+	});
+
 	// Regression for #372: statusLogger() used to fire the level===null (status-only) dispatch
 	// immediately and unconditionally, so a chained call like .status({problem}).error(msg) always
 	// dispatched twice, doubling occurrenceCount for nearly every problem key this feature reports.

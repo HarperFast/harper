@@ -727,7 +727,7 @@ let statusHandler: any;
 export function setStatusHandler(handler: any) {
 	statusHandler = handler;
 }
-function statusLogger(options: any, logger: any) {
+function statusLogger(options: any, logger: any, tag?: string) {
 	// A chained log method (.error(), .warn(), etc.) fires synchronously if the caller chains
 	// one, before this microtask runs. Deferring the options-only dispatch lets us skip it when
 	// a chained call already reported the same logical event, avoiding a double dispatch.
@@ -735,7 +735,7 @@ function statusLogger(options: any, logger: any) {
 	if (statusHandler) {
 		queueMicrotask(() => {
 			if (!chained && statusHandler) {
-				statusHandler(options, null, logger.tag || currentTag, []);
+				statusHandler(options, null, tag || logger.tag || currentTag, []);
 			}
 		});
 	}
@@ -743,9 +743,9 @@ function statusLogger(options: any, logger: any) {
 	for (const level of ['notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace']) {
 		wrapper[level] = function (...args: any[]) {
 			chained = true;
-			logger[level](...args);
+			logger[level]?.(...args);
 			if (statusHandler) {
-				statusHandler(options, level, logger.tag || currentTag, args);
+				statusHandler(options, level, tag || logger.tag || currentTag, args);
 			}
 		};
 	}
@@ -786,7 +786,7 @@ export function loggerWithTag(tag: string, conditional?: boolean, logger?: any) 
 			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.trace ? methods.trace : null;
 		},
 	};
-	Object.defineProperty(taggedLogger, 'status', { value(options) { return statusLogger(options, taggedLogger); } });
+	Object.defineProperty(taggedLogger, 'status', { value(options) { return statusLogger(options, taggedLogger, tag); } });
 	return taggedLogger;
 	function logWithTag(level) {
 		return function (...args) {

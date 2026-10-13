@@ -9,7 +9,7 @@
 import { componentStatusRegistry } from './registry.ts';
 import { COMPONENT_STATUS_LEVELS } from './types.ts';
 import type { StatusOptions } from '../../utility/logging/logger.ts';
-import { setStatusHandler } from '../../utility/logging/harper_logger.js';
+import { setStatusHandler } from '../../utility/logging/harper_logger.ts';
 
 const LOG_TO_STATUS_LEVEL = {
 	fatal: COMPONENT_STATUS_LEVELS.ERROR,
@@ -40,7 +40,7 @@ function formatMessage(args: any[]): string {
 
 /**
  * Status handler called by the logger's .status() wrapper.
- * This is registered with harper_logger.js via setStatusHandler().
+ * This is registered with harper_logger.ts via setStatusHandler().
  */
 export function handleStatusLog(
 	options: StatusOptions,
