@@ -14,7 +14,7 @@ const CreateTableObject = require('#src/dataLayer/CreateTableObject').default;
 const directive530 = require('#src/upgrade/directives/5-3-0').default;
 const { getVersionsForUpgrade } = require('#src/upgrade/directives/directivesController');
 const { declareTokenUseTable, TOKEN_USE_TABLE } = require('#src/security/authn/oidc/tokenUseTable');
-const manageThreads = require('#js/server/threads/manageThreads');
+const manageThreads = require('#src/server/threads/manageThreads');
 
 // What a 5.3.0-beta.2 node that served exchanges declared, and so what its handshake sends a peer.
 const BETA2_EXCHANGING_ATTRIBUTE_NAMES = ['id', 'policy_id', 'used_at', 'expiresAt'];

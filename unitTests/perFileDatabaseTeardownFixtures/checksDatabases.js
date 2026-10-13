@@ -6,7 +6,7 @@
 const assert = require('node:assert');
 const { existsSync } = require('node:fs');
 const path = require('node:path');
-const { registryStatus } = require('@harperfast/rocksdb-js');
+const { registryStatus } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { databases, resetDatabases, resolveDatabaseStorageRoot } = require('#src/resources/databases');
 
 const isRocks = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';

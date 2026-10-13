@@ -4,7 +4,7 @@ const { Worker } = require('worker_threads');
 const { once } = require('node:events');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 describe('Create records', () => {
 	let CreateTest, test_thread;

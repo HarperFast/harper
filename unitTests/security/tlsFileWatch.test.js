@@ -9,7 +9,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const chokidar = require('chokidar');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-const { loadAndWatch } = require('#src/security/keys');
+const { loadAndWatch } = require('#js/security/keys');
 const { waitFor } = require('../waitFor.js');
 
 describe('TLS file watch after a cancelled renewal', () => {

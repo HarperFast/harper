@@ -17,9 +17,27 @@ Build the project using `npm run build` or `npm run build:watch` to automaticall
 
 Run integration tests using `npm run test:integration:all`. For targeted runs or additional options, use `npm run test:integration -- <pattern>`. Make sure to read the [integration test instructions](./integrationTests/README.md) for setup requirements (particularly the loopback address configuration).
 
-Run unit tests using `npm run test:unit <unit-test-file>` or `npm run test:unit:all`, but make sure to build the project first since unit tests depend on the built source files.
+Run a source-compatible test directly, without building Harper:
 
-> Unit tests currently use [Mocha](https://mochajs.org/) as the test runner, but since they are implemented in TypeScript and are sometimes executing TypeScript source code, it also uses [TSX](https://tsx.is/) for compilation and execution. The npm script `test:unit` sets the appropriate env vars and mocha configuration file. Make sure that the `TSX_TSCONFIG_PATH` environment variable points to the correct `tsconfig.json` file for the unit tests (i.e. `./unitTests/tsconfig.json`) and not the root-level `tsconfig.json`.
+```bash
+npm run test:unit:typestrip -- unitTests/components/deploymentRecorder.test.js
+```
+
+`#src` selects the source tree in this lane; retained JavaScript sources use explicit mappings or a `.js` suffix. `npm run test:unit:typestrip` runs the source-compatible part of the core gate. Native resource tests use `npm run test:unit:typestrip:resources`. Source conditions are inherited by workers and spawned fixtures.
+
+Legacy tests that rewire exports, replace module namespaces or manipulate their export cache retain `#js` and need compiled CommonJS. Build after changing the code they test, then run them with ordinary Mocha:
+
+```bash
+npm run build
+npm run test:unit -- unitTests/config/configUtils.test.js
+npm run test:unit:typestrip:main
+```
+
+The combined `:typestrip:main` command covers the same selection as `test:unit:main` in two sequential processes. Each has its own isolated configuration and databases. `--list` on `node unitTests/runTypeStripTests.mts` shows the partition. `:typestrip:all` selects the complete unit tree, including the API and legacy storage suites; stop a conflicting server before API tests as for the ordinary API gate.
+
+A source process denies `#js`, and the test preload rejects this checkout's compiled core; route an existing mutable-export suite to the compiled lane instead of mixing trees. The combined launcher rejects a globally enabled `typestrip` condition; let it choose each lane. Ordinary compiled CI still runs all tests, while native CI never builds `dist`.
+
+The launcher runs each lane in one process, so use ordinary Mocha for watch or parallel mode. Mixed selections with global `--file` setup run compiled to preserve ordering. File reporters must run separately per lane to avoid overwriting their output. A killed process can leave its isolated root for the existing stale-root sweep. No runtime-speed improvement is claimed: the source workflow avoids the build step, while the full selection still needs a current build for legacy and artifact checks.
 
 ## Code Formatting & Linting
 

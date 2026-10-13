@@ -14,6 +14,7 @@ const { handleHDBError } = require('#src/utility/errors/hdbError');
 const { PRIVATEKEY_PEM_NAME } = require('#src/utility/terms/certificates');
 const { materializePerPidRoot } = require('./perPidRoot.js');
 const lifecycle = require('#src/utility/lifecycle');
+const { types } = require('node:util');
 
 let envMgrInitSyncStub;
 
@@ -64,9 +65,11 @@ function preTestPrep(testConfigObj) {
 	if (envMgrInitSyncStub) {
 		envMgrInitSyncStub.restore();
 	}
-	envMgrInitSyncStub = sinon.stub(env, 'initSync').callsFake(() => {
-		env.initTestEnvironment(testConfigObj);
-	});
+	if (!types.isModuleNamespaceObject(env)) {
+		envMgrInitSyncStub = sinon.stub(env, 'initSync').callsFake(() => {
+			env.initTestEnvironment(testConfigObj);
+		});
+	}
 	process.on('unhandledRejection', (reason) => {
 		// Ignore @datadog/pprof errors - the module has no native build for Electron test environment
 		if (reason?.message?.includes('No native build was found for runtime=electron')) {

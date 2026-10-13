@@ -6,7 +6,7 @@ const {
 	isMissingStructureError,
 	DEFAULT_MAX_TYPED_STRUCTURES,
 } = require('#src/resources/RecordEncoder');
-const harperLogger = require('#src/utility/logging/harper_logger');
+const harperLogger = require('#js/utility/logging/harper_logger');
 const { Encoder } = require('msgpackr');
 
 // Shared structures persisted as an encoded buffer (mirrors how a DBI stores them under

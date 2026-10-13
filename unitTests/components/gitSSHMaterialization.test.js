@@ -34,7 +34,7 @@ const secretDecryptor = require('#src/resources/secretDecryptor');
 const { encryptEnvelope, decryptEnvelope, fingerprintOf } = require('#src/utility/secretEnvelope');
 // CJS interop hands back the module namespace, which is the very object Application.ts's default
 // import resolves to — so stubbing a level here is what the code under test sees.
-const logger = require('#src/utility/logging/harper_logger');
+const logger = require('#js/utility/logging/harper_logger');
 
 const ENC_PREFIX = 'enc:v1:';
 const KEY_MATERIAL = '-----BEGIN OPENSSH PRIVATE KEY-----\nc3NoLWtleS1tYXRlcmlhbA\n-----END OPENSSH PRIVATE KEY-----\n';
@@ -101,6 +101,12 @@ describe('materializeGitSSH', () => {
 
 	beforeEach(() => {
 		scopedTmpdir = scopeTmpdir();
+		const previousRoot = env.get(terms.CONFIG_PARAMS.ROOTPATH);
+		const restoreTmpdir = scopedTmpdir.restore;
+		scopedTmpdir.restore = () => {
+			env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, previousRoot);
+			restoreTmpdir();
+		};
 		rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-ssh-test-'));
 		sshDir = path.join(rootDir, 'ssh');
 		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, rootDir);
@@ -362,6 +368,12 @@ describe('nonInteractiveSpawn transient ssh lifetime', () => {
 
 	beforeEach(() => {
 		scopedTmpdir = scopeTmpdir();
+		const previousRoot = env.get(terms.CONFIG_PARAMS.ROOTPATH);
+		const restoreTmpdir = scopedTmpdir.restore;
+		scopedTmpdir.restore = () => {
+			env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, previousRoot);
+			restoreTmpdir();
+		};
 		rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-ssh-spawn-test-'));
 		sshDir = path.join(rootDir, 'ssh');
 		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, rootDir);

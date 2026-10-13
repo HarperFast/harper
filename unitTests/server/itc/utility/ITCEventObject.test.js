@@ -2,7 +2,7 @@
 
 const chai = require('chai');
 const { expect } = chai;
-const ITCEventObject = require('#js/server/itc/utility/ITCEventObject');
+const ITCEventObject = require('#src/server/itc/utility/ITCEventObject.js');
 
 describe('Test ITCEventObject class', () => {
 	it('Test new ITCEventObject is correct shape', () => {

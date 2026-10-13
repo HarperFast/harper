@@ -372,6 +372,10 @@ describe('log writes that cannot land (#847)', function () {
 		const output = execFileSync(process.execPath, ['-e', childScript], {
 			encoding: 'utf8',
 			stdio: ['ignore', 'pipe', 'pipe'],
+			env: {
+				...process.env,
+				NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --disable-warning=MODULE_TYPELESS_PACKAGE_JSON`,
+			},
 		});
 
 		assert.match(output, /CHILD-SURVIVED/, 'the process survived a refused log append');

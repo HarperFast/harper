@@ -3,7 +3,7 @@
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-let DeleteResponseObject = require('#src/dataLayer/DataLayerObjects').DeleteResponseObject;
+let DeleteResponseObject = require('#js/dataLayer/DataLayerObjects').DeleteResponseObject;
 const rewire = require('rewire');
 const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
 const _delete = rewire('#src/dataLayer/delete');

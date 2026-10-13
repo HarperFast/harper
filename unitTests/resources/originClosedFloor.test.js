@@ -5,8 +5,8 @@ const { setTimeout: sleep } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { Transaction, RocksDatabase } = require('@harperfast/rocksdb-js');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { Transaction, RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const {
 	certifyOriginFloor,
 	getOriginClosedFloor,

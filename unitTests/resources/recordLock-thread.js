@@ -4,7 +4,7 @@ require('../testUtils');
 const { parentPort, threadId } = require('worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 require('#src/server/serverHelpers/serverUtilities');
 

@@ -59,22 +59,55 @@ const { installPerFileDatabaseTeardown } = require('./perFileDatabaseTeardown.js
 let runStarted = false;
 let runFinished = false;
 
-module.exports.mochaHooks = {
-	beforeAll() {
-		runStarted = true;
-		installPerFileDatabaseTeardown(this.test.parent);
-	},
-	afterAll() {
-		runFinished = true;
-		// Register the root removal here, not in the preload below: 'exit' listeners fire in
-		// registration order, and the one that flushes and closes every open database
-		// (RocksTransactionLogStore's shutdown()) is registered when the data layer loads —
-		// after the preload, before this hook. Removing the root any earlier deletes the
-		// database files out from under that flush, which rocksdb-js reports as
-		// "Failed to flush database during close: IO error ... 000NNN.log" — a throw out of an
-		// exit listener, so the run exits 7 with every test passing.
-		if (isMainThread) process.on('exit', removePerPidRoot);
-	},
+let observedTotal = 0;
+let observedFiles = [];
+
+module.exports.mochaHooks = () => {
+	runStarted = true;
+	return {
+		beforeAll() {
+			const root = this.test.parent;
+			const files = new Set();
+			function collect(suite) {
+				if (suite.file) files.add(suite.file);
+				for (const test of suite.tests) if (test.file) files.add(test.file);
+				for (const child of suite.suites) collect(child);
+			}
+			collect(root);
+			observedTotal = root.total();
+			observedFiles = [...files];
+			installPerFileDatabaseTeardown(root);
+		},
+		afterAll() {
+			// Register the root removal here, not in the preload below: 'exit' listeners fire in
+			// registration order, and the one that flushes and closes every open database
+			// (RocksTransactionLogStore's shutdown()) is registered when the data layer loads —
+			// after the preload, before this hook. Removing the root any earlier deletes the
+			// database files out from under that flush, which rocksdb-js reports as
+			// "Failed to flush database during close: IO error ... 000NNN.log" — a throw out of an
+			// exit listener, so the run exits 7 with every test passing.
+			if (isMainThread) process.on('exit', removePerPidRoot);
+		},
+	};
+};
+
+module.exports.mochaGlobalTeardown = function () {
+	runFinished = true;
+	if (process.env.HARPER_UNIT_RESULTS) {
+		const files = new Set(observedFiles);
+		function collect(suite) {
+			if (suite.file) files.add(suite.file);
+			for (const test of suite.tests) if (test.file) files.add(test.file);
+			for (const child of suite.suites) collect(child);
+		}
+		if (this.suite) collect(this.suite);
+		const selection = JSON.parse(fs.readFileSync(process.env.HARPER_UNIT_SELECTION_CONFIG, 'utf8')).spec;
+		for (const file of selection) if (require.cache[file]) files.add(file);
+		fs.writeFileSync(
+			process.env.HARPER_UNIT_RESULTS,
+			JSON.stringify({ total: this.stats?.tests ?? observedTotal, files: [...files] })
+		);
+	}
 };
 
 process.on('exit', (code) => {

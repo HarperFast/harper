@@ -7,7 +7,7 @@ const { expect } = chai;
 chai.use(sinon_chai);
 
 const rewire = require('rewire');
-let validationWrapper_rw = rewire('#src/validation/validationWrapper');
+let validationWrapper_rw = rewire('#js/validation/validationWrapper');
 
 /**
  *  Unit tests for validation/validationWrapper.js

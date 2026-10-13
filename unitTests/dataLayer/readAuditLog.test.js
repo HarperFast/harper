@@ -1,7 +1,7 @@
 'use strict';
 
 const rewire = require('rewire');
-const read_audit_log = require('#src/dataLayer/readAuditLog');
+const read_audit_log = require('#js/dataLayer/readAuditLog');
 const rw_read_audit_log = rewire('#src/dataLayer/readAuditLog');
 const ReadAuditLogObject = require('#src/dataLayer/ReadAuditLogObject');
 const env_mgr = require('#src/utility/environment/environmentManager');

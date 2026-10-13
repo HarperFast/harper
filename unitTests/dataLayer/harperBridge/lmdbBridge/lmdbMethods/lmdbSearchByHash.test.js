@@ -12,7 +12,7 @@ const TRANSACTIONS_NAME = 'transactions';
 const BASE_TXN_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 
 const rewire = require('rewire');
-const bridge = require('#src/dataLayer/harperBridge/harperBridge').default;
+const bridge = require('#js/dataLayer/harperBridge/harperBridge').default;
 const lmdb_create_records = bridge.createRecords;
 const lmdb_search_by_hash = bridge.searchByHash;
 const lmdb_create_schema = bridge.createSchema;

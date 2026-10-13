@@ -36,12 +36,12 @@ const { setupTestDBPath } = require('../testUtils');
 const { table, resetDatabases, getDatabases, closeDatabase } = require('#src/resources/databases');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { RequestTarget } = require('#src/resources/RequestTarget');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const fs = require('fs-extra');
 const path = require('node:path');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 
 async function collect(iter) {
 	const out = [];

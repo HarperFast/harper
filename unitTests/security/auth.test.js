@@ -1,6 +1,6 @@
 const assert = require('node:assert');
 const sinon = require('sinon');
-const { Headers } = require('#src/server/serverHelpers/Headers');
+const { Headers } = require('#js/server/serverHelpers/Headers');
 const { assertNoDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
 
 // First set up test environment

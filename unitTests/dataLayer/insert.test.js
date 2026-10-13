@@ -3,7 +3,7 @@
 const testUtils = require('../testUtils.js');
 
 const rewire = require('rewire');
-const insert_rw = rewire('#src/dataLayer/insert');
+const insert_rw = rewire('#js/dataLayer/insert');
 const assert = require('assert');
 const sinon = require('sinon');
 

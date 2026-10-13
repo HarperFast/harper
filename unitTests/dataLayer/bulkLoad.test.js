@@ -10,7 +10,7 @@ const sinon = require('sinon');
 const sinon_chai = require('sinon-chai').default;
 chai.use(sinon_chai);
 const rewire = require('rewire');
-let bulkLoad_rewire = rewire('#src/dataLayer/bulkLoad');
+let bulkLoad_rewire = rewire('#js/dataLayer/bulkLoad');
 const PermissionResponseObject = require('#src/security/data_objects/PermissionResponseObject').default;
 const hdb_terms = require('#src/utility/hdbTerms');
 const hdb_utils = require('#src/utility/common_utils');

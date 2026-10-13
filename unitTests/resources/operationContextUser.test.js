@@ -1,7 +1,7 @@
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 
 // Verifies the fix for issue #1591: writes performed by operation handlers through the static

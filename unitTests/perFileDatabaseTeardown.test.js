@@ -26,6 +26,38 @@ function runFixtures(storageEngine) {
 	);
 }
 
+describe('native ESM database teardown', () => {
+	for (const storageEngine of ['rocksdb', 'lmdb']) {
+		it(`drops an ESM-imported ${storageEngine} database between files`, function () {
+			this.timeout(30000);
+			const result = spawnSync(
+				process.execPath,
+				[
+					require.resolve('mocha/bin/mocha.js'),
+					path.join(__dirname, 'fixtures/nativeTeardown/create.mjs'),
+					path.join(__dirname, 'fixtures/nativeTeardown/check.mjs'),
+					'--no-config',
+					'--require',
+					path.join(__dirname, 'mocha.init.js'),
+					'--exit',
+				],
+				{
+					cwd: path.join(__dirname, '..'),
+					encoding: 'utf8',
+					timeout: 25000,
+					env: {
+						...process.env,
+						NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --conditions=typestrip`,
+						HARPER_STORAGE_ENGINE: storageEngine,
+					},
+				}
+			);
+			assert.strictEqual(result.status, 0, result.stdout + result.stderr);
+			assert.match(result.stdout, /2 passing/);
+		});
+	}
+});
+
 describe('per-file database teardown', () => {
 	it('drops what a RocksDB file created before the next file runs, and nothing else', function () {
 		this.timeout(120000);

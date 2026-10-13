@@ -1,7 +1,7 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { clearThisNodeName } = require('#src/server/nodeName');

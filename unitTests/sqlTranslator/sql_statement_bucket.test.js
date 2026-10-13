@@ -8,7 +8,7 @@ const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
 const alasql = require('alasql');
-const sql_statement_bucket = require('#src/sqlTranslator/sql_statement_bucket').default;
+const sql_statement_bucket = require('#js/sqlTranslator/sql_statement_bucket').default;
 const sql_statement_rewire = rewire('#src/sqlTranslator/sql_statement_bucket');
 
 //DELETE

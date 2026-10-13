@@ -6,7 +6,7 @@ testUtils.preTestPrep();
 // Afterwards root is set back to original value and temp test folder is deleted.
 // This needs to be done before schema.js is called by rewire.
 const HDB_ROOT_TEST = '../unitTests/dataLayer';
-const env = require('#src/utility/environment/environmentManager');
+const env = require('#js/utility/environment/environmentManager');
 const HDB_ROOT_ORIGINAL = env.get('HDB_ROOT');
 env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
 

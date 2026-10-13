@@ -6,7 +6,7 @@ testUtils.preTestPrep();
 const assert = require('assert');
 const rewire = require('rewire');
 const sinon = require('sinon');
-const hdb_term = require('#src/utility/hdbTerms');
+const hdb_term = require('#js/utility/hdbTerms');
 const JobObject = require('#src/server/jobs/JobObject').default;
 const file_load_validator = require('#src/validation/fileLoadValidator');
 const jobs = rewire('#src/server/jobs/jobs');

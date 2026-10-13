@@ -6,7 +6,7 @@ const { removeEntry } = require('#src/resources/RecordEncoder');
 const { Readable, PassThrough } = require('node:stream');
 const { EventEmitter } = require('node:events');
 const { setAuditRetention } = require('#src/resources/auditStore');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const {
 	blobFileMissingOrIncomplete,

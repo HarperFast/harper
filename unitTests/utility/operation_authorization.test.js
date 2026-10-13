@@ -9,7 +9,7 @@ testUtils.preTestPrep();
 const assert = require('assert');
 const _ = require('lodash');
 const rewire = require('rewire');
-const op_auth = require('#src/utility/operation_authorization');
+const op_auth = require('#js/utility/operation_authorization');
 const op_auth_rewire = rewire('#src/utility/operation_authorization');
 const Permission_rw = op_auth_rewire.__get__('permission');
 const write = require('#src/dataLayer/insert');

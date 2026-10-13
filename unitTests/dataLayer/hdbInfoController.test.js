@@ -6,7 +6,7 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 const assert = require('assert');
 // Need to rewire this since we have a promisified data member for search.  Remove rewire when search is asyncified.
-const hdb_info_controller_rw = rewire('#src/dataLayer/hdbInfoController');
+const hdb_info_controller_rw = rewire('#js/dataLayer/hdbInfoController');
 const insert = require('#src/dataLayer/insert');
 const { packageJson } = require('#src/utility/packageUtils');
 const harper_logger = require('#src/utility/logging/harper_logger');

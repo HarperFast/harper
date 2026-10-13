@@ -1,7 +1,7 @@
 'use strict';
 
 const fastify = require('fastify');
-const request_time_plugin = require('#js/server/serverHelpers/requestTimePlugin');
+const request_time_plugin = require('#src/server/serverHelpers/requestTimePlugin');
 const chai = require('chai');
 const { expect } = chai;
 

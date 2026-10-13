@@ -5,7 +5,7 @@ const { getDatabaseGeneration, readAuditEntry } = require('#src/resources/auditS
 const { transaction } = require('#src/resources/transaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const { deliveryCertified } = require('#src/resources/transactionBroadcast');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 

@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const { execFileSync } = require('node:child_process');
 const { resolve } = require('node:path');
 
-const root = resolve(__dirname, '../..');
+const root = resolve(require.resolve('#js/utility/lifecycle'), '../../..');
 
 // Isolate the registry so these checks cannot reset the real runtime's startup hooks.
 function run(mode, code) {

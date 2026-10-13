@@ -15,7 +15,7 @@ const { exchangeOidcToken, clearTokenUseTableCache } = require('#src/security/au
 const { addOidcTrust } = require('#src/security/authn/oidc/trustPolicyOperations');
 const { clearJwksCache } = require('#src/security/authn/oidc/jwks');
 const { validateOperationToken, clearJWTRSAKeysCache, decodeJWT } = require('#src/security/tokenAuthentication');
-const { databases } = require('#src/resources/databases');
+const { databases } = require('#js/resources/databases');
 const terms = require('#src/utility/hdbTerms');
 
 const TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;

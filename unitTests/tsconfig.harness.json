@@ -1,0 +1,11 @@
+{
+	"extends": "../tsconfig.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"types": ["node"],
+		"module": "ESNext",
+		"moduleResolution": "Bundler"
+	},
+	"include": ["runTypeStripTests.mts", "typeStripSuites.mts", "nativeModules.mts", "rocksdbBindings.mts"],
+	"exclude": []
+}

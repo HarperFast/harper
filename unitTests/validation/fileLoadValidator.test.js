@@ -9,7 +9,7 @@ const { expect } = chai;
 chai.use(sinon_chai);
 const fs = require('fs');
 const rewire = require('rewire');
-const validator = require('#src/validation/validationWrapper').default || require('#src/validation/validationWrapper');
+const validator = require('#js/validation/validationWrapper').default || require('#src/validation/validationWrapper');
 let file_load_validator = rewire('#src/validation/fileLoadValidator');
 const common_utils = require('#src/utility/common_utils');
 const log = require('#src/utility/logging/harper_logger');

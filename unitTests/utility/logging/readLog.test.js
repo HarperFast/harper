@@ -1,6 +1,6 @@
 'use strict';
 
-const env_mangr = require('#src/utility/environment/environmentManager');
+const env_mangr = require('#js/utility/environment/environmentManager');
 env_mangr.initTestEnvironment();
 const sinon = require('sinon');
 const chai = require('chai');

@@ -3,7 +3,7 @@
 const assert = require('assert');
 const fastify = require('fastify');
 const { hdbErrors } = require('#src/utility/errors/hdbError');
-const { serverErrorHandler } = require('#js/server/serverHelpers/serverHandlers');
+const { serverErrorHandler } = require('#src/server/serverHelpers/serverHandlers');
 
 describe('serverErrorHandler', function () {
 	it('answers an ordinary 500 when a handler rejects with no error', async function () {

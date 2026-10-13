@@ -8,7 +8,7 @@ import { resolve } from 'node:path';
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, rmSync } from 'node:fs';
 
 const require = createRequire(import.meta.url);
-const root = resolve(import.meta.dirname, '../../..');
+const root = resolve(require.resolve('#js/utility/lifecycle'), '../../..');
 
 function runWithIsolatedRoot(mode, code) {
 	let output = '';

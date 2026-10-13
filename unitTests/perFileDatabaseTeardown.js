@@ -21,6 +21,7 @@ const path = require('node:path');
 const { PID_DIR_PATH } = require('./perPidRoot.js');
 
 const databasesModulePath = require.resolve('#src/resources/databases');
+const nativeDatabaseWasLoaded = require('./nativeModules.mts').trackNativeDatabases(databasesModulePath);
 // mocha.init.js pins storage.path here; a test that points it elsewhere keeps what it creates there
 const STORAGE_ROOT = path.join(PID_DIR_PATH, 'database');
 
@@ -29,7 +30,7 @@ const STORAGE_ROOT = path.join(PID_DIR_PATH, 'database');
  * have created a database, and loading it here would open storage for suites that never touch it.
  */
 function loadedDatabasesModule() {
-	return require.cache[databasesModulePath]?.exports;
+	return require.cache[databasesModulePath]?.exports || (nativeDatabaseWasLoaded() && require(databasesModulePath));
 }
 
 function isInside(parentPath, childPath) {
@@ -101,7 +102,7 @@ async function dropCreatedSince(atStart, file) {
 	if (!databasesModule) return;
 	const env = require('#src/utility/environment/environmentManager');
 	const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-	const { registryStatus } = require('@harperfast/rocksdb-js');
+	const { registryStatus } = require('./rocksdbBindings.mts').rocksdbBindings();
 	const configuredDatabases = env.get(CONFIG_PARAMS.DATABASES) || {};
 	// a database configured at or inside the storage root scans or nests in the directories dropped
 	// here, so ownership can't be told by name or by root; leave the storage root alone

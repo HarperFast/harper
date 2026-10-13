@@ -8,7 +8,7 @@ const { setupTestDBPath } = require('../testUtils');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 const { dropSchema } = require('#src/dataLayer/schema');
-const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
+const { registryStatus, RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const {
 	abandonDatabaseDrop,
 	abandonRestore,
@@ -35,7 +35,7 @@ const {
 	registerWorkerDataProvider,
 	setMainIsWorker,
 	startWorker,
-} = require('#js/server/threads/manageThreads');
+} = require('#src/server/threads/manageThreads');
 
 const WORKER_FIXTURE = join(__dirname, 'databaseAliasIdentity-thread.js');
 const MESSAGE_TYPE = 'database-alias-identity-test';

@@ -11,7 +11,7 @@ const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, SYSTEM_FOLDER_NAME);
 const DEV_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, 'dev');
 
-const { handleHDBError } = require('#src/utility/errors/hdbError');
+const { handleHDBError } = require('#js/utility/errors/hdbError');
 
 const test_data = require('../../../testData.json');
 

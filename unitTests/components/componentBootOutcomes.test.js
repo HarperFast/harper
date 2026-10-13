@@ -10,7 +10,7 @@ const fs = require('node:fs/promises');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { withComponentPreparationLock } = require('#src/components/componentPreparationLock');
+const { withComponentPreparationLock } = require('#js/components/componentPreparationLock');
 const { internal: statusInternal } = require('#src/components/status/index');
 const { getConfigPath } = require('#src/config/configUtils');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');

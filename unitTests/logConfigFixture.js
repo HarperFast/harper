@@ -20,7 +20,7 @@ const fs = require('fs-extra');
 const os = require('node:os');
 const path = require('node:path');
 const hdbTerms = require('#src/utility/hdbTerms');
-const harperLoggerModule = require('#src/utility/logging/harper_logger');
+const harperLoggerModule = require('#js/utility/logging/harper_logger');
 
 /**
  * @param level the logging.level to pin

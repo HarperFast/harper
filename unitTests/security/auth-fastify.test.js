@@ -4,7 +4,7 @@ testUtils.preTestPrep();
 const assert = require('assert');
 const rewire = require('rewire');
 const sinon = require('sinon');
-const auth = rewire('#src/security/fastifyAuth');
+const auth = rewire('#js/security/fastifyAuth');
 const token_auth = rewire('#src/security/tokenAuthentication');
 const password_function = require('#src/utility/password');
 const user = require('#src/security/user');
