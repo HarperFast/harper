@@ -1,4 +1,5 @@
-'use strict';
+import { loadNativePackage } from '../utility/packageUtils.js';
+('use strict');
 
 import bulkDeleteValidator from '../validation/bulkDeleteValidator.ts';
 import deleteValidator from '../validation/deleteValidator.ts';
@@ -34,7 +35,7 @@ export async function deleteFilesBefore(deleteObj: any) {
 
 	commonUtils.transformReq(deleteObj);
 
-	const moment = require('moment') as typeof import('moment');
+	const moment = loadNativePackage('moment') as typeof import('moment');
 	let parsedDate = moment(deleteObj.date, moment.ISO_8601);
 	if (!parsedDate.isValid()) {
 		throw handleHDBError(

@@ -3,8 +3,7 @@
  * with the same compiled CommonJS behavior and configured worker restrictions.
  */
 import { suite, test, before, after } from 'node:test';
-// oxlint-disable-next-line no-restricted-imports -- repository task requires strict assertions
-import { deepStrictEqual, strictEqual, ok } from 'node:assert/strict';
+import { deepStrictEqual, strictEqual, ok } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { once } from 'node:events';

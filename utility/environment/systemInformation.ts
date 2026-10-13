@@ -1,3 +1,4 @@
+import { loadNativePackage } from '../packageUtils.js';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Systeminformation } from 'systeminformation';
@@ -11,7 +12,7 @@ import { getDatabases, type Table } from '../../resources/databases.ts';
 import { TableSizeObject } from '../../dataLayer/harperBridge/TableSizeObject.ts';
 import { RocksDatabase, type StatsHistogramData } from '@harperfast/rocksdb-js';
 
-const loadSi = () => require('systeminformation') as typeof import('systeminformation');
+const loadSi = () => loadNativePackage('systeminformation') as typeof import('systeminformation');
 try {
 	env.initSync();
 } catch {

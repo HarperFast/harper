@@ -1,4 +1,5 @@
-'use strict';
+import { loadNativePackage } from '../utility/packageUtils.js';
+('use strict');
 
 import * as path from 'node:path';
 import fs from 'fs-extra';
@@ -9,7 +10,7 @@ import { generateKeyPair as generateKeyPairOrig, X509Certificate, createPrivateK
 import * as util from 'node:util';
 const generateKeyPair = util.promisify(generateKeyPairOrig);
 
-const loadForge = () => require('node-forge') as typeof Forge;
+const loadForge = () => loadNativePackage('node-forge') as typeof Forge;
 import { v4 as uuidv4 } from 'uuid';
 import { forComponent } from '../utility/logging/harper_logger.ts';
 import * as envManager from '../utility/environment/environmentManager.ts';

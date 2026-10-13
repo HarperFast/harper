@@ -1,3 +1,4 @@
+import { loadNativePackage } from '../utility/packageUtils.js';
 import {
 	getDatabases,
 	getDefaultCompression,
@@ -345,7 +346,9 @@ async function copyDbEnvironment(
 	// this contains the list of all the dbis
 	const sourceDbisDb = rootStore.dbisDb;
 	const sourceAuditStore = rootStore.auditStore;
-	const targetEnv = (require('lmdb') as typeof import('lmdb')).open(new OpenEnvironmentObject(targetDatabasePath));
+	const targetEnv = (loadNativePackage('lmdb') as typeof import('lmdb')).open(
+		new OpenEnvironmentObject(targetDatabasePath)
+	);
 	const targetDbisDb = targetEnv.openDB({ name: INTERNAL_DBIS_NAME });
 	let written;
 	let outstandingWrites = 0;

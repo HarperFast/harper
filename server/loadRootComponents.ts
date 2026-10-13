@@ -1,3 +1,4 @@
+import { loadRuntimeModule } from '../utility/packageUtils.js';
 import * as jobOwnershipRuntimeModule from './jobs/jobOwnership.ts';
 import { isMainThread, workerData } from 'node:worker_threads';
 import { getTables } from '../resources/databases.ts';
@@ -68,7 +69,7 @@ async function loadRootComponents(isWorkerThread: any = false) {
 	// reads the config a restore publishes.
 	if (isMainThread && !process.env.HARPER_SAFE_MODE) {
 		try {
-			await require('../components/canaryRollout.ts').resolveInterruptedCertifications();
+			await loadRuntimeModule('components/canaryRollout').resolveInterruptedCertifications();
 		} catch (error) {
 			console.error(errorForLog(error));
 		}
@@ -126,7 +127,7 @@ async function loadRootComponents(isWorkerThread: any = false) {
  */
 async function componentsFailedClosed() {
 	const componentsRoot = configUtils.getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
-	const { processIncarnation } = require('./threads/manageThreads.ts');
+	const { processIncarnation } = loadRuntimeModule('server/threads/manageThreads');
 	let failClosed;
 	try {
 		failClosed = await failClosedReleases(componentsRoot, processIncarnation);
@@ -135,7 +136,10 @@ async function componentsFailedClosed() {
 		failClosed = await failEveryComponentClosed(error);
 	}
 	// Each holds only while the release it refused is still the live one.
-	for (const [component, { deploymentId, reason }] of Object.entries(workerData?.failClosed ?? {})) {
+	for (const [component, { deploymentId, reason }] of Object.entries(workerData?.failClosed ?? {}) as [
+		string,
+		{ deploymentId: string; reason: string },
+	][]) {
 		if ((await liveDeploymentId(componentsRoot, component).catch(() => undefined)) !== deploymentId) continue;
 		failClosed.set(component, new RejectedReleaseError(component, deploymentId, reason));
 	}

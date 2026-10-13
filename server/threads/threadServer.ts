@@ -275,22 +275,21 @@ function startServers() {
 		if (message.type !== terms.ITC_EVENT_TYPES.SHUTDOWN) return;
 		beginProcessShutdown();
 		harperLogger.trace('received shutdown request', threadId);
-		void loaded.then(shutdownServers, shutdownServers).catch((error) =>
-			harperLogger.error('Error shutting down HTTP worker', error)
-		);
+		void loaded
+			.then(shutdownServers, shutdownServers)
+			.catch((error) => harperLogger.error('Error shutting down HTTP worker', error));
 	});
-	loaded = Promise.resolve(heldStart?.beginHeldStart(heldFor))
-		.then(async (loadedGenerations) => {
-			await loadRootComponentsRuntimeModule.loadRootComponents(true);
-			loadRuntimeModule('components/deployLifecycle').deployLifecycle._componentsLoaded();
-			if (heldStart) {
-				reportStartupPhase('awaiting admission');
-				await new Promise<void>((resolve, reject) => {
-					admitted = heldStart.awaitAdmission(heldFor, loadedGenerations, resolve);
-					admitted.catch(reject);
-				});
-			}
-		});
+	loaded = Promise.resolve(heldStart?.beginHeldStart(heldFor)).then(async (loadedGenerations) => {
+		await loadRootComponentsRuntimeModule.loadRootComponents(true);
+		loadRuntimeModule('components/deployLifecycle').deployLifecycle._componentsLoaded();
+		if (heldStart) {
+			reportStartupPhase('awaiting admission');
+			await new Promise<void>((resolve, reject) => {
+				admitted = heldStart.awaitAdmission(heldFor, loadedGenerations, resolve);
+				admitted.catch(reject);
+			});
+		}
+	});
 	const ready = loaded.then(async () => {
 		await admitted;
 		if (isProcessShuttingDown()) return shutdownServers();
@@ -753,6 +752,7 @@ if (
 		if (isProcessShuttingDown()) return shutdownServers();
 		await startServers();
 	})().catch((err) => {
+		if (isProcessShuttingDown()) return shutdownServers();
 		harperLogger.fatal('Worker failed to start', err);
 		realExit(1);
 	});

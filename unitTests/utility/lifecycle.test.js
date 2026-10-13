@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { execFileSync } = require('node:child_process');
 const { resolve } = require('node:path');
 
@@ -17,13 +17,13 @@ function run(mode, code) {
 		[
 			...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
 			'-e',
-			`const assert = require('node:assert/strict');
+			`const assert = require('node:assert');
 			const { onStartup, runStartup, resetStartupForTests, hasStarted } = require(${JSON.stringify(modulePath)});
 			(async () => { ${code} })().then(() => console.log('completed')).catch(error => { console.error(error); process.exitCode = 1; });`,
 		],
 		{ encoding: 'utf8', timeout: 30000 }
 	);
-	assert.equal(output.trim(), 'completed');
+	assert.strictEqual(output.trim(), 'completed');
 }
 
 for (const mode of ['compiled', 'typestrip']) {
@@ -35,17 +35,17 @@ for (const mode of ['compiled', 'typestrip']) {
 				const calls = [];
 				let release;
 				const barrier = new Promise(resolve => { release = resolve; });
-				assert.equal(hasStarted(), false);
+				assert.strictEqual(hasStarted(), false);
 				onStartup(async () => { calls.push('first'); await barrier; calls.push('finished'); });
 				onStartup(() => { calls.push('second'); });
 				const startup = runStartup();
-				assert.equal(hasStarted(), true);
-				assert.equal(runStartup(), startup);
-				assert.deepEqual(calls, ['first']);
+				assert.strictEqual(hasStarted(), true);
+				assert.strictEqual(runStartup(), startup);
+				assert.deepStrictEqual(calls, ['first']);
 				release();
 				await startup;
 				await runStartup();
-				assert.deepEqual(calls, ['first', 'finished', 'second']);
+				assert.deepStrictEqual(calls, ['first', 'finished', 'second']);
 			`
 			);
 		});
@@ -61,12 +61,12 @@ for (const mode of ['compiled', 'typestrip']) {
 				const first = runStartup();
 				await first;
 				resetStartupForTests();
-				assert.equal(hasStarted(), false);
+				assert.strictEqual(hasStarted(), false);
 				onStartup(() => { calls.push('second'); });
 				const second = runStartup();
-				assert.notEqual(second, first);
+				assert.notStrictEqual(second, first);
 				await second;
-				assert.deepEqual(calls, ['first', 'second']);
+				assert.deepStrictEqual(calls, ['first', 'second']);
 			`
 			);
 		});
@@ -81,14 +81,14 @@ for (const mode of ['compiled', 'typestrip']) {
 				const barrier = new Promise(resolve => { release = resolve; });
 				const completion = new Promise(resolve => { complete = resolve; });
 				onStartup(async () => { entered = true; await barrier; finished = true; complete(); });
-				assert.equal(entered, false);
+				assert.strictEqual(entered, false);
 				await Promise.resolve();
-				assert.equal(entered, true);
+				assert.strictEqual(entered, true);
 				await runStartup();
-				assert.equal(finished, false);
+				assert.strictEqual(finished, false);
 				release();
 				await completion;
-				assert.equal(finished, true);
+				assert.strictEqual(finished, true);
 			`
 			);
 		});
@@ -103,8 +103,8 @@ for (const mode of ['compiled', 'typestrip']) {
 				onStartup(() => { subsequent = true; });
 				const startup = runStartup();
 				await assert.rejects(startup, actual => actual === error);
-				assert.equal(runStartup(), startup);
-				assert.equal(subsequent, false);
+				assert.strictEqual(runStartup(), startup);
+				assert.strictEqual(subsequent, false);
 			`
 			);
 		});
@@ -124,14 +124,14 @@ for (const mode of ['compiled', 'typestrip']) {
 				});
 				onStartup(() => calls.push('second'));
 				const startup = runStartup();
-				assert.equal(reentrant, startup);
+				assert.strictEqual(reentrant, startup);
 				let settled = false;
 				startup.then(() => { settled = true; });
 				await nestedEntered;
-				assert.equal(settled, false);
-				assert.deepEqual(calls, ['first', 'second', 'nested']);
+				assert.strictEqual(settled, false);
+				assert.deepStrictEqual(calls, ['first', 'second', 'nested']);
 				release(); await startup;
-				assert.deepEqual(calls, ['first', 'second', 'nested', 'finished']);
+				assert.deepStrictEqual(calls, ['first', 'second', 'nested', 'finished']);
 			`
 			);
 		});
@@ -148,8 +148,8 @@ for (const mode of ['compiled', 'typestrip']) {
 				});
 				const startup = runStartup();
 				await assert.rejects(startup, actual => actual === error);
-				assert.equal(runStartup(), startup);
-				assert.equal(subsequent, false);
+				assert.strictEqual(runStartup(), startup);
+				assert.strictEqual(subsequent, false);
 				let complete;
 				const late = new Promise(resolve => { complete = resolve; });
 				onStartup(complete); await late;
@@ -172,8 +172,8 @@ for (const mode of ['compiled', 'typestrip']) {
 				const current = runStartup();
 				await current;
 				release(); await old;
-				assert.equal(runStartup(), current);
-				assert.deepEqual(calls, ['old', 'new']);
+				assert.strictEqual(runStartup(), current);
+				assert.deepStrictEqual(calls, ['old', 'new']);
 			`
 			);
 		});

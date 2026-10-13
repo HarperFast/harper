@@ -2,7 +2,7 @@
 
 const { Worker } = require('node:worker_threads');
 const path = require('node:path');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
 
 const FIXTURE = path.join(__dirname, 'manageThreads-shutdown-fixture.cjs');
@@ -43,7 +43,7 @@ describe('manageThreads SHUTDOWN handler', () => {
 		try {
 			worker.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: 7 });
 			const response = await sendAndAwait(worker, { type: 'query-restart-number' });
-			assert.equal(
+			assert.strictEqual(
 				response.value,
 				7,
 				'restartNumber should be updated on the real module binding so restart-interrupt checks in ' +

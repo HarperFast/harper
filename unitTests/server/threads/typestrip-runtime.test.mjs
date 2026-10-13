@@ -1,5 +1,4 @@
-// oxlint-disable-next-line no-restricted-imports -- repository task requires strict assertions
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
@@ -16,19 +15,19 @@ function runWithIsolatedRoot(mode, code) {
 	try {
 		output = execFileSync(
 			process.execPath,
-			[
-				...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
-				'--input-type=module',
-				'-e',
-				`const { createRequire } = await import('node:module');
+			[...(mode === 'typestrip' ? ['--conditions=typestrip'] : []), '--input-type=module'],
+			{
+				env: process.env,
+				encoding: 'utf8',
+				timeout: 30000,
+				input: `const { createRequire } = await import('node:module');
 			const require = createRequire(${JSON.stringify(pathToFileURL(resolve(root, 'package.json')).href)});
 			const { materializePerPidRoot } = require(${JSON.stringify(resolve(root, 'unitTests/perPidRoot.js'))});
 			process.env.ROOTPATH = materializePerPidRoot();
 			console.log('fixture-root ' + process.pid);
 			${code}
 			process.exit(0);`,
-			],
-			{ env: process.env, encoding: 'utf8', timeout: 30000 }
+			}
 		);
 		return output.replace(/^fixture-root \d+\r?\n/, '').trim();
 	} catch (error) {
@@ -50,7 +49,7 @@ describe('TypeStrip runtime boundaries', () => {
 				const output = runWithIsolatedRoot(
 					mode,
 					`
-					const assert = (await import('node:assert/strict')).default;
+					const assert = (await import('node:assert')).default;
 					const { readFileSync, writeFileSync } = await import('node:fs');
 					const configPath = process.env.ROOTPATH + '/harper-config.yaml';
 					const YAML = require('yaml');
@@ -59,7 +58,7 @@ describe('TypeStrip runtime boundaries', () => {
 					writeFileSync(configPath, config.toString());
 					await import(${JSON.stringify(runtimeUrl('server/threads/threadServer'))});
 					const env = await import(${JSON.stringify(runtimeUrl('utility/environment/environmentManager'))});
-					env.initSync(); assert.equal(env.get('serialization_bigInt'), ${bigint});
+					env.initSync(); assert.strictEqual(env.get('serialization_bigInt'), ${bigint});
 					const codecs = await import(${JSON.stringify(runtimeUrl('server/serverHelpers/contentTypes'))});
 					const jsonStream = await import(${JSON.stringify(runtimeUrl('server/serverHelpers/JSONStream'))});
 					const custom = value => 'custom:' + value;
@@ -67,30 +66,30 @@ describe('TypeStrip runtime boundaries', () => {
 					const { runStartup } = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
 					await runStartup();
 					const expected = ${bigint} ? jsonStream.stringify : JSON.stringify;
-					assert.equal(codecs.getMessageSerializer(), expected);
-					for (const type of ['application/json', '*/*', '']) assert.equal(codecs.contentTypes.get(type).serialize, expected);
-					assert.equal(codecs.contentTypes.get('test/custom-json').serialize, custom);
+					assert.strictEqual(codecs.getMessageSerializer(), expected);
+					for (const type of ['application/json', '*/*', '']) assert.strictEqual(codecs.contentTypes.get(type).serialize, expected);
+					assert.strictEqual(codecs.contentTypes.get('test/custom-json').serialize, custom);
 					const request = { headers: { get: () => 'application/json' } };
 					const response = { headers: new Map() };
-					assert.equal(codecs.serialize({ value: 42 }, request, response), '{"value":42}');
-					assert.equal(codecs.serializeMessage({ value: 42 }, request), '{"value":42}');
-					assert.equal(request.serialize, expected);
+					assert.strictEqual(codecs.serialize({ value: 42 }, request, response), '{"value":42}');
+					assert.strictEqual(codecs.serializeMessage({ value: 42 }, request), '{"value":42}');
+					assert.strictEqual(request.serialize, expected);
 					const bigValue = { value: 9007199254740993n };
 					if (${bigint}) {
-						assert.equal(codecs.serialize(bigValue, request, response), '{"value":9007199254740993}');
-						assert.equal(codecs.getDeserializer('application/json')(Buffer.from('{"value":9007199254740993}')).value, bigValue.value);
+						assert.strictEqual(codecs.serialize(bigValue, request, response), '{"value":9007199254740993}');
+						assert.strictEqual(codecs.getDeserializer('application/json')(Buffer.from('{"value":9007199254740993}')).value, bigValue.value);
 					} else {
 						assert.throws(() => codecs.serializeMessage(bigValue, request), error => error.message === 'Cannot serialize BigInt to JSON');
-						assert.equal(codecs.getMessageSerializer()({ value: 42, extra: true }, ['value'], 2), JSON.stringify({ value: 42 }, null, 2));
-						assert.equal(codecs.getDeserializer('application/json')(Buffer.from('{"value":9007199254740993}')).value, 9007199254740992);
+						assert.strictEqual(codecs.getMessageSerializer()({ value: 42, extra: true }, ['value'], 2), JSON.stringify({ value: 42 }, null, 2));
+						assert.strictEqual(codecs.getDeserializer('application/json')(Buffer.from('{"value":9007199254740993}')).value, 9007199254740992);
 					}
 					const ndjson = codecs.contentTypes.get('application/x-ndjson').serializeStream([{ value: 42 }]);
 					let streamed = ''; for await (const chunk of ndjson) streamed += chunk;
-					assert.equal(streamed, '{"value":42}\\n');
+					assert.strictEqual(streamed, '{"value":42}\\n');
 					console.log('direct configured codecs served');
 				`
 				);
-				assert.equal(output, 'direct configured codecs served', mode + ':' + bigint);
+				assert.strictEqual(output, 'direct configured codecs served', mode + ':' + bigint);
 			}
 		}
 	});
@@ -104,7 +103,7 @@ describe('TypeStrip runtime boundaries', () => {
 				const output = runWithIsolatedRoot(
 					mode,
 					`
-					const assert = (await import('node:assert/strict')).default;
+					const assert = (await import('node:assert')).default;
 					const { readFileSync, writeFileSync } = await import('node:fs');
 					const YAML = require('yaml');
 					const configPath = process.env.ROOTPATH + '/harper-config.yaml';
@@ -121,17 +120,17 @@ describe('TypeStrip runtime boundaries', () => {
 					const body = await codecs.serialize(value, request, response);
 					if (${threshold}) {
 						const { brotliDecompressSync } = await import('node:zlib');
-						assert.equal(response.headers.get('Content-Encoding'), 'br');
+						assert.strictEqual(response.headers.get('Content-Encoding'), 'br');
 						assert.ok(body instanceof Uint8Array);
-						assert.equal(brotliDecompressSync(body).toString(), JSON.stringify(value));
+						assert.strictEqual(brotliDecompressSync(body).toString(), JSON.stringify(value));
 					} else {
-						assert.equal(response.headers.has('Content-Encoding'), false);
-						assert.equal(body, JSON.stringify(value));
+						assert.strictEqual(response.headers.has('Content-Encoding'), false);
+						assert.strictEqual(body, JSON.stringify(value));
 					}
 					console.log('configured response compression served');
 					`
 				);
-				assert.equal(output, 'configured response compression served', mode);
+				assert.strictEqual(output, 'configured response compression served', mode);
 			}
 		}
 	});
@@ -147,7 +146,7 @@ describe('TypeStrip runtime boundaries', () => {
 			const output = runWithIsolatedRoot(
 				mode,
 				`
-				const assert = (await import('node:assert/strict')).default;
+				const assert = (await import('node:assert')).default;
 				const { readFileSync, writeFileSync, existsSync, readdirSync } = await import('node:fs');
 				const { setTimeout: delay } = await import('node:timers/promises');
 				const { waitFor } = require(${JSON.stringify(resolve(root, 'unitTests/waitFor.js'))});
@@ -166,7 +165,7 @@ describe('TypeStrip runtime boundaries', () => {
 				updateLogger(logger, { path }, undefined, logger);
 				logger.info('rotation must stay disabled');
 				await delay(600);
-				assert.deepEqual(existsSync(archives) ? readdirSync(archives) : [], []);
+				assert.deepStrictEqual(existsSync(archives) ? readdirSync(archives) : [], []);
 				assert.match(readFileSync(path, 'utf8'), /rotation must stay disabled/);
 				assert.doesNotMatch(readFileSync(path, 'utf8'), /Error initializing log rotator/);
 				updateLogger(logger, { path, rotation }, undefined, logger);
@@ -175,12 +174,12 @@ describe('TypeStrip runtime boundaries', () => {
 				await delay(200);
 				const ended = readdirSync(archives);
 				await delay(200);
-				assert.deepEqual(readdirSync(archives), ended);
+				assert.deepStrictEqual(readdirSync(archives), ended);
 				logger.closeLogFile();
 				console.log('rotation remained disabled');
 			`
 			);
-			assert.equal(output, 'rotation remained disabled', mode);
+			assert.strictEqual(output, 'rotation remained disabled', mode);
 		}
 	});
 
@@ -198,7 +197,7 @@ describe('TypeStrip runtime boundaries', () => {
 			const output = runWithIsolatedRoot(
 				mode,
 				`
-				const assert = (await import('node:assert/strict')).default;
+				const assert = (await import('node:assert')).default;
 				const { Worker } = await import('node:worker_threads');
 				const { once } = await import('node:events');
 				const worker = new Worker(${JSON.stringify(workerPath)}, { execArgv: ${JSON.stringify(execArgv)}, workerData: { addPorts: [], addThreadIds: [] } });
@@ -208,15 +207,15 @@ describe('TypeStrip runtime boundaries', () => {
 					worker.postMessage({ type: 'shutdown', restartNumber: 2 });
 					worker.postMessage({ type: 'release-startup' });
 					const [code] = await once(worker, 'exit', { signal: AbortSignal.timeout(3000) });
-					assert.equal(code, 0);
+					assert.strictEqual(code, 0);
 					assert.ok(messages.some(message => message.type === 'scope-disposed'));
 					assert.ok(messages.some(message => message.type === 'startup-drained'));
-					assert.equal(messages.some(message => message.type === 'child_started' || message.type === 'child_startup_phase'), false);
+					assert.strictEqual(messages.some(message => message.type === 'child_started' || message.type === 'child_startup_phase'), false);
 				} finally { if (worker.threadId !== -1) await worker.terminate(); }
 				console.log('startup shutdown drained');
 			`
 			);
-			assert.equal(output, 'startup shutdown drained', mode);
+			assert.strictEqual(output, 'startup shutdown drained', mode);
 		}
 	});
 
@@ -229,7 +228,7 @@ describe('TypeStrip runtime boundaries', () => {
 			const output = runWithIsolatedRoot(
 				mode,
 				`
-				const assert = (await import('node:assert/strict')).default;
+				const assert = (await import('node:assert')).default;
 				const { readFileSync, writeFileSync } = await import('node:fs');
 				const YAML = require('yaml');
 				const configPath = process.env.ROOTPATH + '/harper-config.yaml';
@@ -247,15 +246,15 @@ describe('TypeStrip runtime boundaries', () => {
 					worker.postMessage({ type: 'shutdown', restartNumber: 2 });
 					worker.postMessage({ type: 'release-component' });
 					const [code] = await once(worker, 'exit', { signal: AbortSignal.timeout(3000) });
-					assert.equal(code, 0);
+					assert.strictEqual(code, 0);
 					assert.ok(messages.some(message => message.type === 'component-disposed'));
 					assert.ok(messages.some(message => message.type === 'child_startup_phase' && message.phase === 'loading components'));
-					assert.equal(messages.some(message => message.type === 'child_started' || (message.type === 'child_startup_phase' && message.phase !== 'loading components')), false);
+					assert.strictEqual(messages.some(message => message.type === 'child_started' || (message.type === 'child_startup_phase' && message.phase !== 'loading components')), false);
 				} finally { if (worker.threadId !== -1) await worker.terminate(); }
 				console.log('component shutdown drained');
 			`
 			);
-			assert.equal(output, 'component shutdown drained', mode);
+			assert.strictEqual(output, 'component shutdown drained', mode);
 		}
 	});
 
@@ -267,17 +266,17 @@ describe('TypeStrip runtime boundaries', () => {
 			const output = runWithIsolatedRoot(
 				mode,
 				`
-				const assert = (await import('node:assert/strict')).default;
+				const assert = (await import('node:assert')).default;
 				process.env.HARPER_BUILTIN_COMPONENTS = 'agent=@/test/agent,operationsApi=@/test/operationsApi';
 				const { TRUSTED_RESOURCE_PLUGINS } = await import(${JSON.stringify(runtimeUrl('components/componentLoader'))});
 				const { runStartup } = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
 				await runStartup();
-				assert.equal(TRUSTED_RESOURCE_PLUGINS.agent, '@/test/agent');
-				assert.equal(TRUSTED_RESOURCE_PLUGINS.operationsApi, '@/test/operationsApi');
+				assert.strictEqual(TRUSTED_RESOURCE_PLUGINS.agent, '@/test/agent');
+				assert.strictEqual(TRUSTED_RESOURCE_PLUGINS.operationsApi, '@/test/operationsApi');
 				console.log('built-in overrides preserved');
 			`
 			);
-			assert.equal(output, 'built-in overrides preserved', mode);
+			assert.strictEqual(output, 'built-in overrides preserved', mode);
 		}
 	});
 
@@ -289,22 +288,22 @@ describe('TypeStrip runtime boundaries', () => {
 			const output = runWithIsolatedRoot(
 				mode,
 				`
-				const assert = (await import('node:assert/strict')).default;
+				const assert = (await import('node:assert')).default;
 				const { readFileSync } = await import('node:fs');
 				const { join } = await import('node:path');
-				assert.equal(typeof globalThis.module, 'undefined');
+				assert.strictEqual(typeof globalThis.module, 'undefined');
 				const { createLogger, setMainLogger } = await import(${JSON.stringify(runtimeUrl('utility/logging/harper_logger'))});
 				const logPath = join(process.env.ROOTPATH, 'before-startup.log');
 				setMainLogger(createLogger({ path: logPath, level: 'warn', stdStreams: false }));
 				const { logger } = await import(${JSON.stringify(runtimeUrl('utility/logging/logger'))});
 				const { hasStarted } = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
-				assert.equal(hasStarted(), false);
+				assert.strictEqual(hasStarted(), false);
 				logger.warn('conditional warning before startup');
 				assert.match(readFileSync(logPath, 'utf8'), /conditional warning before startup/);
 				console.log('pre-startup warning written');
 			`
 			);
-			assert.equal(output, 'pre-startup warning written', mode);
+			assert.strictEqual(output, 'pre-startup warning written', mode);
 		}
 	});
 
@@ -316,22 +315,22 @@ describe('TypeStrip runtime boundaries', () => {
 			const output = runWithIsolatedRoot(
 				mode,
 				`
-				const assert = (await import('node:assert/strict')).default;
+				const assert = (await import('node:assert')).default;
 				const { mkdirSync, writeFileSync } = await import('node:fs');
 				const { join } = await import('node:path');
 				const componentDirectory = join(process.env.ROOTPATH, 'empty-component');
 				mkdirSync(componentDirectory); writeFileSync(join(componentDirectory,'config.yaml'),'# empty configuration\\n');
-				const { loadComponent, setErrorReporter } = await import(${JSON.stringify(runtimeUrl('components/componentLoader'))});
+				const { loadComponent, trackBootOutcomes, bootVerdictOf } = await import(${JSON.stringify(runtimeUrl('components/componentLoader'))});
 				const { Resources } = await import(${JSON.stringify(runtimeUrl('resources/Resources'))});
-				const errors = []; setErrorReporter(error => errors.push(error));
+				trackBootOutcomes(['empty-component']);
 				const resources = new Resources();
 				await loadComponent(componentDirectory,resources,'test-origin');
-				assert.equal(errors.length, 0);
-				assert.equal(resources.get(''), undefined);
+				assert.deepStrictEqual(bootVerdictOf('empty-component').failures, []);
+				assert.strictEqual(resources.get(''), undefined);
 				console.log('empty configuration skipped');
 			`
 			);
-			assert.equal(output, 'empty configuration skipped', mode);
+			assert.strictEqual(output, 'empty configuration skipped', mode);
 		}
 	});
 
@@ -343,7 +342,7 @@ describe('TypeStrip runtime boundaries', () => {
 			const output = runWithIsolatedRoot(
 				mode,
 				`
-				const assert = (await import('node:assert/strict')).default;
+				const assert = (await import('node:assert')).default;
 				await import(${JSON.stringify(runtimeUrl('server/threads/threadServer'))});
 				const env = await import(${JSON.stringify(runtimeUrl('utility/environment/environmentManager'))});
 				env.initSync(); assert.ok(env.get('analytics_aggregatePeriod') > -1);
@@ -358,14 +357,14 @@ describe('TypeStrip runtime boundaries', () => {
 					});
 				});
 				recordAction(7,'typestrip-configured-sample');
-				assert.equal((await reports).mean,7);
+				assert.strictEqual((await reports).mean,7);
 				setAnalyticsEnabled(false);
 				const { closeLoadedDatabases } = await import(${JSON.stringify(runtimeUrl('resources/databases'))});
 				await closeLoadedDatabases();
 				console.log('configured analytics recorded');
 			`
 			);
-			assert.equal(output, 'configured analytics recorded', mode);
+			assert.strictEqual(output, 'configured analytics recorded', mode);
 		}
 	});
 
@@ -388,24 +387,24 @@ describe('TypeStrip runtime boundaries', () => {
 			const modulePath = pathToFileURL(resolve(root, mode === 'compiled' ? 'dist/index.js' : 'index.ts')).href;
 			const output = execFileSync(
 				process.execPath,
-				[
-					...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
-					'--input-type=module',
-					'-e',
-					`const assert = (await import('node:assert/strict')).default;
+				[...(mode === 'typestrip' ? ['--conditions=typestrip'] : []), '--input-type=module'],
+				{
+					input: `const assert = (await import('node:assert')).default;
 				const facade = await import(${JSON.stringify(modulePath)});
 				const names = ${JSON.stringify(names)};
-				assert.deepEqual(Object.keys(facade).filter(name => names.includes(name)).sort(), names.sort());
-				for (const name of names) assert.equal(facade[name], globalThis[name], name);
-				assert.equal(typeof facade.Resource, 'function');
-				assert.equal(typeof facade.operation, 'function');
-				assert.equal(typeof facade.server.http, 'function');
+				assert.deepStrictEqual(Object.keys(facade).filter(name => names.includes(name)).sort(), names.sort());
+				for (const name of names) assert.strictEqual(facade[name], globalThis[name], name);
+				assert.strictEqual(typeof facade.Resource, 'function');
+				assert.strictEqual(typeof facade.operation, 'function');
+				assert.strictEqual(typeof facade.server.http, 'function');
 				assert.ok(new facade.Resource('public-facade') instanceof facade.Resource);
 				console.log('public values preserved'); process.exit(0);`,
-				],
-				{ env: process.env, encoding: 'utf8', timeout: 30000 }
+					env: process.env,
+					encoding: 'utf8',
+					timeout: 30000,
+				}
 			);
-			assert.equal(output.trim(), 'public values preserved', mode);
+			assert.strictEqual(output.trim(), 'public values preserved', mode);
 			const worker = new Worker(resolve(root, 'unitTests/bin/user-thread.js'), {
 				execArgv: mode === 'typestrip' ? ['--conditions=typestrip'] : [],
 				workerData: { noServerStart: true, addPorts: [], addThreadIds: [] },
@@ -413,7 +412,7 @@ describe('TypeStrip runtime boundaries', () => {
 			try {
 				for await (const [message] of on(worker, 'message', { signal: AbortSignal.timeout(30000) })) {
 					if (!Object.hasOwn(message, 'hasResource')) continue;
-					assert.deepEqual(message, { hasResource: true, hasServer: true }, mode);
+					assert.deepStrictEqual(message, { hasResource: true, hasServer: true }, mode);
 					break;
 				}
 			} finally {
@@ -436,33 +435,28 @@ describe('TypeStrip runtime boundaries', () => {
 			const output = runWithIsolatedRoot(
 				mode,
 				`
-				const assert = (await import('node:assert/strict')).default;
+				const assert = (await import('node:assert')).default;
 				const { Worker } = await import('node:worker_threads');
 				const { once } = await import('node:events');
 				const worker = new Worker(${JSON.stringify(workerPath)}, { execArgv: ${JSON.stringify(execArgv)}, workerData: { addPorts: [], addThreadIds: [] } });
 				const messages = []; worker.on('message', message => messages.push(message));
 				try {
 					const [code] = await once(worker, 'exit', { signal: AbortSignal.timeout(10000) });
-					assert.equal(code, 0);
+					assert.strictEqual(code, 0);
 					assert.ok(messages.some(message => message.type === 'startup-ref' && message.held === true));
 					assert.ok(messages.some(message => message.type === 'startup-hook-completed'));
 				} finally { if (worker.threadId !== -1) await worker.terminate(); }
 				console.log('startup hook completed');`
 			);
-			assert.equal(output, 'startup hook completed', mode);
+			assert.strictEqual(output, 'startup hook completed', mode);
 		}
 	});
 
 	it('passes the source condition to actual managed workers without NODE_OPTIONS', () => {
 		const manager = pathToFileURL(resolve(root, 'server/threads/manageThreads.ts')).href;
 		const fixture = resolve(import.meta.dirname, 'fixtures/runtime-condition.cjs');
-		const output = execFileSync(
-			process.execPath,
-			[
-				'--conditions=typestrip',
-				'--input-type=module',
-				'-e',
-				`const { once } = await import('node:events');
+		const output = execFileSync(process.execPath, ['--conditions=typestrip', '--input-type=module'], {
+			input: `const { once } = await import('node:events');
 				const { startWorker } = await import(${JSON.stringify(manager)});
 				const worker = startWorker(${JSON.stringify(fixture)}, { name: 'runtime-condition', autoRestart: false });
 				try {
@@ -470,11 +464,12 @@ describe('TypeStrip runtime boundaries', () => {
 					console.log(JSON.stringify(message));
 				} finally { await worker.terminate(); }
 				process.exit(0);`,
-			],
-			{ env: { ...process.env, NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 30000 }
-		);
+			env: { ...process.env, NODE_OPTIONS: '' },
+			encoding: 'utf8',
+			timeout: 30000,
+		});
 		const message = JSON.parse(output.trim());
-		assert.equal(message.modulePath, resolve(root, 'server/Server.ts'));
+		assert.strictEqual(message.modulePath, resolve(root, 'server/Server.ts'));
 		assert.ok(message.execArgv.includes('--conditions=typestrip'));
 	});
 
@@ -491,11 +486,9 @@ describe('TypeStrip runtime boundaries', () => {
 				).href;
 				const output = execFileSync(
 					process.execPath,
-					[
-						...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
-						'--input-type=module',
-						'-e',
-						`const assert = (await import('node:assert/strict')).default;
+					[...(mode === 'typestrip' ? ['--conditions=typestrip'] : []), '--input-type=module'],
+					{
+						input: `const assert = (await import('node:assert')).default;
 						const { readFileSync, existsSync } = await import('node:fs');
 						const { createLogger, setMainLogger, loggerWithTag } = await import(${JSON.stringify(modulePath)});
 						const firstPath = ${JSON.stringify(resolve(directory, mode + '-first.log'))};
@@ -505,22 +498,24 @@ describe('TypeStrip runtime boundaries', () => {
 						const implicit = loggerWithTag('implicit');
 						const explicit = loggerWithTag('explicit', false, first);
 						const conditional = loggerWithTag('conditional', true);
-						assert.equal(conditional.debug, null);
+						assert.strictEqual(conditional.debug, null);
 						implicit.notify('before replacement');
 						setMainLogger(createLogger({path:secondPath,level:'trace',stdStreams:false}));
 						implicit.notify('after replacement');
 						explicit.notify('explicit remains');
-						assert.equal(conditional.debug, null);
+						assert.strictEqual(conditional.debug, null);
 						assert.ok(existsSync(secondPath), 'implicit tag did not follow new main sink');
 						assert.match(readFileSync(secondPath,'utf8'), /\\[implicit\\].*after replacement/);
 						const firstText = readFileSync(firstPath,'utf8');
 						assert.match(firstText, /\\[explicit\\].*explicit remains/);
 						assert.doesNotMatch(firstText, /after replacement/);
 						console.log('tagged logs preserved'); process.exit(0);`,
-					],
-					{ env: process.env, encoding: 'utf8', timeout: 30000 }
+						env: process.env,
+						encoding: 'utf8',
+						timeout: 30000,
+					}
 				);
-				assert.equal(output.trim(), 'tagged logs preserved', mode);
+				assert.strictEqual(output.trim(), 'tagged logs preserved', mode);
 			}
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
@@ -533,19 +528,19 @@ describe('TypeStrip runtime boundaries', () => {
 			const extension = mode === 'compiled' ? 'js' : 'ts';
 			const output = runWithIsolatedRoot(
 				mode,
-				`const assert = (await import('node:assert/strict')).default;
+				`const assert = (await import('node:assert')).default;
 					await import(${JSON.stringify(pathToFileURL(resolve(root, `${prefix}launchServiceScripts/launchHarperDB.js`)).href)});
 					const { hasStarted, runStartup } = await import(${JSON.stringify(pathToFileURL(resolve(root, `${prefix}utility/lifecycle.${extension}`)).href)});
-					assert.equal(hasStarted(), true);
+					assert.strictEqual(hasStarted(), true);
 					await runStartup();
 					const { authentication } = await import(${JSON.stringify(pathToFileURL(resolve(root, `${prefix}security/auth.${extension}`)).href)});
 					const result = await authentication({headers:{asObject:{host:'example.test',cookie:'example_test-hdb-session=missing'}},ip:'203.0.113.1',method:'GET',pathname:'/',protocol:'http'}, async () => ({status:200,headers:new Headers(),body:{ok:true}}));
-					assert.equal(result.status, 200);
+					assert.strictEqual(result.status, 200);
 					const { closeLoadedDatabases } = await import(${JSON.stringify(pathToFileURL(resolve(root, `${prefix}resources/databases.${extension}`)).href)});
 					await closeLoadedDatabases();
 					console.log('launcher initialized');`
 			);
-			assert.equal(output.trim(), 'launcher initialized', mode);
+			assert.strictEqual(output.trim(), 'launcher initialized', mode);
 		}
 	});
 
@@ -557,7 +552,7 @@ describe('TypeStrip runtime boundaries', () => {
 			const output = runWithIsolatedRoot(
 				mode,
 				`
-				const assert = (await import('node:assert/strict')).default;
+				const assert = (await import('node:assert')).default;
 				const { Readable } = await import('node:stream');
 				const { parsePromise } = await import(${JSON.stringify(modulePath)});
 				const rows = [];
@@ -565,10 +560,10 @@ describe('TypeStrip runtime boundaries', () => {
 					if (result.errors.length) reject(new Error(JSON.stringify(result.errors)));
 					rows.push(...result.data);
 				}, value => value);
-				assert.deepEqual(rows, [{ id: '1', name: 'first' }, { id: '2', name: 'second' }]);
+				assert.deepStrictEqual(rows, [{ id: '1', name: 'first' }, { id: '2', name: 'second' }]);
 				console.log('CSV stream parsed');`
 			);
-			assert.equal(output, 'CSV stream parsed', mode);
+			assert.strictEqual(output, 'CSV stream parsed', mode);
 		}
 	});
 
@@ -585,7 +580,7 @@ describe('TypeStrip runtime boundaries', () => {
 			],
 			{ env: process.env, encoding: 'utf8', timeout: 30000 }
 		);
-		assert.equal(output.trim(), 'function');
+		assert.strictEqual(output.trim(), 'function');
 	});
 
 	it('resolves compiled service entries inside the distribution', () => {
@@ -614,7 +609,7 @@ describe('TypeStrip runtime boundaries', () => {
 					],
 					{ encoding: 'utf8', timeout: 30000 }
 				);
-				assert.deepEqual(JSON.parse(output), [
+				assert.deepStrictEqual(JSON.parse(output), [
 					mode === 'compiled' ? resolve(root, 'dist') : root,
 					mode === 'compiled' ? '.js' : '.ts',
 				]);
@@ -632,11 +627,9 @@ describe('TypeStrip runtime boundaries', () => {
 			const helpers = pathToFileURL(resolve(root, `${prefix}utility/packageUtils.js`)).href;
 			const output = execFileSync(
 				process.execPath,
-				[
-					...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
-					'--input-type=module',
-					'-e',
-					`const { registerHooks } = await import('node:module');
+				[...(mode === 'typestrip' ? ['--conditions=typestrip'] : []), '--input-type=module'],
+				{
+					input: `const { registerHooks } = await import('node:module');
 					const resolutions = [];
 					registerHooks({ resolve(specifier, context, next) { const result = next(specifier, context); resolutions.push(result.url); return result; } });
 					await import(${JSON.stringify(entry)});
@@ -646,10 +639,12 @@ describe('TypeStrip runtime boundaries', () => {
 					if (typeof sql.evaluateSQL !== 'function' || typeof sql.convertSQLToAST !== 'function' || typeof loadRuntimeModule('dataLayer/SQLSearch').default !== 'function' || typeof loadRuntimeModule('sqlTranslator/SelectValidator').default !== 'function') throw new Error('Cold module export missing');
 					if (!resolutions.some(url => url.includes('/alasql/'))) throw new Error('Cold dependency observation missing');
 					console.log('cold SQL loaded'); process.exit(0);`,
-				],
-				{ env: process.env, encoding: 'utf8', timeout: 30000 }
+					env: process.env,
+					encoding: 'utf8',
+					timeout: 30000,
+				}
 			);
-			assert.equal(output.trim(), 'cold SQL loaded', mode);
+			assert.strictEqual(output.trim(), 'cold SQL loaded', mode);
 		}
 	});
 
@@ -662,20 +657,16 @@ describe('TypeStrip runtime boundaries', () => {
 		for (const [modulePath, name] of modules) {
 			const Source = require(`#src/${modulePath}`)[name];
 			class Derived extends Source {}
-			assert.equal(Object.getPrototypeOf(Source), Resource);
+			assert.strictEqual(Object.getPrototypeOf(Source), Resource);
 			assert.ok(new Derived(new Error('test')) instanceof Derived);
 		}
-		const output = execFileSync(
-			process.execPath,
-			[
-				'--conditions=typestrip',
-				'--input-type=module',
-				'-e',
-				`const { Resource } = await import(${JSON.stringify(pathToFileURL(resolve(root, 'resources/Resource.ts')).href)}); for (const [modulePath, name] of ${JSON.stringify(modules)}) { const Source = (await import(new URL(modulePath + '.ts', ${JSON.stringify(pathToFileURL(root + '/').href)})))[name]; class Derived extends Source {} if (Object.getPrototypeOf(Source) !== Resource || !(new Derived(new Error('test')) instanceof Derived)) throw new Error('Lost Resource inheritance'); } console.log('inherited'); process.exit(0);`,
-			],
-			{ env: process.env, encoding: 'utf8', timeout: 30000 }
-		);
-		assert.equal(output.trim(), 'inherited');
+		const output = execFileSync(process.execPath, ['--conditions=typestrip', '--input-type=module'], {
+			input: `const { Resource } = await import(${JSON.stringify(pathToFileURL(resolve(root, 'resources/Resource.ts')).href)}); for (const [modulePath, name] of ${JSON.stringify(modules)}) { const Source = (await import(new URL(modulePath + '.ts', ${JSON.stringify(pathToFileURL(root + '/').href)})))[name]; class Derived extends Source {} if (Object.getPrototypeOf(Source) !== Resource || !(new Derived(new Error('test')) instanceof Derived)) throw new Error('Lost Resource inheritance'); } console.log('inherited'); process.exit(0);`,
+			env: process.env,
+			encoding: 'utf8',
+			timeout: 30000,
+		});
+		assert.strictEqual(output.trim(), 'inherited');
 	});
 
 	it('keeps worker callbacks registered before the cyclic runtime finishes loading', () => {
@@ -683,17 +674,13 @@ describe('TypeStrip runtime boundaries', () => {
 		const state = pathToFileURL(resolve(root, 'server/threads/threadMessageState.ts')).href;
 		const operations = pathToFileURL(resolve(root, 'server/serverHelpers/serverUtilities.ts')).href;
 		const dispatch = pathToFileURL(resolve(root, 'server/serverHelpers/operationDispatchState.ts')).href;
-		const output = execFileSync(
-			process.execPath,
-			[
-				'--conditions=typestrip',
-				'--input-type=module',
-				'-e',
-				`const { workerHooks, listenersByType } = await import(${JSON.stringify(state)}); const schemaListener = () => {}; listenersByType.set('schema', [schemaListener]); const router = await import(${JSON.stringify(router)}); if (listenersByType.get('schema')?.[0] !== schemaListener) throw new Error('Lost event listener'); if (workerHooks.reconcile !== router.reconcileIsolatedWorkers || typeof workerHooks.monitorListener !== 'function') throw new Error('Lost startup registration'); const operations = await import(${JSON.stringify(operations)}); const { operationDispatchState } = await import(${JSON.stringify(dispatch)}); if (operationDispatchState.local?.chooseOperation !== operations.chooseOperation || operationDispatchState.local?.processLocalTransaction !== operations.processLocalTransaction) throw new Error('Lost operation dispatch'); console.log('registered'); process.exit(0);`,
-			],
-			{ env: process.env, encoding: 'utf8', timeout: 30000 }
-		);
-		assert.equal(output.trim(), 'registered');
+		const output = execFileSync(process.execPath, ['--conditions=typestrip', '--input-type=module'], {
+			input: `const { workerHooks, listenersByType } = await import(${JSON.stringify(state)}); const schemaListener = () => {}; listenersByType.set('schema', [schemaListener]); const router = await import(${JSON.stringify(router)}); if (listenersByType.get('schema')?.[0] !== schemaListener) throw new Error('Lost event listener'); if (workerHooks.reconcile !== router.reconcileIsolatedWorkers || typeof workerHooks.monitorListener !== 'function') throw new Error('Lost startup registration'); const operations = await import(${JSON.stringify(operations)}); const { operationDispatchState } = await import(${JSON.stringify(dispatch)}); if (operationDispatchState.local?.chooseOperation !== operations.chooseOperation || operationDispatchState.local?.processLocalTransaction !== operations.processLocalTransaction) throw new Error('Lost operation dispatch'); console.log('registered'); process.exit(0);`,
+			env: process.env,
+			encoding: 'utf8',
+			timeout: 30000,
+		});
+		assert.strictEqual(output.trim(), 'registered');
 	});
 
 	it('shares the parent process incarnation with workers without loading the server', async () => {
@@ -706,7 +693,7 @@ describe('TypeStrip runtime boundaries', () => {
 		);
 		try {
 			const [inherited] = await once(worker, 'message');
-			assert.equal(inherited, processIncarnation);
+			assert.strictEqual(inherited, processIncarnation);
 		} finally {
 			await worker.terminate();
 		}
@@ -724,7 +711,7 @@ describe('TypeStrip runtime boundaries', () => {
 				)
 			).href;
 			const worker = new Worker(
-				`const { parentPort } = require('node:worker_threads'); import(${JSON.stringify(cli)}).then(cli => import(${JSON.stringify(entry)}).then(module => parentPort.postMessage({ type: 'import-complete', cli: typeof cli.harper, started: module.bootLoadsComponents() }))).catch(error => parentPort.postMessage({ type: 'import-complete', error: error.stack }));`,
+				`const { parentPort } = require('node:worker_threads'); import(${JSON.stringify(cli)}).then(async cli => { await import(${JSON.stringify(entry)}); const registry = await import(${JSON.stringify(pathToFileURL(resolve(root, `${mode === 'compiled' ? 'dist/' : ''}server/serverRegistry.${mode === 'compiled' ? 'js' : 'ts'}`)).href)}); parentPort.postMessage({ type: 'import-complete', cli: typeof cli.harper, started: Object.values(registry.SERVERS).some(server => server.listening) }); }).catch(error => parentPort.postMessage({ type: 'import-complete', error: error.stack }));`,
 				{
 					eval: true,
 					execArgv: mode === 'typestrip' ? ['--conditions=typestrip'] : [],
@@ -741,9 +728,9 @@ describe('TypeStrip runtime boundaries', () => {
 					worker.once('error', reject);
 					worker.once('exit', (code) => reject(new Error(`Worker exited before importing the server (${code})`)));
 				});
-				assert.equal(result.error, undefined, mode);
-				assert.equal(result.cli, 'function', mode);
-				assert.equal(result.started, false, mode);
+				assert.strictEqual(result.error, undefined, mode);
+				assert.strictEqual(result.cli, 'function', mode);
+				assert.strictEqual(result.started, false, mode);
 			} finally {
 				await worker.terminate();
 			}
@@ -773,7 +760,7 @@ describe('TypeStrip runtime boundaries', () => {
 			const output = runWithIsolatedRoot(
 				mode,
 				`
-				const assert = (await import('node:assert/strict')).default;
+				const assert = (await import('node:assert')).default;
 				const fs = require('node:fs');
 				const { registerHooks } = await import('node:module');
 				const { fileURLToPath } = await import('node:url');
@@ -796,22 +783,22 @@ describe('TypeStrip runtime boundaries', () => {
 					}
 					if (url !== ${JSON.stringify(runtimeUrl('security/auth'))}) return result;
 					const source = (result.source || fs.readFileSync(fileURLToPath(url), 'utf8')).toString();
-					assert.equal(source.split('setInterval(() => {').length - 1, 1);
+					assert.strictEqual(source.split('setInterval(() => {').length - 1, 1);
 					globalThis.hookControls.push({url,beforeConfig:!fs.existsSync(configPath)});
 					return {...result, source:source.replace('setInterval(() => {','globalThis.authCacheTimer = setInterval(() => {')};
 				} });
 				await import(${JSON.stringify(runtimeUrl('bin/run'))});
 				globalThis.coldRecording = false;
-				assert.equal(globalThis.hookControls.length,6);
+				assert.strictEqual(globalThis.hookControls.length,6);
 				assert.ok(globalThis.hookControls.every(control=>control.beforeConfig));
-				assert.equal(globalThis.authCacheTimer,undefined);
+				assert.strictEqual(globalThis.authCacheTimer,undefined);
 				const owners = [...new Set(globalThis.coldReads.map(({key,caller}) => {
 					let path = caller.slice(caller.indexOf(${JSON.stringify(root + '/')}) + ${root.length + 1}).split(':')[0];
 					if (path.startsWith('dist/')) path = path.slice(5);
 					if (path.endsWith('.js')) path = path.slice(0,-3) + '.ts';
 					return path + ':' + key.toLowerCase();
 				}))].sort();
-				assert.deepEqual(owners, ["dataLayer/bulkLoad.ts:hdb_root", "resources/DatabaseTransaction.ts:storage_debuglongtransactions", "resources/DatabaseTransaction.ts:storage_maxtransactionopentime", "resources/DatabaseTransaction.ts:storage_maxtransactionqueuetime", "resources/RecordEncoder.ts:storage_maxreadtransactionopentime", "resources/Table.ts:storage_prefetchwrites", "resources/analytics/write.ts:analytics_aggregateperiod", "resources/auditStore.ts:logging_auditretention", "resources/databases.ts:storage_pagesize", "security/jsLoader.ts:applications_allowedbuiltinmodules", "security/jsLoader.ts:applications_lockdown", "security/tokenAuthentication.ts:authentication_operationtokentimeout", "security/tokenAuthentication.ts:authentication_refreshtokentimeout", "security/user.ts:authentication_hashfunction", "server/mqtt.ts:authentication_authorizelocal", "server/serverHelpers/contentTypes.ts:http_compressionthreshold", "server/serverHelpers/contentTypes.ts:serialization_bigint", "server/serverHelpers/registeredOperations.ts:operationsapi_network_timeout", "server/storageReclamation.ts:storage_reclamation_interval", "server/storageReclamation.ts:storage_reclamation_threshold", "server/threads/manageThreads.ts:threads_heapsnapshotnearlimit", "server/threads/threadServer.ts:threads_debug", "utility/lmdb/OpenDBIObject.ts:storage_caching", "utility/password.ts:authentication_hashfunction"]);
+				assert.deepStrictEqual(owners, ["dataLayer/bulkLoad.ts:hdb_root", "resources/DatabaseTransaction.ts:storage_debuglongtransactions", "resources/DatabaseTransaction.ts:storage_maxtransactionopentime", "resources/DatabaseTransaction.ts:storage_maxtransactionqueuetime", "resources/RecordEncoder.ts:storage_maxreadtransactionopentime", "resources/Table.ts:storage_prefetchwrites", "resources/analytics/write.ts:analytics_aggregateperiod", "resources/auditStore.ts:logging_auditretention", "resources/databases.ts:storage_pagesize", "security/jsLoader.ts:applications_allowedbuiltinmodules", "security/jsLoader.ts:applications_lockdown", "security/tokenAuthentication.ts:authentication_operationtokentimeout", "security/tokenAuthentication.ts:authentication_refreshtokentimeout", "security/user.ts:authentication_hashfunction", "server/mqtt.ts:authentication_authorizelocal", "server/serverHelpers/contentTypes.ts:http_compressionthreshold", "server/serverHelpers/contentTypes.ts:serialization_bigint", "server/serverHelpers/registeredOperations.ts:operationsapi_network_timeout", "server/storageReclamation.ts:storage_reclamation_interval", "server/storageReclamation.ts:storage_reclamation_threshold", "server/threads/manageThreads.ts:threads_heapsnapshotnearlimit", "server/threads/threadServer.ts:threads_debug", "utility/lmdb/OpenDBIObject.ts:storage_caching", "utility/password.ts:authentication_hashfunction"]);
 				materializePerPidRoot();
 				const YAML = require('yaml');
 				const config = YAML.parseDocument(fs.readFileSync(configPath,'utf8'));
@@ -835,27 +822,27 @@ describe('TypeStrip runtime boundaries', () => {
 				process.env.DEV_MODE='true';
 				const {runStartup} = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
 				await runStartup();
-				assert.equal(globalThis.authCacheTimer._idleTimeout,31337);
-				assert.equal(globalThis.authCacheTimer.hasRef(),false);
-				assert.deepEqual(globalThis.snapshots.loader(),{lockdown:'freeze-after-load',fsAllowed:false,pathAllowed:true});
-				assert.equal(globalThis.snapshots.mqtt(),false);
-				assert.equal(globalThis.snapshots.timeout(),31339);
-				assert.equal(globalThis.snapshots.directory(),process.env.ROOTPATH+'/tmp');
-				assert.equal(globalThis.snapshots.debug(),true);
+				assert.strictEqual(globalThis.authCacheTimer._idleTimeout,31337);
+				assert.strictEqual(globalThis.authCacheTimer.hasRef(),false);
+				assert.deepStrictEqual(globalThis.snapshots.loader(),{lockdown:'freeze-after-load',fsAllowed:false,pathAllowed:true});
+				assert.strictEqual(globalThis.snapshots.mqtt(),false);
+				assert.strictEqual(globalThis.snapshots.timeout(),31339);
+				assert.strictEqual(globalThis.snapshots.directory(),process.env.ROOTPATH+'/tmp');
+				assert.strictEqual(globalThis.snapshots.debug(),true);
 				const inspector = await import('node:inspector');
 				const inspectorUrl = inspector.url();
-				assert.equal(new URL(inspectorUrl).port,String(port));
+				assert.strictEqual(new URL(inspectorUrl).port,String(port));
 				const timer = globalThis.authCacheTimer;
 				await runStartup();
-				assert.equal(globalThis.authCacheTimer,timer);
-				assert.equal(inspector.url(),inspectorUrl);
+				assert.strictEqual(globalThis.authCacheTimer,timer);
+				assert.strictEqual(inspector.url(),inspectorUrl);
 				inspector.close();
 				const databases = await import(${JSON.stringify(runtimeUrl('resources/databases'))});
 				await databases.closeLoadedDatabases();
 				console.log('fresh-install configuration honored');
 			`
 			);
-			assert.equal(output, 'fresh-install configuration honored', mode);
+			assert.strictEqual(output, 'fresh-install configuration honored', mode);
 		}
 	});
 
@@ -874,7 +861,7 @@ describe('TypeStrip runtime boundaries', () => {
 				const output = runWithIsolatedRoot(
 					mode,
 					`
-					const assert = (await import('node:assert/strict')).default;
+					const assert = (await import('node:assert')).default;
 					delete process.env.DEV_MODE; delete process.env.HARPER_SET_CONFIG;
 					const fs = require('node:fs'); const YAML = require('yaml');
 					const net = await import('node:net');
@@ -891,7 +878,7 @@ describe('TypeStrip runtime boundaries', () => {
 					fs.writeFileSync(configPath,config.toString());
 					await import(${JSON.stringify(runtimeUrl('bin/run'))});
 					const inspector = await import('node:inspector');
-					assert.equal(inspector.url(),undefined,'main-thread inspector waits for final configuration');
+					assert.strictEqual(inspector.url(),undefined,'main-thread inspector waits for final configuration');
 					const env = await import(${JSON.stringify(runtimeUrl('utility/environment/environmentManager'))});
 					env.setProperty('threads_debug',${finalDebug});
 					env.setProperty('threads_debug_port',finalPort);
@@ -900,15 +887,15 @@ describe('TypeStrip runtime boundaries', () => {
 					await runStartup();
 					if (${finalDebug}) {
 						assert.ok(inspector.url(),'main-thread inspector honors the final debug override');
-						assert.equal(new URL(inspector.url()).port,String(finalPort));
-					} else assert.equal(inspector.url(),undefined);
+						assert.strictEqual(new URL(inspector.url()).port,String(finalPort));
+					} else assert.strictEqual(inspector.url(),undefined);
 					inspector.close();
 					const {closeLoadedDatabases} = await import(${JSON.stringify(runtimeUrl('resources/databases'))});
 					await closeLoadedDatabases();
 					console.log('final inspector override honored');
 					`
 				);
-				assert.equal(output, 'final inspector override honored', mode + ':' + initialDebug + ':' + finalDebug);
+				assert.strictEqual(output, 'final inspector override honored', mode + ':' + initialDebug + ':' + finalDebug);
 			}
 		}
 	});
@@ -921,7 +908,7 @@ describe('TypeStrip runtime boundaries', () => {
 					resolve(root, `${mode === 'compiled' ? 'dist/' : ''}${path}.${mode === 'compiled' ? 'js' : 'ts'}`)
 				).href;
 			const workerCode = `
-				const assert = (await import('node:assert/strict')).default;
+				const assert = (await import('node:assert')).default;
 				const {parentPort} = await import('node:worker_threads');
 				parentPort.ref();
 				const {registerHooks} = await import('node:module');
@@ -932,18 +919,18 @@ describe('TypeStrip runtime boundaries', () => {
 					const result = next(url,context);
 					if (url !== ${JSON.stringify(runtimeUrl('server/threads/threadServer'))}) return result;
 					const source = (result.source || readFileSync(fileURLToPath(url),'utf8')).toString();
-					assert.equal(source.split('inspectorInitialized = true;').length - 1,1);
+					assert.strictEqual(source.split('inspectorInitialized = true;').length - 1,1);
 					return {...result,source:source.replace('inspectorInitialized = true;','inspectorInitialized = true; globalThis.inspectorAttempts++;')};
 				}});
 				await import(${JSON.stringify(runtimeUrl('server/threads/threadServer'))});
 				const inspector = await import('node:inspector');
-				assert.equal(globalThis.inspectorAttempts,1);
-				assert.equal(new URL(inspector.url()).port,String(process.env.EXPECTED_INSPECTOR_PORT));
+				assert.strictEqual(globalThis.inspectorAttempts,1);
+				assert.strictEqual(new URL(inspector.url()).port,String(process.env.EXPECTED_INSPECTOR_PORT));
 				const initialUrl = inspector.url();
 				const {runStartup} = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
 				await runStartup();
-				assert.equal(globalThis.inspectorAttempts,1,'startup skips the already initialized worker inspector');
-				assert.equal(inspector.url(),initialUrl);
+				assert.strictEqual(globalThis.inspectorAttempts,1,'startup skips the already initialized worker inspector');
+				assert.strictEqual(inspector.url(),initialUrl);
 				inspector.close();
 				const {closeLoadedDatabases} = await import(${JSON.stringify(runtimeUrl('resources/databases'))});
 				await closeLoadedDatabases();
@@ -981,7 +968,103 @@ describe('TypeStrip runtime boundaries', () => {
 				console.log('worker inspector initialized once');
 				`
 			);
-			assert.equal(output, 'worker inspector initialized once', mode);
+			assert.strictEqual(output, 'worker inspector initialized once', mode);
 		}
 	});
+});
+
+describe('TypeStrip canary admission', () => {
+	for (const scenario of ['admitted', 'refused', 'shutdown-during-load', 'bind-retry']) {
+		it(`preserves cleanup and readiness when ${scenario}`, () => {
+			for (const mode of ['compiled', 'typestrip']) {
+				const workerPath = resolve(
+					root,
+					`${mode === 'compiled' ? 'dist/' : ''}server/threads/threadServer.${mode === 'compiled' ? 'js' : 'ts'}`
+				);
+				const output = runWithIsolatedRoot(
+					mode,
+					`
+					const assert = (await import('node:assert')).default;
+					const { readFileSync, writeFileSync } = await import('node:fs');
+					const { createServer, createConnection } = await import('node:net');
+					const { Worker } = await import('node:worker_threads');
+					const { once } = await import('node:events');
+					const { waitFor } = require(${JSON.stringify(resolve(root, 'unitTests/waitFor.js'))});
+					const scenario = ${JSON.stringify(scenario)};
+					const pool = scenario === 'bind-retry';
+					const reservation = createServer();
+					reservation.listen(0, '127.0.0.1');
+					await once(reservation, 'listening');
+					const port = reservation.address().port;
+					if (!pool) await new Promise(resolve => reservation.close(resolve));
+					const YAML = require('yaml');
+					const configPath = process.env.ROOTPATH + '/harper-config.yaml';
+					const config = YAML.parseDocument(readFileSync(configPath, 'utf8'));
+					config.set('admissionScopeProbe', {});
+					writeFileSync(configPath, config.toString());
+					process.env.HARPER_BUILTIN_COMPONENTS = 'admissionScopeProbe=' + ${JSON.stringify(resolve(import.meta.dirname, 'fixtures/admission-scope.cjs'))};
+					const worker = new Worker(${JSON.stringify(workerPath)}, {
+						execArgv: ${JSON.stringify(mode === 'typestrip' ? ['--conditions=typestrip'] : [])},
+						workerData: { addPorts: [], addThreadIds: [], reportsLoad: true, holdProbeLoad: true, probePort: port, probePool: pool, name: pool ? 'replication' : 'http', poolIndex: 0, workerPools: pool ? ['replication'] : [] },
+					});
+					const messages = [];
+					let workerError, exited;
+					worker.on('message', message => messages.push(message));
+					worker.on('error', error => workerError = error);
+					worker.on('exit', code => exited = code);
+					const exit = once(worker, 'exit', { signal: AbortSignal.timeout(15000) });
+					const wait = type => waitFor(() => {
+						if (workerError) throw workerError;
+						const fixtureError = messages.find(message => message.type === 'admission-fixture-error');
+						if (fixtureError) throw new Error(fixtureError.message);
+						const message = messages.find(message => message.type === type);
+						if (!message && exited !== undefined) throw new Error('Worker exited before ' + type + ': ' + exited);
+						return message;
+					}, { timeout: 10000, message: () => 'Waiting for ' + type + '; got ' + messages.map(message => message.type + ':' + (message.phase ?? '')).join(', ') });
+					try {
+						await wait('admission-scope-loaded');
+						if (scenario === 'shutdown-during-load') {
+							worker.postMessage({ type: 'shutdown', restartNumber: 2 });
+							await wait('admission-scope-disposed');
+						}
+						worker.postMessage({ type: 'release-admission-probe' });
+						await wait('child_component_verdict');
+						assert.strictEqual(messages.some(message => message.type === 'admission-components-loaded'), false);
+						assert.strictEqual(messages.some(message => message.type === 'child_started'), false);
+						if (!pool && scenario !== 'shutdown-during-load') {
+							const socket = createConnection({ host: '127.0.0.1', port });
+							try { await assert.rejects(once(socket, 'connect'), { code: 'ECONNREFUSED' }); }
+							finally { socket.destroy(); }
+						}
+						if (scenario === 'admitted' || pool) {
+							worker.postMessage({ type: 'child_admitted' });
+							if (pool) await wait('admission-bind-error');
+							else {
+								await wait('child_started');
+								await wait('admission-components-loaded');
+								const socket = createConnection({ host: '127.0.0.1', port });
+								let text = '';
+								socket.on('data', chunk => text += chunk);
+								try { await once(socket, 'end', { signal: AbortSignal.timeout(3000) }); assert.strictEqual(text, 'admitted'); }
+								finally { socket.destroy(); }
+							}
+						}
+						if (scenario !== 'shutdown-during-load') worker.postMessage({ type: 'shutdown', restartNumber: 2 });
+						await waitFor(() => exited !== undefined, { timeout: 6000, message: 'Graceful exit must finish before the 10s backstop' });
+						const [code] = await exit;
+						assert.strictEqual(code, 0);
+						assert.ok(messages.some(message => message.type === 'admission-scope-disposed'));
+						if (scenario !== 'admitted') assert.strictEqual(messages.some(message => message.type === 'child_started'), false);
+						if (scenario === 'refused' || scenario === 'shutdown-during-load') assert.strictEqual(messages.some(message => message.type === 'admission-components-loaded'), false);
+					} finally {
+						if (worker.threadId !== -1) await worker.terminate();
+						if (reservation.listening) await new Promise(resolve => reservation.close(resolve));
+					}
+					console.log('admission boundary preserved');
+				`
+				);
+				assert.strictEqual(output, 'admission boundary preserved', mode + ':' + scenario);
+			}
+		});
+	}
 });

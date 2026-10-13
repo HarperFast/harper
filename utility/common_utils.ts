@@ -1,4 +1,5 @@
-'use strict';
+import { loadNativePackage } from './packageUtils.js';
+('use strict');
 import * as path from 'node:path';
 import fs from 'fs-extra';
 import log from './logging/harper_logger.ts';
@@ -567,7 +568,7 @@ export function checkTableExists(schema: string, table: string) {
  * @returns {number}
  */
 export function getStartOfTomorrowInSeconds() {
-	const moment = require('moment') as typeof import('moment');
+	const moment = loadNativePackage('moment') as typeof import('moment');
 	let tomorowSeconds = moment().utc().add(1, 'd').startOf('d').unix();
 	let nowSeconds = moment().utc().unix();
 	return tomorowSeconds - nowSeconds;
@@ -578,7 +579,7 @@ export function getStartOfTomorrowInSeconds() {
  * @returns {string}
  */
 export function getLimitKey() {
-	const moment = require('moment') as typeof import('moment');
+	const moment = loadNativePackage('moment') as typeof import('moment');
 	return moment().utc().format('DD-MM-YYYY');
 }
 
@@ -704,7 +705,7 @@ export function stringifyObj(value: any) {
  * @returns {*}
  */
 export function ms_to_time(ms: number) {
-	const moment = require('moment') as typeof import('moment');
+	const moment = loadNativePackage('moment') as typeof import('moment');
 	const duration = moment.duration(ms);
 	const sec = duration.seconds() > 0 ? duration.seconds() + 's' : '';
 	const min = duration.minutes() > 0 ? duration.minutes() + 'm ' : '';

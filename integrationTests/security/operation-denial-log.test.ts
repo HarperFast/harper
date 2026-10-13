@@ -7,8 +7,7 @@
  *   npm run build && npm run test:integration -- "integrationTests/security/operation-denial-log.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-// oxlint-disable-next-line no-restricted-imports -- repository task requires strict assertions
-import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { join, resolve } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';

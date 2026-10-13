@@ -14,8 +14,7 @@
  * API. It has to run in its own process: on the unfixed code the failure kills the parent.
  */
 import { suite, test, before, after } from 'node:test';
-// oxlint-disable-next-line no-restricted-imports -- repository task requires strict assertions
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';

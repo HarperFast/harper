@@ -1,3 +1,4 @@
+import { loadNativePackage } from '../../../../utility/packageUtils.js';
 import { Readable } from 'node:stream';
 import { getDatabases } from '../../../../resources/databases.ts';
 import { readSync, openSync, createReadStream } from 'node:fs';
@@ -25,7 +26,7 @@ async function getBackup(getBackupObj) {
 		if (!tableClass) throw new Error(`Can not find table ${tables[0]}`);
 		// we use the attribute store to drive this process, finding the right stores to duplicate
 		let attributeStore = tableClass.dbisDB;
-		let backupRoot = require('lmdb').open({ noSync: true, maxDbs: OpenEnvironmentObject.MAX_DBS }); // open a temporary database (this
+		let backupRoot = loadNativePackage('lmdb').open({ noSync: true, maxDbs: OpenEnvironmentObject.MAX_DBS }); // open a temporary database (this
 		// will also cause it to
 		// close on completion)
 		let resolution;

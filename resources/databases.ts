@@ -1,3 +1,4 @@
+import { loadNativePackage } from '../utility/packageUtils.js';
 import { EventEmitter } from 'node:events';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { setDatabasesGetter } from '../utility/databasesRef.ts';
@@ -176,7 +177,7 @@ function createOpenDBIObject(dupSort = false, isPrimary = false) {
 }
 // lmdb allocates a 16 MB native buffer per thread on load, so it is loaded only when an LMDB store is opened
 function openLmdb(options: Parameters<typeof import('lmdb').open>[0]): RootDatabase {
-	return (require('lmdb') as typeof import('lmdb')).open(options);
+	return (loadNativePackage('lmdb') as typeof import('lmdb')).open(options);
 }
 // The __dbis__ metadata DBI is non-versioned (OpenDBIObject useVersions=false); only versioned
 // primary stores carry the per-record metadata prefix. lmdb/rocksdb don't forward `useVersions` to

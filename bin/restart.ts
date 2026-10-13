@@ -242,7 +242,7 @@ async function activateDeploymentOnPeers(activation: any) {
 async function activateEachPeer(peers: any[], { project, deploymentId, deploymentRow }, results: any[]) {
 	const replication = (global as any).server.replication;
 	replication.monitorNodeCAs();
-	const { peerDeployAnswerTimeoutMs } = await import('../components/operations.js');
+	const { peerDeployAnswerTimeoutMs } = await import('../components/operations.ts');
 	const timeoutMs = peerDeployAnswerTimeoutMs({ restart: true });
 	for (const node of peers) {
 		try {

@@ -1,4 +1,5 @@
-'use strict';
+import { loadNativePackage } from '../utility/packageUtils.js';
+('use strict');
 
 import Joi from 'joi';
 import * as validator from './validationWrapper.ts';
@@ -35,7 +36,7 @@ const readLogSchema = Joi.object({
 });
 
 function validateDatetime(value, helpers) {
-	const moment = require('moment') as typeof import('moment');
+	const moment = loadNativePackage('moment') as typeof import('moment');
 	if (moment(value, moment.ISO_8601).format(LOG_DATE_FORMAT) === 'Invalid date') {
 		return helpers.message(`'${helpers.state.path[0]}' date '${value}' is invalid.`);
 	}

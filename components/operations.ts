@@ -1,5 +1,5 @@
-import * as jsLoaderRuntimeModule from '../security/jsLoader.ts';
-import * as scopeShutdownRuntimeModule from './scopeShutdown.ts';
+import { loadRuntimeModule } from '../utility/packageUtils.js';
+import * as awaitRestartRuntimeModule from './awaitRestart.ts';
 import * as isolatedApplicationsRuntimeModule from '../server/threads/isolatedApplications.ts';
 import * as secretOperationsRuntimeModule from './secretOperations.ts';
 import * as serverUtilitiesRuntimeModule from '../server/serverHelpers/serverUtilities.ts';
@@ -749,7 +749,7 @@ async function deployComponent(req?: any) {
 		let declaredRootConfig = null;
 		const certification =
 			mode !== 'stage' && (req.restart === true || req.restart === 'rolling')
-				? require('./canaryRollout.ts').deployCertification({
+				? loadRuntimeModule('components/canaryRollout').deployCertification({
 						component: req.project,
 						deploymentId: req.deployment_id ?? req._deploymentId,
 						eligible: () => (wasIsolated ?? initiallyIsolated) === (nowIsolated ?? initiallyIsolated),
@@ -912,7 +912,7 @@ async function deployComponent(req?: any) {
 		// restartWorkers starts or stops the moving application's own worker. An already-live retry cannot know
 		// which workers loaded the previous release, so it restarts them all.
 		const restartScope = application.alreadyActive ? '*' : wasIsolated && nowIsolated ? application.name : undefined;
-		const { awaitRestart } = require('./awaitRestart.ts');
+		const { awaitRestart } = loadRuntimeModule('components/awaitRestart');
 		// Main started this release's rollout at its commit; the origin only waits for it.
 		const awaitCertifiedRollout = async () => {
 			if (!isMainThread) return;
@@ -935,7 +935,7 @@ async function deployComponent(req?: any) {
 			emit('phase', { phase: 'restart', status: 'start' });
 			await awaitCertifiedRollout();
 			if (recorder && !req.ignore_replication_errors) assertPeersStaged(application.name, recorder, response);
-			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
+			const serverUtilities = loadRuntimeModule('server/serverHelpers/serverUtilities');
 			const jobResponse = await serverUtilities.executeJob({
 				operation: 'restart_service',
 				service: 'http',
@@ -1183,8 +1183,8 @@ function drainWhileDeploying(
 	undecidedBoundMs = Infinity,
 	interruptUndecided = async () => false
 ) {
-	const { registerShutdownDrain } = require('./shutdownDrain.ts');
-	const answered = Promise.withResolvers();
+	const { registerShutdownDrain } = loadRuntimeModule('components/shutdownDrain');
+	const answered = Promise.withResolvers<void>();
 	const unregister = registerShutdownDrain({
 		hasWork: () => Boolean(isDeploying()),
 		drain: (deadlineMs) => {
@@ -1195,7 +1195,7 @@ function drainWhileDeploying(
 				timer = setTimeout(resolve, Math.max(0, deadlineMs - Date.now()));
 				timer.unref();
 			});
-			const undecided = new Promise((resolve) => {
+			const undecided = new Promise<void>((resolve) => {
 				if (!Number.isFinite(undecidedBoundMs)) return;
 				bound = setTimeout(async () => {
 					if (isDecided()) return;
@@ -1241,7 +1241,7 @@ function certificationFailure(component, deploymentId, decision, { onOrigin }) {
 				`again. `
 			: '';
 	const retry = `Deploy a fix, or activate deployment ${deploymentId} again once the cause is fixed.`;
-	const error = new ClientError(
+	const error: ClientError & { certification?: unknown } = new ClientError(
 		`${component} was not deployed${onOrigin ? '' : ' on this node'}: release ${deploymentId} ${outcome}. ${remedy}` +
 			`${onOrigin ? 'No other node received it. ' : ''}${retry}`,
 		HTTP_STATUS_CODES.BAD_REQUEST

@@ -1,3 +1,4 @@
+import { loadRuntimeModule } from '../../utility/packageUtils.js';
 import {
 	listenersByType,
 	messagesQueuedByType,
@@ -540,7 +541,7 @@ const certifications = new Map();
 // complete before then too.
 const settledCertifications = new Map();
 const settledKey = (component, deploymentId) => `${component}\u0000${deploymentId}`;
-const heldStarts = new Set();
+const heldStarts = new Set<any>();
 const failClosedInMemory = new Map();
 let certificationHandler;
 const REQUESTER_RELEASE_TIMEOUT_MS = 10000;
@@ -708,11 +709,11 @@ async function untilNoCertificationArmed() {
 
 /** A deploy bracket of main's own (components/deployLifecycle.ts) over a complete tree: it holds watchers, not loads. */
 function pauseWatchersOf(component) {
-	return require('../../components/deployLifecycle.ts').broadcastDeployStart(component, { watchersOnly: true });
+	return loadRuntimeModule('components/deployLifecycle').broadcastDeployStart(component, { watchersOnly: true });
 }
 
 function resumeWatchersOf(component, bracket) {
-	require('../../components/deployLifecycle.ts').broadcastDeployEnd(component, bracket);
+	loadRuntimeModule('components/deployLifecycle').broadcastDeployEnd(component, bracket);
 }
 
 function errorMessageOf(error) {
@@ -746,7 +747,7 @@ function verdictDecision(certification, components) {
 	};
 }
 
-async function decideCertification(certification, decision, canary) {
+async function decideCertification(certification, decision, canary?: any) {
 	if (certification.decision || certification.deciding) return;
 	certification.deciding = true;
 	certification.refusing = refusesRelease(decision);
@@ -769,7 +770,7 @@ async function decideCertification(certification, decision, canary) {
 }
 
 /** Every held start loading a release about to be refused stops first, so no restore runs under one still holding it. */
-function stopHeldStartsOf(certification, canary) {
+function stopHeldStartsOf(certification, canary?: any) {
 	const stopping = [...heldStarts].filter((held) => held.gated.includes(certification));
 	if (canary && heldStarts.has(canary) && !stopping.includes(canary)) stopping.push(canary);
 	return Promise.all(stopping.map((held) => stopHeldStart(held, certification)));
@@ -821,7 +822,7 @@ function heldRequests(gated, checks) {
 }
 
 function holdStart(worker, gated, startOptions) {
-	const held = {
+	const held: any = {
 		worker,
 		gated,
 		checks: startOptions.check ?? [],
@@ -1001,7 +1002,7 @@ function loadFailure(entry, component = entry.component) {
 	}`;
 }
 
-function stopHeldStart(held, refused) {
+function stopHeldStart(held, refused?: any) {
 	if (held.stopping) return held.stopping;
 	held.settled = true;
 	held.worker.stoppedByGate = true;
@@ -1055,11 +1056,11 @@ function releaseCertificationRequester(component, deploymentId) {
 	noteAnswered();
 }
 
-let answered = Promise.withResolvers();
+let answered = Promise.withResolvers<void>();
 /** A deploy stopped answering: it released, left, or its worker exited. */
 function noteAnswered() {
 	answered.resolve();
-	answered = Promise.withResolvers();
+	answered = Promise.withResolvers<void>();
 }
 
 /**
@@ -1352,7 +1353,7 @@ function startWorker(path?: any, options: any = {}, startOptions: any = {}) {
 		workers.splice(workers.indexOf(worker), 1);
 		// Its native handles are closed by now, so the origin-floor bounds it published are stale; every
 		// thread retires them for the databases it has open, since this one need not have them all.
-		const { ORIGIN_FLOOR_RETIRE, retireOriginFloorSlots } = require('../../resources/originClosedFloor.ts');
+		const { ORIGIN_FLOOR_RETIRE, retireOriginFloorSlots } = loadRuntimeModule('resources/originClosedFloor');
 		retireOriginFloorSlots(exitedThreadId);
 		broadcast({ type: ORIGIN_FLOOR_RETIRE, threadId: exitedThreadId });
 		if (
@@ -1405,7 +1406,7 @@ const OVERLAPPING_RESTART_TYPES: any = [hdbTerms.THREAD_TYPES.HTTP, hdbTerms.THR
  * behavior, explicit undefined restarts the shared pool only, a name restarts only that application's
  * dedicated worker, and '*' restarts all.
  */
-let replacementRestarts = Promise.resolve();
+let replacementRestarts: Promise<any> = Promise.resolve();
 async function restartWorkers(
 	name: any = null,
 	maxWorkersDown: any = Math.max(Math.floor(workerCount / 8), 1), // restart 1/8 of the threads at a time, but at least 1
@@ -1432,7 +1433,14 @@ async function restartWorkers(
 	}
 }
 
-async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onProgress, application, certification) {
+async function replaceWorkers(
+	name,
+	maxWorkersDown,
+	startReplacementThreads,
+	onProgress,
+	application,
+	certification?: any
+) {
 	{
 		// Declining is not the same as delegating: a caller reporting on the restart must not read this
 		// as "another thread is completing it".
@@ -1896,8 +1904,8 @@ function postShutdown(worker) {
 }
 
 /** Resolves once a worker asked to shut down has exited, forcing it after the backstop it may extend. */
-function whenShutDownWorkerExits(worker, onProgress, onExit) {
-	return new Promise((resolve) => {
+function whenShutDownWorkerExits(worker, onProgress, onExit?: any) {
+	return new Promise<void>((resolve) => {
 		// in case the exit inside the thread doesn't timeout, force it from the outside
 		const armTerminate = (delay) =>
 			setTimeout(() => {
@@ -1922,7 +1930,7 @@ function whenShutDownWorkerExits(worker, onProgress, onExit) {
 			// Clamp the worker-requested deadline to the configured ceiling (and to a finite value) so a
 			// buggy/rogue message can't defer the force-kill unboundedly; a shrink (drain-done reset)
 			// passes through untouched. See boundedTerminateDelay for the arithmetic + its unit tests.
-			const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
+			const { boundedTerminateDelay, getShutdownDrainCeilingMs } = loadRuntimeModule('components/shutdownDrain');
 			const delay = boundedTerminateDelay(
 				deadlineMs,
 				Date.now(),
@@ -1961,7 +1969,7 @@ function setHeldReplacementTimeout(timeoutMs) {
 /** A held replacement's verdict, the predecessor's retirement where they cannot share a port, and its bind. */
 function heldReplacementTimeoutMs() {
 	if (heldReplacementTimeoutOverride !== undefined) return heldReplacementTimeoutOverride;
-	const { getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
+	const { getShutdownDrainCeilingMs } = loadRuntimeModule('components/shutdownDrain');
 	return canaryVerdictTimeoutMs() + Math.max(threadTerminationTimeout * 2, 60000) + getShutdownDrainCeilingMs();
 }
 
