@@ -16,7 +16,7 @@ For the full list of configurable options, see [Configuration Options](./options
 
 ## Set Configuration
 
-Modifies one or more Harper configuration parameters. **Requires a [restart](../operations-api/operations.md#restart) or [restart_service](../operations-api/operations.md#restart_service) to take effect.**
+Modifies one or more Harper configuration parameters. **Requires a [restart](../operations-api/operations.md#restart) or [restart_service](../operations-api/operations.md#restart_service) to take effect.** A change to `replication.threads` takes effect only on a full `restart`.
 
 `operation` _(required)_ — must be `set_configuration`
 

@@ -1749,7 +1749,7 @@ Restarts all Harper processes. May take up to 60 seconds.
 
 ### `restart_service`
 
-Restarts a specific service. `service` must be one of: `http`, `http_workers`, `custom_functions`, `harperdb` (all currently restart the HTTP workers). Supports `"replicated": true` for a rolling cluster restart.
+Restarts a specific service. `service` must be one of: `http`, `http_workers`, `custom_functions`, `harperdb` (all currently restart the HTTP workers). Supports `"replicated": true` for a rolling cluster restart. Without a `scope`, it also restarts any [dedicated replication threads](../replication/overview.md#dedicated-replication-threads) (v5.4.0).
 
 ```json
 { "operation": "restart_service", "service": "http_workers" }
