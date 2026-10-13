@@ -1,20 +1,12 @@
 /**
- * Post-merge compatibility coverage for https://github.com/HarperFast/harper/pull/2040
- * QA-895/P-634: simultaneous MQTT 3.1.1/5 x JSON/CBOR x QoS 0/1 subscribers.
- * One worker keeps all eight clients on the same worker-local encoding cache.
- * Checks negotiated payload bytes, parsed PUBLISH framing and session packet IDs;
- * repeats rapid version turnover and abrupt sibling disconnect races ten times each.
- * Publishes await QoS 1 acknowledgements to establish order, without awaiting
- * subscriber delivery between versions (concurrent transactions can commit out of order).
- * QoS 0 may coalesce intermediate versions: require nonempty, increasing deliveries
- * ending at the terminal value, not lossless bursts. A subsequent delivery is the
- * observation barrier; no arbitrary settle sleep is used.
- * Non-retained table messages have fresh identities/versions. This does not force
- * same-object version invalidation, timer/budget generation rotation, or prove cache
- * hit counts. Disconnect timing races delivery, not a deterministic server write.
- * WebSocket transport only; Bun and Windows are excluded.
+ * QA-895/P-634: MQTT 3.1.1/5 x JSON/CBOR x QoS 0/1 compatibility after
+ * https://github.com/HarperFast/harper/pull/2040.
+ * One worker keeps the complete population in one encoding-cache domain.
+ * Publisher acknowledgements establish order without awaiting subscriber delivery.
+ * QoS 1 must deliver every sequence; QoS 0 must preserve order and terminal content.
+ * Client-triggered disconnects race delivery without forcing a server write failure.
  */
-import { suite, test, before, after } from 'node:test';
+import { suite, test, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
@@ -23,6 +15,7 @@ import mqtt, { type IClientOptions, type MqttClient } from 'mqtt';
 import { decode as decodeCbor } from 'cbor-x';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import { createApiClient } from '../apiTests/utils/client.mjs';
+import { waitForRouteReady } from '../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/shared-encoding-cross-product');
 const TOPIC = 'Probe/probe1';
@@ -60,7 +53,7 @@ function decode(sub: Subscriber, packet: Packet) {
 suite(
 	'MQTT shared encoding cross product (QA-895/P-634)',
 	{
-		timeout: 120_000,
+		timeout: 180_000,
 		skip: process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32',
 	},
 	(ctx: ContextWithHarper) => {
@@ -175,15 +168,16 @@ suite(
 					} else assert.strictEqual(packet.messageId, undefined, label);
 				}
 				assert.strictEqual(previous, last, `${label}: terminal delivery`);
+				if (sub.combo.qos === 1) assert.strictEqual(sub.packets.length, last, `${label}: complete QoS 1 sequence`);
 			}
 		}
-		async function withPopulation(run: (subs: Subscriber[]) => Promise<void>) {
+		async function withPopulation(run: (subs: Subscriber[]) => Promise<void>, initialize?: () => Promise<void>) {
 			const subs: Subscriber[] = [];
 			try {
+				await initialize?.();
 				for (const combo of combos) subs.push(await makeSub(combo));
 				await run(subs);
 			} finally {
-				// Includes clients whose connect or subscribe failed before makeSub returned.
 				await Promise.all([...clients].filter((client) => client !== publisher).map(close));
 			}
 			assertHealthy();
@@ -192,21 +186,13 @@ suite(
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: { threads: { count: 1 } }, env: {} });
 			url = `${ctx.harper.httpURL.replace(/^http/, 'ws')}/mqtt`;
 			const api = createApiClient(ctx.harper);
-			const deadline = Date.now() + 30_000;
-			let ready = false;
-			let lastResponse = '';
-			while (Date.now() < deadline && !ready) {
-				try {
-					const response = await api.reqRest('/Ready/').timeout(2000);
-					lastResponse = `${response.status} ${JSON.stringify(response.body)}`;
-					ready = response.status === 200 && response.body.ok === true;
-				} catch (error) {
-					lastResponse = String(error);
-				}
-				if (!ready) await sleep(100);
-			}
-			assert.ok(ready, `Fixture readiness failed: ${lastResponse}`);
+			await waitForRouteReady(api, '/Probe/', 120_000, {
+				isReady: (response) => response.status === 200 && Array.isArray(response.body),
+			});
 			publisher = await connect();
+		});
+		beforeEach(() => {
+			runtimeErrors.length = 0;
 		});
 		after(async () => {
 			try {
@@ -241,13 +227,35 @@ suite(
 		for (const disconnect of [false, true]) {
 			test(`${disconnect ? 'abrupt sibling disconnect' : 'rapid version turnover'}: ${REPETITIONS} repetitions`, async (t) => {
 				for (let repetition = 0; repetition < REPETITIONS; repetition++) {
-					await withPopulation(async (subs) => {
-						const marker = randomUUID();
-						let victim: MqttClient | undefined;
-						let victimClosed = false;
-						if (disconnect) {
+					const marker = randomUUID();
+					let victim: MqttClient | undefined;
+					let victimClosed = false;
+					await withPopulation(
+						async (subs) => {
+							for (let seq = 1; seq <= BURST; seq++) await publish(marker, seq);
+							await terminal(subs, marker, BURST);
+							if (victim) await waitFor(() => victimClosed, 'abrupt sibling close');
+							await publish(marker, BURST + 1);
+							await terminal(subs, marker, BURST + 1);
+							validate(subs, marker, BURST + 1);
+							if (repetition === 0) {
+								const omitted = subs.map((sub) => ({ ...sub, packets: sub.packets.map((packet) => ({ ...packet })) }));
+								omitted.find((sub) => sub.combo.qos === 1)!.packets.splice(1, 1);
+								assert.throws(
+									() => validate(omitted, marker, BURST + 1),
+									(error: Error) =>
+										error instanceof assert.AssertionError && error.actual === BURST && error.expected === BURST + 1,
+									'the observed-packet oracle must reject an omitted QoS 1 sequence'
+								);
+							}
+							t.diagnostic(
+								`repetition ${repetition + 1}: 8 subscribers; deliveries ${subs.map((sub) => sub.packets.length).join(',')}`
+							);
+						},
+						async () => {
+							if (!disconnect) return;
 							victim = (await makeSub(combos[repetition % combos.length])).client;
-							// Trigger on a real first delivery while the burst is being drained.
+							// Register before the survivors and abort on actual delivery.
 							victim.once('close', () => {
 								victimClosed = true;
 							});
@@ -255,16 +263,7 @@ suite(
 								victim!.stream.destroy();
 							});
 						}
-						for (let seq = 1; seq <= BURST; seq++) await publish(marker, seq);
-						await terminal(subs, marker, BURST);
-						if (victim) await waitFor(() => victimClosed, 'abrupt sibling close');
-						await publish(marker, BURST + 1);
-						await terminal(subs, marker, BURST + 1);
-						validate(subs, marker, BURST + 1);
-						t.diagnostic(
-							`repetition ${repetition + 1}: 8 subscribers; deliveries ${subs.map((sub) => sub.packets.length).join(',')}`
-						);
-					});
+					);
 				}
 			});
 		}
