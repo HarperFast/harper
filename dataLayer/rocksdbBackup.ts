@@ -619,8 +619,8 @@ export async function validateRestoreBackup(request: any) {
 
 /**
  * Online restore of a user database (see the design's restore lock + marker protocol):
- * take the per-database restore lock, write the restoring marker, close the database across all
- * worker threads, verify the backup, restore, delete the marker, release the lock, and reload
+ * claim the per-database restore lock, close the database across all worker threads, verify the
+ * backup, write the restoring marker, restore, delete the marker, release the lock, and reload
  * everywhere.
  */
 export async function restoreBackup(request: any) {
@@ -669,7 +669,7 @@ export async function restoreBackup(request: any) {
 	});
 	try {
 		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
-		// Each thread also rescans, and the restoring marker keeps it from reloading mid-restore.
+		// Each thread also rescans, and the held restore lock (later the marker) keeps it from reloading.
 		try {
 			await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'close', restoreToken));
 		} catch {

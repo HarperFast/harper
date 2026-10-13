@@ -126,8 +126,9 @@ Several non-obvious mechanics keep that safe:
   409 if that does not happen within 30s, because proceeding past an unconfirmed blob-save barrier
   would re-open the race the barrier exists to close. A destructive purge still
   verifies closure independently: `restoreBackup` polls rocksdb-js `registryStatus()` (process-global
-  across worker threads) until the database path has no open instance, and aborts with a 409 —
-  _cleaning up the marker, since nothing was destroyed_ — if handles remain.
+  across worker threads) until the database path has no open instance, and aborts with a 409 if
+  handles remain — before the marker on a fresh claim, so nothing is left to clean up, while a
+  recovery keeps the marker it found.
 - **The close acknowledgement fences blob saves, deferred reclamation and orphan cleanup, not just
   database handles.** A store
   handle can close while a `saveBlob` file pipeline it started is still pending, because blob roots
