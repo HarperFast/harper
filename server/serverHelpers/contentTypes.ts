@@ -52,6 +52,8 @@ function streamErrorRecord(error: any) {
 	try {
 		const status = error?.statusCode ?? error?.status;
 		if (typeof status === 'number') record.status = status;
+	} catch {}
+	try {
 		if (error?.replicationUnconfirmed === true) {
 			record.replicationUnconfirmed = true;
 			record.retryable = false;
