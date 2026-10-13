@@ -400,11 +400,13 @@ jobs:
 				withoutCredentials('https://admin:secret@other.example.com:9925/'),
 				'https://other.example.com:9925/'
 			);
+			assert.strictEqual(withoutCredentials('admin:secret@other.example.com:9925'), 'other.example.com:9925');
 		});
 
 		it('leaves anything else as it is', () => {
 			assert.strictEqual(withoutCredentials('https://other.example.com:9925/'), 'https://other.example.com:9925/');
 			assert.strictEqual(withoutCredentials('not a url'), 'not a url');
+			assert.strictEqual(withoutCredentials('https://other.example.com/a@b'), 'https://other.example.com/a@b');
 		});
 	});
 });

@@ -373,24 +373,16 @@ function readGithubVariable(repository: string): VariableState {
 	return { state: 'unknown', reason: result.stderr.trim() || `gh exited with ${result.status}` };
 }
 
+/** A target can carry `user:password@`, with or without a scheme; the value is printed, so that part is dropped. */
+export function withoutCredentials(value: string): string {
+	return value.replace(/^((?:[a-z][a-z0-9+.-]*:)?\/\/)?[^/?#@]*@/i, '$1');
+}
+
 /**
  * Like the cluster records, the variable is only created: one that already points at another cluster
  * is how this repository deploys today, and replacing it would move every run of every workflow that
  * reads it. An unreadable variable is left alone too, since it may hold a value.
  */
-/** A target can carry `user:password@`; the value is printed, so that part is dropped. */
-export function withoutCredentials(value: string): string {
-	try {
-		const url = new URL(value);
-		if (!url.username && !url.password) return value;
-		url.username = '';
-		url.password = '';
-		return url.toString();
-	} catch {
-		return value;
-	}
-}
-
 export function variableAction(current: VariableState, audience: string): 'keep' | 'set' | 'conflict' | 'unknown' {
 	if (current.state === 'absent') return 'set';
 	if (current.state === 'unknown') return 'unknown';
