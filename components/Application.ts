@@ -41,6 +41,7 @@ import {
 	type GitCredentialSession,
 	type ResolvedGitCredential,
 } from './gitCredentialServer.ts';
+import { canonicalizePackageJSON } from './canonicalizePackageJSON.ts';
 import { getSecretDecryptor } from '../resources/secretDecryptor.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 import {
@@ -752,7 +753,7 @@ export async function readInstalledPackageMetadata(directory: string): Promise<I
 				const contents = await readFile(join(directory, 'package.json'));
 				try {
 					packageJSON = JSON.parse(contents.toString());
-					files.set('package.json', Buffer.from(JSON.stringify(canonicalizeJSON(packageJSON))));
+					files.set('package.json', Buffer.from(JSON.stringify(canonicalizePackageJSON(packageJSON))));
 				} catch {
 					files.set('package.json', contents);
 				}
@@ -797,14 +798,6 @@ export function installedRuntimeChanged(
 		(current.hasInstallableDependencies && !current.hasLockfile) ||
 		!installedPackageMetadataEqual(previous, current)
 	);
-}
-
-function canonicalizeJSON(value: any): any {
-	if (Array.isArray(value)) return value.map(canonicalizeJSON);
-	if (!value || typeof value !== 'object') return value;
-	const canonical: Record<string, any> = Object.create(null);
-	for (const key of Object.keys(value).sort()) canonical[key] = canonicalizeJSON(value[key]);
-	return canonical;
 }
 
 /**

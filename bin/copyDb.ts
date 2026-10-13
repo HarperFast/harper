@@ -5,7 +5,7 @@ import {
 	getRocksCompression,
 	toRocksCompression,
 } from '../resources/databases.ts';
-import { open, asBinary } from 'lmdb';
+import { asBinary } from '../resources/asBinary.ts';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { move, remove } from 'fs-extra';
 import { existsSync, mkdirSync } from 'node:fs';
@@ -344,7 +344,7 @@ async function copyDbEnvironment(
 	// this contains the list of all the dbis
 	const sourceDbisDb = rootStore.dbisDb;
 	const sourceAuditStore = rootStore.auditStore;
-	const targetEnv = open(new OpenEnvironmentObject(targetDatabasePath));
+	const targetEnv = (require('lmdb') as typeof import('lmdb')).open(new OpenEnvironmentObject(targetDatabasePath));
 	const targetDbisDb = targetEnv.openDB({ name: INTERNAL_DBIS_NAME });
 	let written;
 	let outstandingWrites = 0;

@@ -393,7 +393,10 @@ boundary settles config to the same end state as the tree. `deploy_component` on
 - `unset-package` — a payload build removes `package`, `install` and `credentials` and keeps the rest
   (`isolated`, `urlPath`, `host`, `branchedDatabases`), removing the entry if nothing remains. "No package"
   is an opinion: left in place, a cold install resolves the old package over the payload release that is
-  live. This is a behaviour change operators can see.
+  live. This is a behaviour change operators can see. A payload deploy keeps those four but cannot set them,
+  since its build declares no entry, so `deploy_component` refuses each one without a `package` (400) rather
+  than drop it: a dropped `branchedDatabases` would leave the application reading and writing the base
+  databases it asked to fork (harper#3044). Accepting them is harper#3043.
 - `keep` — a caller installing FROM root config (`installApplications()`, `add_component`, harper-pro's
   clone) owns no effect. It returns before taking any lock, so a boot re-install never waits on a config
   writer.
@@ -844,7 +847,10 @@ Npm dependencies delegated from the default VM loader to Node's native loader ar
 by the installed package/lock comparison—otherwise the default `dependencyLoader: auto` mode would
 make nearly every application opaque. Explicit `dependencyLoader: native` remains authoritative;
 an application-local import delegated by that setting marks the runtime opaque. `package.json` is compared as parsed JSON so formatting and
-key order are irrelevant, while lockfiles remain exact installed-tree evidence. A module first
+unrelated key order are irrelevant — except inside `exports`/`imports`, where key order is itself a
+first-match condition priority Node resolves by, so it is preserved rather than sorted, recursively
+through nested condition maps (`components/canonicalizePackageJSON.ts`) — while lockfiles remain
+exact installed-tree evidence. A module first
 loaded while a deploy is in flight also invalidates the old runtime rather than letting a mixed
 generation appear equivalent. This is deliberately proof-oriented: an unused new local file need
 not restart a fully observed runtime, but a changed or missing imported helper, changed resolution

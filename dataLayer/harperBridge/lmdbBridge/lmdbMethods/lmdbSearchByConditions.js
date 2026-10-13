@@ -10,7 +10,7 @@ const searchUtility = require('../../../../utility/lmdb/searchUtility.ts');
 const lmdbTerms = require('../../../../utility/lmdb/terms.ts');
 const lmdb_search = require('../lmdbUtility/lmdbSearch.js');
 const cursorFunctions = require('../../../../utility/lmdb/searchCursorFunctions.ts');
-const _ = require('lodash');
+const sortBy = require('lodash/sortBy');
 const { getSchemaPath } = require('../lmdbUtility/initializePaths.js');
 const environmentUtility = require('../../../../utility/lmdb/environmentUtility.ts');
 const { handleHDBError, hdbErrors } = require('../../../../utility/errors/hdbError.ts');
@@ -53,7 +53,7 @@ async function lmdbSearchByConditions(searchObject) {
 	// Sort the conditions by narrowest to broadest. Note that we want to do this both for intersection where
 	// it allows us to do minimal filtering, and for union where we can return the fastest results first
 	// in an iterator/stream.
-	let sortedConditions = _.sortBy(searchObject.conditions, (condition) => {
+	let sortedConditions = sortBy(searchObject.conditions, (condition) => {
 		if (condition.estimated_count === undefined) {
 			// skip if it is cached
 			let searchType = condition.comparator;

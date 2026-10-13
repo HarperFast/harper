@@ -1,0 +1,31 @@
+# One database (`data`), because a RocksDB transaction log is per-database: these three tables
+# share the one log the main arms sample. They are separate tables so the seed that arms the purge,
+# the post-purge write volume, and the rows read back as the survival oracle can never be confused
+# for each other. `ReopenTarget` below lives in a second, isolated database — see its own comment.
+type PurgeVictim @table(audit: true) @export {
+	id: ID @primaryKey
+	seq: Int
+	marker: String
+}
+
+type Healer @table(audit: true) @export {
+	id: ID @primaryKey
+	seq: Int
+	marker: String
+}
+
+type QuietTarget @table(audit: true) @export {
+	id: ID @primaryKey
+	seq: Int
+	marker: String
+}
+
+# QA-1730's clean no-write reopen sample needs the window between its purge and its restart to
+# never see a write, which the `data` database above cannot guarantee once the other arms resume
+# writing to it — and a RocksDB transaction log is per-database anyway, so a second database makes
+# the isolation structural rather than a timing coincidence.
+type ReopenTarget @table(database: "qa1730", audit: true) @export {
+	id: ID @primaryKey
+	seq: Int
+	marker: String
+}

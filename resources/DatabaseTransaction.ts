@@ -1,7 +1,8 @@
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
-import { Transaction as LMDBTransaction } from 'lmdb';
+import type { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import {
+	ClientError,
 	DatabaseClosingError,
 	DatabaseDrainTimeoutError,
 	ServerError,
@@ -16,11 +17,12 @@ import { convertToMS } from '../utility/common_utils.ts';
 import { settleBeforeDeadline, when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
-import { releaseLocalKey, reserveLocalKey, transferLocalKey } from './originClosedFloor.ts';
+import { releaseLocalKey, reserveLocalKey, reservedLocalKey, transferLocalKey } from './originClosedFloor.ts';
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
+import { server } from '../server/Server.ts';
 import {
 	createLongLivedHolderReportBudget,
 	describeHolderCandidates,
@@ -418,9 +420,49 @@ export function getTransactionQueueDepths() {
 	return depths;
 }
 
+// a residency id names one list for the life of its database, so its residents are resolved once
+const residentsByResidencyId = new WeakMap<object, Map<number, string[]>>();
+const MAX_CACHED_RESIDENCIES = 10_000;
+
+// BigInt.toJSON throws (and runs before any JSON.stringify replacer)
+const describeKey = (key: Id): string =>
+	Array.isArray(key)
+		? `[${key.map(describeKey).join(',')}]`
+		: typeof key === 'bigint'
+			? String(key)
+			: JSON.stringify(key);
+
+export function confirmingResidents(store: any, residencyId: number, confirmationCount: number, key: Id): string[] {
+	const dbisDb = store.rootStore.dbisDb;
+	let residentsById = residentsByResidencyId.get(dbisDb);
+	if (!residentsById) residentsByResidencyId.set(dbisDb, (residentsById = new Map()));
+	let residents = residentsById.get(residencyId);
+	if (!residents) {
+		if (residentsById.size >= MAX_CACHED_RESIDENCIES) residentsById.clear();
+		const residency: string[] | undefined = dbisDb.getSync([Symbol.for('residency_by_id'), residencyId]);
+		residents = Object.freeze(
+			residency ? Array.from(new Set(residency)).filter((name) => name !== server.hostname) : []
+		) as string[];
+		if (residency) residentsById.set(residencyId, residents);
+	}
+	if (confirmationCount > residents.length) {
+		throw new ClientError(
+			`Cannot confirm replication to ${confirmationCount} node(s) for record ${describeKey(key)} in database "${store.rootStore.databaseName}": it is resident on ${residents.length} other node(s)${residents.length ? ` (${residents.join(', ')})` : ''}`
+		);
+	}
+	return residents;
+}
+
 let confirmReplication;
-export function replicationConfirmation(callback) {
+let confirmationFeasibility:
+	((databaseName: string, confirmationCount: number, residentPeerLists?: string[][]) => void) | undefined;
+/**
+ * Register the replication layer's confirmation waiter, and optionally a check that runs before native
+ * submission and throws when the requested confirmation can never be met, so the write never lands.
+ */
+export function replicationConfirmation(callback, feasibility?: typeof confirmationFeasibility) {
 	confirmReplication = callback;
+	confirmationFeasibility = feasibility;
 }
 let txnExpiration = envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONOPENTIME) ?? 30000;
 
@@ -566,7 +608,13 @@ export type TransactionWrite = {
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
-	commit?: (txnTime: number, existingEntry: Partial<Entry>, retry: boolean, transaction: any) => MaybePromise<void>;
+	commit?: (
+		txnTime: number,
+		existingEntry: Partial<Entry>,
+		retry: boolean,
+		transaction: any,
+		committedBy?: DatabaseTransaction
+	) => MaybePromise<void>;
 	// Once a write has been taken over, the transaction committing it is not the one that staged it, and
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
 	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
@@ -635,6 +683,10 @@ export type TransactionWrite = {
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
 	reloadCommitBase?: boolean;
+	// of the audit entry this write appended; a coordinated retry appends nothing and keeps it, so
+	// confirmation counts the residents the replicated entry names
+	residencyId?: number;
+	appendedTo?: RocksTransaction;
 	baseReadTxn?: any;
 	writeGeneration?: WriteGeneration;
 	instanceClosed?: boolean;
@@ -770,6 +822,8 @@ export class DatabaseTransaction implements Transaction {
 	overloadChecked: boolean;
 	open = TRANSACTION_STATE.OPEN;
 	replicatedConfirmation: number;
+	checkedResidentPeerLists?: string[][] | null;
+	checkedFor?: RocksTransaction;
 	// Set when this transaction is applying data from a canonical source of truth (replication peer
 	// or external caching source); its commits retry transient conflicts without the request-path
 	// retry cap. Propagated to chained (multi-store) transactions in txnForContext.
@@ -1331,6 +1385,90 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
+	 * What a `replicatedConfirmation` commit waits for: the log position peers must acknowledge (the
+	 * committed transaction's own log key when a confirmable write appended an audit entry to it,
+	 * else the last confirmable write's entry version as in lastConfirmableEntry), and the residents of its
+	 * writes, as checked before submission.
+	 */
+	confirmationTarget(
+		committedLogKey?: number,
+		committedTransaction?: RocksTransaction
+	): { version: number; residentPeerLists?: string[][] } | undefined {
+		const residentPeerLists =
+			this.checkedResidentPeerLists === undefined || this.checkedFor !== committedTransaction
+				? this.residentPeerLists(committedTransaction)
+				: (this.checkedResidentPeerLists ?? undefined);
+		this.checkedResidentPeerLists = undefined;
+		// writes that lost to newer entries appended nothing at the key, which peers would then pass only
+		// when some later write replicates
+		let version = this.writes.some(
+			(write) => write && !write.skipReplicationConfirmation && write.appendedTo === committedTransaction
+		)
+			? committedLogKey
+			: undefined;
+		for (let i = this.writes.length - 1; i >= 0 && version === undefined; i--) {
+			const write = this.writes[i];
+			if (!write || write.skipReplicationConfirmation) continue;
+			version = write.store.getEntry(write.key)?.version;
+		}
+		if (version === undefined) return;
+		return { version, residentPeerLists };
+	}
+
+	/**
+	 * One list of other residents per distinct residency among the confirmable writes, in no meaningful
+	 * order, refusing a count any one list cannot meet (harper-pro#1031). A write placed by no residency
+	 * adds no list: N confirmations from any list already come from N distinct peers.
+	 */
+	residentPeerLists(submitted?: RocksTransaction): string[][] | undefined {
+		let lists: Map<number, string[]> | undefined;
+		for (const write of this.writes) {
+			if (!write?.residencyId || write.skipReplicationConfirmation || lists?.has(write.residencyId)) continue;
+			// a residency recorded in a round whose batch an iterator replay discarded names no append
+			if (submitted && write.appendedTo !== submitted) continue;
+			(lists ??= new Map()).set(
+				write.residencyId,
+				confirmingResidents(write.store, write.residencyId, this.replicatedConfirmation, write.key)
+			);
+		}
+		return lists && Array.from(lists.values());
+	}
+
+	/**
+	 * Refuse, before `transaction` is submitted, a confirmation this commit could never get, aborting it.
+	 * Confirmation requested after a write was saved skipped that write's own refusal, so the lists are
+	 * checked again here, and kept for the waiter.
+	 */
+	refuseUnconfirmable(transaction: RocksTransaction): void {
+		// a retry of a submitted attempt (the same handle) must reach its native outcome
+		if ((transaction as RocksTransactionWithRetry).isRetry) return;
+		this.checkedResidentPeerLists = undefined;
+		this.checkedFor = transaction;
+		if (!this.replicatedConfirmation || !this.writes.some((write) => write && !write.skipReplicationConfirmation))
+			return;
+		try {
+			const residentPeerLists = this.residentPeerLists(transaction);
+			const databaseName = this.writes.find((write) => write)?.store.rootStore.databaseName;
+			if (databaseName) {
+				const result: any = confirmationFeasibility?.(databaseName, this.replicatedConfirmation, residentPeerLists);
+				if (result?.then) {
+					result.then(null, () => {});
+					throw new TypeError('A replication confirmation feasibility check must be synchronous');
+				}
+			}
+			this.checkedResidentPeerLists = residentPeerLists ?? null;
+		} catch (error) {
+			abortNativeTransaction(transaction, 'aborting a transaction whose confirmation was refused');
+			try {
+				this.abort();
+			} catch (abortError) {
+				harperLogger.debug?.('cleaning up a transaction whose confirmation was refused', abortError);
+			}
+			throw error;
+		}
+	}
+
+	/**
 	 * The stored entry of the last write eligible for replication confirmation. Two kinds of write are
 	 * skipped (rather than ending the search) so a trailing one cannot suppress confirmation for
 	 * replicable writes staged earlier: writes that explicitly opt out (audit-only markers, which stage
@@ -1576,7 +1714,13 @@ export class DatabaseTransaction implements Transaction {
 			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
 			try {
-				completion = operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>;
+				completion = operation.commit(
+					writeVersion,
+					operation.entry,
+					this.retries > 0,
+					transaction,
+					this
+				) as Promise<void>;
 			} finally {
 				closeWriteInstance(operation);
 			}
@@ -1597,6 +1741,9 @@ export class DatabaseTransaction implements Transaction {
 		// retries where a recommit round self-skips before a fresh-transaction replay.
 		if (!operation.skipped && !(transaction as RocksTransactionWithRetry).isRetry) {
 			operation.appendedAuditEntry = true;
+			// unlike the sticky flag, names the handle (an iterator replay discards the original's batch);
+			// recorded whether or not confirmation is requested yet, since it can be requested later
+			operation.appendedTo = transaction;
 		}
 		if (immediateCommit) {
 			// immediately commit if the harper transaction is closed
@@ -1988,6 +2135,7 @@ export class DatabaseTransaction implements Transaction {
 						}
 						// with options.transaction set this is a retry round — the save loop above already
 						// re-staged the writes into it
+						this.refuseUnconfirmable(transaction);
 						this.assertDatabaseCommitAllowed(transaction);
 						this.markNativeCommitSubmitted();
 						commitResolution = transaction.commit() as Promise<void>;
@@ -2039,6 +2187,7 @@ export class DatabaseTransaction implements Transaction {
 								}
 								throw lockNotHeldError(lapsed);
 							}
+							this.refuseUnconfirmable(transaction);
 							// The transaction was created with coordinatedRetry:true (see
 							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
 							// sentinel (a number) is why commitResolution is typed
@@ -2113,6 +2262,8 @@ export class DatabaseTransaction implements Transaction {
 								}
 								return this.commit({ ...options, transaction });
 							}
+							const committedLogKey = this.replicatedConfirmation ? reservedLocalKey(transaction) : undefined;
+							const committedTransaction = transaction;
 							releaseLocalKey(transaction);
 							// onCommit may be async (e.g. RocksTransactionLogStore emits 'aftercommit'). Surface a
 							// rejection — or a synchronous throw — via logging rather than failing the commit, since
@@ -2145,11 +2296,26 @@ export class DatabaseTransaction implements Transaction {
 								// if we want to wait for replication confirmation, we need to track the transaction times
 								// and when replication notifications come in, we count the number of confirms until we reach the desired number
 								const databaseName = this.writes[0]?.store.rootStore.databaseName;
-								const lastEntry = this.lastConfirmableEntry();
-								if (confirmReplication && databaseName && lastEntry) {
-									completions.push(
-										confirmReplication(databaseName, (lastEntry as any).version, this.replicatedConfirmation)
-									);
+								// the write has landed: a refusal here is this commit's outcome, after the bookkeeping below
+								try {
+									const target =
+										confirmReplication && databaseName
+											? this.confirmationTarget(committedLogKey, committedTransaction)
+											: undefined;
+									if (target) {
+										completions.push(
+											confirmReplication(
+												databaseName,
+												target.version,
+												this.replicatedConfirmation,
+												target.residentPeerLists
+											)
+										);
+									}
+								} catch (error) {
+									const refusal = Promise.reject(error);
+									refusal.catch(() => {}); // surfaces through Promise.all(completions), even if bookkeeping throws first
+									completions.push(refusal);
 								}
 							}
 							// commit succeeded; clean up files for any writes whose commit-handler took an early-return,

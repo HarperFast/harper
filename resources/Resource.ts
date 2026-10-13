@@ -599,6 +599,13 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 
 _assignPackageExport('Resource', Resource);
 
+/**
+ * allowRead implementations whose result, for a target with no caller-supplied `select`, reads only the
+ * user's role permission and the resource class, so a live-subscription recheck pass may share it across
+ * subscriptions of one class.
+ */
+export const defaultAllowReads = new WeakSet<(...args: any[]) => unknown>([Resource.prototype.allowRead]);
+
 export function snakeCase(camelCase: string) {
 	return (
 		camelCase[0].toLowerCase() +
@@ -907,6 +914,8 @@ function transactional(
 			// 'subscribe' is the direct MQTT path; 'connect' is the SSE/WebSocket path (REST CONNECT) —
 			// both resolve to the same subscription iterable.
 			const isSubscribeAction = options.method === 'subscribe' || options.method === 'connect';
+			// read before allowRead, which may write a select of its own
+			const selectedByCaller = isSubscribeAction && query?.select != null;
 			const runAction = (data: any) => {
 				// Capture the complete target after the initial allowRead has narrowed it, but before
 				// subscribe/connect implementations can mutate it. Every later recheck gets a fresh clone.
@@ -917,10 +926,9 @@ function transactional(
 				if (loadAsInstance === false && options.method === 'publish') markStaticResourceInstance(resource);
 				const result = action(resource, query, context, data);
 				if (!isSubscribeAction) return result;
-				return when(result, (subscription: any) => {
-					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, context);
-					return subscription;
-				});
+				return when(result, (subscription: any) =>
+					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, selectedByCaller, context)
+				);
 			};
 			let checkPermission = false;
 			if (query.checkPermission) {
@@ -1035,39 +1043,80 @@ function hasPermissionControl(value: any, seen = new WeakSet<object>()): boolean
 	return false;
 }
 
-function registerLiveSubscriptionForContext(subscription: any, resource: any, admittedTarget: any, context: Context) {
+let securityUser: typeof import('../security/user.ts') | undefined;
+
+const resolveUser = (_scope: unknown, username: string) =>
+	securityUser!.findAndValidateUser(username, undefined, false);
+
+/** Returns `subscription`, or a promise of it once a principal stale at admission has been rechecked. */
+function registerLiveSubscriptionForContext(
+	subscription: any,
+	resource: any,
+	admittedTarget: any,
+	selectedByCaller: boolean,
+	context: Context
+) {
 	const user: any = context?.user;
 	const username = user?.username;
 	// Internal watchers, replication and local-bypass have no user principal — nothing to re-authorize.
-	if (!username) return;
-	registerLiveSubscription({
+	if (!username) return subscription;
+	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
+	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
+	securityUser ??= require('../security/user');
+	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
+	// A select written by authorization names no relationship, so the default allowRead's result still
+	// reads only the role's table permission; a caller's select can reach related tables' allowRead.
+	const sharedDecision = !selectedByCaller && defaultAllowReads.has(resource.allowRead);
+	const evaluate = (principal: any) => {
+		const reTarget: any = cloneRequestTarget(admittedTarget);
+		reTarget.checkPermission = principal.role?.permission;
+		return resource.allowRead(principal, reTarget, context);
+	};
+	const handle = registerLiveSubscription({
 		subscription,
 		username,
 		// JWT exp of the bearer credential (set by the auth layer); undefined for password/mTLS/session.
 		authExpiresAt: user.authExpiresAt,
-		recheck: async () => {
+		// A principal with no record provenance (a component's server.getUser on a path that does not track it)
+		// can't be checked for staleness at admission, so every tick rechecks it.
+		identityOnly: sharedDecision && (user._scopedToken || hasRecordProvenance(user)),
+		recheck: async (pass) => {
 			let fresh: any;
+			let viewer: any;
 			if (user._scopedToken) {
 				// A scoped token's identity IS its embedded role — never re-resolve its attribution
 				// username against hdb_user (it may not exist, or may name an unrelated principal
 				// created later). Expiry (authExpiresAt above) is its only revocation.
-				fresh = user;
+				fresh = viewer = user;
 			} else {
-				// Re-read current user state from hdb_user/hdb_role, so a dropped or
-				// role-stripped user no longer authorizes.
-				const { findAndValidateUser } = require('../security/user');
-				fresh = await findAndValidateUser(username, undefined, false);
+				// Re-read current user state from hdb_user/hdb_role, once per username per pass, so a dropped
+				// or role-stripped user no longer authorizes.
+				fresh = await pass.memo(resolveUser, username, resolveUser);
 				if (!fresh?.role) return false;
 				// Advance the subscription's context to the fresh user so downstream checks — context.user
 				// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
-				// not the stale user captured at subscribe time.
-				if (context) (context as any).user = fresh;
+				// not the stale user captured at subscribe time. Each context gets its own view, which its
+				// code may modify.
+				viewer = cloneUserView(fresh);
+				if (context) (context as any).user = viewer;
 			}
 			// Re-run the same operation-level allowRead that granted the subscription.
-			const reTarget: any = cloneRequestTarget(admittedTarget);
-			reTarget.checkPermission = fresh.role?.permission;
-			return !!(await resource.allowRead(fresh, reTarget, context));
+			return !!(await (sharedDecision ? pass.memo(fresh, resource.constructor, evaluate) : evaluate(viewer)));
 		},
+	});
+	let stale: boolean;
+	try {
+		stale = !isCurrentUser(user);
+	} catch {
+		stale = true;
+	}
+	if (!stale) return subscription;
+	// Admitted by records that changed before it registered, so the notification for that change may already
+	// have run without it: recheck before any delivery.
+	return handle.verify().then((outcome) => {
+		if (outcome === 'revoked') throw new AccessViolation(user);
+		// closed by its owner meanwhile, perhaps with a terminal error the caller acts on
+		return subscription;
 	});
 }
 
@@ -1099,7 +1148,7 @@ export function allowedMethods(resource: any) {
  */
 function selectFromObject(object, propertyResolvers, context) {
 	// TODO: eventually we will do aggregate functions here
-	const record = object.getRecord?.();
+	const record = typeof object.getRecord === 'function' ? object.getRecord() : undefined;
 	if (record) {
 		const ownData = object.getChanges?.();
 		return (property) => {
@@ -1109,25 +1158,36 @@ function selectFromObject(object, propertyResolvers, context) {
 			}
 			if (ownData && property in ownData) {
 				return ownData[property];
-			} else if ((resolver = propertyResolvers?.[property])) {
+			} else if (
+				propertyResolvers &&
+				Object.hasOwn(propertyResolvers, property) &&
+				(resolver = propertyResolvers[property])
+			) {
 				return resolver(object, context);
 			} else return record[property];
 		};
 	} else if (propertyResolvers) {
 		return (property) => {
-			const resolver = propertyResolvers[property];
-			return resolver ? resolver(object, context) : object[property];
+			const resolver = Object.hasOwn(propertyResolvers, property) ? propertyResolvers[property] : undefined;
+			if (resolver) return resolver(object, context);
+			const value = object[property];
+			return typeof value === 'function' ? undefined : value;
 		};
-	} else return (property) => object[property];
+	} else
+		return (property) => {
+			const value = object[property];
+			return typeof value === 'function' ? undefined : value;
+		};
 }
 export function transformForSelect(select, resource) {
-	const propertyResolvers = resource.propertyResolvers;
-	const context = resource.getContext?.();
+	const propertyResolvers = resource?.propertyResolvers;
+	const context = resource?.getContext?.();
 	let subTransforms;
 	if (typeof select === 'string')
 		// if select is a single string then return property value
 		return function transform(object) {
-			if (object.then) return object.then(transform);
+			if (object == null || (!resource && typeof object !== 'object')) return object;
+			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object)) return object.map(transform);
 			return selectFromObject(object, propertyResolvers, context)(select);
 		};
@@ -1135,7 +1195,8 @@ export function transformForSelect(select, resource) {
 		// if it is an array, return an array
 		if (select.asArray)
 			return function transform(object) {
-				if (object.then) return object.then(transform);
+				if (object == null || (!resource && typeof object !== 'object')) return object;
+				if (typeof object.then === 'function') return object.then(transform);
 				if (Array.isArray(object)) return object.map(transform);
 				const results = [];
 				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
@@ -1145,18 +1206,27 @@ export function transformForSelect(select, resource) {
 				return results;
 			};
 		const forceNulls = select.forceNulls;
+		const selectsPrototype = select.some((property) => (property.name || property) === '__proto__');
 		return function transform(object) {
-			if (object.then) return object.then(transform);
+			if (object == null || (!resource && typeof object !== 'object')) return object;
+			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object))
 				return object.map((value) => (value && typeof value === 'object' ? transform(value) : value));
 			// finally the case of returning objects
 			const selectedData = {};
 			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
+			if (selectsPrototype)
+				Object.defineProperty(selectedData, '__proto__', {
+					value: undefined,
+					writable: true,
+					enumerable: true,
+					configurable: true,
+				});
 			let promises;
 			for (const property of select) {
 				let value = getProperty(property);
 				if (value === undefined && forceNulls) value = null;
-				if (value?.then) {
+				if (typeof value?.then === 'function') {
 					if (!promises) promises = [];
 					promises.push(value.then((value) => (selectedData[property.name || property] = value)));
 				} else selectedData[property.name || property] = value;
@@ -1172,14 +1242,18 @@ export function transformForSelect(select, resource) {
 			} else if (typeof property === 'object') {
 				// TODO: Handle aggregate functions
 				if (property.name) {
-					if (!subTransforms) subTransforms = {};
+					const value = getProperty(property.name);
+					if (!value || typeof value !== 'object' || value instanceof Date) return value;
+					if (!subTransforms) subTransforms = Object.create(null);
 					// TODO: Get the resource, cache this transform, and apply above
 					let transform = subTransforms[property.name];
 					if (!transform) {
-						const resource = propertyResolvers[property.name]?.definition?.tableClass;
+						const resource =
+							propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
+								? propertyResolvers[property.name]?.definition?.tableClass
+								: undefined;
 						transform = subTransforms[property.name] = transformForSelect(property.select || property, resource);
 					}
-					const value = getProperty(property.name);
 					return transform(value);
 				} else return getProperty(property);
 			} else return property;

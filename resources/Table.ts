@@ -5,13 +5,13 @@
  */
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
-import { type Database, type Transaction as LMDBReadTransaction } from 'lmdb';
+import type { Database, Transaction as LMDBReadTransaction } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping, getNodeNameForId } from './nodeIdMapping.ts';
-import lodash from 'lodash';
+import sortBy from 'lodash/sortBy.js';
 import { ExtendedIterable, SKIP } from '@harperfast/extended-iterable';
 import type {
 	ResourceInterface,
@@ -30,7 +30,7 @@ import type { AssertNoDrift, AssertTrue, ExactlyEqual, MemberDrift, ParitySentin
 import type { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Contract, SchemaClass } from './defineResource.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource, SEARCH_AUTHORIZATION, transformForSelect } from './Resource.ts';
+import { Resource, SEARCH_AUTHORIZATION, transformForSelect, defaultAllowReads } from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
@@ -46,6 +46,7 @@ import {
 	getDatabaseCommitDrainTimeoutMilliseconds,
 	type WriteGeneration,
 	type Transaction as DatabaseTransactionRecord,
+	confirmingResidents,
 } from './DatabaseTransaction.ts';
 import { releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
 import {
@@ -194,7 +195,13 @@ import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { commutativeOpsOf, rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
-import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
+import {
+	Blob,
+	collectRetainedFileIds,
+	deleteBlobsInObject,
+	findBlobsInObject,
+	startPreCommitBlobsForRecord,
+} from './blob.ts';
 import {
 	onStorageReclamation,
 	removeStorageReclamation,
@@ -215,7 +222,6 @@ import {
 	type FullTextIndexGenerations,
 } from './fullTextSchema.ts';
 
-const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
 
 export type Attribute = {
@@ -875,6 +881,11 @@ interface TableResourceClass {
 			  }
 	): void;
 	getResidencyRecord(id: Id): any;
+	/**
+	 * Set the nodes that store each record in full; other nodes keep an indexed stub. The node that makes a
+	 * write is added to the list and keeps the full record, unless the write is a patch onto a stub it holds.
+	 * Call with no function to restore the default.
+	 */
 	setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition): void;
 	setResidencyById(getResidencyById?: (id: Id) => number | void): void;
 	getResidency(record: object, context: Context): number | void | string[];
@@ -1448,6 +1459,7 @@ export function makeTable(options): TableResourceClass {
 	let expirationScanScheduled = false;
 	// set on the first expiring write so the unscheduled-expiration warning is evaluated at most once per table
 	let expirationWarningChecked = false;
+	let writerResidencyWarned = false;
 	let propertyResolvers: any;
 	const warnedUnresolvedComputed = new Set<string>();
 	let hasRelationships = false;
@@ -2837,16 +2849,16 @@ export function makeTable(options): TableResourceClass {
 		}
 
 		static setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition) {
-			TableResource.getResidency =
-				getResidency &&
-				((record: object, context: Context) => {
-					try {
-						return getResidency(record, context);
-					} catch (error: unknown) {
-						(error as Error).message += ` in residency function for table ${tableName}`;
-						throw error;
+			TableResource.getResidency = getResidency
+				? (record: object, context: Context) => {
+						try {
+							return getResidency(record, context);
+						} catch (error: unknown) {
+							(error as Error).message += ` in residency function for table ${tableName}`;
+							throw error;
+						}
 					}
-				});
+				: defaultGetResidency;
 		}
 		static setResidencyById(getResidencyById?: (id: Id) => number | void) {
 			TableResource.getResidencyById =
@@ -2879,7 +2891,11 @@ export function makeTable(options): TableResourceClass {
 				const replicateTo = [server.hostname]; // start with ourselves, we should always be in the list
 				if (context.previousResidency) {
 					// if we have a previous residency, we should preserve it
-					replicateTo.push(...context.previousResidency.slice(0, count));
+					// the stored list already names the node that wrote it; repeating this one would shed a replica
+					for (const name of context.previousResidency) {
+						if (replicateTo.length > count) break;
+						if (name !== server.hostname) replicateTo.push(name);
+					}
 				} else {
 					// otherwise need to create a new list of nodes to replicate to, based on available nodes
 					// randomize this to ensure distribution of data
@@ -4653,6 +4669,7 @@ export function makeTable(options): TableResourceClass {
 			const transaction = txnForContext(context);
 			const replaying = transaction.isReplay === true;
 			assertDerivedIndexAdmission(options, transaction);
+			const writtenHere = !options?.isNotification && !transaction.sourceApply && !replaying;
 			checkValidId(id);
 			if (fullUpdate && recordUpdate == null && options?.isNotification) {
 				// A source/replication-applied put must carry the record; these applies skip record
@@ -4814,7 +4831,13 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 				before: writeToSource(),
-				commit: (txnTime: number, existingEntry: Entry, retry: boolean, transaction: any) => {
+				commit: (
+					txnTime: number,
+					existingEntry: Entry,
+					retry: boolean,
+					transaction: any,
+					committedBy?: DatabaseTransaction
+				) => {
 					// Whether a prior attempt of THIS write appended its own audit entry (sticky, set in
 					// save(); log entries are not part of the aborted rocks transaction, so they survive).
 					// Only such a write can find its own orphaned entry in the dedup lookups below and must
@@ -5370,37 +5393,44 @@ export function makeTable(options): TableResourceClass {
 					this.#record = recordToStore;
 					if (recordToStore && recordToStore.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');
-					if (residencyId == undefined) {
+					// A patch onto a stub has no complete base, so it can't decide placement; the stub's list names the
+					// nodes holding the complete record.
+					const baseEntry = priorStaged ?? existingEntry;
+					const patchesStub =
+						!fullUpdate &&
+						!TableResource.getResidencyById &&
+						Boolean(baseEntry?.residencyId && baseEntry.metadataFlags & INVALIDATED);
+					if (patchesStub) {
+						omitLocalRecord = true;
+						residencyId ??= baseEntry.residencyId;
+					} else if (residencyId == undefined) {
 						if (existingEntry?.residencyId)
 							(context as any).previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
-						const residency = residencyFromFunction(TableResource.getResidency(recordToStore, context));
-						if (residency) {
-							if (!residency.includes(server.hostname)) {
-								// if we aren't in the residency list, specify that our local record should be omitted or be partial
-								auditRecordToStore ??= recordToStore;
-								omitLocalRecord = true;
-								if (TableResource.getResidencyById) {
-									// complete omission of the record that doesn't belong here
-									recordToStore = undefined;
-								} else {
-									// store the partial record
-									recordToStore = null;
-									for (const name in indices) {
-										if (!recordToStore) {
-											recordToStore = {};
-										}
-										// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-										recordToStore[name] = auditRecordToStore[name];
-									}
-									if (createdTimeProperty && auditRecordToStore[createdTimeProperty.name] != null) {
-										// preserve the created timestamp in the partial record so it isn't lost when we don't have residency
-										if (!recordToStore) recordToStore = {};
-										recordToStore[createdTimeProperty.name] = auditRecordToStore[createdTimeProperty.name];
-									}
-								}
-							}
+						let residency = residencyFromFunction(TableResource.getResidency(recordToStore, context));
+						if (residency && !residency.includes(server.hostname)) {
+							if (writtenHere && !TableResource.getResidencyById) {
+								residency = [...residency, server.hostname];
+								warnWriterKeptResident(residency);
+							} else omitLocalRecord = true;
 						}
 						residencyId = getResidencyId(residency);
+					}
+					// a caller that catches the refusal must not be able to commit it, even on a retry
+					if (residencyId && committedBy?.replicatedConfirmation && !transaction?.isRetry) {
+						try {
+							confirmingResidents(primaryStore, residencyId, committedBy.replicatedConfirmation, id);
+						} catch (error) {
+							write.skipped = true;
+							write.skipReplicationConfirmation = true;
+							write.commit = () => {
+								write.skipped = true;
+							};
+							throw error;
+						}
+					}
+					if (omitLocalRecord) {
+						auditRecordToStore ??= recordToStore;
+						recordToStore = TableResource.getResidencyById ? undefined : residencyStub(recordToStore);
 					}
 					if (expiresAt == undefined) {
 						// A schema @expiresAt attribute makes the record field authoritative over the table
@@ -5525,11 +5555,15 @@ export function makeTable(options): TableResourceClass {
 							false,
 							storeRecord ? auditRecordToStore : (auditRecordToStore ?? recordUpdate)
 						);
+						if ((residencyId || write.residencyId) && audit && !isCopyApply && !transaction?.isRetry)
+							write.residencyId = residencyId;
 						// publish what this write left for the key, for any later write to it in this
 						// transaction (an audit-only commit stored no record, so it stages nothing and the
 						// earlier staged record, if any, remains the basis)
 						if (storeRecord) {
-							write.stagedEntry = { value: recordToStore };
+							write.stagedEntry = omitLocalRecord
+								? { value: recordToStore, metadataFlags: INVALIDATED, residencyId }
+								: { value: recordToStore };
 							// blobs this write saved are referenced by its audit entry (if it wrote one), which
 							// then owns their lifetime; and any record an earlier write in this transaction
 							// stored is now replaced, so mark those writes for the superseded-blob cleanup
@@ -5660,6 +5694,7 @@ export function makeTable(options): TableResourceClass {
 					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
 					write.superseded = false; // reset per round, as in the update path
 					write.skipped = false;
+					if (!transaction?.isRetry) write.skipReplicationConfirmation = false;
 					// what a preceding write in this transaction left for this key is what gets removed
 					// from the indices here, not the pre-transaction record (harper#1968)
 					const priorStagedOp = priorStagedWrite(write);
@@ -5679,6 +5714,7 @@ export function makeTable(options): TableResourceClass {
 					// write (a concurrent transaction observed on a retry round, or an out-of-order delivery)
 					// that a chained delete must not destroy.
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+						write.skipped = true;
 						return;
 					}
 					const stagedRemoval = { value: undefined, localTime: txnLogKey, nodeId: options?.nodeId };
@@ -5718,6 +5754,7 @@ export function makeTable(options): TableResourceClass {
 					} else {
 						// Only RocksDB's remove() takes an options object; on LMDB the 2nd arg is ifVersion, and its writes already join the batched txn.
 						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
+						write.skipReplicationConfirmation = true;
 					}
 					write.stagedEntry = stagedRemoval; // the key holds no record for the rest of this transaction
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
@@ -8710,6 +8747,7 @@ export function makeTable(options): TableResourceClass {
 		AssertTrue<ExactlyEqual<InstanceType<TableResourceClass>, TableResourceInstance<object>>>,
 		AssertTrue<ExactlyEqual<TableResourceClass['prototype'], TableResourceInstance>>,
 	];
+	const defaultGetResidency = TableResource.getResidency;
 	const throttledCallToSource = throttle(
 		async (source, id, sourceContext, existingEntry) => {
 			// call the data source if it exists and will fulfill our request for data
@@ -8728,6 +8766,7 @@ export function makeTable(options): TableResourceClass {
 		`cache resolution for ${tableName}`
 	);
 
+	defaultAllowReads.add(TableResource.prototype.allowRead);
 	try {
 		TableResource.updatedAttributes(); // on creation, update accessors as well
 		if (expirationMs) {
@@ -9443,6 +9482,7 @@ export function makeTable(options): TableResourceClass {
 			// we don't want to wait for the transaction because we want to return as fast as possible
 			// and let the transaction commit in the background
 			let resolved;
+			let removedRecordWithBlobs;
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
 				let updatedRecord, assignCreatedTime, sourceVersion;
@@ -9640,6 +9680,7 @@ export function makeTable(options): TableResourceClass {
 					nodeName: 'source',
 					commit: (_txnTime, existingEntry, _retry, transaction: any) => {
 						sourceWrite.skipped = false; // reset on each retry; cleanup happens after commit if still true
+						removedRecordWithBlobs = undefined;
 						const racedVersion = existingEntry?.version;
 						// A first fill may replace a record that raced it only when its candidate version strictly
 						// orders after that record. The comparison has to be replica-independent, so a tie leaves the
@@ -9697,25 +9738,7 @@ export function makeTable(options): TableResourceClass {
 									// if we aren't in the residency list, specify that our local record should be omitted or be partial
 									auditRecord = updatedRecord;
 									omitLocalRecord = true;
-									if (TableResource.getResidencyById) {
-										// complete omission of the record that doesn't belong here
-										updatedRecord = undefined;
-									} else {
-										// store the partial record
-										updatedRecord = null;
-										for (const name in indices) {
-											if (!updatedRecord) {
-												updatedRecord = {};
-											}
-											// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-											updatedRecord[name] = auditRecord[name];
-										}
-										if (createdTimeProperty && auditRecord[createdTimeProperty.name] != null) {
-											// preserve the created timestamp in the partial record so it isn't lost when we don't have residency
-											if (!updatedRecord) updatedRecord = {};
-											updatedRecord[createdTimeProperty.name] = auditRecord[createdTimeProperty.name];
-										}
-									}
+									updatedRecord = TableResource.getResidencyById ? undefined : residencyStub(auditRecord);
 								}
 								residencyId = getResidencyId(residency);
 							}
@@ -9771,7 +9794,13 @@ export function makeTable(options): TableResourceClass {
 									'delete',
 									Boolean(invalidated)
 								);
+							} else if (isRocksDB) {
+								// not removeEntry, which would queue the blob files for deletion before this commit lands
+								primaryStore.remove(id, { transaction });
+								if (existingEntry.value && existingEntry.metadataFlags & HAS_BLOBS)
+									removedRecordWithBlobs = existingEntry.value;
 							} else {
+								// joins LMDB's conditional batch; its promise gates the blob deletion
 								removeEntry(primaryStore, existingEntry, existingVersion);
 							}
 						}
@@ -9809,6 +9838,14 @@ export function makeTable(options): TableResourceClass {
 				commitPromise,
 				() => {
 					primaryStore.unlock(id);
+					if (removedRecordWithBlobs) {
+						try {
+							// a write committed since the removal may reference the same files again
+							deleteBlobsInObject(removedRecordWithBlobs, collectRetainedFileIds(primaryStore.getEntry(id)?.value));
+						} catch (error) {
+							logger.warn?.(`Error deleting blobs of record ${id} removed from ${tableName}`, error);
+						}
+					}
 				},
 				(error) => {
 					primaryStore.unlock(id);
@@ -10187,6 +10224,25 @@ export function makeTable(options): TableResourceClass {
 			`Shard or residency list ${shardOrResidencyList} is not a valid type, must be a shard number or residency list of node hostnames`
 		);
 	}
+	function residencyStub(record: any) {
+		let stub = null;
+		for (const name in indices) {
+			stub ??= {};
+			stub[name] = record[name];
+		}
+		if (createdTimeProperty && record[createdTimeProperty.name] != null) {
+			stub ??= {};
+			stub[createdTimeProperty.name] = record[createdTimeProperty.name];
+		}
+		return stub;
+	}
+	function warnWriterKeptResident(residency: string[]) {
+		if (writerResidencyWarned) return;
+		writerResidencyWarned = true;
+		logger.warn?.(
+			`The residency function for table "${tableName}" excluded this node (${server.hostname}) for a write made here; this node keeps the full record and was added to its residency: ${residency.join(', ')}`
+		);
+	}
 	function getResidencyId(ownerNodeNames) {
 		if (ownerNodeNames) {
 			const setKey = ownerNodeNames.join(',');
@@ -10194,12 +10250,25 @@ export function makeTable(options): TableResourceClass {
 			// return the Promise as the residencyId and skip minting a new one, corrupting the mapping.
 			let residencyId = (dbisDb as any).getSync([Symbol.for('residency_by_set'), setKey]);
 			if (residencyId) return residencyId;
-			dbisDb.put(
-				[Symbol.for('residency_by_set'), setKey],
-				(residencyId = Math.floor(Math.random() * 0x7fff0000) + 0xffff)
+			// An id names one list for good (readers cache it), so it is claimed in one transaction: a
+			// concurrent mint of the same set or the same candidate id conflicts and retries instead of
+			// overwriting. (LMDB's sync transaction is exclusive and passes no handle.)
+			const claimed = (dbisDb as any).transactionSync(
+				(transaction: any) => {
+					const db = transaction ?? dbisDb;
+					const minted = db.getSync([Symbol.for('residency_by_set'), setKey]);
+					if (minted) return minted;
+					let candidate: number;
+					do candidate = Math.floor(Math.random() * 0x7fff0000) + 0xffff;
+					while (db.getSync([Symbol.for('residency_by_id'), candidate]) !== undefined);
+					db.putSync([Symbol.for('residency_by_id'), candidate], ownerNodeNames);
+					db.putSync([Symbol.for('residency_by_set'), setKey], candidate);
+					return candidate;
+				},
+				isRocksDB ? { retryOnBusy: true } : undefined
 			);
-			dbisDb.put([Symbol.for('residency_by_id'), residencyId], ownerNodeNames);
-			return residencyId;
+			if (claimed === undefined) throw new Error(`Unable to claim a residency id for ${setKey}`);
+			return claimed;
 		}
 	}
 	function preCommitBlobsForRecordBefore(

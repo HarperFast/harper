@@ -66,6 +66,8 @@ Static methods are protocol entry points (each wrapped in `transactional()`); in
 | `missingMethod` / `allowedMethods` | 405 response helpers                                                                                                                                    |
 | `transformForSelect`               | Select-clause expansion                                                                                                                                 |
 
+**A bare nullish id is never a collection target for `get` or `delete`.** `transactional()` throws `ClientError` 400 synchronously for `Class.get()` / `Class.delete()` whose first argument is a bare `null`/`undefined` (harper#1837; the delete used to remove every record). Collection delete takes an object target. Known gap, not a contract: an object whose `id` is nullish (`{ id: undefined }`) is still a collection target and deletes every record. A function-form `defineResource` object never passes through `transactional()`, so its `delete` handler receives the `undefined` target. Caller shapes are pinned in `unitTests/resources/deleteNullResourceApi.test.js`.
+
 ---
 
 ## `Table.ts` — section map
@@ -175,7 +177,7 @@ Consequences worth knowing:
 
 **False-mode collection write gates stay per dispatch.** Built-in array PUT, query DELETE, and publish perform one request-scoped `allowUpdate`, `allowDelete`, or `allowCreate` verdict respectively. After query DELETE authorizes, it scans with a private cloned target whose permission check is disabled; the caller target stays untouched, and concurrent reads using it still run `allowRead`. Static publish overload routing marks the fresh per-dispatch resource receiver in `staticResourceDispatch.ts`, so copied targets and delayed delegation retain the `(target, message)` signature without putting reusable state on caller objects.
 
-**Array PUT is a collection dispatch in both modes.** `Class.put(batch, context)` arrives with no target, so `transactional` synthesizes one — and the collection it inferred from the null id has to carry over onto it, or the resource resolves as a single record with a null primary key and the batch never fans out. Default (instance) mode then dispatches per element through `getResource`, and each element call must carry its own normalized target in the second position — minted by `elementTargetFactory` so the element's id and `isCollection === false` sit on top of the request's query and route metadata, with `checkPermission` deliberately omitted so a per-element dispatch cannot re-arm the verdict the collection receiver already gave. Each element gets its own object, because its id must not be visible to a sibling whose dispatch resolves later; the request's contribution is resolved once for the batch rather than deep-cloned per element, and nested metadata is shared rather than copied — not the outer collection target and not the context: `Table`'s back-compat `put(target, record)` shift only recognizes a target that is a `RequestTarget`, so a context there is taken for the record and staged as record data (harper#2000). A default-mode `put()` override consequently sees one call per element with that element's id and `isCollection === false`; a component that needs the whole array in one call belongs in `loadAsInstance === false` mode.
+**Array PUT is a collection dispatch in both modes.** `Class.put(batch, context)` arrives with no target, so `transactional` synthesizes one — and the collection it inferred from the null id has to carry over onto it, or the resource resolves as a single record with a null primary key and the batch never fans out. Default (instance) mode then dispatches per element through `getResource`, and each element call must carry its own normalized target in the second position — minted by `elementTargetFactory` so the element's id and `isCollection === false` sit on top of the request's query and route metadata, with `checkPermission` deliberately omitted so a per-element dispatch cannot re-arm the verdict the collection receiver already gave. Each element gets its own object, because its id must not be visible to a sibling whose dispatch resolves later; the request's contribution is resolved once for the batch rather than deep-cloned per element, and nested metadata is shared rather than copied — not the outer collection target and not the context: `Table`'s back-compat `put(target, record)` shift only recognizes a target that is a `RequestTarget`, so a context there is taken for the record and staged as record data (harper#2000). A default-mode `put()` override consequently sees one call per element with that element's id and `isCollection === false`; a component that needs the whole array in one call belongs in `loadAsInstance === false` mode. Static-mode classes are outside the fan-out entirely: their `put(target, data)` receives the whole array, so neither element targets nor the pre-dispatch element guard apply to them — a `null` element in a static-mode `Table` batch still fails as a 500 from `Table.put`'s own array branch, a known gap in the malformed-body rule below. `unitTests/resources/arrayPutCallerImpact.test.js` pins each caller shape.
 
 **A malformed element fails the whole batch, and never abandons a sibling write.** The dispatch loop starts each element's write as it goes, so an element that throws _synchronously_ — `null`, or an id the store rejects — aborts the loop with earlier writes already in flight. Those are settled before the batch rejects: otherwise a sibling that rejects afterwards has no handler and surfaces as an unhandled rejection. Any element that is not an object — `null`, `undefined`, or a primitive — is rejected _before_ anything is dispatched, so a malformed body cannot race a sibling's write and nothing needs unwinding. The nullish case alone is not enough: only a `Table`'s own key validation rejects a primitive later, so a plain `Resource`, or any `put()` override that writes onto the record it is handed, would otherwise be given one. For a failure raised once dispatch is underway the batch reports the **earliest-index** one, uniformly — the same rule whether that element's `getResource` resolved synchronously or asynchronously, so the reported error does not move with cache residency — and the surrounding transaction rolls every element back — array PUT is all-or-nothing, not per-element reporting. The up-front rejection names the offending index as a `ClientError`, so a malformed body cannot land as a 500 carrying an engine-generated `TypeError`. A resource class that implements no `put` answers 405 through `missingMethod` here, matching the single-record path rather than throwing a bare `TypeError`.
 
@@ -264,6 +266,24 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
 
 ## Conventions
 
+- Single-record nested selections use `Resource.transformForSelect`; searches use
+  `Table.transformEntryForSelect`. Generic recursion needs no target table for plain JSON;
+  classless primitive array items and whole selected Dates keep their values; Date-array
+  subselects retain the existing search projection policy. Missing targets
+  preserve `undefined`/`null`; synchronous `forceNulls` stays local to its object projection. Promise and
+  `getRecord` detection requires callable values; ordinary method-like JSON keys are data.
+  Generic fallback projections treat function values as absent while retaining inherited data and getters;
+  registered resolver results stay unchanged.
+- The native missing-value contract is pinned by
+  `../unitTests/resources/nestedSelectMissingValues.test.js` and
+  `../integrationTests/resources/relationship-and-status-contract.test.ts`.
+  `Resource.transformForSelect` resolver dictionaries use own entries, the private transform cache has no prototype, and
+  a selected own `__proto__` is a data property on a normal response object.
+  [REST select projection crashes on missing targets and non-relationship fields](https://github.com/HarperFast/harper/issues/1415)
+  remains open for singleton-selector parsing and invalid-subselect policy outside this helper.
+  [Nested Resource projection fails to settle asynchronous arrays and forceNulls](https://github.com/HarperFast/harper/issues/3168)
+  and [Prototype-chain key/attribute names: one **proto** PK poisons SQL/index reads table-wide; proto-named attributes falsely rejected at insert](https://github.com/HarperFast/harper/issues/1295)
+  track separate asynchronous projection and table-wide key boundaries.
 - A record's `toJSON` is a response projection, not durable state. `recordUpdater` (and the cache-fill
   and audit paths feeding it) projects records to stored fields via `storedFieldsOnly`, so no durable
   form carries a resolver-owned (`@computed`/`@relationship`) name; materialization skips such names
@@ -364,6 +384,8 @@ The mitigations live in three places:
 **A blob instance outlives its file, so deletion tombstones it.** The `fileId` stays set on a `Blob` whose file has been unlinked, and `saveBlob` short-circuits on a set `fileId` — so a caller still holding the instance (the deploy recorder re-puts the same record object across a deploy) would re-encode a reference to a file that is gone. `cleanupUnusedBlobs` marks the blob's shared file state when transaction cleanup decides the file is no longer usable, before an in-flight save settles; slices share that state with their source. Ordinary supersession keeps its retention and re-reference window; reclamation marks every queued instance only after it claims the unlink. `saveBlob` throws on a discarded instance rather than minting a second reference (issue #2062).
 
 When adding a new commit-handler early-return path: reset `write.skipped = false` at the top of the handler if you don't already, then set `write.skipped = true` immediately before the `return`. Decide first whether the audit log will reference the blob (via `auditRecordToStore`) — if it does, leave `skipped` unset. `cleanupOrphans` is the periodic safety net; don't rely on it for transactional correctness.
+
+**A removed record's blob files go only once its removal commits.** `removeEntry` (`RecordEncoder.ts`) decides from what `store.remove` returns: a promise gates the unlink on its resolution, anything else is taken as already durable. A RocksDB removal staged in a transaction (`{ transaction }`) returns nothing, so through `removeEntry` its blobs are queued for reclamation at staging time, and an abort leaves the record pointing at files reclaimed `storage.blobRetention` later. `getFromSource()`'s source-miss removal therefore stages `primaryStore.remove(id, { transaction })` itself and deletes the removed record's blobs from the fill's commit completion, keeping any file the record now stored at that key references (queueing a file for reclamation clears its re-reference signal); `_writeDelete`, RocksDB `evict()` and `updateRecord`'s superseded-blob deletion still go through the staging-time path ([#2861](https://github.com/HarperFast/harper/issues/2861)).
 
 **Source-unavailable blobs must not abort the commit.** `startPreCommitBlobsForRecord().complete()` awaits each blob's `saving` promise; a rejection there propagates up and aborts the record's apply (the replication subscription loop catches and logs it as `error in subscription handler`). For a blob the replication source can no longer provide — evicted/expired at the origin, the receiver having flagged the rejection `sourceBlobUnavailable` (harper-pro#403) — that abort permanently wedged a replication copy stream on an expiration cache table whose TTL-evicted blobs are gone everywhere: every orphaned record's apply re-threw, the copy never advanced, and backpressure pinned at ~100%. `complete()` therefore tolerates a `sourceBlobUnavailable` rejection (`isSourceBlobUnavailable`): the record commits with a diverged blob reference, left for proactive backfill (harper-pro#388). Local/transient save faults stay unmarked and still reject, so the write aborts and a reconnect retries it — no silent loss. This is the apply/commit-side complement to the replication receiver's resume-cursor advance (harper-pro#403/#405), which handles the durability-watermark side of the same missing blob.
 
@@ -879,3 +901,50 @@ replay re-encodes the record but never re-appends its audit entry (replay transa
 The row bit reflects its latest mutation, so a caller needing a row to stay local re-asserts it on every
 mutation. Reload and derived-index `evict` markers are always local-only; lock control entries never are.
 Enforced by `unitTests/resources/localOnly.test.js` (both engines; crash + boot replay on RocksDB).
+
+## A record's residency is the listed nodes plus the writer, and a patch over a stub stays a stub (`Table.ts` `_writeUpdate`, harper#2257)
+
+A node outside a record's residency keeps an `INVALIDATED` stub (indexed fields and created time) whose
+`residencyId` names the nodes holding the complete record; a read fetches from one of them. Two rules keep
+a listed node complete. A write made here (not `isNotification`, `sourceApply` or replay) whose record-based
+residency excludes this node adds this node to the list and stores the full record, warning once per table
+per thread: before this, an ordinary write destroyed the writer's copy while the log recorded a plain upsert.
+And a patch whose base (stored, or staged earlier in the transaction) is a record-based stub is stored as a
+stub again on every path. Without an explicit received residency it keeps the base's `residencyId` and does
+not consult the residency function: the merged row lacks the fields a placement decision needs, and the
+base's list is the one naming a complete holder. An explicit received residency stays authoritative, but
+does not make the receiver complete. A replicated or source write with no residency list, and `setResidencyById`, still omit or stub as
+before. Enforced by `unitTests/resources/writerResidency.test.js` (both engines).
+
+## `replicatedConfirmation` counts only the residents of each written record (`DatabaseTransaction` `confirmationTarget`, harper-pro#1031)
+
+Peers acknowledge a database-wide log position, and a non-resident peer passes that position after
+receiving only an invalidation stub, or nothing. So the commit hands the confirmation callback, besides the
+position, one list of other residents (writer and duplicates removed) per distinct `residencyId` among its
+confirmable writes (`residentPeerLists`); the waiter needs the full count from each list. A write with no
+residency adds no list. The position is the committed transaction's reserved log key (`confirmationTarget`),
+not a record version, which can sit below the key (an explicit timestamp under the origin floor) or above it
+(a remote-origin version kept by a merge). Only when no confirmable write appended to the committed handle
+(every write lost to a newer entry) does it fall back to the stored entry's version, as before.
+
+The commit handler stamps `write.residencyId` on each round that appends an audit entry and keeps it on a
+coordinated retry, which appends nothing, so the residents counted are the ones the replicated entry names.
+Ids are resolved through a bounded per-database cache of frozen lists (`confirmingResidents`);
+`getResidencyId` claims a new id and both mappings in one transaction, so an id always resolves to its one
+list. Count-based placement (`replicateTo: N`) keeps the writer out of the carried-over previous residency,
+or every update would repeat it and shed a replica.
+
+Every deterministic refusal precedes native submission, so the refused write never lands. A count larger
+than a record's list is refused in the commit handler before the write stages anything, and the refused
+write turns inert, so a caller that catches the refusal cannot commit it, even on a retry. Before native
+submission the commit rechecks the lists (confirmation may have been requested after a write was saved)
+and runs the feasibility check the replication layer registered with `replicationConfirmation` (harper-pro:
+the recipient bound). A table source's `before` hook (`source.put`/`patch`) has already run by then, because
+record-based placement needs the merged record; the guarantee covers Harper's stored data, not the source.
+An error after the native commit becomes a rejected completion, so the commit's bookkeeping still runs.
+LMDB is untouched: its commit never reaches a registered confirmation callback. Enforced by
+`unitTests/resources/residencyConfirmation.test.js`.
+
+## This node's short id is 0, confirmed per audit store (`nodeIdMapping.ts` `getThisNodeId`)
+
+Every audited write stamps the writing node's short id, so `getThisNodeId` sits on the write path. `getIdMappingRecord` leaves the current node name (`getThisNodeName()`, which `server.hostname` returns) at id `0` whenever it runs, remapping a previous local name to a fresh id on a rename, and no other mapping writer assigns `0`. `getThisNodeId` therefore reads and unpacks the mapping record only to confirm that, and caches the confirmation per audit store and node name; a different name (after `clearThisNodeName()`) takes the read path again, which performs the remap. The confirmation is per worker while the record is shared, and a worker that resolved a different name remaps the record under the others, so it expires after `THIS_NODE_ID_CONFIRM_MS` (monotonic time) and `invalidateNodeNames` drops it wherever the record is written. Pinned by `unitTests/resources/thisNodeId.test.js`.
