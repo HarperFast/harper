@@ -235,10 +235,11 @@ async function harper() {
 	}
 }
 export { harper };
-const isEntry =
+const entryPath =
 	process.argv[1] &&
-	fs.existsSync(process.argv[1]) &&
-	fs.realpathSync(process.argv[1]) === path.join(RUNTIME_SRC_ROOT, `bin/harper${RUNTIME_FILE_EXT}`);
+	[process.argv[1], process.argv[1] + RUNTIME_FILE_EXT].find((candidate) => fs.existsSync(candidate));
+const isEntry =
+	entryPath && fs.realpathSync(entryPath) === path.join(RUNTIME_SRC_ROOT, `bin/harper${RUNTIME_FILE_EXT}`);
 if (isEntry) {
 	harper()
 		.then((message) => {

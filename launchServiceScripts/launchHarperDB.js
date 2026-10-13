@@ -1,4 +1,3 @@
 'use strict';
 
-const entryPoint = '#src/launchServiceScripts/startHarperDB';
-require(entryPoint);
+require('../utility/packageUtils.js').loadRuntimeModule('launchServiceScripts/startHarperDB');

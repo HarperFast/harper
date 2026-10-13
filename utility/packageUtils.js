@@ -1,6 +1,7 @@
 'use strict';
 const { join, dirname } = require('node:path');
 const { existsSync, readFileSync, realpathSync } = require('node:fs');
+const { pathToFileURL } = require('node:url');
 
 /**
  * A naive find-up implementation to find the root package.json, and
@@ -66,6 +67,10 @@ function loadRuntimeModule(relativePath) {
 	return require(join(__dirname, '..', relativePath + RUNTIME_FILE_EXT));
 }
 
+function getRuntimeModuleURL(relativePath) {
+	return pathToFileURL(join(__dirname, '..', relativePath + RUNTIME_FILE_EXT)).href;
+}
+
 module.exports = {
 	packageJson,
 	PACKAGE_ROOT,
@@ -73,4 +78,5 @@ module.exports = {
 	RUNTIME_FILE_EXT,
 	loadNativePackage,
 	loadRuntimeModule,
+	getRuntimeModuleURL,
 };

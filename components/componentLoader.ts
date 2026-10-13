@@ -15,7 +15,7 @@ import { isMainThread } from 'node:worker_threads';
 
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager.ts';
-import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+import { PACKAGE_ROOT, getRuntimeModuleURL } from '../utility/packageUtils.js';
 import { CONFIG_PARAMS, HDB_ROOT_DIR_NAME, ITC_EVENT_TYPES } from '../utility/hdbTerms.ts';
 import * as graphqlHandler from '../resources/graphql.ts';
 import * as graphqlQueryHandler from '../server/graphqlQuerying.ts';
@@ -488,18 +488,15 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	graphqlSchema: graphqlHandler,
 	roles,
 	jsResource: jsHandler,
-	fastifyRoutes: '#src/server/fastifyRoutes',
+	fastifyRoutes: getRuntimeModuleURL('server/fastifyRoutes'),
 	login,
-	// String entry: the loader `await import()`s these lazily when the component is actually
-	// processed, so the gateway's module graph is not pulled into componentLoader's own
-	// evaluation. `#src/*` is used rather than a relative path because it resolves under both
-	// conditions (source under --conditions=typestrip, dist otherwise); a relative extensionless
-	// require would only resolve against dist.
+	// String entry: the loader imports the gateway only when configured, without resolving
+	// core-owned files through an embedding product's package imports.
 	//
 	// The component is only *processed* when a `modelsGateway` key exists in the config, since
 	// the root loop skips absent keys (`if (!componentConfig) continue`). `defaultConfig.yaml`
 	// ships no such key, so an instance that never opts in pays nothing for this entry.
-	modelsGateway: '#src/resources/models/v1/index',
+	modelsGateway: getRuntimeModuleURL('resources/models/v1/index'),
 	static: staticFiles,
 	customFunctions: {},
 	http: httpComponent,

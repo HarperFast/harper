@@ -974,6 +974,48 @@ describe('TypeStrip runtime boundaries', () => {
 });
 
 describe('TypeStrip core packaging', () => {
+	it('keeps lazy plugins in the caller module family when preserving symlinks', () => {
+		const directory = mkdtempSync(resolve(root, 'unitTests/envDir/plugin-symlink-'));
+		const link = resolve(directory, 'core');
+		symlinkSync(root, link, 'dir');
+		try {
+			for (const mode of ['compiled', 'typestrip']) {
+				const prefix = mode === 'compiled' ? 'dist/' : '';
+				const extension = mode === 'compiled' ? 'js' : 'ts';
+				let output = '';
+				try {
+					output = execFileSync(
+						process.execPath,
+						['--preserve-symlinks', ...(mode === 'typestrip' ? ['--conditions=typestrip'] : []), '--input-type=module'],
+						{
+							encoding: 'utf8',
+							timeout: 30000,
+							input: `
+						const assert = (await import('node:assert')).default;
+						const { createRequire } = await import('node:module');
+						const require = createRequire(${JSON.stringify(pathToFileURL(resolve(root, 'package.json')).href)});
+						process.env.ROOTPATH = require('./unitTests/perPidRoot.js').materializePerPidRoot();
+						console.log('fixture-root ' + process.pid);
+						const { TRUSTED_RESOURCE_PLUGINS } = await import(${JSON.stringify(pathToFileURL(resolve(link, prefix + 'components/componentLoader.' + extension)).href)});
+						assert.strictEqual(TRUSTED_RESOURCE_PLUGINS.fastifyRoutes, ${JSON.stringify(pathToFileURL(resolve(link, prefix + 'server/fastifyRoutes.' + extension)).href)});
+						await import(TRUSTED_RESOURCE_PLUGINS.fastifyRoutes);
+						const { closeLoadedDatabases } = await import(${JSON.stringify(pathToFileURL(resolve(link, prefix + 'resources/databases.' + extension)).href)});
+						await closeLoadedDatabases();
+						console.log('plugin family preserved'); process.exit(0);
+						`,
+						}
+					);
+					assert.strictEqual(output.trim().split('\n').at(-1), 'plugin family preserved', mode);
+				} finally {
+					const pid = /fixture-root (\d+)/.exec(output)?.[1];
+					if (pid) rmSync(resolve(root, 'unitTests/envDir', pid), { recursive: true, force: true });
+				}
+			}
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it('links every schema reader and shares the schema in both runtimes', () => {
 		for (const mode of ['compiled', 'typestrip']) {
 			const prefix = mode === 'compiled' ? 'dist/' : '';

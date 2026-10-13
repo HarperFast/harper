@@ -4,6 +4,7 @@ const { join } = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { Worker } = require('node:worker_threads');
 const { once } = require('node:events');
+const { pathToFileURL } = require('node:url');
 
 exports.probeEmbeddedRuntime = async (sourceRoot) => {
 	const product = join(process.env.ROOTPATH, '.embedded-product');
@@ -26,6 +27,7 @@ exports.probeEmbeddedRuntime = async (sourceRoot) => {
 	let worker, external, databases;
 	try {
 		assert.deepStrictEqual(cli(join(runtime, 'bin/harper.js')), [metadata.version]);
+		assert.deepStrictEqual(cli(join(runtime, 'bin/harper')), [metadata.version]);
 		assert.deepStrictEqual(cli(outerCli), ['outer-cli', metadata.version]);
 		const { PACKAGE_ROOT, RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT, packageJson } = require(
 			join(runtime, 'utility/packageUtils.js')
@@ -44,6 +46,18 @@ exports.probeEmbeddedRuntime = async (sourceRoot) => {
 		const { GIT_CREDENTIAL_HELPER_PATH } = require(join(runtime, 'components/Application.js'));
 		assert.strictEqual(GIT_CREDENTIAL_HELPER_PATH, join(runtime, 'components/gitCredentialHelper.js'));
 		assert.ok(existsSync(GIT_CREDENTIAL_HELPER_PATH));
+		const { TRUSTED_RESOURCE_PLUGINS, loadComponent } = require(join(runtime, 'components/componentLoader.js'));
+		for (const name of ['fastifyRoutes', 'modelsGateway']) {
+			const plugin = TRUSTED_RESOURCE_PLUGINS[name];
+			assert.ok(plugin.startsWith(pathToFileURL(runtime).href + '/'));
+			await import(plugin);
+		}
+		const appDirectory = join(product, 'default-app');
+		mkdirSync(appDirectory);
+		const { Resources } = require(join(runtime, 'resources/Resources.js'));
+		await loadComponent(appDirectory, new Resources(), 'embedded-probe', { autoReload: false });
+		const { statusForComponent } = require(join(runtime, 'components/status/index.js'));
+		assert.strictEqual(statusForComponent('default-app.fastifyRoutes').get()?.status, 'healthy');
 		require(join(runtime, 'dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbSearch.js'));
 		require(join(runtime, 'dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbDropAttribute.js'));
 		databases = require(join(runtime, 'resources/databases.js'));
@@ -63,6 +77,10 @@ exports.probeEmbeddedRuntime = async (sourceRoot) => {
 		const [code] = await once(worker, 'exit', { signal: AbortSignal.timeout(15000) });
 		assert.strictEqual(code, 0);
 		assert.ok(messages.includes('child_started'));
+		require(join(runtime, 'launchServiceScripts/launchHarperDB.js'));
+		const lifecycle = require(join(runtime, 'utility/lifecycle.js'));
+		assert.strictEqual(lifecycle.hasStarted(), true);
+		await lifecycle.runStartup();
 	} finally {
 		if (worker && worker.threadId !== -1) await worker.terminate();
 		if (external && external.threadId !== -1) await external.terminate();
