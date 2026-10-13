@@ -14,6 +14,7 @@ const {
 const { dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { spawn } = require('node:child_process');
+const { setTimeout: delay } = require('node:timers/promises');
 const { extract } = require('tar-stream');
 const { RocksDatabase, fileLockRelease, tryFileLock } = require('@harperfast/rocksdb-js');
 const {
@@ -64,7 +65,7 @@ const {
 	assertArchiveRestorable,
 	parseArchiveManifest,
 } = require('#src/dataLayer/backupArchiveManifest');
-const { readBackupManifest } = require('#src/dataLayer/backupManifest');
+const { readBackupManifest, writeBackupManifest } = require('#src/dataLayer/backupManifest');
 
 const DB_NAME = 'rocksdb-backup-unit-test';
 
@@ -455,7 +456,7 @@ describe('rocksdbBackup', function () {
 					damage(backupId);
 					await assert.rejects(
 						restore(backupId),
-						(error) => signature.test(error.message) && /was not modified/.test(error.message)
+						(error) => signature.test(error.message) && /did not modify/.test(error.message)
 					);
 					assertDestinationIntact();
 				});
@@ -489,6 +490,36 @@ describe('rocksdbBackup', function () {
 				assert.deepStrictEqual(observed, [{ repositoryLocked: true, restoreState: 'clear' }]);
 			});
 
+			it(`${mode}: selects the backup under the repository lock`, async function () {
+				this.timeout(30000);
+				const backupId = await seed();
+				const backupDir = backupDirForDatabase(VERIFIED);
+				const token = tryFileLock(managementLockPath(backupDir));
+				assert.ok(token, 'precondition: the test holds the repository lock');
+				const realList = backups.list;
+				let listed = 0;
+				backups.list = (...args) => {
+					listed++;
+					return realList.apply(backups, args);
+				};
+				try {
+					const restoring = restore(backupId);
+					restoring.catch(() => {});
+					try {
+						await delay(300);
+						assert.strictEqual(listed, 0, 'no backup is selected before the repository lock is held');
+						// the same id now names an engine-only backup, which this restore must not accept
+						await writeBackupManifest(backupDir, backupId, false);
+					} finally {
+						fileLockRelease(token);
+					}
+					await assert.rejects(restoring, /Cannot restore an engine-only backup/);
+				} finally {
+					backups.list = realList;
+				}
+				assertDestinationIntact();
+			});
+
 			it(`${mode}: refuses a backup whose declared blob snapshot is missing`, async function () {
 				this.timeout(30000);
 				const backupId = await seed();
@@ -497,7 +528,7 @@ describe('rocksdbBackup', function () {
 				rmSync(snapshotDir, { recursive: true, force: true });
 				await assert.rejects(
 					restore(backupId),
-					(error) => /blob snapshot is missing/.test(error.message) && /was not modified/.test(error.message)
+					(error) => /blob snapshot is missing/.test(error.message) && /did not modify/.test(error.message)
 				);
 				assertDestinationIntact();
 			});

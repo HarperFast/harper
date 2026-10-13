@@ -634,13 +634,7 @@ export async function restoreBackup(request: any) {
 		);
 	}
 	const backupDir = backupDirForDatabase(databaseName);
-	// choose the latest complete backup (or the requested id, rejected if incomplete); the manifest
-	// tells us whether blobs were captured so we restore them only when they were
-	const { backupId, manifest } = await resolveCompleteBackup(
-		backupDir,
-		request.backup_id === undefined ? undefined : requireBackupId(request.backup_id),
-		databaseName
-	);
+	const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
 	// a loaded database *with tables* knows its real directory via its root store (which can differ
 	// from the computed default, e.g. legacy layouts); fall back to the computed path when the
 	// database is unloaded (recovering an interrupted restore) or empty (no table to resolve a root
@@ -650,25 +644,27 @@ export async function restoreBackup(request: any) {
 		loaded != null && Object.keys(loaded).length > 0
 			? requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP).path
 			: resolveDatabasePath(databaseName);
-	// reject a backup with more blob roots than the current config *before* anything destructive —
-	// restoring it would mis-address blobs (records persist their root index)
 	const blobRoots = getBlobPathsForDatabaseName(databaseName);
-	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
 	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
-	// Once is enough: the decision reads the manifest and the opt-in, never the destination, so no
-	// concurrent writer can change the answer between here and the purge.
-	assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
 	const pinId = restorePinId(databaseDir);
 	const restoreToken = randomUUID();
 	let destructionStarted = false;
-	// Re-check before replacing a previous attempt's claim; publish the new claim before the marker
-	// under both locks, so a crash cannot leave a marked database with an unprotected source.
-	const lock = await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		await findBackup(backupDir, backupId, databaseName);
-		await assertBackupReadable(backupDir, backupId, manifest, databaseName, databaseDir);
-		return beginRestoreForDatabase(databaseDir, databaseName, () =>
-			pinBackup(backupDir, pinId, backupId, `restore of database '${databaseName}'`, databaseDir)
+	// Selection, every check derived from it, and verification all run under the repository lock, so
+	// they apply to the backup the claim pins; the claim is published before the marker under both
+	// locks, so a crash cannot leave a marked database with an unprotected source.
+	const { lock, backupId, manifest } = await withBackupRepositoryLock(backupDir, databaseName, async () => {
+		// choose the latest complete backup (or the requested id, rejected if incomplete); the manifest
+		// tells us whether blobs were captured so we restore them only when they were
+		const selected = await resolveCompleteBackup(backupDir, requestedBackupId, databaseName);
+		// reject a backup with more blob roots than the current config *before* anything destructive —
+		// restoring it would mis-address blobs (records persist their root index)
+		await assertBlobSnapshotRestorable(backupDir, selected.backupId, blobRoots);
+		assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: selected.manifest.blobs, allowEngineOnly });
+		await assertBackupReadable(backupDir, selected.backupId, selected.manifest, databaseName, databaseDir);
+		const claimed = await beginRestoreForDatabase(databaseDir, databaseName, () =>
+			pinBackup(backupDir, pinId, selected.backupId, `restore of database '${databaseName}'`, databaseDir)
 		);
+		return { lock: claimed, ...selected };
 	});
 	try {
 		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
@@ -1253,7 +1249,7 @@ export async function createBackupOffline(databaseName: string, excludeBlobs = f
  */
 export async function restoreBackupOffline(
 	databaseName: string,
-	backupId?: number,
+	requestedBackupId?: number,
 	targetDatabase?: string,
 	allowEngineOnlyOption?: boolean
 ) {
@@ -1262,24 +1258,31 @@ export async function restoreBackupOffline(
 	const allowEngineOnly = requireBooleanOption(allowEngineOnlyOption, 'allow_engine_only');
 	validateDatabaseName(databaseName);
 	const backupDir = backupDirForDatabase(databaseName);
-	// resolve to the latest complete backup (or the requested id, rejected if incomplete)
-	const resolved = await resolveCompleteBackup(backupDir, backupId, databaseName);
-	backupId = resolved.backupId;
-	const manifest = resolved.manifest;
 	if (targetDatabase !== undefined) validateDatabaseName(targetDatabase);
 	const databaseDir = resolveDatabasePath(targetDatabase ?? databaseName);
-	// reject a backup with more blob roots than the target's current config before anything
-	// destructive (records persist their root index, so collapsing would mis-address blobs)
 	const blobRoots = getBlobPathsForDatabaseName(targetDatabase ?? databaseName);
-	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
-	assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
 	const pinId = restorePinId(databaseDir);
 	let destructionStarted = false;
-	// As online, claim before marking under both locks, and mark before probing the destination.
-	const lock = await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		await findBackup(backupDir, backupId as number, databaseName);
-		await assertBackupReadable(backupDir, backupId as number, manifest, targetDatabase ?? databaseName, databaseDir);
-		return beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName, (preexisting) => {
+	// As online: select, check and verify under the repository lock, claim before marking under both
+	// locks, and mark before probing the destination.
+	const { lock, backupId, manifest } = await withBackupRepositoryLock(backupDir, databaseName, async () => {
+		// resolve to the latest complete backup (or the requested id, rejected if incomplete)
+		const selected = await resolveCompleteBackup(backupDir, requestedBackupId, databaseName);
+		// reject a backup with more blob roots than the target's current config before anything
+		// destructive (records persist their root index, so collapsing would mis-address blobs)
+		await assertBlobSnapshotRestorable(backupDir, selected.backupId, blobRoots);
+		assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, {
+			backupHasBlobs: selected.manifest.blobs,
+			allowEngineOnly,
+		});
+		await assertBackupReadable(
+			backupDir,
+			selected.backupId,
+			selected.manifest,
+			targetDatabase ?? databaseName,
+			databaseDir
+		);
+		const claimed = await beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName, (preexisting) => {
 			// Inside the reservation, so a create_database racing this restore cannot pass the absence
 			// check and then lose the database it just made. Debris this source left is exempt, or the
 			// rerun wedges for good — a drop refuses a marked directory too, and the marker keeps the pin
@@ -1300,11 +1303,12 @@ export async function restoreBackupOffline(
 			pinBackup(
 				backupDir,
 				pinId,
-				backupId as number,
+				selected.backupId,
 				`restore of database '${targetDatabase ?? databaseName}'`,
 				databaseDir
 			);
 		});
+		return { lock: claimed, ...selected };
 	});
 	try {
 		// The offline path is entered only when the CLI sees no running server (getHdbPid), but that is
@@ -1391,7 +1395,7 @@ async function assertBackupReadable(
 		}
 		const destination = interrupted
 			? `database '${databaseName}' still holds an earlier restore that did not finish and stays unloadable until a restore succeeds; restore a backup that verifies`
-			: `database '${databaseName}' was not modified`;
+			: `this restore did not modify database '${databaseName}'`;
 		throw new Error(`Backup ${backupId} failed verification, so ${destination}: ${error.message}`, { cause: error });
 	}
 }

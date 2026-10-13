@@ -157,7 +157,7 @@ suite('restore_backup verifies before it replaces (harper#2965)', { skip: skipSu
 
 		const job = await runJob({ operation: 'restore_backup', database: DATABASE, backup_id: backupId });
 		strictEqual(job.status, 'ERROR', `restore of a corrupt backup must fail: ${JSON.stringify(job)}`);
-		match(String(job.message), /was not modified/);
+		match(String(job.message), /did not modify/);
 
 		await expectIds([...baseIds, ...postIds], 'after refused restore');
 		await insert(['after-refusal']);
@@ -172,7 +172,7 @@ suite('restore_backup verifies before it replaces (harper#2965)', { skip: skipSu
 
 		const { exit, out } = await cliRestore(corruptId);
 		ok(exit !== 0, `CLI restore of a corrupt backup must fail; output:\n${out}`);
-		match(out, /was not modified/);
+		match(out, /did not modify/);
 
 		await start();
 		await expectIds(before, 'after offline refusal and restart');

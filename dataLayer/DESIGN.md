@@ -69,11 +69,13 @@ Several non-obvious mechanics keep that safe:
   table whose `format_version` or compression this build does not support — opened one at a time, so
   it reaches tables a database open would leave in the table cache's cold set. Checked in the
   repository rather than in a staged copy, so a restore still needs no disk beyond the copy itself; a
-  restore is often run when space is already short. Verification runs under the repository lock,
-  _before_ the restore claims the database (marker, pin): a full checksum read can take minutes, and
+  restore is often run when space is already short. Selection, every check derived from the selected
+  manifest, and verification all run under the repository lock, _before_ the restore claims the
+  database (marker, pin): a full checksum read can take minutes, and
   a marker held across it would leave an intact database unloadable after a crash, while the lock
-  keeps a delete plus `create_backup` from swapping in a different backup under the same id before
-  the pin lands. Other management operations on that repository wait up to 30s for it, then 409, as
+  keeps a delete plus `create_backup` from swapping in a different backup (or manifest) under the
+  same id before the pin lands. The lock coordinates Harper's own operations only; a process writing
+  the repository directly is outside it. Other management operations on that repository wait up to 30s for it, then 409, as
   they already do behind a long `create_backup`. A backup whose manifest declares blobs must also
   still have its blob snapshot. Not covered: blob files
   (rocksdb-js has no reader for them), and anything that fails only once the copy runs (`ENOSPC`, a
