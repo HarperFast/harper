@@ -142,9 +142,14 @@ export function checkWorkflowFile(content: string, branch: string, environment: 
 	const callsReusable = jobs.some((job: any) => typeof job?.uses === 'string');
 	if (literal.includes(environment)) {
 		if (!jobs.some((job: any) => environmentName(job) === environment && grantsIdToken(job, workflow))) {
-			problems.push(
-				`no job in the "${environment}" environment has \`permissions: id-token: write\`, so no run can request a token`
-			);
+			// The job that deploys may be a reusable workflow that sets the environment and permissions itself.
+			if (callsReusable) {
+				unverified.push(`that a job in the "${environment}" environment has \`permissions: id-token: write\``);
+			} else {
+				problems.push(
+					`no job in the "${environment}" environment has \`permissions: id-token: write\`, so no run can request a token`
+				);
+			}
 		}
 		return { problems, unverified };
 	}
@@ -373,6 +378,19 @@ function readGithubVariable(repository: string): VariableState {
  * is how this repository deploys today, and replacing it would move every run of every workflow that
  * reads it. An unreadable variable is left alone too, since it may hold a value.
  */
+/** A target can carry `user:password@`; the value is printed, so that part is dropped. */
+export function withoutCredentials(value: string): string {
+	try {
+		const url = new URL(value);
+		if (!url.username && !url.password) return value;
+		url.username = '';
+		url.password = '';
+		return url.toString();
+	} catch {
+		return value;
+	}
+}
+
 export function variableAction(current: VariableState, audience: string): 'keep' | 'set' | 'conflict' | 'unknown' {
 	if (current.state === 'absent') return 'set';
 	if (current.state === 'unknown') return 'unknown';
@@ -383,10 +401,22 @@ export function variableAction(current: VariableState, audience: string): 'keep'
 	return normalized === audience ? 'keep' : 'conflict';
 }
 
-function setGithubVariable(repository: string, value: string): { ok: boolean; reason?: string } {
+/** POST only creates (`gh variable set` would replace), so a variable written since the read is not overwritten. */
+function createGithubVariable(repository: string, value: string): { ok: boolean; reason?: string } {
 	const result = spawnSync(
 		'gh',
-		['variable', 'set', 'HARPER_CLI_TARGET', '--repo', `github.com/${repository}`, '--body', value],
+		[
+			'api',
+			'--hostname',
+			'github.com',
+			'-X',
+			'POST',
+			`repos/${repository}/actions/variables`,
+			'-f',
+			'name=HARPER_CLI_TARGET',
+			'-f',
+			`value=${value}`,
+		],
 		{ encoding: 'utf8', timeout: CHILD_PROCESS_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] }
 	);
 	if (result.error) {
@@ -562,8 +592,20 @@ export async function setupGithubActions(req: any, transport: any, component: st
 	);
 
 	const setCommand = `  gh variable set HARPER_CLI_TARGET --repo ${fullName} --body ${audience}`;
-	const current = readGithubVariable(fullName);
-	const action = variableAction(current, audience);
+	let current = readGithubVariable(fullName);
+	let action = variableAction(current, audience);
+	let variableWrite: { ok: boolean; reason?: string } | undefined;
+	if (action === 'set') {
+		variableWrite = createGithubVariable(fullName, audience);
+		if (!variableWrite.ok) {
+			// Someone may have created it since the read; judge what is there now rather than the failure.
+			const now = readGithubVariable(fullName);
+			if (now.state === 'set') {
+				current = now;
+				action = variableAction(now, audience);
+			}
+		}
+	}
 	if (action === 'keep') {
 		console.log(chalk.green(`✓ The HARPER_CLI_TARGET variable on ${fullName} is already ${audience}.`));
 		return;
@@ -571,14 +613,11 @@ export async function setupGithubActions(req: any, transport: any, component: st
 	if (action === 'conflict') {
 		throw cliError(
 			`The cluster is set up, but the HARPER_CLI_TARGET variable on ${fullName} is ` +
-				`${(current as { value: string }).value}, so its workflows deploy there; setup left it as it is. ` +
+				`${withoutCredentials((current as { value: string }).value)}, so its workflows deploy there; setup left it as it is. ` +
 				`To deploy to ${audience} instead, set it with:\n${setCommand}`
 		);
 	}
-	const variable =
-		action === 'set'
-			? setGithubVariable(fullName, audience)
-			: { ok: false, reason: (current as { reason: string }).reason };
+	const variable = variableWrite ?? { ok: false, reason: (current as { reason: string }).reason };
 	if (!variable.ok) {
 		throw cliError(
 			`The cluster is set up, but the HARPER_CLI_TARGET repository variable was not set (${variable.reason}). Set it with:\n` +
