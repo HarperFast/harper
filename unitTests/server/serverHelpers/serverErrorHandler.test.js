@@ -136,6 +136,41 @@ describe('serverErrorHandler', function () {
 		});
 	}
 
+	for (const property of ['message', 'code']) {
+		it(`retains the operations outcome when structured fallback ${property} is unreadable`, async () => {
+			const app = fastify();
+			app.setErrorHandler(serverErrorHandler);
+			const failure = new ReplicationConfirmationError(new ServerError('Peer timeout', 504));
+			failure.code = 'PEER_TIMEOUT';
+			failure.http_resp_msg = {
+				get detail() {
+					throw new Error('Details are unreadable');
+				},
+			};
+			Object.defineProperty(failure, property, {
+				get() {
+					throw new Error('Diagnostic is unreadable');
+				},
+			});
+			app.post('/', async () => {
+				throw failure;
+			});
+			try {
+				const response = await app.inject({ method: 'POST', url: '/' });
+				assert.strictEqual(response.statusCode, 504, response.body);
+				assert.strictEqual(response.json().replicationUnconfirmed, true);
+				assert.strictEqual(response.json().retryable, false);
+				assert.strictEqual(
+					response.json().error,
+					property === 'message' ? 'Replication confirmation failed' : 'Peer timeout'
+				);
+				assert.strictEqual(response.json().code, property === 'code' ? undefined : 'PEER_TIMEOUT');
+			} finally {
+				await app.close();
+			}
+		});
+	}
+
 	for (const unreadable of [false, true]) {
 		it(`retains the flag through the real operations insert dispatch and a local commit${unreadable ? ' with unreadable structured details' : ''}`, async function () {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();

@@ -1013,10 +1013,10 @@ steps that never ran after a rejection; a nested flag can remain when there are 
 
 Programmatic errors are `ReplicationConfirmationError` wrappers, not the original instance; inspect
 `cause` for its class and identity. String-only errors (native HTTP handlers and WebSocket close reasons)
-render the new class name. Object responses preserve the original public code alongside the flag.
+render `ReplicationConfirmationError`. Object responses preserve the original public code alongside the flag.
 Confirmation wrapping and flag removal copy diagnostics best-effort, preserving the cause and outcome when getters fail.
-Unreadable structured confirmation details fall back to the ordinary error response. HTTP guards cover the new
-outcome extensions and structured confirmation details; existing top-level diagnostic reads in HTTP error renderers
+Unreadable structured confirmation details fall back to the ordinary error response. HTTP guards cover the
+`replicationUnconfirmed`/`retryable` extensions and structured confirmation details; existing top-level diagnostic reads in HTTP error renderers
 are not hardened for arbitrary application errors.
 
 ## This node's short id is 0, confirmed per audit store (`nodeIdMapping.ts` `getThisNodeId`)

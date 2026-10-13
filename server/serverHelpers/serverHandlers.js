@@ -106,7 +106,13 @@ function serverErrorHandler(error, req, resp) {
 				body = Array.isArray(error.http_resp_msg) ? { error: error.http_resp_msg } : { ...error.http_resp_msg };
 				body.code ??= error.code;
 			} catch {
-				body = { error: error.message, code: error.code };
+				body = { error: 'Replication confirmation failed' };
+				try {
+					if (typeof error.message === 'string') body.error = error.message;
+				} catch {}
+				try {
+					body.code = error.code;
+				} catch {}
 			}
 			return resp.code(error.statusCode).send({
 				...body,
