@@ -2,7 +2,8 @@ import { EventEmitter } from 'node:events';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
-import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
+import type { Database, RootDatabase } from 'lmdb';
+import { compareKeys } from 'ordered-binary';
 import { join, extname, basename, dirname, resolve } from 'node:path';
 import {
 	closeSync,
@@ -171,6 +172,10 @@ export function isReadOnlyMode(): boolean {
 
 function createOpenDBIObject(dupSort = false, isPrimary = false) {
 	return new OpenDBIObject(dupSort, isPrimary);
+}
+// lmdb allocates a 16 MB native buffer per thread on load, so it is loaded only when an LMDB store is opened
+function openLmdb(options: Parameters<typeof import('lmdb').open>[0]): RootDatabase {
+	return (require('lmdb') as typeof import('lmdb')).open(options);
 }
 // The __dbis__ metadata DBI is non-versioned (OpenDBIObject useVersions=false); only versioned
 // primary stores carry the per-record metadata prefix. lmdb/rocksdb don't forward `useVersions` to
@@ -1463,7 +1468,7 @@ export function readMetaDb(
 		if (rootStore) {
 			rootStore.needsDeletion = false;
 		} else {
-			rootStore = open(envInit) as any;
+			rootStore = openLmdb(envInit) as any;
 			lmdbDatabaseEnvs.set(path, rootStore);
 		}
 
@@ -1565,7 +1570,7 @@ function initStores(
 				if (rootStore instanceof RocksDatabase) {
 					auditStore = openAuditStore(rootStore);
 				} else {
-					auditStore = open({
+					auditStore = openLmdb({
 						...envInit,
 						encoder: {
 							encode: (auditRecord: AuditRecord) => createAuditEntry(auditRecord),
@@ -2680,7 +2685,7 @@ function openDatabaseRoot(
 				() => {
 					if (databaseDropMarkerPresent(path)) throwBlockedByDrop(databaseName);
 					const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
-					return open(envInit) as any;
+					return openLmdb(envInit) as any;
 				},
 				(state) => {
 					throwBlockedByRestore(databaseName, state);

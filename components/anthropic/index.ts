@@ -458,7 +458,10 @@ function toAnthropicTool(t: ToolDef): AnthropicTool {
 function mapStopReason(reason?: string | null): GenerateResult['finishReason'] {
 	switch (reason) {
 		case 'max_tokens':
+		case 'model_context_window_exceeded':
 			return 'length';
+		case 'refusal':
+			return 'content_filter';
 		case 'tool_use':
 			return 'tool_calls';
 		case 'end_turn':
