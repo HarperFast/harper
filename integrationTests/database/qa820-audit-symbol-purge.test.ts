@@ -12,8 +12,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const fixture = resolve(import.meta.dirname, 'qa820-audit-symbol-purge');
-// Match neighboring purge suites: Windows remains skipped while harper#2401 tracks process death;
-// Bun follows their runtime-support boundary.
+// Match neighboring purge suites; Windows remains skipped while harper#2401 tracks process death.
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
 function auth(ctx: ContextWithHarper) {
@@ -183,7 +182,7 @@ suite('QA-820 LMDB public purge skips symbol metadata', { skip: skipSuite }, (ct
 			'test run added corrupt-header warnings outside the per-purge checks'
 		);
 
-		const beforeControl = classifyLogs(finalLogs);
+		const beforeControl = classified;
 		const control = await snapshot(ctx, true);
 		assert.strictEqual(control.decodeMarker, true, 'decoded-marker positive control did not run');
 		const controlledLogs = await poll(
