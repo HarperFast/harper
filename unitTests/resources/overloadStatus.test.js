@@ -30,7 +30,8 @@ describe('transaction overload status', function () {
 				} catch (error) {
 					assert.equal(error.statusCode, 503);
 				}
-				return component.get()?.lastChecked !== previousChecked;
+				const current = component.get();
+				return current?.status === 'error' && current.lastChecked !== previousChecked;
 			}, 20_000);
 			const first = component.get();
 			assert.equal(first.status, 'error');
