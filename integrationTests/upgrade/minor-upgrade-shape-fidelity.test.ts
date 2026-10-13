@@ -4,7 +4,6 @@
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
-import { isDeepStrictEqual } from 'node:util';
 import { join } from 'node:path';
 import { cp, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -134,10 +133,9 @@ function assertRecord(actual: FidelityRecord, expected: FidelityRecord, table: s
 	const fields = Object.keys(actual).filter((key) => key !== '__createdtime__' && key !== '__updatedtime__');
 	assert.deepStrictEqual(fields.sort(), Object.keys(expected).sort(), `${table}/${expected.id}: fields`);
 	for (const field of Object.keys(expected)) {
-		assert.ok(
-			typeof actual[field] === typeof expected[field] && isDeepStrictEqual(actual[field], expected[field]),
-			`${table}/${expected.id}.${field}: value/type mismatch`
-		);
+		const message = `${table}/${expected.id}.${field}: value/type mismatch`;
+		assert.strictEqual(typeof actual[field], typeof expected[field], message);
+		assert.deepStrictEqual(actual[field], expected[field], message);
 	}
 }
 
@@ -154,7 +152,6 @@ async function checkTable(ctx: ContextWithHarper, table: string, expected: Fidel
 		table,
 		conditions: [{ attribute: 'id', comparator: 'greater_than', value: 'a' }],
 	});
-	assert.ok(Array.isArray(rows), `${table}: array response`);
 	assert.strictEqual(rows.length, expected.length, `${table}: count`);
 	assert.deepStrictEqual(rows.map(({ id }) => id).sort(), expected.map(({ id }) => id).sort(), `${table}: exact IDs`);
 	const byId = new Map(rows.map((row) => [row.id, row]));
@@ -237,10 +234,12 @@ for (const previousMinor of previousMinorInstalls) {
 					const copy = structuredClone(measured.get(id)!);
 					assertRecord(copy, expected, 'FidelityCheck');
 					copy.value = typeof copy.value === 'string' ? copy.value.replace('é', 'e') : String(copy.value);
-					assert.throws(() => assertRecord(copy, expected, 'FidelityCheck'), {
-						name: 'AssertionError',
-						message: `FidelityCheck/${id}.value: value/type mismatch`,
-					});
+					assert.throws(
+						() => assertRecord(copy, expected, 'FidelityCheck'),
+						(error: unknown) =>
+							error instanceof assert.AssertionError &&
+							error.message.split('\n')[0] === `FidelityCheck/${id}.value: value/type mismatch`
+					);
 					assertRecord(measured.get(id)!, expected, 'FidelityCheck');
 				}
 			});
