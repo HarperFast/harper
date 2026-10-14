@@ -39,7 +39,7 @@ import {
 	withProxyProtocol,
 } from './serverHelpers/proxyProtocol.ts';
 import { Blob } from '../resources/blob.ts';
-import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
+import { checkAnalyticsEnabled, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import { METRIC } from '../resources/analytics/metadata.ts';
 import { Readable, Writable, pipeline } from 'node:stream';
 import { mkdirSync, unlinkSync, readdirSync, statSync, chmodSync } from 'node:fs';
@@ -909,7 +909,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
 			else {
 				// Only a queued request can wait before its handler, so only it gets a `request-time`.
-				(nodeRequest as any).receivedAt = performance.now();
+				if (checkAnalyticsEnabled()) (nodeRequest as any).receivedAt = performance.now();
 				throttledRequestHandler(nodeRequest, nodeResponse);
 			}
 		};
@@ -1176,7 +1176,7 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 	return (request: any) => {
 		const method = request.method;
 		if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') return handle(request);
-		request.receivedAt = performance.now();
+		if (checkAnalyticsEnabled()) request.receivedAt = performance.now();
 		return throttledHandle(request);
 	};
 }

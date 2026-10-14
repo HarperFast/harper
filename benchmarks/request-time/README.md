@@ -15,12 +15,12 @@ Run it against each build booted the same way: a throwaway root, `--THREADS_COUN
 
 ## Result, 2026-10-14
 
-Two-worker instances on an M-series laptop, both builds compiled against the same `node_modules`, two runs where shown.
+Two-worker instances on an M-series laptop. The baseline is the branch's merge-base with main (3fd9ae9d6), both builds compiled against the same `node_modules`; two runs where shown; only 2xx responses count, and every run reported `failed: 0`.
 
 | build, analytics       | GET req/s       | GET p50 ms  | PUT (queued) req/s | PUT p50 ms  |
 | ---------------------- | --------------- | ----------- | ------------------ | ----------- |
-| merge-base f038807, on | 31,663 / 30,906 | 1.25 / 1.21 | 22,731 / 22,695    | 1.96 / 1.96 |
-| branch, on             | 30,913 / 31,048 | 1.25 / 1.22 | 24,948 / 24,897    | 1.79 / 1.78 |
-| branch, off            | 30,891          | 1.21        | 25,748             | 1.73        |
+| merge-base 3fd9ae9, on | 30,069 / 31,034 | 1.40 / 1.40 | 24,901 / 24,744    | 1.78 / 1.78 |
+| branch, on             | 31,026 / 31,774 | 1.25 / 1.25 | 24,851 / 25,105    | 1.78 / 1.78 |
+| branch, off            | 31,186          | 1.20        | 25,321             | 1.75        |
 
-GET is inside run-to-run noise: the unqueued path has no new work. The queued path is faster on the branch than on its merge-base because the branch carries main's commits since the fork; the branch's own cost of analytics on that path, every record it makes including `request-time`, is about 3% of throughput against analytics off.
+Both paths are inside run-to-run noise. The unqueued GET path has no new work; the queued PUT path, which records `request-time`, costs under 2% of throughput with analytics on against analytics off, and matches the merge-base.

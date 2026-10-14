@@ -48,16 +48,14 @@ let activeActions = new Map<string, Action>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
-if (analyticsEnabled) startEventLoopDelayMonitor();
 
-// Check read-only mode lazily to avoid circular dependency at module load time
-function checkAnalyticsEnabled(): boolean {
+// Check read-only mode lazily to avoid circular dependency at module load time. The event loop
+// sampler starts here rather than at load, so a read-only worker never runs it.
+export function checkAnalyticsEnabled(): boolean {
 	if (!analyticsReadOnlyChecked) {
 		analyticsReadOnlyChecked = true;
-		if (isReadOnlyMode()) {
-			analyticsEnabled = false;
-			stopEventLoopDelayMonitor();
-		}
+		if (isReadOnlyMode()) analyticsEnabled = false;
+		else if (analyticsEnabled) startEventLoopDelayMonitor();
 	}
 	return analyticsEnabled;
 }

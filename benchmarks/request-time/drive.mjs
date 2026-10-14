@@ -14,6 +14,10 @@ async function loop() {
 		try {
 			const r = await fetch(base + '/Probe/1', init);
 			await r.arrayBuffer();
+			if (!r.ok) {
+				failed++;
+				continue;
+			}
 			lat.push(performance.now() - t0);
 			done++;
 		} catch {
