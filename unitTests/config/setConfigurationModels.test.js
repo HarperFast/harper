@@ -1,8 +1,10 @@
 'use strict';
 
 const assert = require('node:assert');
-const { readFileSync, writeFileSync } = require('node:fs');
+const { existsSync, readFileSync, writeFileSync, rmSync } = require('node:fs');
+const { join } = require('node:path');
 const { setConfiguration, getConfigFilePath, initConfig } = require('#src/config/configUtils');
+const { getBackupDirPath } = require('#src/config/configHelpers');
 const { CONFIG_PARAM_MAP } = require('#src/utility/hdbTerms');
 const { preserveRootConfig, readRootConfig, setRootConfigEntry } = require('../rootConfigFixture.js');
 
@@ -85,15 +87,27 @@ describe('set_configuration models block', () => {
 		});
 	}
 
-	it('allows replacing environment defaults, which yield to user edits on restart', async () => {
+	it('keeps a replacement through reload when the defaults supplied the old entry', async () => {
 		const saved = process.env.HARPER_DEFAULT_CONFIG;
-		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ models: { generative: { old: { backend: 'ollama' } } } });
+		const configPath = getConfigFilePath();
+		const savedConfig = readFileSync(configPath, 'utf8');
+		const statePath = join(getBackupDirPath(readRootConfig().rootPath), '.harper-config-state.json');
+		const savedState = existsSync(statePath) ? readFileSync(statePath) : undefined;
 		try {
+			await setConfiguration({ operation: 'set_configuration', models: {} });
+			process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ models: { generative: { old: { backend: 'ollama' } } } });
+			initConfig(true);
+			assert.strictEqual(readRootConfig().models.generative.old.backend, 'ollama');
 			await setConfiguration({ operation: 'set_configuration', models });
+			initConfig(true);
 			assert.deepStrictEqual(readRootConfig().models, models);
 		} finally {
 			if (saved === undefined) delete process.env.HARPER_DEFAULT_CONFIG;
 			else process.env.HARPER_DEFAULT_CONFIG = saved;
+			writeFileSync(configPath, savedConfig);
+			if (savedState === undefined) rmSync(statePath, { force: true });
+			else writeFileSync(statePath, savedState);
+			initConfig(true);
 		}
 	});
 

@@ -1064,7 +1064,7 @@ export function updateConfigValue(
 		let doUpdate = false;
 		for (const arg in parsedArgs) {
 			const castedValue = castConfigValue(arg, parsedArgs[arg]);
-			// Model hot reload does not refresh this startup snapshot; it cannot detect a rollback.
+			// set_configuration leaves the startup snapshot unchanged, so model rollbacks must bypass it.
 			if (lookupConfigWriteParam(arg) === 'models' || !isEqual(castedValue, flatConfigObj[arg.toLowerCase()])) {
 				doUpdate = true;
 				break;
