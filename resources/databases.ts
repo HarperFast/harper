@@ -507,42 +507,51 @@ const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
 const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
 /**
  * The column-family wrappers this thread opened for each RocksDB root, by path, so a close reaches one
- * the table graph no longer points at. Held weakly: an unreachable wrapper is released when it is
- * collected, as before; this only lets a close release the reachable ones now. By path, not root
- * object, so a wrapper whose close failed is still found after the root is discarded.
+ * the table graph no longer points at. Held weakly, so an unreachable wrapper is still released when it
+ * is collected. By path, not root object, so a wrapper whose close failed is still found after the root
+ * is discarded.
  */
-const ownedRocksStores = new Map<string, { deref(): any }[]>();
+type OwnedStores = { deref(): any }[] & { compactAt?: number };
+const ownedRocksStores = new Map<string, OwnedStores>();
 
-function ownedStoresFor(rootStore: any): { push(store: any): void } | undefined {
+/** Records the wrappers opened for a root; `retain` marks one whose close failed, which a weak record would lose. */
+type StoreOwner = { push(store: any): unknown; retain?(store: any): void };
+
+function ownedStoresFor(rootStore: any): StoreOwner | undefined {
 	if (!(rootStore instanceof RocksDatabase)) return undefined;
-	return { push: (store) => adoptOwnedStore(rootStore.path, store) };
+	return {
+		push: (store) => adoptOwnedStore(rootStore.path, store),
+		retain: (store) => retainUnclosedStore(rootStore.path, store),
+	};
 }
 
 function adoptOwnedStore(path: string, store: any): void {
 	let owned = ownedRocksStores.get(path);
 	if (!owned) ownedRocksStores.set(path, (owned = []));
 	owned.push(new WeakRef(store));
-	// collected and closed wrappers leave dead entries; compacting at each doubling keeps this amortized
-	if (owned.length >= 64 && (owned.length & (owned.length - 1)) === 0) {
+	// collected and closed wrappers leave dead entries; compacting only once the list has doubled since
+	// the last compaction keeps the scans amortized
+	if (owned.length >= (owned.compactAt ?? 64)) {
 		let kept = 0;
 		for (const ref of owned) {
 			const store = ref.deref();
 			if (store && store.status !== 'closed') owned[kept++] = ref;
 		}
 		owned.length = kept;
+		owned.compactAt = Math.max(64, kept * 2);
 	}
 }
 
 /** Held strongly: a wrapper whose close failed may not release its handle when it is collected. */
 function retainUnclosedStore(path: string, store: any): void {
-	let owned = ownedRocksStores.get(path);
+	let owned: OwnedStores | undefined = ownedRocksStores.get(path);
 	if (!owned) ownedRocksStores.set(path, (owned = []));
 	owned.push({ deref: () => store });
 }
 
 async function closeOwnedStores(path: string, close: (store: any) => Promise<boolean>): Promise<void> {
 	const failed: any[] = [];
-	let owned: { deref(): any }[] | undefined;
+	let owned: OwnedStores | undefined;
 	// a declaration during an await below starts a fresh list, which the next pass drains
 	while ((owned = ownedRocksStores.get(path))) {
 		ownedRocksStores.delete(path);
@@ -1582,7 +1591,7 @@ interface InitStoresOptions {
 	 * Every column family opened here is appended, so a caller can release the ones a failure left
 	 * unreachable — a table's stores are opened well before `setTable` publishes it into the graph.
 	 */
-	openedStores?: { push(store: any): unknown };
+	openedStores?: StoreOwner;
 }
 
 function initStores(
@@ -1881,9 +1890,7 @@ function initStores(
 				// now load the non-primary keys, opening the dbs as necessary for indices
 				if (!attribute.isPrimaryKey && (attribute.indexed || (attribute.attribute && !attribute.name))) {
 					if (!indices[attribute.name]) {
-						const dbi = openIndex(attribute.key, rootStore, attribute, primaryAttribute.generation, (store) =>
-							openedStores?.push(store)
-						);
+						const dbi = openIndex(attribute.key, rootStore, attribute, primaryAttribute.generation, openedStores);
 						indices[attribute.name] = dbi;
 						indices[attribute.name].indexNulls = attribute.indexNulls;
 					}
@@ -3606,7 +3613,7 @@ function openIndex(
 	rootStore: RootDatabaseKind,
 	attribute: any,
 	generation: string | undefined,
-	adopt: (store: any) => void
+	owner: StoreOwner | undefined
 ) {
 	const objectStorage =
 		attribute.isPrimaryKey || (attribute.indexed.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
@@ -3637,6 +3644,8 @@ function openIndex(
 			name: storeNameFor(dbiKey, generation),
 			cache: isCustomObjectIndex,
 		} as any) as any;
+		// before the setup below, whose failure cleanup can itself fail to close it
+		owner?.push(dbi);
 		(dbi as any).rootStore = rootStore;
 		try {
 			// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
@@ -3655,14 +3664,13 @@ function openIndex(
 			try {
 				dbi.close();
 			} catch {
-				retainUnclosedStore(rootStore.path, dbi);
+				owner?.retain?.(dbi);
 			}
 			throw error;
 		}
-		adopt(dbi);
 	} else {
 		dbi = (rootStore as any).openDB(dbiKey, dbiInit as any);
-		adopt(dbi);
+		owner?.push(dbi);
 		installCustomIndex(dbi);
 	}
 	function installCustomIndex(indexStore: any) {
@@ -3710,8 +3718,8 @@ interface TableTarget {
 	tables(databaseName: string): Tables;
 	/** Another thread created the table this declaration was about to; make `tables` reflect it. */
 	reload(databaseName: string): void;
-	/** Records a column-family wrapper the declaration opened, for whoever closes the store. */
-	adopt(store: any, rootStore: RootDatabaseKind): void;
+	/** Who records the column-family wrappers a declaration opens, for whoever closes the store. */
+	owner(rootStore: RootDatabaseKind): StoreOwner | undefined;
 	/** Set for a branch: its Table classes refuse DDL, and its schema signals address it by path. */
 	branch?: BranchDatabase;
 }
@@ -3720,7 +3728,7 @@ const GLOBAL_TARGET: TableTarget = {
 	rootStore: (databaseName, tableName) => database({ database: databaseName, table: tableName }),
 	tables: (databaseName) => databases[databaseName],
 	reload: () => resetDatabases(),
-	adopt: (store, rootStore) => ownedStoresFor(rootStore)?.push(store),
+	owner: (rootStore) => ownedStoresFor(rootStore),
 };
 
 /** One `__dbis__` wrapper per root store: opening another would replace the one teardown closes. */
@@ -3732,7 +3740,7 @@ function internalDbisFor(rootStore: any, target: TableTarget): any {
 		rootStore instanceof RocksDatabase
 			? openRocksDatabase(rootStore.path, { ...internalDbiInit, disableWAL: false, name: INTERNAL_DBIS_NAME } as any)
 			: rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
-	target.adopt(dbisDb, rootStore);
+	target.owner(rootStore)?.push(dbisDb);
 	rootStore.dbisDb = markInternalDbiNonVersioned(dbisDb);
 	return dbisDb;
 }
@@ -3761,7 +3769,8 @@ function branchTarget(branch: BranchDatabase): TableTarget {
 		rootStore: () => branch.rootStore,
 		tables: () => branch.tables,
 		reload: () => reloadBranch(branch),
-		adopt: (store) => branch.openedStores.push(store),
+		// held strongly, so a branch needs no `retain`
+		owner: () => branch.openedStores,
 		branch,
 	};
 }
@@ -4617,7 +4626,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}
-			target.adopt(primaryStore, rootStore);
+			target.owner(rootStore)?.push(primaryStore);
 			unpublishedPrimaryStore = primaryStore;
 			primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
 			// only a store no table has loaded yet is unnamed; a branch's store carries its own store
@@ -4679,7 +4688,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				current.name === storeNameFor(dbiKey, generation)
 			)
 				return current;
-			return openIndex(dbiKey, rootStore, attribute, generation, (store) => target.adopt(store, rootStore));
+			return openIndex(dbiKey, rootStore, attribute, generation, target.owner(rootStore));
 		};
 		Table.dbisDB = attributesDbi;
 		generation ??= attributesDbi.getSync(tableName + '/')?.generation;

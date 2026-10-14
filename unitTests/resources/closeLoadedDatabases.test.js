@@ -237,6 +237,64 @@ describe('RocksDB handle release', function () {
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
+	// a custom index whose setup throws and whose cleanup close also fails, declared or loaded into a branch
+	for (const branched of [false, true]) {
+		it(`releases a custom index whose setup and cleanup both failed (${branched ? 'branch' : 'declared'})`, async function () {
+			this.timeout(30000);
+			const { CUSTOM_INDEXES } = require('#src/resources/indexes/customIndexes');
+			const databaseName = `failedcustomindex${branched ? 'branch' : ''}`;
+			let failing = !branched;
+			CUSTOM_INDEXES.FailingSetup = class {
+				static useObjectStore = true;
+				constructor() {
+					if (failing) throw new Error('custom index setup failed');
+				}
+			};
+			const thing = { name: 'thing', type: 'Array', indexed: { type: 'FailingSetup' } };
+			const realClose = RocksDatabase.prototype.close;
+			const failCleanupClose = () => {
+				RocksDatabase.prototype.close = function (...args) {
+					if (this.name?.startsWith('Items/thing')) {
+						RocksDatabase.prototype.close = realClose;
+						throw new Error('cleanup close failed');
+					}
+					return realClose.apply(this, args);
+				};
+			};
+			const scratchRoot = mkdtempSync(join(tmpdir(), 'harper.unit-test.failed-custom-index-'));
+			try {
+				if (!branched) failCleanupClose();
+				let Items;
+				try {
+					Items = table(itemsDefinition(databaseName, [thing]));
+				} catch {}
+				Items ??= table(itemsDefinition(databaseName));
+				const rootStore = Items.primaryStore.rootStore;
+				if (!(rootStore instanceof RocksDatabase)) return this.skip();
+				if (!branched) {
+					assert.strictEqual(RocksDatabase.prototype.close, realClose, 'precondition: the cleanup close failed');
+					await closeDatabase(databaseName);
+					assert.strictEqual(refCountFor(rootStore.path), 0);
+					return;
+				}
+				const checkpointDir = join(scratchRoot, 'checkpoint');
+				await rootStore.createCheckpoint(checkpointDir);
+				failing = true;
+				failCleanupClose();
+				const branch = openBranchDatabase(checkpointDir, databaseName, `appA__${databaseName}`);
+				assert.strictEqual(RocksDatabase.prototype.close, realClose, 'precondition: the cleanup close failed');
+				assert.ok(refCountFor(branch.rootStore.path) > 0, 'precondition: the branch is open');
+				await closeBranchDatabases();
+				assert.strictEqual(refCountFor(branch.rootStore.path), 0);
+			} finally {
+				RocksDatabase.prototype.close = realClose;
+				delete CUSTOM_INDEXES.FailingSetup;
+				await closeBranchDatabases();
+				rmSync(scratchRoot, { recursive: true, force: true });
+			}
+		});
+	}
+
 	it('a table created beside another keeps the database’s one attributes store', async function () {
 		this.timeout(30000);
 		const databaseName = 'closesecondtable';
