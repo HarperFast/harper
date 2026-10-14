@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791962744489,
+  "lastUpdate": 1791969529574,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -23205,6 +23205,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 3536,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Dawson Toth",
+            "username": "dawsontoth",
+            "email": "dawson@harperdb.io"
+          },
+          "committer": {
+            "name": "Dawson Toth",
+            "username": "dawsontoth",
+            "email": "dawson@toth.support"
+          },
+          "id": "10704664b68fe756c879c8798a3438f21475a413",
+          "message": "Say the policy race can only replace a policy created in the window\n\nSetup writes a policy only when none exists at the preflight and at the\nre-check just before the write, and refuses one that is disabled, so it\ncan't undo a disable or a drop. What the last round trip can overwrite is\na policy another super user creates with the same id, enabled or not. A\nserver-side create-only write would narrow that, not close it:\nhdb_oidc_trust replicates, so the check would be per node.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-13T14:26:24Z",
+          "url": "https://github.com/HarperFast/harper/commit/10704664b68fe756c879c8798a3438f21475a413"
+        },
+        "date": 1791969526067,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 16746,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 15556,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 13672,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 21490112,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 6326,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 1120,
             "unit": "ops"
           }
         ]
