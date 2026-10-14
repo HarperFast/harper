@@ -16,7 +16,7 @@ const { handleHDBError } = require('#js/utility/errors/hdbError');
 const test_data = require('../../../../testData');
 
 const rewire = require('rewire');
-const environment_utility = rewire('#src/utility/lmdb/environmentUtility');
+const environment_utility = rewire('#js/utility/lmdb/environmentUtility');
 const lmdb_terms = require('#src/utility/lmdb/terms');
 const write_utility = require('#src/utility/lmdb/writeUtility');
 const { SearchByConditionsObject, SearchCondition } = require('#src/dataLayer/SearchByConditionsObject');

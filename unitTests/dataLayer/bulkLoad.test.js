@@ -582,7 +582,7 @@ describe.skip('Test bulkLoad.js', () => {
 
 		after(() => {
 			sandbox.restore();
-			bulkLoad_rewire = rewire('#src/dataLayer/bulkLoad');
+			bulkLoad_rewire = rewire('#js/dataLayer/bulkLoad');
 			global.hdb_schema = undefined;
 		});
 
@@ -677,7 +677,7 @@ describe.skip('Test bulkLoad.js', () => {
 
 		after(() => {
 			sandbox.restore();
-			bulkLoad_rewire = rewire('#src/dataLayer/bulkLoad');
+			bulkLoad_rewire = rewire('#js/dataLayer/bulkLoad');
 		});
 
 		it('Should call papaParse if file is CSV', async () => {
@@ -947,7 +947,7 @@ describe.skip('Test bulkLoad.js', () => {
 
 		after(() => {
 			sandbox.restore();
-			bulkLoad_rewire = rewire('#src/dataLayer/bulkLoad');
+			bulkLoad_rewire = rewire('#js/dataLayer/bulkLoad');
 		});
 
 		it('NOMINAL - Should call through and return results', async () => {

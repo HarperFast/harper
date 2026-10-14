@@ -1,6 +1,6 @@
 const assert = require('node:assert');
 const sinon = require('sinon');
-const { Headers } = require('#js/server/serverHelpers/Headers');
+const { Headers } = require('#src/server/serverHelpers/Headers');
 const { assertNoDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
 
 // First set up test environment
@@ -33,7 +33,7 @@ describe('auth.ts - certificate verification integration', function () {
 		sandbox.stub(contentTypes, 'serializeMessage').returnsArg(0);
 
 		// Stub env to ensure auth is loaded with correct settings
-		const env = require('#src/utility/environment/environmentManager');
+		const env = require('#js/utility/environment/environmentManager');
 		envStub = sandbox.stub(env, 'get');
 		envStub.withArgs('authentication.enableSessions').returns(false); // Disable sessions for simpler testing
 		envStub.withArgs('authentication.authorizeLocal').returns(false);

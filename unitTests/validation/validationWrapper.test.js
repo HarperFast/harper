@@ -26,7 +26,7 @@ describe('Test validateWrapper module', () => {
 	});
 
 	after(() => {
-		rewire('#src/validation/validationWrapper');
+		rewire('#js/validation/validationWrapper');
 	});
 
 	describe('Test validateObject function', () => {
@@ -66,7 +66,7 @@ describe('Test validateWrapper module', () => {
 
 	describe('Test validateObjectAsync function', () => {
 		before(() => {
-			validationWrapper_rw = rewire('#src/validation/validationWrapper');
+			validationWrapper_rw = rewire('#js/validation/validationWrapper');
 			validate_async_stub = sandbox.stub().resolves();
 			validationWrapper_rw.__set__('validate', { async: () => validate_async_stub() });
 		});

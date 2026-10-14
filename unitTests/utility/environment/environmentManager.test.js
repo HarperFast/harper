@@ -10,7 +10,7 @@ const fs = require('fs');
 const os = require('node:os');
 const path = require('node:path');
 const hdbTerms = require('#src/utility/hdbTerms');
-const env_rw = rewire('#src/utility/environment/environmentManager');
+const env_rw = rewire('#js/utility/environment/environmentManager');
 const log = require('#src/utility/logging/harper_logger');
 const { Worker } = require('node:worker_threads');
 
@@ -371,7 +371,7 @@ describe('Test environmentManager module', () => {
 			fs.mkdirSync(path.join(fixtureRoot, 'log'), { recursive: true });
 			// rewire gives configUtils its own module state, so writing this config file doesn't
 			// repoint the live config the rest of the suite runs against.
-			rewire('#src/config/configUtils').createConfigFile(
+			rewire('#js/config/configUtils').createConfigFile(
 				{
 					ROOTPATH: fixtureRoot,
 					OPERATIONSAPI_NETWORK_PORT: FIXTURE_PORT,

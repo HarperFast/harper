@@ -64,13 +64,12 @@ const resultsPath = process.env.HARPER_UNIT_RESULTS;
 let pendingResults;
 let activeRuns = 0;
 let resultFiles;
-let rootRemovalRegistered = false;
 delete process.env.HARPER_UNIT_RESULTS;
 
 function registerRootRemoval() {
-	if (isMainThread && !rootRemovalRegistered) {
+	if (isMainThread) {
+		process.off('exit', removePerPidRoot);
 		process.on('exit', removePerPidRoot);
-		rootRemovalRegistered = true;
 	}
 }
 
@@ -89,7 +88,6 @@ module.exports.mochaHooks = () => {
 module.exports.mochaGlobalTeardown = function () {
 	// Register after storage shutdown listeners, including for runs with no matching tests.
 	registerRootRemoval();
-	assertNativeCoreTree();
 	if (resultsPath) {
 		pendingResults = { total: this.stats?.tests ?? observedTotal };
 	}

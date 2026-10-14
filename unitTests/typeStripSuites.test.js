@@ -56,6 +56,10 @@ describe('unit runtime selection', function () {
 		assert(partitionSuites([require.resolve('./resources/debugLongTransactionsReads.test.js')]).compiled.length);
 		assert(lanes.source.includes(require.resolve('./components/deploymentRecorder.test.js')));
 		assert(lanes.source.includes(require.resolve('./perFileDatabaseTeardown.test.js')));
+		for (const name of ['testUtils.js', 'waitFor.js', 'perPidRoot.js', 'rocksdbBindings.mts', 'packageBindings.mts']) {
+			const helper = join(__dirname, name);
+			assert.deepStrictEqual(partitionSuites([helper]), { source: [helper], compiled: [] }, name);
+		}
 	});
 	it('executes both lanes, observes their files and propagates native resolution across processes', () => {
 		const result = run(['source', 'compiled']);
@@ -236,6 +240,28 @@ describe('unit runtime selection', function () {
 				rmSync(directory, { recursive: true, force: true });
 			}
 		});
+	it('keeps the unit root until later shutdown listeners finish', () => {
+		const result = spawnSync(
+			process.execPath,
+			[
+				'-e',
+				`const assert = require('node:assert');
+const fs = require('node:fs');
+const Mocha = require('mocha');
+require('./unitTests/mocha.init.js');
+const { PID_DIR_PATH } = require('./unitTests/perPidRoot.js');
+const run = () => new Promise(resolve => new Mocha({ reporter: 'dot' }).run(resolve));
+(async () => {
+	assert.strictEqual(await run(), 0);
+	await require('./unitTests/testUtils.js').ensureSystemTables();
+	process.on('exit', () => assert(fs.existsSync(PID_DIR_PATH), 'unit root must remain through later shutdown listeners'));
+	assert.strictEqual(await run(), 0);
+})().catch(error => { console.error(error); process.exitCode = 1; });`,
+			],
+			{ cwd: root, encoding: 'utf8', timeout: 20000, env: process.env }
+		);
+		succeeds(result);
+	});
 	it('stops the real Mocha process on POSIX when interrupted through the node-option wrapper', async function () {
 		if (process.platform === 'win32') return this.skip();
 		const directory = mkdtempSync(join(root, 'unitTests/envDir/interrupt-'));

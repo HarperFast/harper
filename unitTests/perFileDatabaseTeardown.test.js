@@ -6,7 +6,16 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { mkdtempSync, mkdirSync, writeFileSync, rmSync, cpSync, symlinkSync, readdirSync } = require('node:fs');
+const {
+	mkdtempSync,
+	mkdirSync,
+	writeFileSync,
+	readFileSync,
+	rmSync,
+	cpSync,
+	symlinkSync,
+	readdirSync,
+} = require('node:fs');
 const { nativeCoreGuard } = require('./nativeModules.mts');
 
 const FIXTURES = path.join(__dirname, 'perFileDatabaseTeardownFixtures');
@@ -65,11 +74,13 @@ describe('native compiled-core guard', () => {
 			mkdirSync(path.join(root, 'dist'));
 			writeFileSync(path.join(root, 'dist', 'marker.cjs'), 'module.exports = true;');
 			const fixture = path.join(root, 'probe.cjs');
+			const results = path.join(root, 'results.json');
 			for (const [filtered, parallel] of [
 				[false, false],
 				[true, false],
 				[true, true],
 			]) {
+				rmSync(results, { force: true });
 				writeFileSync(
 					fixture,
 					"require('./dist/marker.cjs'); describe('guard', () => {" +
@@ -92,11 +103,19 @@ describe('native compiled-core guard', () => {
 						cwd: root,
 						encoding: 'utf8',
 						timeout: 10000,
-						env: { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --conditions=typestrip` },
+						env: {
+							...process.env,
+							NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --conditions=typestrip`,
+							HARPER_UNIT_RESULTS: results,
+						},
 					}
 				);
 				assert.notStrictEqual(result.status, 0, result.stdout + result.stderr);
 				assert.match(result.stderr, /Native unit tests loaded compiled core/);
+				assert(!result.stderr.includes('UnhandledPromiseRejection'));
+				const metadata = JSON.parse(readFileSync(results, 'utf8'));
+				assert.strictEqual(metadata.total, 0);
+				assert.deepStrictEqual(metadata.files, [fixture]);
 				assert.deepStrictEqual(readdirSync(path.join(root, 'unitTests/envDir')), []);
 			}
 		} finally {

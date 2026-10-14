@@ -12,7 +12,7 @@ const harperConfigEnvVars = require('#js/config/harperConfigEnvVars');
 const loggerModule = require('#src/utility/logging/harper_logger');
 const loggerObj = loggerModule.default || loggerModule;
 
-const configUtils = rewire('#src/config/configUtils');
+const configUtils = rewire('#js/config/configUtils');
 const applyRuntimeEnvVarConfig = configUtils.__get__('applyRuntimeEnvVarConfig');
 
 describe('configUtils - applyRuntimeEnvVarConfig', function () {

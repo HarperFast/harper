@@ -22,7 +22,7 @@ describe('Test update module', () => {
 
 	after(() => {
 		sandbox.restore();
-		rewire('#src/dataLayer/update');
+		rewire('#js/dataLayer/update');
 	});
 
 	describe('Tests update function', () => {

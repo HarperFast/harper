@@ -10,7 +10,7 @@ const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
 const password_function = require('#js/utility/password');
-let token_auth = rewire('#src/security/tokenAuthentication');
+let token_auth = rewire('#js/security/tokenAuthentication');
 const user = require('#src/security/user');
 const insert = require('#src/dataLayer/insert');
 

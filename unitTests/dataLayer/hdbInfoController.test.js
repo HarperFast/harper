@@ -68,7 +68,7 @@ describe.skip('Test hdbInfoController module ', function () {
 
 	after(() => {
 		sandbox.restore();
-		rewire('#src/dataLayer/hdbInfoController');
+		rewire('#js/dataLayer/hdbInfoController');
 	});
 
 	describe('Test insertHdbInstallInfo() ', () => {

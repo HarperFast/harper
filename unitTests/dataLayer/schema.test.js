@@ -25,7 +25,7 @@ const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default
 // Rewire is used at times as stubbing alone doesn't work when stubbing a function
 // being called inside another function declared within the same file.
 const rewire = require('rewire');
-let schema = rewire('#src/dataLayer/schema');
+let schema = rewire('#js/dataLayer/schema');
 
 const SCHEMA_NAME_TEST = 'dogsrule';
 const TABLE_NAME_TEST = 'catsdrool';
@@ -95,7 +95,7 @@ describe.skip('Test schema module', function () {
 	});
 
 	after(function () {
-		schema = rewire('#src/dataLayer/schema');
+		schema = rewire('#js/dataLayer/schema');
 		sinon.restore();
 		testUtils.cleanUpDirectories(`${HDB_ROOT_TEST}/schema`);
 		testUtils.cleanUpDirectories(TRASH_PATH_TEST);

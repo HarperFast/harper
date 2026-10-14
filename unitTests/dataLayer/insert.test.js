@@ -61,7 +61,7 @@ describe('Test insert module', () => {
 	});
 
 	after(() => {
-		rewire('#src/dataLayer/insert');
+		rewire('#js/dataLayer/insert');
 	});
 
 	describe('Test upsert method', () => {
