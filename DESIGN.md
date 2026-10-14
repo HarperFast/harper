@@ -197,7 +197,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [Env-config empty objects mean three different things (`config/harperConfigEnvVars.ts`)](config/DESIGN.md#env-config-empty-objects-mean-three-different-things-configharperconfigenvvarsts) — `{}` means no override in an env layer, an empty scope in a file, and a pruned ancestor on removal; `emptyScopeOriginals` markers keep file content intact.
 - [Built-in environment entries are validated before runtime use (`config/configUtils.ts`)](config/DESIGN.md#built-in-environment-entries-are-validated-before-runtime-use-configconfigutilsts) — Incomplete declarations are skipped before runtime readers or config backfill can use them.
 
-## dataLayer/ — backup/restore, version gate, system tables
+## dataLayer/ — backup/restore, version gate, system tables, legacy SQL
 
 - [Version gate at startup: downgrades prompt, and only the minor direction is confirmable](dataLayer/DESIGN.md#version-gate-at-startup-downgrades-prompt-and-only-the-minor-direction-is-confirmable) — Data newer than the binary prompts at start; only the downgrade direction confirms, via `CONFIRM_DOWNGRADE`.
 - [Opening a source LMDB DBI for migration must thread through `compression`](dataLayer/DESIGN.md#opening-a-source-lmdb-dbi-for-migration-must-thread-through-compression) — A migration open of a source LMDB DBI must pass the persisted per-attribute `compression`, as `databases.ts` does.
@@ -205,6 +205,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [RocksDB backup/restore: the restore lock + marker protocol (`dataLayer/restoreMarker.ts`, `dataLayer/rocksdbBackup.ts`)](dataLayer/DESIGN.md#rocksdb-backuprestore-the-restore-lock--marker-protocol-datalayerrestoremarkerts-datalayerrocksdbbackupts) — A flock and an fsynced `.restoring` marker in a sibling `` `restore` `` directory serialize restores and make an interrupted one recoverable.
 - [Backup repository coordination: the management lock, pins, and the restore exclusion](dataLayer/DESIGN.md#backup-repository-coordination-the-management-lock-pins-and-the-restore-exclusion-datalayerbackuprepositoryts-datalayerrestoremarkerts) — One Harper-level lock over every repository mutation; a pin lives exactly as long as the restoring marker it protects.
 - [RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)](dataLayer/DESIGN.md#rocksdb-managed-backups-blob-snapshots-datalayerblobbackupts) — Managed backups snapshot blob roots alongside engine data unless `exclude_blobs`.
+- [Legacy SQL pre-fetch narrows only by top-level AND conjuncts (`dataLayer/SQLSearch.ts`)](dataLayer/DESIGN.md#legacy-sql-pre-fetch-narrows-only-by-top-level-and-conjuncts-datalayersqlsearchts) — Only a predicate every result row satisfies may narrow a column's fetch; NOT, OR and self-joins see every row.
 
 ## utility/
 
