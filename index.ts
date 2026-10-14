@@ -19,23 +19,22 @@ export {
 } from './resources/replicatedApplyFailure.ts';
 export { getContext, getResponse, getUser } from './security/jsLoader.ts';
 // An untagged error from a `server.getUser` override is treated as an internal fault; these tag one
-// as a rejected credential, which authentication defers to the route owner instead (#2703).
+// as a rejected credential (`error.credentialRejection`), which authentication defers to the route
+// owner instead (#2703).
 export {
 	markCredentialRejection,
 	credentialRejectionError,
-	isCredentialRejection,
+	type CredentialRejection,
 } from './security/credentialRejection.ts';
-// Exported from the modules that define them, never re-exported through an intermediate: a plugin has
-// to share core's drain registry and its module-private rejection tag, and a second copy of either
-// fails silently rather than loudly (#2715).
+// Exported from the module that defines it, never re-exported through an intermediate: a plugin has
+// to share core's drain registry, and a second copy fails silently rather than loudly (#2715).
 export { registerShutdownDrain, type ShutdownDrain } from './components/shutdownDrain.ts';
 export { verifyCertificate } from './security/certificateVerification/index.ts';
 export type { PeerCertificate, CertificateVerificationResult } from './security/certificateVerification/types.ts';
 export {
 	assertNoDeferredCredentialRejection,
-	getAuthenticationRejectedInPlace,
-	getDeferredCredentialRejection,
 	settleDeferredCredentialRejection,
+	type AuthenticationRejectedInPlace,
 	type DeferredCredentialRejection,
 } from './security/deferredAuthentication.ts';
 // Code-first schema authoring: declare a table as a TypeScript value; the returned

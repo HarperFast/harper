@@ -8,15 +8,15 @@
 import {
 	registerShutdownDrain,
 	verifyCertificate,
-	isCredentialRejection,
+	credentialRejectionError,
 	assertNoDeferredCredentialRejection,
-	getAuthenticationRejectedInPlace,
-	getDeferredCredentialRejection,
 	settleDeferredCredentialRejection,
 	type ShutdownDrain,
 	type PeerCertificate,
 	type CertificateVerificationResult,
+	type CredentialRejection,
 	type DeferredCredentialRejection,
+	type AuthenticationRejectedInPlace,
 } from '../../dist/index.js';
 
 const drain: ShutdownDrain = {
@@ -37,10 +37,17 @@ verifyCertificate(peerCertificate);
 // @ts-expect-error the peer certificate is the TLS socket's object, not PEM text
 verifyCertificate('-----BEGIN CERTIFICATE-----');
 
-declare const request: unknown;
-const rejected: boolean = isCredentialRejection(new Error('Login failed'));
-const deferred: DeferredCredentialRejection | undefined = getDeferredCredentialRejection(request);
-const inPlace: { status: number; message: string } | undefined = getAuthenticationRejectedInPlace(request);
+const tagged: CredentialRejection = credentialRejectionError('Login failed', 401);
+const rejected: true = tagged.credentialRejection;
+// @ts-expect-error the rejection tag is read-only
+tagged.credentialRejection = true;
+
+declare const request: {
+	deferredCredentialRejection?: DeferredCredentialRejection;
+	authenticationRejectedInPlace?: AuthenticationRejectedInPlace;
+};
+const deferred = request.deferredCredentialRejection;
+const inPlace: { status: number; message: string } | undefined = request.authenticationRejectedInPlace;
 assertNoDeferredCredentialRejection(request);
 const settled = settleDeferredCredentialRejection(request);
 if (settled) {

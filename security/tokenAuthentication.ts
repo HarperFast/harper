@@ -23,7 +23,7 @@ import {
 	markTokenAsWorkloadIdentity,
 } from './credentialProvenance.ts';
 import { buildScopedTokenUser, syntheticRoleName } from './impersonation.ts';
-import { credentialRejectionError, isCredentialRejection } from './credentialRejection.ts';
+import { credentialRejectionError } from './credentialRejection.ts';
 import type { ImpersonatePayload } from '../server/operationsServer.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { update } from '../dataLayer/insert.ts';
@@ -467,7 +467,7 @@ const JWT_REJECTION_ERROR_NAMES = new Set(['JsonWebTokenError', 'NotBeforeError'
 const KEY_MATERIAL_FAULT = /secretOrPublicKey|asymmetric key|PEM routines|^error:/i;
 
 function isTokenRejection(err: any): boolean {
-	if (isCredentialRejection(err)) return true;
+	if (err?.credentialRejection === true) return true;
 	if (!JWT_REJECTION_ERROR_NAMES.has(err?.name)) return false;
 	return !KEY_MATERIAL_FAULT.test(String(err?.message ?? ''));
 }

@@ -7,6 +7,10 @@ import { Headers as ResponseHeaders } from './Headers.ts';
 import { NodeAdapterResponse, type AdaptedResponse } from './NodeAdapterResponse.ts';
 import type { ConnectionInfo } from './proxyProtocol.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import type {
+	AuthenticationRejectedInPlace,
+	DeferredCredentialRejection,
+} from '../../security/deferredAuthentication.ts';
 
 export const isBun = typeof globalThis.Bun !== 'undefined';
 
@@ -46,6 +50,10 @@ export class Request {
 	public newLocation?: string;
 	public isWebSocket?: boolean;
 	public user?: any; // User object can be attached during authentication
+	/** Set by authentication when it deferred a rejected credential to the route owner; never reassignable. */
+	declare readonly deferredCredentialRejection?: DeferredCredentialRejection;
+	/** Set by authentication when it answered a 401 in place; never reassignable. */
+	declare readonly authenticationRejectedInPlace?: AuthenticationRejectedInPlace;
 	public response: {
 		status?: number;
 		headers: ResponseHeaders;

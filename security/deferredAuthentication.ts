@@ -2,9 +2,7 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import { serializeMessage, findBestSerializer } from '../server/serverHelpers/contentTypes.ts';
 import { Headers } from '../server/serverHelpers/Headers.ts';
 
-export { isCredentialRejection, markCredentialRejection, credentialRejectionError } from './credentialRejection.ts';
-
-const DEFERRED_CREDENTIAL_REJECTION = Symbol('harper.deferredCredentialRejection');
+export { markCredentialRejection, credentialRejectionError } from './credentialRejection.ts';
 
 export type DeferredCredentialRejection = {
 	readonly status: number;
@@ -12,37 +10,36 @@ export type DeferredCredentialRejection = {
 	readonly strategy: string;
 };
 
+export type AuthenticationRejectedInPlace = {
+	readonly status: number;
+	readonly message: string;
+};
+
 const CREDENTIAL_REJECTION_STATUS = 401;
 
 /**
- * Records that this request presented a credential Harper rejected, without deciding the request.
- * The caller leaves `request.user` unset and the inbound `Authorization` header untouched.
+ * Records, as `request.deferredCredentialRejection`, that this request presented a credential Harper
+ * rejected, without deciding the request. The caller leaves `request.user` unset and the inbound
+ * `Authorization` header untouched. A WebSocket or MQTT upgrade owner reads the property after the HTTP
+ * chain settles, for the client-safe close reason; an HTTP route owner calls
+ * `settleDeferredCredentialRejection` instead, which renders it.
  *
  * The immutable, non-enumerable descriptor prevents downstream middleware from clearing it and
  * keeps it out of request copies and serialization.
  */
 export function deferCredentialRejection(request: any, error: { message?: string }, strategy: string): void {
-	if (getDeferredCredentialRejection(request)) return;
+	if (request.deferredCredentialRejection) return;
 	const deferred: DeferredCredentialRejection = Object.freeze({
 		status: CREDENTIAL_REJECTION_STATUS,
 		message: error?.message ?? 'Unauthorized',
 		strategy,
 	});
-	Object.defineProperty(request, DEFERRED_CREDENTIAL_REJECTION, {
+	Object.defineProperty(request, 'deferredCredentialRejection', {
 		value: deferred,
 		enumerable: false,
 		configurable: false,
 		writable: false,
 	});
-}
-
-/**
- * The credential rejection authentication deferred on this request, if any. A WebSocket or MQTT
- * upgrade owner reads it after the HTTP chain settles, for the client-safe close reason; an HTTP route
- * owner calls `settleDeferredCredentialRejection` instead, which renders it.
- */
-export function getDeferredCredentialRejection(request: any): DeferredCredentialRejection | undefined {
-	return request?.[DEFERRED_CREDENTIAL_REJECTION];
 }
 
 /**
@@ -64,7 +61,7 @@ export function getDeferredCredentialRejection(request: any): DeferredCredential
 export function settleDeferredCredentialRejection(
 	request: any
 ): { status: number; headers: Headers; body: string | Buffer } | undefined {
-	const deferred = getDeferredCredentialRejection(request);
+	const deferred: DeferredCredentialRejection | undefined = request?.deferredCredentialRejection;
 	if (!deferred) return undefined;
 	const contentType = (request?.headers ? findBestSerializer(request).type : undefined) ?? 'application/json';
 	return {
@@ -74,31 +71,22 @@ export function settleDeferredCredentialRejection(
 	};
 }
 
-const REJECTED_IN_PLACE = Symbol('harper.authenticationRejectedInPlace');
-
 /**
- * Records an authentication decision the middleware answered in place, with the client-safe message
- * the HTTP response carries. A WebSocket or MQTT upgrade only awaits the chain and never reads its
- * resolved value, so a returned 401 is invisible to it; without this record such an upgrade would
- * continue with no principal on a fault that failed the equivalent HTTP request closed.
+ * Records, as `request.authenticationRejectedInPlace`, an authentication decision the middleware
+ * answered in place, with the client-safe message the HTTP response carries. A WebSocket or MQTT
+ * upgrade only awaits the chain and never reads its resolved value, so a returned 401 is invisible to
+ * it; without this record such an upgrade would continue with no principal on a fault that failed the
+ * equivalent HTTP request closed. An upgrade owner reads it for its close reason
+ * (`request.deferredCredentialRejection ?? request.authenticationRejectedInPlace`).
  */
 export function markAuthenticationRejectedInPlace(request: any, status: number, message: string): void {
-	if (request?.[REJECTED_IN_PLACE]) return;
-	Object.defineProperty(request, REJECTED_IN_PLACE, {
+	if (request?.authenticationRejectedInPlace) return;
+	Object.defineProperty(request, 'authenticationRejectedInPlace', {
 		value: Object.freeze({ status, message }),
 		enumerable: false,
 		configurable: false,
 		writable: false,
 	});
-}
-
-/**
- * The 401 authentication already answered in place for this request, if any: the other record an
- * upgrade owner reads for its close reason (`getDeferredCredentialRejection(request) ??
- * getAuthenticationRejectedInPlace(request)`).
- */
-export function getAuthenticationRejectedInPlace(request: any): { status: number; message: string } | undefined {
-	return request?.[REJECTED_IN_PLACE];
 }
 
 /**
@@ -108,6 +96,7 @@ export function getAuthenticationRejectedInPlace(request: any): { status: number
  * `request.user`, because a returned 401 is invisible to an upgrade that only awaits the chain.
  */
 export function assertNoDeferredCredentialRejection(request: any): void {
-	const rejected = getDeferredCredentialRejection(request) ?? getAuthenticationRejectedInPlace(request);
+	const rejected: AuthenticationRejectedInPlace | undefined =
+		request?.deferredCredentialRejection ?? request?.authenticationRejectedInPlace;
 	if (rejected) throw new ClientError(rejected.message, rejected.status);
 }

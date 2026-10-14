@@ -1,27 +1,21 @@
 // `harper` resolves through two independent lists — the package's exports and the object
 // `getHarperExports` builds for a VM compartment — so a value on only one fails at component load, and
-// a second copy of a module carries a second drain registry and a second private Symbol (#2715).
+// a second copy of a module carries a second drain registry (#2715).
 const assert = require('node:assert');
 const { join } = require('node:path');
 const { scopedImport } = require('#src/security/jsLoader');
 const harper = require('#src/index');
 const { registerShutdownDrain } = require('#src/components/shutdownDrain');
 const { verifyCertificate } = require('#src/security/certificateVerification/index');
-const { isCredentialRejection } = require('#src/security/credentialRejection');
 const {
 	assertNoDeferredCredentialRejection,
-	getAuthenticationRejectedInPlace,
-	getDeferredCredentialRejection,
 	settleDeferredCredentialRejection,
 } = require('#src/security/deferredAuthentication');
 
 const PLUGIN_PARITY_EXPORTS = {
 	registerShutdownDrain,
 	verifyCertificate,
-	isCredentialRejection,
 	assertNoDeferredCredentialRejection,
-	getAuthenticationRejectedInPlace,
-	getDeferredCredentialRejection,
 	settleDeferredCredentialRejection,
 };
 // The producers: only security/auth.ts turns a principal-resolution failure into a decision.

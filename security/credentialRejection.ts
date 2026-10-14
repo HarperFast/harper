@@ -1,29 +1,30 @@
 import { ClientError } from '../utility/errors/hdbError.ts';
 
-// Explicit provenance prevents internal faults with a 4xx status from being deferred as rejected credentials.
-const CREDENTIAL_REJECTION = Symbol('harper.credentialRejection');
+/**
+ * An error carrying `credentialRejection: true` is a credential Harper, or a `server.getUser` override,
+ * rejected — as opposed to an internal fault. Authentication defers a rejection to the route owner and
+ * fails an internal fault closed. A protocol that authenticates after its handshake (`server.getUser(
+ * username, password)` on a RESP `AUTH`, as MQTT does on CONNECT) answers a rejection with its
+ * bad-credentials reply and treats anything else as a fault to close the connection on.
+ *
+ * Only the code that concludes the credential is unacceptable sets it; a 4xx status alone never means
+ * rejection. It is a plain property rather than a module-private symbol so every copy of this module,
+ * and every component compartment, reads the same tag.
+ */
+export interface CredentialRejection {
+	readonly credentialRejection: true;
+}
 
-export function markCredentialRejection<E extends object>(error: E): E {
-	Object.defineProperty(error, CREDENTIAL_REJECTION, {
+export function markCredentialRejection<E extends object>(error: E): E & CredentialRejection {
+	Object.defineProperty(error, 'credentialRejection', {
 		value: true,
 		enumerable: false,
 		configurable: true,
 		writable: false,
 	});
-	return error;
+	return error as E & CredentialRejection;
 }
 
-export function credentialRejectionError(message: string, statusCode: number): ClientError {
+export function credentialRejectionError(message: string, statusCode: number): ClientError & CredentialRejection {
 	return markCredentialRejection(new ClientError(message, statusCode));
-}
-
-/**
- * Whether an error is a credential Harper, or a `server.getUser` override, rejected — as opposed to an
- * internal fault. A protocol that authenticates after its handshake (`server.getUser(username,
- * password)` on a RESP `AUTH`, as MQTT does on CONNECT) answers a rejection with its bad-credentials
- * reply and treats anything else as a fault to close the connection on. Only an error tagged by
- * `markCredentialRejection`/`credentialRejectionError` qualifies; a 4xx status alone does not.
- */
-export function isCredentialRejection(error: unknown): boolean {
-	return (error as Record<symbol, unknown> | null | undefined)?.[CREDENTIAL_REJECTION] === true;
 }

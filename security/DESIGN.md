@@ -164,9 +164,10 @@ the MQTT endpoint (harper#2715) must be the identical function on both paths. Th
 purpose: the compartment binds `server`/`logger`/`resources`/`config`/`secrets` and the branched
 `databases`/`tables`/`defineTable` per scope, and omits what only harper-pro consumes through `core/`.
 
-Export the value from the module that _defines_ it rather than re-exporting it through an intermediate,
-so a component-created value shares that module's private symbols. `markCredentialRejection` depends on
-this: its tag is a module-private `Symbol` that `isCredentialRejection` checks by identity.
+Export a value from the module that _defines_ it rather than re-exporting it through an intermediate,
+when the value closes over module state: `registerShutdownDrain` must reach core's one drain registry.
+Shared state a plugin only reads is a plain property instead (`request.deferredCredentialRejection`,
+`error.credentialRejection`), so it survives a second copy of the module.
 
 ## Both application loaders resolve through one `resolveModule` (`security/jsLoader.ts`)
 

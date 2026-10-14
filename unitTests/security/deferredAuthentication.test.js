@@ -4,12 +4,13 @@ const {
 	assertNoDeferredCredentialRejection,
 	credentialRejectionError,
 	deferCredentialRejection,
-	getDeferredCredentialRejection,
-	isCredentialRejection,
 	markCredentialRejection,
 	settleDeferredCredentialRejection,
 } = require('#src/security/deferredAuthentication');
 const { ClientError, ServerError } = require('#src/utility/errors/hdbError');
+
+// How authentication reads the tag (security/auth.ts settleAuthFailure).
+const isCredentialRejection = (error) => error?.credentialRejection === true;
 
 function requestAccepting(accept, extraHeaders = {}) {
 	const asObject = { ...extraHeaders };
@@ -22,7 +23,7 @@ function requestAccepting(accept, extraHeaders = {}) {
 }
 
 describe('deferredAuthentication', () => {
-	describe('isCredentialRejection', () => {
+	describe('the credentialRejection tag', () => {
 		it('accepts only an error tagged at the point authentication rejected the credential', () => {
 			assert.strictEqual(isCredentialRejection(credentialRejectionError('Login failed', 401)), true);
 			assert.strictEqual(isCredentialRejection(credentialRejectionError('token expired', 403)), true);
@@ -46,21 +47,18 @@ describe('deferredAuthentication', () => {
 			assert.strictEqual(isCredentialRejection(null), false);
 		});
 
-		it('cannot be forged from outside the module', () => {
-			const forged = {
-				'credentialRejection': true,
-				'harper.credentialRejection': true,
-				[Symbol.for('harper.credentialRejection')]: true,
-			};
+		it('cannot be cleared once set', () => {
+			const error = credentialRejectionError('Login failed', 401);
 
-			assert.strictEqual(isCredentialRejection(forged), false);
+			assert.strictEqual(Reflect.set(error, 'credentialRejection', false), false);
+			assert.strictEqual(isCredentialRejection(error), true);
 		});
 
 		it('leaves the tag off the wire: it is neither enumerable nor serializable', () => {
 			const error = credentialRejectionError('Login failed', 401);
 
 			assert.deepStrictEqual(Object.keys(error), ['statusCode']);
-			assert.deepStrictEqual(Object.getOwnPropertySymbols({ ...error }), []);
+			assert.strictEqual({ ...error }.credentialRejection, undefined);
 			assert.strictEqual(JSON.stringify({ ...error }), '{"statusCode":401}');
 		});
 	});
@@ -70,24 +68,18 @@ describe('deferredAuthentication', () => {
 			const request = { headers: { authorization: 'Basic d3A6c2VjcmV0' } };
 			deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
 
-			const stateSymbol = Object.getOwnPropertySymbols(request).find(
-				(symbol) => symbol.description === 'harper.deferredCredentialRejection'
-			);
-			assert.ok(stateSymbol, 'the deferred state should be recorded under its own symbol');
-			const descriptor = Object.getOwnPropertyDescriptor(request, stateSymbol);
+			const descriptor = Object.getOwnPropertyDescriptor(request, 'deferredCredentialRejection');
+			assert.ok(descriptor, 'the deferred state should be an own property of the request');
 			assert.strictEqual(descriptor.enumerable, false);
 		});
 
 		it('cannot be cleared or changed by downstream middleware using reflection', () => {
 			const request = requestAccepting('application/json');
 			deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
-			const stateSymbol = Object.getOwnPropertySymbols(request).find(
-				(symbol) => symbol.description === 'harper.deferredCredentialRejection'
-			);
 
-			Reflect.deleteProperty(request, stateSymbol);
-			Reflect.set(request, stateSymbol, undefined);
-			const state = request[stateSymbol];
+			Reflect.deleteProperty(request, 'deferredCredentialRejection');
+			Reflect.set(request, 'deferredCredentialRejection', undefined);
+			const state = request.deferredCredentialRejection;
 			if (state) Reflect.set(state, 'status', 200);
 
 			const settled = settleDeferredCredentialRejection(request);
@@ -101,8 +93,7 @@ describe('deferredAuthentication', () => {
 
 			const copied = { ...request };
 
-			assert.deepStrictEqual(Object.getOwnPropertySymbols(copied), []);
-			assert.strictEqual(getDeferredCredentialRejection(copied), undefined);
+			assert.strictEqual(copied.deferredCredentialRejection, undefined);
 		});
 
 		it('stays out of Object.keys and JSON.stringify', () => {
@@ -125,7 +116,7 @@ describe('deferredAuthentication', () => {
 			const request = {};
 			deferCredentialRejection(request, credentialRejectionError('token expired', 403), 'Bearer');
 
-			assert.deepStrictEqual(getDeferredCredentialRejection(request), {
+			assert.deepStrictEqual(request.deferredCredentialRejection, {
 				status: 401,
 				message: 'token expired',
 				strategy: 'Bearer',
@@ -136,7 +127,7 @@ describe('deferredAuthentication', () => {
 			const request = {};
 			deferCredentialRejection(request, {}, 'Bearer');
 
-			assert.strictEqual(getDeferredCredentialRejection(request).message, 'Unauthorized');
+			assert.strictEqual(request.deferredCredentialRejection.message, 'Unauthorized');
 		});
 
 		it('preserves the first rejection when multiple route chains authenticate the request', () => {
@@ -144,7 +135,7 @@ describe('deferredAuthentication', () => {
 			deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
 			deferCredentialRejection(request, credentialRejectionError('invalid token', 401), 'Bearer');
 
-			assert.deepStrictEqual(getDeferredCredentialRejection(request), {
+			assert.deepStrictEqual(request.deferredCredentialRejection, {
 				status: 401,
 				message: 'Login failed',
 				strategy: 'Basic',
@@ -156,24 +147,7 @@ describe('deferredAuthentication', () => {
 			deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
 			const proxied = new Proxy(request, { get: (target, prop) => Reflect.get(target, prop) });
 
-			assert.strictEqual(getDeferredCredentialRejection(proxied).status, 401);
-		});
-	});
-
-	describe('getDeferredCredentialRejection', () => {
-		it('returns undefined for a request that presented no credential', () => {
-			assert.strictEqual(getDeferredCredentialRejection({}), undefined);
-			assert.strictEqual(getDeferredCredentialRejection(undefined), undefined);
-		});
-
-		it('cannot be forged through a string or well-known symbol key', () => {
-			const forged = {
-				'deferredCredentialRejection': { status: 401, message: 'forged', strategy: 'Basic' },
-				'harper.deferredCredentialRejection': { status: 401, message: 'forged', strategy: 'Basic' },
-				[Symbol.for('harper.deferredCredentialRejection')]: { status: 401, message: 'forged', strategy: 'Basic' },
-			};
-
-			assert.strictEqual(getDeferredCredentialRejection(forged), undefined);
+			assert.strictEqual(proxied.deferredCredentialRejection.status, 401);
 		});
 	});
 
