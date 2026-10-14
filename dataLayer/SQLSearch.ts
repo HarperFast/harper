@@ -53,6 +53,7 @@ interface AlaSQLYY {
 	StringValue: new (props: { value: any }) => any;
 	NumValue: new (props: { value: any }) => any;
 	Op: new (props: any) => any;
+	UniOp: new (props: any) => any;
 	Columnid: new (props: any) => any;
 	Param: new (props: any) => any;
 	FuncValue: new (props?: any) => any;
@@ -260,8 +261,29 @@ class SQLSearch {
 			return;
 		}
 
-		for (let { node } of new RecursiveIterator(this.statement.where)) {
-			if (node && node.left && node.right && (node.left.columnid || node.right.value) && node.op) {
+		// the narrowing maps are keyed by physical table, so a restriction on one occurrence of a self-joined table would narrow the other
+		const physicalTables = new Set(this.tables.map((table) => `${table.databaseid}/${table.tableid}`));
+		if (physicalTables.size < this.tables.length) {
+			log.trace('Where clause joins a table to itself, exact match search not performed on attributes.');
+			return;
+		}
+
+		// Only a top-level AND conjunct holds for every result row, so only it may narrow a column's fetch; a predicate
+		// under NOT, or inside any other expression, must be evaluated against every row.
+		const yy = (alasql as any).yy as AlaSQLYY;
+		const conjuncts = [this.statement.where.expression];
+		while (conjuncts.length > 0) {
+			const node = conjuncts.pop();
+			if (node instanceof yy.Op && node.op === 'AND') {
+				conjuncts.push(node.right, node.left);
+				continue;
+			}
+			// a parenthesized expression
+			if (node instanceof yy.UniOp && node.op === undefined) {
+				conjuncts.push(node.right);
+				continue;
+			}
+			if (node.left && node.right && (node.left.columnid || node.right.value) && node.op) {
 				let values = new Set();
 				let column = node.left.columnid ? node.left : node.right;
 				let foundColumn = this._findColumn(column);
