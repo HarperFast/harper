@@ -28,6 +28,9 @@ module.exports = fp(
 				method = config.method;
 			}
 			recordAction(responseTime, 'duration', action, method, type);
+			// A queued request carries the stamp dispatchRequest took before the throttle.
+			const receivedAt = request.raw?.receivedAt;
+			if (receivedAt !== undefined) recordAction(startTransfer - receivedAt, 'request-time', action, method, type);
 			// TODO: Remove the "success" metric, since we have switch to using recording responses by status code
 			recordActionBinary(reply.raw.statusCode < 400, 'success', action, method, type);
 			recordActionBinary(1, 'response_' + reply.raw.statusCode, action, method, type);

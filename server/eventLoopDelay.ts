@@ -32,7 +32,6 @@ export function startEventLoopDelayMonitor(resolution = EVENT_LOOP_DELAY_RESOLUT
 	return true;
 }
 
-/** Discards what the histogram holds, so the next read covers only what follows. */
 export function resetEventLoopDelay(): void {
 	histogram?.reset();
 }
@@ -42,7 +41,6 @@ export function stopEventLoopDelayMonitor(): void {
 	histogram = undefined;
 }
 
-/** The delay accumulated since the previous read, in milliseconds; resets the histogram. */
 export function readEventLoopDelay(): EventLoopDelay | undefined {
 	if (!histogram) return undefined;
 	const delay = eventLoopDelayFromHistogram(histogram, resolutionMs);

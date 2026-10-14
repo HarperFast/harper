@@ -181,6 +181,9 @@ function sendAnalytics() {
 		activeActions = new Map();
 		const period = performance.now() - analyticsStart;
 		analyticsStart = 0;
+		// Read before the first yield too: a sample that lands mid-flush opens the next window, which
+		// resets the histogram.
+		const eventLoopDelay = readEventLoopDelay();
 		const metrics = [];
 		const report = {
 			time: Date.now(),
@@ -239,7 +242,6 @@ function sendAnalytics() {
 			byThread: true,
 			...memoryUsage,
 		});
-		const eventLoopDelay = readEventLoopDelay();
 		if (eventLoopDelay) {
 			metrics.push({
 				metric: METRIC.EVENT_LOOP_DELAY,
