@@ -193,6 +193,27 @@ describe('RocksDB handle release', function () {
 
 		assert.strictEqual(Items.indices.vector.customIndex, undefined);
 		await closeDatabase(databaseName);
+		assert.strictEqual(refCountFor(Items.primaryStore.rootStore.path), 0);
+	});
+
+	it('a strict close that fails on a replaced index retries it through the drop', async function () {
+		this.timeout(30000);
+		const databaseName = 'strictreplacedfailure';
+		const vector = { name: 'vector', type: 'Array', indexed: { type: 'HNSW' } };
+		const Items = table(itemsDefinition(databaseName, [vector]));
+		const rootStore = Items.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const replaced = Items.indices.vector;
+		table(itemsDefinition(databaseName, [vector, { attribute: 'added', indexed: true }]));
+		assert.notStrictEqual(Items.indices.vector, replaced, 'precondition: a custom index is reopened');
+		failClose(replaced, 1);
+
+		await assert.rejects(closeDatabase(databaseName, { requireClosed: true }), /for destructive DDL/);
+		assert.notStrictEqual(replaced.status, 'closed', 'precondition: the failed wrapper is still open');
+		await new ResourceBridge().dropSchema({ schema: databaseName });
+
+		assert.strictEqual(replaced.status, 'closed');
+		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
 	it('a table created beside another keeps the database’s one attributes store', async function () {

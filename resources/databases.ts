@@ -506,7 +506,7 @@ const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
  * collected, as before; this only lets a close release the reachable ones now. By path, not root
  * object, so a wrapper whose close failed is still found after the root is discarded.
  */
-const ownedRocksStores = new Map<string, WeakRef<any>[]>();
+const ownedRocksStores = new Map<string, { deref(): any }[]>();
 
 /** The owner `initStores` and the global declaration target record a global RocksDB root's wrappers in. */
 function ownedStoresFor(rootStore: any): { push(store: any): void } | undefined {
@@ -521,20 +521,24 @@ function adoptOwnedStore(path: string, store: any): void {
 	// collected and closed wrappers leave dead entries; compacting at each doubling keeps this amortized
 	if (owned.length >= 64 && (owned.length & (owned.length - 1)) === 0) {
 		let kept = 0;
-		for (const ref of owned) if (ref.deref() && ref.deref().status !== 'closed') owned[kept++] = ref;
+		for (const ref of owned) {
+			const store = ref.deref();
+			if (store && store.status !== 'closed') owned[kept++] = ref;
+		}
 		owned.length = kept;
 	}
 }
 
 async function closeOwnedStores(path: string, close: (store: any) => Promise<boolean>): Promise<void> {
-	const failed: WeakRef<any>[] = [];
-	let owned: WeakRef<any>[] | undefined;
+	const failed: { deref(): any }[] = [];
+	let owned: { deref(): any }[] | undefined;
 	// a declaration during an await below starts a fresh list, which the next pass drains
 	while ((owned = ownedRocksStores.get(path))) {
 		ownedRocksStores.delete(path);
 		for (const ref of owned) {
 			const store = ref.deref();
-			if (store && !(await close(store))) failed.push(ref);
+			// held strongly: a wrapper whose close failed may not release its handle when collected
+			if (store && !(await close(store))) failed.push({ deref: () => store });
 		}
 	}
 	if (failed.length) ownedRocksStores.set(path, failed);
@@ -3279,9 +3283,12 @@ async function closeDatabaseStores(
 		databasePaths.delete(rootStore as RootDatabase);
 		let rootClosed = rootStore.status !== 'open';
 		if (!lmdbRootStores.has(rootStore)) {
-			await closeOwnedStores(rootStore.path, (store) => closeStore(store, 'replaced store'));
+			const closeOwned = () => closeOwnedStores(rootStore.path, (store) => closeStore(store, 'replaced store'));
+			await closeOwned();
 			await closeStore(rootStore.dbisDb, 'attributes store');
 			rootClosed = await closeStore(rootStore, 'root store');
+			// a declaration during the closes above still resolved this root, which stays registered until below
+			await closeOwned();
 		} else if (!rootClosed) rootClosed = await closeStore(rootStore, 'root store');
 		if (rootClosed || !requireClosed) rootStorePaths.push(rootStore.path);
 	}
@@ -4650,8 +4657,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		}
 		const indices = Table.indices;
 		attributesDbi ??= internalDbisFor(rootStore, target);
-		// A replaced wrapper stays owned until the database closes, so a plain index keeps its open wrapper
-		// on an unchanged store. Any custom index is reopened: openIndex builds its state from the options.
+		// A plain index keeps its open wrapper on an unchanged store rather than opening another per
+		// redeclare. Any custom index is reopened: openIndex builds its state from the options.
 		const indexFor = (dbiKey: string, attribute: any) => {
 			const current = indices[attribute.name];
 			if (
