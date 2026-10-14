@@ -140,7 +140,15 @@ suite('restore_backup verifies before it replaces (harper#2965)', { skip: skipSu
 
 	before(async () => {
 		await start();
-		const t = await op({ operation: 'create_table', database: DATABASE, table: TABLE, primary_key: 'id' });
+		// Declared up front so no insert redeclares the table: a redeclare leaks RocksDB handles (harper#3120),
+		// and an online restore then refuses at its closure check before it ever verifies the backup.
+		const t = await op({
+			operation: 'create_table',
+			database: DATABASE,
+			table: TABLE,
+			primary_key: 'id',
+			attributes: [{ name: 'id', is_primary_key: true }, { name: 'note' }],
+		});
 		ok(t.status === 200, `create_table failed: ${t.text}`);
 		await insert(baseIds);
 		backupId = await createBackup();
@@ -178,8 +186,6 @@ suite('restore_backup verifies before it replaces (harper#2965)', { skip: skipSu
 		await expectIds(before, 'after offline refusal and restart');
 	});
 
-	// The success path runs offline: online, the restore verifies but is then refused at the closure check
-	// while leaked handles stay open (harper#3120).
 	test('offline CLI: a valid backup is restored and survives a restart', async () => {
 		const validId = await createBackup();
 		const kept = await readIds();
@@ -193,5 +199,18 @@ suite('restore_backup verifies before it replaces (harper#2965)', { skip: skipSu
 		await expectIds(kept, 'after restore and restart');
 		await insert(['after-restore']);
 		await expectIds([...kept, 'after-restore'], 'writable after restore');
+	});
+
+	test('online: a valid backup is restored', async () => {
+		const validId = await createBackup();
+		const kept = await readIds();
+		await insert(['after-online-backup']);
+
+		const job = await runJob({ operation: 'restore_backup', database: DATABASE, backup_id: validId });
+		strictEqual(job.status, 'COMPLETE', `online restore of a valid backup failed: ${JSON.stringify(job)}`);
+
+		await expectIds(kept, 'after online restore');
+		await insert(['after-online-restore']);
+		await expectIds([...kept, 'after-online-restore'], 'writable after online restore');
 	});
 });
