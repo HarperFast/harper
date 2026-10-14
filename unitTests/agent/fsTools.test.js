@@ -251,15 +251,15 @@ describe('agent/fsTools pages', () => {
 
 	it('keeps a whole result, cursor included, under the minimum cap even with a long path', async () => {
 		const { serializeToolResult } = require('#src/resources/models/agentLoop');
-		// About 430 characters in all, whatever the platform's tmpdir length.
-		const segment = Math.floor((420 - scopes.logDir.length) / 3);
+		// About 400 characters in all, whatever the platform's tmpdir length.
+		const segment = Math.floor((390 - scopes.logDir.length) / 3);
 		const deep = join('d'.repeat(segment), 'e'.repeat(segment), 'f'.repeat(segment));
 		mkdirSync(join(scopes.logDir, deep), { recursive: true });
 		writeFileSync(join(scopes.logDir, deep, 'srv.log'), numberedLines(200));
 		const read = await readFileTool.handler({ root: 'logs', path: join(deep, 'srv.log') }, pagedCtx(1024));
 		const tail = await tailFileTool.handler({ root: 'logs', path: join(deep, 'srv.log') }, pagedCtx(1024));
 		const grep = await grepFilesTool.handler({ root: 'logs', path: deep, pattern: 'line' }, pagedCtx(1024));
-		assert.ok(read.path.length > 400);
+		assert.ok(read.path.length > 380);
 		assert.ok(read.nextLine > 1);
 		for (const result of [read, tail, grep]) {
 			assert.equal(serializeToolResult({ ok: true, result }, 1024).truncated, false);
@@ -404,6 +404,37 @@ describe('agent/fsTools pages', () => {
 				skippedFiles: 1,
 			}
 		);
+	});
+
+	it('list_dir pages a flat directory by name through nextOffset, each page under the cap', async () => {
+		const { serializeToolResult } = require('#src/resources/models/agentLoop');
+		const names = Array.from({ length: 120 }, (_, i) => `entry-${String(i).padStart(3, '0')}.log`);
+		for (const name of names) writeFileSync(join(scopes.logDir, name), '');
+		const seen = [];
+		let offset;
+		do {
+			const page = await listDirTool.handler({ root: 'logs', offset }, pagedCtx(1024));
+			assert.equal(serializeToolResult({ ok: true, result: page }, 1024).truncated, false);
+			assert.equal(page.total, 120);
+			seen.push(...page.entries.map((e) => e.name));
+			offset = page.nextOffset;
+		} while (offset !== undefined);
+		assert.deepEqual(seen, names);
+	});
+
+	it('refuses with an explicit error when a path leaves no room for a page under the cap', async () => {
+		const segment = 'p'.repeat(200);
+		const deep = join(segment, segment, segment, segment);
+		mkdirSync(join(scopes.logDir, deep), { recursive: true });
+		writeFileSync(join(scopes.logDir, deep, 'a.log'), 'one\n');
+		for (const [tool, args] of [
+			[readFileTool, { root: 'logs', path: join(deep, 'a.log') }],
+			[tailFileTool, { root: 'logs', path: join(deep, 'a.log') }],
+			[listDirTool, { root: 'logs', path: deep }],
+			[grepFilesTool, { root: 'logs', path: deep, pattern: 'one' }],
+		]) {
+			await assert.rejects(tool.handler(args, pagedCtx(1024)), /leaves no room for a page/, tool.def.name);
+		}
 	});
 
 	it('grep_files is not truncated when every match fits', async () => {
@@ -620,6 +651,35 @@ describe('agent/fsTools key material and the single-file config scope (harper#30
 				tailFileTool.handler({ root: 'logs', path: 'hdb.log', lines: 1 }, ctx(defaultScopes())),
 				/ends inside a PEM private key/
 			);
+		});
+
+		it('fails closed for a key block longer than the 128 KiB look-back, at both read_file and tail_file', async () => {
+			const body = `${'A'.repeat(63)}\n`.repeat(3000); // ~187 KiB of key body
+			const keyLog = `start\n-----BEGIN PRIVATE KEY-----\n${body}-----END PRIVATE KEY-----\nafter\n`;
+			writeFileSync(join(root, 'log', 'hdb.log'), keyLog);
+			const deep = 6 + 28 + 64 * 2500;
+			await assert.rejects(
+				readFileTool.handler({ root: 'logs', path: 'hdb.log', offset: deep, lineCount: 1 }, ctx(defaultScopes())),
+				/may be inside a PEM private key/
+			);
+			writeFileSync(join(root, 'log', 'ends.log'), `start\n-----BEGIN PRIVATE KEY-----\n${body}`);
+			await assert.rejects(
+				tailFileTool.handler(
+					{ root: 'logs', path: 'ends.log', lines: 5 },
+					{ ...ctx(defaultScopes()), maxResultBytes: 1024 }
+				),
+				/may be inside a PEM private key/
+			);
+		});
+
+		it('still serves a deep page when ordinary text lies in the look-back', async () => {
+			const lines = Array.from({ length: 4000 }, (_, i) => `line ${i} of an ordinary log, with spaces\n`).join('');
+			writeFileSync(join(root, 'log', 'plain.log'), lines);
+			const page = await readFileTool.handler(
+				{ root: 'logs', path: 'plain.log', startLine: 3500, lineCount: 1 },
+				ctx(defaultScopes())
+			);
+			assert.equal(page.content, 'line 3499 of an ordinary log, with spaces\n');
 		});
 
 		it('tail_file still sees a BEGIN line that lies before its read window', async () => {

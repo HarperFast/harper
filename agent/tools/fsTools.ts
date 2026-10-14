@@ -26,7 +26,8 @@ const DEFAULT_PAGE_BYTES = 32 * 1024;
 const SCAN_CHUNK_BYTES = 64 * 1024;
 // The observation envelope and a result's fields other than its text and `path`, numbers included.
 const RESULT_FIELD_BYTES = 256;
-const MIN_PAGE_BYTES = 64;
+// Room for one `list_dir` entry with a 255-byte name, the longest a file system allows.
+const MIN_PAGE_BYTES = 320;
 const NEWLINE = 0x0a;
 
 /**
@@ -37,7 +38,12 @@ const NEWLINE = 0x0a;
 function pageBytes(ctx: AgentToolContext, path: string): number {
 	const cap = ctx.maxResultBytes ?? 2 * DEFAULT_PAGE_BYTES;
 	const besidePage = cap - escapedBytes(path) - RESULT_FIELD_BYTES;
-	return Math.max(MIN_PAGE_BYTES, Math.min(Math.floor(cap / 2), besidePage));
+	if (besidePage < MIN_PAGE_BYTES) {
+		throw new Error(
+			`agent.maxToolResultBytes (${cap}) leaves no room for a page beside this path and the result's fields; raise it`
+		);
+	}
+	return Math.min(Math.floor(cap / 2), besidePage);
 }
 
 /** Bytes `text` takes inside a JSON string: control characters escape to six bytes, quotes to two. */
@@ -59,8 +65,11 @@ const KEY_FILE_NAME = /\.(?:pem|key)$|^\.jwtPass$/i;
 const PRIVATE_KEY_ARMOR = /-----(BEGIN|END) [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
 const ARMOR_LINE_OVERLAP_BYTES = 64;
 // Longer than any PEM private-key block, post-quantum ones included (FrodoKEM-1344 is ~57 KB), so a window
-// whose start lies inside a key sees its BEGIN line.
+// whose start lies inside a key normally sees its BEGIN line.
 const KEY_LOOKBACK_BYTES = 128 * 1024;
+// A key block's body: base64 and line breaks. Inside a block whose BEGIN lies beyond the look-back, the
+// look-back holds nothing else, so that is the one case the armor lines cannot settle.
+const KEY_BODY_ONLY = /^[A-Za-z0-9+/=\r\n]*$/;
 
 type Access = 'read' | 'write';
 type Scope = 'components' | 'logs' | 'config';
@@ -114,25 +123,42 @@ function assertNoPrivateKey(text: string, path: string): void {
 	if (PRIVATE_KEY_ARMOR.test(text)) throw new Error(`Refusing to read key material: ${path} holds a PEM private key`);
 }
 
-function endsInsidePrivateKey(text: string, limit = Infinity): boolean {
+type KeyState = 'outside' | 'inside' | 'unknown';
+
+/**
+ * Where the first `limit` characters of `text` leave whatever follows them: after the last armor line
+ * that begins there, or, with none, `unknown` when they are all key-body characters and do not reach
+ * back to the start of the file.
+ */
+function keyStateAfter(text: string, limit: number, reachesFileStart: boolean): KeyState {
 	let last: string | undefined;
 	for (const match of text.matchAll(new RegExp(PRIVATE_KEY_ARMOR.source, 'g'))) {
 		if (match.index >= limit) break;
 		last = match[1];
 	}
-	return last === 'BEGIN';
+	if (last) return last === 'BEGIN' ? 'inside' : 'outside';
+	return !reachesFileStart && KEY_BODY_ONLY.test(text.slice(0, limit)) ? 'unknown' : 'outside';
 }
 
-/** Whether byte `start` lies inside a PEM private-key block, judged by the armor lines that begin before it. */
-async function startsInsidePrivateKey(fh: FileHandle, start: number): Promise<boolean> {
-	if (start === 0) return false;
+function assertOutsidePrivateKey(state: KeyState, path: string, insideMessage: string): void {
+	if (state === 'inside') throw new Error(insideMessage);
+	if (state === 'unknown') {
+		throw new Error(
+			`Refusing to read ${path} there: only key-body characters for ${KEY_LOOKBACK_BYTES / 1024} KiB before it, so it may be inside a PEM private key`
+		);
+	}
+}
+
+/** Where byte `start` lies relative to a PEM private-key block, judged by what comes before it. */
+async function keyStateAt(fh: FileHandle, start: number): Promise<KeyState> {
+	if (start === 0) return 'outside';
 	const from = Math.max(0, start - KEY_LOOKBACK_BYTES);
 	// Read past `start` so an armor line cut by it still matches, but count only lines that begin before it:
 	// an END line just after `start` must not clear a page that starts on the key's last body line.
 	const before = Buffer.alloc(start - from + ARMOR_LINE_OVERLAP_BYTES);
 	const { bytesRead } = await fh.read(before, 0, before.length, from);
 	const limit = before.toString('utf8', 0, Math.min(start - from, bytesRead)).length;
-	return endsInsidePrivateKey(before.toString('utf8', 0, bytesRead), limit);
+	return keyStateAfter(before.toString('utf8', 0, bytesRead), limit, from === 0);
 }
 
 /** Coerce/validate a tool's `root` argument, defaulting to the writable components scope. */
@@ -261,9 +287,11 @@ export const readFileTool: AgentTool = {
 			}
 			const page = await readPage(fh, size, start, lineCount, pageBytes(ctx, path));
 			assertNoPrivateKey(page.content, requested);
-			if (await startsInsidePrivateKey(fh, start)) {
-				throw new Error(`Refusing to read key material: ${requested} holds a PEM private key at that position`);
-			}
+			assertOutsidePrivateKey(
+				await keyStateAt(fh, start),
+				requested,
+				`Refusing to read key material: ${requested} holds a PEM private key at that position`
+			);
 			const result: Record<string, unknown> = { path, size, offset: start, content: page.content };
 			const endLine = startLine === undefined || page.lines === 0 ? undefined : startLine + page.lines - 1;
 			if (startLine !== undefined) Object.assign(result, { startLine, endLine });
@@ -424,7 +452,9 @@ export const writeFileTool: AgentTool = {
 export const listDirTool: AgentTool = {
 	def: {
 		name: 'list_dir',
-		description: 'List the immediate entries in a directory within the components, logs, or config scope.',
+		description:
+			'List the immediate entries in a directory within the components, logs, or config scope, sorted by name, ' +
+			'one page at a time. While entries remain, the result has `nextOffset`: pass it back as `offset` for the next page.',
 		parameters: {
 			type: 'object',
 			properties: {
@@ -433,6 +463,7 @@ export const listDirTool: AgentTool = {
 					type: 'string',
 					description: 'Directory relative to the chosen root. Omit or "" for the root itself.',
 				},
+				offset: { type: 'integer', minimum: 0, description: 'Entry to start at, as returned in `nextOffset`.' },
 			},
 		},
 	},
@@ -442,14 +473,24 @@ export const listDirTool: AgentTool = {
 		const file = scopeFile(ctx.scopes, scope);
 		// Never enumerated, even if the file was swapped for a directory after boot.
 		if (file) return { path, entries: (await lstat(path)).isFile() ? [{ name: file, kind: 'file' }] : [] };
-		const entries = await readdir(path, { withFileTypes: true });
-		return {
-			path,
-			entries: entries.map((e) => ({
-				name: e.name,
-				kind: e.isDirectory() ? 'directory' : e.isFile() ? 'file' : 'other',
-			})),
-		};
+		const offset = optionalInteger(args.offset, 'offset', 0) ?? 0;
+		const budget = pageBytes(ctx, path);
+		const all = (await readdir(path, { withFileTypes: true })).sort((a, b) =>
+			a.name < b.name ? -1 : a.name > b.name ? 1 : 0
+		);
+		const entries: Array<{ name: string; kind: string }> = [];
+		let used = 0;
+		let next = offset;
+		for (; next < all.length; next++) {
+			const e = all[next];
+			const entry = { name: e.name, kind: e.isDirectory() ? 'directory' : e.isFile() ? 'file' : 'other' };
+			used += Buffer.byteLength(JSON.stringify(entry), 'utf8') + 1;
+			if (used > budget && entries.length > 0) break;
+			entries.push(entry);
+		}
+		return next < all.length
+			? { path, total: all.length, entries, nextOffset: next }
+			: { path, total: all.length, entries };
 	},
 };
 
@@ -520,8 +561,9 @@ export const grepFilesTool: AgentTool = {
 				if (results.length >= cap || resultBytes + matchBytes > budget) {
 					truncated = true;
 					// A first match too long for the page still comes back, cut to fit, rather than none.
-					if (results.length === 0 && cap > 0) {
-						match.text = escapedHead(match.text, budget - (matchBytes - escapedBytes(match.text)));
+					const room = budget - (matchBytes - escapedBytes(match.text));
+					if (results.length === 0 && cap > 0 && room > 0) {
+						match.text = escapedHead(match.text, room);
 						results.push(match);
 					}
 					return false;
@@ -592,9 +634,12 @@ export const tailFileTool: AgentTool = {
 				lastLineCut = true;
 			}
 			assertNoPrivateKey(lines.join('\n'), requested);
-			if (endsInsidePrivateKey(scanned.toString('utf8', 0, bytesRead))) {
-				throw new Error(`Refusing to read key material: ${requested} ends inside a PEM private key`);
-			}
+			const scannedText = scanned.toString('utf8', 0, bytesRead);
+			assertOutsidePrivateKey(
+				keyStateAfter(scannedText, scannedText.length, scanStart === 0),
+				requested,
+				`Refusing to read key material: ${requested} ends inside a PEM private key`
+			);
 			const omitted = lines.length < Math.min(wanted, start > 0 ? Infinity : all.length);
 			return { path, lines, truncated: omitted || lastLineCut };
 		} finally {
