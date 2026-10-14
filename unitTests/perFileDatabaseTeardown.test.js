@@ -65,7 +65,11 @@ describe('native compiled-core guard', () => {
 			mkdirSync(path.join(root, 'dist'));
 			writeFileSync(path.join(root, 'dist', 'marker.cjs'), 'module.exports = true;');
 			const fixture = path.join(root, 'probe.cjs');
-			for (const filtered of [false, true]) {
+			for (const [filtered, parallel] of [
+				[false, false],
+				[true, false],
+				[true, true],
+			]) {
 				writeFileSync(
 					fixture,
 					"require('./dist/marker.cjs'); describe('guard', () => {" +
@@ -82,6 +86,7 @@ describe('native compiled-core guard', () => {
 						path.join(root, 'unitTests/mocha.init.js'),
 						'--exit',
 						...(filtered ? ['--grep', 'DOES_NOT_MATCH'] : []),
+						...(parallel ? ['--parallel', '--jobs', '2'] : []),
 					],
 					{
 						cwd: root,

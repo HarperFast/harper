@@ -211,7 +211,7 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
  * fail their flush whenever they finally close, which rocksdb-js reports as "Failed to flush
  * database during close": an uncaught throw out of the exit listener, attributed to no test.
  * Dropping the tables is what the callers actually want; the root itself is removed at process
- * exit, after the databases have closed (see the afterAll hook in mocha.init.js).
+ * exit, after the databases have closed (see completion handling in mocha.init.js).
  *
  * @param envs
  * @returns {Promise<void>}

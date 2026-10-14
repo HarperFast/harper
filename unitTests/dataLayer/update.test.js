@@ -5,8 +5,8 @@ const sinon = require('sinon');
 const { expect } = chai;
 const alasql = require('alasql');
 const rewire = require('rewire');
-const sql = require('#js/sqlTranslator/index');
-const update = rewire('#src/dataLayer/update');
+const sql = require('#src/sqlTranslator/index');
+const update = rewire('#js/dataLayer/update');
 const insert = require('#src/dataLayer/insert');
 const testUtils = require('../testUtils.js');
 

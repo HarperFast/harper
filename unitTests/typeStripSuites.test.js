@@ -193,6 +193,7 @@ describe('unit runtime selection', function () {
 		it(`finishes ordinary parallel workers with grep ${grep}`, () => {
 			const directory = mkdtempSync(join(root, 'unitTests/envDir/parallel-'));
 			const results = join(directory, 'results.json');
+			const pids = join(directory, 'pids');
 			try {
 				const result = spawnSync(
 					process.execPath,
@@ -208,12 +209,21 @@ describe('unit runtime selection', function () {
 						'--exit',
 						...(grep ? ['--grep', grep] : []),
 					],
-					{ cwd: root, encoding: 'utf8', timeout: 20000, env: { ...process.env, HARPER_UNIT_RESULTS: results } }
+					{
+						cwd: root,
+						encoding: 'utf8',
+						timeout: 20000,
+						env: { ...process.env, HARPER_UNIT_RESULTS: results, HARPER_TEST_WORKER_PIDS: pids },
+					}
 				);
 				succeeds(result);
 				assert.match(result.stdout, grep ? /0 passing/ : /1 passing/);
 				assert(!result.stderr.includes('without finishing'));
 				assert.strictEqual(JSON.parse(readFileSync(results, 'utf8')).total, grep ? 0 : 1);
+				for (const pid of readFileSync(pids, 'utf8').trim().split('\n')) {
+					assert(/^\d+$/.test(pid));
+					assert(!existsSync(join(root, 'unitTests/envDir', pid)), `parallel worker root ${pid} remains`);
+				}
 			} finally {
 				rmSync(directory, { recursive: true, force: true });
 			}

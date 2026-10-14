@@ -64,7 +64,15 @@ const resultsPath = process.env.HARPER_UNIT_RESULTS;
 let pendingResults;
 let activeRuns = 0;
 let resultFiles;
+let rootRemovalRegistered = false;
 delete process.env.HARPER_UNIT_RESULTS;
+
+function registerRootRemoval() {
+	if (isMainThread && !rootRemovalRegistered) {
+		process.on('exit', removePerPidRoot);
+		rootRemovalRegistered = true;
+	}
+}
 
 module.exports.mochaHooks = () => {
 	runStarted = true;
@@ -80,7 +88,7 @@ module.exports.mochaHooks = () => {
 
 module.exports.mochaGlobalTeardown = function () {
 	// Register after storage shutdown listeners, including for runs with no matching tests.
-	if (isMainThread) process.on('exit', removePerPidRoot);
+	registerRootRemoval();
 	assertNativeCoreTree();
 	if (resultsPath) {
 		pendingResults = { total: this.stats?.tests ?? observedTotal };
@@ -97,6 +105,16 @@ module.exports.mochaGlobalTeardown = function () {
 		if (resultsPath && !resultFiles) resultFiles = [...this.files];
 		return run.call(this, (failures) => {
 			runFinished = --activeRuns === 0;
+			if (runFinished) {
+				registerRootRemoval();
+				try {
+					assertNativeCoreTree();
+				} catch (error) {
+					fs.writeSync(2, `${error.stack ?? error}\n`);
+					if (failures && typeof failures === 'object') failures.failureCount++;
+					else failures = (failures || 0) + 1;
+				}
+			}
 			if (runFinished && pendingResults)
 				fs.writeFileSync(resultsPath, JSON.stringify({ ...pendingResults, files: resultFiles }));
 			callback?.(failures);
@@ -151,9 +169,7 @@ if (isMainThread) {
 			}
 		}
 	}
-	// The removal itself is registered from the afterAll root hook above, which every suite
-	// gets, so that it runs after the database shutdown listener rather than before it. A run
-	// that dies before afterAll leaves its root behind for the sweep above to reclaim.
+	// Interrupted runs can leave roots behind for this sweep; completed runs remove them on exit.
 }
 materializePerPidRoot();
 process.env.ROOTPATH = PID_DIR_PATH;
