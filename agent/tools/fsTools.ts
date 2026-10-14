@@ -67,9 +67,10 @@ const ARMOR_LINE_OVERLAP_BYTES = 64;
 // Longer than any PEM private-key block, post-quantum ones included (FrodoKEM-1344 is ~57 KB), so a window
 // whose start lies inside a key normally sees its BEGIN line.
 const KEY_LOOKBACK_BYTES = 128 * 1024;
-// A key block's body: base64 and line breaks. Inside a block whose BEGIN lies beyond the look-back, the
-// look-back holds nothing else, so that is the one case the armor lines cannot settle.
-const KEY_BODY_ONLY = /^[A-Za-z0-9+/=\r\n]*$/;
+// A key block's body line: base64, indented when the key is embedded in YAML. Inside a block whose BEGIN
+// lies beyond the look-back, the look-back holds nothing else, so that is the one case the armor lines
+// cannot settle.
+const KEY_BODY_LINE = /^[ \t]*[A-Za-z0-9+/=]*[ \t]*\r?$/;
 
 type Access = 'read' | 'write';
 type Scope = 'components' | 'logs' | 'config';
@@ -137,7 +138,11 @@ function keyStateAfter(text: string, limit: number, reachesFileStart: boolean): 
 		last = match[1];
 	}
 	if (last) return last === 'BEGIN' ? 'inside' : 'outside';
-	return !reachesFileStart && KEY_BODY_ONLY.test(text.slice(0, limit)) ? 'unknown' : 'outside';
+	const bodyOnly = text
+		.slice(0, limit)
+		.split('\n')
+		.every((line) => KEY_BODY_LINE.test(line));
+	return !reachesFileStart && bodyOnly ? 'unknown' : 'outside';
 }
 
 function assertOutsidePrivateKey(state: KeyState, path: string, insideMessage: string): void {
@@ -478,14 +483,24 @@ export const listDirTool: AgentTool = {
 		const all = (await readdir(path, { withFileTypes: true })).sort((a, b) =>
 			a.name < b.name ? -1 : a.name > b.name ? 1 : 0
 		);
-		const entries: Array<{ name: string; kind: string }> = [];
+		const entries: Array<{ name: string; kind: string; nameTruncated?: true }> = [];
 		let used = 0;
 		let next = offset;
 		for (; next < all.length; next++) {
 			const e = all[next];
-			const entry = { name: e.name, kind: e.isDirectory() ? 'directory' : e.isFile() ? 'file' : 'other' };
-			used += Buffer.byteLength(JSON.stringify(entry), 'utf8') + 1;
-			if (used > budget && entries.length > 0) break;
+			const entry: { name: string; kind: string; nameTruncated?: true } = {
+				name: e.name,
+				kind: e.isDirectory() ? 'directory' : e.isFile() ? 'file' : 'other',
+			};
+			const entryBytes = Buffer.byteLength(JSON.stringify(entry), 'utf8') + 1;
+			if (used + entryBytes > budget) {
+				if (entries.length > 0) break;
+				// A name too long for a page on its own, which only escaping can make: cut it to fit.
+				const nameRoom = budget - (entryBytes - escapedBytes(e.name)) - 22;
+				entry.name = escapedHead(e.name, nameRoom);
+				entry.nameTruncated = true;
+			}
+			used += entryBytes;
 			entries.push(entry);
 		}
 		return next < all.length

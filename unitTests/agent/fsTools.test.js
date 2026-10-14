@@ -422,6 +422,21 @@ describe('agent/fsTools pages', () => {
 		assert.deepEqual(seen, names);
 	});
 
+	it('list_dir cuts a name too long for a page on its own, and still pages past it', async () => {
+		const { serializeToolResult } = require('#src/resources/models/agentLoop');
+		writeFileSync(join(scopes.logDir, '\u0001'.repeat(200)), '');
+		writeFileSync(join(scopes.logDir, 'z.log'), '');
+		const first = await listDirTool.handler({ root: 'logs' }, pagedCtx(1024));
+		assert.equal(serializeToolResult({ ok: true, result: first }, 1024).truncated, false);
+		assert.equal(first.entries[0].nameTruncated, true);
+		assert.equal(first.nextOffset, 1);
+		const second = await listDirTool.handler({ root: 'logs', offset: first.nextOffset }, pagedCtx(1024));
+		assert.deepEqual(
+			second.entries.map((e) => e.name),
+			['z.log']
+		);
+	});
+
 	it('refuses with an explicit error when a path leaves no room for a page under the cap', async () => {
 		const segment = 'p'.repeat(200);
 		const deep = join(segment, segment, segment, segment);
@@ -667,6 +682,18 @@ describe('agent/fsTools key material and the single-file config scope (harper#30
 				tailFileTool.handler(
 					{ root: 'logs', path: 'ends.log', lines: 5 },
 					{ ...ctx(defaultScopes()), maxResultBytes: 1024 }
+				),
+				/may be inside a PEM private key/
+			);
+		});
+
+		it('fails closed for an indented key block, as embedded in YAML, longer than the look-back', async () => {
+			const body = `    ${'A'.repeat(63)}\n`.repeat(3000);
+			writeFileSync(join(root, 'log', 'yaml.log'), `tls:\n  privateKey: |\n    -----BEGIN PRIVATE KEY-----\n${body}`);
+			await assert.rejects(
+				readFileTool.handler(
+					{ root: 'logs', path: 'yaml.log', offset: 40 + 68 * 2500, lineCount: 1 },
+					ctx(defaultScopes())
 				),
 				/may be inside a PEM private key/
 			);
