@@ -20,8 +20,7 @@ export function throttle(
 	name?: string
 ) {
 	let queuedCalls: any[];
-	// Measured only since this queue was last empty: a cycle from an earlier backlog, or from another throttle's,
-	// says nothing about how fast this backlog drains.
+	// only cycles since this queue was last empty (server/DESIGN.md)
 	let averageEventCycleTime = 0;
 	let lastLimitExceededLog = -Infinity;
 	return function (...args: any[]) {

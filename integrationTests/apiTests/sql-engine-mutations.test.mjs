@@ -127,7 +127,6 @@ suite('New SQL engine — mutations (phase 4)', (ctx) => {
 			)
 		);
 
-		const read = await byHash('widget', [42]).expect(200);
 		const statusCounts = {};
 		const sampleBodies = {};
 		for (const result of results) {
@@ -136,7 +135,10 @@ suite('New SQL engine — mutations (phase 4)', (ctx) => {
 			const detail = result.status === 'fulfilled' ? result.value.text : result.reason?.message;
 			if (key !== 200) sampleBodies[key] ??= String(detail).slice(0, 200);
 		}
-		const outcome = `status counts ${JSON.stringify(statusCounts)}, non-200 bodies ${JSON.stringify(sampleBodies)}, final qty ${read.body[0].qty}`;
+		const responses = `status counts ${JSON.stringify(statusCounts)}, non-200 bodies ${JSON.stringify(sampleBodies)}`;
+		const read = await byHash('widget', [42]).timeout(60_000);
+		assert.equal(read.status, 200, `final read failed (${read.text}); ${responses}`);
+		const outcome = `${responses}, final qty ${read.body[0].qty}`;
 		assert.deepEqual(statusCounts, { 200: N }, `every increment must be acknowledged; ${outcome}`);
 		assert.equal(read.body[0].qty, N, `expected all ${N} increments to apply; ${outcome}`);
 	});

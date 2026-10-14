@@ -87,7 +87,7 @@ describe('throttle test', () => {
 			() => shed++,
 			1000
 		);
-		// one slow cycle, then lone calls; each setImmediate crosses the throttle's drain callback
+		// each setImmediate crosses the throttle's drain callback, so every call below starts its own backlog
 		throttledFunction();
 		busyWait(500);
 		await new Promise(setImmediate);
