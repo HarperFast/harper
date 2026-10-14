@@ -51,7 +51,8 @@ describe('deferredAuthentication', () => {
 			const error = credentialRejectionError('Login failed', 401);
 
 			assert.strictEqual(Reflect.set(error, 'credentialRejection', false), false);
-			assert.strictEqual(isCredentialRejection(error), true);
+			assert.strictEqual(Reflect.deleteProperty(error, 'credentialRejection'), false);
+			assert.strictEqual(isCredentialRejection(markCredentialRejection(error)), true);
 		});
 
 		it('leaves the tag off the wire: it is neither enumerable nor serializable', () => {

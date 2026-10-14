@@ -19,7 +19,7 @@ export function markCredentialRejection<E extends object>(error: E): E & Credent
 	Object.defineProperty(error, 'credentialRejection', {
 		value: true,
 		enumerable: false,
-		configurable: true,
+		configurable: false,
 		writable: false,
 	});
 	return error as E & CredentialRejection;
