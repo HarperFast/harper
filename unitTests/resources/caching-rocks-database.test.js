@@ -3,8 +3,8 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';

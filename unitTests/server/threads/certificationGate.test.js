@@ -22,7 +22,7 @@ const {
 	setCanaryVerdictTimeout,
 	setHeldReplacementTimeout,
 	setRootComponentsReload,
-} = require('#js/server/threads/manageThreads');
+} = require('#src/server/threads/manageThreads');
 const { assertNotCertifying } = require('#src/components/Application');
 const { certificationRecordPath } = require('#src/components/releaseCertification');
 const { DEPLOYMENT_PROVENANCE_FILE, formatDeploymentProvenance } = require('#src/components/deploymentProvenance');

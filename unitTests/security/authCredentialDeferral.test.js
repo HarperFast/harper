@@ -13,7 +13,7 @@ const {
 const { ClientError, ServerError } = require('#src/utility/errors/hdbError');
 const serverModule = require('#src/server/Server');
 const resourcesModule = require('#src/resources/Resources');
-const tokenAuthentication = require('#src/security/tokenAuthentication');
+const tokenAuthentication = require('#js/security/tokenAuthentication');
 const { databases } = require('#src/resources/databases');
 const { authentication } = require('#src/security/auth');
 const { runStartup } = require('#src/utility/lifecycle');

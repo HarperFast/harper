@@ -5,7 +5,7 @@
  */
 
 import * as alasqlExtension from '../utility/functions/sql/alaSQLExtension.ts';
-import * as dateFunctions from '../utility/functions/date/dateFunctions.js';
+import dateFunctions from '../utility/functions/date/dateFunctions.js';
 import * as geo from '../utility/functions/geo.ts';
 
 //import the custom function, need to define an upper and lower case version of the function so it is parsed properly in alasql

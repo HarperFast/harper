@@ -14,6 +14,7 @@ const { handleHDBError } = require('#src/utility/errors/hdbError');
 const { PRIVATEKEY_PEM_NAME } = require('#src/utility/terms/certificates');
 const { materializePerPidRoot } = require('./perPidRoot.js');
 const lifecycle = require('#src/utility/lifecycle');
+const { types } = require('node:util');
 
 let envMgrInitSyncStub;
 
@@ -64,9 +65,11 @@ function preTestPrep(testConfigObj) {
 	if (envMgrInitSyncStub) {
 		envMgrInitSyncStub.restore();
 	}
-	envMgrInitSyncStub = sinon.stub(env, 'initSync').callsFake(() => {
-		env.initTestEnvironment(testConfigObj);
-	});
+	if (!types.isModuleNamespaceObject(env)) {
+		envMgrInitSyncStub = sinon.stub(env, 'initSync').callsFake(() => {
+			env.initTestEnvironment(testConfigObj);
+		});
+	}
 	process.on('unhandledRejection', (reason) => {
 		// Ignore @datadog/pprof errors - the module has no native build for Electron test environment
 		if (reason?.message?.includes('No native build was found for runtime=electron')) {
@@ -208,7 +211,7 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
  * fail their flush whenever they finally close, which rocksdb-js reports as "Failed to flush
  * database during close": an uncaught throw out of the exit listener, attributed to no test.
  * Dropping the tables is what the callers actually want; the root itself is removed at process
- * exit, after the databases have closed (see the afterAll hook in mocha.init.js).
+ * exit, after the databases have closed (see completion handling in mocha.init.js).
  *
  * @param envs
  * @returns {Promise<void>}

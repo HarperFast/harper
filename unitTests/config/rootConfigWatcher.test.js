@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const { RootConfigWatcher } = require('#src/config/RootConfigWatcher');
+const { RootConfigWatcher } = require('#js/config/RootConfigWatcher');
 const { tmpdir } = require('node:os');
 const { once } = require('node:events');
 const { join } = require('node:path');

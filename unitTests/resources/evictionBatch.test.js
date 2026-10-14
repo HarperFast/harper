@@ -5,7 +5,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { registerDerivedIndexTables } = require('#src/resources/derivedIndexRegistry');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // Exercises the RocksDB batched-eviction path in Table.ts's cleanup scan: when more than
 // EVICTION_BATCH_SIZE (100) records are evictable in a single scan, removals are coalesced into
@@ -116,7 +116,7 @@ describe('Batched eviction (RocksDB)', () => {
 	});
 
 	it('recovers from an optimistic commit conflict (ERR_BUSY) and still evicts', async function () {
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		let injected = false;
 		let armed = false;
@@ -148,7 +148,7 @@ describe('Batched eviction (RocksDB)', () => {
 	});
 
 	it('does not re-arm cleanup after maintenance closes', async function () {
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		const originalGetRange = RetryTable.primaryStore.getRange;
 		const id = 2000;

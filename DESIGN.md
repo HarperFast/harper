@@ -10,6 +10,14 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - Budget, checked by `npm run check:design-docs`: this index stays under 250 lines and each per-directory `DESIGN.md` under 1000. Adding to a file near its ceiling means pruning that file first.
 - User-facing behavior is documented in [HarperFast/documentation](https://github.com/HarperFast/documentation), never here.
 
+## unitTests/ — test runtimes
+
+- [Source and compiled test lanes](unitTests/DESIGN.md#source-and-compiled-test-lanes) — Isolate native source from mutable compiled exports and preserve ESM database teardown.
+
+## sqlTranslator/ — legacy SQL integration
+
+- [CommonJS date functions](sqlTranslator/DESIGN.md#commonjs-date-functions) — Both runtimes use the same CommonJS helper object, enforced by `alasqlFunctionImporter.test.js`.
+
 ## .github/ — CI workflows
 
 - [The lock file must pass `npm ci` under npm 10 and npm 11 (`workflows/lockfile-npm-compat.yml`)](.github/DESIGN.md#the-lock-file-must-pass-npm-ci-under-npm-10-and-npm-11-workflowslockfile-npm-compatyml) — npm 11 writes the lock but accepts some that npm 10's `npm ci` rejects; fix the conflict at its source, never by regenerating with npm 10.

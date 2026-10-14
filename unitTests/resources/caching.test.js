@@ -4,7 +4,7 @@ const { setTimeout: delay } = require('timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { VERSION_REUSED, entryMap } = require('#src/resources/RecordEncoder');
 const { INVALIDATED } = require('#src/resources/Table');
@@ -855,7 +855,7 @@ describe('Caching', () => {
 		// callback runs, which identifies the fill's native transaction. Commits started before it are collected,
 		// so a removal that escaped the fill transaction can be awaited.
 		function interceptFillCommit(id, onFillCommit) {
-			const { Transaction } = require('@harperfast/rocksdb-js');
+			const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 			const originalCommit = Transaction.prototype.commit;
 			const { primaryStore } = UnauditedIndexedTable;
 			const originalGetEntry = primaryStore.getEntry;

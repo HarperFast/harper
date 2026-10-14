@@ -2,10 +2,10 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
-const RETRY_NOW_VALUE = require('@harperfast/rocksdb-js').constants.RETRY_NOW_VALUE;
+const RETRY_NOW_VALUE = require('../rocksdbBindings.mts').rocksdbBindings().constants.RETRY_NOW_VALUE;
 
 // A request-path (non-sourceApply) transaction whose commit conflicts past the retry cap must
 // REJECT the promise chain the request handler awaits — the caller gets a loud ServerError (500),
@@ -53,7 +53,7 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 	// timers (hdb_analytics aggregation) commit their own transactions during the ~20s backoff
 	// window, and failing those spawns unrelated retry chains that pollute the attempt count.
 	function failCommits(mode, code) {
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		const targetDb = ExhaustTable.primaryStore.store.db;
 		const attempts = [];

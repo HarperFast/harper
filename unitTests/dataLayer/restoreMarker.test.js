@@ -14,7 +14,7 @@ const {
 } = require('node:fs');
 const { basename, dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
-const { tryFileLock, fileLockRelease } = require('@harperfast/rocksdb-js');
+const { tryFileLock, fileLockRelease } = require('../rocksdbBindings.mts').rocksdbBindings();
 const {
 	beginRestore,
 	beginDatabaseDrop,

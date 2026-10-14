@@ -21,6 +21,10 @@ const path = require('node:path');
 const { PID_DIR_PATH } = require('./perPidRoot.js');
 
 const databasesModulePath = require.resolve('#src/resources/databases');
+const globalsModulePath = require.resolve('#src/globals');
+const assertNativeCoreTree = require('./nativeModules.mts').nativeCoreGuard(databasesModulePath);
+let observedDatabasesModule;
+let observationFailed = false;
 // mocha.init.js pins storage.path here; a test that points it elsewhere keeps what it creates there
 const STORAGE_ROOT = path.join(PID_DIR_PATH, 'database');
 
@@ -29,7 +33,19 @@ const STORAGE_ROOT = path.join(PID_DIR_PATH, 'database');
  * have created a database, and loading it here would open storage for suites that never touch it.
  */
 function loadedDatabasesModule() {
-	return require.cache[databasesModulePath]?.exports;
+	if (observedDatabasesModule || observationFailed) return observedDatabasesModule;
+	const cached = require.cache[databasesModulePath]?.exports;
+	const published = require.cache[globalsModulePath]?.exports?.databases;
+	if (!cached && Object.getPrototypeOf(published ?? {}) !== null) return;
+	try {
+		const loaded = cached || require(databasesModulePath);
+		if (!cached && loaded.databases !== published)
+			throw new Error('Database registry publication does not match its namespace.');
+		return (observedDatabasesModule = loaded);
+	} catch (error) {
+		observationFailed = true;
+		throw new Error('Could not observe the evaluated database namespace for unit teardown.', { cause: error });
+	}
 }
 
 function isInside(parentPath, childPath) {
@@ -96,12 +112,13 @@ function census() {
 	};
 }
 
-async function dropCreatedSince(atStart, file) {
+async function dropCreatedSince(atStart, file, runStartEntries) {
 	const databasesModule = loadedDatabasesModule();
-	if (!databasesModule) return;
+	const entries = storageEntries();
+	if (!databasesModule && ![...entries].some((entry) => !atStart.entries.has(entry))) return;
 	const env = require('#src/utility/environment/environmentManager');
 	const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-	const { registryStatus } = require('@harperfast/rocksdb-js');
+	const { registryStatus } = require('./rocksdbBindings.mts').rocksdbBindings();
 	const configuredDatabases = env.get(CONFIG_PARAMS.DATABASES) || {};
 	// a database configured at or inside the storage root scans or nests in the directories dropped
 	// here, so ownership can't be told by name or by root; leave the storage root alone
@@ -111,11 +128,16 @@ async function dropCreatedSince(atStart, file) {
 		return configuredPath === STORAGE_ROOT || isInside(STORAGE_ROOT, configuredPath);
 	});
 	if (storageRootIsShared) return;
-	const { databases } = databasesModule;
+	const databases = databasesModule?.databases ?? {};
 	const failures = [];
 	for (const name of Object.keys(databases)) {
 		if (atStart.names.has(name)) continue;
 		try {
+			const root = databasesModule.resolveDatabaseStorageRoot(name);
+			const relativeRoots = [name, `${name}.mdb`].map(
+				(entry) => path.relative(STORAGE_ROOT, path.join(root, entry)).split(path.sep)[0]
+			);
+			if (relativeRoots.some((entry) => runStartEntries.has(entry))) continue;
 			if (!isDisposable(databasesModule, configuredDatabases, name)) continue;
 			await databasesModule.dropDatabase(name);
 		} catch (error) {
@@ -171,16 +193,32 @@ function installPerFileDatabaseTeardown(rootSuite) {
 		if (suite.file && !suite.isPending() && suite.total() > 0) lastSuiteOfFile.set(suite.file, suite);
 	}
 	let atStart = census();
+	const runStartEntries = atStart.entries;
+	assertNativeCoreTree();
 	for (const [file, suite] of lastSuiteOfFile) {
 		suite.afterAll('drop the databases this file created', async () => {
+			const failures = [];
 			try {
-				await dropCreatedSince(atStart, path.relative(process.cwd(), file));
-			} finally {
+				await dropCreatedSince(atStart, path.relative(process.cwd(), file), runStartEntries);
+			} catch (error) {
+				failures.push(error);
+			}
+			try {
 				// report a database that could not be dropped once, not again after every later file
 				atStart = census();
+			} catch (error) {
+				failures.push(error);
 			}
+			try {
+				assertNativeCoreTree();
+			} catch (error) {
+				failures.push(error);
+			}
+			if (failures.length === 1) throw failures[0];
+			if (failures.length > 1)
+				throw new AggregateError(failures, failures.map((error) => error.message).join('; '), { cause: failures[0] });
 		});
 	}
 }
 
-module.exports = { installPerFileDatabaseTeardown };
+module.exports = { installPerFileDatabaseTeardown, assertNativeCoreTree };

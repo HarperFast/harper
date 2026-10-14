@@ -2,7 +2,7 @@ const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { ImmediateTransaction } = require('#src/resources/DatabaseTransaction');
 const { MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
 const { transaction } = require('#src/resources/transaction');
@@ -41,7 +41,7 @@ describe('ImmediateTransaction conflict retry', () => {
 	// records the native transaction id of every attempt so the test can see which transaction each
 	// retry used. `beforeReject` runs before the first rejection, to age the holder's lease meanwhile.
 	function conflictCommits({ failFirst = 1, beforeReject } = {}) {
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		const targetDb = Locked.primaryStore.store.db;
 		const attempts = [];
@@ -106,7 +106,7 @@ describe('ImmediateTransaction conflict retry', () => {
 		const holder = await Locked.lock(recordId, { hold: true, lease: 5000 });
 		// The incident's shape: the holder's write is staged, then a plain write to the same key commits
 		// before the holder's native commit runs, so RocksDB itself refuses that commit.
-		const { Transaction } = require('@harperfast/rocksdb-js');
+		const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 		const originalCommit = Transaction.prototype.commit;
 		const targetDb = Locked.primaryStore.store.db;
 		const attempts = [];

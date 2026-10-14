@@ -1820,7 +1820,7 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 	let runtime;
 	before(() => {
 		setupTestDBPath();
-		require('#js/server/threads/manageThreads').setMainIsWorker(true);
+		require('#src/server/threads/manageThreads').setMainIsWorker(true);
 	});
 	after(() => runtime?.stop());
 

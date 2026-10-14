@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const { THREAD_TYPES } = require('#src/utility/hdbTerms');
-const { startWorker, restartWorkers, shutdownWorkers, workers } = require('#js/server/threads/manageThreads');
+const { startWorker, restartWorkers, shutdownWorkers, workers } = require('#src/server/threads/manageThreads');
 
 const FIXTURE = path.join(__dirname, 'restartThrottle-fixture.cjs');
 const SERVING_TYPE = 'restart-throttle-serving';

@@ -17,7 +17,7 @@ const { execFileSync } = require('node:child_process');
 const { Worker } = require('node:worker_threads');
 const { once } = require('node:events');
 
-const packageUtils = require('#src/utility/packageUtils');
+const packageUtils = require('#js/utility/packageUtils');
 
 // Compare the fs resolved package.json to an absolute resolution from this test file.
 // These tests will fail if this test file changes location.

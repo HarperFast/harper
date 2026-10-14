@@ -19,7 +19,7 @@ testUtils.preTestPrep();
 
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-const operations = require('#js/components/operations');
+const operations = require('#src/components/operations');
 const gunzip = require('gunzip-maybe');
 const tar = require('tar-fs');
 

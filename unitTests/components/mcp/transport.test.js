@@ -1,6 +1,6 @@
 const assert = require('node:assert');
 const rewire = require('rewire');
-const transport_mod = rewire('#src/components/mcp/transport');
+const transport_mod = rewire('#js/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;
 const { _setSessionTableForTest, createSession, loadSession, saveSession } = require('#src/components/mcp/session');
 const {

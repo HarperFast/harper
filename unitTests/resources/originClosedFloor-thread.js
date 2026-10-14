@@ -3,8 +3,8 @@ const { parentPort, workerData, threadId } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { Transaction } = require('@harperfast/rocksdb-js');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 
 const { mode, gate, epoch, tableName, writes } = workerData ?? {};
 if (mode) run().catch((error) => parentPort.postMessage({ type: 'error', message: error.stack }));
