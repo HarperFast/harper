@@ -1027,7 +1027,8 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 			let key = metric + (path ? '-' + path : '');
 			if (method !== undefined) key += '-' + method;
 			if (type !== undefined) key += '-' + type;
-			// NUL cannot come from a request path or method, so no ordinary key can collide with this one.
+			// No ordinary key ends in NUL and digits: HTTP methods are token characters, and an operation
+			// key, whose action name a request body chooses, always ends in `-operation`.
 			if (perThread) key += '\0' + threadId;
 			let action = aggregateActions.get(key);
 			if (action) {
