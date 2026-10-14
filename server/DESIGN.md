@@ -729,7 +729,7 @@ core).
 
 ## The request-queue throttle sheds only on cycles from the current backlog (`server/throttle.ts`)
 
-The cycle-time average behind each shed decision is per `throttle()` instance and returns to 0 when that queue drains, so an earlier backlog's or another throttle's slow cycle cannot shed this one ([the Windows false shed](https://github.com/HarperFast/harper/actions/runs/38426687966)). A new backlog ramps from 0, like a new process. Enforced by the stale-backlog and two-instance cases in `unitTests/server/throttle.test.js`.
+The cycle-time average behind each shed decision is per `throttle()` instance and returns to 0 when that queue drains, so an earlier backlog's or another throttle's slow cycle cannot shed this one. A new backlog ramps from 0, like a new process. Enforced by the stale-backlog and two-instance cases in `unitTests/server/throttle.test.js`.
 
 ## Response compression dispatches on the serialized output, with one brotli policy (`server/serverHelpers/contentTypes.ts`)
 

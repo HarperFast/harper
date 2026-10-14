@@ -109,8 +109,7 @@ suite('New SQL engine — mutations (phase 4)', (ctx) => {
 	// F-146 regression: a self-referential `SET col = col + N` must apply as an
 	// atomic increment. Read-compute-write of an absolute value loses updates when
 	// statements race — this fires many concurrent `qty = qty + 1` and asserts
-	// every increment was acknowledged and landed. Pre-fix this lost ~half the
-	// increments.
+	// every increment landed. Pre-fix this lost ~half the increments.
 	test('concurrent SET qty = qty + 1 loses no increments (atomic Addition)', async () => {
 		await client
 			.req()
@@ -136,7 +135,9 @@ suite('New SQL engine — mutations (phase 4)', (ctx) => {
 			if (key !== 200) sampleBodies[key] ??= String(detail).slice(0, 200);
 		}
 		const responses = `status counts ${JSON.stringify(statusCounts)}, non-200 bodies ${JSON.stringify(sampleBodies)}`;
-		const read = await byHash('widget', [42]).timeout(60_000);
+		const read = await byHash('widget', [42])
+			.timeout(60_000)
+			.catch((error) => assert.fail(`final read failed (${error.message}); ${responses}`));
 		assert.equal(read.status, 200, `final read failed (${read.text}); ${responses}`);
 		const outcome = `${responses}, final qty ${read.body[0].qty}`;
 		assert.deepEqual(statusCounts, { 200: N }, `every increment must be acknowledged; ${outcome}`);
