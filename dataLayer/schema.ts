@@ -40,8 +40,6 @@ const TABLE_NAME_CONSTRAINTS = Joi.string()
 	.min(1)
 	.max(commonValidators.schema_length.maximum)
 	.pattern(schemaRegex)
-	// `__proto__`/`constructor`/`prototype` pass schemaRegex but address Object.prototype as map keys;
-	// refuse them as table names so describe/SQL maps keyed by table name cannot be polluted (GHSA).
 	.invalid(...hdbTerms.PROTOTYPE_POLLUTING_NAMES)
 	.messages({
 		'string.pattern.base': '{:#label} ' + commonValidators.schema_format.message,

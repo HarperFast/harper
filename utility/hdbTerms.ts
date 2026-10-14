@@ -120,14 +120,9 @@ export const RESERVED_DATABASE_NAMES = [
 ] as const;
 
 /**
- * Names that, used as a key on a plain object, address its prototype rather than an own property.
- * `schemaRegex` permits all three as database/table identifiers, so without this a database or table
- * named `__proto__` turns a `map[name] == null` / `map[name] = {}` build into a write onto the
- * process-wide `Object.prototype`. They are refused as database and table identifiers on the create
- * and schema-authoring paths — like `RESERVED_DATABASE_NAMES`, deliberately NOT on the load/drop/read
- * paths, so one created before this fix still loads (data stays reachable) and can be dropped to
- * remediate. The maps that key on these names are additionally built with `Object.create(null)` so
- * they cannot pollute even for such a pre-existing name.
+ * Names that address a plain object's prototype rather than an own key, which `schemaRegex` permits.
+ * Refused as database and table names on the create/authoring paths only, like
+ * `RESERVED_DATABASE_NAMES`, so one created earlier still loads and can be dropped.
  */
 export const PROTOTYPE_POLLUTING_NAMES = ['__proto__', 'constructor', 'prototype'] as const;
 

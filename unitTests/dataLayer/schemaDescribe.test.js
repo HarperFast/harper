@@ -77,9 +77,7 @@ describe('describeAll authorization bypass state', function () {
 			const internalResult = await operationAuthorizationState.runWithOperationAuthorizationBypass(true, () =>
 				schema_describe.describeAll(request)
 			);
-			// The per-database object is now built with Object.create(null) so a `__proto__`/table-named
-			// key cannot pollute Object.prototype (GHSA); it carries no tables, so compare contents rather
-			// than identity — a prototype-sensitive deepStrictEqual against `{}` would reject the null proto.
+			// null-prototype, so compare contents: deepStrictEqual against `{}` also compares prototypes
 			assert.ok(Object.hasOwn(internalResult, 'private_database'));
 			assert.deepStrictEqual({ ...internalResult.private_database }, {});
 		} finally {

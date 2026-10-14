@@ -54,14 +54,10 @@ describe('#1016 reserved database names', () => {
 	});
 });
 
-// GHSA: `__proto__`, `constructor` and `prototype` pass `schemaRegex` but address Object.prototype
-// when used as a key. A database or table under one of those names turns describe/SQL map builds
-// into writes onto the process-wide prototype. They are refused as database AND table names on the
-// create and schema-authoring paths (the same two surfaces as #1016), keyed so an existing one still
-// loads and can be dropped to remediate.
+// Same two creation surfaces as #1016, for database and table names alike.
 const PROTOTYPE_POLLUTING = ['__proto__', 'constructor', 'prototype'];
 
-describe('GHSA prototype-polluting database/table names', () => {
+describe('prototype-polluting database and table names', () => {
 	for (const name of PROTOTYPE_POLLUTING) {
 		it(`create_schema rejects database '${name}'`, async () => {
 			await assert.rejects(

@@ -31,8 +31,7 @@ export async function describeAll(opObj: any = {}) {
 			isSu = rolePerms?.super_user;
 		}
 		let databases = getDatabases();
-		// Keyed by database and table names, which may legally be `__proto__`: on a plain object that key
-		// is the prototype accessor, and the nested write below would land on Object.prototype.
+		// Keyed by database/table names, which can be `__proto__`: null-prototype keeps those own keys.
 		let schemaList = Object.create(null);
 		let schemaPerms = Object.create(null);
 		let tResults = [];

@@ -3771,10 +3771,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if ((RESERVED_DATABASE_NAMES as readonly string[]).includes(databaseName)) {
 		throw new ClientError(`'${databaseName}' is a reserved name and cannot be used as a database name`);
 	}
-	// `__proto__`/`constructor`/`prototype` pass schemaRegex but address Object.prototype as map keys,
-	// so a database or table under one of those names turns describe/SQL map builds into writes onto the
-	// process-wide prototype (GHSA). Refuse both here on the authoring path for the same reason the
-	// reserved-name check above is here: `create_table`'s operations-API validation is bypassed.
 	if ((PROTOTYPE_POLLUTING_NAMES as readonly string[]).includes(databaseName)) {
 		throw new ClientError(`'${databaseName}' is a reserved name and cannot be used as a database name`);
 	}
