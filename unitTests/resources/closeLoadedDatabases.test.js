@@ -237,7 +237,6 @@ describe('RocksDB handle release', function () {
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
-	// a custom index whose setup throws and whose cleanup close also fails, declared or loaded into a branch
 	for (const branched of [false, true]) {
 		it(`releases a custom index whose setup and cleanup both failed (${branched ? 'branch' : 'declared'})`, async function () {
 			this.timeout(30000);
@@ -319,7 +318,6 @@ describe('RocksDB handle release', function () {
 		if (!(rootStore instanceof RocksDatabase)) return this.skip();
 		await Items.put({ id: 1, name: 'one', vector: [1, 0, 0] });
 		await Items.put({ id: 2, name: 'two', vector: [0, 1, 0] });
-		// what a query in flight across the redeclare holds
 		const replaced = Items.indices.vector;
 		const expected = [...replaced.getRange({})].length;
 

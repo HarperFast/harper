@@ -5278,9 +5278,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				if (!storeDropFailed)
 					discard('generation journal row', () => attributesDbi.remove(generationRowKey(createJournal.generation)));
 			}
-			for (const indexName in Table?.indices ?? {})
-				discard(`index ${indexName}`, () => Table.indices[indexName].close());
-			discard('primary store', () => unpublishedPrimaryStore.close());
+			const closeOrRetain = (description: string, store: any) => {
+				if (!discard(description, () => store.close())) target.owner(rootStore)?.retain?.(store);
+			};
+			for (const indexName in Table?.indices ?? {}) closeOrRetain(`index ${indexName}`, Table.indices[indexName]);
+			closeOrRetain('primary store', unpublishedPrimaryStore);
 		}
 	}
 	// Acquire an exclusive lock for attribute updates
