@@ -1206,6 +1206,14 @@ describe('redactForOperationLog', () => {
 		assert.deepStrictEqual(redactForOperationLog(body), body);
 	});
 
+	it('strips model blocks and JSON strings while preserving the configuration request', () => {
+		for (const models of [{ generative: { default: { apiKey: 'model-secret' } } }, '{"apiKey":"model-secret"}']) {
+			const body = { operation: 'set_configuration', models, MODELS: models, logging_level: 'info' };
+			assert.deepStrictEqual(redactForOperationLog(body), { operation: 'set_configuration', logging_level: 'info' });
+			assert.strictEqual(body.models, models);
+		}
+	});
+
 	it('keeps environment variable names while stripping their values', () => {
 		const clean = redactForOperationLog({
 			operation: 'set_env_value',

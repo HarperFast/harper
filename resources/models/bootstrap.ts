@@ -617,7 +617,7 @@ function modelsWatcherErrorListener(error: unknown): void {
 	harperLogger.warn(`models: config watcher error: ${(error as Error)?.message ?? error}`);
 }
 
-function envLayerNamingModels(): string | undefined {
+export function envLayerNamingModels(): string | undefined {
 	for (const name of ['HARPER_SET_CONFIG', 'HARPER_CONFIG', 'HARPER_DEFAULT_CONFIG']) {
 		const raw = process.env[name];
 		if (!raw) continue;

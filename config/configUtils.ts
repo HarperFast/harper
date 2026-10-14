@@ -24,7 +24,7 @@ import isEqual from 'lodash/isEqual.js';
 // through its shared module object the way named exports can.
 // eslint-disable-next-line prefer-const
 let PropertiesReader = propertiesReaderModule;
-import { handleHDBError, ServerError } from '../utility/errors/hdbError.ts';
+import { handleHDBError, ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES, HDB_ERROR_MSGS } from '../utility/errors/commonErrors.ts';
 import { server } from '../server/Server.ts';
 import { getBackupDirPath } from './configHelpers.ts';
@@ -989,6 +989,12 @@ function isSuffixEscapedParam(arg: string): boolean {
 	return component !== undefined && !isReservedComponentName(component);
 }
 
+function lookupConfigWriteParam(arg: string): string | undefined {
+	// Keep the generic MODELS env var out of the boot/install config allowlist.
+	if (arg.toLowerCase() === 'models') return 'models';
+	return lookupConfigParam(arg) ?? (isSuffixEscapedParam(arg) ? arg : undefined);
+}
+
 function findReservedComponentParams(args: object): string[] {
 	const reserved = [];
 	for (const arg in args) {
@@ -1018,7 +1024,7 @@ function describeUnrecognized(names: string[]): string {
 function findUnrecognizedParams(args: object): string[] {
 	let unrecognized;
 	for (const arg in args) {
-		if (lookupConfigParam(arg) === undefined && !isSuffixEscapedParam(arg)) (unrecognized ??= []).push(arg);
+		if (lookupConfigWriteParam(arg) === undefined) (unrecognized ??= []).push(arg);
 	}
 	return unrecognized ?? [];
 }
@@ -1058,7 +1064,8 @@ export function updateConfigValue(
 		let doUpdate = false;
 		for (const arg in parsedArgs) {
 			const castedValue = castConfigValue(arg, parsedArgs[arg]);
-			if (!isEqual(castedValue, flatConfigObj[arg.toLowerCase()])) {
+			// Model hot reload does not refresh this startup snapshot; it cannot detect a rollback.
+			if (lookupConfigWriteParam(arg) === 'models' || !isEqual(castedValue, flatConfigObj[arg.toLowerCase()])) {
 				doUpdate = true;
 				break;
 			}
@@ -1096,7 +1103,7 @@ export function updateConfigValue(
 	} else {
 		// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 		for (const arg in parsedArgs) {
-			let configParam = lookupConfigParam(arg);
+			let configParam = lookupConfigWriteParam(arg);
 
 			// If setting http.securePort to the same value as http.port, set http.port to null to avoid clashing ports
 			if (
@@ -1126,10 +1133,6 @@ export function updateConfigValue(
 					configDoc.deleteIn(['threads']);
 					configDoc.setIn(['threads', 'count'], threadCount);
 				}
-			}
-
-			if (!configParam && isSuffixEscapedParam(arg)) {
-				configParam = arg;
 			}
 
 			if (configParam !== undefined) {
@@ -1406,6 +1409,12 @@ export async function setConfiguration(setConfigJson) {
 		);
 	}
 	assertThreadHeapMemoryStartable(configFields);
+	if (Object.keys(configFields).some((field) => field.toLowerCase() === 'models')) {
+		const { envLayerNamingModels } = await import('../resources/models/bootstrap.ts');
+		const pinnedBy = envLayerNamingModels();
+		if (pinnedBy && pinnedBy !== 'HARPER_DEFAULT_CONFIG')
+			throw new ClientError(`Cannot set models: ${pinnedBy} defines models. Change that variable first.`, 409);
+	}
 	try {
 		// Imported lazily: the publication lock's module loads this one.
 		const { withRootConfigPublicationLock } = await import('../components/rootConfigPublication.ts');

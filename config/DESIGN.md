@@ -8,6 +8,10 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
+## Model configuration writes
+
+`set_configuration` accepts `models` as a complete replacement (including `{}` to clear it), validated by the existing model schema; named entry keys remain inside the object. `lookupConfigWriteParam` keeps this out of the bare env/CLI registry, so an unrelated `MODELS` variable does not become a boot override. Model writes always validate and persist the candidate, bypassing the startup-snapshot no-op check that could silently skip a rollback. They reject with 409 when `HARPER_CONFIG` or `HARPER_SET_CONFIG` names models, because those layers reassert their values; `HARPER_DEFAULT_CONFIG` yields to user edits and remains writable, taking effect on restart because the model watcher is disabled. Operation logs redact the entire block; `${ENV_VAR}` credentials remain literal on disk, while literal credentials retain the existing bootstrap warning. Enforced by `unitTests/config/setConfigurationModels.test.js` and the configuration integration suite.
+
 ## Root config is adopted only when it parses (`config/configUtils.ts`)
 
 `initConfig()` rejects `Document.errors` before upgrade backfill, environment-state writes, validation, or active-config replacement on boot and forced reload. Forced reloads use `initSync()`, whose current failure policy exits the process, so a malformed edit can terminate a running node; this deliberately follows the existing fail-closed validation path. YAML duplicate keys are fatal where they appear in `Document.errors`, including existing files encountered during upgrade. The CLI error is a `ServerError` with status 500 and uses the source-free code and location formatter shared with `ConfigParseError` while retaining the `Error parsing … YAMLParseError` prefix, because parser source frames can expose credentials. It does not retain the parser error as a cause. `unitTests/config/configUtils-parseErrors.test.js` pins the error type and malformed and duplicate-key files with all legacy backfill keys present.
