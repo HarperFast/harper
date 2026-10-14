@@ -206,13 +206,34 @@ describe('RocksDB handle release', function () {
 		const replaced = Items.indices.vector;
 		table(itemsDefinition(databaseName, [vector, { attribute: 'added', indexed: true }]));
 		assert.notStrictEqual(Items.indices.vector, replaced, 'precondition: a custom index is reopened');
-		failClose(replaced, 1);
+		// the owned-list pass and its drain after the root closes each try it
+		failClose(replaced, 2);
 
 		await assert.rejects(closeDatabase(databaseName, { requireClosed: true }), /for destructive DDL/);
 		assert.notStrictEqual(replaced.status, 'closed', 'precondition: the failed wrapper is still open');
 		await new ResourceBridge().dropSchema({ schema: databaseName });
 
 		assert.strictEqual(replaced.status, 'closed');
+		assert.strictEqual(refCountFor(rootStore.path), 0);
+	});
+
+	it('closes the stores a declaration opened while the database was closing', async function () {
+		this.timeout(30000);
+		const databaseName = 'closeduringdeclare';
+		const Items = table(itemsDefinition(databaseName));
+		const rootStore = Items.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		// the owned list (which holds the attributes store) is drained first; the root closes after it
+		const close = rootStore.close;
+		let Late;
+		rootStore.close = function (...args) {
+			rootStore.close = close;
+			Late = table({ table: 'Late', database: databaseName, attributes: [{ attribute: 'id', isPrimaryKey: true }] });
+			return close.apply(this, args);
+		};
+		await closeDatabase(databaseName);
+
+		assert.ok(Late?.primaryStore, 'precondition: the declaration opened its store during the close');
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
@@ -256,7 +277,7 @@ describe('RocksDB handle release', function () {
 		};
 	}
 
-	// the graph pass and the owned-list pass each try it, so only the owned list still reaches it later
+	// the graph pass and both owned-list passes each try it, so only the owned list still reaches it later
 	for (const loaded of [false, true]) {
 		it(`a later close releases an index whose earlier closes failed (${loaded ? 'loaded' : 'declared'})`, async function () {
 			this.timeout(30000);
@@ -269,7 +290,7 @@ describe('RocksDB handle release', function () {
 				resetDatabases();
 				Items = databases[databaseName].Items;
 			}
-			failClose(Items.indices.name, 2);
+			failClose(Items.indices.name, 3);
 
 			await closeDatabase(databaseName);
 			assert.ok(refCountFor(rootStore.path) > 0, 'precondition: the failed wrapper is still open');
