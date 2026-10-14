@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791962741089,
+  "lastUpdate": 1791962744489,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -17874,6 +17874,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 45.38,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Dawson Toth",
+            "username": "dawsontoth",
+            "email": "dawson@harperdb.io"
+          },
+          "committer": {
+            "name": "Dawson Toth",
+            "username": "dawsontoth",
+            "email": "dawson@toth.support"
+          },
+          "id": "10704664b68fe756c879c8798a3438f21475a413",
+          "message": "Say the policy race can only replace a policy created in the window\n\nSetup writes a policy only when none exists at the preflight and at the\nre-check just before the write, and refuses one that is disabled, so it\ncan't undo a disable or a drop. What the last round trip can overwrite is\na policy another super user creates with the same id, enabled or not. A\nserver-side create-only write would narrow that, not close it:\nhdb_oidc_trust replicates, so the check would be per node.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-13T14:26:24Z",
+          "url": "https://github.com/HarperFast/harper/commit/10704664b68fe756c879c8798a3438f21475a413"
+        },
+        "date": 1791962743640,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 13.47,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 12.92,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 19.87,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 10.75,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 34.24,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 12.24,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 40.72,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 13.4,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 19.38,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 52.92,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 139.39,
             "unit": "ms"
           }
         ]
