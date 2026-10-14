@@ -122,11 +122,11 @@ describe('schema-migration fragility: silent gaps when per-record indexing error
 			],
 		});
 		const tagIndex = Tbl.indices?.tag;
-		const ownPut = tagIndex?.put;
+		let restorePut = () => {};
 		if (tagIndex && typeof tagIndex.put === 'function') {
 			const origPut = tagIndex.put.bind(tagIndex);
 			let opCount = 0;
-			tagIndex.put = function (indexedValue, primaryKey, options) {
+			restorePut = stubMethod(tagIndex, 'put', function (indexedValue, primaryKey, options) {
 				opCount++;
 				// reject every 10th index put with a simulated transient error
 				if (opCount % 10 === 0) {
@@ -135,11 +135,11 @@ describe('schema-migration fragility: silent gaps when per-record indexing error
 					);
 				}
 				return origPut(indexedValue, primaryKey, options);
-			};
+			});
 		}
 		if (Tbl.indexingOperation) await Tbl.indexingOperation;
 		// a redeclare keeps this wrapper, so the simulated restart below must not inherit the failure
-		if (tagIndex) tagIndex.put = ownPut;
+		restorePut();
 
 		// With the fix, the index must NOT be silently complete when errors occurred.
 		// The fix leaves isIndexing = true and sets indexingFailed = true so:

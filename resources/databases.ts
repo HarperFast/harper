@@ -513,7 +513,6 @@ const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
  */
 const ownedRocksStores = new Map<string, { deref(): any }[]>();
 
-/** The owner `initStores` and the global declaration target record a global RocksDB root's wrappers in. */
 function ownedStoresFor(rootStore: any): { push(store: any): void } | undefined {
 	if (!(rootStore instanceof RocksDatabase)) return undefined;
 	return { push: (store) => adoptOwnedStore(rootStore.path, store) };
@@ -534,19 +533,25 @@ function adoptOwnedStore(path: string, store: any): void {
 	}
 }
 
+/** Held strongly: a wrapper whose close failed may not release its handle when it is collected. */
+function retainUnclosedStore(path: string, store: any): void {
+	let owned = ownedRocksStores.get(path);
+	if (!owned) ownedRocksStores.set(path, (owned = []));
+	owned.push({ deref: () => store });
+}
+
 async function closeOwnedStores(path: string, close: (store: any) => Promise<boolean>): Promise<void> {
-	const failed: { deref(): any }[] = [];
+	const failed: any[] = [];
 	let owned: { deref(): any }[] | undefined;
 	// a declaration during an await below starts a fresh list, which the next pass drains
 	while ((owned = ownedRocksStores.get(path))) {
 		ownedRocksStores.delete(path);
 		for (const ref of owned) {
 			const store = ref.deref();
-			// held strongly: a wrapper whose close failed may not release its handle when collected
-			if (store && !(await close(store))) failed.push({ deref: () => store });
+			if (store && !(await close(store))) failed.push(store);
 		}
 	}
-	if (failed.length) ownedRocksStores.set(path, failed);
+	for (const store of failed) retainUnclosedStore(path, store);
 }
 type IncompleteDatabaseClose = {
 	databaseNames: Set<string>;
@@ -3632,8 +3637,6 @@ function openIndex(
 			name: storeNameFor(dbiKey, generation),
 			cache: isCustomObjectIndex,
 		} as any) as any;
-		// before the setup below, whose failure cleanup can itself fail to close it
-		adopt(dbi);
 		(dbi as any).rootStore = rootStore;
 		try {
 			// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
@@ -3651,9 +3654,12 @@ function openIndex(
 			// the handle is not yet owned by any table, so nobody else can close it
 			try {
 				dbi.close();
-			} catch {}
+			} catch {
+				retainUnclosedStore(rootStore.path, dbi);
+			}
 			throw error;
 		}
+		adopt(dbi);
 	} else {
 		dbi = (rootStore as any).openDB(dbiKey, dbiInit as any);
 		adopt(dbi);
@@ -4662,8 +4668,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		}
 		const indices = Table.indices;
 		attributesDbi ??= internalDbisFor(rootStore, target);
-		// A plain index keeps its open wrapper on an unchanged store rather than opening another per
-		// redeclare. Any custom index is reopened: openIndex builds its state from the options.
+		// Any custom index is reopened: openIndex builds its state from the options.
 		const indexFor = (dbiKey: string, attribute: any) => {
 			const current = indices[attribute.name];
 			if (

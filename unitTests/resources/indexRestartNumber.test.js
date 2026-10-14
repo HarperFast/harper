@@ -16,7 +16,7 @@
  */
 require('../testUtils');
 const assert = require('node:assert');
-const { setupTestDBPath } = require('../testUtils');
+const { setupTestDBPath, stubMethod } = require('../testUtils');
 const { table, resetDatabases } = require('#src/resources/databases');
 const manageThreads = require('#js/server/threads/manageThreads');
 const { setMainIsWorker } = manageThreads;
@@ -81,18 +81,18 @@ describe('indexing crash-recovery: restartNumber re-trigger (#1359)', () => {
 			],
 		});
 		const tagIndex = Tbl.indices?.tag;
-		const ownPut = tagIndex?.put;
+		let restorePut = () => {};
 		if (tagIndex && typeof tagIndex.put === 'function') {
 			const origPut = tagIndex.put.bind(tagIndex);
 			let opCount = 0;
-			tagIndex.put = function (indexedValue, primaryKey, options) {
+			restorePut = stubMethod(tagIndex, 'put', function (indexedValue, primaryKey, options) {
 				if (++opCount % 7 === 0) return Promise.reject(new Error('simulated permanent index put failure'));
 				return origPut(indexedValue, primaryKey, options);
-			};
+			});
 		}
 		if (Tbl.indexingOperation) await Tbl.indexingOperation;
 		// a redeclare keeps this wrapper, so the simulated restart below must not inherit the failure
-		if (tagIndex) tagIndex.put = ownPut;
+		restorePut();
 
 		const parked = findDescriptor(Tbl, 'tag');
 		assert.ok(parked, 'tag descriptor should exist after a parked backfill');

@@ -252,18 +252,23 @@ describe('RocksDB handle release', function () {
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
-	it('an index range opened before a redeclare still reads until the database closes', async function () {
+	it('a query holding an index a redeclare replaced can still read it until the database closes', async function () {
 		this.timeout(30000);
 		const databaseName = 'closeredeclarereader';
-		const Items = table(itemsDefinition(databaseName));
+		const vector = { name: 'vector', type: 'Array', indexed: { type: 'HNSW' } };
+		const Items = table(itemsDefinition(databaseName, [vector]));
 		const rootStore = Items.primaryStore.rootStore;
 		if (!(rootStore instanceof RocksDatabase)) return this.skip();
-		await Items.put({ id: 1, name: 'one' });
-		await Items.put({ id: 2, name: 'two' });
-		const range = Items.indices.name.getRange({});
+		await Items.put({ id: 1, name: 'one', vector: [1, 0, 0] });
+		await Items.put({ id: 2, name: 'two', vector: [0, 1, 0] });
+		// what a query in flight across the redeclare holds
+		const replaced = Items.indices.vector;
+		const expected = [...replaced.getRange({})].length;
 
-		table(itemsDefinition(databaseName, [{ attribute: 'added', indexed: true }]));
-		assert.strictEqual([...range].length, 2);
+		table(itemsDefinition(databaseName, [vector, { attribute: 'added', indexed: true }]));
+		assert.notStrictEqual(Items.indices.vector, replaced, 'precondition: the redeclare replaced the index wrapper');
+		assert.ok(expected > 0, 'precondition: the index holds entries');
+		assert.strictEqual([...replaced.getRange({})].length, expected);
 		await closeDatabase(databaseName);
 
 		assert.strictEqual(refCountFor(rootStore.path), 0);
