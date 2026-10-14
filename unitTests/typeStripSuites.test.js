@@ -64,6 +64,14 @@ describe('unit runtime selection', function () {
 		assert.match(result.stdout, /Unit runtime: compiled, 1 files/);
 		assert.strictEqual((result.stdout.match(/1 passing/g) || []).length, 2);
 	});
+	it('preserves the real PID when loading a skipped compiled schema fixture', () => {
+		succeeds(
+			run(
+				['compiled'],
+				['--file', join(__dirname, 'dataLayer/schema.test.js'), '--require', join(fixtures, 'pidInvariant.cjs')]
+			)
+		);
+	});
 	it('honors an explicit source-only selection', () => {
 		const result = run(['source', 'compiled'], ['--source-only']);
 		succeeds(result);

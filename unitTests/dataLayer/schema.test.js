@@ -615,11 +615,11 @@ describe.skip('Test schema module', function () {
 	describe('Create attribute', function () {
 		let bridge_create_attr_stub;
 		let attribute_structure_fake = { message: 'inserted 1 of 1 records', skipped_hashes: '', inserted_hashes: '' };
-		sinon.stub(process, 'pid').value('8877');
 
 		let get_db_stub = sandbox.stub().returns({ dogsrule: { catsdrool: { attributes: [] } } });
 
 		before(function () {
+			sandbox.stub(process, 'pid').value('8877');
 			bridge_create_attr_stub = sandbox.stub(harperBridge, 'createAttribute').resolves(attribute_structure_fake);
 			schema.__set__('getDatabases', get_db_stub);
 		});
