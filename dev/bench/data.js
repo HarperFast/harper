@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791883670033,
+  "lastUpdate": 1791962741089,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -7577,6 +7577,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 953.45,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Dawson Toth",
+            "username": "dawsontoth",
+            "email": "dawson@harperdb.io"
+          },
+          "committer": {
+            "name": "Dawson Toth",
+            "username": "dawsontoth",
+            "email": "dawson@toth.support"
+          },
+          "id": "10704664b68fe756c879c8798a3438f21475a413",
+          "message": "Say the policy race can only replace a policy created in the window\n\nSetup writes a policy only when none exists at the preflight and at the\nre-check just before the write, and refuses one that is disabled, so it\ncan't undo a disable or a drop. What the last round trip can overwrite is\na policy another super user creates with the same id, enabled or not. A\nserver-side create-only write would narrow that, not close it:\nhdb_oidc_trust replicates, so the check would be per node.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-13T14:26:24Z",
+          "url": "https://github.com/HarperFast/harper/commit/10704664b68fe756c879c8798a3438f21475a413"
+        },
+        "date": 1791962738315,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 8120.26,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 14198.47,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 13019.57,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 8290.57,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 6539.7,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 12701.27,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1417.42,
             "unit": "ops/sec"
           }
         ]
