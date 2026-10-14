@@ -7,6 +7,7 @@ const sqlTestUtils = require('../sqlTestUtils');
 const { setupCSVSqlData, generateMockAST, cleanupCSVData, sqlIntegrationData } = sqlTestUtils;
 const { createMockDB, tearDownMockDB, deepClone, mochaAsyncWrapper, sortAsc, sortDesc } = testUtils;
 
+const assert = require('node:assert');
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
@@ -294,7 +295,10 @@ describe('Test SQL Engine', function () {
 
 					const search_results = await test_instance.search();
 
-					expect(search_results.map((row) => row.id).sort((a, b) => a - b)).to.deep.equal(expected_ids);
+					assert.deepStrictEqual(
+						search_results.map((row) => row.id).sort((a, b) => a - b),
+						expected_ids
+					);
 				})
 			);
 		}
@@ -313,7 +317,7 @@ describe('Test SQL Engine', function () {
 
 					const search_results = await test_instance.search();
 
-					expect(search_results.map((row) => `${row.lid}:${row.rid}`).sort()).to.deep.equal(expected_pairs);
+					assert.deepStrictEqual(search_results.map((row) => `${row.lid}:${row.rid}`).sort(), expected_pairs);
 				})
 			);
 		}
@@ -1163,8 +1167,8 @@ describe('Test SQL Engine', function () {
 		it('should not narrow the fetch by a predicate under NOT', function () {
 			setupTestInstance(sql_basic_dog_select + ` WHERE NOT (id = 1) AND NOT (age IN (4, 5)) AND NOT (age > 5)`);
 
-			expect(test_instance.exact_search_values).to.deep.equal({});
-			expect(test_instance.comparator_search_values).to.deep.equal({});
+			assert.deepStrictEqual(test_instance.exact_search_values, {});
+			assert.deepStrictEqual(test_instance.comparator_search_values, {});
 		});
 
 		it('should not narrow the fetch by a predicate nested inside another expression', function () {
@@ -1176,16 +1180,19 @@ describe('Test SQL Engine', function () {
 			]) {
 				setupTestInstance(sql_basic_dog_select + ` WHERE ${where}`);
 
-				expect(test_instance.exact_search_values, where).to.not.have.property(test_attr_path);
-				expect(test_instance.comparator_search_values, where).to.deep.equal({});
+				const narrowed = Object.keys(test_instance.exact_search_values).filter(
+					(key) => !test_instance.exact_search_values[key].ignore
+				);
+				assert.deepStrictEqual(narrowed, [], where);
+				assert.deepStrictEqual(test_instance.comparator_search_values, {}, where);
 			}
 		});
 
 		it('should not narrow the fetch when a table is joined to itself', function () {
 			setupTestInstance(`SELECT l.id FROM dev.dog l JOIN dev.dog r ON l.breed = r.breed WHERE l.id = 1 AND r.age > 4`);
 
-			expect(test_instance.exact_search_values).to.deep.equal({});
-			expect(test_instance.comparator_search_values).to.deep.equal({});
+			assert.deepStrictEqual(test_instance.exact_search_values, {});
+			assert.deepStrictEqual(test_instance.comparator_search_values, {});
 		});
 
 		it('should narrow the fetch by every top-level conjunct, through parentheses', function () {
@@ -1194,9 +1201,9 @@ describe('Test SQL Engine', function () {
 					` WHERE (id IN (1, 2)) AND (age > 4 AND NOT (name = 'Sam')) AND IIF(breed = 'Pit', 1, 0) = 1`
 			);
 
-			expect(Object.keys(test_instance.exact_search_values)).to.deep.equal([test_attr_path]);
-			expect([...test_instance.exact_search_values[test_attr_path].values]).to.deep.equal([1, 2]);
-			expect(test_instance.comparator_search_values).to.deep.equal({
+			assert.deepStrictEqual(Object.keys(test_instance.exact_search_values), [test_attr_path]);
+			assert.deepStrictEqual([...test_instance.exact_search_values[test_attr_path].values], [1, 2]);
+			assert.deepStrictEqual(test_instance.comparator_search_values, {
 				'dev/dog/age': { ignore: false, comparators: [{ attribute: 'age', operation: '>', value: 4 }] },
 			});
 		});

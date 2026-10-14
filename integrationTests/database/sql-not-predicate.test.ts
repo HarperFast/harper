@@ -1,13 +1,6 @@
 /**
- * SQL WHERE row sets when a predicate sits under NOT or inside another expression, for SELECT, DELETE and UPDATE
- * (#1397 §D).
- *
- * The legacy AlaSQL executor fetched each WHERE column narrowed to the values its predicates named, wherever those
- * predicates sat, and evaluated the WHERE over only the rows fetched: `NOT (c = 'alpha')` returned nothing and
- * `NOT (a = 1 AND b = 2)` missed every row matching neither side. The default `auto` engine reaches that executor for
- * every parenthesized expression.
- *
- * Expected id sets are hand-written against the NULL-free seed below.
+ * WHERE row sets for a predicate under NOT or inside another expression, for SELECT, DELETE and UPDATE, through the
+ * legacy SQL executor (#1397). Expected id sets are hand-written against the NULL-free seed below.
  */
 
 import { suite, test, before, after } from 'node:test';
