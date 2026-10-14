@@ -41,7 +41,6 @@ import {
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import { METRIC } from '../resources/analytics/metadata.ts';
-import { startRequestTimer, watchRequestArrival } from './serverHelpers/requestTiming.ts';
 import { Readable, Writable, pipeline } from 'node:stream';
 import { mkdirSync, unlinkSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
@@ -903,7 +902,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			`HTTP request queue on port ${port}`
 		);
 		const dispatchRequest = (nodeRequest: IncomingMessage, nodeResponse: any) => {
-			startRequestTimer(nodeRequest as any);
+			(nodeRequest as any).receivedAt = performance.now();
 			// throttle the requests that can make data modifications because they are more likely to be slow and we don't
 			// want to block or slow down other activity
 			const method = nodeRequest.method;
@@ -936,10 +935,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			server.on('secureConnection', (socket) => {
 				if (socket._parent.startTime) recordAction(performance.now() - socket._parent.startTime, 'tls-handshake', port);
 				recordAction(socket.isSessionReused(), 'tls-reused', port);
-				watchRequestArrival(socket);
 			});
 			server.isSecure = true;
-		} else server.on('connection', watchRequestArrival);
+		}
 		registerServer(server, port);
 		// macOS doesn't support SO_REUSEPORT on all socket types; operations API also doesn't need it
 		if (isOperationsServer || process.platform === 'darwin') server.noReusePort = true;
@@ -986,7 +984,6 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 					},
 					dispatchRequest
 				);
-				udsServer.on('connection', watchRequestArrival);
 
 				udsServer.isPerThreadSocket = true;
 				// Mirror the secure server's mTLS config so a client cert forwarded by the
@@ -1365,7 +1362,6 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				const cacheType =
 					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
 				recordAction(executionTime, 'duration', handlerPath, method, cacheType);
-				recordAction(endTime - startTime, METRIC.REQUEST_TIME, handlerPath, method, cacheType);
 				recordActionBinary(status < 400, 'success', handlerPath, method);
 				recordActionBinary(1, 'response_' + status, handlerPath, method);
 				logHttpRequest(request, status, requestId, executionTime);
