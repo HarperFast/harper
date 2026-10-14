@@ -1069,6 +1069,7 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 	// mutates. `headers` is normalized in place the same way the Bun path does.
 	const handle = async (request: any) => {
 		const startTime = performance.now();
+		const receivedAt = request.receivedAt;
 		let requestId = 0;
 		if (isOperationsServer) request.isOperationsServer = true;
 		if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
@@ -1139,8 +1140,8 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 		const cacheType =
 			response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
 		recordAction(executionTime, 'duration', request.handlerPath, request.method, cacheType);
-		if (request.receivedAt !== undefined)
-			recordAction(endTime - request.receivedAt, METRIC.REQUEST_TIME, request.handlerPath, request.method, cacheType);
+		if (receivedAt !== undefined)
+			recordAction(endTime - receivedAt, METRIC.REQUEST_TIME, request.handlerPath, request.method, cacheType);
 		recordActionBinary(status < 400, 'success', request.handlerPath, request.method);
 		recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
 		logHttpRequest(request, status, requestId, executionTime);
