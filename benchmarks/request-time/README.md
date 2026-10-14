@@ -24,3 +24,14 @@ Two-worker instances on an M-series laptop. The baseline is the branch's merge-b
 | branch, off            | 31,186          | 1.20        | 25,321             | 1.75        |
 
 Both paths are inside run-to-run noise. The unqueued GET path has no new work; the queued PUT path, which records `request-time`, costs under 2% of throughput with analytics on against analytics off, and matches the merge-base.
+
+The same comparison on the other two request paths, same instances and driver, analytics on:
+
+| path                                          | build      | GET req/s       | PUT or POST (queued) req/s |
+| --------------------------------------------- | ---------- | --------------- | -------------------------- |
+| uWS HTTP port (`HARPER_UWS_HTTP=1`)           | merge-base | 30,359 / 30,302 | 25,077 / 26,945            |
+| uWS HTTP port (`HARPER_UWS_HTTP=1`)           | branch     | 30,617 / 30,271 | 25,438 / 24,899            |
+| Fastify, operations API `POST /` describe_all | merge-base |                 | 17,214                     |
+| Fastify, operations API `POST /` describe_all | branch     |                 | 17,320                     |
+
+Run the operations-API case with `BENCH_PATH=/ BENCH_AUTH=admin:<password> BENCH_BODY='{"operation":"describe_all"}'` against the operations port; its POSTs go through the throttle queue and are handed to Fastify, which records `request-time` from the dispatch stamp. The uWS flag was verified by the absence of Node's `Connection`, `Keep-Alive` and `Transfer-Encoding` headers on the port. All three paths are inside noise.

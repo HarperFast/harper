@@ -908,7 +908,6 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			const method = nodeRequest.method;
 			if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
 			else {
-				// Only a queued request can wait before its handler, so only it gets a `request-time`.
 				if (checkAnalyticsEnabled()) (nodeRequest as any).receivedAt = performance.now();
 				throttledRequestHandler(nodeRequest, nodeResponse);
 			}

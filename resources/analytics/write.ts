@@ -1027,7 +1027,8 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 			let key = metric + (path ? '-' + path : '');
 			if (method !== undefined) key += '-' + method;
 			if (type !== undefined) key += '-' + type;
-			if (perThread) key += '-thread-' + threadId;
+			// NUL cannot come from a request path or method, so no ordinary key can collide with this one.
+			if (perThread) key += '\0' + threadId;
 			let action = aggregateActions.get(key);
 			if (action) {
 				const byThread = Boolean(action.byThread);

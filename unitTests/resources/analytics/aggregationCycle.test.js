@@ -431,6 +431,45 @@ describe('analytics aggregation cycle', () => {
 		assert.strictEqual(aggregatedMetrics('db-write-by-thread', first + 2).length, 0);
 	});
 
+	it('keeps a per-thread row apart from an ordinary entry whose method spells its old key', async function () {
+		this.timeout(30000);
+		await drainLiveReports();
+		const first = lastRawKey() + 1;
+		await seedRawReports([
+			sampleReport(first, 1, {
+				metric: 'duration',
+				path: 'ThreadPath',
+				method: 'GET',
+				type: 'cache-hit',
+				count: 10,
+				mean: 2,
+				distribution: [{ value: 2, count: 10 }],
+			}),
+			sampleReport(first + 1, 1, {
+				metric: 'duration',
+				method: 'by-thread-ThreadPath-GET-cache-hit-thread-1',
+				count: 7,
+				mean: 1,
+				distribution: [{ value: 1, count: 7 }],
+			}),
+		]);
+		await nextPeriod();
+		await runCycle();
+
+		const perThread = await waitFor(
+			() =>
+				aggregatedMetrics('duration-by-thread', first + 1).find((row) => row.path === 'ThreadPath' && row.thread === 1),
+			{ timeout: 10000, message: 'the per-thread row was aggregated' }
+		);
+		assert.strictEqual(perThread.count, 10);
+		assert.strictEqual(perThread.mean, 2);
+		const ordinary = aggregatedMetrics('duration', first + 1).find(
+			(row) => row.method === 'by-thread-ThreadPath-GET-cache-hit-thread-1'
+		);
+		assert.strictEqual(ordinary.count, 7);
+		assert.strictEqual(ordinary.mean, 1);
+	});
+
 	it('reports the event loop delay of the reporting thread with every flush', async function () {
 		this.timeout(30000);
 		const seen = [];
