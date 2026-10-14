@@ -293,6 +293,11 @@ suite('Configuration', (ctx) => {
 			}
 			const before = await client.req().send({ operation: 'get_configuration' }).expect(200);
 			await client.req().send({ operation: 'set_configuration', logging_level: 'fatal', models: null }).expect(400);
+			await client
+				.req()
+				.send({ operation: 'set_configuration', models: { generative: { ['__proto__']: { backend: 'ollama' } } } })
+				.expect(400)
+				.expect((r) => assert.match(r.body.error, /not valid JSON/));
 			const after = await client.req().send({ operation: 'get_configuration' }).expect(200);
 			assert.deepStrictEqual(after.body, before.body);
 			await client.req().send({ operation: 'set_configuration', models: {} }).expect(200);
@@ -301,8 +306,10 @@ suite('Configuration', (ctx) => {
 				return list.body.data.length === 0;
 			}, 10_000);
 		} finally {
+			const closed = once(provider, 'close', { signal: AbortSignal.timeout(5000) });
 			provider.close();
-			await once(provider, 'close');
+			provider.closeAllConnections();
+			await closed;
 		}
 	});
 

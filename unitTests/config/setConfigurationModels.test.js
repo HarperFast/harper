@@ -30,7 +30,10 @@ describe('set_configuration models block', () => {
 		const configPath = getConfigFilePath();
 		const saved = readFileSync(configPath, 'utf8');
 		const startupModels = {
-			generative: { hasOwnProperty: { backend: 'ollama', model: 'fixture' } },
+			generative: {
+				hasOwnProperty: { backend: 'ollama', model: 'fixture' },
+				['__proto__']: { backend: 'ollama', model: 'fixture' },
+			},
 		};
 		try {
 			await setConfiguration({ operation: 'set_configuration', models: startupModels });
@@ -91,6 +94,22 @@ describe('set_configuration models block', () => {
 		} finally {
 			if (saved === undefined) delete process.env.HARPER_DEFAULT_CONFIG;
 			else process.env.HARPER_DEFAULT_CONFIG = saved;
+		}
+	});
+
+	it('ignores empty environment model blocks, which impose no settings', async () => {
+		for (const layer of ['HARPER_SET_CONFIG', 'HARPER_CONFIG']) {
+			const saved = process.env[layer];
+			try {
+				for (const empty of [{ models: {} }, { 'models.generative': {} }]) {
+					process.env[layer] = JSON.stringify(empty);
+					await setConfiguration({ operation: 'set_configuration', models });
+					assert.deepStrictEqual(readRootConfig().models, models);
+				}
+			} finally {
+				if (saved === undefined) delete process.env[layer];
+				else process.env[layer] = saved;
+			}
 		}
 	});
 });
