@@ -293,6 +293,8 @@ deploy:
 
 It is one job, not a whole workflow. [Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci#path-a-deploy-a-tagged-release-from-your-repository) has complete workflows that run as written, including the step that waits for a rolling deploy to reach every node.
 
+Every step in a job with `id-token: write` can request an identity token, not only `harper`: GitHub gives each one `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`. So the job above runs none of the repository's code, and `persist-credentials: false` keeps the job's GitHub token out of `.git/config`, which `harper deploy` uploads with the rest of the checkout. A workflow that installs dependencies or builds should do that in a job without `id-token: write`, as [Path B](/learn/developers/deploying-from-ci#path-b-build-in-ci-publish-to-github-packages-deploy-the-artifact) does.
+
 Harper currently detects GitHub Actions only. Other CI systems expose the same idea differently; on one Harper does not recognize, the CLI falls through to its other credential sources rather than failing.
 
 If your pipeline already sets a token or password, remove it. Leaving it in place is not harmful but it does keep winning — a configured credential outranks the exchange, deliberately, so that enabling this does not silently re-point an existing pipeline at a different user. See [Authentication Precedence](#authentication-precedence) if you need the full order for a mixed setup.
