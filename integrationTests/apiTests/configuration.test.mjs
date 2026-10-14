@@ -270,7 +270,7 @@ suite('Configuration', (ctx) => {
 		await once(provider, 'listening');
 		const host = `http://127.0.0.1:${provider.address().port}`;
 		try {
-			for (const name of ['named_model.v1', 'replacement', 'named_model.v1']) {
+			for (const name of ['named_model.v1', 'hasOwnProperty', 'replacement', 'named_model.v1']) {
 				const models = { generative: { [name]: { backend: 'ollama', host, model: `fixture-${name}` } } };
 				await client.req().send({ operation: 'set_configuration', models }).expect(200);
 				const config = await client.req().send({ operation: 'get_configuration' }).expect(200);

@@ -1230,12 +1230,12 @@ export function flattenConfig(obj) {
 	function squashObj(obj) {
 		let result = {};
 		for (let i in obj) {
-			if (!obj.hasOwnProperty(i)) continue;
+			if (!Object.hasOwn(obj, i)) continue;
 
 			if (typeof obj[i] == 'object' && obj[i] !== null && !Array.isArray(obj[i]) && !PRESERVED_PROPERTIES.includes(i)) {
 				const flatObj = squashObj(obj[i]);
 				for (const x in flatObj) {
-					if (!flatObj.hasOwnProperty(x)) continue;
+					if (!Object.hasOwn(flatObj, x)) continue;
 
 					if (x !== 'package') i = i.toLowerCase();
 					const key = i + '_' + x;

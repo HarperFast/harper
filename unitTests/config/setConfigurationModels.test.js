@@ -26,16 +26,19 @@ describe('set_configuration models block', () => {
 		assert.deepStrictEqual(readRootConfig().models, models);
 	});
 
-	it('can clear the block and restore the startup value after a different value was written', async () => {
+	it('boots with prototype-named models, clears the block, and restores the startup value', async () => {
 		const configPath = getConfigFilePath();
 		const saved = readFileSync(configPath, 'utf8');
+		const startupModels = {
+			generative: { hasOwnProperty: { backend: 'ollama', model: 'fixture' } },
+		};
 		try {
-			setRootConfigEntry('models', models);
+			await setConfiguration({ operation: 'set_configuration', models: startupModels });
 			initConfig(true);
 			await setConfiguration({ operation: 'set_configuration', models: {} });
 			assert.deepStrictEqual(readRootConfig().models, {});
-			await setConfiguration({ operation: 'set_configuration', models });
-			assert.deepStrictEqual(readRootConfig().models, models);
+			await setConfiguration({ operation: 'set_configuration', models: startupModels });
+			assert.deepStrictEqual(readRootConfig().models, startupModels);
 		} finally {
 			writeFileSync(configPath, saved);
 			initConfig(true);
