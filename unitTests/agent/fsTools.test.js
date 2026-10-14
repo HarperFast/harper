@@ -258,10 +258,9 @@ describe('agent/fsTools pages', () => {
 		writeFileSync(join(scopes.logDir, deep, 'srv.log'), numberedLines(200));
 		const read = await readFileTool.handler({ root: 'logs', path: join(deep, 'srv.log') }, pagedCtx(1024));
 		const tail = await tailFileTool.handler({ root: 'logs', path: join(deep, 'srv.log') }, pagedCtx(1024));
-		const grep = await grepFilesTool.handler({ root: 'logs', path: deep, pattern: 'line' }, pagedCtx(1024));
 		assert.ok(read.path.length > 380);
 		assert.ok(read.nextLine > 1);
-		for (const result of [read, tail, grep]) {
+		for (const result of [read, tail]) {
 			assert.equal(serializeToolResult({ ok: true, result }, 1024).truncated, false);
 		}
 	});
@@ -450,6 +449,16 @@ describe('agent/fsTools pages', () => {
 		]) {
 			await assert.rejects(tool.handler(args, pagedCtx(1024)), /leaves no room for a page/, tool.def.name);
 		}
+	});
+
+	it('grep_files refuses with an explicit error when one match cannot fit beside its path', async () => {
+		const deep = join('q'.repeat(150), 'r'.repeat(150), 's'.repeat(150));
+		mkdirSync(join(scopes.logDir, deep), { recursive: true });
+		writeFileSync(join(scopes.logDir, deep, 'a.log'), 'needle\n');
+		await assert.rejects(
+			grepFilesTool.handler({ root: 'logs', pattern: 'needle' }, pagedCtx(1024)),
+			/leaves no room for a match/
+		);
 	});
 
 	it('grep_files is not truncated when every match fits', async () => {
@@ -695,6 +704,29 @@ describe('agent/fsTools key material and the single-file config scope (harper#30
 					{ root: 'logs', path: 'yaml.log', offset: 40 + 68 * 2500, lineCount: 1 },
 					ctx(defaultScopes())
 				),
+				/may be inside a PEM private key/
+			);
+		});
+
+		it('refuses a page that starts partway through a BEGIN line', async () => {
+			writeFileSync(
+				join(root, 'log', 'cut.log'),
+				`start\n-----BEGIN PRIVATE KEY-----\n${'A'.repeat(64)}\n${'B'.repeat(64)}\n-----END PRIVATE KEY-----\n`
+			);
+			await assert.rejects(
+				readFileTool.handler({ root: 'logs', path: 'cut.log', offset: 16, lineCount: 3 }, ctx(defaultScopes())),
+				/holds a PEM private key at that position/
+			);
+		});
+
+		it('fails closed when the look-back starts partway through the BEGIN line of a longer block', async () => {
+			const body = `${'A'.repeat(63)}\n`.repeat(3000);
+			const head = 'start\n-----BEGIN PRIVATE KEY-----\n';
+			writeFileSync(join(root, 'log', 'long.log'), `${head}${body}`);
+			// The look-back begins 10 bytes into the BEGIN line, so its first line is that line's tail.
+			const offset = 6 + 10 + 128 * 1024;
+			await assert.rejects(
+				readFileTool.handler({ root: 'logs', path: 'long.log', offset, lineCount: 1 }, ctx(defaultScopes())),
 				/may be inside a PEM private key/
 			);
 		});

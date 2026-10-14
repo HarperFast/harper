@@ -138,9 +138,11 @@ function keyStateAfter(text: string, limit: number, reachesFileStart: boolean): 
 		last = match[1];
 	}
 	if (last) return last === 'BEGIN' ? 'inside' : 'outside';
+	// The first line is cut by the look-back's start, so it may be the tail of a BEGIN line: skip it.
 	const bodyOnly = text
 		.slice(0, limit)
 		.split('\n')
+		.slice(1)
 		.every((line) => KEY_BODY_LINE.test(line));
 	return !reachesFileStart && bodyOnly ? 'unknown' : 'outside';
 }
@@ -577,7 +579,12 @@ export const grepFilesTool: AgentTool = {
 					truncated = true;
 					// A first match too long for the page still comes back, cut to fit, rather than none.
 					const room = budget - (matchBytes - escapedBytes(match.text));
-					if (results.length === 0 && cap > 0 && room > 0) {
+					if (results.length === 0 && cap > 0) {
+						if (room <= 0) {
+							throw new Error(
+								`agent.maxToolResultBytes (${ctx.maxResultBytes}) leaves no room for a match in ${file}; raise it`
+							);
+						}
 						match.text = escapedHead(match.text, room);
 						results.push(match);
 					}
