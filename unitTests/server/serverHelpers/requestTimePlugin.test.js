@@ -30,7 +30,7 @@ describe('test requestTimePlugin', () => {
 });
 
 const assert = require('node:assert');
-const plugin = require('#src/server/serverHelpers/requestTimePlugin');
+const plugin = require('#js/server/serverHelpers/requestTimePlugin');
 const analytics = require('#src/resources/analytics/write');
 const { waitFor } = require('../../waitFor.js');
 

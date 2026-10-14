@@ -9,13 +9,15 @@ const until = Date.now() + seconds * 1000;
 const path = process.env.BENCH_PATH || '/Probe/1';
 const headers = { 'content-type': 'application/json' };
 if (process.env.BENCH_AUTH) headers.authorization = 'Basic ' + Buffer.from(process.env.BENCH_AUTH).toString('base64');
-const init =
-	method === 'GET' ? { headers } : { method, headers, body: process.env.BENCH_BODY || '{"id":"1","name":"a"}' };
+const hasBody = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+const init = hasBody
+	? { method, headers, body: process.env.BENCH_BODY || '{"id":"1","name":"a"}' }
+	: { method, headers };
 async function loop() {
 	while (Date.now() < until) {
 		const t0 = performance.now();
 		try {
-			const r = await fetch(base + path, init);
+			const r = await fetch(base + path, { ...init, signal: AbortSignal.timeout(10_000) });
 			await r.arrayBuffer();
 			if (!r.ok) {
 				failed++;
