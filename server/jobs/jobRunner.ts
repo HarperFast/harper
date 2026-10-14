@@ -4,7 +4,6 @@ import { join } from 'node:path';
 
 import * as hdbUtil from '../../utility/common_utils.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
-import moment from 'moment';
 import * as bulkLoad from '../../dataLayer/bulkLoad.ts';
 import log from '../../utility/logging/harper_logger.ts';
 import * as jobs from './jobs.ts';
@@ -106,7 +105,7 @@ async function parseMessage(runnerMessage: any) {
 async function runJob(runnerMessage: any, operation: any) {
 	try {
 		runnerMessage.job.status = hdbTerms.JOB_STATUS_ENUM.IN_PROGRESS;
-		runnerMessage.job.start_datetime = moment().valueOf();
+		runnerMessage.job.start_datetime = Date.now();
 		// Update with "IN PROGRESS"
 		await jobs.updateJob(runnerMessage.job);
 		// Run the operation.
@@ -170,7 +169,7 @@ if (isMainThread) {
 					id: message.jobId,
 					status: hdbTerms.JOB_STATUS_ENUM.ERROR,
 					message: e.message ?? String(e),
-					end_datetime: moment().valueOf(),
+					end_datetime: Date.now(),
 				});
 			} catch (updateErr) {
 				log.error(`Unable to mark job ${message.jobId} as failed:`, updateErr);

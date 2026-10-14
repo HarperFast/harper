@@ -35,6 +35,8 @@ Four constraints that look like choices but are not:
 
 `hdb_oidc_token_use` (declared on every node at every start by `tokenUseTable.ts`, so a node that never exchanges still removes the rows replicated to it — see dataLayer/DESIGN.md, "System table bootstrap") records spent tokens keyed on a SHA-256 of the token itself, each expiring (record metadata, replicated with the row) past the token's own expiry. Hashed rather than stored, so the table never holds a credential; keyed on the token's **signed input** (`header.payload`) rather than `jti` because not every issuer emits one (Azure uses `uti`). Not on the whole token string: the signature segment is covered by nothing, and base64url decoding ignores the surplus low bits of its final character, so 16 distinct spellings of an RS256 signature decode to the same bytes, all verify, and all hash differently — one leaked token would buy 16 exchanges. ES\* malleability (`s → n−s`) is a second such vector. The signed input is exactly what the issuer asserted, so every variant collapses to one fingerprint. The get-then-put is not atomic and does not claim to be: a concurrent replay is not a privilege escalation, since whoever holds the token could obtain one operation token anyway.
 
+`harper deploy setup=true provider=github-actions` (`bin/deploySetupGithubActions.ts`) is the client-side composition of these operations for one repository's workflow: role and user `<component>-ci-deploy` (`deploy_component`, `get_job`, `registration_info`) and policy `github-actions-<component>`, names Studio's setup must match. It only creates: a record that already matches is left alone, and one that differs or was deactivated stops it before it writes, so it does not repurpose a role or undo a revocation. `add_oidc_trust` replaces, so setup lists the policy again just before writing it; a policy another super user creates (enabled or not) in that last round trip would still be overwritten. A server-side create-only write would narrow that further but not close it, since `hdb_oidc_trust` replicates and the check would be per node. It reads the policy back and compares it claim for claim, because a mismatch otherwise surfaces only as the exchange's opaque 401.
+
 ## Scoped tokens and synthetic-role identity (`security/tokenAuthentication.ts`, `security/impersonation.ts`)
 
 `create_authentication_tokens` with an inline `role` **object** mints a `sub: 'scoped-operation'`
@@ -163,6 +165,22 @@ Export the value from the module that _defines_ it rather than re-exporting it t
 so a component-created value shares that module's private symbols. `markCredentialRejection` depends on
 this: its tag is a module-private `Symbol` that `isCredentialRejection` checks by identity.
 
+## Both application loaders resolve through one `resolveModule` (`security/jsLoader.ts`)
+
+The VM loader and the compartment `resolveHook` call the same module-scope `resolveModule`, so a
+dependency that resolves in one `applications.moduleLoader` mode resolves in the other. It resolves
+CommonJS-first (a dual package keeps its `require` target) and falls back to the package's `exports`
+map only for a bare specifier the CommonJS resolver rejects: `ERR_PACKAGE_PATH_NOT_EXPORTED`, or
+`MODULE_NOT_FOUND` on Bun. A fallback resolution records the `package.json` and entry-file digests, not
+a resolution edge, because `RuntimeModuleTracker` re-resolves edges with `createRequire` and would read
+the import-only package as changed on every deploy.
+
+SES loads from the ESM shims `ses/index.js` composes, through `loadSES`, never `require('ses')`: that
+bundle is CommonJS, Bun drops function-level `'use strict'` in CommonJS, and SES's sloppy-mode self-check
+then throws `SES_NO_SLOPPY`. Lockdown and the compartment share that one SES instance. Enforced by the
+`pure-ESM package resolution` blocks in `unitTests/security/jsLoader/jsLoader.test.js` (both modes) and
+`integrationTests/components/compartment-pure-esm-dependency.test.ts` (Node and Bun shards).
+
 ## Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)
 
 `authentication()` resolves a principal from three sources — an mTLS certificate CN, the `Authorization`
@@ -193,7 +211,8 @@ There is no per-thread copy of `hdb_user`/`hdb_role`: every lookup point-reads t
 
 - **One committed state.** RocksDB point reads share no snapshot, so `readUserEntries` re-checks the user's version after reading its role and retries if it moved; otherwise one transaction that moves a user to role B and grants role A super_user could be read as the user on A with A's new grant.
 - **Derived data is keyed by entry version, not object identity.** With `storage.caching: false` every read returns a new object. The per-role memo of `appendSystemTablesToRole` + expanded operations, and `isCurrentUser`, compare versions; a `VERSION_REUSED` entry is compared by value instead, since its version no longer identifies one value. `auth.ts` runs `isCurrentUser` on every `authorizationCache` hit, so a cached principal is re-verified once its user or role record changes; a component's `server.getUser` principal is checked against the versions read for its name before it was resolved (`trackUserRecords`).
-- **Notifications are only for holders of a user.** `onUserChange` feeds live-subscription revocation and MCP list-changed from per-thread `hdb_user`/`hdb_role` subscriptions. It never subscribes to an unaudited table, because `subscribe()` would enable and persist auditing on it; on such a node those consumers fall back to their own backstops.
+- **Notifications are only for holders of a user.** `onUserChange` feeds live-subscription revocation and MCP list-changed from per-thread `hdb_user`/`hdb_role` subscriptions, passing the primary keys of the records changed since the last notification. No argument means which records changed is unknown — a whole-table reload, an oversized batch, a subscription re-established after a gap — and every holder rechecks. `userChangeNotificationEpoch()` is non-zero only while both subscriptions are open and the broadcaster certifies it read every record since (progress tracking, RocksDB only): a consumer that sees one non-zero epoch across a period was notified of every change in it. It never subscribes to an unaudited table, because `subscribe()` would enable and persist auditing on it; on such a node the epoch stays 0 and those consumers fall back to their own backstops.
+- **A request's user is a view.** `auth.ts` hands each request `cloneUserView(user)`, whose `role` and `permission` it may replace (verifyPerms does) without touching the cached principal. The view carries the original's record provenance, so `isCurrentUser` on a request's user answers for the records that admitted it; live-subscription registration relies on that to catch a principal that changed before it registered. Provenance is an own symbol-keyed property of a user this module built, so the spread copies it with no `WeakMap` write on the request path; only a user resolved outside the module (`trackUserRecords`) is tracked in a `WeakMap`. A `deepStrictEqual` against a user literal sees that symbol, so tests compare string-keyed fields.
 
 LMDB lookups use the thread's shared read txn, which lmdb-js renews at most once per event-loop turn, so a commit on another thread is seen from the next turn. Resetting it per lookup would give each in-flight transaction its own reader slot. Enforced by `unitTests/security/userRecordLookups.test.js` and `unitTests/resources/replicatedUserWrites.test.js`.
 

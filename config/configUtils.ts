@@ -15,7 +15,8 @@ import { isMainThread, threadId } from 'node:worker_threads';
 import { randomBytes } from 'node:crypto';
 import isNumber from 'is-number';
 import propertiesReaderModule from 'properties-reader';
-import _ from 'lodash';
+import getPath from 'lodash/get.js';
+import isEqual from 'lodash/isEqual.js';
 
 // Aliased to a mutable, module-scoped binding so unit tests can swap the
 // implementation via rewire. The compiled default-import binding is otherwise
@@ -23,7 +24,7 @@ import _ from 'lodash';
 // through its shared module object the way named exports can.
 // eslint-disable-next-line prefer-const
 let PropertiesReader = propertiesReaderModule;
-import { handleHDBError } from '../utility/errors/hdbError.ts';
+import { handleHDBError, ServerError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES, HDB_ERROR_MSGS } from '../utility/errors/commonErrors.ts';
 import { server } from '../server/Server.ts';
 import { getBackupDirPath } from './configHelpers.ts';
@@ -31,6 +32,7 @@ import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
 import { prepareRuntimeEnvConfig, hasPersistedEnvConfigState, discardConfigState } from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
+import { formatConfigParseErrorDetails } from './parseConfigFile.ts';
 import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
 import { fsyncTolerantSync, isUnsupportedSyncError } from '../utility/fsync.ts';
 
@@ -699,6 +701,12 @@ export function initConfig(force = false) {
 			}
 		}
 
+		if (configDoc.errors?.length > 0) {
+			throw new ServerError(
+				`Error parsing ${configFilePath}: YAMLParseError ${formatConfigParseErrorDetails(configDoc.errors[0])}`
+			);
+		}
+
 		checkForUpdatedConfig(configDoc, configFilePath);
 
 		// Config-shaping env vars delivered via component .env files (loadEnv) cannot take effect —
@@ -784,13 +792,6 @@ function checkForUpdatedConfig(configDoc, configFilePath) {
 
 	if (updateFile) {
 		logger.trace('Updating config file with missing config params');
-		if (configDoc.errors?.length > 0) {
-			throw handleHDBError(
-				new Error(),
-				`Error parsing harperdb-config.yaml ${configDoc.errors}`,
-				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
-			);
-		}
 		persistConfigDuringBoot(configFilePath, () => atomicWriteFile(configFilePath, String(configDoc)));
 	}
 }
@@ -1057,7 +1058,7 @@ export function updateConfigValue(
 		let doUpdate = false;
 		for (const arg in parsedArgs) {
 			const castedValue = castConfigValue(arg, parsedArgs[arg]);
-			if (!_.isEqual(castedValue, flatConfigObj[arg.toLowerCase()])) {
+			if (!isEqual(castedValue, flatConfigObj[arg.toLowerCase()])) {
 				doUpdate = true;
 				break;
 			}
@@ -1621,7 +1622,7 @@ export function initOldConfig(oldConfigPath: string) {
  */
 export function getConfigFromFile(param: string) {
 	const config_file = readConfigFile();
-	return _.get(config_file, param.replaceAll('_', '.'));
+	return getPath(config_file, param.replaceAll('_', '.'));
 }
 
 export function getConfigObj() {

@@ -866,7 +866,10 @@ function flattenToFlatPrompt(input: GenerateInput): string {
 function mapAnthropicStopReason(reason: string | null | undefined): GenerateResult['finishReason'] {
 	switch (reason) {
 		case 'max_tokens':
+		case 'model_context_window_exceeded':
 			return 'length';
+		case 'refusal':
+			return 'content_filter';
 		case 'tool_use':
 			return 'tool_calls';
 		case 'end_turn':

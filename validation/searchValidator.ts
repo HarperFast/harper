@@ -1,4 +1,6 @@
-import * as _ from 'lodash';
+import filter from 'lodash/filter.js';
+import some from 'lodash/some.js';
+import uniqBy from 'lodash/uniqBy.js';
 import * as validator from './validationWrapper.ts';
 import Joi from 'joi';
 import * as hdbUtils from '../utility/common_utils.ts';
@@ -143,7 +145,7 @@ export default function (searchObject: any, type: any) {
 			addConditions(searchObject);
 		}
 
-		let unknownAttributes = _.filter(
+		let unknownAttributes = filter(
 			checkAttributes,
 			(attribute) =>
 				attribute !== '*' &&
@@ -151,7 +153,7 @@ export default function (searchObject: any, type: any) {
 				attribute.attribute !== '*' && // skip check for asterisk attribute
 				!Array.isArray(attribute) &&
 				!attribute.name && // nested attribute
-				!_.some(
+				!some(
 					allTableAttributes,
 					(
 						tableAttribute: any // attribute should match one of the attribute in global
@@ -165,6 +167,25 @@ export default function (searchObject: any, type: any) {
 		// if any unknown attributes present in the search request then list all indicated as unknown attribute to error message at once split in well format
 		// for instance "unknown attribute a, b and c" or "unknown attribute a"
 		if (unknownAttributes && unknownAttributes.length > 0) {
+			// get_attributes/conditions impose no length limit, so this must stay O(n)
+			unknownAttributes = uniqBy(unknownAttributes, (value: any) => {
+				if (typeof value !== 'object') return value;
+				try {
+					// bigint properties (reachable via msgpack/cbor) are converted rather than left to
+					// throw; the leading NUL can't collide with a string attribute name (schemaRegex
+					// forbids control characters), so an object key never matches a primitive one
+					return (
+						'\0' +
+						JSON.stringify(value, (_key, propValue) =>
+							typeof propValue === 'bigint' ? propValue.toString() : propValue
+						)
+					);
+				} catch {
+					// anything else that can't be stringified (e.g. a circular object) dedupes only by
+					// reference identity, never by structural equality, rather than throwing
+					return value;
+				}
+			});
 			// return error with proper message - replace last comma with and
 			let errorMsg = unknownAttributes.join(', ');
 			errorMsg = errorMsg.replace(/,([^,]*)$/, ' and$1');

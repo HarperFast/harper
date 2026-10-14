@@ -39,8 +39,9 @@
  * Harper SHA: 7aaa5a152
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { ok, strictEqual, deepStrictEqual } from 'node:assert';
 import { resolve } from 'node:path';
+import { unpack } from 'msgpackr';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
@@ -301,7 +302,6 @@ suite(
 					console.log(`  Forward @rel status=${relStatus} resolvedOrder=${JSON.stringify(resolvedOrder)}`);
 
 					if (relStatus >= 500) {
-						// Known open defect F-030/#1415: accessing orphaned child.order 500s; treating as known-behavior until #1415 lands
 						relResult = `ERROR (HTTP ${relStatus})`;
 					} else if (!resolvedOrder || resolvedOrder === null) {
 						relResult = 'NULL (graceful null for missing parent)';
@@ -325,14 +325,215 @@ suite(
 					}
 
 					console.log(`  >>> Forward @rel of orphaned child: ${relResult}`);
-					// Until #1415 lands, a 500 on orphaned forward-ref is expected behavior; then assert clean null.
-					ok(
-						relStatus !== 500 || true,
-						'F-030/#1415: known 500 on orphaned child.order; expected to become 404/null after fix'
-					);
+					strictEqual(relStatus, 200, 'An orphaned relationship must remain readable');
+					strictEqual(resolvedOrder, null);
 				}
 
 				console.log(`  >>> Forward @rel of orphaned child: ${relResult}`);
+			});
+
+			test('nested REST select preserves optional and missing relationship targets', async () => {
+				await clearAll();
+				for (const [id, record, expected] of [
+					['optional-absent', {}, undefined],
+					['optional-null', { orderId: null }, null],
+					['optional-orphan', { orderId: 'missing-parent' }, undefined],
+				] as const) {
+					strictEqual((await restPut(`/OrderItem/${id}`, { id, ...record })).status, 204);
+					for (const accept of ['application/json', 'application/x-msgpack']) {
+						const response = await fetch(`${httpURL}/OrderItem/${id}?select(id,order{id,total})`, {
+							headers: { Accept: accept, Authorization: auth },
+						});
+						strictEqual(response.status, 200, `${id} ${accept}`);
+						ok(response.headers.get('content-type')?.startsWith(accept));
+						const body =
+							accept === 'application/json' ? await response.json() : unpack(Buffer.from(await response.arrayBuffer()));
+						strictEqual(body.id, id);
+						strictEqual(body.order, expected);
+						ok(!Object.hasOwn(body, 'orderId'), 'Projection must not echo its foreign key');
+					}
+				}
+			});
+
+			test('nested REST JSON projections preserve ordinary keys and omit unselected data', async () => {
+				await clearAll();
+				const metadata = JSON.parse(
+					'{"then":"ordinary data","getRecord":"ordinary data","getChanges":"ordinary data","hasOwnProperty":"ordinary data","city":"Denver","details":{"level":{"kept":true,"hidden":"omit"}},"constructor":{"city":"Denver","hidden":"omit"},"__proto__":{"city":"Denver","hidden":"omit"}}'
+				);
+				const notes = [{ city: 'Denver', hidden: 'omit' }, null, 'literal', {}];
+				strictEqual((await restPut('/OrderItem/json', { id: 'json', metadata, notes })).status, 204);
+				for (const path of ['/OrderItem/json', '/JsonProjection/json']) {
+					for (const [selection, expected] of [
+						[
+							'metadata{city,then,getRecord,getChanges,hasOwnProperty,details{level{kept}}}',
+							{
+								metadata: {
+									city: 'Denver',
+									then: 'ordinary data',
+									getRecord: 'ordinary data',
+									getChanges: 'ordinary data',
+									hasOwnProperty: 'ordinary data',
+									details: { level: { kept: true } },
+								},
+							},
+						],
+						['notes{city}', { notes: [{ city: 'Denver' }, null, 'literal', {}] }],
+						[
+							'metadata{constructor{city},__proto__{city}}',
+							JSON.parse('{"metadata":{"constructor":{"city":"Denver"},"__proto__":{"city":"Denver"}}}'),
+						],
+						['metadata{toString}', { metadata: {} }],
+					] as const) {
+						for (const accept of ['application/json', 'application/x-msgpack']) {
+							const response = await fetch(`${httpURL}${path}?select(id,${selection})`, {
+								headers: { Accept: accept, Authorization: auth },
+							});
+							strictEqual(response.status, 200, `${path} ${selection} ${accept}`);
+							const body =
+								accept === 'application/json'
+									? await response.json()
+									: unpack(Buffer.from(await response.arrayBuffer()));
+							const storedPrototype =
+								path.startsWith('/OrderItem/') && selection === 'metadata{constructor{city},__proto__{city}}';
+							const jsonExpected = storedPrototype
+								? { metadata: { constructor: { city: 'Denver' }, ['__proto__']: {} } }
+								: expected;
+							const binaryExpectations = {
+								'metadata{constructor{city},__proto__{city}}': {
+									metadata: {
+										constructor: { city: 'Denver' },
+										__proto_: { city: storedPrototype ? undefined : 'Denver' },
+									},
+								},
+								'notes{city}': { notes: [{ city: 'Denver' }, null, 'literal', { city: undefined }] },
+								'metadata{toString}': { metadata: { toString: undefined } },
+							};
+							const binaryExpected = binaryExpectations[selection] || expected;
+							deepStrictEqual(
+								body,
+								{ id: 'json', ...(accept === 'application/json' ? jsonExpected : binaryExpected) },
+								`${path} ${selection} ${accept}`
+							);
+						}
+					}
+				}
+			});
+
+			test('classless nested projections omit function values across native encoders', async () => {
+				const expectations = [
+					['application/json', { id: 'json', metadata: {} }],
+					['application/x-msgpack', { id: 'json', metadata: { callback: undefined, toString: undefined } }],
+					['text/csv', '"id","metadata"\n"json","{}"\n'],
+				] as const;
+				for (const [accept, expected] of expectations) {
+					const response = await fetch(`${httpURL}/JsonProjection/json?select(id,metadata{callback,toString})`, {
+						headers: { Accept: accept, Authorization: auth },
+					});
+					strictEqual(response.status, 200);
+					const body =
+						accept === 'application/json'
+							? await response.json()
+							: accept === 'text/csv'
+								? await response.text()
+								: unpack(Buffer.from(await response.arrayBuffer()));
+					deepStrictEqual(body, expected);
+				}
+			});
+
+			test('nested selection preserves whole Date values through JSON and MessagePack', async () => {
+				const createdAt = '2026-01-01T00:00:00.000Z';
+				strictEqual((await restPut('/OrderItem/date-json', { id: 'date-json', createdAt })).status, 204);
+				for (const [path, id] of [
+					['/OrderItem/date-json', 'date-json'],
+					['/JsonProjection/json', 'json'],
+				]) {
+					for (const accept of ['application/json', 'application/x-msgpack']) {
+						const response = await fetch(`${httpURL}${path}?select(id,createdAt{x})`, {
+							headers: { Accept: accept, Authorization: auth },
+						});
+						strictEqual(response.status, 200);
+						const body =
+							accept === 'application/json' ? await response.json() : unpack(Buffer.from(await response.arrayBuffer()));
+						deepStrictEqual(body, { id, createdAt: accept === 'application/json' ? createdAt : new Date(createdAt) });
+					}
+				}
+			});
+
+			test('nested JSON projection respects parent attribute read permissions', async () => {
+				strictEqual(
+					(
+						await restPut('/OrderItem/permission-json', {
+							id: 'permission-json',
+							metadata: { city: 'Denver', hidden: 'omit' },
+						})
+					).status,
+					204
+				);
+				for (const allowed of [true, false]) {
+					const name = allowed ? 'json-projection-reader' : 'json-projection-denied';
+					strictEqual(
+						(
+							await op({
+								operation: 'add_role',
+								role: name,
+								permission: {
+									super_user: false,
+									data: {
+										tables: {
+											OrderItem: {
+												read: true,
+												insert: false,
+												update: false,
+												delete: false,
+												attribute_permissions: [
+													{ attribute_name: 'id', read: true, insert: false, update: false },
+													{ attribute_name: 'metadata', read: allowed, insert: false, update: false },
+												],
+											},
+										},
+									},
+								},
+							})
+						).status,
+						200
+					);
+					strictEqual(
+						(
+							await op({
+								operation: 'add_user',
+								username: name,
+								password: 'fixture-password',
+								role: name,
+								active: true,
+							})
+						).status,
+						200
+					);
+					for (const accept of ['application/json', 'application/x-msgpack']) {
+						const response = await fetch(`${httpURL}/OrderItem/permission-json?select(id,metadata{city})`, {
+							headers: {
+								Accept: accept,
+								Authorization: 'Basic ' + Buffer.from(name + ':fixture-password').toString('base64'),
+							},
+						});
+						strictEqual(response.status, 200);
+						const body =
+							accept === 'application/json' ? await response.json() : unpack(Buffer.from(await response.arrayBuffer()));
+						deepStrictEqual(
+							body,
+							allowed ? { id: 'permission-json', metadata: { city: 'Denver' } } : { id: 'permission-json' }
+						);
+					}
+				}
+			});
+
+			test('known singleton nested-selector misparse remains outside the fix (issue #1415)', async () => {
+				strictEqual((await restPut('/OrderItem/singleton-json', { id: 'singleton-json' })).status, 204);
+				for (const selection of ['order{name}', 'nonExistentRel{x}', 'name{x}']) {
+					const response = await restGet(`/OrderItem/singleton-json?select(${selection})`);
+					strictEqual(response.status, 200);
+					deepStrictEqual(response.body, {}, 'Known parser defect tracked in issue #1415');
+				}
 			});
 
 			// ---- P3: FK index consistency (single-snapshot oracle) --------------------------------

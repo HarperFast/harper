@@ -967,6 +967,8 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	const aggregateActions = new Map();
 	const distributions = new Map();
 	const threadsToAverage = [];
+	// A measure's weight is the count of only the samples that carried it, per action or thread record.
+	const measureCounts = new Map<object, Record<string, number>>();
 	let lastTime: number | undefined;
 	let stoppedAtWindowEdge = false;
 	for (const { key, value } of rawAnalyticsTable.primaryStore.getRange({
@@ -992,7 +994,8 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 			if (type !== undefined) key += '-' + type;
 			let action = aggregateActions.get(key);
 			if (action) {
-				if (action.threads) {
+				const byThread = Boolean(action.byThread);
+				if (byThread) {
 					const actionForThread = action.threads[threadId];
 					if (actionForThread) action = actionForThread;
 					else {
@@ -1001,17 +1004,27 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 					}
 				}
 				if (!action.count) action.count = 1;
-				const previousCount = action.count;
+				let counts = measureCounts.get(action);
+				if (!counts) {
+					// Until its first fold, a target holds only its first sample.
+					counts = Object.create(null);
+					for (const measureName in action) {
+						if (typeof action[measureName] === 'number') counts[measureName] = action.count;
+					}
+					measureCounts.set(action, counts);
+				}
 				for (const measureName in measures) {
 					const value = measures[measureName];
-					if (typeof value === 'number') {
-						action[measureName] = MAX_MEASURE_NAME.test(measureName)
-							? Math.max(action[measureName], value)
-							: (action[measureName] * previousCount + value * count) / (previousCount + count);
-					}
+					if (typeof value !== 'number') continue;
+					const measureCount = counts[measureName];
+					if (measureCount === undefined) action[measureName] = value;
+					else if (MAX_MEASURE_NAME.test(measureName)) action[measureName] = Math.max(action[measureName], value);
+					else action[measureName] = (action[measureName] * measureCount + value * count) / (measureCount + count);
+					counts[measureName] = (measureCount ?? 0) + count;
 				}
 				action.count += count;
-				if (total >= 0) {
+				// A thread's record is built from measures alone, so it has no total to add to.
+				if (total >= 0 && !byThread) {
 					action.total += total;
 					action.ratio = action.total / action.count;
 				}
@@ -1043,15 +1056,15 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		let { path, method, type, metric, count, total, distribution, threads, ...measures } = entry;
 		threads = threads.filter((thread) => thread);
 		for (const measureName in measures) {
-			if (typeof entry[measureName] !== 'number') continue;
-			let total = 0;
-			for (const thread of threads) {
+			if (typeof entry[measureName] === 'number') entry[measureName] = 0;
+		}
+		// A thread can carry measures the entry's first sample lacked.
+		for (const thread of threads) {
+			for (const measureName in thread) {
 				const value = thread[measureName];
-				if (typeof value === 'number') {
-					total += value;
-				}
+				if (typeof value === 'number')
+					entry[measureName] = (typeof entry[measureName] === 'number' ? entry[measureName] : 0) + value;
 			}
-			entry[measureName] = total;
 		}
 		entry.count = threads.length;
 		delete entry.threads;
