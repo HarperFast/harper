@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const {
 	startEventLoopDelayMonitor,
 	stopEventLoopDelayMonitor,
+	resetEventLoopDelay,
 	readEventLoopDelay,
 	eventLoopDelayFromHistogram,
 } = require('#src/server/eventLoopDelay');
@@ -52,5 +53,27 @@ describe('event loop delay monitor', () => {
 		assert.ok(blocked.maxDelay >= 50, `the 100ms block was seen: ${JSON.stringify(blocked)}`);
 		assert.ok(blocked.mean <= blocked.maxDelay);
 		assert.strictEqual(readEventLoopDelay(), undefined);
+	});
+
+	it('drops a block that happened before a reset, so a report covers only its own window', async () => {
+		assert.strictEqual(startEventLoopDelayMonitor(), true);
+		let seen;
+		for (let attempt = 0; attempt < 5 && !(seen?.maxDelay >= 50); attempt++) {
+			readEventLoopDelay();
+			await delay(60);
+			const start = performance.now();
+			while (performance.now() - start < 100) {}
+			await delay(60);
+			seen = readEventLoopDelay();
+		}
+		assert.ok(seen?.maxDelay >= 50, `the block is visible without a reset: ${JSON.stringify(seen)}`);
+		await delay(60);
+		const start = performance.now();
+		while (performance.now() - start < 100) {}
+		await delay(60);
+		resetEventLoopDelay();
+		await delay(60);
+		const after = readEventLoopDelay();
+		assert.ok(!after || after.maxDelay < 50, `the block before the reset is gone: ${JSON.stringify(after)}`);
 	});
 });

@@ -734,7 +734,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		}
 		const requestHandler = async (nodeRequest: IncomingMessage, nodeResponse: any) => {
 			const startTime = performance.now();
-			const receivedAt = (nodeRequest as any).receivedAt ?? startTime;
+			const receivedAt = (nodeRequest as any).receivedAt;
 			let requestId = 0;
 			try {
 				const request = new Request(nodeRequest, nodeResponse);
@@ -839,7 +839,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				const cacheType =
 					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
 				recordAction(executionTime, 'duration', handlerPath, method, cacheType);
-				recordAction(endTime - receivedAt, METRIC.REQUEST_TIME, handlerPath, method, cacheType);
+				if (receivedAt !== undefined)
+					recordAction(endTime - receivedAt, METRIC.REQUEST_TIME, handlerPath, method, cacheType);
 				recordActionBinary(status < 400, 'success', handlerPath, method);
 				recordActionBinary(1, 'response_' + status, handlerPath, method);
 				logRequest(nodeRequest, status, requestId, executionTime);
@@ -902,12 +903,15 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			`HTTP request queue on port ${port}`
 		);
 		const dispatchRequest = (nodeRequest: IncomingMessage, nodeResponse: any) => {
-			(nodeRequest as any).receivedAt = performance.now();
 			// throttle the requests that can make data modifications because they are more likely to be slow and we don't
 			// want to block or slow down other activity
 			const method = nodeRequest.method;
 			if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
-			else throttledRequestHandler(nodeRequest, nodeResponse);
+			else {
+				// Only a queued request can wait before its handler, so only it gets a `request-time`.
+				(nodeRequest as any).receivedAt = performance.now();
+				throttledRequestHandler(nodeRequest, nodeResponse);
+			}
 		};
 		const server = (httpServers[port] = (
 			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
@@ -1136,13 +1140,8 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 		const cacheType =
 			response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
 		recordAction(executionTime, 'duration', request.handlerPath, request.method, cacheType);
-		recordAction(
-			endTime - (request.receivedAt ?? startTime),
-			METRIC.REQUEST_TIME,
-			request.handlerPath,
-			request.method,
-			cacheType
-		);
+		if (request.receivedAt !== undefined)
+			recordAction(endTime - request.receivedAt, METRIC.REQUEST_TIME, request.handlerPath, request.method, cacheType);
 		recordActionBinary(status < 400, 'success', request.handlerPath, request.method);
 		recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
 		logHttpRequest(request, status, requestId, executionTime);
@@ -1175,9 +1174,9 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 		`HTTP request queue on port ${port}`
 	);
 	return (request: any) => {
-		request.receivedAt = performance.now();
 		const method = request.method;
 		if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') return handle(request);
+		request.receivedAt = performance.now();
 		return throttledHandle(request);
 	};
 }

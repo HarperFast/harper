@@ -1,6 +1,6 @@
 import { monitorEventLoopDelay, type IntervalHistogram } from 'node:perf_hooks';
 
-export const EVENT_LOOP_DELAY_RESOLUTION_MS = 20;
+const EVENT_LOOP_DELAY_RESOLUTION_MS = 20;
 const NANOSECONDS_PER_MILLISECOND = 1e6;
 
 export interface EventLoopDelay {
@@ -30,6 +30,11 @@ export function startEventLoopDelayMonitor(resolution = EVENT_LOOP_DELAY_RESOLUT
 	}
 	resolutionMs = resolution;
 	return true;
+}
+
+/** Discards what the histogram holds, so the next read covers only what follows. */
+export function resetEventLoopDelay(): void {
+	histogram?.reset();
 }
 
 export function stopEventLoopDelayMonitor(): void {

@@ -16,6 +16,7 @@ import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts
 import { METRIC } from './metadata.ts';
 import {
 	readEventLoopDelay,
+	resetEventLoopDelay,
 	startEventLoopDelayMonitor,
 	stopEventLoopDelayMonitor,
 } from '../../server/eventLoopDelay.ts';
@@ -167,7 +168,11 @@ const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1
  * its user and, once its client disconnected, have every write rejected by its aborted signal.
  */
 function sendAnalytics() {
-	analyticsStart ||= performance.now();
+	if (!analyticsStart) {
+		analyticsStart = performance.now();
+		// The report's delay covers its own window, not the idle gap or the boot before it.
+		resetEventLoopDelay();
+	}
 	sendAnalyticsTimeout = setTimeout(async () => {
 		sendAnalyticsTimeout = null;
 		// Rotate before the first yield below: a sample recorded mid-flush would otherwise be added to
@@ -945,7 +950,6 @@ export async function runAggregationCycle(fromPeriod, toPeriod = 60000) {
 
 // A mean of per-sample peaks is not a peak, so peak-named measures fold with max.
 const MAX_MEASURE_NAME = /^max[A-Z]/;
-// Sampled metrics that are also rolled up one row per thread, under the name those rows carry.
 const PER_THREAD_METRICS = new Map<string, string>([['duration', METRIC.DURATION_BY_THREAD]]);
 
 async function aggregation(fromPeriod, toPeriod = 60000) {
@@ -1100,8 +1104,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		for (const measureName in measures) {
 			if (typeof entry[measureName] === 'number') entry[measureName] = 0;
 		}
-		// A thread can carry measures the entry's first sample lacked. `period` is the aggregation
-		// window, not a measure, so it is neither zeroed nor summed.
+		// A thread can carry measures the entry's first sample lacked.
 		for (const thread of threads) {
 			for (const measureName in thread) {
 				if (measureName === 'period') continue;
