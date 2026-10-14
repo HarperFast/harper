@@ -1,8 +1,8 @@
 # dataLayer/ — Design notes
 
-Backup and restore, version gating, system-table bootstrap and storage migration.
+Backup and restore, version gating, system-table bootstrap, storage migration and the legacy SQL executor.
 
-**Read this when:** touching `rocksdbBackup.ts`, `restoreMarker.ts`, `blobBackup.ts`, `hdbInfoController.ts`, `bin/copyDb.ts` or `json/systemSchema.json`.
+**Read this when:** touching `rocksdbBackup.ts`, `restoreMarker.ts`, `blobBackup.ts`, `hdbInfoController.ts`, `bin/copyDb.ts`, `json/systemSchema.json` or `SQLSearch.ts`.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -328,3 +328,17 @@ a multi-gigabyte archive just to decide whether to reject it.
   `producer` block came from this instance's own lineage, so it is reported as unidentified. A
   manifest that is present but malformed is an error — that is a different situation, and only the
   first is eligible for an operator's provenance override.
+
+## Legacy SQL pre-fetch narrows only by top-level AND conjuncts (`dataLayer/SQLSearch.ts`)
+
+The legacy executor loads each WHERE column into one row pool (a union across columns, null where a
+row was not fetched for a column) and lets AlaSQL evaluate the WHERE over that pool.
+`_conditionsToFetchAttributeValues` may narrow a column's fetch to the values a predicate names only
+when every result row must satisfy that predicate: a leaf of the top-level AND chain, parentheses
+transparent. A predicate under `NOT` or inside any other expression must see every row, or the rows
+it rejects never reach AlaSQL and the negation runs over the wrong set (`NOT (c = 'alpha')` returned
+nothing, #1397 §D). Two blunter guards stay: any `OR` disables narrowing, and so does a self-join,
+because the narrowing maps are keyed by physical table, not alias. Under the default `auto` engine
+every parenthesized expression still lands here, since the new engine's normalizer refuses the
+parenthesis node. Enforced by `unitTests/dataLayer/SQLSearch.test.js` and
+`integrationTests/database/sql-not-predicate.test.ts`.
