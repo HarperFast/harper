@@ -727,6 +727,16 @@ Reproduce with a large concurrent non-GET burst on one CPU-starved worker
 (`integrationTests/resources/sourcedfrom-eav-cache-coherence.test.ts` P1 under Bun pinned to a contended
 core).
 
+## The request-queue throttle sheds only on cycles from the current backlog (`server/throttle.ts`)
+
+The shed estimate `queuedCalls.length × averageEventCycleTime` is per `throttle()` instance, and the average
+returns to 0 when that instance's queue drains. A cycle measured before the queue last emptied, or by another
+throttle on the thread (one request queue per HTTP port, one cache-resolution queue per cached table), says
+nothing about how fast this backlog drains. When the average was one module-level value, a slow setup cycle
+survived a dozen lone requests and shed 13 of 60 concurrent SQL increments that then drained at ~3 ms each.
+A new backlog's estimate ramps from 0, the same cold start a new process has, so its first cycles shed little.
+Enforced by the stale-backlog and two-instance cases in `unitTests/server/throttle.test.js`.
+
 ## Response compression dispatches on the serialized output, with one brotli policy (`server/serverHelpers/contentTypes.ts`)
 
 With `http.compressionThreshold` non-zero (the shipped default is 0, off) and `Accept-Encoding: br`, `serialize()` compresses. It chooses between `serialize` and `serializeStream` by the _input_ (iterable or not), but it chooses how to compress by what the serializer _returned_: a `serializeStream` handler may return a complete body (the built-in msgpack handler returns `pack(data)` for a plain array; third-party `server.contentTypes` handlers may return strings or generators). A string or byte body takes the single-buffer path, where the threshold applies; a Readable is compressed as-is; any other iterable is adapted with `Readable.from`, as `http.ts` does for uncompressed iterable bodies. Piping a non-stream failed the request (#2421).

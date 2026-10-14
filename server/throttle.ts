@@ -7,7 +7,6 @@ const WARNING_INTERVAL = 30000;
 const EVENT_QUEUE_MONITORING_INTERVAL = 3000;
 const LIMIT_EXCEEDED_LOG_INTERVAL = 5000;
 let lastEventQueueCheck = performance.now() + EVENT_QUEUE_MONITORING_INTERVAL;
-let averageEventCycleTime = 0;
 /**
  * Throttle function to limit the number of calls to a function so that the event queue doesn't get overwhelmed.
  * @param fn
@@ -21,6 +20,9 @@ export function throttle(
 	name?: string
 ) {
 	let queuedCalls: any[];
+	// Measured only since this queue was last empty: a cycle from an earlier backlog, or from another throttle's,
+	// says nothing about how fast this backlog drains.
+	let averageEventCycleTime = 0;
 	let lastLimitExceededLog = -Infinity;
 	return function (...args: any[]) {
 		if (queuedCalls) {
@@ -65,6 +67,7 @@ export function throttle(
 				waitForNextCycle(now);
 			} else {
 				queuedCalls = null;
+				averageEventCycleTime = 0;
 			}
 		});
 	}

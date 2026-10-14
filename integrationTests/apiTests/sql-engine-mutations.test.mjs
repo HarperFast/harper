@@ -109,7 +109,8 @@ suite('New SQL engine — mutations (phase 4)', (ctx) => {
 	// F-146 regression: a self-referential `SET col = col + N` must apply as an
 	// atomic increment. Read-compute-write of an absolute value loses updates when
 	// statements race — this fires many concurrent `qty = qty + 1` and asserts
-	// every increment landed. Pre-fix this lost ~half the increments.
+	// every increment was acknowledged and landed. Pre-fix this lost ~half the
+	// increments.
 	test('concurrent SET qty = qty + 1 loses no increments (atomic Addition)', async () => {
 		await client
 			.req()
@@ -117,13 +118,26 @@ suite('New SQL engine — mutations (phase 4)', (ctx) => {
 			.expect(200);
 
 		const N = 60;
-		await Promise.all(
+		const results = await Promise.allSettled(
 			Array.from({ length: N }, () =>
-				client.req().send({ operation: 'sql', sql: 'UPDATE dev.widget SET qty = qty + 1 WHERE id = 42' })
+				client
+					.req()
+					.timeout(60_000)
+					.send({ operation: 'sql', sql: 'UPDATE dev.widget SET qty = qty + 1 WHERE id = 42' })
 			)
 		);
 
 		const read = await byHash('widget', [42]).expect(200);
-		assert.equal(read.body[0].qty, N, `expected all ${N} increments to apply, got ${read.body[0].qty}`);
+		const statusCounts = {};
+		const sampleBodies = {};
+		for (const result of results) {
+			const key = result.status === 'fulfilled' ? result.value.status : 'transport error';
+			statusCounts[key] = (statusCounts[key] ?? 0) + 1;
+			const detail = result.status === 'fulfilled' ? result.value.text : result.reason?.message;
+			if (key !== 200) sampleBodies[key] ??= String(detail).slice(0, 200);
+		}
+		const outcome = `status counts ${JSON.stringify(statusCounts)}, non-200 bodies ${JSON.stringify(sampleBodies)}, final qty ${read.body[0].qty}`;
+		assert.deepEqual(statusCounts, { 200: N }, `every increment must be acknowledged; ${outcome}`);
+		assert.equal(read.body[0].qty, N, `expected all ${N} increments to apply; ${outcome}`);
 	});
 });

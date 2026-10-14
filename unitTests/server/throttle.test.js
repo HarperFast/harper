@@ -78,6 +78,65 @@ describe('throttle test', () => {
 			while (performance.now() < start + 10) {}
 		}
 	});
+	it('does not shed a burst on cycle times measured before its queue last drained', async function () {
+		this.timeout(10000);
+		let ran = 0;
+		let shed = 0;
+		const throttledFunction = throttle(
+			() => ran++,
+			() => shed++,
+			1000
+		);
+		// one slow cycle, then lone calls; each setImmediate crosses the throttle's drain callback
+		throttledFunction();
+		busyWait(500);
+		await new Promise(setImmediate);
+		for (let i = 0; i < 5; i++) {
+			throttledFunction();
+			await new Promise(setImmediate);
+		}
+		const burst = [];
+		for (let i = 0; i < 60; i++) burst.push(throttledFunction());
+		await Promise.all(burst);
+		assert.equal(shed, 0);
+		assert.equal(ran, 66);
+	});
+	it("does not shed one throttle's burst on another throttle's slow cycle", async function () {
+		this.timeout(10000);
+		let shed = 0;
+		const slowQueue = throttle(() => {});
+		const burstQueue = throttle(
+			() => {},
+			() => shed++,
+			1000
+		);
+		slowQueue();
+		busyWait(500);
+		await new Promise(setImmediate);
+		const burst = [];
+		for (let i = 0; i < 60; i++) burst.push(burstQueue());
+		await Promise.all(burst);
+		assert.equal(shed, 0);
+	});
+	it("keeps shedding a real backlog while another throttle's queue drains", async function () {
+		this.timeout(10000);
+		let shed = 0;
+		const backlogged = throttle(
+			() => busyWait(10),
+			() => shed++,
+			100
+		);
+		const draining = throttle(() => {});
+		const accepted = [];
+		for (let i = 0; i < 30; i++) accepted.push(backlogged());
+		for (let i = 0; i < 5; i++) {
+			draining();
+			await new Promise(setImmediate);
+		}
+		backlogged();
+		assert.equal(shed, 1);
+		await Promise.all(accepted);
+	});
 	it('throttled calls propagate errors', async () => {
 		let returned = 0;
 		let throttledFunction = throttle(errorFunction);
@@ -95,3 +154,8 @@ describe('throttle test', () => {
 		}
 	});
 });
+
+function busyWait(ms) {
+	const start = performance.now();
+	while (performance.now() < start + ms) {}
+}
