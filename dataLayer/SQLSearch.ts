@@ -262,12 +262,16 @@ class SQLSearch {
 		}
 
 		// the narrowing maps are keyed by physical table, not alias, so in a self-join one occurrence's restriction would narrow the other
-		if (
-			this.tables.length > 1 &&
-			new Set(this.tables.map((table) => `${table.databaseid}/${table.tableid}`)).size < this.tables.length
-		) {
-			log.trace('Where clause joins a table to itself, exact match search not performed on attributes.');
-			return;
+		for (let i = 1; i < this.tables.length; i++) {
+			for (let j = 0; j < i; j++) {
+				if (
+					this.tables[i].databaseid === this.tables[j].databaseid &&
+					this.tables[i].tableid === this.tables[j].tableid
+				) {
+					log.trace('Where clause joins a table to itself, exact match search not performed on attributes.');
+					return;
+				}
+			}
 		}
 
 		// only a top-level AND conjunct holds for every result row; a predicate under NOT or inside any other expression must see every row
@@ -284,7 +288,7 @@ class SQLSearch {
 				conjuncts.push(node.right);
 				continue;
 			}
-			if (node.left && node.right && (node.left.columnid || node.right.value) && node.op) {
+			if (node && node.left && node.right && (node.left.columnid || node.right.value) && node.op) {
 				let values = new Set();
 				let column = node.left.columnid ? node.left : node.right;
 				let foundColumn = this._findColumn(column);
