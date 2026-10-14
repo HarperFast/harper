@@ -53,3 +53,58 @@ describe('#1016 reserved database names', () => {
 		}
 	});
 });
+
+// GHSA: `__proto__`, `constructor` and `prototype` pass `schemaRegex` but address Object.prototype
+// when used as a key. A database or table under one of those names turns describe/SQL map builds
+// into writes onto the process-wide prototype. They are refused as database AND table names on the
+// create and schema-authoring paths (the same two surfaces as #1016), keyed so an existing one still
+// loads and can be dropped to remediate.
+const PROTOTYPE_POLLUTING = ['__proto__', 'constructor', 'prototype'];
+
+describe('GHSA prototype-polluting database/table names', () => {
+	for (const name of PROTOTYPE_POLLUTING) {
+		it(`create_schema rejects database '${name}'`, async () => {
+			await assert.rejects(
+				() => schema.createSchemaStructure({ operation: 'create_schema', schema: name }),
+				/reserved name/,
+				`create_schema accepted prototype-polluting name '${name}'`
+			);
+		});
+
+		it(`create_table rejects database '${name}'`, async () => {
+			await assert.rejects(
+				() => schema.createTableStructure({ operation: 'create_table', schema: name, table: 't', primary_key: 'id' }),
+				/reserved name/,
+				`create_table accepted prototype-polluting database '${name}'`
+			);
+		});
+
+		it(`create_table rejects table '${name}'`, async () => {
+			await assert.rejects(
+				() => schema.createTableStructure({ operation: 'create_table', schema: 'dev', table: name, primary_key: 'id' }),
+				/reserved name/,
+				`create_table accepted prototype-polluting table '${name}'`
+			);
+		});
+
+		it(`schema authoring (table()) rejects database '${name}'`, () => {
+			assert.throws(
+				() => table({ database: name, table: 't', attributes: [{ name: 'id', isPrimaryKey: true }] }),
+				/reserved name/,
+				`table() accepted prototype-polluting database '${name}'`
+			);
+		});
+
+		it(`schema authoring (table()) rejects table '${name}'`, () => {
+			assert.throws(
+				() => table({ database: 'dev', table: name, attributes: [{ name: 'id', isPrimaryKey: true }] }),
+				/reserved name/,
+				`table() accepted prototype-polluting table '${name}'`
+			);
+		});
+
+		it(`validateDatabaseName flags '${name}'`, () => {
+			assert.match(schema.validateDatabaseName(name).message, /reserved name/);
+		});
+	}
+});

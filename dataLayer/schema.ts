@@ -30,7 +30,7 @@ const DB_NAME_CONSTRAINTS = Joi.string()
 	.min(1)
 	.max(commonValidators.schema_length.maximum)
 	.pattern(schemaRegex)
-	.invalid(...hdbTerms.RESERVED_DATABASE_NAMES)
+	.invalid(...hdbTerms.RESERVED_DATABASE_NAMES, ...hdbTerms.PROTOTYPE_POLLUTING_NAMES)
 	.messages({
 		'string.pattern.base': '{:#label} ' + commonValidators.schema_format.message,
 		'any.invalid': "'{#value}' is a reserved name and cannot be used as a database name",
@@ -40,7 +40,13 @@ const TABLE_NAME_CONSTRAINTS = Joi.string()
 	.min(1)
 	.max(commonValidators.schema_length.maximum)
 	.pattern(schemaRegex)
-	.messages({ 'string.pattern.base': '{:#label} ' + commonValidators.schema_format.message })
+	// `__proto__`/`constructor`/`prototype` pass schemaRegex but address Object.prototype as map keys;
+	// refuse them as table names so describe/SQL maps keyed by table name cannot be polluted (GHSA).
+	.invalid(...hdbTerms.PROTOTYPE_POLLUTING_NAMES)
+	.messages({
+		'string.pattern.base': '{:#label} ' + commonValidators.schema_format.message,
+		'any.invalid': "'{#value}' is a reserved name and cannot be used as a table name",
+	})
 	.required();
 
 const PRIMARY_KEY_CONSTRAINTS = Joi.string()

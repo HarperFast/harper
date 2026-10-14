@@ -111,7 +111,11 @@ export async function createEnvironment(
 	envName = envName.toString();
 	let schemasConfig = envMngr.get(hdbTerms.CONFIG_PARAMS.DATABASES);
 	if (!schemasConfig) updateConfigObject(hdbTerms.CONFIG_PARAMS.DATABASES, (schemasConfig = {}));
-	if (!schemasConfig[dbName]) schemasConfig[dbName] = {};
+	// `Object.hasOwn`, not a truthiness test: a database named after an inherited property
+	// (`__proto__`, `constructor`, `toString`, …) reads truthy off the prototype here, so a bare
+	// `!schemasConfig[dbName]` skips the assignment and the `.path` write below lands on
+	// `Object.prototype`/`Object` instead of an own entry (GHSA). hasOwn forces an own property.
+	if (!Object.hasOwn(schemasConfig, dbName)) schemasConfig[dbName] = {};
 	schemasConfig[dbName].path = basePath;
 	try {
 		await validateEnvironmentPath(basePath, envName, isV3);
