@@ -2,7 +2,7 @@
 
 const assert = require('node:assert');
 const { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
-const { dirname, join } = require('node:path');
+const { dirname, join, resolve } = require('node:path');
 const { tmpdir } = require('node:os');
 const { spawn } = require('node:child_process');
 const { extract } = require('tar-stream');
@@ -717,7 +717,7 @@ describe('rocksdbBackup', function () {
 					const { dirname } = require('node:path');
 					const env = require(${JSON.stringify(require.resolve('#src/utility/environment/environmentManager'))});
 					env.initSync();
-					env.setProperty(${JSON.stringify(CONFIG_PARAMS.STORAGE_BACKUPPATH)}, ${JSON.stringify(getBackupsRoot())});
+					env.setProperty(${JSON.stringify(CONFIG_PARAMS.STORAGE_BACKUPPATH)}, ${JSON.stringify(resolve(getBackupsRoot()))});
 					const { fsyncDirectory } = require(${JSON.stringify(require.resolve('#src/utility/durableFile'))});
 					const rename = fs.renameSync;
 					fs.renameSync = (from, to) => {
