@@ -730,6 +730,10 @@ Reproduce with a large concurrent non-GET burst on one CPU-starved worker
 (`integrationTests/resources/sourcedfrom-eav-cache-coherence.test.ts` P1 under Bun pinned to a contended
 core).
 
+## The request-queue throttle sheds only on cycles from the current backlog (`server/throttle.ts`)
+
+The cycle-time average behind each shed decision is per `throttle()` instance and returns to 0 when that queue drains, so an earlier backlog's or another throttle's slow cycle cannot shed this one ([#3200](https://github.com/HarperFast/harper/pull/3200)). A new backlog ramps from 0, like a new process. Enforced by the stale-backlog and two-instance cases in `unitTests/server/throttle.test.js`.
+
 ## Response compression dispatches on the serialized output, with one brotli policy (`server/serverHelpers/contentTypes.ts`)
 
 With `http.compressionThreshold` non-zero (the shipped default is 0, off) and `Accept-Encoding: br`, `serialize()` compresses. It chooses between `serialize` and `serializeStream` by the _input_ (iterable or not), but it chooses how to compress by what the serializer _returned_: a `serializeStream` handler may return a complete body (the built-in msgpack handler returns `pack(data)` for a plain array; third-party `server.contentTypes` handlers may return strings or generators). A string or byte body takes the single-buffer path, where the threshold applies; a Readable is compressed as-is; any other iterable is adapted with `Readable.from`, as `http.ts` does for uncompressed iterable bodies. Piping a non-stream failed the request (#2421).
