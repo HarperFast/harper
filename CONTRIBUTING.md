@@ -35,6 +35,8 @@ npm run test:unit:typestrip:main
 
 The combined `:typestrip:main` command covers the same selection as `test:unit:main` in two sequential processes. Each has its own isolated configuration and databases. `--list` on `node unitTests/runTypeStripTests.mts` shows the partition. `:typestrip:all` selects all `*test.*js` suites, including the API and legacy storage suites; stop a conflicting server before API tests as for the ordinary API gate.
 
+Use the project-installed Mocha through the npm scripts or `npx`; completion tracking patches that copy.
+
 A source process denies `#js`, and the harness fails a source run that loaded this checkout's compiled core, checking at file boundaries and final completion. Route an existing mutable-export suite to the compiled lane instead of mixing trees. The combined launcher rejects a globally enabled `typestrip` condition; let it choose each lane. Ordinary compiled CI still runs all tests, while native CI never builds `dist`.
 
 The launcher runs each lane in one process, so use ordinary Mocha for watch or parallel mode. Custom configurations must require `unitTests/mocha.init.js` for completion tracking. Mixed selections with global `--file` setup run compiled to preserve ordering. File reporters and external reporters must run separately per lane to avoid overwriting output. Ctrl-C removes the launcher's temporary configuration; a force-killed process can leave that directory and its isolated database root. The existing stale-root sweep reclaims only the database root. Mocha's per-test timeout and the enclosing CI/test command bound execution. No runtime-speed improvement is claimed: the source workflow avoids the build step, while the full selection still needs a current build for legacy and artifact checks.
