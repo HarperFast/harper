@@ -122,7 +122,7 @@ The check reads the whole backup once before the restore copies it, so a restore
 
 From the CLI with the server stopped, `target_database=<name>` restores into a separate database instead of overwriting the source. The target must not already exist, or must be an empty directory; Harper picks the new database up on the next start.
 
-If a restore is interrupted (crash, power loss) after it has started replacing the database's files, Harper marks the database as incompletely restored and refuses to load it on the next start, logging an incomplete-restore error. Recover by rerunning `restore_backup` for the same database and `backup_id` — do not try to load or hand-repair the directory. As of v5.4.0, an interruption while the backup is still being checked leaves the database untouched and unmarked, and it loads normally on the next start.
+If a restore is interrupted (crash, power loss) after it has started replacing the database's files, Harper marks the database as incompletely restored and refuses to load it on the next start, logging an incomplete-restore error. Recover by rerunning `restore_backup` for the same database and `backup_id` — do not try to load or hand-repair the directory. As of v5.4.0, an interruption while the backup is still being checked leaves the destination's files and any preexisting incomplete-restore marker unchanged; a previously healthy database loads normally on the next start.
 
 ```json
 { "operation": "restore_backup", "database": "data", "backup_id": 1 }
