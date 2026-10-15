@@ -403,6 +403,32 @@ describe('Test searchValidator module', () => {
 		assert.strictEqual(invalidSelectErr.statusCode, 400);
 		assert.strictEqual(invalidSelectErr.message, "unknown attribute 'child (invalid select)'");
 
+		const invalidOffsetErr = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				hash_values: ['1'],
+				get_attributes: ['id', { name: 'children', offset: '1', limit: 1, select: ['id'] }],
+			},
+			'hashes'
+		);
+		assert.ok(invalidOffsetErr instanceof Error);
+		assert.strictEqual(invalidOffsetErr.statusCode, 400);
+		assert.strictEqual(invalidOffsetErr.message, "unknown attribute 'children (invalid offset)'");
+
+		const invalidLimitErr = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				hash_values: ['1'],
+				get_attributes: ['id', { name: 'children', limit: -1, select: ['id'] }],
+			},
+			'hashes'
+		);
+		assert.ok(invalidLimitErr instanceof Error);
+		assert.strictEqual(invalidLimitErr.statusCode, 400);
+		assert.strictEqual(invalidLimitErr.message, "unknown attribute 'children (invalid limit)'");
+
 		// Reusing the same selector object reference against two different target table schemas
 		// ('child' has 'label', 'grandchild' does not) must validate against both target schemas.
 		const sharedLeafSelector = { name: 'label' };

@@ -2323,11 +2323,22 @@ function parseBlock(query, expectedEnd) {
 					case 'limit':
 						switch (args.length) {
 							case 1:
-								query.limit = +args[0];
+								query.limit = args[0] === '' ? NaN : +args[0];
+								if (!Number.isInteger(query.limit) || query.limit < 0) {
+									recordError('limit must be a non-negative integer');
+								}
 								break;
 							case 2:
-								query.offset = +args[0];
-								query.limit = args[1] - query.offset;
+								query.offset = args[0] === '' ? NaN : +args[0];
+								query.limit = (args[1] === '' ? NaN : +args[1]) - query.offset;
+								if (
+									!Number.isInteger(query.offset) ||
+									query.offset < 0 ||
+									!Number.isInteger(query.limit) ||
+									query.limit < 0
+								) {
+									recordError('limit and offset must be non-negative integers');
+								}
 								break;
 							default:
 								recordError('limit must have 1 or 2 arguments');

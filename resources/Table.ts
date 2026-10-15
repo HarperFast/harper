@@ -7182,10 +7182,14 @@ export function makeTable(options): TableResourceClass {
 											targetReadTxn,
 											transform
 										);
-										if (attribute.offset != null || attribute.limit != null) {
-											const offset = attribute.offset ?? 0;
-											const end = attribute.limit != null ? offset + attribute.limit : undefined;
-											orderedIterable = orderedIterable.slice(offset, end);
+										const offset =
+											Number.isInteger(attribute.offset) && attribute.offset >= 0 ? attribute.offset : undefined;
+										const limit =
+											Number.isInteger(attribute.limit) && attribute.limit >= 0 ? attribute.limit : undefined;
+										if (offset !== undefined || limit !== undefined) {
+											const start = offset ?? 0;
+											const end = limit !== undefined ? start + limit : undefined;
+											orderedIterable = orderedIterable.slice(start, end);
 										}
 										const iterator = orderedIterable[this.isSync ? Symbol.iterator : Symbol.asyncIterator]();
 										const nextValue = (iteration: IteratorResult<any> & Promise<any>) => {

@@ -197,6 +197,14 @@ export default function (searchObject: any, type: any) {
 						unknownAttributes.push(`${attribute.name} (conditions are not allowed in get_attributes)`);
 						continue;
 					}
+					if (attribute.offset !== undefined && (!Number.isInteger(attribute.offset) || attribute.offset < 0)) {
+						unknownAttributes.push(`${attribute.name} (invalid offset)`);
+						continue;
+					}
+					if (attribute.limit !== undefined && (!Number.isInteger(attribute.limit) || attribute.limit < 0)) {
+						unknownAttributes.push(`${attribute.name} (invalid limit)`);
+						continue;
+					}
 					if (attribute.select !== undefined) {
 						if (
 							typeof attribute.select !== 'string' &&
