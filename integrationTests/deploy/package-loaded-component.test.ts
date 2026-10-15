@@ -51,10 +51,7 @@ async function operation(ctx: ContextWithHarper, body: Record<string, unknown>):
 	return response.json();
 }
 
-/**
- * A component with a loadable resource, so a worker actually loads it and plants the link, and a sub-component it
- * loads from its own `node_modules`, which gets a link of its own.
- */
+/** A component with a loadable resource, so a worker actually loads it and plants the links. */
 async function buildPayload(): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), 'pkg-loaded-fixture-'));
 	try {
