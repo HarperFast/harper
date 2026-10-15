@@ -86,7 +86,8 @@ export function get(propName: string): any {
  *
  * The override is also recorded so it propagates to every worker thread spawned from here and
  * survives a forced config reload — except a reload that changes this param on disk, which wins
- * and retires the override (see reapplyAllOverrides()). `value` must be structured-cloneable.
+ * and retires the override (see reapplyAllOverrides()). Passing `undefined` as `value` clears any
+ * recorded override for `propName`. Otherwise, `value` must be structured-cloneable.
  *
  * This function should only be used by the installer and unit tests.
  * @param propName
@@ -100,7 +101,6 @@ export function setProperty(propName: string, value: any) {
 	const canonicalName = (hdbTerms.CONFIG_PARAM_MAP as any)[propName.toLowerCase()] ?? propName;
 	if (value === undefined) {
 		appliedOverrides.delete(canonicalName);
-		appliedOverrides.delete(propName);
 	} else {
 		// Snapshot rather than keep the caller's reference: initializePaths.js and environmentUtility.ts
 		// cache derived per-database paths by mutating the live `databases` value in place, which is
@@ -141,10 +141,9 @@ export function getConfigOverrides(): Record<string, any> | undefined {
 	if (!appliedOverrides.size) return undefined;
 	const overrides: Record<string, any> = {};
 	for (const [propName, { value }] of appliedOverrides) {
-		if (value === undefined) continue;
 		overrides[propName] = value;
 	}
-	return Object.keys(overrides).length ? overrides : undefined;
+	return overrides;
 }
 
 /**
@@ -158,7 +157,6 @@ function applyInheritedConfigOverrides() {
 	const inherited = (workerData as any)?.configOverrides;
 	if (!inherited) return;
 	for (const propName of Object.keys(inherited)) {
-		if (inherited[propName] === undefined) continue;
 		setProperty(propName, inherited[propName]);
 	}
 }

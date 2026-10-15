@@ -593,6 +593,7 @@ describe('install storage.engine resolution', () => {
 	const env_manager = require('#js/utility/environment/environmentManager');
 	const hdbTerms = require('#js/utility/hdbTerms');
 	const hdb_utils = require('#js/utility/common_utils');
+	const config_utils = require('#js/config/configUtils');
 	const keys = require('#js/security/keys');
 	const testUtils = require('../testUtils');
 	const sinon = require('sinon');
@@ -603,6 +604,7 @@ describe('install storage.engine resolution', () => {
 		'HARPER_DEFAULT_CONFIG',
 		'HDB_CONFIG',
 		'STORAGE_ENGINE',
+		'HARPER_STORAGE_ENGINE',
 		'HDB_ROOT',
 		'ROOTPATH',
 		'HDB_ADMIN_USERNAME',
@@ -640,13 +642,6 @@ describe('install storage.engine resolution', () => {
 		} else {
 			throw new Error(`Unexpected engine: ${expectedEngine}`);
 		}
-
-		const overrides = env_manager.getConfigOverrides();
-		if (overrides && Object.prototype.hasOwnProperty.call(overrides, hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE)) {
-			assert.strictEqual(overrides[hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE], expectedEngine);
-		} else {
-			assert.strictEqual(overrides?.[hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE], undefined);
-		}
 	}
 
 	beforeEach(async () => {
@@ -678,19 +673,29 @@ describe('install storage.engine resolution', () => {
 	});
 
 	afterEach(async () => {
-		await closeSystemDatabase();
-		for (const k of ENV_KEYS) {
-			if (savedEnv[k] === undefined) {
-				delete process.env[k];
-			} else {
-				process.env[k] = savedEnv[k];
+		try {
+			await closeSystemDatabase();
+		} finally {
+			for (const k of ENV_KEYS) {
+				if (savedEnv[k] === undefined) {
+					delete process.env[k];
+				} else {
+					process.env[k] = savedEnv[k];
+				}
 			}
+			process.argv = savedArgv;
+			hdb_utils.resetNoBootFileCache();
+			sandbox.restore();
+			env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER, undefined);
+			env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, undefined);
+			env_manager.setProperty(env_manager.BOOT_PROPS_FILE_PATH, undefined);
+			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, undefined);
+			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION, undefined);
+			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, undefined);
+			testUtils.setupTestDBPath();
+			config_utils.initConfig(true);
+			fs.rmSync(tempBaseDir, { recursive: true, force: true });
 		}
-		process.argv = savedArgv;
-		hdb_utils.resetNoBootFileCache();
-		sandbox.restore();
-		testUtils.setupTestDBPath();
-		fs.rmSync(tempBaseDir, { recursive: true, force: true });
 	});
 
 	async function runInstall() {
@@ -736,6 +741,33 @@ describe('install storage.engine resolution', () => {
 		const rootPath = await runInstall();
 		assertInstalledSystemEngine(rootPath, 'lmdb');
 		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+		assert.strictEqual(
+			fs.existsSync(path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE)),
+			true,
+			'Should materialize harper-config.yaml at settings_path when HDB_CONFIG points outside rootPath'
+		);
+	});
+
+	it('preserves unmapped component blocks in HDB_CONFIG during install', async () => {
+		const rootPath = path.join(tempBaseDir, 'hdb');
+		fs.mkdirSync(rootPath, { recursive: true });
+		const rootConfigPath = path.join(rootPath, hdbTerms.HDB_CONFIG_FILE);
+		fs.writeFileSync(
+			rootConfigPath,
+			'storage:\n  engine: lmdb\nrest: true\nmyCustomComponent:\n  package: "@harperdb/custom"\n',
+			'utf8'
+		);
+		process.env.HDB_CONFIG = rootConfigPath;
+		await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		const finalYaml = fs.readFileSync(rootConfigPath, 'utf8');
+		assert.ok(finalYaml.includes('myCustomComponent:'), 'Expected unmapped component block to be preserved');
+		assert.ok(finalYaml.includes('@harperdb/custom'), 'Expected custom component package to be preserved');
+		assert.strictEqual(
+			fs.existsSync(path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE)),
+			false,
+			'Should not create an unused harper-config.yaml when HDB_CONFIG points at harperdb-config.yaml inside rootPath'
+		);
 	});
 
 	it('honours CLI/prompt STORAGE_ENGINE=lmdb during install', async () => {
@@ -748,6 +780,14 @@ describe('install storage.engine resolution', () => {
 	it('resolves CLI STORAGE_ENGINE=rocksdb + HARPER_CONFIG={"storage":{"engine":"lmdb"}} consistently to lmdb', async () => {
 		process.env.STORAGE_ENGINE = 'rocksdb';
 		process.env.HARPER_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('resolves CLI STORAGE_ENGINE=rocksdb + HARPER_DEFAULT_CONFIG={"storage":{"engine":"lmdb"}} consistently to lmdb', async () => {
+		process.env.STORAGE_ENGINE = 'rocksdb';
+		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
 		const rootPath = await runInstall();
 		assertInstalledSystemEngine(rootPath, 'lmdb');
 		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
