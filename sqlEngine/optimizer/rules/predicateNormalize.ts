@@ -52,6 +52,18 @@ export function normalizePredicate(expr: ExprNode): ExprNode {
 				if (inner.kind === 'like') {
 					return { ...inner, negated: !inner.negated };
 				}
+				if (inner.kind === 'logical') {
+					if (inner.op === 'not' && inner.args.length === 1) {
+						return inner.args[0];
+					}
+					if (inner.op === 'and' || inner.op === 'or') {
+						return {
+							kind: 'logical',
+							op: inner.op === 'and' ? 'or' : 'and',
+							args: inner.args.map((arg) => normalizePredicate({ kind: 'logical', op: 'not', args: [arg] })),
+						};
+					}
+				}
 				return { kind: 'logical', op: 'not', args: [inner] };
 			}
 			return { kind: 'logical', op: expr.op, args: expr.args.map(normalizePredicate) };

@@ -572,4 +572,103 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		});
 		assert.deepStrictEqual(data, [{ id: 'from-legacy' }]);
 	});
+
+	it('normalizes parenthesized NOT predicates to match unparenthesized forms and exclude NULLs (#1397)', async () => {
+		const table = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'name', indexed: true, indexNulls: true },
+				{ name: 'age', indexed: true, indexNulls: true },
+			],
+			rows: [
+				{ id: 1, name: 'alice', age: 30 },
+				{ id: 2, name: 'bob', age: 25 },
+				{ id: 3, name: 'alice', age: 25 },
+				{ id: 4, name: null, age: null },
+				{ id: 5, name: 'alice', age: null },
+				{ id: 6, name: 'bob', age: null },
+			],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { user: table } }));
+
+		const pairs = [
+			[
+				"SELECT id FROM dev.user WHERE NOT (name = 'alice')",
+				"SELECT id FROM dev.user WHERE NOT name = 'alice'",
+				[2, 6],
+			],
+			[
+				"SELECT id FROM dev.user WHERE name = 'alice' AND NOT (age = 25)",
+				"SELECT id FROM dev.user WHERE name = 'alice' AND NOT age = 25",
+				[1],
+			],
+			[
+				"SELECT id FROM dev.user WHERE NOT (name = 'alice' OR age = 25)",
+				"SELECT id FROM dev.user WHERE NOT name = 'alice' AND NOT age = 25",
+				[],
+			],
+			[
+				"SELECT id FROM dev.user WHERE NOT (name = 'alice' AND age = 30)",
+				"SELECT id FROM dev.user WHERE NOT name = 'alice' OR NOT age = 30",
+				[2, 3, 6],
+			],
+			[
+				"SELECT id FROM dev.user WHERE NOT (NOT (name = 'alice'))",
+				"SELECT id FROM dev.user WHERE name = 'alice'",
+				[1, 3, 5],
+			],
+			[
+				"SELECT id FROM dev.user WHERE NOT (name = 'alice' AND (age = 25 OR age > 28))",
+				"SELECT id FROM dev.user WHERE NOT name = 'alice' OR (NOT age = 25 AND NOT age > 28)",
+				[2, 6],
+			],
+		];
+
+		for (const [parenSql, unparenSql, expectedIds] of pairs) {
+			const unparenRows = await runSql(unparenSql);
+			const unparenTarget = table._lastTarget;
+			const parenRows = await runSql(parenSql);
+			const parenTarget = table._lastTarget;
+			assert.deepStrictEqual(unparenRows.map((r) => r.id).sort(), expectedIds, unparenSql);
+			assert.deepStrictEqual(parenRows.map((r) => r.id).sort(), expectedIds, parenSql);
+			assert.deepStrictEqual(parenTarget.conditions, unparenTarget.conditions, parenSql);
+		}
+
+		// Also verify join WHERE splitting after De Morgan (`NOT (u.name = 'alice' OR o.amount = 10)`).
+		const orders = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'userId', indexed: true },
+				{ name: 'amount', indexed: true, indexNulls: true },
+			],
+			rows: [
+				{ id: 101, userId: 1, amount: 20 },
+				{ id: 102, userId: 2, amount: 10 },
+				{ id: 103, userId: 2, amount: 30 },
+				{ id: 104, userId: 6, amount: null },
+			],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { user: table, orders } }));
+		const joinParen = await runSql(
+			"SELECT o.id FROM dev.user u INNER JOIN dev.orders o ON u.id = o.userId WHERE NOT (u.name = 'alice' OR o.amount = 10)"
+		);
+		const joinUnparen = await runSql(
+			"SELECT o.id FROM dev.user u INNER JOIN dev.orders o ON u.id = o.userId WHERE NOT u.name = 'alice' AND NOT o.amount = 10"
+		);
+		assert.deepStrictEqual(joinParen, [{ id: 103 }]);
+		assert.deepStrictEqual(joinParen, joinUnparen);
+	});
+
+	it('rejects lone unindexed NOT predicate (both unparenthesized and parenthesized) with no usable index condition', async () => {
+		await assert.rejects(
+			() => runSql("SELECT id FROM dev.user WHERE NOT city = 'denver'"),
+			(err) => err instanceof EngineUnsupportedError && /no usable index condition/.test(err.message)
+		);
+		await assert.rejects(
+			() => runSql("SELECT id FROM dev.user WHERE NOT (city = 'denver')"),
+			(err) => err instanceof EngineUnsupportedError && /no usable index condition/.test(err.message)
+		);
+	});
 });
