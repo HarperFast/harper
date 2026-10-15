@@ -2395,7 +2395,12 @@ function parseBlock(query, expectedEnd) {
 						query.conditions.push(entry);
 						attribute = null;
 					}
-				} else query.push(entry);
+				} else {
+					if (value && entry.conditions.length) {
+						recordError('conditions/comparisons are not allowed in a property list');
+					}
+					query.push(entry);
+				}
 				if (queryString[lastIndex] === ',') {
 					parser.lastIndex = ++lastIndex;
 				} else expectingDelimiter = true;
