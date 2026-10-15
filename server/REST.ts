@@ -195,6 +195,11 @@ function isDeferredRead(data): boolean {
 	);
 }
 
+function discardReadResponse(response, sourceData) {
+	if (typeof sourceData?.onDone === 'function') sourceData.onDone();
+	discardSerializedStream(response.body);
+}
+
 function applyReadPreconditions(response, request, method: string, lastModified?: number, sourceData?) {
 	if ((method !== 'GET' && method !== 'HEAD') || response.status < 200 || response.status >= 300) return response;
 	const incoming = request.headers.asObject;
@@ -202,13 +207,19 @@ function applyReadPreconditions(response, request, method: string, lastModified?
 	const checkDate =
 		(incoming['if-match'] === undefined && incoming['if-unmodified-since'] !== undefined) ||
 		(incoming['if-none-match'] === undefined && incoming['if-modified-since'] !== undefined);
-	const result = evaluatePreconditions(
-		incoming,
-		method,
-		true,
-		response.headers.get('ETag'),
-		checkDate ? (parseHttpDate(response.headers.get('Last-Modified')) ?? lastModified) : undefined
-	);
+	let result;
+	try {
+		result = evaluatePreconditions(
+			incoming,
+			method,
+			true,
+			response.headers.get('ETag'),
+			checkDate ? (parseHttpDate(response.headers.get('Last-Modified')) ?? lastModified) : undefined
+		);
+	} catch (error) {
+		discardReadResponse(response, sourceData);
+		throw error;
+	}
 	if (result) {
 		try {
 			if (sourceData !== undefined) {
@@ -223,8 +234,7 @@ function applyReadPreconditions(response, request, method: string, lastModified?
 				addVaryHeader(response.headers, 'Accept-Encoding');
 			}
 		} finally {
-			if (typeof sourceData?.onDone === 'function') sourceData.onDone();
-			discardSerializedStream(response.body);
+			discardReadResponse(response, sourceData);
 		}
 		if (result === 412) throw new ClientError('Request precondition failed', 412);
 		const headers = mergeHeaders(new Headers(), response.headers);
