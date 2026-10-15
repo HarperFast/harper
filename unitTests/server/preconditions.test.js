@@ -21,7 +21,7 @@ function rest(resources, options = {}) {
 	let handler;
 	handleApplication({
 		resources,
-		options: { getAll: () => ({ webSocket: false, lastModified: true, preconditionLocks: true, ...options }) },
+		options: { getAll: () => ({ webSocket: false, lastModified: true, ...options }) },
 		routeFor: () => ({ urlPath: `/conditions-${mount++}` }),
 		server: { http: (listener) => (handler = listener) },
 	});
@@ -280,12 +280,74 @@ describe('REST preconditions with real table transactions', () => {
 		assert.strictEqual(response.status, 412, await bodyOf(response));
 	});
 
-	it('enforces conditions with locks disabled and when LMDB has no lock capability', async () => {
+	it('serializes 16-way concurrent If-Match and If-None-Match races when locks are enabled by default or explicitly', async function () {
+		if (isLMDB) return this.skip();
+		for (const options of [{}, { preconditionLocks: true }]) {
+			const tag = options.preconditionLocks === true ? 'explicit' : 'default';
+			const client = rest(resources, options);
+			const matchId = `race-match-${tag}`;
+			await Row.put(matchId, { n: 0 });
+			const etag = versionToEtag(Row.primaryStore.getEntry(matchId).version);
+			const matchAttempts = await Promise.all(
+				Array.from({ length: 16 }, (_, index) =>
+					client('PATCH', `/Row/${matchId}`, { n: index + 1 }, { 'if-match': etag }).then((res) => ({
+						status: res.status,
+						n: index + 1,
+					}))
+				)
+			);
+			const matchWinners = matchAttempts.filter(({ status }) => status >= 200 && status < 300);
+			assert.strictEqual(matchWinners.length, 1);
+			assert.strictEqual(matchAttempts.filter(({ status }) => status === 412).length, 15);
+			assert.strictEqual((await Row.get(matchId)).n, matchWinners[0].n);
+
+			const createId = `race-create-${tag}`;
+			const createAttempts = await Promise.all(
+				Array.from({ length: 16 }, (_, index) =>
+					client('PUT', `/Row/${createId}`, { n: index + 1 }, { 'if-none-match': '*' }).then((res) => ({
+						status: res.status,
+						n: index + 1,
+					}))
+				)
+			);
+			const createWinners = createAttempts.filter(({ status }) => status >= 200 && status < 300);
+			assert.strictEqual(createWinners.length, 1);
+			assert.strictEqual(createAttempts.filter(({ status }) => status === 412).length, 15);
+			assert.strictEqual((await Row.get(createId)).n, createWinners[0].n);
+		}
+	});
+
+	it('performs a single best-effort pre-check when locks are disabled or on LMDB', async () => {
 		const unlocked = rest(resources, { preconditionLocks: false });
 		await Row.put('optimistic', { n: 1 });
 		assert.strictEqual((await unlocked('PATCH', '/Row/optimistic', { n: 2 }, { 'if-match': '"stale"' })).status, 412);
 		assert.ok((await unlocked('PATCH', '/Row/optimistic', { n: 3 })).status < 300);
 		assert.strictEqual((await Row.get('optimistic')).n, 3);
+
+		const firstChecked = Promise.withResolvers();
+		const secondChecked = Promise.withResolvers();
+		const releaseBoth = Promise.withResolvers();
+		class ConcurrentBestEffort extends Row {
+			async patch(data, target) {
+				const result = await super.patch(data, target);
+				(data.n === 10 ? firstChecked : secondChecked).resolve();
+				await releaseBoth.promise;
+				return result;
+			}
+		}
+		resources.set('ConcurrentBestEffort', ConcurrentBestEffort, { rest: true });
+		const bestEffort = rest(resources, { preconditionLocks: false });
+		await Row.put('best-effort-race', { n: 1 });
+		const etag = versionToEtag(Row.primaryStore.getEntry('best-effort-race').version);
+		const first = bestEffort('PATCH', '/ConcurrentBestEffort/best-effort-race', { n: 10 }, { 'if-match': etag });
+		const second = bestEffort('PATCH', '/ConcurrentBestEffort/best-effort-race', { n: 20 }, { 'if-match': etag });
+		await Promise.all([firstChecked.promise, secondChecked.promise]);
+		releaseBoth.resolve();
+		const [res1, res2] = await Promise.all([first, second]);
+		assert.ok(res1.status >= 200 && res1.status < 300, await bodyOf(res1));
+		assert.ok(res2.status >= 200 && res2.status < 300, await bodyOf(res2));
+		const stored = (await Row.get('best-effort-race')).n;
+		assert.ok(stored === 10 || stored === 20, `expected 10 or 20, got ${stored}`);
 	});
 
 	it('checks v1 and v2 authorization before revealing condition failures', async () => {
@@ -301,61 +363,6 @@ describe('REST preconditions with real table transactions', () => {
 				);
 				assert.strictEqual(response.status, 403, await bodyOf(response));
 			}
-		}
-	});
-
-	it('rechecks at commit when an unconditional writer bypasses the lock', async () => {
-		class Interleaved extends Row {
-			async patch(data, target) {
-				await Row.put(this.getId(), { n: 9 }, {});
-				return super.patch(data, target);
-			}
-		}
-		resources.set('Interleaved', Interleaved, { rest: true });
-		for (const preconditionLocks of [true, false]) {
-			const id = `interleave-${preconditionLocks}`;
-			await Row.put(id, { n: 1 });
-			const etag = versionToEtag(Row.primaryStore.getEntry(id).version);
-			const response = await rest(resources, { preconditionLocks })(
-				'PATCH',
-				`/Interleaved/${id}`,
-				{ n: 2 },
-				{ 'if-match': etag }
-			);
-			assert.strictEqual(response.status, 412, await bodyOf(response));
-			assert.strictEqual((await Row.get(id)).n, 9);
-		}
-	});
-
-	it('validates empty patches and preserves explicit fields after an interleaved write', async () => {
-		class InterleavedNoop extends Row {
-			async patch(data, target) {
-				await Row.put(this.getId(), { n: 9 }, {});
-				return super.patch(data, target);
-			}
-		}
-		resources.set('InterleavedNoop', InterleavedNoop, { rest: true });
-		for (const preconditionLocks of [true, false]) {
-			for (const data of [{}, { n: 1 }]) {
-				const id = `noop-interleave-${preconditionLocks}-${Object.keys(data).length}`;
-				await Row.put(id, { n: 1 });
-				const etag = versionToEtag(Row.primaryStore.getEntry(id).version);
-				const response = await rest(resources, { preconditionLocks })('PATCH', `/InterleavedNoop/${id}`, data, {
-					'if-match': etag,
-				});
-				assert.strictEqual(response.status, 412, await bodyOf(response));
-				assert.strictEqual((await Row.get(id)).n, 9);
-			}
-			const id = `explicit-interleave-${preconditionLocks}`;
-			await Row.put(id, { n: 1 });
-			const response = await rest(resources, { preconditionLocks })(
-				'PATCH',
-				`/InterleavedNoop/${id}`,
-				{ n: 1 },
-				{ 'if-match': '*' }
-			);
-			assert.ok(response.status < 300 || response.status === 409, await bodyOf(response));
-			assert.strictEqual((await Row.get(id)).n, response.status === 409 ? 9 : 1);
 		}
 	});
 
@@ -609,7 +616,7 @@ describe('REST preconditions with real table transactions', () => {
 		assert.strictEqual((await Row.get('read')).n, 1);
 	});
 
-	it('binds conditions to normalized numeric primary keys, including optimistic create at zero', async () => {
+	it('binds conditions to normalized numeric primary keys, including conditional create at zero', async () => {
 		const Numeric = table({
 			table: 'HttpNumericConditions',
 			database: 'test',
@@ -628,12 +635,16 @@ describe('REST preconditions with real table transactions', () => {
 			assert.strictEqual((await Numeric.get(id)).n, 2);
 		}
 		await Numeric.delete(0);
-		const optimistic = rest(resources, { preconditionLocks: false });
-		const attempts = await Promise.all(
-			Array.from({ length: 8 }, (_, n) => optimistic('PUT', '/Numeric/0', { n }, { 'if-none-match': '*' }))
-		);
-		assert.strictEqual(attempts.filter(({ status }) => status >= 200 && status < 300).length, 1);
-		assert.strictEqual(attempts.filter(({ status }) => status === 412).length, 7);
+		if (!isLMDB) {
+			const attempts = await Promise.all(
+				Array.from({ length: 8 }, (_, n) => request('PUT', '/Numeric/0', { n }, { 'if-none-match': '*' }))
+			);
+			assert.strictEqual(attempts.filter(({ status }) => status >= 200 && status < 300).length, 1);
+			assert.strictEqual(attempts.filter(({ status }) => status === 412).length, 7);
+		} else {
+			assert.ok((await request('PUT', '/Numeric/0', { n: 1 }, { 'if-none-match': '*' })).status < 300);
+			assert.strictEqual((await request('PUT', '/Numeric/0', { n: 2 }, { 'if-none-match': '*' })).status, 412);
+		}
 	});
 
 	it('rejects custom statics and handlers that never consume the condition', async () => {
@@ -706,80 +717,6 @@ describe('REST preconditions with real table transactions', () => {
 			await Isolated.put('commit-barrier', { n: 0 });
 			for (let index = 0; index < count; index++) assert.equal(await Isolated.get(`sibling-${index}`), null);
 			assert.strictEqual((await Isolated.get('target')).n, 1);
-		}
-	});
-
-	it('never reports a skipped wildcard delete as a successful mutation', async () => {
-		class WildcardInterleave extends Row {
-			async delete(target) {
-				await super.patch({ n: 2 }, target);
-				await Row.put(this.getId(), { n: 9 }, {});
-				return super.delete(target);
-			}
-		}
-		resources.set('WildcardInterleave', WildcardInterleave, { rest: true });
-		for (const preconditionLocks of [true, false]) {
-			const id = `wildcard-${preconditionLocks}`;
-			await Row.put(id, { n: 1 });
-			const response = await rest(resources, { preconditionLocks })('DELETE', `/WildcardInterleave/${id}`, undefined, {
-				'if-match': '*',
-			});
-			if (response.status >= 200 && response.status < 300) assert.equal(await Row.get(id), null);
-			else {
-				assert.strictEqual(response.status, 409, await bodyOf(response));
-				assert.strictEqual((await Row.get(id)).n, 9);
-			}
-		}
-	});
-
-	it('keeps a no-op predicate through a retry caused by a sibling write', async () => {
-		class NoopWithSibling extends Row {
-			async patch(data, target) {
-				await super.patch({}, target);
-				await Row.put('retry-sibling', { n: 2 });
-				await Row.put(this.getId(), { n: 9 }, {});
-				await Row.put('retry-sibling', { n: 9 }, {});
-			}
-		}
-		resources.set('NoopWithSibling', NoopWithSibling, { rest: true });
-		for (const preconditionLocks of [true, false]) {
-			const id = `noop-retry-${preconditionLocks}`;
-			await Row.put(id, { n: 1 });
-			await Row.put('retry-sibling', { n: 1 });
-			const response = await rest(resources, { preconditionLocks })(
-				'PATCH',
-				`/NoopWithSibling/${id}`,
-				{},
-				{ 'if-match': versionToEtag(Row.primaryStore.getEntry(id).version) }
-			);
-			assert.strictEqual(response.status, 412, await bodyOf(response));
-			assert.strictEqual((await Row.get(id)).n, 9);
-			assert.strictEqual((await Row.get('retry-sibling')).n, 9);
-		}
-	});
-
-	it('validates a no-op with siblings after an intervening unconditional target write', async () => {
-		class NoopBeforeWork extends Row {
-			async patch(data, target) {
-				await super.patch({}, target);
-				await Row.put(this.getId(), { n: 9 }, {});
-				await Row.put(`noop-work-${this.getId()}`, { n: 8 });
-			}
-		}
-		resources.set('NoopBeforeWork', NoopBeforeWork, { rest: true });
-		for (const preconditionLocks of [true, false]) {
-			const id = `noop-work-${preconditionLocks}`;
-			await Row.put(id, { n: 1 });
-			const response = await rest(resources, { preconditionLocks })(
-				'PATCH',
-				`/NoopBeforeWork/${id}`,
-				{},
-				{ 'if-match': versionToEtag(Row.primaryStore.getEntry(id).version) }
-			);
-			assert.strictEqual(response.status, 412, await bodyOf(response));
-			await Row.put(`noop-work-barrier-${id}`, { n: 0 });
-			assert.strictEqual((await Row.get(id)).n, 9);
-			assert.strictEqual(Row.primaryStore.getEntry(`noop-work-${id}`)?.value, undefined);
 		}
 	});
 
@@ -974,11 +911,49 @@ describe('REST preconditions with real table transactions', () => {
 });
 
 describe('conditional write durability', () => {
-	it('does not replay a rejected conflicting mutation', async function () {
+	it('leaves the stored record equal to the 204 winner after replayLogs when locks are enabled', async function () {
 		if (isLMDB) this.skip();
 		this.timeout(30000);
 		const Row = table({
-			database: 'conditionalReplay',
+			database: 'conditionalReplayLocked',
+			table: 'Row',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+		});
+		const firstStaged = Promise.withResolvers();
+		const releaseFirst = Promise.withResolvers();
+		class Controlled extends Row {
+			async patch(data, target) {
+				await super.patch(data, target);
+				if (data.n === 2) {
+					firstStaged.resolve();
+					await releaseFirst.promise;
+				}
+			}
+		}
+		const resources = new Resources();
+		resources.set('Controlled', Controlled, { rest: true });
+		const request = rest(resources);
+		await Row.put('target', { n: 1 });
+		const etag = versionToEtag(Row.primaryStore.getEntry('target').version);
+		const first = request('PATCH', '/Controlled/target', { n: 2 }, { 'if-match': etag });
+		await firstStaged.promise;
+		const second = request('PATCH', '/Controlled/target', { n: 3 }, { 'if-match': etag });
+		await nextTurn();
+		releaseFirst.resolve();
+		const [accepted, rejected] = await Promise.all([first, second]);
+		assert.strictEqual(accepted.status, 204, await bodyOf(accepted));
+		assert.strictEqual(rejected.status, 412, await bodyOf(rejected));
+		assert.strictEqual((await Row.get('target')).n, 2);
+		const { replayLogs } = require('#src/resources/replayLogs');
+		await replayLogs(Row.primaryStore.rootStore, { Row }, true);
+		assert.strictEqual((await Row.get('target')).n, 2, 'replay must preserve the locked 204 winner');
+	});
+
+	it('converges to the LWW winner after replayLogs when locks are disabled', async function () {
+		if (isLMDB) this.skip();
+		this.timeout(30000);
+		const Row = table({
+			database: 'conditionalReplayBestEffort',
 			table: 'Row',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
 		});
@@ -1003,14 +978,14 @@ describe('conditional write durability', () => {
 		const second = request('PATCH', '/Controlled/target', { n: 3 }, { 'if-match': etag });
 		await secondStaged.promise;
 		releaseFirst.resolve();
-		const accepted = await first;
+		const firstResponse = await first;
 		releaseSecond.resolve();
-		const rejected = await second;
-		assert.ok(accepted.status < 300, await bodyOf(accepted));
-		assert.strictEqual(rejected.status, 412, await bodyOf(rejected));
-		assert.strictEqual((await Row.get('target')).n, 2);
+		const secondResponse = await second;
+		assert.strictEqual(firstResponse.status, 204, await bodyOf(firstResponse));
+		assert.strictEqual(secondResponse.status, 204, await bodyOf(secondResponse));
+		assert.strictEqual((await Row.get('target')).n, 3);
 		const { replayLogs } = require('#src/resources/replayLogs');
 		await replayLogs(Row.primaryStore.rootStore, { Row }, true);
-		assert.strictEqual((await Row.get('target')).n, 2, 'replay must not apply the rejected mutation');
+		assert.strictEqual((await Row.get('target')).n, 3, 'replay must converge to the LWW winner');
 	});
 });

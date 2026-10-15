@@ -32,7 +32,6 @@ import type { Contract, SchemaClass } from './defineResource.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
 import { Resource, SEARCH_AUTHORIZATION, WRITE_CONDITION, transformForSelect, defaultAllowReads } from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
-import { asBinary } from './asBinary.ts';
 import {
 	DatabaseTransaction,
 	ImmediateTransaction,
@@ -1713,31 +1712,18 @@ export function makeTable(options): TableResourceClass {
 				return locked.unlock().then(() => {
 					throw new ClientError('Conditional request already completed', 409);
 				});
+			const link = txnForContext(resource.getContext());
+			if (link?.transaction) {
+				if (link.writes.length === 0 && link.readTxnsUsed <= 1) {
+					link.releaseReadTxn();
+					link.snapshotFree = true;
+				} else if (link.timestamp && reservedLocalKey(link.transaction) === undefined) {
+					link.transaction.setTimestamp(link.timestamp);
+				}
+			}
 			condition.locked = true;
 			condition.release = () => locked.unlock();
 		}));
-	}
-	function attachWriteCondition(write, condition, options) {
-		write[WRITE_CONDITION] = condition;
-		write.validateBase = (entry, txnTime) => {
-			if (priorStagedWrite(write)?.[WRITE_CONDITION] !== condition) {
-				// A predicate-only operation also checks live state before its native guard is prepared.
-				condition.check(
-					write.conditionOnly && isRocksDB ? write.store.getEntry(write.key, { uncachedRead: true }) : entry
-				);
-			}
-			if (!write.conditionOnly && precedesExistingVersion(txnTime, entry, options?.nodeId) < 0)
-				throw new ClientError('A concurrent write superseded the conditional mutation', 409);
-		};
-		if (isRocksDB)
-			write.prepareCommit = (transaction) => {
-				if (!write.conditionOnly) return;
-				write.validateBase(write.entry, transaction.getTimestamp());
-				// Rewriting identical bytes adds native conflict tracking without changing the public version or audit log.
-				const bytes = write.store.getBinarySync(write.key, { transaction });
-				if (bytes === undefined) write.store.removeSync(write.key, { transaction });
-				else write.store.putSync(write.key, asBinary(bytes), { transaction });
-			};
 	}
 	function entryBeforeWrite(loadedEntry: Entry | undefined, id: Id, transaction: any, reloadsCommitBase: boolean) {
 		if (loadedEntry != null) return loadedEntry;
@@ -1769,6 +1755,7 @@ export function makeTable(options): TableResourceClass {
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
 		#version?: number; // version of the record
 		#entry?: Entry; // the entry from the database
+		#entryLoaded = false;
 		#savingOperation?: any; // operation for the record is currently being saved
 		#baseReadTxn?: any; // staging handle this instance's uncached pre-load read through
 		#baseReadEntry?: Entry; // what that read returned, reusable as the commit base only while it is still #entry
@@ -1776,6 +1763,17 @@ export function makeTable(options): TableResourceClass {
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		#writeGeneration?: WriteGeneration;
 		declare getProperty: (name: string) => any;
+		#evaluateWriteCondition(id: Id, condition: any, transaction: any): void {
+			if (!condition) return;
+			if (condition.finished) throw new ClientError('Conditional request already completed', 409);
+			if (!condition.checked) {
+				if (!this.#entryLoaded) {
+					TableResource._updateResource(this, primaryStore.getEntry(id, { transaction: transaction.getReadTxn() }));
+				}
+				condition.check(this.#entry);
+				condition.checked = true;
+			}
+		}
 		[ASSERT_TRACKED_WRITABLE](generation = this.#writeGeneration): void {
 			if (!generation) return;
 			if (generation.internalWrites > 0) return;
@@ -2624,7 +2622,10 @@ export function makeTable(options): TableResourceClass {
 					(entry) => {
 						if (entry) {
 							TableResource._updateResource(this, entry);
-						} else this.#record = null;
+						} else {
+							this.#entryLoaded = true;
+							this.#record = null;
+						}
 						if (readsCommitBase) {
 							this.#baseReadTxn = readTxn;
 							this.#baseReadEntry = entry;
@@ -2670,6 +2671,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		static _updateResource(resource, entry) {
 			resource.#entry = entry;
+			resource.#entryLoaded = true;
 			resource.#record = entry?.value ?? null;
 			resource.#version = entry?.version;
 		}
@@ -4581,6 +4583,8 @@ export function makeTable(options): TableResourceClass {
 			// Store the handle for both scoped and hold locks; undefined (re-entrant hold fast-path)
 			// must not clear a handle already set.
 			if (holdHandle != null) this.#lockHandle = holdHandle;
+			this.#baseReadTxn = undefined;
+			this.#baseReadEntry = undefined;
 			TableResource._updateResource(this, entryForReload);
 			// Preserve staged changes when upgrading the same instance from scoped to hold so that
 			// set() calls made under the scoped lock survive the reload.
@@ -4752,8 +4756,8 @@ export function makeTable(options): TableResourceClass {
 					return this._writeUpdate(id, updates, fullUpdate, options);
 				});
 			}
-			const checkCondition = condition?.check;
 			const transaction = txnForContext(context);
+			this.#evaluateWriteCondition(id, condition, transaction);
 			const replaying = transaction.isReplay === true;
 			assertDerivedIndexAdmission(options, transaction);
 			const writtenHere = !options?.isNotification && !transaction.sourceApply && !replaying;
@@ -4913,11 +4917,6 @@ export function makeTable(options): TableResourceClass {
 							// TODO: else freeze after we have applied the changes
 						}
 					} else {
-						if (checkCondition) {
-							write.conditionOnly = true;
-							write.skipReplicationConfirmation = true;
-							return;
-						}
 						(committedBy as any).removeWrite?.(write);
 						return false;
 					}
@@ -4930,11 +4929,6 @@ export function makeTable(options): TableResourceClass {
 					transaction: any,
 					committedBy?: DatabaseTransaction
 				) => {
-					if (checkCondition && isRocksDB) write.validateBase(existingEntry, txnTime);
-					if (write.conditionOnly) {
-						write.skipped = true;
-						return;
-					}
 					// Whether a prior attempt of THIS write appended its own audit entry (sticky, set in
 					// save(); log entries are not part of the aborted rocks transaction, so they survive).
 					// Only such a write can find its own orphaned entry in the dedup lookups below and must
@@ -5672,7 +5666,6 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 			};
-			if (condition) attachWriteCondition(write, condition, options);
 			this.#savingOperation = write;
 			// The hooks run before `addWrite` so the derived values are on the record at commit (the
 			// txn `before` slot runs after commit). They see the payload before table validation, and a
@@ -5774,8 +5767,8 @@ export function makeTable(options): TableResourceClass {
 			const condition = conditionForWrite(context, id);
 			const locking = lockConditionalWrite(this, id, condition);
 			if (locking) return locking.then(() => this._writeDelete(id, options));
-			const checkCondition = condition?.check;
 			const transaction = txnForContext(context);
+			this.#evaluateWriteCondition(id, condition, transaction);
 			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
 			const entry = entryBeforeWrite(this.#entry, id, transaction, true);
@@ -5798,7 +5791,6 @@ export function makeTable(options): TableResourceClass {
 						? (this.constructor as any).source.delete.bind((this.constructor as any).source, id, undefined, context)
 						: undefined,
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
-					if (checkCondition && isRocksDB) write.validateBase(existingEntry, txnTime);
 					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
 					write.superseded = false; // reset per round, as in the update path
 					write.skipped = false;
@@ -5872,7 +5864,6 @@ export function makeTable(options): TableResourceClass {
 					if (priorStagedOp) priorStagedOp.superseded = true;
 				},
 			};
-			if (condition) attachWriteCondition(write, condition, options);
 			transaction.addWrite(write);
 			if (condition) condition.consumed = true;
 			return true;

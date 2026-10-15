@@ -387,7 +387,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				throw new ClientError('Conditional writes require a table PUT, PATCH or DELETE', 501);
 			writeCondition = {
 				Resource: resource,
-				lock: httpOptions.preconditionLocks === true || httpOptions.preconditionLocks === 'true',
+				lock: httpOptions.preconditionLocks !== false && httpOptions.preconditionLocks !== 'false',
 				consumed: false,
 				release: undefined,
 				check(entry) {
