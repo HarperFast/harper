@@ -109,15 +109,6 @@ function resolveCacheOptions(scope: Scope, urlKey: string, basename: string) {
 }
 
 /**
- * `send` URI-decodes its path argument and 404s any dot segment, as it does for a request path. A
- * static entry is a filesystem path chosen by the `files` globs, so `send` gets only the file's own
- * name, with its directory as `root`: an ancestor directory never reaches the decode or dot check.
- */
-function sendResolvedFile(req, path: string, options?: Record<string, unknown>) {
-	return send(req, encodeURIComponent(basename(path)), { ...options, root: dirname(path) });
-}
-
-/**
  * Serve a file through `send`, applying the plugin's cache-header options (read live from the
  * component config, like `fallthrough`, and layered with any matching `cacheOverrides` entry).
  * `cacheControl` as a string overrides `maxAge`/`immutable` via send's `headers` event;
@@ -136,7 +127,11 @@ function serveFile(req, path: string, scope: Scope) {
 		fileName
 	);
 
-	const stream = sendResolvedFile(req, path, {
+	// `send` URI-decodes its path argument and 404s any dot segment, as it does for a request path. A
+	// static entry is a filesystem path chosen by the `files` globs, so `send` gets only the file's own
+	// name, with its directory as `root`: an ancestor directory never reaches the decode or dot check.
+	const stream = send(req, encodeURIComponent(fileName), {
+		root: dirname(path),
 		// suppress send's own header when we set a full override below (or when disabled)
 		cacheControl: cacheControlDisabled || customCacheControl !== undefined ? false : true,
 		maxAge: maxAgeMs,
@@ -428,10 +423,11 @@ export function handleApplication(scope: Scope) {
 				throw new Error(`Not found file does not exist: ${notFoundPath}`);
 			}
 
+			const resolvedNotFound = realpathSync(notFoundPath);
 			return {
 				status: statusCode,
 				handlesHeaders: true,
-				body: sendResolvedFile(req, realpathSync(notFoundPath)),
+				body: send(req, encodeURIComponent(basename(resolvedNotFound)), { root: dirname(resolvedNotFound) }),
 			};
 		},
 		{

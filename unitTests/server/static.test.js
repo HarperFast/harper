@@ -8,7 +8,6 @@ const { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } = require('
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const send = require('send');
-const sinon = require('sinon');
 const { handleApplication } = require('#src/server/static');
 const { httpServer, pipeBodyToResponse } = require('#src/server/http');
 const analyticsWrite = require('#src/resources/analytics/write');
@@ -769,29 +768,23 @@ describe('pipeBodyToResponse before the response head is written', () => {
 	let tempRoot;
 	let server;
 	let baseUrl;
-	let outcomes;
+	const reported = [];
 	const dispatch = { current: null };
 
 	before(async () => {
 		({ server, baseUrl } = await listenWith(dispatch));
 		tempRoot = mkdtempSync(join(tmpdir(), 'harper-static-preheader-'));
+		analyticsWrite.addAnalyticsListener((metrics) => {
+			for (const { metric, path, count } of metrics) {
+				if (metric.startsWith('response_')) reported.push({ metric, path, count });
+			}
+		});
 	});
 
 	after(() => {
 		server?.closeAllConnections();
 		server?.close();
 		if (tempRoot) rmSync(tempRoot, { recursive: true, force: true });
-	});
-
-	beforeEach(() => {
-		outcomes = [];
-		sinon.stub(analyticsWrite, 'recordActionBinary').callsFake((value, metric) => {
-			if (metric.startsWith('response_')) outcomes.push(metric);
-		});
-	});
-
-	afterEach(() => {
-		sinon.restore();
 	});
 
 	const failing =
@@ -980,7 +973,7 @@ describe('pipeBodyToResponse before the response head is written', () => {
 		await new Promise((resolve) => h2Server.listen(0, '127.0.0.1', resolve));
 		const client = http2.connect(`http://127.0.0.1:${h2Server.address().port}`);
 		try {
-			return await new Promise((resolve) => {
+			return await new Promise((resolve, reject) => {
 				const stream = client.request({ ':path': '/h2' });
 				const chunks = [];
 				let status;
@@ -991,7 +984,7 @@ describe('pipeBodyToResponse before the response head is written', () => {
 				stream.on('data', (chunk) => chunks.push(chunk));
 				stream.on('end', () => finish(true));
 				stream.on('error', () => finish(false));
-				stream.setTimeout(REQUEST_TIMEOUT_MS, () => stream.destroy(new Error('Request timed out')));
+				stream.setTimeout(REQUEST_TIMEOUT_MS, () => reject(new Error('Request timed out')));
 			});
 		} finally {
 			client.close();
@@ -1030,34 +1023,48 @@ describe('pipeBodyToResponse before the response head is written', () => {
 		assert.equal(res.complete, false);
 	});
 
+	// Metrics are reported per period and keyed by handler path, so each test claims its own path.
+	const outcomesFor = (path) => reported.filter((outcome) => outcome.path === path);
+	const withHandlerPath = (path, handler) => (req) => {
+		req.handlerPath = path;
+		return handler(req);
+	};
+
 	it('records the status that was sent, once', async () => {
-		dispatch.current = failing(Object.assign(new Error('try later'), { statusCode: 503 }));
+		dispatch.current = withHandlerPath(
+			'outcome-failed',
+			failing(Object.assign(new Error('try later'), { statusCode: 503 }))
+		);
 
 		await fetchHttp(baseUrl, '/unavailable');
-		await waitFor(() => outcomes.length > 0, 'the outcome to be recorded');
+		await waitFor(() => outcomesFor('outcome-failed').length > 0, 'the outcome to be reported');
 
-		assert.deepEqual(outcomes, ['response_503']);
+		assert.deepEqual(outcomesFor('outcome-failed'), [{ metric: 'response_503', path: 'outcome-failed', count: 1 }]);
 	});
 
 	it('records a served file once, with its own status', async () => {
 		writeFileSync(join(tempRoot, 'ok.txt'), 'ok');
-		dispatch.current = (req) => ({ handlesHeaders: true, body: send(req, 'ok.txt', { root: tempRoot }) });
+		dispatch.current = withHandlerPath('outcome-served', (req) => ({
+			handlesHeaders: true,
+			body: send(req, 'ok.txt', { root: tempRoot }),
+		}));
 
 		const res = await fetchHttp(baseUrl, '/ok');
-		await waitFor(() => outcomes.length > 0, 'the outcome to be recorded');
+		await waitFor(() => outcomesFor('outcome-served').length > 0, 'the outcome to be reported');
 
 		assert.equal(res.status, 200);
 		assert.equal(res.body, 'ok');
-		assert.deepEqual(outcomes, ['response_200']);
+		assert.deepEqual(outcomesFor('outcome-served'), [{ metric: 'response_200', path: 'outcome-served', count: 1 }]);
 	});
 
 	it('leaves a stream whose head was already written on pipeline', async () => {
-		dispatch.current = () => ({ status: 201, body: Readable.from(['a', 'b']) });
+		dispatch.current = withHandlerPath('outcome-streamed', () => ({ status: 201, body: Readable.from(['a', 'b']) }));
 
 		const res = await fetchHttp(baseUrl, '/streamed');
+		await waitFor(() => outcomesFor('outcome-streamed').length > 0, 'the outcome to be reported');
 
 		assert.equal(res.status, 201);
 		assert.equal(res.body, 'ab');
-		assert.deepEqual(outcomes, ['response_201']);
+		assert.deepEqual(outcomesFor('outcome-streamed'), [{ metric: 'response_201', path: 'outcome-streamed', count: 1 }]);
 	});
 });
