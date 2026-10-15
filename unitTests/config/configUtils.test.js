@@ -2115,5 +2115,35 @@ describe('Test configUtils module', () => {
 			expect(configJson.operationsApi.network.port).to.be.null;
 			expect(configJson.operationsApi.network.securePort).to.equal(defaultPort);
 		});
+
+		it('wraps backfilled defaults and synced env objects in YAMLMap nodes so validateConfig nested setIn calls succeed', () => {
+			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config.yaml');
+			// Minimal HDB_CONFIG with scalar threads: 4 and omitted logging / operationsApi sections
+			fs.writeFileSync(hdbConfigTemplatePath, 'threads: 4\nstorage:\n  engine: lmdb\n', 'utf8');
+			process.env.HARPER_SET_CONFIG = JSON.stringify({
+				threads: {
+					count: 2,
+				},
+			});
+
+			try {
+				config_utils_rw.createConfigFile(
+					{
+						ROOTPATH: HDB_ROOT,
+					},
+					false,
+					hdbConfigTemplatePath
+				);
+
+				const configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
+				const configJson = configDoc.toJSON();
+				expect(configJson.threads.count).to.equal(2);
+				expect(configJson.storage.engine).to.equal('lmdb');
+				expect(configJson.operationsApi.network.domainSocket).to.be.a('string');
+				expect(configJson.logging.root).to.be.a('string');
+			} finally {
+				fs.removeSync(hdbConfigTemplatePath);
+			}
+		});
 	});
 });
