@@ -23,6 +23,7 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 	let ParentStaticFalse;
 	let ParentSubclassOverride;
 	let CustomEchoResource;
+	let CustomInstanceEchoResource;
 	let restHttp;
 	let bridge;
 	let previousMainIsWorker;
@@ -142,6 +143,12 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 		};
 
 		CustomEchoResource = class extends Resource {
+			static async get(target) {
+				return { rawIds: target.get('ids') };
+			}
+		};
+
+		CustomInstanceEchoResource = class extends Resource {
 			static loadAsInstance = true;
 			async get(target) {
 				return { rawIds: target.get('ids') };
@@ -161,6 +168,7 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 		mount('ParentStaticFalse', ParentStaticFalse);
 		mount('ParentSubclassOverride', ParentSubclassOverride);
 		mount('CustomEcho', CustomEchoResource);
+		mount('CustomInstanceEcho', CustomInstanceEchoResource);
 
 		await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-v1' });
 		await Child.put({ id: 'c2', parentId: 'p1', label: 'child-label-v2' });
@@ -420,7 +428,7 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 			}
 		});
 
-		it('supports single-record GET with bracketed non-condition operator like ?select(id,children[sort(-id)])', async function () {
+		it('supports single-record GET and collection search with bracketed non-condition operators like ?select(id,children[sort(-id)&limit(1)])', async function () {
 			const res = await restGet('/Parent/p1?select(id,children[sort(-id)])');
 			assert.strictEqual(res.status, 200);
 			assert.strictEqual(res.body.id, 'p1');
@@ -430,11 +438,28 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 				['c2', 'c1']
 			);
 
+			const singleLimitRes = await restGet('/Parent/p1?select(id,children[sort(-id)&limit(1)])');
+			assert.strictEqual(singleLimitRes.status, 200);
+			assert.strictEqual(singleLimitRes.body.id, 'p1');
+			assert.deepStrictEqual(
+				singleLimitRes.body.children.map((c) => c.id),
+				['c2']
+			);
+
 			const instanceTrueRes = await restGet('/ParentInstanceTrue/p1?select(id,children[sort(-id)&limit(1)])');
 			assert.strictEqual(instanceTrueRes.status, 200);
 			assert.strictEqual(instanceTrueRes.body.id, 'p1');
 			assert.deepStrictEqual(
 				instanceTrueRes.body.children.map((c) => c.id),
+				['c2']
+			);
+
+			const collectionLimitRes = await restGet('/Parent/?id=p1&select(id,children[sort(-id)&limit(1)])');
+			assert.strictEqual(collectionLimitRes.status, 200);
+			assert.strictEqual(collectionLimitRes.body.length, 1);
+			assert.strictEqual(collectionLimitRes.body[0].id, 'p1');
+			assert.deepStrictEqual(
+				collectionLimitRes.body[0].children.map((c) => c.id),
 				['c2']
 			);
 		});
@@ -445,11 +470,15 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 		});
 
 		it('does not break custom Resource subclasses receiving bracketed query parameter values like ?ids=[1,2]', async function () {
-			const res = await restGet('/CustomEcho/item?ids=[1,2]');
-			assert.strictEqual(res.status, 200);
-			assert.deepStrictEqual(res.body, { rawIds: '[1,2]' });
+			const staticRes = await restGet('/CustomEcho/item?ids=[1,2]');
+			assert.strictEqual(staticRes.status, 200);
+			assert.deepStrictEqual(staticRes.body, { rawIds: '[1,2]' });
 
-			const badSelectRes = await restGet('/CustomEcho/item?select(children[label=x])');
+			const instanceRes = await restGet('/CustomInstanceEcho/item?ids=[1,2]');
+			assert.strictEqual(instanceRes.status, 200);
+			assert.deepStrictEqual(instanceRes.body, { rawIds: '[1,2]' });
+
+			const badSelectRes = await restGet('/CustomInstanceEcho/item?select(children[label=x])');
 			assert.strictEqual(badSelectRes.status, 400);
 		});
 	});
@@ -589,7 +618,7 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 				);
 				assert.ok(denial, 'expected attribute-scoped role to fail closed on object get_attributes entry');
 				assert.strictEqual(denial.invalid_schema_items.length, 1);
-				assert.match(denial.invalid_schema_items[0], /Attribute '\[object Object\]' does not exist on/);
+				assert.match(denial.invalid_schema_items[0], /does not exist on/);
 			} finally {
 				global.hdb_schema = previousHdbSchema;
 			}

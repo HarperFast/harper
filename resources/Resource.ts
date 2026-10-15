@@ -1260,22 +1260,34 @@ export function transformForSelect(select, resource) {
 						const offset = property.offset;
 						const limit = property.limit;
 						if (sort || offset != null || limit != null) {
+							const sortClauses: { attribute: string | string[]; descending?: boolean }[] = [];
+							for (let clause = sort; clause; clause = clause.next) {
+								sortClauses.push(clause);
+							}
 							const applySubQuery = (resolvedValue) => {
 								if (!resolvedValue || typeof resolvedValue !== 'object' || resolvedValue instanceof Date)
 									return resolvedValue;
 								if (typeof resolvedValue.then === 'function') return resolvedValue.then(applySubQuery);
 								if (Array.isArray(resolvedValue)) {
 									let ordered = resolvedValue;
-									if (sort) {
-										ordered = resolvedValue.slice().sort((a, b) => {
-											for (let clause = sort; clause; clause = clause.next) {
-												const keyA = getComparableKey(a, clause.attribute, targetResource);
-												const keyB = getComparableKey(b, clause.attribute, targetResource);
-												const diff = clause.descending ? compareKeys(keyB, keyA) : compareKeys(keyA, keyB);
-												if (diff !== 0) return diff;
-											}
-											return 0;
-										});
+									if (sortClauses.length > 0) {
+										const resolvers = targetResource?.propertyResolvers;
+										const ctx = targetResource?.getContext?.();
+										ordered = resolvedValue
+											.map((item) => ({
+												item,
+												keys: sortClauses.map((clause) => getComparableKey(item, clause.attribute, resolvers, ctx)),
+											}))
+											.sort((a, b) => {
+												for (let i = 0; i < sortClauses.length; i++) {
+													const diff = sortClauses[i].descending
+														? compareKeys(b.keys[i], a.keys[i])
+														: compareKeys(a.keys[i], b.keys[i]);
+													if (diff !== 0) return diff;
+												}
+												return 0;
+											})
+											.map((entry) => entry.item);
 									}
 									if (offset != null || limit != null) {
 										const start = offset ?? 0;
@@ -1298,27 +1310,27 @@ export function transformForSelect(select, resource) {
 	}
 }
 
-function toComparableKey(value) {
+export function convertToComparableKeys(value) {
 	if (value instanceof Date) return value.getTime();
-	if (Array.isArray(value)) return value.map(toComparableKey);
+	if (Array.isArray(value)) return value.map(convertToComparableKeys);
 	return value;
 }
 
-function getComparableKey(item, attribute, resource) {
+function getComparableKey(item, attribute, resolvers, ctx) {
 	if (item == null || typeof item !== 'object') return undefined;
-	let resolvers = resource?.propertyResolvers;
-	const ctx = resource?.getContext?.();
 	if (Array.isArray(attribute)) {
 		let value = item;
+		let currentResolvers = resolvers;
 		for (const part of attribute) {
 			if (value == null || typeof value !== 'object') return undefined;
-			value = selectFromObject(value, resolvers, ctx)(part);
-			resolvers =
-				resolvers && Object.hasOwn(resolvers, part)
-					? (resolvers[part]?.definition || resolvers[part]?.elements?.definition)?.tableClass?.propertyResolvers
+			value = selectFromObject(value, currentResolvers, ctx)(part);
+			currentResolvers =
+				currentResolvers && Object.hasOwn(currentResolvers, part)
+					? (currentResolvers[part]?.definition || currentResolvers[part]?.elements?.definition)?.tableClass
+							?.propertyResolvers
 					: undefined;
 		}
-		return toComparableKey(value);
+		return convertToComparableKeys(value);
 	}
-	return toComparableKey(selectFromObject(item, resolvers, ctx)(attribute));
+	return convertToComparableKeys(selectFromObject(item, resolvers, ctx)(attribute));
 }

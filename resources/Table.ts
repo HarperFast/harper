@@ -30,7 +30,13 @@ import type { AssertNoDrift, AssertTrue, ExactlyEqual, MemberDrift, ParitySentin
 import type { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Contract, SchemaClass } from './defineResource.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource, SEARCH_AUTHORIZATION, transformForSelect, defaultAllowReads } from './Resource.ts';
+import {
+	Resource,
+	SEARCH_AUTHORIZATION,
+	transformForSelect,
+	defaultAllowReads,
+	convertToComparableKeys,
+} from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
@@ -6522,11 +6528,12 @@ export function makeTable(options): TableResourceClass {
 						},
 						return() {
 							if (results.onDone) results.onDone();
-							return dbIterator.return();
+							return dbIterator.return?.() ?? { done: true, value: undefined };
 						},
-						throw() {
+						throw(error) {
 							if (results.onDone) results.onDone();
-							return dbIterator.throw();
+							if (dbIterator.throw) return dbIterator.throw(error);
+							throw error;
 						},
 					};
 				};
@@ -6739,16 +6746,20 @@ export function makeTable(options): TableResourceClass {
 										));
 									if (Array.isArray(value)) {
 										const results = [];
-										const iterator = targetTable
-											.transformToOrderedSelect(
-												value,
-												attribute.select,
-												typeof attribute.sort === 'object' && attribute.sort,
-												context,
-												targetReadTxn,
-												transform
-											)
-											[this.isSync ? Symbol.iterator : Symbol.asyncIterator]();
+										let orderedIterable = targetTable.transformToOrderedSelect(
+											value,
+											attribute.select,
+											typeof attribute.sort === 'object' && attribute.sort,
+											context,
+											targetReadTxn,
+											transform
+										);
+										if (attribute.offset != null || attribute.limit != null) {
+											const offset = attribute.offset ?? 0;
+											const end = attribute.limit != null ? offset + attribute.limit : undefined;
+											orderedIterable = orderedIterable.slice(offset, end);
+										}
+										const iterator = orderedIterable[this.isSync ? Symbol.iterator : Symbol.asyncIterator]();
 										const nextValue = (iteration: IteratorResult<any> & Promise<any>) => {
 											while (!iteration.done) {
 												if (iteration?.then) return iteration.then(nextValue);
@@ -6757,27 +6768,21 @@ export function makeTable(options): TableResourceClass {
 											}
 											callback(results, attribute_name);
 										};
-										const promised = nextValue(iterator.next());
-										if (promised) {
-											if (!promises) promises = [];
-											promises.push(promised);
-										}
-										return;
+										return nextValue(iterator.next());
 									} else {
 										value = transform.call(this, value);
 										if (value?.then) {
-											if (!promises) promises = [];
-											promises.push(value.then((value: any) => callback(value, attribute_name)));
-											return;
+											return value.then((value: any) => callback(value, attribute_name));
 										}
 									}
 								}
 								callback(value, attribute_name);
 							};
-							if (value?.then) {
+							const promised = value?.then ? value.then(handleResolvedValue) : handleResolvedValue(value);
+							if (promised?.then) {
 								if (!promises) promises = [];
-								promises.push(value.then(handleResolvedValue));
-							} else handleResolvedValue(value);
+								promises.push(promised);
+							}
 							return;
 						} else {
 							value = record[attribute_name];
@@ -10429,13 +10434,4 @@ function hasOtherProcesses(store) {
 			// if the pid from the reader list is different than ours, must be another process accessing the database
 			return +line.match(/\d+/)?.[0] != pid;
 		});
-}
-function convertToComparableKeys(a) {
-	if (a instanceof Date) {
-		return a.getTime();
-	}
-	if (Array.isArray(a)) {
-		return a.map(convertToComparableKeys);
-	}
-	return a;
 }

@@ -1,4 +1,6 @@
 const assert = require('assert');
+const { spawnSync } = require('node:child_process');
+const path = require('node:path');
 const { parseQuery } = require('#src/resources/search');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 // might want to enable an iteration with NATS being assigned as a source
@@ -258,6 +260,26 @@ describe('Parsing queries', () => {
 		assert.throws(() => parseQuery('unknown(5,10)'), /unknown query function call/);
 		assert.throws(() => parseQuery('select([)'), /expected '\]'/);
 		assert.throws(() => parseQuery('select)'), /unexpected token '\)'/);
+		// Run in a subprocess with a hard timeout so a regression in the '?' empty-match guard
+		// fails fast instead of hanging the Mocha suite (which runs with timeout: 0).
+		const probe = spawnSync(
+			process.execPath,
+			[
+				...process.execArgv,
+				'-e',
+				`const assert = require('node:assert');
+				const { parseQuery } = require('#src/resources/search');
+				const { RequestTarget } = require('#src/resources/RequestTarget');
+				assert.throws(
+					() => parseQuery('select(id)?limit(1)'),
+					(err) => err.statusCode === 400 && /unexpected character '\\?'/.test(err.message)
+				);
+				const target = new RequestTarget('?select(id)?limit(1)');
+				assert.strictEqual(target.parseError?.statusCode, 400);`,
+			],
+			{ cwd: path.resolve(__dirname, '../..'), timeout: 5000, encoding: 'utf8' }
+		);
+		assert.strictEqual(probe.status, 0, probe.stderr || probe.error?.message);
 		assert.throws(
 			() => parseQuery('select(id)?limit(1)'),
 			(err) => err.statusCode === 400 && /unexpected character '\?'/.test(err.message)
