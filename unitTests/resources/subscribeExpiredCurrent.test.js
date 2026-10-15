@@ -442,6 +442,53 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 			expiredKeySub.end();
 			liveKeySub.end();
 		}
+
+		const DrainReloadTable = table({
+			table: nextTableName('SubExpDrainReload'),
+			database: nextTableName('db'),
+			expiration: 3600,
+			eviction: 3600,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', type: 'String' },
+			],
+		});
+		for (let i = 0; i < 101; i++) {
+			const id = `b-${String(i).padStart(3, '0')}`;
+			await DrainReloadTable.put(id, { id, name: 'batch' }, { expiresAt: Date.now() + 60_000 });
+		}
+		await DrainReloadTable.put('z-live', { id: 'z-live', name: 'fresh' }, { expiresAt: Date.now() + 60_000 });
+		await DrainReloadTable.put(
+			'm-stalled',
+			{ id: 'm-stalled', name: 'expires-during-drain' },
+			{ expiresAt: Date.now() + 250 }
+		);
+		await waitFor(
+			() => {
+				const localTime = DrainReloadTable.primaryStore.getEntry('m-stalled')?.localTime;
+				return localTime > 1 && Date.now() > localTime;
+			},
+			1000,
+			1
+		);
+
+		const stalledSub = await DrainReloadTable.subscribe({ omitCurrent: true });
+		try {
+			await DrainReloadTable.writeReloadMarker();
+			await waitFor(() => stalledSub.queue?.length > 100, 3000, 5);
+			await waitFor(() => DrainReloadTable.primaryStore.getEntry('m-stalled')?.expiresAt < Date.now(), 2000, 10);
+
+			const stalledEvents = [];
+			stalledSub.on('data', (ev) => stalledEvents.push(ev));
+			await waitFor(() => stalledEvents.some((ev) => ev.id === 'z-live'), 3000, 10);
+
+			assert.ok(
+				!stalledEvents.some((ev) => ev.id === 'm-stalled'),
+				'row that expired while reload re-snapshot was parked on waitForDrain must be skipped'
+			);
+		} finally {
+			stalledSub.end();
+		}
 	});
 
 	it('raises cursorMaxTime across expired rows for includeSuperseded collection subscribers', async function () {

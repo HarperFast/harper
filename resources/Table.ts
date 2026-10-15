@@ -7414,6 +7414,10 @@ export function makeTable(options): TableResourceClass {
 						if (!value) continue; // skip tombstones
 						if (isHiddenExpiry(expiresAt, now)) continue;
 						yield { id, localTime, value, version, type: 'put', size };
+						if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+							if ((await subscription.waitForDrain()) === false) return;
+							now = Date.now();
+						}
 					}
 				} else {
 					const entry = primaryStore.getEntry(thisId);
@@ -7439,9 +7443,6 @@ export function makeTable(options): TableResourceClass {
 						for await (const record of currentScopeRecords()) {
 							if (!subscription.subscriptions) return;
 							if (!send(record)) return;
-							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
-								if ((await subscription.waitForDrain()) === false) return;
-							}
 						}
 					}
 				} catch (error) {
