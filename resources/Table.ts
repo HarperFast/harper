@@ -30,7 +30,7 @@ import type { AssertNoDrift, AssertTrue, ExactlyEqual, MemberDrift, ParitySentin
 import type { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Contract, SchemaClass } from './defineResource.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource, SEARCH_AUTHORIZATION, transformForSelect, defaultAllowReads } from './Resource.ts';
+import { Resource, SEARCH_AUTHORIZATION, WRITE_CONDITION, transformForSelect, defaultAllowReads } from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
@@ -2520,6 +2520,19 @@ export function makeTable(options): TableResourceClass {
 					!(request as any)?.transaction?.root && !(request as any)?.transaction?.snapshotFree
 				);
 			const resource: TableResource = super.getResource(target, request, resourceOptions) as any;
+			const condition = request?.[WRITE_CONDITION];
+			if (condition?.Resource === this && !condition.prepared) {
+				condition.prepared = true;
+				if (target.id == null || target.isCollection || target.property || this.source)
+					throw new ClientError('Conditional writes require a single local table record', 501);
+				condition.id = target.id;
+				if (isRocksDB && condition.lock) {
+					return resource.lock(target.id, { hold: true, scope: 'node' }).then((locked) => {
+						condition.release = () => locked.unlock();
+						return this.loadAsInstance !== false ? resource._loadRecord(target, request, resourceOptions) : resource;
+					});
+				}
+			}
 			if (this.loadAsInstance !== false) {
 				return resource._loadRecord(target, request, resourceOptions);
 			}
@@ -4666,6 +4679,12 @@ export function makeTable(options): TableResourceClass {
 		_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any) {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
+			const condition = (context as any)?.[WRITE_CONDITION];
+			const checkCondition =
+				condition?.Resource === this.constructor && condition.prepared && writeKeyId(id) === writeKeyId(condition.id)
+					? condition.check
+					: undefined;
+			if (checkCondition) condition.consumed = true;
 			const transaction = txnForContext(context);
 			const replaying = transaction.isReplay === true;
 			assertDerivedIndexAdmission(options, transaction);
@@ -4826,6 +4845,7 @@ export function makeTable(options): TableResourceClass {
 							// TODO: else freeze after we have applied the changes
 						}
 					} else {
+						checkCondition?.(primaryStore.getEntry(id));
 						(committedBy as any).removeWrite?.(write);
 						return false;
 					}
@@ -4838,6 +4858,7 @@ export function makeTable(options): TableResourceClass {
 					transaction: any,
 					committedBy?: DatabaseTransaction
 				) => {
+					checkCondition?.(existingEntry);
 					// Whether a prior attempt of THIS write appended its own audit entry (sticky, set in
 					// save(); log entries are not part of the aborted rocks transaction, so they survive).
 					// Only such a write can find its own orphaned entry in the dedup lookups below and must
@@ -5668,6 +5689,12 @@ export function makeTable(options): TableResourceClass {
 		_writeDelete(id: Id, options?: any) {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
+			const condition = (context as any)?.[WRITE_CONDITION];
+			const checkCondition =
+				condition?.Resource === this.constructor && condition.prepared && writeKeyId(id) === writeKeyId(condition.id)
+					? condition.check
+					: undefined;
+			if (checkCondition) condition.consumed = true;
 			const transaction = txnForContext(context);
 			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
@@ -5691,6 +5718,7 @@ export function makeTable(options): TableResourceClass {
 						? (this.constructor as any).source.delete.bind((this.constructor as any).source, id, undefined, context)
 						: undefined,
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
+					checkCondition?.(existingEntry);
 					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
 					write.superseded = false; // reset per round, as in the update path
 					write.skipped = false;
