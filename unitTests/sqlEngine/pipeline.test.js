@@ -588,6 +588,7 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 				{ id: 4, name: null, age: null },
 				{ id: 5, name: 'alice', age: null },
 				{ id: 6, name: 'bob', age: null },
+				{ id: 7, name: 'bob', age: 30 },
 			],
 		});
 		binder._setDatabasesLoader(() => ({ dev: { user: table } }));
@@ -596,7 +597,7 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 			[
 				"SELECT id FROM dev.user WHERE NOT (name = 'alice')",
 				"SELECT id FROM dev.user WHERE NOT name = 'alice'",
-				[2, 6],
+				[2, 6, 7],
 			],
 			[
 				"SELECT id FROM dev.user WHERE name = 'alice' AND NOT (age = 25)",
@@ -606,12 +607,12 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 			[
 				"SELECT id FROM dev.user WHERE NOT (name = 'alice' OR age = 25)",
 				"SELECT id FROM dev.user WHERE NOT name = 'alice' AND NOT age = 25",
-				[],
+				[7],
 			],
 			[
 				"SELECT id FROM dev.user WHERE NOT (name = 'alice' AND age = 30)",
 				"SELECT id FROM dev.user WHERE NOT name = 'alice' OR NOT age = 30",
-				[2, 3, 6],
+				[2, 3, 6, 7],
 			],
 			[
 				"SELECT id FROM dev.user WHERE NOT (NOT (name = 'alice'))",
@@ -620,8 +621,8 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 			],
 			[
 				"SELECT id FROM dev.user WHERE NOT (name = 'alice' AND (age = 25 OR age > 28))",
-				"SELECT id FROM dev.user WHERE NOT name = 'alice' OR (NOT age = 25 AND NOT age > 28)",
-				[2, 6],
+				"SELECT id FROM dev.user WHERE NOT name = 'alice' OR NOT age = 25 AND NOT age > 28",
+				[2, 6, 7],
 			],
 		];
 
@@ -635,7 +636,6 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 			assert.deepStrictEqual(parenTarget.conditions, unparenTarget.conditions, parenSql);
 		}
 
-		// Also verify join WHERE splitting after De Morgan (`NOT (u.name = 'alice' OR o.amount = 10)`).
 		const orders = makeMockTable({
 			primaryKey: 'id',
 			attributes: [
@@ -659,6 +659,81 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		);
 		assert.deepStrictEqual(joinParen, [{ id: 103 }]);
 		assert.deepStrictEqual(joinParen, joinUnparen);
+	});
+
+	it('preserves truthy coercion on double negation of non-boolean operands (NOT (NOT col), NOT NOT col)', async () => {
+		const table = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'name', indexed: true },
+				{ name: 'age', indexed: true },
+			],
+			rows: [
+				{ id: 1, name: 'alice', age: 30 },
+				{ id: 2, name: 'bob', age: 0 },
+				{ id: 3, name: '', age: null },
+			],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { user: table } }));
+
+		const parenAge = await runSql('SELECT id FROM dev.user WHERE id > 0 AND NOT (NOT age)');
+		const unparenAge = await runSql('SELECT id FROM dev.user WHERE id > 0 AND NOT NOT age');
+		assert.deepStrictEqual(parenAge, [{ id: 1 }]);
+		assert.deepStrictEqual(unparenAge, [{ id: 1 }]);
+
+		const parenName = await runSql('SELECT id FROM dev.user WHERE id > 0 AND NOT (NOT name)');
+		assert.deepStrictEqual(parenName.map((r) => r.id).sort(), [1, 2]);
+	});
+
+	it('handles parenthesized expressions in projections, JOIN ON, HAVING, ORDER BY, and AND-in-OR WHERE', async () => {
+		const table = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'name', indexed: true },
+				{ name: 'age', indexed: true },
+			],
+			rows: [
+				{ id: 1, name: 'alice', age: 30 },
+				{ id: 2, name: 'bob', age: 25 },
+				{ id: 3, name: 'alice', age: 25 },
+			],
+		});
+		const orders = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'userId', indexed: true },
+				{ name: 'amount', indexed: true },
+			],
+			rows: [
+				{ id: 101, userId: 1, amount: 20 },
+				{ id: 102, userId: 2, amount: 50 },
+			],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { user: table, orders } }));
+
+		const projected = await runSql('SELECT id, (age + 5) * 2 AS computed FROM dev.user WHERE id = 1');
+		assert.deepStrictEqual(projected, [{ id: 1, computed: 70 }]);
+
+		const groupedAnd = await runSql("SELECT id FROM dev.user WHERE (name = 'alice' OR name = 'bob') AND age = 25");
+		assert.deepStrictEqual(groupedAnd.map((r) => r.id).sort(), [2, 3]);
+
+		const andInsideOr = await runSql("SELECT id FROM dev.user WHERE name = 'bob' OR name = 'alice' AND age = 25");
+		assert.deepStrictEqual(andInsideOr.map((r) => r.id).sort(), [2, 3]);
+		assert.strictEqual(table._lastTarget.conditions[0].operator, 'or');
+		assert.strictEqual(table._lastTarget.conditions[0].conditions[1].operator, 'and');
+
+		const joined = await runSql(
+			'SELECT o.id FROM dev.user u INNER JOIN dev.orders o ON (u.id = o.userId) WHERE (u.id > 0) ORDER BY (o.amount - u.id) DESC'
+		);
+		assert.deepStrictEqual(joined, [{ id: 102 }, { id: 101 }]);
+
+		const having = await runSql(
+			'SELECT name, COUNT(*) AS cnt FROM dev.user WHERE id > 0 GROUP BY name HAVING (COUNT(*) > 1)'
+		);
+		assert.deepStrictEqual(having, [{ name: 'alice', cnt: 2 }]);
 	});
 
 	it('rejects lone unindexed NOT predicate (both unparenthesized and parenthesized) with no usable index condition', async () => {

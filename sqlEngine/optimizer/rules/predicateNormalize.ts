@@ -1,18 +1,20 @@
 /**
  * Rule R3: predicate normalization.
  *
- * Maps AlaSQL operator forms to a canonical shape ahead of pushdown:
+ * Maps AlaSQL operator forms to a canonical shape ahead of join WHERE splitting
+ * and index pushdown:
  *   - LIKE 'foo%'   ->  starts_with(foo)
  *   - LIKE '%foo'   ->  ends_with(foo)
  *   - LIKE '%foo%'  ->  contains(foo)
  *   - BETWEEN a AND b -> binop chain (col >= a AND col <= b)  with semantic
  *                       hint kept via marker for the pushdown rule
- *   - NOT (a > b)   ->  a <= b (NULL semantics preserved by leaving NOT in
- *                       place when the operand is anything other than a
- *                       comparable binop on a single column ref)
+ *   - NOT (a > b)   ->  a <= b (and analogous comparison / IN / BETWEEN / LIKE /
+ *                       IS NULL inversions; NULL and truthiness semantics are
+ *                       preserved by leaving NOT in place on non-boolean operands)
+ *   - NOT (a AND b) / NOT (a OR b) -> De Morgan's law (NOT a OR NOT b /
+ *                       NOT a AND NOT b), applied recursively so negated groups
+ *                       split across join aliases and push down into Table.search
  *   - IS NULL / IS NOT NULL: left as-is (rule output for downstream).
- *
- * No change-of-meaning rewrites at this stage; the rule is conservative.
  */
 
 import type { BinaryOp, ExprNode } from '../../parser/ast.ts';
@@ -52,17 +54,12 @@ export function normalizePredicate(expr: ExprNode): ExprNode {
 				if (inner.kind === 'like') {
 					return { ...inner, negated: !inner.negated };
 				}
-				if (inner.kind === 'logical') {
-					if (inner.op === 'not' && inner.args.length === 1) {
-						return inner.args[0];
-					}
-					if (inner.op === 'and' || inner.op === 'or') {
-						return {
-							kind: 'logical',
-							op: inner.op === 'and' ? 'or' : 'and',
-							args: inner.args.map((arg) => normalizePredicate({ kind: 'logical', op: 'not', args: [arg] })),
-						};
-					}
+				if (inner.kind === 'logical' && (inner.op === 'and' || inner.op === 'or')) {
+					return {
+						kind: 'logical',
+						op: inner.op === 'and' ? 'or' : 'and',
+						args: inner.args.map((arg) => normalizePredicate({ kind: 'logical', op: 'not', args: [arg] })),
+					};
 				}
 				return { kind: 'logical', op: 'not', args: [inner] };
 			}
