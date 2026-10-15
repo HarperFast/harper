@@ -2116,13 +2116,20 @@ describe('Test configUtils module', () => {
 			expect(configJson.operationsApi.network.securePort).to.equal(defaultPort);
 		});
 
-		it('wraps backfilled defaults and synced env objects in YAMLMap nodes so validateConfig nested setIn calls succeed', () => {
+		it('wraps backfilled defaults and synced env objects in YAMLMap nodes while preserving inline comments on overridden scalars', () => {
 			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config.yaml');
-			// Minimal HDB_CONFIG with scalar threads: 4 and omitted logging / operationsApi sections
-			fs.writeFileSync(hdbConfigTemplatePath, 'threads: 4\nstorage:\n  engine: lmdb\n', 'utf8');
+			// Minimal HDB_CONFIG with scalar threads: 4, commented scalar keys, and omitted operationsApi section
+			fs.writeFileSync(
+				hdbConfigTemplatePath,
+				'threads: 4\nstorage:\n  engine: rocksdb # storage engine comment\nlogging:\n  level: info # log level comment\n',
+				'utf8'
+			);
 			process.env.HARPER_SET_CONFIG = JSON.stringify({
 				threads: {
 					count: 2,
+				},
+				logging: {
+					level: 'warn',
 				},
 			});
 
@@ -2130,17 +2137,22 @@ describe('Test configUtils module', () => {
 				config_utils_rw.createConfigFile(
 					{
 						ROOTPATH: HDB_ROOT,
+						STORAGE_ENGINE: 'lmdb',
 					},
 					false,
 					hdbConfigTemplatePath
 				);
 
-				const configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
+				const rawConfig = fs.readFileSync(CONFIG_FILE_PATH, 'utf8');
+				const configDoc = YAML.parseDocument(rawConfig);
 				const configJson = configDoc.toJSON();
 				expect(configJson.threads.count).to.equal(2);
 				expect(configJson.storage.engine).to.equal('lmdb');
+				expect(configJson.logging.level).to.equal('warn');
 				expect(configJson.operationsApi.network.domainSocket).to.be.a('string');
 				expect(configJson.logging.root).to.be.a('string');
+				expect(rawConfig).to.include('# storage engine comment');
+				expect(rawConfig).to.include('# log level comment');
 			} finally {
 				fs.removeSync(hdbConfigTemplatePath);
 			}
