@@ -155,7 +155,7 @@ export default function (searchObject: any, type: any) {
 		const visitedBySchema = new WeakMap<object, WeakSet<object>>();
 		const visitedWithoutSchema = new WeakSet<object>();
 		const getVisitedSet = (schema: any): WeakSet<object> => {
-			if (!schema || typeof schema !== 'object') return visitedWithoutSchema;
+			if (!schema || (typeof schema !== 'object' && typeof schema !== 'function')) return visitedWithoutSchema;
 			let set = visitedBySchema.get(schema);
 			if (!set) {
 				set = new WeakSet<object>();
