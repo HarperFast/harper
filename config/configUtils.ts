@@ -484,7 +484,12 @@ export function createConfigFile(args, skipFsValidation = false, baseConfigPath?
 	// This allows runtime env vars to resolve port conflicts before validation
 	// Must be called AFTER rootPath is set in configDoc
 	// Mutates configDoc in place
-	applyRuntimeEnvVarConfig(configDoc, null, { isInstall: true, userPaths, cliPaths });
+	const commitEnvConfigState = applyRuntimeEnvVarConfig(configDoc, null, {
+		isInstall: true,
+		userPaths,
+		cliPaths,
+		deferStateCommit: true,
+	});
 
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(configDoc, skipFsValidation);
@@ -508,6 +513,7 @@ export function createConfigFile(args, skipFsValidation = false, baseConfigPath?
 		);
 	}
 	atomicWriteFile(configFilePath, String(configDoc));
+	commitEnvConfigState?.();
 	logger.trace(`Config file written to ${configFilePath}`);
 }
 
@@ -1581,8 +1587,13 @@ export function parseYamlDoc(filePath) {
 function applyRuntimeEnvVarConfig(
 	configDoc,
 	configFilePath,
-	options: { isInstall?: boolean; userPaths?: Iterable<string>; cliPaths?: Iterable<string> } = {}
-) {
+	options: {
+		isInstall?: boolean;
+		userPaths?: Iterable<string>;
+		cliPaths?: Iterable<string>;
+		deferStateCommit?: boolean;
+	} = {}
+): (() => boolean) | undefined {
 	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
 	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
@@ -1607,7 +1618,7 @@ function applyRuntimeEnvVarConfig(
 
 	let saveEnvConfigState;
 	let confirmEnvConfigState;
-	let commitEnvConfigState;
+	let commitEnvConfigState: () => boolean;
 	try {
 		// Apply env vars with source tracking and drift detection
 		({
@@ -1637,6 +1648,7 @@ function applyRuntimeEnvVarConfig(
 	// Install has no config file yet and no process to keep alive, so its snapshot write stays
 	// mandatory - an install that never recorded originals should fail, not proceed.
 	if (!configFilePath) {
+		if (options.deferStateCommit) return commitEnvConfigState;
 		commitEnvConfigState();
 		return;
 	}

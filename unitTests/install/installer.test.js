@@ -785,12 +785,22 @@ describe('install storage.engine resolution', () => {
 		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
 	});
 
+	it('resolves CLI STORAGE_ENGINE=rocksdb + HARPER_SET_CONFIG={"storage":{"engine":"lmdb"}} consistently to lmdb', async () => {
+		process.env.STORAGE_ENGINE = 'rocksdb';
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
 	it('resolves CLI STORAGE_ENGINE=rocksdb + HARPER_CONFIG={"storage":{"engine":"lmdb"}} consistently to rocksdb', async () => {
 		process.env.STORAGE_ENGINE = 'rocksdb';
 		process.env.HARPER_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
 		const rootPath = await runInstall();
 		assertInstalledSystemEngine(rootPath, 'rocksdb');
 		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+		config_utils.initConfig(true);
+		assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE), 'rocksdb');
 	});
 
 	it('resolves CLI STORAGE_ENGINE=lmdb + HARPER_DEFAULT_CONFIG={"storage":{"engine":"rocksdb"}} consistently to lmdb', async () => {

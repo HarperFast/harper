@@ -354,5 +354,19 @@ describe('HARPER_CONFIG', function () {
 			assert.strictEqual(result.c, 3, 'HARPER_CONFIG beats base');
 			assert.strictEqual(result.d, 4, 'SET beats HARPER_CONFIG');
 		});
+
+		it('layers DEFAULT < base < HARPER_CONFIG < cli < SET when cli is provided', function () {
+			process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ a: 1, b: 1, c: 1, d: 1, e: 1 });
+			process.env.HARPER_CONFIG = JSON.stringify({ c: 3, d: 3, e: 3 });
+			process.env.HARPER_SET_CONFIG = JSON.stringify({ e: 5 });
+
+			const result = composeConfigFromEnv({ b: 2, c: 2, d: 2, e: 2 }, { d: 4, e: 4 });
+
+			assert.strictEqual(result.a, 1, 'DEFAULT fills the gap');
+			assert.strictEqual(result.b, 2, 'base beats DEFAULT');
+			assert.strictEqual(result.c, 3, 'HARPER_CONFIG beats base');
+			assert.strictEqual(result.d, 4, 'cli beats HARPER_CONFIG');
+			assert.strictEqual(result.e, 5, 'SET beats cli');
+		});
 	});
 });

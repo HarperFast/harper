@@ -877,9 +877,9 @@ function processEnvVar(
 	} else if (sourceName === 'HARPER_CONFIG') {
 		// HARPER_CONFIG merges: it sets exactly the keys it names and reasserts them on
 		// every boot (winning over the config file, user edits, and DEFAULT), yielding
-		// only to HARPER_SET_CONFIG (and individual CLI/env args at install).
+		// only to HARPER_SET_CONFIG and install-time CLI/env args.
 		applyConfigLayer(fileConfig, state, parsedConfig, sourceName, {
-			respectSources: options.isInstall ? ['HARPER_SET_CONFIG', 'cli'] : ['HARPER_SET_CONFIG'],
+			respectSources: ['HARPER_SET_CONFIG', 'cli'],
 			storeOriginals: true,
 		});
 	} else if (sourceName === 'HARPER_DEFAULT_CONFIG') {
@@ -979,22 +979,30 @@ function cleanupRemovedEnvVar(
 
 /**
  * Compose a merged config from HARPER_DEFAULT_CONFIG, HARPER_CONFIG and
- * HARPER_SET_CONFIG layered with an optional base. Later layers win:
- *   HARPER_DEFAULT_CONFIG  <  base  <  HARPER_CONFIG  <  HARPER_SET_CONFIG
+ * HARPER_SET_CONFIG layered with an optional base and optional CLI/individual-env
+ * layer. Later layers win:
+ *   HARPER_DEFAULT_CONFIG  <  base  <  HARPER_CONFIG  <  cli  <  HARPER_SET_CONFIG
  *
  * HARPER_DEFAULT_CONFIG provides scaffolding defaults, the base (e.g., the
  * user's existing config file) is layered on top, HARPER_CONFIG merges its
- * keys over that, and HARPER_SET_CONFIG force-overrides everything. This
- * matches the precedence applied by the runtime pipeline in
- * applyRuntimeEnvConfig.
+ * keys over that, optional CLI/individual-env overrides sit above HARPER_CONFIG,
+ * and HARPER_SET_CONFIG force-overrides everything. This matches the precedence
+ * applied by the runtime pipeline in applyRuntimeEnvConfig.
  *
  * Unlike applyRuntimeEnvConfig, this does NOT read or write the config state
  * file and does NOT track sources — it returns a fresh object. Use when you
  * need the effective value of a config key before the state/file wiring is in
  * place (e.g., during clone / pre-install).
  */
-export function composeConfigFromEnv(base: ConfigObject = {}): ConfigObject {
-	return composeEnvLayers(['HARPER_DEFAULT_CONFIG'], base, ['HARPER_CONFIG', 'HARPER_SET_CONFIG']);
+export function composeConfigFromEnv(base: ConfigObject = {}, cli?: ConfigObject): ConfigObject {
+	if (!cli) {
+		return composeEnvLayers(['HARPER_DEFAULT_CONFIG'], base, ['HARPER_CONFIG', 'HARPER_SET_CONFIG']);
+	}
+	const afterConfig = composeEnvLayers(['HARPER_DEFAULT_CONFIG'], base, ['HARPER_CONFIG']);
+	for (const [p, value] of Object.entries(flattenObject(cli, '', true))) {
+		setNestedValue(afterConfig, p, resolveLeafValue(getNestedValue(afterConfig, p), value, p));
+	}
+	return composeEnvLayers([], afterConfig, ['HARPER_SET_CONFIG']);
 }
 
 /**
@@ -1169,12 +1177,6 @@ export function prepareRuntimeEnvConfig(
 	processEnvVar(fileConfig, state, 'HARPER_DEFAULT_CONFIG', 'HARPER_DEFAULT_CONFIG', options);
 	processEnvVar(fileConfig, state, 'HARPER_CONFIG', 'HARPER_CONFIG', options);
 	processEnvVar(fileConfig, state, 'HARPER_SET_CONFIG', 'HARPER_SET_CONFIG', options);
-
-	for (const [p, src] of Object.entries(state.sources)) {
-		if (src === 'cli') {
-			state.sources[p] = 'user';
-		}
-	}
 
 	return {
 		config: fileConfig,
