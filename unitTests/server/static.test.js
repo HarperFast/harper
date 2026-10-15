@@ -847,6 +847,18 @@ describe('pipeBodyToResponse before the response head is written', () => {
 		assert.equal(res.body, 'Error: Internal Server Error');
 	});
 
+	it('lets an error declare its own cache headers over the no-store default', async () => {
+		dispatch.current = failing(
+			Object.assign(new ClientError('gone', 410), { headers: { 'Cache-Control': 'public, max-age=60' } }),
+			(res) => res.setHeader('Cache-Control', 'public, max-age=3600')
+		);
+
+		const res = await fetchHttp(baseUrl, '/cacheable-gone');
+
+		assert.equal(res.status, 410);
+		assert.equal(res.headers['cache-control'], 'public, max-age=60');
+	});
+
 	it('sends the message of a ClientError', async () => {
 		dispatch.current = failing(new ClientError('no such part', 404));
 
