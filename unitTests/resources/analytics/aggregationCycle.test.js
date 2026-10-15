@@ -485,4 +485,28 @@ describe('analytics aggregation cycle', () => {
 		assert.ok(entry.count >= 1, JSON.stringify(entry));
 		assert.ok(entry.mean >= 0 && entry.maxDelay >= entry.mean, JSON.stringify(entry));
 	});
+
+	it('reports a stall that ran past the flush deadline in that flush', async function () {
+		this.timeout(30000);
+		const flushes = [];
+		analytics.addAnalyticsListener((metrics) => {
+			if (metrics.some((entry) => entry.metric === 'db-write' && entry.path === 'StallProbe')) flushes.push(metrics);
+		});
+		// a fresh deadline, analyticsDelay after the probe
+		analytics.setAnalyticsEnabled(false);
+		analytics.setAnalyticsEnabled(true);
+		analytics.recordAction(1, 'db-write', 'StallProbe');
+		// a check-phase callback blocks the loop across the deadline
+		setTimeout(
+			() =>
+				setImmediate(() => {
+					const start = performance.now();
+					while (performance.now() - start < 300) {}
+				}),
+			analytics.analyticsDelay - 5
+		);
+		await waitFor(() => flushes.length > 0, { timeout: 10000, message: 'the flush carried the probe' });
+		const delay = flushes[0].find((entry) => entry.metric === 'event-loop-delay');
+		assert.ok(delay?.maxDelay >= 200, `the 300 ms stall is in the flush: ${JSON.stringify(delay)}`);
+	});
 });

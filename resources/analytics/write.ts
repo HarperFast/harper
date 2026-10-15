@@ -171,112 +171,119 @@ function sendAnalytics() {
 		// The report's delay covers its own window, not the idle gap or the boot before it.
 		resetEventLoopDelay();
 	}
-	sendAnalyticsTimeout = setTimeout(async () => {
-		sendAnalyticsTimeout = null;
-		// Rotate before the first yield below: a sample recorded mid-flush would otherwise be added to
-		// an entry already reported, and dropped with it.
-		const reportingActions = activeActions;
-		activeActions = new Map();
-		const period = performance.now() - analyticsStart;
-		analyticsStart = 0;
-		// Read before the first yield too: a sample that lands mid-flush opens the next window, which
-		// resets the histogram.
-		const eventLoopDelay = readEventLoopDelay();
-		const metrics = [];
-		const report = {
-			time: Date.now(),
-			period,
-			threadId,
-			metrics,
-		};
-		for (const [_name, action] of reportingActions) {
-			if (action.values) {
-				const values = action.values.subarray(0, (action.values as any).index);
-				values.sort();
-				const count = values.length;
-				// compute the stats
-				let lastUpperBound = 0;
-				const distribution = [];
-				let lastValue;
-				for (const percentile of IDEAL_PERCENTILES) {
-					const upperBound = Math.floor(count * percentile);
-					const value = values[upperBound - 1];
-					if (upperBound > lastUpperBound) {
-						const count = upperBound - lastUpperBound;
-						if (value === lastValue) {
-							const entry = distribution[distribution.length - 1];
-							if (typeof entry === 'number') distribution[distribution.length - 1] = { value: entry, count: 1 + count };
-							else entry.count += count;
-						} else {
-							distribution.push(count > 1 ? { value, count } : value);
-							lastValue = value;
-						}
-						lastUpperBound = upperBound;
-					}
-				}
-				metrics.push(
-					Object.assign(action.description, {
-						mean: action.total / count,
-						distribution,
-						count,
-					})
-				);
-			} else if (action.callback) {
-				metrics.push(Object.assign(action.description, action.callback(action)));
-			} else {
-				metrics.push(
-					Object.assign(action.description, {
-						total: action.total,
-						count: action.count,
-					})
-				);
-			}
-			await rest(); // sort's are expensive and we don't want to do two of them in the same event turn
-		}
-		const memoryUsage = process.memoryUsage();
-		metrics.push({
-			metric: 'memory',
-			threadId,
-			byThread: true,
-			...memoryUsage,
-		});
-		if (eventLoopDelay) {
-			metrics.push({
-				metric: METRIC.EVENT_LOOP_DELAY,
-				threadId,
-				perThread: true,
-				...eventLoopDelay,
-			});
-		}
-		// Transaction queue depth gauges. `depth` is the instantaneous depth at emit time; `maxDepth` is
-		// the high-water mark over this sampling window (the queue can fill and drain within a single
-		// period, so the instantaneous sample alone would miss short spikes). Reported per-thread and
-		// summed across threads by the aggregator, mirroring the `memory` gauge above.
-		const queueDepths = getTransactionQueueDepths();
-		metrics.push({
-			metric: METRIC.WRITE_TRANSACTION_QUEUE_DEPTH,
-			threadId,
-			byThread: true,
-			depth: queueDepths.writeDepth,
-			maxDepth: queueDepths.writeMaxDepth,
-		});
-		metrics.push({
-			metric: METRIC.READ_TRANSACTION_QUEUE_DEPTH,
-			threadId,
-			byThread: true,
-			depth: queueDepths.readDepth,
-			maxDepth: queueDepths.readMaxDepth,
-		});
-		for (const listener of analyticsListeners) {
-			listener(metrics);
-		}
-		if (parentPort)
-			parentPort.postMessage({
-				type: ANALYTICS_REPORT_TYPE,
-				report,
-			});
-		else recordAnalytics({ report });
+	sendAnalyticsTimeout = setTimeout(() => {
+		// One more timer turn: a stall that ran past the deadline is recorded by the event loop
+		// sampler's overdue firing, which libuv runs before a timer armed now, and the read below
+		// would otherwise reset that sample away.
+		sendAnalyticsTimeout = setTimeout(flushAnalytics, 0).unref();
 	}, analyticsDelay).unref();
+}
+
+async function flushAnalytics() {
+	sendAnalyticsTimeout = null;
+	// Rotate before the first yield below: a sample recorded mid-flush would otherwise be added to
+	// an entry already reported, and dropped with it.
+	const reportingActions = activeActions;
+	activeActions = new Map();
+	const period = performance.now() - analyticsStart;
+	analyticsStart = 0;
+	// Read before the first yield too: a sample that lands mid-flush opens the next window, which
+	// resets the histogram.
+	const eventLoopDelay = readEventLoopDelay();
+	const metrics = [];
+	const report = {
+		time: Date.now(),
+		period,
+		threadId,
+		metrics,
+	};
+	for (const [_name, action] of reportingActions) {
+		if (action.values) {
+			const values = action.values.subarray(0, (action.values as any).index);
+			values.sort();
+			const count = values.length;
+			// compute the stats
+			let lastUpperBound = 0;
+			const distribution = [];
+			let lastValue;
+			for (const percentile of IDEAL_PERCENTILES) {
+				const upperBound = Math.floor(count * percentile);
+				const value = values[upperBound - 1];
+				if (upperBound > lastUpperBound) {
+					const count = upperBound - lastUpperBound;
+					if (value === lastValue) {
+						const entry = distribution[distribution.length - 1];
+						if (typeof entry === 'number') distribution[distribution.length - 1] = { value: entry, count: 1 + count };
+						else entry.count += count;
+					} else {
+						distribution.push(count > 1 ? { value, count } : value);
+						lastValue = value;
+					}
+					lastUpperBound = upperBound;
+				}
+			}
+			metrics.push(
+				Object.assign(action.description, {
+					mean: action.total / count,
+					distribution,
+					count,
+				})
+			);
+		} else if (action.callback) {
+			metrics.push(Object.assign(action.description, action.callback(action)));
+		} else {
+			metrics.push(
+				Object.assign(action.description, {
+					total: action.total,
+					count: action.count,
+				})
+			);
+		}
+		await rest(); // sort's are expensive and we don't want to do two of them in the same event turn
+	}
+	const memoryUsage = process.memoryUsage();
+	metrics.push({
+		metric: 'memory',
+		threadId,
+		byThread: true,
+		...memoryUsage,
+	});
+	if (eventLoopDelay) {
+		metrics.push({
+			metric: METRIC.EVENT_LOOP_DELAY,
+			threadId,
+			perThread: true,
+			...eventLoopDelay,
+		});
+	}
+	// Transaction queue depth gauges. `depth` is the instantaneous depth at emit time; `maxDepth` is
+	// the high-water mark over this sampling window (the queue can fill and drain within a single
+	// period, so the instantaneous sample alone would miss short spikes). Reported per-thread and
+	// summed across threads by the aggregator, mirroring the `memory` gauge above.
+	const queueDepths = getTransactionQueueDepths();
+	metrics.push({
+		metric: METRIC.WRITE_TRANSACTION_QUEUE_DEPTH,
+		threadId,
+		byThread: true,
+		depth: queueDepths.writeDepth,
+		maxDepth: queueDepths.writeMaxDepth,
+	});
+	metrics.push({
+		metric: METRIC.READ_TRANSACTION_QUEUE_DEPTH,
+		threadId,
+		byThread: true,
+		depth: queueDepths.readDepth,
+		maxDepth: queueDepths.readMaxDepth,
+	});
+	for (const listener of analyticsListeners) {
+		listener(metrics);
+	}
+	if (parentPort)
+		parentPort.postMessage({
+			type: ANALYTICS_REPORT_TYPE,
+			report,
+		});
+	else recordAnalytics({ report });
 }
 
 export async function recordHostname() {

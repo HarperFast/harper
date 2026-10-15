@@ -35,6 +35,10 @@ const analytics = require('#src/resources/analytics/write');
 const { waitFor } = require('../../waitFor.js');
 
 describe('request-time from the Fastify hook', () => {
+	let analyticsWasEnabled;
+	before(() => (analyticsWasEnabled = analytics.checkAnalyticsEnabled()));
+	after(() => analytics.setAnalyticsEnabled(analyticsWasEnabled));
+
 	it('records request-time for a queued request and nothing for an unqueued one', async function () {
 		this.timeout(15000);
 		const hooks = {};
@@ -44,7 +48,7 @@ describe('request-time from the Fastify hook', () => {
 			for (const entry of metrics) if (entry.metric === 'request-time' || entry.metric === 'duration') seen.push(entry);
 		});
 		analytics.setAnalyticsEnabled(true);
-		const reply = (raw) => ({
+		const reply = () => ({
 			elapsedTime: 1.5,
 			raw: { statusCode: 200 },
 			request: { routeOptions: { config: { isOperation: true } } },
