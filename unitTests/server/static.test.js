@@ -12,6 +12,7 @@ const sinon = require('sinon');
 const { handleApplication } = require('#src/server/static');
 const { httpServer, pipeBodyToResponse } = require('#src/server/http');
 const analyticsWrite = require('#src/resources/analytics/write');
+const { ClientError } = require('#src/utility/errors/hdbError');
 const {
 	credentialRejectionError,
 	deferCredentialRejection,
@@ -609,9 +610,6 @@ describe('static plugin responses without a deferred rejection', () => {
 	});
 });
 
-// These suites drive the production request handler: `httpServer()` returns the real Node server
-// with the middleware chain, outcome recording and `pipeBodyToResponse` wired exactly as in a
-// worker. Only the Scope and the entry watcher are stubbed.
 const REQUEST_TIMEOUT_MS = 5000;
 let nextTestPort = 19470;
 
@@ -623,8 +621,7 @@ function listenWith(dispatch) {
 	});
 }
 
-// Resolves with what the client saw. A reset before the status line rejects ("socket hang up"); a
-// body cut off after the head resolves with `complete: false`.
+// A reset before the status line rejects; a body cut off after the head resolves with `complete: false`.
 function fetchHttp(baseUrl, urlPath, { abortAfterHead = false } = {}) {
 	return new Promise((resolve, reject) => {
 		const req = http.get(`${baseUrl}${urlPath}`, { agent: false }, (res) => {
@@ -678,7 +675,6 @@ describe('static plugin serves files whose path would trip send URL handling', (
 		if (tempRoot) rmSync(tempRoot, { recursive: true, force: true });
 	});
 
-	// An app laid out as <tempRoot>/.hidden-dir/app with the given files under web/ ({ name: content }).
 	function serveApp(files, options = {}) {
 		const appDir = join(tempRoot, '.hidden-dir', 'app');
 		const { scope, state } = fakeScope({ fallthrough: false, ...options });
@@ -798,7 +794,6 @@ describe('pipeBodyToResponse before the response head is written', () => {
 		sinon.restore();
 	});
 
-	// A handlesHeaders body, like static's send(): the head is not written until its first byte.
 	const failing =
 		(error, stage = () => {}) =>
 		(req) => {
@@ -832,7 +827,7 @@ describe('pipeBodyToResponse before the response head is written', () => {
 
 		assert.equal(res.status, 503);
 		assert.equal(res.complete, true);
-		assert.equal(res.body, 'Error: try later');
+		assert.equal(res.body, 'Error: Service Unavailable');
 		assert.equal(res.headers['retry-after'], '5');
 		assert.equal(res.headers['cache-control'], 'no-store');
 		assert.notEqual(res.headers['content-length'], '4096');
@@ -865,6 +860,29 @@ describe('pipeBodyToResponse before the response head is written', () => {
 
 		assert.equal(res.status, 500);
 		assert.equal(res.body, 'Error: Internal Server Error');
+	});
+
+	it('sends the message of a ClientError', async () => {
+		dispatch.current = failing(new ClientError('no such part', 404));
+
+		const res = await fetchHttp(baseUrl, '/client-error');
+
+		assert.equal(res.status, 404);
+		assert.equal(res.body, 'ClientError: no such part');
+	});
+
+	it('does not reveal the message of a status-bearing error that is not a ClientError', async () => {
+		dispatch.current = failing(
+			Object.assign(new Error(`Blob file not found for ${tempRoot}/blobs/1`), {
+				name: 'BlobReadError',
+				statusCode: 404,
+			})
+		);
+
+		const res = await fetchHttp(baseUrl, '/blob-gone');
+
+		assert.equal(res.status, 404);
+		assert.equal(res.body, 'Error: Not Found');
 	});
 
 	it('writes a 416 with its Content-Range', async () => {
@@ -955,37 +973,61 @@ describe('pipeBodyToResponse before the response head is written', () => {
 		await waitFor(() => sourceClosed, 'the source to be destroyed');
 	});
 
-	it('answers a stream error with a status over HTTP/2', async () => {
+	async function overHttp2(createBody) {
 		const h2Server = http2.createServer((req, res) => {
-			const body = new Readable({
-				read() {
-					this.destroy(Object.assign(new Error('try later'), { statusCode: 503 }));
-				},
-			});
-			pipeBodyToResponse(body, res, '/h2', 'GET', performance.now());
+			pipeBodyToResponse(createBody(), res, '/h2', 'GET', performance.now());
 		});
 		await new Promise((resolve) => h2Server.listen(0, '127.0.0.1', resolve));
 		const client = http2.connect(`http://127.0.0.1:${h2Server.address().port}`);
 		try {
-			const res = await new Promise((resolve, reject) => {
+			return await new Promise((resolve) => {
 				const stream = client.request({ ':path': '/h2' });
 				const chunks = [];
 				let status;
+				const finish = (complete) => resolve({ status, complete, body: Buffer.concat(chunks).toString() });
 				stream.on('response', (headers) => {
 					status = headers[':status'];
 				});
 				stream.on('data', (chunk) => chunks.push(chunk));
-				stream.on('end', () => resolve({ status, body: Buffer.concat(chunks).toString() }));
-				stream.on('error', reject);
+				stream.on('end', () => finish(true));
+				stream.on('error', () => finish(false));
 				stream.setTimeout(REQUEST_TIMEOUT_MS, () => stream.destroy(new Error('Request timed out')));
 			});
-
-			assert.equal(res.status, 503);
-			assert.equal(res.body, 'Error: try later');
 		} finally {
 			client.close();
 			h2Server.close();
 		}
+	}
+
+	it('answers a stream error with a status over HTTP/2', async () => {
+		const res = await overHttp2(
+			() =>
+				new Readable({
+					read() {
+						this.destroy(new ClientError('no such part', 404));
+					},
+				})
+		);
+
+		assert.equal(res.status, 404);
+		assert.equal(res.body, 'ClientError: no such part');
+	});
+
+	it('aborts the stream when it fails after the head is written over HTTP/2', async () => {
+		const res = await overHttp2(() => {
+			let sent = false;
+			return new Readable({
+				read() {
+					if (sent) return;
+					sent = true;
+					this.push('partial');
+					setTimeout(() => this.destroy(new Error('midstream')), 50);
+				},
+			});
+		});
+
+		assert.equal(res.status, 200);
+		assert.equal(res.complete, false);
 	});
 
 	it('records the status that was sent, once', async () => {

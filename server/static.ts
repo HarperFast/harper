@@ -109,11 +109,9 @@ function resolveCacheOptions(scope: Scope, urlKey: string, basename: string) {
 }
 
 /**
- * Send a resolved file through `send`. `send` treats its path argument as a URL path: it URI-decodes
- * it and 404s any dot segment. A static entry is a filesystem path picked by the `files` globs (the
- * request URL is only a map key), so `send` gets just the file's own name under its directory as
- * `root`. Ancestor directories (a dot-directory app root, a `%` in a parent) never reach its decode
- * or dotfile check.
+ * `send` URI-decodes its path argument and 404s any dot segment, as it does for a request path. A
+ * static entry is a filesystem path chosen by the `files` globs, so `send` gets only the file's own
+ * name, with its directory as `root`: an ancestor directory never reaches the decode or dot check.
  */
 function sendResolvedFile(req, path: string, options?: Record<string, unknown>) {
 	return send(req, encodeURIComponent(basename(path)), { ...options, root: dirname(path) });

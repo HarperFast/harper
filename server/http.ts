@@ -8,6 +8,7 @@ import { Scope } from '../components/Scope.ts';
 import { Socket } from 'node:net';
 import { setMaxListeners } from 'node:events';
 import harperLogger from '../utility/logging/harper_logger.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import { parentPort } from 'node:worker_threads';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
@@ -579,8 +580,7 @@ export function httpServer(listener, options) {
  * correctly signals a failed/truncated transfer to the client instead of implying it completed.
  *
  * A body that writes its own head (`handlesHeaders`, an unknown-size Blob) reaches here with the head
- * unwritten, and a failure before its first byte can still be an HTTP error: that case goes through
- * `pipeBeforeHeaders`, since `pipeline()` would destroy the response before any status is written.
+ * unwritten: a failure before its first byte is still an HTTP error, which `pipeline()` cannot answer.
  */
 export function pipeBodyToResponse(
 	body: Readable,
@@ -616,12 +616,6 @@ function prematureCloseError(): NodeJS.ErrnoException {
 	return Object.assign(new Error('Premature close'), { code: 'ERR_STREAM_PREMATURE_CLOSE' });
 }
 
-/**
- * `pipeBodyToResponse` for a response whose head is not written yet. `pipeline()` destroys the
- * response on any source error, so the client would see a reset where an HTTP status is still
- * possible. Here a source error before the first byte is answered with a status; after the head is
- * committed, or on a silent premature close, the connection aborts as it does under `pipeline()`.
- */
 function pipeBeforeHeaders(body: Readable, nodeResponse: any, complete: (error?: Error | null) => void) {
 	let failed = false;
 	let bodyEnded = false;
@@ -665,13 +659,11 @@ function pipeBeforeHeaders(body: Readable, nodeResponse: any, complete: (error?:
 	else body.pipe(nodeResponse);
 }
 
-/** The error's own HTTP error status, if it carries one. */
 function errorStatus(error: any): number | undefined {
 	const status = Number(error?.statusCode ?? error?.status);
 	return Number.isInteger(status) && status >= 400 && status <= 599 ? status : undefined;
 }
 
-// Headers a failed body may have staged for the representation it was about to send.
 const STAGED_ENTITY_HEADERS = [
 	'content-length',
 	'content-type',
@@ -682,7 +674,6 @@ const STAGED_ENTITY_HEADERS = [
 	'accept-ranges',
 ];
 
-/** Write `error` as an HTTP error response. Returns false when it could not be written. */
 function answerBeforeHeaders(nodeResponse: any, error: any): boolean {
 	const declaredStatus = errorStatus(error);
 	const status = declaredStatus ?? 500;
@@ -691,11 +682,10 @@ function answerBeforeHeaders(nodeResponse: any, error: any): boolean {
 		// a staged max-age would make the error cacheable
 		nodeResponse.setHeader('Cache-Control', 'no-store');
 		nodeResponse.writeHead(status, toWriteHeadHeaders(error?.headers));
-		// An error without its own status, or one that declares its message not exposable (`send` marks
-		// the filesystem errors it wraps), is an internal fault: keep the class name — the public error
-		// code — and drop the message, which can name a path.
+		// Only a message written for clients is sent; others (a blob or filesystem error) can name a path.
+		// The class name stays: it is the public error code.
 		nodeResponse.end(
-			declaredStatus && error.expose !== false
+			(error?.expose ?? error instanceof ClientError)
 				? errorToString(error)
 				: `${error?.constructor?.name ?? 'Error'}: ${STATUS_CODES[status]}`
 		);
@@ -940,11 +930,6 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 					method,
 					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
 				);
-				const recordOutcome = (finalStatus: number) => {
-					recordActionBinary(finalStatus < 400, 'success', handlerPath, method);
-					recordActionBinary(1, 'response_' + finalStatus, handlerPath, method);
-					logRequest(nodeRequest, finalStatus, requestId, executionTime);
-				};
 				if (!sentBody) {
 					if (body instanceof ReadableStream) body = Readable.fromWeb(body);
 					// Only wrap non-stream iterables. Re-wrapping an existing Node stream in
@@ -956,10 +941,12 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 						body = Readable.from(body);
 
 					// A body that writes its own head (send, an unknown-size Blob) can still fail into an
-					// error status, so record the status that was actually sent
+					// error status, so record the status the response carries once it closes
 					if (body?.pipe && !nodeResponse.headersSent && !nodeResponse.destroyed)
-						nodeResponse.once('close', () => recordOutcome(nodeResponse.statusCode));
-					else recordOutcome(status);
+						nodeResponse.once('close', () =>
+							recordOutcome(nodeResponse.statusCode, nodeRequest, requestId, executionTime, handlerPath, method)
+						);
+					else recordOutcome(status, nodeRequest, requestId, executionTime, handlerPath, method);
 
 					// if it is a stream, pipe it
 					if (body?.pipe) pipeBodyToResponse(body, nodeResponse, handlerPath, method, endTime);
@@ -969,7 +956,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 							nodeResponse.end(body);
 						}, onError);
 					else nodeResponse.end(body);
-				} else recordOutcome(status);
+				} else recordOutcome(status, nodeRequest, requestId, executionTime, handlerPath, method);
 			} catch (error) {
 				onError(error);
 			}
@@ -2177,6 +2164,19 @@ function logHttpRequest(request: any, status: number, requestId: number, executi
 			} ${status}${logging.timing && executionTime ? ' ' + executionTime.toFixed(2) + 'ms' : ''}${requestId ? ' id: ' + requestId : ''}`
 		);
 	}
+}
+
+function recordOutcome(
+	status: number,
+	nodeRequest: IncomingMessage,
+	requestId: number,
+	executionTime: number,
+	handlerPath: string,
+	method: string
+) {
+	recordActionBinary(status < 400, 'success', handlerPath, method);
+	recordActionBinary(1, 'response_' + status, handlerPath, method);
+	logRequest(nodeRequest, status, requestId, executionTime);
 }
 
 export function logRequest(nodeRequest: IncomingMessage, status: number, requestId: number, executionTime?: number) {

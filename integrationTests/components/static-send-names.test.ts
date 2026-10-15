@@ -1,11 +1,6 @@
 /**
- * Static files whose path `send` would treat as a URL path (harper#196). The app lives under a
- * dot-directory (the install parent is `.harper-static-names-*`), serves a dot-directory of its own
- * (`web/.well-known`), and has files named with a literal `%`. Each used to answer with a reset
- * connection, because the file's absolute path was decoded and dot-checked as if it were a URL.
- *
- * Reproduction:
- *   npm run test:integration -- "integrationTests/components/static-send-names.test.ts"
+ * harper#196: the app is installed under a dot-directory, serves a dot-directory of its own, and has
+ * files named with a literal `%`. Each used to reset the connection.
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual } from 'node:assert';
