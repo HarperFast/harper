@@ -45,15 +45,15 @@ describe('Test searchValidator module', () => {
 		};
 	});
 
-	const grandchildTable = {
-		attributes: [
+	const grandchildTable = class GrandchildTable {
+		static attributes = [
 			{ attribute: 'id', name: 'id' },
 			{ attribute: 'code', name: 'code' },
-		],
+		];
 	};
 
-	const childTable = {
-		attributes: [
+	const childTable = class ChildTable {
+		static attributes = [
 			{ attribute: 'id', name: 'id' },
 			{ attribute: 'label', name: 'label' },
 			{
@@ -62,7 +62,7 @@ describe('Test searchValidator module', () => {
 				relationship: { from: 'grandchildId' },
 				definition: { tableClass: grandchildTable },
 			},
-		],
+		];
 	};
 
 	after(() => {
@@ -425,7 +425,7 @@ describe('Test searchValidator module', () => {
 		assert.strictEqual(reusedSelectorErr.statusCode, 400);
 		assert.strictEqual(reusedSelectorErr.message, "unknown attribute 'label'");
 
-		// Deeply nested self-referential select exceeding MAX_SELECT_DEPTH (64) must fail closed with 400.
+		// Deeply nested self-referential select exceeding MAX_SELECT_DEPTH must fail closed with 400.
 		let deepSelect = ['id'];
 		for (let i = 0; i < 70; i++) {
 			deepSelect = [{ name: 'parent', select: deepSelect }];
