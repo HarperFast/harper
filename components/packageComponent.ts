@@ -51,7 +51,7 @@ async function linksToInstall(link: string): Promise<boolean> {
 	try {
 		return (await resolveLink(link)) === PACKAGE_ROOT;
 	} catch {
-		return false; // dangling: left to the dangling-link handling
+		return false;
 	}
 }
 
