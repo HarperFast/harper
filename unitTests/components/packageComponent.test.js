@@ -290,7 +290,6 @@ describe('streamPackagedDirectory round-trip', () => {
 						scan.totalSize < 100_000,
 						`${JSON.stringify(options)}: estimate walked the install (${scan.totalSize} bytes)`
 					);
-					// A prior scan handed in, as the CLI does, must leave out the same links as the packer's own.
 					for (const knownScan of [undefined, scan]) {
 						const label = `${JSON.stringify(options)}${knownScan ? ' with a prior scan' : ''}`;
 						const entries = await archiveEntries(streamPackagedDirectory(sourceDir, options, undefined, knownScan));
