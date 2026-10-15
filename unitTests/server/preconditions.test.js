@@ -732,6 +732,10 @@ describe('REST preconditions with real table transactions', () => {
 		);
 		assert.strictEqual(serialized, 1);
 		assert.strictEqual(closed, 2);
+		const malformed = await request('GET', '/CountSerialization/', undefined, { 'if-match': 'invalid' });
+		assert.strictEqual(malformed.status, 400, await bodyOf(malformed));
+		assert.strictEqual(closed, 3);
+		assert.strictEqual(serialized, 1);
 	});
 
 	it('settles deferred read authorization before returning a conditional stream response', async () => {
