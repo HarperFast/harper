@@ -387,7 +387,14 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 
 		await ReloadExpTable.put('a-expired', { id: 'a-expired', name: 'stale' }, { expiresAt: Date.now() - 5000 });
 		await ReloadExpTable.put('z-live', { id: 'z-live', name: 'fresh' }, { expiresAt: Date.now() + 60_000 });
-		await waitFor(() => Date.now() > (ReloadExpTable.primaryStore.getEntry('z-live')?.version ?? 0), 1000, 1);
+		await waitFor(
+			() => {
+				const localTime = ReloadExpTable.primaryStore.getEntry('z-live')?.localTime;
+				return localTime > 1 && Date.now() > localTime;
+			},
+			1000,
+			1
+		);
 
 		const collectionEvents = [];
 		const collectionSub = await ReloadExpTable.subscribe({ omitCurrent: true });
