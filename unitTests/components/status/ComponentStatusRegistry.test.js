@@ -909,6 +909,72 @@ describe('ComponentStatusRegistry', function () {
 
 				assert.ok(result.message.includes('my-app.long-component-name: Component failed initialization'));
 			});
+
+			it('should include error.message cause in message and details when status has an Error instance', async function () {
+				const loadError = new Error(
+					"Could not load component 'broken-plugin' for application 'my-app' due to: TypeError: handleApplication is not a function"
+				);
+				const consolidatedStatuses = new Map([
+					[
+						'my-app.broken-plugin',
+						{
+							componentName: 'my-app.broken-plugin',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: "Could not load component 'my-app.broken-plugin'",
+							error: loadError,
+							lastChecked: { workers: { 0: 1000 } },
+						},
+					],
+				]);
+
+				const result = await registry.getAggregatedStatusFor('my-app', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
+				assert.ok(
+					result.message.includes(loadError.message),
+					`Expected "${result.message}" to include "${loadError.message}"`
+				);
+				assert.ok(result.details);
+				assert.equal(result.details['my-app.broken-plugin'].status, COMPONENT_STATUS_LEVELS.ERROR);
+				assert.equal(result.details['my-app.broken-plugin'].error, loadError.message);
+				assert.ok(result.details['my-app.broken-plugin'].message.includes(loadError.message));
+			});
+
+			it('should handle string error without duplicating if already present in latestMessage', async function () {
+				const consolidatedStatuses = new Map([
+					[
+						'my-app.plugin-a',
+						{
+							componentName: 'my-app.plugin-a',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: 'Failed to load: missing dependency',
+							error: 'missing dependency',
+							lastChecked: { workers: { 0: 1000 } },
+						},
+					],
+					[
+						'my-app.plugin-b',
+						{
+							componentName: 'my-app.plugin-b',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							error: 'standalone error cause',
+							lastChecked: { workers: { 0: 2000 } },
+						},
+					],
+				]);
+
+				const result = await registry.getAggregatedStatusFor('my-app', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
+				assert.equal(
+					result.message,
+					'my-app.plugin-a: Failed to load: missing dependency; my-app.plugin-b: standalone error cause'
+				);
+				assert.equal(result.details['my-app.plugin-a'].message, 'Failed to load: missing dependency');
+				assert.equal(result.details['my-app.plugin-a'].error, 'missing dependency');
+				assert.equal(result.details['my-app.plugin-b'].message, 'standalone error cause');
+				assert.equal(result.details['my-app.plugin-b'].error, 'standalone error cause');
+			});
 		});
 
 		describe('edge cases and error handling', function () {

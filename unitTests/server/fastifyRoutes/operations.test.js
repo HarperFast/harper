@@ -476,6 +476,129 @@ describe('Test custom functions operations', () => {
 			}
 		});
 
+		it('Test get_status and get_components surface load failure cause and wire-safe per-thread details when a component fails to load', async () => {
+			const statusModule = require('#src/components/status/index');
+			const serverStatus = require('#src/server/status/index');
+			const componentLoader = require('#src/components/componentLoader');
+			const { StatusAggregator, componentStatusRegistry } = statusModule.internal;
+
+			const projectDir = path.join(CF_DIR_ROOT, 'my-other-component');
+			const harperConfigPath = path.join(projectDir, 'harperdb-config.yaml');
+			const pluginName = 'brokenTestPlugin';
+			await fs.writeFile(harperConfigPath, `${pluginName}: true\n`);
+
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName] = {
+				handleApplication() {
+					throw new Error('plugin init boom');
+				},
+			};
+
+			const crossThreadStatuses = new Map([
+				[
+					'my-cool-component@main',
+					{
+						status: 'healthy',
+						lastChecked: new Date(1700000000000),
+						message: 'Component loaded successfully',
+					},
+				],
+				[
+					'my-cool-component@worker-0',
+					{
+						status: 'healthy',
+						workerIndex: 0,
+						lastChecked: new Date(1700000000100),
+						message: 'Component loaded successfully',
+					},
+				],
+			]);
+
+			let getAggregatedFromAllThreadsStub;
+			try {
+				componentStatusRegistry.reset();
+				componentLoader.loadedPaths.clear();
+
+				// 1. Load on main thread (isWorker: false): handleApplication is skipped and recorded healthy
+				await componentLoader.loadComponent(projectDir, { isWorker: false, set: sinon.stub() }, 'test-origin');
+				const mainStatus = componentStatusRegistry.getStatus(`my-other-component.${pluginName}`);
+				expect(mainStatus).to.exist;
+				crossThreadStatuses.set(`my-other-component.${pluginName}@main`, { ...mainStatus });
+
+				// 2. Load on worker thread (isWorker: true): handleApplication throws and loadComponent records failure
+				componentLoader.loadedPaths.clear();
+				await componentLoader.loadComponent(projectDir, { isWorker: true, set: sinon.stub() }, 'test-origin');
+				const workerStatus = componentStatusRegistry.getStatus(`my-other-component.${pluginName}`);
+				expect(workerStatus).to.exist;
+				crossThreadStatuses.set(`my-other-component.${pluginName}@worker-0`, {
+					...workerStatus,
+					workerIndex: 0,
+				});
+
+				const aggregatedStatuses = StatusAggregator.aggregate(crossThreadStatuses);
+				getAggregatedFromAllThreadsStub = sinon
+					.stub(statusModule.internal.ComponentStatusRegistry, 'getAggregatedFromAllThreads')
+					.resolves(aggregatedStatuses);
+
+				// 3. Verify get_status (serverStatus.get) over JSON wire serialization
+				const rawStatusResult = await serverStatus.get({});
+				const wireComponentStatus = JSON.parse(JSON.stringify(rawStatusResult.componentStatus));
+
+				const healthyStatusEntry = wireComponentStatus.find((c) => c.name === 'my-cool-component');
+				expect(healthyStatusEntry).to.deep.equal({
+					name: 'my-cool-component',
+					componentName: 'my-cool-component',
+					status: 'healthy',
+					lastChecked: {
+						main: 1700000000000,
+						workers: { 0: 1700000000100 },
+					},
+				});
+
+				const failedStatusEntry = wireComponentStatus.find((c) => c.name === `my-other-component.${pluginName}`);
+				expect(failedStatusEntry).to.exist;
+				expect(failedStatusEntry.status).to.equal('error');
+				expect(failedStatusEntry.error).to.be.a('string').and.to.include('due to: plugin init boom');
+				expect(failedStatusEntry.abnormalities).to.be.an('object').that.is.not.empty;
+				expect(failedStatusEntry.abnormalities[`my-other-component.${pluginName}@main`]).to.include({
+					status: 'healthy',
+				});
+
+				// 4. Verify get_components (operations.getComponents) over JSON wire serialization
+				const rawComponentsResult = await operations.getComponents();
+				const wireComponentsResult = JSON.parse(JSON.stringify(rawComponentsResult));
+
+				const coolComponent = wireComponentsResult.entries.find((e) => e.name === 'my-cool-component');
+				expect(coolComponent).to.exist;
+				expect(coolComponent.status).to.deep.equal({
+					status: 'healthy',
+					message: 'All components loaded successfully',
+					lastChecked: {
+						main: 1700000000000,
+						workers: { 0: 1700000000100 },
+					},
+				});
+
+				const otherComponent = wireComponentsResult.entries.find((e) => e.name === 'my-other-component');
+				expect(otherComponent).to.exist;
+				expect(otherComponent.status.status).to.equal('error');
+				expect(otherComponent.status.message).to.include('due to: plugin init boom');
+				expect(otherComponent.status.details).to.exist;
+				expect(otherComponent.status.details[`my-other-component.${pluginName}`].status).to.equal('error');
+				expect(otherComponent.status.details[`my-other-component.${pluginName}`].message).to.include(
+					'due to: plugin init boom'
+				);
+				expect(otherComponent.status.details[`my-other-component.${pluginName}`].error).to.include(
+					'due to: plugin init boom'
+				);
+			} finally {
+				getAggregatedFromAllThreadsStub?.restore();
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
+				componentLoader.loadedPaths.clear();
+				componentStatusRegistry.reset();
+				await fs.remove(harperConfigPath);
+			}
+		});
+
 		it('Test getComponentFile happy path', async () => {
 			const result = await operations.getComponentFile({ project: 'my-other-component', file: 'config.yaml' });
 			expect(result.message).to.eql(test_yaml_string);

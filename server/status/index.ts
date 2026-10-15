@@ -4,6 +4,7 @@ import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { validateStatus } from '../../validation/statusValidator.ts';
 import { type StatusId, type StatusValueMap, type StatusRecord, DEFAULT_STATUS_ID } from './definitions.ts';
 import { internal as statusInternal, type AggregatedComponentStatus } from '../../components/status/index.ts';
+import type { ComponentStatusAbnormality } from '../../components/status/types.ts';
 import { restartNeeded } from '../../components/requestRestart.ts';
 import { sendItcEvent } from '../threads/itc.js';
 import { onMessageByType, workers } from '../threads/manageThreads.js';
@@ -74,8 +75,45 @@ function clearStatus({ id }: StatusRequestBody): Promise<boolean> {
 	return getStatusTable().delete(id);
 }
 
-interface AggregatedComponentStatusWithName extends AggregatedComponentStatus {
+type SerializedComponentStatusAbnormality = Omit<ComponentStatusAbnormality, 'error'> & {
+	error?: string;
+};
+
+interface AggregatedComponentStatusWithName extends Omit<AggregatedComponentStatus, 'error' | 'abnormalities'> {
 	name: string;
+	error?: string;
+	abnormalities?: Record<string, SerializedComponentStatusAbnormality>;
+}
+
+function serializeStatusError(error: Error | string | undefined): string | undefined {
+	if (error === undefined) return undefined;
+	if (typeof error === 'string') return error;
+	if (error instanceof Error) return error.message || String(error);
+	if (
+		typeof error === 'object' &&
+		error !== null &&
+		'message' in error &&
+		typeof (error as { message: unknown }).message === 'string'
+	) {
+		return (error as { message: string }).message;
+	}
+	return String(error);
+}
+
+function serializeAbnormalities(
+	abnormalities: Map<string, ComponentStatusAbnormality> | Record<string, ComponentStatusAbnormality>
+): Record<string, SerializedComponentStatusAbnormality> {
+	const entries = abnormalities instanceof Map ? abnormalities.entries() : Object.entries(abnormalities);
+	const serialized: Record<string, SerializedComponentStatusAbnormality> = {};
+	for (const [threadKey, abnormality] of entries) {
+		serialized[threadKey] = {
+			...abnormality,
+			...(abnormality.error !== undefined && {
+				error: serializeStatusError(abnormality.error),
+			}),
+		};
+	}
+	return serialized;
 }
 
 interface AllStatusSummary {
@@ -154,6 +192,10 @@ async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary
 		([name, status]) => ({
 			name,
 			...status,
+			...(status.error !== undefined && { error: serializeStatusError(status.error) }),
+			...(status.abnormalities !== undefined && {
+				abnormalities: serializeAbnormalities(status.abnormalities),
+			}),
 		})
 	);
 

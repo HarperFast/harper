@@ -311,6 +311,101 @@ describe('server.status', function () {
 			assert.equal(result.restartRequired, false);
 		});
 
+		it('should serialize Error instances and abnormalities Maps in componentStatus for JSON wire output', async function () {
+			await status.set({ id: 'primary', status: 'running' });
+
+			const loadFailure = new Error(
+				"Could not load component 'broken-plugin' for application 'my-app' due to: SyntaxError: Unexpected token"
+			);
+			const workerAbnormalityError = new Error('Worker 2 failed to initialize plugin');
+
+			const mockComponentStatuses = new Map([
+				[
+					'healthy-app',
+					{
+						componentName: 'healthy-app',
+						status: 'healthy',
+						latestMessage: 'Component loaded successfully',
+						lastChecked: {
+							main: 1700000000000,
+							workers: { 0: 1700000000100 },
+						},
+					},
+				],
+				[
+					'my-app.broken-plugin',
+					{
+						componentName: 'my-app.broken-plugin',
+						status: 'error',
+						latestMessage: "Could not load component 'my-app.broken-plugin'",
+						error: loadFailure,
+						lastChecked: {
+							main: 1700000000000,
+							workers: { 0: 1700000000100, 2: 1700000000200 },
+						},
+						abnormalities: new Map([
+							[
+								'my-app.broken-plugin@main',
+								{
+									status: 'healthy',
+									message: 'Plugin skipped on main thread',
+									lastChecked: new Date(1700000000000),
+								},
+							],
+							[
+								'my-app.broken-plugin@worker-2',
+								{
+									status: 'error',
+									workerIndex: 2,
+									message: 'Worker 2 failed',
+									error: workerAbnormalityError,
+									lastChecked: new Date(1700000000200),
+								},
+							],
+						]),
+					},
+				],
+			]);
+			getAggregatedStub.resolves(mockComponentStatuses);
+			restartNeededStub.returns(false);
+
+			const rawResult = await status.get({});
+			// Simulate Fastify's JSON wire serialization of componentStatus
+			const wireComponentStatus = JSON.parse(JSON.stringify(rawResult.componentStatus));
+
+			const healthyEntry = wireComponentStatus.find((c) => c.name === 'healthy-app');
+			assert.deepStrictEqual(healthyEntry, {
+				name: 'healthy-app',
+				componentName: 'healthy-app',
+				status: 'healthy',
+				latestMessage: 'Component loaded successfully',
+				lastChecked: {
+					main: 1700000000000,
+					workers: { 0: 1700000000100 },
+				},
+			});
+
+			const failedEntry = wireComponentStatus.find((c) => c.name === 'my-app.broken-plugin');
+			assert.ok(failedEntry);
+			assert.equal(failedEntry.status, 'error');
+			assert.equal(failedEntry.latestMessage, "Could not load component 'my-app.broken-plugin'");
+			assert.equal(typeof failedEntry.error, 'string');
+			assert.equal(failedEntry.error, loadFailure.message);
+			assert.ok(failedEntry.abnormalities && typeof failedEntry.abnormalities === 'object');
+			assert.deepStrictEqual(Object.keys(failedEntry.abnormalities).sort(), [
+				'my-app.broken-plugin@main',
+				'my-app.broken-plugin@worker-2',
+			]);
+			assert.equal(failedEntry.abnormalities['my-app.broken-plugin@main'].status, 'healthy');
+			assert.equal(failedEntry.abnormalities['my-app.broken-plugin@main'].message, 'Plugin skipped on main thread');
+			assert.equal(failedEntry.abnormalities['my-app.broken-plugin@worker-2'].status, 'error');
+			assert.equal(failedEntry.abnormalities['my-app.broken-plugin@worker-2'].workerIndex, 2);
+			assert.equal(
+				failedEntry.abnormalities['my-app.broken-plugin@worker-2'].error,
+				'Worker 2 failed to initialize plugin'
+			);
+		});
+
 		it('should continue working if component status functions are unavailable', async function () {
 			// Set some system status
 			await status.set({ id: 'primary', status: 'running' });

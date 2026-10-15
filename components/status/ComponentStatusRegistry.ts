@@ -222,20 +222,28 @@ export class ComponentStatusRegistry {
 
 		// Show details if anything is not healthy
 		let overallMessage = 'All components loaded successfully';
-		const details: Record<string, { status: ComponentStatusLevel; message?: string }> = {};
+		const details: Record<string, { status: ComponentStatusLevel; message?: string; error?: string }> = {};
 
 		if (hasErrors || hasLoading) {
 			const problemStatuses = allStatuses.filter(
 				(s) => s.status === COMPONENT_STATUS_LEVELS.ERROR || s.status === COMPONENT_STATUS_LEVELS.LOADING
 			);
-			overallMessage = problemStatuses.map((s) => `${s.key}: ${s.latestMessage || s.status}`).join('; ');
+			overallMessage = problemStatuses
+				.map((s) => {
+					const errorMessage = extractErrorMessage(s.error);
+					const message = formatProblemMessage(s.latestMessage, errorMessage);
+					return `${s.key}: ${message || s.status}`;
+				})
+				.join('; ');
 
 			// Include details for debugging
 			for (const status of allStatuses) {
 				if (status.status !== COMPONENT_STATUS_LEVELS.HEALTHY) {
+					const errorMessage = extractErrorMessage(status.error);
 					details[status.key] = {
 						status: status.status,
-						message: status.latestMessage,
+						message: formatProblemMessage(status.latestMessage, errorMessage),
+						...(errorMessage !== undefined && { error: errorMessage }),
 					};
 				}
 			}
@@ -248,4 +256,26 @@ export class ComponentStatusRegistry {
 			lastChecked: allStatuses[0]?.lastChecked || { workers: {} },
 		};
 	}
+}
+
+function extractErrorMessage(error: Error | string | undefined): string | undefined {
+	if (error === undefined) return undefined;
+	if (typeof error === 'string') return error;
+	if (error instanceof Error) return error.message || String(error);
+	if (
+		typeof error === 'object' &&
+		error !== null &&
+		'message' in error &&
+		typeof (error as { message: unknown }).message === 'string'
+	) {
+		return (error as { message: string }).message;
+	}
+	return String(error);
+}
+
+function formatProblemMessage(latestMessage: string | undefined, errorMessage: string | undefined): string | undefined {
+	if (latestMessage && errorMessage) {
+		return latestMessage.includes(errorMessage) ? latestMessage : `${latestMessage}: ${errorMessage}`;
+	}
+	return latestMessage ?? errorMessage;
 }

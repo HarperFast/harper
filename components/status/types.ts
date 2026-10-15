@@ -91,7 +91,7 @@ export interface ComponentApplicationStatus {
 	/** Descriptive message with details when not healthy */
 	message: string;
 	/** Detailed breakdown when issues exist */
-	details?: Record<string, { status: ComponentStatusLevel; message?: string }>;
+	details?: Record<string, { status: ComponentStatusLevel; message?: string; error?: string }>;
 	/** Last checked time information */
 	lastChecked: { workers: Record<number, number> };
 }
