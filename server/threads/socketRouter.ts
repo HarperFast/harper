@@ -18,6 +18,7 @@ import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
 import { startTransactionLogCooling } from '../transactionLogCooling.ts';
+import { applyConfiguredV8Flags } from './v8Flags.ts';
 import { startLongLivedTransactionReporting } from '../../resources/longLivedTransactions.ts';
 import { setActiveWorkerPools } from './workerPools.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
@@ -50,6 +51,7 @@ if (isMainThread) {
 }
 
 export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean) {
+	applyConfiguredV8Flags();
 	const workerSlots = [];
 	let dedicatedPools: { type: string; count: number }[] = [];
 	// Crash-path defense: a hard crash can skip a worker's exit-time UDS cleanup and leave stale

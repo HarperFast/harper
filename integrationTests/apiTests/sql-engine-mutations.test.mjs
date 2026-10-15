@@ -117,13 +117,30 @@ suite('New SQL engine — mutations (phase 4)', (ctx) => {
 			.expect(200);
 
 		const N = 60;
-		await Promise.all(
+		const results = await Promise.allSettled(
 			Array.from({ length: N }, () =>
-				client.req().send({ operation: 'sql', sql: 'UPDATE dev.widget SET qty = qty + 1 WHERE id = 42' })
+				client
+					.req()
+					.timeout(60_000)
+					.send({ operation: 'sql', sql: 'UPDATE dev.widget SET qty = qty + 1 WHERE id = 42' })
 			)
 		);
 
-		const read = await byHash('widget', [42]).expect(200);
-		assert.equal(read.body[0].qty, N, `expected all ${N} increments to apply, got ${read.body[0].qty}`);
+		const statusCounts = {};
+		const sampleBodies = {};
+		for (const result of results) {
+			const key = result.status === 'fulfilled' ? result.value.status : 'transport error';
+			statusCounts[key] = (statusCounts[key] ?? 0) + 1;
+			const detail = result.status === 'fulfilled' ? result.value.text : result.reason?.message;
+			if (key !== 200) sampleBodies[key] ??= String(detail).slice(0, 200);
+		}
+		const responses = `status counts ${JSON.stringify(statusCounts)}, non-200 bodies ${JSON.stringify(sampleBodies)}`;
+		const read = await byHash('widget', [42])
+			.timeout(60_000)
+			.catch((error) => assert.fail(`final read failed (${error.message}); ${responses}`));
+		assert.equal(read.status, 200, `final read failed (${read.text}); ${responses}`);
+		const outcome = `${responses}, final qty ${read.body[0].qty}`;
+		assert.deepEqual(statusCounts, { 200: N }, `every increment must be acknowledged; ${outcome}`);
+		assert.equal(read.body[0].qty, N, `expected all ${N} increments to apply; ${outcome}`);
 	});
 });
