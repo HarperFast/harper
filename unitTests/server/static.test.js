@@ -12,6 +12,7 @@ const { handleApplication } = require('#src/server/static');
 const { httpServer, pipeBodyToResponse } = require('#src/server/http');
 const analyticsWrite = require('#src/resources/analytics/write');
 const { ClientError } = require('#src/utility/errors/hdbError');
+const { waitFor } = require('../waitFor');
 const {
 	credentialRejectionError,
 	deferCredentialRejection,
@@ -621,7 +622,7 @@ function listenWith(dispatch) {
 }
 
 // A reset before the status line rejects; a body cut off after the head resolves with `complete: false`.
-function fetchHttp(baseUrl, urlPath, { abortAfterHead = false } = {}) {
+function fetchHttp(baseUrl, urlPath) {
 	return new Promise((resolve, reject) => {
 		const req = http.get(`${baseUrl}${urlPath}`, { agent: false }, (res) => {
 			const chunks = [];
@@ -636,19 +637,10 @@ function fetchHttp(baseUrl, urlPath, { abortAfterHead = false } = {}) {
 			res.on('end', () => finish(res.complete));
 			res.on('aborted', () => finish(false));
 			res.on('error', () => finish(false));
-			if (abortAfterHead) req.destroy();
 		});
 		req.setTimeout(REQUEST_TIMEOUT_MS, () => req.destroy(new Error('Request timed out')));
 		req.on('error', reject);
 	});
-}
-
-async function waitFor(condition, description) {
-	const deadline = Date.now() + REQUEST_TIMEOUT_MS;
-	while (!condition()) {
-		if (Date.now() > deadline) assert.fail(`timed out waiting for ${description}`);
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
 }
 
 describe('static plugin serves files whose path would trip send URL handling', () => {
@@ -961,9 +953,15 @@ describe('pipeBodyToResponse before the response head is written', () => {
 
 		const req = http.get(`${baseUrl}/slow`, { agent: false });
 		req.on('error', () => {});
-		await waitFor(() => requestStarted, 'the handler to run');
+		await waitFor(() => requestStarted, {
+			timeout: REQUEST_TIMEOUT_MS,
+			message: 'timed out waiting for the handler to run',
+		});
 		req.destroy();
-		await waitFor(() => sourceClosed, 'the source to be destroyed');
+		await waitFor(() => sourceClosed, {
+			timeout: REQUEST_TIMEOUT_MS,
+			message: 'timed out waiting for the source to be destroyed',
+		});
 	});
 
 	async function overHttp2(createBody) {
@@ -984,7 +982,10 @@ describe('pipeBodyToResponse before the response head is written', () => {
 				stream.on('data', (chunk) => chunks.push(chunk));
 				stream.on('end', () => finish(true));
 				stream.on('error', () => finish(false));
-				stream.setTimeout(REQUEST_TIMEOUT_MS, () => reject(new Error('Request timed out')));
+				stream.setTimeout(REQUEST_TIMEOUT_MS, () => {
+					stream.destroy();
+					reject(new Error('Request timed out'));
+				});
 			});
 		} finally {
 			client.close();
@@ -1037,7 +1038,10 @@ describe('pipeBodyToResponse before the response head is written', () => {
 		);
 
 		await fetchHttp(baseUrl, '/unavailable');
-		await waitFor(() => outcomesFor('outcome-failed').length > 0, 'the outcome to be reported');
+		await waitFor(() => outcomesFor('outcome-failed').length > 0, {
+			timeout: REQUEST_TIMEOUT_MS,
+			message: 'timed out waiting for the outcome to be reported',
+		});
 
 		assert.deepEqual(outcomesFor('outcome-failed'), [{ metric: 'response_503', path: 'outcome-failed', count: 1 }]);
 	});
@@ -1050,7 +1054,10 @@ describe('pipeBodyToResponse before the response head is written', () => {
 		}));
 
 		const res = await fetchHttp(baseUrl, '/ok');
-		await waitFor(() => outcomesFor('outcome-served').length > 0, 'the outcome to be reported');
+		await waitFor(() => outcomesFor('outcome-served').length > 0, {
+			timeout: REQUEST_TIMEOUT_MS,
+			message: 'timed out waiting for the outcome to be reported',
+		});
 
 		assert.equal(res.status, 200);
 		assert.equal(res.body, 'ok');
@@ -1061,7 +1068,10 @@ describe('pipeBodyToResponse before the response head is written', () => {
 		dispatch.current = withHandlerPath('outcome-streamed', () => ({ status: 201, body: Readable.from(['a', 'b']) }));
 
 		const res = await fetchHttp(baseUrl, '/streamed');
-		await waitFor(() => outcomesFor('outcome-streamed').length > 0, 'the outcome to be reported');
+		await waitFor(() => outcomesFor('outcome-streamed').length > 0, {
+			timeout: REQUEST_TIMEOUT_MS,
+			message: 'timed out waiting for the outcome to be reported',
+		});
 
 		assert.equal(res.status, 201);
 		assert.equal(res.body, 'ab');

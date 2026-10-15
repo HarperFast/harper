@@ -940,8 +940,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 					else if (!(body instanceof Readable) && (body[Symbol.iterator] || body[Symbol.asyncIterator]))
 						body = Readable.from(body);
 
-					// A body that writes its own head (send, an unknown-size Blob) can still fail into an
-					// error status, so record the status the response carries once it closes
+					// the head may still turn into an error status, so record what the response carries on close
 					if (body?.pipe && !nodeResponse.headersSent && !nodeResponse.destroyed)
 						nodeResponse.once('close', () =>
 							recordOutcome(nodeResponse.statusCode, nodeRequest, requestId, executionTime, handlerPath, method)
