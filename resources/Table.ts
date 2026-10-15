@@ -1696,8 +1696,8 @@ export function makeTable(options): TableResourceClass {
 		return { key, descriptor };
 	}
 	const COMMIT_BASE_METHODS = new Set(['put', 'patch', 'delete']);
-	function conditionForWrite(resource, id: Id) {
-		const condition = resource.getContext()?.[WRITE_CONDITION];
+	function conditionForWrite(context, id: Id) {
+		const condition = context?.[WRITE_CONDITION];
 		return condition?.Resource.primaryStore === primaryStore &&
 			condition.prepared &&
 			writeKeyId(id) === writeKeyId(condition.id)
@@ -1707,6 +1707,10 @@ export function makeTable(options): TableResourceClass {
 	function lockConditionalWrite(resource, id: Id, condition) {
 		if (!condition?.lock || !isRocksDB || condition.locked) return;
 		return (condition.locking ??= resource.lock(id, { hold: true, scope: 'node' }).then((locked) => {
+			if (condition.finished)
+				return locked.unlock().then(() => {
+					throw new ClientError('Conditional request already completed', 409);
+				});
 			condition.locked = true;
 			condition.release = () => locked.unlock();
 		}));
@@ -1714,7 +1718,12 @@ export function makeTable(options): TableResourceClass {
 	function attachWriteCondition(write, condition, options) {
 		write[WRITE_CONDITION] = condition;
 		write.validateBase = (entry, txnTime) => {
-			if (priorStagedWrite(write)?.[WRITE_CONDITION] !== condition) condition.check(entry);
+			if (priorStagedWrite(write)?.[WRITE_CONDITION] !== condition) {
+				// A predicate-only operation has no native write to conflict with intervening commits.
+				condition.check(
+					write.conditionOnly && isRocksDB ? write.store.getEntry(write.key, { uncachedRead: true }) : entry
+				);
+			}
 			if (!write.conditionOnly && precedesExistingVersion(txnTime, entry, options?.nodeId) < 0)
 				throw new ClientError('A concurrent write superseded the conditional mutation', 409);
 		};
@@ -2560,6 +2569,7 @@ export function makeTable(options): TableResourceClass {
 						501
 					);
 				condition.id = target.id;
+				txnForContext(request);
 			}
 			if (this.loadAsInstance !== false) {
 				return resource._loadRecord(target, request, resourceOptions);
@@ -4632,6 +4642,8 @@ export function makeTable(options): TableResourceClass {
 						}
 						// standard path, handle arrays as multiple updates, and otherwise do a direct update
 						if (Array.isArray(record)) {
+							if (context?.[WRITE_CONDITION])
+								throw new ClientError('Conditional writes require a single record body', 501);
 							// Capture each element's operation synchronously (before any async `@embed`
 							// hook resolves): `#savingOperation` is a single field that parallel writes
 							// would otherwise clobber, so a deferred `save()` would commit the wrong op
@@ -4719,7 +4731,7 @@ export function makeTable(options): TableResourceClass {
 		_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any) {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
-			const condition = conditionForWrite(this, id);
+			const condition = conditionForWrite(context, id);
 			const locking = lockConditionalWrite(this, id, condition);
 			if (locking) {
 				const changes = this.#changes;
@@ -4730,7 +4742,6 @@ export function makeTable(options): TableResourceClass {
 				});
 			}
 			const checkCondition = condition?.check;
-			if (checkCondition) condition.consumed = true;
 			const transaction = txnForContext(context);
 			const replaying = transaction.isReplay === true;
 			assertDerivedIndexAdmission(options, transaction);
@@ -4893,6 +4904,7 @@ export function makeTable(options): TableResourceClass {
 					} else {
 						if (checkCondition) {
 							write.conditionOnly = true;
+							write.skipReplicationConfirmation = true;
 							return;
 						}
 						(committedBy as any).removeWrite?.(write);
@@ -5688,7 +5700,9 @@ export function makeTable(options): TableResourceClass {
 					undefined,
 					options?.isNotification
 				);
-				return transaction.addWrite(write as any);
+				const result = transaction.addWrite(write as any);
+				if (condition) condition.consumed = true;
+				return result;
 			};
 			return modelHooksBefore ? modelHooksBefore((context as any)?.signal).then(proceed) : proceed();
 		}
@@ -5744,11 +5758,10 @@ export function makeTable(options): TableResourceClass {
 		_writeDelete(id: Id, options?: any): MaybePromise<boolean> {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
-			const condition = conditionForWrite(this, id);
+			const condition = conditionForWrite(context, id);
 			const locking = lockConditionalWrite(this, id, condition);
 			if (locking) return locking.then(() => this._writeDelete(id, options));
 			const checkCondition = condition?.check;
-			if (checkCondition) condition.consumed = true;
 			const transaction = txnForContext(context);
 			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
@@ -5848,6 +5861,7 @@ export function makeTable(options): TableResourceClass {
 			};
 			if (condition) attachWriteCondition(write, condition, options);
 			transaction.addWrite(write);
+			if (condition) condition.consumed = true;
 			return true;
 		}
 
