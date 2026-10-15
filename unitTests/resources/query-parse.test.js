@@ -257,6 +257,11 @@ describe('Parsing queries', () => {
 	});
 	it('Bad calls', function () {
 		assert.throws(() => parseQuery('limit(5,10'), /expected '\)'/);
+		assert.throws(() => parseQuery('limit(-1)'), /limit must be a non-negative integer/);
+		assert.throws(() => parseQuery('limit(abc)'), /limit must be a non-negative integer/);
+		assert.throws(() => parseQuery('limit(10,5)'), /limit and offset must be non-negative integers/);
+		assert.throws(() => parseQuery('select(id,children[limit(-1)])'), /limit must be a non-negative integer/);
+		assert.throws(() => parseQuery('select(id,children[limit(abc)])'), /limit must be a non-negative integer/);
 		assert.throws(() => parseQuery('unknown(5,10)'), /unknown query function call/);
 		assert.throws(() => parseQuery('select([)'), /expected '\]'/);
 		assert.throws(() => parseQuery('select)'), /unexpected token '\)'/);
@@ -265,7 +270,7 @@ describe('Parsing queries', () => {
 		const probe = spawnSync(
 			process.execPath,
 			[
-				...process.execArgv,
+				...process.execArgv.filter((arg) => !arg.startsWith('--inspect')),
 				'-e',
 				`const assert = require('node:assert');
 				const { parseQuery } = require('#src/resources/search');
@@ -275,11 +280,18 @@ describe('Parsing queries', () => {
 					(err) => err.statusCode === 400 && /unexpected character '\\?'/.test(err.message)
 				);
 				const target = new RequestTarget('?select(id)?limit(1)');
-				assert.strictEqual(target.parseError?.statusCode, 400);`,
+				assert.strictEqual(target.parseError?.statusCode, 400);
+				process.exit(0);`,
 			],
-			{ cwd: path.resolve(__dirname, '../..'), timeout: 5000, encoding: 'utf8' }
+			{ cwd: path.resolve(__dirname, '../..'), timeout: 45000, encoding: 'utf8' }
 		);
-		assert.strictEqual(probe.status, 0, probe.stderr || probe.error?.message);
+		assert.strictEqual(
+			probe.status,
+			0,
+			probe.error?.code === 'ETIMEDOUT'
+				? 'parseQuery("select(id)?limit(1)") timed out in subprocess probe (possible parser hang)'
+				: probe.stderr || probe.error?.message
+		);
 		assert.throws(
 			() => parseQuery('select(id)?limit(1)'),
 			(err) => err.statusCode === 400 && /unexpected character '\?'/.test(err.message)

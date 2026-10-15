@@ -1257,9 +1257,9 @@ export function transformForSelect(select, resource) {
 								: undefined;
 						const innerTransform = subSelect ? transformForSelect(subSelect, targetResource) : (v) => v;
 						const sort = typeof property.sort === 'object' ? property.sort : null;
-						const offset = property.offset;
-						const limit = property.limit;
-						if (sort || offset != null || limit != null) {
+						const offset = Number.isInteger(property.offset) && property.offset >= 0 ? property.offset : undefined;
+						const limit = Number.isInteger(property.limit) && property.limit >= 0 ? property.limit : undefined;
+						if (sort || offset !== undefined || limit !== undefined) {
 							const sortClauses: { attribute: string | string[]; descending?: boolean }[] = [];
 							for (let clause = sort; clause; clause = clause.next) {
 								sortClauses.push(clause);
@@ -1289,9 +1289,9 @@ export function transformForSelect(select, resource) {
 											})
 											.map((entry) => entry.item);
 									}
-									if (offset != null || limit != null) {
+									if (offset !== undefined || limit !== undefined) {
 										const start = offset ?? 0;
-										ordered = ordered.slice(start, limit != null ? start + limit : undefined);
+										ordered = ordered.slice(start, limit !== undefined ? start + limit : undefined);
 									}
 									return innerTransform(ordered);
 								}
