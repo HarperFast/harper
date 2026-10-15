@@ -586,3 +586,170 @@ describe('resolveInstallDestination', () => {
 		assert.equal(resolveInstallDestination(defaultRoot), defaultRoot);
 	});
 });
+
+describe('install storage.engine resolution', () => {
+	const realInstaller = require('#js/utility/install/installer');
+	const { closeDatabase, getDatabases } = require('#js/resources/databases');
+	const env_manager = require('#js/utility/environment/environmentManager');
+	const hdbTerms = require('#js/utility/hdbTerms');
+	const hdb_utils = require('#js/utility/common_utils');
+	const keys = require('#js/security/keys');
+	const testUtils = require('../testUtils');
+	const sinon = require('sinon');
+	const crypto = require('node:crypto');
+	const ENV_KEYS = [
+		'HARPER_SET_CONFIG',
+		'HARPER_CONFIG',
+		'HARPER_DEFAULT_CONFIG',
+		'HDB_CONFIG',
+		'STORAGE_ENGINE',
+		'HDB_ROOT',
+		'ROOTPATH',
+		'HDB_ADMIN_USERNAME',
+		'HDB_ADMIN_PASSWORD',
+	];
+
+	let sandbox;
+	let tempBaseDir;
+	let savedEnv;
+	let savedArgv;
+
+	async function closeSystemDatabase() {
+		const systemTables = getDatabases().system;
+		if (systemTables) {
+			for (const table of Object.values(systemTables)) {
+				if (table?.dbisDB && table.dbisDB.status !== 'closed') {
+					await table.dbisDB.close?.();
+				}
+			}
+		}
+		await closeDatabase('system');
+	}
+
+	function assertInstalledSystemEngine(rootPath, expectedEngine) {
+		const lmdbFile = path.join(rootPath, 'database', 'system.mdb');
+		const rocksCurrent = path.join(rootPath, 'database', 'system', 'CURRENT');
+		if (expectedEngine === 'lmdb') {
+			assert.strictEqual(fs.existsSync(lmdbFile), true, `Expected ${lmdbFile} to exist for lmdb install`);
+			assert.strictEqual(fs.existsSync(rocksCurrent), false, `Expected ${rocksCurrent} not to exist for lmdb install`);
+			assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE), 'lmdb');
+		} else if (expectedEngine === 'rocksdb') {
+			assert.strictEqual(fs.existsSync(rocksCurrent), true, `Expected ${rocksCurrent} to exist for rocksdb install`);
+			assert.strictEqual(fs.existsSync(lmdbFile), false, `Expected ${lmdbFile} not to exist for rocksdb install`);
+			assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE) ?? 'rocksdb', 'rocksdb');
+		} else {
+			throw new Error(`Unexpected engine: ${expectedEngine}`);
+		}
+
+		const overrides = env_manager.getConfigOverrides();
+		if (overrides && Object.prototype.hasOwnProperty.call(overrides, hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE)) {
+			assert.strictEqual(overrides[hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE], expectedEngine);
+		} else {
+			assert.strictEqual(overrides?.[hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE], undefined);
+		}
+	}
+
+	beforeEach(async () => {
+		sandbox = sinon.createSandbox();
+		tempBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-install-engine-'));
+		const fakeHome = path.join(tempBaseDir, 'home');
+		fs.mkdirSync(fakeHome, { recursive: true });
+		sandbox.stub(os, 'homedir').returns(fakeHome);
+		sandbox.stub(hdb_utils, 'getHomeDir').returns(fakeHome);
+		sandbox.stub(keys, 'generateCertsKeys').resolves();
+		sandbox.stub(crypto, 'generateKeyPairSync').returns({
+			privateKey: 'test-private-key',
+			publicKey: 'test-public-key',
+		});
+
+		savedEnv = {};
+		for (const k of ENV_KEYS) {
+			savedEnv[k] = process.env[k];
+			delete process.env[k];
+		}
+		savedArgv = process.argv.slice();
+		process.argv = process.argv.slice(0, 2);
+		hdb_utils.resetNoBootFileCache();
+
+		await closeSystemDatabase();
+		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, undefined);
+		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, undefined);
+		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.DATABASES, undefined);
+	});
+
+	afterEach(async () => {
+		await closeSystemDatabase();
+		for (const k of ENV_KEYS) {
+			if (savedEnv[k] === undefined) {
+				delete process.env[k];
+			} else {
+				process.env[k] = savedEnv[k];
+			}
+		}
+		process.argv = savedArgv;
+		hdb_utils.resetNoBootFileCache();
+		sandbox.restore();
+		testUtils.setupTestDBPath();
+		fs.rmSync(tempBaseDir, { recursive: true, force: true });
+	});
+
+	async function runInstall() {
+		const rootPath = path.join(tempBaseDir, 'hdb');
+		process.env.ROOTPATH = rootPath;
+		process.env.HDB_ADMIN_USERNAME = 'HDB_ADMIN';
+		process.env.HDB_ADMIN_PASSWORD = 'password1234';
+		await realInstaller.install();
+		return rootPath;
+	}
+
+	it('defaults to rocksdb when no storage engine is configured', async () => {
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'rocksdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('honours HARPER_SET_CONFIG={"storage":{"engine":"lmdb"}} during install', async () => {
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('honours HARPER_CONFIG={"storage":{"engine":"lmdb"}} during install', async () => {
+		process.env.HARPER_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('honours HARPER_DEFAULT_CONFIG={"storage":{"engine":"lmdb"}} during install', async () => {
+		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('honours HDB_CONFIG pointing at a YAML file with storage.engine: lmdb during install', async () => {
+		const externalConfigPath = path.join(tempBaseDir, 'external-harper-config.yaml');
+		fs.writeFileSync(externalConfigPath, 'storage:\n  engine: lmdb\n', 'utf8');
+		process.env.HDB_CONFIG = externalConfigPath;
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('honours CLI/prompt STORAGE_ENGINE=lmdb during install', async () => {
+		process.env.STORAGE_ENGINE = 'lmdb';
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('resolves CLI STORAGE_ENGINE=rocksdb + HARPER_CONFIG={"storage":{"engine":"lmdb"}} consistently to lmdb', async () => {
+		process.env.STORAGE_ENGINE = 'rocksdb';
+		process.env.HARPER_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+});

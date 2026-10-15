@@ -223,6 +223,24 @@ describe('Test environmentManager module', () => {
 			expect(env_rw.getConfigOverrides()).to.eql({ foo: 'second' });
 		});
 
+		it('setProperty(key, undefined) records no override and clears any prior override for key', () => {
+			sandbox.stub(config_utils, 'updateConfigObject');
+			env_rw.setProperty('storage_engine', undefined);
+			expect(env_rw.getConfigOverrides()).to.be.undefined;
+
+			env_rw.setProperty('storage_engine', 'lmdb');
+			expect(env_rw.getConfigOverrides()).to.eql({ storage_engine: 'lmdb' });
+
+			env_rw.setProperty('storage_engine', undefined);
+			expect(env_rw.getConfigOverrides()).to.be.undefined;
+
+			// Also verify clearing via a legacy alias removes the canonical override entry
+			env_rw.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, 'lmdb');
+			expect(env_rw.getConfigOverrides()).to.eql({ storage_engine: 'lmdb' });
+			env_rw.setProperty('STORAGE_ENGINE', undefined);
+			expect(env_rw.getConfigOverrides()).to.be.undefined;
+		});
+
 		it('collapses two different legacy aliases for the same canonical param onto one Map entry', () => {
 			// SERVER_PORT_KEY ('SERVER_PORT') and OPERATIONSAPI_NETWORK_PORT both canonicalize to
 			// 'operationsApi_network_port' (CONFIG_PARAM_MAP). Without canonical keying these would

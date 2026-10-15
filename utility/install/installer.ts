@@ -98,6 +98,13 @@ function resolveInstallDestination(value: string): string {
 	return resolveConfiguredPath(value, undefined) ?? value;
 }
 
+function getHdbConfigPath(): string | undefined {
+	return (
+		cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] ||
+		assignCMDENVVariables([hdbTerms.INSTALL_PROMPTS.HDB_CONFIG])[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG]
+	);
+}
+
 /**
  * Calls all the functions that are needed to install Harper.
  * @returns {Promise<void>}
@@ -106,9 +113,10 @@ async function install() {
 	console.error(HDB_PROMPT_MSG(LINE_BREAK + INSTALL_START_MSG + LINE_BREAK));
 	hdbLogger.notify(INSTALL_START_MSG);
 
+	const hdbConfigPath = getHdbConfigPath();
 	let configFromFile;
-	if (cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG]) {
-		configFromFile = getConfigFromFile();
+	if (hdbConfigPath) {
+		configFromFile = getConfigFromFile(hdbConfigPath);
 	}
 
 	// Check to see if any cmd/env vars are passed that override install prompts.
@@ -163,17 +171,15 @@ async function install() {
 	// HDB root is the one of the first params we need for install.
 	hdbRoot = installParams[hdbTerms.INSTALL_PROMPTS.ROOTPATH];
 
-	if (
-		cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] &&
-		path.dirname(cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG]) === hdbRoot
-	) {
+	conditionalRollback = false;
+	if (hdbConfigPath && path.dirname(path.resolve(hdbConfigPath)) === path.resolve(hdbRoot)) {
 		conditionalRollback = true;
 	}
 
 	// We allow HDB to run without a boot file we check for a harperdb-config.yaml
 	if (
 		!ignoreExisting &&
-		!cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] &&
+		!hdbConfigPath &&
 		((await fs.pathExists(path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE))) ||
 			(await fs.pathExists(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE))))
 	) {
@@ -195,7 +201,7 @@ async function install() {
 		throw new Error('Installer should have the HDB root param at the stage it is in but it does not.');
 	}
 	envManager.setHdbBasePath(hdbRoot);
-	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, installParams.STORAGE_ENGINE);
+	stageStorageEngine(installParams);
 	stageRocksCompression();
 
 	// Creates the Harper project folder structure and the LMDB environments/dbis.
@@ -229,8 +235,8 @@ async function install() {
 	hdbLogger.notify(INSTALL_COMPLETE_MSG);
 }
 
-function getConfigFromFile() {
-	let doc = YAML.parseDocument(fs.readFileSync(cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG], 'utf8'), {
+function getConfigFromFile(hdbConfigPath = getHdbConfigPath()) {
+	let doc = YAML.parseDocument(fs.readFileSync(hdbConfigPath, 'utf8'), {
 		simpleKeys: true,
 	} as any);
 	const flatCfg: any = configUtils.flattenConfig(doc.toJSON()) ?? {};
@@ -557,6 +563,46 @@ export function applyInstallModeDefaults(args, defaultsMode) {
  * @returns {Promise<void>}
  */
 /**
+ * Stage the configured storage engine before `mountHdb()` opens the system database.
+ *
+ * `mountHdb()` runs before `createConfigFile()`, so without staging `storage.engine` in the
+ * in-memory config here, `mountHdb()` falls back to the default engine (`rocksdb`) unless
+ * `installParams.STORAGE_ENGINE` was explicitly passed via CLI/prompt. Evaluating the same
+ * precedence `createConfigFile()` later uses (`HARPER_SET_CONFIG` > `HARPER_CONFIG` >
+ * CLI/env/file `storage.engine` > `HARPER_DEFAULT_CONFIG`) keeps the first-boot system database
+ * on the same engine that `harper-config.yaml` will persist.
+ */
+function stageStorageEngine(installParams: Record<string, any> = {}) {
+	const storageEngineParam = hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE;
+	// Clear any prior in-process override first so an unset STORAGE_ENGINE never lingers as an
+	// override that masks the newly written harper-config.yaml.
+	envManager.setProperty(storageEngineParam, undefined);
+	const commandLineConfig = assignCMDENVVariables([storageEngineParam, 'STORAGE_ENGINE'], true);
+	const hdbConfigPath = getHdbConfigPath();
+	const fileConfig = hdbConfigPath ? getConfigFromFile(hdbConfigPath) : {};
+	const cliOrFileEngine =
+		installParams.STORAGE_ENGINE ??
+		installParams[storageEngineParam] ??
+		commandLineConfig[storageEngineParam] ??
+		commandLineConfig.STORAGE_ENGINE ??
+		fileConfig[storageEngineParam] ??
+		fileConfig.STORAGE_ENGINE;
+	const baseConfig =
+		cliOrFileEngine !== undefined && cliOrFileEngine !== null && cliOrFileEngine !== ''
+			? { storage: { engine: cliOrFileEngine } }
+			: {};
+	const envConfig = composeConfigFromEnv(baseConfig);
+	const configuredEngine = envConfig?.storage?.engine ?? cliOrFileEngine;
+	if (configuredEngine !== undefined && configuredEngine !== null && configuredEngine !== '') {
+		// Record `undefined` as the pre-install base so `envManager.initSync(true)` after
+		// `createConfigFile()` sees that `harper-config.yaml` now owns `storage.engine` and retires
+		// the temporary install-time override instead of shipping it to worker threads forever.
+		configUtils.updateConfigObject(storageEngineParam, undefined);
+		envManager.setProperty(storageEngineParam, configuredEngine);
+	}
+}
+
+/**
  * Make the deployment codec readable before `mountHdb()` creates the system column families.
  *
  * The config file is not written until `createConfigFile()`, several steps after `mountHdb()`, but
@@ -564,7 +610,7 @@ export function applyInstallModeDefaults(args, defaultsMode) {
  * asks for a different one — and worker threads share one process-wide family registry. Left
  * unstaged, the main thread creates `__dbis__` at the build default while every worker resolves the
  * configured codec, and Harper dies with "The system database failed to load". Staging it in the
- * in-memory config here is the same trick the STORAGE_ENGINE line above uses.
+ * in-memory config here is the same trick `stageStorageEngine()` above uses.
  *
  * Checked in the same precedence `createConfigFile()` itself later resolves the value with, so
  * `storage.compression` also participates when no explicit RocksDB codec is set: its default is
@@ -576,7 +622,8 @@ function stageRocksCompression() {
 	const compression = hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION;
 	const envConfig = composeConfigFromEnv();
 	const commandLineConfig = assignCMDENVVariables([rocksCompression, compression], true);
-	const fileConfig = cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] ? getConfigFromFile() : {};
+	const hdbConfigPath = getHdbConfigPath();
+	const fileConfig = hdbConfigPath ? getConfigFromFile(hdbConfigPath) : {};
 	const configuredRocksCompression =
 		envConfig?.storage?.rocks?.compression ?? commandLineConfig[rocksCompression] ?? fileConfig[rocksCompression];
 	const configuredCompression =
@@ -605,12 +652,10 @@ async function createConfigFile(installParams) {
 	applyInstallModeDefaults(args, defaultsMode);
 
 	try {
-		if (!cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG]) {
-			// Create the Harper config file.
-			configUtils.createConfigFile(args);
-		}
+		// Create the Harper config file (merging any HDB_CONFIG values already folded into installParams).
+		configUtils.createConfigFile(args);
 
-		envManager.initSync();
+		envManager.initSync(true);
 	} catch (configErr) {
 		rollbackInstall(configErr);
 	}
@@ -635,10 +680,12 @@ function rollbackInstall(errMsg) {
 	if (hdbRoot) {
 		// We do a conditional rollback if installing from config file that exists in the hdb rootpath
 		if (conditionalRollback) {
+			const hdbConfigPath = getHdbConfigPath();
+			const resolvedConfigPath = hdbConfigPath ? path.resolve(hdbConfigPath) : undefined;
 			const dir = fs.readdirSync(hdbRoot, { withFileTypes: true });
 			dir.forEach((d) => {
 				const fullPath = path.join((d as any).parentPath ?? (d as any).path, d.name);
-				if (fullPath !== cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG]) {
+				if (path.resolve(fullPath) !== resolvedConfigPath) {
 					fs.removeSync(fullPath);
 				}
 			});
