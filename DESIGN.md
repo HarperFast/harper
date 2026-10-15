@@ -122,6 +122,8 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 ## server/ — HTTP stacks, threads, operation dispatch
 
+- [HTTP request preconditions (`REST.ts`, `Table.ts`)](server/DESIGN.md#http-request-preconditions-restts-tablets) — Conditional reads follow validator precedence; conditional table writes check the commit base, with optional node-local hold locks.
+
 - [Three HTTP stacks coexist — know which one](server/DESIGN.md#three-http-stacks-coexist--know-which-one) — The native `http.ts` stack, the Fastify operations API and the legacy Fastify custom-functions server, and which one a request lands on.
 - [File overview](server/DESIGN.md#file-overview) — What each file in `server/` owns.
 - [`http.ts` — symbol map](server/DESIGN.md#httpts--symbol-map) — Symbol index for the native HTTP entry file.

@@ -4,8 +4,24 @@
 	"type": "object",
 	"properties": {
 		"rest": {
-			"type": "boolean",
-			"description": "Enable REST API endpoints."
+			"description": "Enable REST API endpoints and configure request handling.",
+			"oneOf": [
+				{ "type": "boolean" },
+				{
+					"type": "object",
+					"properties": {
+						"preconditionLocks": {
+							"type": "boolean",
+							"default": true,
+							"description": "Use node-local record locks for conditional single-record PUT, PATCH and DELETE on RocksDB. Conditions are also checked at commit. Set false to use only optimistic concurrency; LMDB always uses optimistic concurrency. Other protocols and unconditional writes do not acquire these locks."
+						},
+						"lastModified": {
+							"type": "boolean",
+							"description": "Include Last-Modified response headers for versioned records."
+						}
+					}
+				}
+			]
 		},
 		"graphqlSchema": {
 			"type": "object",

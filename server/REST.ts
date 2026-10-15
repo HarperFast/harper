@@ -11,7 +11,7 @@ import { addAnalyticsListener, recordAction, recordActionBinary } from '../resou
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { ServerError, ClientError } from '../utility/errors/hdbError.ts';
 import { Resources } from '../resources/Resources.ts';
-import { Resource, missingMethod, allowedMethods } from '../resources/Resource.ts';
+import { Resource, WRITE_CONDITION, missingMethod, allowedMethods } from '../resources/Resource.ts';
 import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
 import { transaction } from '../resources/transaction.ts';
 import { Headers, mergeHeaders, addVaryHeader } from '../server/serverHelpers/Headers.ts';
@@ -30,10 +30,14 @@ import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
 import { entryMap } from '../resources/RecordEncoder.ts';
+import {
+	evaluatePreconditions,
+	hasWritePreconditions,
+	parseHttpDate,
+	versionToEtag,
+} from './serverHelpers/preconditions.ts';
 
 const { errorToString, errorForLog } = harperLogger;
-const etagBytes = new Uint8Array(8);
-const etagFloat = new Float64Array(etagBytes.buffer, 0, 1);
 
 const OPENAPI_DOMAIN = 'openapi';
 
@@ -161,11 +165,31 @@ function setCountHeaders(headers: Headers, offset: number, mode: string, page: a
 	}
 }
 
+function applyReadPreconditions(response, request, method: string, lastModified?: number) {
+	if ((method !== 'GET' && method !== 'HEAD') || response.status < 200 || response.status >= 300) return response;
+	const result = evaluatePreconditions(
+		request.headers.asObject,
+		request.method,
+		true,
+		response.headers.get('ETag'),
+		parseHttpDate(response.headers.get('Last-Modified')) ?? lastModified
+	);
+	if (result) {
+		discardSerializedStream(response.body);
+		if (typeof response.body?.cancel === 'function') response.body.cancel().catch(() => {});
+		if (result === 412) throw new ClientError('Request precondition failed', 412);
+		response = { status: 304, headers: response.headers, body: undefined };
+		for (const header of ['Content-Length', 'Content-Type', 'Content-Encoding']) response.headers.delete(header);
+	}
+	return response;
+}
+
 async function http(request: Request, nextHandler, resources: Resources, httpOptions: any) {
 	const headersObject = request.headers.asObject;
 	const isSse = headersObject.accept === 'text/event-stream';
 	const method = isSse ? 'CONNECT' : request.method;
 	const headers = new Headers();
+	let writeCondition;
 	try {
 		request.responseHeaders = headers;
 		request.response = {
@@ -281,7 +305,37 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		if (replicateFrom === 'none') {
 			request.replicateFrom = false;
 		}
-		let responseData = await transaction(request, () => {
+		if (hasWritePreconditions(headersObject) && !['GET', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'].includes(method)) {
+			const verb = method.toLowerCase();
+			if (
+				!['PUT', 'PATCH', 'DELETE'].includes(method) ||
+				resource?.[verb] !== Resource[verb] ||
+				!(resource?.prototype as any)?.getMetadata
+			)
+				throw new ClientError('Conditional writes require a table PUT, PATCH or DELETE', 501);
+			writeCondition = {
+				Resource: resource,
+				lock: httpOptions.preconditionLocks !== false && httpOptions.preconditionLocks !== 'false',
+				consumed: false,
+				release: undefined,
+				check(entry) {
+					const exists = entry?.value != null && (entry.expiresAt === undefined || entry.expiresAt >= Date.now());
+					const version = exists ? entry.version : undefined;
+					if (
+						evaluatePreconditions(
+							headersObject,
+							method,
+							exists,
+							Number.isFinite(version) ? versionToEtag(version) : undefined,
+							version
+						)
+					)
+						throw new ClientError('Request precondition failed', 412);
+				},
+			};
+			request[WRITE_CONDITION] = writeCondition;
+		}
+		const dispatch = () => {
 			if (headersObject['content-length'] || headersObject['transfer-encoding']) {
 				// TODO: Support cancellation (if the request otherwise fails or takes too many bytes)
 				try {
@@ -289,6 +343,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 						request.body,
 						request.headers
 					);
+					// A lock wait can outlive body parsing; Resource still receives the original rejection.
+					if (writeCondition && typeof request.data?.then === 'function') request.data.then(undefined, () => {});
 				} catch (error) {
 					throw new ClientError(error, 400);
 				}
@@ -345,7 +401,18 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				default:
 					throw new ServerError(`Method ${method} is not recognized`, 501);
 			}
-		});
+		};
+		let responseData = await transaction(
+			request,
+			writeCondition
+				? async () => {
+						const result = await dispatch();
+						if (!writeCondition.consumed)
+							throw new ClientError('The resource did not apply the write precondition', 501);
+						return result;
+					}
+				: dispatch
+		);
 		let status = request.response.status;
 		let lastModification = request.lastModified;
 		if (responseData == undefined) {
@@ -363,33 +430,9 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				const startup = waitForStreamStartup(response.body);
 				if (startup) await startup;
 			}
-			return response;
+			return applyReadPreconditions(response, request, method, lastModification);
 		} else if (isFinite(lastModification)) {
-			etagFloat[0] = lastModification;
-			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)
-			// very fast and efficient
-			const etag = String.fromCharCode(
-				34,
-				(etagBytes[0] & 0x3f) + 62,
-				(etagBytes[0] >> 6) + ((etagBytes[1] << 2) & 0x3f) + 62,
-				(etagBytes[1] >> 4) + ((etagBytes[2] << 4) & 0x3f) + 62,
-				(etagBytes[2] >> 2) + 62,
-				(etagBytes[3] & 0x3f) + 62,
-				(etagBytes[3] >> 6) + ((etagBytes[4] << 2) & 0x3f) + 62,
-				(etagBytes[4] >> 4) + ((etagBytes[5] << 4) & 0x3f) + 62,
-				(etagBytes[5] >> 2) + 62,
-				(etagBytes[6] & 0x3f) + 62,
-				(etagBytes[6] >> 6) + ((etagBytes[7] << 2) & 0x3f) + 62,
-				34
-			);
-			const lastEtag = headersObject['if-none-match'];
-			if (lastEtag && etag == lastEtag) {
-				if (responseData?.onDone) responseData.onDone();
-				status = 304;
-				responseData = undefined;
-			} else {
-				headers.setIfNone('ETag', etag);
-			}
+			headers.setIfNone('ETag', versionToEtag(lastModification));
 			if ((httpOptions as any).lastModified)
 				headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
 		}
@@ -449,11 +492,22 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		// `Vary`, so declare it here (after serialization) — otherwise a shared cache could serve count
 		// headers to a request that didn't ask, or a cached non-count response to one that did.
 		if ((method === 'GET' || method === 'HEAD') && (target as any)?.isCollection) addVaryHeader(headers, 'Prefer');
-		return responseObject;
+		return applyReadPreconditions(responseObject, request, method, lastModification);
 	} catch (error) {
 		error ??= new Error('Unknown error occurred');
 		// a thrown Response short-circuits as the response, the same as returning one
-		if (error instanceof Response) return finalizeResponse(error, headers, request.response.status, request);
+		if (error instanceof Response) {
+			try {
+				return applyReadPreconditions(
+					finalizeResponse(error, headers, request.response.status, request),
+					request,
+					method,
+					request.lastModified
+				);
+			} catch (preconditionError) {
+				error = preconditionError;
+			}
+		}
 		// the HTTP status may be carried as `statusCode` (our error classes) or `status` (e.g. a thrown plain object)
 		let statusCode = error.statusCode ?? error.status ?? request.response.status;
 		if (statusCode) {
@@ -502,6 +556,11 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			headers.delete(header);
 		responseObject.body = serialize(problemDetail, request, responseObject);
 		return responseObject;
+	} finally {
+		if (writeCondition) {
+			delete request[WRITE_CONDITION];
+			if (writeCondition.release) await writeCondition.release();
+		}
 	}
 }
 

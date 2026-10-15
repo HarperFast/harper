@@ -57,3 +57,15 @@ export class LockHold extends Resource {
 		};
 	}
 }
+
+export class ConditionalCounter extends tables.Counter {
+	put(data, target) {
+		this.getContext().responseHeaders.set('X-Test-Worker', String(threadId));
+		return super.put(data, target);
+	}
+
+	patch(data, target) {
+		this.getContext().responseHeaders.set('X-Test-Worker', String(threadId));
+		return super.patch(data, target);
+	}
+}
