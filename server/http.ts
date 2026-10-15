@@ -682,7 +682,11 @@ function answerBeforeHeaders(nodeResponse: any, error: any): boolean {
 	try {
 		for (const name of STAGED_ENTITY_HEADERS) nodeResponse.removeHeader(name);
 		nodeResponse.setHeader('Cache-Control', 'no-store');
-		nodeResponse.writeHead(status, toWriteHeadHeaders(error?.headers));
+		// the body is ours, so a length the error declared for another one would leave the client waiting
+		const declared = toWriteHeadHeaders(error?.headers);
+		const headers = {};
+		for (const name in declared) if (name.toLowerCase() !== 'content-length') headers[name] = declared[name];
+		nodeResponse.writeHead(status, headers);
 		// Only a message written for clients is sent; others (a blob or filesystem error) can name a path.
 		// The class name stays: it is the public error code.
 		nodeResponse.end(

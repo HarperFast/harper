@@ -859,6 +859,16 @@ describe('pipeBodyToResponse before the response head is written', () => {
 		assert.equal(res.headers['cache-control'], 'public, max-age=60');
 	});
 
+	it('does not let an error declare the length of the replacement body', async () => {
+		dispatch.current = failing(Object.assign(new ClientError('gone', 410), { headers: { 'Content-Length': '4096' } }));
+
+		const res = await fetchHttp(baseUrl, '/declared-length');
+
+		assert.equal(res.status, 410);
+		assert.equal(res.body, 'ClientError: gone');
+		assert.equal(res.complete, true);
+	});
+
 	it('sends the message of a ClientError', async () => {
 		dispatch.current = failing(new ClientError('no such part', 404));
 
