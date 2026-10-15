@@ -1,6 +1,5 @@
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
 import {
 	serialize,
 	serializeMessage,
@@ -200,17 +199,6 @@ function applyReadPreconditions(response, request, method: string, lastModified?
 	if ((method !== 'GET' && method !== 'HEAD') || response.status < 200 || response.status >= 300) return response;
 	const incoming = request.headers.asObject;
 	if (!hasPreconditions(incoming)) return response;
-	if (sourceData !== undefined) {
-		const binary =
-			sourceData instanceof Uint8Array ||
-			sourceData instanceof Blob ||
-			(sourceData?.contentType != null && sourceData.data != null);
-		if (!binary) {
-			findBestSerializer(request);
-			addVaryHeader(response.headers, 'Accept');
-		}
-		addVaryHeader(response.headers, 'Accept-Encoding');
-	}
 	const checkDate =
 		(incoming['if-match'] === undefined && incoming['if-unmodified-since'] !== undefined) ||
 		(incoming['if-none-match'] === undefined && incoming['if-modified-since'] !== undefined);
@@ -222,9 +210,22 @@ function applyReadPreconditions(response, request, method: string, lastModified?
 		checkDate ? (parseHttpDate(response.headers.get('Last-Modified')) ?? lastModified) : undefined
 	);
 	if (result) {
-		if (typeof sourceData?.onDone === 'function') sourceData.onDone();
-		if (sourceData instanceof Readable) discardSerializedStream(sourceData);
-		discardSerializedStream(response.body);
+		try {
+			if (sourceData !== undefined) {
+				const binary =
+					sourceData instanceof Uint8Array ||
+					sourceData instanceof Blob ||
+					(sourceData?.contentType != null && sourceData.data != null);
+				if (!binary) {
+					findBestSerializer(request);
+					addVaryHeader(response.headers, 'Accept');
+				}
+				addVaryHeader(response.headers, 'Accept-Encoding');
+			}
+		} finally {
+			if (typeof sourceData?.onDone === 'function') sourceData.onDone();
+			discardSerializedStream(response.body);
+		}
 		if (result === 412) throw new ClientError('Request precondition failed', 412);
 		const headers = mergeHeaders(new Headers(), response.headers);
 		for (const header of ['Content-Length', 'Content-Type', 'Content-Encoding']) headers.delete(header);
@@ -474,6 +475,10 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 					}
 				: dispatch
 		);
+		if (writeCondition?.release) {
+			await writeCondition.release();
+			writeCondition.release = undefined;
+		}
 		let status = request.response.status;
 		let lastModification = request.lastModified;
 		if (responseData == undefined) {
@@ -637,6 +642,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		return responseObject;
 	} finally {
 		if (writeCondition) {
+			writeCondition.finished = true;
 			delete request[WRITE_CONDITION];
 			if (writeCondition.release) await writeCondition.release();
 		}

@@ -327,6 +327,170 @@ describe('REST preconditions with real table transactions', () => {
 		}
 	});
 
+	it('validates empty patches and preserves explicit fields after an interleaved write', async () => {
+		class InterleavedNoop extends Row {
+			async patch(data, target) {
+				await Row.put(this.getId(), { n: 9 }, {});
+				return super.patch(data, target);
+			}
+		}
+		resources.set('InterleavedNoop', InterleavedNoop, { rest: true });
+		for (const preconditionLocks of [true, false]) {
+			for (const data of [{}, { n: 1 }]) {
+				const id = `noop-interleave-${preconditionLocks}-${Object.keys(data).length}`;
+				await Row.put(id, { n: 1 });
+				const etag = versionToEtag(Row.primaryStore.getEntry(id).version);
+				const response = await rest(resources, { preconditionLocks })('PATCH', `/InterleavedNoop/${id}`, data, {
+					'if-match': etag,
+				});
+				assert.strictEqual(response.status, 412, await bodyOf(response));
+				assert.strictEqual((await Row.get(id)).n, 9);
+			}
+			const id = `explicit-interleave-${preconditionLocks}`;
+			await Row.put(id, { n: 1 });
+			const response = await rest(resources, { preconditionLocks })(
+				'PATCH',
+				`/InterleavedNoop/${id}`,
+				{ n: 1 },
+				{ 'if-match': '*' }
+			);
+			assert.ok(response.status < 300 || response.status === 409, await bodyOf(response));
+			assert.strictEqual((await Row.get(id)).n, response.status === 409 ? 9 : 1);
+		}
+	});
+
+	it('does not mark an asynchronous model-hook write consumed before staging', async () => {
+		const Embedded = table({
+			table: 'ConditionEmbed',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'content', type: 'String' },
+				{ name: 'embedding', type: 'Array', embed: { source: 'content', model: 'default' } },
+			],
+		});
+		let gate, pending;
+		Embedded.setEmbedAttribute('embedding', async () => {
+			if (gate) await gate;
+			return [1];
+		});
+		class Unawaited extends Embedded {
+			patch(data, target) {
+				pending = super.patch(data, target);
+				pending.catch(() => {});
+			}
+		}
+		await Embedded.put('deferred', { content: 'before' });
+		let release;
+		gate = new Promise((resolve) => {
+			release = resolve;
+		});
+		resources.set('Unawaited', Unawaited, { rest: true });
+		const response = await rest(resources, { preconditionLocks: false })(
+			'PATCH',
+			'/Unawaited/deferred',
+			{ content: 'after' },
+			{ 'if-match': '"stale"' }
+		);
+		release();
+		await pending.catch(() => {});
+		assert.strictEqual(response.status, 501, await bodyOf(response));
+		assert.strictEqual((await Embedded.get('deferred')).content, 'before');
+	});
+
+	it('releases a hold delivered after its request has already finished', async function () {
+		if (isLMDB) this.skip();
+		let delivered, release, pending;
+		const acquired = new Promise((resolve) => {
+			delivered = resolve;
+		});
+		const gate = new Promise((resolve) => {
+			release = resolve;
+		});
+		class LateHold extends Row {
+			async lock(...args) {
+				const held = await super.lock(...args);
+				delivered();
+				await gate;
+				return held;
+			}
+			patch(data, target) {
+				pending = super.patch(data, target);
+				pending.catch(() => {});
+			}
+		}
+		resources.set('LateHold', LateHold, { rest: true });
+		await Row.put('late-hold', { n: 1 });
+		const response = await rest(resources)('PATCH', '/LateHold/late-hold', { n: 2 }, { 'if-match': '*' });
+		await acquired;
+		release();
+		await pending.catch(() => {});
+		assert.strictEqual(response.status, 501, await bodyOf(response));
+		const held = await Row.lock('late-hold', { hold: true, timeoutMs: 100 });
+		await held.unlock();
+		assert.strictEqual((await Row.get('late-hold')).n, 1);
+	});
+
+	it('does not ask replication to confirm a predicate-only empty patch', async () => {
+		await Row.put('confirm-noop', { n: 1 });
+		const before = Row.primaryStore.getEntry('confirm-noop');
+		const response = await request(
+			'PATCH',
+			'/Row/confirm-noop',
+			{},
+			{ 'if-match': versionToEtag(before.version), 'x-replicate-to': '0;confirm=1' }
+		);
+		assert.ok(response.status < 300, await bodyOf(response));
+		assert.strictEqual(Row.primaryStore.getEntry('confirm-noop').version, before.version);
+	});
+
+	it('checks the target database before committing cross-database siblings', async () => {
+		const Other = table({
+			table: 'OtherConditions',
+			database: 'httpConditionOther',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+		});
+		class CrossDatabase extends Modern {
+			async patch(target, data) {
+				await Other.put(target.id, { n: 8 });
+				return super.patch(target, data);
+			}
+		}
+		resources.set('CrossDatabase', CrossDatabase, { rest: true });
+		for (const preconditionLocks of [true, false]) {
+			const id = `cross-${preconditionLocks}`;
+			await Row.put(id, { n: 1 });
+			const response = await rest(resources, { preconditionLocks })(
+				'PATCH',
+				`/CrossDatabase/${id}`,
+				{ n: 2 },
+				{ 'if-match': '"stale"' }
+			);
+			assert.strictEqual(response.status, 412, await bodyOf(response));
+			await Other.put(`barrier-${id}`, { n: 0 });
+			assert.strictEqual(Other.primaryStore.getEntry(id)?.value ?? null, null);
+			assert.strictEqual((await Row.get(id)).n, 1);
+			const accepted = await rest(resources)('PATCH', `/CrossDatabase/${id}`, { n: 3 });
+			assert.ok(accepted.status < 300, await bodyOf(accepted));
+			await Other.put(`accepted-barrier-${id}`, { n: 0 });
+			assert.strictEqual(Other.primaryStore.getEntry(id)?.value?.n, 8);
+		}
+	});
+
+	it('rejects conditional array PUT bodies before staging batch writes', async () => {
+		for (const path of ['Modern', 'Row']) {
+			for (const preconditionLocks of [true, false]) {
+				const id = `array-${path}-${preconditionLocks}`;
+				await Row.put(id, { n: 1 });
+				const response = await rest(resources, { preconditionLocks })('PUT', `/${path}/${id}`, [{ id, n: 2 }], {
+					'if-match': '*',
+				});
+				assert.strictEqual(response.status, path === 'Row' ? 400 : 501, await bodyOf(response));
+				assert.strictEqual((await Row.get(id)).n, 1);
+			}
+		}
+	});
+
 	it('commits one audit entry per conditional mutation without a phantom lock write', async () => {
 		const id = 'audit';
 		await Row.put(id, { n: 1 });
@@ -555,6 +719,15 @@ describe('REST preconditions with real table transactions', () => {
 		assert.ok(cached.headers.get('vary').includes('Accept'));
 		await bodyOf(await request('GET', '/CountSerialization/'));
 		assert.strictEqual(serialized, 1);
+		await assert.rejects(
+			request('GET', '/CountSerialization/', undefined, {
+				'if-none-match': '*',
+				'accept': 'application/x-unsupported',
+			}),
+			{ statusCode: 406 }
+		);
+		assert.strictEqual(serialized, 1);
+		assert.strictEqual(closed, 2);
 	});
 
 	it('settles deferred read authorization before returning a conditional stream response', async () => {
