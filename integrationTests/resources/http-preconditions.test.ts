@@ -27,7 +27,7 @@ for (const preconditionLocks of [true, false]) {
 				ok(config.includes('rest: true'));
 				await writeFile(
 					join(fixture, 'config.yaml'),
-					config.replace('rest: true', `rest:\n  preconditionLocks: ${preconditionLocks}`)
+					config.replace('rest: true', `rest:\n  preconditionLocks: ${preconditionLocks}\n  lastModified: true`)
 				);
 				await setupHarperWithFixture(ctx, fixture, {
 					config: { threads: { count: 4 } },
@@ -98,6 +98,40 @@ for (const preconditionLocks of [true, false]) {
 					strictEqual(cached.headers.get('etag'), etag);
 					strictEqual(await cached.text(), '');
 				}
+			});
+
+			test('honors HTTP dates, including precedence and invalid-date handling', async () => {
+				for (const method of ['PUT', 'PATCH', 'DELETE']) {
+					const id = `dates-${method}`;
+					ok((await request('PUT', id, { n: 1 })).ok);
+					const before = await request('GET', id);
+					const modified = before.headers.get('last-modified');
+					ok(modified);
+					await before.text();
+					for (const readMethod of ['GET', 'HEAD']) {
+						const cached = await request(readMethod, id, undefined, { 'If-Modified-Since': modified });
+						strictEqual(cached.status, 304);
+						strictEqual(cached.headers.get('last-modified'), modified);
+						strictEqual(await cached.text(), '');
+					}
+					const rejected = await request(method, id, method === 'DELETE' ? undefined : { n: 2 }, {
+						'If-Unmodified-Since': new Date(Date.parse(modified) - 1000).toUTCString(),
+					});
+					strictEqual(rejected.status, 412, await rejected.text());
+					strictEqual(((await (await request('GET', id)).json()) as { n: number }).n, 1);
+					const accepted = await request(method, id, method === 'DELETE' ? undefined : { n: 3 }, {
+						'If-Unmodified-Since': modified,
+					});
+					ok(accepted.ok, `${accepted.status}: ${await accepted.text()}`);
+				}
+				const precedence = await request('GET', 'race', undefined, {
+					'If-None-Match': '"other"',
+					'If-Modified-Since': new Date(Date.now() + 86_400_000).toUTCString(),
+				});
+				strictEqual(precedence.status, 200, await precedence.text());
+				const ignored = await request('PATCH', 'race', { n: 42 }, { 'If-Unmodified-Since': 'invalid' });
+				ok(ignored.ok, `${ignored.status}: ${await ignored.text()}`);
+				strictEqual(((await (await request('GET', 'race')).json()) as { n: number }).n, 42);
 			});
 
 			test('matching If-None-Match rejects each mutation with 412 and preserves ETag', async () => {
