@@ -28,6 +28,8 @@ import { promisify } from 'util';
 const pSchemaToGlobal = promisify(globalSchema.setSchemaDataToGlobal);
 import * as keys from '../../security/keys.ts';
 import { resolveConfiguredPath } from '../../config/componentEnvPrepass.ts';
+import { resetRocksCompression } from '../../resources/databases.ts';
+import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
 
 const HDB_PROMPT_MSG = (msg) => chalk.magenta.bold(msg);
 const LINE_BREAK = os.EOL;
@@ -78,10 +80,12 @@ const cfgEnv: Record<string, string | undefined> = {};
 let hdbRoot = undefined;
 let conditionalRollback = false;
 let ignoreExisting = false;
+let bootPropsCreated = true;
 let pendingStagedInstallConfig:
 	| {
 			args: Record<string, any>;
 			hdbConfigPath: string | undefined;
+			defaultedArgKeys: Set<string>;
 			staged: configUtils.StagedInstallConfig;
 	  }
 	| undefined;
@@ -260,10 +264,20 @@ async function install() {
 	}
 	envManager.setHdbBasePath(hdbRoot);
 	stageInstallConfig(installParams);
+	bootPropsCreated = false;
 
 	try {
 		// Creates the Harper project folder structure and the LMDB environments/dbis.
-		await mountHdb(hdbRoot);
+		await mountHdb(hdbRoot, () => {
+			if (pendingStagedInstallConfig?.staged) {
+				try {
+					configUtils.validateStagedInstallConfig(pendingStagedInstallConfig.staged);
+				} catch (configErr) {
+					rollbackInstall(configErr);
+					throw configErr;
+				}
+			}
+		});
 
 		// Creates the boot prop file in user home dir. Boot prop file contains location of hdb config.
 		await createBootPropertiesFile();
@@ -272,6 +286,7 @@ async function install() {
 		await createConfigFile(installParams);
 	} finally {
 		pendingStagedInstallConfig = undefined;
+		bootPropsCreated = true;
 	}
 
 	// At this point there should be config and Harper folders so re-init log settings to update
@@ -574,6 +589,7 @@ async function createBootPropertiesFile() {
 		envManager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER, `${install_user}`);
 		envManager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, configFilePath);
 		envManager.setProperty(envManager.BOOT_PROPS_FILE_PATH, propsFilePath);
+		bootPropsCreated = true;
 	}
 }
 
@@ -592,7 +608,7 @@ async function createBootPropertiesFile() {
  * @param defaultsMode - the resolved DEFAULTS_MODE install param ('dev' or 'prod')
  * @returns the same args object, mutated in place, for convenience
  */
-export function applyInstallModeDefaults(args, defaultsMode, baseDoc?: YAML.Document) {
+export function applyInstallModeDefaults(args, defaultsMode, baseDoc?: YAML.Document, defaultedKeys?: Set<string>) {
 	const getConfigured = (cfg: string) => {
 		const argVal = args[cfg.toLowerCase()] ?? args[cfg];
 		if (argVal !== undefined) return argVal;
@@ -612,11 +628,14 @@ export function applyInstallModeDefaults(args, defaultsMode, baseDoc?: YAML.Docu
 		for (const cfg in DEV_MODE_CONFIG) {
 			// Before setting http.port check that secure port is not being passed
 			if (cfg === CONFIG_PARAMS.HTTP_PORT && getConfigured(CONFIG_PARAMS.HTTP_SECUREPORT) === undefined) {
-				if (args[cfg.toLowerCase()] !== undefined || args[cfg] !== undefined || getConfigured(cfg) === undefined) {
+				const hadArg = args[cfg.toLowerCase()] !== undefined || args[cfg] !== undefined;
+				if (hadArg || getConfigured(cfg) === undefined) {
 					args[cfg] = args[cfg.toLowerCase()] ?? args[cfg] ?? DEV_MODE_CONFIG[cfg];
+					if (!hadArg) defaultedKeys?.add(cfg);
 				}
 				// set secure port to null to override default
 				args[CONFIG_PARAMS.HTTP_SECUREPORT] = null;
+				defaultedKeys?.add(CONFIG_PARAMS.HTTP_SECUREPORT);
 				continue;
 			} else if (cfg === CONFIG_PARAMS.HTTP_PORT) {
 				continue;
@@ -627,26 +646,36 @@ export function applyInstallModeDefaults(args, defaultsMode, baseDoc?: YAML.Docu
 				cfg === CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT &&
 				getConfigured(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT) === undefined
 			) {
-				if (args[cfg.toLowerCase()] !== undefined || args[cfg] !== undefined || getConfigured(cfg) === undefined) {
+				const hadArg = args[cfg.toLowerCase()] !== undefined || args[cfg] !== undefined;
+				if (hadArg || getConfigured(cfg) === undefined) {
 					args[cfg] = args[cfg.toLowerCase()] ?? args[cfg] ?? DEV_MODE_CONFIG[cfg];
+					if (!hadArg) defaultedKeys?.add(cfg);
 				}
 				// set secure port to null to override default
 				args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT] = null;
+				defaultedKeys?.add(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
 				continue;
 			} else if (cfg === CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) {
 				continue;
 			}
 
-			if (getConfigured(cfg) === undefined) args[cfg] = DEV_MODE_CONFIG[cfg];
+			if (getConfigured(cfg) === undefined) {
+				args[cfg] = DEV_MODE_CONFIG[cfg];
+				defaultedKeys?.add(cfg);
+			}
 		}
 	} else {
 		if (
 			getConfigured(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) &&
 			getConfigured(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT) === undefined
-		)
+		) {
 			args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT] = null;
-		if (getConfigured(CONFIG_PARAMS.HTTP_PORT) && getConfigured(CONFIG_PARAMS.HTTP_SECUREPORT) === undefined)
+			defaultedKeys?.add(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
+		}
+		if (getConfigured(CONFIG_PARAMS.HTTP_PORT) && getConfigured(CONFIG_PARAMS.HTTP_SECUREPORT) === undefined) {
 			args[CONFIG_PARAMS.HTTP_SECUREPORT] = null;
+			defaultedKeys?.add(CONFIG_PARAMS.HTTP_SECUREPORT);
+		}
 	}
 	return args;
 }
@@ -654,6 +683,7 @@ export function applyInstallModeDefaults(args, defaultsMode, baseDoc?: YAML.Docu
 function buildInstallConfigArgs(installParams: Record<string, any> = {}): {
 	args: Record<string, any>;
 	hdbConfigPath: string | undefined;
+	defaultedArgKeys: Set<string>;
 } {
 	const hdbConfigPath = getHdbConfigPath();
 	let baseDoc: YAML.Document | undefined;
@@ -695,28 +725,25 @@ function buildInstallConfigArgs(installParams: Record<string, any> = {}): {
 		console.error(chalk.yellow.bold(`Warning: ${warn}`));
 		hdbLogger.warn(warn);
 	}
-	applyInstallModeDefaults(args, defaultsMode, baseDoc);
-	return { args, hdbConfigPath };
+	const defaultedArgKeys = new Set<string>();
+	applyInstallModeDefaults(args, defaultsMode, baseDoc, defaultedArgKeys);
+	return { args, hdbConfigPath, defaultedArgKeys };
 }
 
 /**
- * Compose and stage the install configuration in memory before `mountHdb()` opens the system
- * database, then stash the composed document for `createConfigFile()` to validate and persist.
- *
- * The config file is not written until `createConfigFile()`, several steps after `mountHdb()`, but
- * `mountHdb()` already needs `storage.engine`, `storage.rocks.compression`, `storage.compression`,
- * `storage.path`, and `databases` to match the final persisted config (e.g., RocksDB fixes a column
- * family's codec at creation and refuses a later reopen with a different codec). Composing once
- * through `configUtils.stageInstallConfig()` guarantees `mountHdb()` and `createConfigFile()` see
- * the exact same values and precedence.
+ * Composes and stages the install configuration in memory before `mountHdb()` opens the system
+ * database, and resets memoized compression/path caches so `mountHdb()` and `createConfigFile()`
+ * see the same resolved values.
  */
 function stageInstallConfig(installParams: Record<string, any> = {}) {
 	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, undefined);
 	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, undefined);
 	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION, undefined);
-	const { args, hdbConfigPath } = buildInstallConfigArgs(installParams);
-	const staged = configUtils.stageInstallConfig(args, hdbConfigPath);
-	pendingStagedInstallConfig = { args, hdbConfigPath, staged };
+	resetRocksCompression();
+	initPaths.resetPaths();
+	const { args, hdbConfigPath, defaultedArgKeys } = buildInstallConfigArgs(installParams);
+	const staged = configUtils.stageInstallConfig(args, hdbConfigPath, defaultedArgKeys);
+	pendingStagedInstallConfig = { args, hdbConfigPath, defaultedArgKeys, staged };
 }
 
 /**
@@ -729,11 +756,17 @@ async function createConfigFile(installParams) {
 	hdbLogger.trace('Creating Harper config file');
 	const pending = pendingStagedInstallConfig;
 	pendingStagedInstallConfig = undefined;
-	const { args, hdbConfigPath } = pending ?? buildInstallConfigArgs(installParams);
+	const { args, hdbConfigPath, defaultedArgKeys } = pending ?? buildInstallConfigArgs(installParams);
 
 	const overwriteRootNamedHdbConfig = isRootNamedHdbConfig(hdbConfigPath, hdbRoot);
-	const originalHdbConfigContent =
-		overwriteRootNamedHdbConfig && hdbConfigPath ? fs.readFileSync(hdbConfigPath, 'utf8') : undefined;
+	const resolvedConfigPath = overwriteRootNamedHdbConfig && hdbConfigPath ? path.resolve(hdbConfigPath) : undefined;
+	const originalHdbConfigContent = resolvedConfigPath ? fs.readFileSync(resolvedConfigPath, 'utf8') : undefined;
+	const backupConfigPath = resolvedConfigPath ? `${resolvedConfigPath}.install-backup-${process.pid}` : undefined;
+	if (resolvedConfigPath && backupConfigPath) {
+		try {
+			fs.copyFileSync(resolvedConfigPath, backupConfigPath);
+		} catch {}
+	}
 	try {
 		if (pending?.staged) {
 			configUtils.createConfigFile(
@@ -741,27 +774,45 @@ async function createConfigFile(installParams) {
 				false,
 				hdbConfigPath,
 				overwriteRootNamedHdbConfig && hdbConfigPath ? hdbConfigPath : undefined,
-				pending.staged
+				pending.staged,
+				defaultedArgKeys
 			);
 		} else {
 			configUtils.createConfigFile(
 				args,
 				false,
 				hdbConfigPath,
-				overwriteRootNamedHdbConfig && hdbConfigPath ? hdbConfigPath : undefined
+				overwriteRootNamedHdbConfig && hdbConfigPath ? hdbConfigPath : undefined,
+				undefined,
+				defaultedArgKeys
 			);
+		}
+		if (backupConfigPath) {
+			fs.rmSync(backupConfigPath, { force: true });
 		}
 		envManager.initSync();
 	} catch (configErr) {
-		if (originalHdbConfigContent !== undefined && hdbConfigPath) {
-			const resolvedConfigPath = path.resolve(hdbConfigPath);
-			try {
-				configUtils.atomicWriteFile(resolvedConfigPath, originalHdbConfigContent);
-			} catch {
+		if (resolvedConfigPath) {
+			let restored = false;
+			if (backupConfigPath && fs.existsSync(backupConfigPath)) {
 				try {
-					fs.writeFileSync(resolvedConfigPath, originalHdbConfigContent, 'utf8');
-				} catch (restoreErr) {
-					hdbLogger.error(`Failed to restore ${hdbConfigPath} during install rollback: ${restoreErr}`);
+					fs.renameSync(backupConfigPath, resolvedConfigPath);
+					restored = true;
+				} catch {
+					try {
+						fs.rmSync(backupConfigPath, { force: true });
+					} catch {}
+				}
+			}
+			if (!restored && originalHdbConfigContent !== undefined) {
+				try {
+					configUtils.atomicWriteFile(resolvedConfigPath, originalHdbConfigContent);
+				} catch {
+					try {
+						fs.writeFileSync(resolvedConfigPath, originalHdbConfigContent, 'utf8');
+					} catch (restoreErr) {
+						hdbLogger.error(`Failed to restore ${hdbConfigPath} during install rollback: ${restoreErr}`);
+					}
 				}
 			}
 		}
@@ -779,9 +830,11 @@ function rollbackInstall(errMsg) {
 	console.error(ABORT_MSG);
 
 	// Remove boot file folder.
-	const harperdbBootFolder = path.resolve(envManager.get(envManager.BOOT_PROPS_FILE_PATH), '../');
-	if (harperdbBootFolder) {
-		fs.removeSync(harperdbBootFolder);
+	if (bootPropsCreated) {
+		const harperdbBootFolder = path.resolve(envManager.get(envManager.BOOT_PROPS_FILE_PATH), '../');
+		if (harperdbBootFolder) {
+			fs.removeSync(harperdbBootFolder);
+		}
 	}
 
 	// Remove HDB.

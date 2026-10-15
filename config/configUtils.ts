@@ -410,9 +410,10 @@ function syncObjectToYamlDoc(doc: YAML.Document, obj: Record<string, any>, prefi
 export interface StagedInstallConfig {
 	configDoc: YAML.Document;
 	commitEnvConfigState?: () => boolean;
+	validated?: boolean;
 }
 
-function composeInstallConfig(args, baseConfigPath?: string): StagedInstallConfig {
+function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: Set<string>): StagedInstallConfig {
 	const defaultDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
 	flatDefaultConfigObj = flattenConfig(defaultDoc.toJSON());
 
@@ -455,7 +456,7 @@ function composeInstallConfig(args, baseConfigPath?: string): StagedInstallConfi
 			const splitParam = configParam.split('_');
 			let value = castConfigValue(configParam, args[arg]);
 			if (configParam === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
-			if (value !== undefined && value !== null && value !== '') {
+			if (value !== undefined && value !== null && value !== '' && !defaultedArgKeys?.has(arg)) {
 				userPaths.add(splitParam.join('.'));
 			}
 			try {
@@ -488,15 +489,22 @@ function composeInstallConfig(args, baseConfigPath?: string): StagedInstallConfi
 
 /**
  * Composes and stages the install configuration in `flatConfigObj` before `mountHdb()` creates
- * the first-boot databases, so `envManager.get()` sees the same resolved settings (`storage.engine`,
- * `storage.rocks.compression`, `storage.compression`, `storage.path`, `databases`, etc.) that
- * `createConfigFile()` will later validate and write to disk. Does not set `configObj` so
- * `getConfigObj()` keeps its lazy initialization until `createConfigFile()` finishes.
+ * the first-boot databases, leaving `configObj` unset until `createConfigFile()` finishes.
  */
-export function stageInstallConfig(args, baseConfigPath?: string): StagedInstallConfig {
-	const staged = composeInstallConfig(args, baseConfigPath);
+export function stageInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: Set<string>): StagedInstallConfig {
+	const staged = composeInstallConfig(args, baseConfigPath, defaultedArgKeys);
 	flatConfigObj = flattenConfig(staged.configDoc.toJSON());
 	return staged;
+}
+
+/**
+ * Validates a staged install configuration and refreshes `flatConfigObj` with any paths
+ * normalized during validation (such as `storage.path`).
+ */
+export function validateStagedInstallConfig(staged: StagedInstallConfig, skipFsValidation = false): void {
+	validateConfig(staged.configDoc, skipFsValidation);
+	staged.validated = true;
+	flatConfigObj = flattenConfig(staged.configDoc.toJSON());
 }
 
 /**
@@ -509,28 +517,22 @@ export function createConfigFile(
 	skipFsValidation = false,
 	baseConfigPath?: string,
 	targetConfigPath?: string,
-	staged?: StagedInstallConfig
+	staged?: StagedInstallConfig,
+	defaultedArgKeys?: Set<string>
 ) {
-	const { configDoc, commitEnvConfigState } = staged ?? composeInstallConfig(args, baseConfigPath);
+	const { configDoc, commitEnvConfigState, validated } =
+		staged ?? composeInstallConfig(args, baseConfigPath, defaultedArgKeys);
 
 	// Validates config doc and if required sets default values for some parameters.
-	validateConfig(configDoc, skipFsValidation);
+	if (!validated) {
+		validateConfig(configDoc, skipFsValidation);
+	}
 
 	// Create new config file and write config doc to it.
 	const hdbRoot = configDoc.getIn(['rootPath']) as string;
 	const configFilePath = targetConfigPath
 		? path.resolve(targetConfigPath)
 		: path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
-	if (configDoc.errors?.length > 0) {
-		throw handleHDBError(
-			new Error(),
-			`Error parsing ${configFilePath} ${configDoc.errors}`,
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
-	}
 	fs.createFileSync(configFilePath);
 	atomicWriteFile(configFilePath, String(configDoc));
 	flatConfigObj = setActiveConfig(configDoc.toJSON());
