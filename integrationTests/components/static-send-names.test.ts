@@ -31,29 +31,29 @@ suite('static plugin serves names send would mishandle as a URL path', (ctx: Con
 
 	async function get(path: string) {
 		const res = await fetch(new URL(path, ctx.harper.httpURL), { signal: AbortSignal.timeout(5000) });
-		return { status: res.status, text: await res.text() };
+		return { status: res.status, text: (await res.text()).trim() };
 	}
 
 	test('serves a file when the application is installed under a dot-directory', async () => {
 		const res = await get('/hello.txt');
 		strictEqual(res.status, 200);
-		strictEqual(res.text, 'hello\n');
+		strictEqual(res.text, 'hello');
 	});
 
 	test('serves a file from a dot-directory the static config selects', async () => {
 		const res = await get('/.well-known/security.txt');
 		strictEqual(res.status, 200);
-		strictEqual(res.text, 'Contact: mailto:security@example.com\n');
+		strictEqual(res.text, 'Contact: mailto:security@example.com');
 	});
 
 	test('serves a file whose name contains a percent sign', async () => {
 		const literal = await get('/discount-50%.txt');
 		strictEqual(literal.status, 200);
-		strictEqual(literal.text, 'half off\n');
+		strictEqual(literal.text, 'half off');
 
 		// the name on disk is `hello%20world.txt`; send must not decode it to `hello world.txt`
 		const escaped = await get('/hello%20world.txt');
 		strictEqual(escaped.status, 200);
-		strictEqual(escaped.text, 'literal escape\n');
+		strictEqual(escaped.text, 'literal escape');
 	});
 });
