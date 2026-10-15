@@ -4,6 +4,7 @@ const { ComponentStatusRegistry } = require('#src/components/status/ComponentSta
 const { ComponentStatus } = require('#src/components/status/ComponentStatus');
 const { COMPONENT_STATUS_LEVELS } = require('#src/components/status/types');
 const { StatusAggregator } = require('#src/components/status/crossThread');
+const { ServerError, ClientError } = require('#src/utility/errors/hdbError');
 const itcModule = require('#js/server/threads/itc');
 const manageThreadsModule = require('#js/server/threads/manageThreads');
 
@@ -984,6 +985,8 @@ describe('ComponentStatusRegistry', function () {
 
 			it('should preserve Error subclass names and handle null-prototype error objects without throwing', async function () {
 				const typeError = new TypeError('handleApplication is not a function');
+				const serverError = new ServerError('connect failed: postgres://svc:secret@db.internal:5432/app');
+				const clientError = new ClientError('invalid plugin configuration');
 				const nullProtoError = Object.create(null);
 				const consolidatedStatuses = new Map([
 					[
@@ -1006,6 +1009,26 @@ describe('ComponentStatusRegistry', function () {
 							lastChecked: { workers: { 0: 2000 } },
 						},
 					],
+					[
+						'my-app.plugin-c',
+						{
+							componentName: 'my-app.plugin-c',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: "Component 'my-app.plugin-c' failed to load",
+							error: serverError,
+							lastChecked: { workers: { 0: 3000 } },
+						},
+					],
+					[
+						'my-app.plugin-d',
+						{
+							componentName: 'my-app.plugin-d',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: "Component 'my-app.plugin-d' failed to load",
+							error: clientError,
+							lastChecked: { workers: { 0: 4000 } },
+						},
+					],
 				]);
 
 				const result = await registry.getAggregatedStatusFor('my-app', consolidatedStatuses);
@@ -1017,6 +1040,52 @@ describe('ComponentStatusRegistry', function () {
 					"Component 'my-app.plugin-a' failed to load: TypeError: handleApplication is not a function"
 				);
 				assert.equal(result.details['my-app.plugin-b'].error, '[object Object]');
+				assert.equal(
+					result.details['my-app.plugin-c'].error,
+					'ServerError: connect failed: postgres://[REDACTED]@db.internal:5432/app'
+				);
+				assert.equal(
+					result.details['my-app.plugin-c'].message,
+					"Component 'my-app.plugin-c' failed to load: ServerError: connect failed: postgres://[REDACTED]@db.internal:5432/app"
+				);
+				assert.equal(result.details['my-app.plugin-d'].error, 'ClientError: invalid plugin configuration');
+			});
+
+			it('should deduplicate folder-level loader messages while preserving plugin-authored Could not load messages', async function () {
+				const consolidatedStatuses = new Map([
+					[
+						'my-app.folder-load',
+						{
+							componentName: 'my-app.folder-load',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: 'Could not load broken-folder',
+							error: new Error('Could not load broken-folder due to: Error: ENOENT'),
+							lastChecked: { workers: { 0: 1000 } },
+						},
+					],
+					[
+						'my-app.model-loader',
+						{
+							componentName: 'my-app.model-loader',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: 'Could not load weights from S3',
+							error: new Error('Could not load model: timeout'),
+							lastChecked: { workers: { 0: 2000 } },
+						},
+					],
+				]);
+
+				const result = await registry.getAggregatedStatusFor('my-app', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
+				assert.equal(
+					result.details['my-app.folder-load'].message,
+					'Could not load broken-folder due to: Error: ENOENT'
+				);
+				assert.equal(
+					result.details['my-app.model-loader'].message,
+					'Could not load weights from S3: Could not load model: timeout'
+				);
 			});
 
 			it('should handle string error without duplicating if already present in latestMessage', async function () {

@@ -168,8 +168,14 @@ export class ComponentStatusRegistry {
 	}
 
 	/**
-	 * Get aggregated status for a specific component and all its sub-components
-	 * This method handles both exact matches and sub-component aggregation
+	 * Get aggregated status for a specific component and all its sub-components.
+	 * This method handles both exact matches and sub-component aggregation.
+	 *
+	 * Wire shape: when sub-components are unhealthy, `message` and `details[key].message`
+	 * combine `latestMessage` with the serialized failure cause (`details[key].error`),
+	 * formatted via `serializeStatusError` (with class prefix for non-plain `Error` types
+	 * and URL userinfo credentials redacted) so operators calling `get_components` can
+	 * see why a component failed to load.
 	 *
 	 * @param componentName - The component name to look up (e.g., "application-template", "http")
 	 * @param consolidatedStatuses - Pre-fetched consolidated statuses from all threads (optional, will fetch if not provided)
@@ -258,9 +264,27 @@ export class ComponentStatusRegistry {
 	}
 }
 
+const CREDENTIAL_URL_USERINFO_PATTERN = /(?<=[a-z][a-z0-9+.-]*:\/\/)[^/?#\s]+@/gi;
+const LOADER_COMPONENT_FAILURE_MESSAGE = /^Could not load component '[^']*'$/;
+
+function redactUrlCredentials(text: string): string {
+	return text.replace(CREDENTIAL_URL_USERINFO_PATTERN, '[REDACTED]@');
+}
+
+/**
+ * Format a component status error into a single wire-safe diagnostic string.
+ *
+ * Deliberate exposure decision: `get_status` and `get_components` are operator
+ * health/diagnostic operations (super_user by default, or explicitly granted via
+ * a role's `operations` allowlist) that intentionally surface component failure
+ * causes so operators can diagnose broken deployments without log access. Only
+ * the error class name and message are rendered (never stack traces or arbitrary
+ * enumerable properties), and embedded URL userinfo credentials (`scheme://user:pass@host`)
+ * are redacted before the string leaves the status registry.
+ */
 export function serializeStatusError(error: unknown): string | undefined {
 	if (error === undefined || error === null) return undefined;
-	if (typeof error === 'string') return error;
+	if (typeof error === 'string') return redactUrlCredentials(error);
 	try {
 		if (typeof error === 'object') {
 			const message = (error as { message?: unknown }).message;
@@ -268,21 +292,24 @@ export function serializeStatusError(error: unknown): string | undefined {
 				const rawName = (error as { name?: unknown }).name;
 				const ctorName = (error as { constructor?: { name?: unknown } }).constructor?.name;
 				const errorName =
-					typeof rawName === 'string' && rawName.length > 0
+					typeof rawName === 'string' && rawName.length > 0 && rawName !== 'Error'
 						? rawName
 						: typeof ctorName === 'string' && ctorName.length > 0 && ctorName !== 'Object'
 							? ctorName
-							: undefined;
+							: typeof rawName === 'string' && rawName.length > 0
+								? rawName
+								: undefined;
 				if (!message) {
 					return errorName || 'Error';
 				}
-				if (errorName && errorName !== 'Error' && !message.startsWith(`${errorName}:`)) {
-					return `${errorName}: ${message}`;
-				}
-				return message;
+				const rendered =
+					errorName && errorName !== 'Error' && !message.startsWith(`${errorName}:`)
+						? `${errorName}: ${message}`
+						: message;
+				return redactUrlCredentials(rendered);
 			}
 		}
-		return String(error);
+		return redactUrlCredentials(String(error));
 	} catch {
 		try {
 			return Object.prototype.toString.call(error);
@@ -299,7 +326,8 @@ function formatProblemMessage(latestMessage: string | undefined, errorMessage: s
 		}
 		if (
 			errorMessage.includes(latestMessage) ||
-			(latestMessage.startsWith('Could not load ') && /^(?:[\w$]+:\s*)?Could not load /.test(errorMessage))
+			(LOADER_COMPONENT_FAILURE_MESSAGE.test(latestMessage) &&
+				/^(?:[\w$]+:\s*)?Could not load component /.test(errorMessage))
 		) {
 			return errorMessage;
 		}

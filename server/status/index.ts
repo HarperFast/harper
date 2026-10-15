@@ -167,6 +167,16 @@ async function getMiddlewareChains(): Promise<MiddlewareChainsSummary | null> {
 	}
 }
 
+/**
+ * Collect system, component, and restart status across all threads for `get_status`.
+ *
+ * Wire shape: `componentStatus[].error` and `componentStatus[].abnormalities[*].error`
+ * are serialized via `serializeStatusError` to strings (`"ClassName: message"`, or
+ * `"message"` for plain `Error`) rather than raw `Error` instances (which `JSON.stringify`
+ * would collapse to `{}`), and `abnormalities` is a plain `Record` keyed by thread label
+ * rather than a `Map`. Component failure causes are surfaced intentionally for operator
+ * diagnostics with embedded URL credentials redacted.
+ */
 async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary> {
 	statusLogger.debug?.('getAllStatus');
 	const statusRecords = getStatusTable().search([]);

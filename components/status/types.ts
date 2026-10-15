@@ -65,9 +65,9 @@ export interface AggregatedComponentStatus {
 	};
 	/** Map of thread-specific statuses if they differ (only populated when inconsistent) */
 	abnormalities?: Map<string, ComponentStatusAbnormality>;
-	/** Most recent message across all threads */
+	/** Status message from the highest-priority, most recent non-healthy thread */
 	latestMessage?: string;
-	/** Any error from any thread */
+	/** Error from the highest-priority, most recent non-healthy thread */
 	error?: Error | string;
 }
 
