@@ -38,20 +38,18 @@ const WEBPACK_CACHE_SEGMENT = join('cache', 'webpack');
  */
 const INSTALL_OWNED_PATH = join('node_modules', 'harper');
 
-// The callback form, not `fs/promises`: it shares `realpathSync`'s implementation, which is what the loader compares
-// with, and unlike the native one it does no case conversion on a case-insensitive filesystem.
+// Callback `realpath`, not `fs/promises`: the loader's `realpathSync` algorithm, which unlike the native one does no
+// case conversion on a case-insensitive filesystem.
 const resolveLink = promisify(realpath);
 
 /**
- * Whether `name` in `dir` is a `harper` link, directly inside a `node_modules` directory, that resolves to the running
- * install: the link the loader gives every component it loads from `node_modules` (a config.yaml `package:` entry) and
- * re-creates on load. Identity decides it, not the name: a real `harper` under a package nothing loads as a component
- * is that package's npm dependency, which the target would not reinstall (see the note above).
+ * The loader also links the install into `node_modules/harper` of each component it loads from `node_modules` (a
+ * config.yaml `package:` entry). Deeper down only such a link is skipped, not the name: a real `harper` under a package
+ * nothing loads as a component is that package's own dependency (see the note above).
  */
-async function isNestedInstallLink(dir: string, name: string): Promise<boolean> {
-	if (name !== 'harper' || basename(dir) !== 'node_modules') return false;
+async function linksToInstall(link: string): Promise<boolean> {
 	try {
-		return (await resolveLink(join(dir, name))) === PACKAGE_ROOT;
+		return (await resolveLink(link)) === PACKAGE_ROOT;
 	} catch {
 		return false; // dangling: left to the dangling-link handling
 	}
@@ -86,10 +84,7 @@ export interface PackageDirectoryScan {
 	 * the link. `streamPackagedDirectory` skips these paths so the walk continues past them.
 	 */
 	danglingSymlinks: string[];
-	/**
-	 * Relative paths of nested `node_modules/harper` links to the running install (`isNestedInstallLink`), which
-	 * `streamPackagedDirectory` leaves out under every option, as it does the top-level one.
-	 */
+	/** Relative paths of nested `node_modules/harper` links to the install, left out under every option. */
 	installLinks: string[];
 }
 
@@ -126,7 +121,7 @@ export async function scanPackageDirectory(
 			const fullPath = join(dir, entry.name);
 			if (isExcluded(directory, fullPath, options)) continue;
 			if (entry.isSymbolicLink()) {
-				if (await isNestedInstallLink(dir, entry.name)) {
+				if (entry.name === 'harper' && basename(dir) === 'node_modules' && (await linksToInstall(fullPath))) {
 					installLinks.push(relative(directory, fullPath));
 					continue;
 				}
