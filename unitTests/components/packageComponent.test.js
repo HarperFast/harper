@@ -21,6 +21,7 @@ const { buildMultipartBody } = require('#src/bin/multipartBuilder');
 const { parseMultipartRequest } = require('#src/server/serverHelpers/multipartParser');
 const gunzip = require('gunzip-maybe');
 const tar = require('tar-fs');
+const tarStream = require('tar-stream');
 
 async function makeFixture(files) {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-roundtrip-'));
@@ -44,6 +45,22 @@ async function readDirTree(dir) {
 	}
 	await walk('');
 	return out;
+}
+
+// The archive's own entries, read from the tar headers: extracting would follow or recreate symlinks.
+async function archiveEntries(stream) {
+	const entries = new Map();
+	const extract = tarStream.extract();
+	extract.on('entry', (header, body, next) => {
+		const chunks = [];
+		body.on('data', (chunk) => chunks.push(chunk));
+		body.on('end', () => {
+			entries.set(header.name.replace(/\/$/, ''), { ...header, content: Buffer.concat(chunks).toString('utf8') });
+			next();
+		});
+	});
+	await pipeline(stream, gunzip(), extract);
+	return entries;
 }
 
 function parseMultipart(contentType, stream) {
@@ -224,6 +241,93 @@ describe('streamPackagedDirectory round-trip', () => {
 				await fs.rm(sourceDir, { recursive: true, force: true });
 				await fs.rm(extractDir, { recursive: true, force: true });
 			}
+		}
+	});
+
+	it('leaves out a nested node_modules/harper link to the install, and keeps a real harper or one linked elsewhere', async function () {
+		this.timeout(30000);
+		const aliasDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-install-alias-'));
+		await fs.symlink(PACKAGE_ROOT, path.join(aliasDir, 'harper'), 'dir');
+		// The link the loader gives every component it loads from node_modules (a config.yaml `package:` entry),
+		// plus the relative and chained forms the loader also accepts as already linked.
+		const installLinks = {
+			[path.join('node_modules', 'plugin', 'node_modules', 'harper')]: () => PACKAGE_ROOT,
+			[path.join('node_modules', 'plugin', 'node_modules', 'dep', 'node_modules', 'harper')]: () => PACKAGE_ROOT,
+			[path.join('node_modules', '@scope', 'plugin', 'node_modules', 'harper')]: (linkDir) =>
+				path.relative(linkDir, PACKAGE_ROOT),
+			[path.join('node_modules', 'chained', 'node_modules', 'harper')]: () => path.join(aliasDir, 'harper'),
+		};
+		const linkedElsewhere = path.join('node_modules', 'linked', 'node_modules', 'harper');
+		const dangling = path.join('node_modules', 'broken', 'node_modules', 'harper');
+		const archiveName = (rel) => rel.split(path.sep).join('/');
+		try {
+			for (const options of [{}, { skip_symlinks: true }]) {
+				const sourceDir = await makeFixture({
+					'index.js': 'x\n',
+					'node_modules/plugin/index.js': 'plugin\n',
+					'node_modules/plugin/node_modules/dep/index.js': 'dep\n',
+					// An npm-installed harper under a package nothing loads as a component: the loader never replaces it.
+					'node_modules/lib/node_modules/harper/index.js': 'npm copy\n',
+					'vendor/harper/index.js': 'vendored\n',
+				});
+				await fs.symlink(PACKAGE_ROOT, path.join(sourceDir, 'node_modules', 'harper'), 'dir');
+				const links = {
+					...installLinks,
+					[linkedElsewhere]: () => path.join(sourceDir, 'vendor', 'harper'),
+					[dangling]: () => path.join(sourceDir, 'gone'),
+				};
+				// Real path, so a relative target counts its `..`s from where the link actually is (macOS's tmpdir is a link).
+				const realSourceDir = await fs.realpath(sourceDir);
+				for (const [link, target] of Object.entries(links)) {
+					const linkDir = path.dirname(path.join(realSourceDir, link));
+					await fs.mkdir(linkDir, { recursive: true });
+					await fs.symlink(target(linkDir), path.join(realSourceDir, link), 'dir');
+				}
+
+				try {
+					const scan = await scanPackageDirectory(sourceDir, options);
+					assert.ok(
+						scan.totalSize < 100_000,
+						`${JSON.stringify(options)}: estimate walked the install (${scan.totalSize} bytes)`
+					);
+					// A prior scan handed in, as the CLI does, must leave out the same links as the packer's own.
+					for (const knownScan of [undefined, scan]) {
+						const label = `${JSON.stringify(options)}${knownScan ? ' with a prior scan' : ''}`;
+						const entries = await archiveEntries(streamPackagedDirectory(sourceDir, options, undefined, knownScan));
+						const names = [...entries.keys()];
+						for (const link of Object.keys(installLinks)) {
+							const name = archiveName(link);
+							assert.ok(!names.some((n) => n === name || n.startsWith(name + '/')), `${label}: packed ${name}`);
+						}
+						assert.deepStrictEqual([...scan.installLinks].sort(), Object.keys(installLinks).sort(), label);
+						assert.strictEqual(entries.get('node_modules/plugin/index.js')?.content, 'plugin\n', label);
+						assert.strictEqual(
+							entries.get('node_modules/lib/node_modules/harper/index.js')?.content,
+							'npm copy\n',
+							label
+						);
+						if (options.skip_symlinks) {
+							assert.deepStrictEqual(scan.danglingSymlinks, [], label);
+							const literal = entries.get(archiveName(linkedElsewhere));
+							assert.strictEqual(literal?.type, 'symlink', label);
+							assert.strictEqual(literal.linkname, path.join(sourceDir, 'vendor', 'harper'), label);
+						} else {
+							assert.deepStrictEqual(scan.danglingSymlinks, [dangling], label);
+							assert.ok(!entries.has(archiveName(dangling)), `${label}: packed the dangling link`);
+							assert.strictEqual(entries.get(`${archiveName(linkedElsewhere)}/index.js`)?.content, 'vendored\n', label);
+							const packedBytes = names.reduce(
+								(sum, n) => sum + (entries.get(n).type === 'file' ? entries.get(n).size : 0),
+								0
+							);
+							assert.strictEqual(scan.totalSize, packedBytes, `${label}: the estimate is what was packed`);
+						}
+					}
+				} finally {
+					await fs.rm(sourceDir, { recursive: true, force: true });
+				}
+			}
+		} finally {
+			await fs.rm(aliasDir, { recursive: true, force: true });
 		}
 	});
 
