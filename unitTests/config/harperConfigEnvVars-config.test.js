@@ -354,13 +354,13 @@ describe('HARPER_CONFIG', function () {
 	});
 
 	describe('individual env var interaction', function () {
-		it('does NOT filter individual args against HARPER_CONFIG (SET-only filtering)', function () {
+		it('filters individual args against HARPER_CONFIG (reasserting config layer)', function () {
 			process.env.HARPER_CONFIG = JSON.stringify({ operationsApi: { network: { port: 9925 } } });
 
 			const args = { operationsapi_network_port: '9930', rootpath: '/y' };
 			const filtered = filterArgsAgainstRuntimeConfig(args);
 
-			assert.deepStrictEqual(filtered, args, 'individual env vars win over HARPER_CONFIG');
+			assert.deepStrictEqual(filtered, { rootpath: '/y' }, 'HARPER_CONFIG wins over individual env vars');
 		});
 	});
 

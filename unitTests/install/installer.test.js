@@ -651,9 +651,13 @@ describe('install storage.engine resolution', () => {
 				.sort();
 			assert.ok(optionsFiles.length > 0, `Expected OPTIONS-* file in ${rocksSystemDir}`);
 			const latestOptions = fs.readFileSync(path.join(rocksSystemDir, optionsFiles[optionsFiles.length - 1]), 'utf8');
+			const compressionLines = latestOptions
+				.split(/\r?\n/)
+				.map((line) => line.trim())
+				.filter((line) => line.startsWith('compression='));
 			assert.ok(
-				latestOptions.includes(`compression=${compression}`),
-				`Expected ${rocksSystemDir}/${optionsFiles[optionsFiles.length - 1]} to contain compression=${compression}`
+				compressionLines.length > 0 && compressionLines.every((line) => line === `compression=${compression}`),
+				`Expected all compression= lines in ${rocksSystemDir}/${optionsFiles[optionsFiles.length - 1]} to equal compression=${compression}, got: ${compressionLines.join(', ')}`
 			);
 		} else {
 			throw new Error(`Unexpected engine: ${expectedEngine}`);
@@ -716,6 +720,7 @@ describe('install storage.engine resolution', () => {
 			if (sandbox) {
 				sandbox.restore();
 			}
+			realInstaller.setIgnoreExisting(false);
 			env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER, undefined);
 			env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, undefined);
 			env_manager.setProperty(env_manager.BOOT_PROPS_FILE_PATH, undefined);
@@ -821,10 +826,20 @@ describe('install storage.engine resolution', () => {
 	});
 
 	it('resolves CLI STORAGE_ENGINE=rocksdb + HARPER_CONFIG={"storage":{"engine":"lmdb"}} consistently to lmdb across install and subsequent boots', async () => {
+		const assignCMDENVVariables = require('#js/utility/assignCmdEnvVariables').default;
+		const { filterArgsAgainstRuntimeConfig } = require('#js/config/harperConfigEnvVars');
 		process.env.STORAGE_ENGINE = 'rocksdb';
 		process.env.HARPER_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
 		const rootPath = await runInstall();
 		assertInstalledSystemEngine(rootPath, 'lmdb');
+		// Simulate subsequent-boot bin/run.ts path where individual env vars are filtered before updateConfigValue
+		let parsedArgs = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
+		parsedArgs = filterArgsAgainstRuntimeConfig(parsedArgs);
+		assert.strictEqual(parsedArgs.storage_engine, undefined, 'HARPER_CONFIG should filter STORAGE_ENGINE on run');
+		if (!hdb_utils.isEmpty(parsedArgs) && !hdb_utils.isEmptyOrZeroLength(Object.keys(parsedArgs))) {
+			config_utils.updateConfigValue(undefined, undefined, parsedArgs, true, true);
+		}
+		assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE), 'lmdb');
 		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
 	});
 
@@ -985,7 +1000,7 @@ describe('install storage.engine resolution', () => {
 		);
 	});
 
-	it('restores a pre-seeded HDB_CONFIG inside rootPath on rollback even when atomicWriteFile fails with ENOSPC', async () => {
+	it('restores a pre-seeded HDB_CONFIG inside rootPath on rollback via backup rename or writeFileSync fallback', async () => {
 		const rootPath = path.join(tempBaseDir, 'hdb');
 		fs.mkdirSync(rootPath, { recursive: true });
 		const rootConfigPath = path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE);
@@ -993,6 +1008,14 @@ describe('install storage.engine resolution', () => {
 		fs.writeFileSync(rootConfigPath, originalContent, 'utf8');
 		process.env.HDB_CONFIG = rootConfigPath;
 
+		// Force copyFileSync to fail so rollback exercises the atomicWriteFile -> writeFileSync fallback chain
+		const origCopyFileSync = fs.copyFileSync;
+		sandbox.stub(fs, 'copyFileSync').callsFake((src, dest, ...rest) => {
+			if (String(dest).includes('.install-backup-')) {
+				throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+			}
+			return origCopyFileSync.call(fs, src, dest, ...rest);
+		});
 		sandbox.stub(config_utils, 'createConfigFile').callsFake(() => {
 			fs.writeFileSync(rootConfigPath, 'corrupted: true\n', 'utf8');
 			throw new Error('simulated createConfigFile failure');
@@ -1010,12 +1033,95 @@ describe('install storage.engine resolution', () => {
 		assert.strictEqual(
 			fs.readFileSync(rootConfigPath, 'utf8'),
 			originalContent,
-			'Expected pre-seeded root HDB_CONFIG content to be restored via backup-aside or writeFileSync fallback'
+			'Expected pre-seeded root HDB_CONFIG content to be restored via writeFileSync fallback'
 		);
 		assert.deepStrictEqual(
 			fs.readdirSync(rootPath),
 			[hdbTerms.HARPER_CONFIG_FILE],
 			'Expected only the restored root config file to remain in rootPath after rollback'
+		);
+	});
+
+	it('retains the .install-backup file in rootPath on rollback when rename and in-memory restore writes all fail', async () => {
+		const rootPath = path.join(tempBaseDir, 'hdb');
+		fs.mkdirSync(rootPath, { recursive: true });
+		const rootConfigPath = path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE);
+		const originalContent = 'storage:\n  engine: lmdb\n# pre-seeded root config\n';
+		fs.writeFileSync(rootConfigPath, originalContent, 'utf8');
+		process.env.HDB_CONFIG = rootConfigPath;
+
+		sandbox.stub(config_utils, 'createConfigFile').callsFake(() => {
+			fs.writeFileSync(rootConfigPath, 'corrupted: true\n', 'utf8');
+			throw new Error('simulated createConfigFile failure');
+		});
+		const origRenameSync = fs.renameSync;
+		sandbox.stub(fs, 'renameSync').callsFake((src, dest) => {
+			if (String(src).includes('.install-backup-')) {
+				throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+			}
+			return origRenameSync.call(fs, src, dest);
+		});
+		const enospcErr = Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+		sandbox.stub(config_utils, 'atomicWriteFile').throws(enospcErr);
+		const origWriteFileSync = fs.writeFileSync;
+		sandbox.stub(fs, 'writeFileSync').callsFake((file, data, ...rest) => {
+			if (file === rootConfigPath && data === originalContent) {
+				throw enospcErr;
+			}
+			return origWriteFileSync.call(fs, file, data, ...rest);
+		});
+		const exitStub = sandbox.stub(process, 'exit').callsFake((code) => {
+			throw new Error(`process.exit(${code})`);
+		});
+
+		await assert.rejects(runInstall(), /process\.exit\(1\)/);
+
+		assert.strictEqual(exitStub.calledWith(1), true, 'Expected rollbackInstall to call process.exit(1)');
+		const remainingFiles = fs.readdirSync(rootPath);
+		const backupFile = remainingFiles.find((f) => f.includes('.install-backup-'));
+		assert.ok(backupFile, 'Expected .install-backup file to be retained when all restore attempts fail');
+		assert.strictEqual(
+			fs.readFileSync(path.join(rootPath, backupFile), 'utf8'),
+			originalContent,
+			'Expected retained .install-backup file to contain intact original HDB_CONFIG content'
+		);
+	});
+
+	it('preserves an existing ~/.harperdb boot properties directory on rollback when shouldWriteBootProps is false', async () => {
+		const existingRoot = path.join(tempBaseDir, 'existing-install');
+		fs.mkdirSync(existingRoot, { recursive: true });
+		const existingConfigPath = path.join(existingRoot, hdbTerms.HARPER_CONFIG_FILE);
+		fs.writeFileSync(existingConfigPath, 'storage:\n  engine: rocksdb\n', 'utf8');
+
+		const homeHdbDir = path.join(tempBaseDir, 'home', hdbTerms.HDB_HOME_DIR_NAME);
+		const homeKeysDir = path.join(homeHdbDir, 'keys');
+		fs.mkdirSync(homeKeysDir, { recursive: true });
+		const existingKeyPath = path.join(homeKeysDir, 'existing.pem');
+		fs.writeFileSync(existingKeyPath, 'existing-key', 'utf8');
+		const propsFilePath = path.join(homeHdbDir, hdbTerms.BOOT_PROPS_FILE_NAME);
+		const propsContent = `install_user=admin\nsettings_path=${existingConfigPath}\n`;
+		fs.writeFileSync(propsFilePath, propsContent, 'utf8');
+
+		realInstaller.setIgnoreExisting(true);
+		process.env.STORAGE_ENGINE = 'lmdb';
+		sandbox.stub(config_utils, 'createConfigFile').throws(new Error('simulated createConfigFile failure'));
+		const exitStub = sandbox.stub(process, 'exit').callsFake((code) => {
+			throw new Error(`process.exit(${code})`);
+		});
+
+		await assert.rejects(runInstall(), /process\.exit\(1\)/);
+
+		assert.strictEqual(exitStub.calledWith(1), true, 'Expected rollbackInstall to call process.exit(1)');
+		assert.strictEqual(
+			fs.existsSync(propsFilePath),
+			true,
+			'Expected pre-existing ~/.harperdb/hdb_boot_properties.file to be preserved on rollback'
+		);
+		assert.strictEqual(fs.readFileSync(propsFilePath, 'utf8'), propsContent);
+		assert.strictEqual(
+			fs.existsSync(existingKeyPath),
+			true,
+			'Expected pre-existing ~/.harperdb/keys to be preserved on rollback'
 		);
 	});
 });
