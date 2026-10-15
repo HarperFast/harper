@@ -401,7 +401,7 @@ function syncObjectToYamlDoc(doc: YAML.Document, obj: Record<string, any>, prefi
 					? (currentNode as any).toJSON()
 					: doc.getIn(keyPath);
 			if (!doc.hasIn(keyPath) || !isEqual(currentVal, val)) {
-				doc.setIn(keyPath, doc.createNode(val));
+				doc.setIn(keyPath, val !== null && typeof val === 'object' ? doc.createNode(val) : val);
 			}
 		}
 	}
@@ -465,7 +465,10 @@ function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: 
 					configDoc.deleteIn(splitParam.slice(0, -1));
 				}
 
-				configDoc.setIn([...splitParam], configDoc.createNode(value));
+				configDoc.setIn(
+					[...splitParam],
+					value !== null && typeof value === 'object' ? configDoc.createNode(value) : value
+				);
 			} catch (err) {
 				logger.error(err);
 			}

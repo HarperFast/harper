@@ -9,7 +9,10 @@
  *
  * - HARPER_CONFIG (recommended): merge — sets exactly the keys it names, reasserting
  *   them on every boot (a manual edit or individual env var for a named key is
- *   overwritten on restart), and yields only to HARPER_SET_CONFIG.
+ *   overwritten on restart), and yields only to HARPER_SET_CONFIG. Filtering named
+ *   keys in filterArgsAgainstRuntimeConfig() aligns the main thread (threads.count,
+ *   operationsApi.network.port, TLS cert paths, storage.*) with worker threads and
+ *   install-time resolution.
  * - HARPER_DEFAULT_CONFIG: defaults — yields to the config file, individual env vars,
  *   and user edits.
  * - HARPER_SET_CONFIG: force — overrides everything and locks against drift.
@@ -316,7 +319,9 @@ export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Recor
 
 	const filteredArgs: Record<string, any> = {};
 	for (const key in args) {
-		if (!runtimeConfigKeys.has(key.toLowerCase())) {
+		const lowerKey = key.toLowerCase();
+		const canonicalKey = (hdbTerms.CONFIG_PARAM_MAP[lowerKey] ?? lowerKey).toLowerCase();
+		if (!runtimeConfigKeys.has(lowerKey) && !runtimeConfigKeys.has(canonicalKey)) {
 			filteredArgs[key] = args[key];
 		}
 	}
