@@ -1,10 +1,11 @@
 const assert = require('node:assert');
-const { Readable } = require('node:stream');
+const { Readable, PassThrough } = require('node:stream');
 const { setImmediate: nextTurn } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
+const { ClientError } = require('#src/utility/errors/hdbError');
 const { Resources } = require('#src/resources/Resources');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { handleApplication } = require('#src/server/REST');
@@ -20,7 +21,7 @@ function rest(resources, options = {}) {
 	let handler;
 	handleApplication({
 		resources,
-		options: { getAll: () => ({ webSocket: false, lastModified: true, ...options }) },
+		options: { getAll: () => ({ webSocket: false, lastModified: true, preconditionLocks: true, ...options }) },
 		routeFor: () => ({ urlPath: `/conditions-${mount++}` }),
 		server: { http: (listener) => (handler = listener) },
 	});
@@ -67,6 +68,13 @@ describe('HTTP precondition evaluation', () => {
 		assert.throws(() => check({ 'if-match': '"current" garbage' }), { statusCode: 400 });
 	});
 
+	it('accepts empty lists and empty elements required by RFC 9110 list parsing', () => {
+		for (const value of ['', ' , , ', '"current",,']) {
+			assert.strictEqual(check({ 'if-match': value }), value.includes('current') ? undefined : 412);
+			assert.strictEqual(check({ 'if-none-match': value }), value.includes('current') ? 304 : undefined);
+		}
+	});
+
 	it('distinguishes existence from a validator and honors wildcard semantics', () => {
 		for (const method of ['GET', 'HEAD', 'PUT', 'PATCH', 'DELETE']) {
 			assert.strictEqual(check({ 'if-match': '*' }, method, false), 412);
@@ -87,6 +95,18 @@ describe('HTTP precondition evaluation', () => {
 		assert.strictEqual(check({ 'if-none-match': '"other"', 'if-modified-since': date }), undefined);
 		assert.strictEqual(check({ 'if-match': '"other"', 'if-none-match': '"current"' }), 412);
 		assert.strictEqual(check({ 'if-modified-since': date }, 'PUT'), undefined);
+	});
+
+	it('interprets an obsolete two-digit date beyond the full fifty-year boundary in the past', () => {
+		const future = new Date();
+		future.setUTCFullYear(future.getUTCFullYear() + 50);
+		future.setUTCDate(future.getUTCDate() + 2);
+		future.setUTCMilliseconds(0);
+		const [, day, month, year, time] = future.toUTCString().split(' ');
+		const weekday = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][future.getUTCDay()];
+		const header = `${weekday}, ${day}-${month}-${year.slice(-2)} ${time} GMT`;
+		future.setUTCFullYear(future.getUTCFullYear() - 100);
+		assert.strictEqual(parseHttpDate(header), future.getTime());
 	});
 
 	it('ignores invalid and repeated date fields, while accepting HTTP date formats and epoch zero', () => {
@@ -183,11 +203,11 @@ describe('REST preconditions with real table transactions', () => {
 		await Row.put('body-wait', { n: 1 });
 		const held = await Row.lock('body-wait', { hold: true });
 		const failure = new Error('HTTP precondition body-wait failure');
-		const body = Readable.from(
-			(async function* () {
-				throw failure;
-			})()
-		);
+		const body = new Readable({
+			read() {
+				this.destroy(failure);
+			},
+		});
 		const rejected = [];
 		const onRejected = (error) => {
 			if (error === failure) rejected.push(error);
@@ -209,6 +229,49 @@ describe('REST preconditions with real table transactions', () => {
 			process.off('unhandledRejection', onRejected);
 		}
 		assert.strictEqual((await Row.get('body-wait')).n, 1);
+	});
+
+	it('does not lock a record while a request body is pending or permission is denied', async function () {
+		if (isLMDB) return this.skip();
+		await Row.put('slow-body', { n: 1 });
+		for (const name of ['Row', 'Modern']) {
+			for (const user of [admin, { role: { permission: {} } }]) {
+				const body = new PassThrough();
+				const pending = request(
+					'PATCH',
+					`/${name}/slow-body`,
+					body,
+					{ 'if-match': '*', 'content-type': 'application/json', 'transfer-encoding': 'chunked' },
+					user
+				);
+				let held;
+				try {
+					await nextTurn();
+					held = await Row.lock('slow-body', { hold: true, timeout: 100 });
+				} finally {
+					if (held) await held.unlock();
+					body.end('{"n":2}');
+					const response = await pending;
+					assert.ok(user === admin ? response.status < 300 : response.status === 403, await bodyOf(response));
+				}
+			}
+		}
+	});
+
+	it('releases a newly acquired hold if constructing the locked target fails', async function () {
+		if (isLMDB) return this.skip();
+		let rejectConstruction = false;
+		class RejectConstruction extends Row {
+			constructor(...args) {
+				super(...args);
+				if (rejectConstruction) throw new Error('locked-target construction failed');
+			}
+		}
+		const receiver = new RejectConstruction('own-key', {});
+		rejectConstruction = true;
+		await assert.rejects(receiver.lock('other-key', { hold: true }), /locked-target construction failed/);
+		const held = await Row.lock('other-key', { hold: true, timeout: 100 });
+		await held.unlock();
 	});
 
 	it('treats an expired record as absent for mutation conditions', async () => {
@@ -301,22 +364,31 @@ describe('REST preconditions with real table transactions', () => {
 		assert.strictEqual((await Row.get('read')).n, 1);
 	});
 
-	it('binds the condition to the normalized numeric primary key', async () => {
+	it('binds conditions to normalized numeric primary keys, including optimistic create at zero', async () => {
 		const Numeric = table({
 			table: 'HttpNumericConditions',
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true, type: 'Int' }, { name: 'n' }],
 		});
 		resources.set('Numeric', Numeric, { rest: true });
-		await Numeric.put(42, { n: 1 });
-		const response = await request(
-			'PATCH',
-			'/Numeric/42',
-			{ n: 2 },
-			{ 'if-match': versionToEtag(Numeric.primaryStore.getEntry(42).version) }
+		for (const id of [0, 42]) {
+			await Numeric.put(id, { n: 1 });
+			const response = await request(
+				'PATCH',
+				`/Numeric/${id}`,
+				{ n: 2 },
+				{ 'if-match': versionToEtag(Numeric.primaryStore.getEntry(id).version) }
+			);
+			assert.ok(response.status < 300, await bodyOf(response));
+			assert.strictEqual((await Numeric.get(id)).n, 2);
+		}
+		await Numeric.delete(0);
+		const optimistic = rest(resources, { preconditionLocks: false });
+		const attempts = await Promise.all(
+			Array.from({ length: 8 }, (_, n) => optimistic('PUT', '/Numeric/0', { n }, { 'if-none-match': '*' }))
 		);
-		assert.ok(response.status < 300, await bodyOf(response));
-		assert.strictEqual((await Numeric.get(42)).n, 2);
+		assert.strictEqual(attempts.filter(({ status }) => status >= 200 && status < 300).length, 1);
+		assert.strictEqual(attempts.filter(({ status }) => status === 412).length, 7);
 	});
 
 	it('rejects custom statics and handlers that never consume the condition', async () => {
@@ -335,6 +407,224 @@ describe('REST preconditions with real table transactions', () => {
 		assert.strictEqual((await Row.get('read')).n, 1);
 	});
 
+	it('checks a multi-write operation against its original entry, including a no-op first write', async () => {
+		class Replace extends Row {
+			async put(data, target) {
+				await super.delete(target);
+				return super.put(data, target);
+			}
+		}
+		class NoopThenPatch extends Row {
+			async patch(data, target) {
+				await super.patch({}, target);
+				return super.patch(data, target);
+			}
+		}
+		resources.set('Replace', Replace, { rest: true });
+		resources.set('NoopThenPatch', NoopThenPatch, { rest: true });
+		for (const preconditionLocks of [true, false]) {
+			for (const [name, method] of [
+				['Replace', 'PUT'],
+				['NoopThenPatch', 'PATCH'],
+			]) {
+				const id = `${name}-${preconditionLocks}`;
+				await Row.put(id, { n: 1 });
+				const response = await rest(resources, { preconditionLocks })(
+					method,
+					`/${name}/${id}`,
+					{ n: 2 },
+					{ 'if-match': versionToEtag(Row.primaryStore.getEntry(id).version) }
+				);
+				assert.ok(response.status < 300, await bodyOf(response));
+				assert.strictEqual((await Row.get(id)).n, 2);
+			}
+		}
+	});
+
+	it('rolls back sibling writes in optimistic and exclusive batches when a condition fails', async () => {
+		for (const count of [1, 105]) {
+			const Isolated = table({
+				table: 'Rows',
+				database: `conditionalAtomicity${count}`,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+			});
+			class WithSibling extends Isolated {
+				async patch(data, target) {
+					for (let index = 0; index < count; index++) await Isolated.put(`sibling-${index}`, { n: 8 });
+					return super.patch(data, target);
+				}
+			}
+			resources.set(`WithSibling${count}`, WithSibling, { rest: true });
+			await Isolated.put('target', { n: 1 });
+			const response = await request('PATCH', `/WithSibling${count}/target`, { n: 2 }, { 'if-match': '"stale"' });
+			assert.strictEqual(response.status, 412, await bodyOf(response));
+			await Isolated.put('commit-barrier', { n: 0 });
+			for (let index = 0; index < count; index++) assert.equal(await Isolated.get(`sibling-${index}`), null);
+			assert.strictEqual((await Isolated.get('target')).n, 1);
+		}
+	});
+
+	it('never reports a skipped wildcard delete as a successful mutation', async () => {
+		class WildcardInterleave extends Row {
+			async delete(target) {
+				await super.patch({ n: 2 }, target);
+				await Row.put(this.getId(), { n: 9 }, {});
+				return super.delete(target);
+			}
+		}
+		resources.set('WildcardInterleave', WildcardInterleave, { rest: true });
+		for (const preconditionLocks of [true, false]) {
+			const id = `wildcard-${preconditionLocks}`;
+			await Row.put(id, { n: 1 });
+			const response = await rest(resources, { preconditionLocks })('DELETE', `/WildcardInterleave/${id}`, undefined, {
+				'if-match': '*',
+			});
+			if (response.status >= 200 && response.status < 300) assert.equal(await Row.get(id), null);
+			else {
+				assert.strictEqual(response.status, 409, await bodyOf(response));
+				assert.strictEqual((await Row.get(id)).n, 9);
+			}
+		}
+	});
+
+	it('keeps a no-op predicate through a retry caused by a sibling write', async () => {
+		class NoopWithSibling extends Row {
+			async patch(data, target) {
+				await super.patch({}, target);
+				await Row.put('retry-sibling', { n: 2 });
+				await Row.put(this.getId(), { n: 9 }, {});
+				await Row.put('retry-sibling', { n: 9 }, {});
+			}
+		}
+		resources.set('NoopWithSibling', NoopWithSibling, { rest: true });
+		for (const preconditionLocks of [true, false]) {
+			const id = `noop-retry-${preconditionLocks}`;
+			await Row.put(id, { n: 1 });
+			await Row.put('retry-sibling', { n: 1 });
+			const response = await rest(resources, { preconditionLocks })(
+				'PATCH',
+				`/NoopWithSibling/${id}`,
+				{},
+				{ 'if-match': versionToEtag(Row.primaryStore.getEntry(id).version) }
+			);
+			assert.strictEqual(response.status, 412, await bodyOf(response));
+			assert.strictEqual((await Row.get(id)).n, 9);
+			assert.strictEqual((await Row.get('retry-sibling')).n, 9);
+		}
+	});
+
+	it('rejects composite read representations and permits explicit application handling', async () => {
+		class Composite extends Row {
+			async get(target) {
+				await Row.get('read');
+				return super.get(target);
+			}
+		}
+		resources.set('Composite', Composite, { rest: true });
+		const rejected = await request('PATCH', '/Composite/read', { n: 2 }, { 'if-match': '*' });
+		assert.strictEqual(rejected.status, 501);
+		assert.strictEqual((await Row.get('read')).n, 1);
+		const own = rest(resources, { preconditions: false });
+		const accepted = await own('PATCH', '/Composite/read', { n: 1 }, { 'if-match': 'application-validator' });
+		assert.ok(accepted.status < 300, await bodyOf(accepted));
+		assert.strictEqual((await own('GET', '/Row/read', undefined, { 'if-none-match': '*' })).status, 200);
+	});
+
+	it('short-circuits cached reads before serialization and closes their producer', async () => {
+		let serialized = 0,
+			closed = 0;
+		class CountSerialization extends Resource {
+			static get(_target, context) {
+				context.lastModified = 42;
+				return {
+					toJSON() {
+						serialized++;
+						return { n: 1 };
+					},
+					onDone() {
+						closed++;
+					},
+				};
+			}
+		}
+		resources.set('CountSerialization', CountSerialization, { rest: true });
+		const cached = await request('GET', '/CountSerialization/', undefined, { 'if-none-match': versionToEtag(42) });
+		assert.strictEqual(cached.status, 304);
+		assert.strictEqual(serialized, 0);
+		assert.strictEqual(closed, 1);
+		assert.ok(cached.headers.get('vary').includes('Accept'));
+		await bodyOf(await request('GET', '/CountSerialization/'));
+		assert.strictEqual(serialized, 1);
+	});
+
+	it('settles deferred read authorization before returning a conditional stream response', async () => {
+		const denied = () => ({
+			[Symbol.asyncIterator]() {
+				return this;
+			},
+			next() {
+				return Promise.reject(new ClientError('deferred access denied', 403));
+			},
+		});
+		class LazyRead extends Resource {
+			static get(_target, context) {
+				context.lastModified = 42;
+				return denied();
+			}
+		}
+		class LazyEnvelope extends Resource {
+			static get() {
+				return { headers: new Headers({ ETag: '"lazy"' }), data: denied() };
+			}
+		}
+		resources.set('LazyRead', LazyRead, { rest: true });
+		resources.set('LazyEnvelope', LazyEnvelope, { rest: true });
+		for (const name of ['LazyRead', 'LazyEnvelope']) {
+			const response = await request('GET', `/${name}/`, undefined, {
+				'if-none-match': '*',
+				'accept': 'application/x-ndjson',
+			});
+			assert.strictEqual(response.status, 403, await bodyOf(response));
+		}
+	});
+
+	it('observes a rejected body promise discarded by a cached response', async () => {
+		const failure = new Error('discarded conditional response failure');
+		const unhandled = [];
+		const onRejected = (error) => {
+			if (error === failure) unhandled.push(error);
+		};
+		class PromisedBody extends Resource {
+			static get() {
+				return { headers: new Headers({ ETag: '"promised"' }), body: Promise.reject(failure) };
+			}
+		}
+		resources.set('PromisedBody', PromisedBody, { rest: true });
+		process.on('unhandledRejection', onRejected);
+		try {
+			const response = await request('GET', '/PromisedBody/', undefined, { 'if-none-match': '"promised"' });
+			assert.strictEqual(response.status, 304);
+			await nextTurn();
+			assert.deepStrictEqual(unhandled, []);
+		} finally {
+			process.off('unhandledRejection', onRejected);
+		}
+	});
+
+	it('copies immutable upstream headers for 304 responses', async () => {
+		const upstream = await fetch('data:text/plain,upstream');
+		assert.throws(() => upstream.headers.delete('content-type'), TypeError);
+		class Upstream extends Resource {
+			static get() {
+				return upstream;
+			}
+		}
+		resources.set('Upstream', Upstream, { rest: true });
+		const response = await request('GET', '/Upstream/', undefined, { 'if-none-match': '*' });
+		assert.strictEqual(response.status, 304, await bodyOf(response));
+		assert.ok(upstream.headers.get('content-type'));
+	});
+
 	it('checks empty PATCH without committing a phantom version', async () => {
 		await Row.put('empty-patch', { n: 1 });
 		const version = Row.primaryStore.getEntry('empty-patch').version;
@@ -350,6 +640,8 @@ describe('REST preconditions with real table transactions', () => {
 		assert.strictEqual((await Row.get('invalid-date')).n, 1);
 		assert.strictEqual((await request('TRACE', '/Row/read', undefined, { 'if-match': '"stale"' })).status, 200);
 		assert.strictEqual((await request('OPTIONS', '/Row/read', undefined, { 'if-match': '"stale"' })).status, 204);
+		const query = await request('QUERY', '/Row/', {}, { 'if-none-match': '*' });
+		assert.strictEqual(query.status, 200, await bodyOf(query));
 	});
 
 	it('cancels web response bodies, including thrown responses', async () => {

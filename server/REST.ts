@@ -1,9 +1,11 @@
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import {
 	serialize,
 	serializeMessage,
 	getDeserializer,
+	findBestSerializer,
 	waitForStreamStartup,
 	discardSerializedStream,
 } from '../server/serverHelpers/contentTypes.ts';
@@ -32,6 +34,7 @@ import { RequestTarget } from '../resources/RequestTarget';
 import { entryMap } from '../resources/RecordEncoder.ts';
 import {
 	evaluatePreconditions,
+	hasPreconditions,
 	hasWritePreconditions,
 	parseHttpDate,
 	versionToEtag,
@@ -47,7 +50,14 @@ const OPENAPI_DOMAIN = 'openapi';
  * itself when one isn't already present, and default the status. Shared by the normal return path and the
  * thrown-Response short-circuit so both honor status, headers, and body identically.
  */
-function finalizeResponse(responseData, headers, status, request) {
+function finalizeResponse(
+	responseData,
+	headers,
+	status,
+	request,
+	method = request.method,
+	preconditionsEnabled = true
+) {
 	if (Object.isFrozen(responseData)) {
 		// make a copy if it is a frozen record
 		responseData = Object.assign({}, responseData);
@@ -73,6 +83,16 @@ function finalizeResponse(responseData, headers, status, request) {
 		// if we rebuilt the headers, reassign it, but we don't want to assign to a Response object (which should already
 		// have a valid Headers object) or it will throw an error
 		responseData.headers = responseHeaders;
+	if (preconditionsEnabled && (method === 'GET' || method === 'HEAD') && hasPreconditions(request.headers.asObject)) {
+		const conditional = applyReadPreconditions(
+			{ status: responseData.status ?? status ?? 200, headers: responseHeaders, body: responseData.body },
+			request,
+			method,
+			request.lastModified,
+			responseData.body === undefined ? ('data' in responseData ? responseData.data : responseData) : undefined
+		);
+		if (conditional.status === 304) return conditional;
+	}
 	// if no body, look for provided data to serialize
 	if (!responseData.body) {
 		let body: any;
@@ -165,21 +185,50 @@ function setCountHeaders(headers: Headers, offset: number, mode: string, page: a
 	}
 }
 
-function applyReadPreconditions(response, request, method: string, lastModified?: number) {
+function isDeferredRead(data): boolean {
+	return Boolean(
+		data &&
+		typeof data === 'object' &&
+		!Array.isArray(data) &&
+		!(data instanceof Uint8Array) &&
+		!(data instanceof Blob) &&
+		(data[Symbol.iterator] || data[Symbol.asyncIterator])
+	);
+}
+
+function applyReadPreconditions(response, request, method: string, lastModified?: number, sourceData?) {
 	if ((method !== 'GET' && method !== 'HEAD') || response.status < 200 || response.status >= 300) return response;
+	const incoming = request.headers.asObject;
+	if (!hasPreconditions(incoming)) return response;
+	if (sourceData !== undefined) {
+		const binary =
+			sourceData instanceof Uint8Array ||
+			sourceData instanceof Blob ||
+			(sourceData?.contentType != null && sourceData.data != null);
+		if (!binary) {
+			findBestSerializer(request);
+			addVaryHeader(response.headers, 'Accept');
+		}
+		addVaryHeader(response.headers, 'Accept-Encoding');
+	}
+	const checkDate =
+		(incoming['if-match'] === undefined && incoming['if-unmodified-since'] !== undefined) ||
+		(incoming['if-none-match'] === undefined && incoming['if-modified-since'] !== undefined);
 	const result = evaluatePreconditions(
-		request.headers.asObject,
-		request.method,
+		incoming,
+		method,
 		true,
 		response.headers.get('ETag'),
-		parseHttpDate(response.headers.get('Last-Modified')) ?? lastModified
+		checkDate ? (parseHttpDate(response.headers.get('Last-Modified')) ?? lastModified) : undefined
 	);
 	if (result) {
+		if (typeof sourceData?.onDone === 'function') sourceData.onDone();
+		if (sourceData instanceof Readable) discardSerializedStream(sourceData);
 		discardSerializedStream(response.body);
-		if (typeof response.body?.cancel === 'function') response.body.cancel().catch(() => {});
 		if (result === 412) throw new ClientError('Request precondition failed', 412);
-		response = { status: 304, headers: response.headers, body: undefined };
-		for (const header of ['Content-Length', 'Content-Type', 'Content-Encoding']) response.headers.delete(header);
+		const headers = mergeHeaders(new Headers(), response.headers);
+		for (const header of ['Content-Length', 'Content-Type', 'Content-Encoding']) headers.delete(header);
+		return { status: 304, headers, body: undefined };
 	}
 	return response;
 }
@@ -189,6 +238,9 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 	const isSse = headersObject.accept === 'text/event-stream';
 	const method = isSse ? 'CONNECT' : request.method;
 	const headers = new Headers();
+	const preconditionsEnabled = httpOptions.preconditions !== false && httpOptions.preconditions !== 'false';
+	const conditionalRead =
+		preconditionsEnabled && (method === 'GET' || method === 'HEAD') && hasPreconditions(headersObject);
 	let writeCondition;
 	try {
 		request.responseHeaders = headers;
@@ -305,7 +357,16 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		if (replicateFrom === 'none') {
 			request.replicateFrom = false;
 		}
-		if (hasWritePreconditions(headersObject) && !['GET', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'].includes(method)) {
+		if (
+			preconditionsEnabled &&
+			method !== 'GET' &&
+			method !== 'HEAD' &&
+			method !== 'OPTIONS' &&
+			method !== 'TRACE' &&
+			method !== 'CONNECT' &&
+			method !== 'QUERY' &&
+			hasWritePreconditions(headersObject)
+		) {
 			const verb = method.toLowerCase();
 			if (
 				!['PUT', 'PATCH', 'DELETE'].includes(method) ||
@@ -315,7 +376,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				throw new ClientError('Conditional writes require a table PUT, PATCH or DELETE', 501);
 			writeCondition = {
 				Resource: resource,
-				lock: httpOptions.preconditionLocks !== false && httpOptions.preconditionLocks !== 'false',
+				lock: httpOptions.preconditionLocks === true || httpOptions.preconditionLocks === 'true',
 				consumed: false,
 				release: undefined,
 				check(entry) {
@@ -343,7 +404,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 						request.body,
 						request.headers
 					);
-					// A lock wait can outlive body parsing; Resource still receives the original rejection.
+					// Resource loading can outlive body parsing; preserve the rejection until it is awaited.
 					if (writeCondition && typeof request.data?.then === 'function') request.data.then(undefined, () => {});
 				} catch (error) {
 					throw new ClientError(error, 400);
@@ -422,7 +483,18 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
 		} else if (responseData.headers) {
 			// if response is a Response object (or response-like envelope with headers), use it as the response
-			const response = finalizeResponse(responseData, headers, status, request);
+			const deferred =
+				conditionalRead &&
+				responseData.body === undefined &&
+				isDeferredRead('data' in responseData ? responseData.data : responseData);
+			const response = finalizeResponse(
+				responseData,
+				headers,
+				status,
+				request,
+				method,
+				preconditionsEnabled && !deferred
+			);
 			if (request.method === 'HEAD') {
 				discardSerializedStream(response.body);
 				if (!(response instanceof Response)) response.body = undefined;
@@ -430,7 +502,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				const startup = waitForStreamStartup(response.body);
 				if (startup) await startup;
 			}
-			return applyReadPreconditions(response, request, method, lastModification);
+			return deferred ? applyReadPreconditions(response, request, method, lastModification) : response;
 		} else if (isFinite(lastModification)) {
 			headers.setIfNone('ETag', versionToEtag(lastModification));
 			if ((httpOptions as any).lastModified)
@@ -439,6 +511,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		if (request.createdResource) status = 201;
 		if (request.newLocation) headers.setIfNone('Location', request.newLocation);
 
+		let deferredReadConditions = false;
 		const responseObject = {
 			status: status ?? 200,
 			headers,
@@ -479,6 +552,15 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				// returns the count as an array).
 				setCountHeaders(headers, (target as any).offset || 0, (target as any).count, responseData);
 			}
+			deferredReadConditions = conditionalRead && isDeferredRead(responseData);
+			const conditional =
+				conditionalRead && !deferredReadConditions
+					? applyReadPreconditions(responseObject, request, method, lastModification, responseData)
+					: responseObject;
+			if (conditional.status === 304) {
+				if ((target as any)?.isCollection) addVaryHeader(conditional.headers, 'Prefer');
+				return conditional;
+			}
 			responseObject.body = serialize(responseData, request, responseObject);
 			if (request.method === 'HEAD') {
 				discardSerializedStream(responseObject.body);
@@ -492,18 +574,15 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		// `Vary`, so declare it here (after serialization) — otherwise a shared cache could serve count
 		// headers to a request that didn't ask, or a cached non-count response to one that did.
 		if ((method === 'GET' || method === 'HEAD') && (target as any)?.isCollection) addVaryHeader(headers, 'Prefer');
-		return applyReadPreconditions(responseObject, request, method, lastModification);
+		return deferredReadConditions
+			? applyReadPreconditions(responseObject, request, method, lastModification)
+			: responseObject;
 	} catch (error) {
 		error ??= new Error('Unknown error occurred');
 		// a thrown Response short-circuits as the response, the same as returning one
 		if (error instanceof Response) {
 			try {
-				return applyReadPreconditions(
-					finalizeResponse(error, headers, request.response.status, request),
-					request,
-					method,
-					request.lastModified
-				);
+				return finalizeResponse(error, headers, request.response.status, request, method, preconditionsEnabled);
 			} catch (preconditionError) {
 				error = preconditionError;
 			}

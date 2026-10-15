@@ -729,7 +729,7 @@ interface TableResourceInstance<Record extends object = any> {
 	): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)>;
 	_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any): any;
 	delete(target: RequestTargetOrId): Promise<boolean>;
-	_writeDelete(id: Id, options?: any): boolean;
+	_writeDelete(id: Id, options?: any): MaybePromise<boolean>;
 	search(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>>;
 	subscribe(request: SubscriptionRequest): Promise<AsyncIterable<Record>>;
 	doesExist(): boolean;
@@ -1696,6 +1696,29 @@ export function makeTable(options): TableResourceClass {
 		return { key, descriptor };
 	}
 	const COMMIT_BASE_METHODS = new Set(['put', 'patch', 'delete']);
+	function conditionForWrite(resource, id: Id) {
+		const condition = resource.getContext()?.[WRITE_CONDITION];
+		return condition?.Resource.primaryStore === primaryStore &&
+			condition.prepared &&
+			writeKeyId(id) === writeKeyId(condition.id)
+			? condition
+			: undefined;
+	}
+	function lockConditionalWrite(resource, id: Id, condition) {
+		if (!condition?.lock || !isRocksDB || condition.locked) return;
+		return (condition.locking ??= resource.lock(id, { hold: true, scope: 'node' }).then((locked) => {
+			condition.locked = true;
+			condition.release = () => locked.unlock();
+		}));
+	}
+	function attachWriteCondition(write, condition, options) {
+		write[WRITE_CONDITION] = condition;
+		write.validateBase = (entry, txnTime) => {
+			if (priorStagedWrite(write)?.[WRITE_CONDITION] !== condition) condition.check(entry);
+			if (!write.conditionOnly && precedesExistingVersion(txnTime, entry, options?.nodeId) < 0)
+				throw new ClientError('A concurrent write superseded the conditional mutation', 409);
+		};
+	}
 	function entryBeforeWrite(loadedEntry: Entry | undefined, id: Id, transaction: any, reloadsCommitBase: boolean) {
 		if (loadedEntry != null) return loadedEntry;
 		if (isRocksDB && reloadsCommitBase) {
@@ -2523,15 +2546,20 @@ export function makeTable(options): TableResourceClass {
 			const condition = request?.[WRITE_CONDITION];
 			if (condition?.Resource === this && !condition.prepared) {
 				condition.prepared = true;
-				if (target.id == null || target.isCollection || target.property || this.source)
-					throw new ClientError('Conditional writes require a single local table record', 501);
+				if (
+					target.id == null ||
+					target.isCollection ||
+					target.property ||
+					target.select ||
+					this.source ||
+					this.get !== Resource.get ||
+					this.prototype.get !== TableResource.prototype.get
+				)
+					throw new ClientError(
+						'Conditional writes require a single local table record with its default representation',
+						501
+					);
 				condition.id = target.id;
-				if (isRocksDB && condition.lock) {
-					return resource.lock(target.id, { hold: true, scope: 'node' }).then((locked) => {
-						condition.release = () => locked.unlock();
-						return this.loadAsInstance !== false ? resource._loadRecord(target, request, resourceOptions) : resource;
-					});
-				}
 			}
 			if (this.loadAsInstance !== false) {
 				return resource._loadRecord(target, request, resourceOptions);
@@ -4474,7 +4502,13 @@ export function makeTable(options): TableResourceClass {
 			return acquisition.then(
 				(handle) => {
 					link.unregisterPendingLock(primaryStore, keyId);
-					return this.#reloadLocked(id, handle);
+					try {
+						return this.#reloadLocked(id, handle);
+					} catch (error) {
+						link.unregisterRecordLock(handle);
+						handle.release();
+						throw error;
+					}
 				},
 				(error) => {
 					link.unregisterPendingLock(primaryStore, keyId);
@@ -4685,11 +4719,17 @@ export function makeTable(options): TableResourceClass {
 		_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any) {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
-			const condition = (context as any)?.[WRITE_CONDITION];
-			const checkCondition =
-				condition?.Resource === this.constructor && condition.prepared && writeKeyId(id) === writeKeyId(condition.id)
-					? condition.check
-					: undefined;
+			const condition = conditionForWrite(this, id);
+			const locking = lockConditionalWrite(this, id, condition);
+			if (locking) {
+				const changes = this.#changes;
+				const updates = recordUpdate === undefined ? this.#changes : recordUpdate;
+				return locking.then(() => {
+					this.#changes = changes;
+					return this._writeUpdate(id, updates, fullUpdate, options);
+				});
+			}
+			const checkCondition = condition?.check;
 			if (checkCondition) condition.consumed = true;
 			const transaction = txnForContext(context);
 			const replaying = transaction.isReplay === true;
@@ -4851,7 +4891,10 @@ export function makeTable(options): TableResourceClass {
 							// TODO: else freeze after we have applied the changes
 						}
 					} else {
-						checkCondition?.(primaryStore.getEntry(id));
+						if (checkCondition) {
+							write.conditionOnly = true;
+							return;
+						}
 						(committedBy as any).removeWrite?.(write);
 						return false;
 					}
@@ -4864,7 +4907,11 @@ export function makeTable(options): TableResourceClass {
 					transaction: any,
 					committedBy?: DatabaseTransaction
 				) => {
-					checkCondition?.(existingEntry);
+					if (checkCondition && isRocksDB) write.validateBase(existingEntry, txnTime);
+					if (write.conditionOnly) {
+						write.skipped = true;
+						return;
+					}
 					// Whether a prior attempt of THIS write appended its own audit entry (sticky, set in
 					// save(); log entries are not part of the aborted rocks transaction, so they survive).
 					// Only such a write can find its own orphaned entry in the dedup lookups below and must
@@ -5602,6 +5649,7 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 			};
+			if (condition) attachWriteCondition(write, condition, options);
 			this.#savingOperation = write;
 			// The hooks run before `addWrite` so the derived values are on the record at commit (the
 			// txn `before` slot runs after commit). They see the payload before table validation, and a
@@ -5669,7 +5717,8 @@ export function makeTable(options): TableResourceClass {
 				}
 				(scanTarget as any).select = ['$id']; // just get the primary key of each record so we can delete them
 				for await (const entry of this.search(scanTarget)) {
-					this._writeDelete((entry as any).$id);
+					const deletion = this._writeDelete((entry as any).$id);
+					if (deletion instanceof Promise) await deletion;
 				}
 				return true;
 			}
@@ -5685,21 +5734,20 @@ export function makeTable(options): TableResourceClass {
 						throw new AccessViolation((context as any).user);
 					}
 					const id = requestTargetToId(target as any);
-					this._writeDelete(id);
-					return true;
+					return when(this._writeDelete(id), () => true);
 				}) as any;
 			}
-			this._writeDelete(this.getId());
+			const deletion = this._writeDelete(this.getId());
+			if (deletion instanceof Promise) await deletion;
 			return Boolean(this.#record);
 		}
-		_writeDelete(id: Id, options?: any) {
+		_writeDelete(id: Id, options?: any): MaybePromise<boolean> {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
-			const condition = (context as any)?.[WRITE_CONDITION];
-			const checkCondition =
-				condition?.Resource === this.constructor && condition.prepared && writeKeyId(id) === writeKeyId(condition.id)
-					? condition.check
-					: undefined;
+			const condition = conditionForWrite(this, id);
+			const locking = lockConditionalWrite(this, id, condition);
+			if (locking) return locking.then(() => this._writeDelete(id, options));
+			const checkCondition = condition?.check;
 			if (checkCondition) condition.consumed = true;
 			const transaction = txnForContext(context);
 			assertDerivedIndexAdmission(options, transaction);
@@ -5724,7 +5772,7 @@ export function makeTable(options): TableResourceClass {
 						? (this.constructor as any).source.delete.bind((this.constructor as any).source, id, undefined, context)
 						: undefined,
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
-					checkCondition?.(existingEntry);
+					if (checkCondition && isRocksDB) write.validateBase(existingEntry, txnTime);
 					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
 					write.superseded = false; // reset per round, as in the update path
 					write.skipped = false;
@@ -5798,6 +5846,7 @@ export function makeTable(options): TableResourceClass {
 					if (priorStagedOp) priorStagedOp.superseded = true;
 				},
 			};
+			if (condition) attachWriteCondition(write, condition, options);
 			transaction.addWrite(write);
 			return true;
 		}

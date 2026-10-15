@@ -10,10 +10,15 @@
 				{
 					"type": "object",
 					"properties": {
-						"preconditionLocks": {
+						"preconditions": {
 							"type": "boolean",
 							"default": true,
-							"description": "Use node-local record locks for conditional single-record PUT, PATCH and DELETE on RocksDB. Conditions are also checked at commit. Set false to use only optimistic concurrency; LMDB always uses optimistic concurrency. Other protocols and unconditional writes do not acquire these locks."
+							"description": "Handle HTTP request preconditions. Set false for applications that implement their own conditional request handling."
+						},
+						"preconditionLocks": {
+							"type": "boolean",
+							"default": false,
+							"description": "Opt in to node-local record locks for conditional single-record PUT, PATCH and DELETE on RocksDB. Conditions are also checked at commit. The default and LMDB use optimistic concurrency. Other protocols and unconditional writes do not acquire these locks."
 						},
 						"lastModified": {
 							"type": "boolean",
