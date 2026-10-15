@@ -337,7 +337,12 @@ function backfillMissingDefaults(targetDoc: YAML.Document, defaultsDoc: YAML.Doc
 		const key = String((pair.key as any)?.value ?? pair.key);
 		const keyPath = [...prefix, key];
 		if (!targetDoc.hasIn(keyPath)) {
-			targetDoc.setIn(keyPath, defaultsDoc.getIn(keyPath));
+			const defaultNode = defaultsDoc.getIn(keyPath, true);
+			const defaultVal =
+				defaultNode && typeof (defaultNode as any).toJSON === 'function'
+					? (defaultNode as any).toJSON()
+					: defaultsDoc.getIn(keyPath);
+			targetDoc.setIn(keyPath, targetDoc.createNode(defaultVal));
 		} else if (YAML.isMap(pair.value) && YAML.isMap(targetDoc.getIn(keyPath, true))) {
 			backfillMissingDefaults(targetDoc, defaultsDoc, keyPath);
 		}
@@ -366,7 +371,7 @@ function syncObjectToYamlDoc(doc: YAML.Document, obj: Record<string, any>, prefi
 		if (prefix.length === 0) {
 			doc.contents = doc.createNode(obj) as any;
 		} else {
-			doc.setIn(prefix, obj);
+			doc.setIn(prefix, doc.createNode(obj));
 		}
 		return;
 	}
@@ -383,12 +388,12 @@ function syncObjectToYamlDoc(doc: YAML.Document, obj: Record<string, any>, prefi
 		if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
 			if (Object.keys(val).length === 0) {
 				if (!YAML.isMap(currentNode) || currentNode.items.length !== 0) {
-					doc.setIn(keyPath, {});
+					doc.setIn(keyPath, doc.createNode({}));
 				}
 			} else if (YAML.isMap(currentNode)) {
 				syncObjectToYamlDoc(doc, val, keyPath);
 			} else {
-				doc.setIn(keyPath, val);
+				doc.setIn(keyPath, doc.createNode(val));
 			}
 		} else {
 			const currentVal =
@@ -396,7 +401,7 @@ function syncObjectToYamlDoc(doc: YAML.Document, obj: Record<string, any>, prefi
 					? (currentNode as any).toJSON()
 					: doc.getIn(keyPath);
 			if (!doc.hasIn(keyPath) || !isEqual(currentVal, val)) {
-				doc.setIn(keyPath, val);
+				doc.setIn(keyPath, doc.createNode(val));
 			}
 		}
 	}
@@ -405,9 +410,7 @@ function syncObjectToYamlDoc(doc: YAML.Document, obj: Record<string, any>, prefi
 /**
  * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
  * @param args - any args that the user provided.
- * @param skipFsValidation - whether to skip filesystem path validation
  * @param baseConfigPath - optional user-supplied config template (HDB_CONFIG) to backfill with defaults
- * @param targetConfigPath - optional destination path for the written config file
  */
 export function createConfigFile(args, skipFsValidation = false, baseConfigPath?: string, targetConfigPath?: string) {
 	const defaultDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
@@ -1365,7 +1368,7 @@ export function flattenConfig(obj) {
  * @param value
  * @returns {*|number|string|string|null|boolean}
  */
-function castConfigValue(param, value) {
+export function castConfigValue(param, value) {
 	if (isNumber(value)) {
 		return parseFloat(value);
 	}

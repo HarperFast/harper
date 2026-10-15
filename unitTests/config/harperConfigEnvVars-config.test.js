@@ -156,6 +156,36 @@ describe('HARPER_CONFIG', function () {
 			applyRuntimeEnvConfig(fileConfig, testRoot);
 			assert.strictEqual(fileConfig.http.port, 9925, 'original restored after both vars gone');
 		});
+
+		it('yields to install cliPaths during install, downgrades cli to user in state, and reasserts on subsequent runtime boots', function () {
+			const prepareRuntimeEnvConfig = harperConfigEnvVars.__get__('prepareRuntimeEnvConfig');
+			process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ storage: { engine: 'rocksdb' }, http: { port: 7777 } });
+			process.env.HARPER_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
+
+			// Install boot: CLI explicitly sets storage.engine='rocksdb' and http.port=8080
+			const fileConfig = { storage: { engine: 'rocksdb' }, http: { port: 8080 } };
+			const { commitState } = prepareRuntimeEnvConfig(fileConfig, testRoot, {
+				isInstall: true,
+				cliPaths: ['storage.engine', 'http.port'],
+			});
+			commitState();
+
+			assert.strictEqual(fileConfig.storage.engine, 'rocksdb', 'CLI wins over HARPER_CONFIG during install');
+			assert.strictEqual(fileConfig.http.port, 8080, 'CLI wins over HARPER_DEFAULT_CONFIG during install');
+			assert.strictEqual(
+				readState().sources['storage.engine'],
+				'user',
+				'cli source is downgraded to user in persisted state'
+			);
+			assert.strictEqual(readState().sources['http.port'], 'user');
+
+			// Subsequent runtime boot (isInstall: false): HARPER_CONFIG reasserts over 'user',
+			// while HARPER_DEFAULT_CONFIG continues to yield to 'user'.
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.storage.engine, 'lmdb', 'HARPER_CONFIG reasserts on runtime boot');
+			assert.strictEqual(readState().sources['storage.engine'], 'HARPER_CONFIG');
+			assert.strictEqual(fileConfig.http.port, 8080, 'HARPER_DEFAULT_CONFIG still yields to user');
+		});
 	});
 
 	describe('deletion / cleanup', function () {
