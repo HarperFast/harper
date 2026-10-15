@@ -8572,6 +8572,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			return entriesDeleted;
 		}
+		static #loggedHistoryEntryError = false;
 		static async *getHistory(startTime = 0, endTime = Infinity) {
 			for (const auditRecord of auditStore.getRange({
 				start: startTime || 1, // if startTime is 0, we actually want to shift to 1 because 0 is encoded as all zeros with audit store's special encoder, and will include symbols
@@ -8584,7 +8585,10 @@ export function makeTable(options): TableResourceClass {
 				try {
 					value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
 				} catch (error) {
-					logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
+					if (!this.#loggedHistoryEntryError) {
+						this.#loggedHistoryEntryError = true;
+						logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
+					}
 				}
 				yield {
 					id: auditRecord.recordId,
@@ -8627,7 +8631,10 @@ export function makeTable(options): TableResourceClass {
 							// window boundary (nextVersion), matching getHistory (issue #1330)
 							value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
 						} catch (error) {
-							logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
+							if (!this.#loggedHistoryEntryError) {
+								this.#loggedHistoryEntryError = true;
+								logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
+							}
 						}
 						history.splice(insertionPoint, 0, {
 							id: auditRecord.recordId,

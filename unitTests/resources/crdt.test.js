@@ -436,6 +436,16 @@ describe('crdt getRecordAtTime', () => {
 			assert.deepStrictEqual(getRecordAtTime(current, 20, prunedStore, 1, 'K'), { id: 'K', n: 2, label: 'c' });
 		});
 
+		it('does not fill an unknown field with a bare CRDT delta when the base put before it was pruned', () => {
+			const prunedStore = makeStore([
+				// version 10 (put { id: 'K', count: 5 }) was pruned by audit retention
+				{ version: 20, type: 'patch', value: { count: { __op__: 'add', value: 3 } }, previousVersion: 10 },
+				{ version: 30, type: 'patch', value: { count: 100 }, previousVersion: 20 },
+			]);
+			const current = currentEntry({ id: 'K', count: 100 }, 30);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, prunedStore, 1, 'K'), { id: 'K', count: 100 });
+		});
+
 		it('threads nodeId into forward reconstruction when currentEntry is undefined on a multi-log store', () => {
 			const multiLogEvents = [
 				{ txnLogKey: 100, version: 10, nodeId: 2, type: 'put', value: { id: 'M', count: 5 }, previousVersion: 0 },
