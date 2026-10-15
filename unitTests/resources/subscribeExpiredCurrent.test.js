@@ -66,17 +66,16 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 			],
 		});
 
+		const futureExpiry = Date.now() + 60_000;
 		await ExpWindowTable.put({ id: 'a-expired', name: 'expired-table-ttl' });
 		await ExpWindowTable.put({ id: ['prefix', 'a-expired'], name: 'expired-prefix-ttl' });
-		await delay(80);
-
-		const futureExpiry = Date.now() + 60_000;
 		await ExpWindowTable.put('z-live', { id: 'z-live', name: 'live-row' }, { expiresAt: futureExpiry });
 		await ExpWindowTable.put(
 			['prefix', 'z-live'],
 			{ id: ['prefix', 'z-live'], name: 'live-prefix-row' },
 			{ expiresAt: futureExpiry }
 		);
+		await delay(80);
 
 		const storedExpired = ExpWindowTable.primaryStore.getEntry('a-expired');
 		assert.ok(storedExpired?.value, 'a-expired must still exist in primaryStore within the eviction window');
@@ -133,8 +132,8 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 		});
 
 		await ExpWindowSingleTable.put({ id: 'a-expired', name: 'expired-table-ttl' });
-		await delay(80);
 		await ExpWindowSingleTable.put('z-live', { id: 'z-live', name: 'live-row' }, { expiresAt: Date.now() + 60_000 });
+		await delay(80);
 
 		const storedExpired = ExpWindowSingleTable.primaryStore.getEntry('a-expired');
 		assert.ok(storedExpired?.value, 'a-expired must still exist in primaryStore within the eviction window');
@@ -270,17 +269,16 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 		});
 		Resources.resources.set(MqttTopicName, MqttTable, { mqtt: true });
 
+		const futureExpiry = Date.now() + 60_000;
 		await MqttTable.put({ id: 'a-expired', name: 'mqtt-expired-top' });
 		await MqttTable.put({ id: 'nested/a-expired', name: 'mqtt-expired-nested' });
-		await delay(80);
-
-		const futureExpiry = Date.now() + 60_000;
 		await MqttTable.put('z-live', { id: 'z-live', name: 'mqtt-live-top' }, { expiresAt: futureExpiry });
 		await MqttTable.put(
 			'nested/z-live',
 			{ id: 'nested/z-live', name: 'mqtt-live-nested' },
 			{ expiresAt: futureExpiry }
 		);
+		await delay(80);
 
 		assert.ok(MqttTable.primaryStore.getEntry('a-expired')?.expiresAt < Date.now());
 		assert.ok(MqttTable.primaryStore.getEntry('nested/a-expired')?.expiresAt < Date.now());
@@ -389,6 +387,7 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 
 		await ReloadExpTable.put('a-expired', { id: 'a-expired', name: 'stale' }, { expiresAt: Date.now() - 5000 });
 		await ReloadExpTable.put('z-live', { id: 'z-live', name: 'fresh' }, { expiresAt: Date.now() + 60_000 });
+		await waitFor(() => Date.now() > (ReloadExpTable.primaryStore.getEntry('z-live')?.version ?? 0), 1000, 1);
 
 		const collectionEvents = [];
 		const collectionSub = await ReloadExpTable.subscribe({ omitCurrent: true });
