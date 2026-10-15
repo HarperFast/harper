@@ -14,7 +14,7 @@ import * as envManager from '../environment/environmentManager.ts';
 import * as hdbUtils from '../common_utils.ts';
 
 import * as hdbInfoController from '../../dataLayer/hdbInfoController.ts';
-import { packageJson } from '../packageUtils.js';
+import { packageJson, PACKAGE_ROOT } from '../packageUtils.js';
 import * as hdbTerms from '../hdbTerms.ts';
 const { CONFIG_PARAMS } = hdbTerms;
 import installValidator from '../../validation/installValidator.ts';
@@ -421,7 +421,7 @@ async function checkForExistingInstall() {
 
 	// If the boot file doesn't exist check to see if cli/env root path has been passed and
 	// is pointing to an installed HDB
-	if (!bootFileExists && hdbUtils.noBootFile()) hdbExists = true;
+	if (!bootFileExists && !getHdbConfigPath() && hdbUtils.noBootFile()) hdbExists = true;
 
 	if (hdbExists && !ignoreExisting) {
 		hdbLogger.trace(`Install found existing HDB config at:${bootPropPath}`);
@@ -441,7 +441,11 @@ async function checkForExistingInstall() {
 }
 
 async function createBootPropertiesFile() {
-	const configFilePath = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
+	const hdbConfigPath = getHdbConfigPath();
+	const configFilePath =
+		conditionalRollback && hdbConfigPath
+			? path.resolve(hdbConfigPath)
+			: path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 
 	let install_user;
 	try {
@@ -569,7 +573,7 @@ export function applyInstallModeDefaults(args, defaultsMode) {
  * in-memory config here, `mountHdb()` falls back to the default engine (`rocksdb`) unless
  * `installParams.STORAGE_ENGINE` was explicitly passed via CLI/prompt. Evaluating the same
  * precedence `createConfigFile()` later uses (`HARPER_SET_CONFIG` > `HARPER_CONFIG` >
- * CLI/env/file `storage.engine` > `HARPER_DEFAULT_CONFIG`) keeps the first-boot system database
+ * `HARPER_DEFAULT_CONFIG` > CLI/env/file `storage.engine`) keeps the first-boot system database
  * on the same engine that `harper-config.yaml` will persist.
  */
 function stageStorageEngine(installParams: Record<string, any> = {}) {
@@ -577,28 +581,20 @@ function stageStorageEngine(installParams: Record<string, any> = {}) {
 	// Clear any prior in-process override first so an unset STORAGE_ENGINE never lingers as an
 	// override that masks the newly written harper-config.yaml.
 	envManager.setProperty(storageEngineParam, undefined);
+	const envConfig = composeConfigFromEnv();
 	const commandLineConfig = assignCMDENVVariables([storageEngineParam, 'STORAGE_ENGINE'], true);
 	const hdbConfigPath = getHdbConfigPath();
 	const fileConfig = hdbConfigPath ? getConfigFromFile(hdbConfigPath) : {};
-	const cliOrFileEngine =
+	const configuredEngine =
+		envConfig?.storage?.engine ??
 		installParams.STORAGE_ENGINE ??
 		installParams[storageEngineParam] ??
 		commandLineConfig[storageEngineParam] ??
 		commandLineConfig.STORAGE_ENGINE ??
 		fileConfig[storageEngineParam] ??
 		fileConfig.STORAGE_ENGINE;
-	const baseConfig =
-		cliOrFileEngine !== undefined && cliOrFileEngine !== null && cliOrFileEngine !== ''
-			? { storage: { engine: cliOrFileEngine } }
-			: {};
-	const envConfig = composeConfigFromEnv(baseConfig);
-	const configuredEngine = envConfig?.storage?.engine ?? cliOrFileEngine;
 	if (configuredEngine !== undefined && configuredEngine !== null && configuredEngine !== '') {
-		// Record `undefined` as the pre-install base so `envManager.initSync(true)` after
-		// `createConfigFile()` sees that `harper-config.yaml` now owns `storage.engine` and retires
-		// the temporary install-time override instead of shipping it to worker threads forever.
-		configUtils.updateConfigObject(storageEngineParam, undefined);
-		envManager.setProperty(storageEngineParam, configuredEngine);
+		configUtils.updateConfigObject(storageEngineParam, configuredEngine);
 	}
 }
 
@@ -638,6 +634,53 @@ function stageRocksCompression() {
 	envManager.setProperty(compression, configuredCompression);
 }
 
+function backfillMissingDefaults(
+	targetDoc: YAML.Document,
+	defaultsObj: Record<string, any>,
+	prefix: string[] = []
+): boolean {
+	let mutated = false;
+	for (const [key, defaultVal] of Object.entries(defaultsObj)) {
+		const keyPath = [...prefix, key];
+		if (!targetDoc.hasIn(keyPath)) {
+			targetDoc.setIn(keyPath, defaultVal);
+			mutated = true;
+		} else if (defaultVal !== null && typeof defaultVal === 'object' && !Array.isArray(defaultVal)) {
+			const currentVal = targetDoc.getIn(keyPath);
+			if (currentVal !== null && typeof currentVal === 'object' && !Array.isArray(currentVal)) {
+				if (backfillMissingDefaults(targetDoc, defaultVal, keyPath)) {
+					mutated = true;
+				}
+			}
+		}
+	}
+	return mutated;
+}
+
+function materializeHdbConfigFile(hdbConfigPath: string): { targetConfigPath: string; originalContent?: string } {
+	const targetConfigPath = conditionalRollback
+		? path.resolve(hdbConfigPath)
+		: path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
+	const sourceContent = fs.readFileSync(hdbConfigPath, 'utf8');
+	const originalContent = conditionalRollback ? sourceContent : undefined;
+	const userDoc = YAML.parseDocument(sourceContent, { simpleKeys: true } as any);
+	const defaultDoc = YAML.parseDocument(
+		fs.readFileSync(path.join(PACKAGE_ROOT, 'static/defaultConfig.yaml'), 'utf8'),
+		{ simpleKeys: true } as any
+	);
+	let mutated = backfillMissingDefaults(userDoc, defaultDoc.toJSON());
+	if (userDoc.getIn(['rootPath']) == null && hdbRoot) {
+		const normalizedRoot = hdbRoot.endsWith('/') ? hdbRoot.slice(0, -1) : hdbRoot;
+		userDoc.setIn(['rootPath'], normalizedRoot);
+		mutated = true;
+	}
+	if (!conditionalRollback || mutated) {
+		fs.createFileSync(targetConfigPath);
+		fs.writeFileSync(targetConfigPath, String(userDoc), 'utf8');
+	}
+	return { targetConfigPath, originalContent };
+}
+
 async function createConfigFile(installParams) {
 	hdbLogger.trace('Creating Harper config file');
 	const args = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
@@ -651,12 +694,24 @@ async function createConfigFile(installParams) {
 	}
 	applyInstallModeDefaults(args, defaultsMode);
 
+	let materializedHdbConfig: { targetConfigPath: string; originalContent?: string } | undefined;
 	try {
-		// Create the Harper config file (merging any HDB_CONFIG values already folded into installParams).
-		configUtils.createConfigFile(args);
+		const hdbConfigPath = getHdbConfigPath();
+		if (!hdbConfigPath) {
+			// Create the Harper config file.
+			configUtils.createConfigFile(args);
+		} else {
+			materializedHdbConfig = materializeHdbConfigFile(hdbConfigPath);
+			configUtils.initConfig(true);
+		}
 
-		envManager.initSync(true);
+		envManager.initSync();
 	} catch (configErr) {
+		if (materializedHdbConfig?.originalContent !== undefined) {
+			try {
+				fs.writeFileSync(materializedHdbConfig.targetConfigPath, materializedHdbConfig.originalContent, 'utf8');
+			} catch {}
+		}
 		rollbackInstall(configErr);
 	}
 }
