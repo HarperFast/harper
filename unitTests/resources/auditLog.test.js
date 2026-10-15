@@ -29,6 +29,8 @@ const { waitFor } = require('../waitFor');
 const { transaction } = require('#src/resources/transaction');
 const { AUDIT_STORE_NAME } = require('#src/utility/lmdb/terms');
 const harperLogger = require('#src/utility/logging/harper_logger');
+const { logger } = require('#src/utility/logging/logger');
+const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 require('#src/server/serverHelpers/serverUtilities');
 describe('Audit log', () => {
 	let AuditedTable;
@@ -2419,5 +2421,189 @@ describe('audit entry previousVersion presence', () => {
 			assert.throws(() => store.put(key, { ...BASE, previousVersion: 2 ** 49 }), /is not representable/);
 			assert.strictEqual(store.get(key), undefined, 'the rejected entry must not be persisted');
 		});
+	});
+});
+
+describe('history after record eviction (issue #3164)', () => {
+	let EvictedHistoryTable;
+	const schema = 'evict_history_test_schema';
+	const tableName = 'EvictedHistoryTable';
+
+	before(async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		EvictedHistoryTable = table({
+			database: schema,
+			table: tableName,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'count' }],
+		});
+	});
+
+	it('reconstructs full and patched history entries via getHistory and readAuditLog after eviction', async () => {
+		await EvictedHistoryTable.put({ id: 'rec-1', name: 'initial', count: 1 });
+		await EvictedHistoryTable.patch('rec-1', { name: 'patched' });
+
+		const entryBeforeEvict = await EvictedHistoryTable.primaryStore.getEntry('rec-1');
+		assert.ok(entryBeforeEvict, 'record should exist in primaryStore before eviction');
+
+		await EvictedHistoryTable.evict('rec-1', entryBeforeEvict.value, entryBeforeEvict.version);
+		assert.strictEqual(
+			await EvictedHistoryTable.primaryStore.getEntry('rec-1'),
+			undefined,
+			'evicted record should be absent from primaryStore'
+		);
+
+		await EvictedHistoryTable.put({ id: 'rec-2', name: 'after-evict', count: 10 });
+
+		const history = [];
+		for await (const entry of EvictedHistoryTable.getHistory()) {
+			history.push(entry);
+		}
+		assert.strictEqual(history.length, 3);
+		assert.deepStrictEqual(
+			history.map((e) => ({ type: e.type, id: e.id, value: e.value })),
+			[
+				{ type: 'put', id: 'rec-1', value: { id: 'rec-1', name: 'initial', count: 1 } },
+				{ type: 'patch', id: 'rec-1', value: { id: 'rec-1', name: 'patched', count: 1 } },
+				{ type: 'put', id: 'rec-2', value: { id: 'rec-2', name: 'after-evict', count: 10 } },
+			]
+		);
+
+		const bridge = new ResourceBridge();
+		const byTimestamp = await Array.fromAsync(
+			await bridge.readAuditLog({
+				schema,
+				table: tableName,
+				search_type: 'timestamp',
+				search_values: [0],
+			})
+		);
+		assert.strictEqual(byTimestamp.length, 3);
+		assert.deepStrictEqual(byTimestamp[0].records, [{ id: 'rec-1', name: 'initial', count: 1 }]);
+		assert.deepStrictEqual(byTimestamp[1].records, [{ id: 'rec-1', name: 'patched', count: 1 }]);
+		assert.deepStrictEqual(byTimestamp[2].records, [{ id: 'rec-2', name: 'after-evict', count: 10 }]);
+	});
+
+	it('logs and skips a failing entry in getHistory and readAuditLog without truncating other entries', async () => {
+		const originalError = logger.error;
+		const loggedErrors = [];
+		logger.error = (...args) => {
+			loggedErrors.push(args);
+		};
+		const originalGetEntry = EvictedHistoryTable.primaryStore.getEntry;
+		EvictedHistoryTable.primaryStore.getEntry = function (id, options) {
+			if (id === 'rec-1') {
+				throw new Error('simulated getEntry failure for rec-1');
+			}
+			return originalGetEntry.call(this, id, options);
+		};
+		try {
+			const history = [];
+			for await (const entry of EvictedHistoryTable.getHistory()) {
+				history.push(entry);
+			}
+			// The patch entry for rec-1 calls primaryStore.getEntry('rec-1') which throws,
+			// while the full put entries for rec-1 and rec-2 do not need getRecordAtTime and succeed.
+			assert.strictEqual(history.length, 2);
+			assert.deepStrictEqual(
+				history.map((e) => ({ type: e.type, id: e.id, value: e.value })),
+				[
+					{ type: 'put', id: 'rec-1', value: { id: 'rec-1', name: 'initial', count: 1 } },
+					{ type: 'put', id: 'rec-2', value: { id: 'rec-2', name: 'after-evict', count: 10 } },
+				]
+			);
+			assert.ok(
+				loggedErrors.some((args) =>
+					args.some((arg) => arg instanceof Error && arg.message === 'simulated getEntry failure for rec-1')
+				),
+				'expected getHistory error to be logged'
+			);
+		} finally {
+			EvictedHistoryTable.primaryStore.getEntry = originalGetEntry;
+			logger.error = originalError;
+		}
+	});
+
+	it('preserves buffered and subsequent entries in readAuditLog when an entry or iterator step throws', async () => {
+		const originalError = harperLogger.error;
+		const loggedErrors = [];
+		harperLogger.error = (...args) => {
+			loggedErrors.push(args);
+		};
+		const originalGetHistory = EvictedHistoryTable.getHistory;
+		EvictedHistoryTable.getHistory = async function* () {
+			yield {
+				operation: 'put',
+				type: 'put',
+				localTime: 100,
+				version: 100,
+				user: 'alice',
+				id: 'r1',
+				value: { id: 'r1', name: 'one' },
+			};
+			yield {
+				operation: 'put',
+				type: 'put',
+				localTime: 200,
+				version: 200,
+				user: 'alice',
+				id: 'r2',
+				get value() {
+					throw new Error('simulated corrupt entry value');
+				},
+			};
+			yield {
+				operation: 'put',
+				type: 'put',
+				localTime: 300,
+				version: 300,
+				user: 'alice',
+				id: 'r3',
+				value: { id: 'r3', name: 'three' },
+			};
+			throw new Error('simulated mid-stream history failure');
+		};
+		try {
+			const bridge = new ResourceBridge();
+			const grouped = await Array.fromAsync(
+				await bridge.readAuditLog({
+					schema,
+					table: tableName,
+					search_type: 'timestamp',
+					search_values: [0],
+				})
+			);
+			assert.deepStrictEqual(grouped, [
+				{
+					operation: 'put',
+					timestamp: 100,
+					user_name: 'alice',
+					ids: ['r1'],
+					records: [{ id: 'r1', name: 'one' }],
+				},
+				{
+					operation: 'put',
+					timestamp: 300,
+					user_name: 'alice',
+					ids: ['r3'],
+					records: [{ id: 'r3', name: 'three' }],
+				},
+			]);
+			assert.ok(
+				loggedErrors.some((args) =>
+					args.some((arg) => arg instanceof Error && arg.message === 'simulated corrupt entry value')
+				),
+				'expected per-entry error to be logged'
+			);
+			assert.ok(
+				loggedErrors.some((args) =>
+					args.some((arg) => arg instanceof Error && arg.message === 'simulated mid-stream history failure')
+				),
+				'expected iterator error to be logged'
+			);
+		} finally {
+			EvictedHistoryTable.getHistory = originalGetHistory;
+			harperLogger.error = originalError;
+		}
 	});
 });

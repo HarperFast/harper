@@ -355,6 +355,60 @@ describe('crdt getRecordAtTime', () => {
 		const current = currentEntry({ id: 'S', status: 'b', v: 2 }, 30);
 		assert.deepStrictEqual(getRecordAtTime(current, 25, store, 1, 'S'), { id: 'S', status: 'a', v: 2 });
 	});
+
+	describe('record evicted or deleted from primary store (issue #3164)', () => {
+		const events = [
+			{ version: 10, type: 'put', value: { id: 'E', name: 'initial', count: 1 }, previousVersion: 0 },
+			{
+				version: 20,
+				type: 'patch',
+				value: { name: 'patched', count: { __op__: 'add', value: 2 } },
+				previousVersion: 10,
+			},
+			{ version: 30, type: 'patch', value: { extra: 'later' }, previousVersion: 20 },
+		];
+		const store = makeStore(events);
+
+		it('reconstructs forward when currentEntry is undefined (evicted from primary store)', () => {
+			assert.deepStrictEqual(getRecordAtTime(undefined, 20, store, 1, 'E'), {
+				id: 'E',
+				name: 'patched',
+				count: 3,
+			});
+			assert.deepStrictEqual(getRecordAtTime(undefined, 30, store, 1, 'E'), {
+				id: 'E',
+				name: 'patched',
+				count: 3,
+				extra: 'later',
+			});
+		});
+
+		it('reconstructs forward when currentEntry has a null value (tombstone)', () => {
+			assert.deepStrictEqual(getRecordAtTime({ value: null, localTime: 40 }, 20, store, 1, 'E'), {
+				id: 'E',
+				name: 'patched',
+				count: 3,
+			});
+		});
+
+		it('threads nodeId into forward reconstruction when currentEntry is undefined on a multi-log store', () => {
+			const multiLogEvents = [
+				{ txnLogKey: 100, version: 10, nodeId: 2, type: 'put', value: { id: 'M', count: 5 }, previousVersion: 0 },
+				{
+					txnLogKey: 200,
+					version: 20,
+					nodeId: 2,
+					type: 'patch',
+					value: { count: { __op__: 'add', value: 4 } },
+					previousVersion: 10,
+					previousNodeId: 2,
+					previousAdditionalAuditRefs: [{ version: 100, nodeId: 2 }],
+				},
+			];
+			const multiLogStore = makeStore(multiLogEvents);
+			assert.deepStrictEqual(getRecordAtTime(undefined, 200, multiLogStore, 1, 'M', 2), { id: 'M', count: 9 });
+		});
+	});
 });
 
 describe('crdt applyForward', () => {

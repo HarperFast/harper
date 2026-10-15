@@ -8580,13 +8580,20 @@ export function makeTable(options): TableResourceClass {
 				await rest(); // yield to other async operations
 				if (auditRecord.tableId !== tableId || auditRecord.type === 'evict' || isLockControlType(auditRecord.type))
 					continue;
+				let value;
+				try {
+					value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
+				} catch (error) {
+					logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
+					continue;
+				}
 				yield {
 					id: auditRecord.recordId,
 					// Compatibility-facing LMDB history has always reported/grouped by record version.
 					localTime: isRocksDB ? auditRecord.txnLogKey : auditRecord.version,
 					version: auditRecord.version,
 					type: auditRecord.type,
-					value: auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey),
+					value,
 					user: auditRecord.user,
 					operation: auditRecord.originatingOperation,
 				};

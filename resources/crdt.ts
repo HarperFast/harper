@@ -221,8 +221,11 @@ function previousAuditPosition(auditStore, tableId: number, recordId: any, audit
  * @param store
  * @returns
  */
-export function getRecordAtTime(currentEntry, timestamp, store, tableId: number, recordId: any) {
+export function getRecordAtTime(currentEntry, timestamp, store, tableId: number, recordId: any, nodeId?: number) {
 	const auditStore = store.rootStore.auditStore;
+	if (!currentEntry?.value) {
+		return reconstructForward(auditStore, store, tableId, recordId, { txnLogKey: timestamp, nodeId }, timestamp);
+	}
 	let record = { ...currentEntry.value };
 	// `localTime` is the record's audit head on both engines: the audit-store key on LMDB, where it
 	// is a different clock than the record version, and the transaction-log key on RocksDB. Only a

@@ -37,7 +37,7 @@ import type {
 	Operator,
 } from '../../resources/ResourceInterface.ts';
 import { collapseData } from '../../resources/tracked.ts';
-import { errorToString } from '../../utility/logging/harper_logger.ts';
+import harperLogger, { errorToString } from '../../utility/logging/harper_logger.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { boundedAuditPruneEnd, raiseAuditFloor } from '../../resources/auditStore.ts';
 import { BridgeMethods } from './BridgeMethods.ts';
@@ -856,29 +856,40 @@ function createDeleteResponse(deleted, skipped, txnTime) {
 async function* groupRecordsInHistory(table, start?, end?, limit?) {
 	let enqueued;
 	let count = 0;
-	for await (const entry of table.getHistory(start, end)) {
-		let operation = normalizeHistoryOperation(entry.operation, entry.type);
-		const { id, localTime: timestamp, value } = entry;
-		if (enqueued?.timestamp === timestamp) {
-			enqueued.ids.push(id);
-			enqueued.records.push(value);
-		} else {
-			if (enqueued) {
-				yield enqueued;
-				count++;
-				if (limit && limit <= count) {
-					enqueued = undefined;
-					break;
-				}
+	try {
+		for await (const entry of table.getHistory(start, end)) {
+			let operation, id, timestamp, value, user;
+			try {
+				operation = normalizeHistoryOperation(entry.operation, entry.type);
+				({ id, localTime: timestamp, value, user } = entry);
+			} catch (error) {
+				harperLogger.error?.('Error getting history entry', error);
+				continue;
 			}
-			enqueued = {
-				operation,
-				user_name: entry.user,
-				timestamp,
-				ids: [id],
-				records: [value],
-			};
+			if (enqueued && enqueued.timestamp === timestamp) {
+				enqueued.ids.push(id);
+				enqueued.records.push(value);
+			} else {
+				if (enqueued) {
+					const previous = enqueued;
+					enqueued = undefined;
+					yield previous;
+					count++;
+					if (limit && limit <= count) {
+						break;
+					}
+				}
+				enqueued = {
+					operation,
+					user_name: user,
+					timestamp,
+					ids: [id],
+					records: [value],
+				};
+			}
 		}
+	} catch (error) {
+		harperLogger.error?.('Error getting history entry', error);
 	}
 	if (enqueued) yield enqueued;
 }
