@@ -916,6 +916,25 @@ describe('pipeBodyToResponse before the response head is written', () => {
 		assert.equal((await fetchHttp(baseUrl, '/after')).body, 'still serving');
 	});
 
+	it('serves the whole response when the source errors after it ended', async () => {
+		dispatch.current = () => {
+			const body = new Readable({
+				read() {
+					this.push('complete');
+					this.push(null);
+				},
+			});
+			body.on('end', () => setImmediate(() => body.emit('error', new Error('late'))));
+			return { handlesHeaders: true, body };
+		};
+
+		const res = await fetchHttp(baseUrl, '/late-error');
+
+		assert.equal(res.status, 200);
+		assert.equal(res.body, 'complete');
+		assert.equal(res.complete, true);
+	});
+
 	it('aborts the connection when the source closes without ending or erroring', async () => {
 		dispatch.current = () => {
 			const body = new Readable({ read() {} });

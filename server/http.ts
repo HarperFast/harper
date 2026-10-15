@@ -622,10 +622,12 @@ function pipeBeforeHeaders(body: Readable, nodeResponse: any, complete: (error?:
 	const fail = (error: NodeJS.ErrnoException) => {
 		// Later source events (a 'close' after its 'error') must not abort the replacement response
 		if (failed) return;
-		failed = true;
 		const premature = error.code === 'ERR_STREAM_PREMATURE_CLOSE';
 		const declaredStatus = errorStatus(error);
 		if (!premature) harperLogger[declaredStatus && declaredStatus < 500 ? 'info' : 'warn'](errorForLog(error));
+		// An error after the source ended must not cut off the response the pipe is still flushing
+		if (bodyEnded) return;
+		failed = true;
 		body.unpipe?.(nodeResponse);
 		body.destroy?.();
 		if (
@@ -679,7 +681,6 @@ function answerBeforeHeaders(nodeResponse: any, error: any): boolean {
 	const status = declaredStatus ?? 500;
 	try {
 		for (const name of STAGED_ENTITY_HEADERS) nodeResponse.removeHeader(name);
-		// a staged max-age would make the error cacheable
 		nodeResponse.setHeader('Cache-Control', 'no-store');
 		nodeResponse.writeHead(status, toWriteHeadHeaders(error?.headers));
 		// Only a message written for clients is sent; others (a blob or filesystem error) can name a path.
