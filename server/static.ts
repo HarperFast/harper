@@ -1,5 +1,5 @@
 import { realpathSync, existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { Scope } from '../components/Scope';
 import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
 import { convertToMS } from '../utility/common_utils.ts';
@@ -109,6 +109,17 @@ function resolveCacheOptions(scope: Scope, urlKey: string, basename: string) {
 }
 
 /**
+ * Send a resolved file through `send`. `send` treats its path argument as a URL path: it URI-decodes
+ * it and 404s any dot segment. A static entry is a filesystem path picked by the `files` globs (the
+ * request URL is only a map key), so `send` gets just the file's own name under its directory as
+ * `root`. Ancestor directories (a dot-directory app root, a `%` in a parent) never reach its decode
+ * or dotfile check.
+ */
+function sendResolvedFile(req, path: string, options?: Record<string, unknown>) {
+	return send(req, encodeURIComponent(basename(path)), { ...options, root: dirname(path) });
+}
+
+/**
  * Serve a file through `send`, applying the plugin's cache-header options (read live from the
  * component config, like `fallthrough`, and layered with any matching `cacheOverrides` entry).
  * `cacheControl` as a string overrides `maxAge`/`immutable` via send's `headers` event;
@@ -120,14 +131,14 @@ function serveFile(req, path: string, scope: Scope) {
 	// The staticFiles map keys are the mount-relative URL path (leading slash stripped for matching);
 	// for a directory-index serve req.pathname is the directory, so also match the served basename.
 	const urlKey = typeof req.pathname === 'string' ? req.pathname.replace(/^\//, '') : '';
-	const basename = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1);
+	const fileName = basename(path);
 	const { cacheControlDisabled, maxAgeMs, immutable, customCacheControl } = resolveCacheOptions(
 		scope,
 		urlKey,
-		basename
+		fileName
 	);
 
-	const stream = send(req, path, {
+	const stream = sendResolvedFile(req, path, {
 		// suppress send's own header when we set a full override below (or when disabled)
 		cacheControl: cacheControlDisabled || customCacheControl !== undefined ? false : true,
 		maxAge: maxAgeMs,
@@ -422,7 +433,7 @@ export function handleApplication(scope: Scope) {
 			return {
 				status: statusCode,
 				handlesHeaders: true,
-				body: send(req, realpathSync(notFoundPath)),
+				body: sendResolvedFile(req, realpathSync(notFoundPath)),
 			};
 		},
 		{

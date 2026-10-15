@@ -1,10 +1,17 @@
 'use strict';
 
 const assert = require('assert');
-const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
+const http = require('node:http');
+const http2 = require('node:http2');
+const { Readable } = require('node:stream');
+const { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
+const send = require('send');
+const sinon = require('sinon');
 const { handleApplication } = require('#src/server/static');
+const { httpServer, pipeBodyToResponse } = require('#src/server/http');
+const analyticsWrite = require('#src/resources/analytics/write');
 const {
 	credentialRejectionError,
 	deferCredentialRejection,
@@ -599,5 +606,416 @@ describe('static plugin responses without a deferred rejection', () => {
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
+	});
+});
+
+// These suites drive the production request handler: `httpServer()` returns the real Node server
+// with the middleware chain, outcome recording and `pipeBodyToResponse` wired exactly as in a
+// worker. Only the Scope and the entry watcher are stubbed.
+const REQUEST_TIMEOUT_MS = 5000;
+let nextTestPort = 19470;
+
+function listenWith(dispatch) {
+	const port = nextTestPort++;
+	const [server] = httpServer((req, next) => dispatch.current(req, next), { port, name: `staticUnit${port}` });
+	return new Promise((resolve) => {
+		server.listen(0, '127.0.0.1', () => resolve({ server, baseUrl: `http://127.0.0.1:${server.address().port}` }));
+	});
+}
+
+// Resolves with what the client saw. A reset before the status line rejects ("socket hang up"); a
+// body cut off after the head resolves with `complete: false`.
+function fetchHttp(baseUrl, urlPath, { abortAfterHead = false } = {}) {
+	return new Promise((resolve, reject) => {
+		const req = http.get(`${baseUrl}${urlPath}`, { agent: false }, (res) => {
+			const chunks = [];
+			const finish = (complete) =>
+				resolve({
+					status: res.statusCode,
+					headers: res.headers,
+					body: Buffer.concat(chunks).toString('utf8'),
+					complete,
+				});
+			res.on('data', (chunk) => chunks.push(chunk));
+			res.on('end', () => finish(res.complete));
+			res.on('aborted', () => finish(false));
+			res.on('error', () => finish(false));
+			if (abortAfterHead) req.destroy();
+		});
+		req.setTimeout(REQUEST_TIMEOUT_MS, () => req.destroy(new Error('Request timed out')));
+		req.on('error', reject);
+	});
+}
+
+async function waitFor(condition, description) {
+	const deadline = Date.now() + REQUEST_TIMEOUT_MS;
+	while (!condition()) {
+		if (Date.now() > deadline) assert.fail(`timed out waiting for ${description}`);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
+describe('static plugin serves files whose path would trip send URL handling', () => {
+	let tempRoot;
+	let server;
+	let baseUrl;
+	const dispatch = { current: null };
+
+	before(async () => {
+		({ server, baseUrl } = await listenWith(dispatch));
+	});
+
+	after(() => {
+		server?.closeAllConnections();
+		server?.close();
+	});
+
+	beforeEach(() => {
+		tempRoot = mkdtempSync(join(tmpdir(), 'harper-static-names-'));
+	});
+
+	afterEach(() => {
+		if (tempRoot) rmSync(tempRoot, { recursive: true, force: true });
+	});
+
+	// An app laid out as <tempRoot>/.hidden-dir/app with the given files under web/ ({ name: content }).
+	function serveApp(files, options = {}) {
+		const appDir = join(tempRoot, '.hidden-dir', 'app');
+		const { scope, state } = fakeScope({ fallthrough: false, ...options });
+		scope.directory = appDir;
+		handleApplication(scope);
+		for (const [name, content] of Object.entries(files)) {
+			const absolutePath = join(appDir, 'web', name);
+			mkdirSync(join(absolutePath, '..'), { recursive: true });
+			writeFileSync(absolutePath, content);
+			state.entryCallback({ eventType: 'add', urlPath: `/${name}`, absolutePath });
+		}
+		dispatch.current = (req) => state.listener(req, () => ({ status: 404, body: 'next' }));
+		return { appDir, state };
+	}
+
+	it('serves a file when the application root is under a dot-directory', async () => {
+		serveApp({ 'hello.txt': 'hello', '.well-known/security.txt': 'Contact: mailto:security@example.com' });
+
+		const hello = await fetchHttp(baseUrl, '/hello.txt');
+		assert.equal(hello.status, 200);
+		assert.equal(hello.body, 'hello');
+		assert.match(hello.headers['content-type'], /text\/plain/);
+
+		const wellKnown = await fetchHttp(baseUrl, '/.well-known/security.txt');
+		assert.equal(wellKnown.status, 200);
+		assert.equal(wellKnown.body, 'Contact: mailto:security@example.com');
+	});
+
+	it('serves the notFound page when the application root is under a dot-directory', async () => {
+		serveApp({ '404.html': '<h1>missing</h1>' }, { notFound: { file: 'web/404.html', statusCode: 404 } });
+
+		const res = await fetchHttp(baseUrl, '/nothing-here');
+		assert.equal(res.status, 404);
+		assert.equal(res.body, '<h1>missing</h1>');
+	});
+
+	it('serves a file whose name contains a percent sign', async () => {
+		serveApp({ 'discount-50%.txt': 'half off', 'hello%20world.txt': 'literal escape' });
+
+		const literal = await fetchHttp(baseUrl, '/discount-50%.txt');
+		assert.equal(literal.status, 200);
+		assert.equal(literal.body, 'half off');
+
+		// the name on disk is `hello%20world.txt`; send must not decode it to `hello world.txt`
+		const escaped = await fetchHttp(baseUrl, '/hello%20world.txt');
+		assert.equal(escaped.status, 200);
+		assert.equal(escaped.body, 'literal escape');
+	});
+
+	it('serves a symlinked file whose target is inside a dot-directory', async function () {
+		const { appDir, state } = serveApp({});
+		const target = join(tempRoot, '.store', 'pkg', 'bundle.js');
+		mkdirSync(join(target, '..'), { recursive: true });
+		writeFileSync(target, 'export const bundled = true;');
+		const link = join(appDir, 'web', 'bundle.js');
+		mkdirSync(join(link, '..'), { recursive: true });
+		try {
+			symlinkSync(target, link);
+		} catch (error) {
+			if (process.platform === 'win32') return this.skip();
+			throw error;
+		}
+		state.entryCallback({ eventType: 'add', urlPath: '/bundle.js', absolutePath: link });
+
+		const res = await fetchHttp(baseUrl, '/bundle.js');
+		assert.equal(res.status, 200);
+		assert.equal(res.body, 'export const bundled = true;');
+	});
+
+	it('keeps answering 404 for an entry that is a dotfile or links to one', async function () {
+		const { appDir, state } = serveApp({ '.hidden.txt': 'hidden' });
+		const secret = join(appDir, '.env');
+		writeFileSync(secret, 'SECRET=1');
+		const link = join(appDir, 'web', 'config.txt');
+		try {
+			symlinkSync(secret, link);
+		} catch (error) {
+			if (process.platform === 'win32') return this.skip();
+			throw error;
+		}
+		state.entryCallback({ eventType: 'add', urlPath: '/config.txt', absolutePath: link });
+
+		for (const urlPath of ['/.hidden.txt', '/config.txt']) {
+			const res = await fetchHttp(baseUrl, urlPath);
+			assert.equal(res.status, 404, urlPath);
+			assert.ok(!res.body.includes('SECRET'), urlPath);
+		}
+	});
+});
+
+describe('pipeBodyToResponse before the response head is written', () => {
+	let tempRoot;
+	let server;
+	let baseUrl;
+	let outcomes;
+	const dispatch = { current: null };
+
+	before(async () => {
+		({ server, baseUrl } = await listenWith(dispatch));
+		tempRoot = mkdtempSync(join(tmpdir(), 'harper-static-preheader-'));
+	});
+
+	after(() => {
+		server?.closeAllConnections();
+		server?.close();
+		if (tempRoot) rmSync(tempRoot, { recursive: true, force: true });
+	});
+
+	beforeEach(() => {
+		outcomes = [];
+		sinon.stub(analyticsWrite, 'recordActionBinary').callsFake((value, metric) => {
+			if (metric.startsWith('response_')) outcomes.push(metric);
+		});
+	});
+
+	afterEach(() => {
+		sinon.restore();
+	});
+
+	// A handlesHeaders body, like static's send(): the head is not written until its first byte.
+	const failing =
+		(error, stage = () => {}) =>
+		(req) => {
+			stage(req._nodeResponse);
+			return {
+				handlesHeaders: true,
+				body: new Readable({
+					read() {
+						this.destroy(error);
+					},
+				}),
+			};
+		};
+
+	it('answers a stream error that carries a status with that status, headers and no stale entity headers', async () => {
+		dispatch.current = failing(
+			Object.assign(new Error('try later'), { statusCode: 503, headers: { 'Retry-After': '5' } }),
+			(res) => {
+				res.setHeader('Content-Length', '4096');
+				res.setHeader('Content-Type', 'text/html');
+				res.setHeader('ETag', '"abc"');
+				res.setHeader('Last-Modified', 'Wed, 21 Oct 2015 07:28:00 GMT');
+				res.setHeader('Cache-Control', 'public, max-age=3600');
+				res.setHeader('X-Frame-Options', 'DENY');
+				res.setHeader('Vary', 'Accept-Encoding');
+				res.setHeader('Set-Cookie', 'a=1');
+			}
+		);
+
+		const res = await fetchHttp(baseUrl, '/unavailable');
+
+		assert.equal(res.status, 503);
+		assert.equal(res.complete, true);
+		assert.equal(res.body, 'Error: try later');
+		assert.equal(res.headers['retry-after'], '5');
+		assert.equal(res.headers['cache-control'], 'no-store');
+		assert.notEqual(res.headers['content-length'], '4096');
+		assert.equal(res.headers.etag, undefined);
+		assert.equal(res.headers['last-modified'], undefined);
+		assert.equal(res.headers['x-frame-options'], 'DENY');
+		assert.equal(res.headers.vary, 'Accept-Encoding');
+		assert.deepEqual(res.headers['set-cookie'], ['a=1']);
+	});
+
+	it('answers send for a missing file with 404 and does not reveal the path', async () => {
+		dispatch.current = (req) => ({
+			handlesHeaders: true,
+			body: send(req, 'missing.txt', { root: tempRoot }),
+		});
+
+		const res = await fetchHttp(baseUrl, '/missing');
+
+		assert.equal(res.status, 404);
+		assert.equal(res.body, 'Error: Not Found');
+		assert.ok(!res.body.includes(tempRoot));
+	});
+
+	it('answers an error without a status with a generic 500 that does not reveal its message', async () => {
+		dispatch.current = failing(
+			Object.assign(new Error(`EACCES: permission denied, open '${tempRoot}/secret'`), { code: 'EACCES' })
+		);
+
+		const res = await fetchHttp(baseUrl, '/denied');
+
+		assert.equal(res.status, 500);
+		assert.equal(res.body, 'Error: Internal Server Error');
+	});
+
+	it('writes a 416 with its Content-Range', async () => {
+		dispatch.current = failing(
+			Object.assign(new Error('Range Not Satisfiable'), { status: 416, headers: { 'Content-Range': 'bytes */5' } })
+		);
+
+		const res = await fetchHttp(baseUrl, '/range');
+
+		assert.equal(res.status, 416);
+		assert.equal(res.headers['content-range'], 'bytes */5');
+	});
+
+	it('answers a source that was destroyed with an error before it was piped', async () => {
+		dispatch.current = () => {
+			const body = new Readable({ read() {} });
+			body.on('error', () => {});
+			body.destroy(Object.assign(new Error('gone'), { statusCode: 410 }));
+			return { handlesHeaders: true, body };
+		};
+
+		const res = await fetchHttp(baseUrl, '/gone');
+
+		assert.equal(res.status, 410);
+	});
+
+	it('aborts the connection when it cannot write the error response', async () => {
+		dispatch.current = failing(
+			Object.assign(new Error('bad header'), { statusCode: 503, headers: { 'Retry-After': '5\r\nX-Injected: 1' } })
+		);
+
+		await assert.rejects(fetchHttp(baseUrl, '/unwritable'), /socket hang up/);
+		dispatch.current = () => ({ status: 200, body: 'still serving' });
+		assert.equal((await fetchHttp(baseUrl, '/after')).body, 'still serving');
+	});
+
+	it('aborts the connection when the source closes without ending or erroring', async () => {
+		dispatch.current = () => {
+			const body = new Readable({ read() {} });
+			body.destroy();
+			return { handlesHeaders: true, body };
+		};
+
+		await assert.rejects(fetchHttp(baseUrl, '/silent'), /socket hang up/);
+		dispatch.current = () => ({ status: 200, body: 'still serving' });
+		assert.equal((await fetchHttp(baseUrl, '/after')).body, 'still serving');
+	});
+
+	it('aborts the connection when the stream fails after the head is written', async () => {
+		dispatch.current = () => {
+			let sent = false;
+			return {
+				handlesHeaders: true,
+				body: new Readable({
+					read() {
+						if (sent) return;
+						sent = true;
+						this.push('partial');
+						// let the head and first chunk reach the client before the failure
+						setTimeout(() => this.destroy(Object.assign(new Error('midstream'), { statusCode: 503 })), 50);
+					},
+				}),
+			};
+		};
+
+		const res = await fetchHttp(baseUrl, '/midstream');
+
+		assert.equal(res.status, 200);
+		assert.equal(res.complete, false, 'a truncated body must not read as a complete response');
+	});
+
+	it('destroys the source when the client disconnects before the first byte', async () => {
+		let sourceClosed = false;
+		let requestStarted = false;
+		dispatch.current = () => {
+			requestStarted = true;
+			const body = new Readable({ read() {} });
+			body.on('close', () => {
+				sourceClosed = true;
+			});
+			return { handlesHeaders: true, body };
+		};
+
+		const req = http.get(`${baseUrl}/slow`, { agent: false });
+		req.on('error', () => {});
+		await waitFor(() => requestStarted, 'the handler to run');
+		req.destroy();
+		await waitFor(() => sourceClosed, 'the source to be destroyed');
+	});
+
+	it('answers a stream error with a status over HTTP/2', async () => {
+		const h2Server = http2.createServer((req, res) => {
+			const body = new Readable({
+				read() {
+					this.destroy(Object.assign(new Error('try later'), { statusCode: 503 }));
+				},
+			});
+			pipeBodyToResponse(body, res, '/h2', 'GET', performance.now());
+		});
+		await new Promise((resolve) => h2Server.listen(0, '127.0.0.1', resolve));
+		const client = http2.connect(`http://127.0.0.1:${h2Server.address().port}`);
+		try {
+			const res = await new Promise((resolve, reject) => {
+				const stream = client.request({ ':path': '/h2' });
+				const chunks = [];
+				let status;
+				stream.on('response', (headers) => {
+					status = headers[':status'];
+				});
+				stream.on('data', (chunk) => chunks.push(chunk));
+				stream.on('end', () => resolve({ status, body: Buffer.concat(chunks).toString() }));
+				stream.on('error', reject);
+				stream.setTimeout(REQUEST_TIMEOUT_MS, () => stream.destroy(new Error('Request timed out')));
+			});
+
+			assert.equal(res.status, 503);
+			assert.equal(res.body, 'Error: try later');
+		} finally {
+			client.close();
+			h2Server.close();
+		}
+	});
+
+	it('records the status that was sent, once', async () => {
+		dispatch.current = failing(Object.assign(new Error('try later'), { statusCode: 503 }));
+
+		await fetchHttp(baseUrl, '/unavailable');
+		await waitFor(() => outcomes.length > 0, 'the outcome to be recorded');
+
+		assert.deepEqual(outcomes, ['response_503']);
+	});
+
+	it('records a served file once, with its own status', async () => {
+		writeFileSync(join(tempRoot, 'ok.txt'), 'ok');
+		dispatch.current = (req) => ({ handlesHeaders: true, body: send(req, 'ok.txt', { root: tempRoot }) });
+
+		const res = await fetchHttp(baseUrl, '/ok');
+		await waitFor(() => outcomes.length > 0, 'the outcome to be recorded');
+
+		assert.equal(res.status, 200);
+		assert.equal(res.body, 'ok');
+		assert.deepEqual(outcomes, ['response_200']);
+	});
+
+	it('leaves a stream whose head was already written on pipeline', async () => {
+		dispatch.current = () => ({ status: 201, body: Readable.from(['a', 'b']) });
+
+		const res = await fetchHttp(baseUrl, '/streamed');
+
+		assert.equal(res.status, 201);
+		assert.equal(res.body, 'ab');
+		assert.deepEqual(outcomes, ['response_201']);
 	});
 });

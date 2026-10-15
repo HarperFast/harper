@@ -22,7 +22,7 @@ import { claimListener, listenerOwner, shouldBindListenerHere } from './threads/
 import { createTLSSelector, getEffectiveTlsCiphers } from '../security/keys.ts';
 import { createSecureServer, createServer as createH2CServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
-import { createServer, IncomingMessage, validateHeaderName, validateHeaderValue } from 'node:http';
+import { createServer, IncomingMessage, STATUS_CODES, validateHeaderName, validateHeaderValue } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.ts';
 import {
@@ -40,7 +40,7 @@ import {
 } from './serverHelpers/proxyProtocol.ts';
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
-import { Readable, Writable, pipeline } from 'node:stream';
+import { Readable, Writable, finished, pipeline } from 'node:stream';
 import { mkdirSync, unlinkSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.ts';
@@ -577,6 +577,10 @@ export function httpServer(listener, options) {
  * up destroy-propagation in both directions (client disconnect destroys the source, a source error
  * destroys the response) and, unlike a clean `.end()`, closes the response abruptly on error — which
  * correctly signals a failed/truncated transfer to the client instead of implying it completed.
+ *
+ * A body that writes its own head (`handlesHeaders`, an unknown-size Blob) reaches here with the head
+ * unwritten, and a failure before its first byte can still be an HTTP error: that case goes through
+ * `pipeBeforeHeaders`, since `pipeline()` would destroy the response before any status is written.
  */
 export function pipeBodyToResponse(
 	body: Readable,
@@ -593,7 +597,7 @@ export function pipeBodyToResponse(
 	body.on('data', (data) => {
 		bytesSent += typeof data === 'string' ? Buffer.byteLength(data) : data.length;
 	});
-	pipeline(body, nodeResponse, (error) => {
+	const complete = (error?: Error | null) => {
 		if (error) {
 			// a client closing the connection mid-stream surfaces as a premature-close error here;
 			// that's a routine disconnect, not a failure worth a warning
@@ -603,7 +607,102 @@ export function pipeBodyToResponse(
 			recordAction(bytesSent, 'bytes-sent', handlerPath, method);
 			endConnectionIfClientExpectsClose(nodeResponse);
 		}
+	};
+	if (nodeResponse.headersSent) pipeline(body, nodeResponse, complete);
+	else pipeBeforeHeaders(body, nodeResponse, complete);
+}
+
+function prematureCloseError(): NodeJS.ErrnoException {
+	return Object.assign(new Error('Premature close'), { code: 'ERR_STREAM_PREMATURE_CLOSE' });
+}
+
+/**
+ * `pipeBodyToResponse` for a response whose head is not written yet. `pipeline()` destroys the
+ * response on any source error, so the client would see a reset where an HTTP status is still
+ * possible. Here a source error before the first byte is answered with a status; after the head is
+ * committed, or on a silent premature close, the connection aborts as it does under `pipeline()`.
+ */
+function pipeBeforeHeaders(body: Readable, nodeResponse: any, complete: (error?: Error | null) => void) {
+	let failed = false;
+	let bodyEnded = false;
+	const fail = (error: NodeJS.ErrnoException) => {
+		// Later source events (a 'close' after its 'error') must not abort the replacement response
+		if (failed) return;
+		failed = true;
+		const premature = error.code === 'ERR_STREAM_PREMATURE_CLOSE';
+		const declaredStatus = errorStatus(error);
+		if (!premature) harperLogger[declaredStatus && declaredStatus < 500 ? 'info' : 'warn'](errorForLog(error));
+		body.unpipe?.(nodeResponse);
+		body.destroy?.();
+		if (
+			!premature &&
+			!nodeResponse.headersSent &&
+			!nodeResponse.destroyed &&
+			!nodeResponse.writableEnded &&
+			answerBeforeHeaders(nodeResponse, error)
+		)
+			return;
+		nodeResponse.destroy(error);
+	};
+	// 'error' goes on first: a source that is destroyed with an error emits it on a later tick
+	body.on('error', (error) => fail(error ?? prematureCloseError()));
+	body.on('end', () => {
+		bodyEnded = true;
 	});
+	body.on('close', () => {
+		if (!bodyEnded && !nodeResponse.writableEnded && !nodeResponse.destroyed) fail(prematureCloseError());
+	});
+	finished(nodeResponse, (error) => {
+		if (failed) {
+			if (!error) endConnectionIfClientExpectsClose(nodeResponse);
+			return;
+		}
+		if (error || !nodeResponse.writableFinished) body.destroy?.();
+		complete(error);
+	});
+	// A source destroyed before the listeners above attached emits nothing later
+	if (body.destroyed && !body.readableEnded) fail(body.errored ?? prematureCloseError());
+	else body.pipe(nodeResponse);
+}
+
+/** The error's own HTTP error status, if it carries one. */
+function errorStatus(error: any): number | undefined {
+	const status = Number(error?.statusCode ?? error?.status);
+	return Number.isInteger(status) && status >= 400 && status <= 599 ? status : undefined;
+}
+
+// Headers a failed body may have staged for the representation it was about to send.
+const STAGED_ENTITY_HEADERS = [
+	'content-length',
+	'content-type',
+	'content-range',
+	'content-encoding',
+	'etag',
+	'last-modified',
+	'accept-ranges',
+];
+
+/** Write `error` as an HTTP error response. Returns false when it could not be written. */
+function answerBeforeHeaders(nodeResponse: any, error: any): boolean {
+	const declaredStatus = errorStatus(error);
+	const status = declaredStatus ?? 500;
+	try {
+		for (const name of STAGED_ENTITY_HEADERS) nodeResponse.removeHeader(name);
+		// a staged max-age would make the error cacheable
+		nodeResponse.setHeader('Cache-Control', 'no-store');
+		nodeResponse.writeHead(status, toWriteHeadHeaders(error?.headers));
+		// An error without its own status, or one that declares its message not exposable (`send` marks
+		// the filesystem errors it wraps), is an internal fault: keep the class name — the public error
+		// code — and drop the message, which can name a path.
+		nodeResponse.end(
+			declaredStatus && error.expose !== false
+				? errorToString(error)
+				: `${error?.constructor?.name ?? 'Error'}: ${STATUS_CODES[status]}`
+		);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -841,9 +940,11 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 					method,
 					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
 				);
-				recordActionBinary(status < 400, 'success', handlerPath, method);
-				recordActionBinary(1, 'response_' + status, handlerPath, method);
-				logRequest(nodeRequest, status, requestId, executionTime);
+				const recordOutcome = (finalStatus: number) => {
+					recordActionBinary(finalStatus < 400, 'success', handlerPath, method);
+					recordActionBinary(1, 'response_' + finalStatus, handlerPath, method);
+					logRequest(nodeRequest, finalStatus, requestId, executionTime);
+				};
 				if (!sentBody) {
 					if (body instanceof ReadableStream) body = Readable.fromWeb(body);
 					// Only wrap non-stream iterables. Re-wrapping an existing Node stream in
@@ -854,6 +955,12 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 					else if (!(body instanceof Readable) && (body[Symbol.iterator] || body[Symbol.asyncIterator]))
 						body = Readable.from(body);
 
+					// A body that writes its own head (send, an unknown-size Blob) can still fail into an
+					// error status, so record the status that was actually sent
+					if (body?.pipe && !nodeResponse.headersSent && !nodeResponse.destroyed)
+						nodeResponse.once('close', () => recordOutcome(nodeResponse.statusCode));
+					else recordOutcome(status);
+
 					// if it is a stream, pipe it
 					if (body?.pipe) pipeBodyToResponse(body, nodeResponse, handlerPath, method, endTime);
 					// else just send the buffer/string
@@ -862,7 +969,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 							nodeResponse.end(body);
 						}, onError);
 					else nodeResponse.end(body);
-				}
+				} else recordOutcome(status);
 			} catch (error) {
 				onError(error);
 			}
