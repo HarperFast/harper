@@ -5685,6 +5685,7 @@ export function makeTable(options): TableResourceClass {
 				return Promise.reject(err);
 			}
 			const proceed = (): any => {
+				if (condition?.finished) throw new ClientError('Conditional request already completed', 409);
 				// On a source/replication apply (`isNotification`), the record's already-saved blobs were
 				// received out-of-band for THIS write, so track them for skip/abort cleanup (harper-pro#406).
 				write.beforeIntermediate = preCommitBlobsForRecordBefore(

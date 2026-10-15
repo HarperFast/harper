@@ -390,10 +390,14 @@ describe('REST preconditions with real table transactions', () => {
 			'PATCH',
 			'/Unawaited/deferred',
 			{ content: 'after' },
-			{ 'if-match': '"stale"' }
+			{ 'if-match': '*' }
 		);
 		release();
-		await pending.catch(() => {});
+		const lateError = await pending.then(
+			() => undefined,
+			(error) => error
+		);
+		assert.strictEqual(lateError?.statusCode, 409);
 		assert.strictEqual(response.status, 501, await bodyOf(response));
 		assert.strictEqual((await Embedded.get('deferred')).content, 'before');
 	});
