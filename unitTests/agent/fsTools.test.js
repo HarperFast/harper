@@ -423,15 +423,25 @@ describe('agent/fsTools pages', () => {
 
 	it('list_dir cuts a name too long for a page on its own, and still pages past it', async () => {
 		const { serializeToolResult } = require('#src/resources/models/agentLoop');
-		writeFileSync(join(scopes.logDir, '\u0001'.repeat(200)), '');
+		// Windows refuses control characters in names but counts UTF-16 units, so multi-byte ones outgrow a page there.
+		const longName = (process.platform === 'win32' ? '€' : '\u0001').repeat(200);
+		writeFileSync(join(scopes.logDir, longName), '');
 		writeFileSync(join(scopes.logDir, 'z.log'), '');
-		const first = await listDirTool.handler({ root: 'logs' }, pagedCtx(1024));
-		assert.equal(serializeToolResult({ ok: true, result: first }, 1024).truncated, false);
-		assert.equal(first.entries[0].nameTruncated, true);
-		assert.equal(first.nextOffset, 1);
-		const second = await listDirTool.handler({ root: 'logs', offset: first.nextOffset }, pagedCtx(1024));
+		const pages = [];
+		let offset;
+		do {
+			const page = await listDirTool.handler({ root: 'logs', offset }, pagedCtx(1024));
+			assert.equal(serializeToolResult({ ok: true, result: page }, 1024).truncated, false);
+			pages.push(page.entries);
+			offset = page.nextOffset;
+		} while (offset !== undefined);
+		assert.equal(pages.length, 2);
+		const entries = pages.flat();
+		const cut = entries.filter((e) => e.nameTruncated);
+		assert.equal(cut.length, 1);
+		assert.ok(longName.startsWith(cut[0].name) && cut[0].name.length < longName.length);
 		assert.deepEqual(
-			second.entries.map((e) => e.name),
+			entries.filter((e) => !e.nameTruncated).map((e) => e.name),
 			['z.log']
 		);
 	});

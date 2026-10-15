@@ -26,7 +26,7 @@ const DEFAULT_PAGE_BYTES = 32 * 1024;
 const SCAN_CHUNK_BYTES = 64 * 1024;
 // The observation envelope and a result's fields other than its text and `path`, numbers included.
 const RESULT_FIELD_BYTES = 256;
-// Room for one `list_dir` entry with a 255-byte name, the longest a file system allows.
+// Room for one `list_dir` entry with a 255-byte name; `list_dir` cuts a longer name to fit.
 const MIN_PAGE_BYTES = 320;
 const NEWLINE = 0x0a;
 
@@ -497,7 +497,7 @@ export const listDirTool: AgentTool = {
 			const entryBytes = Buffer.byteLength(JSON.stringify(entry), 'utf8') + 1;
 			if (used + entryBytes > budget) {
 				if (entries.length > 0) break;
-				// A name too long for a page on its own, which only escaping can make: cut it to fit.
+				// A name too long for a page on its own: cut it to fit.
 				const nameRoom = budget - (entryBytes - escapedBytes(e.name)) - 22;
 				entry.name = escapedHead(e.name, nameRoom);
 				entry.nameTruncated = true;
