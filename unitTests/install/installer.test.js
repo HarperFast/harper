@@ -589,7 +589,8 @@ describe('resolveInstallDestination', () => {
 
 describe('install storage.engine resolution', () => {
 	const realInstaller = require('#js/utility/install/installer');
-	const { closeDatabase, getDatabases } = require('#js/resources/databases');
+	const { closeDatabase, getDatabases, resetRocksCompression } = require('#js/resources/databases');
+	const initPaths = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 	const env_manager = require('#js/utility/environment/environmentManager');
 	const hdbTerms = require('#js/utility/hdbTerms');
 	const hdb_utils = require('#js/utility/common_utils');
@@ -606,6 +607,8 @@ describe('install storage.engine resolution', () => {
 		'HARPER_STORAGE_ENGINE',
 		'STORAGE_COMPRESSION',
 		'STORAGE_ROCKS_COMPRESSION',
+		'DEFAULTS_MODE',
+		'THREADS_COUNT',
 		'HDB_ROOT',
 		'ROOTPATH',
 		'HDB_ADMIN_USERNAME',
@@ -629,9 +632,11 @@ describe('install storage.engine resolution', () => {
 		await closeDatabase('system');
 	}
 
-	function assertInstalledSystemEngine(rootPath, expectedEngine) {
-		const lmdbFile = path.join(rootPath, 'database', 'system.mdb');
-		const rocksCurrent = path.join(rootPath, 'database', 'system', 'CURRENT');
+	function assertInstalledSystemEngine(rootPath, expectedEngine, expectedOptions = {}) {
+		const { compression = 'kLZ4Compression', storageDir = path.join(rootPath, 'database') } = expectedOptions;
+		const lmdbFile = path.join(storageDir, 'system.mdb');
+		const rocksSystemDir = path.join(storageDir, 'system');
+		const rocksCurrent = path.join(rocksSystemDir, 'CURRENT');
 		if (expectedEngine === 'lmdb') {
 			assert.strictEqual(fs.existsSync(lmdbFile), true, `Expected ${lmdbFile} to exist for lmdb install`);
 			assert.strictEqual(fs.existsSync(rocksCurrent), false, `Expected ${rocksCurrent} not to exist for lmdb install`);
@@ -640,6 +645,16 @@ describe('install storage.engine resolution', () => {
 			assert.strictEqual(fs.existsSync(rocksCurrent), true, `Expected ${rocksCurrent} to exist for rocksdb install`);
 			assert.strictEqual(fs.existsSync(lmdbFile), false, `Expected ${lmdbFile} not to exist for rocksdb install`);
 			assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE) ?? 'rocksdb', 'rocksdb');
+			const optionsFiles = fs
+				.readdirSync(rocksSystemDir)
+				.filter((name) => name.startsWith('OPTIONS-'))
+				.sort();
+			assert.ok(optionsFiles.length > 0, `Expected OPTIONS-* file in ${rocksSystemDir}`);
+			const latestOptions = fs.readFileSync(path.join(rocksSystemDir, optionsFiles[optionsFiles.length - 1]), 'utf8');
+			assert.ok(
+				latestOptions.includes(`compression=${compression}`),
+				`Expected ${rocksSystemDir}/${optionsFiles[optionsFiles.length - 1]} to contain compression=${compression}`
+			);
 		} else {
 			throw new Error(`Unexpected engine: ${expectedEngine}`);
 		}
@@ -677,6 +692,8 @@ describe('install storage.engine resolution', () => {
 		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, undefined);
 		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, undefined);
 		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.DATABASES, undefined);
+		resetRocksCompression();
+		initPaths.resetPaths();
 	});
 
 	afterEach(async () => {
@@ -705,6 +722,8 @@ describe('install storage.engine resolution', () => {
 			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, undefined);
 			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION, undefined);
 			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, undefined);
+			resetRocksCompression();
+			initPaths.resetPaths();
 			testUtils.setupTestDBPath();
 			env_manager.initSync(true);
 			hdb_logger.initLogSettings(true);
@@ -878,14 +897,13 @@ describe('install storage.engine resolution', () => {
 		const rootPath = await runInstall();
 		assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION), 'zstd');
 		assert.strictEqual(env_manager.getConfigOverrides()?.storage_rocks_compression, undefined);
-		assertInstalledSystemEngine(rootPath, 'rocksdb');
+		assertInstalledSystemEngine(rootPath, 'rocksdb', { compression: 'kZSTD' });
 		assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION), 'zstd');
 		const writtenParsed = YAML.parse(fs.readFileSync(path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE), 'utf8'));
 		assert.strictEqual(writtenParsed.storage.rocks.compression, 'zstd');
 	});
 
 	it('coerces CLI/env STORAGE_COMPRESSION=false to boolean false when staging before mountHdb and persists boolean false', async () => {
-		process.env.STORAGE_ENGINE = 'lmdb';
 		process.env.STORAGE_COMPRESSION = 'false';
 		const rootPath = await runInstall();
 
@@ -895,10 +913,76 @@ describe('install storage.engine resolution', () => {
 			'Active config STORAGE_COMPRESSION must be coerced to boolean false, not raw string "false"'
 		);
 		assert.strictEqual(env_manager.getConfigOverrides()?.storage_compression, undefined);
+		assertInstalledSystemEngine(rootPath, 'rocksdb', { compression: 'kNoCompression' });
 		const writtenParsed = YAML.parse(fs.readFileSync(path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE), 'utf8'));
 		assert.strictEqual(writtenParsed.storage.compression, false);
 		config_utils.initConfig(true);
 		assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION), false);
+	});
+
+	it('creates system database at custom storage.path from HARPER_SET_CONFIG and persists storage.path', async () => {
+		const customStorageDir = path.join(tempBaseDir, 'custom-storage');
+		fs.mkdirSync(customStorageDir, { recursive: true });
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ storage: { path: customStorageDir } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'rocksdb', { storageDir: customStorageDir });
+		assert.strictEqual(
+			fs.existsSync(path.join(rootPath, 'database', 'system', 'CURRENT')),
+			false,
+			'Default <rootPath>/database/system should not be created when custom storage.path is configured'
+		);
+		const writtenParsed = YAML.parse(fs.readFileSync(path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE), 'utf8'));
+		assert.strictEqual(writtenParsed.storage.path, customStorageDir);
+	});
+
+	it('rejects a nonexistent storage.path before mountHdb creates tables or directories there', async () => {
+		const missingStorageDir = path.join(tempBaseDir, 'nonexistent-storage-dir');
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ storage: { path: missingStorageDir } });
+		const exitStub = sandbox.stub(process, 'exit').callsFake((code) => {
+			throw new Error(`process.exit(${code})`);
+		});
+
+		await assert.rejects(runInstall(), /process\.exit\(1\)/);
+
+		assert.strictEqual(exitStub.calledWith(1), true, 'Expected rollbackInstall to call process.exit(1)');
+		assert.strictEqual(
+			fs.existsSync(missingStorageDir),
+			false,
+			'Nonexistent storage.path must not be created by mountHdb/openRocksDatabase before validation rejects it'
+		);
+		assert.strictEqual(
+			fs.existsSync(path.join(tempBaseDir, 'hdb')),
+			false,
+			'Expected install rootPath to be removed during rollback'
+		);
+	});
+
+	it('allows HARPER_DEFAULT_CONFIG to override un-authored dev mode defaults while yielding to explicit CLI/env args', async () => {
+		process.env.DEFAULTS_MODE = 'dev';
+		process.env.THREADS_COUNT = '2';
+		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({
+			threads: { count: 4 },
+			logging: { level: 'debug' },
+			storage: { engine: 'lmdb' },
+		});
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		const writtenParsed = YAML.parse(fs.readFileSync(path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE), 'utf8'));
+		assert.strictEqual(
+			writtenParsed.logging.level,
+			'debug',
+			'HARPER_DEFAULT_CONFIG should override un-authored DEV_MODE_CONFIG logging.level default ("info")'
+		);
+		assert.strictEqual(
+			writtenParsed.threads.count,
+			2,
+			'Explicit CLI/env THREADS_COUNT=2 should still take precedence over HARPER_DEFAULT_CONFIG threads.count=4'
+		);
+		assert.strictEqual(
+			writtenParsed.localStudio.enabled,
+			true,
+			'Un-overridden DEV_MODE_CONFIG defaults should still be preserved'
+		);
 	});
 
 	it('restores a pre-seeded HDB_CONFIG inside rootPath on rollback even when atomicWriteFile fails with ENOSPC', async () => {
@@ -926,12 +1010,12 @@ describe('install storage.engine resolution', () => {
 		assert.strictEqual(
 			fs.readFileSync(rootConfigPath, 'utf8'),
 			originalContent,
-			'Expected pre-seeded root HDB_CONFIG content to be restored via writeFileSync fallback'
+			'Expected pre-seeded root HDB_CONFIG content to be restored via backup-aside or writeFileSync fallback'
 		);
-		assert.strictEqual(
-			fs.existsSync(path.join(rootPath, 'database')),
-			false,
-			'Expected install-created database directory to be removed during rollback'
+		assert.deepStrictEqual(
+			fs.readdirSync(rootPath),
+			[hdbTerms.HARPER_CONFIG_FILE],
+			'Expected only the restored root config file to remain in rootPath after rollback'
 		);
 	});
 });
