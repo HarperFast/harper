@@ -7167,7 +7167,7 @@ export function makeTable(options): TableResourceClass {
 						// if a post-subscribe write hits a key the cursor also visits. This is
 						// idempotent for "current state then live updates" — both deliveries land at
 						// the same final state. We don't dedupe.
-						for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
+						for (const { key: id, value, version, localTime, expiresAt, size } of primaryStore.getRange({
 							start: thisId ?? false,
 							end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
 							versions: true,
@@ -7178,11 +7178,12 @@ export function makeTable(options): TableResourceClass {
 								await rest();
 								if (!isActive()) return;
 							}
-							// Update cursorMaxTime BEFORE the !value check so deletion tombstones
-							// (which have null value but a real localTime/version) still raise the gate.
+							// Update cursorMaxTime BEFORE the !value / expiresAt checks so deletion tombstones
+							// (which have null value but a real localTime/version) and expired rows still raise the gate.
 							const t = localTime ?? version;
 							if (t > cursorMaxTime) cursorMaxTime = t;
 							if (!value) continue;
+							if (!hasSourceGet && expiresAt != undefined && expiresAt < Date.now()) continue;
 							const scanned: any = { id, localTime, value, version, type: 'put', size };
 							if (reportingProgress) scanned.fromScan = true;
 							if (!send(scanned)) return;
@@ -7287,7 +7288,11 @@ export function makeTable(options): TableResourceClass {
 						}
 						// with no entry, a pruned tombstone may have taken the history with it
 					} else if (checkResume && !entry && !checkResume()) return;
-					if (!request.omitCurrent && entry?.value) {
+					if (
+						!request.omitCurrent &&
+						entry?.value &&
+						(hasSourceGet || entry.expiresAt == undefined || entry.expiresAt >= Date.now())
+					) {
 						// if retain and it exists, send the current value first
 						const current: any = { id: thisId, ...entry, type: 'put' };
 						if (reportingProgress) current.fromScan = true;
@@ -7394,7 +7399,7 @@ export function makeTable(options): TableResourceClass {
 				const isCollection = request.isCollection ?? thisId == null;
 				if (isCollection) {
 					let sinceYield = 0;
-					for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
+					for (const { key: id, value, version, localTime, expiresAt, size } of primaryStore.getRange({
 						start: thisId ?? false,
 						end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
 						versions: true,
@@ -7406,11 +7411,13 @@ export function makeTable(options): TableResourceClass {
 							if (!isActive()) return;
 						}
 						if (!value) continue; // skip tombstones
+						if (!hasSourceGet && expiresAt != undefined && expiresAt < Date.now()) continue;
 						yield { id, localTime, value, version, type: 'put', size };
 					}
 				} else {
 					const entry = primaryStore.getEntry(thisId);
-					if (entry?.value) yield { id: thisId, ...entry, type: 'put' };
+					if (entry?.value && (hasSourceGet || entry.expiresAt == undefined || entry.expiresAt >= Date.now()))
+						yield { id: thisId, ...entry, type: 'put' };
 				}
 			}
 			// Drain the current scope into the subscription with the same back-pressure as the live path.
