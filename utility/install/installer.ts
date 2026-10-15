@@ -22,7 +22,6 @@ import _installValidator from '../../validation/installValidator.ts';
 const installValidator = _installValidator;
 import _mountHdb from '../mount_hdb.ts';
 const mountHdb = _mountHdb;
-import { composeConfigFromEnv } from '../../config/harperConfigEnvVars.ts';
 import * as configUtils from '../../config/configUtils.ts';
 import * as userOps from '../../security/user.ts';
 import * as roleOps from '../../security/role.ts';
@@ -83,6 +82,13 @@ const cfgEnv: Record<string, string | undefined> = {};
 let hdbRoot = undefined;
 let conditionalRollback = false;
 let ignoreExisting = false;
+let pendingStagedInstallConfig:
+	| {
+			args: Record<string, any>;
+			hdbConfigPath: string | undefined;
+			staged: configUtils.StagedInstallConfig;
+	  }
+	| undefined;
 
 /**
  * This module orchestrates the installation of Harper.
@@ -257,17 +263,20 @@ async function install() {
 		throw new Error('Installer should have the HDB root param at the stage it is in but it does not.');
 	}
 	envManager.setHdbBasePath(hdbRoot);
-	stageStorageEngine(installParams);
-	stageRocksCompression(installParams);
+	stageInstallConfig(installParams);
 
-	// Creates the Harper project folder structure and the LMDB environments/dbis.
-	await mountHdb(hdbRoot);
+	try {
+		// Creates the Harper project folder structure and the LMDB environments/dbis.
+		await mountHdb(hdbRoot);
 
-	// Creates the boot prop file in user home dir. Boot prop file contains location of hdb config.
-	await createBootPropertiesFile();
+		// Creates the boot prop file in user home dir. Boot prop file contains location of hdb config.
+		await createBootPropertiesFile();
 
-	// Create the harperdb-config.yaml file
-	await createConfigFile(installParams);
+		// Create the harperdb-config.yaml file
+		await createConfigFile(installParams);
+	} finally {
+		pendingStagedInstallConfig = undefined;
+	}
 
 	// At this point there should be config and Harper folders so re-init log settings to update
 	hdbLogger.initLogSettings(true);
@@ -646,110 +655,10 @@ export function applyInstallModeDefaults(args, defaultsMode, baseDoc?: YAML.Docu
 	return args;
 }
 
-// Stage storage.engine in memory before mountHdb() opens the system database prior to createConfigFile().
-function stageStorageEngine(installParams: Record<string, any> = {}) {
-	const storageEngineParam = hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE;
-	envManager.setProperty(storageEngineParam, undefined);
-	const commandLineConfig = assignCMDENVVariables([storageEngineParam], true);
-	const rawCliEngine = commandLineConfig[storageEngineParam];
-	const rawBaseEngine = installParams.STORAGE_ENGINE ?? installParams[storageEngineParam];
-	const cliEngine =
-		rawCliEngine !== undefined && rawCliEngine !== null && rawCliEngine !== ''
-			? configUtils.castConfigValue(storageEngineParam, rawCliEngine)
-			: undefined;
-	const baseEngine =
-		rawBaseEngine !== undefined && rawBaseEngine !== null && rawBaseEngine !== ''
-			? configUtils.castConfigValue(storageEngineParam, rawBaseEngine)
-			: undefined;
-	const envConfig = composeConfigFromEnv(
-		baseEngine !== undefined && baseEngine !== null && baseEngine !== '' ? { storage: { engine: baseEngine } } : {},
-		cliEngine !== undefined && cliEngine !== null && cliEngine !== '' ? { storage: { engine: cliEngine } } : undefined
-	);
-	const configuredEngine = envConfig?.storage?.engine;
-	if (configuredEngine !== undefined && configuredEngine !== null && configuredEngine !== '') {
-		configUtils.updateConfigObject(storageEngineParam, configuredEngine);
-	}
-}
-
-/**
- * Make the deployment codec readable before `mountHdb()` creates the system column families.
- *
- * The config file is not written until `createConfigFile()`, several steps after `mountHdb()`, but
- * RocksDB fixes a column family's codec when the family is created and refuses a later reopen that
- * asks for a different one — and worker threads share one process-wide family registry. Left
- * unstaged, the main thread creates `__dbis__` at the build default while every worker resolves the
- * configured codec, and Harper dies with "The system database failed to load". Staging it in the
- * in-memory config here is the same trick `stageStorageEngine()` above uses.
- *
- * Checked in the same precedence `createConfigFile()` itself later resolves the value with, so
- * `storage.compression` also participates when no explicit RocksDB codec is set: its default is
- * true, which resolves to lz4. Stage both values from every source `createConfigFile()` honors so
- * the first open cannot create `__dbis__` with `none` and later workers reopen it with lz4.
- */
-function stageRocksCompression(installParams: Record<string, any> = {}) {
-	const rocksCompression = hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION;
-	const compression = hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION;
-	envManager.setProperty(rocksCompression, undefined);
-	envManager.setProperty(compression, undefined);
-	const commandLineConfig = assignCMDENVVariables([rocksCompression, compression], true);
-	const rawCliRocksCompression = commandLineConfig[rocksCompression];
-	const rawCliCompression = commandLineConfig[compression];
-	const rawBaseRocksCompression = installParams[rocksCompression];
-	const rawBaseCompression = installParams[compression];
-	const cliRocksCompression =
-		rawCliRocksCompression !== undefined && rawCliRocksCompression !== null && rawCliRocksCompression !== ''
-			? configUtils.castConfigValue(rocksCompression, rawCliRocksCompression)
-			: undefined;
-	const cliCompression =
-		rawCliCompression !== undefined && rawCliCompression !== null && rawCliCompression !== ''
-			? configUtils.castConfigValue(compression, rawCliCompression)
-			: undefined;
-	const baseRocksCompression =
-		rawBaseRocksCompression !== undefined && rawBaseRocksCompression !== null && rawBaseRocksCompression !== ''
-			? configUtils.castConfigValue(rocksCompression, rawBaseRocksCompression)
-			: undefined;
-	const baseCompression =
-		rawBaseCompression !== undefined && rawBaseCompression !== null && rawBaseCompression !== ''
-			? configUtils.castConfigValue(compression, rawBaseCompression)
-			: undefined;
-	const baseStorage: Record<string, any> = {};
-	if (baseRocksCompression !== undefined && baseRocksCompression !== null && baseRocksCompression !== '') {
-		baseStorage.rocks = { compression: baseRocksCompression };
-	}
-	if (baseCompression !== undefined && baseCompression !== null && baseCompression !== '') {
-		baseStorage.compression = baseCompression;
-	}
-	const cliStorage: Record<string, any> = {};
-	if (cliRocksCompression !== undefined && cliRocksCompression !== null && cliRocksCompression !== '') {
-		cliStorage.rocks = { compression: cliRocksCompression };
-	}
-	if (cliCompression !== undefined && cliCompression !== null && cliCompression !== '') {
-		cliStorage.compression = cliCompression;
-	}
-	const envConfig = composeConfigFromEnv(
-		Object.keys(baseStorage).length > 0 ? { storage: baseStorage } : {},
-		Object.keys(cliStorage).length > 0 ? { storage: cliStorage } : undefined
-	);
-	const configuredRocksCompression = envConfig?.storage?.rocks?.compression;
-	const configuredCompression = envConfig?.storage?.compression ?? true;
-	if (
-		configuredRocksCompression !== undefined &&
-		configuredRocksCompression !== null &&
-		configuredRocksCompression !== ''
-	) {
-		configUtils.updateConfigObject(rocksCompression, configuredRocksCompression);
-	}
-	configUtils.updateConfigObject(compression, configuredCompression);
-}
-
-/**
- * Calls the util function that creates the Harper config file.
- * If an error occurs during the create install is rolled backed.
- * @param installParams
- * @returns {Promise<void>}
- */
-async function createConfigFile(installParams) {
-	hdbLogger.trace(`Creating ${PRODUCT_NAME} config file`);
+function buildInstallConfigArgs(installParams: Record<string, any> = {}): {
+	args: Record<string, any>;
+	hdbConfigPath: string | undefined;
+} {
 	const hdbConfigPath = getHdbConfigPath();
 	let baseDoc: YAML.Document | undefined;
 	if (hdbConfigPath) {
@@ -791,24 +700,73 @@ async function createConfigFile(installParams) {
 		hdbLogger.warn(warn);
 	}
 	applyInstallModeDefaults(args, defaultsMode, baseDoc);
+	return { args, hdbConfigPath };
+}
+
+/**
+ * Compose and stage the install configuration in memory before `mountHdb()` opens the system
+ * database, then stash the composed document for `createConfigFile()` to validate and persist.
+ *
+ * The config file is not written until `createConfigFile()`, several steps after `mountHdb()`, but
+ * `mountHdb()` already needs `storage.engine`, `storage.rocks.compression`, `storage.compression`,
+ * `storage.path`, and `databases` to match the final persisted config (e.g., RocksDB fixes a column
+ * family's codec at creation and refuses a later reopen with a different codec). Composing once
+ * through `configUtils.stageInstallConfig()` guarantees `mountHdb()` and `createConfigFile()` see
+ * the exact same values and precedence.
+ */
+function stageInstallConfig(installParams: Record<string, any> = {}) {
+	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, undefined);
+	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, undefined);
+	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION, undefined);
+	const { args, hdbConfigPath } = buildInstallConfigArgs(installParams);
+	const staged = configUtils.stageInstallConfig(args, hdbConfigPath);
+	pendingStagedInstallConfig = { args, hdbConfigPath, staged };
+}
+
+/**
+ * Calls the util function that creates the Harper config file.
+ * If an error occurs during the create install is rolled backed.
+ * @param installParams
+ * @returns {Promise<void>}
+ */
+async function createConfigFile(installParams) {
+	hdbLogger.trace(`Creating ${PRODUCT_NAME} config file`);
+	const pending = pendingStagedInstallConfig;
+	pendingStagedInstallConfig = undefined;
+	const { args, hdbConfigPath } = pending ?? buildInstallConfigArgs(installParams);
 
 	const overwriteRootNamedHdbConfig = isRootNamedHdbConfig(hdbConfigPath, hdbRoot);
 	const originalHdbConfigContent =
 		overwriteRootNamedHdbConfig && hdbConfigPath ? fs.readFileSync(hdbConfigPath, 'utf8') : undefined;
 	try {
-		configUtils.createConfigFile(
-			args,
-			false,
-			hdbConfigPath,
-			overwriteRootNamedHdbConfig && hdbConfigPath ? hdbConfigPath : undefined
-		);
+		if (pending?.staged) {
+			configUtils.createConfigFile(
+				args,
+				false,
+				hdbConfigPath,
+				overwriteRootNamedHdbConfig && hdbConfigPath ? hdbConfigPath : undefined,
+				pending.staged
+			);
+		} else {
+			configUtils.createConfigFile(
+				args,
+				false,
+				hdbConfigPath,
+				overwriteRootNamedHdbConfig && hdbConfigPath ? hdbConfigPath : undefined
+			);
+		}
 		envManager.initSync();
 	} catch (configErr) {
 		if (originalHdbConfigContent !== undefined && hdbConfigPath) {
+			const resolvedConfigPath = path.resolve(hdbConfigPath);
 			try {
-				configUtils.atomicWriteFile(path.resolve(hdbConfigPath), originalHdbConfigContent);
-			} catch (restoreErr) {
-				hdbLogger.error(`Failed to restore ${hdbConfigPath} during install rollback: ${restoreErr}`);
+				configUtils.atomicWriteFile(resolvedConfigPath, originalHdbConfigContent);
+			} catch {
+				try {
+					fs.writeFileSync(resolvedConfigPath, originalHdbConfigContent, 'utf8');
+				} catch (restoreErr) {
+					hdbLogger.error(`Failed to restore ${hdbConfigPath} during install rollback: ${restoreErr}`);
+				}
 			}
 		}
 		rollbackInstall(configErr);
