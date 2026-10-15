@@ -151,7 +151,7 @@ describe('Parsing queries', () => {
 		assert.equal(query.select[0].select[1].select.length, 1);
 		assert.equal(query.select[0].select[1].select[0], 'other_name');
 	});
-	it('Single-argument nested select keeps outer array wrapper (F-342)', function () {
+	it('Single-argument nested select keeps outer array wrapper (#1415)', function () {
 		const braceQuery = parseQuery('select(child{id,label})');
 		assert.ok(Array.isArray(braceQuery.select));
 		assert.strictEqual(braceQuery.select.length, 1);
@@ -174,7 +174,7 @@ describe('Parsing queries', () => {
 		const scalarQuery = parseQuery('select(title)');
 		assert.strictEqual(scalarQuery.select, 'title');
 	});
-	it('Rejects bracketed filter conditions inside select(...) with 400 SyntaxViolation (F-342)', function () {
+	it('Rejects bracketed filter conditions inside select(...) with 400 SyntaxViolation', function () {
 		for (const raw of [
 			'select(children[label=child-label-c1])',
 			'select(id,children[label=child-label-c1])',

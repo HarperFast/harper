@@ -221,11 +221,11 @@ describe('Test searchValidator module', () => {
 		assert.strictEqual(result, undefined);
 	});
 
-	it('allows valid { name, select } and { name } get_attributes entries in hashes, value, and conditions (F-341)', () => {
+	it('allows valid { name, select } and { name } get_attributes entries in hashes, value, and conditions (#3136)', () => {
 		const get_attributes = [
 			'id',
 			{ name: 'child', select: ['id', 'label', { name: 'grandchild', select: ['id', 'code'] }] },
-			{ name: 'children', select: ['id', 'label'] },
+			{ name: 'children', offset: 0, limit: 1, select: ['id', 'label'] },
 			{ name: 'child' },
 		];
 		assert.strictEqual(
@@ -267,7 +267,7 @@ describe('Test searchValidator module', () => {
 		);
 	});
 
-	it('rejects unknown top-level { name, select } and { name } entries across hashes, value, and conditions (F-341)', () => {
+	it('rejects unknown top-level { name, select } and { name } entries across hashes, value, and conditions', () => {
 		for (const [type, base] of [
 			['hashes', { schema: 'searchValidatorTest', table: 'test', hash_values: ['1'] }],
 			['value', { schema: 'searchValidatorTest', table: 'test', attribute: 'id', value: '1' }],
@@ -292,7 +292,7 @@ describe('Test searchValidator module', () => {
 		}
 	});
 
-	it('recursively rejects unknown nested attributes on both from: and to: relationships across hashes, value, and conditions (F-341)', () => {
+	it('recursively rejects unknown nested attributes on both from: and to: relationships across hashes, value, and conditions', () => {
 		for (const [type, base] of [
 			['hashes', { schema: 'searchValidatorTest', table: 'test', hash_values: ['1'] }],
 			['value', { schema: 'searchValidatorTest', table: 'test', attribute: 'id', value: '1' }],
@@ -337,7 +337,7 @@ describe('Test searchValidator module', () => {
 		}
 	});
 
-	it('handles self-referential relationships and non-relationship JSON attributes without false positives (F-341)', () => {
+	it('handles self-referential relationships and non-relationship JSON attributes without false positives', () => {
 		assert.strictEqual(
 			searchValidator(
 				{
@@ -429,8 +429,6 @@ describe('Test searchValidator module', () => {
 		assert.strictEqual(invalidLimitErr.statusCode, 400);
 		assert.strictEqual(invalidLimitErr.message, "unknown attribute 'children (invalid limit)'");
 
-		// Reusing the same selector object reference against two different target table schemas
-		// ('child' has 'label', 'grandchild' does not) must validate against both target schemas.
 		const sharedLeafSelector = { name: 'label' };
 		const reusedSelectorErr = searchValidator(
 			{
@@ -451,7 +449,6 @@ describe('Test searchValidator module', () => {
 		assert.strictEqual(reusedSelectorErr.statusCode, 400);
 		assert.strictEqual(reusedSelectorErr.message, "unknown attribute 'label'");
 
-		// Deeply nested self-referential select exceeding MAX_SELECT_DEPTH must fail closed with 400.
 		let deepSelect = ['id'];
 		for (let i = 0; i < 70; i++) {
 			deepSelect = [{ name: 'parent', select: deepSelect }];

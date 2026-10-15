@@ -1247,7 +1247,6 @@ export function transformForSelect(select, resource) {
 					const value = getProperty(property.name);
 					if (!value || typeof value !== 'object' || value instanceof Date) return value;
 					if (!subTransforms) subTransforms = new WeakMap();
-					// TODO: Get the resource, cache this transform, and apply above
 					let transform = subTransforms.get(property);
 					if (!transform) {
 						const subSelect = property.select ?? (Array.isArray(property) ? property : null);
