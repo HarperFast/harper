@@ -12,7 +12,7 @@ import { ComponentStatusRegistry } from './ComponentStatusRegistry.ts';
 
 // Internal classes and types
 export { ComponentStatus } from './ComponentStatus.ts';
-export { ComponentStatusRegistry } from './ComponentStatusRegistry.ts';
+export { ComponentStatusRegistry, serializeStatusError } from './ComponentStatusRegistry.ts';
 export { CrossThreadStatusCollector, StatusAggregator, crossThreadCollector } from './crossThread.ts';
 export type { ComponentStatusMap } from './ComponentStatusRegistry.ts';
 

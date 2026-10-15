@@ -488,7 +488,7 @@ describe('Test custom functions operations', () => {
 			await fs.writeFile(harperConfigPath, `${pluginName}: true\n`);
 
 			componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName] = {
-				handleApplication() {
+				start() {
 					throw new Error('plugin init boom');
 				},
 			};
@@ -518,13 +518,11 @@ describe('Test custom functions operations', () => {
 				componentStatusRegistry.reset();
 				componentLoader.loadedPaths.clear();
 
-				// 1. Load on main thread (isWorker: false): handleApplication is skipped and recorded healthy
 				await componentLoader.loadComponent(projectDir, { isWorker: false, set: sinon.stub() }, 'test-origin');
 				const mainStatus = componentStatusRegistry.getStatus(`my-other-component.${pluginName}`);
 				expect(mainStatus).to.exist;
 				crossThreadStatuses.set(`my-other-component.${pluginName}@main`, { ...mainStatus });
 
-				// 2. Load on worker thread (isWorker: true): handleApplication throws and loadComponent records failure
 				componentLoader.loadedPaths.clear();
 				await componentLoader.loadComponent(projectDir, { isWorker: true, set: sinon.stub() }, 'test-origin');
 				const workerStatus = componentStatusRegistry.getStatus(`my-other-component.${pluginName}`);
@@ -539,7 +537,6 @@ describe('Test custom functions operations', () => {
 					.stub(statusModule.internal.ComponentStatusRegistry, 'getAggregatedFromAllThreads')
 					.resolves(aggregatedStatuses);
 
-				// 3. Verify get_status (serverStatus.get) over JSON wire serialization
 				const rawStatusResult = await serverStatus.get({});
 				const wireComponentStatus = JSON.parse(JSON.stringify(rawStatusResult.componentStatus));
 
@@ -554,16 +551,16 @@ describe('Test custom functions operations', () => {
 					},
 				});
 
+				const expectedCause = `Could not load component '${pluginName}' for application 'my-other-component' due to: plugin init boom`;
 				const failedStatusEntry = wireComponentStatus.find((c) => c.name === `my-other-component.${pluginName}`);
 				expect(failedStatusEntry).to.exist;
 				expect(failedStatusEntry.status).to.equal('error');
-				expect(failedStatusEntry.error).to.be.a('string').and.to.include('due to: plugin init boom');
+				expect(failedStatusEntry.error).to.equal(expectedCause);
 				expect(failedStatusEntry.abnormalities).to.be.an('object').that.is.not.empty;
 				expect(failedStatusEntry.abnormalities[`my-other-component.${pluginName}@main`]).to.include({
 					status: 'healthy',
 				});
 
-				// 4. Verify get_components (operations.getComponents) over JSON wire serialization
 				const rawComponentsResult = await operations.getComponents();
 				const wireComponentsResult = JSON.parse(JSON.stringify(rawComponentsResult));
 
@@ -581,15 +578,13 @@ describe('Test custom functions operations', () => {
 				const otherComponent = wireComponentsResult.entries.find((e) => e.name === 'my-other-component');
 				expect(otherComponent).to.exist;
 				expect(otherComponent.status.status).to.equal('error');
-				expect(otherComponent.status.message).to.include('due to: plugin init boom');
+				expect(otherComponent.status.message).to.equal(`my-other-component.${pluginName}: ${expectedCause}`);
 				expect(otherComponent.status.details).to.exist;
-				expect(otherComponent.status.details[`my-other-component.${pluginName}`].status).to.equal('error');
-				expect(otherComponent.status.details[`my-other-component.${pluginName}`].message).to.include(
-					'due to: plugin init boom'
-				);
-				expect(otherComponent.status.details[`my-other-component.${pluginName}`].error).to.include(
-					'due to: plugin init boom'
-				);
+				expect(otherComponent.status.details[`my-other-component.${pluginName}`]).to.deep.equal({
+					status: 'error',
+					message: expectedCause,
+					error: expectedCause,
+				});
 			} finally {
 				getAggregatedFromAllThreadsStub?.restore();
 				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];

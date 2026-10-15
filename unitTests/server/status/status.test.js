@@ -317,7 +317,7 @@ describe('server.status', function () {
 			const loadFailure = new Error(
 				"Could not load component 'broken-plugin' for application 'my-app' due to: SyntaxError: Unexpected token"
 			);
-			const workerAbnormalityError = new Error('Worker 2 failed to initialize plugin');
+			const workerAbnormalityError = new TypeError('Worker 2 failed to initialize plugin');
 
 			const mockComponentStatuses = new Map([
 				[
@@ -370,7 +370,6 @@ describe('server.status', function () {
 			restartNeededStub.returns(false);
 
 			const rawResult = await status.get({});
-			// Simulate Fastify's JSON wire serialization of componentStatus
 			const wireComponentStatus = JSON.parse(JSON.stringify(rawResult.componentStatus));
 
 			const healthyEntry = wireComponentStatus.find((c) => c.name === 'healthy-app');
@@ -402,7 +401,7 @@ describe('server.status', function () {
 			assert.equal(failedEntry.abnormalities['my-app.broken-plugin@worker-2'].workerIndex, 2);
 			assert.equal(
 				failedEntry.abnormalities['my-app.broken-plugin@worker-2'].error,
-				'Worker 2 failed to initialize plugin'
+				'TypeError: Worker 2 failed to initialize plugin'
 			);
 		});
 

@@ -230,7 +230,7 @@ export class ComponentStatusRegistry {
 			);
 			overallMessage = problemStatuses
 				.map((s) => {
-					const errorMessage = extractErrorMessage(s.error);
+					const errorMessage = serializeStatusError(s.error);
 					const message = formatProblemMessage(s.latestMessage, errorMessage);
 					return `${s.key}: ${message || s.status}`;
 				})
@@ -239,7 +239,7 @@ export class ComponentStatusRegistry {
 			// Include details for debugging
 			for (const status of allStatuses) {
 				if (status.status !== COMPONENT_STATUS_LEVELS.HEALTHY) {
-					const errorMessage = extractErrorMessage(status.error);
+					const errorMessage = serializeStatusError(status.error);
 					details[status.key] = {
 						status: status.status,
 						message: formatProblemMessage(status.latestMessage, errorMessage),
@@ -258,24 +258,52 @@ export class ComponentStatusRegistry {
 	}
 }
 
-function extractErrorMessage(error: Error | string | undefined): string | undefined {
-	if (error === undefined) return undefined;
+export function serializeStatusError(error: unknown): string | undefined {
+	if (error === undefined || error === null) return undefined;
 	if (typeof error === 'string') return error;
-	if (error instanceof Error) return error.message || String(error);
-	if (
-		typeof error === 'object' &&
-		error !== null &&
-		'message' in error &&
-		typeof (error as { message: unknown }).message === 'string'
-	) {
-		return (error as { message: string }).message;
+	try {
+		if (typeof error === 'object') {
+			const message = (error as { message?: unknown }).message;
+			if (typeof message === 'string') {
+				const rawName = (error as { name?: unknown }).name;
+				const ctorName = (error as { constructor?: { name?: unknown } }).constructor?.name;
+				const errorName =
+					typeof rawName === 'string' && rawName.length > 0
+						? rawName
+						: typeof ctorName === 'string' && ctorName.length > 0 && ctorName !== 'Object'
+							? ctorName
+							: undefined;
+				if (!message) {
+					return errorName || 'Error';
+				}
+				if (errorName && errorName !== 'Error' && !message.startsWith(`${errorName}:`)) {
+					return `${errorName}: ${message}`;
+				}
+				return message;
+			}
+		}
+		return String(error);
+	} catch {
+		try {
+			return Object.prototype.toString.call(error);
+		} catch {
+			return '[Unrenderable Object]';
+		}
 	}
-	return String(error);
 }
 
 function formatProblemMessage(latestMessage: string | undefined, errorMessage: string | undefined): string | undefined {
 	if (latestMessage && errorMessage) {
-		return latestMessage.includes(errorMessage) ? latestMessage : `${latestMessage}: ${errorMessage}`;
+		if (latestMessage.includes(errorMessage)) {
+			return latestMessage;
+		}
+		if (
+			errorMessage.includes(latestMessage) ||
+			(latestMessage.startsWith('Could not load ') && /^(?:[\w$]+:\s*)?Could not load /.test(errorMessage))
+		) {
+			return errorMessage;
+		}
+		return `${latestMessage}: ${errorMessage}`;
 	}
 	return latestMessage ?? errorMessage;
 }

@@ -85,21 +85,6 @@ interface AggregatedComponentStatusWithName extends Omit<AggregatedComponentStat
 	abnormalities?: Record<string, SerializedComponentStatusAbnormality>;
 }
 
-function serializeStatusError(error: Error | string | undefined): string | undefined {
-	if (error === undefined) return undefined;
-	if (typeof error === 'string') return error;
-	if (error instanceof Error) return error.message || String(error);
-	if (
-		typeof error === 'object' &&
-		error !== null &&
-		'message' in error &&
-		typeof (error as { message: unknown }).message === 'string'
-	) {
-		return (error as { message: string }).message;
-	}
-	return String(error);
-}
-
 function serializeAbnormalities(
 	abnormalities: Map<string, ComponentStatusAbnormality> | Record<string, ComponentStatusAbnormality>
 ): Record<string, SerializedComponentStatusAbnormality> {
@@ -109,7 +94,7 @@ function serializeAbnormalities(
 		serialized[threadKey] = {
 			...abnormality,
 			...(abnormality.error !== undefined && {
-				error: serializeStatusError(abnormality.error),
+				error: statusInternal.serializeStatusError(abnormality.error),
 			}),
 		};
 	}
@@ -192,7 +177,7 @@ async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary
 		([name, status]) => ({
 			name,
 			...status,
-			...(status.error !== undefined && { error: serializeStatusError(status.error) }),
+			...(status.error !== undefined && { error: statusInternal.serializeStatusError(status.error) }),
 			...(status.abnormalities !== undefined && {
 				abnormalities: serializeAbnormalities(status.abnormalities),
 			}),

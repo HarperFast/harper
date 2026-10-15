@@ -419,6 +419,49 @@ describe('ComponentStatusRegistry', function () {
 			assert.equal(aggStatus.latestMessage, 'High latency detected'); // Non-healthy message preferred
 		});
 
+		it('should pair latestMessage and error from the highest-priority most-recent status entry', function () {
+			const worker0Error = new Error('Worker 0 syntax error');
+			const worker2Error = new Error('Worker 2 port conflict');
+			const allStatuses = new Map([
+				[
+					'plugin@worker-0',
+					{
+						status: 'error',
+						lastChecked: new Date(1000),
+						message: 'Worker 0 failed',
+						error: worker0Error,
+						workerIndex: 0,
+					},
+				],
+				[
+					'plugin@worker-1',
+					{
+						status: 'loading',
+						lastChecked: new Date(3000),
+						message: 'Component is loading',
+						workerIndex: 1,
+					},
+				],
+				[
+					'plugin@worker-2',
+					{
+						status: 'error',
+						lastChecked: new Date(2000),
+						message: 'Worker 2 failed',
+						error: worker2Error,
+						workerIndex: 2,
+					},
+				],
+			]);
+
+			const aggregated = StatusAggregator.aggregate(allStatuses);
+			const aggStatus = aggregated.get('plugin');
+
+			assert.equal(aggStatus.status, 'error');
+			assert.equal(aggStatus.latestMessage, 'Worker 2 failed');
+			assert.equal(aggStatus.error, worker2Error);
+		});
+
 		it('should handle status priority correctly', function () {
 			const testCases = [
 				{ statuses: ['healthy', 'healthy', 'healthy'], expected: 'healthy' },
@@ -930,14 +973,50 @@ describe('ComponentStatusRegistry', function () {
 				const result = await registry.getAggregatedStatusFor('my-app', consolidatedStatuses);
 
 				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
-				assert.ok(
-					result.message.includes(loadError.message),
-					`Expected "${result.message}" to include "${loadError.message}"`
-				);
+				assert.equal(result.message, `my-app.broken-plugin: ${loadError.message}`);
 				assert.ok(result.details);
-				assert.equal(result.details['my-app.broken-plugin'].status, COMPONENT_STATUS_LEVELS.ERROR);
-				assert.equal(result.details['my-app.broken-plugin'].error, loadError.message);
-				assert.ok(result.details['my-app.broken-plugin'].message.includes(loadError.message));
+				assert.deepEqual(result.details['my-app.broken-plugin'], {
+					status: COMPONENT_STATUS_LEVELS.ERROR,
+					message: loadError.message,
+					error: loadError.message,
+				});
+			});
+
+			it('should preserve Error subclass names and handle null-prototype error objects without throwing', async function () {
+				const typeError = new TypeError('handleApplication is not a function');
+				const nullProtoError = Object.create(null);
+				const consolidatedStatuses = new Map([
+					[
+						'my-app.plugin-a',
+						{
+							componentName: 'my-app.plugin-a',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: "Component 'my-app.plugin-a' failed to load",
+							error: typeError,
+							lastChecked: { workers: { 0: 1000 } },
+						},
+					],
+					[
+						'my-app.plugin-b',
+						{
+							componentName: 'my-app.plugin-b',
+							status: COMPONENT_STATUS_LEVELS.ERROR,
+							latestMessage: "Component 'my-app.plugin-b' failed to load",
+							error: nullProtoError,
+							lastChecked: { workers: { 0: 2000 } },
+						},
+					],
+				]);
+
+				const result = await registry.getAggregatedStatusFor('my-app', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
+				assert.equal(result.details['my-app.plugin-a'].error, 'TypeError: handleApplication is not a function');
+				assert.equal(
+					result.details['my-app.plugin-a'].message,
+					"Component 'my-app.plugin-a' failed to load: TypeError: handleApplication is not a function"
+				);
+				assert.equal(result.details['my-app.plugin-b'].error, '[object Object]');
 			});
 
 			it('should handle string error without duplicating if already present in latestMessage', async function () {
