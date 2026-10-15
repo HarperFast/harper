@@ -235,8 +235,6 @@ describe('Test environmentManager module', () => {
 			env_rw.setProperty('storage_engine', undefined);
 			expect(env_rw.getConfigOverrides()).to.be.undefined;
 
-			// Also verify clearing via a true legacy alias (SERVER_PORT -> operationsApi_network_port)
-			// removes the canonical override entry and delegates to updateConfigObject.
 			env_rw.setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, 9925);
 			expect(env_rw.getConfigOverrides()).to.eql({ operationsApi_network_port: 9925 });
 			env_rw.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY, undefined);

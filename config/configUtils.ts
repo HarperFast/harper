@@ -363,6 +363,48 @@ function collectLeafDotPaths(obj: any, prefix = '', out = new Set<string>()): Se
 	return out;
 }
 
+function syncObjectToYamlDoc(doc: YAML.Document, obj: Record<string, any>, prefix: string[] = []): void {
+	const mapNode = prefix.length === 0 ? doc.contents : doc.getIn(prefix, true);
+	if (!YAML.isMap(mapNode)) {
+		if (prefix.length === 0) {
+			doc.contents = doc.createNode(obj) as any;
+		} else {
+			doc.setIn(prefix, obj);
+		}
+		return;
+	}
+	for (const pair of [...mapNode.items]) {
+		const key = String((pair.key as any)?.value ?? pair.key);
+		if (!Object.prototype.hasOwnProperty.call(obj, key) || obj[key] === undefined) {
+			doc.deleteIn([...prefix, key]);
+		}
+	}
+	for (const [key, val] of Object.entries(obj)) {
+		if (val === undefined) continue;
+		const keyPath = [...prefix, key];
+		const currentNode = doc.getIn(keyPath, true);
+		if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+			if (Object.keys(val).length === 0) {
+				if (!YAML.isMap(currentNode) || currentNode.items.length !== 0) {
+					doc.setIn(keyPath, {});
+				}
+			} else if (YAML.isMap(currentNode)) {
+				syncObjectToYamlDoc(doc, val, keyPath);
+			} else {
+				doc.setIn(keyPath, val);
+			}
+		} else {
+			const currentVal =
+				currentNode && typeof (currentNode as any).toJSON === 'function'
+					? (currentNode as any).toJSON()
+					: doc.getIn(keyPath);
+			if (!doc.hasIn(keyPath) || !isEqual(currentVal, val)) {
+				doc.setIn(keyPath, val);
+			}
+		}
+	}
+}
+
 /**
  * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
  * @param args - any args that the user provided.
@@ -413,12 +455,7 @@ export function createConfigFile(args, skipFsValidation = false, baseConfigPath?
 			const splitParam = configParam.split('_');
 			let value = castConfigValue(configParam, args[arg]);
 			if (configParam === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
-			if (
-				(configParam === CONFIG_PARAMS.STORAGE_ENGINE || baseConfigPath) &&
-				value !== undefined &&
-				value !== null &&
-				value !== ''
-			) {
+			if (configParam === CONFIG_PARAMS.STORAGE_ENGINE && value !== undefined && value !== null && value !== '') {
 				userPaths.add(splitParam.join('.'));
 			}
 			try {
@@ -1589,8 +1626,7 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 			configObj.operationsApi.network.port = null;
 		}
 
-		// Update the YAML document's contents
-		// We update only the 'contents' property to preserve the Document instance and its methods
+		// Update the YAML document's contents in place so comments are preserved
 		const mergedDoc = YAML.parseDocument(YAML.stringify(configObj), { simpleKeys: true } as any);
 
 		// Check for YAML parsing errors
@@ -1602,7 +1638,7 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 			);
 		}
 
-		configDoc.contents = mergedDoc.contents;
+		syncObjectToYamlDoc(configDoc, configObj);
 	} catch (error) {
 		logger.error(`Failed to apply runtime env config: ${error.message}`);
 		throw error;

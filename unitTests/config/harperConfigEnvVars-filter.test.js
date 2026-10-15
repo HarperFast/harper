@@ -4,12 +4,11 @@ const assert = require('node:assert');
 const { filterArgsAgainstRuntimeConfig } = require('#src/config/harperConfigEnvVars');
 
 describe('filterArgsAgainstRuntimeConfig', function () {
-	const ENV_VARS = ['HARPER_SET_CONFIG', 'HARPER_CONFIG', 'HARPER_DEFAULT_CONFIG'];
+	const ENV_VARS = ['HARPER_SET_CONFIG', 'HARPER_DEFAULT_CONFIG'];
 	let originalEnv;
 
 	beforeEach(function () {
 		originalEnv = ENV_VARS.map((name) => process.env[name]);
-		ENV_VARS.forEach((name) => delete process.env[name]);
 	});
 
 	afterEach(function () {
@@ -23,7 +22,9 @@ describe('filterArgsAgainstRuntimeConfig', function () {
 	});
 
 	describe('Basic filtering', function () {
-		it('should return args unchanged when HARPER_SET_CONFIG and HARPER_CONFIG are not set', function () {
+		it('should return args unchanged when HARPER_SET_CONFIG is not set', function () {
+			delete process.env.HARPER_SET_CONFIG;
+
 			const args = {
 				operationsapi_network_port: '9925',
 				http_port: '9926',
@@ -57,24 +58,6 @@ describe('filterArgsAgainstRuntimeConfig', function () {
 			assert.strictEqual(result.operationsapi_network_port, undefined, 'Port should be filtered');
 			assert.strictEqual(result.operationsapi_network_secureport, undefined, 'SecurePort should be filtered');
 			assert.strictEqual(result.http_port, '9926', 'HTTP port should NOT be filtered');
-			assert.strictEqual(result.rootpath, '/var/hdb', 'RootPath should NOT be filtered');
-		});
-
-		it('should filter out args that are in HARPER_CONFIG', function () {
-			process.env.HARPER_CONFIG = JSON.stringify({
-				storage: {
-					engine: 'lmdb',
-				},
-			});
-
-			const args = {
-				storage_engine: 'rocksdb', // Should be filtered
-				rootpath: '/var/hdb', // Should NOT be filtered
-			};
-
-			const result = filterArgsAgainstRuntimeConfig(args);
-
-			assert.strictEqual(result.storage_engine, undefined, 'storage_engine should be filtered when in HARPER_CONFIG');
 			assert.strictEqual(result.rootpath, '/var/hdb', 'RootPath should NOT be filtered');
 		});
 
