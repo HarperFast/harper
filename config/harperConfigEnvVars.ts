@@ -264,28 +264,11 @@ function resolveLeafValue(currentValue: any, leafValue: any, path: string): any 
  * // Returns: { rootpath: '/var/hdb' }
  */
 export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Record<string, any> {
-	// Only filter against HARPER_SET_CONFIG (not HARPER_DEFAULT_CONFIG)
-	if (!process.env.HARPER_SET_CONFIG) {
+	// Filter against HARPER_SET_CONFIG and HARPER_CONFIG (not HARPER_DEFAULT_CONFIG)
+	if (!process.env.HARPER_SET_CONFIG && !process.env.HARPER_CONFIG) {
 		return args;
 	}
 
-	// Parse HARPER_SET_CONFIG
-	let setConfig: ConfigObject;
-	try {
-		setConfig = JSON.parse(process.env.HARPER_SET_CONFIG);
-	} catch (err) {
-		// If parsing fails, log warning and return args unchanged
-		const logger = getLogger();
-		logger.warn('Failed to parse HARPER_SET_CONFIG for arg filtering', err);
-		return args;
-	}
-
-	// If no valid config, return args unchanged
-	if (Object.keys(setConfig).length === 0) {
-		return args;
-	}
-
-	// Flatten HARPER_SET_CONFIG to get all keys
 	const flattenSetConfig = (obj: ConfigObject, prefix = ''): Set<string> => {
 		const keys = new Set<string>();
 		for (const key in obj) {
@@ -304,12 +287,30 @@ export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Recor
 		return keys;
 	};
 
-	const setConfigKeys = flattenSetConfig(setConfig);
+	const runtimeConfigKeys = new Set<string>();
+	for (const envVarName of ['HARPER_SET_CONFIG', 'HARPER_CONFIG'] as const) {
+		const raw = process.env[envVarName];
+		if (!raw) continue;
+		try {
+			const parsed = JSON.parse(raw);
+			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+				flattenSetConfig(parsed).forEach((k) => runtimeConfigKeys.add(k));
+			}
+		} catch (err) {
+			// If parsing fails, log warning and skip that var
+			const logger = getLogger();
+			logger.warn(`Failed to parse ${envVarName} for arg filtering`, err);
+		}
+	}
 
-	// Filter out args that are in HARPER_SET_CONFIG
+	if (runtimeConfigKeys.size === 0) {
+		return args;
+	}
+
+	// Filter out args that are in HARPER_SET_CONFIG or HARPER_CONFIG
 	const filteredArgs: Record<string, any> = {};
 	for (const key in args) {
-		if (!setConfigKeys.has(key.toLowerCase())) {
+		if (!runtimeConfigKeys.has(key.toLowerCase())) {
 			filteredArgs[key] = args[key];
 		}
 	}
@@ -1083,7 +1084,7 @@ export function hasPersistedEnvConfigState(rootPath: string): boolean {
 export function applyRuntimeEnvConfig(
 	fileConfig: ConfigObject,
 	rootPath: string,
-	options: { isInstall?: boolean } = {}
+	options: { isInstall?: boolean; userPaths?: Iterable<string> } = {}
 ): ConfigObject {
 	const { config, commitState } = prepareRuntimeEnvConfig(fileConfig, rootPath, options);
 	commitState();
@@ -1099,7 +1100,7 @@ export function applyRuntimeEnvConfig(
 export function prepareRuntimeEnvConfig(
 	fileConfig: ConfigObject,
 	rootPath: string,
-	options: { isInstall?: boolean } = {}
+	options: { isInstall?: boolean; userPaths?: Iterable<string> } = {}
 ): {
 	config: ConfigObject;
 	saveState: () => boolean;
@@ -1131,6 +1132,10 @@ export function prepareRuntimeEnvConfig(
 		const driftedPaths = detectConfigDrift(fileConfig, state);
 		for (const path of driftedPaths) {
 			state.sources[path] = 'user';
+		}
+	} else if (options.isInstall && options.userPaths) {
+		for (const userPath of options.userPaths) {
+			state.sources[userPath] = 'user';
 		}
 	}
 
