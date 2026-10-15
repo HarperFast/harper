@@ -81,14 +81,6 @@ let hdbRoot = undefined;
 let conditionalRollback = false;
 let ignoreExisting = false;
 let bootPropsCreated = true;
-let pendingStagedInstallConfig:
-	| {
-			args: Record<string, any>;
-			hdbConfigPath: string | undefined;
-			defaultedArgKeys: Set<string>;
-			staged: configUtils.StagedInstallConfig;
-	  }
-	| undefined;
 
 /**
  * This module orchestrates the installation of Harper.
@@ -263,19 +255,17 @@ async function install() {
 		throw new Error('Installer should have the HDB root param at the stage it is in but it does not.');
 	}
 	envManager.setHdbBasePath(hdbRoot);
-	stageInstallConfig(installParams);
+	const stagedInstall = stageInstallConfig(installParams);
 	bootPropsCreated = false;
 
 	try {
 		// Creates the Harper project folder structure and the LMDB environments/dbis.
 		await mountHdb(hdbRoot, () => {
-			if (pendingStagedInstallConfig?.staged) {
-				try {
-					configUtils.validateStagedInstallConfig(pendingStagedInstallConfig.staged);
-				} catch (configErr) {
-					rollbackInstall(configErr);
-					throw configErr;
-				}
+			try {
+				configUtils.validateStagedInstallConfig(stagedInstall.staged);
+			} catch (configErr) {
+				rollbackInstall(configErr);
+				throw configErr;
 			}
 		});
 
@@ -283,9 +273,8 @@ async function install() {
 		await createBootPropertiesFile();
 
 		// Create the harperdb-config.yaml file
-		await createConfigFile(installParams);
+		await createConfigFile(stagedInstall);
 	} finally {
-		pendingStagedInstallConfig = undefined;
 		bootPropsCreated = true;
 	}
 
@@ -580,6 +569,7 @@ async function createBootPropertiesFile() {
 
 			try {
 				await fs.writeFile(propsFilePath, bootPropsValue);
+				bootPropsCreated = true;
 			} catch (err) {
 				hdbLogger.error(`There was an error creating the boot file at path: ${propsFilePath}`);
 				throw err;
@@ -589,7 +579,6 @@ async function createBootPropertiesFile() {
 		envManager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER, `${install_user}`);
 		envManager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, configFilePath);
 		envManager.setProperty(envManager.BOOT_PROPS_FILE_PATH, propsFilePath);
-		bootPropsCreated = true;
 	}
 }
 
@@ -730,11 +719,8 @@ function buildInstallConfigArgs(installParams: Record<string, any> = {}): {
 	return { args, hdbConfigPath, defaultedArgKeys };
 }
 
-/**
- * Composes and stages the install configuration in memory before `mountHdb()` opens the system
- * database, and resets memoized compression/path caches so `mountHdb()` and `createConfigFile()`
- * see the same resolved values.
- */
+// Resets memoized compression/path caches before staging so mountHdb() and createConfigFile()
+// resolve the same values.
 function stageInstallConfig(installParams: Record<string, any> = {}) {
 	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, undefined);
 	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, undefined);
@@ -743,20 +729,25 @@ function stageInstallConfig(installParams: Record<string, any> = {}) {
 	initPaths.resetPaths();
 	const { args, hdbConfigPath, defaultedArgKeys } = buildInstallConfigArgs(installParams);
 	const staged = configUtils.stageInstallConfig(args, hdbConfigPath, defaultedArgKeys);
-	pendingStagedInstallConfig = { args, hdbConfigPath, defaultedArgKeys, staged };
+	return { args, hdbConfigPath, defaultedArgKeys, staged };
 }
 
 /**
  * Calls the util function that creates the Harper config file.
  * If an error occurs during the create install is rolled backed.
- * @param installParams
+ * @param installParamsOrStaged
  * @returns {Promise<void>}
  */
-async function createConfigFile(installParams) {
+async function createConfigFile(installParamsOrStaged) {
 	hdbLogger.trace('Creating Harper config file');
-	const pending = pendingStagedInstallConfig;
-	pendingStagedInstallConfig = undefined;
-	const { args, hdbConfigPath, defaultedArgKeys } = pending ?? buildInstallConfigArgs(installParams);
+	const isStaged =
+		installParamsOrStaged &&
+		typeof installParamsOrStaged === 'object' &&
+		'staged' in installParamsOrStaged &&
+		'defaultedArgKeys' in installParamsOrStaged;
+	const { args, hdbConfigPath, defaultedArgKeys, staged } = isStaged
+		? installParamsOrStaged
+		: { ...buildInstallConfigArgs(installParamsOrStaged), staged: undefined };
 
 	const overwriteRootNamedHdbConfig = isRootNamedHdbConfig(hdbConfigPath, hdbRoot);
 	const resolvedConfigPath = overwriteRootNamedHdbConfig && hdbConfigPath ? path.resolve(hdbConfigPath) : undefined;
@@ -765,32 +756,23 @@ async function createConfigFile(installParams) {
 	if (resolvedConfigPath && backupConfigPath) {
 		try {
 			fs.copyFileSync(resolvedConfigPath, backupConfigPath);
-		} catch {}
+		} catch (copyErr) {
+			hdbLogger.warn(`Could not create backup copy of ${hdbConfigPath} at ${backupConfigPath}: ${copyErr}`);
+		}
 	}
 	try {
-		if (pending?.staged) {
-			configUtils.createConfigFile(
-				args,
-				false,
-				hdbConfigPath,
-				overwriteRootNamedHdbConfig && hdbConfigPath ? hdbConfigPath : undefined,
-				pending.staged,
-				defaultedArgKeys
-			);
-		} else {
-			configUtils.createConfigFile(
-				args,
-				false,
-				hdbConfigPath,
-				overwriteRootNamedHdbConfig && hdbConfigPath ? hdbConfigPath : undefined,
-				undefined,
-				defaultedArgKeys
-			);
-		}
+		configUtils.createConfigFile(
+			args,
+			false,
+			hdbConfigPath,
+			overwriteRootNamedHdbConfig && hdbConfigPath ? hdbConfigPath : undefined,
+			staged,
+			defaultedArgKeys
+		);
+		envManager.initSync();
 		if (backupConfigPath) {
 			fs.rmSync(backupConfigPath, { force: true });
 		}
-		envManager.initSync();
 	} catch (configErr) {
 		if (resolvedConfigPath) {
 			let restored = false;
@@ -798,22 +780,27 @@ async function createConfigFile(installParams) {
 				try {
 					fs.renameSync(backupConfigPath, resolvedConfigPath);
 					restored = true;
-				} catch {
-					try {
-						fs.rmSync(backupConfigPath, { force: true });
-					} catch {}
-				}
+				} catch {}
 			}
 			if (!restored && originalHdbConfigContent !== undefined) {
 				try {
 					configUtils.atomicWriteFile(resolvedConfigPath, originalHdbConfigContent);
+					restored = true;
 				} catch {
 					try {
 						fs.writeFileSync(resolvedConfigPath, originalHdbConfigContent, 'utf8');
+						restored = true;
 					} catch (restoreErr) {
-						hdbLogger.error(`Failed to restore ${hdbConfigPath} during install rollback: ${restoreErr}`);
+						const backupNote =
+							backupConfigPath && fs.existsSync(backupConfigPath) ? ` (backup preserved at ${backupConfigPath})` : '';
+						hdbLogger.error(`Failed to restore ${hdbConfigPath} during install rollback${backupNote}: ${restoreErr}`);
 					}
 				}
+			}
+			if (restored && backupConfigPath) {
+				try {
+					fs.rmSync(backupConfigPath, { force: true });
+				} catch {}
 			}
 		}
 		rollbackInstall(configErr);
@@ -843,10 +830,12 @@ function rollbackInstall(errMsg) {
 		if (conditionalRollback) {
 			const hdbConfigPath = getHdbConfigPath();
 			const resolvedConfigPath = hdbConfigPath ? path.resolve(hdbConfigPath) : undefined;
+			const resolvedBackupPath = resolvedConfigPath ? `${resolvedConfigPath}.install-backup-${process.pid}` : undefined;
 			const dir = fs.readdirSync(hdbRoot, { withFileTypes: true });
 			dir.forEach((d) => {
 				const fullPath = path.join((d as any).parentPath ?? (d as any).path, d.name);
-				if (path.resolve(fullPath) !== resolvedConfigPath) {
+				const resolvedFullPath = path.resolve(fullPath);
+				if (resolvedFullPath !== resolvedConfigPath && resolvedFullPath !== resolvedBackupPath) {
 					fs.removeSync(fullPath);
 				}
 			});

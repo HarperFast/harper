@@ -117,8 +117,8 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 		// If run is called with cmd/env vars we create a backup of config and update config file.
 		let parsedArgs = assignCMDENVVariables(Object.keys(terms.CONFIG_PARAM_MAP), true);
 
-		// If HARPER_SET_CONFIG is present, filter out any config keys that are set in it
-		// to prevent individual env vars from overriding explicit runtime configuration
+		// If HARPER_CONFIG or HARPER_SET_CONFIG is present, filter out any config keys that are set
+		// in them to prevent individual env vars from overriding explicit runtime configuration
 		const { filterArgsAgainstRuntimeConfig } = require('../config/harperConfigEnvVars');
 		parsedArgs = filterArgsAgainstRuntimeConfig(parsedArgs);
 
