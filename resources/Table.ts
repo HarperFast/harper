@@ -6965,6 +6965,8 @@ export function makeTable(options): TableResourceClass {
 				request
 			);
 			const isActive = () => !subscription.closed && Boolean(subscription.subscriptions);
+			const isHiddenExpiry = (expiresAt: number | undefined) =>
+				!hasSourceGet && expiresAt != undefined && expiresAt < Date.now();
 			let progressLive = false;
 			let progressFloor: number | undefined;
 			let goLive: (() => void) | undefined;
@@ -7183,7 +7185,7 @@ export function makeTable(options): TableResourceClass {
 							const t = localTime ?? version;
 							if (t > cursorMaxTime) cursorMaxTime = t;
 							if (!value) continue;
-							if (!hasSourceGet && expiresAt != undefined && expiresAt < Date.now()) continue;
+							if (isHiddenExpiry(expiresAt)) continue;
 							const scanned: any = { id, localTime, value, version, type: 'put', size };
 							if (reportingProgress) scanned.fromScan = true;
 							if (!send(scanned)) return;
@@ -7288,11 +7290,7 @@ export function makeTable(options): TableResourceClass {
 						}
 						// with no entry, a pruned tombstone may have taken the history with it
 					} else if (checkResume && !entry && !checkResume()) return;
-					if (
-						!request.omitCurrent &&
-						entry?.value &&
-						(hasSourceGet || entry.expiresAt == undefined || entry.expiresAt >= Date.now())
-					) {
+					if (!request.omitCurrent && entry?.value && !isHiddenExpiry(entry.expiresAt)) {
 						// if retain and it exists, send the current value first
 						const current: any = { id: thisId, ...entry, type: 'put' };
 						if (reportingProgress) current.fromScan = true;
@@ -7411,13 +7409,12 @@ export function makeTable(options): TableResourceClass {
 							if (!isActive()) return;
 						}
 						if (!value) continue; // skip tombstones
-						if (!hasSourceGet && expiresAt != undefined && expiresAt < Date.now()) continue;
+						if (isHiddenExpiry(expiresAt)) continue;
 						yield { id, localTime, value, version, type: 'put', size };
 					}
 				} else {
 					const entry = primaryStore.getEntry(thisId);
-					if (entry?.value && (hasSourceGet || entry.expiresAt == undefined || entry.expiresAt >= Date.now()))
-						yield { id: thisId, ...entry, type: 'put' };
+					if (entry?.value && !isHiddenExpiry(entry.expiresAt)) yield { id: thisId, ...entry, type: 'put' };
 				}
 			}
 			// Drain the current scope into the subscription with the same back-pressure as the live path.
