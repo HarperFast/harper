@@ -785,9 +785,29 @@ describe('install storage.engine resolution', () => {
 		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
 	});
 
-	it('resolves CLI STORAGE_ENGINE=rocksdb + HARPER_DEFAULT_CONFIG={"storage":{"engine":"lmdb"}} consistently to lmdb', async () => {
-		process.env.STORAGE_ENGINE = 'rocksdb';
-		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
+	it('resolves CLI STORAGE_ENGINE=lmdb + HARPER_DEFAULT_CONFIG={"storage":{"engine":"rocksdb"}} consistently to lmdb', async () => {
+		process.env.STORAGE_ENGINE = 'lmdb';
+		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ storage: { engine: 'rocksdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('resolves HDB_CONFIG storage.engine=lmdb + HARPER_SET_CONFIG={"storage":{"engine":"rocksdb"}} consistently to rocksdb', async () => {
+		const externalConfigPath = path.join(tempBaseDir, 'external-harper-config.yaml');
+		fs.writeFileSync(externalConfigPath, 'storage:\n  engine: lmdb\n', 'utf8');
+		process.env.HDB_CONFIG = externalConfigPath;
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ storage: { engine: 'rocksdb' } });
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'rocksdb');
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('resolves HDB_CONFIG storage.engine=lmdb + HARPER_DEFAULT_CONFIG={"storage":{"engine":"rocksdb"}} consistently to lmdb', async () => {
+		const externalConfigPath = path.join(tempBaseDir, 'external-harper-config.yaml');
+		fs.writeFileSync(externalConfigPath, 'storage:\n  engine: lmdb\n', 'utf8');
+		process.env.HDB_CONFIG = externalConfigPath;
+		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ storage: { engine: 'rocksdb' } });
 		const rootPath = await runInstall();
 		assertInstalledSystemEngine(rootPath, 'lmdb');
 		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);

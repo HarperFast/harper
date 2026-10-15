@@ -224,9 +224,10 @@ describe('Test environmentManager module', () => {
 		});
 
 		it('setProperty(key, undefined) records no override and clears any prior override for key', () => {
-			sandbox.stub(config_utils, 'updateConfigObject');
+			const update_config_object = sandbox.stub(config_utils, 'updateConfigObject');
 			env_rw.setProperty('storage_engine', undefined);
 			expect(env_rw.getConfigOverrides()).to.be.undefined;
+			expect(update_config_object.calledWith('storage_engine', undefined)).to.be.true;
 
 			env_rw.setProperty('storage_engine', 'lmdb');
 			expect(env_rw.getConfigOverrides()).to.eql({ storage_engine: 'lmdb' });
@@ -234,11 +235,13 @@ describe('Test environmentManager module', () => {
 			env_rw.setProperty('storage_engine', undefined);
 			expect(env_rw.getConfigOverrides()).to.be.undefined;
 
-			// Also verify clearing via a legacy alias removes the canonical override entry
-			env_rw.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, 'lmdb');
-			expect(env_rw.getConfigOverrides()).to.eql({ storage_engine: 'lmdb' });
-			env_rw.setProperty('STORAGE_ENGINE', undefined);
+			// Also verify clearing via a true legacy alias (SERVER_PORT -> operationsApi_network_port)
+			// removes the canonical override entry and delegates to updateConfigObject.
+			env_rw.setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, 9925);
+			expect(env_rw.getConfigOverrides()).to.eql({ operationsApi_network_port: 9925 });
+			env_rw.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY, undefined);
 			expect(env_rw.getConfigOverrides()).to.be.undefined;
+			expect(update_config_object.calledWith(hdbTerms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY, undefined)).to.be.true;
 		});
 
 		it('collapses two different legacy aliases for the same canonical param onto one Map entry', () => {

@@ -14,7 +14,7 @@ import * as envManager from '../environment/environmentManager.ts';
 import * as hdbUtils from '../common_utils.ts';
 
 import * as hdbInfoController from '../../dataLayer/hdbInfoController.ts';
-import { packageJson, PACKAGE_ROOT } from '../packageUtils.js';
+import { packageJson } from '../packageUtils.js';
 import * as hdbTerms from '../hdbTerms.ts';
 const { CONFIG_PARAMS } = hdbTerms;
 import installValidator from '../../validation/installValidator.ts';
@@ -75,7 +75,7 @@ const INSTALL_PROMPTS = {
 };
 
 import assignCMDENVVariables from '../assignCmdEnvVariables.ts';
-const cfgEnv = assignCMDENVVariables([hdbTerms.INSTALL_PROMPTS.HDB_CONFIG]);
+const cfgEnv: Record<string, string | undefined> = {};
 let hdbRoot = undefined;
 let conditionalRollback = false;
 let ignoreExisting = false;
@@ -100,9 +100,38 @@ function resolveInstallDestination(value: string): string {
 
 function getHdbConfigPath(): string | undefined {
 	return (
-		cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] ||
-		assignCMDENVVariables([hdbTerms.INSTALL_PROMPTS.HDB_CONFIG])[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG]
+		assignCMDENVVariables([hdbTerms.INSTALL_PROMPTS.HDB_CONFIG])[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] ||
+		cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG]
 	);
+}
+
+function isRootNamedHdbConfig(hdbConfigPath: string | undefined, rootDir: string | undefined): boolean {
+	if (!hdbConfigPath || !rootDir) return false;
+	const resolvedConfig = path.resolve(hdbConfigPath);
+	const baseName = path.basename(resolvedConfig);
+	return (
+		path.dirname(resolvedConfig) === path.resolve(rootDir) &&
+		(baseName === hdbTerms.HARPER_CONFIG_FILE || baseName === hdbTerms.HDB_CONFIG_FILE)
+	);
+}
+
+function isPreseededRootConfig(rootDir: string | undefined): boolean {
+	const hdbConfigPath = getHdbConfigPath();
+	if (!isRootNamedHdbConfig(hdbConfigPath, rootDir) || !rootDir) return false;
+	const resolvedConfig = path.resolve(hdbConfigPath!);
+	const otherConfigName =
+		path.basename(resolvedConfig) === hdbTerms.HARPER_CONFIG_FILE
+			? hdbTerms.HDB_CONFIG_FILE
+			: hdbTerms.HARPER_CONFIG_FILE;
+	if (fs.existsSync(path.join(rootDir, otherConfigName))) return false;
+	if (
+		fs.existsSync(path.join(rootDir, hdbTerms.DATABASES_DIR_NAME, hdbTerms.SYSTEM_SCHEMA_NAME)) ||
+		fs.existsSync(path.join(rootDir, hdbTerms.DATABASES_DIR_NAME, `${hdbTerms.SYSTEM_SCHEMA_NAME}.mdb`)) ||
+		fs.existsSync(path.join(rootDir, hdbTerms.SYSTEM_SCHEMA_NAME, 'hdb_user.mdb'))
+	) {
+		return false;
+	}
+	return true;
 }
 
 /**
@@ -120,8 +149,7 @@ async function install() {
 	}
 
 	// Check to see if any cmd/env vars are passed that override install prompts.
-	const promptOverride = checkForPromptOverride();
-	Object.assign(promptOverride, configFromFile);
+	const promptOverride = Object.assign({}, configFromFile, checkForPromptOverride());
 
 	// A cmd/env/config-file-sourced ROOTPATH skips the install prompt (and its `~/...`-expanding
 	// filter) entirely, so resolve it here - before it's validated (installValidator, below) or
@@ -171,15 +199,12 @@ async function install() {
 	// HDB root is the one of the first params we need for install.
 	hdbRoot = installParams[hdbTerms.INSTALL_PROMPTS.ROOTPATH];
 
-	conditionalRollback = false;
-	if (hdbConfigPath && path.dirname(path.resolve(hdbConfigPath)) === path.resolve(hdbRoot)) {
-		conditionalRollback = true;
-	}
+	conditionalRollback = isRootNamedHdbConfig(hdbConfigPath, hdbRoot);
 
 	// We allow HDB to run without a boot file we check for a harperdb-config.yaml
 	if (
 		!ignoreExisting &&
-		!hdbConfigPath &&
+		!isPreseededRootConfig(hdbRoot) &&
 		((await fs.pathExists(path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE))) ||
 			(await fs.pathExists(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE))))
 	) {
@@ -421,7 +446,13 @@ async function checkForExistingInstall() {
 
 	// If the boot file doesn't exist check to see if cli/env root path has been passed and
 	// is pointing to an installed HDB
-	if (!bootFileExists && !getHdbConfigPath() && hdbUtils.noBootFile()) hdbExists = true;
+	if (!bootFileExists && hdbUtils.noBootFile()) {
+		if (isPreseededRootConfig(hdbUtils.getEnvCliRootPath())) {
+			hdbUtils.resetNoBootFileCache();
+		} else {
+			hdbExists = true;
+		}
+	}
 
 	if (hdbExists && !ignoreExisting) {
 		hdbLogger.trace(`Install found existing HDB config at:${bootPropPath}`);
@@ -573,7 +604,7 @@ export function applyInstallModeDefaults(args, defaultsMode) {
  * in-memory config here, `mountHdb()` falls back to the default engine (`rocksdb`) unless
  * `installParams.STORAGE_ENGINE` was explicitly passed via CLI/prompt. Evaluating the same
  * precedence `createConfigFile()` later uses (`HARPER_SET_CONFIG` > `HARPER_CONFIG` >
- * `HARPER_DEFAULT_CONFIG` > CLI/env/file `storage.engine`) keeps the first-boot system database
+ * CLI/env/file `storage.engine` > `HARPER_DEFAULT_CONFIG`) keeps the first-boot system database
  * on the same engine that `harper-config.yaml` will persist.
  */
 function stageStorageEngine(installParams: Record<string, any> = {}) {
@@ -581,18 +612,19 @@ function stageStorageEngine(installParams: Record<string, any> = {}) {
 	// Clear any prior in-process override first so an unset STORAGE_ENGINE never lingers as an
 	// override that masks the newly written harper-config.yaml.
 	envManager.setProperty(storageEngineParam, undefined);
-	const envConfig = composeConfigFromEnv();
-	const commandLineConfig = assignCMDENVVariables([storageEngineParam, 'STORAGE_ENGINE'], true);
+	const commandLineConfig = assignCMDENVVariables([storageEngineParam], true);
 	const hdbConfigPath = getHdbConfigPath();
 	const fileConfig = hdbConfigPath ? getConfigFromFile(hdbConfigPath) : {};
-	const configuredEngine =
-		envConfig?.storage?.engine ??
+	const baseEngine =
+		commandLineConfig[storageEngineParam] ??
 		installParams.STORAGE_ENGINE ??
 		installParams[storageEngineParam] ??
-		commandLineConfig[storageEngineParam] ??
-		commandLineConfig.STORAGE_ENGINE ??
 		fileConfig[storageEngineParam] ??
 		fileConfig.STORAGE_ENGINE;
+	const envConfig = composeConfigFromEnv(
+		baseEngine !== undefined && baseEngine !== null && baseEngine !== '' ? { storage: { engine: baseEngine } } : {}
+	);
+	const configuredEngine = envConfig?.storage?.engine;
 	if (configuredEngine !== undefined && configuredEngine !== null && configuredEngine !== '') {
 		configUtils.updateConfigObject(storageEngineParam, configuredEngine);
 	}
@@ -634,82 +666,44 @@ function stageRocksCompression() {
 	envManager.setProperty(compression, configuredCompression);
 }
 
-function backfillMissingDefaults(
-	targetDoc: YAML.Document,
-	defaultsObj: Record<string, any>,
-	prefix: string[] = []
-): boolean {
-	let mutated = false;
-	for (const [key, defaultVal] of Object.entries(defaultsObj)) {
-		const keyPath = [...prefix, key];
-		if (!targetDoc.hasIn(keyPath)) {
-			targetDoc.setIn(keyPath, defaultVal);
-			mutated = true;
-		} else if (defaultVal !== null && typeof defaultVal === 'object' && !Array.isArray(defaultVal)) {
-			const currentVal = targetDoc.getIn(keyPath);
-			if (currentVal !== null && typeof currentVal === 'object' && !Array.isArray(currentVal)) {
-				if (backfillMissingDefaults(targetDoc, defaultVal, keyPath)) {
-					mutated = true;
-				}
-			}
-		}
-	}
-	return mutated;
-}
-
-function materializeHdbConfigFile(hdbConfigPath: string): { targetConfigPath: string; originalContent?: string } {
-	const targetConfigPath = conditionalRollback
-		? path.resolve(hdbConfigPath)
-		: path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
-	const sourceContent = fs.readFileSync(hdbConfigPath, 'utf8');
-	const originalContent = conditionalRollback ? sourceContent : undefined;
-	const userDoc = YAML.parseDocument(sourceContent, { simpleKeys: true } as any);
-	const defaultDoc = YAML.parseDocument(
-		fs.readFileSync(path.join(PACKAGE_ROOT, 'static/defaultConfig.yaml'), 'utf8'),
-		{ simpleKeys: true } as any
-	);
-	let mutated = backfillMissingDefaults(userDoc, defaultDoc.toJSON());
-	if (userDoc.getIn(['rootPath']) == null && hdbRoot) {
-		const normalizedRoot = hdbRoot.endsWith('/') ? hdbRoot.slice(0, -1) : hdbRoot;
-		userDoc.setIn(['rootPath'], normalizedRoot);
-		mutated = true;
-	}
-	if (!conditionalRollback || mutated) {
-		fs.createFileSync(targetConfigPath);
-		fs.writeFileSync(targetConfigPath, String(userDoc), 'utf8');
-	}
-	return { targetConfigPath, originalContent };
-}
-
 async function createConfigFile(installParams) {
 	hdbLogger.trace('Creating Harper config file');
-	const args = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
-	Object.assign(args, installParams);
-
-	const defaultsMode = installParams[hdbTerms.INSTALL_PROMPTS.DEFAULTS_MODE];
-	if (defaultsMode !== undefined && defaultsMode !== 'dev' && defaultsMode !== 'prod') {
-		const warn = `DEFAULTS_MODE value "${defaultsMode}" is not recognized (expected "dev" or "prod"). Using prod defaults.`;
-		console.error(chalk.yellow.bold(`Warning: ${warn}`));
-		hdbLogger.warn(warn);
-	}
-	applyInstallModeDefaults(args, defaultsMode);
-
-	let materializedHdbConfig: { targetConfigPath: string; originalContent?: string } | undefined;
-	try {
-		const hdbConfigPath = getHdbConfigPath();
-		if (!hdbConfigPath) {
-			// Create the Harper config file.
-			configUtils.createConfigFile(args);
-		} else {
-			materializedHdbConfig = materializeHdbConfigFile(hdbConfigPath);
-			configUtils.initConfig(true);
+	const cliEnvArgs = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
+	const hdbConfigPath = getHdbConfigPath();
+	let args: Record<string, any>;
+	if (hdbConfigPath) {
+		args = Object.assign(
+			{ [hdbTerms.INSTALL_PROMPTS.ROOTPATH]: hdbRoot },
+			installParams[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME] !== undefined
+				? { [hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME]: installParams[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME] }
+				: {},
+			cliEnvArgs
+		);
+	} else {
+		args = Object.assign({}, installParams, cliEnvArgs);
+		const defaultsMode = installParams[hdbTerms.INSTALL_PROMPTS.DEFAULTS_MODE];
+		if (defaultsMode !== undefined && defaultsMode !== 'dev' && defaultsMode !== 'prod') {
+			const warn = `DEFAULTS_MODE value "${defaultsMode}" is not recognized (expected "dev" or "prod"). Using prod defaults.`;
+			console.error(chalk.yellow.bold(`Warning: ${warn}`));
+			hdbLogger.warn(warn);
 		}
+		applyInstallModeDefaults(args, defaultsMode);
+	}
 
+	const originalHdbConfigContent =
+		conditionalRollback && hdbConfigPath ? fs.readFileSync(hdbConfigPath, 'utf8') : undefined;
+	try {
+		configUtils.createConfigFile(
+			args,
+			false,
+			hdbConfigPath,
+			conditionalRollback && hdbConfigPath ? hdbConfigPath : undefined
+		);
 		envManager.initSync();
 	} catch (configErr) {
-		if (materializedHdbConfig?.originalContent !== undefined) {
+		if (originalHdbConfigContent !== undefined && hdbConfigPath) {
 			try {
-				fs.writeFileSync(materializedHdbConfig.targetConfigPath, materializedHdbConfig.originalContent, 'utf8');
+				configUtils.atomicWriteFile(path.resolve(hdbConfigPath), originalHdbConfigContent);
 			} catch {}
 		}
 		rollbackInstall(configErr);

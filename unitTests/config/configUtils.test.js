@@ -1110,16 +1110,28 @@ describe('Test configUtils module', () => {
 			config_obj_rw();
 		});
 
-		it('deletes rather than writing an undefined value into the nested tree', () => {
+		it('deletes rather than writing an undefined value into flatConfigObj or the nested tree', () => {
 			// squashObj (below) never writes an undefined value as an enumerable key either; several
 			// root-config readers iterate configObj's own keys and assume every one holds a real value.
-			const nested_config = { databases: { data: { path: '/old' } } };
-			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const flat_config = {
+				databases: { data: { path: '/old' } },
+				operationsapi_network_port: 9925,
+			};
+			const nested_config = {
+				databases: { data: { path: '/old' } },
+				operationsApi: { network: { port: 9925 } },
+			};
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', flat_config);
 			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
 
 			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.DATABASES, undefined);
+			// Also test clearing via a legacy alias (SERVER_PORT -> operationsApi_network_port)
+			config_utils_rw.updateConfigObject(hdbTerms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY, undefined);
 
+			expect(flat_config.hasOwnProperty('databases')).to.be.false;
+			expect(flat_config.hasOwnProperty('operationsapi_network_port')).to.be.false;
 			expect(nested_config.hasOwnProperty('databases')).to.be.false;
+			expect(nested_config.operationsApi.network.hasOwnProperty('port')).to.be.false;
 			config_obj_rw();
 		});
 
