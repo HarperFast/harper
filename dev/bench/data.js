@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792055958973,
+  "lastUpdate": 1792055963882,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -28239,6 +28239,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 869.7,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5ed056a6a4fa41a45be6d870622e30aa9132e8c6",
+          "message": "Fix SQL `WHERE NOT (...)` selecting, deleting or updating the wrong rows (#3202)\n\n* Evaluate a legacy SQL predicate under NOT against every row\n\nThe legacy executor narrowed each WHERE column's fetch to the values its\npredicates named, wherever those predicates sat, so `NOT (c = 'alpha')`\nwas evaluated over the alpha rows only and returned nothing, and\n`DELETE ... WHERE NOT (a = 1 AND b = 2)` missed every row matching\nneither side. The default auto engine reaches this executor for every\nparenthesized expression.\n\nOnly a top-level AND conjunct now narrows a fetch. A self-join skips\nnarrowing, because the narrowing maps are keyed by physical table and a\nrestriction on one occurrence would narrow the other.\n\nRefs #1397\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_018Gtc2KgUdvqhVKFLh7f6bp\nDispatch-Task: harper-1397-sqlsearch-not-prefetch\n\n* Skip the self-join check on single-table queries, and use plain assert in the new tests\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_018Gtc2KgUdvqhVKFLh7f6bp\nDispatch-Task: harper-1397-sqlsearch-not-prefetch\n\n* Compare table identities in place for the self-join check, and keep the walk's node guard\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_018Gtc2KgUdvqhVKFLh7f6bp\nDispatch-Task: harper-1397-sqlsearch-not-prefetch\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-14T20:13:40Z",
+          "url": "https://github.com/HarperFast/harper/commit/5ed056a6a4fa41a45be6d870622e30aa9132e8c6"
+        },
+        "date": 1792055962444,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 3912.59,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 3912.59,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 693.5,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1977.4,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 2787.5,
             "unit": "ms"
           }
         ]
