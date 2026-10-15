@@ -654,10 +654,10 @@ function stageStorageEngine(installParams: Record<string, any> = {}) {
 	const cliEngine = commandLineConfig[storageEngineParam];
 	const baseEngine = installParams.STORAGE_ENGINE ?? installParams[storageEngineParam];
 	const envConfig = composeConfigFromEnv(
-		baseEngine !== undefined && baseEngine !== null && baseEngine !== '' ? { storage: { engine: baseEngine } } : {}
+		baseEngine !== undefined && baseEngine !== null && baseEngine !== '' ? { storage: { engine: baseEngine } } : {},
+		cliEngine !== undefined && cliEngine !== null && cliEngine !== '' ? { storage: { engine: cliEngine } } : undefined
 	);
-	const configuredEngine =
-		cliEngine !== undefined && cliEngine !== null && cliEngine !== '' ? cliEngine : envConfig?.storage?.engine;
+	const configuredEngine = envConfig?.storage?.engine;
 	if (configuredEngine !== undefined && configuredEngine !== null && configuredEngine !== '') {
 		configUtils.updateConfigObject(storageEngineParam, configuredEngine);
 	}
@@ -695,15 +695,16 @@ function stageRocksCompression(installParams: Record<string, any> = {}) {
 	if (baseCompression !== undefined && baseCompression !== null && baseCompression !== '') {
 		baseConfig.storage.compression = baseCompression;
 	}
-	const envConfig = composeConfigFromEnv(baseConfig);
-	const configuredRocksCompression =
-		cliRocksCompression !== undefined && cliRocksCompression !== null && cliRocksCompression !== ''
-			? cliRocksCompression
-			: envConfig?.storage?.rocks?.compression;
-	const configuredCompression =
-		cliCompression !== undefined && cliCompression !== null && cliCompression !== ''
-			? cliCompression
-			: (envConfig?.storage?.compression ?? true);
+	const cliConfig: Record<string, any> = { storage: {} };
+	if (cliRocksCompression !== undefined && cliRocksCompression !== null && cliRocksCompression !== '') {
+		cliConfig.storage.rocks = { compression: cliRocksCompression };
+	}
+	if (cliCompression !== undefined && cliCompression !== null && cliCompression !== '') {
+		cliConfig.storage.compression = cliCompression;
+	}
+	const envConfig = composeConfigFromEnv(baseConfig, cliConfig);
+	const configuredRocksCompression = envConfig?.storage?.rocks?.compression;
+	const configuredCompression = envConfig?.storage?.compression ?? true;
 	if (
 		configuredRocksCompression !== undefined &&
 		configuredRocksCompression !== null &&
