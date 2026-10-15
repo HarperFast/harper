@@ -1058,8 +1058,8 @@ describe('ComponentStatusRegistry', function () {
 						{
 							componentName: 'my-app.folder-load',
 							status: COMPONENT_STATUS_LEVELS.ERROR,
-							latestMessage: 'Could not load broken-folder',
-							error: new Error('Could not load broken-folder due to: Error: ENOENT'),
+							latestMessage: 'Could not load my-app',
+							error: new SyntaxError('Could not load application due to Unexpected token'),
 							lastChecked: { workers: { 0: 1000 } },
 						},
 					],
@@ -1080,12 +1080,58 @@ describe('ComponentStatusRegistry', function () {
 				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
 				assert.equal(
 					result.details['my-app.folder-load'].message,
-					'Could not load broken-folder due to: Error: ENOENT'
+					'SyntaxError: Could not load application due to Unexpected token'
 				);
 				assert.equal(
 					result.details['my-app.model-loader'].message,
 					'Could not load weights from S3: Could not load model: timeout'
 				);
+			});
+
+			it('should redact embedded URL credentials in status messages at write time and deduplicate fail-closed refusals', async function () {
+				class RejectedReleaseError extends Error {
+					constructor(message) {
+						super(message);
+						this.name = 'RejectedReleaseError';
+					}
+				}
+				const rawReason =
+					'Not loading my-app: release failed canary probe: connect failed: postgres://svc:pw@db.internal:5432/app';
+				const rejectedError = new RejectedReleaseError(rawReason);
+
+				registry.markFailed('my-app', rejectedError, rejectedError.message);
+
+				const stored = registry.getStatus('my-app');
+				assert.equal(
+					stored.message,
+					'Not loading my-app: release failed canary probe: connect failed: postgres://[REDACTED]@db.internal:5432/app'
+				);
+				assert(!stored.message.includes('svc:pw'));
+
+				const consolidatedStatuses = new Map([
+					[
+						'my-app',
+						{
+							componentName: 'my-app',
+							status: stored.status,
+							latestMessage: stored.message,
+							error: stored.error,
+							lastChecked: { workers: { 0: 1000 } },
+						},
+					],
+				]);
+
+				const result = await registry.getAggregatedStatusFor('my-app', consolidatedStatuses);
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
+				assert.equal(
+					result.details['my-app'].error,
+					'RejectedReleaseError: Not loading my-app: release failed canary probe: connect failed: postgres://[REDACTED]@db.internal:5432/app'
+				);
+				assert.equal(
+					result.details['my-app'].message,
+					'RejectedReleaseError: Not loading my-app: release failed canary probe: connect failed: postgres://[REDACTED]@db.internal:5432/app'
+				);
+				assert(!result.message.includes('svc:pw'));
 			});
 
 			it('should handle string error without duplicating if already present in latestMessage', async function () {

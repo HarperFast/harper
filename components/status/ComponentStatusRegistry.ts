@@ -61,7 +61,9 @@ export class ComponentStatusRegistry {
 			);
 		}
 
-		this.statusMap.set(componentName, new ComponentStatus(status, message, error));
+		const sanitizedMessage = typeof message === 'string' ? redactUrlCredentials(message) : message;
+		const sanitizedError = typeof error === 'string' ? redactUrlCredentials(error) : error;
+		this.statusMap.set(componentName, new ComponentStatus(status, sanitizedMessage, sanitizedError));
 	}
 
 	/**
@@ -168,15 +170,8 @@ export class ComponentStatusRegistry {
 	}
 
 	/**
-	 * Get aggregated status for a specific component and all its sub-components.
-	 * This method handles both exact matches and sub-component aggregation.
-	 *
-	 * Wire shape: when sub-components are unhealthy, `message` and `details[key].message`
-	 * combine `latestMessage` with the serialized failure cause (`details[key].error`),
-	 * formatted via `serializeStatusError` (with class prefix for non-plain `Error` types
-	 * and URL userinfo credentials redacted) so operators calling `get_components` can
-	 * see why a component failed to load.
-	 *
+	 * Get aggregated status for a specific component and all its sub-components
+	 * This method handles both exact matches and sub-component aggregation
 	 * @param componentName - The component name to look up (e.g., "application-template", "http")
 	 * @param consolidatedStatuses - Pre-fetched consolidated statuses from all threads (optional, will fetch if not provided)
 	 * @returns Aggregated status information for the component
@@ -266,6 +261,7 @@ export class ComponentStatusRegistry {
 
 const CREDENTIAL_URL_USERINFO_PATTERN = /(?<=[a-z][a-z0-9+.-]*:\/\/)[^/?#\s]+@/gi;
 const LOADER_COMPONENT_FAILURE_MESSAGE = /^Could not load component '[^']*'$/;
+const LOADER_DIRECTORY_FAILURE_MESSAGE = /^Could not load \S+$/;
 
 function redactUrlCredentials(text: string): string {
 	return text.replace(CREDENTIAL_URL_USERINFO_PATTERN, '[REDACTED]@');
@@ -280,7 +276,8 @@ function redactUrlCredentials(text: string): string {
  * causes so operators can diagnose broken deployments without log access. Only
  * the error class name and message are rendered (never stack traces or arbitrary
  * enumerable properties), and embedded URL userinfo credentials (`scheme://user:pass@host`)
- * are redacted before the string leaves the status registry.
+ * are redacted in both status messages (`setStatus`) and serialized errors before
+ * text leaves the status registry.
  */
 export function serializeStatusError(error: unknown): string | undefined {
 	if (error === undefined || error === null) return undefined;
@@ -320,18 +317,21 @@ export function serializeStatusError(error: unknown): string | undefined {
 }
 
 function formatProblemMessage(latestMessage: string | undefined, errorMessage: string | undefined): string | undefined {
-	if (latestMessage && errorMessage) {
-		if (latestMessage.includes(errorMessage)) {
-			return latestMessage;
+	const sanitizedLatest = latestMessage !== undefined ? redactUrlCredentials(latestMessage) : undefined;
+	if (sanitizedLatest && errorMessage) {
+		if (sanitizedLatest.includes(errorMessage)) {
+			return sanitizedLatest;
 		}
 		if (
-			errorMessage.includes(latestMessage) ||
-			(LOADER_COMPONENT_FAILURE_MESSAGE.test(latestMessage) &&
-				/^(?:[\w$]+:\s*)?Could not load component /.test(errorMessage))
+			errorMessage.includes(sanitizedLatest) ||
+			(LOADER_COMPONENT_FAILURE_MESSAGE.test(sanitizedLatest) &&
+				/^(?:[\w$]+:\s*)?Could not load component /.test(errorMessage)) ||
+			(LOADER_DIRECTORY_FAILURE_MESSAGE.test(sanitizedLatest) &&
+				/^(?:[\w$]+:\s*)?Could not load application due to /.test(errorMessage))
 		) {
 			return errorMessage;
 		}
-		return `${latestMessage}: ${errorMessage}`;
+		return `${sanitizedLatest}: ${errorMessage}`;
 	}
-	return latestMessage ?? errorMessage;
+	return sanitizedLatest ?? errorMessage;
 }
