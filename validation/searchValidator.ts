@@ -4,11 +4,12 @@ import * as validator from './validationWrapper.ts';
 import Joi from 'joi';
 import * as hdbUtils from '../utility/common_utils.ts';
 import { hdbSchemaTable, checkValidTable, hdbTable, hdbDatabase } from './common_validators.ts';
-import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
+import { ClientError, handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
 import { FULL_TEXT_COMPARATORS } from '../resources/indexes/fullTextQueryProtocol.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
+const MAX_SELECT_DEPTH = 64;
 const FULL_TEXT_COMPARATOR_SET = new Set<string>(FULL_TEXT_COMPARATORS);
 const SEARCH_BY_CONDITIONS_COMPARATORS = [
 	'equals',
@@ -151,9 +152,20 @@ export default function (searchObject: any, type: any) {
 		}
 
 		let unknownAttributes: any[] = [];
-		const visitedObjects = new WeakSet();
-		const collectUnknownAttributes = (attributesToCheck: any[], currentTableSchema: any) => {
+		const visitedBySchema = new WeakMap<object, WeakSet<object>>();
+		const visitedWithoutSchema = new WeakSet<object>();
+		const getVisitedSet = (schema: any): WeakSet<object> => {
+			if (!schema || typeof schema !== 'object') return visitedWithoutSchema;
+			let set = visitedBySchema.get(schema);
+			if (!set) {
+				set = new WeakSet<object>();
+				visitedBySchema.set(schema, set);
+			}
+			return set;
+		};
+		const collectUnknownAttributes = (attributesToCheck: any[], currentTableSchema: any, depth = 0) => {
 			const tableAttributes = currentTableSchema?.attributes || [];
+			const visitedObjects = getVisitedSet(currentTableSchema);
 			for (const attribute of attributesToCheck) {
 				if (
 					attribute === '*' ||
@@ -181,12 +193,20 @@ export default function (searchObject: any, type: any) {
 						unknownAttributes.push(attribute.name);
 						continue;
 					}
+					if (attribute.conditions !== undefined) {
+						unknownAttributes.push(`${attribute.name} (conditions are not allowed in get_attributes)`);
+						continue;
+					}
 					if (attribute.select !== undefined) {
 						if (
 							typeof attribute.select !== 'string' &&
 							(!Array.isArray(attribute.select) || attribute.select.length === 0)
 						) {
-							unknownAttributes.push(attribute);
+							unknownAttributes.push(`${attribute.name} (invalid select)`);
+							continue;
+						}
+						if (depth >= MAX_SELECT_DEPTH) {
+							unknownAttributes.push(`${attribute.name} (select depth exceeded)`);
 							continue;
 						}
 						const targetTable =
@@ -194,7 +214,7 @@ export default function (searchObject: any, type: any) {
 							currentTableSchema?.propertyResolvers?.[attribute.name]?.definition?.tableClass;
 						if (targetTable?.attributes) {
 							const nestedSelect = Array.isArray(attribute.select) ? attribute.select : [attribute.select];
-							collectUnknownAttributes(nestedSelect, targetTable);
+							collectUnknownAttributes(nestedSelect, targetTable, depth + 1);
 						}
 					}
 					continue;
@@ -243,7 +263,7 @@ export default function (searchObject: any, type: any) {
 			// return error with proper message - replace last comma with and
 			let errorMsg = unknownAttributes.join(', ');
 			errorMsg = errorMsg.replace(/,([^,]*)$/, ' and$1');
-			return new Error(`unknown attribute '${errorMsg}'`);
+			return new ClientError(`unknown attribute '${errorMsg}'`);
 		}
 	}
 

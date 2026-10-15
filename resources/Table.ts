@@ -8258,7 +8258,7 @@ export function makeTable(options): TableResourceClass {
 								const ids = object[relationship.from];
 								if (ids == null) return ids;
 								const ctx = context ?? contextStorage.getStore();
-								if (ctx) ctx.lastModified = UNCACHEABLE_TIMESTAMP;
+								if (ctx && !('replacingVersion' in ctx)) ctx.lastModified = UNCACHEABLE_TIMESTAMP;
 								if (attribute.elements) {
 									// tolerate a scalar id in an array-typed FK field (legacy data written
 									// before attribute.set normalized single records to a one-element array)
