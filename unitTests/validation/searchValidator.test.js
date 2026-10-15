@@ -282,10 +282,12 @@ describe('Test searchValidator module', () => {
 		]) {
 			const err1 = searchValidator({ ...base, get_attributes: ['id', { name: 'unknownRel', select: ['id'] }] }, type);
 			assert.ok(err1 instanceof Error, `expected error for ${type}`);
+			assert.strictEqual(err1.statusCode, 400);
 			assert.strictEqual(err1.message, "unknown attribute 'unknownRel'");
 
 			const err2 = searchValidator({ ...base, get_attributes: ['id', { name: 'unknownTopAttr' }] }, type);
 			assert.ok(err2 instanceof Error, `expected error for ${type}`);
+			assert.strictEqual(err2.statusCode, 400);
 			assert.strictEqual(err2.message, "unknown attribute 'unknownTopAttr'");
 		}
 	});
@@ -308,6 +310,7 @@ describe('Test searchValidator module', () => {
 				type
 			);
 			assert.ok(fromErr instanceof Error, `expected from: error for ${type}`);
+			assert.strictEqual(fromErr.statusCode, 400);
 			assert.strictEqual(fromErr.message, "unknown attribute 'unknownChildAttr'");
 
 			const toErr = searchValidator(
@@ -315,6 +318,7 @@ describe('Test searchValidator module', () => {
 				type
 			);
 			assert.ok(toErr instanceof Error, `expected to: error for ${type}`);
+			assert.strictEqual(toErr.statusCode, 400);
 			assert.strictEqual(toErr.message, "unknown attribute 'unknownChildAttr'");
 
 			const deepErr = searchValidator(
@@ -328,6 +332,7 @@ describe('Test searchValidator module', () => {
 				type
 			);
 			assert.ok(deepErr instanceof Error, `expected deep error for ${type}`);
+			assert.strictEqual(deepErr.statusCode, 400);
 			assert.strictEqual(deepErr.message, "unknown attribute 'unknownGrandchildAttr'");
 		}
 	});
@@ -360,6 +365,82 @@ describe('Test searchValidator module', () => {
 			'hashes'
 		);
 		assert.ok(selfErr instanceof Error);
+		assert.strictEqual(selfErr.statusCode, 400);
 		assert.strictEqual(selfErr.message, "unknown attribute 'bogusSelfAttr'");
+	});
+
+	it('rejects conditions in object get_attributes, non-array select, reused invalid sub-selectors across schemas, and excessive select depth', () => {
+		const condErr = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				hash_values: ['1'],
+				get_attributes: [
+					'id',
+					{
+						name: 'children',
+						conditions: [{ attribute: 'label', comparator: 'equals', value: 'x' }],
+						select: ['id'],
+					},
+				],
+			},
+			'hashes'
+		);
+		assert.ok(condErr instanceof Error);
+		assert.strictEqual(condErr.statusCode, 400);
+		assert.strictEqual(condErr.message, "unknown attribute 'children (conditions are not allowed in get_attributes)'");
+
+		const invalidSelectErr = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				hash_values: ['1'],
+				get_attributes: ['id', { name: 'child', select: 123 }],
+			},
+			'hashes'
+		);
+		assert.ok(invalidSelectErr instanceof Error);
+		assert.strictEqual(invalidSelectErr.statusCode, 400);
+		assert.strictEqual(invalidSelectErr.message, "unknown attribute 'child (invalid select)'");
+
+		// Reusing the same selector object reference against two different target table schemas
+		// ('child' has 'label', 'grandchild' does not) must validate against both target schemas.
+		const sharedLeafSelector = { name: 'label' };
+		const reusedSelectorErr = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				hash_values: ['1'],
+				get_attributes: [
+					'id',
+					{
+						name: 'child',
+						select: [sharedLeafSelector, { name: 'grandchild', select: [sharedLeafSelector] }],
+					},
+				],
+			},
+			'hashes'
+		);
+		assert.ok(reusedSelectorErr instanceof Error);
+		assert.strictEqual(reusedSelectorErr.statusCode, 400);
+		assert.strictEqual(reusedSelectorErr.message, "unknown attribute 'label'");
+
+		// Deeply nested self-referential select exceeding MAX_SELECT_DEPTH (64) must fail closed with 400.
+		let deepSelect = ['id'];
+		for (let i = 0; i < 70; i++) {
+			deepSelect = [{ name: 'parent', select: deepSelect }];
+		}
+		const depthErr = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				hash_values: ['1'],
+				get_attributes: deepSelect,
+			},
+			'hashes'
+		);
+		assert.ok(depthErr instanceof Error);
+		assert.strictEqual(depthErr.statusCode, 400);
+		assert.strictEqual(depthErr.message, "unknown attribute 'parent (select depth exceeded)'");
 	});
 });

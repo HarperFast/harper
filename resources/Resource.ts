@@ -30,6 +30,7 @@ import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 import { isFormDataIterable, resolveBody } from './resolveBody.ts';
+import { compareKeys } from 'ordered-binary';
 
 // Only table-backed classes are refused here: a custom resource's put/post/delete may be a non-storage call that a
 // read-only server must still answer. post, publish, copy and move are left to the transaction's write admission.
@@ -134,6 +135,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 			function handleSelect(result) {
 				let select;
 				if ((select = query?.select) && result != null && !result.selectApplied) {
+					if (query.parseError) throw query.parseError;
 					const transform = transformForSelect(select, resource.constructor);
 					if (typeof result?.map === 'function') {
 						return result.map(transform);
@@ -1264,24 +1266,79 @@ export function transformForSelect(select, resource) {
 				if (property.name) {
 					const value = getProperty(property.name);
 					if (!value || typeof value !== 'object' || value instanceof Date) return value;
-					if (!subTransforms) subTransforms = Object.create(null);
+					if (!subTransforms) subTransforms = new WeakMap();
 					// TODO: Get the resource, cache this transform, and apply above
-					let transform = subTransforms[property.name];
+					let transform = subTransforms.get(property);
 					if (!transform) {
 						const subSelect = property.select ?? (Array.isArray(property) ? property : null);
-						if (subSelect) {
-							const resource =
-								propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
-									? propertyResolvers[property.name]?.definition?.tableClass
-									: undefined;
-							transform = subTransforms[property.name] = transformForSelect(subSelect, resource);
+						const targetResource =
+							propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
+								? propertyResolvers[property.name]?.definition?.tableClass
+								: undefined;
+						const innerTransform = subSelect ? transformForSelect(subSelect, targetResource) : (v) => v;
+						const sort = typeof property.sort === 'object' ? property.sort : null;
+						const offset = property.offset;
+						const limit = property.limit;
+						if (sort || offset != null || limit != null) {
+							const applySubQuery = (resolvedValue) => {
+								if (!resolvedValue || typeof resolvedValue !== 'object' || resolvedValue instanceof Date)
+									return resolvedValue;
+								if (typeof resolvedValue.then === 'function') return resolvedValue.then(applySubQuery);
+								if (Array.isArray(resolvedValue)) {
+									let ordered = resolvedValue;
+									if (sort) {
+										ordered = resolvedValue.slice().sort((a, b) => {
+											for (let clause = sort; clause; clause = clause.next) {
+												const keyA = getComparableKey(a, clause.attribute, targetResource);
+												const keyB = getComparableKey(b, clause.attribute, targetResource);
+												const diff = clause.descending ? compareKeys(keyB, keyA) : compareKeys(keyA, keyB);
+												if (diff !== 0) return diff;
+											}
+											return 0;
+										});
+									}
+									if (offset != null || limit != null) {
+										const start = offset ?? 0;
+										ordered = ordered.slice(start, limit != null ? start + limit : undefined);
+									}
+									return innerTransform(ordered);
+								}
+								return innerTransform(resolvedValue);
+							};
+							transform = applySubQuery;
 						} else {
-							transform = subTransforms[property.name] = (v) => v;
+							transform = innerTransform;
 						}
+						subTransforms.set(property, transform);
 					}
 					return transform(value);
 				} else return getProperty(property);
 			} else return property;
 		};
 	}
+}
+
+function toComparableKey(value) {
+	if (value instanceof Date) return value.getTime();
+	if (Array.isArray(value)) return value.map(toComparableKey);
+	return value;
+}
+
+function getComparableKey(item, attribute, resource) {
+	if (item == null || typeof item !== 'object') return undefined;
+	let resolvers = resource?.propertyResolvers;
+	const ctx = resource?.getContext?.();
+	if (Array.isArray(attribute)) {
+		let value = item;
+		for (const part of attribute) {
+			if (value == null || typeof value !== 'object') return undefined;
+			value = selectFromObject(value, resolvers, ctx)(part);
+			resolvers =
+				resolvers && Object.hasOwn(resolvers, part)
+					? (resolvers[part]?.definition || resolvers[part]?.elements?.definition)?.tableClass?.propertyResolvers
+					: undefined;
+		}
+		return toComparableKey(value);
+	}
+	return toComparableKey(selectFromObject(item, resolvers, ctx)(attribute));
 }

@@ -2167,6 +2167,11 @@ function parseBlock(query, expectedEnd) {
 	let lastBinaryOperator;
 	while ((match = parser.exec(queryString))) {
 		lastIndex = parser.lastIndex;
+		if (match[0] === '' && lastIndex < queryString.length) {
+			recordError(`unexpected character '${queryString[lastIndex]}'`);
+			lastIndex = queryString.length;
+			return query;
+		}
 		const [, value, operator] = match;
 		if (expectingDelimiter) {
 			if (value) recordError(`expected operator, but encountered '${value}'`);
