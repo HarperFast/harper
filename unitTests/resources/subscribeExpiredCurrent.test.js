@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
@@ -49,16 +49,16 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 		const liveEntry = entries.find((e) => e.key === 'live-key');
 
 		assert.ok(expiredEntry, 'expired entry should still be stored before eviction');
-		assert.equal(expiredEntry.expiresAt, pastExpiry);
+		assert.strictEqual(expiredEntry.expiresAt, pastExpiry);
 		assert.ok(liveEntry, 'live entry should be stored');
-		assert.equal(liveEntry.expiresAt, futureExpiry);
+		assert.strictEqual(liveEntry.expiresAt, futureExpiry);
 	});
 
 	it('skips expired records in the [expiration, expiration + eviction] window on wildcard/collection subscribe without lazy eviction', async function () {
 		const ExpWindowTable = table({
 			table: nextTableName('SubExpWindowCol'),
 			database: nextTableName('db'),
-			expiration: 0.05, // 50ms expiration
+			expiration: 0.05,
 			eviction: 3600, // 1h eviction window so the background sweep never evicts during the test
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
@@ -96,14 +96,14 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 
 		try {
 			await waitFor(() => collectionEvents.some((ev) => ev.id === 'z-live'), 3000);
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				collectionEvents.map((ev) => ev.id),
 				[['prefix', 'z-live'], 'z-live'],
 				'collection subscribe should deliver only unexpired records'
 			);
 
 			await waitFor(() => prefixEvents.length === 1, 3000);
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				prefixEvents.map((ev) => ev.id),
 				[['prefix', 'z-live']],
 				'prefix subscribe should deliver only unexpired matching records'
@@ -150,21 +150,20 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 
 		try {
 			await waitFor(() => liveSingleEvents.length >= 1, 3000);
-			assert.equal(liveSingleEvents[0].id, 'z-live');
-			assert.equal(liveSingleEvents[0].value.name, 'live-row');
+			assert.strictEqual(liveSingleEvents[0].id, 'z-live');
+			assert.strictEqual(liveSingleEvents[0].value.name, 'live-row');
 
 			const afterSubExpired = ExpWindowSingleTable.primaryStore.getEntry('a-expired');
 			assert.ok(afterSubExpired?.value, 'subscribe() must not lazily evict a-expired from primaryStore');
 			assert.ok(afterSubExpired.expiresAt < Date.now());
 
-			// Issue a live write to 'a-expired'; the first event delivered must be the live write, not the expired current row
 			await ExpWindowSingleTable.put(
 				'a-expired',
 				{ id: 'a-expired', name: 'replacement-live' },
 				{ expiresAt: Date.now() + 60_000 }
 			);
 			await waitFor(() => expiredSingleEvents.length >= 1, 3000);
-			assert.equal(
+			assert.strictEqual(
 				expiredSingleEvents[0].value?.name,
 				'replacement-live',
 				'first event on expired single-record subscription must be the subsequent live write, not the expired current value'
@@ -224,15 +223,15 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 
 		try {
 			await waitFor(() => wildcardEvents.some((ev) => ev.id === 'z-unexpired'), 3000);
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				wildcardEvents.map((ev) => ev.id),
 				['z-unexpired'],
 				'wildcard subscribe should skip @expiresAt-expired records and deliver only unexpired records'
 			);
 
 			await waitFor(() => singleValidEvents.length >= 1, 3000);
-			assert.equal(singleValidEvents[0].id, 'z-unexpired');
-			assert.equal(singleValidEvents[0].value.name, 'still-valid');
+			assert.strictEqual(singleValidEvents[0].id, 'z-unexpired');
+			assert.strictEqual(singleValidEvents[0].value.name, 'still-valid');
 
 			for (const id of ['a-expired-past', 'b-expired-elapsed']) {
 				const entry = ExpiresAtAttrTable.primaryStore.getEntry(id);
@@ -245,7 +244,7 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 				expiresAt: new Date(Date.now() + 60_000),
 			});
 			await waitFor(() => singleExpiredEvents.length >= 1, 3000);
-			assert.equal(
+			assert.strictEqual(
 				singleExpiredEvents[0].value?.name,
 				'renewed',
 				'expired single-record subscriber should only receive the new live write'
@@ -288,7 +287,6 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 
 		const mqttUser = { username: 'mqtt-exp-test', role: { permission: { super_user: true } } };
 
-		// 1. Multi-level wildcard '#' (collection subscribe via DurableSubscriptionsSession)
 		const hashDeliveries = [];
 		const hashSession = await getSession({
 			clientId: nextClientId('mqtt-hash'),
@@ -300,7 +298,6 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 			return true;
 		});
 
-		// 2. Single-level wildcard '+' at root and 'nested/+'
 		const plusDeliveries = [];
 		const plusSession = await getSession({
 			clientId: nextClientId('mqtt-plus'),
@@ -312,7 +309,6 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 			return true;
 		});
 
-		// 3. Single-record topics ('a-expired' and 'z-live') via Resource.subscribe path in DurableSubscriptionsSession
 		const singleDeliveries = [];
 		const singleSession = await getSession({
 			clientId: nextClientId('mqtt-single'),
@@ -328,7 +324,7 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 			await singleSession.addSubscription({ topic: `${MqttTopicName}/a-expired`, qos: 1, rh: 0 }, true);
 			await singleSession.addSubscription({ topic: `${MqttTopicName}/z-live`, qos: 1, rh: 0 }, true);
 			await waitFor(() => singleDeliveries.some((d) => d.topic === `${MqttTopicName}/z-live`), 3000);
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				singleDeliveries.map((d) => d.topic),
 				[`${MqttTopicName}/z-live`],
 				'MQTT single-topic retained subscribe must deliver unexpired topic and skip expired topic'
@@ -336,7 +332,7 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 
 			await hashSession.addSubscription({ topic: `${MqttTopicName}/#`, qos: 1, rh: 0 }, true);
 			await waitFor(() => hashDeliveries.some((d) => d.topic === `${MqttTopicName}/z-live`), 3000);
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				hashDeliveries.map((d) => d.topic),
 				[`${MqttTopicName}/nested/z-live`, `${MqttTopicName}/z-live`],
 				'MQTT # retained subscribe must skip expired records'
@@ -350,22 +346,26 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 					plusDeliveries.some((d) => d.topic === `${MqttTopicName}/nested/z-live`),
 				3000
 			);
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				plusDeliveries.map((d) => d.topic).sort(),
 				[`${MqttTopicName}/nested/z-live`, `${MqttTopicName}/z-live`],
 				'MQTT + retained subscribe must skip expired records'
 			);
 
-			// Expired records must still reside in primaryStore (no lazy eviction)
-			assert.ok(MqttTable.primaryStore.getEntry('a-expired')?.value);
-			assert.ok(MqttTable.primaryStore.getEntry('nested/a-expired')?.value);
+			assert.ok(
+				MqttTable.primaryStore.getEntry('a-expired')?.value,
+				'a-expired must remain in primaryStore after MQTT subscribe'
+			);
+			assert.ok(
+				MqttTable.primaryStore.getEntry('nested/a-expired')?.value,
+				'nested/a-expired must remain in primaryStore after MQTT subscribe'
+			);
 
-			// Live write to 'a-expired' should be delivered as the first message for that topic
 			await MqttTable.put('a-expired', { id: 'a-expired', name: 'mqtt-fresh' }, { expiresAt: Date.now() + 60_000 });
 			await waitFor(() => singleDeliveries.some((d) => d.topic === `${MqttTopicName}/a-expired`), 3000);
 			const expiredTopicEvents = singleDeliveries.filter((d) => d.topic === `${MqttTopicName}/a-expired`);
-			assert.equal(expiredTopicEvents.length, 1);
-			assert.equal(expiredTopicEvents[0].message.name, 'mqtt-fresh');
+			assert.strictEqual(expiredTopicEvents.length, 1);
+			assert.strictEqual(expiredTopicEvents[0].message.name, 'mqtt-fresh');
 		} finally {
 			hashSession.disconnect(true);
 			plusSession.disconnect(true);
@@ -395,25 +395,38 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 		collectionSub.on('data', (ev) => collectionEvents.push(ev));
 
 		const expiredKeyEvents = [];
-		const expiredKeySub = await ReloadExpTable.subscribe('a-expired', { omitCurrent: true });
+		const expiredKeySub = await ReloadExpTable.subscribe({ id: 'a-expired', omitCurrent: true });
 		expiredKeySub.on('data', (ev) => expiredKeyEvents.push(ev));
 
 		const liveKeyEvents = [];
-		const liveKeySub = await ReloadExpTable.subscribe('z-live', { omitCurrent: true });
+		const liveKeySub = await ReloadExpTable.subscribe({ id: 'z-live', omitCurrent: true });
 		liveKeySub.on('data', (ev) => liveKeyEvents.push(ev));
 
 		try {
+			assert.strictEqual(collectionEvents.length, 0);
+			assert.strictEqual(expiredKeyEvents.length, 0);
+			assert.strictEqual(liveKeyEvents.length, 0);
+
 			await ReloadExpTable.writeReloadMarker();
 
 			await waitFor(() => collectionEvents.some((ev) => ev.id === 'z-live'), 3000);
-			await waitFor(() => liveKeyEvents.some((ev) => ev.id === 'z-live'), 3000);
+			await waitFor(() => liveKeyEvents.length === 1, 3000);
 
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				collectionEvents.map((ev) => ev.id),
 				['z-live'],
 				'reload re-snapshot on collection subscriber must skip expired records'
 			);
-			assert.equal(expiredKeyEvents.length, 0, 'reload re-snapshot on expired single-record subscriber must skip it');
+			assert.deepStrictEqual(
+				liveKeyEvents.map((ev) => ev.id),
+				['z-live'],
+				'reload re-snapshot on live single-record subscriber must deliver the live record'
+			);
+			assert.strictEqual(
+				expiredKeyEvents.length,
+				0,
+				'reload re-snapshot on expired single-record subscriber must skip it'
+			);
 			assert.ok(
 				ReloadExpTable.primaryStore.getEntry('a-expired')?.value,
 				'reload re-snapshot must not evict expired record'
@@ -445,7 +458,7 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 		const expiredEntry = GateTable.primaryStore.getEntry('z-expired');
 		const expiredTime = expiredEntry.localTime ?? expiredEntry.version;
 		const liveTime = liveEntry.localTime ?? liveEntry.version;
-		assert.ok(expiredTime >= liveTime, 'expired row should have the highest timestamp in the scan');
+		assert.ok(expiredTime > liveTime, 'expired row should have a strictly higher timestamp than the live row');
 
 		const events = [];
 		const sub = await GateTable.subscribe({ includeSuperseded: true });
@@ -454,7 +467,7 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 		try {
 			await waitFor(() => events.some((ev) => ev.id === 'a-live'), 3000);
 			await waitFor(() => sub.startTime === expiredTime, 3000);
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				events.map((ev) => ev.id),
 				['a-live'],
 				'expired row is not delivered, yet cursorMaxTime advances subscription.startTime to its timestamp'
@@ -486,8 +499,8 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 		CachedTable.sourcedFrom(BackingSource);
 
 		const loaded = await CachedTable.get('s1');
-		assert.equal(loaded.name, 'from-source-1');
-		assert.equal(sourceGetCalls, 1);
+		assert.strictEqual(loaded.name, 'from-source-1');
+		assert.strictEqual(sourceGetCalls, 1);
 
 		await delay(80);
 		const cachedEntry = CachedTable.primaryStore.getEntry('s1');
@@ -504,14 +517,14 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 
 		try {
 			await waitFor(() => singleEvents.length >= 1, 3000);
-			assert.equal(singleEvents[0].id, 's1');
-			assert.equal(singleEvents[0].value.name, 'from-source-1');
-			assert.equal(sourceGetCalls, 1, 'subscribe() must not call the backing source');
+			assert.strictEqual(singleEvents[0].id, 's1');
+			assert.strictEqual(singleEvents[0].value.name, 'from-source-1');
+			assert.strictEqual(sourceGetCalls, 1, 'subscribe() must not call the backing source');
 
 			await waitFor(() => collectionEvents.length >= 1, 3000);
-			assert.equal(collectionEvents[0].id, 's1');
-			assert.equal(collectionEvents[0].value.name, 'from-source-1');
-			assert.equal(sourceGetCalls, 1, 'collection subscribe() must not call the backing source');
+			assert.strictEqual(collectionEvents[0].id, 's1');
+			assert.strictEqual(collectionEvents[0].value.name, 'from-source-1');
+			assert.strictEqual(sourceGetCalls, 1, 'collection subscribe() must not call the backing source');
 		} finally {
 			singleSub.end();
 			collectionSub.end();
