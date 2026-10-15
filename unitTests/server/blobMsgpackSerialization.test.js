@@ -1,6 +1,6 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
-const { Packr, addExtension, unpack } = require('msgpackr');
+const { Unpackr, addExtension, unpack } = require('msgpackr');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { createBlob } = require('#src/resources/blob');
@@ -13,6 +13,9 @@ const { waitFor } = require('../waitFor');
 
 const BLOB_HEADER_SIZE = 8;
 const EXTERNAL_FILE_ARRAY_HEADER = 0x91;
+const FILE_BLOB_PAYLOAD_SIZE = 40_000;
+const INLINE_BLOB_PAYLOAD_SIZE = 1024;
+const MAP16_HEADER = 0xde;
 
 describe('Blob MessagePack serialization without reentering defaultPackr', () => {
 	let BlobRecordTable;
@@ -21,44 +24,16 @@ describe('Blob MessagePack serialization without reentering defaultPackr', () =>
 	let restWsHandler;
 	let extensionsArray;
 	let originalBlobUnpack;
-	class PrefixUnpackr extends Packr {
-		unpackPrefix(extBuffer) {
-			this._inSaveState = false;
-			return this.unpack(extBuffer);
-		}
-		unpack(source, options) {
-			if (!this._inSaveState) {
-				this._inSaveState = true;
-				return super.unpack(source, options);
-			}
-			if (this._readingElement) {
-				return super.unpack(source, options);
-			}
-			this._readingElement = true;
-			try {
-				let value;
-				let endOffset = 0;
-				super.unpackMultiple(source, (val, _start, end) => {
-					value = val;
-					endOffset = end;
-					return false;
-				});
-				return { value, endOffset };
-			} finally {
-				this._readingElement = false;
-			}
-		}
-	}
-	const optionsDecoder = new PrefixUnpackr({ copyBuffers: true, mapsAsObjects: true });
+	const optionsDecoder = new Unpackr({ mapsAsObjects: true });
 
 	function decodeExternalBlobExt(extBuffer) {
 		if (extBuffer[0] === EXTERNAL_FILE_ARRAY_HEADER) {
-			const { value, endOffset } = optionsDecoder.unpackPrefix(extBuffer);
-			const options = value[0];
+			const dataStart = extBuffer.length - FILE_BLOB_PAYLOAD_SIZE;
+			const [options] = optionsDecoder.unpack(extBuffer.subarray(0, dataStart - BLOB_HEADER_SIZE));
 			return {
 				...options,
-				header: Buffer.from(extBuffer.subarray(endOffset, endOffset + BLOB_HEADER_SIZE)),
-				data: Buffer.from(extBuffer.subarray(endOffset + BLOB_HEADER_SIZE)),
+				header: Buffer.from(extBuffer.subarray(dataStart - BLOB_HEADER_SIZE, dataStart)),
+				data: Buffer.from(extBuffer.subarray(dataStart)),
 			};
 		}
 		return originalBlobUnpack(extBuffer);
@@ -68,9 +43,10 @@ describe('Blob MessagePack serialization without reentering defaultPackr', () =>
 		setupTestDBPath();
 		setMainIsWorker(true);
 
-		// Capture msgpackr's extension table so we can decode the external-file branch
-		// of extension 11 (`pack([options])` + raw file header/body) via `unpack()` and
-		// restore `resources/blob.ts`'s registered unpacker afterwards.
+		// msgpackr invokes `extensions[type](...)` as a method on its internal `extensions` array,
+		// so `this` inside an unpack handler is that array. That lets the test decode the external-file
+		// branch of extension 11 (`blobPackr.pack([options])` + raw file header/body) via `unpack()`
+		// and restore `resources/blob.ts`'s registered handler afterwards.
 		addExtension({
 			type: 127,
 			unpack() {
@@ -133,7 +109,7 @@ describe('Blob MessagePack serialization without reentering defaultPackr', () =>
 	}
 
 	it('encodes a record with a file-backed Blob via public MessagePack serializer without stale prefix and decodes with unpack', async () => {
-		const payload = Buffer.alloc(40_000, 0x61);
+		const payload = Buffer.alloc(FILE_BLOB_PAYLOAD_SIZE, 0x61);
 		const recordId = 'serializer-blob-1';
 		const blob = await createBlob(payload, { saveBeforeCommit: true, type: 'application/octet-stream' });
 		await BlobRecordTable.put({
@@ -145,37 +121,80 @@ describe('Blob MessagePack serialization without reentering defaultPackr', () =>
 		const storedRecord = await BlobRecordTable.get(recordId);
 		assert.ok(storedRecord, 'Expected stored record to exist');
 
-		// Advance msgpackr's shared module-level target/position with a structured-record Packr
-		// (matching storage/control-frame writes that precede public serialization in production).
-		const priorPackr = new Packr();
-		priorPackr.pack({ type: 'subscription_ack', id: 'sub-1', timestamp: 1700000000000 });
-
 		const request = { headers: makeHeaders({ accept: 'application/x-msgpack' }) };
+		// Leave msgpackr's shared buffer position non-zero, as any earlier response on this thread does.
+		await serialize({ warmup: 'prior-msgpack-response' }, request, { headers: new Headers() });
+
 		const frame = Buffer.from(await serialize(storedRecord, request, { headers: new Headers() }));
-		assert.notEqual(
+		assert.strictEqual(
 			frame[0],
-			0x40,
-			`Expected outer msgpack frame to start with a map header, not stale 0x40 prefix (got 0x${frame[0].toString(16)})`
+			MAP16_HEADER,
+			`Expected outer msgpack frame to start with map16 header 0xde, got 0x${frame[0].toString(16)}`
+		);
+		assert.ok(
+			frame.length < payload.length + 256,
+			`Expected single-record frame length (< ${payload.length + 256}), got ${frame.length}`
 		);
 
 		const decoded = unpack(frame);
-		assert.equal(decoded.id, recordId);
-		assert.equal(decoded.name, 'serializer-record');
-		assert.equal(decoded.data.size, payload.length);
-		assert.equal(decoded.data.type, 'application/octet-stream');
-		assert.deepEqual(decoded.data.data, payload);
+		assert.strictEqual(decoded.id, recordId);
+		assert.strictEqual(decoded.name, 'serializer-record');
+		assert.strictEqual(decoded.data.size, payload.length);
+		assert.strictEqual(decoded.data.type, 'application/octet-stream');
+		assert.deepStrictEqual(decoded.data.data, payload);
 
 		const messageFrame = Buffer.from(await serializeMessage(storedRecord, request));
-		assert.notEqual(messageFrame[0], 0x40);
+		assert.strictEqual(messageFrame[0], MAP16_HEADER);
+		assert.ok(messageFrame.length < payload.length + 256);
 		const decodedMessage = unpack(messageFrame);
-		assert.equal(decodedMessage.id, recordId);
-		assert.equal(decodedMessage.name, 'serializer-record');
-		assert.equal(decodedMessage.data.size, payload.length);
-		assert.deepEqual(decodedMessage.data.data, payload);
+		assert.strictEqual(decodedMessage.id, recordId);
+		assert.strictEqual(decodedMessage.name, 'serializer-record');
+		assert.strictEqual(decodedMessage.data.size, payload.length);
+		assert.deepStrictEqual(decodedMessage.data.data, payload);
+	});
+
+	it('encodes a record with an inline sub-threshold Blob via public MessagePack serializer without stale prefix and decodes with unpack', async () => {
+		const payload = Buffer.alloc(INLINE_BLOB_PAYLOAD_SIZE, 0x64);
+		const recordId = 'serializer-inline-blob-1';
+		const blob = await createBlob(payload, { saveInRecord: true, type: 'application/octet-stream' });
+		await BlobRecordTable.put({
+			id: recordId,
+			name: 'inline-serializer-record',
+			data: blob,
+		});
+
+		const storedRecord = await BlobRecordTable.get(recordId);
+		assert.ok(storedRecord, 'Expected stored inline-blob record to exist');
+
+		const request = { headers: makeHeaders({ accept: 'application/x-msgpack' }) };
+		// Leave msgpackr's shared buffer position non-zero, as any earlier response on this thread does.
+		await serialize({ warmup: 'prior-msgpack-response' }, request, { headers: new Headers() });
+
+		const frame = Buffer.from(await serialize(storedRecord, request, { headers: new Headers() }));
+		assert.strictEqual(frame[0], MAP16_HEADER);
+		assert.ok(frame.length < payload.length + 256);
+
+		const decoded = unpack(frame);
+		assert.strictEqual(decoded.id, recordId);
+		assert.strictEqual(decoded.name, 'inline-serializer-record');
+		assert.ok(decoded.data instanceof Blob);
+		assert.strictEqual(decoded.data.size, payload.length);
+		assert.strictEqual(decoded.data.type, 'application/octet-stream');
+		assert.deepStrictEqual(Buffer.from(await decoded.data.bytes()), payload);
+
+		const messageFrame = Buffer.from(await serializeMessage(storedRecord, request));
+		assert.strictEqual(messageFrame[0], MAP16_HEADER);
+		assert.ok(messageFrame.length < payload.length + 256);
+		const decodedMessage = unpack(messageFrame);
+		assert.strictEqual(decodedMessage.id, recordId);
+		assert.strictEqual(decodedMessage.name, 'inline-serializer-record');
+		assert.ok(decodedMessage.data instanceof Blob);
+		assert.strictEqual(decodedMessage.data.size, payload.length);
+		assert.deepStrictEqual(Buffer.from(await decodedMessage.data.bytes()), payload);
 	});
 
 	it('serves REST GET with Accept: application/x-msgpack on a record with a file-backed Blob', async () => {
-		const payload = Buffer.alloc(40_000, 0x62);
+		const payload = Buffer.alloc(FILE_BLOB_PAYLOAD_SIZE, 0x62);
 		const recordId = 'rest-get-blob-1';
 		const blob = await createBlob(payload, { saveBeforeCommit: true, type: 'application/octet-stream' });
 		await BlobRecordTable.put({
@@ -184,11 +203,15 @@ describe('Blob MessagePack serialization without reentering defaultPackr', () =>
 			data: blob,
 		});
 
+		const requestHeaders = makeHeaders({ accept: 'application/x-msgpack' });
+		// Leave msgpackr's shared buffer position non-zero, as any earlier response on this thread does.
+		await serialize({ warmup: 'prior-msgpack-response' }, { headers: requestHeaders }, { headers: new Headers() });
+
 		const response = await restHandler(
 			{
 				url: `/BlobMsgpackRecord/${recordId}`,
 				method: 'GET',
-				headers: makeHeaders({ accept: 'application/x-msgpack' }),
+				headers: requestHeaders,
 				protocol: 'http',
 				ip: '127.0.0.1',
 				user: { role: { permission: { super_user: true } } },
@@ -198,8 +221,8 @@ describe('Blob MessagePack serialization without reentering defaultPackr', () =>
 			}
 		);
 
-		assert.equal(response.status, 200);
-		assert.equal(response.headers.get('content-type'), 'application/x-msgpack');
+		assert.strictEqual(response.status, 200);
+		assert.strictEqual(response.headers.get('content-type'), 'application/x-msgpack');
 
 		let bodyBuffer;
 		if (Buffer.isBuffer(response.body) || response.body instanceof Uint8Array) {
@@ -212,27 +235,31 @@ describe('Blob MessagePack serialization without reentering defaultPackr', () =>
 			bodyBuffer = Buffer.concat(chunks);
 		}
 		assert.ok(bodyBuffer.length > payload.length, 'Expected MessagePack body to include the Blob payload');
-		assert.notEqual(
+		assert.ok(
+			bodyBuffer.length < payload.length + 256,
+			`Expected single-record REST MessagePack body (< ${payload.length + 256}), got ${bodyBuffer.length}`
+		);
+		assert.strictEqual(
 			bodyBuffer[0],
-			0x40,
-			`Expected REST GET MessagePack body not to start with stale 0x40 prefix (got 0x${bodyBuffer[0].toString(16)})`
+			MAP16_HEADER,
+			`Expected REST GET MessagePack body to start with 0xde map16 header, got 0x${bodyBuffer[0].toString(16)}`
 		);
 
 		const decoded = unpack(bodyBuffer);
-		assert.equal(decoded.id, recordId);
-		assert.equal(decoded.name, 'rest-get-record');
-		assert.equal(decoded.data.size, payload.length);
-		assert.equal(decoded.data.type, 'application/octet-stream');
-		assert.deepEqual(decoded.data.data, payload);
+		assert.strictEqual(decoded.id, recordId);
+		assert.strictEqual(decoded.name, 'rest-get-record');
+		assert.strictEqual(decoded.data.size, payload.length);
+		assert.strictEqual(decoded.data.type, 'application/octet-stream');
+		assert.deepStrictEqual(decoded.data.data, payload);
 	});
 
 	it('delivers valid MessagePack frames over a WebSocket subscription for a record with a file-backed Blob', async () => {
-		const payload = Buffer.alloc(40_000, 0x63);
+		const payload = Buffer.alloc(FILE_BLOB_PAYLOAD_SIZE, 0x63);
 		const recordId = 'ws-sub-blob-1';
 
 		const sentFrames = [];
 		const ws = new EventEmitter();
-		ws.readyState = 1; // OPEN
+		ws.readyState = 1;
 		ws._socket = { writableNeedDrain: false };
 		ws.send = (frame) => {
 			sentFrames.push(Buffer.from(frame));
@@ -247,50 +274,53 @@ describe('Blob MessagePack serialization without reentering defaultPackr', () =>
 		};
 
 		const wsSession = restWsHandler(ws, request, Promise.resolve());
-		// Yield briefly so resource.connect(subscribe) registers its listener before writes
-		await new Promise((resolve) => setImmediate(resolve));
+		try {
+			await new Promise((resolve) => setImmediate(resolve));
 
-		// Frame 1: plain record without a Blob
-		await BlobRecordTable.put({
-			id: recordId,
-			name: 'ws-plain-record',
-		});
-		await waitFor(() => sentFrames.length >= 1, 5000);
+			await BlobRecordTable.put({
+				id: recordId,
+				name: 'ws-plain-record',
+			});
+			await waitFor(() => sentFrames.length >= 1, 5000);
 
-		const plainFrame = sentFrames[0];
-		const decodedPlainEvent = unpack(plainFrame);
-		assert.equal(decodedPlainEvent.type, 'put');
-		assert.equal(decodedPlainEvent.id, recordId);
-		assert.equal(decodedPlainEvent.value.id, recordId);
-		assert.equal(decodedPlainEvent.value.name, 'ws-plain-record');
+			const plainFrame = sentFrames[0];
+			const decodedPlainEvent = unpack(plainFrame);
+			assert.strictEqual(decodedPlainEvent.type, 'put');
+			assert.strictEqual(decodedPlainEvent.id, recordId);
+			assert.strictEqual(decodedPlainEvent.value.id, recordId);
+			assert.strictEqual(decodedPlainEvent.value.name, 'ws-plain-record');
 
-		// Frame 2: record with a 40KB file-backed Blob
-		const blob = await createBlob(payload, { saveBeforeCommit: true, type: 'application/octet-stream' });
-		await BlobRecordTable.put({
-			id: recordId,
-			name: 'ws-blob-record',
-			data: blob,
-		});
+			const blob = await createBlob(payload, { saveBeforeCommit: true, type: 'application/octet-stream' });
+			await BlobRecordTable.put({
+				id: recordId,
+				name: 'ws-blob-record',
+				data: blob,
+			});
 
-		await waitFor(() => sentFrames.length >= 2, 5000);
+			await waitFor(() => sentFrames.length >= 2, 5000);
 
-		const eventFrame = sentFrames[1];
-		assert.notEqual(
-			eventFrame[0],
-			0x40,
-			`Expected WebSocket MessagePack frame not to start with stale 0x40 prefix (got 0x${eventFrame[0].toString(16)})`
-		);
+			const eventFrame = sentFrames[1];
+			assert.strictEqual(
+				eventFrame[0],
+				MAP16_HEADER,
+				`Expected WebSocket MessagePack frame to start with 0xde map16 header, got 0x${eventFrame[0].toString(16)}`
+			);
+			assert.ok(
+				eventFrame.length < payload.length + 256,
+				`Expected single-event WebSocket MessagePack frame (< ${payload.length + 256}), got ${eventFrame.length}`
+			);
 
-		const decodedEvent = unpack(eventFrame);
-		assert.equal(decodedEvent.type, 'put');
-		assert.equal(decodedEvent.id, recordId);
-		assert.equal(decodedEvent.value.id, recordId);
-		assert.equal(decodedEvent.value.name, 'ws-blob-record');
-		assert.equal(decodedEvent.value.data.size, payload.length);
-		assert.equal(decodedEvent.value.data.type, 'application/octet-stream');
-		assert.deepEqual(decodedEvent.value.data.data, payload);
-
-		ws.emit('close');
-		await wsSession;
+			const decodedEvent = unpack(eventFrame);
+			assert.strictEqual(decodedEvent.type, 'put');
+			assert.strictEqual(decodedEvent.id, recordId);
+			assert.strictEqual(decodedEvent.value.id, recordId);
+			assert.strictEqual(decodedEvent.value.name, 'ws-blob-record');
+			assert.strictEqual(decodedEvent.value.data.size, payload.length);
+			assert.strictEqual(decodedEvent.value.data.type, 'application/octet-stream');
+			assert.deepStrictEqual(decodedEvent.value.data.data, payload);
+		} finally {
+			ws.emit('close');
+			await wsSession;
+		}
 	});
 });

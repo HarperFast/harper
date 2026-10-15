@@ -3318,6 +3318,10 @@ export function collectRetainedFileIds(record: any): Set<string> | undefined {
 }
 
 const copyingUnpacker = new Packr({ copyBuffers: true, mapsAsObjects: true });
+// Extension 11's `pack()` runs inside an outer Packr.pack() call — including msgpackr's
+// module-level `pack()` singleton used by the public `application/x-msgpack` serializer.
+// Calling that singleton here would re-enter `defaultPackr.pack()` and reset its closure
+// `start` offset to 0, prepending stale shared-buffer bytes to the outer frame.
 const blobPackr = new Packr({ useRecords: false });
 
 addExtension({
