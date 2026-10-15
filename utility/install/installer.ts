@@ -479,12 +479,12 @@ async function checkForExistingInstall(configFromFile?: Record<string, any>) {
 
 	// If the boot file doesn't exist check to see if cli/env root path has been passed and
 	// is pointing to an installed HDB
-	if (!bootFileExists && hdbUtils.noBootFile()) {
-		if (isPreseededRootConfig(hdbUtils.getEnvCliRootPath(), configFromFile)) {
-			hdbUtils.resetNoBootFileCache();
-		} else {
-			hdbExists = true;
-		}
+	if (
+		!bootFileExists &&
+		hdbUtils.noBootFile() &&
+		!isPreseededRootConfig(hdbUtils.getEnvCliRootPath(), configFromFile)
+	) {
+		hdbExists = true;
 	}
 
 	if (hdbExists && !ignoreExisting) {
@@ -651,8 +651,16 @@ function stageStorageEngine(installParams: Record<string, any> = {}) {
 	const storageEngineParam = hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE;
 	envManager.setProperty(storageEngineParam, undefined);
 	const commandLineConfig = assignCMDENVVariables([storageEngineParam], true);
-	const cliEngine = commandLineConfig[storageEngineParam];
-	const baseEngine = installParams.STORAGE_ENGINE ?? installParams[storageEngineParam];
+	const rawCliEngine = commandLineConfig[storageEngineParam];
+	const rawBaseEngine = installParams.STORAGE_ENGINE ?? installParams[storageEngineParam];
+	const cliEngine =
+		rawCliEngine !== undefined && rawCliEngine !== null && rawCliEngine !== ''
+			? configUtils.castConfigValue(storageEngineParam, rawCliEngine)
+			: undefined;
+	const baseEngine =
+		rawBaseEngine !== undefined && rawBaseEngine !== null && rawBaseEngine !== ''
+			? configUtils.castConfigValue(storageEngineParam, rawBaseEngine)
+			: undefined;
 	const envConfig = composeConfigFromEnv(
 		baseEngine !== undefined && baseEngine !== null && baseEngine !== '' ? { storage: { engine: baseEngine } } : {},
 		cliEngine !== undefined && cliEngine !== null && cliEngine !== '' ? { storage: { engine: cliEngine } } : undefined
@@ -684,25 +692,44 @@ function stageRocksCompression(installParams: Record<string, any> = {}) {
 	envManager.setProperty(rocksCompression, undefined);
 	envManager.setProperty(compression, undefined);
 	const commandLineConfig = assignCMDENVVariables([rocksCompression, compression], true);
-	const cliRocksCompression = commandLineConfig[rocksCompression];
-	const cliCompression = commandLineConfig[compression];
-	const baseRocksCompression = installParams[rocksCompression];
-	const baseCompression = installParams[compression];
-	const baseConfig: Record<string, any> = { storage: {} };
+	const rawCliRocksCompression = commandLineConfig[rocksCompression];
+	const rawCliCompression = commandLineConfig[compression];
+	const rawBaseRocksCompression = installParams[rocksCompression];
+	const rawBaseCompression = installParams[compression];
+	const cliRocksCompression =
+		rawCliRocksCompression !== undefined && rawCliRocksCompression !== null && rawCliRocksCompression !== ''
+			? configUtils.castConfigValue(rocksCompression, rawCliRocksCompression)
+			: undefined;
+	const cliCompression =
+		rawCliCompression !== undefined && rawCliCompression !== null && rawCliCompression !== ''
+			? configUtils.castConfigValue(compression, rawCliCompression)
+			: undefined;
+	const baseRocksCompression =
+		rawBaseRocksCompression !== undefined && rawBaseRocksCompression !== null && rawBaseRocksCompression !== ''
+			? configUtils.castConfigValue(rocksCompression, rawBaseRocksCompression)
+			: undefined;
+	const baseCompression =
+		rawBaseCompression !== undefined && rawBaseCompression !== null && rawBaseCompression !== ''
+			? configUtils.castConfigValue(compression, rawBaseCompression)
+			: undefined;
+	const baseStorage: Record<string, any> = {};
 	if (baseRocksCompression !== undefined && baseRocksCompression !== null && baseRocksCompression !== '') {
-		baseConfig.storage.rocks = { compression: baseRocksCompression };
+		baseStorage.rocks = { compression: baseRocksCompression };
 	}
 	if (baseCompression !== undefined && baseCompression !== null && baseCompression !== '') {
-		baseConfig.storage.compression = baseCompression;
+		baseStorage.compression = baseCompression;
 	}
-	const cliConfig: Record<string, any> = { storage: {} };
+	const cliStorage: Record<string, any> = {};
 	if (cliRocksCompression !== undefined && cliRocksCompression !== null && cliRocksCompression !== '') {
-		cliConfig.storage.rocks = { compression: cliRocksCompression };
+		cliStorage.rocks = { compression: cliRocksCompression };
 	}
 	if (cliCompression !== undefined && cliCompression !== null && cliCompression !== '') {
-		cliConfig.storage.compression = cliCompression;
+		cliStorage.compression = cliCompression;
 	}
-	const envConfig = composeConfigFromEnv(baseConfig, cliConfig);
+	const envConfig = composeConfigFromEnv(
+		Object.keys(baseStorage).length > 0 ? { storage: baseStorage } : {},
+		Object.keys(cliStorage).length > 0 ? { storage: cliStorage } : undefined
+	);
 	const configuredRocksCompression = envConfig?.storage?.rocks?.compression;
 	const configuredCompression = envConfig?.storage?.compression ?? true;
 	if (
@@ -780,7 +807,9 @@ async function createConfigFile(installParams) {
 		if (originalHdbConfigContent !== undefined && hdbConfigPath) {
 			try {
 				configUtils.atomicWriteFile(path.resolve(hdbConfigPath), originalHdbConfigContent);
-			} catch {}
+			} catch (restoreErr) {
+				hdbLogger.error(`Failed to restore ${hdbConfigPath} during install rollback: ${restoreErr}`);
+			}
 		}
 		rollbackInstall(configErr);
 	}

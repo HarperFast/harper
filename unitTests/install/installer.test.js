@@ -604,6 +604,8 @@ describe('install storage.engine resolution', () => {
 		'HDB_CONFIG',
 		'STORAGE_ENGINE',
 		'HARPER_STORAGE_ENGINE',
+		'STORAGE_COMPRESSION',
+		'STORAGE_ROCKS_COMPRESSION',
 		'HDB_ROOT',
 		'ROOTPATH',
 		'HDB_ADMIN_USERNAME',
@@ -793,14 +795,14 @@ describe('install storage.engine resolution', () => {
 		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
 	});
 
-	it('resolves CLI STORAGE_ENGINE=rocksdb + HARPER_CONFIG={"storage":{"engine":"lmdb"}} consistently to rocksdb', async () => {
+	it('resolves CLI STORAGE_ENGINE=rocksdb + HARPER_CONFIG={"storage":{"engine":"lmdb"}} to rocksdb during install and reasserts HARPER_CONFIG on subsequent initConfig', async () => {
 		process.env.STORAGE_ENGINE = 'rocksdb';
 		process.env.HARPER_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
 		const rootPath = await runInstall();
 		assertInstalledSystemEngine(rootPath, 'rocksdb');
 		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
 		config_utils.initConfig(true);
-		assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE), 'rocksdb');
+		assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE), 'lmdb');
 	});
 
 	it('resolves CLI STORAGE_ENGINE=lmdb + HARPER_DEFAULT_CONFIG={"storage":{"engine":"rocksdb"}} consistently to lmdb', async () => {
@@ -865,5 +867,25 @@ describe('install storage.engine resolution', () => {
 		assert.strictEqual(writtenParsed.node.hostname, 'custom-node');
 		assert.ok(writtenRaw.includes('# Custom HTTP settings'), 'Expected HTTP comment to be preserved');
 		assert.ok(writtenRaw.includes('# Keep ops API on TLS 9925 only'), 'Expected ops API comment to be preserved');
+	});
+
+	it('coerces CLI/env STORAGE_COMPRESSION=false to boolean false when staging before mountHdb and persists boolean false', async () => {
+		process.env.STORAGE_ENGINE = 'lmdb';
+		process.env.STORAGE_COMPRESSION = 'false';
+		const updateConfigSpy = sandbox.spy(config_utils, 'updateConfigObject');
+		await runInstall();
+
+		const stagedCompressionCalls = updateConfigSpy
+			.getCalls()
+			.filter((call) => call.args[0] === hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION && call.args[1] !== undefined);
+		assert.ok(stagedCompressionCalls.length >= 1, 'Expected stage call for STORAGE_COMPRESSION');
+		assert.strictEqual(
+			stagedCompressionCalls[0].args[1],
+			false,
+			'Staged STORAGE_COMPRESSION must be coerced to boolean false, not raw string "false"'
+		);
+		assert.strictEqual(env_manager.getConfigOverrides()?.storage_compression, undefined);
+		config_utils.initConfig(true);
+		assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION), false);
 	});
 });
