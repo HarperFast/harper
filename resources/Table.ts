@@ -8572,8 +8572,8 @@ export function makeTable(options): TableResourceClass {
 			}
 			return entriesDeleted;
 		}
-		static #loggedHistoryEntryError = false;
 		static async *getHistory(startTime = 0, endTime = Infinity) {
+			let loggedEntryError = false;
 			for (const auditRecord of auditStore.getRange({
 				start: startTime || 1, // if startTime is 0, we actually want to shift to 1 because 0 is encoded as all zeros with audit store's special encoder, and will include symbols
 				end: endTime,
@@ -8585,8 +8585,8 @@ export function makeTable(options): TableResourceClass {
 				try {
 					value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
 				} catch (error) {
-					if (!this.#loggedHistoryEntryError) {
-						this.#loggedHistoryEntryError = true;
+					if (!loggedEntryError) {
+						loggedEntryError = true;
 						logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
 					}
 				}
@@ -8613,6 +8613,7 @@ export function makeTable(options): TableResourceClass {
 			if (!nextVersion) throw new Error('The entry does not have a local audit time');
 			const count = 0;
 			const auditWindow = 100;
+			let loggedEntryError = false;
 			do {
 				await rest(); // yield to other async operations
 				let insertionPoint = history.length;
@@ -8631,8 +8632,8 @@ export function makeTable(options): TableResourceClass {
 							// window boundary (nextVersion), matching getHistory (issue #1330)
 							value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
 						} catch (error) {
-							if (!this.#loggedHistoryEntryError) {
-								this.#loggedHistoryEntryError = true;
+							if (!loggedEntryError) {
+								loggedEntryError = true;
 								logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
 							}
 						}

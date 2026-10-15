@@ -2569,6 +2569,11 @@ describe('history after record eviction (issue #3164)', () => {
 			assert.deepStrictEqual(byTimestamp[1].records, [undefined]);
 			assert.deepStrictEqual(byTimestamp[2].records, [{ id: 'rec-2', name: 'after', count: 10 }]);
 
+			class SubTable extends EvictedHistoryTable {}
+			const subHistory = await Array.fromAsync(SubTable.getHistory());
+			assert.strictEqual(subHistory.length, 3);
+			assert.strictEqual(subHistory[1].value, undefined);
+
 			// Allow getHistoryOfRecord('rec-1')'s initial head lookup to succeed, then fail on the patch's getValue
 			let rec1Calls = 0;
 			EvictedHistoryTable.primaryStore.getEntry = function (id, options) {
@@ -2577,7 +2582,7 @@ describe('history after record eviction (issue #3164)', () => {
 				}
 				return originalGetEntry.call(this, id, options);
 			};
-			const recordHistory = await EvictedHistoryTable.getHistoryOfRecord('rec-1');
+			const recordHistory = await SubTable.getHistoryOfRecord('rec-1');
 			assert.strictEqual(recordHistory.length, 2);
 			assert.deepStrictEqual(
 				recordHistory.map((e) => ({ type: e.type, id: e.id, value: e.value })),

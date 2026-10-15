@@ -109,8 +109,9 @@ export function applyReverse(record, update, unknowns: Set<string>) {
 	}
 }
 
-// Apply an audit update onto a record moving forward in time (the inverse of applyReverse). Used
-// when reconstructing a record from a known-good base after the reverse walk crosses a delete.
+// Apply an audit update onto a record moving forward in time (the inverse of applyReverse). When
+// `skipUnseededOps` is true (a partial replay whose base was pruned), CRDT operations on keys not
+// yet present on `record` are skipped rather than folded onto undefined.
 export function applyForward(record, update, skipUnseededOps = false) {
 	for (const key in update) {
 		const value = update[key];
