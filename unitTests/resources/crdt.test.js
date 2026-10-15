@@ -383,12 +383,47 @@ describe('crdt getRecordAtTime', () => {
 			});
 		});
 
-		it('reconstructs forward when currentEntry has a null value (tombstone)', () => {
-			assert.deepStrictEqual(getRecordAtTime({ value: null, localTime: 40 }, 20, store, 1, 'E'), {
+		it('reconstructs pre-eviction patch state when the record is re-inserted after eviction', () => {
+			// A post-eviction re-insert has previousVersion: 0 because existingEntry was undefined when
+			// written, breaking the reverse link from version 40 back to version 30.
+			const reinsertEvents = [
+				...events,
+				{ version: 40, type: 'put', value: { id: 'E', name: 'refetched', count: 7 }, previousVersion: 0 },
+			];
+			const reinsertStore = makeStore(reinsertEvents);
+			const current = currentEntry({ id: 'E', name: 'refetched', count: 7 }, 40);
+			assert.deepStrictEqual(getRecordAtTime(current, 20, reinsertStore, 1, 'E'), {
 				id: 'E',
 				name: 'patched',
 				count: 3,
 			});
+		});
+
+		it('reconstructs forward when currentEntry has a null value (tombstone), including in-between timestamps', () => {
+			const tombstoneStore = makeStore([...events, { version: 40, type: 'delete', value: null, previousVersion: 30 }]);
+			assert.deepStrictEqual(getRecordAtTime({ value: null, localTime: 40 }, 20, tombstoneStore, 1, 'E'), {
+				id: 'E',
+				name: 'patched',
+				count: 3,
+			});
+			assert.deepStrictEqual(getRecordAtTime({ value: null, localTime: 40 }, 25, tombstoneStore, 1, 'E'), {
+				id: 'E',
+				name: 'patched',
+				count: 3,
+			});
+			assert.deepStrictEqual(getRecordAtTime({ value: null }, 20, store, 1, 'E'), {
+				id: 'E',
+				name: 'patched',
+				count: 3,
+			});
+		});
+
+		it('returns undefined when the base put of an evicted record has been pruned', () => {
+			const prunedStore = makeStore([
+				// version 10 was pruned by audit retention; patch at 20 still points to previousVersion: 10
+				{ version: 20, type: 'patch', value: { name: 'patched' }, previousVersion: 10 },
+			]);
+			assert.strictEqual(getRecordAtTime(undefined, 20, prunedStore, 1, 'E'), undefined);
 		});
 
 		it('threads nodeId into forward reconstruction when currentEntry is undefined on a multi-log store', () => {
@@ -404,6 +439,7 @@ describe('crdt getRecordAtTime', () => {
 					previousNodeId: 2,
 					previousAdditionalAuditRefs: [{ version: 100, nodeId: 2 }],
 				},
+				{ txnLogKey: 200, version: 25, nodeId: 3, type: 'put', value: { id: 'M', count: 100 }, previousVersion: 0 },
 			];
 			const multiLogStore = makeStore(multiLogEvents);
 			assert.deepStrictEqual(getRecordAtTime(undefined, 200, multiLogStore, 1, 'M', 2), { id: 'M', count: 9 });

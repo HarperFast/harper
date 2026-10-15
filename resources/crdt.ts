@@ -146,7 +146,7 @@ function reconstructForward(auditStore, store, tableId: number, recordId: any, f
 	let { txnLogKey: auditTime, nodeId: auditNodeId } = fromPosition;
 	while (auditTime > 0) {
 		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
-		if (!auditEntry) break;
+		if (!auditEntry) return entries.length === 0 ? null : undefined;
 		if (auditEntry.type === 'delete') {
 			// A delete at or before `timestamp` bounds the history; the record is rebuilt from the
 			// writes collected after it (an empty base). A delete newer than `timestamp` (a later
@@ -223,7 +223,7 @@ function previousAuditPosition(auditStore, tableId: number, recordId: any, audit
  */
 export function getRecordAtTime(currentEntry, timestamp, store, tableId: number, recordId: any, nodeId?: number) {
 	const auditStore = store.rootStore.auditStore;
-	if (!currentEntry?.value) {
+	if (!currentEntry) {
 		return reconstructForward(auditStore, store, tableId, recordId, { txnLogKey: timestamp, nodeId }, timestamp);
 	}
 	let record = { ...currentEntry.value };
@@ -270,6 +270,9 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
 		auditTime = previousPosition.txnLogKey;
 		auditNodeId = previousPosition.nodeId;
+	}
+	if (!(auditTime > 0 && auditTime <= timestamp)) {
+		return reconstructForward(auditStore, store, tableId, recordId, { txnLogKey: timestamp, nodeId }, timestamp);
 	}
 	// If the most recent entry at or before `timestamp` is a delete, the record did not exist then.
 	// (A delete reached as a boundary — rather than crossed, which returns via reconstructForward —

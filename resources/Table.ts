@@ -8585,7 +8585,6 @@ export function makeTable(options): TableResourceClass {
 					value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
 				} catch (error) {
 					logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
-					continue;
 				}
 				yield {
 					id: auditRecord.recordId,
@@ -8622,14 +8621,20 @@ export function makeTable(options): TableResourceClass {
 						!isLockControlType(auditRecord.type) &&
 						compareKeys(auditRecord.recordId, id) === 0
 					) {
+						let value;
+						try {
+							// reconstruct each entry's record image as of its own log position, not the audit
+							// window boundary (nextVersion), matching getHistory (issue #1330)
+							value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
+						} catch (error) {
+							logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
+						}
 						history.splice(insertionPoint, 0, {
 							id: auditRecord.recordId,
 							localTime: isRocksDB ? auditRecord.txnLogKey : auditRecord.version,
 							version: auditRecord.version,
 							type: auditRecord.type,
-							// reconstruct each entry's record image as of its own log position, not the audit
-							// window boundary (nextVersion), matching getHistory (issue #1330)
-							value: auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey),
+							value,
 							user: auditRecord.user,
 							operation: auditRecord.originatingOperation,
 						});

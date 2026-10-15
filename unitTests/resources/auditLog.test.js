@@ -2426,12 +2426,17 @@ describe('audit entry previousVersion presence', () => {
 
 describe('history after record eviction (issue #3164)', () => {
 	let EvictedHistoryTable;
+	let tableName;
+	let tableIndex = 0;
 	const schema = 'evict_history_test_schema';
-	const tableName = 'EvictedHistoryTable';
 
 	before(async function () {
 		setupTestDBPath();
 		setMainIsWorker(true);
+	});
+
+	beforeEach(async function () {
+		tableName = `EvictedHistoryTable_${++tableIndex}`;
 		EvictedHistoryTable = table({
 			database: schema,
 			table: tableName,
@@ -2439,7 +2444,7 @@ describe('history after record eviction (issue #3164)', () => {
 		});
 	});
 
-	it('reconstructs full and patched history entries via getHistory and readAuditLog after eviction', async () => {
+	it('reconstructs full and patched history entries via getHistory and readAuditLog after eviction and after re-insert', async () => {
 		await EvictedHistoryTable.put({ id: 'rec-1', name: 'initial', count: 1 });
 		await EvictedHistoryTable.patch('rec-1', { name: 'patched' });
 
@@ -2482,17 +2487,53 @@ describe('history after record eviction (issue #3164)', () => {
 		assert.deepStrictEqual(byTimestamp[0].records, [{ id: 'rec-1', name: 'initial', count: 1 }]);
 		assert.deepStrictEqual(byTimestamp[1].records, [{ id: 'rec-1', name: 'patched', count: 1 }]);
 		assert.deepStrictEqual(byTimestamp[2].records, [{ id: 'rec-2', name: 'after-evict', count: 10 }]);
+
+		// Re-inserting rec-1 after eviction writes a put with no previousVersion link; older patches
+		// must still reconstruct their pre-eviction image rather than returning the re-inserted value.
+		await EvictedHistoryTable.put({ id: 'rec-1', name: 'refetched', count: 7 });
+
+		const historyAfterReinsert = [];
+		for await (const entry of EvictedHistoryTable.getHistory()) {
+			historyAfterReinsert.push(entry);
+		}
+		assert.strictEqual(historyAfterReinsert.length, 4);
+		assert.deepStrictEqual(
+			historyAfterReinsert.map((e) => ({ type: e.type, id: e.id, value: e.value })),
+			[
+				{ type: 'put', id: 'rec-1', value: { id: 'rec-1', name: 'initial', count: 1 } },
+				{ type: 'patch', id: 'rec-1', value: { id: 'rec-1', name: 'patched', count: 1 } },
+				{ type: 'put', id: 'rec-2', value: { id: 'rec-2', name: 'after-evict', count: 10 } },
+				{ type: 'put', id: 'rec-1', value: { id: 'rec-1', name: 'refetched', count: 7 } },
+			]
+		);
+
+		const byTimestampAfterReinsert = await Array.fromAsync(
+			await bridge.readAuditLog({
+				schema,
+				table: tableName,
+				search_type: 'timestamp',
+				search_values: [0],
+			})
+		);
+		assert.strictEqual(byTimestampAfterReinsert.length, 4);
+		assert.deepStrictEqual(byTimestampAfterReinsert[1].records, [{ id: 'rec-1', name: 'patched', count: 1 }]);
+		assert.deepStrictEqual(byTimestampAfterReinsert[3].records, [{ id: 'rec-1', name: 'refetched', count: 7 }]);
 	});
 
-	it('logs and skips a failing entry in getHistory and readAuditLog without truncating other entries', async () => {
+	it('contains a per-entry reconstruction failure in getHistory, getHistoryOfRecord, and readAuditLog without dropping buffered or subsequent entries', async () => {
+		await EvictedHistoryTable.put({ id: 'rec-1', name: 'initial', count: 1 });
+		await EvictedHistoryTable.patch('rec-1', { name: 'patched' });
+		await EvictedHistoryTable.put({ id: 'rec-2', name: 'after', count: 10 });
+
 		const originalError = logger.error;
 		const loggedErrors = [];
 		logger.error = (...args) => {
 			loggedErrors.push(args);
 		};
 		const originalGetEntry = EvictedHistoryTable.primaryStore.getEntry;
+		let throwOnRec1 = true;
 		EvictedHistoryTable.primaryStore.getEntry = function (id, options) {
-			if (id === 'rec-1') {
+			if (id === 'rec-1' && throwOnRec1) {
 				throw new Error('simulated getEntry failure for rec-1');
 			}
 			return originalGetEntry.call(this, id, options);
@@ -2502,70 +2543,20 @@ describe('history after record eviction (issue #3164)', () => {
 			for await (const entry of EvictedHistoryTable.getHistory()) {
 				history.push(entry);
 			}
-			// The patch entry for rec-1 calls primaryStore.getEntry('rec-1') which throws,
-			// while the full put entries for rec-1 and rec-2 do not need getRecordAtTime and succeed.
-			assert.strictEqual(history.length, 2);
+			// The patch entry for rec-1 fails getValue and is yielded with value: undefined,
+			// preserving its audit event metadata while both put entries succeed.
+			assert.strictEqual(history.length, 3);
 			assert.deepStrictEqual(
 				history.map((e) => ({ type: e.type, id: e.id, value: e.value })),
 				[
 					{ type: 'put', id: 'rec-1', value: { id: 'rec-1', name: 'initial', count: 1 } },
-					{ type: 'put', id: 'rec-2', value: { id: 'rec-2', name: 'after-evict', count: 10 } },
+					{ type: 'patch', id: 'rec-1', value: undefined },
+					{ type: 'put', id: 'rec-2', value: { id: 'rec-2', name: 'after', count: 10 } },
 				]
 			);
-			assert.ok(
-				loggedErrors.some((args) =>
-					args.some((arg) => arg instanceof Error && arg.message === 'simulated getEntry failure for rec-1')
-				),
-				'expected getHistory error to be logged'
-			);
-		} finally {
-			EvictedHistoryTable.primaryStore.getEntry = originalGetEntry;
-			logger.error = originalError;
-		}
-	});
 
-	it('preserves buffered and subsequent entries in readAuditLog when an entry or iterator step throws', async () => {
-		const originalError = harperLogger.error;
-		const loggedErrors = [];
-		harperLogger.error = (...args) => {
-			loggedErrors.push(args);
-		};
-		const originalGetHistory = EvictedHistoryTable.getHistory;
-		EvictedHistoryTable.getHistory = async function* () {
-			yield {
-				operation: 'put',
-				type: 'put',
-				localTime: 100,
-				version: 100,
-				user: 'alice',
-				id: 'r1',
-				value: { id: 'r1', name: 'one' },
-			};
-			yield {
-				operation: 'put',
-				type: 'put',
-				localTime: 200,
-				version: 200,
-				user: 'alice',
-				id: 'r2',
-				get value() {
-					throw new Error('simulated corrupt entry value');
-				},
-			};
-			yield {
-				operation: 'put',
-				type: 'put',
-				localTime: 300,
-				version: 300,
-				user: 'alice',
-				id: 'r3',
-				value: { id: 'r3', name: 'three' },
-			};
-			throw new Error('simulated mid-stream history failure');
-		};
-		try {
 			const bridge = new ResourceBridge();
-			const grouped = await Array.fromAsync(
+			const byTimestamp = await Array.fromAsync(
 				await bridge.readAuditLog({
 					schema,
 					table: tableName,
@@ -2573,37 +2564,39 @@ describe('history after record eviction (issue #3164)', () => {
 					search_values: [0],
 				})
 			);
-			assert.deepStrictEqual(grouped, [
-				{
-					operation: 'put',
-					timestamp: 100,
-					user_name: 'alice',
-					ids: ['r1'],
-					records: [{ id: 'r1', name: 'one' }],
-				},
-				{
-					operation: 'put',
-					timestamp: 300,
-					user_name: 'alice',
-					ids: ['r3'],
-					records: [{ id: 'r3', name: 'three' }],
-				},
-			]);
-			assert.ok(
-				loggedErrors.some((args) =>
-					args.some((arg) => arg instanceof Error && arg.message === 'simulated corrupt entry value')
-				),
-				'expected per-entry error to be logged'
+			assert.strictEqual(byTimestamp.length, 3);
+			assert.deepStrictEqual(byTimestamp[0].records, [{ id: 'rec-1', name: 'initial', count: 1 }]);
+			assert.deepStrictEqual(byTimestamp[1].ids, ['rec-1']);
+			assert.deepStrictEqual(byTimestamp[1].records, [undefined]);
+			assert.deepStrictEqual(byTimestamp[2].records, [{ id: 'rec-2', name: 'after', count: 10 }]);
+
+			// Allow getHistoryOfRecord('rec-1')'s initial head lookup to succeed, then fail on the patch's getValue
+			let rec1Calls = 0;
+			EvictedHistoryTable.primaryStore.getEntry = function (id, options) {
+				if (id === 'rec-1' && ++rec1Calls > 1) {
+					throw new Error('simulated getEntry failure for rec-1');
+				}
+				return originalGetEntry.call(this, id, options);
+			};
+			const recordHistory = await EvictedHistoryTable.getHistoryOfRecord('rec-1');
+			assert.strictEqual(recordHistory.length, 2);
+			assert.deepStrictEqual(
+				recordHistory.map((e) => ({ type: e.type, id: e.id, value: e.value })),
+				[
+					{ type: 'put', id: 'rec-1', value: { id: 'rec-1', name: 'initial', count: 1 } },
+					{ type: 'patch', id: 'rec-1', value: undefined },
+				]
 			);
+
 			assert.ok(
 				loggedErrors.some((args) =>
-					args.some((arg) => arg instanceof Error && arg.message === 'simulated mid-stream history failure')
+					args.some((arg) => arg instanceof Error && arg.message === 'simulated getEntry failure for rec-1')
 				),
-				'expected iterator error to be logged'
+				'expected history entry reconstruction error to be logged'
 			);
 		} finally {
-			EvictedHistoryTable.getHistory = originalGetHistory;
-			harperLogger.error = originalError;
+			EvictedHistoryTable.primaryStore.getEntry = originalGetEntry;
+			logger.error = originalError;
 		}
 	});
 });
