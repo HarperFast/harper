@@ -3551,6 +3551,7 @@ export function makeTable(options): TableResourceClass {
 		 */
 		get(target?: any): any {
 			const constructor: any = this.constructor;
+			if (target?.parseError) throw target.parseError;
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target?.select);
 			if (fullTextFieldNames) {
 				assertRecordField(
@@ -3639,7 +3640,7 @@ export function makeTable(options): TableResourceClass {
 								return transform(record);
 							}
 							if (target?.property) {
-								return record[target?.property];
+								return record?.[target.property];
 							}
 							return record;
 						}
@@ -3652,7 +3653,7 @@ export function makeTable(options): TableResourceClass {
 				// if we are not explicitly using getReturnMutable, return the frozen record
 				const record = this.#record;
 				const select = target?.select;
-				if (select && record != null) {
+				if (select && record != null && constructor.loadAsInstance !== true) {
 					const transform = transformForSelect(select, this.constructor);
 					return promiseNormalize(transform(record), target);
 				}
@@ -8535,6 +8536,8 @@ export function makeTable(options): TableResourceClass {
 							propertyResolvers[attribute.name] = attribute.resolve = (object, context, entry, returnEntry?) => {
 								const ids = object[relationship.from];
 								if (ids == null) return ids;
+								const ctx = context ?? contextStorage.getStore();
+								if (ctx) ctx.lastModified = UNCACHEABLE_TIMESTAMP;
 								if (attribute.elements) {
 									// tolerate a scalar id in an array-typed FK field (legacy data written
 									// before attribute.set normalized single records to a one-element array)
