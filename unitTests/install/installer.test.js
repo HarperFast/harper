@@ -593,7 +593,6 @@ describe('install storage.engine resolution', () => {
 	const env_manager = require('#js/utility/environment/environmentManager');
 	const hdbTerms = require('#js/utility/hdbTerms');
 	const hdb_utils = require('#js/utility/common_utils');
-	const config_utils = require('#js/config/configUtils');
 	const keys = require('#js/security/keys');
 	const testUtils = require('../testUtils');
 	const sinon = require('sinon');
@@ -676,16 +675,22 @@ describe('install storage.engine resolution', () => {
 		try {
 			await closeSystemDatabase();
 		} finally {
-			for (const k of ENV_KEYS) {
-				if (savedEnv[k] === undefined) {
-					delete process.env[k];
-				} else {
-					process.env[k] = savedEnv[k];
+			if (savedEnv) {
+				for (const k of ENV_KEYS) {
+					if (savedEnv[k] === undefined) {
+						delete process.env[k];
+					} else {
+						process.env[k] = savedEnv[k];
+					}
 				}
 			}
-			process.argv = savedArgv;
+			if (savedArgv) {
+				process.argv = savedArgv;
+			}
 			hdb_utils.resetNoBootFileCache();
-			sandbox.restore();
+			if (sandbox) {
+				sandbox.restore();
+			}
 			env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER, undefined);
 			env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, undefined);
 			env_manager.setProperty(env_manager.BOOT_PROPS_FILE_PATH, undefined);
@@ -693,8 +698,11 @@ describe('install storage.engine resolution', () => {
 			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION, undefined);
 			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, undefined);
 			testUtils.setupTestDBPath();
-			config_utils.initConfig(true);
-			fs.rmSync(tempBaseDir, { recursive: true, force: true });
+			env_manager.initSync(true);
+			hdb_logger.initLogSettings(true);
+			if (tempBaseDir) {
+				fs.rmSync(tempBaseDir, { recursive: true, force: true });
+			}
 		}
 	});
 

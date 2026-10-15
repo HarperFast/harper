@@ -1125,7 +1125,6 @@ describe('Test configUtils module', () => {
 			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
 
 			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.DATABASES, undefined);
-			// Also test clearing via a legacy alias (SERVER_PORT -> operationsApi_network_port)
 			config_utils_rw.updateConfigObject(hdbTerms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY, undefined);
 
 			expect(flat_config.hasOwnProperty('databases')).to.be.false;
