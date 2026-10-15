@@ -653,7 +653,6 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 	} finally {
 		if (writeCondition) {
 			writeCondition.finished = true;
-			delete request[WRITE_CONDITION];
 			if (writeCondition.release) await writeCondition.release();
 		}
 	}

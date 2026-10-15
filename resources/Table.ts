@@ -32,6 +32,7 @@ import type { Contract, SchemaClass } from './defineResource.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
 import { Resource, SEARCH_AUTHORIZATION, WRITE_CONDITION, transformForSelect, defaultAllowReads } from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
+import { asBinary } from './asBinary.ts';
 import {
 	DatabaseTransaction,
 	ImmediateTransaction,
@@ -1698,11 +1699,12 @@ export function makeTable(options): TableResourceClass {
 	const COMMIT_BASE_METHODS = new Set(['put', 'patch', 'delete']);
 	function conditionForWrite(context, id: Id) {
 		const condition = context?.[WRITE_CONDITION];
-		return condition?.Resource.primaryStore === primaryStore &&
+		const matches =
+			condition?.Resource.primaryStore === primaryStore &&
 			condition.prepared &&
-			writeKeyId(id) === writeKeyId(condition.id)
-			? condition
-			: undefined;
+			writeKeyId(id) === writeKeyId(condition.id);
+		if (matches && condition.finished) throw new ClientError('Conditional request already completed', 409);
+		return matches ? condition : undefined;
 	}
 	function lockConditionalWrite(resource, id: Id, condition) {
 		if (!condition?.lock || !isRocksDB || condition.locked) return;
@@ -1719,7 +1721,7 @@ export function makeTable(options): TableResourceClass {
 		write[WRITE_CONDITION] = condition;
 		write.validateBase = (entry, txnTime) => {
 			if (priorStagedWrite(write)?.[WRITE_CONDITION] !== condition) {
-				// A predicate-only operation has no native write to conflict with intervening commits.
+				// A predicate-only operation also checks live state before its native guard is prepared.
 				condition.check(
 					write.conditionOnly && isRocksDB ? write.store.getEntry(write.key, { uncachedRead: true }) : entry
 				);
@@ -1727,6 +1729,15 @@ export function makeTable(options): TableResourceClass {
 			if (!write.conditionOnly && precedesExistingVersion(txnTime, entry, options?.nodeId) < 0)
 				throw new ClientError('A concurrent write superseded the conditional mutation', 409);
 		};
+		if (isRocksDB)
+			write.prepareCommit = (transaction) => {
+				if (!write.conditionOnly) return;
+				write.validateBase(write.entry, transaction.getTimestamp());
+				// Rewriting identical bytes adds native conflict tracking without changing the public version or audit log.
+				const bytes = write.store.getBinarySync(write.key, { transaction });
+				if (bytes === undefined) write.store.removeSync(write.key, { transaction });
+				else write.store.putSync(write.key, asBinary(bytes), { transaction });
+			};
 	}
 	function entryBeforeWrite(loadedEntry: Entry | undefined, id: Id, transaction: any, reloadsCommitBase: boolean) {
 		if (loadedEntry != null) return loadedEntry;
@@ -4636,7 +4647,7 @@ export function makeTable(options): TableResourceClass {
 						}
 						// standard path, handle arrays as multiple updates, and otherwise do a direct update
 						if (Array.isArray(record)) {
-							if (context?.[WRITE_CONDITION])
+							if (context?.[WRITE_CONDITION]?.Resource.primaryStore === primaryStore)
 								throw new ClientError('Conditional writes require a single record body', 501);
 							// Capture each element's operation synchronously (before any async `@embed`
 							// hook resolves): `#savingOperation` is a single field that parallel writes
@@ -5743,7 +5754,8 @@ export function makeTable(options): TableResourceClass {
 						throw new AccessViolation((context as any).user);
 					}
 					const id = requestTargetToId(target as any);
-					return when(this._writeDelete(id), () => true);
+					const deletion = this._writeDelete(id);
+					return deletion instanceof Promise ? deletion.then(() => true) : true;
 				}) as any;
 			}
 			const deletion = this._writeDelete(this.getId());
