@@ -31,7 +31,6 @@ export async function describeAll(opObj: any = {}) {
 			isSu = rolePerms?.super_user;
 		}
 		let databases = getDatabases();
-		// Keyed by database/table names, which can be `__proto__`: null-prototype keeps those own keys.
 		let schemaList = Object.create(null);
 		let schemaPerms = Object.create(null);
 		let tResults = [];

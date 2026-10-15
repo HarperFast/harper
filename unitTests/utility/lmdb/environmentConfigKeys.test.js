@@ -11,9 +11,6 @@ const envMngr = require('#src/utility/environment/environmentManager');
 const hdbTerms = require('#src/utility/hdbTerms');
 const { createEnvironment, closeEnvironment } = require('#src/utility/lmdb/environmentUtility');
 
-// createEnvironment records each database's path in the `databases` config map, keyed by the database
-// directory's name. A name that is also an inherited property must still become an own, serializable
-// entry, and must never put `path` on Object.prototype or the Object constructor (GHSA).
 describe('LMDB environment config keys named after inherited properties', function () {
 	let rootDir;
 
@@ -22,7 +19,7 @@ describe('LMDB environment config keys named after inherited properties', functi
 	});
 
 	after(function () {
-		fs.rmSync(rootDir, { recursive: true, force: true });
+		if (rootDir) fs.rmSync(rootDir, { recursive: true, force: true });
 	});
 
 	for (const dbName of ['__proto__', 'constructor', 'toString']) {

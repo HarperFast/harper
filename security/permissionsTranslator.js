@@ -21,7 +21,7 @@ const syntheticRolePermsMap = new Map();
 
 const schemaPermsTemplate = (describePerm = false) => ({
 	describe: describePerm,
-	tables: {},
+	tables: Object.create(null),
 });
 
 const permissionsTemplate = (readPerm = false, insertPerm = false, updatePerm = false, deletePerm = false) => ({
@@ -172,12 +172,12 @@ function translateRolePermissions(role, schema) {
 			return;
 		}
 		finalPermissions[s] = schemaPermsTemplate();
-		// own key only: a database named `__proto__` would otherwise read Object.prototype as its grant
+		// own keys only: a database or table named `__proto__` would otherwise read Object.prototype as its grant
 		if (Object.hasOwn(perms, s) && perms[s]) {
 			if (perms[s].describe) finalPermissions[s].describe = true; // preserve describe
 			//translate schema.tables to permissions
 			Object.keys(schema[s]).forEach((t) => {
-				if (perms[s].tables[t]) {
+				if (Object.hasOwn(perms[s].tables, t) && perms[s].tables[t]) {
 					//need to evaluate individual table perms AND attr perms
 					const table_perms = perms[s].tables[t];
 					const tableSchema = schema[s][t];

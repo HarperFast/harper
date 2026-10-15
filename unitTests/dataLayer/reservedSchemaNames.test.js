@@ -54,7 +54,6 @@ describe('#1016 reserved database names', () => {
 	});
 });
 
-// Same two creation surfaces as #1016, for database and table names alike.
 const PROTOTYPE_POLLUTING = ['__proto__', 'constructor', 'prototype'];
 
 describe('prototype-polluting database and table names', () => {
@@ -105,7 +104,6 @@ describe('prototype-polluting database and table names', () => {
 	}
 });
 
-// A table created before these names were refused reaches table() again for every schema change.
 describe('a prototype-polluting table that already exists keeps accepting schema changes', () => {
 	const DATABASE = 'proto_alias_db';
 

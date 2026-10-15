@@ -96,7 +96,6 @@ class SQLSearch {
 		this.comparator_search_values = {};
 		this.tables = [];
 
-		// Keyed by `${database}_${alias}`, which a query can make `__proto__`: null-prototype keeps that an own key.
 		this.data = Object.create(null);
 
 		this.has_aggregator = false;
@@ -206,9 +205,9 @@ class SQLSearch {
 			const schemaTable = `${table.databaseid}_${table.as ? table.as : table.tableid}`;
 			this.data[schemaTable] = {};
 			this.data[schemaTable].__hashName = getDatabases()[table.databaseid][table.tableid].primaryKey;
-			this.data[schemaTable].__mergedData = {};
+			this.data[schemaTable].__mergedData = Object.create(null);
 			this.data[schemaTable].__mergedAttributes = [];
-			this.data[schemaTable].__mergedAttrMap = {};
+			this.data[schemaTable].__mergedAttrMap = Object.create(null);
 		});
 	}
 
@@ -1375,7 +1374,7 @@ class SQLSearch {
 		const fetchAttributesObjs = this.fetch_attributes.reduce((acc, attr) => {
 			const schemaTable = `${attr.table.databaseid}_${attr.table.as ? attr.table.as : attr.table.tableid}`;
 			if (!acc[schemaTable]) {
-				acc[schemaTable] = {};
+				acc[schemaTable] = Object.create(null);
 			}
 			acc[schemaTable][aliasMap[attr.attribute]] = null;
 			return acc;

@@ -3663,7 +3663,7 @@ interface TableTarget {
 
 const GLOBAL_TARGET: TableTarget = {
 	rootStore: (databaseName, tableName) => database({ database: databaseName, table: tableName }),
-	tables: (databaseName) => databases[databaseName],
+	tables: (databaseName) => getDatabases()[databaseName],
 	reload: () => resetDatabases(),
 	// a real database's stores live until the process (or `closeDatabase`, which walks the graph) ends
 	adopt: () => {},

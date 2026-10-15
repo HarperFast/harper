@@ -1,8 +1,6 @@
 'use strict';
 
-// The databases map is null-prototype, so `databases.__proto__ = …` is an own key that describeAll
-// visits like a real database of that name. descTable swallows the stand-in table's missing store and
-// still returns `{ schema, name }`, which is all the result-building loop reads.
+// descTable tolerates a stand-in table with no store, so an own `databases.__proto__` entry is enough to drive describeAll.
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -83,8 +81,6 @@ describe('describe_all prototype pollution', function () {
 		assert.ok(Object.hasOwn(result.safe_db, '__proto__'), 'the `__proto__` table should be an own key');
 	});
 
-	// verifyPerms reads `permission.super_user` before translating the role, so a polluted prototype is
-	// read by any role without its own `super_user` key.
 	it('does not let a `__proto__` database with a `super_user` table escalate a structure user', async function () {
 		databases.__proto__ = { super_user: fakeTable('super_user') };
 
