@@ -53,7 +53,7 @@ function getLogger(): Logger {
 
 // Type definitions
 type ConfigObject = Record<string, any>;
-type ConfigSource = 'HARPER_DEFAULT_CONFIG' | 'HARPER_CONFIG' | 'HARPER_SET_CONFIG' | 'user' | 'default';
+type ConfigSource = 'HARPER_DEFAULT_CONFIG' | 'HARPER_CONFIG' | 'HARPER_SET_CONFIG' | 'user' | 'cli' | 'default';
 
 /**
  * Configuration state tracking structure
@@ -758,7 +758,7 @@ function applyConfigLayer(
 
 		// Store original value if requested and this is first time overriding
 		if (storeOriginals) {
-			if ((!currentSource || currentSource === 'user') && currentValue != null) {
+			if ((!currentSource || currentSource === 'user' || currentSource === 'cli') && currentValue != null) {
 				if (!Object.prototype.hasOwnProperty.call(state.originalValues, path)) {
 					state.originalValues[path] = currentValue;
 				}
@@ -873,9 +873,9 @@ function processEnvVar(
 	} else if (sourceName === 'HARPER_CONFIG') {
 		// HARPER_CONFIG merges: it sets exactly the keys it names and reasserts them on
 		// every boot (winning over the config file, user edits, and DEFAULT), yielding
-		// only to HARPER_SET_CONFIG. Same behavior at install and runtime.
+		// only to HARPER_SET_CONFIG (and individual CLI/env args at install).
 		applyConfigLayer(fileConfig, state, parsedConfig, sourceName, {
-			respectSources: ['HARPER_SET_CONFIG'],
+			respectSources: options.isInstall ? ['HARPER_SET_CONFIG', 'cli'] : ['HARPER_SET_CONFIG'],
 			storeOriginals: true,
 		});
 	} else if (sourceName === 'HARPER_DEFAULT_CONFIG') {
@@ -883,7 +883,7 @@ function processEnvVar(
 		if (options.isInstall) {
 			// Install: Override template defaults, but respect other sources
 			applyConfigLayer(fileConfig, state, parsedConfig, sourceName, {
-				respectSources: ['HARPER_SET_CONFIG', 'user'],
+				respectSources: ['HARPER_SET_CONFIG', 'cli', 'user'],
 				storeOriginals: true,
 			});
 		} else {
@@ -1083,7 +1083,7 @@ export function hasPersistedEnvConfigState(rootPath: string): boolean {
 export function applyRuntimeEnvConfig(
 	fileConfig: ConfigObject,
 	rootPath: string,
-	options: { isInstall?: boolean; userPaths?: Iterable<string> } = {}
+	options: { isInstall?: boolean; userPaths?: Iterable<string>; cliPaths?: Iterable<string> } = {}
 ): ConfigObject {
 	const { config, commitState } = prepareRuntimeEnvConfig(fileConfig, rootPath, options);
 	commitState();
@@ -1099,7 +1099,7 @@ export function applyRuntimeEnvConfig(
 export function prepareRuntimeEnvConfig(
 	fileConfig: ConfigObject,
 	rootPath: string,
-	options: { isInstall?: boolean; userPaths?: Iterable<string> } = {}
+	options: { isInstall?: boolean; userPaths?: Iterable<string>; cliPaths?: Iterable<string> } = {}
 ): {
 	config: ConfigObject;
 	saveState: () => boolean;
@@ -1132,9 +1132,16 @@ export function prepareRuntimeEnvConfig(
 		for (const path of driftedPaths) {
 			state.sources[path] = 'user';
 		}
-	} else if (options.isInstall && options.userPaths) {
-		for (const userPath of options.userPaths) {
-			state.sources[userPath] = 'user';
+	} else if (options.isInstall) {
+		if (options.userPaths) {
+			for (const userPath of options.userPaths) {
+				state.sources[userPath] = 'user';
+			}
+		}
+		if (options.cliPaths) {
+			for (const cliPath of options.cliPaths) {
+				state.sources[cliPath] = 'cli';
+			}
 		}
 	}
 
@@ -1158,6 +1165,12 @@ export function prepareRuntimeEnvConfig(
 	processEnvVar(fileConfig, state, 'HARPER_DEFAULT_CONFIG', 'HARPER_DEFAULT_CONFIG', options);
 	processEnvVar(fileConfig, state, 'HARPER_CONFIG', 'HARPER_CONFIG', options);
 	processEnvVar(fileConfig, state, 'HARPER_SET_CONFIG', 'HARPER_SET_CONFIG', options);
+
+	for (const [p, src] of Object.entries(state.sources)) {
+		if (src === 'cli') {
+			state.sources[p] = 'user';
+		}
+	}
 
 	return {
 		config: fileConfig,
