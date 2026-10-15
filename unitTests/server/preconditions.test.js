@@ -402,6 +402,49 @@ describe('REST preconditions with real table transactions', () => {
 		assert.strictEqual((await Embedded.get('deferred')).content, 'before');
 	});
 
+	it('refuses target writes started after their conditional request has finished', async () => {
+		let pending;
+		const schedule = (write) => {
+			pending = new Promise((resolve, reject) => {
+				setImmediate(() => {
+					try {
+						resolve(write());
+					} catch (error) {
+						reject(error);
+					}
+				});
+			});
+			pending.catch(() => {});
+		};
+		class Deferred extends Row {
+			put(data, target) {
+				schedule(() => super.put(data, target));
+			}
+			patch(data, target) {
+				schedule(() => super.patch(data, target));
+			}
+			delete(target) {
+				schedule(() => super.delete(target));
+			}
+		}
+		resources.set('Deferred', Deferred, { rest: true });
+		for (const preconditionLocks of [true, false]) {
+			for (const method of ['PUT', 'PATCH', 'DELETE']) {
+				const id = `deferred-${method}-${preconditionLocks}`;
+				await Row.put(id, { n: 1 });
+				const response = await rest(resources, { preconditionLocks })(
+					method,
+					`/Deferred/${id}`,
+					method === 'DELETE' ? undefined : { n: 2 },
+					{ 'if-match': '"stale"' }
+				);
+				await assert.rejects(pending, (error) => error.statusCode === 409);
+				assert.strictEqual(response.status, 501, await bodyOf(response));
+				assert.strictEqual((await Row.get(id)).n, 1);
+			}
+		}
+	});
+
 	it('releases a hold delivered after its request has already finished', async function () {
 		if (isLMDB) this.skip();
 		let delivered, release, pending;
@@ -430,7 +473,7 @@ describe('REST preconditions with real table transactions', () => {
 		release();
 		await pending.catch(() => {});
 		assert.strictEqual(response.status, 501, await bodyOf(response));
-		const held = await Row.lock('late-hold', { hold: true, timeoutMs: 100 });
+		const held = await Row.lock('late-hold', { hold: true, timeout: 100 });
 		await held.unlock();
 		assert.strictEqual((await Row.get('late-hold')).n, 1);
 	});
@@ -491,6 +534,40 @@ describe('REST preconditions with real table transactions', () => {
 				});
 				assert.strictEqual(response.status, path === 'Row' ? 400 : 501, await bodyOf(response));
 				assert.strictEqual((await Row.get(id)).n, 1);
+			}
+		}
+	});
+
+	it('allows array writes to an unrelated table within a conditional mutation', async () => {
+		const Lines = table({
+			table: 'ConditionLines',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+		});
+		Lines.loadAsInstance = false;
+		class WithLines extends Modern {
+			async put(target, data) {
+				await Lines.put(target.id, [{ id: target.id, n: 8 }]);
+				return super.put(target, data);
+			}
+		}
+		resources.set('WithLines', WithLines, { rest: true });
+		for (const preconditionLocks of [true, false]) {
+			for (const accepted of [false, true]) {
+				const id = `lines-${accepted}-${preconditionLocks}`;
+				await Row.put(id, { n: 1 });
+				const etag = versionToEtag(Row.primaryStore.getEntry(id).version);
+				const response = await rest(resources, { preconditionLocks })(
+					'PUT',
+					`/WithLines/${id}`,
+					{ n: 2 },
+					{ 'if-match': accepted ? etag : '"stale"' }
+				);
+				if (accepted) assert.ok(response.status < 300, await bodyOf(response));
+				else assert.strictEqual(response.status, 412, await bodyOf(response));
+				await Lines.put(`barrier-${id}`, { n: 0 });
+				assert.strictEqual((await Row.get(id)).n, accepted ? 2 : 1);
+				assert.strictEqual(Lines.primaryStore.getEntry(id)?.value?.n, accepted ? 8 : undefined);
 			}
 		}
 	});
@@ -681,6 +758,31 @@ describe('REST preconditions with real table transactions', () => {
 		}
 	});
 
+	it('validates a no-op with siblings after an intervening unconditional target write', async () => {
+		class NoopBeforeWork extends Row {
+			async patch(data, target) {
+				await super.patch({}, target);
+				await Row.put(this.getId(), { n: 9 }, {});
+				await Row.put(`noop-work-${this.getId()}`, { n: 8 });
+			}
+		}
+		resources.set('NoopBeforeWork', NoopBeforeWork, { rest: true });
+		for (const preconditionLocks of [true, false]) {
+			const id = `noop-work-${preconditionLocks}`;
+			await Row.put(id, { n: 1 });
+			const response = await rest(resources, { preconditionLocks })(
+				'PATCH',
+				`/NoopBeforeWork/${id}`,
+				{},
+				{ 'if-match': versionToEtag(Row.primaryStore.getEntry(id).version) }
+			);
+			assert.strictEqual(response.status, 412, await bodyOf(response));
+			await Row.put(`noop-work-barrier-${id}`, { n: 0 });
+			assert.strictEqual((await Row.get(id)).n, 9);
+			assert.strictEqual(Row.primaryStore.getEntry(`noop-work-${id}`)?.value, undefined);
+		}
+	});
+
 	it('rejects composite read representations and permits explicit application handling', async () => {
 		class Composite extends Row {
 			async get(target) {
@@ -868,5 +970,47 @@ describe('REST preconditions with real table transactions', () => {
 		assert.strictEqual(await bodyOf(read), '');
 		const forbidden = await request('GET', '/Envelope/', { error: true }, { 'if-match': '"stale"' });
 		assert.strictEqual(forbidden.status, 403);
+	});
+});
+
+describe('conditional write durability', () => {
+	it('does not replay a rejected conflicting mutation', async function () {
+		if (isLMDB) this.skip();
+		this.timeout(30000);
+		const Row = table({
+			database: 'conditionalReplay',
+			table: 'Row',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+		});
+		const firstStaged = Promise.withResolvers();
+		const secondStaged = Promise.withResolvers();
+		const releaseFirst = Promise.withResolvers();
+		const releaseSecond = Promise.withResolvers();
+		class Controlled extends Row {
+			async patch(data, target) {
+				await super.patch(data, target);
+				(data.n === 2 ? firstStaged : secondStaged).resolve();
+				await (data.n === 2 ? releaseFirst : releaseSecond).promise;
+			}
+		}
+		const resources = new Resources();
+		resources.set('Controlled', Controlled, { rest: true });
+		const request = rest(resources, { preconditionLocks: false });
+		await Row.put('target', { n: 1 });
+		const etag = versionToEtag(Row.primaryStore.getEntry('target').version);
+		const first = request('PATCH', '/Controlled/target', { n: 2 }, { 'if-match': etag });
+		await firstStaged.promise;
+		const second = request('PATCH', '/Controlled/target', { n: 3 }, { 'if-match': etag });
+		await secondStaged.promise;
+		releaseFirst.resolve();
+		const accepted = await first;
+		releaseSecond.resolve();
+		const rejected = await second;
+		assert.ok(accepted.status < 300, await bodyOf(accepted));
+		assert.strictEqual(rejected.status, 412, await bodyOf(rejected));
+		assert.strictEqual((await Row.get('target')).n, 2);
+		const { replayLogs } = require('#src/resources/replayLogs');
+		await replayLogs(Row.primaryStore.rootStore, { Row }, true);
+		assert.strictEqual((await Row.get('target')).n, 2, 'replay must not apply the rejected mutation');
 	});
 });

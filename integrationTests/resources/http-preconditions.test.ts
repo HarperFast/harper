@@ -1,7 +1,4 @@
-/**
- * HTTP preconditions across multiple workers with optimistic and record-lock admission.
- * https://github.com/HarperFast/harper/issues/900
- */
+// https://github.com/HarperFast/harper/issues/900
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';
 import { resolve, join } from 'node:path';
