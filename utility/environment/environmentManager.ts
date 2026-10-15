@@ -26,11 +26,12 @@ const installPropsToSave = {
 let installProps: any = {};
 export { BOOT_PROPS_FILE_PATH };
 
-// Every param passed to setProperty() on this thread, keyed by its canonical config param so
-// aliases collapse to one last-write-wins entry. Workers inherit this map (getConfigOverrides() and
-// the workerDataProvider registration in server/threads/manageThreads.js) and it is replayed after
-// a forced config reload; `base` is the configured value the override displaced, which is how
-// reapplyAllOverrides() tells a reload that left the param alone from one that is itself the change.
+// Every non-undefined param passed to setProperty() on this thread (passing undefined clears the
+// entry), keyed by its canonical config param so aliases collapse to one last-write-wins entry.
+// Workers inherit this map (getConfigOverrides() and the workerDataProvider registration in
+// server/threads/manageThreads.js) and it is replayed after a forced config reload; `base` is the
+// configured value the override displaced, which is how reapplyAllOverrides() tells a reload that
+// left the param alone from one that is itself the change.
 //
 // setProperty() therefore means operator/harness *intent* only. Code caching a value it derived
 // from config it just read (initializePaths.js, utility/lmdb/environmentUtility.ts) must call

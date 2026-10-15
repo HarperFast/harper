@@ -333,14 +333,59 @@ function matchesFileContent(filePath, content): boolean {
 	}
 }
 
+function backfillMissingDefaults(targetDoc: YAML.Document, defaultsDoc: YAML.Document, prefix: string[] = []): void {
+	const defaultsNode = prefix.length === 0 ? defaultsDoc.contents : defaultsDoc.getIn(prefix, true);
+	if (!YAML.isMap(defaultsNode)) return;
+	for (const pair of defaultsNode.items) {
+		const key = String((pair.key as any)?.value ?? pair.key);
+		const keyPath = [...prefix, key];
+		if (!targetDoc.hasIn(keyPath)) {
+			targetDoc.setIn(keyPath, defaultsDoc.getIn(keyPath));
+		} else if (YAML.isMap(pair.value) && YAML.isMap(targetDoc.getIn(keyPath, true))) {
+			backfillMissingDefaults(targetDoc, defaultsDoc, keyPath);
+		}
+	}
+}
+
+function collectLeafDotPaths(obj: any, prefix = '', out = new Set<string>()): Set<string> {
+	if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
+		if (prefix) out.add(prefix);
+		return out;
+	}
+	for (const [key, val] of Object.entries(obj)) {
+		const nextPrefix = prefix ? `${prefix}.${key}` : key;
+		if (val !== null && typeof val === 'object' && !Array.isArray(val) && Object.keys(val).length > 0) {
+			collectLeafDotPaths(val, nextPrefix, out);
+		} else {
+			out.add(nextPrefix);
+		}
+	}
+	return out;
+}
+
 /**
  * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
  * @param args - any args that the user provided.
+ * @param skipFsValidation - whether to skip filesystem path validation
+ * @param baseConfigPath - optional user-supplied config template (HDB_CONFIG) to backfill with defaults
+ * @param targetConfigPath - optional destination path for the written config file
  */
-export function createConfigFile(args, skipFsValidation = false) {
-	const configDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
+export function createConfigFile(args, skipFsValidation = false, baseConfigPath?: string, targetConfigPath?: string) {
+	const defaultDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
+	flatDefaultConfigObj = flattenConfig(defaultDoc.toJSON());
 
-	flatDefaultConfigObj = flattenConfig(configDoc.toJSON());
+	let configDoc = defaultDoc;
+	const userPaths = new Set<string>();
+	if (baseConfigPath) {
+		configDoc = parseYamlDoc(baseConfigPath);
+		if (configDoc.errors?.length > 0) {
+			throw new ServerError(
+				`Error parsing ${baseConfigPath}: YAMLParseError ${formatConfigParseErrorDetails(configDoc.errors[0])}`
+			);
+		}
+		collectLeafDotPaths(configDoc.toJSON(), '', userPaths);
+		backfillMissingDefaults(configDoc, defaultDoc);
+	}
 
 	// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 	let schemasArgs;
@@ -368,6 +413,14 @@ export function createConfigFile(args, skipFsValidation = false) {
 			const splitParam = configParam.split('_');
 			let value = castConfigValue(configParam, args[arg]);
 			if (configParam === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
+			if (
+				(configParam === CONFIG_PARAMS.STORAGE_ENGINE || baseConfigPath) &&
+				value !== undefined &&
+				value !== null &&
+				value !== ''
+			) {
+				userPaths.add(splitParam.join('.'));
+			}
 			try {
 				// Remove parent structure if it's a boolean to avoid type conflicts when setting the new value
 				if (splitParam.length > 1 && typeof configDoc.getIn(splitParam.slice(0, -1)) === 'boolean') {
@@ -387,7 +440,7 @@ export function createConfigFile(args, skipFsValidation = false) {
 	// This allows runtime env vars to resolve port conflicts before validation
 	// Must be called AFTER rootPath is set in configDoc
 	// Mutates configDoc in place
-	applyRuntimeEnvVarConfig(configDoc, null, { isInstall: true });
+	applyRuntimeEnvVarConfig(configDoc, null, { isInstall: true, userPaths });
 
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(configDoc, skipFsValidation);
@@ -396,7 +449,9 @@ export function createConfigFile(args, skipFsValidation = false) {
 
 	// Create new config file and write config doc to it.
 	const hdbRoot = configDoc.getIn(['rootPath']) as string;
-	const configFilePath = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
+	const configFilePath = targetConfigPath
+		? path.resolve(targetConfigPath)
+		: path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 	fs.createFileSync(configFilePath);
 	if (configDoc.errors?.length > 0) {
 		throw handleHDBError(
@@ -923,7 +978,8 @@ export function updateConfigObject(param: string, value: any) {
 		return;
 	}
 
-	flatConfigObj[configObjKey.toLowerCase()] = value;
+	if (value === undefined) delete flatConfigObj[configObjKey.toLowerCase()];
+	else flatConfigObj[configObjKey.toLowerCase()] = value;
 
 	// Keep the nested config tree in sync too: componentLoader (root components) and other
 	// nested-path readers derive behavior — e.g. a component's network port/protocol — from
