@@ -111,9 +111,7 @@ export async function createEnvironment(
 	envName = envName.toString();
 	let schemasConfig = envMngr.get(hdbTerms.CONFIG_PARAMS.DATABASES);
 	if (!schemasConfig) updateConfigObject(hdbTerms.CONFIG_PARAMS.DATABASES, (schemasConfig = {}));
-	// A database named after an inherited property (`__proto__`, `constructor`, `toString`) reads truthy
-	// off the prototype, and plain assignment of `__proto__` invokes its setter, so either would put
-	// `.path` on shared state instead of an own entry. defineProperty creates the own key for any name.
+	// defineProperty makes an own entry for any name: `schemasConfig.__proto__ = {}` would reparent the map instead
 	if (!Object.hasOwn(schemasConfig, dbName)) {
 		Object.defineProperty(schemasConfig, dbName, { value: {}, enumerable: true, writable: true, configurable: true });
 	}

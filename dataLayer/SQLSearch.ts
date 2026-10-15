@@ -96,8 +96,8 @@ class SQLSearch {
 		this.comparator_search_values = {};
 		this.tables = [];
 
-		//holds the data to be evaluated by the sql processor
-		this.data = {};
+		// Keyed by `${database}_${alias}`, which a query can make `__proto__`: null-prototype keeps that an own key.
+		this.data = Object.create(null);
 
 		this.has_aggregator = false;
 		this.has_ordinal = false;
@@ -649,7 +649,7 @@ class SQLSearch {
 			}
 
 			return acc;
-		}, {});
+		}, Object.create(null));
 
 		for (const attribute of this.fetch_attributes) {
 			const schemaTable = `${attribute.table.databaseid}_${
@@ -1129,7 +1129,7 @@ class SQLSearch {
 					acc[tableKey].columns.push(column.attribute);
 				}
 				return acc;
-			}, {});
+			}, Object.create(null));
 
 			for (const schemaTable in tableSearches) {
 				const table = tableSearches[schemaTable];
@@ -1370,7 +1370,7 @@ class SQLSearch {
 				acc[col.columnid_orig] = col.columnid_orig;
 			}
 			return acc;
-		}, {});
+		}, Object.create(null));
 
 		const fetchAttributesObjs = this.fetch_attributes.reduce((acc, attr) => {
 			const schemaTable = `${attr.table.databaseid}_${attr.table.as ? attr.table.as : attr.table.tableid}`;
@@ -1379,7 +1379,7 @@ class SQLSearch {
 			}
 			acc[schemaTable][aliasMap[attr.attribute]] = null;
 			return acc;
-		}, {});
+		}, Object.create(null));
 
 		for (const attribute of this.fetch_attributes) {
 			const schemaTable = `${attribute.table.databaseid}_${

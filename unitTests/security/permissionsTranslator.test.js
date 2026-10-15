@@ -615,6 +615,27 @@ describe('Test permissionsTranslator module', function () {
 			expect(Object.keys(translateRolePerms_spy.args[0][1])).to.not.include(terms.SYSTEM_SCHEMA_NAME);
 		});
 
+		it('translates a role against a loaded `__proto__` database without reading Object.prototype as its grant', () => {
+			const schema = Object.create(null);
+			schema[TEST_SCHEMA] = cloneDeep(TEST_SCHEMA_DOG_BREED[TEST_SCHEMA]);
+			schema.__proto__ = { t: { hash_attribute: 'id', attributes: [{ attribute: 'id' }] } };
+			const previous = global.hdb_schema;
+			global.hdb_schema = schema;
+			try {
+				const test_role = getUpdatedRoleObj();
+				const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
+				expect(Object.hasOwn(test_result, '__proto__')).to.be.true;
+				expect(test_result.__proto__.describe).to.be.false;
+				expect(test_result.__proto__.tables.t).to.deep.equal({
+					...createTablePermsObj(false, false, false, false),
+					describe: false,
+				});
+				expect(test_result[TEST_SCHEMA].tables.dog.read).to.be.true;
+			} finally {
+				global.hdb_schema = previous;
+			}
+		});
+
 		it('Pass SU role - expect same permissions to be returned', () => {
 			const test_role = getUpdatedRoleObj();
 			test_role.permission.super_user = true;

@@ -1,6 +1,6 @@
 const assert = require('node:assert');
 const schema = require('#src/dataLayer/schema');
-const { table } = require('#src/resources/databases');
+const { table, databases, dropDatabase } = require('#src/resources/databases');
 
 // harper#1016: a role's `permission` object keys per-database permissions by
 // database name alongside named flags (super_user / cluster_user /
@@ -103,4 +103,28 @@ describe('prototype-polluting database and table names', () => {
 			assert.match(schema.validateDatabaseName(name).message, /reserved name/);
 		});
 	}
+});
+
+// A table created before these names were refused reaches table() again for every schema change.
+describe('a prototype-polluting table that already exists keeps accepting schema changes', () => {
+	const DATABASE = 'proto_alias_db';
+
+	after(async () => {
+		delete databases[DATABASE]?.prototype;
+		await dropDatabase(DATABASE);
+	});
+
+	it("adds an attribute to an existing table named 'prototype'", () => {
+		const Source = table({ database: DATABASE, table: 'src', attributes: [{ name: 'id', isPrimaryKey: true }] });
+		databases[DATABASE].prototype = Source; // stands in for a table loaded from disk under that name
+		const Table = table({
+			database: DATABASE,
+			table: 'prototype',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'extra' }],
+		});
+		assert.ok(
+			Table.attributes.some((attribute) => attribute.name === 'extra'),
+			'the existing table did not take the new attribute'
+		);
+	});
 });

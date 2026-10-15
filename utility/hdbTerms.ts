@@ -119,11 +119,7 @@ export const RESERVED_DATABASE_NAMES = [
 	'_expandedOperations',
 ] as const;
 
-/**
- * Names that address a plain object's prototype rather than an own key, which `schemaRegex` permits.
- * Refused as database and table names on the create/authoring paths only, like
- * `RESERVED_DATABASE_NAMES`, so one created earlier still loads and can be dropped.
- */
+/** Keys that address a plain object's prototype rather than an own entry; refused as new database and table names. */
 export const PROTOTYPE_POLLUTING_NAMES = ['__proto__', 'constructor', 'prototype'] as const;
 
 /** Email address for support requests */
