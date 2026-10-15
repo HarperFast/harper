@@ -251,4 +251,103 @@ describe('Writer residency (harper#2257)', () => {
 		await Records.patch('by-id', { note: 'added' });
 		assert.equal(Records.primaryStore.getEntry('by-id')?.value, undefined, 'nor after a patch');
 	});
+
+	describe('when replication worker pool is active', () => {
+		const { setActiveWorkerPools } = require('#src/server/threads/workerPools');
+		const harperLogger = require('#src/utility/logging/harper_logger');
+
+		function capturingErrors(run) {
+			const errors = [];
+			const originalError = harperLogger.error;
+			harperLogger.error = (...args) => {
+				errors.push(args.map(String).join(' '));
+			};
+			try {
+				run();
+			} finally {
+				harperLogger.error = originalError;
+			}
+			return errors;
+		}
+
+		afterEach(() => {
+			setActiveWorkerPools([]);
+		});
+
+		it('does not log when the replication pool is not active', () => {
+			setActiveWorkerPools([]);
+			const FreshTable = table({
+				table: 'WriterResidencyNoPool',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			let called = 0;
+			const errors = capturingErrors(() => {
+				FreshTable.setResidency(() => {
+					called++;
+					return [PEER];
+				});
+			});
+			FreshTable.setResidency(undefined);
+			assert.strictEqual(errors.length, 0);
+			assert.strictEqual(called, 0);
+		});
+
+		it('logs an error once per table without invoking the callback and ignores clearing', () => {
+			setActiveWorkerPools(['replication']);
+			const PoolTable = table({
+				table: 'WriterResidencyPoolActive',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			let called = 0;
+			const fn = () => {
+				called++;
+				return [PEER];
+			};
+			// Clearing before registration neither logs nor consumes the once-per-table flag.
+			assert.deepStrictEqual(
+				capturingErrors(() => {
+					PoolTable.setResidency(undefined);
+					PoolTable.setResidencyById(undefined);
+				}),
+				[]
+			);
+			const firstErrors = capturingErrors(() => {
+				PoolTable.setResidency(fn);
+			});
+			assert.strictEqual(firstErrors.length, 1);
+			assert.match(firstErrors[0], /WriterResidencyPoolActive/);
+			assert.match(firstErrors[0], /setResidency/);
+			assert.match(firstErrors[0], /replication\.threads: 0/);
+			assert.strictEqual(called, 0, 'must not invoke user residency callback while logging');
+
+			// Subsequent registrations on the same table do not re-log.
+			assert.deepStrictEqual(
+				capturingErrors(() => {
+					PoolTable.setResidency(fn);
+					PoolTable.setResidencyById(fn);
+				}),
+				[]
+			);
+			PoolTable.setResidency(undefined);
+			PoolTable.setResidencyById(undefined);
+
+			// A second table gets its own once-per-table error on setResidencyById.
+			const SecondPoolTable = table({
+				table: 'WriterResidencyPoolActiveById',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const byIdErrors = capturingErrors(() => {
+				SecondPoolTable.setResidencyById(fn);
+			});
+			assert.strictEqual(byIdErrors.length, 1);
+			assert.match(byIdErrors[0], /WriterResidencyPoolActiveById/);
+			assert.match(byIdErrors[0], /setResidencyById/);
+			assert.match(byIdErrors[0], /replication\.threads: 0/);
+			assert.strictEqual(called, 0);
+			SecondPoolTable.setResidencyById(undefined);
+		});
+	});
 });
