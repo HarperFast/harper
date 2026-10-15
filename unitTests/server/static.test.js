@@ -917,21 +917,50 @@ describe('pipeBodyToResponse before the response head is written', () => {
 	});
 
 	it('serves the whole response when the source errors after it ended', async () => {
-		dispatch.current = () => {
+		const size = 32 * 1024 * 1024;
+		let lateErrorEmitted = false;
+		let finishedAtError;
+		dispatch.current = (req) => {
 			const body = new Readable({
 				read() {
-					this.push('complete');
+					this.push(Buffer.alloc(size, 97));
 					this.push(null);
 				},
 			});
-			body.on('end', () => setImmediate(() => body.emit('error', new Error('late'))));
+			// the response has ended but its body is still flushing, because the client has not read it yet
+			body.on('end', () =>
+				setImmediate(() => {
+					finishedAtError = req._nodeResponse.writableFinished;
+					lateErrorEmitted = true;
+					body.emit('error', new Error('late'));
+				})
+			);
 			return { handlesHeaders: true, body };
 		};
 
-		const res = await fetchHttp(baseUrl, '/late-error');
+		const res = await new Promise((resolve, reject) => {
+			const request = http.get(`${baseUrl}/late-error`, { agent: false }, (response) => {
+				response.pause();
+				waitFor(() => lateErrorEmitted, {
+					timeout: REQUEST_TIMEOUT_MS,
+					message: 'timed out waiting for the late error',
+				}).then(() => {
+					let received = 0;
+					const finish = (complete) => resolve({ status: response.statusCode, received, complete });
+					response.on('data', (chunk) => (received += chunk.length));
+					response.on('end', () => finish(response.complete));
+					response.on('aborted', () => finish(false));
+					response.on('error', () => finish(false));
+					response.resume();
+				}, reject);
+			});
+			request.setTimeout(REQUEST_TIMEOUT_MS, () => request.destroy(new Error('Request timed out')));
+			request.on('error', reject);
+		});
 
+		assert.equal(finishedAtError, false, 'the late error must arrive while the response is still flushing');
 		assert.equal(res.status, 200);
-		assert.equal(res.body, 'complete');
+		assert.equal(res.received, size);
 		assert.equal(res.complete, true);
 	});
 
