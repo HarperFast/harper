@@ -2531,9 +2531,8 @@ describe('history after record eviction (issue #3164)', () => {
 			loggedErrors.push(args);
 		};
 		const originalGetEntry = EvictedHistoryTable.primaryStore.getEntry;
-		let throwOnRec1 = true;
 		EvictedHistoryTable.primaryStore.getEntry = function (id, options) {
-			if (id === 'rec-1' && throwOnRec1) {
+			if (id === 'rec-1') {
 				throw new Error('simulated getEntry failure for rec-1');
 			}
 			return originalGetEntry.call(this, id, options);

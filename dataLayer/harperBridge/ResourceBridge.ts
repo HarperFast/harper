@@ -857,9 +857,9 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
 	let enqueued;
 	let count = 0;
 	for await (const entry of table.getHistory(start, end)) {
-		const operation = normalizeHistoryOperation(entry.operation, entry.type);
-		const { id, localTime: timestamp, value, user } = entry;
-		if (enqueued && enqueued.timestamp === timestamp) {
+		let operation = normalizeHistoryOperation(entry.operation, entry.type);
+		const { id, localTime: timestamp, value } = entry;
+		if (enqueued?.timestamp === timestamp) {
 			enqueued.ids.push(id);
 			enqueued.records.push(value);
 		} else {
@@ -873,7 +873,7 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
 			}
 			enqueued = {
 				operation,
-				user_name: user,
+				user_name: entry.user,
 				timestamp,
 				ids: [id],
 				records: [value],

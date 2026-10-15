@@ -136,7 +136,15 @@ export function applyForward(record, update) {
  * between entries). Returns null if the record did not exist at `timestamp` (the nearest in-range
  * history boundary is a delete with no surviving writes, or there is no in-range history).
  */
-function reconstructForward(auditStore, store, tableId: number, recordId: any, fromPosition, timestamp) {
+function reconstructForward(
+	auditStore,
+	store,
+	tableId: number,
+	recordId: any,
+	fromPosition,
+	timestamp,
+	allowPartial = false
+) {
 	// Collect the in-range entries (at or before `timestamp`) back to a base boundary, newest-first.
 	// The boundary is a full `put` (snapshot) or a `delete` (everything older is erased); a record
 	// whose first write was a `patch` has no put and bottoms out at the start of history. Only
@@ -146,7 +154,10 @@ function reconstructForward(auditStore, store, tableId: number, recordId: any, f
 	let { txnLogKey: auditTime, nodeId: auditNodeId } = fromPosition;
 	while (auditTime > 0) {
 		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
-		if (!auditEntry) return entries.length === 0 ? null : undefined;
+		if (!auditEntry) {
+			if (allowPartial) break;
+			return entries.length === 0 ? null : undefined;
+		}
 		if (auditEntry.type === 'delete') {
 			// A delete at or before `timestamp` bounds the history; the record is rebuilt from the
 			// writes collected after it (an empty base). A delete newer than `timestamp` (a later
@@ -295,7 +306,8 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 			tableId,
 			recordId,
 			{ txnLogKey: auditTime, nodeId: auditNodeId },
-			timestamp
+			timestamp,
+			true
 		);
 		if (priorRecord) {
 			for (const key of unknowns) {
