@@ -415,6 +415,7 @@ export function createConfigFile(args, skipFsValidation = false, baseConfigPath?
 
 	let configDoc = defaultDoc;
 	const userPaths = new Set<string>();
+	const cliPaths = new Set<string>();
 	if (baseConfigPath) {
 		configDoc = parseYamlDoc(baseConfigPath);
 		if (configDoc.errors?.length > 0) {
@@ -452,8 +453,17 @@ export function createConfigFile(args, skipFsValidation = false, baseConfigPath?
 			const splitParam = configParam.split('_');
 			let value = castConfigValue(configParam, args[arg]);
 			if (configParam === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
-			if (configParam === CONFIG_PARAMS.STORAGE_ENGINE && value !== undefined && value !== null && value !== '') {
-				userPaths.add(splitParam.join('.'));
+			if (
+				(configParam === CONFIG_PARAMS.STORAGE_ENGINE ||
+					configParam === CONFIG_PARAMS.STORAGE_COMPRESSION ||
+					configParam === CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION) &&
+				value !== undefined &&
+				value !== null &&
+				value !== ''
+			) {
+				const dotPath = splitParam.join('.');
+				userPaths.add(dotPath);
+				cliPaths.add(dotPath);
 			}
 			try {
 				// Remove parent structure if it's a boolean to avoid type conflicts when setting the new value
@@ -474,7 +484,7 @@ export function createConfigFile(args, skipFsValidation = false, baseConfigPath?
 	// This allows runtime env vars to resolve port conflicts before validation
 	// Must be called AFTER rootPath is set in configDoc
 	// Mutates configDoc in place
-	applyRuntimeEnvVarConfig(configDoc, null, { isInstall: true, userPaths });
+	applyRuntimeEnvVarConfig(configDoc, null, { isInstall: true, userPaths, cliPaths });
 
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(configDoc, skipFsValidation);
@@ -1568,7 +1578,11 @@ export function parseYamlDoc(filePath) {
  * @param {string} [configFilePath] - Path to config file (optional, skips file write if not provided)
  * @param {Object} [options] - Options to pass to applyRuntimeEnvConfig (e.g., {isInstall: true})
  */
-function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
+function applyRuntimeEnvVarConfig(
+	configDoc,
+	configFilePath,
+	options: { isInstall?: boolean; userPaths?: Iterable<string>; cliPaths?: Iterable<string> } = {}
+) {
 	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
 	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
@@ -1614,17 +1628,6 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 		}
 
 		// Update the YAML document's contents in place so comments are preserved
-		const mergedDoc = YAML.parseDocument(YAML.stringify(configObj), { simpleKeys: true } as any);
-
-		// Check for YAML parsing errors
-		if (mergedDoc.errors?.length > 0) {
-			throw handleHDBError(
-				new Error(),
-				`Error parsing harperdb-config.yaml: ${mergedDoc.errors}`,
-				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
-			);
-		}
-
 		syncObjectToYamlDoc(configDoc, configObj);
 	} catch (error) {
 		logger.error(`Failed to apply runtime env config: ${error.message}`);

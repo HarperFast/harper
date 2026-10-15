@@ -583,12 +583,29 @@ async function createBootPropertiesFile() {
  * @param defaultsMode - the resolved DEFAULTS_MODE install param ('dev' or 'prod')
  * @returns the same args object, mutated in place, for convenience
  */
-export function applyInstallModeDefaults(args, defaultsMode) {
+export function applyInstallModeDefaults(args, defaultsMode, baseDoc?: YAML.Document) {
+	const getConfigured = (cfg: string) => {
+		const argVal = args[cfg.toLowerCase()] ?? args[cfg];
+		if (argVal !== undefined) return argVal;
+		if (!baseDoc) return undefined;
+		const pathParts = cfg.split('_');
+		const docVal = baseDoc.getIn(pathParts);
+		if (docVal !== undefined) return docVal;
+		if (pathParts.length > 1) {
+			const parentVal = baseDoc.getIn(pathParts.slice(0, -1));
+			if (typeof parentVal === 'boolean' || typeof parentVal === 'number') {
+				return parentVal;
+			}
+		}
+		return undefined;
+	};
 	if (defaultsMode === 'dev') {
 		for (const cfg in DEV_MODE_CONFIG) {
 			// Before setting http.port check that secure port is not being passed
-			if (cfg === CONFIG_PARAMS.HTTP_PORT && args[CONFIG_PARAMS.HTTP_SECUREPORT.toLowerCase()] === undefined) {
-				args[cfg] = args[cfg.toLowerCase()] ?? DEV_MODE_CONFIG[cfg];
+			if (cfg === CONFIG_PARAMS.HTTP_PORT && getConfigured(CONFIG_PARAMS.HTTP_SECUREPORT) === undefined) {
+				if (args[cfg.toLowerCase()] !== undefined || args[cfg] !== undefined || getConfigured(cfg) === undefined) {
+					args[cfg] = args[cfg.toLowerCase()] ?? args[cfg] ?? DEV_MODE_CONFIG[cfg];
+				}
 				// set secure port to null to override default
 				args[CONFIG_PARAMS.HTTP_SECUREPORT] = null;
 				continue;
@@ -599,9 +616,11 @@ export function applyInstallModeDefaults(args, defaultsMode) {
 			// Before setting ops API port check that secure port is not being passed
 			if (
 				cfg === CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT &&
-				args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT.toLowerCase()] === undefined
+				getConfigured(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT) === undefined
 			) {
-				args[cfg] = args[cfg.toLowerCase()] ?? DEV_MODE_CONFIG[cfg];
+				if (args[cfg.toLowerCase()] !== undefined || args[cfg] !== undefined || getConfigured(cfg) === undefined) {
+					args[cfg] = args[cfg.toLowerCase()] ?? args[cfg] ?? DEV_MODE_CONFIG[cfg];
+				}
 				// set secure port to null to override default
 				args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT] = null;
 				continue;
@@ -609,15 +628,15 @@ export function applyInstallModeDefaults(args, defaultsMode) {
 				continue;
 			}
 
-			if (args[cfg.toLowerCase()] === undefined) args[cfg] = DEV_MODE_CONFIG[cfg];
+			if (getConfigured(cfg) === undefined) args[cfg] = DEV_MODE_CONFIG[cfg];
 		}
 	} else {
 		if (
-			args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT.toLowerCase()] &&
-			args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT.toLowerCase()] === undefined
+			getConfigured(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) &&
+			getConfigured(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT) === undefined
 		)
 			args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT] = null;
-		if (args[CONFIG_PARAMS.HTTP_PORT.toLowerCase()] && args[CONFIG_PARAMS.HTTP_SECUREPORT.toLowerCase()] === undefined)
+		if (getConfigured(CONFIG_PARAMS.HTTP_PORT) && getConfigured(CONFIG_PARAMS.HTTP_SECUREPORT) === undefined)
 			args[CONFIG_PARAMS.HTTP_SECUREPORT] = null;
 	}
 	return args;
@@ -627,11 +646,14 @@ export function applyInstallModeDefaults(args, defaultsMode) {
 function stageStorageEngine(installParams: Record<string, any> = {}) {
 	const storageEngineParam = hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE;
 	envManager.setProperty(storageEngineParam, undefined);
+	const commandLineConfig = assignCMDENVVariables([storageEngineParam], true);
+	const cliEngine = commandLineConfig[storageEngineParam];
 	const baseEngine = installParams.STORAGE_ENGINE ?? installParams[storageEngineParam];
 	const envConfig = composeConfigFromEnv(
 		baseEngine !== undefined && baseEngine !== null && baseEngine !== '' ? { storage: { engine: baseEngine } } : {}
 	);
-	const configuredEngine = envConfig?.storage?.engine;
+	const configuredEngine =
+		cliEngine !== undefined && cliEngine !== null && cliEngine !== '' ? cliEngine : envConfig?.storage?.engine;
 	if (configuredEngine !== undefined && configuredEngine !== null && configuredEngine !== '') {
 		configUtils.updateConfigObject(storageEngineParam, configuredEngine);
 	}
@@ -658,8 +680,10 @@ function stageRocksCompression(installParams: Record<string, any> = {}) {
 	envManager.setProperty(rocksCompression, undefined);
 	envManager.setProperty(compression, undefined);
 	const commandLineConfig = assignCMDENVVariables([rocksCompression, compression], true);
-	const baseRocksCompression = commandLineConfig[rocksCompression] ?? installParams[rocksCompression];
-	const baseCompression = commandLineConfig[compression] ?? installParams[compression];
+	const cliRocksCompression = commandLineConfig[rocksCompression];
+	const cliCompression = commandLineConfig[compression];
+	const baseRocksCompression = installParams[rocksCompression];
+	const baseCompression = installParams[compression];
 	const baseConfig: Record<string, any> = { storage: {} };
 	if (baseRocksCompression !== undefined && baseRocksCompression !== null && baseRocksCompression !== '') {
 		baseConfig.storage.rocks = { compression: baseRocksCompression };
@@ -668,8 +692,14 @@ function stageRocksCompression(installParams: Record<string, any> = {}) {
 		baseConfig.storage.compression = baseCompression;
 	}
 	const envConfig = composeConfigFromEnv(baseConfig);
-	const configuredRocksCompression = envConfig?.storage?.rocks?.compression;
-	const configuredCompression = envConfig?.storage?.compression ?? true;
+	const configuredRocksCompression =
+		cliRocksCompression !== undefined && cliRocksCompression !== null && cliRocksCompression !== ''
+			? cliRocksCompression
+			: envConfig?.storage?.rocks?.compression;
+	const configuredCompression =
+		cliCompression !== undefined && cliCompression !== null && cliCompression !== ''
+			? cliCompression
+			: (envConfig?.storage?.compression ?? true);
 	if (
 		configuredRocksCompression !== undefined &&
 		configuredRocksCompression !== null &&
@@ -688,10 +718,36 @@ function stageRocksCompression(installParams: Record<string, any> = {}) {
  */
 async function createConfigFile(installParams) {
 	hdbLogger.trace('Creating Harper config file');
+	const hdbConfigPath = getHdbConfigPath();
+	let baseDoc: YAML.Document | undefined;
+	if (hdbConfigPath) {
+		try {
+			const parsed = configUtils.parseYamlDoc(hdbConfigPath);
+			if (!parsed.errors?.length) {
+				baseDoc = parsed;
+			}
+		} catch {}
+	}
 	const cliEnvArgs = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
 	delete cliEnvArgs.rootpath;
 	delete cliEnvArgs.hdb_root;
-	const args: Record<string, any> = Object.assign({}, cliEnvArgs, installParams, cliEnvArgs);
+	const args: Record<string, any> = baseDoc
+		? Object.assign({}, cliEnvArgs)
+		: Object.assign({}, cliEnvArgs, installParams, cliEnvArgs);
+	if (baseDoc) {
+		if (installParams[hdbTerms.INSTALL_PROMPTS.ROOTPATH] !== undefined) {
+			args[hdbTerms.INSTALL_PROMPTS.ROOTPATH] = installParams[hdbTerms.INSTALL_PROMPTS.ROOTPATH];
+		}
+		const baseNodeHostname = baseDoc.getIn(CONFIG_PARAMS.NODE_HOSTNAME.split('_'));
+		if (
+			installParams[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME] !== undefined &&
+			(cliEnvArgs[CONFIG_PARAMS.NODE_HOSTNAME.toLowerCase()] !== undefined ||
+				cliEnvArgs[CONFIG_PARAMS.REPLICATION_HOSTNAME.toLowerCase()] !== undefined ||
+				baseNodeHostname === undefined)
+		) {
+			args[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME] = installParams[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME];
+		}
+	}
 	if (installParams[hdbTerms.INSTALL_PROMPTS.ROOTPATH] !== undefined) {
 		delete args.rootpath;
 		delete args.hdb_root;
@@ -702,9 +758,8 @@ async function createConfigFile(installParams) {
 		console.error(chalk.yellow.bold(`Warning: ${warn}`));
 		hdbLogger.warn(warn);
 	}
-	applyInstallModeDefaults(args, defaultsMode);
+	applyInstallModeDefaults(args, defaultsMode, baseDoc);
 
-	const hdbConfigPath = getHdbConfigPath();
 	const overwriteRootNamedHdbConfig = isRootNamedHdbConfig(hdbConfigPath, hdbRoot);
 	const originalHdbConfigContent =
 		overwriteRootNamedHdbConfig && hdbConfigPath ? fs.readFileSync(hdbConfigPath, 'utf8') : undefined;

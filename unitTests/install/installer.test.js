@@ -785,11 +785,11 @@ describe('install storage.engine resolution', () => {
 		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
 	});
 
-	it('resolves CLI STORAGE_ENGINE=rocksdb + HARPER_CONFIG={"storage":{"engine":"lmdb"}} consistently to lmdb', async () => {
+	it('resolves CLI STORAGE_ENGINE=rocksdb + HARPER_CONFIG={"storage":{"engine":"lmdb"}} consistently to rocksdb', async () => {
 		process.env.STORAGE_ENGINE = 'rocksdb';
 		process.env.HARPER_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
 		const rootPath = await runInstall();
-		assertInstalledSystemEngine(rootPath, 'lmdb');
+		assertInstalledSystemEngine(rootPath, 'rocksdb');
 		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
 	});
 
@@ -819,5 +819,41 @@ describe('install storage.engine resolution', () => {
 		const rootPath = await runInstall();
 		assertInstalledSystemEngine(rootPath, 'lmdb');
 		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('preserves HDB_CONFIG operationsApi.network, node.hostname, and comments without flattenConfig corruption', async () => {
+		const externalConfigPath = path.join(tempBaseDir, 'external-harper-config.yaml');
+		fs.writeFileSync(
+			externalConfigPath,
+			[
+				'# Custom HTTP settings',
+				'http:',
+				'  port: 8080',
+				'  securePort: null',
+				'operationsApi:',
+				'  network:',
+				'    # Keep ops API on TLS 9925 only',
+				'    securePort: 9925',
+				'node:',
+				'  hostname: custom-node',
+				'storage:',
+				'  engine: lmdb',
+				'',
+			].join('\n'),
+			'utf8'
+		);
+		process.env.HDB_CONFIG = externalConfigPath;
+		const rootPath = await runInstall();
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		const writtenPath = path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE);
+		const writtenRaw = fs.readFileSync(writtenPath, 'utf8');
+		const writtenParsed = YAML.parse(writtenRaw);
+		assert.strictEqual(writtenParsed.http.port, 8080);
+		assert.strictEqual(writtenParsed.http.securePort, null);
+		assert.strictEqual(writtenParsed.operationsApi.network.port, null);
+		assert.strictEqual(writtenParsed.operationsApi.network.securePort, 9925);
+		assert.strictEqual(writtenParsed.node.hostname, 'custom-node');
+		assert.ok(writtenRaw.includes('# Custom HTTP settings'), 'Expected HTTP comment to be preserved');
+		assert.ok(writtenRaw.includes('# Keep ops API on TLS 9925 only'), 'Expected ops API comment to be preserved');
 	});
 });
