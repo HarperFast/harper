@@ -492,11 +492,9 @@ describe('analytics aggregation cycle', () => {
 		analytics.addAnalyticsListener((metrics) => {
 			if (metrics.some((entry) => entry.metric === 'db-write' && entry.path === 'StallProbe')) flushes.push(metrics);
 		});
-		// a fresh deadline, analyticsDelay after the probe
 		analytics.setAnalyticsEnabled(false);
 		analytics.setAnalyticsEnabled(true);
 		analytics.recordAction(1, 'db-write', 'StallProbe');
-		// a check-phase callback blocks the loop across the deadline
 		setTimeout(
 			() =>
 				setImmediate(() => {
