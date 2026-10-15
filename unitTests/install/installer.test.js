@@ -185,8 +185,9 @@ describe.skip('Test installer module', () => {
 			ROOTPATH: 'user/unit/test',
 			OPERATIONSAPI_NETWORK_PORT: '8888',
 		};
+		const stageInstallConfig = installer.__get__('stageInstallConfig');
 		const createConfigFile = installer.__get__('createConfigFile');
-		await createConfigFile(fake_install_params);
+		await createConfigFile(stageInstallConfig(fake_install_params));
 
 		expect(create_config_file_stub.args[0][0]).to.eql(expected_args);
 		//expect(env_mng_init_stub.called).to.be.true;
@@ -205,8 +206,9 @@ describe.skip('Test installer module', () => {
 			ROOTPATH: 'user/unit/test',
 			OPERATIONSAPI_NETWORK_PORT: '8888',
 		};
+		const stageInstallConfig = installer.__get__('stageInstallConfig');
 		const createConfigFile = installer.__get__('createConfigFile');
-		await createConfigFile(fake_install_params);
+		await createConfigFile(stageInstallConfig(fake_install_params));
 		expect(rollback_stub.args[0][0].name).equal('Error creating config file');
 		rollback_rw();
 	});
@@ -589,7 +591,14 @@ describe('resolveInstallDestination', () => {
 
 describe('install storage.engine resolution', () => {
 	const realInstaller = require('#js/utility/install/installer');
-	const { closeDatabase, getDatabases, resetRocksCompression } = require('#js/resources/databases');
+	const {
+		closeDatabase,
+		databases,
+		getDatabases,
+		resetDatabases,
+		resetRocksCompression,
+	} = require('#js/resources/databases');
+	const { setAnalyticsEnabled } = require('#src/resources/analytics/write');
 	const initPaths = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 	const env_manager = require('#js/utility/environment/environmentManager');
 	const hdbTerms = require('#js/utility/hdbTerms');
@@ -619,18 +628,38 @@ describe('install storage.engine resolution', () => {
 	let tempBaseDir;
 	let savedEnv;
 	let savedArgv;
+	let savedSystemDb;
 
 	async function closeSystemDatabase() {
 		const systemTables = getDatabases().system;
-		if (systemTables) {
+		if (systemTables && systemTables !== savedSystemDb) {
 			for (const table of Object.values(systemTables)) {
 				if (table?.dbisDB && table.dbisDB.status !== 'closed') {
 					await table.dbisDB.close?.();
 				}
 			}
+			await closeDatabase('system');
 		}
-		await closeDatabase('system');
 	}
+
+	before(() => {
+		setAnalyticsEnabled(false);
+		savedSystemDb = databases.system;
+		if (savedSystemDb) {
+			delete databases.system;
+		}
+	});
+
+	after(() => {
+		if (savedSystemDb) {
+			Object.defineProperty(databases, 'system', {
+				value: savedSystemDb,
+				configurable: true,
+			});
+			resetDatabases();
+		}
+		setAnalyticsEnabled(env_manager.get(hdbTerms.CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1);
+	});
 
 	function assertInstalledSystemEngine(rootPath, expectedEngine, expectedOptions = {}) {
 		const { compression = 'kLZ4Compression', storageDir = path.join(rootPath, 'database') } = expectedOptions;
@@ -694,8 +723,10 @@ describe('install storage.engine resolution', () => {
 
 		await closeSystemDatabase();
 		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, undefined);
-		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, undefined);
+		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, tempBaseDir);
 		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.DATABASES, undefined);
+		resetDatabases();
+		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, undefined);
 		resetRocksCompression();
 		initPaths.resetPaths();
 	});

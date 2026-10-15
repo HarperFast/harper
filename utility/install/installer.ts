@@ -723,8 +723,6 @@ function buildInstallConfigArgs(installParams: Record<string, any> = {}): {
 	return { args, hdbConfigPath, defaultedArgKeys };
 }
 
-// Resets memoized compression/path caches before staging so mountHdb() and createConfigFile()
-// resolve the same values.
 function stageInstallConfig(installParams: Record<string, any> = {}) {
 	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, undefined);
 	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, undefined);
@@ -739,19 +737,11 @@ function stageInstallConfig(installParams: Record<string, any> = {}) {
 /**
  * Calls the util function that creates the Harper config file.
  * If an error occurs during the create install is rolled backed.
- * @param installParamsOrStaged
  * @returns {Promise<void>}
  */
-async function createConfigFile(installParamsOrStaged) {
+async function createConfigFile(stagedInstall: ReturnType<typeof stageInstallConfig>) {
 	hdbLogger.trace(`Creating ${PRODUCT_NAME} config file`);
-	const isStaged =
-		installParamsOrStaged &&
-		typeof installParamsOrStaged === 'object' &&
-		'staged' in installParamsOrStaged &&
-		'defaultedArgKeys' in installParamsOrStaged;
-	const { args, hdbConfigPath, defaultedArgKeys, staged } = isStaged
-		? installParamsOrStaged
-		: { ...buildInstallConfigArgs(installParamsOrStaged), staged: undefined };
+	const { args, hdbConfigPath, defaultedArgKeys, staged } = stagedInstall;
 
 	const overwriteRootNamedHdbConfig = isRootNamedHdbConfig(hdbConfigPath, hdbRoot);
 	const resolvedConfigPath = overwriteRootNamedHdbConfig && hdbConfigPath ? path.resolve(hdbConfigPath) : undefined;
@@ -774,9 +764,6 @@ async function createConfigFile(installParamsOrStaged) {
 			defaultedArgKeys
 		);
 		envManager.initSync();
-		if (backupConfigPath) {
-			fs.rmSync(backupConfigPath, { force: true });
-		}
 	} catch (configErr) {
 		if (resolvedConfigPath) {
 			let restored = false;
@@ -808,6 +795,14 @@ async function createConfigFile(installParamsOrStaged) {
 			}
 		}
 		rollbackInstall(configErr);
+		return;
+	}
+	if (backupConfigPath) {
+		try {
+			fs.rmSync(backupConfigPath, { force: true });
+		} catch (rmErr) {
+			hdbLogger.warn(`Could not remove backup copy at ${backupConfigPath}: ${rmErr}`);
+		}
 	}
 }
 

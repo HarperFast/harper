@@ -261,6 +261,35 @@ describe('filterArgsAgainstRuntimeConfig', function () {
 			assert.strictEqual(result.http_port, undefined);
 			assert.strictEqual(result.logging_level, 'info');
 		});
+
+		it('should filter out legacy CONFIG_PARAM_MAP aliases when canonical key is in HARPER_CONFIG or HARPER_SET_CONFIG', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({
+				threads: {
+					count: 2,
+				},
+			});
+			process.env.HARPER_SET_CONFIG = JSON.stringify({
+				operationsApi: {
+					network: {
+						port: 9925,
+					},
+				},
+			});
+
+			const args = {
+				max_http_threads: '8', // Legacy alias for threads_count -> filtered by HARPER_CONFIG
+				http_threads: '4', // Legacy alias for threads_count -> filtered by HARPER_CONFIG
+				server_port: '9999', // Legacy alias for operationsapi_network_port -> filtered by HARPER_SET_CONFIG
+				rootpath: '/var/hdb', // NOT filtered
+			};
+
+			const result = filterArgsAgainstRuntimeConfig(args);
+
+			assert.strictEqual(result.max_http_threads, undefined, 'max_http_threads alias should be filtered');
+			assert.strictEqual(result.http_threads, undefined, 'http_threads alias should be filtered');
+			assert.strictEqual(result.server_port, undefined, 'server_port alias should be filtered');
+			assert.strictEqual(result.rootpath, '/var/hdb', 'rootpath should NOT be filtered');
+		});
 	});
 
 	describe('Does NOT filter HARPER_DEFAULT_CONFIG', function () {
