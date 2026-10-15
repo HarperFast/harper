@@ -1248,11 +1248,16 @@ export function transformForSelect(select, resource) {
 					// TODO: Get the resource, cache this transform, and apply above
 					let transform = subTransforms[property.name];
 					if (!transform) {
-						const resource =
-							propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
-								? propertyResolvers[property.name]?.definition?.tableClass
-								: undefined;
-						transform = subTransforms[property.name] = transformForSelect(property.select || property, resource);
+						const subSelect = property.select ?? (Array.isArray(property) ? property : null);
+						if (subSelect) {
+							const resource =
+								propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
+									? propertyResolvers[property.name]?.definition?.tableClass
+									: undefined;
+							transform = subTransforms[property.name] = transformForSelect(subSelect, resource);
+						} else {
+							transform = subTransforms[property.name] = (v) => v;
+						}
 					}
 					return transform(value);
 				} else return getProperty(property);

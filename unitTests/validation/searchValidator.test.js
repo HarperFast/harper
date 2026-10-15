@@ -13,11 +13,57 @@ const { getDatabases } = require('#src/resources/databases');
 describe('Test searchValidator module', () => {
 	before(() => {
 		getDatabases().searchValidatorTest = {
+			child: childTable,
+			grandchild: grandchildTable,
 			test: {
-				attributes: [{ attribute: 'id' }, { attribute: 'name' }],
+				attributes: [
+					{ attribute: 'id', name: 'id' },
+					{ attribute: 'name', name: 'name' },
+					{ attribute: 'metadata', name: 'metadata', type: 'Any' },
+					{
+						attribute: 'child',
+						name: 'child',
+						relationship: { from: 'childId' },
+						definition: { tableClass: childTable },
+					},
+					{
+						attribute: 'children',
+						name: 'children',
+						relationship: { to: 'parentId' },
+						elements: { type: 'Child', definition: { tableClass: childTable } },
+					},
+					{
+						attribute: 'parent',
+						name: 'parent',
+						relationship: { from: 'parentId' },
+						get definition() {
+							return { tableClass: getDatabases().searchValidatorTest.test };
+						},
+					},
+				],
 			},
 		};
 	});
+
+	const grandchildTable = {
+		attributes: [
+			{ attribute: 'id', name: 'id' },
+			{ attribute: 'code', name: 'code' },
+		],
+	};
+
+	const childTable = {
+		attributes: [
+			{ attribute: 'id', name: 'id' },
+			{ attribute: 'label', name: 'label' },
+			{
+				attribute: 'grandchild',
+				name: 'grandchild',
+				relationship: { from: 'grandchildId' },
+				definition: { tableClass: grandchildTable },
+			},
+		],
+	};
 
 	after(() => {
 		delete getDatabases().searchValidatorTest;
@@ -173,5 +219,147 @@ describe('Test searchValidator module', () => {
 		);
 
 		assert.strictEqual(result, undefined);
+	});
+
+	it('allows valid { name, select } and { name } get_attributes entries in hashes, value, and conditions (F-341)', () => {
+		const get_attributes = [
+			'id',
+			{ name: 'child', select: ['id', 'label', { name: 'grandchild', select: ['id', 'code'] }] },
+			{ name: 'children', select: ['id', 'label'] },
+			{ name: 'child' },
+		];
+		assert.strictEqual(
+			searchValidator(
+				{
+					schema: 'searchValidatorTest',
+					table: 'test',
+					hash_values: ['1'],
+					get_attributes,
+				},
+				'hashes'
+			),
+			null
+		);
+		assert.strictEqual(
+			searchValidator(
+				{
+					schema: 'searchValidatorTest',
+					table: 'test',
+					attribute: 'id',
+					value: '1',
+					get_attributes,
+				},
+				'value'
+			),
+			undefined
+		);
+		assert.strictEqual(
+			searchValidator(
+				{
+					schema: 'searchValidatorTest',
+					table: 'test',
+					conditions: [{ attribute: 'id', comparator: 'equals', value: '1' }],
+					get_attributes,
+				},
+				'conditions'
+			),
+			undefined
+		);
+	});
+
+	it('rejects unknown top-level { name, select } and { name } entries across hashes, value, and conditions (F-341)', () => {
+		for (const [type, base] of [
+			['hashes', { schema: 'searchValidatorTest', table: 'test', hash_values: ['1'] }],
+			['value', { schema: 'searchValidatorTest', table: 'test', attribute: 'id', value: '1' }],
+			[
+				'conditions',
+				{
+					schema: 'searchValidatorTest',
+					table: 'test',
+					conditions: [{ attribute: 'id', comparator: 'equals', value: '1' }],
+				},
+			],
+		]) {
+			const err1 = searchValidator({ ...base, get_attributes: ['id', { name: 'unknownRel', select: ['id'] }] }, type);
+			assert.ok(err1 instanceof Error, `expected error for ${type}`);
+			assert.strictEqual(err1.message, "unknown attribute 'unknownRel'");
+
+			const err2 = searchValidator({ ...base, get_attributes: ['id', { name: 'unknownTopAttr' }] }, type);
+			assert.ok(err2 instanceof Error, `expected error for ${type}`);
+			assert.strictEqual(err2.message, "unknown attribute 'unknownTopAttr'");
+		}
+	});
+
+	it('recursively rejects unknown nested attributes on both from: and to: relationships across hashes, value, and conditions (F-341)', () => {
+		for (const [type, base] of [
+			['hashes', { schema: 'searchValidatorTest', table: 'test', hash_values: ['1'] }],
+			['value', { schema: 'searchValidatorTest', table: 'test', attribute: 'id', value: '1' }],
+			[
+				'conditions',
+				{
+					schema: 'searchValidatorTest',
+					table: 'test',
+					conditions: [{ attribute: 'id', comparator: 'equals', value: '1' }],
+				},
+			],
+		]) {
+			const fromErr = searchValidator(
+				{ ...base, get_attributes: ['id', { name: 'child', select: ['id', 'unknownChildAttr'] }] },
+				type
+			);
+			assert.ok(fromErr instanceof Error, `expected from: error for ${type}`);
+			assert.strictEqual(fromErr.message, "unknown attribute 'unknownChildAttr'");
+
+			const toErr = searchValidator(
+				{ ...base, get_attributes: ['id', { name: 'children', select: ['id', 'unknownChildAttr'] }] },
+				type
+			);
+			assert.ok(toErr instanceof Error, `expected to: error for ${type}`);
+			assert.strictEqual(toErr.message, "unknown attribute 'unknownChildAttr'");
+
+			const deepErr = searchValidator(
+				{
+					...base,
+					get_attributes: [
+						'id',
+						{ name: 'child', select: [{ name: 'grandchild', select: ['id', 'unknownGrandchildAttr'] }] },
+					],
+				},
+				type
+			);
+			assert.ok(deepErr instanceof Error, `expected deep error for ${type}`);
+			assert.strictEqual(deepErr.message, "unknown attribute 'unknownGrandchildAttr'");
+		}
+	});
+
+	it('handles self-referential relationships and non-relationship JSON attributes without false positives (F-341)', () => {
+		assert.strictEqual(
+			searchValidator(
+				{
+					schema: 'searchValidatorTest',
+					table: 'test',
+					hash_values: ['1'],
+					get_attributes: [
+						'id',
+						{ name: 'parent', select: ['id', { name: 'parent', select: ['id', 'name'] }] },
+						{ name: 'metadata', select: ['nestedKey', { name: 'deep', select: ['leaf'] }] },
+					],
+				},
+				'hashes'
+			),
+			null
+		);
+
+		const selfErr = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				hash_values: ['1'],
+				get_attributes: ['id', { name: 'parent', select: ['id', { name: 'parent', select: ['bogusSelfAttr'] }] }],
+			},
+			'hashes'
+		);
+		assert.ok(selfErr instanceof Error);
+		assert.strictEqual(selfErr.message, "unknown attribute 'bogusSelfAttr'");
 	});
 });

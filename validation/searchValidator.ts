@@ -1,4 +1,3 @@
-import filter from 'lodash/filter.js';
 import some from 'lodash/some.js';
 import uniqBy from 'lodash/uniqBy.js';
 import * as validator from './validationWrapper.ts';
@@ -98,8 +97,15 @@ export default function (searchObject: any, type: any) {
 			if (!searchObject.get_attributes) addError(`'get_attributes' is required`);
 			else if (!Array.isArray(searchObject.get_attributes)) addError(`'get_attributes' must be an array`);
 			else if (searchObject.get_attributes.length === 0) addError(`'get_attributes' must contain at least 1 item`);
-			else if (!searchObject.get_attributes.every((value) => typeof value === 'string' || typeof value === 'number'))
-				addError(`'get_attributes' must be strings or numbers`);
+			else if (
+				!searchObject.get_attributes.every(
+					(value) =>
+						typeof value === 'string' ||
+						typeof value === 'number' ||
+						(typeof value === 'object' && value !== null && !Array.isArray(value))
+				)
+			)
+				addError(`'get_attributes' must be strings, numbers, or objects`);
 			function addError(error) {
 				if (errors) errors += '. ' + error;
 				else errors = error;
@@ -123,7 +129,6 @@ export default function (searchObject: any, type: any) {
 		}
 
 		let tableSchema = getDatabases()[searchObject.schema][searchObject.table];
-		let allTableAttributes = tableSchema.attributes;
 
 		//this clones the get_attributes array
 		let checkAttributes = searchObject.get_attributes ? [...searchObject.get_attributes] : [];
@@ -145,24 +150,73 @@ export default function (searchObject: any, type: any) {
 			addConditions(searchObject);
 		}
 
-		let unknownAttributes = filter(
-			checkAttributes,
-			(attribute) =>
-				attribute !== '*' &&
-				!attribute.startsWith?.('$') && // meta attributes
-				attribute.attribute !== '*' && // skip check for asterisk attribute
-				!Array.isArray(attribute) &&
-				!attribute.name && // nested attribute
-				!some(
-					allTableAttributes,
-					(
-						tableAttribute: any // attribute should match one of the attribute in global
-					) =>
-						tableAttribute === attribute ||
-						tableAttribute.attribute === attribute ||
-						tableAttribute.attribute === (attribute as any).attribute
-				)
-		);
+		let unknownAttributes: any[] = [];
+		const visitedObjects = new WeakSet();
+		const collectUnknownAttributes = (attributesToCheck: any[], currentTableSchema: any) => {
+			const tableAttributes = currentTableSchema?.attributes || [];
+			for (const attribute of attributesToCheck) {
+				if (
+					attribute === '*' ||
+					attribute?.startsWith?.('$') || // meta attributes
+					attribute?.attribute === '*' || // skip check for asterisk attribute
+					Array.isArray(attribute)
+				) {
+					continue;
+				}
+				if (
+					attribute &&
+					typeof attribute === 'object' &&
+					typeof attribute.name === 'string' &&
+					attribute.name.length > 0
+				) {
+					if (visitedObjects.has(attribute)) continue;
+					visitedObjects.add(attribute);
+					const matchedAttribute = tableAttributes.find(
+						(tableAttribute: any) =>
+							tableAttribute === attribute.name ||
+							tableAttribute.attribute === attribute.name ||
+							tableAttribute.name === attribute.name
+					);
+					if (!matchedAttribute) {
+						unknownAttributes.push(attribute.name);
+						continue;
+					}
+					if (attribute.select !== undefined) {
+						if (
+							typeof attribute.select !== 'string' &&
+							(!Array.isArray(attribute.select) || attribute.select.length === 0)
+						) {
+							unknownAttributes.push(attribute);
+							continue;
+						}
+						const targetTable =
+							(matchedAttribute.definition || matchedAttribute.elements?.definition)?.tableClass ??
+							currentTableSchema?.propertyResolvers?.[attribute.name]?.definition?.tableClass;
+						if (targetTable?.attributes) {
+							const nestedSelect = Array.isArray(attribute.select) ? attribute.select : [attribute.select];
+							collectUnknownAttributes(nestedSelect, targetTable);
+						}
+					}
+					continue;
+				}
+				if (
+					!some(
+						tableAttributes,
+						(
+							tableAttribute: any // attribute should match one of the attribute in global
+						) =>
+							tableAttribute === attribute ||
+							tableAttribute.attribute === attribute ||
+							tableAttribute.name === attribute ||
+							tableAttribute.attribute === (attribute as any)?.attribute ||
+							tableAttribute.name === (attribute as any)?.attribute
+					)
+				) {
+					unknownAttributes.push(attribute);
+				}
+			}
+		};
+		collectUnknownAttributes(checkAttributes, tableSchema);
 
 		// if any unknown attributes present in the search request then list all indicated as unknown attribute to error message at once split in well format
 		// for instance "unknown attribute a, b and c" or "unknown attribute a"

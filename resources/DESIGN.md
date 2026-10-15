@@ -235,7 +235,7 @@ GraphQL `@relationship` attributes are live objects in component workers, but th
 
 The primary-descriptor update shares the `update-attributes` serialization boundary with `dropTable()`, re-reads the row after locking, and refuses to replace a drop tombstone. Missing or malformed targets are skipped rather than installed without authorization metadata.
 
-Only the GraphQL authoring path persists relationships. `defineTable()` resolves its relation targets through a lazy thunk so forward references and cycles work, and the target class is not resolvable at registration time — so code-first relationships remain worker-only, and the operations API still rejects them as unknown attributes. Tightening the operations API's object/nested `get_attributes` form to reject names it cannot resolve is NOT an option: `Table.transformEntryForSelect` projects undeclared JSON sub-objects through that same form, so `validation/searchValidator.ts` deliberately leaves it unchecked.
+Only the GraphQL authoring path persists relationships. `defineTable()` resolves its relation targets through a lazy thunk so forward references and cycles work, and the target class is not resolvable at registration time — so code-first relationships remain worker-only, and the operations API still rejects them as unknown attributes. For operations-API `{ name, select }` entries in `get_attributes` (`search_by_hash`, `search_by_id`, `search_by_value`, and `search_by_conditions`), `validation/searchValidator.ts` validates top-level `name` against `table.attributes` and recursively validates `select` against the relationship target's `tableClass.attributes` when the attribute resolves to a relationship, while leaving inner `select` keys on non-relationship (plain JSON) attributes unchecked against a table catalog.
 
 Tests: `../unitTests/resources/schemaMigrationFragility.test.js` (catalog round-trip and failure behavior) and `../integrationTests/apiTests/graphql.test.mjs` (operations API in both directions).
 
@@ -279,8 +279,7 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
   `../integrationTests/resources/relationship-and-status-contract.test.ts`.
   `Resource.transformForSelect` resolver dictionaries use own entries, the private transform cache has no prototype, and
   a selected own `__proto__` is a data property on a normal response object.
-  [REST select projection crashes on missing targets and non-relationship fields](https://github.com/HarperFast/harper/issues/1415)
-  remains open for singleton-selector parsing and invalid-subselect policy outside this helper.
+  `parseQuery` (`search.ts`) unwraps a single-argument `select(x)` to a scalar string only when `!(args[0] as any).name`, keeping a single nested selector (`select(rel{a,b})` or `select(rel[select(a,b)])`) wrapped in its outer array and rejecting bracketed filter conditions inside `select(...)` with a 400 `SyntaxViolation` ([harper#1415](https://github.com/HarperFast/harper/issues/1415)).
   [Nested Resource projection fails to settle asynchronous arrays and forceNulls](https://github.com/HarperFast/harper/issues/3168)
   and [Prototype-chain key/attribute names: one **proto** PK poisons SQL/index reads table-wide; proto-named attributes falsely rejected at insert](https://github.com/HarperFast/harper/issues/1295)
   track separate asynchronous projection and table-wide key boundaries.
