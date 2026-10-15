@@ -246,7 +246,11 @@ export class LMDBTransaction extends DatabaseTransaction {
 		const completions = [];
 		let commitCompletions: Promise<void>[];
 		let writeIndex = 0;
-		this.writes = this.writes.filter((write) => write); // filter out removed entries
+		let requiresBaseValidation = false;
+		this.writes = this.writes.filter((write) => {
+			if (write?.validateBase) requiresBaseValidation = true;
+			return write;
+		});
 		const doWrite = (write) => {
 			let completion;
 			try {
@@ -266,8 +270,8 @@ export class LMDBTransaction extends DatabaseTransaction {
 		const nextCondition = () => {
 			const write = this.writes[writeIndex++];
 			if (write) {
-				if (write.key) {
-					if (retries > 0 || !write.entry) {
+				if (write.key != null) {
+					if (!write.validateBase && (retries > 0 || !write.entry)) {
 						// if the first optimistic attempt failed, we need to try again with the very latest version
 						write.entry = write.store.getEntry(write.key);
 					}
@@ -296,6 +300,14 @@ export class LMDBTransaction extends DatabaseTransaction {
 			// use a real (async) transaction to get exclusive access to the data
 			if (db?.retryRisk) db.retryRisk *= 0.99; // gradually decay the retry risk
 			if (this.writes.length + (db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) {
+				if (requiresBaseValidation) {
+					for (const write of this.writes) {
+						if (write.validateBase) {
+							if (retries > 0 || !write.entry) write.entry = write.store.getEntry(write.key);
+							write.validateBase(write.entry, txnTime);
+						}
+					}
+				}
 				this.markNativeCommitSubmitted();
 				nextCondition();
 				if (commitCompletions) {
@@ -313,6 +325,11 @@ export class LMDBTransaction extends DatabaseTransaction {
 				// a real LMDB transaction to get exclusive access to reading and writing
 				this.markNativeCommitSubmitted();
 				const transactionResolution = this.writes[0].store.transaction(() => {
+					if (requiresBaseValidation) {
+						for (const write of this.writes) {
+							if (write.validateBase) write.validateBase(write.store.getEntry(write.key), txnTime);
+						}
+					}
 					for (const write of this.writes) {
 						// we load latest data while in the transaction
 						write.entry = write.store.getEntry(write.key);

@@ -32,8 +32,11 @@ export function parseHttpDate(value: unknown): number | undefined {
 		parts[asctime ? 1 : 2]
 	);
 	let year = +parts[asctime ? 4 : 3];
+	let futureLimit: Date | undefined;
 	if (parts[asctime ? 4 : 3].length === 2) {
-		const currentYear = new Date().getUTCFullYear();
+		futureLimit = new Date();
+		const currentYear = futureLimit.getUTCFullYear();
+		futureLimit.setUTCFullYear(currentYear + 50);
 		year += Math.floor(currentYear / 100) * 100;
 		if (year > currentYear + 50) year -= 100;
 	}
@@ -41,6 +44,7 @@ export function parseHttpDate(value: unknown): number | undefined {
 	const date = new Date(0);
 	date.setUTCFullYear(year, month, day);
 	date.setUTCHours(hour, minute, second, 0);
+	if (futureLimit && date > futureLimit) date.setUTCFullYear((year -= 100));
 	if (
 		month >= 0 &&
 		date.getUTCFullYear() === year &&
@@ -56,26 +60,24 @@ export function parseHttpDate(value: unknown): number | undefined {
 function matchesEtag(value: string | string[], etag: string | undefined, exists: boolean, weak: boolean): boolean {
 	const list = Array.isArray(value) ? value.join(',') : value;
 	if (list.trim() === '*') return exists;
+	const comparable = weak && etag?.startsWith('W/') ? etag.slice(2) : etag;
 	let matched = false;
 	let offset = 0;
 	while (offset < list.length) {
-		while (/[\t ,]/.test(list[offset] ?? '') && offset < list.length) offset++;
+		while (list[offset] === '\t' || list[offset] === ' ' || list[offset] === ',') offset++;
 		if (offset === list.length) break;
 		const start = offset;
-		if (list.startsWith('W/', offset)) offset += 2;
+		const weakTag = list.startsWith('W/', offset);
+		if (weakTag) offset += 2;
+		const tagStart = offset;
 		if (list[offset++] !== '"') throw new ClientError('Invalid entity-tag precondition');
 		while (offset < list.length && list[offset] !== '"') {
 			const code = list.charCodeAt(offset++);
 			if (code < 0x21 || code > 0xff || code === 0x7f) throw new ClientError('Invalid entity-tag precondition');
 		}
 		if (list[offset++] !== '"') throw new ClientError('Invalid entity-tag precondition');
-		const tag = list.slice(start, offset);
-		if (
-			exists &&
-			etag &&
-			(weak ? tag.replace(/^W\//, '') === etag.replace(/^W\//, '') : tag === etag && !tag.startsWith('W/'))
-		)
-			matched = true;
+		const tag = list.slice(weak ? tagStart : start, offset);
+		if (exists && comparable && (weak || !weakTag) && tag === comparable) matched = true;
 		while (list[offset] === ' ' || list[offset] === '\t') offset++;
 		if (offset < list.length && list[offset++] !== ',') throw new ClientError('Invalid entity-tag precondition');
 	}
@@ -87,6 +89,15 @@ export function hasWritePreconditions(headers: Record<string, any>): boolean {
 		headers['if-match'] !== undefined ||
 		headers['if-none-match'] !== undefined ||
 		parseHttpDate(headers['if-unmodified-since']) !== undefined
+	);
+}
+
+export function hasPreconditions(headers: Record<string, any>): boolean {
+	return (
+		headers['if-match'] !== undefined ||
+		headers['if-none-match'] !== undefined ||
+		headers['if-modified-since'] !== undefined ||
+		headers['if-unmodified-since'] !== undefined
 	);
 }
 
