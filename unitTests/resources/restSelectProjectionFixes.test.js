@@ -15,7 +15,7 @@ require('#src/server/serverHelpers/serverUtilities');
 
 const superUser = { role: { permission: { super_user: true } } };
 
-describe('REST and operations API select projection fixes (F-337, F-338, F-341, F-342)', function () {
+describe('REST and operations API select projection fixes', function () {
 	const dbName = 'rest_select_projection_fixes';
 	let Child;
 	let Parent;
@@ -205,7 +205,7 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 		}
 	});
 
-	describe('F-337: @relationship(from:) ETag / conditional GET invalidation', function () {
+	describe('@relationship(from:) ETag / conditional GET invalidation', function () {
 		for (const [modeLabel, route] of [
 			['loadAsInstance = undefined', 'Parent'],
 			['loadAsInstance = true', 'ParentInstanceTrue'],
@@ -312,7 +312,7 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 		});
 	});
 
-	describe('F-338: loadAsInstance tri-state single-projection and missing-record .property', function () {
+	describe('loadAsInstance tri-state single-projection and missing-record .property', function () {
 		beforeEach(async function () {
 			await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-v1' });
 			await Child.put({ id: 'c2', parentId: 'p1', label: 'child-label-v2' });
@@ -369,7 +369,7 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 		});
 	});
 
-	describe('F-342: single-argument nested select(rel{...}) and bracketed conditions in select()', function () {
+	describe('single-argument nested select(rel{...}) (#1415) and bracketed conditions in select()', function () {
 		beforeEach(async function () {
 			await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-v1' });
 			await Child.put({ id: 'c2', parentId: 'p1', label: 'child-label-v2' });
@@ -400,6 +400,11 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 			assert.strictEqual(singleGetTo.status, 200);
 			assert.strictEqual(Object.keys(singleGetTo.body).length, 1);
 			assert.strictEqual(singleGetTo.body.children.length, 2);
+			assert.strictEqual(
+				singleGetTo.headers.get('etag'),
+				undefined,
+				'to-side relationship projection must also suppress parent ETag'
+			);
 
 			const collectionGetTo = await restGet('/Parent/?id=p1&select(children{id,label})');
 			assert.strictEqual(collectionGetTo.status, 200);
@@ -483,7 +488,7 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 		});
 	});
 
-	describe('F-341: operations API object get_attributes in search_by_hash and recursive validation', function () {
+	describe('operations API object get_attributes in search_by_hash and recursive validation (#3136)', function () {
 		beforeEach(async function () {
 			await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-v1' });
 			await Child.put({ id: 'c2', parentId: 'p1', label: 'child-label-v2' });
@@ -498,7 +503,7 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 				get_attributes: [
 					'id',
 					{ name: 'child', select: ['id', 'label'] },
-					{ name: 'children', select: ['id', 'label'] },
+					{ name: 'children', offset: 0, limit: 1, select: ['id', 'label'] },
 				],
 			})) {
 				rows.push(row);
@@ -506,7 +511,7 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 			assert.strictEqual(rows.length, 1);
 			assert.strictEqual(rows[0].id, 'p1');
 			assert.deepStrictEqual(rows[0].child, { id: 'c1', label: 'child-label-v1' });
-			assert.strictEqual(rows[0].children.length, 2);
+			assert.strictEqual(rows[0].children.length, 1);
 
 			const wholeRelRows = [];
 			for await (const row of bridge.searchByHash({

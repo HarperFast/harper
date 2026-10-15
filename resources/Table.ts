@@ -329,8 +329,9 @@ const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 
 // (large filtered full-scan, in-memory sort) should still be gated by config before broad exposure.
 const MAX_EXACT_COUNT_SCAN = 1_000_000;
 const MAX_EXACT_COUNT_MS = 1_000;
-// Largest page a `Prefer: count=` request will materialize. A request whose limit exceeds this (or is
-// not a finite, non-negative integer, e.g. `limit(Infinity)`/`limit(foo)`) falls through to the normal
+// Largest page a `Prefer: count=` request will materialize. A programmatic target whose limit exceeds
+// this (or is not a finite, non-negative integer, e.g. `{ limit: Infinity }` / `{ limit: NaN }`; REST
+// `parseQuery` rejects non-integer/negative `limit(...)` with 400) falls through to the normal
 // streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
 const MAX_COUNT_PAGE = 10_000;
 // How often the exact-count drain yields to the macrotask queue (must be a power of two for the bit-mask
@@ -6685,10 +6686,11 @@ export function makeTable(options): TableResourceClass {
 				// Requires a bounded page AND window. Counting is a pagination feature; both the limit and the
 				// offset must be finite, non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the
 				// window (offset + limit) no larger than MAX_EXACT_COUNT_SCAN. Anything else — a missing/
-				// oversized/non-finite/negative limit or offset (a bare collection GET, limit(Infinity),
-				// limit(foo), limit(-5,10)) or a deep-page window past the scan budget — falls through to the
-				// normal streaming path with no count. This bounds the offset too: without it a huge offset would
-				// postpone the exact guardrail (which only engages past the page) until that offset was scanned.
+				// oversized/non-finite/negative limit or offset (a bare collection GET, or programmatic targets
+				// such as `{ limit: Infinity }`, `{ limit: NaN }`, `{ offset: -5, limit: 10 }`) or a deep-page
+				// window past the scan budget — falls through to the normal streaming path with no count. This
+				// bounds the offset too: without it a huge offset would postpone the exact guardrail (which only
+				// engages past the page) until that offset was scanned.
 				const pageLimit = target.limit as number;
 				if (
 					target.count &&
