@@ -410,18 +410,17 @@ function syncObjectToYamlDoc(doc: YAML.Document, obj: Record<string, any>, prefi
 	}
 }
 
-/**
- * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
- * @param args - any args that the user provided.
- * @param baseConfigPath - optional user-supplied config template (HDB_CONFIG) to backfill with defaults
- */
-export function createConfigFile(args, skipFsValidation = false, baseConfigPath?: string, targetConfigPath?: string) {
+export interface StagedInstallConfig {
+	configDoc: YAML.Document;
+	commitEnvConfigState?: () => boolean;
+}
+
+function composeInstallConfig(args, baseConfigPath?: string): StagedInstallConfig {
 	const defaultDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
 	flatDefaultConfigObj = flattenConfig(defaultDoc.toJSON());
 
 	let configDoc = defaultDoc;
 	const userPaths = new Set<string>();
-	const cliPaths = new Set<string>();
 	if (baseConfigPath) {
 		configDoc = parseYamlDoc(baseConfigPath);
 		if (configDoc.errors?.length > 0) {
@@ -459,17 +458,8 @@ export function createConfigFile(args, skipFsValidation = false, baseConfigPath?
 			const splitParam = configParam.split('_');
 			let value = castConfigValue(configParam, args[arg]);
 			if (configParam === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
-			if (
-				(configParam === CONFIG_PARAMS.STORAGE_ENGINE ||
-					configParam === CONFIG_PARAMS.STORAGE_COMPRESSION ||
-					configParam === CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION) &&
-				value !== undefined &&
-				value !== null &&
-				value !== ''
-			) {
-				const dotPath = splitParam.join('.');
-				userPaths.add(dotPath);
-				cliPaths.add(dotPath);
+			if (value !== undefined && value !== null && value !== '') {
+				userPaths.add(splitParam.join('.'));
 			}
 			try {
 				// Remove parent structure if it's a boolean to avoid type conflicts when setting the new value
@@ -493,21 +483,47 @@ export function createConfigFile(args, skipFsValidation = false, baseConfigPath?
 	const commitEnvConfigState = applyRuntimeEnvVarConfig(configDoc, null, {
 		isInstall: true,
 		userPaths,
-		cliPaths,
 		deferStateCommit: true,
 	});
 
+	return { configDoc, commitEnvConfigState };
+}
+
+/**
+ * Composes and stages the install configuration in `flatConfigObj` before `mountHdb()` creates
+ * the first-boot databases, so `envManager.get()` sees the same resolved settings (`storage.engine`,
+ * `storage.rocks.compression`, `storage.compression`, `storage.path`, `databases`, etc.) that
+ * `createConfigFile()` will later validate and write to disk. Does not set `configObj` so
+ * `getConfigObj()` keeps its lazy initialization until `createConfigFile()` finishes.
+ */
+export function stageInstallConfig(args, baseConfigPath?: string): StagedInstallConfig {
+	const staged = composeInstallConfig(args, baseConfigPath);
+	flatConfigObj = flattenConfig(staged.configDoc.toJSON());
+	return staged;
+}
+
+/**
+ * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
+ * @param args - any args that the user provided.
+ * @param baseConfigPath - optional user-supplied config template (HDB_CONFIG) to backfill with defaults
+ */
+export function createConfigFile(
+	args,
+	skipFsValidation = false,
+	baseConfigPath?: string,
+	targetConfigPath?: string,
+	staged?: StagedInstallConfig
+) {
+	const { configDoc, commitEnvConfigState } = staged ?? composeInstallConfig(args, baseConfigPath);
+
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(configDoc, skipFsValidation);
-
-	flatConfigObj = setActiveConfig(configDoc.toJSON());
 
 	// Create new config file and write config doc to it.
 	const hdbRoot = configDoc.getIn(['rootPath']) as string;
 	const configFilePath = targetConfigPath
 		? path.resolve(targetConfigPath)
 		: path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
-	fs.createFileSync(configFilePath);
 	if (configDoc.errors?.length > 0) {
 		throw handleHDBError(
 			new Error(),
@@ -518,7 +534,9 @@ export function createConfigFile(args, skipFsValidation = false, baseConfigPath?
 			true
 		);
 	}
+	fs.createFileSync(configFilePath);
 	atomicWriteFile(configFilePath, String(configDoc));
+	flatConfigObj = setActiveConfig(configDoc.toJSON());
 	commitEnvConfigState?.();
 	logger.trace(`Config file written to ${configFilePath}`);
 }
@@ -1606,7 +1624,6 @@ function applyRuntimeEnvVarConfig(
 	options: {
 		isInstall?: boolean;
 		userPaths?: Iterable<string>;
-		cliPaths?: Iterable<string>;
 		deferStateCommit?: boolean;
 	} = {}
 ): (() => boolean) | undefined {
