@@ -608,11 +608,11 @@ const PREPARE_OPERATION: any = {
 		// Pre-walk the directory once for both the uncompressed-size estimate (progress bar
 		// total) and the dangling-symlink list — a dangling symlink would otherwise silently
 		// truncate the tarball (tar-fs finalizes early on the broken target). Packaging skips
-		// them; the list is reused below (no second walk) and warns the user which links were
+		// them; the scan is reused below (no second walk) and warns the user which links were
 		// skipped so the omission is visible.
 		const scan = await scanPackageDirectory(projectPath, packageOptions);
 		req._uploadSizeEstimate = scan.totalSize;
-		req._danglingSymlinks = scan.danglingSymlinks;
+		req._packageScan = scan;
 		if (scan.danglingSymlinks.length) {
 			process.stderr.write(
 				`warning: skipping ${scan.danglingSymlinks.length} broken symlink(s) — their linked content will NOT be deployed:\n` +
@@ -935,7 +935,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				req._projectPath,
 				req._packageOptions,
 				renderer ? (n) => renderer.countUploadBytes(n) : undefined,
-				req._danglingSymlinks
+				req._packageScan
 			);
 			const fields = operationFields(req);
 			const multipart = buildMultipartBody(fields, {
