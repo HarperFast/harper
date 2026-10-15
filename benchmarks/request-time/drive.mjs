@@ -17,7 +17,10 @@ async function loop() {
 	while (Date.now() < until) {
 		const t0 = performance.now();
 		try {
-			const r = await fetch(base + path, { ...init, signal: AbortSignal.timeout(10_000) });
+			const r = await fetch(base + path, {
+				...init,
+				signal: AbortSignal.timeout(Math.max(1, Math.min(10_000, until - Date.now()))),
+			});
 			await r.arrayBuffer();
 			if (!r.ok) {
 				failed++;
@@ -34,11 +37,12 @@ const startedAt = Date.now();
 await Promise.all(Array.from({ length: concurrency }, loop));
 const elapsed = (Date.now() - startedAt) / 1000;
 lat.sort((a, b) => a - b);
-if (!lat.length) {
-	console.log(JSON.stringify({ method, reqPerSec: 0, failed }));
-	process.exit(1);
-}
 const p = (q) => Number(lat[Math.min(lat.length - 1, Math.floor(q * lat.length))].toFixed(3));
-console.log(
-	JSON.stringify({ method, reqPerSec: Math.round(done / elapsed), p50: p(0.5), p90: p(0.9), p99: p(0.99), failed })
-);
+if (lat.length) {
+	console.log(
+		JSON.stringify({ method, reqPerSec: Math.round(done / elapsed), p50: p(0.5), p90: p(0.9), p99: p(0.99), failed })
+	);
+} else {
+	console.log(JSON.stringify({ method, reqPerSec: 0, failed }));
+	process.exitCode = 1;
+}
