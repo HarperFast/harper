@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791969534206,
+  "lastUpdate": 1792049454609,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -7634,6 +7634,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1417.42,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5ed056a6a4fa41a45be6d870622e30aa9132e8c6",
+          "message": "Fix SQL `WHERE NOT (...)` selecting, deleting or updating the wrong rows (#3202)\n\n* Evaluate a legacy SQL predicate under NOT against every row\n\nThe legacy executor narrowed each WHERE column's fetch to the values its\npredicates named, wherever those predicates sat, so `NOT (c = 'alpha')`\nwas evaluated over the alpha rows only and returned nothing, and\n`DELETE ... WHERE NOT (a = 1 AND b = 2)` missed every row matching\nneither side. The default auto engine reaches this executor for every\nparenthesized expression.\n\nOnly a top-level AND conjunct now narrows a fetch. A self-join skips\nnarrowing, because the narrowing maps are keyed by physical table and a\nrestriction on one occurrence would narrow the other.\n\nRefs #1397\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_018Gtc2KgUdvqhVKFLh7f6bp\nDispatch-Task: harper-1397-sqlsearch-not-prefetch\n\n* Skip the self-join check on single-table queries, and use plain assert in the new tests\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_018Gtc2KgUdvqhVKFLh7f6bp\nDispatch-Task: harper-1397-sqlsearch-not-prefetch\n\n* Compare table identities in place for the self-join check, and keep the walk's node guard\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_018Gtc2KgUdvqhVKFLh7f6bp\nDispatch-Task: harper-1397-sqlsearch-not-prefetch\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-14T20:13:40Z",
+          "url": "https://github.com/HarperFast/harper/commit/5ed056a6a4fa41a45be6d870622e30aa9132e8c6"
+        },
+        "date": 1792049452260,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 5812.95,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8008.67,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 7805.87,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6213.15,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4415.75,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 7866.73,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 985.16,
             "unit": "ops/sec"
           }
         ]
