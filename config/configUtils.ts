@@ -468,7 +468,7 @@ function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: 
 					configDoc.deleteIn(splitParam.slice(0, -1));
 				}
 
-				configDoc.setIn([...splitParam], value);
+				configDoc.setIn([...splitParam], configDoc.createNode(value));
 			} catch (err) {
 				logger.error(err);
 			}
@@ -490,20 +490,13 @@ function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: 
 	return { configDoc, commitEnvConfigState };
 }
 
-/**
- * Composes and stages the install configuration in `flatConfigObj` before `mountHdb()` creates
- * the first-boot databases, leaving `configObj` unset until `createConfigFile()` finishes.
- */
+// Leaves configObj unset until createConfigFile() finishes so pre-file readers still see "uninstalled".
 export function stageInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: Set<string>): StagedInstallConfig {
 	const staged = composeInstallConfig(args, baseConfigPath, defaultedArgKeys);
 	flatConfigObj = flattenConfig(staged.configDoc.toJSON());
 	return staged;
 }
 
-/**
- * Validates a staged install configuration and refreshes `flatConfigObj` with any paths
- * normalized during validation (such as `storage.path`).
- */
 export function validateStagedInstallConfig(staged: StagedInstallConfig, skipFsValidation = false): void {
 	validateConfig(staged.configDoc, skipFsValidation);
 	staged.validated = true;
@@ -1393,7 +1386,7 @@ export function flattenConfig(obj) {
  * @param value
  * @returns {*|number|string|string|null|boolean}
  */
-export function castConfigValue(param, value) {
+function castConfigValue(param, value) {
 	if (isNumber(value)) {
 		return parseFloat(value);
 	}

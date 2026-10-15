@@ -5,11 +5,11 @@
  * to Harper's configuration system with source tracking and drift detection.
  *
  * The three variables form a precedence ladder (later wins):
- *   HARPER_DEFAULT_CONFIG  <  config file / user edits  <  HARPER_CONFIG  <  HARPER_SET_CONFIG
+ *   HARPER_DEFAULT_CONFIG  <  config file / user edits / individual env vars  <  HARPER_CONFIG  <  HARPER_SET_CONFIG
  *
  * - HARPER_CONFIG (recommended): merge — sets exactly the keys it names, reasserting
- *   them on every boot (a manual edit to a named key is overwritten on restart), and
- *   yields only to HARPER_SET_CONFIG.
+ *   them on every boot (a manual edit or individual env var for a named key is
+ *   overwritten on restart), and yields only to HARPER_SET_CONFIG.
  * - HARPER_DEFAULT_CONFIG: defaults — yields to the config file, individual env vars,
  *   and user edits.
  * - HARPER_SET_CONFIG: force — overrides everything and locks against drift.
@@ -247,45 +247,31 @@ function resolveLeafValue(currentValue: any, leafValue: any, path: string): any 
 }
 
 /**
- * Filters out arguments that are already set in HARPER_SET_CONFIG.
- * This prevents individual environment variables from overriding runtime configuration.
+ * The config env vars that reassert every key they name, at each start and at each runtime config refresh, over
+ * the file and over edits to it. HARPER_DEFAULT_CONFIG is not one: at runtime it only fills in what is missing.
+ */
+export const REASSERTING_CONFIG_ENV_VARS = ['HARPER_CONFIG', 'HARPER_SET_CONFIG'] as const;
+
+/**
+ * Filters out arguments that are already set in HARPER_CONFIG or HARPER_SET_CONFIG.
+ * This prevents individual environment variables from overriding reasserting runtime
+ * configuration layers on subsequent boots (where bin/run.ts calls updateConfigValue
+ * after initConfig()).
  *
- * Note: Only filters against HARPER_SET_CONFIG, not HARPER_DEFAULT_CONFIG, since
- * HARPER_DEFAULT_CONFIG sets defaults that can be overridden by individual env vars.
+ * Note: Only filters against HARPER_CONFIG and HARPER_SET_CONFIG, not HARPER_DEFAULT_CONFIG,
+ * since HARPER_DEFAULT_CONFIG sets defaults that can be overridden by individual env vars.
  *
  * @param args - Object containing individual env var arguments (e.g., from assignCMDENVVariables)
- * @returns Filtered args object with HARPER_SET_CONFIG keys removed
+ * @returns Filtered args object with HARPER_CONFIG and HARPER_SET_CONFIG keys removed
  *
  * @example
- * // If HARPER_SET_CONFIG sets operationsApi.network.port
+ * // If HARPER_CONFIG or HARPER_SET_CONFIG sets operationsApi.network.port
  * const args = { operationsapi_network_port: '9925', rootpath: '/var/hdb' };
  * const filtered = filterArgsAgainstRuntimeConfig(args);
  * // Returns: { rootpath: '/var/hdb' }
  */
 export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Record<string, any> {
-	// Only filter against HARPER_SET_CONFIG (not HARPER_DEFAULT_CONFIG)
-	if (!process.env.HARPER_SET_CONFIG) {
-		return args;
-	}
-
-	// Parse HARPER_SET_CONFIG
-	let setConfig: ConfigObject;
-	try {
-		setConfig = JSON.parse(process.env.HARPER_SET_CONFIG);
-	} catch (err) {
-		// If parsing fails, log warning and return args unchanged
-		const logger = getLogger();
-		logger.warn('Failed to parse HARPER_SET_CONFIG for arg filtering', err);
-		return args;
-	}
-
-	// If no valid config, return args unchanged
-	if (Object.keys(setConfig).length === 0) {
-		return args;
-	}
-
-	// Flatten HARPER_SET_CONFIG to get all keys
-	const flattenSetConfig = (obj: ConfigObject, prefix = ''): Set<string> => {
+	const flattenConfigKeys = (obj: ConfigObject, prefix = ''): Set<string> => {
 		const keys = new Set<string>();
 		for (const key in obj) {
 			const newKey = prefix ? `${prefix}_${key}` : key;
@@ -295,7 +281,7 @@ export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Recor
 				!Array.isArray(obj[key]) &&
 				!isDirectiveObject(obj[key])
 			) {
-				flattenSetConfig(obj[key], newKey).forEach((k) => keys.add(k));
+				flattenConfigKeys(obj[key], newKey).forEach((k) => keys.add(k));
 			} else {
 				keys.add(newKey.toLowerCase());
 			}
@@ -303,12 +289,30 @@ export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Recor
 		return keys;
 	};
 
-	const setConfigKeys = flattenSetConfig(setConfig);
+	const runtimeConfigKeys = new Set<string>();
+	for (const envVarName of REASSERTING_CONFIG_ENV_VARS) {
+		const raw = process.env[envVarName];
+		if (!raw) continue;
+		let parsed: ConfigObject;
+		try {
+			parsed = JSON.parse(raw);
+		} catch (err) {
+			const logger = getLogger();
+			logger.warn(`Failed to parse ${envVarName} for arg filtering`, err);
+			continue;
+		}
+		if (isPlainObject(parsed)) {
+			flattenConfigKeys(parsed).forEach((k) => runtimeConfigKeys.add(k));
+		}
+	}
 
-	// Filter out args that are in HARPER_SET_CONFIG
+	if (runtimeConfigKeys.size === 0) {
+		return args;
+	}
+
 	const filteredArgs: Record<string, any> = {};
 	for (const key in args) {
-		if (!setConfigKeys.has(key.toLowerCase())) {
+		if (!runtimeConfigKeys.has(key.toLowerCase())) {
 			filteredArgs[key] = args[key];
 		}
 	}
@@ -990,12 +994,6 @@ function cleanupRemovedEnvVar(
 export function composeConfigFromEnv(base: ConfigObject = {}): ConfigObject {
 	return composeEnvLayers(['HARPER_DEFAULT_CONFIG'], base, ['HARPER_CONFIG', 'HARPER_SET_CONFIG']);
 }
-
-/**
- * The config env vars that reassert every key they name, at each start and at each runtime config refresh, over
- * the file and over edits to it. HARPER_DEFAULT_CONFIG is not one: at runtime it only fills in what is missing.
- */
-export const REASSERTING_CONFIG_ENV_VARS = ['HARPER_CONFIG', 'HARPER_SET_CONFIG'] as const;
 
 /**
  * `base` as the reasserting env vars leave it, or only the named ones: what the next start, or the next config
