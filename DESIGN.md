@@ -18,7 +18,6 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 ## resources/ — records, transactions, tables, blobs, audit
 
-- [Conditional base validation precedes LMDB batch instructions](resources/DESIGN.md#conditional-base-validation-precedes-lmdb-batch-instructions) — Validate every conditional base before queuing writes, including conflict retries and exclusive batches.
 - [File overview](resources/DESIGN.md#file-overview) — What each file in `resources/` owns.
 - [`Resource.ts` — base class](resources/DESIGN.md#resourcets--base-class) — Static entry points versus instance methods, and the `transactional()` wrapper.
 - [`Table.ts` — section map](resources/DESIGN.md#tablets--section-map) — Section markers for the `makeTable()` factory.
@@ -120,7 +119,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 ## server/ — HTTP stacks, threads, operation dispatch
 
-- [HTTP request preconditions (`REST.ts`, `Table.ts`)](server/DESIGN.md#http-request-preconditions-restts-tablets) — Conditional reads follow validator precedence; conditional table writes check the commit base, with optional node-local hold locks.
+- [HTTP request preconditions (`REST.ts`, `Table.ts`)](server/DESIGN.md#http-request-preconditions-restts-tablets) — Conditional reads follow validator precedence; conditional table writes evaluate once under a default node-local hold lock (or best-effort pre-check when disabled/LMDB) and never on commit retry.
 - [Three HTTP stacks coexist — know which one](server/DESIGN.md#three-http-stacks-coexist--know-which-one) — The native `http.ts` stack, the Fastify operations API and the legacy Fastify custom-functions server, and which one a request lands on.
 - [File overview](server/DESIGN.md#file-overview) — What each file in `server/` owns.
 - [`http.ts` — symbol map](server/DESIGN.md#httpts--symbol-map) — Symbol index for the native HTTP entry file.

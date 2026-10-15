@@ -618,8 +618,6 @@ export type TransactionWrite = {
 	// Once a write has been taken over, the transaction committing it is not the one that staged it, and
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
 	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
-	validateBase?: (entry: Partial<Entry> | undefined, txnTime: number) => void;
-	prepareCommit?: (transaction: RocksTransaction) => void;
 	fullUpdate?: boolean;
 	// The origin record version carried by an applied or replayed write. Bound it by the origin's
 	// transaction-log key so malformed or historical overloaded values cannot move ordering past the write.
@@ -765,7 +763,6 @@ export class DatabaseTransaction implements Transaction {
 		this.#scopeOwned = options?.scopeOwned === true;
 	}
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
-	private hasCommitPreparation = false;
 	ownedWrites?: WeakSet<TransactionWrite>;
 	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
 	declare writesByKey?: Map<any, Map<unknown, TransactionWrite>>;
@@ -1303,7 +1300,6 @@ export class DatabaseTransaction implements Transaction {
 			if (write) this.ownedWrites?.delete(write);
 		}
 		this.writes = [];
-		this.hasCommitPreparation = false;
 		this.writesByKey = undefined;
 		// The commit-fence latch belongs to the discarded batch. A reused transaction that once staged
 		// a locked write would otherwise re-scan every write of every later unlocked batch. Assigned
@@ -1531,7 +1527,6 @@ export class DatabaseTransaction implements Transaction {
 		this.writeTick = monitorTick;
 		this.linkWrite(operation);
 		this.writes.push(operation);
-		if (operation.prepareCommit) this.hasCommitPreparation = true;
 		(this.ownedWrites ??= new WeakSet()).add(operation);
 		operation.stagedIn = this;
 		// Hold this write back while any earlier same-key write has not run — out of staging order both
@@ -2142,7 +2137,6 @@ export class DatabaseTransaction implements Transaction {
 						// re-staged the writes into it
 						this.refuseUnconfirmable(transaction);
 						this.assertDatabaseCommitAllowed(transaction);
-						this.prepareNativeCommit(transaction);
 						this.markNativeCommitSubmitted();
 						commitResolution = transaction.commit() as Promise<void>;
 						recordCommitLatency(commitResolution, performance.now());
@@ -2199,7 +2193,6 @@ export class DatabaseTransaction implements Transaction {
 							// sentinel (a number) is why commitResolution is typed
 							// Promise<number | void>; it is handled in the resolve callback below.
 							this.assertDatabaseCommitAllowed(transaction);
-							this.prepareNativeCommit(transaction);
 							this.markNativeCommitSubmitted();
 							commitResolution = transaction.commit();
 							// Record how long this commit stays outstanding (submit → settle) as a distribution
@@ -2575,16 +2568,6 @@ export class DatabaseTransaction implements Transaction {
 		this.open = TRANSACTION_STATE.OPEN;
 		this.snapshotFree = true;
 		this.writesAbandoned = false;
-	}
-
-	private prepareNativeCommit(transaction: RocksTransaction): void {
-		if (!this.hasCommitPreparation) return;
-		try {
-			for (const write of this.writes) write?.prepareCommit?.(transaction);
-		} catch (error) {
-			abortNativeTransaction(transaction, 'aborting a transaction whose commit preparation failed');
-			throw error;
-		}
 	}
 
 	private assertDatabaseCommitAllowed(transaction: RocksTransaction): void {

@@ -10,7 +10,7 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 
 for (const preconditionLocks of [true, false]) {
 	suite(
-		`HTTP conditional requests (locks ${preconditionLocks ? 'on' : 'off'})`,
+		`HTTP conditional requests (locks ${preconditionLocks ? 'on by default' : 'off'})`,
 		{ skip: process.platform === 'win32' },
 		(ctx: ContextWithHarper) => {
 			let base: string;
@@ -22,10 +22,10 @@ for (const preconditionLocks of [true, false]) {
 				for (const file of ['resources.js', 'schema.graphql']) await copyFile(join(source, file), join(fixture, file));
 				const config = await readFile(join(source, 'config.yaml'), 'utf8');
 				ok(config.includes('rest: true'));
-				await writeFile(
-					join(fixture, 'config.yaml'),
-					config.replace('rest: true', `rest:\n  preconditionLocks: ${preconditionLocks}\n  lastModified: true`)
-				);
+				const restConfig = preconditionLocks
+					? 'rest:\n  lastModified: true'
+					: 'rest:\n  preconditionLocks: false\n  lastModified: true';
+				await writeFile(join(fixture, 'config.yaml'), config.replace('rest: true', restConfig));
 				await setupHarperWithFixture(ctx, fixture, {
 					config: { threads: { count: 4 } },
 					env: {},
@@ -50,11 +50,13 @@ for (const preconditionLocks of [true, false]) {
 				});
 
 			async function parallel(method: string, id: string, headers: Record<string, string>) {
+				const barrierDir = preconditionLocks ? undefined : await mkdtemp(join(fixture, 'barrier-'));
+				const requestHeaders = barrierDir ? { ...headers, 'X-Test-Barrier': barrierDir } : headers;
 				let release!: () => void;
 				const barrier = new Promise<void>((resolve) => (release = resolve));
 				const attempts = Array.from({ length: 16 }, async (_, n) => {
 					await barrier;
-					const response = await request(method, id, { n }, headers);
+					const response = await request(method, id, { n }, requestHeaders);
 					const text = await response.text();
 					return { n, status: response.status, worker: response.headers.get('X-Test-Worker'), text };
 				});
@@ -65,24 +67,44 @@ for (const preconditionLocks of [true, false]) {
 					`expected multiple workers: ${JSON.stringify(results)}`
 				);
 				const winners = results.filter(({ status }) => status >= 200 && status < 300);
-				strictEqual(winners.length, 1, JSON.stringify(results));
-				strictEqual(results.filter(({ status }) => status === 412).length, 15, JSON.stringify(results));
 				const stored = await request('GET', id);
-				strictEqual(((await stored.json()) as { n: number }).n, winners[0].n);
+				const storedValue = (await stored.json()) as { n: number };
+				if (preconditionLocks) {
+					strictEqual(winners.length, 1, JSON.stringify(results));
+					strictEqual(results.filter(({ status }) => status === 412).length, 15, JSON.stringify(results));
+					strictEqual(storedValue.n, winners[0].n);
+				} else {
+					strictEqual(winners.length, 16, JSON.stringify(results));
+					strictEqual(results.filter(({ status }) => status === 412).length, 0, JSON.stringify(results));
+					ok(
+						winners.some(({ n }) => n === storedValue.n),
+						`expected stored value ${storedValue.n} in winners: ${JSON.stringify(results)}`
+					);
+				}
 			}
 
-			test('one update wins when all workers receive the same If-Match', async () => {
-				ok((await request('PUT', 'race', { n: -1 })).ok);
-				const read = await request('GET', 'race');
-				const etag = read.headers.get('etag');
-				ok(etag);
-				await read.text();
-				await parallel('PATCH', 'race', { 'If-Match': etag });
-			});
+			test(
+				preconditionLocks
+					? 'one update wins when all workers receive the same If-Match'
+					: 'concurrent If-Match updates all succeed and converge when locks are off',
+				async () => {
+					ok((await request('PUT', 'race', { n: -1 })).ok);
+					const read = await request('GET', 'race');
+					const etag = read.headers.get('etag');
+					ok(etag);
+					await read.text();
+					await parallel('PATCH', 'race', { 'If-Match': etag });
+				}
+			);
 
-			test('one create wins with If-None-Match wildcard', async () => {
-				await parallel('PUT', 'create-once', { 'If-None-Match': '*' });
-			});
+			test(
+				preconditionLocks
+					? 'one create wins with If-None-Match wildcard'
+					: 'concurrent If-None-Match wildcard creates all succeed and converge when locks are off',
+				async () => {
+					await parallel('PUT', 'create-once', { 'If-None-Match': '*' });
+				}
+			);
 
 			test('GET and HEAD return an empty 304 carrying ETag, including a weak list', async () => {
 				const read = await request('GET', 'race');
