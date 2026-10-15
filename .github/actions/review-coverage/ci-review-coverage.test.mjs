@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import test from 'node:test';
 
-import { coverageFooterProblem, evaluateCiCoverage } from './evaluateCiCoverage.mjs';
+import { COVERAGE_LEGS, coverageFooterProblem, evaluateCiCoverage } from './evaluateCiCoverage.mjs';
 import { evaluateFramingVerdict, parseFramingPaths } from './evaluateFramingVerdict.mjs';
 
 const HEAD = 'abcdef1234567890abcdef1234567890abcdef12';
@@ -421,6 +421,10 @@ const HELPER_FOOTERS = [
 	`<sub>Review-Coverage: authored=codex; ran=claude(fallback),gemini; adjudicated=domain; blocked=cursor-grok(auth),domain(exit--1),conformance(no-linter); rounds=3; full=1 @ ${PIN}</sub>`,
 	`Review-Coverage: authored=claude; ran=codex,cursor-grok,cursor-composer; blocked=claude(fallback)(out-of-budget); declined=gemini; rounds=12; full=12 @ ${PIN}`,
 	`  <sub>Review-Coverage: authored=codex; ran=claude,cursor-muse; rounds=1 @ ${PIN}</sub>  `,
+	`<sub>Review-Coverage: authored=claude; ran=gemini,codex,cursor-composer; adjudicated=domain; blocked=cursor-grok(failed); declined=cursor-kimi,cursor-muse,muse; rounds=2; full=1 @ ${PIN}</sub>`,
+	`<sub>Review-Coverage: authored=claude; ran=codex,muse; adjudicated=domain; rounds=1; full=1 @ ${PIN}</sub>`,
+	`<sub>Review-Coverage: authored=codex; ran=claude,gemini; adjudicated=domain; blocked=muse(auth); rounds=1 @ ${PIN}</sub>`,
+	`<sub>Review-Coverage: authored=gemini; ran=codex,cursor-composer; adjudicated=domain; declined=muse; rounds=1 @ ${PIN}</sub>`,
 ];
 
 test('every helper-shaped Review-Coverage footer is enforceable', () => {
@@ -429,6 +433,37 @@ test('every helper-shaped Review-Coverage footer is enforceable', () => {
 		const r = evaluateCiCoverage(pr({ body: `Summary\r\n\r\n${footer}\r\n` }), { mode: 'enforce' });
 		assert.strictEqual(r.pass, true, footer);
 		assert.doesNotMatch(r.detail, /counts 0 toward enforcement/, footer);
+	}
+});
+
+// The family each leg counts as in the helper's own floor (REVIEW_LEGS in skills-internal
+// prepush-policy.mjs, where `codex` and `claude` resolve to themselves).
+const HELPER_LEG_FAMILY = new Map([
+	['codex', 'codex'],
+	['claude', 'claude'],
+	['claude(fallback)', 'claude'],
+	['gemini', 'gemini'],
+	['cursor-grok', 'grok'],
+	['cursor-composer', 'composer'],
+	['cursor-kimi', 'kimi'],
+	['cursor-muse', 'muse'],
+	['muse', 'muse'],
+]);
+
+test('every leg the grammar accepts scores the families the helper counts', () => {
+	assert.deepStrictEqual([...COVERAGE_LEGS].sort(), [...HELPER_LEG_FAMILY.keys()].sort());
+	for (const authored of ['claude', 'codex', 'gemini']) {
+		const outside = [...COVERAGE_LEGS].filter((leg) => HELPER_LEG_FAMILY.get(leg) !== authored);
+		for (const first of outside) {
+			for (const second of outside) {
+				const ran = first === second ? first : `${first},${second}`;
+				const r = evaluateCiCoverage(pr({ body: covered(ran, authored) }), { mode: 'enforce' });
+				const expected = new Set([first, second].map((leg) => HELPER_LEG_FAMILY.get(leg))).size;
+				assert.strictEqual(r.count, expected, `authored=${authored}; ran=${ran}`);
+				assert.strictEqual(r.pass, expected >= 2, `authored=${authored}; ran=${ran}`);
+				assert.doesNotMatch(r.detail, /counts 0 toward enforcement/, `authored=${authored}; ran=${ran}`);
+			}
+		}
 	}
 });
 
