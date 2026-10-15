@@ -260,6 +260,14 @@ describe('Parsing queries', () => {
 		assert.throws(() => parseQuery('unknown(5,10)'), /unknown query function call/);
 		assert.throws(() => parseQuery('select([)'), /expected '\]'/);
 		assert.throws(() => parseQuery('select)'), /unexpected token '\)'/);
+		assert.throws(
+			() => parseQuery('select(id)?limit(1)'),
+			(err) => err.statusCode === 400 && /unexpected character '\?'/.test(err.message)
+		);
+		const target = new RequestTarget('?select(id)?limit(1)');
+		assert.ok(target.parseError);
+		assert.strictEqual(target.parseError.statusCode, 400);
+		assert.match(target.parseError.message, /unexpected character '\?'/);
 	});
 
 	it.skip('Bad queries', function () {

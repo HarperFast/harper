@@ -142,8 +142,8 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 		};
 
 		CustomEchoResource = class extends Resource {
-			static loadAsInstance = false;
-			static async get(target) {
+			static loadAsInstance = true;
+			async get(target) {
 				return { rawIds: target.get('ids') };
 			}
 		};
@@ -191,7 +191,9 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 			await Parent?.dropTable();
 			await Child?.dropTable();
 		} finally {
-			setMainIsWorker(previousMainIsWorker);
+			if (previousMainIsWorker !== undefined) {
+				setMainIsWorker(previousMainIsWorker);
+			}
 		}
 	});
 
@@ -423,13 +425,32 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 			assert.strictEqual(res.status, 200);
 			assert.strictEqual(res.body.id, 'p1');
 			assert.ok(Array.isArray(res.body.children));
-			assert.strictEqual(res.body.children.length, 2);
+			assert.deepStrictEqual(
+				res.body.children.map((c) => c.id),
+				['c2', 'c1']
+			);
+
+			const instanceTrueRes = await restGet('/ParentInstanceTrue/p1?select(id,children[sort(-id)&limit(1)])');
+			assert.strictEqual(instanceTrueRes.status, 200);
+			assert.strictEqual(instanceTrueRes.body.id, 'p1');
+			assert.deepStrictEqual(
+				instanceTrueRes.body.children.map((c) => c.id),
+				['c2']
+			);
+		});
+
+		it('returns 400 on single-record Table GET when a non-select query parameter has a FIQL parse error', async function () {
+			const res = await restGet('/Parent/p1?v=1.2&nocache');
+			assert.strictEqual(res.status, 400);
 		});
 
 		it('does not break custom Resource subclasses receiving bracketed query parameter values like ?ids=[1,2]', async function () {
 			const res = await restGet('/CustomEcho/item?ids=[1,2]');
 			assert.strictEqual(res.status, 200);
 			assert.deepStrictEqual(res.body, { rawIds: '[1,2]' });
+
+			const badSelectRes = await restGet('/CustomEcho/item?select(children[label=x])');
+			assert.strictEqual(badSelectRes.status, 400);
 		});
 	});
 
@@ -473,7 +494,7 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 			assert.strictEqual(wholeRelRows[0].child.label, 'child-label-v1');
 		});
 
-		it('rejects unknown top-level and nested attributes in searchByHash, searchByValue, and searchByConditions', async function () {
+		it('rejects unknown top-level and nested attributes with 400 statusCode in searchByHash, searchByValue, and searchByConditions', async function () {
 			for (const badAttr of [
 				{ name: 'unknownRel', select: ['id'] },
 				{ name: 'child', select: ['id', 'unknownChildAttr'] },
@@ -487,7 +508,7 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 							hash_values: ['p1'],
 							get_attributes: ['id', badAttr],
 						}),
-					/unknown attribute/
+					(err) => err.statusCode === 400 && /unknown attribute/.test(err.message)
 				);
 				assert.throws(
 					() =>
@@ -498,7 +519,7 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 							value: 'p1',
 							get_attributes: ['id', badAttr],
 						}),
-					/unknown attribute/
+					(err) => err.statusCode === 400 && /unknown attribute/.test(err.message)
 				);
 				await assert.rejects(
 					async () =>
@@ -508,41 +529,70 @@ describe('REST and operations API select projection fixes (F-337, F-338, F-341, 
 							conditions: [{ attribute: 'id', comparator: 'equals', value: 'p1' }],
 							get_attributes: ['id', badAttr],
 						}),
-					/unknown attribute/
+					(err) => err.statusCode === 400 && /unknown attribute/.test(err.message)
 				);
 			}
 		});
 
+		it('rejects undeclared dynamic object properties in object get_attributes when not in table catalog', async function () {
+			await Parent.put({
+				id: 'p-dyn',
+				title: 'dynamic-holder',
+				undeclaredDynamicObj: { nested: 'value' },
+			});
+			try {
+				assert.throws(
+					() =>
+						bridge.searchByHash({
+							schema: dbName,
+							table: 'Parent',
+							hash_values: ['p-dyn'],
+							get_attributes: ['id', { name: 'undeclaredDynamicObj', select: ['nested'] }],
+						}),
+					(err) => err.statusCode === 400 && err.message === "unknown attribute 'undeclaredDynamicObj'"
+				);
+			} finally {
+				await Parent.delete('p-dyn');
+			}
+		});
+
 		it('fails closed in verifyPerms when an attribute-scoped role passes an object get_attributes entry', function () {
+			const previousHdbSchema = global.hdb_schema;
 			global.hdb_schema = getDatabases();
-			const permission = {
-				super_user: false,
-				[dbName]: {
-					describe: true,
-					tables: {
-						Parent: {
-							read: true,
-							insert: false,
-							update: false,
-							delete: false,
-							describe: true,
-							attribute_permissions: [{ attribute_name: 'id', read: true, describe: true }],
+			try {
+				const permission = {
+					super_user: false,
+					[dbName]: {
+						describe: true,
+						tables: {
+							Parent: {
+								read: true,
+								insert: false,
+								update: false,
+								delete: false,
+								describe: true,
+								attribute_permissions: [{ attribute_name: 'id', read: true, describe: true }],
+							},
 						},
 					},
-				},
-			};
-			const denial = opAuth.verifyPerms(
-				{
-					operation: 'search_by_hash',
-					schema: dbName,
-					table: 'Parent',
-					hash_values: ['p1'],
-					get_attributes: ['id', { name: 'child', select: ['id'] }],
-					hdb_user: { username: 'scoped', role: { id: 'r1', role: 'r1', permission } },
-				},
-				'searchByHash'
-			);
-			assert.ok(denial, 'expected attribute-scoped role to fail closed on object get_attributes entry');
+				};
+				const denial = opAuth.verifyPerms(
+					{
+						operation: 'search_by_hash',
+						schema: dbName,
+						table: 'Parent',
+						hash_values: ['p1'],
+						get_attributes: ['id', { name: 'child', select: ['id'] }],
+						hdb_user: { username: 'scoped', role: { id: 'r1', role: 'r1', permission } },
+					},
+					'searchByHash'
+				);
+				assert.ok(denial, 'expected attribute-scoped role to fail closed on object get_attributes entry');
+				assert.strictEqual(denial.invalid_schema_items.length, 1);
+				assert.match(denial.invalid_schema_items[0], /Attribute '\[object Object\]' does not exist on/);
+			} finally {
+				global.hdb_schema = previousHdbSchema;
+			}
 		});
 	});
 });
