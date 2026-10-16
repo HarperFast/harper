@@ -53,6 +53,7 @@ import { releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClos
 import {
 	acquireRecordKey,
 	admissionFloor,
+	admissionStamp,
 	lockAttemptKey,
 	lockNotHeldError,
 	resolveLockOptions,
@@ -4484,6 +4485,7 @@ export function makeTable(options): TableResourceClass {
 				try {
 					admittedEntry = (primaryStore as any).getEntry(id);
 					floor = admissionFloor(admittedEntry?.version, dependencyFloor);
+					if (floor !== undefined) floor = admissionStamp(tableRootStore, floor, handle.acquiredAt);
 				} catch (error) {
 					handle.release();
 					throw error;

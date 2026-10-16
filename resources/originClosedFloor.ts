@@ -337,6 +337,16 @@ export function reservedLocalKey(handle: RocksTransaction | undefined): number |
 	return handle && (handle as any)[RESERVATION]?.key;
 }
 
+/**
+ * A key at or above `floor` that no other local append on this node is issued: the ratchet rises to
+ * just below it first, so every later key, native or ratchet-issued on any thread, lands above it.
+ */
+export function claimLocalKey(rootStore: RocksDatabase, floor: number): number {
+	const registry = registryFor(rootStore);
+	storeMax(registry.words, WORD_RATCHET, fromBits(toBits(floor) - 1n));
+	return registry.freshKey();
+}
+
 function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void {
 	const words = registryFor(rootStore).words;
 	storeMax(words, WORD_RATCHET, floor);

@@ -1527,7 +1527,13 @@ describe('Record locks (harper#483)', () => {
 		// A predecessor's committed version can sit ahead of the successor's clock: a caller-supplied
 		// future timestamp, or a peer whose clock runs ahead. The successor read that state under the
 		// lock, so its write is the newer one and must outrank it under last-write-wins.
-		const futureTimestamp = () => Date.now() + 60_000;
+		// Within storage.maxLockClockSkew, so admissions claim their stamps from the local key ratchet.
+		// That ratchet is process-wide, so the suite waits for the clock to pass the last one.
+		let aheadUntil = 0;
+		const futureTimestamp = (aheadMs = 1_000) => (aheadUntil = Math.max(aheadUntil, Date.now() + aheadMs));
+		after(async () => {
+			while (LockTest.primaryStore.rootStore.getMonotonicTimestamp() <= aheadUntil + 50) await delay(10);
+		});
 		const handleOf = (txn) => [...txn.recordLocks.values()][0].values().next().value;
 		const auditOf = (recordId, version) => {
 			for (const entry of LockTest.auditStore.getRange({ start: 1 }))
@@ -1601,7 +1607,7 @@ describe('Record locks (harper#483)', () => {
 			const idA = id();
 			const idB = id();
 			const nearer = futureTimestamp();
-			const farther = nearer + 30_000;
+			const farther = futureTimestamp(1_500);
 			await transaction({ timestamp: nearer }, () => LockTest.put({ id: idA, n: 0 }));
 			await transaction({ timestamp: farther }, () => LockTest.put({ id: idB, n: 0 }));
 			await transaction(async () => {
@@ -1636,7 +1642,8 @@ describe('Record locks (harper#483)', () => {
 			if (isLMDB) return this.skip();
 			const recordId = id();
 			const otherId = id();
-			const predecessorTimestamp = futureTimestamp();
+			// Far enough ahead that no key the ratchet issues, the frozen clock's included, reaches it.
+			const predecessorTimestamp = Date.now() + 60_000;
 			await transaction({ timestamp: predecessorTimestamp }, () => LockTest.put({ id: recordId, n: 0 }));
 			let clockBeforeLock;
 			let clockAfterLock;
@@ -1661,7 +1668,7 @@ describe('Record locks (harper#483)', () => {
 			const idA = id();
 			const idB = id();
 			await LockTest.put({ id: idA, n: 0 });
-			const predecessorTimestamp = futureTimestamp();
+			const predecessorTimestamp = Date.now() + 60_000;
 			await transaction({ timestamp: predecessorTimestamp }, () => LockTest.put({ id: idB, n: 0 }));
 			await transaction(async () => {
 				const a = await LockTest.lock(idA);
@@ -1719,6 +1726,52 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual(auditA.txnLogKey, auditB.txnLogKey, 'one batch, one log key');
 			assert.ok(auditA.txnLogKey >= versionA, 'the log key covers the unfloored lock write');
 			assert.ok(auditB.txnLogKey >= versionB, 'the log key covers the floored lock write');
+		});
+
+		it('successors admitted on one future-stamped transaction take distinct versions and log keys', async function () {
+			if (isLMDB) return this.skip();
+			const idA = id();
+			const idB = id();
+			const counterId = id();
+			await LockTest.put({ id: counterId, n: 0 });
+			const predecessorTimestamp = futureTimestamp();
+			await transaction({ timestamp: predecessorTimestamp }, async () => {
+				await LockTest.put({ id: idA, n: 0 });
+				await LockTest.put({ id: idB, n: 0 });
+			});
+			for (const recordId of [idA, idB]) {
+				await transaction(async (txn) => {
+					const locked = await LockTest.lock(recordId);
+					locked.set('n', 1);
+					await locked.save();
+					const counter = await LockTest.update(counterId, {}, txn);
+					counter.addTo('n', 1);
+				});
+			}
+			const versionA = entryOf(idA).version;
+			const versionB = entryOf(idB).version;
+			assert.ok(versionA > predecessorTimestamp, 'the first successor is above the predecessor');
+			assert.ok(versionB > predecessorTimestamp, 'the second successor is above the predecessor');
+			assert.notStrictEqual(versionA, versionB, 'each successor claimed its own stamp');
+			assert.notStrictEqual(auditOf(idA, versionA).txnLogKey, auditOf(idB, versionB).txnLogKey, 'distinct log keys');
+			assert.strictEqual(entryOf(counterId).value.n, 2, 'neither increment was taken for a re-delivery of the other');
+		});
+
+		it('a floor beyond storage.maxLockClockSkew still outranks, without lifting other writes to it', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			const otherId = id();
+			const predecessorTimestamp = Date.now() + 60_000;
+			await transaction({ timestamp: predecessorTimestamp }, () => LockTest.put({ id: recordId, n: 0 }));
+			await transaction(async () => {
+				const successor = await LockTest.lock(recordId);
+				successor.set('n', 1);
+				await successor.save();
+			});
+			assert.strictEqual(entryOf(recordId).value.n, 1);
+			assert.ok(entryOf(recordId).version > predecessorTimestamp, 'stamped above the admitted version');
+			await transaction(() => LockTest.put({ id: otherId, n: 1 }));
+			assert.ok(entryOf(otherId).version < predecessorTimestamp, 'a later unlocked write stays on the clock');
 		});
 
 		it('the admission floor is the next representable timestamp, and none above the last valid one', function () {
