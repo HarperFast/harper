@@ -1,3 +1,21 @@
+/**
+ * TLS Array Configuration on First-Boot Install.
+ *
+ * When `tls` (or `operationsApi.tls`) is configured as the documented SNI array
+ * form (`tls: [{ certificate, privateKey, ... }, ...]`), first-boot installation
+ * previously called `updateConfigCert()` (`security/keys.ts`) which unconditionally
+ * scheduled flat `tls_privateKey` writes into the `YAMLSeq` node and logged
+ * `Error: Expected a valid index, not privateKey.` at `[error]` level to `hdb.log`.
+ *
+ * Scope:
+ *   - A1 is the primary regression test for `updateConfigCert()` on first-boot install.
+ *   - A2–A6 and B1 guard adjacent array/object TLS invariants (config file preservation,
+ *     `system.hdb_certificate` population, SNI selection, `set_configuration`, and restart).
+ *
+ * Reproduction:
+ *   npm run test:integration -- "integrationTests/security/tls-array-install.test.ts"
+ */
+
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -22,6 +40,7 @@ import {
 
 const SERVER_AUTH_OID = '1.3.6.1.5.5.7.3.1';
 const SUBJECT_ALT_NAME_OID = '2.5.29.17';
+const TLS_HANDSHAKE_TIMEOUT_MS = 5000;
 
 function makeSubjectAltNameExt(hostname: string): pkijs.Extension {
 	const altNames = new pkijs.GeneralNames({
@@ -51,6 +70,16 @@ function getLogContent(ctx: ContextWithHarper): string {
 	return readFileSync(getLogPath(ctx), 'utf8');
 }
 
+function getPhaseLogContent(ctx: ContextWithHarper, logBefore: string): string {
+	const currentLog = getLogContent(ctx);
+	// Slice to only lines appended during this phase when the prior log prefix is intact;
+	// fall back to the full current log if the file was truncated or rotated.
+	if (logBefore.length > 0 && currentLog.startsWith(logBefore)) {
+		return currentLog.slice(logBefore.length);
+	}
+	return currentLog;
+}
+
 function getConfigPath(ctx: ContextWithHarper): string {
 	const harperConfig = join(ctx.harper.dataRootDir, 'harper-config.yaml');
 	return existsSync(harperConfig) ? harperConfig : join(ctx.harper.dataRootDir, 'harperdb-config.yaml');
@@ -69,6 +98,7 @@ function getPeerCertCN(host: string, port: number, servername: string, caPem: st
 				servername,
 				ca: caPem,
 				rejectUnauthorized: true,
+				timeout: TLS_HANDSHAKE_TIMEOUT_MS,
 			},
 			() => {
 				const peerCert = socket.getPeerCertificate();
@@ -83,6 +113,12 @@ function getPeerCertCN(host: string, port: number, servername: string, caPem: st
 				}
 			}
 		);
+		socket.on('timeout', () => {
+			socket.destroy();
+			reject(
+				new Error(`TLS handshake timed out after ${TLS_HANDSHAKE_TIMEOUT_MS}ms for ${servername} on ${host}:${port}`)
+			);
+		});
 		socket.on('error', (err) => {
 			socket.destroy();
 			reject(err);
@@ -90,7 +126,7 @@ function getPeerCertCN(host: string, port: number, servername: string, caPem: st
 	});
 }
 
-suite('TLS array configuration on first-boot install and runtime update', () => {
+suite('TLS array configuration on first-boot install', () => {
 	let certDir: string;
 	let caPem: string;
 	let caPath: string;
@@ -156,6 +192,8 @@ suite('TLS array configuration on first-boot install and runtime update', () => 
 	});
 
 	suite('A: first-boot install with two-entry tls array', (ctx: ContextWithHarper) => {
+		let installLog = '';
+
 		before(async () => {
 			await startHarper(ctx, {
 				config: {
@@ -167,6 +205,7 @@ suite('TLS array configuration on first-boot install and runtime update', () => 
 					tls: [entryA, entryB],
 				},
 			});
+			installLog = getLogContent(ctx);
 		});
 
 		after(async () => {
@@ -174,21 +213,27 @@ suite('TLS array configuration on first-boot install and runtime update', () => 
 		});
 
 		test('A1: first-boot install with array tls logs zero [error] lines in hdb.log', () => {
-			const log = getLogContent(ctx);
-			assert.ok(log.length > 0, 'Expected hdb.log to be non-empty');
+			assert.ok(installLog.length > 0, 'Expected hdb.log to be non-empty after first-boot install');
 			assert.ok(
-				log.includes('Harper installation was successful.') && log.includes('Harper successfully started.'),
+				installLog.includes('Harper installation was successful.') &&
+					installLog.includes('Harper successfully started.'),
 				'Expected hdb.log to contain startup and install log entries'
 			);
 			assert.equal(
-				log.includes('Expected a valid index, not privateKey'),
+				installLog.includes('Expected a valid index, not privateKey'),
 				false,
-				`Expected no 'Expected a valid index, not privateKey' error in hdb.log, got:\n${log}`
+				`Expected no 'Expected a valid index, not privateKey' error in first-boot hdb.log, got:\n${installLog}`
 			);
-			const errorLines = getErrorLines(log);
-			assert.deepEqual(errorLines, [], `Expected zero [error] lines in hdb.log, found:\n${errorLines.join('\n')}`);
+			const errorLines = getErrorLines(installLog);
+			assert.deepEqual(
+				errorLines,
+				[],
+				`Expected zero [error] lines in first-boot install hdb.log, found:\n${errorLines.join('\n')}`
+			);
 		});
 
+		// A2–A6 guard adjacent array-TLS invariants across config persistence, certificate table
+		// population, SNI certificate selection, set_configuration updates, and restart.
 		test('A2: harper-config.yaml retains the 2-entry tls array without default privateKey injection', () => {
 			const configFile = getConfigPath(ctx);
 			const parsed = yaml.parse(readFileSync(configFile, 'utf8'));
@@ -271,7 +316,13 @@ suite('TLS array configuration on first-boot install and runtime update', () => 
 			const parsed = yaml.parse(readFileSync(configFile, 'utf8'));
 			assert.deepEqual(parsed.tls, threeEntries);
 
-			const errorLines = getErrorLines(getLogContent(ctx).slice(logBefore.length));
+			const phaseLog = getPhaseLogContent(ctx, logBefore);
+			assert.equal(
+				phaseLog.includes('Expected a valid index, not'),
+				false,
+				`Expected no YAMLSeq setIn error during set_configuration, got:\n${phaseLog}`
+			);
+			const errorLines = getErrorLines(phaseLog);
 			assert.deepEqual(
 				errorLines,
 				[],
@@ -280,6 +331,7 @@ suite('TLS array configuration on first-boot install and runtime update', () => 
 		});
 
 		test('A6: restart after set_configuration boots with zero [error] lines and serves the 3rd host by SNI', async () => {
+			const logBeforeRestart = getLogContent(ctx);
 			await killHarper(ctx);
 			await startHarper(ctx, {
 				config: {
@@ -291,8 +343,14 @@ suite('TLS array configuration on first-boot install and runtime update', () => 
 				},
 			});
 
-			const errorLines = getErrorLines(getLogContent(ctx));
-			assert.deepEqual(errorLines, [], `Expected zero [error] lines after restart, found:\n${errorLines.join('\n')}`);
+			const restartLog = getPhaseLogContent(ctx, logBeforeRestart);
+			assert.equal(
+				restartLog.includes('Expected a valid index, not'),
+				false,
+				`Expected no YAMLSeq setIn error during restart, got:\n${restartLog}`
+			);
+			const errorLines = getErrorLines(restartLog);
+			assert.deepEqual(errorLines, [], `Expected zero [error] lines during restart, found:\n${errorLines.join('\n')}`);
 
 			const host = ctx.harper.hostname;
 			assert.equal(await getPeerCertCN(host, 9927, 'host-c.harper.local', caPem), 'host-c.harper.local');
@@ -301,6 +359,8 @@ suite('TLS array configuration on first-boot install and runtime update', () => 
 	});
 
 	suite('B: control — first-boot install with single tls object', (ctx: ContextWithHarper) => {
+		let controlInstallLog = '';
+
 		before(async () => {
 			await startHarper(ctx, {
 				config: {
@@ -316,6 +376,7 @@ suite('TLS array configuration on first-boot install and runtime update', () => 
 					},
 				},
 			});
+			controlInstallLog = getLogContent(ctx);
 		});
 
 		after(async () => {
@@ -323,14 +384,23 @@ suite('TLS array configuration on first-boot install and runtime update', () => 
 		});
 
 		test('B1: first-boot install with object tls logs zero [error] lines, keeps tls as an object, and serves certificate', async () => {
-			const log = getLogContent(ctx);
-			assert.ok(log.length > 0, 'Expected hdb.log to be non-empty');
+			assert.ok(controlInstallLog.length > 0, 'Expected hdb.log to be non-empty after control install');
 			assert.ok(
-				log.includes('Harper installation was successful.') && log.includes('Harper successfully started.'),
+				controlInstallLog.includes('Harper installation was successful.') &&
+					controlInstallLog.includes('Harper successfully started.'),
 				'Expected hdb.log to contain startup and install log entries'
 			);
-			const errorLines = getErrorLines(log);
-			assert.deepEqual(errorLines, [], `Expected zero [error] lines in hdb.log, found:\n${errorLines.join('\n')}`);
+			assert.equal(
+				controlInstallLog.includes('Expected a valid index, not'),
+				false,
+				`Expected no YAMLSeq setIn error in control install hdb.log, got:\n${controlInstallLog}`
+			);
+			const errorLines = getErrorLines(controlInstallLog);
+			assert.deepEqual(
+				errorLines,
+				[],
+				`Expected zero [error] lines in control install hdb.log, found:\n${errorLines.join('\n')}`
+			);
 
 			const configFile = getConfigPath(ctx);
 			const parsed = yaml.parse(readFileSync(configFile, 'utf8'));
