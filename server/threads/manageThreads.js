@@ -1447,7 +1447,9 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 			// some reason, so we need to reset it to the correct path.
 			process.chdir(process.cwd());
 		} catch (e) {
-			harperLogger.status({ problem: 'threads.cwd' }).error('Unable to reestablish current working directory', e);
+			harperLogger
+				.status({ problem: 'threads.cwd', expires: 120 })
+				.error('Unable to reestablish current working directory', e);
 		}
 		const freshlyStarted = new Set(); // dedicated workers the reconcile just started: already on the new code
 		// problematic cyclic dependency, bind late

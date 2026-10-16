@@ -684,7 +684,7 @@ export class RecordEncoder extends StructonEncoder {
 				return null;
 			}
 			harperLogger
-				.status({ problem: 'database.record-decode' })
+				.status({ problem: 'database.record-decode', expires: 120 })
 				.error('Error decoding record', error, 'data: ' + hexPreview);
 			return null;
 		}
@@ -838,7 +838,7 @@ export function checkReadTxnTimeouts() {
 				if (txn.openTimer > 3) {
 					if (txn.openTimer > READ_TXN_TIMEOUT_TICKS) {
 						harperLogger
-							.status({ problem: 'database.read-txn-critical' })
+							.status({ problem: 'database.read-txn-critical', expires: 120 })
 							.error(
 								`Read transaction detected that has been open too long (over ${Math.round(READ_TXN_TIMEOUT_TICKS * 15)} seconds), ending transaction`,
 								txn

@@ -4,6 +4,8 @@ const assert = require('node:assert');
 const { handleStatusLog, initLogBridge } = require('#src/components/status/logBridge');
 const { componentStatusRegistry } = require('#src/components/status/registry');
 const { COMPONENT_STATUS_LEVELS } = require('#src/components/status/types');
+const { waitFor } = require('../../waitFor.js');
+const { setTimeout: delay } = require('node:timers/promises');
 const { setStatusHandler, createLogger } = require('#src/utility/logging/harper_logger');
 
 describe('logBridge', function () {
@@ -15,6 +17,71 @@ describe('logBridge', function () {
 	afterEach(function () {
 		setStatusHandler(undefined);
 		componentStatusRegistry.reset();
+	});
+
+	for (const chained of [true, false]) {
+		it(`expires a ${chained ? 'chained' : 'bare'} report back to healthy`, async function () {
+			const logger = createLogger({ level: 'error', writeToLog: () => {} });
+			const key = `test.expiry-${chained}`;
+			const status = logger.status({ problem: key, expires: 0.03 });
+			if (chained) status.error('temporary failure');
+			await Promise.resolve();
+			assert.equal(componentStatusRegistry.getStatus(key).status, COMPONENT_STATUS_LEVELS.ERROR);
+			await waitFor(() => componentStatusRegistry.getStatus(key)?.status === COMPONENT_STATUS_LEVELS.HEALTHY, 2000);
+			assert.equal(componentStatusRegistry.getStatus(key).message, 'Auto-expired');
+		});
+	}
+
+	it('renews a repeated expiry and supports a changed duration', async function () {
+		const logger = createLogger({ level: 'error', writeToLog: () => {} });
+		const key = 'test.renew-expiry';
+		try {
+			const originalWindow = new Promise((resolve) =>
+				setTimeout(() => resolve(componentStatusRegistry.getStatus(key)?.status), 60)
+			);
+			logger.status({ problem: key, expires: 0.03 }).error('first');
+			logger.status({ problem: key, expires: 0.2 }).error('renewed');
+			logger.status({ problem: key, expires: 0.2 }).error('renewed again');
+			assert.equal(await originalWindow, COMPONENT_STATUS_LEVELS.ERROR);
+			await waitFor(() => componentStatusRegistry.getStatus(key)?.status === COMPONENT_STATUS_LEVELS.HEALTHY, 2000);
+		} finally {
+			handleStatusLog({ resolves: key }, null, undefined, []);
+		}
+	});
+
+	it('extends the original expiry when the same duration is reported again', async function () {
+		const logger = createLogger({ level: 'error', writeToLog: () => {} });
+		const key = 'test.refresh-expiry';
+		try {
+			logger.status({ problem: key, expires: 0.06 }).error('first');
+			const originalWindow = new Promise((resolve) =>
+				setTimeout(() => resolve(componentStatusRegistry.getStatus(key)?.status), 65)
+			);
+			await delay(10);
+			logger.status({ problem: key, expires: 0.06 }).error('still failing');
+			assert.equal(await originalWindow, COMPONENT_STATUS_LEVELS.ERROR);
+			await waitFor(() => componentStatusRegistry.getStatus(key)?.status === COMPONENT_STATUS_LEVELS.HEALTHY, 2000);
+		} finally {
+			handleStatusLog({ resolves: key }, null, undefined, []);
+		}
+	});
+
+	it('cancels old expiry for a bare persistent overwrite and for explicit resolution', async function () {
+		const logger = createLogger({ level: 'error', writeToLog: () => {} });
+		const key = 'test.persistent-overwrite';
+		const resolved = 'test.explicit-resolution';
+		try {
+			logger.status({ problem: key, expires: 0.02 }).error('temporary');
+			logger.status({ problem: key });
+			logger.status({ problem: resolved, expires: 0.02 }).error('temporary');
+			logger.status({ resolves: resolved }).info('fixed');
+			await delay(60);
+			assert.equal(componentStatusRegistry.getStatus(key).status, COMPONENT_STATUS_LEVELS.ERROR);
+			assert.equal(componentStatusRegistry.getStatus(resolved).message, 'fixed');
+		} finally {
+			handleStatusLog({ resolves: key }, null, undefined, []);
+			handleStatusLog({ resolves: resolved }, null, undefined, []);
+		}
 	});
 
 	it('preserves tagged status logs and still reports status at filtered log levels', async function () {

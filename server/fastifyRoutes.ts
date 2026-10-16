@@ -118,7 +118,7 @@ export async function customFunctionsServer() {
 			//generate a Fastify server instance
 			server = fastifyServer = await buildServer(isHttps);
 		} catch (err) {
-			harperLogger.status({ problem: 'custom-functions.build' }).error(`Custom Functions buildServer error: ${err}`);
+			harperLogger.error(`Custom Functions buildServer error: ${err}`);
 			throw err;
 		}
 
@@ -126,13 +126,13 @@ export async function customFunctionsServer() {
 			//make sure the process waits for the server to be fully instantiated before moving forward
 			await server.ready();
 		} catch (err) {
-			harperLogger.status({ problem: 'custom-functions.ready' }).error(`Custom Functions server.ready() error: ${err}`);
+			harperLogger.error(`Custom Functions server.ready() error: ${err}`);
 			throw err;
 		}
 		// fastify can't clean up properly
 		server.server.cantCleanupProperly = true;
 	} catch (err) {
-		harperLogger.status({ problem: 'custom-functions.init' }).error(`Custom Functions ${process.pid} Error: ${err}`);
+		harperLogger.error(`Custom Functions ${process.pid} Error: ${err}`);
 		harperLogger.error(err);
 		// Use realExit so this fatal worker bootstrap failure still terminates
 		// the worker even with the worker process guard installed.

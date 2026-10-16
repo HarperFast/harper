@@ -412,7 +412,7 @@ export function deliverSocket(fdOrSocket, port, data) {
 				} else if (retries < 5) retry(retries + 1);
 				else {
 					harperLogger
-						.status({ problem: 'server.port-registration' })
+						.status({ problem: 'server.port-registration', expires: 120 })
 						.error(`Server on port ${port} was not registered`);
 					socket.destroy();
 				}

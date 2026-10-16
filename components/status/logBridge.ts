@@ -21,7 +21,7 @@ const LOG_TO_STATUS_LEVEL = {
 	trace: COMPONENT_STATUS_LEVELS.WARNING,
 } as const;
 
-const expiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const expiryTimers = new Map<string, { timer: ReturnType<typeof setTimeout>; ms: number }>();
 
 function formatMessage(args: any[]): string {
 	return args
@@ -48,12 +48,8 @@ export function handleStatusLog(
 	componentTag: string | undefined,
 	args: any[]
 ) {
-	// When level is null, this is a status-only call (no chained log method).
-	// If a chained method follows, it will call again with level set — skip the
-	// initial status-only call in that case by deferring: the chained call will
-	// provide the actual level and message.
+	// The logger defers its unchained status-only call; the bridge need not defer again.
 	if (level === null) {
-		// Immediate status-only registration (no log output)
 		if (options.resolves) {
 			clearExpiry(options.resolves);
 			componentStatusRegistry.setStatus(
@@ -70,6 +66,8 @@ export function handleStatusLog(
 			componentStatusRegistry.setStatus(options.problem, statusLevel, undefined, undefined, 'log');
 			if (options.expires) {
 				scheduleExpiry(options.problem, options.expires * 1000);
+			} else {
+				clearExpiry(options.problem);
 			}
 		}
 		return;
@@ -105,19 +103,24 @@ export function handleStatusLog(
 }
 
 function scheduleExpiry(key: string, ms: number) {
+	const existing = expiryTimers.get(key);
+	if (existing?.ms === ms) {
+		existing.timer.refresh();
+		return;
+	}
 	clearExpiry(key);
 	const timer = setTimeout(() => {
 		componentStatusRegistry.setStatus(key, COMPONENT_STATUS_LEVELS.HEALTHY, 'Auto-expired', undefined, 'log');
 		expiryTimers.delete(key);
 	}, ms);
 	timer.unref();
-	expiryTimers.set(key, timer);
+	expiryTimers.set(key, { timer, ms });
 }
 
 function clearExpiry(key: string) {
 	const existing = expiryTimers.get(key);
 	if (existing) {
-		clearTimeout(existing);
+		clearTimeout(existing.timer);
 		expiryTimers.delete(key);
 	}
 }
