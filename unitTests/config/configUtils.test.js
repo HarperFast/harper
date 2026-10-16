@@ -2157,5 +2157,41 @@ describe('Test configUtils module', () => {
 				fs.removeSync(hdbConfigTemplatePath);
 			}
 		});
+
+		it('expands numeric threads: 4 shorthand in HDB_CONFIG when CLI/env THREADS_COUNT or THREADS_DEBUG is passed without HARPER_SET_CONFIG', () => {
+			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config-threads.yaml');
+			fs.writeFileSync(hdbConfigTemplatePath, 'threads: 4\nstorage:\n  engine: lmdb\n', 'utf8');
+
+			try {
+				config_utils_rw.createConfigFile(
+					{
+						ROOTPATH: HDB_ROOT,
+						THREADS_COUNT: 2,
+					},
+					false,
+					hdbConfigTemplatePath
+				);
+
+				const configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
+				const configJson = configDoc.toJSON();
+				expect(configJson.threads.count).to.equal(2);
+				expect(configJson.threads.debug).to.equal(false);
+			} finally {
+				fs.removeSync(hdbConfigTemplatePath);
+			}
+		});
+
+		it('throws if staged is passed to createConfigFile alongside defined args, baseConfigPath, or defaultedArgKeys', () => {
+			const staged = config_utils_rw.stageInstallConfig({ ROOTPATH: HDB_ROOT });
+			expect(() =>
+				config_utils_rw.createConfigFile({ ROOTPATH: HDB_ROOT }, false, undefined, CONFIG_FILE_PATH, staged)
+			).to.throw(/createConfigFile cannot accept args, baseConfigPath, or defaultedArgKeys when staged is provided/);
+			expect(() =>
+				config_utils_rw.createConfigFile(undefined, false, '/some/base.yaml', CONFIG_FILE_PATH, staged)
+			).to.throw(/createConfigFile cannot accept args, baseConfigPath, or defaultedArgKeys when staged is provided/);
+			expect(() =>
+				config_utils_rw.createConfigFile(undefined, false, undefined, CONFIG_FILE_PATH, staged, new Set(['ROOTPATH']))
+			).to.throw(/createConfigFile cannot accept args, baseConfigPath, or defaultedArgKeys when staged is provided/);
+		});
 	});
 });

@@ -429,6 +429,15 @@ function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: 
 				`Error parsing ${baseConfigPath}: YAMLParseError ${formatConfigParseErrorDetails(configDoc.errors[0])}`
 			);
 		}
+		const threadCount = configDoc.getIn(['threads']);
+		if (
+			typeof threadCount === 'number' &&
+			threadCount >= 0 &&
+			Object.keys(args ?? {}).some((arg) => lookupConfigParam(arg)?.startsWith('threads_'))
+		) {
+			configDoc.deleteIn(['threads']);
+			configDoc.setIn(['threads', 'count'], threadCount);
+		}
 		collectLeafDotPaths(configDoc.toJSON(), '', userPaths);
 		backfillMissingDefaults(configDoc, defaultDoc);
 	}
@@ -455,23 +464,37 @@ function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: 
 			configParam = arg;
 		}
 
+		if (configParam?.startsWith('threads_')) {
+			const threadCount = configDoc.getIn(['threads']);
+			if (typeof threadCount === 'number' && threadCount >= 0) {
+				configDoc.deleteIn(['threads']);
+				configDoc.setIn(['threads', 'count'], threadCount);
+				if (userPaths.delete('threads')) {
+					userPaths.add('threads.count');
+				}
+			}
+		}
+
 		if (configParam !== undefined) {
 			const splitParam = configParam.split('_');
 			let value = castConfigValue(configParam, args[arg]);
 			if (configParam === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
-			if (value !== undefined && value !== null && value !== '' && !defaultedArgKeys?.has(arg)) {
-				userPaths.add(splitParam.join('.'));
-			}
 			try {
-				// Remove parent structure if it's a boolean to avoid type conflicts when setting the new value
-				if (splitParam.length > 1 && typeof configDoc.getIn(splitParam.slice(0, -1)) === 'boolean') {
-					configDoc.deleteIn(splitParam.slice(0, -1));
+				for (let i = 1; i < splitParam.length; i++) {
+					const ancestorPath = splitParam.slice(0, i);
+					const ancestorVal = configDoc.getIn(ancestorPath);
+					if (ancestorVal !== undefined && (ancestorVal === null || typeof ancestorVal !== 'object')) {
+						configDoc.deleteIn(ancestorPath);
+					}
 				}
 
 				configDoc.setIn(
 					[...splitParam],
 					value !== null && typeof value === 'object' ? configDoc.createNode(value) : value
 				);
+				if (value !== undefined && value !== null && value !== '' && !defaultedArgKeys?.has(arg)) {
+					userPaths.add(splitParam.join('.'));
+				}
 			} catch (err) {
 				logger.error(err);
 			}
@@ -508,8 +531,12 @@ export function validateStagedInstallConfig(staged: StagedInstallConfig, skipFsV
 
 /**
  * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
- * @param args - any args that the user provided.
- * @param baseConfigPath - optional user-supplied config template (HDB_CONFIG) to backfill with defaults
+ * @param args - any args that the user provided (must be undefined when `staged` is provided).
+ * @param skipFsValidation - when true, skips filesystem existence checks during config validation.
+ * @param baseConfigPath - optional user-supplied config template (HDB_CONFIG) to backfill with defaults.
+ * @param targetConfigPath - optional destination path to write the config file to instead of `<rootPath>/harperdb-config.yaml`.
+ * @param staged - optional pre-staged install config from `stageInstallConfig()`.
+ * @param defaultedArgKeys - optional set of arg keys populated from install-mode defaults rather than explicit user input.
  */
 export function createConfigFile(
 	args,
@@ -519,6 +546,9 @@ export function createConfigFile(
 	staged?: StagedInstallConfig,
 	defaultedArgKeys?: Set<string>
 ) {
+	if (staged && (args !== undefined || baseConfigPath !== undefined || defaultedArgKeys !== undefined)) {
+		throw new Error('createConfigFile cannot accept args, baseConfigPath, or defaultedArgKeys when staged is provided');
+	}
 	const { configDoc, commitEnvConfigState, validated } =
 		staged ?? composeInstallConfig(args, baseConfigPath, defaultedArgKeys);
 
@@ -1277,11 +1307,6 @@ export function updateConfigValue(
 				let newValue = castConfigValue(configParam, parsedArgs[arg]);
 				if (configParam === 'rootPath' && newValue?.endsWith('/')) newValue = newValue.slice(0, -1);
 				try {
-					if (splitParam.length > 1) {
-						if (typeof configDoc.getIn(splitParam.slice(0, -1)) === 'boolean') {
-							configDoc.deleteIn(splitParam.slice(0, -1));
-						}
-					}
 					configDoc.setIn([...splitParam], newValue);
 				} catch (err) {
 					logger.error(err);
