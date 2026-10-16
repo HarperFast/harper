@@ -2179,14 +2179,14 @@ describe('Test configUtils module', () => {
 			});
 
 			try {
-				config_utils_rw.createConfigFile(
+				const staged = config_utils_rw.stageInstallConfig(
 					{
 						ROOTPATH: HDB_ROOT,
 						STORAGE_ENGINE: 'lmdb',
 					},
-					false,
 					hdbConfigTemplatePath
 				);
+				config_utils_rw.writeStagedInstallConfig(staged);
 
 				const rawConfig = fs.readFileSync(CONFIG_FILE_PATH, 'utf8');
 				const configDoc = YAML.parseDocument(rawConfig);
@@ -2209,13 +2209,14 @@ describe('Test configUtils module', () => {
 			const origDefaultConfig = process.env.HARPER_DEFAULT_CONFIG;
 
 			try {
-				config_utils_rw.createConfigFile(
-					{
-						ROOTPATH: HDB_ROOT,
-						THREADS_COUNT: 2,
-					},
-					false,
-					hdbConfigTemplatePath
+				config_utils_rw.writeStagedInstallConfig(
+					config_utils_rw.stageInstallConfig(
+						{
+							ROOTPATH: HDB_ROOT,
+							THREADS_COUNT: 2,
+						},
+						hdbConfigTemplatePath
+					)
 				);
 
 				let configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
@@ -2223,13 +2224,14 @@ describe('Test configUtils module', () => {
 				expect(configJson.threads.count).to.equal(2);
 				expect(configJson.threads.debug).to.equal(false);
 
-				config_utils_rw.createConfigFile(
-					{
-						ROOTPATH: HDB_ROOT,
-						THREADS_DEBUG: true,
-					},
-					false,
-					hdbConfigTemplatePath
+				config_utils_rw.writeStagedInstallConfig(
+					config_utils_rw.stageInstallConfig(
+						{
+							ROOTPATH: HDB_ROOT,
+							THREADS_DEBUG: true,
+						},
+						hdbConfigTemplatePath
+					)
 				);
 
 				configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
@@ -2241,12 +2243,13 @@ describe('Test configUtils module', () => {
 					threads: { count: 8, debug: true },
 					http: { mtls: { required: true } },
 				});
-				config_utils_rw.createConfigFile(
-					{
-						ROOTPATH: HDB_ROOT,
-					},
-					false,
-					hdbConfigTemplatePath
+				config_utils_rw.writeStagedInstallConfig(
+					config_utils_rw.stageInstallConfig(
+						{
+							ROOTPATH: HDB_ROOT,
+						},
+						hdbConfigTemplatePath
+					)
 				);
 
 				configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
@@ -2264,21 +2267,23 @@ describe('Test configUtils module', () => {
 			}
 		});
 
-		it('allows HARPER_DEFAULT_CONFIG to override defaults under an empty section in HDB_CONFIG', () => {
+		it('allows HARPER_DEFAULT_CONFIG to override defaults under an empty section in HDB_CONFIG while preserving authored empty component maps', () => {
 			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config-empty-section.yaml');
-			fs.writeFileSync(hdbConfigTemplatePath, 'storage:\n  engine: lmdb\nhttp: {}\n', 'utf8');
+			fs.writeFileSync(hdbConfigTemplatePath, 'storage:\n  engine: lmdb\nhttp: {}\nmyComponent: {}\n', 'utf8');
 			const origDefaultConfig = process.env.HARPER_DEFAULT_CONFIG;
 
 			try {
 				process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({
 					http: { port: 8080 },
+					myComponent: false,
 				});
-				config_utils_rw.createConfigFile(
-					{
-						ROOTPATH: HDB_ROOT,
-					},
-					false,
-					hdbConfigTemplatePath
+				config_utils_rw.writeStagedInstallConfig(
+					config_utils_rw.stageInstallConfig(
+						{
+							ROOTPATH: HDB_ROOT,
+						},
+						hdbConfigTemplatePath
+					)
 				);
 
 				const configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
@@ -2286,6 +2291,7 @@ describe('Test configUtils module', () => {
 				expect(configJson.storage.engine).to.equal('lmdb');
 				expect(configJson.http.port).to.equal(8080);
 				expect(configJson.http.securePort).to.equal(9926);
+				expect(configJson.myComponent).to.deep.equal({});
 			} finally {
 				if (origDefaultConfig === undefined) {
 					delete process.env.HARPER_DEFAULT_CONFIG;
