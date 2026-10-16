@@ -361,7 +361,8 @@ describe('Writer residency (harper#2257)', () => {
 			});
 			assert.strictEqual(errors.length, 1);
 			assert.match(errors[0], /ComputedIndexPoolActive/);
-			assert.match(errors[0], /setComputedAttribute\('indexedScore'/);
+			assert.match(errors[0], /setComputedAttribute \(e\.g\. 'indexedScore'\)/);
+			assert.match(errors[0], /unresolvedComputedIndexes\(\)/);
 			assert.match(errors[0], /replication\.threads: 0 in harper-config\.yaml/);
 			assert.deepStrictEqual(
 				capturingErrors(() => {

@@ -8451,7 +8451,7 @@ export function makeTable(options): TableResourceClass {
 			) {
 				TableResource.#computedPoolErrorLogged = true;
 				harperLogger.error?.(
-					`Table '${tableName}' registered setComputedAttribute('${attribute_name}', ...) for an indexed @computed attribute while the replication worker pool is active (replication.threads > 0, or defaulted for threads.count >= 2). Replication pool workers do not load application code and will skip indexing replicated updates for this attribute. Set replication.threads: 0 in harper-config.yaml if this table requires replicated updates to maintain this computed index.`
+					`Table '${tableName}' registered setComputedAttribute (e.g. '${attribute_name}') for an indexed @computed attribute while the replication worker pool is active (replication.threads > 0, or defaulted for threads.count >= 2). Replication pool workers do not load application code and cannot compute this index, so applying a replicated write to this table fails (see Table.unresolvedComputedIndexes()). Set replication.threads: 0 in harper-config.yaml if this table requires replicated updates to maintain this computed index.`
 				);
 			}
 			this.userResolvers[attribute_name] = resolver;

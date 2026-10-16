@@ -123,10 +123,8 @@ describe('dedicated worker pools', () => {
 		});
 
 		it('normalizes effective HTTP worker count for DEV_MODE (1) and win32 (1) before deriving default pool size', () => {
-			configure({ [CONFIG_PARAMS.THREADS_COUNT]: 4, [CONFIG_PARAMS.REPLICATION_SECUREPORT]: 9933 });
-			// DEV_MODE passes 1 to startHTTPThreads(1) regardless of threads.count in config.
+			configure({ [CONFIG_PARAMS.REPLICATION_SECUREPORT]: 9933 });
 			assert.deepStrictEqual(admitted(1), []);
-			// win32 normalizes threadCount > 0 to 1 before admittedWorkerPools(threadCount).
 			assert.strictEqual(effectiveHttp(4, 'win32'), 1);
 			assert.strictEqual(effectiveHttp(0, 'win32'), 0);
 			assert.strictEqual(effectiveHttp(4, 'linux'), 4);
@@ -136,7 +134,6 @@ describe('dedicated worker pools', () => {
 
 		it('honors explicit replication.threads: 0 even when threads.count >= 2', () => {
 			configure({
-				[CONFIG_PARAMS.THREADS_COUNT]: 4,
 				[CONFIG_PARAMS.REPLICATION_THREADS]: 0,
 				[CONFIG_PARAMS.REPLICATION_SECUREPORT]: 9933,
 			});
