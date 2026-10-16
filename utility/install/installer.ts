@@ -28,7 +28,6 @@ import { promisify } from 'util';
 const pSchemaToGlobal = promisify(globalSchema.setSchemaDataToGlobal);
 import * as keys from '../../security/keys.ts';
 import { resolveConfiguredPath } from '../../config/componentEnvPrepass.ts';
-import { resetRocksCompression } from '../../resources/databases.ts';
 import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
 
 const HDB_PROMPT_MSG = (msg) => chalk.magenta.bold(msg);
@@ -79,6 +78,8 @@ import assignCMDENVVariables from '../assignCmdEnvVariables.ts';
 const cfgEnv: Record<string, string | undefined> = {};
 let hdbRoot = undefined;
 let conditionalRollback = false;
+let rootExistedBeforeInstall = false;
+let preExistingRootEntries: Set<string> | null = null;
 let ignoreExisting = false;
 let bootPropsCreated = true;
 
@@ -257,12 +258,14 @@ async function install() {
 	envManager.setHdbBasePath(hdbRoot);
 	const stagedInstall = stageInstallConfig(installParams);
 	bootPropsCreated = false;
+	rootExistedBeforeInstall = fs.existsSync(hdbRoot);
+	preExistingRootEntries = rootExistedBeforeInstall ? new Set(fs.readdirSync(hdbRoot)) : null;
 
 	try {
 		// Creates the Harper project folder structure and the LMDB environments/dbis.
 		await mountHdb(hdbRoot, () => {
 			try {
-				configUtils.validateStagedInstallConfig(stagedInstall.staged);
+				configUtils.validateStagedInstallConfig(stagedInstall);
 			} catch (configErr) {
 				rollbackInstall(configErr);
 				throw configErr;
@@ -276,6 +279,8 @@ async function install() {
 		await createConfigFile(stagedInstall);
 	} finally {
 		bootPropsCreated = true;
+		rootExistedBeforeInstall = false;
+		preExistingRootEntries = null;
 	}
 
 	// At this point there should be config and Harper folders so re-init log settings to update
@@ -595,6 +600,8 @@ async function createBootPropertiesFile() {
  *
  * @param args - config args (cmd/env values already merged with install params)
  * @param defaultsMode - the resolved DEFAULTS_MODE install param ('dev' or 'prod')
+ * @param baseDoc - optional parsed HDB_CONFIG YAML document checked before applying mode defaults
+ * @param defaultedKeys - optional set populated with keys that were filled from install-mode defaults
  * @returns the same args object, mutated in place, for convenience
  */
 export function applyInstallModeDefaults(args, defaultsMode, baseDoc?: YAML.Document, defaultedKeys?: Set<string>) {
@@ -719,15 +726,10 @@ function buildInstallConfigArgs(installParams: Record<string, any> = {}): {
 	return { args, hdbConfigPath, defaultedArgKeys };
 }
 
-function stageInstallConfig(installParams: Record<string, any> = {}) {
-	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, undefined);
-	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, undefined);
-	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION, undefined);
-	resetRocksCompression();
+function stageInstallConfig(installParams: Record<string, any> = {}): configUtils.StagedInstallConfig {
 	initPaths.resetPaths();
 	const { args, hdbConfigPath, defaultedArgKeys } = buildInstallConfigArgs(installParams);
-	const staged = configUtils.stageInstallConfig(args, hdbConfigPath, defaultedArgKeys);
-	return { args, hdbConfigPath, defaultedArgKeys, staged };
+	return configUtils.stageInstallConfig(args, hdbConfigPath, defaultedArgKeys);
 }
 
 /**
@@ -735,9 +737,9 @@ function stageInstallConfig(installParams: Record<string, any> = {}) {
  * If an error occurs during the create install is rolled backed.
  * @returns {Promise<void>}
  */
-async function createConfigFile(stagedInstall: ReturnType<typeof stageInstallConfig>) {
+async function createConfigFile(staged: configUtils.StagedInstallConfig) {
 	hdbLogger.trace('Creating Harper config file');
-	const { args, hdbConfigPath, defaultedArgKeys, staged } = stagedInstall;
+	const hdbConfigPath = getHdbConfigPath();
 
 	const overwriteRootNamedHdbConfig = isRootNamedHdbConfig(hdbConfigPath, hdbRoot);
 	const resolvedConfigPath = overwriteRootNamedHdbConfig && hdbConfigPath ? path.resolve(hdbConfigPath) : undefined;
@@ -752,12 +754,11 @@ async function createConfigFile(stagedInstall: ReturnType<typeof stageInstallCon
 	}
 	try {
 		configUtils.createConfigFile(
-			args,
+			undefined,
 			false,
-			hdbConfigPath,
+			undefined,
 			overwriteRootNamedHdbConfig && hdbConfigPath ? hdbConfigPath : undefined,
-			staged,
-			defaultedArgKeys
+			staged
 		);
 		envManager.initSync();
 	} catch (configErr) {
@@ -821,19 +822,28 @@ function rollbackInstall(errMsg) {
 
 	// Remove HDB.
 	if (hdbRoot) {
-		// We do a conditional rollback if installing from config file that exists in the hdb rootpath
-		if (conditionalRollback) {
-			const hdbConfigPath = getHdbConfigPath();
-			const resolvedConfigPath = hdbConfigPath ? path.resolve(hdbConfigPath) : undefined;
-			const resolvedBackupPath = resolvedConfigPath ? `${resolvedConfigPath}.install-backup-${process.pid}` : undefined;
-			const dir = fs.readdirSync(hdbRoot, { withFileTypes: true });
-			dir.forEach((d) => {
-				const fullPath = path.join((d as any).parentPath ?? (d as any).path, d.name);
-				const resolvedFullPath = path.resolve(fullPath);
-				if (resolvedFullPath !== resolvedConfigPath && resolvedFullPath !== resolvedBackupPath) {
-					fs.removeSync(fullPath);
-				}
-			});
+		// When hdbRoot already existed before install (or contains a root-placed HDB_CONFIG),
+		// remove only entries created by this install and preserve pre-existing operator files.
+		if (conditionalRollback || rootExistedBeforeInstall) {
+			if (fs.existsSync(hdbRoot)) {
+				const hdbConfigPath = getHdbConfigPath();
+				const resolvedConfigPath = hdbConfigPath ? path.resolve(hdbConfigPath) : undefined;
+				const resolvedBackupPath = resolvedConfigPath
+					? `${resolvedConfigPath}.install-backup-${process.pid}`
+					: undefined;
+				const dir = fs.readdirSync(hdbRoot, { withFileTypes: true });
+				dir.forEach((d) => {
+					const fullPath = path.join((d as any).parentPath ?? (d as any).path, d.name);
+					const resolvedFullPath = path.resolve(fullPath);
+					if (
+						!preExistingRootEntries?.has(d.name) &&
+						resolvedFullPath !== resolvedConfigPath &&
+						resolvedFullPath !== resolvedBackupPath
+					) {
+						fs.removeSync(fullPath);
+					}
+				});
+			}
 		} else {
 			fs.removeSync(hdbRoot);
 		}
