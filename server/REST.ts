@@ -482,7 +482,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				? async () => {
 						try {
 							const result = await dispatch();
-							// A Response or `{ status, headers, ... }` envelope sends its own status, as finalizeResponse does.
+							// The status finalizeResponse will send.
 							const replyStatus = result?.headers
 								? (result.status ?? request.response.status)
 								: request.response.status;

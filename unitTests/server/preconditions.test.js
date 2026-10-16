@@ -437,11 +437,12 @@ describe('REST preconditions with real table transactions', () => {
 		Transaction.prototype.commit = function (...args) {
 			if (this.store?.db !== targetDb || !late || held) return commit.apply(this, args);
 			held = true;
+			let lateSettled = false;
 			const settled = late.then(
-				() => {},
-				() => {}
+				() => (lateSettled = true),
+				() => (lateSettled = true)
 			);
-			const timeout = delay(1000).then(() => (timedOut = true));
+			const timeout = delay(1000).then(() => (timedOut = !lateSettled));
 			return Promise.race([settled, timeout]).then(() => commit.apply(this, args));
 		};
 		let response;
