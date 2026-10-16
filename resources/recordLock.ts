@@ -571,14 +571,12 @@ export async function acquireRecordKey(
 				};
 		const acquired = store.tryLock(key, onUnlocked);
 		if (acquired) {
-			let acquiredAt: number;
 			try {
-				acquiredAt = freshLocalKey(store.rootStore ?? store);
+				return makeKeyLockHandle(store, key, keyId, lease, hold, freshLocalKey(store.rootStore ?? store));
 			} catch (error) {
 				store.unlock(key);
 				throw error;
 			}
-			return makeKeyLockHandle(store, key, keyId, lease, hold, acquiredAt);
 		}
 		if (onUnlocked) hasCallback = true; // callback now registered; do not register another until it fires
 		const remaining = deadline - Date.now();
