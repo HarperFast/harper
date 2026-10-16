@@ -22,6 +22,10 @@ describe('health-check configuration', function () {
 	it('rejects tight loops, non-finite intervals and crossed thresholds including partial overrides', function () {
 		for (const healthChecks of [
 			{ enabled: 'false' },
+			{ intervalSecond: 1 },
+			{ tresholds: {} },
+			{ thresholds: { disk: { warn: 80 } } },
+			{ thresholds: { disks: { warning: 80 } } },
 			{ intervalSeconds: '1' },
 			{ thresholds: { disk: { warning: '80' } } },
 			{ intervalSeconds: 0.001 },

@@ -21,14 +21,14 @@ const LOG_TO_STATUS_LEVEL = {
 	trace: COMPONENT_STATUS_LEVELS.WARNING,
 } as const;
 
-const expiryTimers = new Map<string, { timer: ReturnType<typeof setTimeout>; ms: number }>();
+const expiryTimers = new Map<string, { timer: ReturnType<typeof setTimeout>; ms: number; lastChecked?: Date }>();
 
 function formatMessage(args: any[]): string {
 	return args
 		.map((a) => {
 			if (typeof a === 'string') return a;
-			if (a instanceof Error) return a.message;
 			try {
+				if (a instanceof Error) return a.message;
 				return String(a);
 			} catch {
 				return '[unserializable]';
@@ -90,7 +90,13 @@ export function handleStatusLog(
 	if (options.problem) {
 		const key = options.problem;
 		const statusLevel = LOG_TO_STATUS_LEVEL[level] || COMPONENT_STATUS_LEVELS.WARNING;
-		const errorArg = args.find((a) => a instanceof Error);
+		const errorArg = args.find((a) => {
+			try {
+				return a instanceof Error;
+			} catch {
+				return false;
+			}
+		});
 
 		componentStatusRegistry.setStatus(key, statusLevel, message, errorArg, 'log');
 
@@ -105,16 +111,21 @@ export function handleStatusLog(
 function scheduleExpiry(key: string, ms: number) {
 	const existing = expiryTimers.get(key);
 	if (existing?.ms === ms) {
+		existing.lastChecked = componentStatusRegistry.getStatus(key)?.lastChecked;
 		existing.timer.refresh();
 		return;
 	}
 	clearExpiry(key);
 	const timer = setTimeout(() => {
-		componentStatusRegistry.setStatus(key, COMPONENT_STATUS_LEVELS.HEALTHY, 'Auto-expired', undefined, 'log');
+		// Every registry write replaces lastChecked, so this expiry owns only its report.
+		if (componentStatusRegistry.getStatus(key)?.lastChecked === entry.lastChecked) {
+			componentStatusRegistry.setStatus(key, COMPONENT_STATUS_LEVELS.HEALTHY, 'Auto-expired', undefined, 'log');
+		}
 		expiryTimers.delete(key);
 	}, ms);
 	timer.unref();
-	expiryTimers.set(key, { timer, ms });
+	const entry = { timer, ms, lastChecked: componentStatusRegistry.getStatus(key)?.lastChecked };
+	expiryTimers.set(key, entry);
 }
 
 function clearExpiry(key: string) {

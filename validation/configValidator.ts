@@ -280,10 +280,11 @@ let hdbRoot;
 let skipFsVal = false;
 
 const healthThresholds = (warningDefault: number, errorDefault: number) =>
-	Joi.object({ warning: number.min(0).max(100).optional(), error: number.min(0).max(100).optional() }).custom(
-		(value, helpers) =>
+	Joi.object({ warning: number.min(0).max(100).optional(), error: number.min(0).max(100).optional() })
+		.unknown(false)
+		.custom((value, helpers) =>
 			(value.warning ?? warningDefault) <= (value.error ?? errorDefault) ? value : helpers.error('any.invalid')
-	);
+		);
 
 export function configValidator(configJson, skipFsValidation = false) {
 	skipFsVal = skipFsValidation;
@@ -498,8 +499,11 @@ export function configValidator(configJson, skipFsValidation = false) {
 					disk: healthThresholds(80, 95),
 					memory: healthThresholds(80, 95),
 					cpu: healthThresholds(85, 95),
-				}).optional(),
+				})
+					.unknown(false)
+					.optional(),
 			})
+				.unknown(false)
 				.strict()
 				.optional(),
 		}).optional(),

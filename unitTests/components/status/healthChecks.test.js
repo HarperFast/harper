@@ -31,14 +31,12 @@ async function runFreshProcess(script) {
 describe('runtime health checks', function () {
 	this.timeout(45000);
 	let root;
-	let previousRoot;
-	let previousStorage;
+	const previousRoot = env.get('rootPath');
+	const previousStorage = env.get('storage_path');
 	beforeEach(async function () {
 		stopHealthChecks?.();
 		componentStatusRegistry.reset();
 		root = await mkdtemp(join(tmpdir(), 'harper-health-'));
-		previousRoot = env.get('rootPath');
-		previousStorage = env.get('storage_path');
 		env.setProperty('rootPath', root);
 		env.setProperty('storage_path', root);
 	});
@@ -47,7 +45,8 @@ describe('runtime health checks', function () {
 		componentStatusRegistry.reset();
 		env.setProperty('rootPath', previousRoot);
 		env.setProperty('storage_path', previousStorage);
-		await rm(root, { recursive: true, force: true });
+		if (root) await rm(root, { recursive: true, force: true });
+		root = undefined;
 	});
 	const quota = (usedBytes) =>
 		writeFile(join(root, 'quota-status.json'), JSON.stringify({ usedBytes, quotaBytes: 100, updatedAt: Date.now() }));
@@ -156,7 +155,7 @@ describe('runtime health checks', function () {
 			used: 49,
 			basis: 'cgroup working set',
 		});
-		await writeFile(join(group, 'memory.stat'), 'inactive_file 3\n');
+		await writeFile(join(group, 'memory.stat'), 'inactive_file\t3  \r\n');
 		assert.equal((await readConstrainedMemoryUsage(100, root, membership)).used, 96);
 	});
 
