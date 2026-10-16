@@ -217,6 +217,9 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 	});
 
 	test('keeps all highlights when a multi-record native trace exceeds its span budget', async () => {
+		const info = await runtimeInfo();
+		assert(info.limits.maxTraceRecords >= 60);
+		assert.strictEqual(info.limits.maxTraceSpans, 1024);
 		const records = Array.from({ length: 60 }, (_, index) => ({
 			id: `span-budget-${index}`,
 			title: 'tracebudget '.repeat(17) + 'Colfax',

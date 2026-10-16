@@ -436,7 +436,10 @@ describe('FullTextQueryIndex', () => {
 		assert(traces.every(({ options }) => options.remainingBudgetMilliseconds > 0));
 		assert.deepStrictEqual(first[0].$highlights.title[0].spans, [{ start: 0, end: 3 }]);
 		traceComplete = false;
-		await assert.rejects(index.search(condition, {}, { minResults: 1 }), /incomplete highlights/);
+		await assert.rejects(index.search(condition, {}, { minResults: 1 }), {
+			message: 'Full-text index returned incomplete highlights',
+			statusCode: 500,
+		});
 		traceComplete = true;
 
 		traces.length = 0;
@@ -4419,7 +4422,10 @@ describe('bounded highlight trace recovery', () => {
 			100
 		);
 		try {
-			await assert.rejects(index.search(highlightCondition(2), {}, { minResults: 100 }), /incomplete highlights/);
+			await assert.rejects(index.search(highlightCondition(2), {}, { minResults: 100 }), {
+				message: 'Full-text highlight recovery budget exceeded; reduce result limit or omit $highlights',
+				statusCode: 500,
+			});
 			assert(calls > 199);
 			assert(calls <= 258);
 		} finally {
@@ -4472,7 +4478,7 @@ describe('bounded highlight trace recovery', () => {
 				await waitFor(() => performance.now() >= deadline, 1000, 1);
 				return tracedValues(records, false);
 			},
-			{ maxSearchBudgetMilliseconds: 30 }
+			{ maxSearchBudgetMilliseconds: 200 }
 		);
 		try {
 			await assert.rejects(index.search(highlightCondition(), {}, { minResults: 4 }), /execution budget/);

@@ -782,8 +782,12 @@ export class FullTextQueryIndex {
 							});
 							assertSearchActive();
 							if (!traced.complete) {
-								if (batch.length < 2 || remainingAdditionalTraceCalls < 2)
-									throw new ServerError('Full-text index returned incomplete highlights', 500);
+								if (batch.length < 2) throw new ServerError('Full-text index returned incomplete highlights', 500);
+								if (remainingAdditionalTraceCalls < 2)
+									throw new ServerError(
+										'Full-text highlight recovery budget exceeded; reduce result limit or omit $highlights',
+										500
+									);
 								remainingAdditionalTraceCalls -= 2;
 								const middle = Math.floor(batch.length / 2);
 								pending.push(batch.slice(middle), batch.slice(0, middle));

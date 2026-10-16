@@ -69,6 +69,9 @@ describe('published native full-text Table.search integration', () => {
 	});
 
 	it('recovers complete highlights across the native 1024-span batch boundary', async () => {
+		const runtime = await (await loadFullTextNativeBinding()).runtimeInfo();
+		assert(runtime.limits.maxTraceRecords >= 60);
+		assert.strictEqual(runtime.limits.maxTraceSpans, 1024);
 		const searchDefinition = definition('catalogSearch', [{ name: 'title', highlight: true }]);
 		searchDefinition.highlighting = { maxFragments: 2, fragmentLength: 140 };
 		Product = table({

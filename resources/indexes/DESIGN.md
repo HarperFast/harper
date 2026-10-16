@@ -510,8 +510,9 @@ by both record count and encoded source bytes and sends only the fields used by 
 single record larger than the native source-byte limit is rejected before crossing the binding.
 An incomplete multi-record trace is discarded and retried in sequential halves under the original
 reader lease, request cancellation and deadline. At most 256 additional trace calls are admitted per
-query across all leaves and source batches. An incomplete singleton or exhausted additional-call
-budget retains the incomplete-highlights failure; partial spans never become successful output.
+search request across all leaves and source batches. An incomplete singleton or exhausted additional-call
+budget fails with status 500; exhaustion identifies the budget and advises narrowing the request, while
+the singleton keeps its existing incomplete-highlights message. Partial spans never become successful output.
 
 Search hits carry the source record version. Harper reads the authoritative record in its transaction and omits a hit when the version no longer matches; it never combines an old score or highlight with new content. Bounded searches begin by over-fetching 32–256 native hits. When version checks or structured filters under-fill a page, Harper sizes the next request from observed yield. Pages grow within the native response envelope, with 4,096 as an absolute ceiling, then shrink as selectivity improves; a zero-yield page grows geometrically because it provides no selectivity estimate.
 
