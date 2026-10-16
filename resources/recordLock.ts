@@ -212,11 +212,11 @@ export function admissionStamp(
 	rootStore: any,
 	floor: number,
 	acquiredAt: number
-): { stamp: number; movesClock: boolean } {
-	if (floor <= acquiredAt) return { stamp: floor, movesClock: true };
+): { floor: number; stamp: number; movesClock: boolean } {
+	if (floor <= acquiredAt) return { floor, stamp: acquiredAt, movesClock: true };
 	const maxSkew = maxLockClockSkewMs();
 	const skew = floor - rootStore.getMonotonicTimestamp();
-	if (skew <= maxSkew) return { stamp: claimLocalKey(rootStore, floor), movesClock: true };
+	if (skew <= maxSkew) return { floor, stamp: claimLocalKey(rootStore, floor), movesClock: true };
 	const now = performance.now();
 	if (now - lastClockSkewWarn >= CLOCK_SKEW_WARN_INTERVAL_MS) {
 		lastClockSkewWarn = now;
@@ -224,7 +224,7 @@ export function admissionStamp(
 			`A record lock was admitted on state stamped ${Math.round(skew)}ms ahead of this node's clock, beyond storage.maxLockClockSkew (${maxSkew}ms); check clock synchronization. Its writes outrank that state only outside an explicit transaction, and their transaction log key may repeat another's.`
 		);
 	}
-	return { stamp: floor, movesClock: false };
+	return { floor, stamp: floor, movesClock: false };
 }
 
 /** The advisory key for this (table, record) pair, distinct from getFromSource's bare-id single-flight lock. */
@@ -288,14 +288,25 @@ class KeyLockHandle implements RecordLockHandle {
 	}
 
 	holderVersionCandidate(floor?: number): number {
-		// The smallest step past the holder's last version: it prevents an exact LWW tie with that write
-		// without materially moving past it.
 		return Math.max(
-			this.#lastHolderVersion != null ? timestampAbove(this.#lastHolderVersion) : this.acquiredAt,
+			this.#lastHolderVersion != null ? this.#stepPast(this.#lastHolderVersion) : this.acquiredAt,
 			this.acquiredAt,
 			this.#candidateFloor ?? -Infinity,
 			floor ?? -Infinity
 		);
+	}
+
+	/**
+	 * The smallest step past the holder's last version, which prevents an exact LWW tie with it. Ahead of
+	 * the clock it is claimed like an admission stamp: one ulp above the ratchet is otherwise the next key
+	 * the ratchet issues.
+	 */
+	#stepPast(version: number): number {
+		const step = timestampAbove(version);
+		const rootStore = this.store.rootStore;
+		if (typeof rootStore?.getUserSharedBuffer !== 'function') return step;
+		const lead = step - rootStore.getMonotonicTimestamp();
+		return lead > 0 && lead <= maxLockClockSkewMs() ? claimLocalKey(rootStore, step) : step;
 	}
 
 	isExpired(): boolean {
@@ -482,7 +493,16 @@ export async function acquireRecordKey(
 					wakeResolve?.();
 				};
 		const acquired = store.tryLock(key, onUnlocked);
-		if (acquired) return makeKeyLockHandle(store, key, keyId, lease, hold, freshLocalKey(store.rootStore ?? store));
+		if (acquired) {
+			let acquiredAt: number;
+			try {
+				acquiredAt = freshLocalKey(store.rootStore ?? store);
+			} catch (error) {
+				store.unlock(key);
+				throw error;
+			}
+			return makeKeyLockHandle(store, key, keyId, lease, hold, acquiredAt);
+		}
 		if (onUnlocked) hasCallback = true; // callback now registered; do not register another until it fires
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);
