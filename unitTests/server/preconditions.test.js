@@ -734,6 +734,7 @@ describe('REST preconditions with real table transactions', () => {
 				() => Promise.reject(Object.assign(new Response('no', { status: 403 }), { statusCode: 202 })),
 			],
 			['thrown plain error', 500, () => Promise.reject(new Error('plain'))],
+			['thrown zero status', 500, () => Promise.reject({ status: 0, message: 'upstream unavailable' })],
 			[
 				'sibling write then thrown success',
 				501,
@@ -745,21 +746,24 @@ describe('REST preconditions with real table transactions', () => {
 			['thrown forbidden', 403, () => Promise.reject(new Response('no', { status: 403 }))],
 			['thrown unavailable', 503, () => Promise.reject(new ClientError('busy', 503))],
 		];
-		for (const [name, expected, handler] of cases) {
-			const className = `Reply${name.replace(/\W/g, '')}`;
-			const Handler = {
-				[className]: class extends Row {
-					patch() {
-						return handler(this);
-					}
-				},
-			}[className];
-			resources.set(className, Handler, { rest: true });
-			const response = await request('PATCH', `/${className}/reply-shape`, { n: 2 }, { 'if-match': '*' });
-			assert.strictEqual(response.status, expected, name);
+		try {
+			for (const [name, expected, handler] of cases) {
+				const className = `Reply${name.replace(/\W/g, '')}`;
+				const Handler = {
+					[className]: class extends Row {
+						patch() {
+							return handler(this);
+						}
+					},
+				}[className];
+				resources.set(className, Handler, { rest: true });
+				const response = await request('PATCH', `/${className}/reply-shape`, { n: 2 }, { 'if-match': '*' });
+				assert.strictEqual(response.status, expected, name);
+			}
+			await nextTurn();
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
 		}
-		await nextTurn();
-		process.off('unhandledRejection', onUnhandled);
 		assert.deepStrictEqual(unhandled, []);
 		assert.strictEqual(cancelled, 3, 'a rejected streaming reply must be cancelled');
 		assert.deepStrictEqual(

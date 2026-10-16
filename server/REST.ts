@@ -611,7 +611,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		}
 		// the HTTP status may be carried as `statusCode` (our error classes) or `status` (e.g. a thrown plain object)
 		let statusCode = error.statusCode ?? error.status ?? request.response.status;
-		if (writeCondition && !writeCondition.consumed && statusCode < 400) {
+		if (writeCondition && !writeCondition.consumed && (statusCode || 500) < 400) {
 			error = new ClientError('The resource did not apply the write precondition', 501);
 			statusCode = 501;
 		}
