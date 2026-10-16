@@ -30,12 +30,17 @@ describe('http.readRequestQueueLimit validation', () => {
 });
 
 describe('read queue CORS header configuration', () => {
-	for (const value of ['Accept, Content-Type, Authorization', '', null]) {
-		it(`accepts ${JSON.stringify(value)}`, () => {
+	for (const value of ['Accept, Content-Type, Authorization', ['Accept', 'Content-Type'], [], '', null, false, 123]) {
+		it(`accepts legacy header value ${JSON.stringify(value)}`, () => {
 			assert.ifError(validate(undefined, value).error);
 		});
 	}
-	for (const value of ['Accept,\nContent-Type', 'Accept\r\nInjected: value', 'Accept\0']) {
+	for (const value of [
+		'Accept,\nContent-Type',
+		'Accept\r\nInjected: value',
+		'Accept\0',
+		['Accept', 'Injected\nvalue'],
+	]) {
 		it(`rejects ${JSON.stringify(value)} before serving requests`, () => {
 			const { error } = validate(undefined, value);
 			assert(error?.details.some((detail) => detail.path.join('.') === 'http.corsAccessControlAllowHeaders'));

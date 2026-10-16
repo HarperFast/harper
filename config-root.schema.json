@@ -34,8 +34,9 @@
 					"items": { "type": "string" }
 				},
 				"corsAccessControlAllowHeaders": {
-					"type": ["string", "null"],
-					"description": "Comma-separated list of header keys for Access-Control-Allow-Headers on OPTIONS requests. Must be a valid HTTP header value; invalid control characters are rejected at configuration validation. Default: 'Accept, Content-Type, Authorization'"
+					"type": ["string", "array", "null"],
+					"items": { "type": "string" },
+					"description": "Comma-separated list or array of header keys for Access-Control-Allow-Headers on OPTIONS requests. Each serialized value must be a valid HTTP header value; invalid control characters are rejected at configuration validation. Default: 'Accept, Content-Type, Authorization'"
 				},
 				"headersTimeout": {
 					"type": "integer",
