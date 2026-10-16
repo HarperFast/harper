@@ -680,14 +680,28 @@ describe('REST preconditions with real table transactions', () => {
 	it('fails closed for every non-error reply shape from a handler that skipped the condition', async () => {
 		await Row.put('reply-shape', { n: 1 });
 		await Row.put('reply-sibling', { n: 1 });
+		const ids = ['reply-shape', 'reply-sibling'];
+		const snapshot = () =>
+			ids.map((id) => [
+				Row.primaryStore.getEntry(id).version,
+				[...Row.auditStore.getRange({ start: 1 })].filter(
+					(entry) => entry.tableId === Row.tableId && entry.recordId === id
+				).length,
+			]);
+		const before = snapshot();
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
 		let cancelled = 0;
-		const streamingBody = () =>
+		const streamingBody = (cancelError) =>
 			new ReadableStream({
-				pull(controller) {
+				start(controller) {
 					controller.enqueue(new TextEncoder().encode('chunk'));
+					controller.close();
 				},
 				cancel() {
 					cancelled++;
+					if (cancelError) throw cancelError;
 				},
 			});
 		const cases = [
@@ -704,6 +718,22 @@ describe('REST preconditions with real table transactions', () => {
 			['thrown redirect', 501, () => Promise.reject(new Response(null, { status: 302 }))],
 			['thrown streaming success', 501, () => Promise.reject(new Response(streamingBody(), { status: 200 }))],
 			['returned streaming success', 501, () => new Response(streamingBody(), { status: 200 })],
+			[
+				'thrown success whose cancel fails',
+				501,
+				() => Promise.reject(new Response(streamingBody(new Error('cancel failed')), { status: 200 })),
+			],
+			[
+				'success Response carrying an error statusCode',
+				501,
+				() => Promise.reject(Object.assign(new Response('ok', { status: 200 }), { statusCode: 503 })),
+			],
+			[
+				'error Response carrying a success statusCode',
+				403,
+				() => Promise.reject(Object.assign(new Response('no', { status: 403 }), { statusCode: 202 })),
+			],
+			['thrown plain error', 500, () => Promise.reject(new Error('plain'))],
 			[
 				'sibling write then thrown success',
 				501,
@@ -726,11 +756,17 @@ describe('REST preconditions with real table transactions', () => {
 			}[className];
 			resources.set(className, Handler, { rest: true });
 			const response = await request('PATCH', `/${className}/reply-shape`, { n: 2 }, { 'if-match': '*' });
-			assert.strictEqual(response.status, expected, `${name}: ${await bodyOf(response)}`);
+			assert.strictEqual(response.status, expected, name);
 		}
-		assert.strictEqual(cancelled, 2, 'a rejected streaming reply must be cancelled');
-		assert.strictEqual((await Row.get('reply-shape')).n, 1);
-		assert.strictEqual((await Row.get('reply-sibling')).n, 1, 'the sibling write must roll back');
+		await nextTurn();
+		process.off('unhandledRejection', onUnhandled);
+		assert.deepStrictEqual(unhandled, []);
+		assert.strictEqual(cancelled, 3, 'a rejected streaming reply must be cancelled');
+		assert.deepStrictEqual(
+			snapshot(),
+			before,
+			'rejected replies, and their sibling writes, must leave no version or audit entry'
+		);
 
 		class Unconditional extends Row {
 			patch() {

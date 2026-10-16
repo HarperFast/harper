@@ -88,3 +88,9 @@ export class ConditionalCounter extends tables.Counter {
 		return result;
 	}
 }
+
+export class ConditionalShortCircuit extends tables.Counter {
+	patch() {
+		throw new Response('ok', { status: 200 });
+	}
+}

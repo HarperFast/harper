@@ -596,25 +596,25 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			: responseObject;
 	} catch (error) {
 		error ??= new Error('Unknown error occurred');
-		// Any non-error reply, whatever shape carried its status, needs the condition applied, as the
-		// returned-result gate above requires.
-		if (writeCondition && !writeCondition.consumed) {
-			const replyStatus = error.statusCode ?? error.status ?? request.response.status;
-			if (replyStatus < 400) {
-				if (error instanceof Response) discardSerializedStream(error.body);
-				error = new ClientError('The resource did not apply the write precondition', 501);
-			}
-		}
 		// a thrown Response short-circuits as the response, the same as returning one
 		if (error instanceof Response) {
-			try {
-				return finalizeResponse(error, headers, request.response.status, request, method, preconditionsEnabled);
-			} catch (preconditionError) {
-				error = preconditionError;
+			if (writeCondition && !writeCondition.consumed && error.status < 400) {
+				discardSerializedStream(error.body);
+				error = new ClientError('The resource did not apply the write precondition', 501);
+			} else {
+				try {
+					return finalizeResponse(error, headers, request.response.status, request, method, preconditionsEnabled);
+				} catch (preconditionError) {
+					error = preconditionError;
+				}
 			}
 		}
 		// the HTTP status may be carried as `statusCode` (our error classes) or `status` (e.g. a thrown plain object)
 		let statusCode = error.statusCode ?? error.status ?? request.response.status;
+		if (writeCondition && !writeCondition.consumed && statusCode < 400) {
+			error = new ClientError('The resource did not apply the write precondition', 501);
+			statusCode = 501;
+		}
 		if (statusCode) {
 			if (statusCode === 500) harperLogger.warn(errorForLog(error));
 			else harperLogger.info(errorForLog(error));
