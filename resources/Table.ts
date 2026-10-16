@@ -1707,7 +1707,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	function lockConditionalWrite(resource, id: Id, condition) {
 		if (!condition?.lock || !isRocksDB || condition.locked) return;
-		return (condition.locking ??= resource.lock(id, { hold: true, scope: 'node' }).then((locked) => {
+		return (condition.locking ??= resource.lock(id, { hold: true }).then((locked) => {
 			if (condition.finished)
 				return locked.unlock().then(() => {
 					throw new ClientError('Conditional request already completed', 409);
