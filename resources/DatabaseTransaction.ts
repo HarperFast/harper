@@ -1931,6 +1931,7 @@ export class DatabaseTransaction implements Transaction {
 		// a locked write would otherwise re-scan every write of every later unlocked batch. Assigned
 		// only when it was set, so an ordinary transaction never gains the property at all.
 		if (this.hasLeaseProtectedWrite) this.hasLeaseProtectedWrite = false;
+		if (this.unlockedWriteScan) this.unlockedWriteScan = undefined;
 	}
 
 	/**
@@ -2379,11 +2380,18 @@ export class DatabaseTransaction implements Transaction {
 			(transaction as RocksTransactionWithRetry).isRetry = true;
 			(transaction as RocksTransactionWithRetry).retries = this.retries;
 		} else if (!remoteOrigin) {
-			const key = reserveLocalKey(
-				operation.store.rootStore,
-				transaction,
-				(this.saveCommits && this.recordLocks ? this.lockStampCeiling(transaction, txnTime) : txnTime) || undefined
-			);
+			let key: number;
+			try {
+				key = reserveLocalKey(
+					operation.store.rootStore,
+					transaction,
+					(this.saveCommits && this.recordLocks ? this.lockStampCeiling(transaction, txnTime) : txnTime) || undefined
+				);
+			} catch (error) {
+				if (immediateCommit)
+					abortNativeTransaction(transaction, 'aborting an immediate transaction whose key was not reserved');
+				throw error;
+			}
 			if (!txnTime) {
 				txnTime = key;
 				if (!concurrentClosedWrite) this.timestamp = key;
