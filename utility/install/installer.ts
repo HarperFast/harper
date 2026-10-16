@@ -784,12 +784,9 @@ async function createConfigFile(staged: configUtils.StagedInstallConfig) {
 		}
 	}
 	try {
-		configUtils.createConfigFile(
-			undefined,
-			false,
-			undefined,
-			overwriteRootNamedHdbConfig && hdbConfigPath ? hdbConfigPath : undefined,
-			staged
+		configUtils.writeStagedInstallConfig(
+			staged,
+			overwriteRootNamedHdbConfig && hdbConfigPath ? hdbConfigPath : undefined
 		);
 		envManager.initSync();
 	} catch (configErr) {

@@ -162,7 +162,6 @@ describe('HARPER_CONFIG', function () {
 			process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ storage: { engine: 'rocksdb' }, http: { port: 7777 } });
 			process.env.HARPER_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
 
-			// Install boot: user/CLI explicitly sets storage.engine='rocksdb' and http.port=8080
 			const fileConfig = { storage: { engine: 'rocksdb' }, http: { port: 8080 } };
 			const { commitState } = prepareRuntimeEnvConfig(fileConfig, testRoot, {
 				isInstall: true,
@@ -176,12 +175,10 @@ describe('HARPER_CONFIG', function () {
 			assert.strictEqual(readState().originalValues['storage.engine'], 'rocksdb');
 			assert.strictEqual(readState().sources['http.port'], 'user');
 
-			// Subsequent runtime boot (isInstall: false): same resolution, no engine flip
 			applyRuntimeEnvConfig(fileConfig, testRoot);
 			assert.strictEqual(fileConfig.storage.engine, 'lmdb', 'HARPER_CONFIG stays lmdb on runtime boot');
 			assert.strictEqual(fileConfig.http.port, 8080, 'HARPER_DEFAULT_CONFIG still yields to user');
 
-			// Dropping HARPER_CONFIG restores the user-authored value
 			delete process.env.HARPER_CONFIG;
 			applyRuntimeEnvConfig(fileConfig, testRoot);
 			assert.strictEqual(

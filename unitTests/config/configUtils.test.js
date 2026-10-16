@@ -2164,7 +2164,6 @@ describe('Test configUtils module', () => {
 
 		it('wraps backfilled defaults and synced env objects in YAMLMap nodes while preserving inline comments on overridden scalars', () => {
 			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config.yaml');
-			// Minimal HDB_CONFIG with scalar threads: 4, commented scalar keys, and omitted operationsApi section
 			fs.writeFileSync(
 				hdbConfigTemplatePath,
 				'threads: 4\nstorage:\n  engine: rocksdb # storage engine comment\nlogging:\n  level: info # log level comment\n',
@@ -2238,7 +2237,6 @@ describe('Test configUtils module', () => {
 				expect(configJson.threads.count).to.equal(4);
 				expect(configJson.threads.debug).to.equal(true);
 
-				// Even with no threads_* CLI args, HARPER_DEFAULT_CONFIG yields to template threads: 4 and http.mtls: false
 				process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({
 					threads: { count: 8, debug: true },
 					http: { mtls: { required: true } },
@@ -2266,17 +2264,36 @@ describe('Test configUtils module', () => {
 			}
 		});
 
-		it('throws if staged is passed to createConfigFile alongside defined args, baseConfigPath, or defaultedArgKeys', () => {
-			const staged = config_utils_rw.stageInstallConfig({ ROOTPATH: HDB_ROOT });
-			expect(() =>
-				config_utils_rw.createConfigFile({ ROOTPATH: HDB_ROOT }, false, undefined, CONFIG_FILE_PATH, staged)
-			).to.throw(/createConfigFile cannot accept args, baseConfigPath, or defaultedArgKeys when staged is provided/);
-			expect(() =>
-				config_utils_rw.createConfigFile(undefined, false, '/some/base.yaml', CONFIG_FILE_PATH, staged)
-			).to.throw(/createConfigFile cannot accept args, baseConfigPath, or defaultedArgKeys when staged is provided/);
-			expect(() =>
-				config_utils_rw.createConfigFile(undefined, false, undefined, CONFIG_FILE_PATH, staged, new Set(['ROOTPATH']))
-			).to.throw(/createConfigFile cannot accept args, baseConfigPath, or defaultedArgKeys when staged is provided/);
+		it('allows HARPER_DEFAULT_CONFIG to override defaults under an empty section in HDB_CONFIG', () => {
+			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config-empty-section.yaml');
+			fs.writeFileSync(hdbConfigTemplatePath, 'storage:\n  engine: lmdb\nhttp: {}\n', 'utf8');
+			const origDefaultConfig = process.env.HARPER_DEFAULT_CONFIG;
+
+			try {
+				process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({
+					http: { port: 8080 },
+				});
+				config_utils_rw.createConfigFile(
+					{
+						ROOTPATH: HDB_ROOT,
+					},
+					false,
+					hdbConfigTemplatePath
+				);
+
+				const configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
+				const configJson = configDoc.toJSON();
+				expect(configJson.storage.engine).to.equal('lmdb');
+				expect(configJson.http.port).to.equal(8080);
+				expect(configJson.http.securePort).to.equal(9926);
+			} finally {
+				if (origDefaultConfig === undefined) {
+					delete process.env.HARPER_DEFAULT_CONFIG;
+				} else {
+					process.env.HARPER_DEFAULT_CONFIG = origDefaultConfig;
+				}
+				fs.removeSync(hdbConfigTemplatePath);
+			}
 		});
 	});
 });
