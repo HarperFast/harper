@@ -429,11 +429,11 @@ describe('REST preconditions with real table transactions', () => {
 			}
 		}
 		resources.set('LateWrite', LateWrite, { rest: true });
-		// Hold the request's commit until the late write has run, or a bounded second has passed.
 		const { Transaction } = require('@harperfast/rocksdb-js');
 		const commit = Transaction.prototype.commit;
 		const targetDb = Row.primaryStore.store.db;
 		let held = false;
+		let timedOut = false;
 		Transaction.prototype.commit = function (...args) {
 			if (this.store?.db !== targetDb || !late || held) return commit.apply(this, args);
 			held = true;
@@ -441,7 +441,8 @@ describe('REST preconditions with real table transactions', () => {
 				() => {},
 				() => {}
 			);
-			return Promise.race([settled, delay(1000)]).then(() => commit.apply(this, args));
+			const timeout = delay(1000).then(() => (timedOut = true));
+			return Promise.race([settled, timeout]).then(() => commit.apply(this, args));
 		};
 		let response;
 		try {
@@ -450,6 +451,7 @@ describe('REST preconditions with real table transactions', () => {
 			Transaction.prototype.commit = commit;
 		}
 		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual(timedOut, false, 'the late write must run while the commit is held');
 		await assert.rejects(late, /Conditional request already completed/);
 		assert.strictEqual((await Row.get('sealed')).n, 2);
 	});
@@ -783,6 +785,15 @@ describe('REST preconditions with real table transactions', () => {
 			],
 			['thrown forbidden', 403, () => Promise.reject(new Response('no', { status: 403 }))],
 			['returned forbidden', 403, () => new Response('no', { status: 403 })],
+			['returned forbidden envelope', 403, () => ({ status: 403, headers: new Headers(), data: { error: 'no' } })],
+			[
+				'error reply status then success envelope',
+				501,
+				(resource) => {
+					resource.getContext().response.status = 409;
+					return { status: 200, headers: new Headers(), data: { ok: true } };
+				},
+			],
 			['thrown unavailable', 503, () => Promise.reject(new ClientError('busy', 503))],
 		];
 		try {
