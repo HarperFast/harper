@@ -1534,6 +1534,7 @@ describe('Record locks (harper#483)', () => {
 		let aheadUntil = 0;
 		const futureTimestamp = (aheadMs = 1_000) => (aheadUntil = Math.max(aheadUntil, Date.now() + aheadMs));
 		after(async () => {
+			if (isLMDB) return;
 			const rootStore = LockTest.primaryStore.rootStore;
 			const coveredUntil = () => Math.max(aheadUntil, readLocalIssuanceCeiling(LockTest.auditStore));
 			while (rootStore.getMonotonicTimestamp() <= coveredUntil()) await delay(10);
