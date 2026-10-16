@@ -8,6 +8,11 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 // @ts-expect-error client.mjs has no type declarations
 import { createApiClient } from '../apiTests/utils/client.mjs';
 
+// Bun accepts reusePort on Linux but does not reliably distribute loopback test traffic across the
+// listeners, so Node/Linux supplies the multi-worker proof while Bun validates the concurrent
+// precondition contract through whichever listener wins.
+const MIN_OBSERVABLE_WORKERS = process.env.HARPER_RUNTIME === 'bun' ? 1 : 2;
+
 for (const preconditionLocks of [true, false]) {
 	suite(
 		`HTTP conditional requests (locks ${preconditionLocks ? 'on by default' : 'off'})`,
@@ -63,8 +68,8 @@ for (const preconditionLocks of [true, false]) {
 				release();
 				const results = await Promise.all(attempts);
 				ok(
-					new Set(results.map(({ worker }) => worker).filter(Boolean)).size > 1,
-					`expected multiple workers: ${JSON.stringify(results)}`
+					new Set(results.map(({ worker }) => worker).filter(Boolean)).size >= MIN_OBSERVABLE_WORKERS,
+					`expected at least ${MIN_OBSERVABLE_WORKERS} worker(s): ${JSON.stringify(results)}`
 				);
 				const winners = results.filter(({ status }) => status >= 200 && status < 300);
 				const stored = await request('GET', id);
