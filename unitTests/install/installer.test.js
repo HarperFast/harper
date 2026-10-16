@@ -170,7 +170,7 @@ describe.skip('Test installer module', () => {
 	});
 
 	it('Test createConfigFile assigns all the args and calls createConfig then init', async () => {
-		const create_config_file_stub = sandbox.stub(config_utils, 'createConfigFile');
+		const write_staged_config_stub = sandbox.stub(config_utils, 'writeStagedInstallConfig');
 		// not reliably reset
 		//const env_mng_init_stub = sandbox.stub(env_manager, 'initSync');
 		process.env.CLUSTERING = 'true';
@@ -184,20 +184,20 @@ describe.skip('Test installer module', () => {
 		const staged = stageInstallConfig(fake_install_params);
 		await createConfigFile(staged);
 
-		expect(create_config_file_stub.args[0][0]).to.be.undefined;
-		expect(create_config_file_stub.args[0][4]).to.equal(staged);
+		expect(write_staged_config_stub.args[0][0]).to.equal(staged);
+		expect(write_staged_config_stub.args[0][1]).to.be.undefined;
 		//expect(env_mng_init_stub.called).to.be.true;
 
 		delete process.env.CLUSTERING;
 		delete process.env.NODE_NAME;
-		create_config_file_stub.restore();
+		write_staged_config_stub.restore();
 	});
 
 	// this test does reliably wrap stubs
 	it.skip('Test createConfigFile calls rollback if create config throws error', async () => {
 		const rollback_stub = sandbox.stub();
 		const rollback_rw = installer.__set__('rollbackInstall', rollback_stub);
-		sandbox.stub(config_utils, 'createConfigFile').throws('Error creating config file');
+		sandbox.stub(config_utils, 'writeStagedInstallConfig').throws('Error creating config file');
 		const fake_install_params = {
 			ROOTPATH: 'user/unit/test',
 			OPERATIONSAPI_NETWORK_PORT: '8888',
@@ -587,6 +587,9 @@ describe('resolveInstallDestination', () => {
 
 describe('install storage.engine resolution', () => {
 	const realInstaller = require('#js/utility/install/installer');
+	const run_rw = rewire('#js/bin/run');
+	const initialize = run_rw.__get__('initialize');
+	const PROCESS_EVENTS = ['unhandledRejection', 'exit', 'SIGINT', 'SIGQUIT', 'SIGTERM'];
 	const {
 		closeDatabase,
 		databases,
@@ -625,6 +628,21 @@ describe('install storage.engine resolution', () => {
 	let savedEnv;
 	let savedArgv;
 	let savedSystemDb;
+
+	async function runBootInitialize() {
+		const beforeListeners = new Map(PROCESS_EVENTS.map((ev) => [ev, new Set(process.listeners(ev))]));
+		try {
+			await initialize();
+		} finally {
+			for (const [ev, existing] of beforeListeners) {
+				for (const listener of process.listeners(ev)) {
+					if (!existing.has(listener)) {
+						process.removeListener(ev, listener);
+					}
+				}
+			}
+		}
+	}
 
 	async function closeSystemDatabase() {
 		const systemTables = getDatabases().system;
@@ -856,14 +874,12 @@ describe('install storage.engine resolution', () => {
 	});
 
 	it('resolves CLI STORAGE_ENGINE=rocksdb + HARPER_CONFIG={"storage":{"engine":"lmdb"}} consistently to lmdb across install and subsequent boots', async () => {
-		const { initialize } = require('#js/bin/run');
 		process.env.STORAGE_ENGINE = 'rocksdb';
 		process.env.HARPER_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
 		const rootPath = await runInstall();
 		assertInstalledSystemEngine(rootPath, 'lmdb');
 		const updateSpy = sandbox.spy(config_utils, 'updateConfigValue');
-		// Run real subsequent-boot bin/run.ts initialize() path
-		await initialize(false, false, true);
+		await runBootInitialize();
 		for (const call of updateSpy.getCalls()) {
 			assert.strictEqual(call.args[2]?.storage_engine, undefined, 'HARPER_CONFIG should filter STORAGE_ENGINE on run');
 		}
@@ -872,14 +888,13 @@ describe('install storage.engine resolution', () => {
 	});
 
 	it('auto-installs via bin/run.ts initialize() when not installed and skips redundant updateConfigValue via installedDuringInit', async () => {
-		const { initialize } = require('#js/bin/run');
 		const rootPath = path.join(tempBaseDir, 'hdb');
 		process.env.ROOTPATH = rootPath;
 		process.env.HDB_ADMIN_USERNAME = 'HDB_ADMIN';
 		process.env.HDB_ADMIN_PASSWORD = 'password1234';
 		process.env.STORAGE_ENGINE = 'lmdb';
 		const updateSpy = sandbox.spy(config_utils, 'updateConfigValue');
-		await initialize(false, false, true);
+		await runBootInitialize();
 		assertInstalledSystemEngine(rootPath, 'lmdb');
 		const cliEnvUpdateCalls = updateSpy.getCalls().filter((call) => call.args[3] === true);
 		assert.strictEqual(
@@ -1056,7 +1071,6 @@ describe('install storage.engine resolution', () => {
 		fs.writeFileSync(rootConfigPath, originalContent, 'utf8');
 		process.env.HDB_CONFIG = rootConfigPath;
 
-		// Force copyFileSync to fail so rollback exercises the atomicWriteFile -> writeFileSync fallback chain
 		const origCopyFileSync = fs.copyFileSync;
 		sandbox.stub(fs, 'copyFileSync').callsFake((src, dest, ...rest) => {
 			if (String(dest).includes('.install-backup-')) {
@@ -1064,9 +1078,9 @@ describe('install storage.engine resolution', () => {
 			}
 			return origCopyFileSync.call(fs, src, dest, ...rest);
 		});
-		sandbox.stub(config_utils, 'createConfigFile').callsFake(() => {
+		sandbox.stub(config_utils, 'writeStagedInstallConfig').callsFake(() => {
 			fs.writeFileSync(rootConfigPath, 'corrupted: true\n', 'utf8');
-			throw new Error('simulated createConfigFile failure');
+			throw new Error('simulated writeStagedInstallConfig failure');
 		});
 		const enospcErr = Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
 		sandbox.stub(config_utils, 'atomicWriteFile').throws(enospcErr);
@@ -1104,7 +1118,9 @@ describe('install storage.engine resolution', () => {
 		fs.writeFileSync(externalConfigPath, 'storage:\n  engine: lmdb\n', 'utf8');
 		process.env.HDB_CONFIG = externalConfigPath;
 
-		sandbox.stub(config_utils, 'createConfigFile').throws(new Error('simulated createConfigFile failure'));
+		sandbox
+			.stub(config_utils, 'writeStagedInstallConfig')
+			.throws(new Error('simulated writeStagedInstallConfig failure'));
 		const exitStub = sandbox.stub(process, 'exit').callsFake((code) => {
 			throw new Error(`process.exit(${code})`);
 		});
@@ -1132,9 +1148,9 @@ describe('install storage.engine resolution', () => {
 		fs.writeFileSync(rootConfigPath, originalContent, 'utf8');
 		process.env.HDB_CONFIG = rootConfigPath;
 
-		sandbox.stub(config_utils, 'createConfigFile').callsFake(() => {
+		sandbox.stub(config_utils, 'writeStagedInstallConfig').callsFake(() => {
 			fs.writeFileSync(rootConfigPath, 'corrupted: true\n', 'utf8');
-			throw new Error('simulated createConfigFile failure');
+			throw new Error('simulated writeStagedInstallConfig failure');
 		});
 		const origRenameSync = fs.renameSync;
 		sandbox.stub(fs, 'renameSync').callsFake((src, dest) => {
@@ -1186,7 +1202,9 @@ describe('install storage.engine resolution', () => {
 
 		realInstaller.setIgnoreExisting(true);
 		process.env.STORAGE_ENGINE = 'lmdb';
-		sandbox.stub(config_utils, 'createConfigFile').throws(new Error('simulated createConfigFile failure'));
+		sandbox
+			.stub(config_utils, 'writeStagedInstallConfig')
+			.throws(new Error('simulated writeStagedInstallConfig failure'));
 		const exitStub = sandbox.stub(process, 'exit').callsFake((code) => {
 			throw new Error(`process.exit(${code})`);
 		});
@@ -1217,9 +1235,9 @@ describe('install storage.engine resolution', () => {
 			fs.writeFileSync(rootConfigPath, originalContent, 'utf8');
 			process.env.HDB_CONFIG = rootConfigPath;
 
-			const createConfigStub = sandbox
-				.stub(config_utils, 'createConfigFile')
-				.throws(new Error('simulated createConfigFile failure'));
+			const writeConfigStub = sandbox
+				.stub(config_utils, 'writeStagedInstallConfig')
+				.throws(new Error('simulated writeStagedInstallConfig failure'));
 			const exitStub = sandbox.stub(process, 'exit').callsFake((code) => {
 				throw new Error(`process.exit(${code})`);
 			});
@@ -1238,7 +1256,6 @@ describe('install storage.engine resolution', () => {
 				`Expected install-created ${engine} system DB inside pre-existing database directory to be removed on rollback`
 			);
 
-			// Simulate fresh process state after process.exit(1) and verify retry with root-named HDB_CONFIG succeeds
 			await closeSystemDatabase();
 			env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, undefined);
 			env_manager.setProperty(env_manager.BOOT_PROPS_FILE_PATH, undefined);
@@ -1246,7 +1263,7 @@ describe('install storage.engine resolution', () => {
 			resetDatabases();
 			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, undefined);
 			hdb_utils.resetNoBootFileCache();
-			createConfigStub.restore();
+			writeConfigStub.restore();
 			exitStub.restore();
 			await runInstall();
 			assertInstalledSystemEngine(rootPath, engine);

@@ -359,8 +359,10 @@ function collectLeafDotPaths(obj: any, prefix = '', out = new Set<string>()): Se
 	}
 	for (const [key, val] of Object.entries(obj)) {
 		const nextPrefix = prefix ? `${prefix}.${key}` : key;
-		if (val !== null && typeof val === 'object' && !Array.isArray(val) && Object.keys(val).length > 0) {
-			collectLeafDotPaths(val, nextPrefix, out);
+		if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+			if (Object.keys(val).length > 0) {
+				collectLeafDotPaths(val, nextPrefix, out);
+			}
 		} else {
 			out.add(nextPrefix);
 		}
@@ -506,7 +508,7 @@ function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: 
 	return { configDoc, commitEnvConfigState };
 }
 
-// Leaves configObj unset until createConfigFile() finishes so pre-file readers still see "uninstalled".
+// Leaves configObj unset until writeStagedInstallConfig() finishes so pre-file readers still see "uninstalled".
 export function stageInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: Set<string>): StagedInstallConfig {
 	const staged = composeInstallConfig(args, baseConfigPath, defaultedArgKeys);
 	flatConfigObj = flattenConfig(staged.configDoc.toJSON());
@@ -519,28 +521,12 @@ export function validateStagedInstallConfig(staged: StagedInstallConfig, skipFsV
 	flatConfigObj = flattenConfig(staged.configDoc.toJSON());
 }
 
-/**
- * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
- * @param args - any args that the user provided (must be undefined when `staged` is provided).
- * @param skipFsValidation - when true, skips filesystem existence checks during config validation.
- * @param baseConfigPath - optional user-supplied config template (HDB_CONFIG) to backfill with defaults.
- * @param targetConfigPath - optional destination path to write the config file to instead of `<rootPath>/harper-config.yaml`.
- * @param staged - optional pre-staged install config from `stageInstallConfig()`.
- * @param defaultedArgKeys - optional set of arg keys populated from install-mode defaults rather than explicit user input.
- */
-export function createConfigFile(
-	args,
-	skipFsValidation = false,
-	baseConfigPath?: string,
+export function writeStagedInstallConfig(
+	staged: StagedInstallConfig,
 	targetConfigPath?: string,
-	staged?: StagedInstallConfig,
-	defaultedArgKeys?: Set<string>
-) {
-	if (staged && (args !== undefined || baseConfigPath !== undefined || defaultedArgKeys !== undefined)) {
-		throw new Error('createConfigFile cannot accept args, baseConfigPath, or defaultedArgKeys when staged is provided');
-	}
-	const { configDoc, commitEnvConfigState, validated } =
-		staged ?? composeInstallConfig(args, baseConfigPath, defaultedArgKeys);
+	skipFsValidation = false
+): void {
+	const { configDoc, commitEnvConfigState, validated } = staged;
 
 	// Validates config doc and if required sets default values for some parameters.
 	if (!validated) {
@@ -557,6 +543,18 @@ export function createConfigFile(
 	flatConfigObj = setActiveConfig(configDoc.toJSON());
 	commitEnvConfigState?.();
 	logger.trace(`Config file written to ${configFilePath}`);
+}
+
+/**
+ * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
+ * @param args - any args that the user provided
+ * @param skipFsValidation - when true, skips filesystem existence checks during config validation.
+ * @param baseConfigPath - optional user-supplied config template (HDB_CONFIG) to backfill with defaults.
+ * @param targetConfigPath - optional destination path to write the config file to instead of `<rootPath>/harper-config.yaml`.
+ */
+export function createConfigFile(args, skipFsValidation = false, baseConfigPath?: string, targetConfigPath?: string) {
+	const staged = composeInstallConfig(args, baseConfigPath);
+	writeStagedInstallConfig(staged, targetConfigPath, skipFsValidation);
 }
 
 /**
