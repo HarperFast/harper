@@ -2279,24 +2279,23 @@ export class DatabaseTransaction implements Transaction {
 			// Before the first staged write, which freezes the native timestamp. A key below the floor's
 			// admission bound is replaced on the handle only: `txnTime` keeps an explicit value as the
 			// record version, and the entry then carries both clocks as an applied write does.
-			let key: number;
 			const lockBatch = this.saveCommits && this.recordLocks;
 			try {
-				key = reserveLocalKey(
+				const key = reserveLocalKey(
 					operation.store.rootStore,
 					transaction,
 					(lockBatch ? this.lockStampCeiling(transaction, txnTime) : txnTime) || undefined
 				);
+				// A batch key a lock stamp set is not the clock of the batch's unlocked writes: past the
+				// skew cap it can be arbitrarily far ahead.
+				if (!txnTime) {
+					txnTime = lockBatch ? Math.min(freshLocalKey(operation.store.rootStore), key) : key;
+					if (!concurrentClosedWrite) this.timestamp = txnTime;
+				}
 			} catch (error) {
 				if (immediateCommit)
 					abortNativeTransaction(transaction, 'aborting an immediate transaction whose key was not reserved');
 				throw error;
-			}
-			// A batch key a lock stamp set is not the clock of the batch's unlocked writes: past the skew
-			// cap it can be arbitrarily far ahead.
-			if (!txnTime) {
-				txnTime = lockBatch ? Math.min(freshLocalKey(operation.store.rootStore), key) : key;
-				if (!concurrentClosedWrite) this.timestamp = txnTime;
 			}
 		}
 		if (!txnTime) {
