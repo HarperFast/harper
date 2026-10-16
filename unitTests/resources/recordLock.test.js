@@ -7,6 +7,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction, contextStorage } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
 const { readLocalIssuanceCeiling } = require('#src/resources/auditStore');
+const { ImmediateTransaction } = require('#src/resources/DatabaseTransaction');
 const {
 	MIN_LOCK_LEASE_MS,
 	admissionFloor,
@@ -1765,6 +1766,24 @@ describe('Record locks (harper#483)', () => {
 				readLocalIssuanceCeiling(LockTest.auditStore) >= Math.max(keyA, keyB),
 				'a restart issues above every claimed key'
 			);
+		});
+
+		it('a write outside a transaction is not ordered behind one a claim lifted inside a transaction', async function () {
+			if (isLMDB) return this.skip();
+			const lockedId = id();
+			const otherId = id();
+			await transaction({ timestamp: futureTimestamp() }, () => LockTest.put({ id: lockedId, n: 0 }));
+			await transaction(async () => {
+				const locked = await LockTest.lock(lockedId);
+				locked.set('n', 1);
+				await locked.save();
+			});
+			await transaction(() => LockTest.put({ id: otherId, n: 1 }));
+			const context = {};
+			const resource = await LockTest.getResource(otherId, context);
+			await resource.patch(otherId, { n: 2 });
+			assert.ok(context.transaction instanceof ImmediateTransaction, 'the second write took the immediate path');
+			assert.strictEqual(entryOf(otherId).value.n, 2, 'the later write is the stored one');
 		});
 
 		it('a floor beyond storage.maxLockClockSkew outranks outside an explicit transaction and lifts no clock', async function () {
