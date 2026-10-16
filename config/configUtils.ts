@@ -352,16 +352,29 @@ function backfillMissingDefaults(targetDoc: YAML.Document, defaultsDoc: YAML.Doc
 	}
 }
 
-function collectLeafDotPaths(obj: any, prefix = '', out = new Set<string>()): Set<string> {
+function collectLeafDotPaths(obj: any, prefix = '', out = new Set<string>(), defaultsObj?: any): Set<string> {
 	if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
 		if (prefix) out.add(prefix);
 		return out;
 	}
 	for (const [key, val] of Object.entries(obj)) {
 		const nextPrefix = prefix ? `${prefix}.${key}` : key;
+		const defaultVal =
+			defaultsObj !== null && typeof defaultsObj === 'object' && !Array.isArray(defaultsObj)
+				? defaultsObj[key]
+				: undefined;
 		if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
 			if (Object.keys(val).length > 0) {
-				collectLeafDotPaths(val, nextPrefix, out);
+				collectLeafDotPaths(val, nextPrefix, out, defaultVal);
+			} else {
+				const defaultHasSection =
+					defaultVal !== null &&
+					typeof defaultVal === 'object' &&
+					!Array.isArray(defaultVal) &&
+					Object.keys(defaultVal).length > 0;
+				if (!defaultHasSection) {
+					out.add(nextPrefix);
+				}
 			}
 		} else {
 			out.add(nextPrefix);
@@ -431,7 +444,8 @@ function clearScalarAncestors(configDoc: YAML.Document, splitParam: string[], us
 
 function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: Set<string>): StagedInstallConfig {
 	const defaultDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
-	flatDefaultConfigObj = flattenConfig(defaultDoc.toJSON());
+	const defaultConfigJson = defaultDoc.toJSON();
+	flatDefaultConfigObj = flattenConfig(defaultConfigJson);
 
 	let configDoc = defaultDoc;
 	const userPaths = new Set<string>();
@@ -447,7 +461,7 @@ function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: 
 			configDoc.deleteIn(['threads']);
 			configDoc.setIn(['threads', 'count'], threadCount);
 		}
-		collectLeafDotPaths(configDoc.toJSON(), '', userPaths);
+		collectLeafDotPaths(configDoc.toJSON(), '', userPaths, defaultConfigJson);
 		backfillMissingDefaults(configDoc, defaultDoc);
 	}
 
@@ -549,12 +563,10 @@ export function writeStagedInstallConfig(
  * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
  * @param args - any args that the user provided
  * @param skipFsValidation - when true, skips filesystem existence checks during config validation.
- * @param baseConfigPath - optional user-supplied config template (HDB_CONFIG) to backfill with defaults.
- * @param targetConfigPath - optional destination path to write the config file to instead of `<rootPath>/harper-config.yaml`.
  */
-export function createConfigFile(args, skipFsValidation = false, baseConfigPath?: string, targetConfigPath?: string) {
-	const staged = composeInstallConfig(args, baseConfigPath);
-	writeStagedInstallConfig(staged, targetConfigPath, skipFsValidation);
+export function createConfigFile(args, skipFsValidation = false) {
+	const staged = composeInstallConfig(args);
+	writeStagedInstallConfig(staged, undefined, skipFsValidation);
 }
 
 /**
