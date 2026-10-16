@@ -177,6 +177,19 @@ for (const preconditionLocks of [true, false]) {
 					ok(accepted.ok, `${accepted.status}: ${await accepted.text()}`);
 				}
 			});
+
+			test('a handler that skips the write and throws a success Response gets 501', async () => {
+				ok((await request('PUT', 'short-circuit', { n: 1 })).ok);
+				const response = await fetch(`${base}/ConditionalShortCircuit/short-circuit`, {
+					method: 'PATCH',
+					headers: { 'Authorization': auth, 'Content-Type': 'application/json', 'If-Match': '*' },
+					body: JSON.stringify({ n: 2 }),
+					signal: AbortSignal.timeout(15_000),
+				});
+				strictEqual(response.status, 501, await response.text());
+				const stored = await request('GET', 'short-circuit');
+				strictEqual(((await stored.json()) as { n: number }).n, 1);
+			});
 		}
 	);
 }
