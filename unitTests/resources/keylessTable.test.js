@@ -116,4 +116,81 @@ describe('tables with no primary key (harper#3225)', () => {
 		assertStaysKeyless(tables[tableName], tableName);
 		assert.strictEqual((await tables[tableName].get(createdId))?.name, 'after the declaration');
 	});
+
+	it('ignores every key declared on a populated keyless table', async function () {
+		const tableName = 'KeylessTwoKeys3225';
+		const Keyless = table({ table: tableName, database: 'test', schemaDefined: true, attributes: [{ name: 'name' }] });
+		const existingId = await Keyless.post({ name: 'existing' });
+		table({
+			table: tableName,
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'code', type: 'String', isPrimaryKey: true },
+				{ name: 'name' },
+			],
+		});
+		await commitCatalog(Keyless);
+		assertStaysKeyless(databases.test[tableName], tableName);
+		assert(!databases.test[tableName].dbisDB.getSync(`${tableName}/code`)?.isPrimaryKey);
+		assert.strictEqual((await databases.test[tableName].get(existingId))?.name, 'existing');
+	});
+
+	it('ignores a key declared by a caller that does not author the schema, without logging', async function () {
+		const tableName = 'KeylessUnauthored3225';
+		const Keyless = table({ table: tableName, database: 'test', attributes: [{ name: 'name' }] });
+		const errorLines = await withStorageErrors(() =>
+			table({
+				table: tableName,
+				database: 'test',
+				attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }, { name: 'name' }],
+			})
+		);
+		assert.deepStrictEqual(
+			errorLines.filter((line) => line.includes(tableName)),
+			[],
+			'only a schema-authored declaration is reported'
+		);
+		const createdId = await Keyless.post({ name: 'after the declaration' });
+		assert.strictEqual(typeof createdId, 'number', 'a keyless table must keep generating numeric ids');
+		await commitCatalog(Keyless);
+		assertStaysKeyless(databases.test[tableName], tableName);
+
+		delete databases.test[tableName];
+		resetDatabases();
+		const Reloaded = getDatabases().test[tableName];
+		assert.strictEqual(Reloaded.primaryKey, undefined);
+		assert(!Reloaded.attributes.some((attribute) => attribute.isPrimaryKey));
+		assert.strictEqual((await Reloaded.get(createdId))?.name, 'after the declaration');
+	});
+
+	it('completes an interrupted drop of a table whose bare row lacks isPrimaryKey', async function () {
+		const tableName = 'KeylessInterruptedDrop3225';
+		const Keyless = table({ table: tableName, database: 'test', schemaDefined: true, attributes: [{ name: 'name' }] });
+		await Keyless.post({ name: 'dropped' });
+		const catalog = Keyless.dbisDB;
+		const bareKey = `${tableName}/`;
+		const tombstone = { ...catalog.getSync(bareKey), dropping: true };
+		delete tombstone.isPrimaryKey;
+		delete tombstone.is_hash_attribute;
+		catalog.putSync(bareKey, tombstone);
+		await commitCatalog(Keyless);
+
+		delete databases.test[tableName];
+		resetDatabases();
+		assert.strictEqual(getDatabases().test[tableName], undefined, 'a dropping table must not load');
+		assert.strictEqual(catalog.getSync(bareKey), undefined, 'the interrupted drop must remove the bare row');
+		assert.strictEqual(catalog.getSync(`${tableName}/name`), undefined, 'the interrupted drop must remove every row');
+
+		const Recreated = table({
+			table: tableName,
+			database: 'test',
+			schemaDefined: true,
+			attributes: [{ name: 'name' }],
+		});
+		const records = [];
+		for (const entry of Recreated.primaryStore.getRange({ start: true })) records.push(entry);
+		assert.deepStrictEqual(records, [], 'the recreated table must not inherit the dropped records');
+	});
 });

@@ -1,15 +1,8 @@
 /**
- * Tables with no primary key across restarts (harper#3225).
- *
- * - A table whose bare `<table>/` catalog row has lost isPrimaryKey must not stop Harper from
- *   starting, and its records must stay readable and writable. Before the fix, startup failed with
- *   "store.useReadTransaction is not a function" and "The system database failed to load".
- * - A schema that declares a primary key on an existing keyless table must load (with an error
- *   naming the table) and leave the table keyless. Before the fix, the whole graphqlSchema
- *   component failed — healthy tables included — and an empty table failed on the restart after
- *   its first write.
- *
- * Each half runs on its own instance so either one fails on its own signature.
+ * Tables with no primary key across restarts (harper#3225): a nameless bare `<table>/` catalog row without
+ * isPrimaryKey must load with its records readable and writable, and a schema declaring a primary key on an
+ * existing keyless table must load with the rest of its tables and leave that table keyless. Each half runs on
+ * its own instance, so either one fails on its own signature.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, deepStrictEqual } from 'node:assert';
