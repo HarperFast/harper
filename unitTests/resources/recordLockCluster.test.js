@@ -16,7 +16,7 @@ const {
 	homeFor,
 	ringKeyFor,
 } = require('#src/resources/recordLockCoordinator');
-const { LOCAL_ONLY, isLockControlType } = require('#src/resources/auditStore');
+const { LOCAL_ONLY, isLockControlType, readLocalIssuanceCeiling } = require('#src/resources/auditStore');
 const { writeKeyId } = require('#src/resources/DatabaseTransaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const { ClientError } = require('#src/utility/errors/hdbError');
@@ -1311,11 +1311,19 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 	});
 
 	describe('stamping above the admitted state (harper#2540)', () => {
+		// Inside storage.maxLockClockSkew, so the stamp is a claim on the process-wide ratchet; the suite
+		// waits for the clock to pass what it claimed.
+		after(async () => {
+			if (isLMDB) return;
+			const rootStore = ClusterLockTest.primaryStore.rootStore;
+			while (rootStore.getMonotonicTimestamp() <= readLocalIssuanceCeiling(ClusterLockTest.auditStore)) await delay(10);
+		});
+
 		it('stamps a holder write above a future-stamped stored version', async function () {
 			if (isLMDB) return this.skip();
 			useSoloTransport();
 			const recordId = id();
-			const predecessorTimestamp = Date.now() + 60_000;
+			const predecessorTimestamp = Date.now() + 1_000;
 			await transaction({ timestamp: predecessorTimestamp }, () => ClusterLockTest.put({ id: recordId, n: 10 }));
 			await transaction(async () => {
 				const record = await ClusterLockTest.lock(recordId);
@@ -1342,7 +1350,6 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 				leaseMs: 5000,
 			});
 			assert.strictEqual(granted.granted, true);
-			// The peer's clock runs ahead, so its release lands at a log position past this node's clock.
 			const releasePosition = Date.now() + 120_000;
 			coordinator.applyEntry(
 				{ type: 'lockRelease', key: recordId, requester: 'peer-ahead', token: granted.token, dependencies: [] },
@@ -1372,7 +1379,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.strictEqual(ClusterLockTest.lockCoordinator, undefined);
 			const recordId = id();
 			await ClusterLockTest.put({ id: recordId, n: 10 });
-			const barrierPosition = Date.now() + 120_000;
+			const barrierPosition = Date.now() + 1_000;
 			let requirement;
 			useSoloTransport({
 				establishLockFreshness: async (_database, _table, _key, dependencies) => {

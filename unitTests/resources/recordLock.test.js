@@ -6,7 +6,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction, contextStorage } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
-const { readLocalClaimCeiling } = require('#src/resources/auditStore');
+const { readLocalIssuanceCeiling } = require('#src/resources/auditStore');
 const {
 	MIN_LOCK_LEASE_MS,
 	admissionFloor,
@@ -1533,7 +1533,9 @@ describe('Record locks (harper#483)', () => {
 		let aheadUntil = 0;
 		const futureTimestamp = (aheadMs = 1_000) => (aheadUntil = Math.max(aheadUntil, Date.now() + aheadMs));
 		after(async () => {
-			while (LockTest.primaryStore.rootStore.getMonotonicTimestamp() <= aheadUntil + 100) await delay(10);
+			const rootStore = LockTest.primaryStore.rootStore;
+			const coveredUntil = () => Math.max(aheadUntil, readLocalIssuanceCeiling(LockTest.auditStore));
+			while (rootStore.getMonotonicTimestamp() <= coveredUntil()) await delay(10);
 		});
 		const handleOf = (txn) => [...txn.recordLocks.values()][0].values().next().value;
 		const auditOf = (recordId, version) => {
@@ -1686,7 +1688,7 @@ describe('Record locks (harper#483)', () => {
 		it('keeps a hold advancing past a far-future floor', async function () {
 			if (isLMDB) return this.skip();
 			const recordId = id();
-			// Past 2^42 ms a fixed 0.000488 ms step no longer changes a double.
+			// One ulp here is 2^-10 ms, more than a 0.000488 ms step.
 			const predecessorTimestamp = 2 ** 42 + 0.5;
 			await transaction({ timestamp: predecessorTimestamp }, () => LockTest.put({ id: recordId, n: 0 }));
 			const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
@@ -1707,7 +1709,8 @@ describe('Record locks (harper#483)', () => {
 			const idA = id();
 			const idB = id();
 			await LockTest.put({ id: idA, n: 0 });
-			const predecessorTimestamp = futureTimestamp();
+			// Beyond storage.maxLockClockSkew, so no claim lifts the batch key and only its ceiling can.
+			const predecessorTimestamp = Date.now() + 60_000;
 			await transaction({ timestamp: predecessorTimestamp }, () => LockTest.put({ id: idB, n: 0 }));
 			const context = {};
 			// Both scoped locks stage their writes on one immediate context, so one save commits both.
@@ -1759,26 +1762,31 @@ describe('Record locks (harper#483)', () => {
 			assert.notStrictEqual(keyA, keyB, 'distinct log keys');
 			assert.strictEqual(entryOf(counterId).value.n, 2, 'neither increment was taken for a re-delivery of the other');
 			assert.ok(
-				readLocalClaimCeiling(LockTest.auditStore) >= Math.max(keyA, keyB),
+				readLocalIssuanceCeiling(LockTest.auditStore) >= Math.max(keyA, keyB),
 				'a restart issues above every claimed key'
 			);
 		});
 
-		it('a floor beyond storage.maxLockClockSkew still outranks, without lifting other writes to it', async function () {
+		it('a floor beyond storage.maxLockClockSkew outranks outside an explicit transaction and lifts no clock', async function () {
 			if (isLMDB) return this.skip();
 			const recordId = id();
 			const otherId = id();
+			const laterId = id();
 			const predecessorTimestamp = Date.now() + 60_000;
 			await transaction({ timestamp: predecessorTimestamp }, () => LockTest.put({ id: recordId, n: 0 }));
-			await transaction(async () => {
-				const successor = await LockTest.lock(recordId);
-				successor.set('n', 1);
-				await successor.save();
-			});
+			const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			holder.set('n', 1);
+			await holder.save();
+			await holder.unlock();
 			assert.strictEqual(entryOf(recordId).value.n, 1);
 			assert.ok(entryOf(recordId).version > predecessorTimestamp, 'stamped above the admitted version');
-			await transaction(() => LockTest.put({ id: otherId, n: 1 }));
-			assert.ok(entryOf(otherId).version < predecessorTimestamp, 'a later unlocked write stays on the clock');
+			await transaction(async () => {
+				await LockTest.lock(recordId);
+				await LockTest.put({ id: otherId, n: 1 });
+			});
+			assert.ok(entryOf(otherId).version < predecessorTimestamp, "the transaction's other writes keep its clock");
+			await transaction(() => LockTest.put({ id: laterId, n: 1 }));
+			assert.ok(entryOf(laterId).version < predecessorTimestamp, 'a later write on the node stays on the clock');
 		});
 
 		it('the admission floor is the next representable timestamp, and none above the last valid one', function () {

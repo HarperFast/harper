@@ -147,7 +147,6 @@ import {
 	isAuditEntryWrite,
 	isResumablePosition,
 	getDatabaseGeneration,
-	coverLocalClaim,
 } from './auditStore.ts';
 import {
 	acquireFullTextClearFence,
@@ -4428,19 +4427,16 @@ export function makeTable(options): TableResourceClass {
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					}
 				}
-				let floor: number | undefined;
+				let admitted: { stamp: number; movesClock: boolean } | undefined;
 				try {
 					admittedEntry = (primaryStore as any).getEntry(id);
-					floor = admissionFloor(admittedEntry?.version, dependencyFloor);
-					if (floor !== undefined)
-						floor = admissionStamp(tableRootStore, floor, handle.acquiredAt, (claim, headroom) =>
-							coverLocalClaim(auditStore, claim, headroom)
-						);
+					const floor = admissionFloor(admittedEntry?.version, dependencyFloor);
+					if (floor !== undefined) admitted = admissionStamp(tableRootStore, floor, handle.acquiredAt);
 				} catch (error) {
 					handle.release();
 					throw error;
 				}
-				if (floor !== undefined) handle.noteCandidateFloor(floor);
+				if (admitted) handle.noteCandidateFloor(admitted.stamp);
 				link.registerRecordLock(handle);
 				if (link.saveCommits && (context as any)?.timestamp) handle.noteCandidateFloor((context as any).timestamp);
 				if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
@@ -4453,14 +4449,14 @@ export function makeTable(options): TableResourceClass {
 					if (link.writes.length === 0 && !link.timestamp) {
 						link.timestamp = handle.acquiredAt;
 					}
-					// Raised only while nothing else would move with it: a log key already reserved stays, and an
-					// unlocked write staged first keeps its stamp, leaving this holder's ordering best-effort.
+					// Otherwise the holder's ordering is best-effort.
 					if (
-						floor > link.timestamp &&
+						admitted?.movesClock &&
+						admitted.stamp > link.timestamp &&
 						(!link.transaction || reservedLocalKey(link.transaction) === undefined) &&
-						link.writes.every((write) => !write || write.lockHandle)
+						!link.hasUnlockedWrite()
 					)
-						link.timestamp = Math.max(floor, link.timestamp || handle.acquiredAt);
+						link.timestamp = Math.max(admitted.stamp, link.timestamp || handle.acquiredAt);
 					if (!resolved.hold && link.transaction) {
 						// Scoped lock: the read snapshot may predate the lock; drop it so the
 						// scope reads what it locked.  Hold locks use acquiredAt directly and

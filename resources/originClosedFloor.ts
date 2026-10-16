@@ -40,6 +40,7 @@ export const ORIGIN_FLOOR_RETIRE = 'origin-floor-retire';
 const RETIRED_BIT = 1n << 40n;
 const RESERVATION = Symbol('originFloorReservation');
 const REGISTRY = Symbol('originFloorRegistry');
+const ISSUANCE_COVER = Symbol('localIssuanceCover');
 
 // Positive doubles order as their bit patterns read as signed 64-bit integers: a compare-and-swap
 // maximum on the bits is one on the values, and +1 on the bits is nextafter.
@@ -84,6 +85,7 @@ class ThreadRegistry {
 	private outstanding = 0;
 	private retired = false;
 	private released = 0;
+	private coveredThrough = 0;
 
 	constructor(rootStore: RocksDatabase) {
 		this.rootStore = rootStore;
@@ -206,8 +208,20 @@ class ThreadRegistry {
 			if (this.admitNative(toBits(again))) return again;
 			const ratchet = Atomics.load(this.words, WORD_RATCHET);
 			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, ratchet + 1n) === ratchet)
-				return fromBits(ratchet + 1n);
+				return this.covered(fromBits(ratchet + 1n));
 		}
+	}
+
+	/**
+	 * A key issued from the ratchet is ahead of the clock, which a restart cannot recover, so a ceiling
+	 * above it is persisted before it is used; open seeds issuance above that ceiling.
+	 */
+	private covered(key: number): number {
+		if (key > this.coveredThrough) {
+			const cover: ((key: number) => number) | undefined = (this.rootStore as any)[ISSUANCE_COVER];
+			if (cover) this.coveredThrough = cover(key);
+		}
+		return key;
 	}
 
 	reserve(handle: RocksTransaction, explicit: number | undefined): number {
@@ -347,9 +361,14 @@ export function claimLocalKey(rootStore: RocksDatabase, floor: number): number {
 	return registry.freshKey();
 }
 
-/** Issue every later local key above `ceiling`: the highest key an earlier process may have claimed. */
-export function seedLocalIssuance(rootStore: RocksDatabase, ceiling: number): void {
-	if (typeof rootStore?.getUserSharedBuffer !== 'function' || !isValidFloor(ceiling)) return;
+/**
+ * Persist issuance ahead of the clock through `cover`, which returns the ceiling it stored, and issue
+ * every later local key above `ceiling`, the last one stored by an earlier process.
+ */
+export function seedLocalIssuance(rootStore: RocksDatabase, ceiling: number, cover: (key: number) => number): void {
+	if (typeof rootStore?.getUserSharedBuffer !== 'function') return;
+	(rootStore as any)[ISSUANCE_COVER] = cover;
+	if (!isValidFloor(ceiling)) return;
 	const words = registryFor(rootStore).words;
 	storeMax(words, WORD_RATCHET, ceiling);
 	if (rootStore.getMonotonicTimestamp() <= ceiling) Atomics.store(words, WORD_STRICT, 1n);
