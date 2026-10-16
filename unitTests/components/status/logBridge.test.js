@@ -15,7 +15,7 @@ describe('logBridge', function () {
 	});
 
 	afterEach(function () {
-		setStatusHandler(undefined);
+		initLogBridge();
 		componentStatusRegistry.reset();
 	});
 
@@ -82,6 +82,54 @@ describe('logBridge', function () {
 			handleStatusLog({ resolves: key }, null, undefined, []);
 			handleStatusLog({ resolves: resolved }, null, undefined, []);
 		}
+	});
+
+	it('does not let an old expiry clear an explicit registry overwrite or recreate a reset entry', async function () {
+		const overwritten = 'test.expiry-overwritten';
+		const removed = 'test.expiry-removed';
+		handleStatusLog({ problem: overwritten, expires: 0.02 }, 'error', undefined, ['temporary']);
+		handleStatusLog({ problem: removed, expires: 0.02 }, 'error', undefined, ['temporary']);
+		componentStatusRegistry.reset();
+		componentStatusRegistry.reportError(overwritten, 'persistent', 'new report');
+		await delay(60);
+		assert.equal(componentStatusRegistry.getStatus(overwritten).status, COMPONENT_STATUS_LEVELS.ERROR);
+		assert.equal(componentStatusRegistry.getStatus(overwritten).message, 'new report');
+		assert.equal(componentStatusRegistry.getStatus(removed), undefined);
+	});
+
+	it('isolates failing status handlers in chained and bare calls', async function () {
+		const output = [];
+		const logger = createLogger({ level: 'error', writeToLog: (line) => output.push(line) });
+		setStatusHandler(() => {
+			throw new Error('Status handler failed');
+		});
+		assert.doesNotThrow(() => logger.status({ problem: 'test.bad-handler' }).error('cleanup continues'));
+		logger.status({ problem: 'test.bad-bare-handler' });
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.ok(output.some((line) => line.includes('cleanup continues')));
+		const failure = new Error('Original formatting error');
+		const value = {
+			[Symbol.for('nodejs.util.inspect.custom')]() {
+				throw failure;
+			},
+		};
+		try {
+			assert.throws(
+				() => logger.status({ problem: 'test.two-failures' }).error(value),
+				(error) => error === failure
+			);
+		} finally {
+			logger.info('');
+		}
+	});
+
+	it('reports filtered calls with uninspectable arguments without losing the status', function () {
+		const { proxy, revoke } = Proxy.revocable({}, {});
+		revoke();
+		const logger = createLogger({ level: 'error', writeToLog: () => {} });
+		assert.doesNotThrow(() => logger.status({ problem: 'test.revoked-proxy' }).debug(proxy));
+		assert.equal(componentStatusRegistry.getStatus('test.revoked-proxy').occurrenceCount, 1);
+		assert.equal(componentStatusRegistry.getStatus('test.revoked-proxy').message, '[unserializable]');
 	});
 
 	it('preserves tagged status logs and still reports status at filtered log levels', async function () {

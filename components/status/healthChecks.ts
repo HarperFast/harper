@@ -116,7 +116,7 @@ export async function readConstrainedMemoryUsage(
 						readFile(resolve(path, 'memory.stat'), 'utf8'),
 					]);
 					const effectiveLimit = Math.min(Number(maximum) || Infinity, Number(high) || Infinity);
-					const inactive = Number(stats.match(/^inactive_file (\d+)$/m)?.[1]);
+					const inactive = Number(stats.match(/^inactive_file[ \t]+(\d+)[ \t]*\r?$/m)?.[1]);
 					const used = Number(current);
 					// Reclaimable file cache must not make a database scan look like memory exhaustion.
 					if (effectiveLimit === limit && Number.isFinite(used) && used >= 0 && Number.isFinite(inactive)) {

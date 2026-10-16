@@ -685,6 +685,13 @@ let statusHandler: any;
 export function setStatusHandler(handler: any) {
 	statusHandler = handler;
 }
+function dispatchStatus(options: any, level: string | null, tag: string, args: any[]) {
+	try {
+		statusHandler?.(options, level, tag, args);
+	} catch {
+		// Status instrumentation must not interrupt the caller's recovery or cleanup.
+	}
+}
 function statusLogger(options: any, logger: any, tag?: string) {
 	// A chained log method (.error(), .warn(), etc.) fires synchronously if the caller chains
 	// one, before this microtask runs. Deferring the options-only dispatch lets us skip it when
@@ -693,7 +700,7 @@ function statusLogger(options: any, logger: any, tag?: string) {
 	if (statusHandler) {
 		queueMicrotask(() => {
 			if (!chained && statusHandler) {
-				statusHandler(options, null, tag || logger.tag || currentTag, []);
+				dispatchStatus(options, null, tag || logger.tag || currentTag, []);
 			}
 		});
 	}
@@ -705,7 +712,7 @@ function statusLogger(options: any, logger: any, tag?: string) {
 				logger[level]?.(...args);
 			} finally {
 				if (statusHandler) {
-					statusHandler(options, level, tag || logger.tag || currentTag, args);
+					dispatchStatus(options, level, tag || logger.tag || currentTag, args);
 				}
 			}
 		};

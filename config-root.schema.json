@@ -19,6 +19,7 @@
 			"properties": {
 				"healthChecks": {
 					"type": "object",
+					"additionalProperties": false,
 					"properties": {
 						"enabled": {
 							"type": "boolean",
@@ -32,9 +33,11 @@
 						},
 						"thresholds": {
 							"type": "object",
+							"additionalProperties": false,
 							"properties": {
 								"disk": {
 									"type": "object",
+									"additionalProperties": false,
 									"description": "Warning must not exceed error; omitted values use defaults.",
 									"properties": {
 										"warning": {
@@ -53,6 +56,7 @@
 								},
 								"memory": {
 									"type": "object",
+									"additionalProperties": false,
 									"description": "Warning must not exceed error; omitted values use defaults.",
 									"properties": {
 										"warning": {
@@ -71,6 +75,7 @@
 								},
 								"cpu": {
 									"type": "object",
+									"additionalProperties": false,
 									"description": "Warning must not exceed error; omitted values use defaults.",
 									"properties": {
 										"warning": {
