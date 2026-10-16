@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { isValidFloor, timestampAbove } from './originClosedFloor.ts';
 
 /**
  * Exclusive per-record locks (harper#483).
@@ -70,7 +71,10 @@ export interface RecordLockHandle {
 	acquiredAt: number;
 	/** Advance, but never lower, the version floor from the transaction that owns the actual write timestamp. */
 	noteHolderVersion(version: number): void;
-	/** Preserve a caller timestamp as a candidate floor without treating it as a committed write. */
+	/**
+	 * Raise the floor holder writes start from without treating it as a committed write: a caller
+	 * timestamp, or the stamp above the state the lock was admitted on.
+	 */
 	noteCandidateFloor(version: number): void;
 	/** Compute a holder-write version without advancing the floor until that write commits. */
 	holderVersionCandidate(floor?: number): number;
@@ -159,6 +163,28 @@ export function lockNotHeldError(handle: Pick<RecordLockHandle, 'expired'>): Cli
 	return new ClientError(handle.expired ? 'Record lock lease expired' : 'Record lock already released', 409);
 }
 
+/**
+ * The floor a newly admitted holder's writes start from: strictly above the version the lock reloaded
+ * (a tombstone's included) and the highest predecessor log position the admission waited for. A bound
+ * no valid timestamp exceeds fails the admission, rather than handing back a lock whose writes lose.
+ */
+export function admissionFloor(version: unknown, dependencyFloor: number | undefined): number | undefined {
+	const aboveVersion = stampAbove(version);
+	const aboveDependencies = stampAbove(dependencyFloor);
+	return aboveVersion === undefined || aboveDependencies > aboveVersion ? aboveDependencies : aboveVersion;
+}
+
+function stampAbove(bound: unknown): number | undefined {
+	if (!(typeof bound === 'number' && bound > 0)) return undefined;
+	const above = timestampAbove(bound);
+	if (!isValidFloor(above))
+		throw new ClientError(
+			`No valid timestamp is above ${bound}, so a write under this lock could not outrank the state it was admitted on`,
+			409
+		);
+	return above;
+}
+
 /** The advisory key for this (table, record) pair, distinct from getFromSource's bare-id single-flight lock. */
 export function lockAttemptKey(tableId: number, id: any): any[] {
 	return Array.isArray(id) ? [LOCK_KEY_PREFIX, tableId, ...id] : [LOCK_KEY_PREFIX, tableId, id];
@@ -224,10 +250,10 @@ class KeyLockHandle implements RecordLockHandle {
 	}
 
 	holderVersionCandidate(floor?: number): number {
-		// A small nonzero step prevents exact LWW ties without materially moving past the observed floor.
-		const MIN_STEP = 0.000488;
+		// The smallest step past the holder's last version: it prevents an exact LWW tie with that write
+		// without materially moving past it. A fixed ms step stops advancing a version from 2^42 ms up.
 		return Math.max(
-			this.#lastHolderVersion != null ? this.#lastHolderVersion + MIN_STEP : this.acquiredAt,
+			this.#lastHolderVersion != null ? timestampAbove(this.#lastHolderVersion) : this.acquiredAt,
 			this.acquiredAt,
 			this.#candidateFloor ?? -Infinity,
 			floor ?? -Infinity

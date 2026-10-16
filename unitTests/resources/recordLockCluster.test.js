@@ -1309,4 +1309,86 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.strictEqual((await ClusterLockTest.get(recordId)).n, 1, 'the expired write never landed');
 		});
 	});
+
+	describe('stamping above the admitted state (harper#2540)', () => {
+		it('stamps a holder write above a future-stamped stored version', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			const recordId = id();
+			const predecessorTimestamp = Date.now() + 60_000;
+			await transaction({ timestamp: predecessorTimestamp }, () => ClusterLockTest.put({ id: recordId, n: 10 }));
+			await transaction(async () => {
+				const record = await ClusterLockTest.lock(recordId);
+				assert.strictEqual(record.n, 10);
+				record.n = 11;
+				await record.save();
+			});
+			const after = ClusterLockTest.primaryStore.getEntry(recordId);
+			assert.strictEqual(after.value.n, 11);
+			assert.ok(after.version > predecessorTimestamp);
+		});
+
+		it('stamps a holder write above a predecessor release position ahead of its clock', async function () {
+			if (isLMDB) return this.skip();
+			const homes = [NODE_NAME, 'peer-ahead'];
+			useSoloTransport({ homes });
+			const recordId = idHomedHere(homes);
+			await ClusterLockTest.put({ id: recordId, n: 10 });
+			const coordinator = ClusterLockTest.lockCoordinator;
+			const granted = await coordinator.onDelegationRequest({
+				key: recordId,
+				requester: 'peer-ahead',
+				generation: 1,
+				leaseMs: 5000,
+			});
+			assert.strictEqual(granted.granted, true);
+			// The peer's clock runs ahead, so its release lands at a log position past this node's clock.
+			const releasePosition = Date.now() + 120_000;
+			coordinator.applyEntry(
+				{ type: 'lockRelease', key: recordId, requester: 'peer-ahead', token: granted.token, dependencies: [] },
+				'peer-ahead',
+				releasePosition
+			);
+			const context = {};
+			const record = await ClusterLockTest.lock(recordId, { hold: true, lease: 5000 }, context);
+			const handle = [...context.transaction.recordLocks.values()][0].values().next().value;
+			assert.ok(handle.expiresAt < releasePosition, 'the floor does not stretch the lease');
+			record.n = 12;
+			await record.save();
+			await record.unlock();
+			const after = ClusterLockTest.primaryStore.getEntry(recordId);
+			assert.strictEqual(after.value.n, 12);
+			assert.ok(after.version > releasePosition, 'stamped above the release position');
+		});
+
+		it('stamps a holder write above a recovery barrier position ahead of its clock', async function () {
+			if (isLMDB) return this.skip();
+			// A coordinator retired without a successor leaves a replacement that trusts no key's history, so
+			// its first grant names the recovery barrier.
+			useSoloTransport();
+			const warmUp = await ClusterLockTest.lock(id(), { hold: true, lease: 5000 });
+			await warmUp.unlock();
+			unregisterClusterLockTransport('test', true);
+			assert.strictEqual(ClusterLockTest.lockCoordinator, undefined);
+			const recordId = id();
+			await ClusterLockTest.put({ id: recordId, n: 10 });
+			const barrierPosition = Date.now() + 120_000;
+			let requirement;
+			useSoloTransport({
+				establishLockFreshness: async (_database, _table, _key, dependencies) => {
+					requirement = dependencies;
+					return [[getThisNodeName(), barrierPosition]];
+				},
+			});
+			await transaction(async () => {
+				const record = await ClusterLockTest.lock(recordId);
+				record.n = 13;
+				await record.save();
+			});
+			assert.strictEqual(requirement, null, 'the admission waited on the recovery barrier');
+			const after = ClusterLockTest.primaryStore.getEntry(recordId);
+			assert.strictEqual(after.value.n, 13);
+			assert.ok(after.version > barrierPosition, 'stamped above the barrier position');
+		});
+	});
 });
