@@ -746,6 +746,27 @@ function detectConfigDrift(fileConfig: ConfigObject, state: ConfigState): string
 	return driftedPaths;
 }
 
+function hasRespectedSource(state: ConfigState, path: string, respectSources: ConfigSource[]): boolean {
+	if (respectSources.length === 0) return false;
+	const parts = path.split('.');
+	for (let i = 1; i <= parts.length; i++) {
+		const ancestorOrSelf = parts.slice(0, i).join('.');
+		const src = Object.prototype.hasOwnProperty.call(state.sources, ancestorOrSelf)
+			? state.sources[ancestorOrSelf]
+			: undefined;
+		if (src && respectSources.includes(src)) {
+			return true;
+		}
+	}
+	const prefix = `${path}.`;
+	for (const [trackedPath, src] of Object.entries(state.sources)) {
+		if (trackedPath.startsWith(prefix) && respectSources.includes(src)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /**
  * Apply a configuration layer (DEFAULT or SET)
  */
@@ -763,8 +784,8 @@ function applyConfigLayer(
 		const currentSource = Object.prototype.hasOwnProperty.call(state.sources, path) ? state.sources[path] : undefined;
 		const currentValue = getNestedValue(fileConfig, path);
 
-		// Skip if this path has a source we should respect
-		if (currentSource && respectSources.includes(currentSource)) {
+		// Skip if this path (or a scalar ancestor / tracked descendant) has a source we should respect
+		if (hasRespectedSource(state, path, respectSources)) {
 			continue;
 		}
 
