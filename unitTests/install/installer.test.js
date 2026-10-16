@@ -170,12 +170,6 @@ describe.skip('Test installer module', () => {
 	});
 
 	it('Test createConfigFile assigns all the args and calls createConfig then init', async () => {
-		const expected_args = {
-			node_name: 'dog1',
-			clustering: 'true',
-			ROOTPATH: 'user/unit/test',
-			OPERATIONSAPI_NETWORK_PORT: '8888',
-		};
 		const create_config_file_stub = sandbox.stub(config_utils, 'createConfigFile');
 		// not reliably reset
 		//const env_mng_init_stub = sandbox.stub(env_manager, 'initSync');
@@ -187,9 +181,11 @@ describe.skip('Test installer module', () => {
 		};
 		const stageInstallConfig = installer.__get__('stageInstallConfig');
 		const createConfigFile = installer.__get__('createConfigFile');
-		await createConfigFile(stageInstallConfig(fake_install_params));
+		const staged = stageInstallConfig(fake_install_params);
+		await createConfigFile(staged);
 
-		expect(create_config_file_stub.args[0][0]).to.eql(expected_args);
+		expect(create_config_file_stub.args[0][0]).to.be.undefined;
+		expect(create_config_file_stub.args[0][4]).to.equal(staged);
 		//expect(env_mng_init_stub.called).to.be.true;
 
 		delete process.env.CLUSTERING;
@@ -707,6 +703,7 @@ describe('install storage.engine resolution', () => {
 		sandbox.stub(os, 'homedir').returns(fakeHome);
 		sandbox.stub(hdb_utils, 'getHomeDir').returns(fakeHome);
 		sandbox.stub(keys, 'generateCertsKeys').resolves();
+		sandbox.stub(keys, 'reviewSelfSignedCert').resolves();
 		sandbox.stub(crypto, 'generateKeyPairSync').returns({
 			privateKey: 'test-private-key',
 			publicKey: 'test-public-key',
@@ -722,6 +719,8 @@ describe('install storage.engine resolution', () => {
 		hdb_utils.resetNoBootFileCache();
 
 		await closeSystemDatabase();
+		env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, undefined);
+		env_manager.setProperty(env_manager.BOOT_PROPS_FILE_PATH, undefined);
 		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, undefined);
 		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, tempBaseDir);
 		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.DATABASES, undefined);
@@ -857,21 +856,37 @@ describe('install storage.engine resolution', () => {
 	});
 
 	it('resolves CLI STORAGE_ENGINE=rocksdb + HARPER_CONFIG={"storage":{"engine":"lmdb"}} consistently to lmdb across install and subsequent boots', async () => {
-		const assignCMDENVVariables = require('#js/utility/assignCmdEnvVariables').default;
-		const { filterArgsAgainstRuntimeConfig } = require('#js/config/harperConfigEnvVars');
+		const { initialize } = require('#js/bin/run');
 		process.env.STORAGE_ENGINE = 'rocksdb';
 		process.env.HARPER_CONFIG = JSON.stringify({ storage: { engine: 'lmdb' } });
 		const rootPath = await runInstall();
 		assertInstalledSystemEngine(rootPath, 'lmdb');
-		// Simulate subsequent-boot bin/run.ts path where individual env vars are filtered before updateConfigValue
-		let parsedArgs = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
-		parsedArgs = filterArgsAgainstRuntimeConfig(parsedArgs);
-		assert.strictEqual(parsedArgs.storage_engine, undefined, 'HARPER_CONFIG should filter STORAGE_ENGINE on run');
-		if (!hdb_utils.isEmpty(parsedArgs) && !hdb_utils.isEmptyOrZeroLength(Object.keys(parsedArgs))) {
-			config_utils.updateConfigValue(undefined, undefined, parsedArgs, true, true);
+		const updateSpy = sandbox.spy(config_utils, 'updateConfigValue');
+		// Run real subsequent-boot bin/run.ts initialize() path
+		await initialize(false, false, true);
+		for (const call of updateSpy.getCalls()) {
+			assert.strictEqual(call.args[2]?.storage_engine, undefined, 'HARPER_CONFIG should filter STORAGE_ENGINE on run');
 		}
 		assert.strictEqual(env_manager.get(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE), 'lmdb');
 		assert.strictEqual(env_manager.getConfigOverrides()?.storage_engine, undefined);
+	});
+
+	it('auto-installs via bin/run.ts initialize() when not installed and skips redundant updateConfigValue via installedDuringInit', async () => {
+		const { initialize } = require('#js/bin/run');
+		const rootPath = path.join(tempBaseDir, 'hdb');
+		process.env.ROOTPATH = rootPath;
+		process.env.HDB_ADMIN_USERNAME = 'HDB_ADMIN';
+		process.env.HDB_ADMIN_PASSWORD = 'password1234';
+		process.env.STORAGE_ENGINE = 'lmdb';
+		const updateSpy = sandbox.spy(config_utils, 'updateConfigValue');
+		await initialize(false, false, true);
+		assertInstalledSystemEngine(rootPath, 'lmdb');
+		const cliEnvUpdateCalls = updateSpy.getCalls().filter((call) => call.args[3] === true);
+		assert.strictEqual(
+			cliEnvUpdateCalls.length,
+			0,
+			'installedDuringInit should prevent redundant parsedArgs updateConfigValue after auto-install'
+		);
 	});
 
 	it('resolves CLI STORAGE_ENGINE=lmdb + HARPER_DEFAULT_CONFIG={"storage":{"engine":"rocksdb"}} consistently to lmdb', async () => {
@@ -1031,9 +1046,11 @@ describe('install storage.engine resolution', () => {
 		);
 	});
 
-	it('restores a pre-seeded HDB_CONFIG inside rootPath on rollback via backup rename or writeFileSync fallback', async () => {
+	it('restores a pre-seeded HDB_CONFIG and preserves pre-existing files inside rootPath on rollback via backup rename or writeFileSync fallback', async () => {
 		const rootPath = path.join(tempBaseDir, 'hdb');
-		fs.mkdirSync(rootPath, { recursive: true });
+		const preExistingComponentFile = path.join(rootPath, 'components', 'my-app', 'index.js');
+		fs.mkdirSync(path.dirname(preExistingComponentFile), { recursive: true });
+		fs.writeFileSync(preExistingComponentFile, 'export default {};\n', 'utf8');
 		const rootConfigPath = path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE);
 		const originalContent = 'storage:\n  engine: lmdb\n# pre-seeded root config\n';
 		fs.writeFileSync(rootConfigPath, originalContent, 'utf8');
@@ -1066,10 +1083,44 @@ describe('install storage.engine resolution', () => {
 			originalContent,
 			'Expected pre-seeded root HDB_CONFIG content to be restored via writeFileSync fallback'
 		);
+		assert.strictEqual(
+			fs.readFileSync(preExistingComponentFile, 'utf8'),
+			'export default {};\n',
+			'Expected pre-existing operator component file inside rootPath to survive rollback'
+		);
+		assert.deepStrictEqual(
+			fs.readdirSync(rootPath).sort(),
+			['components', hdbTerms.HARPER_CONFIG_FILE].sort(),
+			'Expected only pre-existing entries and restored root config file to remain in rootPath after rollback'
+		);
+	});
+
+	it('preserves pre-existing operator files inside rootPath on rollback even when HDB_CONFIG points outside rootPath', async () => {
+		const rootPath = path.join(tempBaseDir, 'hdb');
+		const preExistingComponentFile = path.join(rootPath, 'components', 'my-app', 'index.js');
+		fs.mkdirSync(path.dirname(preExistingComponentFile), { recursive: true });
+		fs.writeFileSync(preExistingComponentFile, 'export default {};\n', 'utf8');
+		const externalConfigPath = path.join(tempBaseDir, 'external-harper-config.yaml');
+		fs.writeFileSync(externalConfigPath, 'storage:\n  engine: lmdb\n', 'utf8');
+		process.env.HDB_CONFIG = externalConfigPath;
+
+		sandbox.stub(config_utils, 'createConfigFile').throws(new Error('simulated createConfigFile failure'));
+		const exitStub = sandbox.stub(process, 'exit').callsFake((code) => {
+			throw new Error(`process.exit(${code})`);
+		});
+
+		await assert.rejects(runInstall(), /process\.exit\(1\)/);
+
+		assert.strictEqual(exitStub.calledWith(1), true, 'Expected rollbackInstall to call process.exit(1)');
+		assert.strictEqual(
+			fs.readFileSync(preExistingComponentFile, 'utf8'),
+			'export default {};\n',
+			'Expected pre-existing operator component file inside rootPath to survive rollback'
+		);
 		assert.deepStrictEqual(
 			fs.readdirSync(rootPath),
-			[hdbTerms.HARPER_CONFIG_FILE],
-			'Expected only the restored root config file to remain in rootPath after rollback'
+			['components'],
+			'Expected install-created directories (database, keys, log, backup) to be removed while preserving pre-existing entries'
 		);
 	});
 
