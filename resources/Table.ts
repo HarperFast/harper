@@ -48,8 +48,9 @@ import {
 	type Transaction as DatabaseTransactionRecord,
 	confirmingResidents,
 } from './DatabaseTransaction.ts';
+<<<<<<< HEAD
 import { readOnlyModeError } from './readOnlyMode.ts';
-import { releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
+import { freshLocalKey, releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
 import {
 	acquireRecordKey,
 	admissionFloor,
@@ -7813,7 +7814,7 @@ export function makeTable(options): TableResourceClass {
 						? (entry: LockControlEntry) => transport.writeControl!(tableName, entry)
 						: (entry: LockControlEntry) => TableResource.writeLockControlEntry(entry),
 					keyIdOf: writeKeyId,
-					nextTimestamp: () => (primaryStore as any).getMonotonicTimestamp(),
+					nextTimestamp: () => freshLocalKey(tableRootStore),
 					grantableAfterMono: transport.grantableAfterMono,
 				});
 				predecessor?.close();

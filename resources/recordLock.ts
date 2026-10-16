@@ -1,7 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
-import { claimLocalKey, isValidFloor, timestampAbove } from './originClosedFloor.ts';
+import { claimLocalKey, freshLocalKey, isValidFloor, timestampAbove } from './originClosedFloor.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { convertToMS } from '../utility/common_utils.ts';
@@ -208,10 +208,10 @@ function maxLockClockSkewMs(): number {
 /**
  * The stamp a new holder's writes start from, given its admission floor. A floor above `acquiredAt` is
  * the same for every holder admitted on state one transaction left, and as an explicit stamp it would
- * become each one's log key, so it is replaced by a key no other local append is issued: the clock's
- * next one, or, for a floor ahead of the clock within the configured skew, a claim that lifts every
- * later local key on this node above it. Past the skew the floor stays explicit and `movesClock` is
- * false, so one far-future timestamp pins neither this node's clock nor the holder's transaction.
+ * become each one's log key, so it is replaced by a key no other local append is issued; one ahead of
+ * the clock, within the configured skew, lifts every later local key on this node above it. Past the
+ * skew the floor stays explicit and `movesClock` is false, so one far-future timestamp pins neither
+ * this node's clock nor the holder's transaction.
  */
 export function admissionStamp(
 	rootStore: any,
@@ -219,10 +219,8 @@ export function admissionStamp(
 	acquiredAt: number
 ): { stamp: number; movesClock: boolean } {
 	if (floor <= acquiredAt) return { stamp: floor, movesClock: true };
-	const clock = rootStore.getMonotonicTimestamp();
-	if (floor <= clock) return { stamp: clock, movesClock: true };
 	const maxSkew = maxLockClockSkewMs();
-	const skew = floor - clock;
+	const skew = floor - rootStore.getMonotonicTimestamp();
 	if (skew <= maxSkew) return { stamp: claimLocalKey(rootStore, floor), movesClock: true };
 	const now = performance.now();
 	if (now - lastClockSkewWarn >= CLOCK_SKEW_WARN_INTERVAL_MS) {
@@ -551,7 +549,7 @@ export async function acquireRecordKey(
 					wakeResolve?.();
 				};
 		const acquired = store.tryLock(key, onUnlocked);
-		if (acquired) return makeKeyLockHandle(store, key, keyId, lease, hold, store.getMonotonicTimestamp());
+		if (acquired) return makeKeyLockHandle(store, key, keyId, lease, hold, freshLocalKey(store.rootStore ?? store));
 		if (onUnlocked) hasCallback = true; // callback now registered; do not register another until it fires
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);

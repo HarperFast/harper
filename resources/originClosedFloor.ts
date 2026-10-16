@@ -352,6 +352,17 @@ export function reservedLocalKey(handle: RocksTransaction | undefined): number |
 }
 
 /**
+ * A timestamp no local append on this node is issued: the clock's next one, or the ratchet's while it
+ * is ahead. A raw clock sample can equal a key the ratchet issued ahead of the clock once the clock
+ * catches up, and an equal version on one record reads as a re-delivery.
+ */
+export function freshLocalKey(rootStore: any): number {
+	return typeof rootStore?.getUserSharedBuffer === 'function'
+		? registryFor(rootStore).freshKey()
+		: rootStore.getMonotonicTimestamp();
+}
+
+/**
  * A key at or above `floor` that no other local append on this node is issued: the ratchet rises to
  * just below it first, so every later key, native or ratchet-issued on any thread, lands above it.
  */
