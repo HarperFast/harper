@@ -3982,14 +3982,19 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			}
 			if (Table.primaryKey == null) {
 				// a keyless table cannot adopt a key without re-keying its records
-				const declaredPrimaryAttributes = attributes.filter((attribute) => attribute.isPrimaryKey);
-				if (schemaDefinedExplicit && declaredPrimaryAttributes.length > 0)
-					logger.error(
-						`Table '${databaseName}.${tableName}' has no primary key, so its declared primary key ` +
-							`'${declaredPrimaryAttributes.map(({ name }) => name).join("', '")}' is ignored and the table stays ` +
-							`keyless. Recreate the table with that primary key, or migrate its records, to use it.`
-					);
-				for (const attribute of declaredPrimaryAttributes) {
+				for (const attribute of attributes) {
+					if (!attribute.isPrimaryKey) continue;
+					if (origin === 'cluster')
+						logger.warn(
+							`Ignoring peer redefinition of ${databaseName}.${tableName}.${attribute.name} ` +
+								`(isPrimaryKey: local table has no primary key, peer true)`
+						);
+					else if (schemaDefinedExplicit)
+						logger.error(
+							`Table '${databaseName}.${tableName}' has no primary key, so its declared primary key ` +
+								`'${attribute.name}' is ignored and the table stays keyless. Recreate the table with that ` +
+								`primary key, or migrate its records, to use it.`
+						);
 					delete attribute.isPrimaryKey;
 					if (properties?.[attribute.name]) delete properties[attribute.name].primaryKey;
 				}
