@@ -55,6 +55,11 @@ function fromBits(bits: bigint): number {
 }
 const INFINITY_BITS = toBits(Infinity);
 
+/** The next representable timestamp above a positive `value`: the step the native clock breaks ties by. */
+export function timestampAbove(value: number): number {
+	return fromBits(toBits(value) + 1n);
+}
+
 function storeMax(words: BigInt64Array, index: number, value: number): number {
 	const bits = toBits(value);
 	for (;;) {
