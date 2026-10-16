@@ -188,8 +188,11 @@ an increment. Within `storage.maxLockClockSkew` (default 5 s) the floor is inste
 local key (`claimLocalKey`), which lifts every later local key on this node, locked or not, above it:
 the node's log clock never runs behind state it admitted a lock on. Past the cap a rate-limited
 clock-skew warning is logged and the floor stays explicit, so one far-future timestamp cannot pin the
-node's clock; the holder still outranks, but its log key may repeat another's. Re-entry, coalesced
-followers and scoped → hold upgrades are not admissions and raise nothing.
+node's clock; the holder still outranks, but its log key may repeat another's. A malformed cap falls
+back to 5 s with a warning, and `0` never claims. A claim is persisted as a ceiling before it is used
+and seeds issuance at open, so a restart cannot reissue it (resources/DESIGN.md "Origin-closed
+timestamp floor"). Re-entry, coalesced followers and scoped → hold upgrades are not admissions and
+raise nothing.
 
 The floor reaches the write through the existing stamps. An explicit transaction's clock takes it only
 while nothing else would move with it — no log key reserved yet and no unlocked write staged first;
@@ -197,7 +200,10 @@ otherwise the clock stays put, the holder's ordering is best-effort, and nothing
 hold saved later in a different explicit transaction is stamped by that transaction's clock, not the
 floor. An `ImmediateTransaction` stamps holder writes from the handle as above, and reserves its
 batch's log key at or above every version the batch carries (`lockStampCeiling`), because a replica
-applies a write at no more than its log key. A hold steps one ulp past its last version, which keeps
+applies a write at no more than its log key. One route escapes it: a holder write saved while the same
+context's previous commit is still in flight (awaiting a streamed blob) joins that batch under its
+already-reserved key, so a replica applies it at that lower key and can keep the predecessor's value
+there while the origin keeps the holder's (harper#3238). A hold steps one ulp past its last version, which keeps
 advancing above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double.
 
 **Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance

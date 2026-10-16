@@ -15,8 +15,15 @@ const {
 	reserveLocalKey,
 	releaseLocalKey,
 	retireOriginFloorSlots,
+	seedLocalIssuance,
 } = require('#src/resources/originClosedFloor');
-const { persistOriginClosedFloor, readOriginClosedFloor, LOCAL_ONLY } = require('#src/resources/auditStore');
+const {
+	persistOriginClosedFloor,
+	readOriginClosedFloor,
+	coverLocalClaim,
+	readLocalClaimCeiling,
+	LOCAL_ONLY,
+} = require('#src/resources/auditStore');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -411,6 +418,17 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		const [entry] = entriesFor('after-claims');
 		assert(entry.txnLogKey > Math.max(...claims), 'a later local key is above every claim');
 		while (rootStore.getMonotonicTimestamp() <= floor) await sleep(10);
+	});
+
+	it('issuance after a persisted claim ceiling (simulated in-process) starts above it', async () => {
+		const ceiling = rootStore.getMonotonicTimestamp() + 250;
+		coverLocalClaim(auditStore, ceiling, 0);
+		assert.equal(readLocalClaimCeiling(auditStore), ceiling, 'persisted before any claim under it is used');
+		seedLocalIssuance(rootStore, readLocalClaimCeiling(auditStore));
+		await transaction(() => Tbl.put({ id: 'after-ceiling', n: 1 }));
+		const [entry] = entriesFor('after-ceiling');
+		assert(entry.txnLogKey > ceiling, 'the first key after the open-time seed is above the ceiling');
+		while (rootStore.getMonotonicTimestamp() <= ceiling) await sleep(10);
 	});
 
 	it('issuance behind a persisted floor (simulated in-process) yields unique keys at or above it', async () => {

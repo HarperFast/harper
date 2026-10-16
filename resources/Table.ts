@@ -148,6 +148,7 @@ import {
 	isAuditEntryWrite,
 	isResumablePosition,
 	getDatabaseGeneration,
+	coverLocalClaim,
 } from './auditStore.ts';
 import {
 	acquireFullTextClearFence,
@@ -4394,7 +4395,7 @@ export function makeTable(options): TableResourceClass {
 				resolved.hold
 			);
 			const clusterStart = performance.now();
-			// The committed entry the admission computed its floor from, which is also what the holder reloads.
+			// One read for both the floor and the reload: a write landing between two reads would be uncovered.
 			let admittedEntry: any;
 			// What a follower waits on must span the cluster round and registration, not just the native
 			// acquire. Waking it at the native hand-off leaves it in a window where the key is held but no
@@ -4485,7 +4486,10 @@ export function makeTable(options): TableResourceClass {
 				try {
 					admittedEntry = (primaryStore as any).getEntry(id);
 					floor = admissionFloor(admittedEntry?.version, dependencyFloor);
-					if (floor !== undefined) floor = admissionStamp(tableRootStore, floor, handle.acquiredAt);
+					if (floor !== undefined)
+						floor = admissionStamp(tableRootStore, floor, handle.acquiredAt, (claim, headroom) =>
+							coverLocalClaim(auditStore, claim, headroom)
+						);
 				} catch (error) {
 					handle.release();
 					throw error;
