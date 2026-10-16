@@ -185,11 +185,13 @@ const AUDIT_RESUME_FLOOR_KEY = Symbol.for('audit-resume-floor');
  */
 const ORIGIN_CLOSED_FLOOR_KEY = Symbol.for('origin-closed-floor');
 /**
- * Above every local key a record-lock admission claimed ahead of the clock (`claimLocalKey`). Written
- * before the claim is used and read at open to seed issuance, so a restart before the clock passes a
- * claim cannot issue it again. RocksDB only.
+ * Above every local key the issuance ratchet handed out ahead of the clock (a record-lock claim, or
+ * keys behind a recovered floor). Written before such a key is used and read at open to seed issuance,
+ * so a restart before the clock passes them cannot issue them again. RocksDB only.
  */
-const LOCAL_CLAIM_CEILING_KEY = Symbol.for('local-claim-ceiling');
+const LOCAL_ISSUANCE_CEILING_KEY = Symbol.for('local-issuance-ceiling');
+// Past each covered key: the one-ulp keys that follow it (~200k at this magnitude) cost no write.
+const ISSUANCE_CEILING_HEADROOM_MS = 50;
 
 function isRocksStore(store: any): boolean {
 	return store instanceof RocksTransactionLogStore || store instanceof RocksDatabase;
@@ -236,7 +238,7 @@ export function openAuditStore(rootStore) {
 	establishDatabaseGeneration(auditStore);
 	if (isRocksStore(auditStore)) {
 		publishOriginFloor(rootStore, readOriginClosedFloor(auditStore));
-		seedLocalIssuance(rootStore, readLocalClaimCeiling(auditStore));
+		seedLocalIssuance(rootStore, readLocalIssuanceCeiling(auditStore), (key) => coverLocalIssuance(auditStore, key));
 	}
 	endSubscriptionsFromEarlierHandles(auditStore, isRocksStore(auditStore));
 	auditStore.tableStores = [];
@@ -970,28 +972,28 @@ export function persistOriginClosedFloor(auditStore: any, floor: number): void {
 	);
 }
 
-export function readLocalClaimCeiling(auditStore: any): number {
-	const ceiling = decodeAuditFloor(auditStore.getBinary(LOCAL_CLAIM_CEILING_KEY));
+export function readLocalIssuanceCeiling(auditStore: any): number {
+	const ceiling = decodeAuditFloor(auditStore.getBinary(LOCAL_ISSUANCE_CEILING_KEY));
 	return isValidFloor(ceiling) ? ceiling : 0;
 }
 
-/**
- * Persist a ceiling at or above `claim` before the claim is used. `headroom` past the claim covers the
- * claims and ratchet-issued keys that follow it, so a run of them costs one write.
- */
-export function coverLocalClaim(auditStore: any, claim: number, headroom: number): void {
-	if (claim <= (auditStore.localClaimCeiling ?? 0)) return;
-	const ceiling = isValidFloor(claim + headroom) ? claim + headroom : claim;
+/** Persist a ceiling above `key` before it is used, and return the ceiling now stored. */
+export function coverLocalIssuance(auditStore: any, key: number): number {
+	const ceiling = isValidFloor(key + ISSUANCE_CEILING_HEADROOM_MS) ? key + ISSUANCE_CEILING_HEADROOM_MS : key;
+	let stored = ceiling;
 	commitAuditMetadata(
 		auditStore,
 		(read) => {
-			const stored = decodeAuditFloor(read(LOCAL_CLAIM_CEILING_KEY));
-			if (Number.isFinite(stored) && stored >= ceiling) return undefined;
-			return [[LOCAL_CLAIM_CEILING_KEY, encodeAuditFloor(ceiling)]];
+			const existing = decodeAuditFloor(read(LOCAL_ISSUANCE_CEILING_KEY));
+			if (Number.isFinite(existing) && existing >= ceiling) {
+				stored = existing;
+				return undefined;
+			}
+			return [[LOCAL_ISSUANCE_CEILING_KEY, encodeAuditFloor(ceiling)]];
 		},
-		'local claim ceiling'
+		'local issuance ceiling'
 	);
-	auditStore.localClaimCeiling = ceiling;
+	return stored;
 }
 
 export interface DatabaseGeneration {
