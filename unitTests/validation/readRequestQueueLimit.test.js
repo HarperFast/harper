@@ -15,12 +15,12 @@ function validate(limit) {
 }
 
 describe('http.readRequestQueueLimit validation', () => {
-	for (const limit of [undefined, null, 0, 60_000]) {
+	for (const limit of [undefined, null, false, 0, 60_000]) {
 		it(`accepts ${limit}`, () => {
 			assert.ifError(validate(limit).error);
 		});
 	}
-	for (const limit of [-1, 0.5, '60s', Infinity]) {
+	for (const limit of [true, -1, 0.5, '60s', Infinity]) {
 		it(`rejects ${limit}`, () => {
 			const { error } = validate(limit);
 			assert(error?.details.some((detail) => detail.path.join('.') === 'http.readRequestQueueLimit'));

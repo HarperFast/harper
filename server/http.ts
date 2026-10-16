@@ -27,6 +27,7 @@ import { createServer as createNetServer } from 'node:net';
 import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.ts';
 import {
 	appendHeader,
+	addVaryHeader,
 	bridgeChainHeadersToNodeResponse,
 	Headers,
 	mergeChainHeadersIntoFallback,
@@ -660,6 +661,31 @@ function claimPortForThreadType(port: number | string, options: ServerOptions | 
 	claimListener(port, threadType);
 }
 
+function isReadMethod(method) {
+	return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
+}
+
+function readQueueRejectionHeaders(origin, isOperationsServer) {
+	const headers = new Headers({ 'content-type': 'text/plain' });
+	applyUniversalHeaders(headers);
+	const prefix = isOperationsServer ? 'operationsApi_network' : 'http';
+	if (env.get(prefix + '_cors')) {
+		addVaryHeader(headers, 'Origin');
+		const accessList = env.get(prefix + '_corsAccessList') ?? [];
+		if (origin && (accessList.includes(origin) || accessList.includes('*'))) {
+			headers.set('Access-Control-Allow-Origin', origin);
+			if (env.get(terms.CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true)
+				headers.set('Access-Control-Allow-Credentials', 'true');
+			headers.set('Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, PATCH, OPTIONS');
+			headers.set(
+				'Access-Control-Allow-Headers',
+				env.get(terms.CONFIG_PARAMS.HTTP_CORSACCESSCONTROLALLOWHEADERS) ?? 'Accept, Content-Type, Authorization'
+			);
+		}
+	}
+	return headers;
+}
+
 function throttleRequests(
 	port,
 	handler,
@@ -671,17 +697,12 @@ function throttleRequests(
 	const writes = queueWrites
 		? throttle(handler, onLimitExceeded, requestQueueLimit, `HTTP request queue on port ${port}`)
 		: handler;
-	const reads = throttle(
-		handler,
-		onLimitExceeded,
-		readRequestQueueLimit ?? 60_000,
-		`HTTP read request queue on port ${port}`
-	);
+	const reads =
+		readRequestQueueLimit === false
+			? handler
+			: throttle(handler, onLimitExceeded, readRequestQueueLimit ?? 60_000, `HTTP read request queue on port ${port}`);
 	return (request, response) => {
-		const method = request.method;
-		return method === 'GET' || method === 'HEAD' || method === 'OPTIONS'
-			? reads(request, response)
-			: writes(request, response);
+		return isReadMethod(request.method) ? reads(request, response) : writes(request, response);
 	};
 }
 
@@ -762,6 +783,11 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			});
 		}
 		const requestHandler = async (nodeRequest: IncomingMessage, nodeResponse: any) => {
+			if (
+				isReadMethod(nodeRequest.method) &&
+				(nodeResponse.destroyed || nodeRequest.stream?.destroyed || nodeRequest.socket?.destroyed)
+			)
+				return;
 			const startTime = performance.now();
 			let requestId = 0;
 			try {
@@ -925,6 +951,10 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			requestHandler,
 			(nodeRequest: IncomingMessage, nodeResponse: any) => {
 				// if the request queue is taking too long, we want to return an error
+				if (isReadMethod(nodeRequest.method)) {
+					for (const [name, value] of readQueueRejectionHeaders(nodeRequest.headers.origin, isOperationsServer))
+						nodeResponse.setHeader(name, value);
+				}
 				nodeResponse.statusCode = 503;
 				nodeResponse.end('Service unavailable, exceeded request queue limit');
 				recordAction(true, 'service-unavailable', port);
@@ -1092,12 +1122,13 @@ export function makeUwsHandler(
 	port: number | string,
 	isOperationsServer: boolean,
 	requestQueueLimit?: number,
-	readRequestQueueLimit?: number
+	readRequestQueueLimit?: number | false | null
 ) {
 	// Build a fresh response descriptor rather than mutating what the chain returned: a handler may
 	// return a WHATWG `Response` (read-only `status`/`body` accessors), which the Bun path also never
 	// mutates. `headers` is normalized in place the same way the Bun path does.
 	const handle = async (request: any) => {
+		if (isReadMethod(request.method) && request.signal?.aborted) return;
 		const startTime = performance.now();
 		let requestId = 0;
 		if (isOperationsServer) request.isOperationsServer = true;
@@ -1191,11 +1222,13 @@ export function makeUwsHandler(
 	return throttleRequests(
 		port,
 		handle,
-		(_request: any) => {
+		(request: any) => {
 			recordAction(true, 'service-unavailable', port);
 			return {
 				status: 503,
-				headers: new Headers({ 'content-type': 'text/plain' }),
+				headers: isReadMethod(request.method)
+					? readQueueRejectionHeaders(request.headers.get('origin'), isOperationsServer)
+					: new Headers({ 'content-type': 'text/plain' }),
 				body: 'Service unavailable, exceeded request queue limit',
 			};
 		},
@@ -1307,6 +1340,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 			const startTime = performance.now();
 			let requestId = 0;
 			try {
+				if (isReadMethod(webRequest.method) && webRequest.signal.aborted) return new Response(null, { status: 204 });
 				const request = new BunRequest(webRequest, bunServer, secure) as any;
 				if (isOperationsServer) request.isOperationsServer = true;
 				if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
@@ -1480,9 +1514,12 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 			fetch: throttleRequests(
 				port,
 				fetchHandler,
-				() => {
+				(request) => {
 					recordAction(true, 'service-unavailable', port);
-					return new Response('Service unavailable, exceeded request queue limit', { status: 503 });
+					return new Response('Service unavailable, exceeded request queue limit', {
+						status: 503,
+						headers: [...readQueueRejectionHeaders(request.headers.get('origin'), isOperationsServer)],
+					});
 				},
 				undefined,
 				env.get(serverPrefix + '_readRequestQueueLimit'),
