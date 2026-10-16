@@ -297,6 +297,8 @@ describe('Test harper_logger module', () => {
 					'  logging:',
 					'    level: debug',
 					'    tag: custom-tag',
+					'storage:',
+					'  logging: debug',
 					'',
 				].join('\n')
 			);
@@ -3202,11 +3204,11 @@ describe('Test harper_logger module', () => {
 	describe('Test applyLogSettings function (harper#2191)', () => {
 		const { _applyLogSettingsForTests, getLogFilePath } = harperLoggerModule;
 
-		it('does not throw on a component key declared with no body', () => {
+		it('does not throw on a component key declared with no body or scalar logging', () => {
 			// `myComponent:` with nothing under it parses to null, and this runs from the root
 			// config's async `change` listener, where the TypeError escapes as an unhandled
 			// rejection rather than as a listener fault the watcher contains.
-			assert.doesNotThrow(() => _applyLogSettingsForTests({ noBody: null }));
+			assert.doesNotThrow(() => _applyLogSettingsForTests({ noBody: null, scalarLogging: { logging: 'debug' } }));
 		});
 
 		it('leaves the established settings alone when the barrier settles carrying no config', () => {

@@ -236,11 +236,16 @@ function applyLogSettings(rootConfigObject: any) {
 	updateLogger(mainLogger, logOptions);
 	logFilePath = mainLogger.path;
 	logConsole = logOptions.console ?? false;
-	if (logOptions.external) {
-		updateLogger(externalLogger, logOptions.external);
+	const externalLogOptions =
+		logOptions.external && typeof logOptions.external === 'object' ? logOptions.external : undefined;
+	if (externalLogOptions) {
+		updateLogger(externalLogger, externalLogOptions);
 		for (let [name, component] of mainLogger.components) {
-			if (!(rootConfigObject[name] && rootConfigObject[name].logging) && component.isExternal)
-				updateLogger(component, logOptions.external, name);
+			if (
+				!(rootConfigObject[name]?.logging && typeof rootConfigObject[name].logging === 'object') &&
+				component.isExternal
+			)
+				updateLogger(component, externalLogOptions, name);
 		}
 	}
 	for (const name in rootConfigObject) {
@@ -248,11 +253,11 @@ function applyLogSettings(rootConfigObject: any) {
 		const component = rootConfigObject[name];
 		// `myComponent:` with nothing under it parses to null, and an async listener's TypeError
 		// escapes the watcher's emit guard as an unhandled rejection.
-		if (component?.logging) {
+		if (component?.logging && typeof component.logging === 'object') {
 			updateLogger(mainLogger.forComponent(name), component.logging, name);
 		} else if (mainLogger.hasComponent(name)) {
 			const componentLogger = mainLogger.forComponent(name);
-			updateLogger(componentLogger, (componentLogger.isExternal && logOptions.external) ?? logOptions, name);
+			updateLogger(componentLogger, (componentLogger.isExternal && externalLogOptions) ?? logOptions, name);
 		}
 	}
 }
@@ -576,10 +581,13 @@ export function initLogSettings(forceInit = false) {
 			});
 			// setup the external logger
 			externalLogger = mainLogger.forComponent('external');
-			const externalLogOptions = configObject?.logging?.external;
+			const rawExternalLogOptions = configObject?.logging?.external;
+			const externalLogOptions =
+				rawExternalLogOptions && typeof rawExternalLogOptions === 'object' ? rawExternalLogOptions : undefined;
 			for (const [name, componentLogger] of mainLogger.components) {
+				const rawComponentLogging = configObject?.[name]?.logging;
 				const componentLogOptions =
-					configObject?.[name]?.logging ??
+					(rawComponentLogging && typeof rawComponentLogging === 'object' ? rawComponentLogging : undefined) ??
 					(name === 'external' || componentLogger.isExternal ? externalLogOptions : undefined) ??
 					{};
 				updateLogger(componentLogger, componentLogOptions, name);
