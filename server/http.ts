@@ -660,6 +660,31 @@ function claimPortForThreadType(port: number | string, options: ServerOptions | 
 	claimListener(port, threadType);
 }
 
+function throttleRequests(
+	port,
+	handler,
+	onLimitExceeded,
+	requestQueueLimit,
+	readRequestQueueLimit,
+	queueWrites = true
+) {
+	const writes = queueWrites
+		? throttle(handler, onLimitExceeded, requestQueueLimit, `HTTP request queue on port ${port}`)
+		: handler;
+	const reads = throttle(
+		handler,
+		onLimitExceeded,
+		readRequestQueueLimit ?? 60_000,
+		`HTTP read request queue on port ${port}`
+	);
+	return (request, response) => {
+		const method = request.method;
+		return method === 'GET' || method === 'HEAD' || method === 'OPTIONS'
+			? reads(request, response)
+			: writes(request, response);
+	};
+}
+
 function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 	claimPortForThreadType(port, options);
 	const threadType = options?.threadType;
@@ -686,7 +711,12 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				port: uwsPort,
 				host: lastColon > 0 ? String(port).slice(0, lastColon).replace(/[[\]]/g, '') : undefined,
 				secure: false,
-				handler: makeUwsHandler(port, isOperationsServer, env.get(serverPrefix + '_requestQueueLimit')),
+				handler: makeUwsHandler(
+					port,
+					isOperationsServer,
+					env.get(serverPrefix + '_requestQueueLimit'),
+					env.get(serverPrefix + '_readRequestQueueLimit')
+				),
 			};
 			// Marker so the httpServers guard is satisfied and the caller has a truthy handle; the
 			// actual listen happens in threadServer.js from uwsServeConfigs. onWebSocket() detects
@@ -890,8 +920,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				} else harperLogger.error(errorForLog(error));
 			}
 		};
-		// create a throttled version of the request handler, so we can throttle POST requests
-		const throttledRequestHandler = throttle(
+		const queuedRequestHandler = throttleRequests(
+			port,
 			requestHandler,
 			(nodeRequest: IncomingMessage, nodeResponse: any) => {
 				// if the request queue is taking too long, we want to return an error
@@ -900,17 +930,11 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				recordAction(true, 'service-unavailable', port);
 			},
 			env.get(serverPrefix + '_requestQueueLimit'),
-			`HTTP request queue on port ${port}`
+			env.get(serverPrefix + '_readRequestQueueLimit')
 		);
 		const server = (httpServers[port] = (
 			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
-		)(options, (nodeRequest: IncomingMessage, nodeResponse: any) => {
-			// throttle the requests that can make data modifications because they are more likely to be slow and we don't
-			// want to block or slow down other activity
-			const method = nodeRequest.method;
-			if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
-			else throttledRequestHandler(nodeRequest, nodeResponse);
-		}));
+		)(options, queuedRequestHandler));
 
 		// Node v16 and earlier required setting this as a property; but carefully, we must only set if it is actually a
 		// number or it will actually crash the server
@@ -966,7 +990,12 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				uwsServeConfigs[udsPath] = {
 					socketPath: udsPath,
 					secure: true,
-					handler: makeUwsHandler(port, isOperationsServer, env.get(serverPrefix + '_requestQueueLimit')),
+					handler: makeUwsHandler(
+						port,
+						isOperationsServer,
+						env.get(serverPrefix + '_requestQueueLimit'),
+						env.get(serverPrefix + '_readRequestQueueLimit')
+					),
 				};
 				// Let onWebSocket() install its wsHandler on this mirror too
 				server.udsMirrorUwsConfig = uwsServeConfigs[udsPath];
@@ -981,12 +1010,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 						...socketOptionDefaults,
 						maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 					},
-					(nodeRequest: IncomingMessage, nodeResponse: any) => {
-						const method = nodeRequest.method;
-						if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD')
-							requestHandler(nodeRequest, nodeResponse);
-						else throttledRequestHandler(nodeRequest, nodeResponse);
-					}
+					queuedRequestHandler
 				);
 
 				udsServer.isPerThreadSocket = true;
@@ -1023,11 +1047,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				const udsPathH2 = join(socketsDir, `${socketName}-h2.sock`);
 				const yamlPathH2 = join(socketsDir, `${socketName}-h2.yaml`);
 				if (threadType) claimListener(udsPathH2, threadType);
-				const h2Server = createH2CServer({}, (nodeRequest: any, nodeResponse: any) => {
-					const method = nodeRequest.method;
-					if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
-					else throttledRequestHandler(nodeRequest, nodeResponse);
-				});
+				const h2Server = createH2CServer({}, queuedRequestHandler);
 				// A stray non-h2 client (or a truncated preface) fails the session, not the worker.
 				h2Server.on('sessionError', (error: Error) => {
 					harperLogger.debug('h2c UDS session error:', error);
@@ -1068,7 +1088,12 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
  * and a Fastify fallback is registered for the port, it delegates via inject() (see injectToFastify),
  * mirroring the Bun path — so legacy Fastify routes work behind uWS too.
  */
-export function makeUwsHandler(port: number | string, isOperationsServer: boolean, requestQueueLimit?: number) {
+export function makeUwsHandler(
+	port: number | string,
+	isOperationsServer: boolean,
+	requestQueueLimit?: number,
+	readRequestQueueLimit?: number
+) {
 	// Build a fresh response descriptor rather than mutating what the chain returned: a handler may
 	// return a WHATWG `Response` (read-only `status`/`body` accessors), which the Bun path also never
 	// mutates. `headers` is normalized in place the same way the Bun path does.
@@ -1163,9 +1188,8 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 		const body = await normalizeUwsBody(response.body, request.signal);
 		return { status, headers, handlesHeaders: response.handlesHeaders, body };
 	};
-	// Shed data-modifying requests when the event queue is backed up (503), mirroring the Node UDS
-	// path — GET/OPTIONS/HEAD are cheap and always run, everything else goes through the throttle.
-	const throttledHandle = throttle(
+	return throttleRequests(
+		port,
 		handle,
 		(_request: any) => {
 			recordAction(true, 'service-unavailable', port);
@@ -1176,13 +1200,8 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 			};
 		},
 		requestQueueLimit,
-		`HTTP request queue on port ${port}`
+		readRequestQueueLimit
 	);
-	return (request: any) => {
-		const method = request.method;
-		if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') return handle(request);
-		return throttledHandle(request);
-	};
 }
 
 /**
@@ -1458,7 +1477,17 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 		// address that's already in use instead of silently co-binding. Mirrors the Node path,
 		// which sets server.noReusePort for isOperationsServer (see above).
 		const config: any = {
-			fetch: fetchHandler,
+			fetch: throttleRequests(
+				port,
+				fetchHandler,
+				() => {
+					recordAction(true, 'service-unavailable', port);
+					return new Response('Service unavailable, exceeded request queue limit', { status: 503 });
+				},
+				undefined,
+				env.get(serverPrefix + '_readRequestQueueLimit'),
+				false
+			),
 			reusePort: !isOperationsServer && process.platform !== 'darwin' && process.platform !== 'win32',
 		};
 		if (secure) {

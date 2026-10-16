@@ -47,7 +47,12 @@
 				},
 				"requestQueueLimit": {
 					"type": "integer",
-					"description": "Max estimated request queue time (ms) before rejecting with 503. Default: 20000"
+					"description": "Max estimated request queue time (ms) for methods other than GET, HEAD and OPTIONS before rejecting with 503 on Node and uWS. Default: 20000"
+				},
+				"readRequestQueueLimit": {
+					"type": ["integer", "null"],
+					"minimum": 0,
+					"description": "Max estimated request queue time (ms) for GET, HEAD and OPTIONS before rejecting with 503. Separate from the write queue; not an in-flight concurrency limit. Default (also when null): 60000. Takes effect on restart."
 				},
 				"keepAliveTimeout": { "type": "integer", "description": "Keep-alive inactivity timeout in ms. Default: 30000" },
 				"port": { "type": "integer", "description": "HTTP port. Default: 9926" },
