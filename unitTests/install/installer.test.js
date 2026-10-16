@@ -1207,47 +1207,49 @@ describe('install storage.engine resolution', () => {
 		);
 	});
 
-	it('removes install-created system DB inside a pre-existing empty database directory on rollback so retry with root-named HDB_CONFIG succeeds', async () => {
-		const rootPath = path.join(tempBaseDir, 'hdb');
-		const preExistingDatabaseDir = path.join(rootPath, 'database');
-		fs.mkdirSync(preExistingDatabaseDir, { recursive: true });
-		const rootConfigPath = path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE);
-		const originalContent = 'storage:\n  engine: lmdb\n';
-		fs.writeFileSync(rootConfigPath, originalContent, 'utf8');
-		process.env.HDB_CONFIG = rootConfigPath;
+	for (const engine of ['rocksdb', 'lmdb']) {
+		it(`removes install-created ${engine} system DB inside a pre-existing empty database directory on rollback so retry with root-named HDB_CONFIG succeeds`, async () => {
+			const rootPath = path.join(tempBaseDir, 'hdb');
+			const preExistingDatabaseDir = path.join(rootPath, 'database');
+			fs.mkdirSync(preExistingDatabaseDir, { recursive: true });
+			const rootConfigPath = path.join(rootPath, hdbTerms.HARPER_CONFIG_FILE);
+			const originalContent = `storage:\n  engine: ${engine}\n`;
+			fs.writeFileSync(rootConfigPath, originalContent, 'utf8');
+			process.env.HDB_CONFIG = rootConfigPath;
 
-		const createConfigStub = sandbox
-			.stub(config_utils, 'createConfigFile')
-			.throws(new Error('simulated createConfigFile failure'));
-		const exitStub = sandbox.stub(process, 'exit').callsFake((code) => {
-			throw new Error(`process.exit(${code})`);
+			const createConfigStub = sandbox
+				.stub(config_utils, 'createConfigFile')
+				.throws(new Error('simulated createConfigFile failure'));
+			const exitStub = sandbox.stub(process, 'exit').callsFake((code) => {
+				throw new Error(`process.exit(${code})`);
+			});
+
+			await assert.rejects(runInstall(), /process\.exit\(1\)/);
+
+			assert.strictEqual(exitStub.calledWith(1), true, 'Expected rollbackInstall to call process.exit(1)');
+			assert.strictEqual(
+				fs.existsSync(preExistingDatabaseDir),
+				true,
+				'Expected pre-existing empty database directory mount to be preserved'
+			);
+			assert.deepStrictEqual(
+				fs.readdirSync(preExistingDatabaseDir),
+				[],
+				`Expected install-created ${engine} system DB inside pre-existing database directory to be removed on rollback`
+			);
+
+			// Simulate fresh process state after process.exit(1) and verify retry with root-named HDB_CONFIG succeeds
+			await closeSystemDatabase();
+			env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, undefined);
+			env_manager.setProperty(env_manager.BOOT_PROPS_FILE_PATH, undefined);
+			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, tempBaseDir);
+			resetDatabases();
+			env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, undefined);
+			hdb_utils.resetNoBootFileCache();
+			createConfigStub.restore();
+			exitStub.restore();
+			await runInstall();
+			assertInstalledSystemEngine(rootPath, engine);
 		});
-
-		await assert.rejects(runInstall(), /process\.exit\(1\)/);
-
-		assert.strictEqual(exitStub.calledWith(1), true, 'Expected rollbackInstall to call process.exit(1)');
-		assert.strictEqual(
-			fs.existsSync(preExistingDatabaseDir),
-			true,
-			'Expected pre-existing empty database directory mount to be preserved'
-		);
-		assert.deepStrictEqual(
-			fs.readdirSync(preExistingDatabaseDir),
-			[],
-			'Expected install-created system.mdb inside pre-existing database directory to be removed on rollback'
-		);
-
-		// Simulate fresh process state after process.exit(1) and verify retry with root-named HDB_CONFIG succeeds
-		await closeSystemDatabase();
-		env_manager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, undefined);
-		env_manager.setProperty(env_manager.BOOT_PROPS_FILE_PATH, undefined);
-		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, tempBaseDir);
-		resetDatabases();
-		env_manager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, undefined);
-		hdb_utils.resetNoBootFileCache();
-		createConfigStub.restore();
-		exitStub.restore();
-		await runInstall();
-		assertInstalledSystemEngine(rootPath, 'lmdb');
-	});
+	}
 });

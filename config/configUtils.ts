@@ -416,13 +416,13 @@ export interface StagedInstallConfig {
 	validated?: boolean;
 }
 
-function clearScalarAncestors(configDoc: any, splitParam: string[]) {
-	if (typeof configDoc?.deleteIn !== 'function') return;
+function clearScalarAncestors(configDoc: YAML.Document, splitParam: string[], userPaths?: Set<string>) {
 	for (let i = 1; i < splitParam.length; i++) {
 		const ancestorPath = splitParam.slice(0, i);
 		const ancestorVal = configDoc.getIn(ancestorPath);
 		if (ancestorVal !== undefined && (ancestorVal === null || typeof ancestorVal !== 'object')) {
 			configDoc.deleteIn(ancestorPath);
+			userPaths?.delete(ancestorPath.join('.'));
 		}
 	}
 }
@@ -441,11 +441,7 @@ function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: 
 			);
 		}
 		const threadCount = configDoc.getIn(['threads']);
-		if (
-			typeof threadCount === 'number' &&
-			threadCount >= 0 &&
-			Object.keys(args ?? {}).some((arg) => lookupConfigParam(arg)?.startsWith('threads_'))
-		) {
+		if (typeof threadCount === 'number' && threadCount >= 0) {
 			configDoc.deleteIn(['threads']);
 			configDoc.setIn(['threads', 'count'], threadCount);
 		}
@@ -480,7 +476,7 @@ function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: 
 			let value = castConfigValue(configParam, args[arg]);
 			if (configParam === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
 			try {
-				clearScalarAncestors(configDoc, splitParam);
+				clearScalarAncestors(configDoc, splitParam, userPaths);
 
 				configDoc.setIn(
 					[...splitParam],
