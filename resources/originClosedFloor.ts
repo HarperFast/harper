@@ -376,6 +376,17 @@ export function reservedAroundCallerValue(handle: RocksTransaction | undefined):
 	return (handle && (handle as any)[RESERVATION]?.aroundCallerValue) === true;
 }
 
+/**
+ * A timestamp no local append on this node is issued: the clock's next one, or the ratchet's while it
+ * is ahead. A raw clock sample can equal a key the ratchet issued ahead of the clock once the clock
+ * catches up, and an equal version on one record reads as a re-delivery.
+ */
+export function freshLocalKey(rootStore: any): number {
+	return typeof rootStore?.getUserSharedBuffer === 'function'
+		? registryFor(rootStore).freshKey()
+		: rootStore.getMonotonicTimestamp();
+}
+
 /** Claim a record-version floor with a fresh local key, leaving all later local keys above it. */
 export function claimLocalKey(rootStore: RocksDatabase, floor: number): number {
 	const registry = registryFor(rootStore);

@@ -88,6 +88,7 @@ import {
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
+	freshLocalKey,
 	isValidFloor,
 	releaseLocalKey,
 	reserveLocalKey,
@@ -9697,7 +9698,7 @@ export function makeTable(options): TableResourceClass {
 						? (entry: LockControlEntry) => transport.writeControl!(tableName, entry)
 						: (entry: LockControlEntry) => TableResource.writeLockControlEntry(entry),
 					keyIdOf: writeKeyId,
-					nextTimestamp: () => (primaryStore as any).getMonotonicTimestamp(),
+					nextTimestamp: () => freshLocalKey(tableRootStore),
 					grantableAfterMono: transport.grantableAfterMono,
 				});
 				predecessor?.close();

@@ -202,7 +202,9 @@ far-future timestamp pins neither the node's clock nor the holder's transaction,
 would otherwise inherit it. Such a holder still outranks through an `ImmediateTransaction`'s per-write
 stamp, is best-effort in an explicit transaction, and its log key may repeat another's. A key the
 ratchet issues ahead of the clock is persisted as a ceiling before it is used and seeds issuance at
-open, so a restart cannot reissue it (resources/DESIGN.md "Origin-closed timestamp floor"). Re-entry,
+open, so a restart cannot reissue it (resources/DESIGN.md "Origin-closed timestamp floor"). For the same
+reason a handle's `acquiredAt` and a cluster round's `tsR` come from that allocator (`freshLocalKey`),
+not a raw clock sample, which could equal an issued key once the clock catches up. Re-entry,
 coalesced followers and scoped → hold upgrades are not admissions and raise nothing.
 
 The floor reaches the write through the existing stamps. An explicit transaction's clock takes it only
