@@ -33,7 +33,6 @@ import { recordAction } from './analytics/write.ts';
 import { constants, RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import { NonPrimaryStoreError } from '../utility/errors/hdbError.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 
 const StructonEncoder = createStructon(Encoder) as typeof Encoder;
@@ -699,7 +698,6 @@ export function handleLocalTimeForGets(store, rootStore) {
 		(store as any).initStore(rootStore);
 		return store;
 	}
-	if (store instanceof RocksDatabase) throw new NonPrimaryStoreError((store as any).name);
 	store.readCount = 0;
 	store.cachePuts = false;
 	store.rootStore = rootStore;

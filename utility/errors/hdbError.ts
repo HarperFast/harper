@@ -117,16 +117,6 @@ export class DatabaseClosingError extends ServerError {
 	}
 }
 
-/** A RocksDB store that is not a primary store was handed to a path that only serves primary stores. */
-export class NonPrimaryStoreError extends ServerError {
-	code: string;
-	constructor(storeName: string | undefined) {
-		super(`RocksDB store '${storeName}' is not a primary store and cannot back a table's records`);
-		this.name = 'NonPrimaryStoreError';
-		this.code = 'NON_PRIMARY_STORE';
-	}
-}
-
 export class DatabaseGenerationChangedError extends ClientError {
 	code: string;
 	constructor() {

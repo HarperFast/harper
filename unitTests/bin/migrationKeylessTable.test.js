@@ -1,6 +1,5 @@
 // harper#3225: the LMDB→RocksDB migration must copy a keyless table's records even when its bare
-// `<table>/` catalog row has lost isPrimaryKey. Deciding primary-ness from the flag alone skipped the
-// table's primary store, so the migrated database silently had none of its records.
+// `<table>/` catalog row has lost isPrimaryKey.
 const fs = require('fs-extra');
 const assert = require('node:assert');
 const path = require('path');
