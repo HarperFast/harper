@@ -3,6 +3,7 @@
 import fs from 'fs-extra';
 import Joi from 'joi';
 import { resolveFullTextSearchLimits } from '../resources/indexes/fullTextSearchLimits.ts';
+import { validateHeaderValue } from 'node:http';
 import * as os from 'node:os';
 const { boolean, string, number, array } = Joi.types();
 const v8Flag = string.trim().allow('').pattern(/^--/, 'V8 flag starting with --');
@@ -492,7 +493,20 @@ export function configValidator(configJson, skipFsValidation = false) {
 			requireAuthentication: boolean.optional(),
 		}),
 		http: Joi.object({
-			readRequestQueueLimit: Joi.alternatives([number.integer().min(0).allow(null), boolean.valid(false)]).optional(),
+			corsAccessControlAllowHeaders: string
+				.custom((value, helpers) => {
+					try {
+						validateHeaderValue('Access-Control-Allow-Headers', value);
+						return value;
+					} catch {
+						return helpers.error('any.invalid');
+					}
+				})
+				.allow('', null)
+				.optional(),
+			readRequestQueueLimit: Joi.alternatives([number.integer().min(0).allow(null), boolean.valid(false)])
+				.prefs({ convert: false })
+				.optional(),
 			compressionThreshold: number.optional(),
 			cors: boolean.optional(),
 			corsAccessList: array.optional(),
