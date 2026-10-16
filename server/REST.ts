@@ -237,7 +237,9 @@ function applyReadPreconditions(response, request, method: string, lastModified?
 			discardReadResponse(response, sourceData);
 		}
 		if (result === 412) throw new ClientError('Request precondition failed', 412);
-		const headers = mergeHeaders(new Headers(), response.headers);
+		// Only foreign (possibly immutable) Response headers need a copy.
+		const headers =
+			response.headers === request.responseHeaders ? response.headers : mergeHeaders(new Headers(), response.headers);
 		for (const header of ['Content-Length', 'Content-Type', 'Content-Encoding']) headers.delete(header);
 		return { status: 304, headers, body: undefined };
 	}
@@ -478,12 +480,21 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			request,
 			writeCondition
 				? async () => {
-						const result = await dispatch();
-						if (!writeCondition.consumed) {
-							if (result instanceof Response) discardSerializedStream(result.body);
-							throw new ClientError('The resource did not apply the write precondition', 501);
+						try {
+							const result = await dispatch();
+							if (
+								!writeCondition.consumed &&
+								!((result instanceof Response ? result.status : request.response.status) >= 400)
+							) {
+								if (result instanceof Response) discardSerializedStream(result.body);
+								throw new ClientError('The resource did not apply the write precondition', 501);
+							}
+							return result;
+						} finally {
+							// Seal admission before the commit await: a deferred call holding this context must not
+							// reuse the already-checked condition.
+							writeCondition.finished = true;
 						}
-						return result;
 					}
 				: dispatch
 		);
@@ -519,7 +530,15 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				const startup = waitForStreamStartup(response.body);
 				if (startup) await startup;
 			}
-			return deferred ? applyReadPreconditions(response, request, method, lastModification) : response;
+			return deferred
+				? applyReadPreconditions(
+						response,
+						request,
+						method,
+						lastModification,
+						'data' in responseData ? responseData.data : responseData
+					)
+				: response;
 		} else if (isFinite(lastModification)) {
 			headers.setIfNone('ETag', versionToEtag(lastModification));
 			if ((httpOptions as any).lastModified)
@@ -592,7 +611,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		// headers to a request that didn't ask, or a cached non-count response to one that did.
 		if ((method === 'GET' || method === 'HEAD') && (target as any)?.isCollection) addVaryHeader(headers, 'Prefer');
 		return deferredReadConditions
-			? applyReadPreconditions(responseObject, request, method, lastModification)
+			? applyReadPreconditions(responseObject, request, method, lastModification, responseData)
 			: responseObject;
 	} catch (error) {
 		error ??= new Error('Unknown error occurred');
