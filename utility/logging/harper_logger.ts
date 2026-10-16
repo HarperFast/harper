@@ -214,6 +214,12 @@ async function updateLogSettings() {
 	applyLogSettings(rootConfig.config);
 }
 
+function normalizeLogOptions(options: any) {
+	if (typeof options === 'string') return { level: options };
+	if (options && typeof options === 'object') return options;
+	return undefined;
+}
+
 // Separate from the watcher wiring above because the watcher it builds reads a process-wide path,
 // which leaves no way to exercise these settings against a given config.
 function applyLogSettings(rootConfigObject: any) {
@@ -224,7 +230,7 @@ function applyLogSettings(rootConfigObject: any) {
 	// What `initLogSettings()` established at startup stands until a real config arrives, which
 	// is why the watcher settles those outcomes with no config rather than an empty one.
 	if (!rootConfigObject || typeof rootConfigObject !== 'object') return;
-	const logOptions = rootConfigObject.logging ?? {};
+	const logOptions = normalizeLogOptions(rootConfigObject.logging) ?? {};
 	// Resolve relative paths against rootPath from the same config
 	const rootPath = rootConfigObject.rootPath;
 	if (logOptions.root) {
@@ -236,15 +242,11 @@ function applyLogSettings(rootConfigObject: any) {
 	updateLogger(mainLogger, logOptions);
 	logFilePath = mainLogger.path;
 	logConsole = logOptions.console ?? false;
-	const externalLogOptions =
-		logOptions.external && typeof logOptions.external === 'object' ? logOptions.external : undefined;
+	const externalLogOptions = normalizeLogOptions(logOptions.external);
 	if (externalLogOptions) {
 		updateLogger(externalLogger, externalLogOptions);
 		for (let [name, component] of mainLogger.components) {
-			if (
-				!(rootConfigObject[name]?.logging && typeof rootConfigObject[name].logging === 'object') &&
-				component.isExternal
-			)
+			if (!normalizeLogOptions(rootConfigObject[name]?.logging) && component.isExternal)
 				updateLogger(component, externalLogOptions, name);
 		}
 	}
@@ -253,8 +255,9 @@ function applyLogSettings(rootConfigObject: any) {
 		const component = rootConfigObject[name];
 		// `myComponent:` with nothing under it parses to null, and an async listener's TypeError
 		// escapes the watcher's emit guard as an unhandled rejection.
-		if (component?.logging && typeof component.logging === 'object') {
-			updateLogger(mainLogger.forComponent(name), component.logging, name);
+		const componentLogging = normalizeLogOptions(component?.logging);
+		if (componentLogging) {
+			updateLogger(mainLogger.forComponent(name), componentLogging, name);
 		} else if (mainLogger.hasComponent(name)) {
 			const componentLogger = mainLogger.forComponent(name);
 			updateLogger(componentLogger, (componentLogger.isExternal && externalLogOptions) ?? logOptions, name);
@@ -533,6 +536,7 @@ export function initLogSettings(forceInit = false) {
 				}
 			}
 			closeLogFile();
+			logLevel = undefined;
 			const bootPropsFilePath = getPropsFilePath();
 			let properties = assignCMDENVVariables(['ROOTPATH']);
 			try {
@@ -581,16 +585,18 @@ export function initLogSettings(forceInit = false) {
 			});
 			// setup the external logger
 			externalLogger = mainLogger.forComponent('external');
-			const rawExternalLogOptions = configObject?.logging?.external;
-			const externalLogOptions =
-				rawExternalLogOptions && typeof rawExternalLogOptions === 'object' ? rawExternalLogOptions : undefined;
+			const externalLogOptions = normalizeLogOptions(configObject?.logging?.external);
 			for (const [name, componentLogger] of mainLogger.components) {
-				const rawComponentLogging = configObject?.[name]?.logging;
 				const componentLogOptions =
-					(rawComponentLogging && typeof rawComponentLogging === 'object' ? rawComponentLogging : undefined) ??
+					normalizeLogOptions(configObject?.[name]?.logging) ??
 					(name === 'external' || componentLogger.isExternal ? externalLogOptions : undefined) ??
 					{};
-				updateLogger(componentLogger, componentLogOptions, name);
+				try {
+					updateLogger(componentLogger, componentLogOptions, name);
+				} catch (err) {
+					console.error(err);
+					updateLogger(componentLogger, {}, name);
+				}
 			}
 			if (!externalLogOptions?.tag) externalLogger.tag = null; // don't tag by default
 			if (isMainThread && typeof globalThis.Bun === 'undefined') {
@@ -606,7 +612,6 @@ export function initLogSettings(forceInit = false) {
 	} catch (err) {
 		hdbProperties = undefined;
 		if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT || err.code === hdbTerms.NODE_ERROR_CODES.ERR_INVALID_ARG_TYPE) {
-			logLevel = undefined;
 			// If the env settings haven't been initialized check cmd/env vars for values. If values not found used default.
 			const cmdEnvs = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
 			for (const key in cmdEnvs) {

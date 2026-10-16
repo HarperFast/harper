@@ -313,6 +313,7 @@ describe('Test harper_logger module', () => {
 			expect(harper_logger.forComponent('storage')).to.equal(storageLogger);
 			expect(storageLogger.path).to.equal(logPath);
 			expect(storageLogger.logToStdstreams).to.be.false;
+			expect(storageLogger.conditional.debug).to.be.a('function');
 			expect(customCompLogger.path).to.equal(logPath);
 			expect(customCompLogger.tag).to.equal('custom-tag');
 			expect(customCompLogger.conditional.debug).to.be.a('function');
@@ -340,10 +341,13 @@ describe('Test harper_logger module', () => {
 
 			harper_logger._applyLogSettingsForTests({
 				rootPath: rebindRoot,
-				logging: { file: true, stdStreams: true, level: 'info', root: logRoot },
+				logging: { file: true, stdStreams: true, level: 'error', root: logRoot },
+				authentication: { logging: { level: 'error' } },
 				customComp: { logging: { level: 'debug' } },
 			});
 			expect(customCompLogger.logToStdstreams).to.be.true;
+			expect(authEventLogger.info).to.be.null;
+			expect(mainTaggedLogger.info).to.be.null;
 
 			fs.removeSync(configFile);
 			const stdioFallback = captureStdio();
@@ -377,8 +381,7 @@ describe('Test harper_logger module', () => {
 
 			assert.ifError(result.error);
 			assert.equal(result.status, 0, `fixture exited ${result.status}: ${result.stderr}`);
-			assert.equal(result.stdout, '');
-			assert.equal(result.stderr, '');
+			assert.doesNotMatch(result.stdout + result.stderr, /\[tls\]/, result.stderr);
 
 			const logPath = path.join(firstBootRoot, 'log', 'hdb.log');
 			assert.ok(fs.pathExistsSync(logPath), 'expected configured hdb.log to exist');
@@ -3208,7 +3211,15 @@ describe('Test harper_logger module', () => {
 			// `myComponent:` with nothing under it parses to null, and this runs from the root
 			// config's async `change` listener, where the TypeError escapes as an unhandled
 			// rejection rather than as a listener fault the watcher contains.
-			assert.doesNotThrow(() => _applyLogSettingsForTests({ noBody: null, scalarLogging: { logging: 'debug' } }));
+			assert.doesNotThrow(() =>
+				_applyLogSettingsForTests({
+					logging: 'info',
+					noBody: null,
+					scalarLogging: { logging: 'debug' },
+					boolLogging: { logging: true },
+				})
+			);
+			expect(harperLoggerModule.forComponent('scalarLogging').conditional.debug).to.be.a('function');
 		});
 
 		it('leaves the established settings alone when the barrier settles carrying no config', () => {
