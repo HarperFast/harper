@@ -5,8 +5,7 @@ function tableFor(query) {
 	return databases.data[query.get('table')];
 }
 
-// GET /StripPrimaryFlag/?table=X rewrites X's bare `<table>/` row without isPrimaryKey, the
-// shape of the catalog row whose store a 5.3.2 startup opened as an index store
+// GET /StripPrimaryFlag/?table=X rewrites X's bare `<table>/` row without isPrimaryKey
 export class StripPrimaryFlag extends Resource {
 	static loadAsInstance = false;
 	get(target) {
