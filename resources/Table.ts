@@ -48,9 +48,11 @@ import {
 	type Transaction as DatabaseTransactionRecord,
 	confirmingResidents,
 } from './DatabaseTransaction.ts';
-import { releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
+import { freshLocalKey, releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
 import {
 	acquireRecordKey,
+	admissionFloor,
+	admissionStamp,
 	lockAttemptKey,
 	lockNotHeldError,
 	resolveLockOptions,
@@ -4309,8 +4311,8 @@ export function makeTable(options): TableResourceClass {
 							);
 							if (violation) throw violation;
 							if (resolved.hold && !acquired.hold) {
-								detachScopedUpgradeWrite(link, keyId, acquired);
 								acquired.upgradeToHold(resolved.lease);
+								detachScopedUpgradeWrite(link, keyId, acquired);
 							}
 							return this.#reloadLocked(id, acquired, true);
 						}
@@ -4338,6 +4340,8 @@ export function makeTable(options): TableResourceClass {
 				resolved.hold
 			);
 			const clusterStart = performance.now();
+			// One read for both the floor and the reload: a write landing between two reads would be uncovered.
+			let admittedEntry: any;
 			// What a follower waits on must span the cluster round and registration, not just the native
 			// acquire. Waking it at the native hand-off leaves it in a window where the key is held but no
 			// handle is registered, so it retries and parks on the leader's own lock for its full timeout
@@ -4375,6 +4379,7 @@ export function makeTable(options): TableResourceClass {
 					handle.release();
 					throw transportUnavailable(databaseName);
 				}
+				let dependencyFloor: number | undefined;
 				if (coordinator) {
 					try {
 						// Not a 423 when the budget is gone, and not a skip either: the native wait can consume
@@ -4412,6 +4417,7 @@ export function makeTable(options): TableResourceClass {
 						// The getter again: a swap during the acquisition moved this admission to the
 						// successor, and registering on the predecessor would revoke a handle that is fine.
 						TableResource.admittingCoordinator?.registerAdmission(round.admissionId, () => handle.revokeLease());
+						dependencyFloor = round.dependencyFloor;
 					} catch (error) {
 						handle.release();
 						throw error;
@@ -4421,6 +4427,16 @@ export function makeTable(options): TableResourceClass {
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					}
 				}
+				let admitted: { floor: number; stamp: number; movesClock: boolean } | undefined;
+				try {
+					admittedEntry = (primaryStore as any).getEntry(id);
+					const floor = admissionFloor(admittedEntry?.version, dependencyFloor);
+					if (floor !== undefined) admitted = admissionStamp(tableRootStore, floor, handle.acquiredAt);
+				} catch (error) {
+					handle.release();
+					throw error;
+				}
+				if (admitted) handle.noteCandidateFloor(admitted.stamp);
 				link.registerRecordLock(handle);
 				if (link.saveCommits && (context as any)?.timestamp) handle.noteCandidateFloor((context as any).timestamp);
 				if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
@@ -4433,6 +4449,13 @@ export function makeTable(options): TableResourceClass {
 					if (link.writes.length === 0 && !link.timestamp) {
 						link.timestamp = handle.acquiredAt;
 					}
+					if (
+						admitted?.movesClock &&
+						admitted.floor > link.timestamp &&
+						(!link.transaction || reservedLocalKey(link.transaction) === undefined) &&
+						!link.hasUnlockedWrite()
+					)
+						link.timestamp = Math.max(admitted.stamp, link.timestamp || handle.acquiredAt);
 					if (!resolved.hold && link.transaction) {
 						// Scoped lock: the read snapshot may predate the lock; drop it so the
 						// scope reads what it locked.  Hold locks use acquiredAt directly and
@@ -4457,7 +4480,7 @@ export function makeTable(options): TableResourceClass {
 			return acquisition.then(
 				(handle) => {
 					link.unregisterPendingLock(primaryStore, keyId);
-					return this.#reloadLocked(id, handle);
+					return this.#reloadLocked(id, handle, false, { entry: admittedEntry });
 				},
 				(error) => {
 					link.unregisterPendingLock(primaryStore, keyId);
@@ -4465,7 +4488,7 @@ export function makeTable(options): TableResourceClass {
 				}
 			);
 		}
-		#reloadLocked(id: Id, holdHandle?: RecordLockHandle | null, preserveChanges = false) {
+		#reloadLocked(id: Id, holdHandle?: RecordLockHandle | null, preserveChanges = false, admitted?: { entry: any }) {
 			// For freshness, read the committed entry (snapshot-free) so a hold lock sees concurrent
 			// committed writes rather than a stale snapshot.  A write earlier in THIS explicit
 			// transaction has not landed in that committed entry yet (harper#1968: Harper defers an
@@ -4474,7 +4497,7 @@ export function makeTable(options): TableResourceClass {
 			// record comes from the prior staged write, the rest of the entry (version, audit chain,
 			// blob metadata) stays the pre-transaction one.
 			const link = txnForContext(this.getContext());
-			let entryForReload: any = primaryStore.getEntry(id);
+			let entryForReload: any = admitted ? admitted.entry : primaryStore.getEntry(id);
 			if (link.open === TRANSACTION_STATE.OPEN) {
 				const keyId = writeKeyId(id);
 				const tailWrite = link.writesByKey?.get(primaryStore)?.get(keyId);
@@ -7709,7 +7732,7 @@ export function makeTable(options): TableResourceClass {
 						? (entry: LockControlEntry) => transport.writeControl!(tableName, entry)
 						: (entry: LockControlEntry) => TableResource.writeLockControlEntry(entry),
 					keyIdOf: writeKeyId,
-					nextTimestamp: () => (primaryStore as any).getMonotonicTimestamp(),
+					nextTimestamp: () => freshLocalKey(tableRootStore),
 					grantableAfterMono: transport.grantableAfterMono,
 				});
 				predecessor?.close();
@@ -9417,9 +9440,18 @@ export function makeTable(options): TableResourceClass {
 		const existingVersion = existingEntry?.version;
 		const existingRecord = existingEntry?.value;
 		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
-		const sourceTimestamp =
-			inheritedTimestamp ||
-			(isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime());
+		let sourceTimestamp = inheritedTimestamp;
+		if (!sourceTimestamp) {
+			if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
+			else {
+				try {
+					sourceTimestamp = freshLocalKey(tableRootStore);
+				} catch {
+					// A read must not fail on the issuance ceiling's write; a raw sample only risks a tie.
+					sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
+				}
+			}
+		}
 		let whenResolved, timer;
 		// We start by locking the record so that there is only one resolution happening at once;
 		// if there is already a resolution in process, we want to use the results of that resolution

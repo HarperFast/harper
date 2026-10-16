@@ -17,7 +17,14 @@ import { convertToMS } from '../utility/common_utils.ts';
 import { settleBeforeDeadline, when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
-import { releaseLocalKey, reserveLocalKey, reservedLocalKey, transferLocalKey } from './originClosedFloor.ts';
+import {
+	freshLocalKey,
+	isReservedForLocalAppend,
+	releaseLocalKey,
+	reserveLocalKey,
+	reservedLocalKey,
+	transferLocalKey,
+} from './originClosedFloor.ts';
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
@@ -868,6 +875,7 @@ export class DatabaseTransaction implements Transaction {
 	 * staging is exactly what the fence exists to catch.
 	 */
 	declare hasLeaseProtectedWrite?: boolean;
+	declare unlockedWriteScan?: { writes: TransactionWrite[]; index: number; found: boolean };
 	// Tracks in-flight acquireRecordKey calls so concurrent lock() calls for the same key in one
 	// link (e.g. Promise.all([T.lock(id), T.lock(id)])) can coalesce rather than self-block.
 	declare pendingLocks?: Map<any, Map<unknown, Promise<RecordLockHandle>>>;
@@ -1276,6 +1284,38 @@ export class DatabaseTransaction implements Transaction {
 		if (recordLocks.size === 0) this.recordLocks = undefined;
 	}
 
+	/**
+	 * An immediate batch commits every staged write under the log key its first write reserves, and a
+	 * replica applies each write at no more than that key, so the key must cover every version in it.
+	 */
+	private lockStampCeiling(transaction: RocksTransaction, txnTime: number): number {
+		if (isReservedForLocalAppend(transaction)) return txnTime;
+		let ceiling = txnTime;
+		for (const write of this.writes) {
+			if (!write || write.saved) continue;
+			const version = write.lockHandle
+				? (write.lockStamp ||= write.lockHandle.holderVersionCandidate())
+				: this.timestamp;
+			if (version > ceiling) ceiling = version;
+		}
+		return ceiling;
+	}
+
+	/**
+	 * Whether an unlocked write is staged. Resumes where the last call stopped, so a transaction that
+	 * takes N locks scans its writes once in all; a detached write it already counted stays counted.
+	 */
+	hasUnlockedWrite(): boolean {
+		const writes = this.writes;
+		let scan = this.unlockedWriteScan;
+		if (scan?.writes !== writes) scan = this.unlockedWriteScan = { writes, index: 0, found: false };
+		for (; !scan.found && scan.index < writes.length; scan.index++) {
+			const write = writes[scan.index];
+			if (write && !write.lockHandle) scan.found = true;
+		}
+		return scan.found;
+	}
+
 	private noteCommittedLockVersions(): void {
 		const recordLocks = this.recordLocks;
 		if (!recordLocks) return;
@@ -1305,6 +1345,7 @@ export class DatabaseTransaction implements Transaction {
 		// a locked write would otherwise re-scan every write of every later unlocked batch. Assigned
 		// only when it was set, so an ordinary transaction never gains the property at all.
 		if (this.hasLeaseProtectedWrite) this.hasLeaseProtectedWrite = false;
+		if (this.unlockedWriteScan) this.unlockedWriteScan = undefined;
 	}
 
 	/**
@@ -1648,8 +1689,22 @@ export class DatabaseTransaction implements Transaction {
 			// Before the first staged write, which freezes the native timestamp. A key below the floor's
 			// admission bound is replaced on the handle only: `txnTime` keeps an explicit value as the
 			// record version, and the entry then carries both clocks as an applied write does.
-			const key = reserveLocalKey(operation.store.rootStore, transaction, txnTime || undefined);
-			if (!txnTime) txnTime = this.timestamp = key;
+			const lockBatch = this.saveCommits && this.recordLocks;
+			try {
+				const key = reserveLocalKey(
+					operation.store.rootStore,
+					transaction,
+					(lockBatch ? this.lockStampCeiling(transaction, txnTime) : txnTime) || undefined
+				);
+				// A batch key a lock stamp set is not the clock of the batch's unlocked writes: past the
+				// skew cap it can be arbitrarily far ahead.
+				if (!txnTime)
+					txnTime = this.timestamp = lockBatch ? Math.min(freshLocalKey(operation.store.rootStore), key) : key;
+			} catch (error) {
+				if (immediateCommit)
+					abortNativeTransaction(transaction, 'aborting an immediate transaction whose key was not reserved');
+				throw error;
+			}
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
 		if (!operation.saved && operation.pendingPriorWrite) {
