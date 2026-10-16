@@ -497,7 +497,7 @@
 			"properties": {
 				"writeAsync": {
 					"type": "boolean",
-					"description": "Disable LMDB's per-commit disk sync for faster writes (risk of data loss on crash). Applies only to the LMDB storage engine; RocksDB never fsyncs commits regardless of this setting. Default: false"
+					"description": "When true, disables LMDB's per-commit disk sync for faster writes (risk of losing recent commits on OS crash or power loss); when false, LMDB syncs each commit to disk. Applies only to the LMDB storage engine; this setting has no effect on RocksDB, which never fsyncs commits (commits write to the OS page cache without a per-commit disk sync). Default: false"
 				},
 				"caching": { "type": "boolean", "description": "Enable in-memory caching of records. Default: true" },
 				"compression": {
