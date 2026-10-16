@@ -362,6 +362,13 @@ export function reservedAroundCallerValue(handle: RocksTransaction | undefined):
 	return (handle && (handle as any)[RESERVATION]?.aroundCallerValue) === true;
 }
 
+/** Claim a record-version floor with a fresh local key, leaving all later local keys above it. */
+export function claimLocalKey(rootStore: RocksDatabase, floor: number): number {
+	const registry = registryFor(rootStore);
+	storeMax(registry.words, WORD_RATCHET, fromBits(toBits(floor) - 1n));
+	return registry.freshKey();
+}
+
 function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void {
 	const words = registryFor(rootStore).words;
 	storeMax(words, WORD_RATCHET, floor);
