@@ -660,7 +660,14 @@ function droppedRowKey(tableName: string): string {
  */
 export function isPrimaryCatalogRow(key: unknown, value: any): boolean {
 	if (value?.isPrimaryKey) return true;
-	return value != null && value.name == null && typeof key === 'string' && key.indexOf('/') === key.length - 1;
+	// exactly one slash, at the end: initStores reads `<table>/<attribute>` by splitting on the first slash
+	return (
+		value != null &&
+		value.name == null &&
+		typeof key === 'string' &&
+		key.length > 1 &&
+		key.indexOf('/') === key.length - 1
+	);
 }
 /**
  * Once a name has been dropped, later creates of it take a generation even after the retirement journal is
