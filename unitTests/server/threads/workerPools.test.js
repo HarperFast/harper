@@ -102,6 +102,8 @@ describe('dedicated worker pools', () => {
 			require('#src/server/threads/socketRouter').admittedWorkerPools(httpThreadCount);
 		const threadCount = (httpThreadCount) =>
 			require('#src/server/threads/socketRouter').replicationThreadCount(httpThreadCount);
+		const effectiveHttp = (httpThreadCount, platform) =>
+			require('#src/server/threads/socketRouter').effectiveHttpThreadCount(httpThreadCount, platform);
 
 		it('defaults replication.threads to floor(threads.count / 2) for threads.count >= 2 and 0 otherwise', () => {
 			configure({ [CONFIG_PARAMS.REPLICATION_SECUREPORT]: 9933 });
@@ -120,6 +122,18 @@ describe('dedicated worker pools', () => {
 			}
 		});
 
+		it('normalizes effective HTTP worker count for DEV_MODE (1) and win32 (1) before deriving default pool size', () => {
+			configure({ [CONFIG_PARAMS.THREADS_COUNT]: 4, [CONFIG_PARAMS.REPLICATION_SECUREPORT]: 9933 });
+			// DEV_MODE passes 1 to startHTTPThreads(1) regardless of threads.count in config.
+			assert.deepStrictEqual(admitted(1), []);
+			// win32 normalizes threadCount > 0 to 1 before admittedWorkerPools(threadCount).
+			assert.strictEqual(effectiveHttp(4, 'win32'), 1);
+			assert.strictEqual(effectiveHttp(0, 'win32'), 0);
+			assert.strictEqual(effectiveHttp(4, 'linux'), 4);
+			assert.deepStrictEqual(admitted(effectiveHttp(4, 'win32')), []);
+			assert.deepStrictEqual(admitted(effectiveHttp(4, 'linux')), [{ type: 'replication', count: 2 }]);
+		});
+
 		it('honors explicit replication.threads: 0 even when threads.count >= 2', () => {
 			configure({
 				[CONFIG_PARAMS.THREADS_COUNT]: 4,
@@ -132,12 +146,13 @@ describe('dedicated worker pools', () => {
 
 		it('admits the explicitly configured replication pool', () => {
 			configure({
-				[CONFIG_PARAMS.REPLICATION_THREADS]: 2,
+				[CONFIG_PARAMS.REPLICATION_THREADS]: 3,
 				[CONFIG_PARAMS.REPLICATION_SECUREPORT]: '127.0.0.1:9933',
 				[CONFIG_PARAMS.HTTP_PORT]: 9926,
 				[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT]: 9925,
 			});
-			assert.deepStrictEqual(admitted(1), [{ type: 'replication', count: 2 }]);
+			assert.deepStrictEqual(threadCount(4), { count: 3, explicit: true });
+			assert.deepStrictEqual(admitted(1), [{ type: 'replication', count: 3 }]);
 		});
 
 		it('refuses an explicitly configured pool with no replication port of its own', () => {

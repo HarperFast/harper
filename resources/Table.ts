@@ -2852,8 +2852,12 @@ export function makeTable(options): TableResourceClass {
 		static #reportResidencyPoolHook(hookName: 'setResidency' | 'setResidencyById') {
 			if (TableResource.#residencyPoolErrorLogged || !isWorkerPoolActive(THREAD_TYPES.REPLICATION)) return;
 			TableResource.#residencyPoolErrorLogged = true;
+			const consequence =
+				hookName === 'setResidencyById'
+					? 'outbound replication sends invalidation entries (residency partials) and inbound replication stores residency stubs for non-resident records instead of evaluating the callback'
+					: 'replicated writes that do not carry a residency list fall back to default residency placement on replication workers instead of evaluating the callback';
 			harperLogger.error?.(
-				`Table '${tableName}' registered ${hookName} while the replication worker pool is active (replication.threads > 0, or defaulted for threads.count >= 2). Replication pool workers do not load application code and cannot evaluate residency functions, so non-resident peers will receive and store invalidation entries (residency partials) instead of full records. Set replication.threads: 0 in harperdb-config.yaml if this table requires custom residency functions.`
+				`Table '${tableName}' registered ${hookName} while the replication worker pool is active (replication.threads > 0, or defaulted for threads.count >= 2). Replication pool workers do not load application code and cannot evaluate residency functions, so ${consequence}. Set replication.threads: 0 in harper-config.yaml if this table requires custom residency functions.`
 			);
 		}
 		static setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition) {
@@ -8426,6 +8430,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			return unresolved;
 		}
+		static #computedPoolErrorLogged = false;
 		static setComputedAttribute(attribute_name, resolver) {
 			const attribute = findAttribute(attributes, attribute_name);
 			if (!attribute) {
@@ -8435,6 +8440,19 @@ export function makeTable(options): TableResourceClass {
 			if (!attribute.computed) {
 				console.error(`The attribute "${attribute_name}" is not defined as computed in the table "${tableName}"`);
 				return;
+			}
+			if (
+				typeof resolver === 'function' &&
+				!resolver.unresolved &&
+				!attribute.computedFromExpression &&
+				Boolean(indices[attribute_name] || attribute.indexed) &&
+				!TableResource.#computedPoolErrorLogged &&
+				isWorkerPoolActive(THREAD_TYPES.REPLICATION)
+			) {
+				TableResource.#computedPoolErrorLogged = true;
+				harperLogger.error?.(
+					`Table '${tableName}' registered setComputedAttribute('${attribute_name}', ...) for an indexed @computed attribute while the replication worker pool is active (replication.threads > 0, or defaulted for threads.count >= 2). Replication pool workers do not load application code and will skip indexing replicated updates for this attribute. Set replication.threads: 0 in harper-config.yaml if this table requires replicated updates to maintain this computed index.`
+				);
 			}
 			this.userResolvers[attribute_name] = resolver;
 		}

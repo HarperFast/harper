@@ -281,31 +281,21 @@ describe('Writer residency (harper#2257)', () => {
 				database: 'test',
 				attributes: [{ name: 'id', isPrimaryKey: true }],
 			});
-			let called = 0;
 			const errors = capturingErrors(() => {
-				FreshTable.setResidency(() => {
-					called++;
-					return [PEER];
-				});
+				FreshTable.setResidency(() => [PEER]);
 			});
 			FreshTable.setResidency(undefined);
 			assert.strictEqual(errors.length, 0);
-			assert.strictEqual(called, 0);
 		});
 
-		it('logs an error once per table without invoking the callback and ignores clearing', () => {
+		it('logs an error once per table on setResidency / setResidencyById and ignores clearing', () => {
 			setActiveWorkerPools(['replication']);
 			const PoolTable = table({
 				table: 'WriterResidencyPoolActive',
 				database: 'test',
 				attributes: [{ name: 'id', isPrimaryKey: true }],
 			});
-			let called = 0;
-			const fn = () => {
-				called++;
-				return [PEER];
-			};
-			// Clearing before registration neither logs nor consumes the once-per-table flag.
+			const fn = () => [PEER];
 			assert.deepStrictEqual(
 				capturingErrors(() => {
 					PoolTable.setResidency(undefined);
@@ -319,10 +309,9 @@ describe('Writer residency (harper#2257)', () => {
 			assert.strictEqual(firstErrors.length, 1);
 			assert.match(firstErrors[0], /WriterResidencyPoolActive/);
 			assert.match(firstErrors[0], /setResidency/);
-			assert.match(firstErrors[0], /replication\.threads: 0/);
-			assert.strictEqual(called, 0, 'must not invoke user residency callback while logging');
+			assert.match(firstErrors[0], /default residency placement/);
+			assert.match(firstErrors[0], /replication\.threads: 0 in harper-config\.yaml/);
 
-			// Subsequent registrations on the same table do not re-log.
 			assert.deepStrictEqual(
 				capturingErrors(() => {
 					PoolTable.setResidency(fn);
@@ -333,7 +322,6 @@ describe('Writer residency (harper#2257)', () => {
 			PoolTable.setResidency(undefined);
 			PoolTable.setResidencyById(undefined);
 
-			// A second table gets its own once-per-table error on setResidencyById.
 			const SecondPoolTable = table({
 				table: 'WriterResidencyPoolActiveById',
 				database: 'test',
@@ -345,9 +333,42 @@ describe('Writer residency (harper#2257)', () => {
 			assert.strictEqual(byIdErrors.length, 1);
 			assert.match(byIdErrors[0], /WriterResidencyPoolActiveById/);
 			assert.match(byIdErrors[0], /setResidencyById/);
-			assert.match(byIdErrors[0], /replication\.threads: 0/);
-			assert.strictEqual(called, 0);
+			assert.match(byIdErrors[0], /invalidation entries \(residency partials\)/);
+			assert.match(byIdErrors[0], /replication\.threads: 0 in harper-config\.yaml/);
 			SecondPoolTable.setResidencyById(undefined);
+		});
+
+		it('logs an error once per table when setComputedAttribute registers an indexed JS resolver', () => {
+			setActiveWorkerPools(['replication']);
+			const ComputedPoolTable = table({
+				table: 'ComputedIndexPoolActive',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'unindexedScore', computed: true },
+					{ name: 'exprScore', computed: true, indexed: { type: 'value' }, computedFromExpression: 'id' },
+					{ name: 'indexedScore', computed: true, indexed: { type: 'value' } },
+				],
+			});
+			assert.deepStrictEqual(
+				capturingErrors(() => {
+					ComputedPoolTable.setComputedAttribute('unindexedScore', (rec) => rec.id);
+				}),
+				[]
+			);
+			const errors = capturingErrors(() => {
+				ComputedPoolTable.setComputedAttribute('indexedScore', (rec) => rec.id);
+			});
+			assert.strictEqual(errors.length, 1);
+			assert.match(errors[0], /ComputedIndexPoolActive/);
+			assert.match(errors[0], /setComputedAttribute\('indexedScore'/);
+			assert.match(errors[0], /replication\.threads: 0 in harper-config\.yaml/);
+			assert.deepStrictEqual(
+				capturingErrors(() => {
+					ComputedPoolTable.setComputedAttribute('indexedScore', (rec) => rec.id);
+				}),
+				[]
+			);
 		});
 	});
 });

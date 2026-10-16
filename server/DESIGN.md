@@ -757,16 +757,28 @@ uWS force-closes a completed `Connection: close` response while an upload is sti
 
 ## Dedicated worker pools own their listeners and load no applications (`server/threads/workerPools.ts`)
 
-A dedicated pool (today only `replication`, sized by `replication.threads`) is a set of workers of
+A dedicated pool (today only `replication`, sized by `replication.threads` in `server/threads/socketRouter.ts`) is a set of workers of
 a type other than `http`, started by `startHTTPThreads` with indices past the HTTP pool, so worker 0
 and last-worker duties never land on one. The invariants:
 
+- **Default sizing and port admission.** When `replication.threads` is unset (`undefined`, `null`, or
+  `''`), `replicationThreadCount(n)` defaults it to `Math.floor(n / 2)` for `n >= 2` and `0` for
+  `n < 2`, where `n` is the effective HTTP worker count after `DEV_MODE` (`bin/run.ts`) and the `win32`
+  single-worker clamp (`effectiveHttpThreadCount`). An explicit non-negative integer (`0` or positive)
+  is honored as-is. A `replication` pool requires a dedicated `replication.port` or
+  `replication.securePort` that is not shared with `http` or `operationsApi.network`; when
+  `replication.threads` was explicitly set, a missing or shared replication port throws in
+  `admittedWorkerPools`, whereas a defaulted pool logs a warning and falls back to `0` (`[]`). With
+  `threads.count: 0` there is no pool, and an explicit `replication.threads > 0` is logged and ignored.
 - **No application code.** `shouldLoadApplicationHere` returns false on a pool worker; trusted
   built-ins (including `HARPER_BUILTIN_COMPONENTS`) still load, and databases open from storage.
-  Anything an application installs per thread (for example `Table.setResidencyById`, or a
-  `setComputedAttribute` resolver) is absent there; `Table.unresolvedComputedIndexes()` names the
-  indexes such a thread cannot maintain, so a consumer can refuse rather than index wrongly, and a pool
-  worker that resolves one anyway throws instead of indexing `undefined`.
+  Anything an application installs per thread (for example `Table.setResidency`,
+  `Table.setResidencyById`, or a `setComputedAttribute` resolver) is absent there. Registering
+  `Table.setResidency`, `Table.setResidencyById`, or an indexed `Table.setComputedAttribute` function
+  while `isWorkerPoolActive('replication')` is true logs a once-per-table-per-thread error naming
+  `replication.threads: 0` in `harper-config.yaml` as the opt-out; `Table.unresolvedComputedIndexes()`
+  names the indexes such a thread cannot maintain, so a consumer can refuse rather than index wrongly,
+  and a pool worker that resolves one anyway throws instead of indexing `undefined`.
 - **Exclusive listeners.** A component passes `threadType` in its `server.http`/`server.ws`/
   `server.socket` options to claim a port (and its UDS mirrors). `listenOnPorts` then binds it only on
   that pool's workers, and a pool worker binds nothing else, so it never receives HTTP traffic.
@@ -780,7 +792,6 @@ and last-worker duties never land on one. The invariants:
 - **Restarts.** Deploys and drops restart `http` workers only; `restart_service` with no `scope` (an
   operator restart) restarts `http` and `replication` together (`bin/restart.ts`). Pool restarts
   overlap like HTTP ones.
-- With `threads.count: 0` there is no pool: the setting is logged and ignored.
 
 ## An unread multipart upload is discarded once its response has finished (`server/serverHelpers/multipartParser.ts`)
 

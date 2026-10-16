@@ -100,9 +100,8 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 				return Promise.resolve([]);
 			}
 			// Windows does not support SO_REUSEPORT, so only a single HTTP worker is supported.
-			// Normalize before admittedWorkerPools() so the default replication.threads calculation
-			// sees the effective HTTP worker count (1 -> floor(1/2) = 0).
-			if (process.platform === 'win32') threadCount = 1;
+			// Normalize before admittedWorkerPools() so the default pool size uses the effective count.
+			threadCount = effectiveHttpThreadCount(threadCount);
 			if (!dedicatedPoolsStarted) {
 				dedicatedPools = admittedWorkerPools(threadCount);
 				setActiveWorkerPools(dedicatedPools.map((pool) => pool.type));
@@ -282,9 +281,11 @@ if (isMainThread) {
 	setRunningIsolatedApplicationsGetter(() => [...isolatedSlots.keys()]);
 }
 
-export function replicationThreadCount(
-	httpThreadCount: number = Number(env.get(hdbTerms.CONFIG_PARAMS.THREADS_COUNT) ?? 1)
-): { count: number; explicit: boolean } {
+export function effectiveHttpThreadCount(threadCount: number, platform: NodeJS.Platform = process.platform): number {
+	return platform === 'win32' && threadCount > 0 ? 1 : threadCount;
+}
+
+export function replicationThreadCount(httpThreadCount: number): { count: number; explicit: boolean } {
 	const configured = env.get(hdbTerms.CONFIG_PARAMS.REPLICATION_THREADS);
 	if (configured === undefined || configured === null || configured === '') {
 		return {
@@ -309,9 +310,7 @@ function portNumberOf(port: unknown): number | undefined {
  * ports, which only the main thread binds, and a port shared with HTTP or the operations API cannot
  * be owned by one worker type.
  */
-export function admittedWorkerPools(
-	httpThreadCount: number = Number(env.get(hdbTerms.CONFIG_PARAMS.THREADS_COUNT) ?? 1)
-): { type: string; count: number }[] {
+export function admittedWorkerPools(httpThreadCount: number): { type: string; count: number }[] {
 	const { count, explicit } = replicationThreadCount(httpThreadCount);
 	if (!Number.isInteger(count) || count < 0)
 		throw new Error(`replication.threads must be a non-negative integer, got ${count}`);
