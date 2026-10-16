@@ -5101,7 +5101,7 @@ export function makeTable(options): TableResourceClass {
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					}
 				}
-				let admitted: { stamp: number; movesClock: boolean } | undefined;
+				let admitted: { floor: number; stamp: number; movesClock: boolean } | undefined;
 				try {
 					admittedEntry = (primaryStore as any).getEntry(id);
 					const floor = admissionFloor(admittedEntry?.version, dependencyFloor);
@@ -5123,10 +5123,9 @@ export function makeTable(options): TableResourceClass {
 					if (link.writes.length === 0 && !link.timestamp) {
 						link.timestamp = handle.acquiredAt;
 					}
-					// Otherwise the holder's ordering is best-effort.
 					if (
 						admitted?.movesClock &&
-						admitted.stamp > link.timestamp &&
+						admitted.floor > link.timestamp &&
 						(!link.transaction || reservedLocalKey(link.transaction) === undefined) &&
 						!link.hasUnlockedWrite()
 					)
@@ -11929,9 +11928,7 @@ export function makeTable(options): TableResourceClass {
 		const existingVersion = existingEntry?.version;
 		const existingRecord = existingEntry?.value;
 		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
-		const sourceTimestamp =
-			inheritedTimestamp ||
-			(isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime());
+		const sourceTimestamp = inheritedTimestamp || (isRocksDB ? freshLocalKey(tableRootStore) : getNextMonotonicTime());
 		let wake: () => void;
 		const fillKey = writeKeyId(id);
 		const heldFill = sourceFills?.get(fillKey);

@@ -214,11 +214,14 @@ stays put, the holder's ordering is best-effort, and nothing throws. Likewise a 
 different explicit transaction is stamped by that transaction's clock, not the floor. An
 `ImmediateTransaction` stamps holder writes from the handle as above, and reserves its batch's log key
 at or above every version the batch carries (`lockStampCeiling`), because a replica applies a write at
-no more than its log key. One route escapes it: a holder write saved while the same context's previous
-commit is still in flight (awaiting a streamed blob) joins that batch under its already-reserved key,
-so a replica applies it at that lower key and can keep the predecessor's value there while the origin
-keeps the holder's (harper#3238). A hold steps one ulp past its last version, which keeps advancing
-above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double.
+no more than its log key; the batch's unlocked writes take the allocator's key instead when that is
+lower, so a lock stamp does not carry them ahead. One route escapes it: a holder write saved while the
+same context's previous commit is still in flight (awaiting a streamed blob) joins that batch under its
+already-reserved key, so a replica applies it at that lower key and can keep the predecessor's value
+there while the origin keeps the holder's (harper#3238). A hold steps one ulp past its last version,
+which keeps advancing above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double; a step
+ahead of the clock within the cap is claimed, since one ulp above the ratchet is the next key it
+issues.
 
 **Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance
 (`#lockHandle`) and on the link until `unlock()` is called. Writing through the returned record after

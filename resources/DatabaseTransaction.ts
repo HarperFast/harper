@@ -24,6 +24,7 @@ import { settleBeforeDeadline, when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
 import {
+	freshLocalKey,
 	isReservedForLocalAppend,
 	releaseLocalKey,
 	reserveLocalKey,
@@ -2381,20 +2382,23 @@ export class DatabaseTransaction implements Transaction {
 			(transaction as RocksTransactionWithRetry).retries = this.retries;
 		} else if (!remoteOrigin) {
 			let key: number;
+			const lockBatch = this.saveCommits && this.recordLocks;
 			try {
 				key = reserveLocalKey(
 					operation.store.rootStore,
 					transaction,
-					(this.saveCommits && this.recordLocks ? this.lockStampCeiling(transaction, txnTime) : txnTime) || undefined
+					(lockBatch ? this.lockStampCeiling(transaction, txnTime) : txnTime) || undefined
 				);
 			} catch (error) {
 				if (immediateCommit)
 					abortNativeTransaction(transaction, 'aborting an immediate transaction whose key was not reserved');
 				throw error;
 			}
+			// A batch key a lock stamp set is not the clock of the batch's unlocked writes: past the skew
+			// cap it can be arbitrarily far ahead.
 			if (!txnTime) {
-				txnTime = key;
-				if (!concurrentClosedWrite) this.timestamp = key;
+				txnTime = lockBatch ? Math.min(freshLocalKey(operation.store.rootStore), key) : key;
+				if (!concurrentClosedWrite) this.timestamp = txnTime;
 			}
 		}
 		if (!txnTime) {

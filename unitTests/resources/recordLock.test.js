@@ -1912,6 +1912,45 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual(entryOf(otherId).value.n, 2, 'the later write is the stored one');
 		});
 
+		it('an unlocked write in an immediate batch keeps the clock when a lock stamp raises the batch key', async function () {
+			if (isLMDB) return this.skip();
+			const lockedId = id();
+			const otherId = id();
+			const predecessorTimestamp = Date.now() + 60_000;
+			await transaction({ timestamp: predecessorTimestamp }, () => LockTest.put({ id: lockedId, n: 0 }));
+			await LockTest.put({ id: otherId, n: 0 });
+			const context = {};
+			const locked = await LockTest.lock(lockedId, { lease: 5000 }, context);
+			locked.set('n', 1);
+			const resource = await LockTest.getResource(otherId, context);
+			await resource.patch(otherId, { n: 1 });
+			await locked.unlock();
+			assert.ok(context.transaction instanceof ImmediateTransaction, 'both writes took the immediate path');
+			assert.strictEqual(entryOf(lockedId).value.n, 1, 'the locked write outranks its predecessor');
+			assert.ok(entryOf(otherId).version < predecessorTimestamp, 'the unlocked write is not stamped at the lock floor');
+		});
+
+		it('a hold upgraded inside a claim lead does not repeat the next issued key', async function () {
+			if (isLMDB) return this.skip();
+			const claimedId = id();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			await transaction({ timestamp: futureTimestamp() }, () => LockTest.put({ id: claimedId, n: 0 }));
+			await transaction(async () => {
+				const claimed = await LockTest.lock(claimedId);
+				claimed.set('n', 1);
+				await claimed.save();
+			});
+			const context = {};
+			await LockTest.lock(recordId, { lease: 5000 }, context);
+			const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 }, context);
+			holder.set('n', 1);
+			await holder.save();
+			await holder.unlock();
+			await LockTest.put({ id: recordId, n: 2 });
+			assert.strictEqual(entryOf(recordId).value.n, 2, 'the later put is not taken for a re-delivery of the hold save');
+		});
+
 		it('a floor beyond storage.maxLockClockSkew outranks outside an explicit transaction and lifts no clock', async function () {
 			if (isLMDB) return this.skip();
 			const recordId = id();
