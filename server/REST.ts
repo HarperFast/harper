@@ -595,7 +595,9 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 	} catch (error) {
 		error ??= new Error('Unknown error occurred');
 		// a thrown Response short-circuits as the response, the same as returning one
-		if (error instanceof Response) {
+		if (error instanceof Response && writeCondition && !writeCondition.consumed && error.status < 400)
+			error = new ClientError('The resource did not apply the write precondition', 501);
+		else if (error instanceof Response) {
 			try {
 				return finalizeResponse(error, headers, request.response.status, request, method, preconditionsEnabled);
 			} catch (preconditionError) {

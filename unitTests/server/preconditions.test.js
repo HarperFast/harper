@@ -663,10 +663,17 @@ describe('REST preconditions with real table transactions', () => {
 		class Noop extends Row {
 			patch() {}
 		}
+		class ThrownSuccess extends Row {
+			patch() {
+				throw new Response('ok', { status: 200 });
+			}
+		}
 		resources.set('CustomStatic', CustomStatic, { rest: true });
 		resources.set('Noop', Noop, { rest: true });
+		resources.set('ThrownSuccess', ThrownSuccess, { rest: true });
 		assert.strictEqual((await request('PUT', '/CustomStatic/read', { n: 2 }, { 'if-match': '*' })).status, 501);
 		assert.strictEqual((await request('PATCH', '/Noop/read', { n: 2 }, { 'if-match': '*' })).status, 501);
+		assert.strictEqual((await request('PATCH', '/ThrownSuccess/read', { n: 2 }, { 'if-match': '*' })).status, 501);
 		assert.strictEqual((await Row.get('read')).n, 1);
 	});
 
@@ -1020,8 +1027,6 @@ describe('conditional write durability', () => {
 		const resources = new Resources();
 		resources.set('RetryCounted', RetryCounted, { rest: true });
 		const request = rest(resources);
-		// Answer this table's first native commit with the coordinated conflict signal a concurrent
-		// writer produces for a transaction that read before writing.
 		const { Transaction, constants } = require('@harperfast/rocksdb-js');
 		const commit = Transaction.prototype.commit;
 		const targetDb = Row.primaryStore.store.db;
@@ -1090,7 +1095,6 @@ describe('conditional write lock scope', () => {
 		if (isLMDB) this.skip();
 		await Row.put('clustered', { n: 1 });
 		let homeMapCalls = 0;
-		// A home map naming only this node, so the cluster lock is delegated locally with no message.
 		registerClusterLockTransport('conditionalLockScope', {
 			coordinationIncarnation: () => 1,
 			homeMap: () => {
@@ -1106,7 +1110,6 @@ describe('conditional write lock scope', () => {
 		const response = await request('PATCH', '/ScopeRow/clustered', { n: 2 }, { 'if-match': etagOf('clustered') });
 		assert.strictEqual(response.status, 204, await bodyOf(response));
 		assert.strictEqual((await Row.get('clustered')).n, 2);
-		// A node-scoped lock never consults the transport.
 		assert.ok(homeMapCalls > 0, 'the precondition lock must run the cluster round');
 		const stale = await request('PATCH', '/ScopeRow/clustered', { n: 3 }, { 'if-match': versionToEtag(1) });
 		assert.strictEqual(stale.status, 412, await bodyOf(stale));
