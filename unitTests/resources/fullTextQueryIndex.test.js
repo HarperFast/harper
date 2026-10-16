@@ -4395,6 +4395,19 @@ describe('bounded highlight trace recovery', () => {
 				const result = await index.search(highlightCondition(), {}, { minResults: 4 });
 				assert.strictEqual(result.length, 4);
 				assert.strictEqual(calls.length, maximum === 1 ? 7 : 3);
+				const order = calls[0].records.map((record) => record.id);
+				const batches =
+					maximum === 1
+						? [[0, 1, 2, 3], [0, 1], [0], [1], [2, 3], [2], [3]]
+						: [
+								[0, 1, 2, 3],
+								[0, 1],
+								[2, 3],
+							];
+				assert.deepStrictEqual(
+					calls.map((call) => call.records.map((record) => record.id)),
+					batches.map((batch) => batch.map((position) => order[position]))
+				);
 				for (const entry of result) {
 					assert.deepStrictEqual(entry.$highlights.title, [{ valueIndex: 0, spans: [{ start: 0, end: 4 }] }]);
 					assert.strictEqual(entry.$highlights.secret, undefined);

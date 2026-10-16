@@ -770,9 +770,9 @@ export class FullTextQueryIndex {
 				);
 				for (const leaf of fieldLeaves) {
 					for (const traceRecords of traceSourceBatches(records, this.#maxTraceSourceBytes!)) {
-						const pending = [traceRecords];
-						while (pending.length) {
-							const batch = pending.pop()!;
+						let batch = traceRecords;
+						let pending: (typeof traceRecords)[] | undefined;
+						while (batch) {
 							assertSearchActive();
 							const traced = await reader.traceMatches({ text: leaf.text, mode: leaf.mode, fields }, batch, {
 								remainingBudgetMilliseconds: remainingSearchBudget(deadline),
@@ -790,7 +790,8 @@ export class FullTextQueryIndex {
 									);
 								remainingAdditionalTraceCalls -= 2;
 								const middle = Math.floor(batch.length / 2);
-								pending.push(batch.slice(middle), batch.slice(0, middle));
+								(pending ??= []).push(batch.slice(middle));
+								batch = batch.slice(0, middle);
 								continue;
 							}
 							for (const record of traced.records) {
@@ -807,6 +808,7 @@ export class FullTextQueryIndex {
 									});
 								}
 							}
+							batch = pending?.pop();
 						}
 					}
 				}
