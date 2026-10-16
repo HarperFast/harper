@@ -68,6 +68,51 @@ describe('published native full-text Table.search integration', () => {
 		setFullTextNativeBindingForTests(undefined);
 	});
 
+	it('recovers complete highlights across the native 1024-span batch boundary', async () => {
+		const searchDefinition = definition('catalogSearch', [{ name: 'title', highlight: true }]);
+		searchDefinition.highlighting = { maxFragments: 2, fragmentLength: 140 };
+		Product = table({
+			database: `fulltext-native-spans-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [searchDefinition],
+		});
+		for (let index = 0; index < 60; index++)
+			await Product.put(`span-${index}`, { title: 'ridge '.repeat(17) + 'Colfax' });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
+		for (const [value, spanCount] of [
+			['ridge', 17],
+			['ridge Colfax', 18],
+		]) {
+			const records = await collect(
+				Product.search({
+					conditions: [
+						{
+							attribute: 'catalogSearch',
+							comparator: 'matches',
+							value,
+							includeHighlights: true,
+							maxIndexLagMilliseconds: 0,
+							waitForIndexMilliseconds: 30000,
+						},
+					],
+					select: ['id', '$highlights'],
+					limit: 60,
+				})
+			);
+			assert.strictEqual(records.length, 60);
+			assert.strictEqual(new Set(records.map((record) => record.id)).size, 60);
+			for (const record of records) {
+				assert.strictEqual(record.$highlights.title.length, 1);
+				assert.strictEqual(record.$highlights.title[0].spans.length, spanCount);
+			}
+		}
+	});
+
 	it('executes every query mode, negation, REST syntax, field selection, and same-index OR', async () => {
 		const searchDefinition = definition('catalogSearch', [
 			{ name: 'title', weight: 2, highlight: true },

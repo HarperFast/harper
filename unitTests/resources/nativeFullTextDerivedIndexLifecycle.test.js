@@ -198,6 +198,25 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		assert.strictEqual(traced.complete, true);
 		assert.deepStrictEqual(traced.records[0].values[0].spans, [{ start: 0, end: 4 }]);
 		assert.strictEqual('Café running shoes'.slice(0, 4), 'Café');
+		const spanRecords = Array.from({ length: 60 }, (_, index) => ({
+			id: `trace-${index}`,
+			fields: { title: 'ridge '.repeat(17) + 'Colfax' },
+		}));
+		const underBudget = await reader.traceMatches({ text: 'ridge', fields: ['title'] }, spanRecords);
+		assert.strictEqual(underBudget.complete, true);
+		assert.strictEqual(underBudget.records.length, 60);
+		assert(underBudget.records.every((record) => record.values[0].spans.length === 17));
+		const overBudget = await reader.traceMatches({ text: 'ridge Colfax', fields: ['title'] }, spanRecords);
+		assert.strictEqual(overBudget.complete, false);
+		assert.strictEqual(overBudget.records.length, 57);
+		assert.strictEqual(overBudget.records.at(-1).values[0].spans.length, 16);
+		for (const batch of [spanRecords.slice(0, 30), spanRecords.slice(30)]) {
+			const complete = await reader.traceMatches({ text: 'ridge Colfax', fields: ['title'] }, batch);
+			assert.strictEqual(complete.complete, true);
+			assert.strictEqual(complete.records.length, 30);
+			assert(complete.records.every((record) => record.values[0].spans.length === 18));
+		}
+
 		const [searchDuringReload] = await Promise.all([reader.search({ text: 'running', limit: 10 }), reader.reload()]);
 		assert.deepStrictEqual(
 			searchDuringReload.hits.map(({ id }) => id),

@@ -216,6 +216,34 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		}
 	});
 
+	test('keeps all highlights when a multi-record native trace exceeds its span budget', async () => {
+		const records = Array.from({ length: 60 }, (_, index) => ({
+			id: `span-budget-${index}`,
+			title: 'tracebudget '.repeat(17) + 'Colfax',
+			owner: READER.username,
+		}));
+		await operation({ operation: 'insert', schema: 'data', table: 'Product', records });
+		const target = query(
+			'tracebudget Colfax',
+			{ includeHighlights: true },
+			{ select: ['id', 'title', '$highlights'], limit: 60 }
+		);
+		await waitForIds(
+			query('tracebudget'),
+			records.map((record) => record.id)
+		);
+		for (const result of [
+			await search(target),
+			await request('/Product/?catalogSearch=matches=tracebudget%20Colfax&limit(60)&select(id,title,$highlights)'),
+		]) {
+			assert.deepStrictEqual(ids(result), records.map((record) => record.id).sort());
+			for (const record of result) {
+				assert.strictEqual(record.$highlights.title.length, 1);
+				assert.strictEqual(record.$highlights.title[0].spans.length, 18);
+			}
+		}
+	});
+
 	test('returns opt-in highlights and score metadata consistently through both public paths', async () => {
 		const target = query(
 			'trail running',

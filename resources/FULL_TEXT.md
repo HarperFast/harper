@@ -94,7 +94,7 @@ A format-incompatible native package upgrade causes each node to rebuild its loc
 
 Earlier beta declarations and indexes are unsupported. This field-only API does not provide a compatibility or upgrade path for them.
 
-Native queries have finite result windows and execution budgets. Reduce the requested offset/limit or narrow the query when a window is exceeded; filtering can also exhaust the window. Prefix modes use the native autocomplete window, clamped when necessary so its maximum result set fits in one native response. Highlight tracing has separate record and source-byte bounds. These are functional constraints, not catalog-scale performance guarantees.
+Native queries have finite result windows and execution budgets. Reduce the requested offset/limit or narrow the query when a window is exceeded; filtering can also exhaust the window. Prefix modes use the native autocomplete window, clamped when necessary so its maximum result set fits in one native response. Highlight tracing has separate record, source-byte and aggregate span bounds. Incomplete multi-record traces are retried in smaller batches under the original query deadline and cancellation, with at most 256 additional trace calls per query. A singleton that remains incomplete, or exhausted recovery budget, fails the query rather than returning partial highlights. These are functional constraints, not catalog-scale performance guarantees.
 
 Harper does not configure Fulltext's native filter metadata or submit native filter or candidate-ID requests. Ordinary conditions continue through Harper's secondary-index gates and authoritative record predicates.
 

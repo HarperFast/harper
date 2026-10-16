@@ -142,6 +142,8 @@ function simpleQueryIndex({
 	onClose,
 	onGetEntry,
 	onSearch,
+	onTrace,
+	runtimeLimits = {},
 	entryForKey,
 	estimatedRecordCount = 20,
 	isEntryCurrent,
@@ -178,7 +180,7 @@ function simpleQueryIndex({
 			async runtimeInfo() {
 				return {
 					queryClassIsolationMinimumSearchThreads: 1,
-					limits: queryLimits({ maxSearchWindow, maxTraceRecords: 10 }),
+					limits: queryLimits({ maxSearchWindow, maxTraceRecords: 10, ...runtimeLimits }),
 				};
 			},
 			async openNativeFullTextReader() {
@@ -193,6 +195,7 @@ function simpleQueryIndex({
 						const current = hits();
 						return { total: current.length, totalRelation: 'exact', hits: current.slice(offset, offset + limit) };
 					},
+					traceMatches: onTrace,
 					async reload() {
 						reloads++;
 						onReload?.();
@@ -4333,5 +4336,149 @@ describe('FullTextQueryIndex', () => {
 		);
 		assert.strictEqual(waited, 1);
 		await index.close();
+	});
+});
+
+function highlightFixture(onTrace, runtimeLimits = {}, count = 4) {
+	const auditStore = sharedStore(),
+		readinessId = 'highlight-splitting';
+	publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+	const fixture = simpleQueryIndex({
+		auditStore,
+		readinessId,
+		payload: publicationPayload(),
+		hits: () =>
+			Array.from({ length: count }, (_, index) => ({ id: nativeId(1, String(index)), version: '1', score: 1 })),
+		onTrace,
+		runtimeLimits,
+		maxSearchWindow: Math.max(10, count),
+	});
+	attachCurrentCoverage(fixture.index, auditStore, readinessId);
+	return fixture.index;
+}
+function highlightCondition(leaves = 1) {
+	const leaf = { text: 'shoe', mode: 'any', fields: ['title'] };
+	return {
+		comparator: 'matches',
+		value: 'shoe',
+		includeHighlights: true,
+		fullTextQuery:
+			leaves === 1 ? leaf : { operator: 'or', clauses: Array.from({ length: leaves }, () => ({ ...leaf })) },
+		fullTextLeaves: Array.from({ length: leaves }, () => ({ ...leaf })),
+	};
+}
+function tracedValues(records, complete) {
+	return {
+		complete,
+		records: records.map(({ id }) => ({
+			id,
+			values: [
+				{ field: 'title', valueIndex: 0, spans: [{ start: complete ? 0 : 999, end: complete ? 4 : 1000 }] },
+				{ field: 'secret', valueIndex: 0, spans: [{ start: 0, end: 1 }] },
+			],
+		})),
+	};
+}
+
+describe('bounded highlight trace recovery', () => {
+	for (const maximum of [1, 2])
+		it(`discards partial parent traces and preserves leaves with ${maximum}-record complete batches`, async () => {
+			const calls = [];
+			const index = highlightFixture(async (request, records, options) => {
+				calls.push({ request, records, options });
+				return tracedValues(records, records.length <= maximum);
+			});
+			try {
+				const result = await index.search(highlightCondition(), {}, { minResults: 4 });
+				assert.strictEqual(result.length, 4);
+				assert.strictEqual(calls.length, maximum === 1 ? 7 : 3);
+				for (const entry of result) {
+					assert.deepStrictEqual(entry.$highlights.title, [{ valueIndex: 0, spans: [{ start: 0, end: 4 }] }]);
+					assert.strictEqual(entry.$highlights.secret, undefined);
+				}
+				assert(calls.every((call) => JSON.stringify(call.request) === JSON.stringify(calls[0].request)));
+				assert(
+					calls.every(
+						(call) =>
+							call.options.remainingBudgetMilliseconds > 0 &&
+							call.options.remainingBudgetMilliseconds <= calls[0].options.remainingBudgetMilliseconds
+					)
+				);
+			} finally {
+				await index.close();
+			}
+		});
+	it('bounds additional calls across batches and query leaves', async () => {
+		let calls = 0;
+		const index = highlightFixture(
+			async (_request, records) => {
+				calls++;
+				return tracedValues(records, records.length === 1);
+			},
+			{ maxTraceRecords: 100 },
+			100
+		);
+		try {
+			await assert.rejects(index.search(highlightCondition(2), {}, { minResults: 100 }), /incomplete highlights/);
+			assert(calls > 199);
+			assert(calls <= 258);
+		} finally {
+			await index.close();
+		}
+	});
+	for (const failure of ['abort', 'transaction', 'native'])
+		it(`does not continue tracing after ${failure} failure`, async () => {
+			const controller = new AbortController(),
+				reason = new Error(`${failure} stopped`);
+			let inactive = false,
+				calls = 0;
+			const index = highlightFixture(async (_request, records) => {
+				calls++;
+				if (failure === 'abort') controller.abort(reason);
+				if (failure === 'transaction') inactive = true;
+				if (failure === 'native') throw Object.assign(reason, { code: 'E_QUEUE_FULL' });
+				return tracedValues(records, false);
+			});
+			try {
+				await assert.rejects(
+					index.search(
+						highlightCondition(),
+						{ signal: controller.signal },
+						{
+							minResults: 4,
+							assertTransactionActive: () => {
+								if (inactive) throw reason;
+							},
+						}
+					),
+					(error) =>
+						failure === 'abort'
+							? error === reason
+							: failure === 'native'
+								? error.statusCode === 503 && /busy/.test(error.message)
+								: error.statusCode === 500 && /search.*failed/.test(error.message)
+				);
+				assert.strictEqual(calls, 1);
+			} finally {
+				await index.close();
+			}
+		});
+	it('does not reset the original deadline while splitting', async () => {
+		let calls = 0;
+		const index = highlightFixture(
+			async (_request, records, options) => {
+				calls++;
+				const deadline = performance.now() + options.remainingBudgetMilliseconds + 2;
+				await waitFor(() => performance.now() >= deadline, 1000, 1);
+				return tracedValues(records, false);
+			},
+			{ maxSearchBudgetMilliseconds: 30 }
+		);
+		try {
+			await assert.rejects(index.search(highlightCondition(), {}, { minResults: 4 }), /execution budget/);
+			assert.strictEqual(calls, 1);
+		} finally {
+			await index.close();
+		}
 	});
 });

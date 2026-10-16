@@ -56,6 +56,7 @@ const NATIVE_SEARCH_RESPONSE_HEADER_BYTES = 13;
 const NATIVE_SEARCH_HIT_OVERHEAD_BYTES = 13;
 const MAX_RELOAD_FAILURES_BEFORE_REOPEN = 3;
 const HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
+const MAX_ADDITIONAL_HIGHLIGHT_TRACE_CALLS = 256;
 const READER_DRAIN_GRACE_MILLISECONDS = 1_000;
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 const logger = loggerWithTag('fulltext-query-index');
@@ -637,7 +638,11 @@ export class FullTextQueryIndex {
 					lease.definition,
 					condition,
 					accepted.slice(options.resultOffset ?? 0),
-					deadline
+					deadline,
+					() => {
+						if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+						options.assertTransactionActive?.();
+					}
 				);
 			return accepted.map((entry) => ({
 				key: entry.key,
@@ -720,8 +725,10 @@ export class FullTextQueryIndex {
 			record: Record<string, unknown>;
 			recordEntry: any;
 		}>,
-		deadline: number
+		deadline: number,
+		assertSearchActive: () => void
 	): Promise<void> {
+		let remainingAdditionalTraceCalls = MAX_ADDITIONAL_HIGHLIGHT_TRACE_CALLS;
 		const highlighting = definition.highlighting;
 		if (!highlighting) return;
 		const highlightFields = new Set(
@@ -754,6 +761,7 @@ export class FullTextQueryIndex {
 				this.#maxTraceRecords!,
 				this.#maxTraceSourceBytes!
 			)) {
+				assertSearchActive();
 				const records = await Promise.all(
 					sourceEntries.map(async ({ nativeId, record }) => ({
 						id: nativeId,
@@ -762,25 +770,38 @@ export class FullTextQueryIndex {
 				);
 				for (const leaf of fieldLeaves) {
 					for (const traceRecords of traceSourceBatches(records, this.#maxTraceSourceBytes!)) {
-						const traced = await reader.traceMatches({ text: leaf.text, mode: leaf.mode, fields }, traceRecords, {
-							remainingBudgetMilliseconds: remainingSearchBudget(deadline),
-							snippets: true,
-							fragmentLength: highlighting.fragmentLength,
-							maxFragmentsPerValue: highlighting.maxFragments,
-						});
-						if (!traced.complete) throw new ServerError('Full-text index returned incomplete highlights', 500);
-						for (const record of traced.records) {
-							const entry = byId.get(record.id);
-							if (!entry) continue;
-							const highlights = (entry.$highlights ??= Object.create(null));
-							for (const value of record.values) {
-								if (!leafFields.has(value.field)) continue;
-								const values = (highlights[value.field] ??= []) as unknown[];
-								values.push({
-									valueIndex: value.valueIndex,
-									spans: value.spans,
-									...(value.fragments ? { fragments: value.fragments } : null),
-								});
+						const pending = [traceRecords];
+						while (pending.length) {
+							const batch = pending.pop()!;
+							assertSearchActive();
+							const traced = await reader.traceMatches({ text: leaf.text, mode: leaf.mode, fields }, batch, {
+								remainingBudgetMilliseconds: remainingSearchBudget(deadline),
+								snippets: true,
+								fragmentLength: highlighting.fragmentLength,
+								maxFragmentsPerValue: highlighting.maxFragments,
+							});
+							assertSearchActive();
+							if (!traced.complete) {
+								if (batch.length < 2 || remainingAdditionalTraceCalls < 2)
+									throw new ServerError('Full-text index returned incomplete highlights', 500);
+								remainingAdditionalTraceCalls -= 2;
+								const middle = Math.floor(batch.length / 2);
+								pending.push(batch.slice(middle), batch.slice(0, middle));
+								continue;
+							}
+							for (const record of traced.records) {
+								const entry = byId.get(record.id);
+								if (!entry) continue;
+								const highlights = (entry.$highlights ??= Object.create(null));
+								for (const value of record.values) {
+									if (!leafFields.has(value.field)) continue;
+									const values = (highlights[value.field] ??= []) as unknown[];
+									values.push({
+										valueIndex: value.valueIndex,
+										spans: value.spans,
+										...(value.fragments ? { fragments: value.fragments } : null),
+									});
+								}
 							}
 						}
 					}
