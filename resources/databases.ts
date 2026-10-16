@@ -655,6 +655,14 @@ function droppedRowKey(tableName: string): string {
 	return DROPPED_ROW_PREFIX + tableName;
 }
 /**
+ * Whether a catalog row describes its table's primary store. The bare `<table>/` row of a table with no
+ * primary key can lack `isPrimaryKey`, and its store still holds primary-format records (harper#3225).
+ */
+export function isPrimaryCatalogRow(key: unknown, value: any): boolean {
+	if (value?.isPrimaryKey) return true;
+	return value != null && value.name == null && typeof key === 'string' && key.indexOf('/') === key.length - 1;
+}
+/**
  * Once a name has been dropped, later creates of it take a generation even after the retirement journal is
  * reclaimed. Keep the row untimed and shaped `{ table, tableId }`: later versions read it as an untimed drop
  * marker that a timed drop overwrites. RocksDB callers hold the catalog lock and write it before removing
@@ -1325,7 +1333,7 @@ function initStores(
 		definedTables?.add(tableName);
 		let tableDef = tablesToLoad.get(tableName);
 		if (!tableDef) tablesToLoad.set(tableName, (tableDef = { attributes: [] }));
-		if (attribute_name == null || value.isPrimaryKey) tableDef.primary = value;
+		if (isPrimaryCatalogRow(key, value)) tableDef.primary = value;
 		if (value.dropping) tableDef.tombstone = value;
 		if (attribute_name != null) tableDef.attributes.push(value);
 		Object.defineProperty(value, 'key', { value: key, configurable: true });
@@ -1505,7 +1513,8 @@ function initStores(
 				(attributesDbi as any).putSync(NEXT_TABLE_ID, tableId + 1);
 				(attributesDbi as any).putSync(primaryAttribute.key, primaryAttribute);
 			}
-			const dbiInit = createOpenDBIObject(!primaryAttribute.isPrimaryKey, primaryAttribute.isPrimaryKey);
+			// primary by selection, not by its flag (isPrimaryCatalogRow)
+			const dbiInit = createOpenDBIObject(false, true);
 			dbiInit.compression = primaryAttribute.compression;
 			if (dbiInit.compression) {
 				const compressionThreshold =
@@ -3671,6 +3680,16 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (Table.primaryStore.rootStore.status === 'closed') {
 				throw new Error(`Can not use a closed data store from ${tableName} class`);
 			}
+			const declaredPrimaryAttribute = attributes.find((attribute) => attribute.isPrimaryKey);
+			if (schemaDefinedExplicit && declaredPrimaryAttribute && Table.primaryKey == null) {
+				// a keyless table cannot adopt a key without re-keying its records (harper#3225)
+				logger.error(
+					`Table '${databaseName}.${tableName}' has no primary key, so its declared primary key ` +
+						`'${declaredPrimaryAttribute.name}' is ignored and the table stays keyless. Recreate the table with ` +
+						`that primary key, or migrate its records, to use it.`
+				);
+				delete declaredPrimaryAttribute.isPrimaryKey;
+			}
 			// Reject moving the primary key to a different attribute on a table that already has records.
 			// The storage key (Table.primaryKey) is never re-pointed here, so honoring the change would
 			// leave describe reporting the new attribute while every record — old and newly inserted — stays
@@ -5736,7 +5755,8 @@ function completeInterruptedDrop(
 	}>;
 	const bareEntry = catalogRows.find(({ key }) => key === tableName + '/');
 	const primaryEntry =
-		(bareEntry?.value?.isPrimaryKey ? bareEntry : undefined) ?? catalogRows.find(({ value }) => value?.isPrimaryKey);
+		(bareEntry && isPrimaryCatalogRow(bareEntry.key, bareEntry.value) ? bareEntry : undefined) ??
+		catalogRows.find(({ value }) => value?.isPrimaryKey);
 	const tombstoneEntry = bareEntry ?? primaryEntry;
 	if (rootStore instanceof RocksDatabase && !fullTextRetired) {
 		const names = [
@@ -5795,7 +5815,7 @@ function completeInterruptedDrop(
 		// recreate silently inherit the previous table's records.
 		for (const { key, value } of catalogRows) {
 			const objectStorage =
-				value?.isPrimaryKey || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
+				isPrimaryCatalogRow(key, value) || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
 			const store = (rootStore as any).openDB(key, createOpenDBIObject(!objectStorage, objectStorage) as any);
 			try {
 				// dropSync (not drop): this function is synchronous, and its callers rely on
