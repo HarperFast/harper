@@ -974,18 +974,19 @@ export function updateConfigCert() {
 	// This object is what will be added to the harperdb-config.yaml file.
 	// We check for any CLI of Env args and if they are present we use them instead of default values.
 	const conf = hdbTerms.CONFIG_PARAMS;
-	const newCerts = {
-		[conf.TLS_PRIVATEKEY]: cliEnvArgs[conf.TLS_PRIVATEKEY.toLowerCase()]
+	const newCerts: Record<string, any> = {};
+	if (!Array.isArray(configUtils.getConfigFromFile(conf.TLS))) {
+		newCerts[conf.TLS_PRIVATEKEY] = cliEnvArgs[conf.TLS_PRIVATEKEY.toLowerCase()]
 			? cliEnvArgs[conf.TLS_PRIVATEKEY.toLowerCase()]
-			: private_key,
-	};
+			: private_key;
 
-	if (cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()]) {
-		newCerts[conf.TLS_CERTIFICATE] = cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()];
-	}
+		if (cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()]) {
+			newCerts[conf.TLS_CERTIFICATE] = cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()];
+		}
 
-	if (cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
-		newCerts[conf.TLS_CERTIFICATEAUTHORITY] = cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()];
+		if (cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
+			newCerts[conf.TLS_CERTIFICATEAUTHORITY] = cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()];
+		}
 	}
 
 	if (cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()]) {

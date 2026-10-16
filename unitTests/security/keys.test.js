@@ -279,6 +279,24 @@ describe('Test keys module', () => {
 		expect(call).to.exist;
 	});
 
+	it('Test updateConfigCert skips tls_* writes when configured tls is an array', () => {
+		config_utils.getConfigFromFile.restore();
+		sandbox.stub(config_utils, 'getConfigFromFile').callsFake((key) => {
+			if (key === 'tls') {
+				return [
+					{ certificate: test_cert_path, privateKey: test_private_key_path },
+					{ certificate: test_cert_path, privateKey: test_private_key_path },
+				];
+			}
+			if (key === 'rootPath') return root_path;
+			return undefined;
+		});
+		update_config_value_stub = sandbox.stub(config_utils, 'updateConfigValue');
+		keys.updateConfigCert('public/cert.pem', 'private/cert.pem', 'certificate/authority.pem');
+		expect(update_config_value_stub.calledOnce).to.be.true;
+		expect(update_config_value_stub.firstCall.args[2]).to.deep.equal({});
+	});
+
 	it('hostnamesFromCert returns the correct hostnames', async () => {
 		const test_cert = {
 			subject: '',
