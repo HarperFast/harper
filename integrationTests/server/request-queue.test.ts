@@ -12,7 +12,7 @@ for (const nativeBun of process.env.HARPER_RUNTIME === 'bun' ? [false, true] : [
 						readRequestQueueLimit: 1,
 						requestQueueLimit: 0,
 						cors: true,
-						corsAccessControlAllowHeaders: 'Accept, Content-Type, Authorization',
+						corsAccessControlAllowHeaders: ['Accept', 'Content-Type', 'Authorization'],
 						corsAccessList: ['https://queue.example'],
 						securityHeaders: { 'X-Queue-Test': 'present' },
 						...(nativeBun ? { webSocket: false } : {}),

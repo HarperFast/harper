@@ -493,16 +493,16 @@ export function configValidator(configJson, skipFsValidation = false) {
 			requireAuthentication: boolean.optional(),
 		}),
 		http: Joi.object({
-			corsAccessControlAllowHeaders: string
-				.custom((value, helpers) => {
-					try {
-						validateHeaderValue('Access-Control-Allow-Headers', value);
-						return value;
-					} catch {
-						return helpers.error('any.invalid');
-					}
-				})
-				.allow('', null)
+			corsAccessControlAllowHeaders: Joi.custom((value, helpers) => {
+				try {
+					for (const header of Array.isArray(value) ? value : [value])
+						validateHeaderValue('Access-Control-Allow-Headers', typeof header === 'string' ? header : '' + header);
+					return value;
+				} catch {
+					return helpers.error('any.invalid');
+				}
+			})
+				.allow(null)
 				.optional(),
 			readRequestQueueLimit: Joi.alternatives([number.integer().min(0).allow(null), boolean.valid(false)])
 				.prefs({ convert: false })
