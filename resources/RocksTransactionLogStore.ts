@@ -167,6 +167,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			};
 		}
 		log.addEntry(entryBinary, options.transaction.id);
+		options.transaction.hasStagedLog = true;
 	}
 
 	/** A log holds one origin, which keeps `txnLogKey` unique within it; see resources/DESIGN.md. */
