@@ -53,8 +53,10 @@ export interface ResolvedRecordLockOptions {
 /**
  * The handle returned by `lock()` and held by each gated write until its transaction completes.
  * `release()` is synchronous: it calls `store.unlock(key)` which is ownerless and fires any
- * waiting callbacks cross-thread. The `expired` flag is set in the holder thread by the lease
- * timer, so a stale holder cannot accidentally call unlock after its lease already fired and
+ * waiting callbacks cross-thread, unless an in-flight native commit holds the key via
+ * `retainForCommit()` (in which case the native unlock and cluster release are deferred until
+ * `releaseCommitHold()` settles the hold). The `expired` flag is set in the holder thread by the
+ * lease timer, so a stale holder cannot accidentally call unlock after its lease already fired and
  * released the key to a new holder.
  */
 export interface RecordLockHandle {
@@ -108,6 +110,14 @@ export interface RecordLockHandle {
 	 */
 	nextHolderVersion(): number;
 	release(): boolean;
+	/**
+	 * Hold the native key across an in-flight native commit attempt so a lease expiry or caller
+	 * release during a logged retry loop defers `store.unlock(key)` until the attempt settles (or
+	 * `holdDeadlineMono` expires).
+	 */
+	retainForCommit?(holdDeadlineMono?: number): void;
+	/** Release a commit hold acquired by `retainForCommit()`, flushing a deferred unlock when the last hold drops. */
+	releaseCommitHold?(): void;
 	/**
 	 * Flip this handle to hold mode and reset its lease timer. Used during scoped→hold upgrades
 	 * so all instances that reference this handle object remain valid (no retire + replace).
@@ -192,6 +202,10 @@ class KeyLockHandle implements RecordLockHandle {
 	// an NTP step nor a manual clock change can extend a lease past what peers assumed.
 	#deadlineMono: number | undefined;
 	#onRelease: (() => void) | undefined;
+	#commitHolds = 0;
+	#deferredUnlock = false;
+	#holdDeadlineMono: number | undefined;
+	#holdTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(store: any, key: any[], keyId: unknown, lease?: number, hold = false, acquiredAt?: number) {
 		this.store = store;
@@ -238,8 +252,9 @@ class KeyLockHandle implements RecordLockHandle {
 	// bound and the key may belong to someone else.
 	#leaseLapsed(): boolean {
 		if (this.#deadlineMono === undefined || performance.now() < this.#deadlineMono) return false;
-		// Finish the expiry rather than only reporting it: the native key must actually go back so a
-		// stalled holder does not keep a key every participant has already written off.
+		// Finish the expiry rather than only reporting it: once no in-flight commit holds the handle,
+		// the native key must go back so a stalled holder does not keep a key every participant has
+		// already written off.
 		if (!this.released) this.#onLeaseExpire();
 		return true;
 	}
@@ -259,8 +274,8 @@ class KeyLockHandle implements RecordLockHandle {
 		// no-op in the one state it was written for.
 		this.expired = true;
 		if (this.released) {
-			// The native key is already back and `onRelease` already fired; only the fence flag and the
-			// lease timer are left to settle.
+			// `release()` already ran (returning the native key or deferring the unlock onto an active
+			// commit hold); only the fence flag and the lease timer are left to settle.
 			clearTimeout(this.#timer);
 			return;
 		}
@@ -294,20 +309,80 @@ class KeyLockHandle implements RecordLockHandle {
 		return next;
 	}
 
-	#onLeaseExpire() {
-		if (this.released) return;
-		this.released = true;
-		this.expired = true;
-		clearTimeout(this.#timer);
+	retainForCommit(holdDeadlineMono?: number): void {
+		if (this.released && !this.#deferredUnlock) return;
+		this.#commitHolds++;
+		if (holdDeadlineMono !== undefined && Number.isFinite(holdDeadlineMono)) {
+			this.#holdDeadlineMono = Math.max(this.#holdDeadlineMono ?? holdDeadlineMono, holdDeadlineMono);
+			if (this.#deferredUnlock) this.#armHoldTimer();
+		}
+	}
+
+	releaseCommitHold(): void {
+		if (this.#commitHolds <= 0) return;
+		if (--this.#commitHolds === 0) {
+			clearTimeout(this.#holdTimer);
+			this.#holdTimer = undefined;
+			this.#holdDeadlineMono = undefined;
+			if (this.#deferredUnlock) {
+				this.#deferredUnlock = false;
+				this.#unlockAndEmitRelease('record lock deferred release failed (store may have been dropped)');
+			}
+		}
+	}
+
+	#deferOrFlushUnlock(warningMessage: string) {
+		if (this.#holdDeadlineMono !== undefined && performance.now() >= this.#holdDeadlineMono) {
+			this.#commitHolds = 0;
+			this.#deferredUnlock = false;
+			this.#holdDeadlineMono = undefined;
+			clearTimeout(this.#holdTimer);
+			this.#holdTimer = undefined;
+			this.#unlockAndEmitRelease(warningMessage);
+			return;
+		}
+		this.#deferredUnlock = true;
+		this.#armHoldTimer();
+	}
+
+	#armHoldTimer() {
+		clearTimeout(this.#holdTimer);
+		this.#holdTimer = undefined;
+		if (!this.#deferredUnlock || this.#holdDeadlineMono === undefined) return;
+		const remaining = Math.max(0, Math.ceil(this.#holdDeadlineMono - performance.now()));
+		this.#holdTimer = setTimeout(() => {
+			this.#holdTimer = undefined;
+			this.#commitHolds = 0;
+			this.#holdDeadlineMono = undefined;
+			if (this.#deferredUnlock) {
+				this.#deferredUnlock = false;
+				this.#unlockAndEmitRelease('record lock commit hold timer failed (store may have been dropped)');
+			}
+		}, remaining).unref();
+	}
+
+	#unlockAndEmitRelease(warningMessage: string) {
 		try {
 			this.store.unlock(this.key);
 		} catch (err) {
 			if (!warnedLeaseTimerStores.has(this.store)) {
 				warnedLeaseTimerStores.add(this.store);
-				harperLogger.warn?.('record lock lease timer failed (store may have been dropped)', err);
+				harperLogger.warn?.(warningMessage, err);
 			}
 		}
 		this.#emitRelease();
+	}
+
+	#onLeaseExpire() {
+		if (this.released) return;
+		this.released = true;
+		this.expired = true;
+		clearTimeout(this.#timer);
+		if (this.#commitHolds > 0) {
+			this.#deferOrFlushUnlock('record lock lease timer failed (store may have been dropped)');
+			return;
+		}
+		this.#unlockAndEmitRelease('record lock lease timer failed (store may have been dropped)');
 	}
 
 	// The cluster release is a durability optimization, not the safety mechanism — peers expire the
@@ -331,15 +406,11 @@ class KeyLockHandle implements RecordLockHandle {
 		if (this.released) return false;
 		this.released = true;
 		clearTimeout(this.#timer);
-		try {
-			this.store.unlock(this.key);
-		} catch (err) {
-			if (!warnedLeaseTimerStores.has(this.store)) {
-				warnedLeaseTimerStores.add(this.store);
-				harperLogger.warn?.('record lock release failed (store may have been dropped)', err);
-			}
+		if (this.#commitHolds > 0) {
+			this.#deferOrFlushUnlock('record lock release failed (store may have been dropped)');
+			return true;
 		}
-		this.#emitRelease();
+		this.#unlockAndEmitRelease('record lock release failed (store may have been dropped)');
 		return true;
 	}
 
