@@ -189,6 +189,11 @@ function updateConditional(logger: any) {
 	conditional.info = LOG_LEVEL_HIERARCHY.info >= logger.level ? logger.info.bind(logger) : undefined;
 	conditional.debug = LOG_LEVEL_HIERARCHY.debug >= logger.level ? logger.debug.bind(logger) : undefined;
 	conditional.trace = LOG_LEVEL_HIERARCHY.trace >= logger.level ? logger.trace.bind(logger) : undefined;
+	if (logger.taggedLoggers) {
+		for (const updateTaggedLogger of logger.taggedLoggers) {
+			updateTaggedLogger(logger);
+		}
+	}
 }
 /**
  * Resolve a config path value against rootPath if it is relative.
@@ -511,6 +516,7 @@ export function logsAtLevel(level: any) {
  * any, use default values.
  */
 export function initLogSettings(forceInit = false) {
+	const previousMainLogger = mainLogger;
 	try {
 		if (hdbProperties === undefined || forceInit) {
 			if (forceInit && mainLogger?.[SET_ROTATION_POLICY]) {
@@ -563,9 +569,14 @@ export function initLogSettings(forceInit = false) {
 				level: logLevel,
 				stdStreams: logToStdstreams,
 				rotation,
+				components: previousMainLogger?.components,
+				taggedLoggers: previousMainLogger?.taggedLoggers,
 			});
 			// setup the external logger
 			externalLogger = mainLogger.forComponent('external');
+			for (const [name, componentLogger] of mainLogger.components) {
+				updateLogger(componentLogger, { path: logFilePath, level: logLevel, stdStreams: logToStdstreams }, name);
+			}
 			externalLogger.tag = null; // don't tag by default
 			if (isMainThread && typeof globalThis.Bun === 'undefined') {
 				// Bun will crash with the segfault handler, ironically
@@ -605,9 +616,27 @@ export function initLogSettings(forceInit = false) {
 
 			// createLogger shadows the module-level `logToStdstreams` with this option, so omitting it
 			// drops every log written before a config exists rather than routing it to the streams.
-			mainLogger = createLogger({ level: logLevel, stdStreams: logToStdstreams });
+			mainLogger = createLogger({
+				level: logLevel,
+				stdStreams: logToStdstreams,
+				components: previousMainLogger?.components,
+				taggedLoggers: previousMainLogger?.taggedLoggers,
+			});
 			// setup the external logger
 			externalLogger = mainLogger.forComponent('external');
+			for (const [name, componentLogger] of mainLogger.components) {
+				if (componentLogger[SET_ROTATION_POLICY]) {
+					const { source } = mainLogger[GET_ROTATION_POLICY]();
+					componentLogger[SET_ROTATION_POLICY](undefined, source, true);
+				} else {
+					componentLogger.rotation = undefined;
+				}
+				componentLogger.path = undefined;
+				componentLogger.level = LOG_LEVEL_HIERARCHY[logLevel] ?? mainLogger.level ?? LOG_LEVEL_HIERARCHY.info;
+				updateConditional(componentLogger);
+				componentLogger.logToStdstreams = logToStdstreams;
+				componentLogger.tag = name;
+			}
 			externalLogger.tag = null; // don't tag by default
 			// The streams are this branch's only sink, so it needs the same EPIPE/EIO listeners the
 			// configured path installs below: `harper install | head -1` closes the reader, and the
@@ -667,23 +696,30 @@ function stdioLogging() {
 	installStdioGuard(process.stderr);
 }
 
-export function loggerWithTag(tag: string, conditional?: boolean, logger: any = mainLogger) {
+export function loggerWithTag(tag: string, conditional?: boolean, logger?: any) {
 	tag = tag.replace(/ /g, '-'); // tag can't have spaces
-	return {
-		notify: logWithTag(logger.notify, 'notify'),
-		fatal: logWithTag(logger.fatal, 'fatal'),
-		error: logWithTag(logger.error, 'error'),
-		warn: logWithTag(logger.warn, 'warn'),
-		info: logWithTag(logger.info, 'info'),
-		debug: logWithTag(logger.debug, 'debug'),
-		trace: logWithTag(logger.trace, 'trace'),
-	};
-	function logWithTag(loggerMethod, level) {
-		return !conditional || logger.level <= LOG_LEVEL_HIERARCHY[level]
+	const taggedLogger: any = {};
+	function updateTaggedLogger(targetLogger = logger ?? mainLogger) {
+		taggedLogger.notify = logWithTag(targetLogger.notify, 'notify', targetLogger);
+		taggedLogger.fatal = logWithTag(targetLogger.fatal, 'fatal', targetLogger);
+		taggedLogger.error = logWithTag(targetLogger.error, 'error', targetLogger);
+		taggedLogger.warn = logWithTag(targetLogger.warn, 'warn', targetLogger);
+		taggedLogger.info = logWithTag(targetLogger.info, 'info', targetLogger);
+		taggedLogger.debug = logWithTag(targetLogger.debug, 'debug', targetLogger);
+		taggedLogger.trace = logWithTag(targetLogger.trace, 'trace', targetLogger);
+	}
+	const initialLogger = logger ?? mainLogger;
+	updateTaggedLogger(initialLogger);
+	if (initialLogger) {
+		(initialLogger.taggedLoggers ??= []).push(updateTaggedLogger);
+	}
+	return taggedLogger;
+	function logWithTag(loggerMethod, level, targetLogger) {
+		return !conditional || targetLogger.level <= LOG_LEVEL_HIERARCHY[level]
 			? function (...args) {
 					currentTag = tag;
 					try {
-						return loggerMethod.call(logger, ...args);
+						return loggerMethod.call(targetLogger, ...args);
 					} finally {
 						currentTag = undefined;
 					}
@@ -715,6 +751,8 @@ export function createLogger(options: any = {} as any) {
 		isExternalInstance,
 		writeToLog,
 		component,
+		components = new Map(),
+		taggedLoggers = [],
 		rotationSource,
 		rotationInherited = false,
 	}: any = options;
@@ -745,7 +783,7 @@ export function createLogger(options: any = {} as any) {
 			} else {
 				logToFile(log);
 			}
-		} else if (logToStdstreams) process.stdout.write(log);
+		} else if (logger.logToStdstreams) process.stdout.write(log);
 	}
 
 	/**
@@ -755,7 +793,7 @@ export function createLogger(options: any = {} as any) {
 	function logStdErr(log) {
 		if (log_to_file) {
 			logToFile(log);
-			if (logToStdstreams) {
+			if (logger.logToStdstreams) {
 				loggingEnabled = false;
 				try {
 					// if we are writing std streams we don't want to double write to the file through the stdio capture
@@ -764,7 +802,7 @@ export function createLogger(options: any = {} as any) {
 					loggingEnabled = true;
 				}
 			}
-		} else if (logToStdstreams) process.stderr.write(log);
+		} else if (logger.logToStdstreams) process.stderr.write(log);
 	}
 	let logToFile = logFilePath && getFileLogger(logFilePath, rotation, isExternalInstance, rotationPolicy());
 	rotationPolicyApplied();
@@ -798,6 +836,7 @@ export function createLogger(options: any = {} as any) {
 		logger.rotation = newRotation;
 	};
 	logger[GET_ROTATION_POLICY] = () => ({ ownSource: ownRotationSource, source: currentRotationSource });
+	logger.taggedLoggers = taggedLoggers;
 	updateConditional(logger);
 	logger.path = logFilePath;
 	Object.defineProperty(logger, 'path', {
@@ -806,7 +845,13 @@ export function createLogger(options: any = {} as any) {
 		},
 		set(path) {
 			logFilePath = path;
-			if (!logFilePath) return;
+			if (!logFilePath) {
+				logToFile = undefined;
+				logger.closeLogFile = undefined;
+				rotationPolicyApplied();
+				if (isExternalInstance) writeToLogFile = undefined;
+				return;
+			}
 			logToFile = getFileLogger(logFilePath, logger.rotation, isExternalInstance, rotationPolicy());
 			logger.closeLogFile = logToFile.closeLogFile;
 			rotationPolicyApplied();
@@ -817,7 +862,6 @@ export function createLogger(options: any = {} as any) {
 	logger.closeLogFile = logToFile?.closeLogFile;
 	logger.logToStdstreams = logToStdstreams;
 	if (!component) {
-		let components = new Map();
 		logger.forComponent = function (name, isExternal = false) {
 			let componentLogger = components.get(name);
 			if (!componentLogger) {
