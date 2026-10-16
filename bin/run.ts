@@ -82,10 +82,9 @@ function addExitListeners() {
  * Do the initial checks and potential upgrades/installation
  * @param calledByInstall
  * @param calledByMain
- * @param skipListeners - test seam: when true, skips registering process signal/exit/rejection listeners
  * @returns {Promise<void>}
  */
-async function initialize(calledByInstall = false, calledByMain = false, skipListeners = false) {
+async function initialize(calledByInstall = false, calledByMain = false) {
 	// Check to see if HDB is installed, if it isn't we call install.
 	console.log(chalk.magenta(`Starting ${PRODUCT_NAME}...`));
 
@@ -95,9 +94,7 @@ async function initialize(calledByInstall = false, calledByMain = false, skipLis
 		console.log(chalk.yellow('Database writes are disabled. Analytics collection is disabled.\n'));
 	}
 
-	if (!skipListeners) {
-		addUnhandleRejectionListener();
-	}
+	addUnhandleRejectionListener();
 
 	hdbLogger.suppressLogging?.(() => {
 		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'static/ascii_logo.txt'))));
@@ -161,9 +158,7 @@ async function initialize(calledByInstall = false, calledByMain = false, skipLis
 		process.exit(4);
 	}
 
-	if (!skipListeners) {
-		addExitListeners();
-	}
+	addExitListeners();
 
 	if (calledByMain) {
 		// Write Harper PID to file for tracking purposes
@@ -301,7 +296,6 @@ async function launch(exit = true) {
 }
 
 export { addExitListeners };
-export { initialize };
 export { launch };
 export { main };
 export { startupLog };
