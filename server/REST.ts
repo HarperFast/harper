@@ -482,11 +482,12 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				? async () => {
 						try {
 							const result = await dispatch();
-							if (
-								!writeCondition.consumed &&
-								!((result instanceof Response ? result.status : request.response.status) >= 400)
-							) {
-								if (result instanceof Response) discardSerializedStream(result.body);
+							// A Response or `{ status, headers, ... }` envelope sends its own status, as finalizeResponse does.
+							const replyStatus = result?.headers
+								? (result.status ?? request.response.status)
+								: request.response.status;
+							if (!writeCondition.consumed && !(replyStatus >= 400)) {
+								if (result?.headers) discardSerializedStream(result.body);
 								throw new ClientError('The resource did not apply the write precondition', 501);
 							}
 							return result;
