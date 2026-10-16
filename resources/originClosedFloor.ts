@@ -347,6 +347,14 @@ export function claimLocalKey(rootStore: RocksDatabase, floor: number): number {
 	return registry.freshKey();
 }
 
+/** Issue every later local key above `ceiling`: the highest key an earlier process may have claimed. */
+export function seedLocalIssuance(rootStore: RocksDatabase, ceiling: number): void {
+	if (typeof rootStore?.getUserSharedBuffer !== 'function' || !isValidFloor(ceiling)) return;
+	const words = registryFor(rootStore).words;
+	storeMax(words, WORD_RATCHET, ceiling);
+	if (rootStore.getMonotonicTimestamp() <= ceiling) Atomics.store(words, WORD_STRICT, 1n);
+}
+
 function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void {
 	const words = registryFor(rootStore).words;
 	storeMax(words, WORD_RATCHET, floor);

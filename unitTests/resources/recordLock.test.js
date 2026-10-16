@@ -6,6 +6,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction, contextStorage } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
+const { readLocalClaimCeiling } = require('#src/resources/auditStore');
 const {
 	MIN_LOCK_LEASE_MS,
 	admissionFloor,
@@ -1532,7 +1533,7 @@ describe('Record locks (harper#483)', () => {
 		let aheadUntil = 0;
 		const futureTimestamp = (aheadMs = 1_000) => (aheadUntil = Math.max(aheadUntil, Date.now() + aheadMs));
 		after(async () => {
-			while (LockTest.primaryStore.rootStore.getMonotonicTimestamp() <= aheadUntil + 50) await delay(10);
+			while (LockTest.primaryStore.rootStore.getMonotonicTimestamp() <= aheadUntil + 100) await delay(10);
 		});
 		const handleOf = (txn) => [...txn.recordLocks.values()][0].values().next().value;
 		const auditOf = (recordId, version) => {
@@ -1753,8 +1754,14 @@ describe('Record locks (harper#483)', () => {
 			assert.ok(versionA > predecessorTimestamp, 'the first successor is above the predecessor');
 			assert.ok(versionB > predecessorTimestamp, 'the second successor is above the predecessor');
 			assert.notStrictEqual(versionA, versionB, 'each successor claimed its own stamp');
-			assert.notStrictEqual(auditOf(idA, versionA).txnLogKey, auditOf(idB, versionB).txnLogKey, 'distinct log keys');
+			const keyA = auditOf(idA, versionA).txnLogKey;
+			const keyB = auditOf(idB, versionB).txnLogKey;
+			assert.notStrictEqual(keyA, keyB, 'distinct log keys');
 			assert.strictEqual(entryOf(counterId).value.n, 2, 'neither increment was taken for a re-delivery of the other');
+			assert.ok(
+				readLocalClaimCeiling(LockTest.auditStore) >= Math.max(keyA, keyB),
+				'a restart issues above every claimed key'
+			);
 		});
 
 		it('a floor beyond storage.maxLockClockSkew still outranks, without lifting other writes to it', async function () {
