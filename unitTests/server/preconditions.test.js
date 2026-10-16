@@ -4,13 +4,20 @@ const { setImmediate: nextTurn } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
-const { Resource } = require('#src/resources/Resource');
+const { Resource, WRITE_CONDITION } = require('#src/resources/Resource');
 const { ClientError } = require('#src/utility/errors/hdbError');
 const { Resources } = require('#src/resources/Resources');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { handleApplication } = require('#src/server/REST');
 const { Headers } = require('#src/server/serverHelpers/Headers');
 const { evaluatePreconditions, parseHttpDate, versionToEtag } = require('#src/server/serverHelpers/preconditions');
+const {
+	registerClusterLockTransport,
+	unregisterClusterLockTransport,
+} = require('#src/resources/recordLockCoordinator');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+const { clearThisNodeName, getThisNodeName } = require('#src/server/nodeName');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -987,5 +994,154 @@ describe('conditional write durability', () => {
 		const { replayLogs } = require('#src/resources/replayLogs');
 		await replayLogs(Row.primaryStore.rootStore, { Row }, true);
 		assert.strictEqual((await Row.get('target')).n, 3, 'replay must converge to the LWW winner');
+	});
+
+	it('commits a conditional write across a native commit conflict retry without re-evaluating the precondition', async function () {
+		if (isLMDB) this.skip();
+		const Row = table({
+			database: 'conditionalReplayLocked',
+			table: 'RetryOnceRow',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+		});
+		await Row.put('target', { n: 1 });
+		const etag = versionToEtag(Row.primaryStore.getEntry('target').version);
+		let checks = 0;
+		class RetryCounted extends Row {
+			async patch(data, target) {
+				const condition = this.getContext()[WRITE_CONDITION];
+				const check = condition.check;
+				condition.check = function (entry) {
+					checks++;
+					return check.call(this, entry);
+				};
+				return super.patch(data, target);
+			}
+		}
+		const resources = new Resources();
+		resources.set('RetryCounted', RetryCounted, { rest: true });
+		const request = rest(resources);
+		// Answer this table's first native commit with the coordinated conflict signal a concurrent
+		// writer produces for a transaction that read before writing.
+		const { Transaction, constants } = require('@harperfast/rocksdb-js');
+		const commit = Transaction.prototype.commit;
+		const targetDb = Row.primaryStore.store.db;
+		let commits = 0;
+		Transaction.prototype.commit = function (...args) {
+			if (this.store?.db !== targetDb || commits++) return commit.apply(this, args);
+			return Promise.resolve(constants.RETRY_NOW_VALUE);
+		};
+		let response;
+		try {
+			response = await request('PATCH', '/RetryCounted/target', { n: 2 }, { 'if-match': etag });
+		} finally {
+			Transaction.prototype.commit = commit;
+		}
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual(commits, 2, 'the forced conflict must retry the commit once');
+		assert.strictEqual(checks, 1, 'precondition must be evaluated once before staging and never on retry');
+		assert.strictEqual((await Row.get('target')).n, 2);
+	});
+});
+
+describe('conditional write lock scope', () => {
+	const NODE_NAME = 'precondition-lock-node';
+	const DISABLED_MESSAGE = 'cluster record locks are not enabled on this node';
+	let previousHostname;
+	let Row;
+	let request;
+	let unlockedRequest;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		previousHostname = env.get(CONFIG_PARAMS.NODE_HOSTNAME);
+		// The coordinator refuses a loopback identity, and a bare test box resolves to one.
+		env.setProperty(CONFIG_PARAMS.NODE_HOSTNAME, NODE_NAME);
+		clearThisNodeName();
+		Row = table({
+			database: 'conditionalLockScope',
+			table: 'ScopeRow',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+		});
+		const resources = new Resources();
+		resources.set('ScopeRow', Row, { rest: true });
+		request = rest(resources);
+		unlockedRequest = rest(resources, { preconditionLocks: false });
+	});
+	afterEach(() => unregisterClusterLockTransport('conditionalLockScope', true));
+	after(() => {
+		env.setProperty(CONFIG_PARAMS.NODE_HOSTNAME, previousHostname);
+		clearThisNodeName();
+	});
+
+	const etagOf = (id) => versionToEtag(Row.primaryStore.getEntry(id).version);
+	const auditEntries = (id) =>
+		[...Row.auditStore.getRange({ start: 1 })].filter((entry) => entry.tableId === Row.tableId && entry.recordId === id)
+			.length;
+
+	it('locks node-locally when no cluster transport is registered (core-only)', async function () {
+		if (isLMDB) this.skip();
+		await Row.put('local', { n: 1 });
+		const response = await request('PATCH', '/ScopeRow/local', { n: 2 }, { 'if-match': etagOf('local') });
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual((await Row.get('local')).n, 2);
+	});
+
+	it('takes the cluster lock through a registered transport, because the lock uses the default scope', async function () {
+		if (isLMDB) this.skip();
+		await Row.put('clustered', { n: 1 });
+		let homeMapCalls = 0;
+		// A home map naming only this node, so the cluster lock is delegated locally with no message.
+		registerClusterLockTransport('conditionalLockScope', {
+			coordinationIncarnation: () => 1,
+			homeMap: () => {
+				homeMapCalls++;
+				return { generation: 1, homes: [getThisNodeName()], homeIncarnation: 1 };
+			},
+			grantableAfterMono: -Infinity,
+			ownsCoordination: () => true,
+			requestDelegation: () => Promise.reject(new Error('no peer transport')),
+			recallDelegation: () => Promise.resolve(),
+			establishLockFreshness: async (_database, _table, _key, dependencies) => dependencies ?? [],
+		});
+		const response = await request('PATCH', '/ScopeRow/clustered', { n: 2 }, { 'if-match': etagOf('clustered') });
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		assert.strictEqual((await Row.get('clustered')).n, 2);
+		// A node-scoped lock never consults the transport.
+		assert.ok(homeMapCalls > 0, 'the precondition lock must run the cluster round');
+		const stale = await request('PATCH', '/ScopeRow/clustered', { n: 3 }, { 'if-match': versionToEtag(1) });
+		assert.strictEqual(stale.status, 412, await bodyOf(stale));
+	});
+
+	it('fails with 503 and stages nothing when cluster record locks are unavailable, unless preconditionLocks is false', async function () {
+		if (isLMDB) this.skip();
+		await Row.put('unavailable', { n: 1 });
+		const version = Row.primaryStore.getEntry('unavailable').version;
+		const before = auditEntries('unavailable');
+		// Mirrors harper-pro's createDisabledRecordLockTransport(), registered while replication.recordLocks is off.
+		const disabled = () => Promise.reject(new ClientError(DISABLED_MESSAGE, 503));
+		registerClusterLockTransport('conditionalLockScope', {
+			homeMap() {
+				throw new ClientError(DISABLED_MESSAGE, 503);
+			},
+			ownsCoordination: () => true,
+			requestDelegation: disabled,
+			recallDelegation: disabled,
+			establishLockFreshness: disabled,
+		});
+		const rejected = await request('PATCH', '/ScopeRow/unavailable', { n: 2 }, { 'if-match': etagOf('unavailable') });
+		const body = await bodyOf(rejected);
+		assert.strictEqual(rejected.status, 503, body);
+		assert.match(body, /not enabled on this node/);
+		assert.strictEqual(Row.primaryStore.getEntry('unavailable').version, version);
+		assert.strictEqual(auditEntries('unavailable'), before, 'a refused lock must stage no write');
+
+		const optedOut = await unlockedRequest(
+			'PATCH',
+			'/ScopeRow/unavailable',
+			{ n: 2 },
+			{ 'if-match': etagOf('unavailable') }
+		);
+		assert.strictEqual(optedOut.status, 204, await bodyOf(optedOut));
+		assert.strictEqual((await Row.get('unavailable')).n, 2);
 	});
 });

@@ -18,7 +18,7 @@
 						"preconditionLocks": {
 							"type": "boolean",
 							"default": true,
-							"description": "Acquire node-local record locks for conditional single-record PUT, PATCH and DELETE on RocksDB before evaluating the precondition once against the locked record. Set false for a best-effort single pre-check without locking (also used on LMDB, which has no record lock). Preconditions are never re-evaluated on commit retries."
+							"description": "Acquire default-scope record locks for conditional single-record PUT, PATCH and DELETE on RocksDB before evaluating the precondition once against the locked record: one winner cluster-wide when cluster record locks are available, node-local on core-only, and 503 on harper-pro without replication.recordLocks enabled. Set false to opt out into a best-effort single pre-check without locking (also used on LMDB, which has no record lock). Preconditions are never re-evaluated on commit retries."
 						},
 						"lastModified": {
 							"type": "boolean",
