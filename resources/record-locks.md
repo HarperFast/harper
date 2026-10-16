@@ -203,7 +203,9 @@ already-reserved key, so a replica applies it at that lower key and can keep the
 there while the origin keeps the holder's (harper#3238). A hold steps one ulp past its last version,
 which keeps advancing above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double; a step
 ahead of the clock within the cap is claimed, since one ulp above the ratchet is the next key it
-issues.
+issues. A step taken once the clock has passed a claimed version stays one ulp above it, keeping the
+hold's writes at their acquisition order; an unlocked write to the held record that the ratchet
+issued that exact key during the lead then drops the hold's save as its re-delivery (harper#3246).
 
 **Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance
 (`#lockHandle`) and on the link until `unlock()` is called. Writing through the returned record after

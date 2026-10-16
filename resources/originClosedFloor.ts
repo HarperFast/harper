@@ -351,7 +351,6 @@ export function reservedLocalKey(handle: RocksTransaction | undefined): number |
 	return handle && (handle as any)[RESERVATION]?.key;
 }
 
-/** The highest key the ratchet has issued or admitted. */
 export function localIssuanceRatchet(rootStore: RocksDatabase): number {
 	return fromBits(Atomics.load(registryFor(rootStore).words, WORD_RATCHET));
 }
