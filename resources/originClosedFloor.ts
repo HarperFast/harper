@@ -376,6 +376,11 @@ export function reservedAroundCallerValue(handle: RocksTransaction | undefined):
 	return (handle && (handle as any)[RESERVATION]?.aroundCallerValue) === true;
 }
 
+/** The highest key the ratchet has issued or admitted. */
+export function localIssuanceRatchet(rootStore: RocksDatabase): number {
+	return fromBits(Atomics.load(registryFor(rootStore).words, WORD_RATCHET));
+}
+
 /**
  * A timestamp no local append on this node is issued: the clock's next one, or the ratchet's while it
  * is ahead. A raw clock sample can equal a key the ratchet issued ahead of the clock once the clock

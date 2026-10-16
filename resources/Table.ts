@@ -11928,7 +11928,18 @@ export function makeTable(options): TableResourceClass {
 		const existingVersion = existingEntry?.version;
 		const existingRecord = existingEntry?.value;
 		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
-		const sourceTimestamp = inheritedTimestamp || (isRocksDB ? freshLocalKey(tableRootStore) : getNextMonotonicTime());
+		let sourceTimestamp = inheritedTimestamp;
+		if (!sourceTimestamp) {
+			if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
+			else {
+				try {
+					sourceTimestamp = freshLocalKey(tableRootStore);
+				} catch {
+					// A read must not fail on the issuance ceiling's write; a raw sample only risks a tie.
+					sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
+				}
+			}
+		}
 		let wake: () => void;
 		const fillKey = writeKeyId(id);
 		const heldFill = sourceFills?.get(fillKey);

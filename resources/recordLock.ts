@@ -1,7 +1,13 @@
 import { performance } from 'node:perf_hooks';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
-import { claimLocalKey, freshLocalKey, isValidFloor, timestampAbove } from './originClosedFloor.ts';
+import {
+	claimLocalKey,
+	freshLocalKey,
+	isValidFloor,
+	localIssuanceRatchet,
+	timestampAbove,
+} from './originClosedFloor.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { convertToMS } from '../utility/common_utils.ts';
@@ -315,7 +321,10 @@ class KeyLockHandle implements RecordLockHandle {
 		const rootStore = this.store.rootStore;
 		if (typeof rootStore?.getUserSharedBuffer !== 'function') return step;
 		const lead = step - rootStore.getMonotonicTimestamp();
-		return lead > 0 && lead <= maxLockClockSkewMs() ? claimLocalKey(rootStore, step) : step;
+		if (lead <= 0) return step;
+		return lead <= maxLockClockSkewMs() || step <= timestampAbove(localIssuanceRatchet(rootStore))
+			? claimLocalKey(rootStore, step)
+			: step;
 	}
 
 	isExpired(): boolean {
@@ -495,6 +504,12 @@ class KeyLockHandle implements RecordLockHandle {
 	}
 
 	upgradeToHold(lease: number): void {
+		// Prime the nextHolderVersion counter so a later CLOSED-path save (e.g. after the
+		// enclosing transaction commits) gets a step past acquiredAt rather than acquiredAt again
+		// — the same priming the fresh-hold path performs.  Without this, a post-commit save
+		// and any in-transaction save both get acquiredAt, causing a LWW tie that drops the write.
+		// First, since a step can claim a key and so throw, before anything here becomes a hold.
+		this.nextHolderVersion();
 		this.hold = true;
 		clearTimeout(this.#timer);
 		// A granted cluster round may not be extended locally: peers bound the hold from the request
@@ -508,11 +523,6 @@ class KeyLockHandle implements RecordLockHandle {
 		this.#deadlineMono = deadline;
 		this.expiresAt = Date.now() + remaining;
 		this.#timer = setTimeout(() => this.#onLeaseExpire(), remaining).unref();
-		// Prime the nextHolderVersion counter so a later CLOSED-path save (e.g. after the
-		// enclosing transaction commits) gets a step past acquiredAt rather than acquiredAt again
-		// — the same priming the fresh-hold path performs.  Without this, a post-commit save
-		// and any in-transaction save both get acquiredAt, causing a LWW tie that drops the write.
-		this.nextHolderVersion();
 	}
 }
 

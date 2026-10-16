@@ -2381,24 +2381,22 @@ export class DatabaseTransaction implements Transaction {
 			(transaction as RocksTransactionWithRetry).isRetry = true;
 			(transaction as RocksTransactionWithRetry).retries = this.retries;
 		} else if (!remoteOrigin) {
-			let key: number;
 			const lockBatch = this.saveCommits && this.recordLocks;
 			try {
-				key = reserveLocalKey(
+				const key = reserveLocalKey(
 					operation.store.rootStore,
 					transaction,
 					(lockBatch ? this.lockStampCeiling(transaction, txnTime) : txnTime) || undefined
 				);
+				// A lock's batch key can exceed the skew cap, so it must not raise unrelated writes to that stamp.
+				if (!txnTime) {
+					txnTime = lockBatch ? Math.min(freshLocalKey(operation.store.rootStore), key) : key;
+					if (!concurrentClosedWrite) this.timestamp = txnTime;
+				}
 			} catch (error) {
 				if (immediateCommit)
 					abortNativeTransaction(transaction, 'aborting an immediate transaction whose key was not reserved');
 				throw error;
-			}
-			// A batch key a lock stamp set is not the clock of the batch's unlocked writes: past the skew
-			// cap it can be arbitrarily far ahead.
-			if (!txnTime) {
-				txnTime = lockBatch ? Math.min(freshLocalKey(operation.store.rootStore), key) : key;
-				if (!concurrentClosedWrite) this.timestamp = txnTime;
 			}
 		}
 		if (!txnTime) {
