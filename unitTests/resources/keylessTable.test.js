@@ -5,7 +5,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
-const { databases, getDatabases, resetDatabases, table } = require('#src/resources/databases');
+const { databases, getDatabases, isPrimaryCatalogRow, resetDatabases, table } = require('#src/resources/databases');
 const { forComponent } = require('#src/utility/logging/harper_logger');
 
 async function commitCatalog(Table) {
@@ -45,6 +45,18 @@ function assertStaysKeyless(Table, tableName) {
 describe('tables with no primary key (harper#3225)', () => {
 	before(function () {
 		setupTestDBPath();
+	});
+
+	it('recognizes a primary catalog row by its flag, or as a nameless bare `<table>/` row', function () {
+		assert.strictEqual(isPrimaryCatalogRow('T/', {}), true);
+		assert.strictEqual(isPrimaryCatalogRow('T/id', { name: 'id', isPrimaryKey: true }), true);
+		assert.strictEqual(isPrimaryCatalogRow('T/', { name: 'id' }), false, 'a named bare row needs its flag');
+		assert.strictEqual(isPrimaryCatalogRow('T/name', { name: 'name' }), false);
+		assert.strictEqual(isPrimaryCatalogRow('T/x/', {}), false, 'initStores reads this as attribute x of T');
+		assert.strictEqual(isPrimaryCatalogRow('', {}), false);
+		assert.strictEqual(isPrimaryCatalogRow('/', {}), false);
+		assert.strictEqual(isPrimaryCatalogRow(Symbol.for('structures'), []), false);
+		assert.strictEqual(isPrimaryCatalogRow('T/', undefined), false);
 	});
 
 	it('loads a table whose bare catalog row lacks isPrimaryKey, with its records readable and writable', async function () {
