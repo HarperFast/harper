@@ -413,6 +413,17 @@ export interface StagedInstallConfig {
 	validated?: boolean;
 }
 
+function clearScalarAncestors(configDoc: any, splitParam: string[]) {
+	if (typeof configDoc?.deleteIn !== 'function') return;
+	for (let i = 1; i < splitParam.length; i++) {
+		const ancestorPath = splitParam.slice(0, i);
+		const ancestorVal = configDoc.getIn(ancestorPath);
+		if (ancestorVal !== undefined && (ancestorVal === null || typeof ancestorVal !== 'object')) {
+			configDoc.deleteIn(ancestorPath);
+		}
+	}
+}
+
 function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: Set<string>): StagedInstallConfig {
 	const defaultDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
 	flatDefaultConfigObj = flattenConfig(defaultDoc.toJSON());
@@ -461,29 +472,12 @@ function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: 
 			configParam = arg;
 		}
 
-		if (configParam?.startsWith('threads_')) {
-			const threadCount = configDoc.getIn(['threads']);
-			if (typeof threadCount === 'number' && threadCount >= 0) {
-				configDoc.deleteIn(['threads']);
-				configDoc.setIn(['threads', 'count'], threadCount);
-				if (userPaths.delete('threads')) {
-					userPaths.add('threads.count');
-				}
-			}
-		}
-
 		if (configParam !== undefined) {
 			const splitParam = configParam.split('_');
 			let value = castConfigValue(configParam, args[arg]);
 			if (configParam === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
 			try {
-				for (let i = 1; i < splitParam.length; i++) {
-					const ancestorPath = splitParam.slice(0, i);
-					const ancestorVal = configDoc.getIn(ancestorPath);
-					if (ancestorVal !== undefined && (ancestorVal === null || typeof ancestorVal !== 'object')) {
-						configDoc.deleteIn(ancestorPath);
-					}
-				}
+				clearScalarAncestors(configDoc, splitParam);
 
 				configDoc.setIn(
 					[...splitParam],
@@ -531,7 +525,7 @@ export function validateStagedInstallConfig(staged: StagedInstallConfig, skipFsV
  * @param args - any args that the user provided (must be undefined when `staged` is provided).
  * @param skipFsValidation - when true, skips filesystem existence checks during config validation.
  * @param baseConfigPath - optional user-supplied config template (HDB_CONFIG) to backfill with defaults.
- * @param targetConfigPath - optional destination path to write the config file to instead of `<rootPath>/harperdb-config.yaml`.
+ * @param targetConfigPath - optional destination path to write the config file to instead of `<rootPath>/harper-config.yaml`.
  * @param staged - optional pre-staged install config from `stageInstallConfig()`.
  * @param defaultedArgKeys - optional set of arg keys populated from install-mode defaults rather than explicit user input.
  */
@@ -1250,6 +1244,7 @@ export function updateConfigValue(
 
 		const splitParam = configParam.split('_');
 		const newValue = castConfigValue(configParam, value);
+		clearScalarAncestors(configDoc, splitParam);
 		configDoc.setIn([...splitParam], newValue);
 	} else {
 		// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
@@ -1301,6 +1296,7 @@ export function updateConfigValue(
 				let newValue = castConfigValue(configParam, parsedArgs[arg]);
 				if (configParam === 'rootPath' && newValue?.endsWith('/')) newValue = newValue.slice(0, -1);
 				try {
+					clearScalarAncestors(configDoc, splitParam);
 					configDoc.setIn([...splitParam], newValue);
 				} catch (err) {
 					logger.error(err);

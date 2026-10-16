@@ -1416,6 +1416,48 @@ describe('Test configUtils module', () => {
 				atomic_write_rw();
 			}
 		});
+
+		it('clears boolean/scalar ancestors when setting nested config paths like http_mtls_required under http.mtls: false', () => {
+			const realDoc = YAML.parseDocument(
+				`rootPath: ${HDB_ROOT}\nhttp:\n  mtls: false\n  port: 9926\nlogging: true\noperationsApi:\n  network:\n    port: 9925\n`
+			);
+			const parse_yaml_doc_rw = config_utils_rw.__set__('parseYamlDoc', sandbox.stub().returns(realDoc));
+			const get_config_value_rw = config_utils_rw.__set__('getConfigValue', sandbox.stub().returns(CONFIG_FILE_PATH));
+			const fs_exists_stub = sandbox.stub(fs, 'existsSync').returns(true);
+			const validate_config_rw = config_utils_rw.__set__('validateConfig', sandbox.stub());
+			const atomic_write_rw = config_utils_rw.__set__('atomicWriteFile', sandbox.stub());
+
+			try {
+				config_utils_rw.__set__('flatConfigObj', {
+					rootpath: HDB_ROOT,
+					http_mtls: false,
+					http_port: 9926,
+					logging: true,
+					operationsapi_network_port: 9925,
+				});
+
+				config_utils_rw.updateConfigValue(
+					undefined,
+					undefined,
+					{
+						http_mtls_required: true,
+						logging_level: 'debug',
+					},
+					false,
+					false
+				);
+
+				const json = realDoc.toJSON();
+				expect(json.http.mtls).to.eql({ required: true });
+				expect(json.logging).to.eql({ level: 'debug' });
+			} finally {
+				parse_yaml_doc_rw();
+				get_config_value_rw();
+				fs_exists_stub.restore();
+				validate_config_rw();
+				atomic_write_rw();
+			}
+		});
 	});
 
 	describe('Test castConfigValue function', () => {
@@ -2172,10 +2214,24 @@ describe('Test configUtils module', () => {
 					hdbConfigTemplatePath
 				);
 
-				const configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
-				const configJson = configDoc.toJSON();
+				let configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
+				let configJson = configDoc.toJSON();
 				expect(configJson.threads.count).to.equal(2);
 				expect(configJson.threads.debug).to.equal(false);
+
+				config_utils_rw.createConfigFile(
+					{
+						ROOTPATH: HDB_ROOT,
+						THREADS_DEBUG: true,
+					},
+					false,
+					hdbConfigTemplatePath
+				);
+
+				configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
+				configJson = configDoc.toJSON();
+				expect(configJson.threads.count).to.equal(4);
+				expect(configJson.threads.debug).to.equal(true);
 			} finally {
 				fs.removeSync(hdbConfigTemplatePath);
 			}
