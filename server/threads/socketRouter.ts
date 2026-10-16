@@ -17,6 +17,7 @@ import { lifecycle as componentLifecycle } from '../../components/status/index.t
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
+import { startHealthChecks } from '../../components/status/healthChecks.ts';
 import { startTransactionLogCooling } from '../transactionLogCooling.ts';
 import { applyConfiguredV8Flags } from './v8Flags.ts';
 import { startLongLivedTransactionReporting } from '../../resources/longLivedTransactions.ts';
@@ -141,6 +142,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 	} finally {
 		for (const slot of workerSlots) if (!slot.application) slot.finishStartup();
 		threadsHaveStarted(undefined as any);
+		startHealthChecks();
 	}
 }
 

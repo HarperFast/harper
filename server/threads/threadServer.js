@@ -96,7 +96,7 @@ process.on('uncaughtException', (error) => {
 	if (error.isHandled) return;
 	if (error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED') return; // that's what network connections do
 	if (error.message === 'write EIO') return; // that means the terminal is closed
-	harperLogger.status({ problem: 'threads.uncaught-exception' }).error('uncaughtException', error);
+	harperLogger.status({ problem: 'threads.uncaught-exception', expires: 120 }).error('uncaughtException', error);
 });
 // In both Node.js 15+ and Bun, an unhandled promise rejection exits the worker unless a
 // handler is registered. Without this, any async path that rejects without being caught
