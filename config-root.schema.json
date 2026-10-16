@@ -718,7 +718,7 @@
 				},
 				"maxLockClockSkew": {
 					"type": ["string", "number"],
-					"description": "How far ahead of this node's clock (e.g. '5s'; a number is seconds) a record lock may find the state it is admitted on and still lift this node's transaction-log clock above it, so the holder's log key is unique. Further ahead, the holder's writes still outrank that state, a clock-skew warning is logged, and its log key may repeat another's. Default: '5s'"
+					"description": "How far ahead of this node's clock (e.g. '5s'; a number is seconds) a record lock may find the state it is admitted on and still lift this node's transaction-log clock above it, so the holder's log key is unique. Further ahead, a clock-skew warning is logged, the holder's writes outrank that state only outside an explicit transaction, and their log key may repeat another's. 0 never lifts the clock. Read once per thread; restart to change it. Default: '5s'"
 				},
 				"longTransactionReportThreshold": {
 					"type": ["string", "number"],

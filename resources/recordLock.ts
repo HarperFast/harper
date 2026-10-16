@@ -189,9 +189,6 @@ function stampAbove(bound: unknown): number | undefined {
 }
 
 const DEFAULT_MAX_LOCK_CLOCK_SKEW_MS = 5000;
-// Persisted past each claim: it covers the one-ulp keys the ratchet issues after the claim until the
-// clock passes it (~200k at this magnitude), and the claims that follow within it cost no write.
-const CLAIM_CEILING_HEADROOM_MS = 50;
 let maxLockClockSkew: number | undefined;
 const CLOCK_SKEW_WARN_INTERVAL_MS = 60_000;
 let lastClockSkewWarn = -Infinity;
@@ -199,7 +196,8 @@ let lastClockSkewWarn = -Infinity;
 function maxLockClockSkewMs(): number {
 	if (maxLockClockSkew !== undefined) return maxLockClockSkew;
 	const configured = envMngr.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
-	const skew = configured == null ? DEFAULT_MAX_LOCK_CLOCK_SKEW_MS : convertToMS(configured);
+	if (configured == null) return (maxLockClockSkew = DEFAULT_MAX_LOCK_CLOCK_SKEW_MS);
+	const skew = typeof configured === 'string' || typeof configured === 'number' ? convertToMS(configured) : NaN;
 	if (Number.isFinite(skew) && skew >= 0) return (maxLockClockSkew = skew);
 	harperLogger.warn?.(
 		`storage.maxLockClockSkew must be a finite, non-negative duration, but is ${configured}; using ${DEFAULT_MAX_LOCK_CLOCK_SKEW_MS}ms`
@@ -208,34 +206,32 @@ function maxLockClockSkewMs(): number {
 }
 
 /**
- * The stamp a new holder's writes start from, given its admission floor. A floor ahead of this node's
- * clock is the same for every holder admitted on state one future-stamped transaction left, and as an
- * explicit stamp it would become each one's log key; within the configured skew it is claimed as a
- * unique local key instead, which lifts every later local key on this node above it. Past the skew it
- * stays explicit, so one far-future timestamp cannot pin this node's clock.
+ * The stamp a new holder's writes start from, given its admission floor. A floor above `acquiredAt` is
+ * the same for every holder admitted on state one transaction left, and as an explicit stamp it would
+ * become each one's log key, so it is replaced by a key no other local append is issued: the clock's
+ * next one, or, for a floor ahead of the clock within the configured skew, a claim that lifts every
+ * later local key on this node above it. Past the skew the floor stays explicit and `movesClock` is
+ * false, so one far-future timestamp pins neither this node's clock nor the holder's transaction.
  */
 export function admissionStamp(
 	rootStore: any,
 	floor: number,
-	acquiredAt: number,
-	coverClaim: (claim: number, headroom: number) => void
-): number {
-	if (floor <= acquiredAt) return floor;
+	acquiredAt: number
+): { stamp: number; movesClock: boolean } {
+	if (floor <= acquiredAt) return { stamp: floor, movesClock: true };
+	const clock = rootStore.getMonotonicTimestamp();
+	if (floor <= clock) return { stamp: clock, movesClock: true };
 	const maxSkew = maxLockClockSkewMs();
-	const skew = floor - Date.now();
-	if (skew <= maxSkew) {
-		const claim = claimLocalKey(rootStore, floor);
-		coverClaim(claim, CLAIM_CEILING_HEADROOM_MS);
-		return claim;
-	}
+	const skew = floor - clock;
+	if (skew <= maxSkew) return { stamp: claimLocalKey(rootStore, floor), movesClock: true };
 	const now = performance.now();
 	if (now - lastClockSkewWarn >= CLOCK_SKEW_WARN_INTERVAL_MS) {
 		lastClockSkewWarn = now;
 		harperLogger.warn?.(
-			`A record lock was admitted on state stamped ${Math.round(skew)}ms ahead of this node's clock, beyond storage.maxLockClockSkew (${maxSkew}ms); check clock synchronization. The holder's writes still outrank that state, but their transaction log key may repeat another's.`
+			`A record lock was admitted on state stamped ${Math.round(skew)}ms ahead of this node's clock, beyond storage.maxLockClockSkew (${maxSkew}ms); check clock synchronization. Its writes outrank that state only outside an explicit transaction, and their transaction log key may repeat another's.`
 		);
 	}
-	return floor;
+	return { stamp: floor, movesClock: false };
 }
 
 /** The advisory key for this (table, record) pair, distinct from getFromSource's bare-id single-flight lock. */
@@ -304,7 +300,7 @@ class KeyLockHandle implements RecordLockHandle {
 
 	holderVersionCandidate(floor?: number): number {
 		// The smallest step past the holder's last version: it prevents an exact LWW tie with that write
-		// without materially moving past it. A fixed ms step stops advancing a version from 2^42 ms up.
+		// without materially moving past it.
 		return Math.max(
 			this.#lastHolderVersion != null ? timestampAbove(this.#lastHolderVersion) : this.acquiredAt,
 			this.acquiredAt,
@@ -504,7 +500,7 @@ class KeyLockHandle implements RecordLockHandle {
 		this.expiresAt = Date.now() + remaining;
 		this.#timer = setTimeout(() => this.#onLeaseExpire(), remaining).unref();
 		// Prime the nextHolderVersion counter so a later CLOSED-path save (e.g. after the
-		// enclosing transaction commits) gets acquiredAt+MIN_STEP rather than acquiredAt again
+		// enclosing transaction commits) gets a step past acquiredAt rather than acquiredAt again
 		// — the same priming the fresh-hold path performs.  Without this, a post-commit save
 		// and any in-transaction save both get acquiredAt, causing a LWW tie that drops the write.
 		this.nextHolderVersion();

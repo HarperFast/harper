@@ -187,31 +187,36 @@ freshness wait, with the record read once under the lock and that same entry rel
 handle's floor one ulp (`timestampAbove`) above the stored version, a tombstone's included, and above
 the highest predecessor `lockRelease` / `lockBarrier` log position the round waited for
 (`admissionFloor`; the coordinator caches that maximum per delegation as `dependencyFloor`). A bound no
-valid timestamp exceeds fails the admission with a 409 and gives the key back. A floor ahead of this
-node's clock is not used as is: every holder admitted on state one future-stamped transaction left
-would share it, as the version of every write in its explicit transaction and as its log key, and two
-writes with an equal version and log key on one record read as a re-delivery — a shared counter loses
-an increment. Within `storage.maxLockClockSkew` (default 5 s) the floor is instead claimed as a unique
-local key (`claimLocalKey`), which lifts every later local key on this node, locked or not, above it:
-the node's log clock never runs behind state it admitted a lock on. Past the cap a rate-limited
-clock-skew warning is logged and the floor stays explicit, so one far-future timestamp cannot pin the
-node's clock; the holder still outranks, but its log key may repeat another's. A malformed cap falls
-back to 5 s with a warning, and `0` never claims. A claim is persisted as a ceiling before it is used
-and seeds issuance at open, so a restart cannot reissue it (resources/DESIGN.md "Origin-closed
-timestamp floor"). Re-entry, coalesced followers and scoped → hold upgrades are not admissions and
-raise nothing.
+valid timestamp exceeds fails the admission with a 409 and gives the key back.
+
+A floor above the handle's `acquiredAt` is not used as is (`admissionStamp`): every holder admitted on
+state one transaction left would share it, as the version of every write in its explicit transaction
+and as its log key, and two writes with an equal version and log key on one record read as a
+re-delivery — a shared counter loses an increment. A floor the clock has already passed takes the
+clock's next key. A floor ahead of the clock within `storage.maxLockClockSkew` (default 5 s; a malformed
+value falls back to it with a warning; read once per thread) is claimed as a unique local key
+(`claimLocalKey`), which lifts every later local key on this node, locked or not, above it: the node's
+log clock never runs behind state it admitted a lock on. Past the cap, or with a cap of `0`, a
+rate-limited clock-skew warning is logged and the floor stays explicit and moves no clock: one
+far-future timestamp pins neither the node's clock nor the holder's transaction, whose other writes
+would otherwise inherit it. Such a holder still outranks through an `ImmediateTransaction`'s per-write
+stamp, is best-effort in an explicit transaction, and its log key may repeat another's. A key the
+ratchet issues ahead of the clock is persisted as a ceiling before it is used and seeds issuance at
+open, so a restart cannot reissue it (resources/DESIGN.md "Origin-closed timestamp floor"). Re-entry,
+coalesced followers and scoped → hold upgrades are not admissions and raise nothing.
 
 The floor reaches the write through the existing stamps. An explicit transaction's clock takes it only
-while nothing else would move with it — no log key reserved yet and no unlocked write staged first;
-otherwise the clock stays put, the holder's ordering is best-effort, and nothing throws. Likewise a
-hold saved later in a different explicit transaction is stamped by that transaction's clock, not the
-floor. An `ImmediateTransaction` stamps holder writes from the handle as above, and reserves its
-batch's log key at or above every version the batch carries (`lockStampCeiling`), because a replica
-applies a write at no more than its log key. One route escapes it: a holder write saved while the same
-context's previous commit is still in flight (awaiting a streamed blob) joins that batch under its
-already-reserved key, so a replica applies it at that lower key and can keep the predecessor's value
-there while the origin keeps the holder's (harper#3238). A hold steps one ulp past its last version, which keeps
-advancing above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double.
+while nothing else would move with it — no log key reserved yet and no unlocked write staged first
+(`hasUnlockedWrite`, one pass over the writes for all of a transaction's locks); otherwise the clock
+stays put, the holder's ordering is best-effort, and nothing throws. Likewise a hold saved later in a
+different explicit transaction is stamped by that transaction's clock, not the floor. An
+`ImmediateTransaction` stamps holder writes from the handle as above, and reserves its batch's log key
+at or above every version the batch carries (`lockStampCeiling`), because a replica applies a write at
+no more than its log key. One route escapes it: a holder write saved while the same context's previous
+commit is still in flight (awaiting a streamed blob) joins that batch under its already-reserved key,
+so a replica applies it at that lower key and can keep the predecessor's value there while the origin
+keeps the holder's (harper#3238). A hold steps one ulp past its last version, which keeps advancing
+above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double.
 
 **Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance
 (`#lockHandle`) and on the link until `unlock()` is called. Writing through the returned record after
@@ -1175,8 +1180,9 @@ feature that has not yet been measured.
 >      its write is still in flight when the successor writes, so no admission saw it.
 >    - **(1b) a holder whose own clock cannot move.** The floor reaches a write only through its
 >      stamp. An explicit transaction that already reserved its log key, or staged an unlocked write
->      before `lock()`, keeps its clock; and a hold saved later in a different explicit transaction
->      is stamped by that transaction's clock. Either way the holder writes at that clock on a
+>      before `lock()`, keeps its clock; so does one admitted on state stamped beyond
+>      `storage.maxLockClockSkew`; and a hold saved later in a different explicit transaction is
+>      stamped by that transaction's clock. Either way the holder writes at that clock on a
 >      perfectly clean handoff, and if the admitted state is stamped above it, the holder's write is
 >      the older one, silently. What the committed record then holds is whatever ordinary resolution
 >      produces from the pair — which for overlapping plain fields is not the holder's value, and for
