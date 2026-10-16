@@ -2269,13 +2269,18 @@ describe('Test configUtils module', () => {
 
 		it('allows HARPER_DEFAULT_CONFIG to override defaults under an empty section in HDB_CONFIG while preserving authored empty component maps', () => {
 			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config-empty-section.yaml');
-			fs.writeFileSync(hdbConfigTemplatePath, 'storage:\n  engine: lmdb\nhttp: {}\nmyComponent: {}\n', 'utf8');
+			fs.writeFileSync(
+				hdbConfigTemplatePath,
+				'storage:\n  engine: lmdb\nhttp: {}\nmyComponent: {}\noperationsApi:\n  tls: {}\n',
+				'utf8'
+			);
 			const origDefaultConfig = process.env.HARPER_DEFAULT_CONFIG;
 
 			try {
 				process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({
 					http: { port: 8080 },
 					myComponent: false,
+					operationsApi: { tls: { certificate: '/certs/default.pem' } },
 				});
 				config_utils_rw.writeStagedInstallConfig(
 					config_utils_rw.stageInstallConfig(
@@ -2292,6 +2297,7 @@ describe('Test configUtils module', () => {
 				expect(configJson.http.port).to.equal(8080);
 				expect(configJson.http.securePort).to.equal(9926);
 				expect(configJson.myComponent).to.deep.equal({});
+				expect(configJson.operationsApi.tls).to.deep.equal({});
 			} finally {
 				if (origDefaultConfig === undefined) {
 					delete process.env.HARPER_DEFAULT_CONFIG;

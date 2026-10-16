@@ -352,32 +352,29 @@ function backfillMissingDefaults(targetDoc: YAML.Document, defaultsDoc: YAML.Doc
 	}
 }
 
-function collectLeafDotPaths(obj: any, prefix = '', out = new Set<string>(), defaultsObj?: any): Set<string> {
+function collectLeafDotPaths(
+	obj: any,
+	prefix: string[] = [],
+	out = new Set<string>(),
+	defaultsDoc?: YAML.Document
+): Set<string> {
 	if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
-		if (prefix) out.add(prefix);
+		if (prefix.length > 0) out.add(prefix.join('.'));
 		return out;
 	}
 	for (const [key, val] of Object.entries(obj)) {
-		const nextPrefix = prefix ? `${prefix}.${key}` : key;
-		const defaultVal =
-			defaultsObj !== null && typeof defaultsObj === 'object' && !Array.isArray(defaultsObj)
-				? defaultsObj[key]
-				: undefined;
+		const nextPath = [...prefix, key];
 		if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
 			if (Object.keys(val).length > 0) {
-				collectLeafDotPaths(val, nextPrefix, out, defaultVal);
+				collectLeafDotPaths(val, nextPath, out, defaultsDoc);
 			} else {
-				const defaultHasSection =
-					defaultVal !== null &&
-					typeof defaultVal === 'object' &&
-					!Array.isArray(defaultVal) &&
-					Object.keys(defaultVal).length > 0;
-				if (!defaultHasSection) {
-					out.add(nextPrefix);
+				const defaultNode = defaultsDoc?.getIn(nextPath, true);
+				if (!YAML.isMap(defaultNode) || defaultNode.items.length === 0) {
+					out.add(nextPath.join('.'));
 				}
 			}
 		} else {
-			out.add(nextPrefix);
+			out.add(nextPath.join('.'));
 		}
 	}
 	return out;
@@ -444,8 +441,7 @@ function clearScalarAncestors(configDoc: YAML.Document, splitParam: string[], us
 
 function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: Set<string>): StagedInstallConfig {
 	const defaultDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
-	const defaultConfigJson = defaultDoc.toJSON();
-	flatDefaultConfigObj = flattenConfig(defaultConfigJson);
+	flatDefaultConfigObj = flattenConfig(defaultDoc.toJSON());
 
 	let configDoc = defaultDoc;
 	const userPaths = new Set<string>();
@@ -461,7 +457,7 @@ function composeInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: 
 			configDoc.deleteIn(['threads']);
 			configDoc.setIn(['threads', 'count'], threadCount);
 		}
-		collectLeafDotPaths(configDoc.toJSON(), '', userPaths, defaultConfigJson);
+		collectLeafDotPaths(configDoc.toJSON(), [], userPaths, defaultDoc);
 		backfillMissingDefaults(configDoc, defaultDoc);
 	}
 
