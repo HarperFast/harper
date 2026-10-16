@@ -9,6 +9,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { Transaction, RocksDatabase } = require('@harperfast/rocksdb-js');
 const {
 	certifyOriginFloor,
+	claimLocalKey,
 	getOriginClosedFloor,
 	publishOriginFloor,
 	reserveLocalKey,
@@ -398,6 +399,18 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		retireOriginFloorSlots(threadId);
 		await sleep(2);
 		assert(certify() > key, 'the terminated worker holds nothing once retired');
+	});
+
+	it('claims at one floor ahead of the clock are unique, and every later local key is above them', async () => {
+		// Ahead by little, for the reason the issuance test below gives.
+		const floor = rootStore.getMonotonicTimestamp() + 250;
+		const claims = [claimLocalKey(rootStore, floor), claimLocalKey(rootStore, floor), claimLocalKey(rootStore, floor)];
+		for (const claim of claims) assert(claim >= floor, `claim ${claim} below its floor ${floor}`);
+		assert.equal(new Set(claims).size, claims.length, 'no two claims share a key');
+		await transaction(() => Tbl.put({ id: 'after-claims', n: 1 }));
+		const [entry] = entriesFor('after-claims');
+		assert(entry.txnLogKey > Math.max(...claims), 'a later local key is above every claim');
+		while (rootStore.getMonotonicTimestamp() <= floor) await sleep(10);
 	});
 
 	it('issuance behind a persisted floor (simulated in-process) yields unique keys at or above it', async () => {

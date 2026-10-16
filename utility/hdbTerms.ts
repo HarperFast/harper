@@ -746,6 +746,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_PREFETCHWRITES: 'storage_prefetchWrites',
 	STORAGE_ENCRYPTION: 'storage_encryption',
 	STORAGE_MAXTRANSACTIONQUEUETIME: 'storage_maxTransactionQueueTime',
+	STORAGE_MAXLOCKCLOCKSKEW: 'storage_maxLockClockSkew',
 	STORAGE_MAXTRANSACTIONOPENTIME: 'storage_maxTransactionOpenTime',
 	STORAGE_MAX_READ_TRANSACTION_OPEN_TIME: 'storage_maxReadTransactionOpenTime',
 	STORAGE_DEBUGLONGTRANSACTIONS: 'storage_debugLongTransactions',

@@ -1,7 +1,10 @@
 import { performance } from 'node:perf_hooks';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
-import { isValidFloor, timestampAbove } from './originClosedFloor.ts';
+import { claimLocalKey, isValidFloor, timestampAbove } from './originClosedFloor.ts';
+import * as envMngr from '../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { convertToMS } from '../utility/common_utils.ts';
 
 /**
  * Exclusive per-record locks (harper#483).
@@ -178,6 +181,32 @@ function stampAbove(bound: unknown): number | undefined {
 			409
 		);
 	return above;
+}
+
+let maxLockClockSkew: number | undefined;
+const CLOCK_SKEW_WARN_INTERVAL_MS = 60_000;
+let lastClockSkewWarn = -Infinity;
+
+/**
+ * The stamp a new holder's writes start from, given its admission floor. A floor ahead of this node's
+ * clock is the same for every holder admitted on state one future-stamped transaction left, and as an
+ * explicit stamp it would become each one's log key; within the configured skew it is claimed as a
+ * unique local key instead, which lifts every later local key on this node above it. Past the skew it
+ * stays explicit, so one far-future timestamp cannot pin this node's clock.
+ */
+export function admissionStamp(rootStore: any, floor: number, acquiredAt: number): number {
+	if (floor <= acquiredAt) return floor;
+	maxLockClockSkew ??= convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW) ?? '5s');
+	const skew = floor - Date.now();
+	if (skew <= maxLockClockSkew) return claimLocalKey(rootStore, floor);
+	const now = performance.now();
+	if (now - lastClockSkewWarn >= CLOCK_SKEW_WARN_INTERVAL_MS) {
+		lastClockSkewWarn = now;
+		harperLogger.warn?.(
+			`A record lock was admitted on state stamped ${Math.round(skew)}ms ahead of this node's clock, beyond storage.maxLockClockSkew (${maxLockClockSkew}ms); check clock synchronization. The holder's writes still outrank that state, but their transaction log key may repeat another's.`
+		);
+	}
+	return floor;
 }
 
 /** The advisory key for this (table, record) pair, distinct from getFromSource's bare-id single-flight lock. */

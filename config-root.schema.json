@@ -536,6 +536,10 @@
 					"type": "string",
 					"description": "Max write queue time before rejecting (e.g. '45s')."
 				},
+				"maxLockClockSkew": {
+					"type": ["string", "number"],
+					"description": "How far ahead of this node's clock (e.g. '5s'; a number is seconds) a record lock may find the state it is admitted on and still lift this node's transaction-log clock above it, so the holder's log key is unique. Further ahead, the holder's writes still outrank that state, a clock-skew warning is logged, and its log key may repeat another's. Default: '5s'"
+				},
 				"longTransactionReportThreshold": {
 					"type": ["string", "number"],
 					"description": "How old a RocksDB transaction handle must be before it is reported in the log (e.g. '5m'). A handle this old can hold write intents that park other writers' commits and pin a read snapshot. Set to 0 to disable the reporting. Default: '5m'"
