@@ -977,7 +977,6 @@ export function readLocalIssuanceCeiling(auditStore: any): number {
 	return isValidFloor(ceiling) ? ceiling : 0;
 }
 
-/** Persist a ceiling above `key` before it is used, and return the ceiling now stored. */
 export function coverLocalIssuance(auditStore: any, key: number): number {
 	const ceiling = isValidFloor(key + ISSUANCE_CEILING_HEADROOM_MS) ? key + ISSUANCE_CEILING_HEADROOM_MS : key;
 	let stored = ceiling;
