@@ -21,6 +21,7 @@ import assert from 'node:assert';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import * as tls from 'node:tls';
 import * as yaml from 'yaml';
 import {
@@ -41,6 +42,11 @@ import {
 const SERVER_AUTH_OID = '1.3.6.1.5.5.7.3.1';
 const SUBJECT_ALT_NAME_OID = '2.5.29.17';
 const TLS_HANDSHAKE_TIMEOUT_MS = 5000;
+const LOG_FLUSH_TIMEOUT_MS = 5000;
+// Under Bun's node:http emulation, createSecureServer({ SNICallback }) without a static
+// cert/key speaks plaintext on the secure port (see server/DESIGN.md). The install/config/DB
+// assertions run on all runtimes; only the live TLS handshake probes skip under Bun.
+const isBun = process.env.HARPER_RUNTIME === 'bun';
 
 function makeSubjectAltNameExt(hostname: string): pkijs.Extension {
 	const altNames = new pkijs.GeneralNames({
@@ -67,7 +73,8 @@ function getLogPath(ctx: ContextWithHarper): string {
 }
 
 function getLogContent(ctx: ContextWithHarper): string {
-	return readFileSync(getLogPath(ctx), 'utf8');
+	const logPath = getLogPath(ctx);
+	return existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
 }
 
 function getPhaseLogContent(ctx: ContextWithHarper, logBefore: string): string {
@@ -78,6 +85,23 @@ function getPhaseLogContent(ctx: ContextWithHarper, logBefore: string): string {
 		return currentLog.slice(logBefore.length);
 	}
 	return currentLog;
+}
+
+// harper_logger buffers file writes for 1ms under high log volume while writing to stdout
+// immediately, so startHarper (which resolves on stdout's "Harper successfully started.")
+// can return slightly before the corresponding line lands in hdb.log on disk.
+async function waitForLogFlush(
+	ctx: ContextWithHarper,
+	expectedMarker = 'Harper successfully started.',
+	logBefore = ''
+): Promise<string> {
+	const deadline = Date.now() + LOG_FLUSH_TIMEOUT_MS;
+	let phaseLog = getPhaseLogContent(ctx, logBefore);
+	while (!phaseLog.includes(expectedMarker) && Date.now() < deadline) {
+		await sleep(25);
+		phaseLog = getPhaseLogContent(ctx, logBefore);
+	}
+	return phaseLog;
 }
 
 function getConfigPath(ctx: ContextWithHarper): string {
@@ -197,6 +221,14 @@ suite('TLS array configuration on first-boot install', () => {
 		before(async () => {
 			await startHarper(ctx, {
 				config: {
+					// Disable log rotation so Windows CI (where dataRootDir is on C:\ and
+					// HARPER_INTEGRATION_TEST_LOG_DIR is on D:\) does not emit an unrelated
+					// cross-filesystem log-rotation [error] line into hdb.log.
+					logging: {
+						rotation: {
+							enabled: false,
+						},
+					},
 					operationsApi: {
 						network: {
 							securePort: 9935,
@@ -205,7 +237,7 @@ suite('TLS array configuration on first-boot install', () => {
 					tls: [entryA, entryB],
 				},
 			});
-			installLog = getLogContent(ctx);
+			installLog = await waitForLogFlush(ctx);
 		});
 
 		after(async () => {
@@ -291,13 +323,17 @@ suite('TLS array configuration on first-boot install', () => {
 			assert.ok(selfSignedCA, `Expected self-signed CA row in ${JSON.stringify(rows)}`);
 		});
 
-		test('A4: HTTPS (9927) and operationsApi securePort (9935) serve each configured host certificate by SNI', async () => {
-			const host = ctx.harper.hostname;
-			assert.equal(await getPeerCertCN(host, 9927, 'host-a.harper.local', caPem), 'host-a.harper.local');
-			assert.equal(await getPeerCertCN(host, 9927, 'host-b.harper.local', caPem), 'host-b.harper.local');
-			assert.equal(await getPeerCertCN(host, 9935, 'host-a.harper.local', caPem), 'host-a.harper.local');
-			assert.equal(await getPeerCertCN(host, 9935, 'host-b.harper.local', caPem), 'host-b.harper.local');
-		});
+		test(
+			'A4: HTTPS (9927) and operationsApi securePort (9935) serve each configured host certificate by SNI',
+			{ skip: isBun },
+			async () => {
+				const host = ctx.harper.hostname;
+				assert.equal(await getPeerCertCN(host, 9927, 'host-a.harper.local', caPem), 'host-a.harper.local');
+				assert.equal(await getPeerCertCN(host, 9927, 'host-b.harper.local', caPem), 'host-b.harper.local');
+				assert.equal(await getPeerCertCN(host, 9935, 'host-a.harper.local', caPem), 'host-a.harper.local');
+				assert.equal(await getPeerCertCN(host, 9935, 'host-b.harper.local', caPem), 'host-b.harper.local');
+			}
+		);
 
 		test('A5: set_configuration with a 3-entry tls array persists without logging errors', async () => {
 			const logBefore = getLogContent(ctx);
@@ -335,6 +371,11 @@ suite('TLS array configuration on first-boot install', () => {
 			await killHarper(ctx);
 			await startHarper(ctx, {
 				config: {
+					logging: {
+						rotation: {
+							enabled: false,
+						},
+					},
 					operationsApi: {
 						network: {
 							securePort: 9935,
@@ -343,7 +384,7 @@ suite('TLS array configuration on first-boot install', () => {
 				},
 			});
 
-			const restartLog = getPhaseLogContent(ctx, logBeforeRestart);
+			const restartLog = await waitForLogFlush(ctx, 'Harper successfully started.', logBeforeRestart);
 			assert.equal(
 				restartLog.includes('Expected a valid index, not'),
 				false,
@@ -352,9 +393,11 @@ suite('TLS array configuration on first-boot install', () => {
 			const errorLines = getErrorLines(restartLog);
 			assert.deepEqual(errorLines, [], `Expected zero [error] lines during restart, found:\n${errorLines.join('\n')}`);
 
-			const host = ctx.harper.hostname;
-			assert.equal(await getPeerCertCN(host, 9927, 'host-c.harper.local', caPem), 'host-c.harper.local');
-			assert.equal(await getPeerCertCN(host, 9935, 'host-c.harper.local', caPem), 'host-c.harper.local');
+			if (!isBun) {
+				const host = ctx.harper.hostname;
+				assert.equal(await getPeerCertCN(host, 9927, 'host-c.harper.local', caPem), 'host-c.harper.local');
+				assert.equal(await getPeerCertCN(host, 9935, 'host-c.harper.local', caPem), 'host-c.harper.local');
+			}
 		});
 	});
 
@@ -364,6 +407,11 @@ suite('TLS array configuration on first-boot install', () => {
 		before(async () => {
 			await startHarper(ctx, {
 				config: {
+					logging: {
+						rotation: {
+							enabled: false,
+						},
+					},
 					operationsApi: {
 						network: {
 							securePort: 9935,
@@ -376,7 +424,7 @@ suite('TLS array configuration on first-boot install', () => {
 					},
 				},
 			});
-			controlInstallLog = getLogContent(ctx);
+			controlInstallLog = await waitForLogFlush(ctx);
 		});
 
 		after(async () => {
@@ -410,9 +458,11 @@ suite('TLS array configuration on first-boot install', () => {
 			assert.equal(parsed.tls.privateKey, entryA.privateKey);
 			assert.equal(parsed.tls.certificateAuthority, entryA.certificateAuthority);
 
-			const host = ctx.harper.hostname;
-			assert.equal(await getPeerCertCN(host, 9927, 'host-a.harper.local', caPem), 'host-a.harper.local');
-			assert.equal(await getPeerCertCN(host, 9935, 'host-a.harper.local', caPem), 'host-a.harper.local');
+			if (!isBun) {
+				const host = ctx.harper.hostname;
+				assert.equal(await getPeerCertCN(host, 9927, 'host-a.harper.local', caPem), 'host-a.harper.local');
+				assert.equal(await getPeerCertCN(host, 9935, 'host-a.harper.local', caPem), 'host-a.harper.local');
+			}
 		});
 	});
 });
