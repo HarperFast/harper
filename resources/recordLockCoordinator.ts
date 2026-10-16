@@ -2445,6 +2445,7 @@ export class LockCoordinator {
 
 	#admit(delegation: Delegation, leaseMs: number): LockRound {
 		const mintedMono = this.#monotonic();
+		const tsR = this.#nextTimestamp();
 		// Admissions that unlocked are kept only until their handle's own lease fences it. Collecting
 		// them here rather than on a timer keeps the work on the path that creates it, and a delegation
 		// can accumulate at most one entry per overlapping lock in its own lease.
@@ -2455,7 +2456,7 @@ export class LockCoordinator {
 		delegation.admissions.set(admissionId, { revoke: noRevoke, expiresMono: mintedMono + leaseMs, holding: true });
 		delegation.holding++;
 		this.#admissions.set(admissionId, delegation);
-		return { tsR: this.#nextTimestamp(), mintedMono, admissionId, dependencyFloor: delegation.dependencyFloor };
+		return { tsR, mintedMono, admissionId, dependencyFloor: delegation.dependencyFloor };
 	}
 
 	/**

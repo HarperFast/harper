@@ -563,6 +563,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 			]),
 			compactOnStart: boolean.optional(),
 			compactOnStartKeepBackup: boolean.optional(),
+			maxLockClockSkew: Joi.alternatives([number.min(0), string]).optional(),
 			noReadAhead: boolean.optional(),
 			path: storagePathConstraints,
 			prefetchWrites: boolean.optional(),
