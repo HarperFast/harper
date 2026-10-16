@@ -84,6 +84,9 @@ let hdbRoot = undefined;
 let conditionalRollback = false;
 let rootExistedBeforeInstall = false;
 let preExistingRootEntries: Set<string> | null = null;
+let preExistingStorageDirEntries: Map<string, Set<string>> | null = null;
+let candidateSystemDbPaths: string[] | null = null;
+let preExistingSystemDbPaths: Set<string> | null = null;
 let ignoreExisting = false;
 let bootPropsCreated = true;
 
@@ -122,6 +125,39 @@ function isRootNamedHdbConfig(hdbConfigPath: string | undefined, rootDir: string
 	);
 }
 
+function getCandidateSystemDbPaths(
+	rootDir: string,
+	...configSources: Array<Record<string, any> | undefined>
+): string[] {
+	const systemDbPaths = new Set<string>([
+		path.join(rootDir, hdbTerms.DATABASES_DIR_NAME, hdbTerms.SYSTEM_SCHEMA_NAME),
+		path.join(rootDir, hdbTerms.DATABASES_DIR_NAME, `${hdbTerms.SYSTEM_SCHEMA_NAME}.mdb`),
+		path.join(rootDir, hdbTerms.LEGACY_DATABASES_DIR_NAME, hdbTerms.SYSTEM_SCHEMA_NAME),
+		path.join(rootDir, hdbTerms.SYSTEM_SCHEMA_NAME, 'hdb_user.mdb'),
+	]);
+	for (const cfg of configSources) {
+		if (!cfg) continue;
+		const rawStoragePath = cfg[hdbTerms.CONFIG_PARAMS.STORAGE_PATH.toLowerCase()] ?? cfg.storage?.path;
+		const customStorageDir = resolveConfiguredPath(rawStoragePath, rootDir);
+		if (customStorageDir) {
+			systemDbPaths.add(path.join(customStorageDir, hdbTerms.SYSTEM_SCHEMA_NAME));
+			systemDbPaths.add(path.join(customStorageDir, `${hdbTerms.SYSTEM_SCHEMA_NAME}.mdb`));
+		}
+		const rawSystemDbPath =
+			cfg[hdbTerms.CONFIG_PARAMS.DATABASES]?.[hdbTerms.SYSTEM_SCHEMA_NAME]?.path ??
+			cfg.databases?.[hdbTerms.SYSTEM_SCHEMA_NAME]?.path;
+		const customSystemDbPath = resolveConfiguredPath(rawSystemDbPath, rootDir);
+		if (customSystemDbPath) {
+			systemDbPaths.add(customSystemDbPath);
+			systemDbPaths.add(`${customSystemDbPath}.mdb`);
+			systemDbPaths.add(path.join(customSystemDbPath, hdbTerms.SYSTEM_SCHEMA_NAME));
+			systemDbPaths.add(path.join(customSystemDbPath, `${hdbTerms.SYSTEM_SCHEMA_NAME}.mdb`));
+			systemDbPaths.add(path.join(customSystemDbPath, 'hdb_user.mdb'));
+		}
+	}
+	return Array.from(systemDbPaths);
+}
+
 function isPreseededRootConfig(rootDir: string | undefined, configFromFile: Record<string, any> = {}): boolean {
 	const hdbConfigPath = getHdbConfigPath();
 	if (!isRootNamedHdbConfig(hdbConfigPath, rootDir) || !rootDir) return false;
@@ -131,36 +167,7 @@ function isPreseededRootConfig(rootDir: string | undefined, configFromFile: Reco
 			? hdbTerms.HDB_CONFIG_FILE
 			: hdbTerms.HARPER_CONFIG_FILE;
 	if (fs.existsSync(path.join(rootDir, otherConfigName))) return false;
-	const customStorageDir = resolveConfiguredPath(
-		configFromFile?.[hdbTerms.CONFIG_PARAMS.STORAGE_PATH.toLowerCase()],
-		rootDir
-	);
-	const customSystemDbPath = resolveConfiguredPath(
-		configFromFile?.[hdbTerms.CONFIG_PARAMS.DATABASES]?.[hdbTerms.SYSTEM_SCHEMA_NAME]?.path,
-		rootDir
-	);
-	const systemDbPaths = [
-		path.join(rootDir, hdbTerms.DATABASES_DIR_NAME, hdbTerms.SYSTEM_SCHEMA_NAME),
-		path.join(rootDir, hdbTerms.DATABASES_DIR_NAME, `${hdbTerms.SYSTEM_SCHEMA_NAME}.mdb`),
-		path.join(rootDir, hdbTerms.LEGACY_DATABASES_DIR_NAME, hdbTerms.SYSTEM_SCHEMA_NAME),
-		path.join(rootDir, hdbTerms.SYSTEM_SCHEMA_NAME, 'hdb_user.mdb'),
-	];
-	if (customStorageDir) {
-		systemDbPaths.push(
-			path.join(customStorageDir, hdbTerms.SYSTEM_SCHEMA_NAME),
-			path.join(customStorageDir, `${hdbTerms.SYSTEM_SCHEMA_NAME}.mdb`)
-		);
-	}
-	if (customSystemDbPath) {
-		systemDbPaths.push(
-			customSystemDbPath,
-			`${customSystemDbPath}.mdb`,
-			path.join(customSystemDbPath, hdbTerms.SYSTEM_SCHEMA_NAME),
-			path.join(customSystemDbPath, `${hdbTerms.SYSTEM_SCHEMA_NAME}.mdb`),
-			path.join(customSystemDbPath, 'hdb_user.mdb')
-		);
-	}
-	if (systemDbPaths.some((p) => fs.existsSync(p))) {
+	if (getCandidateSystemDbPaths(rootDir, configFromFile).some((p) => fs.existsSync(p))) {
 		return false;
 	}
 	return true;
@@ -264,6 +271,26 @@ async function install() {
 	bootPropsCreated = false;
 	rootExistedBeforeInstall = fs.existsSync(hdbRoot);
 	preExistingRootEntries = rootExistedBeforeInstall ? new Set(fs.readdirSync(hdbRoot)) : null;
+	const stagedJson = stagedInstall.configDoc.toJSON();
+	const baseCandidatePaths = getCandidateSystemDbPaths(hdbRoot, configFromFile, stagedJson);
+	candidateSystemDbPaths = baseCandidatePaths.flatMap((p) => (p.endsWith('.mdb') ? [p, `${p}-lock`] : [p]));
+	preExistingSystemDbPaths = new Set(candidateSystemDbPaths.filter((p) => fs.existsSync(p)));
+	preExistingStorageDirEntries = new Map();
+	const storageDirs = new Set<string>([path.join(hdbRoot, hdbTerms.DATABASES_DIR_NAME)]);
+	for (const cfg of [configFromFile, stagedJson]) {
+		const resolved = resolveConfiguredPath(
+			cfg?.[hdbTerms.CONFIG_PARAMS.STORAGE_PATH.toLowerCase()] ?? cfg?.storage?.path,
+			hdbRoot
+		);
+		if (resolved) storageDirs.add(resolved);
+	}
+	for (const dirPath of storageDirs) {
+		try {
+			if (fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory()) {
+				preExistingStorageDirEntries.set(dirPath, new Set(fs.readdirSync(dirPath)));
+			}
+		} catch {}
+	}
 
 	try {
 		// Creates the Harper project folder structure and the LMDB environments/dbis.
@@ -285,6 +312,9 @@ async function install() {
 		bootPropsCreated = true;
 		rootExistedBeforeInstall = false;
 		preExistingRootEntries = null;
+		preExistingStorageDirEntries = null;
+		candidateSystemDbPaths = null;
+		preExistingSystemDbPaths = null;
 	}
 
 	// At this point there should be config and Harper folders so re-init log settings to update
@@ -850,6 +880,20 @@ function rollbackInstall(errMsg) {
 			}
 		} else {
 			fs.removeSync(hdbRoot);
+		}
+		for (const [dirPath, existingEntries] of preExistingStorageDirEntries ?? []) {
+			if (fs.existsSync(dirPath)) {
+				for (const entryName of fs.readdirSync(dirPath)) {
+					if (!existingEntries.has(entryName)) {
+						fs.removeSync(path.join(dirPath, entryName));
+					}
+				}
+			}
+		}
+		for (const sysDbPath of candidateSystemDbPaths ?? []) {
+			if (!preExistingSystemDbPaths?.has(sysDbPath) && fs.existsSync(sysDbPath)) {
+				fs.removeSync(sysDbPath);
+			}
 		}
 	}
 

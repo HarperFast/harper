@@ -82,7 +82,7 @@ function addExitListeners() {
  * Do the initial checks and potential upgrades/installation
  * @param calledByInstall
  * @param calledByMain
- * @param skipListeners
+ * @param skipListeners - test seam: when true, skips registering process signal/exit/rejection listeners
  * @returns {Promise<void>}
  */
 async function initialize(calledByInstall = false, calledByMain = false, skipListeners = false) {
@@ -95,7 +95,7 @@ async function initialize(calledByInstall = false, calledByMain = false, skipLis
 		console.log(chalk.yellow('Database writes are disabled. Analytics collection is disabled.\n'));
 	}
 
-	if (!skipExitListeners && !skipListeners) {
+	if (!skipListeners) {
 		addUnhandleRejectionListener();
 	}
 
