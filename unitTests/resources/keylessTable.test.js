@@ -12,17 +12,17 @@ async function commitCatalog(Table) {
 	if (Table.dbisDB.committed) await Table.dbisDB.committed;
 }
 
-async function withStorageErrors(callback) {
+async function withStorageLines(level, callback) {
 	const storageLogger = forComponent('storage');
-	const originalError = storageLogger.error;
-	const errorLines = [];
-	storageLogger.error = (...args) => errorLines.push(args.map(String).join(' '));
+	const original = storageLogger[level];
+	const lines = [];
+	storageLogger[level] = (...args) => lines.push(args.map(String).join(' '));
 	try {
 		await callback();
 	} finally {
-		storageLogger.error = originalError;
+		storageLogger[level] = original;
 	}
-	return errorLines;
+	return lines;
 }
 
 function assertStaysKeyless(Table, tableName) {
@@ -82,7 +82,7 @@ describe('tables with no primary key (harper#3225)', () => {
 		const existingId = await tables[tableName].post({ name: 'existing' });
 		const declared = `type ${tableName} @table { id: ID @primaryKey name: String }`;
 
-		const errorLines = await withStorageErrors(() => loadGQLSchema(declared));
+		const errorLines = await withStorageLines('error', () => loadGQLSchema(declared));
 		const attributed = errorLines.filter((line) => line.includes(`'data.${tableName}'`));
 		assert.strictEqual(
 			attributed.length,
@@ -140,7 +140,7 @@ describe('tables with no primary key (harper#3225)', () => {
 	it('ignores a key declared by a caller that does not author the schema, without logging', async function () {
 		const tableName = 'KeylessUnauthored3225';
 		const Keyless = table({ table: tableName, database: 'test', attributes: [{ name: 'name' }] });
-		const errorLines = await withStorageErrors(() =>
+		const errorLines = await withStorageLines('error', () =>
 			table({
 				table: tableName,
 				database: 'test',
@@ -163,6 +163,30 @@ describe('tables with no primary key (harper#3225)', () => {
 		assert.strictEqual(Reloaded.primaryKey, undefined);
 		assert(!Reloaded.attributes.some((attribute) => attribute.isPrimaryKey));
 		assert.strictEqual((await Reloaded.get(createdId))?.name, 'after the declaration');
+	});
+
+	it('reports a peer definition that declares a key on a keyless table, and ignores the key', async function () {
+		const tableName = 'KeylessPeerDeclared3225';
+		const Keyless = table({ table: tableName, database: 'test', schemaDefined: true, attributes: [{ name: 'name' }] });
+		await Keyless.post({ name: 'existing' });
+		const warnings = await withStorageLines('warn', () =>
+			table({
+				table: tableName,
+				database: 'test',
+				origin: 'cluster',
+				attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }, { name: 'name' }],
+			})
+		);
+		const attributed = warnings.filter((line) => line.includes(`test.${tableName}.id`));
+		assert.strictEqual(
+			attributed.length,
+			1,
+			`expected one warning for ${tableName}; captured:\n${warnings.join('\n')}`
+		);
+		assert(attributed[0].includes('Ignoring peer redefinition'), attributed[0]);
+		assert.strictEqual(databases.test[tableName].primaryKey, undefined);
+		assert(!databases.test[tableName].attributes.some((attribute) => attribute.isPrimaryKey));
+		assert.strictEqual(typeof databases.test[tableName].getNewId(), 'number');
 	});
 
 	it('completes an interrupted drop of a table whose bare row lacks isPrimaryKey', async function () {
