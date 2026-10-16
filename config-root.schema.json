@@ -34,8 +34,8 @@
 					"items": { "type": "string" }
 				},
 				"corsAccessControlAllowHeaders": {
-					"type": "string",
-					"description": "Comma-separated list of header keys for Access-Control-Allow-Headers on OPTIONS requests. Default: 'Accept, Content-Type, Authorization'"
+					"type": ["string", "null"],
+					"description": "Comma-separated list of header keys for Access-Control-Allow-Headers on OPTIONS requests. Must be a valid HTTP header value; invalid control characters are rejected at configuration validation. Default: 'Accept, Content-Type, Authorization'"
 				},
 				"headersTimeout": {
 					"type": "integer",
@@ -51,7 +51,7 @@
 				},
 				"readRequestQueueLimit": {
 					"oneOf": [{ "type": ["integer", "null"], "minimum": 0 }, { "const": false }],
-					"description": "Max estimated request queue time (ms) for GET, HEAD and OPTIONS before rejecting with 503. Separate from the write queue; not an in-flight concurrency limit. Default (also when null): 60000. Queued reads dispatch one per event-loop cycle; false restores immediate dispatch without read admission or its scheduling cost. Takes effect on restart."
+					"description": "Max estimated request queue time (ms) for GET, HEAD and OPTIONS on http component listeners before rejecting with 503. Separate from the write queue; not an in-flight concurrency limit. Default (also when null): 60000. Queued reads dispatch one per event-loop cycle; false dispatches immediately without read admission or its scheduling cost. Use actual numbers/booleans, not quoted strings. A shed OPTIONS preflight surfaces as a CORS failure in browsers because preflight requires a 2xx response. Takes effect on restart."
 				},
 				"keepAliveTimeout": { "type": "integer", "description": "Keep-alive inactivity timeout in ms. Default: 30000" },
 				"port": { "type": "integer", "description": "HTTP port. Default: 9926" },
