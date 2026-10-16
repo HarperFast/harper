@@ -22,7 +22,7 @@ import { relative, join, dirname, resolve } from 'node:path';
 import assignCmdenvVars from '../utility/assignCmdEnvVariables.ts';
 import * as configUtils from '../config/configUtils.ts';
 import { table, getDatabases, databases } from '../resources/databases.ts';
-const logger = forComponent('tls').conditional;
+let logger = forComponent('tls').conditional;
 const { CONFIG_PARAMS } = hdbTerms;
 const { CERTIFICATE_VALUES } = certificatesTerms;
 import { getThisNodeName, getThisNodeUrl, urlToNodeName, clearThisNodeName } from '../server/nodeName.ts';
@@ -854,8 +854,9 @@ export async function reviewSelfSignedCert() {
 	}
 }
 
-// Update the cert config in harperdb-config.yaml
-// If CLI or Env values are present it will use those values, else it will use default private key.
+// Update the cert config in harperdb-config.yaml.
+// Uses CLI or Env values when present (or the default private key for tls),
+// except when the target section (`tls` or `operationsApi.tls`) is configured as an array.
 export function updateConfigCert() {
 	const cliEnvArgs = assignCmdenvVars(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
 	const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
@@ -864,29 +865,50 @@ export function updateConfigCert() {
 	// This object is what will be added to the harperdb-config.yaml file.
 	// We check for any CLI of Env args and if they are present we use them instead of default values.
 	const conf = hdbTerms.CONFIG_PARAMS;
-	const newCerts = {
-		[conf.TLS_PRIVATEKEY]: cliEnvArgs[conf.TLS_PRIVATEKEY.toLowerCase()]
-			? cliEnvArgs[conf.TLS_PRIVATEKEY.toLowerCase()]
-			: private_key,
+	const newCerts: Record<string, any> = {};
+	const isArraySection = (key: string) => Array.isArray(configUtils.getConfigFromFile(key));
+	const warnIgnoredFlatArgs = (section: string, paramNames: string[]) => {
+		const ignored = paramNames.filter((name) => Boolean(cliEnvArgs[name.toLowerCase()]));
+		if (ignored.length > 0) {
+			logger.warn?.(
+				`Ignoring flat ${section} CLI/env parameter(s) (${ignored.join(', ')}) because ${section} is configured as an array.`
+			);
+		}
 	};
 
-	if (cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()]) {
-		newCerts[conf.TLS_CERTIFICATE] = cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()];
+	if (!isArraySection(conf.TLS)) {
+		newCerts[conf.TLS_PRIVATEKEY] = cliEnvArgs[conf.TLS_PRIVATEKEY.toLowerCase()]
+			? cliEnvArgs[conf.TLS_PRIVATEKEY.toLowerCase()]
+			: private_key;
+
+		if (cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()]) {
+			newCerts[conf.TLS_CERTIFICATE] = cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()];
+		}
+
+		if (cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
+			newCerts[conf.TLS_CERTIFICATEAUTHORITY] = cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()];
+		}
+	} else {
+		warnIgnoredFlatArgs(conf.TLS, [conf.TLS_PRIVATEKEY, conf.TLS_CERTIFICATE, conf.TLS_CERTIFICATEAUTHORITY]);
 	}
 
-	if (cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
-		newCerts[conf.TLS_CERTIFICATEAUTHORITY] = cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()];
-	}
-
-	if (cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()]) {
-		newCerts[conf.OPERATIONSAPI_TLS_CERTIFICATE] = cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()];
-	}
-	if (cliEnvArgs[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()]) {
-		newCerts[conf.OPERATIONSAPI_TLS_PRIVATEKEY] = cliEnvArgs[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()];
-	}
-	if (cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
-		newCerts[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY] =
-			cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()];
+	if (!isArraySection(conf.OPERATIONSAPI_TLS)) {
+		if (cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()]) {
+			newCerts[conf.OPERATIONSAPI_TLS_CERTIFICATE] = cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()];
+		}
+		if (cliEnvArgs[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()]) {
+			newCerts[conf.OPERATIONSAPI_TLS_PRIVATEKEY] = cliEnvArgs[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()];
+		}
+		if (cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
+			newCerts[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY] =
+				cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()];
+		}
+	} else {
+		warnIgnoredFlatArgs(conf.OPERATIONSAPI_TLS, [
+			conf.OPERATIONSAPI_TLS_CERTIFICATE,
+			conf.OPERATIONSAPI_TLS_PRIVATEKEY,
+			conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY,
+		]);
 	}
 
 	// Filter out any cert config keys already set by HARPER_SET_CONFIG so we don't overwrite them
