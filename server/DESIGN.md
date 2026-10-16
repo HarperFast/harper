@@ -842,13 +842,17 @@ conflict 503s log at `error` (once per stuck commit, rate-limited) as well as `i
 with that exact body is therefore the throttle, which now writes a rate-limited `warn` per throttle instance naming
 the queue; `resources/Table.ts`'s cache-resolution throttle throws its own 503 under the same warn. The
 gate is per instance on purpose: a shared one let a cache-fill shed silence the HTTP shed that followed.
-Reproduce with a large concurrent non-GET burst on one CPU-starved worker
+Reproduce with a large concurrent request burst on one CPU-starved worker
 (`integrationTests/resources/sourcedfrom-eav-cache-coherence.test.ts` P1 under Bun pinned to a contended
 core).
 
 ## The request-queue throttle sheds only on cycles from the current backlog (`server/throttle.ts`)
 
 The cycle-time average behind each shed decision is per `throttle()` instance and returns to 0 when that queue drains, so an earlier backlog's or another throttle's slow cycle cannot shed this one ([#3200](https://github.com/HarperFast/harper/pull/3200)). A new backlog ramps from 0, like a new process. Enforced by the stale-backlog and two-instance cases in `unitTests/server/throttle.test.js`.
+
+## HTTP reads and writes have separate queue depths and limits (`server/http.ts`)
+
+`throttleRequests` admits GET/HEAD/OPTIONS through a separate queue (`http.readRequestQueueLimit`, default 60s); Node TCP/UDS/h2c share their queues, uWS uses the same dispatcher, and Bun preserves immediate write dispatch. Both queues still measure the same event loop, so read work can increase a write queue's cycle-time estimate. `unitTests/server/httpRequestQueue.test.js` enforces classification, independent depth/limits and recovery; `integrationTests/server/request-queue.test.ts` checks GET shedding and recovery over HTTP. These are event-loop admission queues, not limits on in-flight asynchronous work.
 
 ## Response compression dispatches on the serialized output, with one brotli policy (`server/serverHelpers/contentTypes.ts`)
 
