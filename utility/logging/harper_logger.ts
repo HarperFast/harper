@@ -138,7 +138,7 @@ export function updateLogger(logger: any, logOptions: any, name?: string, mainLo
 		path = join(logOptions.root, logName);
 	} else {
 		path = mainLoggerRef.path;
-		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
+		if (!logOptions.root && path) logOptions.root = pathModule.dirname(path);
 	}
 	if (inheritedRotation && inheritedRotation === mainLoggerRef?.rotation && path !== mainLoggerRef?.path) {
 		// This logger has no rotation block of its own and is inheriting main's wholesale — but
@@ -163,13 +163,17 @@ export function updateLogger(logger: any, logOptions: any, name?: string, mainLo
 	// After the rotation above: assigning `path` goes through the setter that rebuilds this path's
 	// file logger, and it reads `logger.rotation` as it stands at that moment.
 	if (path) logger.path = path;
+	else if (!mainLoggerRef?.path && logger !== mainLoggerRef) logger.path = undefined;
 	else console.error('No path for logger', logOptions);
 	logger.level = LOG_LEVEL_HIERARCHY[logOptions.level] ?? mainLoggerRef?.level ?? LOG_LEVEL_HIERARCHY.info;
 	updateConditional(logger);
-	logger.logToStdstreams = logOptions.stdStreams ?? false;
+	logger.logToStdstreams =
+		logOptions.stdStreams ?? (logger === mainLoggerRef ? false : mainLoggerRef?.logToStdstreams) ?? false;
 	// if there is a configured tag or if a component is logging to default/main log path, use the component name as the tag
 	// to differentiate it
-	logger.tag = logOptions.tag ?? ((mainLoggerRef.path === logger.path || externalLogger.path === logger.path) && name);
+	logger.tag =
+		logOptions.tag ??
+		((!logger.path || mainLoggerRef.path === logger.path || externalLogger.path === logger.path) && name);
 
 	function setRotationPolicy(rotation) {
 		if (logger[SET_ROTATION_POLICY]) logger[SET_ROTATION_POLICY](rotation, rotationSource, inheritsRotation);
@@ -189,11 +193,6 @@ function updateConditional(logger: any) {
 	conditional.info = LOG_LEVEL_HIERARCHY.info >= logger.level ? logger.info.bind(logger) : undefined;
 	conditional.debug = LOG_LEVEL_HIERARCHY.debug >= logger.level ? logger.debug.bind(logger) : undefined;
 	conditional.trace = LOG_LEVEL_HIERARCHY.trace >= logger.level ? logger.trace.bind(logger) : undefined;
-	if (logger.taggedLoggers) {
-		for (const updateTaggedLogger of logger.taggedLoggers) {
-			updateTaggedLogger(logger);
-		}
-	}
 }
 /**
  * Resolve a config path value against rootPath if it is relative.
@@ -461,6 +460,7 @@ module.exports = {
 	disableStdio,
 	isStdioBrokenError,
 	externalLogger,
+	conditional: mainLogger.conditional,
 	updateLogger,
 };
 
@@ -551,6 +551,7 @@ export function initLogSettings(forceInit = false) {
 					configPath = join(properties.ROOTPATH, hdbTerms.HDB_CONFIG_FILE);
 			} else configPath = hdbProperties.get('settings_path');
 			let rotation;
+			let configObject;
 			({
 				level: logLevel,
 				configLogPath: logRoot,
@@ -559,6 +560,7 @@ export function initLogSettings(forceInit = false) {
 				colorMode,
 				rotation,
 				toStream: logToStdstreams,
+				configObject,
 			} = getLogConfig(configPath));
 
 			logName = hdbTerms.LOG_NAMES.HDB;
@@ -570,14 +572,19 @@ export function initLogSettings(forceInit = false) {
 				stdStreams: logToStdstreams,
 				rotation,
 				components: previousMainLogger?.components,
-				taggedLoggers: previousMainLogger?.taggedLoggers,
+				conditional: previousMainLogger?.conditional,
 			});
 			// setup the external logger
 			externalLogger = mainLogger.forComponent('external');
+			const externalLogOptions = configObject?.logging?.external;
 			for (const [name, componentLogger] of mainLogger.components) {
-				updateLogger(componentLogger, { path: logFilePath, level: logLevel, stdStreams: logToStdstreams }, name);
+				const componentLogOptions =
+					configObject?.[name]?.logging ??
+					(name === 'external' || componentLogger.isExternal ? externalLogOptions : undefined) ??
+					{};
+				updateLogger(componentLogger, componentLogOptions, name);
 			}
-			externalLogger.tag = null; // don't tag by default
+			if (!externalLogOptions?.tag) externalLogger.tag = null; // don't tag by default
 			if (isMainThread && typeof globalThis.Bun === 'undefined') {
 				// Bun will crash with the segfault handler, ironically
 				try {
@@ -591,6 +598,7 @@ export function initLogSettings(forceInit = false) {
 	} catch (err) {
 		hdbProperties = undefined;
 		if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT || err.code === hdbTerms.NODE_ERROR_CODES.ERR_INVALID_ARG_TYPE) {
+			logLevel = undefined;
 			// If the env settings haven't been initialized check cmd/env vars for values. If values not found used default.
 			const cmdEnvs = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
 			for (const key in cmdEnvs) {
@@ -609,6 +617,7 @@ export function initLogSettings(forceInit = false) {
 
 			const { defaultLevel } = getDefaultConfig();
 
+			logFilePath = undefined;
 			log_to_file = false;
 			logToStdstreams = true;
 
@@ -620,22 +629,12 @@ export function initLogSettings(forceInit = false) {
 				level: logLevel,
 				stdStreams: logToStdstreams,
 				components: previousMainLogger?.components,
-				taggedLoggers: previousMainLogger?.taggedLoggers,
+				conditional: previousMainLogger?.conditional,
 			});
 			// setup the external logger
 			externalLogger = mainLogger.forComponent('external');
 			for (const [name, componentLogger] of mainLogger.components) {
-				if (componentLogger[SET_ROTATION_POLICY]) {
-					const { source } = mainLogger[GET_ROTATION_POLICY]();
-					componentLogger[SET_ROTATION_POLICY](undefined, source, true);
-				} else {
-					componentLogger.rotation = undefined;
-				}
-				componentLogger.path = undefined;
-				componentLogger.level = LOG_LEVEL_HIERARCHY[logLevel] ?? mainLogger.level ?? LOG_LEVEL_HIERARCHY.info;
-				updateConditional(componentLogger);
-				componentLogger.logToStdstreams = logToStdstreams;
-				componentLogger.tag = name;
+				updateLogger(componentLogger, {}, name);
 			}
 			externalLogger.tag = null; // don't tag by default
 			// The streams are this branch's only sink, so it needs the same EPIPE/EIO listeners the
@@ -698,33 +697,51 @@ function stdioLogging() {
 
 export function loggerWithTag(tag: string, conditional?: boolean, logger?: any) {
 	tag = tag.replace(/ /g, '-'); // tag can't have spaces
-	const taggedLogger: any = {};
-	function updateTaggedLogger(targetLogger = logger ?? mainLogger) {
-		taggedLogger.notify = logWithTag(targetLogger.notify, 'notify', targetLogger);
-		taggedLogger.fatal = logWithTag(targetLogger.fatal, 'fatal', targetLogger);
-		taggedLogger.error = logWithTag(targetLogger.error, 'error', targetLogger);
-		taggedLogger.warn = logWithTag(targetLogger.warn, 'warn', targetLogger);
-		taggedLogger.info = logWithTag(targetLogger.info, 'info', targetLogger);
-		taggedLogger.debug = logWithTag(targetLogger.debug, 'debug', targetLogger);
-		taggedLogger.trace = logWithTag(targetLogger.trace, 'trace', targetLogger);
+	const methods = {
+		notify: logWithTag('notify'),
+		fatal: logWithTag('fatal'),
+		error: logWithTag('error'),
+		warn: logWithTag('warn'),
+		info: logWithTag('info'),
+		debug: logWithTag('debug'),
+		trace: logWithTag('trace'),
+	};
+	if (!conditional) {
+		return methods;
 	}
-	const initialLogger = logger ?? mainLogger;
-	updateTaggedLogger(initialLogger);
-	if (initialLogger) {
-		(initialLogger.taggedLoggers ??= []).push(updateTaggedLogger);
-	}
-	return taggedLogger;
-	function logWithTag(loggerMethod, level, targetLogger) {
-		return !conditional || targetLogger.level <= LOG_LEVEL_HIERARCHY[level]
-			? function (...args) {
-					currentTag = tag;
-					try {
-						return loggerMethod.call(targetLogger, ...args);
-					} finally {
-						currentTag = undefined;
-					}
-				}
-			: null;
+	return {
+		get notify() {
+			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.notify ? methods.notify : null;
+		},
+		get fatal() {
+			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.fatal ? methods.fatal : null;
+		},
+		get error() {
+			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.error ? methods.error : null;
+		},
+		get warn() {
+			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.warn ? methods.warn : null;
+		},
+		get info() {
+			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.info ? methods.info : null;
+		},
+		get debug() {
+			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.debug ? methods.debug : null;
+		},
+		get trace() {
+			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.trace ? methods.trace : null;
+		},
+	};
+	function logWithTag(level) {
+		return function (...args) {
+			const targetLogger = logger ?? mainLogger;
+			currentTag = tag;
+			try {
+				return targetLogger[level](...args);
+			} finally {
+				currentTag = undefined;
+			}
+		};
 	}
 }
 
@@ -752,7 +769,7 @@ export function createLogger(options: any = {} as any) {
 		writeToLog,
 		component,
 		components = new Map(),
-		taggedLoggers = [],
+		conditional = {},
 		rotationSource,
 		rotationInherited = false,
 	}: any = options;
@@ -836,7 +853,7 @@ export function createLogger(options: any = {} as any) {
 		logger.rotation = newRotation;
 	};
 	logger[GET_ROTATION_POLICY] = () => ({ ownSource: ownRotationSource, source: currentRotationSource });
-	logger.taggedLoggers = taggedLoggers;
+	logger.conditional = conditional;
 	updateConditional(logger);
 	logger.path = logFilePath;
 	Object.defineProperty(logger, 'path', {
@@ -844,8 +861,12 @@ export function createLogger(options: any = {} as any) {
 			return logFilePath;
 		},
 		set(path) {
+			const previousPath = logFilePath;
 			logFilePath = path;
 			if (!logFilePath) {
+				if (previousPath && rotationChangeIsAuthoritative && logger.rotation === undefined) {
+					getFileLogger(previousPath, undefined, isExternalInstance, rotationPolicy());
+				}
 				logToFile = undefined;
 				logger.closeLogFile = undefined;
 				rotationPolicyApplied();
@@ -1270,6 +1291,7 @@ function getLogConfig(hdbConfigPath) {
 			logConsole,
 			colorMode,
 			rotation,
+			configObject: configDoc.toJSON?.(),
 		};
 	} catch (err) {
 		// If the config file doesn't exist throw ENOENT error and parent function will use default log settings
@@ -2361,6 +2383,7 @@ import { getSharedRootConfigWatcher } from '../../config/RootConfigWatcher.ts';
 
 export const getLogFilePath = () => logFilePath;
 export const forComponent = (name: string, isExternal?: boolean) => mainLogger.forComponent(name, isExternal);
+export const conditional = mainLogger.conditional;
 export default {
 	notify,
 	fatal,
@@ -2388,6 +2411,7 @@ export default {
 	disableStdio,
 	isStdioBrokenError,
 	externalLogger,
+	conditional,
 	AuthAuditLog,
 	errorToString,
 	errorForLog,
