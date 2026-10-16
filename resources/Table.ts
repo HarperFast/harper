@@ -9440,7 +9440,18 @@ export function makeTable(options): TableResourceClass {
 		const existingVersion = existingEntry?.version;
 		const existingRecord = existingEntry?.value;
 		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
-		const sourceTimestamp = inheritedTimestamp || (isRocksDB ? freshLocalKey(tableRootStore) : getNextMonotonicTime());
+		let sourceTimestamp = inheritedTimestamp;
+		if (!sourceTimestamp) {
+			if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
+			else {
+				try {
+					sourceTimestamp = freshLocalKey(tableRootStore);
+				} catch {
+					// A read must not fail on the issuance ceiling's write; a raw sample only risks a tie.
+					sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
+				}
+			}
+		}
 		let whenResolved, timer;
 		// We start by locking the record so that there is only one resolution happening at once;
 		// if there is already a resolution in process, we want to use the results of that resolution
