@@ -3,6 +3,7 @@ import {
 	getDefaultCompression,
 	resetDatabases,
 	getRocksCompression,
+	isPrimaryCatalogRow,
 	toRocksCompression,
 } from '../resources/databases.ts';
 import { asBinary } from '../resources/asBinary.ts';
@@ -354,7 +355,7 @@ async function copyDbEnvironment(
 	const transaction = sourceDbisDb.useReadTransaction();
 	try {
 		for (const { key, value: attribute } of sourceDbisDb.getRange({ transaction })) {
-			const isPrimary = attribute.isPrimaryKey;
+			const isPrimary = isPrimaryCatalogRow(key, attribute);
 			let existingCompression, newCompression;
 			if (isPrimary) {
 				existingCompression = attribute.compression;
@@ -691,7 +692,7 @@ export function verifyMigratedDatabase(databasePath: string): Record<string, { r
 		});
 		handles.push(dbisDb);
 		for (const { key, value: attribute } of dbisDb.getRange({})) {
-			if (typeof key === 'symbol' || !attribute?.isPrimaryKey) continue;
+			if (typeof key === 'symbol' || !isPrimaryCatalogRow(key, attribute)) continue;
 			// per-table handles close per-iteration so a many-table sweep does not hold every CF
 			// handle open at once; only the two pre-loop opens need the leak-safety array
 			const rawDbi = RocksDatabase.open(databasePath, { name: key, encoding: false });
@@ -813,7 +814,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 	try {
 		transaction = sourceDbisDb.useReadTransaction();
 		for (const { key, value: attribute } of sourceDbisDb.getRange({ transaction })) {
-			const isPrimary = attribute.isPrimaryKey;
+			const isPrimary = isPrimaryCatalogRow(key, attribute);
 			targetDbisDb.put(key, attribute);
 			if (!(isPrimary || attribute.indexed)) continue;
 
