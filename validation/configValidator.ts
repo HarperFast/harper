@@ -492,7 +492,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 			requireAuthentication: boolean.optional(),
 		}),
 		http: Joi.object({
-			readRequestQueueLimit: number.integer().min(0).allow(null).optional(),
+			readRequestQueueLimit: Joi.alternatives([number.integer().min(0).allow(null), boolean.valid(false)]).optional(),
 			compressionThreshold: number.optional(),
 			cors: boolean.optional(),
 			corsAccessList: array.optional(),
