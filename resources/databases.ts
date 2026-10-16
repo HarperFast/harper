@@ -758,7 +758,14 @@ export function onTableDropRecorded(listener: (databaseName: string, tableName: 
  */
 export function isPrimaryCatalogRow(key: unknown, value: any): boolean {
 	if (value?.isPrimaryKey) return true;
-	return value != null && value.name == null && typeof key === 'string' && key.indexOf('/') === key.length - 1;
+	// exactly one slash, at the end: initStores reads `<table>/<attribute>` by splitting on the first slash
+	return (
+		value != null &&
+		value.name == null &&
+		typeof key === 'string' &&
+		key.length > 1 &&
+		key.indexOf('/') === key.length - 1
+	);
 }
 /** The primary catalog row of a live table, under either key layout. */
 function primaryCatalogRowFor(table: {
