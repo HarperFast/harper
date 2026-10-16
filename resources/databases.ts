@@ -655,8 +655,8 @@ function droppedRowKey(tableName: string): string {
 	return DROPPED_ROW_PREFIX + tableName;
 }
 /**
- * Whether a catalog row describes its table's primary store. The bare `<table>/` row of a table with no
- * primary key can lack `isPrimaryKey`, and its store still holds primary-format records (harper#3225).
+ * Whether a catalog row names its table's primary store: one flagged `isPrimaryKey`, or the nameless bare
+ * `<table>/` row of a keyless table, which can lose the flag while its store still holds primary records.
  */
 export function isPrimaryCatalogRow(key: unknown, value: any): boolean {
 	if (value?.isPrimaryKey) return true;
@@ -3680,15 +3680,19 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (Table.primaryStore.rootStore.status === 'closed') {
 				throw new Error(`Can not use a closed data store from ${tableName} class`);
 			}
-			const declaredPrimaryAttribute = attributes.find((attribute) => attribute.isPrimaryKey);
-			if (schemaDefinedExplicit && declaredPrimaryAttribute && Table.primaryKey == null) {
-				// a keyless table cannot adopt a key without re-keying its records (harper#3225)
-				logger.error(
-					`Table '${databaseName}.${tableName}' has no primary key, so its declared primary key ` +
-						`'${declaredPrimaryAttribute.name}' is ignored and the table stays keyless. Recreate the table with ` +
-						`that primary key, or migrate its records, to use it.`
-				);
-				delete declaredPrimaryAttribute.isPrimaryKey;
+			if (Table.primaryKey == null) {
+				// a keyless table cannot adopt a key without re-keying its records
+				const declaredPrimaryAttributes = attributes.filter((attribute) => attribute.isPrimaryKey);
+				if (schemaDefinedExplicit && declaredPrimaryAttributes.length > 0)
+					logger.error(
+						`Table '${databaseName}.${tableName}' has no primary key, so its declared primary key ` +
+							`'${declaredPrimaryAttributes.map(({ name }) => name).join("', '")}' is ignored and the table stays ` +
+							`keyless. Recreate the table with that primary key, or migrate its records, to use it.`
+					);
+				for (const attribute of declaredPrimaryAttributes) {
+					delete attribute.isPrimaryKey;
+					if (properties?.[attribute.name]) delete properties[attribute.name].primaryKey;
+				}
 			}
 			// Reject moving the primary key to a different attribute on a table that already has records.
 			// The storage key (Table.primaryKey) is never re-pointed here, so honoring the change would
@@ -5755,8 +5759,8 @@ function completeInterruptedDrop(
 	}>;
 	const bareEntry = catalogRows.find(({ key }) => key === tableName + '/');
 	const primaryEntry =
-		(bareEntry && isPrimaryCatalogRow(bareEntry.key, bareEntry.value) ? bareEntry : undefined) ??
-		catalogRows.find(({ value }) => value?.isPrimaryKey);
+		catalogRows.find(({ value }) => value?.isPrimaryKey) ??
+		(bareEntry && isPrimaryCatalogRow(bareEntry.key, bareEntry.value) ? bareEntry : undefined);
 	const tombstoneEntry = bareEntry ?? primaryEntry;
 	if (rootStore instanceof RocksDatabase && !fullTextRetired) {
 		const names = [
