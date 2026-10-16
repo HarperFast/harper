@@ -51,6 +51,7 @@ import {
 import { releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
 import {
 	acquireRecordKey,
+	admissionFloor,
 	lockAttemptKey,
 	lockNotHeldError,
 	resolveLockOptions,
@@ -4338,6 +4339,8 @@ export function makeTable(options): TableResourceClass {
 				resolved.hold
 			);
 			const clusterStart = performance.now();
+			// The committed entry the admission computed its floor from, which is also what the holder reloads.
+			let admittedEntry: any;
 			// What a follower waits on must span the cluster round and registration, not just the native
 			// acquire. Waking it at the native hand-off leaves it in a window where the key is held but no
 			// handle is registered, so it retries and parks on the leader's own lock for its full timeout
@@ -4375,6 +4378,7 @@ export function makeTable(options): TableResourceClass {
 					handle.release();
 					throw transportUnavailable(databaseName);
 				}
+				let dependencyFloor: number | undefined;
 				if (coordinator) {
 					try {
 						// Not a 423 when the budget is gone, and not a skip either: the native wait can consume
@@ -4412,6 +4416,7 @@ export function makeTable(options): TableResourceClass {
 						// The getter again: a swap during the acquisition moved this admission to the
 						// successor, and registering on the predecessor would revoke a handle that is fine.
 						TableResource.admittingCoordinator?.registerAdmission(round.admissionId, () => handle.revokeLease());
+						dependencyFloor = round.dependencyFloor;
 					} catch (error) {
 						handle.release();
 						throw error;
@@ -4421,6 +4426,15 @@ export function makeTable(options): TableResourceClass {
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					}
 				}
+				let floor: number | undefined;
+				try {
+					admittedEntry = (primaryStore as any).getEntry(id);
+					floor = admissionFloor(admittedEntry?.version, dependencyFloor);
+				} catch (error) {
+					handle.release();
+					throw error;
+				}
+				if (floor !== undefined) handle.noteCandidateFloor(floor);
 				link.registerRecordLock(handle);
 				if (link.saveCommits && (context as any)?.timestamp) handle.noteCandidateFloor((context as any).timestamp);
 				if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
@@ -4433,6 +4447,14 @@ export function makeTable(options): TableResourceClass {
 					if (link.writes.length === 0 && !link.timestamp) {
 						link.timestamp = handle.acquiredAt;
 					}
+					// Raised only while nothing else would move with it: a log key already reserved stays, and an
+					// unlocked write staged first keeps its stamp, leaving this holder's ordering best-effort.
+					if (
+						floor > link.timestamp &&
+						(!link.transaction || reservedLocalKey(link.transaction) === undefined) &&
+						link.writes.every((write) => !write || write.lockHandle)
+					)
+						link.timestamp = Math.max(floor, link.timestamp || handle.acquiredAt);
 					if (!resolved.hold && link.transaction) {
 						// Scoped lock: the read snapshot may predate the lock; drop it so the
 						// scope reads what it locked.  Hold locks use acquiredAt directly and
@@ -4457,7 +4479,7 @@ export function makeTable(options): TableResourceClass {
 			return acquisition.then(
 				(handle) => {
 					link.unregisterPendingLock(primaryStore, keyId);
-					return this.#reloadLocked(id, handle);
+					return this.#reloadLocked(id, handle, false, { entry: admittedEntry });
 				},
 				(error) => {
 					link.unregisterPendingLock(primaryStore, keyId);
@@ -4465,7 +4487,7 @@ export function makeTable(options): TableResourceClass {
 				}
 			);
 		}
-		#reloadLocked(id: Id, holdHandle?: RecordLockHandle | null, preserveChanges = false) {
+		#reloadLocked(id: Id, holdHandle?: RecordLockHandle | null, preserveChanges = false, admitted?: { entry: any }) {
 			// For freshness, read the committed entry (snapshot-free) so a hold lock sees concurrent
 			// committed writes rather than a stale snapshot.  A write earlier in THIS explicit
 			// transaction has not landed in that committed entry yet (harper#1968: Harper defers an
@@ -4474,7 +4496,7 @@ export function makeTable(options): TableResourceClass {
 			// record comes from the prior staged write, the rest of the entry (version, audit chain,
 			// blob metadata) stays the pre-transaction one.
 			const link = txnForContext(this.getContext());
-			let entryForReload: any = primaryStore.getEntry(id);
+			let entryForReload: any = admitted ? admitted.entry : primaryStore.getEntry(id);
 			if (link.open === TRANSACTION_STATE.OPEN) {
 				const keyId = writeKeyId(id);
 				const tailWrite = link.writesByKey?.get(primaryStore)?.get(keyId);

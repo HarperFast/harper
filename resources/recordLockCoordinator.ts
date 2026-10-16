@@ -491,6 +491,12 @@ function normalizeDependencies(value: unknown, homes?: readonly string[]): LockD
 	return [...positions].sort(([a], [b]) => a.localeCompare(b));
 }
 
+function highestPosition(dependencies: LockDependencySet): number | undefined {
+	let highest: number | undefined;
+	for (const [, position] of dependencies) if (highest === undefined || position > highest) highest = position;
+	return highest;
+}
+
 class DelegatedKeyFilter {
 	#bits = new Uint32Array(DELEGATED_KEY_FILTER_WORDS);
 
@@ -589,6 +595,8 @@ interface Delegation {
 	key: any;
 	token: FencingToken;
 	dependencies: LockDependencySet;
+	/** The highest log position the freshness requirement named, which every admission stamps above. */
+	dependencyFloor: number | undefined;
 	/** Monotonic deadline on THIS node. A delegate stops admitting here. */
 	expiresMono: number;
 	/** Set by a recall. No new admission may start, but live ones are drained first. */
@@ -718,6 +726,11 @@ export interface LockRound {
 	 * track of handles it was still responsible for.
 	 */
 	admissionId: number;
+	/**
+	 * The highest predecessor `lockRelease` or `lockBarrier` log position the admission's freshness
+	 * requirement named. Log keys are transaction timestamps, so the holder's writes stamp above it.
+	 */
+	dependencyFloor?: number;
 }
 
 export interface LockCoordinatorOptions {
@@ -1560,7 +1573,12 @@ export class LockCoordinator {
 		authority.#startTicking();
 		// The LOCAL id is what the handle registers and releases against; the round the owner minted
 		// still carries its own id, which only the owner-facing release/revoke messages use.
-		return { tsR: round.tsR, mintedMono: round.mintedMono, admissionId: localId };
+		return {
+			tsR: round.tsR,
+			mintedMono: round.mintedMono,
+			admissionId: localId,
+			dependencyFloor: round.dependencyFloor,
+		};
 	}
 
 	/**
@@ -2277,7 +2295,7 @@ export class LockCoordinator {
 		delegation.admissions.set(admissionId, { revoke: noRevoke, expiresMono: mintedMono + leaseMs, holding: true });
 		delegation.holding++;
 		this.#admissions.set(admissionId, delegation);
-		return { tsR: this.#nextTimestamp(), mintedMono, admissionId };
+		return { tsR: this.#nextTimestamp(), mintedMono, admissionId, dependencyFloor: delegation.dependencyFloor };
 	}
 
 	/**
@@ -2366,12 +2384,14 @@ export class LockCoordinator {
 		const existing = this.#delegations.get(keyId);
 		// A reply that lost a race with a newer delegation for the same key must not move it backwards.
 		if (existing && compareTokens(existing.token, token) >= 0) return existing;
+		const dependencyFloor = highestPosition(dependencies);
 		if (existing && !existing.recalled) {
 			// A RENEWAL of authority this node never lost. Advance the token and the deadline in place so
 			// the admissions it is still answerable for ride along; installing a fresh object here
 			// orphaned them, and the next recall then surrendered while a live handle could still commit.
 			existing.token = token;
 			existing.expiresMono = expiresMono;
+			if (dependencyFloor > (existing.dependencyFloor ?? -Infinity)) existing.dependencyFloor = dependencyFloor;
 			this.#startTicking();
 			return existing;
 		}
@@ -2381,6 +2401,7 @@ export class LockCoordinator {
 			key,
 			token,
 			dependencies,
+			dependencyFloor,
 			expiresMono,
 			recalled: false,
 			admissions: new Map(),
