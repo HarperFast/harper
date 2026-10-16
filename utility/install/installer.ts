@@ -31,6 +31,7 @@ import * as globalSchema from '../globalSchema.ts';
 import { promisify } from 'node:util';
 const pSchemaToGlobal = promisify(globalSchema.setSchemaDataToGlobal);
 import * as keys from '../../security/keys.ts';
+import { closeDatabase, databases } from '../../resources/databases.ts';
 import { resolveConfiguredPath } from '../../config/componentEnvPrepass.ts';
 import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
 
@@ -825,6 +826,7 @@ async function createConfigFile(staged: configUtils.StagedInstallConfig) {
 				} catch {}
 			}
 		}
+		await closeCreatedSystemDatabaseForRollback();
 		rollbackInstall(configErr);
 		return;
 	}
@@ -834,6 +836,22 @@ async function createConfigFile(staged: configUtils.StagedInstallConfig) {
 		} catch (rmErr) {
 			hdbLogger.warn(`Could not remove backup copy at ${backupConfigPath}: ${rmErr}`);
 		}
+	}
+}
+
+async function closeCreatedSystemDatabaseForRollback() {
+	if (preExistingSystemDbPaths && preExistingSystemDbPaths.size > 0) return;
+	try {
+		const systemTables = databases[hdbTerms.SYSTEM_SCHEMA_NAME];
+		if (!systemTables) return;
+		for (const table of Object.values(systemTables) as any[]) {
+			if (table?.dbisDB && table.dbisDB.status !== 'closed') {
+				await table.dbisDB.close?.();
+			}
+		}
+		await closeDatabase(hdbTerms.SYSTEM_SCHEMA_NAME);
+	} catch (closeErr) {
+		hdbLogger.warn(`Could not close system database during install rollback: ${closeErr}`);
 	}
 }
 
@@ -856,15 +874,14 @@ function rollbackInstall(errMsg) {
 
 	// Remove HDB.
 	if (hdbRoot) {
+		const resolvedHdbRoot = path.resolve(hdbRoot);
+		const hdbConfigPath = getHdbConfigPath();
+		const resolvedConfigPath = hdbConfigPath ? path.resolve(hdbConfigPath) : undefined;
+		const resolvedBackupPath = resolvedConfigPath ? `${resolvedConfigPath}.install-backup-${process.pid}` : undefined;
 		// When hdbRoot already existed before install (or contains a root-placed HDB_CONFIG),
 		// remove only entries created by this install and preserve pre-existing operator files.
 		if (conditionalRollback || rootExistedBeforeInstall) {
 			if (fs.existsSync(hdbRoot)) {
-				const hdbConfigPath = getHdbConfigPath();
-				const resolvedConfigPath = hdbConfigPath ? path.resolve(hdbConfigPath) : undefined;
-				const resolvedBackupPath = resolvedConfigPath
-					? `${resolvedConfigPath}.install-backup-${process.pid}`
-					: undefined;
 				const dir = fs.readdirSync(hdbRoot, { withFileTypes: true });
 				dir.forEach((d) => {
 					const fullPath = path.join((d as any).parentPath ?? (d as any).path, d.name);
@@ -882,10 +899,16 @@ function rollbackInstall(errMsg) {
 			fs.removeSync(hdbRoot);
 		}
 		for (const [dirPath, existingEntries] of preExistingStorageDirEntries ?? []) {
-			if (fs.existsSync(dirPath)) {
+			if (path.resolve(dirPath) !== resolvedHdbRoot && fs.existsSync(dirPath)) {
 				for (const entryName of fs.readdirSync(dirPath)) {
-					if (!existingEntries.has(entryName)) {
-						fs.removeSync(path.join(dirPath, entryName));
+					const fullPath = path.join(dirPath, entryName);
+					const resolvedFullPath = path.resolve(fullPath);
+					if (
+						!existingEntries.has(entryName) &&
+						resolvedFullPath !== resolvedConfigPath &&
+						resolvedFullPath !== resolvedBackupPath
+					) {
+						fs.removeSync(fullPath);
 					}
 				}
 			}

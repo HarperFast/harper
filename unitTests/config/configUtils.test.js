@@ -1216,11 +1216,14 @@ describe('Test configUtils module', () => {
 
 		it('Test happy path with parsed_args and where backup and update_config_obj are false', () => {
 			const set_in_stub = sandbox.stub().callsFake(() => {});
-			const get_in_stub = sandbox.stub().callsFake(() => HDB_ROOT);
+			const get_in_stub = sandbox
+				.stub()
+				.callsFake((path) => (Array.isArray(path) && path[0] === 'rootPath' ? HDB_ROOT : {}));
 			const fake_config_doc = {
 				value: CONFIG_DOC_VALUE,
 				setIn: set_in_stub,
 				getIn: get_in_stub,
+				deleteIn: sandbox.stub(),
 			};
 			const parse_yaml_doc_stub = sandbox.stub().returns(fake_config_doc);
 			config_utils_rw.__set__('parseYamlDoc', parse_yaml_doc_stub);
@@ -1325,6 +1328,7 @@ describe('Test configUtils module', () => {
 				value: CONFIG_DOC_VALUE,
 				setIn: set_in_stub,
 				getIn: get_in_stub,
+				deleteIn: sandbox.stub(),
 			};
 			const parse_yaml_doc_stub = sandbox.stub().returns(fake_config_doc);
 			config_utils_rw.__set__('parseYamlDoc', parse_yaml_doc_stub);
@@ -1389,7 +1393,7 @@ describe('Test configUtils module', () => {
 				if (Array.isArray(path) && path[0] === 'rootPath') return HDB_ROOT;
 				return undefined;
 			});
-			const fake_config_doc = { setIn: set_in_stub, getIn: get_in_stub, errors: [] };
+			const fake_config_doc = { setIn: set_in_stub, getIn: get_in_stub, deleteIn: sandbox.stub(), errors: [] };
 			const parse_yaml_doc_stub = sandbox.stub().returns(fake_config_doc);
 			const parse_yaml_doc_rw = config_utils_rw.__set__('parseYamlDoc', parse_yaml_doc_stub);
 			const get_config_value_stub = sandbox.stub().returns(HDB_ROOT);
@@ -2202,7 +2206,8 @@ describe('Test configUtils module', () => {
 
 		it('expands numeric threads: 4 shorthand in HDB_CONFIG when CLI/env THREADS_COUNT or THREADS_DEBUG is passed without HARPER_SET_CONFIG', () => {
 			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config-threads.yaml');
-			fs.writeFileSync(hdbConfigTemplatePath, 'threads: 4\nstorage:\n  engine: lmdb\n', 'utf8');
+			fs.writeFileSync(hdbConfigTemplatePath, 'threads: 4\nhttp:\n  mtls: false\nstorage:\n  engine: lmdb\n', 'utf8');
+			const origDefaultConfig = process.env.HARPER_DEFAULT_CONFIG;
 
 			try {
 				config_utils_rw.createConfigFile(
@@ -2232,7 +2237,31 @@ describe('Test configUtils module', () => {
 				configJson = configDoc.toJSON();
 				expect(configJson.threads.count).to.equal(4);
 				expect(configJson.threads.debug).to.equal(true);
+
+				// Even with no threads_* CLI args, HARPER_DEFAULT_CONFIG yields to template threads: 4 and http.mtls: false
+				process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({
+					threads: { count: 8, debug: true },
+					http: { mtls: { required: true } },
+				});
+				config_utils_rw.createConfigFile(
+					{
+						ROOTPATH: HDB_ROOT,
+					},
+					false,
+					hdbConfigTemplatePath
+				);
+
+				configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
+				configJson = configDoc.toJSON();
+				expect(configJson.threads.count).to.equal(4);
+				expect(configJson.threads.debug).to.equal(true);
+				expect(configJson.http.mtls).to.equal(false);
 			} finally {
+				if (origDefaultConfig === undefined) {
+					delete process.env.HARPER_DEFAULT_CONFIG;
+				} else {
+					process.env.HARPER_DEFAULT_CONFIG = origDefaultConfig;
+				}
 				fs.removeSync(hdbConfigTemplatePath);
 			}
 		});
