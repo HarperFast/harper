@@ -724,6 +724,8 @@ export function discardSerializedStream(stream) {
 		return;
 	}
 	stream?.[streamStartup]?.cancel?.();
+	// Nothing else will ever listen to a discarded stream, so its teardown error must not go uncaught.
+	if (typeof stream?.on === 'function') stream.on('error', () => {});
 	stream?.destroy?.();
 	if (typeof stream?.cancel === 'function') Promise.resolve(stream.cancel()).catch(() => {});
 }

@@ -1,6 +1,6 @@
 const assert = require('node:assert');
 const { Readable, PassThrough } = require('node:stream');
-const { setImmediate: nextTurn } = require('node:timers/promises');
+const { setImmediate: nextTurn, setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
@@ -416,6 +416,44 @@ describe('REST preconditions with real table transactions', () => {
 		assert.strictEqual((await Embedded.get('deferred')).content, 'before');
 	});
 
+	it('seals admission when dispatch settles, before its commit completes', async function () {
+		if (isLMDB) this.skip();
+		await Row.put('sealed', { n: 1 });
+		const etag = versionToEtag(Row.primaryStore.getEntry('sealed').version);
+		let late;
+		class LateWrite extends Row {
+			async patch(data, target) {
+				await super.patch(data, target);
+				late = new Promise((resolve) => setImmediate(resolve)).then(() => super.patch({ n: 3 }, target));
+				late.catch(() => {});
+			}
+		}
+		resources.set('LateWrite', LateWrite, { rest: true });
+		// Hold the request's commit until the late write has run, or a bounded second has passed.
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const commit = Transaction.prototype.commit;
+		const targetDb = Row.primaryStore.store.db;
+		let held = false;
+		Transaction.prototype.commit = function (...args) {
+			if (this.store?.db !== targetDb || !late || held) return commit.apply(this, args);
+			held = true;
+			const settled = late.then(
+				() => {},
+				() => {}
+			);
+			return Promise.race([settled, delay(1000)]).then(() => commit.apply(this, args));
+		};
+		let response;
+		try {
+			response = await request('PATCH', '/LateWrite/sealed', { n: 2 }, { 'if-match': etag });
+		} finally {
+			Transaction.prototype.commit = commit;
+		}
+		assert.strictEqual(response.status, 204, await bodyOf(response));
+		await assert.rejects(late, /Conditional request already completed/);
+		assert.strictEqual((await Row.get('sealed')).n, 2);
+	});
+
 	it('refuses target writes started after their conditional request has finished', async () => {
 		let pending;
 		const schedule = (write) => {
@@ -744,6 +782,7 @@ describe('REST preconditions with real table transactions', () => {
 				},
 			],
 			['thrown forbidden', 403, () => Promise.reject(new Response('no', { status: 403 }))],
+			['returned forbidden', 403, () => new Response('no', { status: 403 })],
 			['thrown unavailable', 503, () => Promise.reject(new ClientError('busy', 503))],
 		];
 		try {
@@ -929,6 +968,77 @@ describe('REST preconditions with real table transactions', () => {
 			});
 			assert.strictEqual(response.status, 403, await bodyOf(response));
 		}
+	});
+
+	it('releases a deferred read source and contains its stream teardown error on 304', async () => {
+		let done = 0;
+		const source = () => {
+			let sent = false;
+			const iterable = {
+				[Symbol.asyncIterator]() {
+					return this;
+				},
+				next() {
+					if (sent) return Promise.resolve({ done: true });
+					sent = true;
+					return Promise.resolve({ value: { id: 1 }, done: false });
+				},
+				return() {
+					return Promise.resolve({ done: true });
+				},
+				onDone() {
+					done++;
+				},
+			};
+			return iterable;
+		};
+		class LazyDone extends Resource {
+			static get(_target, context) {
+				context.lastModified = 42;
+				return source();
+			}
+		}
+		class LazyDoneEnvelope extends Resource {
+			static get() {
+				return { headers: new Headers({ ETag: '"lazy-done"' }), data: source() };
+			}
+		}
+		const teardownFailure = new Error('teardown failed');
+		class FailingTeardown extends Resource {
+			static get() {
+				const body = new Readable({
+					read() {},
+					destroy(_error, callback) {
+						callback(teardownFailure);
+					},
+				});
+				return { headers: new Headers({ ETag: '"teardown"' }), body };
+			}
+		}
+		resources.set('LazyDone', LazyDone, { rest: true });
+		resources.set('LazyDoneEnvelope', LazyDoneEnvelope, { rest: true });
+		resources.set('FailingTeardown', FailingTeardown, { rest: true });
+		const uncaught = [];
+		const onUncaught = (error) => {
+			if (error === teardownFailure) uncaught.push(error);
+		};
+		process.prependListener('uncaughtException', onUncaught);
+		try {
+			for (const name of ['LazyDone', 'LazyDoneEnvelope']) {
+				const response = await request('GET', `/${name}/`, undefined, {
+					'if-none-match': '*',
+					'accept': 'application/json',
+				});
+				assert.strictEqual(response.status, 304, name);
+			}
+			const response = await request('GET', '/FailingTeardown/', undefined, { 'if-none-match': '"teardown"' });
+			assert.strictEqual(response.status, 304);
+			await nextTurn();
+		} finally {
+			process.off('uncaughtException', onUncaught);
+		}
+		assert.strictEqual(done, 2, 'a discarded deferred source must be released');
+		assert.deepStrictEqual(uncaught, []);
 	});
 
 	it('observes a rejected body promise discarded by a cached response', async () => {
