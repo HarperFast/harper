@@ -479,8 +479,10 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			writeCondition
 				? async () => {
 						const result = await dispatch();
-						if (!writeCondition.consumed)
+						if (!writeCondition.consumed) {
+							if (result instanceof Response) discardSerializedStream(result.body);
 							throw new ClientError('The resource did not apply the write precondition', 501);
+						}
 						return result;
 					}
 				: dispatch
@@ -594,10 +596,17 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			: responseObject;
 	} catch (error) {
 		error ??= new Error('Unknown error occurred');
+		// Any non-error reply, whatever shape carried its status, needs the condition applied, as the
+		// returned-result gate above requires.
+		if (writeCondition && !writeCondition.consumed) {
+			const replyStatus = error.statusCode ?? error.status ?? request.response.status;
+			if (replyStatus < 400) {
+				if (error instanceof Response) discardSerializedStream(error.body);
+				error = new ClientError('The resource did not apply the write precondition', 501);
+			}
+		}
 		// a thrown Response short-circuits as the response, the same as returning one
-		if (error instanceof Response && writeCondition && !writeCondition.consumed && error.status < 400)
-			error = new ClientError('The resource did not apply the write precondition', 501);
-		else if (error instanceof Response) {
+		if (error instanceof Response) {
 			try {
 				return finalizeResponse(error, headers, request.response.status, request, method, preconditionsEnabled);
 			} catch (preconditionError) {

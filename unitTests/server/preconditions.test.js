@@ -677,6 +677,75 @@ describe('REST preconditions with real table transactions', () => {
 		assert.strictEqual((await Row.get('read')).n, 1);
 	});
 
+	it('fails closed for every non-error reply shape from a handler that skipped the condition', async () => {
+		await Row.put('reply-shape', { n: 1 });
+		await Row.put('reply-sibling', { n: 1 });
+		let cancelled = 0;
+		const streamingBody = () =>
+			new ReadableStream({
+				pull(controller) {
+					controller.enqueue(new TextEncoder().encode('chunk'));
+				},
+				cancel() {
+					cancelled++;
+				},
+			});
+		const cases = [
+			['thrown plain status', 501, () => Promise.reject({ status: 200, message: 'ok' })],
+			['thrown statusCode', 501, () => Promise.reject(Object.assign(new Error('accepted'), { statusCode: 202 }))],
+			[
+				'reply status then error',
+				501,
+				(resource) => {
+					resource.getContext().response.status = 201;
+					throw new Error('late failure');
+				},
+			],
+			['thrown redirect', 501, () => Promise.reject(new Response(null, { status: 302 }))],
+			['thrown streaming success', 501, () => Promise.reject(new Response(streamingBody(), { status: 200 }))],
+			['returned streaming success', 501, () => new Response(streamingBody(), { status: 200 })],
+			[
+				'sibling write then thrown success',
+				501,
+				async (resource) => {
+					await Row.put('reply-sibling', { n: 2 }, resource.getContext());
+					throw new Response('ok', { status: 200 });
+				},
+			],
+			['thrown forbidden', 403, () => Promise.reject(new Response('no', { status: 403 }))],
+			['thrown unavailable', 503, () => Promise.reject(new ClientError('busy', 503))],
+		];
+		for (const [name, expected, handler] of cases) {
+			const className = `Reply${name.replace(/\W/g, '')}`;
+			const Handler = {
+				[className]: class extends Row {
+					patch() {
+						return handler(this);
+					}
+				},
+			}[className];
+			resources.set(className, Handler, { rest: true });
+			const response = await request('PATCH', `/${className}/reply-shape`, { n: 2 }, { 'if-match': '*' });
+			assert.strictEqual(response.status, expected, `${name}: ${await bodyOf(response)}`);
+		}
+		assert.strictEqual(cancelled, 2, 'a rejected streaming reply must be cancelled');
+		assert.strictEqual((await Row.get('reply-shape')).n, 1);
+		assert.strictEqual((await Row.get('reply-sibling')).n, 1, 'the sibling write must roll back');
+
+		class Unconditional extends Row {
+			patch() {
+				throw new Response('ok', { status: 200 });
+			}
+		}
+		resources.set('Unconditional', Unconditional, { rest: true });
+		assert.strictEqual((await request('PATCH', '/Unconditional/reply-shape', { n: 2 })).status, 200);
+		const optedOut = rest(resources, { preconditions: false });
+		assert.strictEqual(
+			(await optedOut('PATCH', '/Unconditional/reply-shape', { n: 2 }, { 'if-match': '*' })).status,
+			200
+		);
+	});
+
 	it('checks a multi-write operation against its original entry, including a no-op first write', async () => {
 		class Replace extends Row {
 			async put(data, target) {
