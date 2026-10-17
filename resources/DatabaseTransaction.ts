@@ -804,13 +804,13 @@ function releaseTransactionLockHolds(transaction: RocksTransaction | null | unde
 function isWriteOwnedByActiveCommit(
 	write: TransactionWrite | undefined,
 	targetTransaction: RocksTransaction | undefined,
-	hasSiblingInFlight: boolean
+	hasSiblingInFlight: boolean,
+	activeCommitHandles?: Set<RocksTransaction>
 ): boolean {
 	const stagedOn = write?.stagedOn as RocksTransactionWithRetry | undefined;
-	if (!stagedOn) return false;
-	if (stagedOn !== targetTransaction && hasSiblingInFlight) return true;
-	if (!targetTransaction && (stagedOn.commitInFlight || hasDurableLog(stagedOn))) return true;
-	return false;
+	if (!stagedOn || stagedOn === targetTransaction) return false;
+	if (hasSiblingInFlight && (targetTransaction || activeCommitHandles?.has(stagedOn))) return true;
+	return Boolean(stagedOn.commitInFlight || hasDurableLog(stagedOn));
 }
 
 export class DatabaseTransaction implements Transaction {
@@ -1363,11 +1363,11 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	private hasSiblingCommitInFlight(targetTransaction?: RocksTransaction): boolean {
-		if (!targetTransaction) return false;
 		const active = this.activeCommitHandles;
 		if (!active || active.size === 0) return false;
+		const excluded = targetTransaction ?? this.transaction;
 		for (const handle of active) {
-			if (handle !== targetTransaction) return true;
+			if (handle !== excluded) return true;
 		}
 		return false;
 	}
@@ -1413,9 +1413,18 @@ export class DatabaseTransaction implements Transaction {
 	clearWrites(committedTransaction?: RocksTransaction): void {
 		if (committedTransaction) this.activeCommitHandles?.delete(committedTransaction);
 		const hasSiblingInFlight = this.hasSiblingCommitInFlight(committedTransaction);
-		if (this.writes.some((write) => isWriteOwnedByActiveCommit(write, committedTransaction, hasSiblingInFlight))) {
+		if (
+			(hasSiblingInFlight || !committedTransaction) &&
+			this.writes.some((write) =>
+				isWriteOwnedByActiveCommit(write, committedTransaction, hasSiblingInFlight, this.activeCommitHandles)
+			)
+		) {
 			for (const write of [...this.writes]) {
-				if (!write || isWriteOwnedByActiveCommit(write, committedTransaction, hasSiblingInFlight)) continue;
+				if (
+					!write ||
+					isWriteOwnedByActiveCommit(write, committedTransaction, hasSiblingInFlight, this.activeCommitHandles)
+				)
+					continue;
 				if (write.stagedIn === this) write.stagedIn = undefined;
 				this.detachWrite(write);
 			}
@@ -2215,9 +2224,10 @@ export class DatabaseTransaction implements Transaction {
 			}
 			if (this.saveCommits && transaction) (this.activeCommitHandles ??= new Set()).add(transaction);
 		} catch (error) {
+			if (!transaction) transaction = this.transaction ?? undefined;
 			// abort() releases only this.transaction; a retry round's handle was detached before its
 			// first submission and would otherwise hold its write intents until GC.
-			if (transaction !== this.transaction)
+			if (transaction && transaction !== this.transaction)
 				abortNativeTransaction(
 					transaction,
 					'aborting a retry transaction whose re-save threw',
@@ -2234,7 +2244,6 @@ export class DatabaseTransaction implements Transaction {
 		if (completions.length > 0) {
 			this.setCommitPhase(true);
 		}
-		let preSubmitTarget: RocksTransaction | undefined = options.transaction;
 		let commitResult: MaybePromise<CommitResolution>;
 		try {
 			commitResult = when(completions.length > 0 ? Promise.all(completions) : null, () => {
@@ -2274,7 +2283,6 @@ export class DatabaseTransaction implements Transaction {
 					this.baseReadRefConsumed = true;
 					this.readTxnsUsed--;
 				}
-				preSubmitTarget = undefined;
 				if (this.readTxnsUsed > 0) {
 					// Outstanding iterators still stream through this.transaction — their native iterators
 					// live inside it (GetIterator wraps its write batch + snapshot), so committing or
@@ -2317,6 +2325,7 @@ export class DatabaseTransaction implements Transaction {
 								if (transaction) this.activeCommitHandles?.delete(transaction);
 								(this.activeCommitHandles ??= new Set()).add(replayTransaction);
 							}
+							transaction = replayTransaction;
 							try {
 								for (const operation of this.writes) {
 									this.save(operation, replayTransaction, true, options);
@@ -2331,7 +2340,6 @@ export class DatabaseTransaction implements Transaction {
 								this.abort(false, true, replayTransaction);
 								throw error;
 							}
-							transaction = replayTransaction;
 						}
 						// with options.transaction set this is a retry round — the save loop above already
 						// re-staged the writes into it
@@ -2769,12 +2777,12 @@ export class DatabaseTransaction implements Transaction {
 			});
 		} catch (error) {
 			this.setCommitPhase(false);
-			this.abortAfterCommitError(error, preSubmitTarget);
+			this.abortAfterCommitError(error, transaction);
 		}
 		if ((commitResult as Promise<CommitResolution>)?.then)
 			return (commitResult as Promise<CommitResolution>).catch((error) => {
 				this.setCommitPhase(false);
-				this.abortAfterCommitError(error, preSubmitTarget);
+				this.abortAfterCommitError(error, transaction);
 			});
 		return commitResult;
 	}
@@ -2868,7 +2876,7 @@ export class DatabaseTransaction implements Transaction {
 		const nativeTxn = targetTransaction ?? this.transaction;
 		const hasSiblingInFlight = this.hasSiblingCommitInFlight(targetTransaction);
 		const preserveActiveWrites = this.writes.some((write) =>
-			isWriteOwnedByActiveCommit(write, targetTransaction, hasSiblingInFlight)
+			isWriteOwnedByActiveCommit(write, targetTransaction, hasSiblingInFlight, this.activeCommitHandles)
 		);
 		const next = cascade && !preserveActiveWrites ? this.next : undefined;
 		if (cascade && !retainReadTransaction && !preserveActiveWrites) this.next = null;
@@ -2894,7 +2902,8 @@ export class DatabaseTransaction implements Transaction {
 			this.drainCompletions();
 			const targetLogged = hasDurableLog(targetTransaction);
 			for (const write of this.writes) {
-				if (isWriteOwnedByActiveCommit(write, targetTransaction, hasSiblingInFlight)) continue;
+				if (isWriteOwnedByActiveCommit(write, targetTransaction, hasSiblingInFlight, this.activeCommitHandles))
+					continue;
 				if (targetLogged && (!write?.stagedOn || write.stagedOn === targetTransaction)) continue;
 				if (write?.savedBlobs)
 					cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
