@@ -27,6 +27,8 @@ function getDurableSession() {
 					name: 'awaitingAcks',
 					type: 'array',
 				},
+				{ name: 'awaitingRelease', type: 'array' },
+				{ name: 'awaitingCompletion', type: 'array' },
 				{ name: 'incarnation', type: 'string' },
 			],
 		});
@@ -201,27 +203,37 @@ export async function getSession({
 	}
 	return session;
 }
+const MAX_MESSAGE_ID = 65500;
 let nextMessageId = 1;
 function getNextMessageId() {
 	nextMessageId++;
 	// MQTT only supports 16-bit message ids, so must roll over before getting beyond 16-bit ids.
-	if (nextMessageId > 65500) nextMessageId = 1;
+	if (nextMessageId > MAX_MESSAGE_ID) nextMessageId = 1;
 	return nextMessageId;
 }
 type Acknowledgement = {
+	qos?: number;
 	topic?: string;
 	timestamp?: number;
 	acknowledge?: () => any;
 };
+type InboundExchange = { reply: Promise<any>; published?: boolean; release?: Promise<boolean> };
+/** `priorDelivery` result for a delivery the client already took before a reconnect. */
+const ALREADY_RECEIVED = -1;
+const MESSAGE_IDS_EXHAUSTED = 'MESSAGE_IDS_EXHAUSTED';
 
 class SubscriptionsSession {
-	listener: (topic, message, messageId, subscription, version?) => any;
+	listener: (topic, message, messageId, subscription, version?, dup?: boolean) => any;
 	sessionId: any;
 	user: any;
 	request: any;
 	socket: any;
 	subscriptions = [];
 	awaitingAcks: Map<number, Acknowledgement>;
+	/** Inbound QoS 2 exchanges by packet id, until their PUBREL is saved. */
+	awaitingRelease: Map<number, InboundExchange>;
+	/** Outbound QoS 2 packet ids whose PUBREL awaits PUBCOMP, each settling once its PUBREL may be sent. */
+	awaitingCompletion: Map<number, Promise<boolean> | boolean>;
 	sessionWasPresent: boolean;
 	keepalive: number;
 	keepaliveTimer: any;
@@ -374,6 +386,7 @@ class SubscriptionsSession {
 						}
 						if (!update || typeof update !== 'object') continue;
 						let messageId;
+						let dup = false;
 						if (
 							update.type &&
 							update.type !== 'put' &&
@@ -385,7 +398,13 @@ class SubscriptionsSession {
 						if (filter && !filter(update)) continue;
 						if (needsAck) {
 							update.topic = topic;
-							messageId = this.needsAcknowledge(update);
+							const priorMessageId = this.priorDelivery(update);
+							if (priorMessageId === ALREADY_RECEIVED) {
+								update.acknowledge?.();
+								continue;
+							}
+							messageId = this.needsAcknowledge(update, subscriptionRequest.qos, priorMessageId);
+							dup = priorMessageId !== undefined;
 						} else {
 							// There is no ack to wait for. We can immediately notify any interested source
 							// that we have sent the message
@@ -403,16 +422,20 @@ class SubscriptionsSession {
 							update.value,
 							messageId,
 							subscriptionRequest,
-							update.version
+							update.version,
+							dup
 						);
 						if (result === false) break;
-						if (this.awaitingAcks?.size > AWAITING_ACKS_HIGH_WATER_MARK) {
+						const pending = this.pendingDeliveries();
+						if (pending > AWAITING_ACKS_HIGH_WATER_MARK) {
 							// slow it down if we are getting too far ahead in acks
-							await new Promise((resolve) =>
-								setTimeout(resolve, this.awaitingAcks.size - AWAITING_ACKS_HIGH_WATER_MARK)
-							);
+							await new Promise((resolve) => setTimeout(resolve, pending - AWAITING_ACKS_HIGH_WATER_MARK));
 						} else await new Promise(setImmediate); // yield event turn
 					} catch (error) {
+						if (error.code === MESSAGE_IDS_EXHAUSTED) {
+							this.subscriptionFailed(subscription, error);
+							break;
+						}
 						warn(error);
 					} finally {
 						this.consumed(subscription);
@@ -431,22 +454,90 @@ class SubscriptionsSession {
 	resume() {
 		// nothing to do in a clean session
 	}
-	needsAcknowledge(update) {
-		const messageId = getNextMessageId();
-		if (update.acknowledge) {
-			// only need to track if the source wants acknowledgements
-			if (!this.awaitingAcks) this.awaitingAcks = new Map();
-			this.awaitingAcks.set(messageId, { acknowledge: update.acknowledge });
+	newMessageId() {
+		for (let attempt = 0; attempt < MAX_MESSAGE_ID; attempt++) {
+			const messageId = getNextMessageId();
+			if (!this.messageIdInUse(messageId)) return messageId;
 		}
+		const error: any = new Error(`Every MQTT packet identifier is in flight for session ${this.sessionId}`);
+		error.code = MESSAGE_IDS_EXHAUSTED;
+		throw error;
+	}
+	messageIdInUse(messageId: number): boolean {
+		return this.awaitingAcks?.has(messageId) || this.awaitingCompletion?.has(messageId);
+	}
+	pendingDeliveries(): number {
+		return (this.awaitingAcks?.size ?? 0) + (this.awaitingCompletion?.size ?? 0);
+	}
+	/** The packet id a resumed delivery was sent under before, or ALREADY_RECEIVED. */
+	priorDelivery(_update): number | undefined {
+		return undefined;
+	}
+	needsAcknowledge(update, qos: number, messageId = this.newMessageId()) {
+		if (!this.awaitingAcks) this.awaitingAcks = new Map();
+		this.awaitingAcks.set(messageId, { qos, acknowledge: update.acknowledge });
 		return messageId;
 	}
 	acknowledge(messageId) {
 		const acknowledgement = this.awaitingAcks?.get(messageId);
 		if (acknowledgement) {
 			this.awaitingAcks.delete(messageId);
-			acknowledgement.acknowledge();
+			acknowledgement.acknowledge?.();
 		}
 	}
+	/**
+	 * Until its PUBREL, a QoS 2 PUBLISH with a packet id already received is a retransmission: it gets
+	 * the first one's PUBREC, once that is saved, and is not published again.
+	 */
+	receiveExactlyOnce(messageId: number, publish: () => Promise<any>) {
+		const exchanges = (this.awaitingRelease ??= new Map());
+		const known = exchanges.get(messageId);
+		if (known) return known.reply;
+		const exchange: InboundExchange = { reply: undefined };
+		exchange.reply = publish().then(
+			async (acknowledgement) => {
+				if (acknowledgement.reasonCode >= 0x80) {
+					// a failed PUBLISH ends its exchange at the PUBREC, so a retry publishes
+					if (exchanges.get(messageId) === exchange) exchanges.delete(messageId);
+					return acknowledgement;
+				}
+				exchange.published = true;
+				await this.saveExchanges();
+				return acknowledgement;
+			},
+			(error) => {
+				if (exchanges.get(messageId) === exchange) exchanges.delete(messageId);
+				throw error;
+			}
+		);
+		exchanges.set(messageId, exchange);
+		return exchange.reply;
+	}
+	/** Ends an inbound QoS 2 exchange; false when none has this id. The client may reuse the id once it has the PUBCOMP, so the removal is saved first. */
+	release(messageId: number): Promise<boolean> | boolean {
+		const exchange = this.awaitingRelease?.get(messageId);
+		if (!exchange) return false;
+		exchange.release ??= (async () => {
+			await exchange.reply;
+			await this.saveExchanges();
+			if (this.awaitingRelease.get(messageId) === exchange) this.awaitingRelease.delete(messageId);
+			return true;
+		})();
+		return exchange.release;
+	}
+	/** An outbound PUBREC; false when no QoS 2 delivery has this id. A repeated one settles with the first. */
+	received(messageId: number, failed: boolean): Promise<boolean> | boolean {
+		const owed = this.awaitingCompletion?.get(messageId);
+		if (owed !== undefined) return owed;
+		if (this.awaitingAcks?.get(messageId)?.qos !== 2) return false;
+		this.acknowledge(messageId);
+		if (!failed) (this.awaitingCompletion ??= new Map()).set(messageId, true);
+		return true;
+	}
+	completed(messageId: number) {
+		this.awaitingCompletion?.delete(messageId);
+	}
+	saveExchanges(): Promise<void> | void {}
 	async removeSubscription(topic) {
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existingSubscription = this.subscriptions.find((subscription) => subscription.topic === topic);
@@ -476,7 +567,7 @@ class SubscriptionsSession {
 		}
 		return context;
 	}
-	setListener(listener: (topic, message, messageId, subscription, version?) => any) {
+	setListener(listener: (topic, message, messageId, subscription, version?, dup?: boolean) => any) {
 		this.listener = listener;
 	}
 	disconnect(clientTerminated) {
@@ -548,8 +639,26 @@ async function publishMessage(message: any, data: any, context: any) {
 			: resource.publish(target, message.data, context);
 	});
 }
+/**
+ * A delivery is identified by its log key, its ordinal among the deliveries sharing that key (a
+ * transaction's events share one, and a record can recur in it), and its record id as a check.
+ */
+type DeliveryIdentity = [key: number, ordinal: number, id: unknown];
 /** A QoS 0 entry has no position: QoS 0 promises no delivery while the client is away, so it resumes live. */
-type DurableEntry = { qos: number; topic: string; startTime?: number; databaseGeneration?: string };
+type DurableEntry = {
+	qos: number;
+	topic: string;
+	startTime?: number;
+	databaseGeneration?: string;
+	/** QoS 2 deliveries above `startTime` that the client has taken (PUBREC), which a replay skips. */
+	received?: DeliveryIdentity[];
+	/** QoS 2 deliveries sent and not yet PUBREC'd, with their packet ids, which a replay sends again as DUPs. */
+	inFlight?: [...DeliveryIdentity, number][];
+};
+function deliveryId(id: unknown) {
+	return Array.isArray(id) ? keyArrayToString(id) : (id ?? null);
+}
+const slotOf = (key: number, ordinal: number) => key + '/' + ordinal;
 type TopicState = {
 	entry: DurableEntry;
 	subscription?: any;
@@ -561,7 +670,13 @@ type TopicState = {
 	/** Each event has its own log key, as on LMDB; a RocksDB transaction's events share one. */
 	keysPerEntry?: boolean;
 	/** In delivery order: `needsAcknowledge` is its only writer and runs as each message is sent. */
-	unacked: Map<number, { key: number; previousKey?: number; late?: boolean }>;
+	unacked: Map<number, { key: number; ordinal: number; id: unknown; previousKey?: number; late?: boolean }>;
+	/** `entry.received`, by slot. */
+	received: Map<string, DeliveryIdentity>;
+	/** `entry.inFlight` from the stored record, by slot, until the replay sends each again. */
+	resend: Map<string, [...DeliveryIdentity, number]>;
+	ordinalKey?: number;
+	ordinal: number;
 	/** Unacked deliveries that arrived below a key delivered before them. */
 	lateUnacked: number;
 	consumed: number;
@@ -631,24 +746,38 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	checkpointTimer: any;
 	/** Packets are handled concurrently, so SUBSCRIBE, UNSUBSCRIBE and resume change `topics` one at a time. */
 	changes: Promise<unknown> = Promise.resolve();
+	/** Packet ids of `resend` deliveries, held for them. */
+	reservedIds = new Set<number>();
 	constructor(sessionId, user, record?) {
 		super(sessionId, user);
 		this.mayCreate = !record;
+		for (const messageId of record?.awaitingRelease || []) {
+			(this.awaitingRelease ??= new Map()).set(messageId, {
+				reply: Promise.resolve({ cmd: 'pubrec', messageId, reasonCode: 0 }),
+				published: true,
+			});
+		}
+		for (const messageId of record?.awaitingCompletion || []) {
+			(this.awaitingCompletion ??= new Map()).set(messageId, true);
+		}
 		for (const entry of record?.subscriptions || []) {
 			const { qos, topic, startTime, databaseGeneration } = entry;
-			this.topics.set(
-				topic,
-				newTopicState(
-					qos > 0
-						? {
-								qos,
-								topic,
-								startTime,
-								databaseGeneration: boundToCurrentGeneration(entry) ? databaseGeneration : undefined,
-							}
-						: { qos, topic }
-				)
+			const state = newTopicState(
+				qos > 0
+					? {
+							qos,
+							topic,
+							startTime,
+							databaseGeneration: boundToCurrentGeneration(entry) ? databaseGeneration : undefined,
+						}
+					: { qos, topic }
 			);
+			for (const identity of entry.received || []) state.received.set(slotOf(identity[0], identity[1]), identity);
+			for (const delivery of entry.inFlight || []) {
+				state.resend.set(slotOf(delivery[0], delivery[1]), delivery);
+				this.reservedIds.add(delivery[3]);
+			}
+			this.topics.set(topic, state);
 		}
 	}
 	/** Claim the record for this connection before CONNACK, so an older connection's writes stop. */
@@ -701,7 +830,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			state = newTopicState({ qos: subscription.qos, topic: subscription.topic, startTime, databaseGeneration });
 			this.topics.set(subscription.topic, state);
 		} else if (state.subscription) {
+			const replaced = state;
 			state = newTopicState({ ...state.entry, qos: subscription.qos });
+			state.received = replaced.received;
+			state.resend = replaced.resend;
 			this.topics.set(subscription.topic, state);
 		}
 		state.subscription = subscription;
@@ -720,10 +852,38 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			state.entry.databaseGeneration = undefined;
 		}
 	}
-	needsAcknowledge(update) {
+	messageIdInUse(messageId: number): boolean {
+		return super.messageIdInUse(messageId) || this.reservedIds.has(messageId);
+	}
+	pendingDeliveries(): number {
+		let pending = super.pendingDeliveries();
+		for (const state of this.topics.values()) pending += state.received.size;
+		return pending;
+	}
+	priorDelivery(update) {
+		const state = this.topics.get(update.topic);
+		if (!state || update.fromScan || typeof update.localTime !== 'number') return;
+		const key = update.localTime;
+		// a transaction's events arrive together and in the same order when replayed
+		if (key === state.ordinalKey) state.ordinal++;
+		else {
+			state.ordinalKey = key;
+			state.ordinal = 0;
+		}
+		if (state.received.size === 0 && state.resend.size === 0) return;
+		const slot = slotOf(key, state.ordinal);
+		const id = deliveryId(update.id);
+		if (state.received.get(slot)?.[2] === id) return ALREADY_RECEIVED;
+		const resend = state.resend.get(slot);
+		if (resend?.[2] !== id) return;
+		state.resend.delete(slot);
+		this.reservedIds.delete(resend[3]);
+		return resend[3];
+	}
+	needsAcknowledge(update, qos: number, messageId = this.newMessageId()) {
 		if (!this.awaitingAcks) this.awaitingAcks = new Map();
-		const messageId = getNextMessageId();
 		const ackInfo: Acknowledgement = {
+			qos,
 			topic: update.topic,
 			timestamp: update.localTime,
 		};
@@ -738,14 +898,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				state.keyBefore = key < state.deliveredKey ? positionBefore(key) : state.deliveredKey;
 				state.deliveredKey = key;
 			}
-			// a message id wraps, so one can replace an outstanding entry
-			if (state.unacked.get(messageId)?.late) state.lateUnacked--;
+			const delivery = { key, ordinal: state.ordinal, id: deliveryId(update.id), previousKey: state.keyBefore };
 			if (key < state.highestKey) {
 				state.lateUnacked++;
-				state.unacked.set(messageId, { key, previousKey: state.keyBefore, late: true });
+				state.unacked.set(messageId, { ...delivery, late: true });
 			} else {
 				state.highestKey = key;
-				state.unacked.set(messageId, { key, previousKey: state.keyBefore });
+				state.unacked.set(messageId, delivery);
 			}
 		}
 		return messageId;
@@ -760,6 +919,42 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		state?.unacked.delete(messageId);
 		// mqtt.ts reports the acknowledgement once this settles, so what it allows is saved by then
 		return this.scheduleCheckpoint();
+	}
+	/** Its PUBREL waits for a save that keeps the message from being sent again and records the PUBREL owed. */
+	received(messageId: number, failed: boolean) {
+		const owed = this.awaitingCompletion?.get(messageId);
+		if (owed !== undefined) return owed;
+		const delivery = this.awaitingAcks?.get(messageId);
+		if (delivery?.qos !== 2) return false;
+		const state = this.topics.get(delivery.topic);
+		const sent = state?.unacked.get(messageId);
+		// the position cannot pass it while an older delivery, or the rest of its transaction, is unacknowledged
+		if (sent) state.received.set(slotOf(sent.key, sent.ordinal), [sent.key, sent.ordinal, sent.id]);
+		this.dirty = true;
+		this.acknowledge(messageId);
+		if (failed) return true;
+		this.advancePositions();
+		const awaitingCompletion = (this.awaitingCompletion ??= new Map());
+		// in the map before the save starts, which reads it at once
+		awaitingCompletion.set(messageId, true);
+		const saved = this.persist().then(() => true);
+		awaitingCompletion.set(messageId, saved);
+		return saved;
+	}
+	completed(messageId: number) {
+		// one not yet saved only has its PUBREL sent again after a reconnect, which the client completes again
+		if (this.awaitingCompletion?.delete(messageId)) {
+			this.dirty = true;
+			this.scheduleCheckpoint();
+		}
+	}
+	saveExchanges() {
+		return this.persist();
+	}
+	/** QoS 2 deliveries awaiting PUBREC, whose packet ids a reconnect resends them under. */
+	hasInFlight() {
+		for (const state of this.topics.values()) if (state.entry.qos === 2 && state.unacked.size > 0) return true;
+		return false;
 	}
 	consumed(subscription) {
 		const state = this.topics.get(subscription.topic);
@@ -863,6 +1058,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (bound && !(next > state.entry.startTime)) continue;
 			if (!bound && next === state.entry.startTime) continue;
 			state.entry.startTime = next;
+			for (const [slot, [key]] of state.received) if (key <= next) state.received.delete(slot);
+			for (const [slot, delivery] of state.resend) {
+				if (delivery[0] <= next) {
+					state.resend.delete(slot);
+					this.reservedIds.delete(delivery[3]);
+				}
+			}
 			// only a certified position may be checked on resume
 			state.entry.databaseGeneration =
 				state.subscription.progress === undefined ? undefined : state.subscription.databaseGeneration;
@@ -893,14 +1095,28 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 	recordToWrite() {
 		const subscriptions = [];
-		for (const { entry } of this.topics.values()) {
-			const { qos, topic, startTime, databaseGeneration } = entry;
+		for (const state of this.topics.values()) {
+			const { qos, topic, startTime, databaseGeneration } = state.entry;
 			const saved: DurableEntry = { qos, topic };
 			if (startTime !== undefined) saved.startTime = startTime;
 			if (databaseGeneration !== undefined) saved.databaseGeneration = databaseGeneration;
+			if (state.received.size > 0) saved.received = [...state.received.values()];
+			if (qos === 2) {
+				const inFlight = [...state.resend.values()];
+				for (const [messageId, { key, ordinal, id }] of state.unacked) inFlight.push([key, ordinal, id, messageId]);
+				if (inFlight.length > 0) saved.inFlight = inFlight;
+			}
 			subscriptions.push(saved);
 		}
-		return { id: this.sessionId, incarnation: this.incarnation, subscriptions };
+		const record: any = { id: this.sessionId, incarnation: this.incarnation, subscriptions };
+		const awaitingRelease = [];
+		for (const [messageId, exchange] of this.awaitingRelease ?? []) {
+			// one still publishing must publish again if retransmitted, and one being released is gone once saved
+			if (exchange.published && !exchange.release) awaitingRelease.push(messageId);
+		}
+		if (awaitingRelease.length > 0) record.awaitingRelease = awaitingRelease;
+		if (this.awaitingCompletion?.size > 0) record.awaitingCompletion = [...this.awaitingCompletion.keys()];
+		return record;
 	}
 	persist(): Promise<void> {
 		if (this.sealed) return this.writes;
@@ -942,7 +1158,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			const changed = this.advancePositions();
 			this.terminated = true;
 			clearInterval(this.checkpointTimer);
-			if (changed || this.dirty) this.persist().catch(() => {});
+			if (changed || this.dirty || this.hasInFlight()) this.persist().catch(() => {});
 			this.closeConnection?.();
 		}
 		this.sealed = true;
@@ -998,12 +1214,21 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const changed = !this.terminated && this.advancePositions();
 		this.terminated = true;
 		super.disconnect(clientTerminated);
-		if ((changed || this.dirty) && !this.discarded) this.persist().catch(() => {});
+		if ((changed || this.dirty || this.hasInFlight()) && !this.discarded) this.persist().catch(() => {});
 		// a SUBSCRIBE still in flight would otherwise save after a reconnect has claimed the record
 		this.sealed = true;
 	}
 }
 
 function newTopicState(entry: DurableEntry): TopicState {
-	return { entry, verified: true, unacked: new Map(), lateUnacked: 0, consumed: 0 };
+	return {
+		entry,
+		verified: true,
+		unacked: new Map(),
+		received: new Map(),
+		resend: new Map(),
+		ordinal: 0,
+		lateUnacked: 0,
+		consumed: 0,
+	};
 }

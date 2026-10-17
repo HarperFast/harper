@@ -1263,6 +1263,370 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 	});
 });
 
+describe('MQTT QoS 2 exactly-once exchanges', function () {
+	if (!isRocksDB) return;
+	this.timeout(60_000);
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		if (!Resources.resources) Resources.resetResources();
+	});
+	const v5 = { protocolVersion: 5 };
+	const ofCommand = (socket, cmd) => sentPackets(socket).filter((packet) => packet.cmd === cmd);
+	const payloadValue = (packet) => JSON.parse(packet.payload.toString()).value;
+
+	async function openConnected(open, clientId) {
+		const socket = open();
+		socket.handlers.message(connectPacket(clientId));
+		await waitFor(() => ofCommand(socket, 'connack').length > 0);
+		return socket;
+	}
+	/** Resolves once `value` reaches the watcher, so every message published before it has been delivered too. */
+	async function settled(socket, watcher, name, value) {
+		socket.handlers.message(
+			generate({ cmd: 'publish', topic: `${name}/marker`, payload: JSON.stringify({ value }), qos: 0 }, v5)
+		);
+		await waitFor(() => values(watcher.received).includes(value));
+	}
+
+	it('publishes a retransmitted QoS 2 PUBLISH once, and completes its release once', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const watcher = await connect(`qos2-in-watch-${name}`);
+		await watcher.session.addSubscription({ topic: `${name}/#`, qos: 0, rh: 2 }, false);
+		const open = mqttListener();
+		const socket = await openConnected(open, `qos2-in-${name}`);
+		const publish = (dup) =>
+			generate(
+				{ cmd: 'publish', topic: `${name}/m`, payload: JSON.stringify({ value: 'once' }), qos: 2, messageId: 7, dup },
+				v5
+			);
+		socket.handlers.message(publish(false));
+		socket.handlers.message(publish(true));
+		await waitFor(() => ofCommand(socket, 'pubrec').length === 2);
+		assert.deepStrictEqual(
+			ofCommand(socket, 'pubrec').map((packet) => [packet.messageId, packet.reasonCode]),
+			[
+				[7, 0],
+				[7, 0],
+			]
+		);
+		// a retransmitted PUBREL gets the PUBCOMP of the first, once its release is saved
+		socket.handlers.message(generate({ cmd: 'pubrel', messageId: 7 }, v5));
+		socket.handlers.message(generate({ cmd: 'pubrel', messageId: 7 }, v5));
+		await waitFor(() => ofCommand(socket, 'pubcomp').length === 2);
+		socket.handlers.message(generate({ cmd: 'pubrel', messageId: 7 }, v5));
+		await waitFor(() => ofCommand(socket, 'pubcomp').length === 3);
+		assert.deepStrictEqual(
+			ofCommand(socket, 'pubcomp').map((packet) => packet.reasonCode),
+			[0, 0, 0x92],
+			'a PUBREL after the exchange ended finds no id'
+		);
+		await settled(socket, watcher, name, 'marker');
+		assert.strictEqual(values(watcher.received).filter((value) => value === 'once').length, 1);
+		socket.handlers.close();
+		watcher.session.disconnect(true);
+	});
+
+	it('recognizes a QoS 2 retransmission after a reconnect, and forgets its id once released', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const watcher = await connect(`qos2-reconnect-watch-${name}`);
+		await watcher.session.addSubscription({ topic: `${name}/#`, qos: 0, rh: 2 }, false);
+		const open = mqttListener();
+		const clientId = `qos2-reconnect-${name}`;
+		const publish = (dup) =>
+			generate(
+				{ cmd: 'publish', topic: `${name}/m`, payload: JSON.stringify({ value: 'again' }), qos: 2, messageId: 9, dup },
+				v5
+			);
+		const first = await openConnected(open, clientId);
+		first.handlers.message(publish(false));
+		await waitFor(() => ofCommand(first, 'pubrec').length === 1);
+		assert.deepStrictEqual((await stored(clientId)).awaitingRelease, [9], 'kept before the PUBREC went out');
+		// the PUBREC is lost with the connection, so the client sends the PUBLISH again
+		first.handlers.close();
+		const second = await openConnected(open, clientId);
+		second.handlers.message(publish(true));
+		await waitFor(() => ofCommand(second, 'pubrec').length === 1);
+		second.handlers.message(generate({ cmd: 'pubrel', messageId: 9 }, v5));
+		await waitFor(() => ofCommand(second, 'pubcomp').length === 1);
+		assert.strictEqual(ofCommand(second, 'pubcomp')[0].reasonCode, 0);
+		assert.strictEqual((await stored(clientId)).awaitingRelease, undefined, 'released before the PUBCOMP went out');
+		await settled(second, watcher, name, 'marker');
+		assert.strictEqual(values(watcher.received).filter((value) => value === 'again').length, 1);
+		second.handlers.close();
+		watcher.session.disconnect(true);
+	});
+
+	it('publishes a QoS 2 PUBLISH again when the first attempt failed', async () => {
+		const { name } = topicTable();
+		const open = mqttListener();
+		const socket = await openConnected(open, `qos2-failed-${name}`);
+		const publish = () =>
+			generate({ cmd: 'publish', topic: 'NoSuchTopic/m', payload: '{}', qos: 2, messageId: 11 }, v5);
+		socket.handlers.message(publish());
+		await waitFor(() => ofCommand(socket, 'pubrec').length === 1);
+		socket.handlers.message(publish());
+		await waitFor(() => ofCommand(socket, 'pubrec').length === 2);
+		assert.deepStrictEqual(
+			ofCommand(socket, 'pubrec').map((packet) => packet.reasonCode),
+			[0x90, 0x90],
+			'each attempt was handled'
+		);
+		socket.handlers.close();
+	});
+
+	it('sends a PUBREL again after a reconnect, rather than the message it releases', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const topic = `${name}/#`;
+		const clientId = `qos2-out-${name}`;
+		const first = await openConnected(open, clientId);
+		first.handlers.message(generate({ cmd: 'subscribe', messageId: 1, subscriptions: [{ topic, qos: 2, rh: 2 }] }, v5));
+		await waitFor(() => ofCommand(first, 'suback').length > 0);
+		assert.deepStrictEqual(ofCommand(first, 'suback')[0].granted, [2]);
+		await T.put('a', { value: 'a' });
+		const [delivered] = await waitFor(() => {
+			const publishes = ofCommand(first, 'publish');
+			return publishes.length > 0 && publishes;
+		});
+		assert.strictEqual(delivered.qos, 2);
+		first.handlers.message(generate({ cmd: 'pubrec', messageId: delivered.messageId }, v5));
+		await waitFor(() => ofCommand(first, 'pubrel').length === 1);
+		assert.deepStrictEqual(
+			(await stored(clientId)).awaitingCompletion,
+			[delivered.messageId],
+			'kept before the PUBREL'
+		);
+		first.handlers.close();
+		await T.put('b', { value: 'b' });
+		const second = open();
+		second.handlers.message(connectPacket(clientId));
+		await waitFor(() => ofCommand(second, 'publish').some((packet) => payloadValue(packet) === 'b'));
+		const sent = sentPackets(second);
+		assert.deepStrictEqual(
+			sent.slice(0, 2).map((packet) => [packet.cmd, packet.messageId]),
+			[
+				['connack', undefined],
+				['pubrel', delivered.messageId],
+			]
+		);
+		assert.ok(!ofCommand(second, 'publish').some((packet) => payloadValue(packet) === 'a'), 'not sent again');
+		const resent = ofCommand(second, 'publish').find((packet) => payloadValue(packet) === 'b');
+		assert.notStrictEqual(resent.messageId, delivered.messageId, 'an id awaiting PUBCOMP is not reused');
+		second.handlers.message(generate({ cmd: 'pubcomp', messageId: delivered.messageId }, v5));
+		await waitFor(async () => (await stored(clientId)).awaitingCompletion === undefined);
+		second.handlers.close();
+	});
+
+	it('does not send again a QoS 2 message the client took ahead of an older one', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const topic = `${name}/#`;
+		const clientId = `qos2-order-${name}`;
+		const first = await openConnected(open, clientId);
+		first.handlers.message(generate({ cmd: 'subscribe', messageId: 1, subscriptions: [{ topic, qos: 2, rh: 2 }] }, v5));
+		await waitFor(() => ofCommand(first, 'suback').length > 0);
+		await T.put('a', { value: 'a' });
+		await T.put('b', { value: 'b' });
+		await waitFor(() => ofCommand(first, 'publish').length === 2);
+		const b = ofCommand(first, 'publish').find((packet) => payloadValue(packet) === 'b');
+		first.handlers.message(generate({ cmd: 'pubrec', messageId: b.messageId }, v5));
+		await waitFor(() => ofCommand(first, 'pubrel').length === 1);
+		assert.strictEqual((await stored(clientId)).subscriptions[0].received.length, 1, 'kept past the held position');
+		first.handlers.close();
+		await T.put('c', { value: 'c' });
+		const second = await openConnected(open, clientId);
+		await waitFor(() => ofCommand(second, 'publish').some((packet) => payloadValue(packet) === 'c'));
+		assert.deepStrictEqual(
+			ofCommand(second, 'publish').map(payloadValue),
+			['a', 'c'],
+			'the unacknowledged message is sent again, the received one is not'
+		);
+		// once the older message is taken, the position passes both and the skip list is dropped
+		for (const packet of ofCommand(second, 'publish'))
+			second.handlers.message(generate({ cmd: 'pubrec', messageId: packet.messageId }, v5));
+		await waitFor(() => ofCommand(second, 'pubrel').length === 3);
+		// a quiet table certifies no position until a later write gives it a watermark
+		await T.put('d', { value: 'd' });
+		const d = await waitFor(() => ofCommand(second, 'publish').find((packet) => payloadValue(packet) === 'd'));
+		second.handlers.message(generate({ cmd: 'pubrec', messageId: d.messageId }, v5));
+		await waitFor(async () => (await stored(clientId)).subscriptions[0].received === undefined);
+		second.handlers.close();
+	});
+
+	async function subscribed(open, clientId, topic) {
+		const socket = await openConnected(open, clientId);
+		socket.handlers.message(
+			generate({ cmd: 'subscribe', messageId: 1, subscriptions: [{ topic, qos: 2, rh: 2 }] }, v5)
+		);
+		await waitFor(() => ofCommand(socket, 'suback').length > 0);
+		return socket;
+	}
+	const published = (socket, value) => ofCommand(socket, 'publish').find((packet) => payloadValue(packet) === value);
+
+	it('sends a QoS 2 message again under its packet id, as a DUP, when its PUBREC never arrived', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const clientId = `qos2-dup-${name}`;
+		const first = await subscribed(open, clientId, `${name}/#`);
+		await T.put('a', { value: 'a' });
+		const sent = await waitFor(() => published(first, 'a'));
+		assert.strictEqual(sent.dup, false);
+		first.handlers.close();
+		const second = await openConnected(open, clientId);
+		const resent = await waitFor(() => published(second, 'a'));
+		assert.strictEqual(resent.messageId, sent.messageId);
+		assert.strictEqual(resent.dup, true);
+		second.handlers.close();
+	});
+
+	it('tells apart a record published twice in one transaction, live and on a replay', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const clientId = `qos2-repeat-${name}`;
+		const first = await subscribed(open, clientId, `${name}/#`);
+		await T.put('held', { value: 'held' });
+		await waitFor(() => published(first, 'held'));
+		await transaction({}, async (context) => {
+			await T.publish('r', { value: 'r1' }, context);
+			await T.publish('r', { value: 'r2' }, context);
+		});
+		const r1 = await waitFor(() => published(first, 'r1'));
+		await waitFor(() => published(first, 'r2'));
+		first.handlers.message(generate({ cmd: 'pubrec', messageId: r1.messageId }, v5));
+		await waitFor(() => ofCommand(first, 'pubrel').length === 1);
+		first.handlers.close();
+		await T.put('after', { value: 'after' });
+		const second = await openConnected(open, clientId);
+		await waitFor(() => published(second, 'after'));
+		assert.deepStrictEqual(
+			ofCommand(second, 'publish').map(payloadValue),
+			['held', 'r2', 'after'],
+			'only the publication the client took is skipped'
+		);
+		second.handlers.close();
+	});
+
+	it('sends a PUBREL, a repeated one included, only once the save it waits for has landed', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const clientId = `qos2-barrier-${name}`;
+		const socket = await subscribed(open, clientId, `${name}/#`);
+		await T.put('a', { value: 'a' });
+		const sent = await waitFor(() => published(socket, 'a'));
+		const saves = holdSaves((record) => record.id === clientId);
+		try {
+			socket.handlers.message(generate({ cmd: 'pubrec', messageId: sent.messageId }, v5));
+			socket.handlers.message(generate({ cmd: 'pubrec', messageId: sent.messageId }, v5));
+			await waitFor(() => saves.held.length > 0);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.strictEqual(ofCommand(socket, 'pubrel').length, 0, 'nothing released before the save');
+		} finally {
+			saves.release();
+		}
+		await waitFor(() => ofCommand(socket, 'pubrel').length === 2);
+		socket.handlers.close();
+	});
+
+	it('withholds the PUBREL and disconnects when its save fails', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const clientId = `qos2-save-fails-${name}`;
+		const socket = await subscribed(open, clientId, `${name}/#`);
+		await T.put('a', { value: 'a' });
+		const sent = await waitFor(() => published(socket, 'a'));
+		const sessions = databases.system.hdb_durable_session;
+		const put = sessions.put;
+		sessions.put = function (record, ...rest) {
+			if (record.id === clientId) return Promise.reject(new Error('disk full'));
+			return put.call(this, record, ...rest);
+		};
+		try {
+			socket.handlers.message(generate({ cmd: 'pubrec', messageId: sent.messageId }, v5));
+			await waitFor(() => ofCommand(socket, 'disconnect').length > 0);
+			assert.strictEqual(ofCommand(socket, 'pubrel').length, 0);
+		} finally {
+			sessions.put = put;
+		}
+		socket.handlers.close();
+	});
+
+	it('answers a PUBREC for a packet id it never sent with 0x92, owing nothing', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const clientId = `qos2-unknown-${name}`;
+		const socket = await subscribed(open, clientId, `${name}/#`);
+		socket.handlers.message(generate({ cmd: 'pubrec', messageId: 4242 }, v5));
+		await waitFor(() => ofCommand(socket, 'pubrel').length === 1);
+		assert.strictEqual(ofCommand(socket, 'pubrel')[0].reasonCode, 0x92);
+		const session = [...open.sessions].find((session) => session.sessionId === clientId);
+		assert.ok(!session.awaitingCompletion?.has(4242));
+		socket.handlers.close();
+	});
+
+	it('publishes a retransmitted QoS 2 PUBLISH once on MQTT 3.1.1', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const watcher = await connect(`qos2-v4-watch-${name}`);
+		await watcher.session.addSubscription({ topic: `${name}/#`, qos: 0, rh: 2 }, false);
+		const open = mqttListener();
+		const v4 = { protocolVersion: 4 };
+		const socket = open();
+		socket.handlers.message(
+			generate(
+				{ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 4, clientId: `qos2-v4-${name}`, clean: false },
+				v4
+			)
+		);
+		await waitFor(() => ofCommand(socket, 'connack').length > 0);
+		const publish = (dup) =>
+			generate(
+				{ cmd: 'publish', topic: `${name}/m`, payload: JSON.stringify({ value: 'v4' }), qos: 2, messageId: 3, dup },
+				v4
+			);
+		socket.handlers.message(publish(false));
+		socket.handlers.message(publish(true));
+		await waitFor(() => ofCommand(socket, 'pubrec').length === 2);
+		socket.handlers.message(generate({ cmd: 'pubrel', messageId: 3 }, v4));
+		await waitFor(() => ofCommand(socket, 'pubcomp').length === 1);
+		socket.handlers.message(
+			generate({ cmd: 'publish', topic: `${name}/marker`, payload: '{"value":"m"}', qos: 0 }, v4)
+		);
+		await waitFor(() => values(watcher.received).includes('m'));
+		assert.strictEqual(values(watcher.received).filter((value) => value === 'v4').length, 1);
+		socket.handlers.close();
+		watcher.session.disconnect(true);
+	});
+
+	it('refuses to assign a packet id when every one is in flight', async () => {
+		const { name } = topicTable();
+		const { session } = await connect(`qos2-exhausted-${name}`);
+		session.awaitingAcks = new Map();
+		for (let messageId = 1; messageId <= 65500; messageId++) session.awaitingAcks.set(messageId, {});
+		assert.throws(() => session.newMessageId(), { code: 'MESSAGE_IDS_EXHAUSTED' });
+		session.awaitingAcks = new Map();
+		session.disconnect(true);
+	});
+
+	it('assigns no packet id still awaiting its PUBCOMP', async () => {
+		const { name } = topicTable();
+		const { session } = await connect(`qos2-ids-${name}`);
+		const first = session.newMessageId();
+		session.awaitingCompletion = new Map([[first + 1, true]]);
+		assert.strictEqual(session.newMessageId(), first + 2);
+		session.disconnect(true);
+	});
+});
+
 describe('MQTT durable sessions on LMDB', function () {
 	if (isRocksDB) return;
 	this.timeout(60_000);
