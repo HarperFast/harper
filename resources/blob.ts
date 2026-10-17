@@ -1203,6 +1203,43 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 			return isBeingWritten;
 		}
 	}
+	/**
+	 * Open the blob for streaming, resolving only once the backing content is confirmed readable.
+	 * stream() must return synchronously (the web Blob contract), so a missing or corrupt backing
+	 * file can only surface through the stream itself — by then an HTTP caller has typically already
+	 * committed a 200 status for a body that will never arrive. This awaits the underlying file open
+	 * and the first read (where the header is validated), so pre-streaming failures reject here as
+	 * BlobReadErrors carrying their statusCode — missing file (404), in-flight write or
+	 * half-replicated blob (503), error stub/truncation (500) — while holding at most one chunk in
+	 * memory. Mid-stream failures still surface through the returned stream and any 'error'
+	 * listeners registered via on().
+	 */
+	async openStream(): Promise<ReadableStream> {
+		const storageInfo = storageInfoForBlob.get(this);
+		// in-memory content cannot fail to open, use the buffer-backed stream directly
+		if (storageInfo?.contentBuffer) return this.stream();
+		const reader = this.stream().getReader();
+		// the first read drives the file open (with its retry/timeout classification) and the header
+		// checks in the first pull, so everything wrong before content flows rejects here
+		const firstChunk = await reader.read();
+		return new ReadableStream({
+			start(controller) {
+				if (firstChunk.done) controller.close();
+				else controller.enqueue(firstChunk.value);
+			},
+			pull(controller) {
+				// .then() chain rather than async/await: this runs per chunk, so skip the async state
+				// machine and extra promise allocations on the hot path
+				return reader.read().then(({ done, value }) => {
+					if (done) controller.close();
+					else controller.enqueue(value);
+				});
+			},
+			cancel(reason) {
+				return reader.cancel(reason);
+			},
+		});
+	}
 	slice(start: number, end: number, type?: string): Blob {
 		const sourceStorageInfo = storageInfoForBlob.get(this);
 		const slicedBlob = new FileBackedBlob(type && { type });
