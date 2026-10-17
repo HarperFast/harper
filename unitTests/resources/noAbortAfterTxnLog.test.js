@@ -241,6 +241,7 @@ describe('Transactions are never aborted once durably written to the transaction
 	describe('2. Coordinated RETRY_NOW retry cap after durable log write', () => {
 		it('retries past MAX_RETRIES without aborting when attempt 1 hits a real RETRY_NOW conflict and subsequent attempts return RETRY_NOW', async function () {
 			this.timeout(20000);
+			setMaxRetryDelayMs(1);
 			const recordId = id('retry-now-cap');
 			const baseNow = Date.now();
 			await putWithTimestamp(AuditedA, { id: recordId, writer: 'seed', count: 0 }, baseNow - 10_000);
@@ -427,7 +428,6 @@ describe('Transactions are never aborted once durably written to the transaction
 					committedAuditWritersWhileHolderOpen = auditEntriesFor(AuditedA, recordId).map(
 						(e) => e.getValue(AuditedA.primaryStore)?.writer
 					);
-					// Commit the holder's write intent (without a log entry) so attempt 1 wakes with a real RETRY_NOW.
 					holderOpen = false;
 					holderTxn.commitSync();
 					const res = await commitPromise;
@@ -435,7 +435,6 @@ describe('Transactions are never aborted once durably written to the transaction
 					return res;
 				}
 				if (attemptOutcomes.length === 1) {
-					// Real conflict #2 on the same logged handle (no stubbed RETRY_NOW_VALUE).
 					await putWithTimestamp(AuditedA, { id: recordId, writer: 'interposer-2', count: 2 }, baseNow - 3_000);
 				}
 				const res = await originalCommit.apply(this, args);
@@ -452,9 +451,6 @@ describe('Transactions are never aborted once durably written to the transaction
 			await transaction(context, async () => {
 				await AuditedA.get(recordId, context);
 				trackedTxnId = context.transaction.transaction.id;
-				// Commit interposer-1 after `context` takes its snapshot so `txn_->Commit()` hits Status::Busy(),
-				// then stage an uncommitted write intent on `holderTxn` so `save()` attaches `holderTxn`'s LockTracker
-				// and `completeCommitWork` parks on `holderTxn` after flushing the durable log entry.
 				await putWithTimestamp(AuditedA, { id: recordId, writer: 'interposer-1', count: 1 }, baseNow - 8_000);
 				holderTxn = new Transaction(AuditedA.primaryStore.store, { coordinatedRetry: true });
 				holderOpen = true;
@@ -492,7 +488,6 @@ describe('Transactions are never aborted once durably written to the transaction
 			);
 			assert.strictEqual(AuditedA.primaryStore.getEntry(recordId).value.writer, 'multi-real-winner');
 
-			// Overwrite the primary store directly and run replayLogs() to prove the log and primary store agree.
 			const winnerEntry = AuditedA.primaryStore.getEntry(recordId);
 			AuditedA.primaryStore.putSync(
 				recordId,
@@ -519,6 +514,8 @@ describe('Transactions are never aborted once durably written to the transaction
 			let activeScenario = 'lww';
 			let trackedLwwTxn;
 			let trackedPatchTxn;
+			const lwwOutcomes = [];
+			const patchOutcomes = [];
 			const newerInterposerTs = baseNow + 5_000;
 
 			Transaction.prototype.commit = async function (...args) {
@@ -526,12 +523,26 @@ describe('Transactions are never aborted once durably written to the transaction
 				if (activeScenario === 'lww' && trackedLwwTxn === undefined) {
 					trackedLwwTxn = this.id;
 					await putWithTimestamp(AuditedA, { id: lwwId, writer: 'newer-interposer', count: 99 }, newerInterposerTs);
-					return originalCommit.apply(this, args);
+					const res = await originalCommit.apply(this, args);
+					lwwOutcomes.push(res);
+					return res;
+				}
+				if (this.id === trackedLwwTxn) {
+					const res = await originalCommit.apply(this, args);
+					lwwOutcomes.push(res);
+					return res;
 				}
 				if (activeScenario === 'patch' && trackedPatchTxn === undefined) {
 					trackedPatchTxn = this.id;
 					await putWithTimestamp(AuditedA, { id: patchId, writer: 'interposer-writer', count: 10 }, baseNow - 5_000);
-					return originalCommit.apply(this, args);
+					const res = await originalCommit.apply(this, args);
+					patchOutcomes.push(res);
+					return res;
+				}
+				if (this.id === trackedPatchTxn) {
+					const res = await originalCommit.apply(this, args);
+					patchOutcomes.push(res);
+					return res;
 				}
 				return originalCommit.apply(this, args);
 			};
@@ -539,26 +550,32 @@ describe('Transactions are never aborted once durably written to the transaction
 				Transaction.prototype.commit = originalCommit;
 			});
 
-			// (a) LWW loser on retry: the retrying transaction's staged timestamp is older than newerInterposerTs,
-			// so round 2's Table handler skips overwriting the primary record while still committing the native handle
-			// so its uncommittedPositions slot is released cleanly.
 			const lwwCtx = {};
 			await transaction(lwwCtx, async () => {
 				lwwCtx.transaction.timestamp = baseNow - 2_000;
 				await AuditedA.get(lwwId, lwwCtx);
 				await AuditedA.put({ id: lwwId, writer: 'older-retry-writer', count: 1 }, lwwCtx);
 			});
+			assert.deepStrictEqual(
+				lwwOutcomes,
+				[RETRY_NOW_VALUE, undefined],
+				'LWW loser must conflict on attempt 1 and commit its no-op handle on attempt 2'
+			);
 			const lwwStored = AuditedA.primaryStore.getEntry(lwwId);
 			assert.strictEqual(lwwStored.value.writer, 'newer-interposer');
 			assert.strictEqual(lwwStored.value.count, 99);
 			assert.strictEqual(lwwStored.version, newerInterposerTs);
 
-			// (b) Patch retry: round 2 reloads the interposer's record ('interposer-writer', count: 10) and merges { count: 77 }.
 			activeScenario = 'patch';
 			const patchCtx = {};
 			await transaction(patchCtx, async () => {
 				await AuditedA.patch(patchId, { count: 77 }, patchCtx);
 			});
+			assert.deepStrictEqual(
+				patchOutcomes,
+				[RETRY_NOW_VALUE, undefined],
+				'patch must conflict on attempt 1 and commit the merged record on attempt 2'
+			);
 			const patchStored = AuditedA.primaryStore.getEntry(patchId);
 			assert.strictEqual(
 				patchStored.value.writer,
@@ -566,6 +583,144 @@ describe('Transactions are never aborted once durably written to the transaction
 				'patch retry must merge against the newly committed base record'
 			);
 			assert.strictEqual(patchStored.value.count, 77);
+		});
+
+		it('breaks symmetric RETRY_NOW contention between two concurrent crossing-writes transactions after both durably log', async function () {
+			this.timeout(20000);
+			const keyA = id('cross-a');
+			const keyB = id('cross-b');
+			const baseNow = Date.now();
+			await putWithTimestamp(AuditedA, { id: keyA, writer: 'seed', count: 0 }, baseNow - 10_000);
+			await putWithTimestamp(AuditedA, { id: keyB, writer: 'seed', count: 0 }, baseNow - 10_000);
+
+			const targetDb = AuditedA.primaryStore.store.db;
+			const rootStore = AuditedA.primaryStore.rootStore;
+			const aborted = trackAborts(targetDb);
+			const originalCommit = Transaction.prototype.commit;
+
+			let txn1Id;
+			let txn2Id;
+			let attempts1 = 0;
+			let attempts2 = 0;
+			let enteredInTurn = 0;
+			const attempt1Outcomes = [];
+			const waitingInCommit = [];
+			const reenteredSynchronouslyAfterRound = [];
+
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+				if (this.id !== txn1Id && this.id !== txn2Id) return originalCommit.apply(this, args);
+				const attempt = this.id === txn1Id ? ++attempts1 : ++attempts2;
+				enteredInTurn++;
+				if (attempt === 1) {
+					const res = await originalCommit.apply(this, args);
+					attempt1Outcomes.push(res);
+					return await new Promise((resolve) => {
+						waitingInCommit.push(() => resolve(res));
+					});
+				}
+				if (attempt <= 3) {
+					return await new Promise((resolve) => {
+						waitingInCommit.push(() => resolve(RETRY_NOW_VALUE));
+					});
+				}
+				return originalCommit.apply(this, args);
+			};
+			pendingRestores.push(() => {
+				Transaction.prototype.commit = originalCommit;
+				while (waitingInCommit.length > 0) waitingInCommit.shift()();
+			});
+
+			const auditABefore = auditEntriesFor(AuditedA, keyA).length;
+			const auditBBefore = auditEntriesFor(AuditedA, keyB).length;
+
+			const ctx1 = {};
+			const ctx2 = {};
+			let snapshotsReadyResolve;
+			let snapshotsReadyCount = 0;
+			const snapshotsReady = new Promise((resolve) => {
+				snapshotsReadyResolve = resolve;
+			});
+			let releaseAfterBump;
+			const bumpGate = new Promise((resolve) => {
+				releaseAfterBump = resolve;
+			});
+			pendingRestores.push(() => releaseAfterBump());
+
+			const t1Promise = transaction(ctx1, async () => {
+				ctx1.transaction.timestamp = baseNow - 2_000;
+				await AuditedA.get(keyA, ctx1);
+				await AuditedA.get(keyB, ctx1);
+				txn1Id = ctx1.transaction.transaction.id;
+				if (++snapshotsReadyCount === 2) snapshotsReadyResolve();
+				await bumpGate;
+				await AuditedA.put({ id: keyA, writer: 'cross-1', count: 10 }, ctx1);
+				await AuditedA.put({ id: keyB, writer: 'cross-1', count: 10 }, ctx1);
+			});
+
+			const t2Promise = transaction(ctx2, async () => {
+				ctx2.transaction.timestamp = baseNow - 1_000;
+				await AuditedA.get(keyB, ctx2);
+				await AuditedA.get(keyA, ctx2);
+				txn2Id = ctx2.transaction.transaction.id;
+				if (++snapshotsReadyCount === 2) snapshotsReadyResolve();
+				await bumpGate;
+				await AuditedA.put({ id: keyB, writer: 'cross-2', count: 20 }, ctx2);
+				await AuditedA.put({ id: keyA, writer: 'cross-2', count: 20 }, ctx2);
+			});
+
+			await snapshotsReady;
+			await putWithTimestamp(AuditedA, { id: keyA, writer: 'bump', count: 1 }, baseNow - 8_000);
+			await putWithTimestamp(AuditedA, { id: keyB, writer: 'bump', count: 1 }, baseNow - 8_000);
+			releaseAfterBump();
+
+			for (let round = 1; round <= 3; round++) {
+				await waitFor(() => waitingInCommit.length === 2, {
+					timeout: 3000,
+					message: `both crossing-writes transactions must reach commit round ${round}`,
+				});
+				if (round === 1) {
+					assert.deepStrictEqual(
+						attempt1Outcomes,
+						[RETRY_NOW_VALUE, RETRY_NOW_VALUE],
+						'both transactions must flush their durable log entries and get real RETRY_NOW on attempt 1'
+					);
+				}
+				enteredInTurn = 0;
+				const releases = waitingInCommit.splice(0, 2);
+				for (const release of releases) release();
+				await new Promise(setImmediate);
+				reenteredSynchronouslyAfterRound.push(enteredInTurn);
+			}
+
+			assert.deepStrictEqual(
+				reenteredSynchronouslyAfterRound,
+				[2, 2, 0],
+				'rounds 1-2 re-stage immediately in lockstep, while round 3 (retries > 2) backs off before re-staging'
+			);
+
+			const suspension = suspendDatabaseCommits([rootStore]);
+			try {
+				await suspension.waitForDrain();
+				await Promise.all([t1Promise, t2Promise]);
+			} finally {
+				suspension.release();
+			}
+
+			assert.deepStrictEqual(aborted, [], 'neither logged crossing-writes transaction may be aborted');
+			assert.ok(attempts1 >= 4 && attempts2 >= 4, 'both transactions must complete after the post-round-3 backoff');
+			assert.strictEqual(AuditedA.primaryStore.getEntry(keyA).value.writer, 'cross-2');
+			assert.strictEqual(AuditedA.primaryStore.getEntry(keyB).value.writer, 'cross-2');
+			assert.strictEqual(
+				auditEntriesFor(AuditedA, keyA).length - auditABefore,
+				3,
+				'keyA must have bump + cross-1 + cross-2 audit entries with no duplicates across retries'
+			);
+			assert.strictEqual(
+				auditEntriesFor(AuditedA, keyB).length - auditBBefore,
+				3,
+				'keyB must have bump + cross-1 + cross-2 audit entries with no duplicates across retries'
+			);
 		});
 	});
 
@@ -633,7 +788,7 @@ describe('Transactions are never aborted once durably written to the transaction
 		});
 
 		it('unblocks a parked logged commit when the long-transaction monitor aborts an unsubmitted write-intent holder', async function () {
-			this.timeout(20000);
+			this.timeout(25000);
 			const recordId = id('monitor-aborts-holder');
 			const baseNow = Date.now();
 			await putWithTimestamp(AuditedA, { id: recordId, writer: 'seed', count: 0 }, baseNow - 10_000);
@@ -660,28 +815,51 @@ describe('Transactions are never aborted once durably written to the transaction
 			});
 			pendingRestores.push(() => releaseHolderScope());
 
-			// Start the writer first so it takes its snapshot at `seed`.
+			const targetDb = AuditedA.primaryStore.store.db;
+			const originalCommit = Transaction.prototype.commit;
+			let writerTxnId;
+			let writerAttempts = 0;
+			let writerSettled = false;
+
+			const holderCtx = {};
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== targetDb || this.id !== writerTxnId) return originalCommit.apply(this, args);
+				writerAttempts++;
+				if (writerAttempts >= 2 && !holderCtx.transaction?.timedOut) {
+					// Keep bumping the committed version behind the reset snapshot while the holder is still open,
+					// so round 2+ also hits Status::Busy() and parks on the holder instead of committing around it.
+					await putWithTimestamp(
+						AuditedA,
+						{ id: recordId, writer: `interposer-${writerAttempts}`, count: 1 },
+						baseNow - 8_000 + writerAttempts
+					);
+				}
+				return originalCommit.apply(this, args);
+			};
+			pendingRestores.push(() => {
+				Transaction.prototype.commit = originalCommit;
+			});
+
 			const writerCtx = {};
 			const writerPromise = transaction(writerCtx, async () => {
-				writerCtx.transaction.timeout = 10_000;
-				writerCtx.transaction.writeTimeout = 10_000;
+				writerCtx.transaction.timeout = 20_000;
+				writerCtx.transaction.writeTimeout = 20_000;
 				await AuditedA.get(recordId, writerCtx);
+				writerTxnId = writerCtx.transaction.transaction.id;
 				writerSnapshotResolve();
 				await writerReadyGate;
 				await AuditedA.put({ id: recordId, writer: 'unblocked-by-monitor', count: 3 }, writerCtx);
+			}).then((res) => {
+				writerSettled = true;
+				return res;
 			});
 
 			await writerSnapshotReady;
+			await putWithTimestamp(AuditedA, { id: recordId, writer: 'interposer-1', count: 1 }, baseNow - 8_000);
 
-			// Commit an interposer write so `writerCtx`'s `txn_->Commit()` hits Status::Busy() and consults the VT slot.
-			await putWithTimestamp(AuditedA, { id: recordId, writer: 'interposer', count: 1 }, baseNow - 8_000);
-
-			// Start an unsubmitted write-bearing transaction that stages a write intent on `recordId` and stalls.
-			const holderCtx = {};
 			const holderPromise = transaction(holderCtx, async () => {
 				await AuditedA.get(recordId, holderCtx);
 				await AuditedA.put({ id: recordId, writer: 'stalled-holder', count: 2 }, holderCtx);
-				// Force the write intent into the native transaction before parking the scope.
 				holderCtx.transaction.save(holderCtx.transaction.writes[0]);
 				holderStagedResolve();
 				await holderScopeGate;
@@ -698,18 +876,24 @@ describe('Transactions are never aborted once durably written to the transaction
 					),
 				{ timeout: 3000, message: 'writer must flush its durable log entry and park on stalled holder' }
 			);
-			assert.ok(
-				!holderCtx.transaction.timedOut,
-				'holder must still be open while writer is parked on its write intent'
+			await waitFor(() => writerAttempts >= 2, {
+				timeout: 8000,
+				message: 'writer must finish one native park interval and re-park on round 2 while holder remains open',
+			});
+			assert.strictEqual(
+				writerSettled,
+				false,
+				'writer must still be pending after one native park interval before the monitor aborts the holder'
 			);
+			assert.ok(!holderCtx.transaction.timedOut, 'holder must still be open while writer is parked on round 2');
 
-			// Arm the monitor to abort the stalled unsubmitted holder on the next tick.
 			holderCtx.transaction.timeout = 0;
 			holderCtx.transaction.writeTimeout = 0;
 			setTxnExpiration(25);
 
 			await writerPromise;
 			assert.strictEqual(holderCtx.transaction.timedOut, true, 'monitor must have timed out the unsubmitted holder');
+			assert.ok(writerAttempts >= 3, 'writer must wake from round 2 and commit after the monitor aborts the holder');
 
 			releaseHolderScope();
 			await assert.rejects(
@@ -1695,6 +1879,7 @@ describe('Transactions are never aborted once durably written to the transaction
 	describe('5. Chained multi-store transaction (head -> next) with a durably logged link', () => {
 		it('carries a chained transaction to completion when DbA commits and DbB logs on attempt 1 then conflicts past MAX_RETRIES and budget', async function () {
 			this.timeout(20000);
+			setMaxRetryDelayMs(1);
 			const recordId = id('chain-b-conflict');
 			const baseNow = Date.now();
 			await putWithTimestamp(AuditedA, { id: recordId, writer: 'seed-a', count: 0 }, baseNow - 10_000);
@@ -1755,6 +1940,7 @@ describe('Transactions are never aborted once durably written to the transaction
 
 		it('carries a chained transaction to completion when head DbA logs on attempt 1 and conflicts past MAX_RETRIES before cascading to DbB', async function () {
 			this.timeout(20000);
+			setMaxRetryDelayMs(1);
 			const recordId = id('chain-a-conflict');
 			const baseNow = Date.now();
 			await putWithTimestamp(AuditedA, { id: recordId, writer: 'seed-a', count: 0 }, baseNow - 10_000);
@@ -1898,6 +2084,8 @@ describe('Transactions are never aborted once durably written to the transaction
 			await putWithTimestamp(AuditedB, { id: recordB, writer: 'seed-b', count: 0 }, baseNow - 10_000);
 
 			const dbAHandle = AuditedA.primaryStore.store.db;
+			const abortedA = trackAborts(dbAHandle);
+			const errorLines = captureLogger('error');
 			const rootStoreB = AuditedB.primaryStore.rootStore;
 			const originalCommit = Transaction.prototype.commit;
 			let trackedTxnA;
@@ -1915,7 +2103,6 @@ describe('Transactions are never aborted once durably written to the transaction
 				}
 				if (this.id !== trackedTxnA) return originalCommit.apply(this, args);
 				attemptsA++;
-				// Suspend database B before link B ever submits its first native commit attempt.
 				suspensionB = suspendDatabaseCommits([rootStoreB]);
 				await suspensionB.waitForDrain();
 				return originalCommit.apply(this, args);
@@ -1935,6 +2122,17 @@ describe('Transactions are never aborted once durably written to the transaction
 			);
 
 			assert.strictEqual(attemptsA, 2, 'head A must have retried after logging on attempt 1');
+			assert.deepStrictEqual(
+				abortedA,
+				[],
+				'already-committed head handle A must not have abort() called when chained link B rejects'
+			);
+			assert.strictEqual(
+				errorLines.filter(([msg]) => msg.includes('Aborted a transaction with a durable log entry')).length,
+				0,
+				'already-committed head handle A must not trigger false abandoned-log diagnostics when chained link B rejects'
+			);
+			assert.strictEqual(AuditedA.primaryStore.getEntry(recordA).value.writer, 'logged-head-a');
 			assert.strictEqual(
 				AuditedB.primaryStore.getEntry(recordB).value.writer,
 				'seed-b',
