@@ -465,12 +465,12 @@ async function subscribeToCustomResource(
 	user: AuthedUser,
 	profile: McpProfile
 ): Promise<ResourceSubscription | null> {
-	const { contextStorage } = require('../../resources/transaction');
+	const { contextStorage } = (transactionModule ??= require('../../resources/transaction'));
 	const stream = await acquireChangeStream(uri, { ...contextStorage.getStore(), user }, () =>
 		subscribe(params, { user, profile })
 	);
 	if (!stream) return null;
-	const subscription = changeStreamSubscription(uri, stream, false);
+	const subscription = changeStreamSubscription(uri, stream, false, true);
 	try {
 		await trackPrincipalLifetime(subscription, user);
 	} catch (err) {
@@ -490,7 +490,7 @@ async function acquireChangeStream(
 	context: object,
 	call: () => unknown
 ): Promise<ResourceChangeStream | null> {
-	const { transaction } = require('../../resources/transaction');
+	const { transaction } = (transactionModule ??= require('../../resources/transaction'));
 	let acquired: unknown;
 	let result: unknown;
 	try {
@@ -516,12 +516,16 @@ function isChangeStream(value: unknown): value is ResourceChangeStream {
  * Wrap a change stream in a start/stop handle. `stop` releases the stream once:
  * `end()` when it has one (a Harper subscription, or an author's queue), else
  * its iterator's `return()`. The iterator is taken up front so a stream that
- * cannot produce one fails the subscribe instead of being admitted dead.
+ * cannot produce one fails the subscribe instead of being admitted dead. With
+ * `refuseGeneratorRelease`, a stream whose only release is an async generator's
+ * `return()` is refused: that cannot interrupt a pending await, so unsubscribe
+ * would not release its source.
  */
 function changeStreamSubscription(
 	uri: string,
 	stream: ResourceChangeStream,
-	acknowledgeEvents: boolean
+	acknowledgeEvents: boolean,
+	refuseGeneratorRelease = false
 ): ResourceSubscription {
 	let iterator: AsyncIterator<unknown>;
 	try {
@@ -529,6 +533,16 @@ function changeStreamSubscription(
 	} catch (err) {
 		release(uri, () => stream.end?.());
 		throw err;
+	}
+	if (
+		refuseGeneratorRelease &&
+		typeof stream.end !== 'function' &&
+		Object.prototype.toString.call(iterator) === '[object AsyncGenerator]'
+	) {
+		release(uri, () => iterator.return?.());
+		throw new Error(
+			`subscribe for ${uri} returned an async generator with no end(); return a stream with end(), such as a Table.subscribe() result`
+		);
 	}
 	let started = false;
 	let stopped = false;
@@ -566,7 +580,6 @@ function changeStreamSubscription(
 	};
 }
 
-/** Run a stream's teardown, containing a throw or a rejected promise it returns. */
 function release(uri: string, teardown: () => unknown): void {
 	try {
 		const released = teardown();
@@ -580,6 +593,8 @@ function release(uri: string, teardown: () => unknown): void {
 	}
 }
 
+let transactionModule: typeof import('../../resources/transaction.ts') | undefined;
+let liveSubscriptionAuthModule: typeof import('../../server/liveSubscriptionAuth.ts') | undefined;
 let securityUser: typeof import('../../security/user.ts') | undefined;
 
 // One function for every custom subscription, so a recheck pass memoizes one lookup per username.
@@ -596,7 +611,7 @@ const resolveUser = (_scope: unknown, username: string) =>
 async function trackPrincipalLifetime(subscription: ResourceSubscription, user: AuthedUser): Promise<void> {
 	const username = user?.username;
 	if (!username) return;
-	const { registerLiveSubscription } = require('../../server/liveSubscriptionAuth');
+	const { registerLiveSubscription } = (liveSubscriptionAuthModule ??= require('../../server/liveSubscriptionAuth'));
 	securityUser ??= require('../../security/user') as typeof import('../../security/user.ts');
 	const { hasRecordProvenance, isCurrentUser } = securityUser;
 	const principal = user as User;
@@ -616,6 +631,22 @@ async function trackPrincipalLifetime(subscription: ResourceSubscription, user: 
 		recheckNow = true;
 	}
 	if (recheckNow && (await handle.verify()) === 'revoked') throw new AccessViolation(user);
+}
+
+/** Whether a URI names a resource this profile knows: a registered custom entry, or a built-in scheme. */
+export function isRecognizedResourceUri(uri: string, profile: McpProfile): boolean {
+	if (matchCustomResource(profile, uri)) return true;
+	try {
+		const { protocol } = new URL(uri);
+		return (
+			protocol === HARPER_SCHEME ||
+			protocol === HARPER_REST_SCHEME ||
+			protocol === HTTPS_SCHEME ||
+			protocol === HTTP_SCHEME
+		);
+	} catch {
+		return false;
+	}
 }
 
 /** A rejection reason may be anything, `null` or a null-prototype object included. */
