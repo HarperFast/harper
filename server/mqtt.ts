@@ -734,7 +734,6 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		function packetMethodName(packet) {
 			return packet.qos > 0 ? packet.cmd + ',qos=' + packet.qos : packet.cmd;
 		}
-		/** Publishes a client's PUBLISH, resolving to its PUBACK or PUBREC (none for QoS 0). */
 		async function publish(packet) {
 			const responseCmd = packet.qos === 2 ? 'pubrec' : 'puback';
 			const deserialize =

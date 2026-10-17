@@ -218,7 +218,6 @@ type Acknowledgement = {
 	acknowledge?: () => any;
 };
 type InboundExchange = { reply: Promise<any>; published?: boolean; release?: Promise<boolean> };
-/** `priorDelivery` result for a delivery the client already took before a reconnect. */
 const ALREADY_RECEIVED = -1;
 const MESSAGE_IDS_EXHAUSTED = 'MESSAGE_IDS_EXHAUSTED';
 
@@ -474,8 +473,10 @@ class SubscriptionsSession {
 		return undefined;
 	}
 	needsAcknowledge(update, qos: number, messageId = this.newMessageId()) {
-		if (!this.awaitingAcks) this.awaitingAcks = new Map();
-		this.awaitingAcks.set(messageId, { qos, acknowledge: update.acknowledge });
+		if (update.acknowledge || qos === 2) {
+			if (!this.awaitingAcks) this.awaitingAcks = new Map();
+			this.awaitingAcks.set(messageId, { qos, acknowledge: update.acknowledge });
+		}
 		return messageId;
 	}
 	acknowledge(messageId) {
@@ -671,7 +672,6 @@ type TopicState = {
 	keysPerEntry?: boolean;
 	/** In delivery order: `needsAcknowledge` is its only writer and runs as each message is sent. */
 	unacked: Map<number, { key: number; ordinal: number; id: unknown; previousKey?: number; late?: boolean }>;
-	/** `entry.received`, by slot. */
 	received: Map<string, DeliveryIdentity>;
 	/** `entry.inFlight` from the stored record, by slot, until the replay sends each again. */
 	resend: Map<string, [...DeliveryIdentity, number]>;
@@ -746,8 +746,11 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	checkpointTimer: any;
 	/** Packets are handled concurrently, so SUBSCRIBE, UNSUBSCRIBE and resume change `topics` one at a time. */
 	changes: Promise<unknown> = Promise.resolve();
-	/** Packet ids of `resend` deliveries, held for them. */
 	reservedIds = new Set<number>();
+	receivedCount = 0;
+	inFlightChanged = false;
+	/** Set while the final save waits for inbound publishes; `sealed` follows once it is taken. */
+	sealing = false;
 	constructor(sessionId, user, record?) {
 		super(sessionId, user);
 		this.mayCreate = !record;
@@ -772,7 +775,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 						}
 					: { qos, topic }
 			);
-			for (const identity of entry.received || []) state.received.set(slotOf(identity[0], identity[1]), identity);
+			for (const identity of entry.received || []) this.addReceived(state, identity);
 			for (const delivery of entry.inFlight || []) {
 				state.resend.set(slotOf(delivery[0], delivery[1]), delivery);
 				this.reservedIds.add(delivery[3]);
@@ -818,6 +821,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	subscribed(subscription) {
 		let state = this.topics.get(subscription.topic);
 		if (!(subscription.qos > 0)) {
+			if (state) this.forgetTopic(state);
 			state = newTopicState({ qos: 0, topic: subscription.topic });
 			state.subscription = subscription;
 			this.topics.set(subscription.topic, state);
@@ -832,9 +836,17 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		} else if (state.subscription) {
 			const replaced = state;
 			state = newTopicState({ ...state.entry, qos: subscription.qos });
-			state.received = replaced.received;
-			state.resend = replaced.resend;
 			this.topics.set(subscription.topic, state);
+			if (subscription.qos === 2) {
+				state.received = replaced.received;
+				state.resend = replaced.resend;
+				// the replacement replays from the position, so a delivery still awaiting its PUBREC keeps its id
+				for (const [messageId, sent] of replaced.unacked) {
+					if (this.awaitingAcks?.get(messageId)?.qos !== 2) continue;
+					state.resend.set(slotOf(sent.key, sent.ordinal), [sent.key, sent.ordinal, sent.id, messageId]);
+					this.reservedIds.add(messageId);
+				}
+			} else this.forgetTopic(replaced);
 		}
 		state.subscription = subscription;
 		if (subscription.progress === undefined) state.keysPerEntry = logKeysPerEntry(subscription.topic);
@@ -856,13 +868,20 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		return super.messageIdInUse(messageId) || this.reservedIds.has(messageId);
 	}
 	pendingDeliveries(): number {
-		let pending = super.pendingDeliveries();
-		for (const state of this.topics.values()) pending += state.received.size;
-		return pending;
+		return super.pendingDeliveries() + this.receivedCount;
+	}
+	addReceived(state: TopicState, identity: DeliveryIdentity) {
+		const slot = slotOf(identity[0], identity[1]);
+		if (!state.received.has(slot)) this.receivedCount++;
+		state.received.set(slot, identity);
+	}
+	forgetTopic(state: TopicState) {
+		this.receivedCount -= state.received.size;
+		for (const delivery of state.resend.values()) this.reservedIds.delete(delivery[3]);
 	}
 	priorDelivery(update) {
 		const state = this.topics.get(update.topic);
-		if (!state || update.fromScan || typeof update.localTime !== 'number') return;
+		if (state?.entry.qos !== 2 || update.fromScan || typeof update.localTime !== 'number') return;
 		const key = update.localTime;
 		// a transaction's events arrive together and in the same order when replayed
 		if (key === state.ordinalKey) state.ordinal++;
@@ -898,7 +917,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				state.keyBefore = key < state.deliveredKey ? positionBefore(key) : state.deliveredKey;
 				state.deliveredKey = key;
 			}
-			const delivery = { key, ordinal: state.ordinal, id: deliveryId(update.id), previousKey: state.keyBefore };
+			const delivery = {
+				key,
+				ordinal: state.ordinal,
+				id: qos === 2 ? deliveryId(update.id) : undefined,
+				previousKey: state.keyBefore,
+			};
+			if (qos === 2) this.inFlightChanged = true;
 			if (key < state.highestKey) {
 				state.lateUnacked++;
 				state.unacked.set(messageId, { ...delivery, late: true });
@@ -929,7 +954,17 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const state = this.topics.get(delivery.topic);
 		const sent = state?.unacked.get(messageId);
 		// the position cannot pass it while an older delivery, or the rest of its transaction, is unacknowledged
-		if (sent) state.received.set(slotOf(sent.key, sent.ordinal), [sent.key, sent.ordinal, sent.id]);
+		if (sent) this.addReceived(state, [sent.key, sent.ordinal, sent.id]);
+		else if (state) {
+			// sent by a subscription this one replaced, and not yet sent again
+			for (const [slot, resend] of state.resend) {
+				if (resend[3] !== messageId) continue;
+				state.resend.delete(slot);
+				this.reservedIds.delete(messageId);
+				this.addReceived(state, [resend[0], resend[1], resend[2]]);
+				break;
+			}
+		}
 		this.dirty = true;
 		this.acknowledge(messageId);
 		if (failed) return true;
@@ -937,7 +972,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const awaitingCompletion = (this.awaitingCompletion ??= new Map());
 		// in the map before the save starts, which reads it at once
 		awaitingCompletion.set(messageId, true);
-		const saved = this.persist().then(() => true);
+		const saved = Promise.resolve(this.saveExchanges()).then(() => true);
 		awaitingCompletion.set(messageId, saved);
 		return saved;
 	}
@@ -949,9 +984,30 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		}
 	}
 	saveExchanges() {
+		// an ended session's last save has been taken, so nothing it would acknowledge can be kept
+		if (this.sealed) return Promise.reject(new Error(`MQTT session ${this.sessionId} has ended`));
 		return this.persist();
 	}
-	/** QoS 2 deliveries awaiting PUBREC, whose packet ids a reconnect resends them under. */
+	/** The final save waits for inbound QoS 2 publishes still committing, so it keeps their ids; nothing saves after it. */
+	seal(save: boolean) {
+		if (this.sealing) return;
+		const publishing = [];
+		for (const exchange of this.awaitingRelease?.values() ?? []) {
+			if (!exchange.published && !exchange.release) publishing.push(exchange.reply.catch(() => {}));
+		}
+		if (publishing.length === 0) {
+			if (save) this.persist().catch(() => {});
+			this.sealed = true;
+			return;
+		}
+		// a takeover waits on `writes`, so it reads the record only after this save
+		this.sealing = true;
+		this.writes = Promise.all([this.writes, ...publishing]).then(() => {
+			const saved = this.persist().catch(() => {});
+			this.sealed = true;
+			return saved;
+		});
+	}
 	hasInFlight() {
 		for (const state of this.topics.values()) if (state.entry.qos === 2 && state.unacked.size > 0) return true;
 		return false;
@@ -1001,6 +1057,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		}
 		const owner = this.topics.get(topic)?.subscription;
 		if (owner && (owner === started || (owner === replaced && !this.subscriptions.includes(owner)))) {
+			this.forgetTopic(this.topics.get(topic));
 			this.topics.delete(topic);
 			this.persist().catch(() => {});
 		}
@@ -1008,6 +1065,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	removeSubscription(topic) {
 		return this.inOrder(async () => {
 			const result = await super.removeSubscription(topic);
+			const state = this.topics.get(topic);
+			if (state) this.forgetTopic(state);
 			const saved = this.topics.delete(topic);
 			// a retry after a failed save reports that save, not a removal already made in memory
 			if (saved || this.dirty || this.saving) await this.persist();
@@ -1058,7 +1117,12 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (bound && !(next > state.entry.startTime)) continue;
 			if (!bound && next === state.entry.startTime) continue;
 			state.entry.startTime = next;
-			for (const [slot, [key]] of state.received) if (key <= next) state.received.delete(slot);
+			for (const [slot, [key]] of state.received) {
+				if (key <= next) {
+					state.received.delete(slot);
+					this.receivedCount--;
+				}
+			}
 			for (const [slot, delivery] of state.resend) {
 				if (delivery[0] <= next) {
 					state.resend.delete(slot);
@@ -1086,7 +1150,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 	checkpoint() {
 		if (this.terminated) return;
-		if (this.advancePositions() || this.dirty) this.persist().catch(() => {});
+		if (this.advancePositions() || this.dirty || this.inFlightChanged) this.persist().catch(() => {});
 	}
 	startCheckpoints() {
 		if (this.checkpointTimer || this.terminated) return;
@@ -1095,6 +1159,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 	recordToWrite() {
 		const subscriptions = [];
+		this.inFlightChanged = false;
 		for (const state of this.topics.values()) {
 			const { qos, topic, startTime, databaseGeneration } = state.entry;
 			const saved: DurableEntry = { qos, topic };
@@ -1158,10 +1223,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			const changed = this.advancePositions();
 			this.terminated = true;
 			clearInterval(this.checkpointTimer);
-			if (changed || this.dirty || this.hasInFlight()) this.persist().catch(() => {});
+			this.seal(changed || this.dirty || this.hasInFlight());
 			this.closeConnection?.();
-		}
-		this.sealed = true;
+		} else if (!this.sealing) this.sealed = true;
 	}
 	supersede() {
 		if (this.terminated) return;
@@ -1214,9 +1278,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const changed = !this.terminated && this.advancePositions();
 		this.terminated = true;
 		super.disconnect(clientTerminated);
-		if ((changed || this.dirty || this.hasInFlight()) && !this.discarded) this.persist().catch(() => {});
 		// a SUBSCRIBE still in flight would otherwise save after a reconnect has claimed the record
-		this.sealed = true;
+		this.seal((changed || this.dirty || this.hasInFlight()) && !this.discarded);
 	}
 }
 
