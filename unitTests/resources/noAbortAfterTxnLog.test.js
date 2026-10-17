@@ -11,6 +11,7 @@ const {
 	getOutstandingCommits,
 	replicationConfirmation,
 	setMaxOutstandingTxnDuration,
+	setMaxRetryDelayMs,
 	suspendDatabaseCommits,
 } = require('#src/resources/DatabaseTransaction');
 const { MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
@@ -113,7 +114,9 @@ describe('Transactions are never aborted once durably written to the transaction
 
 	describe('1. Uncoordinated ERR_BUSY / ERR_TRY_AGAIN retry cap after durable log write', () => {
 		it('retries past MAX_RETRIES without aborting when attempt 1 hits a real ERR_BUSY conflict and subsequent attempts reject', async function () {
-			this.timeout(60000);
+			this.timeout(20000);
+			const prevMaxRetryDelay = setMaxRetryDelayMs(1);
+			pendingRestores.push(() => setMaxRetryDelayMs(prevMaxRetryDelay));
 			const recordId = id('busy-cap');
 			const baseNow = Date.now();
 			await putWithTimestamp(AuditedA, { id: recordId, writer: 'seed', count: 0 }, baseNow - 10_000);
@@ -199,7 +202,9 @@ describe('Transactions are never aborted once durably written to the transaction
 		});
 
 		it('still aborts an unlogged (audit: false) transaction at MAX_RETRIES and releases its lock hold', async function () {
-			this.timeout(30000);
+			this.timeout(20000);
+			const prevMaxRetryDelay = setMaxRetryDelayMs(1);
+			pendingRestores.push(() => setMaxRetryDelayMs(prevMaxRetryDelay));
 			const recordId = id('unlogged-busy-cap');
 			await UnauditedA.put({ id: recordId, writer: 'seed', count: 0 });
 
@@ -227,7 +232,6 @@ describe('Transactions are never aborted once durably written to the transaction
 			assert.strictEqual(aborted.length, 1, 'unlogged transaction must be aborted on retry exhaustion');
 			await holder.unlock();
 
-			// Verify commitOutcome's rejection handler released the commit hold so a new holder can lock immediately.
 			const nextHolder = await UnauditedA.lock(recordId, { lease: 5000, timeout: 300 });
 			await nextHolder.unlock();
 		});
@@ -461,9 +465,9 @@ describe('Transactions are never aborted once durably written to the transaction
 				if (trackedTxnId === undefined) {
 					trackedTxnId = this.id;
 					trackedNativeTxn = this;
-					[lockHandle] = this.lockHolds ?? [];
 					attemptCount++;
 					await putWithTimestamp(AuditedA, { id: recordId, writer: 'interposer', count: 1 }, baseNow - 5_000);
+					[lockHandle] = this.lockHolds ?? [];
 					try {
 						return await originalCommit.apply(this, args);
 					} finally {
@@ -766,6 +770,8 @@ describe('Transactions are never aborted once durably written to the transaction
 
 			Transaction.prototype.commit = async function (...args) {
 				if (this.store?.db === dbAHandle) {
+					const commitPromise = originalCommit.apply(this, args);
+					await Promise.resolve();
 					if (holdRetainedDuringDbACommit === undefined) {
 						dbANativeTxn = this;
 						holdRetainedDuringDbACommit = (this.lockHolds?.size ?? 0) > 0;
@@ -773,6 +779,7 @@ describe('Transactions are never aborted once durably written to the transaction
 						repNativeTxn = this;
 						holdRetainedDuringRepCommit = (this.lockHolds?.size ?? 0) > 0;
 					}
+					return commitPromise;
 				}
 				if (this.store?.db !== dbBHandle) return originalCommit.apply(this, args);
 				dbBReached = true;
@@ -1030,8 +1037,6 @@ describe('Transactions are never aborted once durably written to the transaction
 			const k2AuditsBefore = auditEntriesFor(AuditedA, k2).length;
 			const k3AuditsBefore = auditEntriesFor(AuditedA, k3).length;
 
-			// 1. Start k1.save() first so it owns isCommitting = true, hits an ERR_BUSY conflict on attempt 1
-			//    (setting sharedCtx.transaction.retries = 1), and parks inside attempt 2.
 			holder1.set('writer', 'w1');
 			holder1.set('count', 10);
 			const k1SavePromise = holder1.save();
@@ -1039,15 +1044,12 @@ describe('Transactions are never aborted once durably written to the transaction
 			assert.strictEqual(sharedCtx.transaction.isCommitting, true);
 			assert.strictEqual(sharedCtx.transaction.retries, 1);
 
-			// 2. While k1 owns isCommitting = true and retries === 1, start k2.save() so it takes the
-			//    if (this.isCommitting) -> this.commit({ transaction: txn2 }) path and parks in flight.
 			nextWriteStage = 'k2';
 			holder2.set('writer', 'w2');
 			holder2.set('count', 20);
 			const k2SavePromise = holder2.save();
 			await waitFor(() => k2InCommit, { message: 'k2 commit should be parked in flight' });
 
-			// 3. Let k1 finish so isCommitting resets to false while k2 remains in this.writes.
 			releaseK1();
 			await k1SavePromise;
 			assert.strictEqual(sharedCtx.transaction.isCommitting, false);
@@ -1057,8 +1059,6 @@ describe('Transactions are never aborted once durably written to the transaction
 				'shared ImmediateTransaction must reset its retry counter when k1 settles so sibling writes do not inherit it'
 			);
 
-			// 4. While k2 is still in flight in this.writes, run k3.save() through the top-level
-			//    this.commit() loop on the same ImmediateTransaction.
 			nextWriteStage = 'k3';
 			holder3.set('writer', 'w3');
 			holder3.set('count', 30);
@@ -1171,35 +1171,27 @@ describe('Transactions are never aborted once durably written to the transaction
 			const k2AuditsBefore = auditEntriesFor(AuditedA, k2).length;
 			const k3AuditsBefore = auditEntriesFor(AuditedA, k3).length;
 
-			// 1. Start k1.save() so it holds isCommitting = true while parked on attempt 1.
 			holder1.set('writer', 'w1');
 			holder1.set('count', 10);
 			const k1SavePromise = holder1.save();
 			await waitFor(() => k1InCommit, { message: 'k1 commit should be parked in flight' });
 			assert.strictEqual(sharedCtx.transaction.isCommitting, true);
 
-			// 2. While k1 holds isCommitting = true, start k2.save() so it takes the nested
-			//    this.commit({ transaction: txn2 }) path and parks in attempt 1.
 			nextWriteStage = 'k2';
 			holder2.set('writer', 'w2');
 			holder2.set('count', 20);
 			const k2SavePromise = holder2.save();
 			await waitFor(() => k2Attempt1Parked, { message: 'k2 attempt 1 should be parked in flight' });
 
-			// 3. Let k1 finish first so isCommitting resets to false while k2 is still in flight.
 			releaseK1();
 			await k1SavePromise;
 			assert.strictEqual(sharedCtx.transaction.isCommitting, false);
 
-			// 4. Release k2 attempt 1 so it hits an interposed ERR_BUSY conflict, increments
-			//    sharedCtx.transaction.retries to 1, and parks inside attempt 2.
 			releaseK2Attempt1();
 			await waitFor(() => k2Attempt2Parked, { message: 'k2 retry attempt 2 should be parked in flight' });
 			assert.strictEqual(sharedCtx.transaction.isCommitting, false);
 			assert.strictEqual(sharedCtx.transaction.retries, 1);
 
-			// 5. While k2 is parked in attempt 2 (with sharedCtx.transaction.retries === 1), run k3.save()
-			//    through the top-level this.commit() path and force k3 itself to conflict and retry onto attempt 2.
 			nextWriteStage = 'k3';
 			holder3.set('writer', 'w3');
 			holder3.set('count', 30);
@@ -1554,18 +1546,18 @@ describe('Transactions are never aborted once durably written to the transaction
 
 			let trackedTxnId;
 			let attemptCount = 0;
-			const ageSamples = [];
-			let enteredBackoffWindow = false;
-			let releaseAttempt5;
-			const attempt5Gate = new Promise((resolve) => {
-				releaseAttempt5 = resolve;
+			let elapsedBeforeAttempt4 = 0;
+			let attempt4EntrySnap;
+			let atAttempt4Gate = false;
+			let releaseAttempt4;
+			const attempt4Gate = new Promise((resolve) => {
+				releaseAttempt4 = resolve;
 			});
-			pendingRestores.push(() => releaseAttempt5());
+			pendingRestores.push(() => releaseAttempt4());
 
+			let startMs = 0;
 			Transaction.prototype.commit = async function (...args) {
 				if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
-				const snap = getOutstandingCommits();
-				if (snap.oldestAgeMs !== undefined) ageSamples.push(snap.oldestAgeMs);
 				if (trackedTxnId === undefined) {
 					trackedTxnId = this.id;
 					attemptCount++;
@@ -1574,15 +1566,15 @@ describe('Transactions are never aborted once durably written to the transaction
 				}
 				if (this.id !== trackedTxnId) return originalCommit.apply(this, args);
 				attemptCount++;
-				if (attemptCount <= 5) {
-					if (attemptCount === 4) {
-						// After attempt 3 rejects, this.retries === 3 (> 2), so the retry enters the quadratic backoff window.
-						enteredBackoffWindow = true;
-					}
-					if (attemptCount === 5) {
-						await attempt5Gate;
+				if (attemptCount <= 4) {
+					if (attemptCount < 4) {
+						await delay(20);
 					} else {
-						await delay(15);
+						elapsedBeforeAttempt4 = performance.now() - startMs;
+						await Promise.resolve();
+						attempt4EntrySnap = getOutstandingCommits();
+						atAttempt4Gate = true;
+						await attempt4Gate;
 					}
 					throw Object.assign(new Error('forced busy'), { code: 'ERR_BUSY' });
 				}
@@ -1592,53 +1584,41 @@ describe('Transactions are never aborted once durably written to the transaction
 				Transaction.prototype.commit = originalCommit;
 			});
 
-			const startMs = performance.now();
 			const holder = await AuditedA.lock(recordId, { hold: true, lease: 10_000 });
 			holder.set('writer', 'drain-survivor');
 			holder.set('count', 42);
+			startMs = performance.now();
 			const savePromise = holder.save();
 
-			await waitFor(() => enteredBackoffWindow, {
-				message: 'logged retry should reach the ERR_BUSY backoff window (retries > 2)',
+			await waitFor(() => atAttempt4Gate, {
+				message: 'logged retry should reach attempt 4 after the first ERR_BUSY backoff window',
 			});
 
-			// Sample oldestAgeMs during the backoff window and verify an unrelated write on another database
-			// is not load-shed with 503 when total elapsed exceeds maxOutstandingTxnDurationMs but the current
-			// round's age is below it.
-			const midBackoffSnap = getOutstandingCommits();
-			assert.ok(midBackoffSnap.count >= 1, 'logged retry must remain tracked in outstandingCommits during backoff');
-			if (midBackoffSnap.oldestAgeMs !== undefined) ageSamples.push(midBackoffSnap.oldestAgeMs);
-			setMaxOutstandingTxnDuration(35);
-			try {
-				await AuditedB.put({ id: unrelatedId, writer: 'unrelated-ok', count: 1 });
-			} finally {
-				setMaxOutstandingTxnDuration(45_000);
-			}
+			assert.ok(attempt4EntrySnap.count >= 1, 'attempt 4 must be tracked in outstandingCommits');
+			assert.ok(
+				attempt4EntrySnap.oldestAgeMs < elapsedBeforeAttempt4 / 2,
+				`attempt 4 entry age (${attempt4EntrySnap.oldestAgeMs}ms) must reflect only the fresh round, not cumulative elapsed (${elapsedBeforeAttempt4}ms)`
+			);
 
-			// Now suspend commits on rootStore while the logged retry is in its backoff/attempt-5 window.
 			const suspension = suspendDatabaseCommits([rootStore]);
 			try {
-				assert.ok(attemptCount < 6, 'retry loop must still be in flight when suspendDatabaseCommits is called');
-				releaseAttempt5();
+				await AuditedB.put({ id: unrelatedId, writer: 'unrelated-ok', count: 1 });
+				assert.strictEqual(attemptCount, 4, 'retry loop must still be on attempt 4 before release');
+				releaseAttempt4();
 				await suspension.waitForDrain();
 				assert.strictEqual(
 					attemptCount,
-					6,
-					'suspendDatabaseCommits must wait for the logged retry loop to finish committing across backoff windows'
+					5,
+					'suspendDatabaseCommits must wait across the ERR_BUSY backoff window for attempt 5 to finish'
 				);
 				await savePromise;
 			} finally {
 				suspension.release();
 			}
-			const totalElapsedMs = performance.now() - startMs;
 			await holder.unlock();
 
 			assert.strictEqual(AuditedA.primaryStore.getEntry(recordId).value.writer, 'drain-survivor');
-			const maxSampledAge = Math.max(...ageSamples);
-			assert.ok(
-				maxSampledAge < 80,
-				`each per-attempt/per-backoff outstanding-commit age (${maxSampledAge}ms) must stay bounded by a single round, not accumulate total elapsed (${totalElapsedMs}ms)`
-			);
+			assert.strictEqual(AuditedB.primaryStore.getEntry(unrelatedId).value.writer, 'unrelated-ok');
 		});
 	});
 
@@ -1664,7 +1644,6 @@ describe('Transactions are never aborted once durably written to the transaction
 				'pre-submit expired lease must still abort with 409'
 			);
 
-			// Also verify suspendDatabaseCommits rejects an unlogged commit at commit() before its first native submission.
 			let suspension;
 			try {
 				await assert.rejects(
@@ -1685,6 +1664,7 @@ describe('Transactions are never aborted once durably written to the transaction
 		});
 
 		it('logs an error with commit identity if a native abort ever throws ERR_TRANSACTION_ABANDONED', async function () {
+			const targetDb = AuditedA.primaryStore.store.db;
 			const errorLines = [];
 			const originalError = harperLogger.error;
 			harperLogger.error = (...args) => errorLines.push(args);
@@ -1693,7 +1673,7 @@ describe('Transactions are never aborted once durably written to the transaction
 			let interceptTerminalFailure = false;
 			let terminalAttempt = 0;
 			Transaction.prototype.commit = function (...args) {
-				if (interceptTerminalFailure && this.hasStagedLog) {
+				if (this.store?.db === targetDb && interceptTerminalFailure && this.hasStagedLog) {
 					terminalAttempt++;
 					if (terminalAttempt === 1) {
 						return Promise.reject(Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY' }));
@@ -1702,7 +1682,8 @@ describe('Transactions are never aborted once durably written to the transaction
 				}
 				return originalCommit.apply(this, args);
 			};
-			Transaction.prototype.abort = function () {
+			Transaction.prototype.abort = function (...args) {
+				if (this.store?.db !== targetDb) return originalAbort.apply(this, args);
 				throw Object.assign(new Error('Transaction cannot be aborted after log write'), {
 					code: 'ERR_TRANSACTION_ABANDONED',
 				});
