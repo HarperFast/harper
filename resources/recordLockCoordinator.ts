@@ -807,14 +807,12 @@ interface InFlightSurrender {
 	table: string;
 	ringKey: string;
 	token: FencingToken;
-	/** Every handle is fenced or past its lease. */
-	fenced: Promise<void>;
-	/** `fenced`, then the release written (a close has no release: the two coincide). */
+	/** Every handle fenced or past its lease, then the release written (a close has no release). */
 	settled: Promise<void>;
 }
 interface DatabaseFencing {
 	entries: Set<InFlightSurrender>;
-	/** Entries whose `fenced` is still pending, counted per `table\0ringKey`, so a grant can ask in O(1). */
+	/** Entries whose handles are not all fenced yet, counted per ring key, so a grant can ask in O(1). */
 	unfenced: Map<string, number>;
 }
 const inFlightSurrenders = new Map<string, DatabaseFencing>();
@@ -1313,7 +1311,8 @@ export class LockCoordinator {
 			const delegation = this.#liveDelegation(keyId, leaseMs, homeMap.generation);
 			if (delegation) return this.#admit(delegation, leaseMs);
 
-			const home = homeFor(this.#ringKey(keyId), homeMap.homes);
+			const ringKey = this.#ringKey(keyId);
+			const home = homeFor(ringKey, homeMap.homes);
 			if (!home)
 				throw new LockUnavailableError(`The record lock home map for ${this.database} names no nodes to home a key on`);
 
@@ -1325,12 +1324,10 @@ export class LockCoordinator {
 			this.#pendingRequests.set(keyId, pendingRequest);
 			let reply: DelegationReply;
 			try {
-				// A handle this node admitted earlier may still be fencing after a close without a successor;
-				// a renewal from the home would admit alongside it, so the key reads as held until it is fenced.
-				reply = this.#fencingInFlight(keyId)
+				reply = this.#fencingInFlight(ringKey)
 					? { granted: false, reason: 'contended', retryAfterMs: 25 }
 					: home === this.nodeId
-						? this.#grantLocally(keyId, key, homeMap, leaseMs)
+						? this.#grantLocally(keyId, key, homeMap, leaseMs, ringKey)
 						: await this.#requestRemotely(home, keyId, key, homeMap, leaseMs, deadlineMono);
 			} catch (error) {
 				const requestAuthority = this.#authority();
@@ -1976,8 +1973,9 @@ export class LockCoordinator {
 		if (!homeMap.homes.includes(request.requester)) return { granted: false, reason: 'unknown-node' };
 		// Both sides must agree we are the home, or two arbiters could issue for one key.
 		const keyId = this.#keyIdOf(request.key);
-		if (homeFor(this.#ringKey(keyId), homeMap.homes) !== this.nodeId) return { granted: false, reason: 'not-home' };
-		return this.#grant(keyId, request.key, homeMap, request.leaseMs, request.requester);
+		const ringKey = this.#ringKey(keyId);
+		if (homeFor(ringKey, homeMap.homes) !== this.nodeId) return { granted: false, reason: 'not-home' };
+		return this.#grant(keyId, request.key, homeMap, request.leaseMs, request.requester, ringKey);
 	}
 
 	/**
@@ -2189,8 +2187,6 @@ export class LockCoordinator {
 		retiredCoordinators.set(retirementKey, {
 			grantableAfterMono: Math.max(retired?.grantableAfterMono ?? -Infinity, grantableAfterMono),
 			counter: Math.max(retired?.counter ?? 0, this.#counter),
-			// The closing coordinator's incarnation, merged upward with the record's; a side that retains no
-			// horizon makes no claim, and an unknown side on a retained horizon keeps the record unknown.
 			incarnation:
 				retired === undefined || retired.grantableAfterMono === -Infinity
 					? this.#coordinatingIncarnation
@@ -2530,8 +2526,8 @@ export class LockCoordinator {
 	}
 
 	/** This node is the key's home: grant to itself through exactly the same table a peer would use. */
-	#grantLocally(keyId: unknown, key: any, homeMap: LockHomeMap, leaseMs: number): DelegationReply {
-		return this.#grant(keyId, key, homeMap, leaseMs, this.nodeId);
+	#grantLocally(keyId: unknown, key: any, homeMap: LockHomeMap, leaseMs: number, ringKey: string): DelegationReply {
+		return this.#grant(keyId, key, homeMap, leaseMs, this.nodeId, ringKey);
 	}
 
 	async #requestRemotely(
@@ -2608,7 +2604,14 @@ export class LockCoordinator {
 		return this.#writeControlSafely({ type: 'lockRelease', key, requester: this.nodeId, token, dependencies: null });
 	}
 
-	#grant(keyId: unknown, key: any, homeMap: LockHomeMap, leaseMs: number, requester: string): DelegationReply {
+	#grant(
+		keyId: unknown,
+		key: any,
+		homeMap: LockHomeMap,
+		leaseMs: number,
+		requester: string,
+		ringKey: string
+	): DelegationReply {
 		const now = this.#monotonic();
 		this.#prepareFreshnessGeneration(homeMap.generation);
 		// Consulted unconditionally — it is what observes a gap in ownership, and the waiver it applies
@@ -2621,8 +2624,9 @@ export class LockCoordinator {
 		// "held by someone else" — for a key nobody holds.
 		if (quarantine > 0) return { granted: false, reason: 'quarantine', retryAfterMs: Math.min(quarantine, 250) };
 		// This node's own delegation for the key may still be fencing a sibling's handle after a close
-		// without a successor, with no grant left to say so: hold the key until every handle is fenced.
-		if (this.#fencingInFlight(keyId)) return { granted: false, reason: 'contended', retryAfterMs: 25 };
+		// without a successor, with no grant left to say so: the key reads as held until every handle is
+		// fenced, here and on this node's own re-acquisition (`#acquire`), which would otherwise renew it.
+		if (this.#fencingInFlight(ringKey)) return { granted: false, reason: 'contended', retryAfterMs: 25 };
 		const existing = this.#grants.get(keyId);
 		if (existing) {
 			// An expired grant is not a live one. Collecting it here rather than trusting `tick()` is
@@ -2751,27 +2755,25 @@ export class LockCoordinator {
 	}
 
 	/** Whether a handle this node admitted for the key is still being fenced; the release write is not waited for. */
-	#fencingInFlight(keyId: unknown): boolean {
+	#fencingInFlight(ringKey: string): boolean {
 		const fencing = inFlightSurrenders.get(this.database);
-		if (!fencing || fencing.unfenced.size === 0) return false;
-		return fencing.unfenced.has(`${this.table}\u0000${this.#ringKey(keyId)}`);
+		return fencing !== undefined && fencing.unfenced.size > 0 && fencing.unfenced.has(ringKey);
 	}
 
 	#trackFencing(keyId: unknown, delegation: Delegation, fenced: Promise<void>, settled: Promise<void>): Promise<void> {
 		let fencing = inFlightSurrenders.get(this.database);
 		if (!fencing) inFlightSurrenders.set(this.database, (fencing = { entries: new Set(), unfenced: new Map() }));
 		const ringKey = this.#ringKey(keyId);
-		const unfencedKey = `${this.table}\u0000${ringKey}`;
-		fencing.unfenced.set(unfencedKey, (fencing.unfenced.get(unfencedKey) ?? 0) + 1);
+		fencing.unfenced.set(ringKey, (fencing.unfenced.get(ringKey) ?? 0) + 1);
+		fenced.finally(() => {
+			const count = (fencing.unfenced.get(ringKey) ?? 1) - 1;
+			if (count > 0) fencing.unfenced.set(ringKey, count);
+			else fencing.unfenced.delete(ringKey);
+		});
 		const entry: InFlightSurrender = {
 			table: this.table,
 			ringKey,
 			token: delegation.token,
-			fenced: fenced.finally(() => {
-				const count = (fencing.unfenced.get(unfencedKey) ?? 1) - 1;
-				if (count > 0) fencing.unfenced.set(unfencedKey, count);
-				else fencing.unfenced.delete(unfencedKey);
-			}),
 			settled: settled.finally(() => {
 				fencing.entries.delete(entry);
 				if (fencing.entries.size === 0 && inFlightSurrenders.get(this.database) === fencing)
@@ -2814,8 +2816,6 @@ export class LockCoordinator {
 	async recallFromHome(home: string, homeMap: LockHomeMap, belowIncarnation: number): Promise<void> {
 		if (this.#handedOff) return this.#authority().recallFromHome(home, homeMap, belowIncarnation);
 		const drains: Promise<void>[] = [];
-		// Fences a close already fired for this table are joined whether or not the coordinator is still
-		// open: a closed one has nothing left to recall, but those may still be landing.
 		for (const fencing of inFlightSurrenders.get(this.database)?.entries ?? [])
 			if (
 				fencing.table === this.table &&
