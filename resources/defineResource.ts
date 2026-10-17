@@ -25,6 +25,7 @@
  * the table's attributes).
  */
 
+import { resolveBody } from './resolveBody.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { attributeToFragment, type AttributeLike } from './jsonSchemaTypes.ts';
 import { ValidationError, type ValidationIssue } from '../utility/errors/hdbError.ts';
@@ -559,16 +560,10 @@ function wrapStaticVerb(original: Function, compiled: CompiledVerb): Function {
 	}
 	return function (this: any, target: any, ...rest: any[]) {
 		if (target instanceof URLSearchParams) {
-			const body = rest[0];
-			// REST.ts's streaming deserializer hands the body over as a still-pending promise
-			// (`request.data`); await it before validating, or it reads as an empty object and every
-			// declared-required field is (incorrectly) reported missing. A plain value (as passed by a
-			// programmatic call or a unit test) validates synchronously, preserving the synchronous-throw
-			// contract those callers rely on.
-			if (hasBody && bodyFragment && body && typeof body.then === 'function') {
-				return body.then((resolvedBody: any) => validateAndDispatch.call(this, target, rest, resolvedBody));
+			if (hasBody && bodyFragment) {
+				return resolveBody(rest[0], true, (body: any) => validateAndDispatch.call(this, target, rest, body));
 			}
-			return validateAndDispatch.call(this, target, rest, body);
+			return validateAndDispatch.call(this, target, rest, rest[0]);
 		}
 		return original.call(this, target, ...rest);
 	};
