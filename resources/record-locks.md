@@ -657,10 +657,49 @@ prove the older interval was safe. Transports without the optional hook retain t
 `homeMap()` fallback.
 
 That quarantine costs availability, and the cost is real: for keys a node homes, the first cluster
-lock after a cold start waits out the interval. It does not affect keys homed elsewhere — the node
-acquires those immediately — and it is bounded by the delegation lease, not by an operator's response
-time. A deployment that can prove a previous incarnation issued nothing (a fresh database, a first
-start) may override it through the transport, which is the only party that knows that.
+lock after a cold start waits out the interval — per table, from each coordinator's own construction,
+so a table first locked an hour after the restart still pays it. It does not affect keys homed
+elsewhere — the node acquires those immediately — and it is bounded by the delegation lease, not by
+an operator's response time. A deployment that can prove a previous incarnation issued nothing (a
+fresh database, a first start) may override it through the transport, which is the only party that
+knows that.
+
+**Ending the quarantine by recall instead (harper#3254).** The timer exists because you cannot recall
+what you cannot reach. When every ring member _is_ reachable, the same guarantee can be established
+rather than waited out, exactly as a planned transition's quiesce step does (above): the restarted
+home asks every member of `homes[]` to recall every delegation it holds from this node **below the
+home's current incarnation** — `LockCoordinator.recallFromHome` on the member drains and releases each
+one through the ordinary `onDelegationRecall` path, surrenders already in flight included, and
+resolves only when nothing on that node can admit or commit under any of them. Once every member has
+answered, the transport attests the incarnation through `ClusterLockTransport.quiescedIncarnation()`,
+and a coordinator coordinating under exactly that incarnation drops both halves of its quarantine on
+its next refused grant (and reports `unprovenOwnershipMs() === 0`). What it keeps is a retirement
+record from this incarnation: a coordinator closed and re-registered inside the same process issued
+under the current incarnation, which the recall did not ask about.
+
+Three properties carry the argument, and the transport owes all three:
+
+- **Completeness is over the agreed ring**, never over whoever answered. A member that is
+  unreachable, rejects the operation (an older build), answers for another incarnation or generation,
+  or answers anything other than the exact confirmation leaves the round incomplete and the timer in
+  force. The round is retried while the thread coordinates the database and the incarnation stays
+  unattested; a later-built table coordinator benefits from the attestation too, which is why the
+  retries do not stop at the timer.
+- **Below, not "the previous incarnation".** A home that restarts twice inside one quarantine still
+  has its i-2 delegations live on members, and i-1 never granted anything to answer for. The member
+  filters on `token[1] < incarnation`, under the generation named by the request and the home named by
+  the authenticated caller, and the answer echoes both so the home can bind it.
+- **A late grant from the dead incarnation is surrendered, not admitted.** The member stamps every
+  request in flight to that home with the recalled bound before it waits on anything, so a reply that
+  was already in the socket when the home died is handed back on arrival (`PendingRequest.recalledBelow`).
+
+The attestation is per incarnation and not per generation: a live delegation from an earlier
+incarnation can only exist under the generation that incarnation last activated, and activation is
+durable before any grant, so the restarted incarnation reads the same generation; a later generation
+change drains under this section's transition and the incarnation has not changed. An incarnation
+change — a coordinating-worker handoff bumps it for every database the node coordinates — re-arms the
+quarantine and needs its own round. Freshness is untouched: a key whose lineage the restart lost still
+takes §7.2's recovery barrier.
 
 #### 4.4 Routing — exactly one algorithm
 
@@ -813,7 +852,12 @@ fail closed, not silently pass.
 The home holds the dependency set in memory, so a home restart, a generation change, or a delegate
 crash with no clean release loses it. **Open against harper-pro:** whether a durable copy is
 recoverable from the log within retention. If it is, that is a cheaper recovery than the barrier
-below and should be preferred.
+below and should be preferred. The §4.3 restart recall (harper#3254) deliberately does not seed the
+sets from the releases it provokes: a member writes its release before it answers, so a fast member's
+release reaches the home while another member is still draining and nothing yet expects it, and a
+seed installed when the round completes would never match it — the keys it targeted would silently
+take the barrier anyway. Seeding needs its own ordering state and proof; until then every key whose
+lineage the restart lost takes the barrier once.
 
 Without it, the first grant for a key carries a recovery marker, and the acquirer must instead **drain its
 inbound replication streams from every reachable member to the position each held at grant time**
