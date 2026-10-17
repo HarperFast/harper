@@ -132,4 +132,13 @@ describe('mcp/subscriptions', () => {
 		assert.deepEqual(restored, [URI], 'only the subscribable URI is restored');
 		assert.equal(_liveSubscriptionCount('s1'), 1);
 	});
+
+	it('keeps a durable URI when restoration throws so a later reconnect can retry it', async () => {
+		_setSubscribeImplForTest(async () => {
+			throw new Error('authorization service unavailable');
+		});
+		const retained = await restoreResourceSubscriptions('s1', [URI], USER);
+		assert.deepEqual(retained, [URI]);
+		assert.equal(_liveSubscriptionCount('s1'), 0);
+	});
 });
