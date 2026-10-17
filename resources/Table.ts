@@ -9196,10 +9196,7 @@ export function makeTable(options): TableResourceClass {
 			do {
 				// See if this is a transaction for our database and if so, use it
 				if (transaction.db?.path === primaryStore.path) {
-					if (
-						context?.timestamp &&
-						((transaction.commitsInFlight ?? 0) > 0 || context.timestamp !== transaction.lastContextTimestamp)
-					) {
+					if (transaction.saveCommits && context?.timestamp && context.timestamp !== transaction.lastContextTimestamp) {
 						transaction.timestamp = context.timestamp;
 						transaction.lastContextTimestamp = context.timestamp;
 					}
@@ -9268,10 +9265,6 @@ export function makeTable(options): TableResourceClass {
 					if (transaction.timedOut) transaction.next.timedOut = true;
 					if (transaction.disconnected) transaction.next.disconnected = true;
 					if (transaction.postSubmitPoisoned) transaction.next.postSubmitPoisoned = true;
-					if (transaction.timestamp) {
-						transaction.next.timestamp = transaction.timestamp;
-						transaction.next.lastContextTimestamp = transaction.lastContextTimestamp;
-					}
 					transaction = transaction.next;
 					transaction.db = primaryStore;
 					return transaction;
