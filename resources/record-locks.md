@@ -677,7 +677,7 @@ its next refused grant (and reports `unprovenOwnershipMs() === 0`). What it keep
 record from this incarnation: a coordinator closed and re-registered inside the same process issued
 under the current incarnation, which the recall did not ask about.
 
-Three properties carry the argument, and the transport owes all three:
+Four properties carry the argument, and the transport owes all four:
 
 - **Completeness is over the agreed ring**, never over whoever answered. A member that is
   unreachable, rejects the operation (an older build), answers for another incarnation or generation,
@@ -689,6 +689,11 @@ Three properties carry the argument, and the transport owes all three:
   has its i-2 delegations live on members, and i-1 never granted anything to answer for. The member
   filters on `token[1] < incarnation`, under the generation named by the request and the home named by
   the authenticated caller, and the answer echoes both so the home can bind it.
+- **The local answer covers every thread.** A member's own sweep runs on its coordinating thread
+  and cannot see a handle a sibling thread holds under a relayed admission, so on a
+  coordinating-worker takeover the transport fences every sibling's relayed handles before it counts
+  this node's answer, and moves ownership only once the previous owner thread has exited (its own
+  handles die with it, and an exit commits nothing out of submission order).
 - **A late grant from the dead incarnation is surrendered, not admitted.** The member stamps every
   request in flight to that home with the recalled bound before it waits on anything, so a reply that
   was already in the socket when the home died is handed back on arrival (`PendingRequest.recalledBelow`).

@@ -3869,6 +3869,38 @@ describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
 			assert.strictEqual(reply.granted, true, 'the empty replacement relabelled incarnation 1 grants as incarnation 2');
 		});
 
+		it('holds a key whose own delegation is still fencing a sibling handle after a close', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('alpha');
+			const node = cluster.node('alpha');
+			const round = await node.coordinator.acquire(key, LEASE, WAIT);
+			let releaseFence;
+			node.coordinator.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
+			node.coordinator.release(key, round.admissionId);
+			node.coordinator.close();
+			const successor = new LockCoordinator({
+				database: cluster.database,
+				table: cluster.table,
+				nodeId: 'alpha',
+				transport: node.coordinator.transport,
+				writeControl: cluster.writeControlFor('alpha'),
+				keyIdOf: (k) => String(k),
+				nextTimestamp: () => ++cluster.tsCounter,
+				monotonic: () => node.mono + performance.now(),
+				grantableAfterMono: -Infinity,
+				autoTick: false,
+			});
+			node.coordinator = successor;
+			const held = await successor.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(held.granted, false, 'granted while the closed coordinator was still fencing a handle');
+			assert.strictEqual(held.reason, 'contended');
+			releaseFence();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			const after = await successor.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(after.granted, true);
+			successor.close();
+		});
+
 		it('a transport without the hook, or one that throws, keeps the timer', async () => {
 			const plain = restarted({ transport: { quiescedIncarnation: undefined } });
 			assert.strictEqual((await request(plain)).reason, 'quarantine');
@@ -4016,8 +4048,14 @@ describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
 				alpha.close();
 				await new Promise((resolve) => setTimeout(resolve, 30));
 				assert.strictEqual(settled, false, 'the sweep answered while the handle on the other worker was unfenced');
+				assert.strictEqual(
+					cluster.node('alpha').written.some((e) => e.type === 'lockRelease'),
+					false,
+					'the release was written before the fence the close fired had landed'
+				);
 				releaseFence();
 				await sweep;
+				assert.strictEqual(cluster.node('alpha').written.filter((e) => e.type === 'lockRelease').length, 1);
 			} finally {
 				unregisterClusterLockTransport(cluster.database, true);
 			}
