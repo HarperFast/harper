@@ -63,7 +63,7 @@ const MAX_RETRIES = 40;
 export const COMMIT_PHASE_GRACE = 10;
 // Cap the per-retry backoff so replication-applied transactions, which retry conflicts without a
 // cap (see the commit rejection handler), don't grow the delay unbounded.
-const MAX_RETRY_DELAY_MS = 1000;
+let MAX_RETRY_DELAY_MS = 1000;
 // Every native write commit currently outstanding on this worker thread, oldest first.
 // checkOverloaded() sheds new application writes once the OLDEST of these has been outstanding
 // past MAX_OUTSTANDING_TXN_DURATION, so a commit whose promise never settles (harper#2001) is
@@ -946,6 +946,7 @@ export class DatabaseTransaction implements Transaction {
 	declare ownedReadIterators?: Set<OwnedReadIterator>;
 	// Depth of commit() attempts on this link that have not reached a native outcome.
 	commitsInFlight = 0;
+	declare activeCommitHandles?: Set<RocksTransaction>;
 	// A poison landed while a commit was already in flight somewhere in the chain. Excuses the head's
 	// cascade into `next`, but not a link the monitor poisoned BEFORE any commit started.
 	declare poisonedMidCommit?: boolean;
@@ -1339,15 +1340,25 @@ export class DatabaseTransaction implements Transaction {
 		commitStartedAt?: number;
 		commitOverdueLogged?: boolean;
 	} {
-		if (this.saveCommits && !this.root && !this.next && transaction) {
-			const txn = transaction as RocksTransactionWithRetry;
-			if (txn.commitStartedAt == null && this.commitStartedAt != null) {
+		const txn = transaction as RocksTransactionWithRetry | null | undefined;
+		if (txn?.commitStartedAt != null) return txn;
+		if (this.saveCommits && !this.root && !this.next && txn) {
+			if (this.commitStartedAt != null && !this.hasSiblingCommitInFlight(transaction ?? undefined)) {
 				txn.commitStartedAt = this.commitStartedAt;
 				this.commitStartedAt = undefined;
 			}
 			return txn;
 		}
 		return this.root ?? this;
+	}
+
+	private hasSiblingCommitInFlight(targetTransaction?: RocksTransaction): boolean {
+		const active = this.activeCommitHandles;
+		if (!active || active.size === 0) return false;
+		for (const handle of active) {
+			if (handle !== targetTransaction) return true;
+		}
+		return false;
 	}
 
 	/**
@@ -1379,7 +1390,7 @@ export class DatabaseTransaction implements Transaction {
 	private noteCommittedLockVersions(committedTransaction?: RocksTransaction): void {
 		const recordLocks = this.recordLocks;
 		if (!recordLocks) return;
-		const filterByStagedOn = Boolean(committedTransaction || (this.commitsInFlight ?? 0) > 1);
+		const filterByStagedOn = Boolean(committedTransaction || this.hasSiblingCommitInFlight(committedTransaction));
 		for (const write of this.writes) {
 			if (filterByStagedOn && write?.stagedOn && write.stagedOn !== committedTransaction) continue;
 			if (write?.appliedRecordVersion == null) continue;
@@ -1395,8 +1406,9 @@ export class DatabaseTransaction implements Transaction {
 	 * are removed while another native commit is still in flight.
 	 */
 	clearWrites(committedTransaction?: RocksTransaction): void {
+		if (committedTransaction) this.activeCommitHandles?.delete(committedTransaction);
 		if (
-			(this.commitsInFlight ?? 0) > 1 &&
+			this.hasSiblingCommitInFlight(committedTransaction) &&
 			this.writes.some((write) => write?.stagedOn && write.stagedOn !== committedTransaction)
 		) {
 			for (const write of [...this.writes]) {
@@ -1411,6 +1423,7 @@ export class DatabaseTransaction implements Transaction {
 			}
 			return;
 		}
+		this.activeCommitHandles?.clear();
 		// A deferred write's `stagedIn` must not outlive this transaction's ability to commit it: save() can
 		// fire after a commit or abort, and routing it back here would revive a write this transaction
 		// already rolled back — whose blobs abort() has reclaimed. Cleared here, save() resolves the
@@ -2096,6 +2109,7 @@ export class DatabaseTransaction implements Transaction {
 	private endCommitAttempt(): void {
 		this.commitsInFlight--;
 		if (!this.commitsInFlight) {
+			this.activeCommitHandles?.clear();
 			this.nativeCommitSubmitted = false;
 			this.nativeCommitAttemptEnded();
 		}
@@ -2194,7 +2208,9 @@ export class DatabaseTransaction implements Transaction {
 				)
 					continue;
 				this.save(operation, transaction, i < this.validated, options);
+				if (!transaction) transaction = this.transaction;
 			}
+			if (transaction) (this.activeCommitHandles ??= new Set()).add(transaction);
 		} catch (error) {
 			// abort() releases only this.transaction; a retry round's handle was detached before its
 			// first submission and would otherwise hold its write intents until GC.
@@ -2292,6 +2308,8 @@ export class DatabaseTransaction implements Transaction {
 							const retries = ((transaction as RocksTransactionWithRetry | undefined)?.retries ?? this.retries) + 1;
 							(replayTransaction as RocksTransactionWithRetry).retries = retries;
 							this.retries = retries; // a replay round: commit handlers re-base on the reloaded entries
+							if (transaction) this.activeCommitHandles?.delete(transaction);
+							(this.activeCommitHandles ??= new Set()).add(replayTransaction);
 							try {
 								for (const operation of this.writes) {
 									this.save(operation, replayTransaction, true, options);
@@ -2313,8 +2331,8 @@ export class DatabaseTransaction implements Transaction {
 						this.refuseUnconfirmable(transaction);
 						this.assertDatabaseCommitAllowed(transaction);
 						this.markNativeCommitSubmitted();
-						if (this.hasLeaseProtectedWrite) this.retainTransactionLockHolds(transaction);
 						commitResolution = transaction.commit() as Promise<void>;
+						if (this.hasLeaseProtectedWrite) this.retainTransactionLockHolds(transaction);
 						recordCommitLatency(commitResolution, performance.now());
 						// Write-queue-depth accounting for this replay commit happens uniformly below, via
 						// trackOutstandingCommit(commitResolution) — see that function's comment. Omitting
@@ -2376,8 +2394,8 @@ export class DatabaseTransaction implements Transaction {
 							// Promise<number | void>; it is handled in the resolve callback below.
 							this.assertDatabaseCommitAllowed(transaction);
 							this.markNativeCommitSubmitted();
-							if (this.hasLeaseProtectedWrite) this.retainTransactionLockHolds(transaction);
 							commitResolution = transaction.commit();
+							if (this.hasLeaseProtectedWrite) this.retainTransactionLockHolds(transaction);
 							// Record how long this commit stays outstanding (submit → settle) as a distribution
 							// metric. This is the same clock the overload check uses (trackOutstandingCommit
 							// stamps each attempt at submit), so a rising p99/p999 is the leading indicator for the
@@ -2527,7 +2545,7 @@ export class DatabaseTransaction implements Transaction {
 							}
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.clearWrites(committedTransaction);
-							this.retries = 0; // reset the last-seen retry counter so a reused DatabaseTransaction's next batch starts fresh (per-handle counts live on transaction.retries)
+							this.retries = 0;
 							if (options.doneWriting) this.endScopeOwnership();
 							this.releaseContext(!!options.doneWriting);
 							let txnTime =
@@ -2634,6 +2652,9 @@ export class DatabaseTransaction implements Transaction {
 								// terminal (non-conflict) failure: release the native handle so it doesn't leak;
 								// usually already released by the failed commit itself, abort for the unexpected
 								// case (same defensive pattern as the retry-exhaustion give-up above)
+								if ((error as any)?.hasLog) {
+									(transaction as RocksTransactionWithRetry).isRetry = true;
+								}
 								abortNativeTransaction(
 									transaction,
 									'aborting transaction after failed commit',
@@ -2647,7 +2668,7 @@ export class DatabaseTransaction implements Transaction {
 								// finished and its durability is unknown, so ownership goes with it.
 								this.endScopeOwnership();
 								this.releaseContext(!!options.doneWriting);
-								if (!hasDurableLog(transaction)) {
+								if (!hasDurableLog(transaction) && !(error as any)?.hasLog) {
 									for (const write of this.writes) {
 										if (!write?.savedBlobs || (write.stagedOn && write.stagedOn !== transaction)) continue;
 										cleanupUnusedBlobs(
@@ -2672,7 +2693,7 @@ export class DatabaseTransaction implements Transaction {
 					// silence the unhandled-rejection that surfaces it.
 					return commitOutcome.then(
 						(resolution) => {
-							if ((this.commitsInFlight ?? 0) <= 1 && !this.next) {
+							if (!this.hasSiblingCommitInFlight(transaction) && !this.next) {
 								const chainRoot = this.root ?? this;
 								chainRoot.commitStartedAt = undefined;
 								chainRoot.commitOverdueLogged = undefined;
@@ -2681,7 +2702,7 @@ export class DatabaseTransaction implements Transaction {
 						},
 						(error) => {
 							releaseTransactionLockHolds(transaction);
-							if ((this.commitsInFlight ?? 0) <= 1 && !this.next) {
+							if (!this.hasSiblingCommitInFlight(transaction) && !this.next) {
 								const chainRoot = this.root ?? this;
 								chainRoot.commitStartedAt = undefined;
 								chainRoot.commitOverdueLogged = undefined;
@@ -2691,19 +2712,19 @@ export class DatabaseTransaction implements Transaction {
 					);
 				}
 				for (const write of this.writes) {
-					if ((this.commitsInFlight ?? 0) > 1 && write?.stagedOn) continue;
+					if (this.hasSiblingCommitInFlight(transaction) && write?.stagedOn && write.stagedOn !== transaction) continue;
 					if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
-				if (this.recordLocks) this.noteCommittedLockVersions();
-				this.clearWrites();
+				if (this.recordLocks) this.noteCommittedLockVersions(transaction);
+				this.clearWrites(transaction);
 				this.releaseRecordLocks();
 				if (options.doneWriting) this.endScopeOwnership();
 				this.releaseContext(!!options.doneWriting);
 				const txnResolution: CommitResolution = {
 					txnTime: this.timestamp,
 				};
-				if (this.writes.length === 0) this.timestamp = 0; // reset like the async path (~1279) so stale lock stamps don't persist
+				if (this.writes.length === 0) this.timestamp = 0;
 				if (this.next) {
 					// now run any other transactions
 					options.timestamp = txnResolution.txnTime;
@@ -2855,7 +2876,7 @@ export class DatabaseTransaction implements Transaction {
 			this.open = TRANSACTION_STATE.CLOSED;
 			this.drainCompletions();
 			const preserveSiblingWrites = Boolean(
-				(this.commitsInFlight ?? 0) > 1 &&
+				this.hasSiblingCommitInFlight(targetTransaction) &&
 				this.writes.some((write) => write?.stagedOn && write.stagedOn !== targetTransaction)
 			);
 			const targetLogged = hasDurableLog(targetTransaction);
@@ -2953,7 +2974,10 @@ export class DatabaseTransaction implements Transaction {
 	 * When a durably logged commit exceeds its conflict budget, it cannot be abandoned (its log entry
 	 * is already on disk). Bound how long its deferred record-lock holds can block peers or local
 	 * contenders by releasing them at the budget boundary (`holdBudgetSpent` prevents later retry
-	 * rounds from re-retaining them), and log once per chain and per rate-limit window.
+	 * rounds from re-retaining them), and log once per chain and per rate-limit window. While the
+	 * logged commit remains uncommitted, its position in `uncommittedPositions` also pins the
+	 * database's `'local'` transaction-log read watermark (`RocksTransactionLogStore`), stalling live
+	 * subscriptions and outbound replication behind the conflicting write intent.
 	 */
 	private noteOverdueLoggedCommit(headTransaction: RocksTransaction, elapsedMs: number): void {
 		(headTransaction as RocksTransactionWithRetry).holdBudgetSpent = true;
@@ -2972,7 +2996,8 @@ export class DatabaseTransaction implements Transaction {
 				`.` +
 				describeHolderCandidates(this.writes[0]?.store?.rootStore?.path, headTransaction?.id) +
 				` Because its transaction-log entry is already durable on disk, it cannot be aborted and ` +
-				`will continue retrying until the conflicting write intent releases.`
+				`will continue retrying until the conflicting write intent releases (pinning the local ` +
+				`transaction-log read watermark for subscriptions and replication while uncommitted).`
 		);
 	}
 
@@ -3653,6 +3678,12 @@ export function resetReplayedWritesWarning() {
 export function setMaxOutstandingTxnDuration(ms: number): number {
 	const previous = MAX_OUTSTANDING_TXN_DURATION;
 	MAX_OUTSTANDING_TXN_DURATION = ms;
+	return previous;
+}
+
+export function setMaxRetryDelayMs(ms: number): number {
+	const previous = MAX_RETRY_DELAY_MS;
+	MAX_RETRY_DELAY_MS = ms;
 	return previous;
 }
 
