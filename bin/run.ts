@@ -13,7 +13,7 @@ import * as path from 'path';
 import checkJwtTokens from '../utility/install/checkJWTTokensExist.js';
 import { install } from '../utility/install/installer.ts';
 import chalk from 'chalk';
-import { packageJson } from '../utility/packageUtils.js';
+import { packageJson, PRODUCT_NAME } from '../utility/packageUtils.js';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as installation from '../utility/installation.ts';
 import * as configUtils from '../config/configUtils.ts';
@@ -37,13 +37,12 @@ let pmUtils;
 let cmdArgs;
 let skipExitListeners = false;
 
-const UPGRADE_COMPLETE_MSG = 'Upgrade complete. Starting Harper.';
-const UPGRADE_ERR = 'Got an error while trying to upgrade your Harper instance. Exiting Harper.';
-const HDB_NOT_FOUND_MSG = 'Harper not found, starting install process.';
+const UPGRADE_COMPLETE_MSG = `Upgrade complete. Starting ${PRODUCT_NAME}.`;
+const UPGRADE_ERR = `Got an error while trying to upgrade your ${PRODUCT_NAME} instance. Exiting ${PRODUCT_NAME}.`;
+const HDB_NOT_FOUND_MSG = `${PRODUCT_NAME} not found, starting install process.`;
 const INSTALL_ERR = 'There was an error during install. Exiting.';
-const HDB_STARTED = 'Harper successfully started.';
-const SAFE_MODE_MSG =
-	'Harper is running in safe mode (HARPER_SAFE_MODE); user applications and components will not be loaded.';
+const HDB_STARTED = `${PRODUCT_NAME} successfully started.`;
+const SAFE_MODE_MSG = `${PRODUCT_NAME} is running in safe mode (HARPER_SAFE_MODE); user applications and components will not be loaded.`;
 
 function addUnhandleRejectionListener() {
 	process.on('unhandledRejection', (reason, promise) => {
@@ -57,7 +56,7 @@ function addExitListeners() {
 			try {
 				fs.removeSync(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE));
 			} catch (error) {
-				hdbLogger.error('Unable to remove the Harper pid file during shutdown', error);
+				hdbLogger.error(`Unable to remove the ${PRODUCT_NAME} pid file during shutdown`, error);
 			}
 		};
 		// Forward defence, not load-bearing today: nothing below can reach a worker start.
@@ -84,7 +83,7 @@ function addExitListeners() {
  */
 async function initialize(calledByInstall = false, calledByMain = false) {
 	// Check to see if HDB is installed, if it isn't we call install.
-	console.log(chalk.magenta('Starting Harper...'));
+	console.log(chalk.magenta(`Starting ${PRODUCT_NAME}...`));
 
 	// Display read-only mode warning early, before database initialization
 	if (isReadOnlyMode()) {
@@ -149,8 +148,8 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	// If found confirm it matches a currently running processes
 	let hdbPid = getHdbPid();
 	if (hdbPid) {
-		hdbLogger.debug('Error: Harper is already running');
-		console.error(`Error: Harper is already running (pid: ${hdbPid})`);
+		hdbLogger.debug(`Error: ${PRODUCT_NAME} is already running`);
+		console.error(`Error: ${PRODUCT_NAME} is already running (pid: ${hdbPid})`);
 		process.exit(4);
 	}
 
@@ -160,7 +159,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 		// Write Harper PID to file for tracking purposes
 		await fs.writeFile(path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE), `${process.pid}`);
 	}
-	hdbLogger.info('Harper PID', process.pid);
+	hdbLogger.info(`${PRODUCT_NAME} PID`, process.pid);
 
 	// Check to see if an upgrade is needed based on existing hdbInfo data. If so, we need to force the user to upgrade
 	// before the server can be started.
@@ -175,7 +174,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	} catch (err) {
 		if (upgradeVers) {
 			console.error(
-				`Got an error while trying to upgrade your Harper instance to version ${upgradeVers}. Exiting Harper.`,
+				`Got an error while trying to upgrade your ${PRODUCT_NAME} instance to version ${upgradeVers}. Exiting ${PRODUCT_NAME}.`,
 				err
 			);
 			hdbLogger.error(err);
@@ -257,7 +256,7 @@ async function main(calledByInstall = false) {
 function started() {
 	// Console log Harper dog logo
 	hdbLogger.suppressLogging(() => {
-		console.log(chalk.magenta(`Harper ${packageJson.version} successfully started`));
+		console.log(chalk.magenta(`${PRODUCT_NAME} ${packageJson.version} successfully started`));
 	});
 	hdbLogger.notify(HDB_STARTED);
 }
