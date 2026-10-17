@@ -1089,21 +1089,161 @@ describe('Transactions are never aborted once durably written to the transaction
 			assert.strictEqual(AuditedA.primaryStore.getEntry(k3).value.writer, 'w3');
 		});
 
+		it('does not re-stage an in-flight nested write onto a sibling commit when both the nested write and the sibling commit retry', async function () {
+			this.timeout(20000);
+			const k1 = id('imm-retry-guard-1');
+			const k2 = id('imm-retry-guard-2');
+			const k3 = id('imm-retry-guard-3');
+			const baseNow = Date.now();
+			await putWithTimestamp(AuditedA, { id: k1, writer: 'seed', count: 0 }, baseNow - 10_000);
+			await putWithTimestamp(AuditedA, { id: k2, writer: 'seed', count: 0 }, baseNow - 10_000);
+			await putWithTimestamp(AuditedA, { id: k3, writer: 'seed', count: 0 }, baseNow - 10_000);
+
+			const targetDb = AuditedA.primaryStore.store.db;
+			const originalCommit = Transaction.prototype.commit;
+			let k1TxnId;
+			let k1InCommit = false;
+			let releaseK1;
+			const k1Gate = new Promise((resolve) => {
+				releaseK1 = resolve;
+			});
+			pendingRestores.push(() => releaseK1());
+
+			let k2TxnId;
+			let k2Attempt1Parked = false;
+			let releaseK2Attempt1;
+			const k2Attempt1Gate = new Promise((resolve) => {
+				releaseK2Attempt1 = resolve;
+			});
+			pendingRestores.push(() => releaseK2Attempt1());
+
+			let k2Attempt2Parked = false;
+			let releaseK2Attempt2;
+			const k2Attempt2Gate = new Promise((resolve) => {
+				releaseK2Attempt2 = resolve;
+			});
+			pendingRestores.push(() => releaseK2Attempt2());
+
+			let k3TxnId;
+			let k3Attempt2Seen = false;
+			let nextWriteStage = 'k1';
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+				if (nextWriteStage === 'k1' && k1TxnId === undefined) {
+					k1TxnId = this.id;
+					k1InCommit = true;
+					await k1Gate;
+					return originalCommit.apply(this, args);
+				}
+				if (nextWriteStage === 'k2' && k2TxnId === undefined) {
+					k2TxnId = this.id;
+					k2Attempt1Parked = true;
+					await k2Attempt1Gate;
+					await putWithTimestamp(AuditedA, { id: k2, writer: 'interposer-k2', count: 1 }, baseNow - 5_000);
+					return originalCommit.apply(this, args);
+				}
+				if (this.id === k2TxnId) {
+					k2Attempt2Parked = true;
+					await k2Attempt2Gate;
+					return originalCommit.apply(this, args);
+				}
+				if (nextWriteStage === 'k3' && k3TxnId === undefined) {
+					k3TxnId = this.id;
+					await putWithTimestamp(AuditedA, { id: k3, writer: 'interposer-k3', count: 1 }, baseNow - 5_000);
+					return originalCommit.apply(this, args);
+				}
+				if (this.id === k3TxnId) {
+					k3Attempt2Seen = Boolean(this.isRetry);
+					return originalCommit.apply(this, args);
+				}
+				return originalCommit.apply(this, args);
+			};
+			pendingRestores.push(() => {
+				Transaction.prototype.commit = originalCommit;
+			});
+
+			const holder1 = await AuditedA.lock(k1, { hold: true, lease: 10_000 });
+			const sharedCtx = holder1.getContext();
+			const holder2 = await AuditedA.lock(k2, { hold: true, lease: 10_000 }, sharedCtx);
+			const holder3 = await AuditedA.lock(k3, { hold: true, lease: 10_000 }, sharedCtx);
+
+			const k1AuditsBefore = auditEntriesFor(AuditedA, k1).length;
+			const k2AuditsBefore = auditEntriesFor(AuditedA, k2).length;
+			const k3AuditsBefore = auditEntriesFor(AuditedA, k3).length;
+
+			// 1. Start k1.save() so it holds isCommitting = true while parked on attempt 1.
+			holder1.set('writer', 'w1');
+			holder1.set('count', 10);
+			const k1SavePromise = holder1.save();
+			await waitFor(() => k1InCommit, { message: 'k1 commit should be parked in flight' });
+			assert.strictEqual(sharedCtx.transaction.isCommitting, true);
+
+			// 2. While k1 holds isCommitting = true, start k2.save() so it takes the nested
+			//    this.commit({ transaction: txn2 }) path and parks in attempt 1.
+			nextWriteStage = 'k2';
+			holder2.set('writer', 'w2');
+			holder2.set('count', 20);
+			const k2SavePromise = holder2.save();
+			await waitFor(() => k2Attempt1Parked, { message: 'k2 attempt 1 should be parked in flight' });
+
+			// 3. Let k1 finish first so isCommitting resets to false while k2 is still in flight.
+			releaseK1();
+			await k1SavePromise;
+			assert.strictEqual(sharedCtx.transaction.isCommitting, false);
+
+			// 4. Release k2 attempt 1 so it hits an interposed ERR_BUSY conflict, increments
+			//    sharedCtx.transaction.retries to 1, and parks inside attempt 2.
+			releaseK2Attempt1();
+			await waitFor(() => k2Attempt2Parked, { message: 'k2 retry attempt 2 should be parked in flight' });
+			assert.strictEqual(sharedCtx.transaction.isCommitting, false);
+			assert.strictEqual(sharedCtx.transaction.retries, 1);
+
+			// 5. While k2 is parked in attempt 2 (with sharedCtx.transaction.retries === 1), run k3.save()
+			//    through the top-level this.commit() path and force k3 itself to conflict and retry onto attempt 2.
+			nextWriteStage = 'k3';
+			holder3.set('writer', 'w3');
+			holder3.set('count', 30);
+			await holder3.save();
+			assert.strictEqual(k3Attempt2Seen, true, 'k3 must have retried onto a second native attempt');
+
+			releaseK2Attempt2();
+			await k2SavePromise;
+			await holder1.unlock();
+			await holder2.unlock();
+			await holder3.unlock();
+
+			const k1AuditsAfter = auditEntriesFor(AuditedA, k1).length;
+			const k2AuditsAfter = auditEntriesFor(AuditedA, k2).length;
+			const k3AuditsAfter = auditEntriesFor(AuditedA, k3).length;
+			assert.strictEqual(k1AuditsAfter - k1AuditsBefore, 1, 'k1 must only be committed once');
+			assert.strictEqual(
+				k2AuditsAfter - k2AuditsBefore,
+				2,
+				'k2 must have 2 audit entries (interposer + w2) and never be re-staged onto k3 attempt 1 or attempt 2'
+			);
+			assert.strictEqual(k3AuditsAfter - k3AuditsBefore, 2, 'k3 must have 2 audit entries (interposer + w3)');
+			assert.strictEqual(AuditedA.primaryStore.getEntry(k1).value.writer, 'w1');
+			assert.strictEqual(AuditedA.primaryStore.getEntry(k2).value.writer, 'w2');
+			assert.strictEqual(AuditedA.primaryStore.getEntry(k3).value.writer, 'w3');
+		});
+
 		it('allocates fresh monotonic timestamps for sequential plain writes sharing an ImmediateTransaction while a sibling commit is in flight', async function () {
 			this.timeout(15000);
 			const keyA = id('imm-ts-a');
 			const keyB = id('imm-ts-b');
 
+			const targetDb = AuditedA.primaryStore.store.db;
 			let nextWriteStage = 'b';
 			let bInCommit = false;
 			let releaseB;
 			const bGate = new Promise((resolve) => {
 				releaseB = resolve;
 			});
+			pendingRestores.push(() => releaseB());
 
 			const originalCommit = Transaction.prototype.commit;
 			Transaction.prototype.commit = function (...args) {
-				if (this.hasStagedLog && !this._immTsStage) {
+				if (this.store?.db === targetDb && this.hasStagedLog && !this._immTsStage) {
 					this._immTsStage = nextWriteStage;
 				}
 				if (this._immTsStage === 'b') {
@@ -1117,16 +1257,17 @@ describe('Transactions are never aborted once durably written to the transaction
 			});
 
 			const sharedCtx = {};
-			const bPromise = AuditedA.put({ id: keyB, writer: 'b', count: 1 }, sharedCtx);
+			const bPromise = new AuditedA(keyB, sharedCtx).put(keyB, { id: keyB, writer: 'b', count: 1 });
+			assert.strictEqual(sharedCtx.transaction.saveCommits, true);
 			await waitFor(() => bInCommit, { message: 'write B should be parked inside native commit()' });
 
 			nextWriteStage = 'a1';
-			await AuditedA.put({ id: keyA, writer: 'v1', count: 1 }, sharedCtx);
+			await new AuditedA(keyA, sharedCtx).put(keyA, { id: keyA, writer: 'v1', count: 1 });
 			const v1Entry = AuditedA.primaryStore.getEntry(keyA);
 			assert.strictEqual(v1Entry.value.writer, 'v1');
 
 			nextWriteStage = 'a2';
-			await AuditedA.put({ id: keyA, writer: 'v2', count: 2 }, sharedCtx);
+			await new AuditedA(keyA, sharedCtx).put(keyA, { id: keyA, writer: 'v2', count: 2 });
 			const v2Entry = AuditedA.primaryStore.getEntry(keyA);
 			assert.strictEqual(v2Entry.value.writer, 'v2');
 			assert.strictEqual(v2Entry.value.count, 2);
@@ -1138,6 +1279,76 @@ describe('Transactions are never aborted once durably written to the transaction
 			releaseB();
 			await bPromise;
 			assert.strictEqual(AuditedA.primaryStore.getEntry(keyB).value.writer, 'b');
+		});
+
+		it('preserves explicit context and transaction timestamps across sequential writes on a reused ImmediateTransaction', async function () {
+			this.timeout(15000);
+			const keyA = id('imm-explicit-ts-a');
+			const keyB = id('imm-explicit-ts-b');
+			const keyC = id('imm-explicit-ts-c');
+			const keyD = id('imm-explicit-ts-d');
+
+			const targetDb = AuditedA.primaryStore.store.db;
+			let nextWriteStage = 'a';
+			let aInCommit = false;
+			let releaseA;
+			const aGate = new Promise((resolve) => {
+				releaseA = resolve;
+			});
+			pendingRestores.push(() => releaseA());
+
+			const originalCommit = Transaction.prototype.commit;
+			Transaction.prototype.commit = function (...args) {
+				if (this.store?.db === targetDb && this.hasStagedLog && !this._immExplicitTsStage) {
+					this._immExplicitTsStage = nextWriteStage;
+				}
+				if (this._immExplicitTsStage === 'a') {
+					aInCommit = true;
+					return aGate.then(() => originalCommit.apply(this, args));
+				}
+				return originalCommit.apply(this, args);
+			};
+			pendingRestores.push(() => {
+				Transaction.prototype.commit = originalCommit;
+			});
+
+			const explicitCtxTs = Date.now() + 60_000;
+			const sharedCtx = { timestamp: explicitCtxTs };
+			const aPromise = new AuditedA(keyA, sharedCtx).put(keyA, { id: keyA, writer: 'w1', count: 1 });
+			assert.strictEqual(sharedCtx.transaction.saveCommits, true);
+			await waitFor(() => aInCommit, { message: 'write A should be parked inside native commit()' });
+
+			nextWriteStage = 'b';
+			await new AuditedA(keyB, sharedCtx).put(keyB, { id: keyB, writer: 'w2', count: 2 });
+			assert.strictEqual(
+				AuditedA.primaryStore.getEntry(keyB).version,
+				explicitCtxTs,
+				'concurrent write sharing a context with explicit timestamp must preserve context.timestamp'
+			);
+
+			releaseA();
+			await aPromise;
+			assert.strictEqual(AuditedA.primaryStore.getEntry(keyA).version, explicitCtxTs);
+
+			nextWriteStage = 'c';
+			await new AuditedA(keyC, sharedCtx).put(keyC, { id: keyC, writer: 'w3', count: 3 });
+			assert.strictEqual(
+				AuditedA.primaryStore.getEntry(keyC).version,
+				explicitCtxTs,
+				'subsequent write after in-flight writes drain must still preserve context.timestamp on a reused ImmediateTransaction'
+			);
+
+			const explicitTxnTs = explicitCtxTs + 5_000;
+			const txnTsCtx = {};
+			await new AuditedA(keyD, txnTsCtx).put(keyD, { id: keyD, writer: 'seed', count: 0 });
+			assert.strictEqual(txnTsCtx.transaction.saveCommits, true);
+			txnTsCtx.transaction.timestamp = explicitTxnTs;
+			await new AuditedA(keyD, txnTsCtx).put(keyD, { id: keyD, writer: 'w4', count: 4 });
+			assert.strictEqual(
+				AuditedA.primaryStore.getEntry(keyD).version,
+				explicitTxnTs,
+				'explicitly assigning ctx.transaction.timestamp before a write must survive ImmediateTransaction reuse'
+			);
 		});
 	});
 

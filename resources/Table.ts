@@ -8917,7 +8917,10 @@ export function makeTable(options): TableResourceClass {
 			}
 			do {
 				// See if this is a transaction for our database and if so, use it
-				if (transaction.db?.path === primaryStore.path) return transaction;
+				if (transaction.db?.path === primaryStore.path) {
+					if (context?.timestamp && transaction.saveCommits) transaction.timestamp = context.timestamp;
+					return transaction;
+				}
 				// try the next one:
 				let nextTxn = transaction.next;
 				// A self-committing link is CLOSED once it has committed, and a further write through it
@@ -8983,6 +8986,7 @@ export function makeTable(options): TableResourceClass {
 					if (transaction.postSubmitPoisoned) transaction.next.postSubmitPoisoned = true;
 					transaction = transaction.next;
 					transaction.db = primaryStore;
+					if (context?.timestamp && transaction.saveCommits) transaction.timestamp = context.timestamp;
 					return transaction;
 				}
 				transaction = nextTxn;

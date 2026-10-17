@@ -607,9 +607,9 @@ export type TransactionWrite = {
 	// Lock handle set by Table._writeUpdate when the write is staged through a held record lock;
 	// used in DatabaseTransaction.save() to assign and track that handle's write versions.
 	lockHandle?: RecordLockHandle;
-	// Per-operation holder version, set once on first save() and reused on retry so that
-	// ImmediateTransaction's sequential immediateCommit saves don't collide: each write carries its
-	// own stamp independently of this.timestamp, which may not reset to 0 between saves.
+	// Per-operation holder version, set once on first save() and reused on retry so each lock write
+	// keeps its own candidate version across retries instead of falling back to stagedTxnTime or an
+	// explicit this.timestamp shared on the transaction.
 	lockStamp?: number;
 	// Version staged by a write that actually changed the record this round. It advances any
 	// same-key held handle's floor only after the native transaction commits successfully.
@@ -775,6 +775,7 @@ export class DatabaseTransaction implements Transaction {
 	stagesWriteOnSave = true;
 	validated = 0;
 	timestamp = 0;
+	declare explicitTimestamp?: boolean;
 	retries = 0;
 	declare next: DatabaseTransaction;
 	// The head of this multi-store chain, set when the link is created; absent on the head itself.
@@ -1309,8 +1310,9 @@ export class DatabaseTransaction implements Transaction {
 	private noteCommittedLockVersions(committedTransaction?: RocksTransaction): void {
 		const recordLocks = this.recordLocks;
 		if (!recordLocks) return;
+		const filterByStagedOn = Boolean(committedTransaction || (this.commitsInFlight ?? 0) > 1);
 		for (const write of this.writes) {
-			if (committedTransaction && write?.stagedOn && write.stagedOn !== committedTransaction) continue;
+			if (filterByStagedOn && write?.stagedOn && write.stagedOn !== committedTransaction) continue;
 			if (write?.appliedRecordVersion == null) continue;
 			const handle = write.lockHandle ?? recordLocks.get(write.store)?.get(writeKeyId(write.key));
 			if (handle && !handle.released) handle.noteHolderVersion(write.appliedRecordVersion);
@@ -1325,7 +1327,6 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	clearWrites(committedTransaction?: RocksTransaction): void {
 		if (
-			committedTransaction &&
 			(this.commitsInFlight ?? 0) > 1 &&
 			this.writes.some((write) => write?.stagedOn && write.stagedOn !== committedTransaction)
 		) {
@@ -1727,7 +1728,7 @@ export class DatabaseTransaction implements Transaction {
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
 		operation.stagedTime ??= txnTime;
 		if (!operation.lockStamp) (transaction as RocksTransactionWithRetry).stagedTxnTime ??= txnTime;
-		if (this.saveCommits && !(this.getContext() as any)?.timestamp) this.timestamp = 0;
+		if (this.saveCommits && !this.explicitTimestamp && !(this.getContext() as any)?.timestamp) this.timestamp = 0;
 		if (!operation.saved && operation.pendingPriorWrite) {
 			const pendingWrites = [];
 			for (let pending = operation.pendingPriorWrite; pending;) {
@@ -1755,7 +1756,7 @@ export class DatabaseTransaction implements Transaction {
 		// An entry read uncached through this same pinned-snapshot handle is already that base, until a retry resets
 		// the snapshot or an earlier staged write to the key changes what a read returns; the resource withholds the
 		// handle once its entry was replaced or evicted, and locked, snapshot-free and replayed writes always reload.
-		const txnRetries = (transaction as RocksTransactionWithRetry | undefined)?.retries ?? this.retries;
+		const txnRetries = (transaction as RocksTransactionWithRetry | undefined)?.retries ?? 0;
 		const reusesBaseRead =
 			operation.baseReadTxn === transaction &&
 			txnRetries === 0 &&
@@ -1833,7 +1834,7 @@ export class DatabaseTransaction implements Transaction {
 				completion = operation.commit(
 					writeVersion,
 					operation.entry,
-					wasSaved && txnRetries > 0,
+					(wasSaved || this.isReplay) && txnRetries > 0,
 					transaction,
 					this
 				) as Promise<void>;
@@ -2500,7 +2501,7 @@ export class DatabaseTransaction implements Transaction {
 							}
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.clearWrites(committedTransaction);
-							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
+							this.retries = 0; // reset the last-seen retry counter so a reused DatabaseTransaction's next batch starts fresh (per-handle counts live on transaction.retries)
 							if (options.doneWriting) this.endScopeOwnership();
 							this.releaseContext(!!options.doneWriting);
 							let txnTime =
@@ -2672,6 +2673,7 @@ export class DatabaseTransaction implements Transaction {
 					);
 				}
 				for (const write of this.writes) {
+					if ((this.commitsInFlight ?? 0) > 1 && write?.stagedOn) continue;
 					if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
@@ -3177,10 +3179,10 @@ export class ImmediateTransaction extends DatabaseTransaction {
 	}
 	save(...args: any[]): any {
 		const operation = args[0]; // the staged write, not a transaction — commit() re-enters here with it
-		if (this.isCommitting) {
+		if (this.isCommitting || args[1] || args[3]) {
 			// Stage into the transaction commit() is committing (on a retry round, the one being retried)
 			// and reload within it; with no handle super.save() would open its own and nest a commit().
-			super.save(operation, args[1], true);
+			super.save(operation, args[1], true, args[3]);
 		} else {
 			this.admitRequestWrite(); // a deferred save reaches here without passing through addWrite()
 			this.isCommitting = true;
@@ -3228,6 +3230,7 @@ export class ImmediateTransaction extends DatabaseTransaction {
 	}
 	set timestamp(value: number) {
 		this._timestamp = value;
+		this.explicitTimestamp = value > 0;
 	}
 	getReadTxn(): any {
 		return; // no transaction means read latest
