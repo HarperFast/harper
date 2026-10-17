@@ -988,7 +988,7 @@ class DerivedIndexRunner {
 		try {
 			acquired = this.#logStore.tryLock(this.#lockKey);
 		} catch (error) {
-			logger.error(`Derived index '${this.id}' could not attempt the runner lock; retrying`, error);
+			logger.error?.(`Derived index '${this.id}' could not attempt the runner lock; retrying`, error);
 			this.#lockBackoff = true;
 			// Replace an armed contention retry rather than inheriting its deadline.
 			clearTimeout(this.#lockRetryTimer);
@@ -1725,7 +1725,7 @@ class DerivedIndexRunner {
 			return true;
 		} catch (error) {
 			// Without the marker a crash mid-reset would reopen on the condemned cursor, so no reset runs.
-			logger.error(`Derived index '${this.id}' could not persist its condemnation`, error);
+			logger.error?.(`Derived index '${this.id}' could not persist its condemnation`, error);
 			return false;
 		}
 	}
@@ -1736,14 +1736,14 @@ class DerivedIndexRunner {
 			this.#condemned = this.#logStore.rootStore.getSync(this.#markerKey) !== undefined;
 			return this.#condemned;
 		} catch (error) {
-			logger.error(`Derived index '${this.id}' could not read its condemnation marker`, error);
+			logger.error?.(`Derived index '${this.id}' could not read its condemnation marker`, error);
 			return true;
 		}
 	}
 
 	/** No rebuild attempt is spent on a refused marker; the next acquirer retries it before any reset. */
 	#deferForCondemnation(code: DerivedIndexReadinessReason) {
-		logger.error(`Derived index '${this.id}' condemnation could not be persisted; retrying at the next wake`);
+		logger.error?.(`Derived index '${this.id}' condemnation could not be persisted; retrying at the next wake`);
 		const reason = this.status.state === 'needs-rebuild' ? this.status.reason : 'condemnation not persisted';
 		this.status = { state: 'needs-rebuild', reason, ownerEpoch: this.#ownerEpoch };
 		this.#publishReadiness('needs-rebuild', code);
@@ -1763,7 +1763,7 @@ class DerivedIndexRunner {
 			this.#logStore.rootStore.removeSync(this.#markerKey);
 			this.#condemned = false;
 		} catch (error) {
-			logger.error(`Derived index '${this.id}' could not clear its condemnation marker`, error);
+			logger.error?.(`Derived index '${this.id}' could not clear its condemnation marker`, error);
 		}
 	}
 
@@ -1810,7 +1810,7 @@ class DerivedIndexRunner {
 			return;
 		}
 		if (this.status.state !== 'needs-rebuild')
-			logger.error(`Derived index '${this.#registration.backend.id}' needs rebuild: ${reason}`, error);
+			logger.error?.(`Derived index '${this.#registration.backend.id}' needs rebuild: ${reason}`, error);
 		this.status = { state: 'needs-rebuild', reason, ownerEpoch: this.#ownerEpoch };
 		this.#discardProgress();
 		if (!this.#owned) return;
@@ -1835,7 +1835,7 @@ class DerivedIndexRunner {
 	}
 
 	#becomeUnavailable(reason: string, code: DerivedIndexReadinessReason, error?: unknown) {
-		logger.error(
+		logger.error?.(
 			`Derived index '${this.#registration.backend.id}' is unavailable after ${this.#rebuildAttempts} rebuild attempts: ${reason}`,
 			error
 		);
@@ -2088,7 +2088,7 @@ class DerivedIndexRunner {
 			this.#becomeUnavailable(reason, code, error);
 			return;
 		}
-		logger.error(
+		logger.error?.(
 			`Derived index '${this.#registration.backend.id}' rebuild attempt ${this.#rebuildAttempts} failed: ${reason}`,
 			error
 		);
@@ -2152,7 +2152,7 @@ class DerivedIndexRunner {
 			try {
 				this.#logStore.unlock(this.#lockKey);
 			} catch (error) {
-				logger.error(`Failed to release derived index runner '${backend.id}'`, error);
+				logger.error?.(`Failed to release derived index runner '${backend.id}'`, error);
 			}
 			// A skip left standing by an absent or throwing `notify` swallows a peer's release instead.
 			if (this.#wakeBuffer.notify) {
@@ -2170,7 +2170,7 @@ class DerivedIndexRunner {
 			this.#releasingSince = undefined;
 			this.#heldLock = true;
 			const reason = `backend shutdown failed; runner lock held: ${error instanceof Error ? error.message : String(error)}`;
-			logger.error(`Derived index '${backend.id}' ${reason}`, error);
+			logger.error?.(`Derived index '${backend.id}' ${reason}`, error);
 			this.#releaseFailure = new Error(reason, { cause: error });
 			this.status = { state: 'unavailable', reason, ownerEpoch: epoch };
 			this.#publishReadiness('unavailable', 'shutdown-failed');

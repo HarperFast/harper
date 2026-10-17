@@ -781,7 +781,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		}
 	});
 	parser.on('error', (error) => {
-		mqttLog.warn('MQTT parsing error, closing connection:', error.message);
+		mqttLog.warn?.('MQTT parsing error, closing connection:', error.message);
 		if (socket?.destroy) socket.destroy();
 		else socket?.terminate();
 	});
