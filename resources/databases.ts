@@ -662,7 +662,183 @@ function droppedRowKey(tableName: string): string {
  */
 export function recordTableNameHistory(attributesDbi, tableName: string, tableId: number | undefined): void {
 	const key = droppedRowKey(tableName);
+<<<<<<< HEAD
 	if (!attributesDbi.getSync(key)) attributesDbi.putSync(key, { table: tableName, tableId });
+=======
+	const write = () => {
+		if (tombstoneKey) {
+			const live = attributesDbi.getSync(tombstoneKey);
+			if (live?.dropping && Number.isFinite(live.droppedTime) && !(droppedTime >= live.droppedTime)) {
+				droppedTime = live.droppedTime;
+				tableId = live.tableId ?? tableId;
+			}
+		}
+		if (!Number.isFinite(droppedTime)) {
+			if (rootStore instanceof RocksDatabase && tombstoneKey && !attributesDbi.getSync(key))
+				attributesDbi.putSync(key, { table: tableName, tableId });
+			return false;
+		}
+		const existing: TableDropMarker | undefined = attributesDbi.getSync(key);
+		if (existing && existing.droppedTime >= droppedTime) return false;
+		const marker: TableDropMarker = { table: tableName, droppedTime };
+		if (tableId != null) marker.tableId = tableId;
+		attributesDbi.putSync(key, marker);
+		return true;
+	};
+	const written: boolean =
+		exclusive || !(rootStore instanceof RocksDatabase)
+			? withCatalogWrite(rootStore, `drop marker for '${databaseName}.${tableName}'`, write)
+			: write();
+	// Committed by here on both engines; announced outside the caller's lock because listeners re-send
+	// schemas, which read this catalog, and to every thread, since each owns its own replication connections.
+	if (written) {
+		dropEpoch++;
+		queueMicrotask(() => {
+			emitTableDropRecorded(databaseName, tableName);
+			void manageThreads.broadcast({ type: TABLE_DROP_RECORDED, databaseName, tableName });
+		});
+	}
+	return written;
+}
+const TABLE_DROP_RECORDED = 'table-drop-recorded';
+let dropEpoch = 0;
+function emitTableDropRecorded(databaseName: string, tableName: string) {
+	try {
+		databaseEventsEmitter.emit('tableDropRecorded', databaseName, tableName);
+	} catch (error) {
+		logger.warn(`A tableDropRecorded listener failed for ${databaseName}.${tableName}`, error);
+	}
+}
+// a message queued before this registration is replayed outside manageThreads' own catch, so the emit catches
+manageThreads.onMessageByType(TABLE_DROP_RECORDED, ({ databaseName, tableName }) => {
+	dropEpoch++;
+	emitTableDropRecorded(databaseName, tableName);
+});
+/** Advances on this thread whenever a drop marker is recorded on any thread. */
+export function tableDropEpoch(): number {
+	return dropEpoch;
+}
+export function getTableDrops(databaseName: string): TableDropMarker[] {
+	const store = dropMarkerStoreFor(databaseName);
+	if (!store) return [];
+	const markers: TableDropMarker[] = [];
+	for (const { value } of store.attributesDbi.getRange({ start: DROPPED_ROW_PREFIX, end: DROPPED_ROW_END })) {
+		if (value && typeof value.table === 'string' && Number.isFinite(value.droppedTime)) markers.push(value);
+	}
+	return markers;
+}
+/** A peer's drop of a table this node does not hold; false when the database is unknown here or the marker is not newer. */
+export function recordTableDrop(databaseName: string, tableName: string, droppedTime: number): boolean {
+	if (!Number.isFinite(droppedTime)) return false;
+	const store = dropMarkerStoreFor(databaseName);
+	if (!store) return false;
+	// markers only move forward, so one at least this new needs no lock
+	if (store.attributesDbi.getSync(droppedRowKey(tableName))?.droppedTime >= droppedTime) return false;
+	return writeTableDropMarker(
+		store.rootStore,
+		store.attributesDbi,
+		databaseName,
+		tableName,
+		droppedTime,
+		undefined,
+		true
+	);
+}
+export function onTableDropRecorded(listener: (databaseName: string, tableName: string) => void) {
+	databaseEventsEmitter.on('tableDropRecorded', listener);
+	return {
+		remove() {
+			databaseEventsEmitter.off('tableDropRecorded', listener);
+		},
+	};
+}
+/**
+ * Whether a catalog row names its table's primary store: one flagged `isPrimaryKey`, or the nameless bare
+ * `<table>/` row of a keyless table, which can lose the flag while its store still holds primary records.
+ */
+export function isPrimaryCatalogRow(key: unknown, value: any): boolean {
+	if (value?.isPrimaryKey) return true;
+	// exactly one slash, at the end: initStores reads `<table>/<attribute>` by splitting on the first slash
+	return (
+		value != null &&
+		value.name == null &&
+		typeof key === 'string' &&
+		key.length > 1 &&
+		key.indexOf('/') === key.length - 1
+	);
+}
+/** The primary catalog row of a live table, under either key layout. */
+function primaryCatalogRowFor(table: {
+	dbisDB: any;
+	tableName: string;
+	primaryKey?: string;
+}): { key: string; value: any } | undefined {
+	const bareKey = table.tableName + '/';
+	const bare = table.dbisDB?.getSync(bareKey);
+	if (bare) return { key: bareKey, value: bare };
+	if (!table.primaryKey) return;
+	const legacyKey = `${table.tableName}/${table.primaryKey}`;
+	const legacy = table.dbisDB?.getSync(legacyKey);
+	return legacy?.isPrimaryKey ? { key: legacyKey, value: legacy } : undefined;
+}
+/** The stamp on disk, which a class loaded on another thread may not carry yet. */
+export function catalogCreatedTime(table: { dbisDB: any; tableName: string; primaryKey?: string }): number | undefined {
+	const createdTime = primaryCatalogRowFor(table)?.value?.createdTime;
+	return Number.isFinite(createdTime) ? createdTime : undefined;
+}
+/**
+ * Backfills the stamp of a generation created on a build that stored none, once a peer's stamped definition
+ * proves which generation it is. Only an absent stamp is written; false when one exists or the table is gone.
+ */
+export function stampTableCreatedTime(
+	table: { dbisDB: any; tableName: string; primaryKey?: string; primaryStore: any; createdTime?: number },
+	createdTime: number
+): boolean {
+	if (!Number.isFinite(createdTime)) return false;
+	const rootStore = table.primaryStore?.rootStore;
+	const attributesDbi = table.dbisDB;
+	if (!rootStore || !attributesDbi) return false;
+	const write = () => {
+		const row = primaryCatalogRowFor(table);
+		if (!row || row.value.dropping || Number.isFinite(row.value.createdTime)) return false;
+		row.value.createdTime = createdTime;
+		attributesDbi.putSync(row.key, row.value);
+		return true;
+	};
+	const written: boolean = withCatalogWrite(rootStore, `stamp '${table.tableName}'`, write);
+	if (written) table.createdTime = createdTime;
+	return written;
+}
+/** The time a drop of this name carries for peers: its marker, or the live tombstone of a drop still completing. */
+export function pendingOrRecordedDropTime(databaseName: string, tableName: string): number | undefined {
+	const store = dropMarkerStoreFor(databaseName);
+	if (!store) return;
+	const marker: TableDropMarker | undefined = store.attributesDbi.getSync(droppedRowKey(tableName));
+	const tombstone = store.attributesDbi.getSync(tableName + '/');
+	const pending = tombstone?.dropping ? tombstone.droppedTime : undefined;
+	const candidates = [marker?.droppedTime, pending].filter((time) => Number.isFinite(time)) as number[];
+	return candidates.length ? Math.max(...candidates) : undefined;
+}
+/** Right before a completion path removes the live tombstone at `tombstoneKey`; RocksDB callers hold the catalog lock. */
+export function promoteTombstoneToDropMarker(
+	rootStore: RootDatabaseKind,
+	attributesDbi,
+	databaseName: string,
+	tableName: string,
+	tombstoneKey: string,
+	tombstone: { droppedTime?: number; tableId?: number } | undefined
+): void {
+	writeTableDropMarker(
+		rootStore,
+		attributesDbi,
+		databaseName,
+		tableName,
+		tombstone?.droppedTime,
+		tombstone?.tableId,
+		false,
+		tombstoneKey
+	);
+>>>>>>> 6fd124e3a (Load tables with no primary key, and keep a key declared on one from breaking its schema)
 }
 export function storeNamesFor(attributesDbi, tableName: string, generation: string | undefined): string[] {
 	const names: string[] = [];
@@ -1325,7 +1501,7 @@ function initStores(
 		definedTables?.add(tableName);
 		let tableDef = tablesToLoad.get(tableName);
 		if (!tableDef) tablesToLoad.set(tableName, (tableDef = { attributes: [] }));
-		if (attribute_name == null || value.isPrimaryKey) tableDef.primary = value;
+		if (isPrimaryCatalogRow(key, value)) tableDef.primary = value;
 		if (value.dropping) tableDef.tombstone = value;
 		if (attribute_name != null) tableDef.attributes.push(value);
 		Object.defineProperty(value, 'key', { value: key, configurable: true });
@@ -1505,7 +1681,8 @@ function initStores(
 				(attributesDbi as any).putSync(NEXT_TABLE_ID, tableId + 1);
 				(attributesDbi as any).putSync(primaryAttribute.key, primaryAttribute);
 			}
-			const dbiInit = createOpenDBIObject(!primaryAttribute.isPrimaryKey, primaryAttribute.isPrimaryKey);
+			// primary by selection, not by its flag (isPrimaryCatalogRow)
+			const dbiInit = createOpenDBIObject(false, true);
 			dbiInit.compression = primaryAttribute.compression;
 			if (dbiInit.compression) {
 				const compressionThreshold =
@@ -3671,6 +3848,25 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (Table.primaryStore.rootStore.status === 'closed') {
 				throw new Error(`Can not use a closed data store from ${tableName} class`);
 			}
+			if (Table.primaryKey == null) {
+				// a keyless table cannot adopt a key without re-keying its records
+				for (const attribute of attributes) {
+					if (!attribute.isPrimaryKey) continue;
+					if (origin === 'cluster')
+						logger.warn(
+							`Ignoring peer redefinition of ${databaseName}.${tableName}.${attribute.name} ` +
+								`(isPrimaryKey: local table has no primary key, peer true)`
+						);
+					else if (schemaDefinedExplicit)
+						logger.error(
+							`Table '${databaseName}.${tableName}' has no primary key, so its declared primary key ` +
+								`'${attribute.name}' is ignored and the table stays keyless. Recreate the table with that ` +
+								`primary key, or migrate its records, to use it.`
+						);
+					delete attribute.isPrimaryKey;
+					if (properties?.[attribute.name]) delete properties[attribute.name].primaryKey;
+				}
+			}
 			// Reject moving the primary key to a different attribute on a table that already has records.
 			// The storage key (Table.primaryKey) is never re-pointed here, so honoring the change would
 			// leave describe reporting the new attribute while every record — old and newly inserted — stays
@@ -5736,7 +5932,8 @@ function completeInterruptedDrop(
 	}>;
 	const bareEntry = catalogRows.find(({ key }) => key === tableName + '/');
 	const primaryEntry =
-		(bareEntry?.value?.isPrimaryKey ? bareEntry : undefined) ?? catalogRows.find(({ value }) => value?.isPrimaryKey);
+		catalogRows.find(({ value }) => value?.isPrimaryKey) ??
+		(bareEntry && isPrimaryCatalogRow(bareEntry.key, bareEntry.value) ? bareEntry : undefined);
 	const tombstoneEntry = bareEntry ?? primaryEntry;
 	if (rootStore instanceof RocksDatabase && !fullTextRetired) {
 		const names = [
@@ -5795,7 +5992,7 @@ function completeInterruptedDrop(
 		// recreate silently inherit the previous table's records.
 		for (const { key, value } of catalogRows) {
 			const objectStorage =
-				value?.isPrimaryKey || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
+				isPrimaryCatalogRow(key, value) || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
 			const store = (rootStore as any).openDB(key, createOpenDBIObject(!objectStorage, objectStorage) as any);
 			try {
 				// dropSync (not drop): this function is synchronous, and its callers rely on
