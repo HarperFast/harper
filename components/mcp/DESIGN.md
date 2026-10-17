@@ -69,7 +69,8 @@ A handful of design points are non-obvious and easy to break:
   `matchCustomResource(profile, uri)` first, exactly as `readResource` does, so read and subscribe always resolve
   the same entry; an entry without `subscribe` stays `-32602`. The author's method runs in the read path's
   user-carrying transaction and the returned iterable is consumed after it ends, which is why generator methods
-  are refused at registration (their body would run outside it). Custom values are opaque — only audit-log
+  are refused at registration (their body would run outside it) and a returned async generator is refused at
+  subscribe (its `return()` cannot interrupt a pending await, so unsubscribe could not release its source). Custom values are opaque — only audit-log
   events get `acknowledge()`. Release is one idempotent `stop()` for both sources: `end()` if the stream has
   one, else the iterator's `return()`, also run when iteration ends or throws, and for a stream acquired by a
   transaction that then failed to commit (`acquireChangeStream`). A custom stream is also registered with

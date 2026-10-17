@@ -53,8 +53,9 @@
  * never sent). It runs in the same user-carrying transaction as a read, and the
  * iterable is consumed after that transaction ends, so authorization and source
  * acquisition must happen before it returns — generator methods are rejected at
- * registration for that reason. The stream is released with `end()` when it has
- * one, else its iterator's `return()`. The MCP layer adds only identity-lifetime
+ * registration for that reason, and a returned async generator is refused
+ * because its `return()` cannot interrupt a pending await. The stream is
+ * released with `end()` when it has one, else its iterator's `return()`. The MCP layer adds only identity-lifetime
  * revocation (token expiry, a removed user or role); resource-specific access
  * changes after subscribe are the author's to enforce.
  */

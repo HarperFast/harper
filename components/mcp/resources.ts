@@ -372,6 +372,8 @@ export interface ResourceSubscription {
 	start: (onUpdate: () => void) => void;
 	/** Release the change stream. Idempotent; also runs when the stream ends or fails. */
 	stop: () => void;
+	/** Run `callback` once stopped, for whatever reason; at once if already stopped. */
+	onStop: (callback: () => void) => void;
 }
 
 /**
@@ -447,11 +449,7 @@ export async function subscribeToResource(
 	return stream ? changeStreamSubscription(uri, stream, true) : null;
 }
 
-/**
- * Start a custom resource's subscription (#3250): run the author's `subscribe`
- * in the same user-carrying transaction `readCustomResource` uses (and, as
- * there, without `authorize`), then admit it to identity-lifetime revocation.
- */
+/** `readCustomResource`'s transaction, and for the same reason without `authorize`. */
 async function subscribeToCustomResource(
 	uri: string,
 	subscribe: NonNullable<CustomResourceDef['subscribe']>,
@@ -490,7 +488,13 @@ async function acquireChangeStream(
 	try {
 		result = await transaction(context, async () => (acquired = await call()));
 	} catch (err) {
-		if (isChangeStream(acquired)) changeStreamSubscription(uri, acquired, false).stop();
+		if (isChangeStream(acquired)) {
+			try {
+				changeStreamSubscription(uri, acquired, false).stop();
+			} catch {
+				// a stream that cannot even produce an iterator was released by that attempt
+			}
+		}
 		throw err;
 	}
 	return isChangeStream(result) ? result : null;
@@ -502,49 +506,39 @@ function isChangeStream(value: unknown): value is ResourceChangeStream {
 
 /**
  * Wrap a change stream in a start/stop handle. `stop` releases the stream once:
- * `end()` when the stream has one (a Harper subscription, or an author's queue),
- * otherwise its iterator's `return()`. Iteration ending, by completion or by an
- * error, also stops, so the producer is released on every path.
+ * `end()` when it has one (a Harper subscription, or an author's queue), else
+ * its iterator's `return()`. The iterator is taken up front so a stream that
+ * cannot produce one fails the subscribe instead of being admitted dead.
  */
 function changeStreamSubscription(
 	uri: string,
 	stream: ResourceChangeStream,
 	acknowledgeEvents: boolean
-): ResourceSubscription & { onStop: (callback: () => void) => void } {
-	let iterator: AsyncIterator<unknown> | undefined;
+): ResourceSubscription {
+	let iterator: AsyncIterator<unknown>;
+	try {
+		iterator = stream[Symbol.asyncIterator]();
+	} catch (err) {
+		release(uri, () => stream.end?.());
+		throw err;
+	}
+	let started = false;
 	let stopped = false;
 	const stopCallbacks: Array<() => void> = [];
 	const stop = () => {
 		if (stopped) return;
 		stopped = true;
 		for (const callback of stopCallbacks) callback();
-		try {
-			const released =
-				typeof stream.end === 'function' ? stream.end() : (iterator ?? stream[Symbol.asyncIterator]()).return?.();
-			if (typeof (released as Promise<unknown> | undefined)?.then === 'function') {
-				(released as Promise<unknown>).then(undefined, (err: unknown) =>
-					harperLogger.trace(`MCP subscription ${uri} stop: ${describeError(err)}`)
-				);
-			}
-		} catch (err) {
-			harperLogger.trace(`MCP subscription ${uri} stop: ${describeError(err)}`);
-		}
+		release(uri, () => (typeof stream.end === 'function' ? stream.end() : iterator.return?.()));
 	};
 	return {
 		start(onUpdate) {
-			if (stopped || iterator) return;
-			let active: AsyncIterator<unknown>;
-			try {
-				active = iterator = stream[Symbol.asyncIterator]();
-			} catch (err) {
-				harperLogger.trace(`MCP subscription ${uri} could not start: ${describeError(err)}`);
-				stop();
-				return;
-			}
+			if (stopped || started) return;
+			started = true;
 			void (async () => {
 				try {
 					for (;;) {
-						const { done, value } = await active.next();
+						const { done, value } = await iterator.next();
 						if (done || stopped) break;
 						if (acknowledgeEvents) (value as { acknowledge?: () => void } | undefined)?.acknowledge?.();
 						onUpdate();
@@ -558,9 +552,24 @@ function changeStreamSubscription(
 		},
 		stop,
 		onStop(callback) {
-			stopCallbacks.push(callback);
+			if (stopped) callback();
+			else stopCallbacks.push(callback);
 		},
 	};
+}
+
+/** Run a stream's teardown, containing a throw or a rejected promise it returns. */
+function release(uri: string, teardown: () => unknown): void {
+	try {
+		const released = teardown();
+		if (typeof (released as Promise<unknown> | undefined)?.then === 'function') {
+			(released as Promise<unknown>).then(undefined, (err: unknown) =>
+				harperLogger.trace(`MCP subscription ${uri} stop: ${describeError(err)}`)
+			);
+		}
+	} catch (err) {
+		harperLogger.trace(`MCP subscription ${uri} stop: ${describeError(err)}`);
+	}
 }
 
 let securityUser: typeof import('../../security/user.ts') | undefined;
@@ -576,10 +585,7 @@ const resolveUser = (_scope: unknown, username: string) =>
  * in resources/Resource.ts). An expired or no-longer-current principal is
  * rechecked before the caller can admit the subscription.
  */
-async function trackPrincipalLifetime(
-	subscription: ReturnType<typeof changeStreamSubscription>,
-	user: AuthedUser
-): Promise<void> {
+async function trackPrincipalLifetime(subscription: ResourceSubscription, user: AuthedUser): Promise<void> {
 	const username = user?.username;
 	if (!username) return;
 	const { registerLiveSubscription } = require('../../server/liveSubscriptionAuth');
@@ -604,8 +610,8 @@ async function trackPrincipalLifetime(
 	if (recheckNow && (await handle.verify()) === 'revoked') throw new AccessViolation(user);
 }
 
-/** A rejection reason may be anything, `null` included. */
-function describeError(err: unknown): string {
+/** A rejection reason may be anything, `null` or a null-prototype object included. */
+export function describeError(err: unknown): string {
 	try {
 		return err instanceof Error ? err.message : String(err);
 	} catch {
