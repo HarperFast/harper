@@ -98,10 +98,12 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'static/ascii_logo.txt'))));
 	});
 	hdbLogger.debug('Checking to make sure hdb is installed');
+	let installedDuringInit = false;
 	if (installation.isHdbInstalled(env, hdbLogger) === false) {
 		console.log(HDB_NOT_FOUND_MSG);
 		try {
 			await install();
+			installedDuringInit = true;
 		} catch (err) {
 			console.error(INSTALL_ERR, err);
 			hdbLogger.error(err);
@@ -110,13 +112,13 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	}
 
 	// The called by install check is here because if cmd/env args are passed to install (which calls run when done)
-	// we do not need to update/backup the config file on run.
-	if (!calledByInstall) {
+	// or auto-install just ran above, we do not need to update/backup the config file on run.
+	if (!calledByInstall && !installedDuringInit) {
 		// If run is called with cmd/env vars we create a backup of config and update config file.
 		let parsedArgs = assignCMDENVVariables(Object.keys(terms.CONFIG_PARAM_MAP), true);
 
-		// If HARPER_SET_CONFIG is present, filter out any config keys that are set in it
-		// to prevent individual env vars from overriding explicit runtime configuration
+		// If HARPER_CONFIG or HARPER_SET_CONFIG is present, filter out any config keys that are set
+		// in them to prevent individual env vars from overriding explicit runtime configuration
 		const { filterArgsAgainstRuntimeConfig } = require('../config/harperConfigEnvVars');
 		parsedArgs = filterArgsAgainstRuntimeConfig(parsedArgs);
 

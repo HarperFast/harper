@@ -5,12 +5,14 @@
  * to Harper's configuration system with source tracking and drift detection.
  *
  * The three variables form a precedence ladder (later wins):
- *   HARPER_DEFAULT_CONFIG  <  config file / user edits  <  HARPER_CONFIG  <  HARPER_SET_CONFIG
+ *   HARPER_DEFAULT_CONFIG  <  config file / user edits / individual env vars  <  HARPER_CONFIG  <  HARPER_SET_CONFIG
  *
  * - HARPER_CONFIG (recommended): merge — sets exactly the keys it names, reasserting
- *   them on every boot (a manual edit to a named key is overwritten on restart), and
- *   yields only to HARPER_SET_CONFIG. Individual HARPER_* env vars still win over it
- *   for the keys they name (arg filtering remains SET-only).
+ *   them on every boot (a manual edit or individual env var for a named key is
+ *   overwritten on restart), and yields only to HARPER_SET_CONFIG. Filtering named
+ *   keys in filterArgsAgainstRuntimeConfig() aligns the main thread (threads.count,
+ *   operationsApi.network.port, TLS cert paths, storage.*) with worker threads and
+ *   install-time resolution.
  * - HARPER_DEFAULT_CONFIG: defaults — yields to the config file, individual env vars,
  *   and user edits.
  * - HARPER_SET_CONFIG: force — overrides everything and locks against drift.
@@ -252,45 +254,31 @@ function resolveLeafValue(currentValue: any, leafValue: any, path: string): any 
 }
 
 /**
- * Filters out arguments that are already set in HARPER_SET_CONFIG.
- * This prevents individual environment variables from overriding runtime configuration.
+ * The config env vars that reassert every key they name, at each start and at each runtime config refresh, over
+ * the file and over edits to it. HARPER_DEFAULT_CONFIG is not one: at runtime it only fills in what is missing.
+ */
+export const REASSERTING_CONFIG_ENV_VARS = ['HARPER_CONFIG', 'HARPER_SET_CONFIG'] as const;
+
+/**
+ * Filters out arguments that are already set in HARPER_CONFIG or HARPER_SET_CONFIG.
+ * This prevents individual environment variables from overriding reasserting runtime
+ * configuration layers on subsequent boots (where bin/run.ts calls updateConfigValue
+ * after initConfig()).
  *
- * Note: Only filters against HARPER_SET_CONFIG, not HARPER_DEFAULT_CONFIG, since
- * HARPER_DEFAULT_CONFIG sets defaults that can be overridden by individual env vars.
+ * Note: Only filters against HARPER_CONFIG and HARPER_SET_CONFIG, not HARPER_DEFAULT_CONFIG,
+ * since HARPER_DEFAULT_CONFIG sets defaults that can be overridden by individual env vars.
  *
  * @param args - Object containing individual env var arguments (e.g., from assignCMDENVVariables)
- * @returns Filtered args object with HARPER_SET_CONFIG keys removed
+ * @returns Filtered args object with HARPER_CONFIG and HARPER_SET_CONFIG keys removed
  *
  * @example
- * // If HARPER_SET_CONFIG sets operationsApi.network.port
+ * // If HARPER_CONFIG or HARPER_SET_CONFIG sets operationsApi.network.port
  * const args = { operationsapi_network_port: '9925', rootpath: '/var/hdb' };
  * const filtered = filterArgsAgainstRuntimeConfig(args);
  * // Returns: { rootpath: '/var/hdb' }
  */
 export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Record<string, any> {
-	// Only filter against HARPER_SET_CONFIG (not HARPER_DEFAULT_CONFIG)
-	if (!process.env.HARPER_SET_CONFIG) {
-		return args;
-	}
-
-	// Parse HARPER_SET_CONFIG
-	let setConfig: ConfigObject;
-	try {
-		setConfig = JSON.parse(process.env.HARPER_SET_CONFIG);
-	} catch (err) {
-		// If parsing fails, log warning and return args unchanged
-		const logger = getLogger();
-		logger.warn('Failed to parse HARPER_SET_CONFIG for arg filtering', err);
-		return args;
-	}
-
-	// If no valid config, return args unchanged
-	if (Object.keys(setConfig).length === 0) {
-		return args;
-	}
-
-	// Flatten HARPER_SET_CONFIG to get all keys
-	const flattenSetConfig = (obj: ConfigObject, prefix = ''): Set<string> => {
+	const flattenConfigKeys = (obj: ConfigObject, prefix = ''): Set<string> => {
 		const keys = new Set<string>();
 		for (const key in obj) {
 			const newKey = prefix ? `${prefix}_${key}` : key;
@@ -300,7 +288,7 @@ export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Recor
 				!Array.isArray(obj[key]) &&
 				!isDirectiveObject(obj[key])
 			) {
-				flattenSetConfig(obj[key], newKey).forEach((k) => keys.add(k));
+				flattenConfigKeys(obj[key], newKey).forEach((k) => keys.add(k));
 			} else {
 				keys.add(newKey.toLowerCase());
 			}
@@ -308,12 +296,32 @@ export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Recor
 		return keys;
 	};
 
-	const setConfigKeys = flattenSetConfig(setConfig);
+	const runtimeConfigKeys = new Set<string>();
+	for (const envVarName of REASSERTING_CONFIG_ENV_VARS) {
+		const raw = process.env[envVarName];
+		if (!raw) continue;
+		let parsed: ConfigObject;
+		try {
+			parsed = JSON.parse(raw);
+		} catch (err) {
+			const logger = getLogger();
+			logger.warn(`Failed to parse ${envVarName} for arg filtering`, err);
+			continue;
+		}
+		if (isPlainObject(parsed)) {
+			flattenConfigKeys(parsed).forEach((k) => runtimeConfigKeys.add(k));
+		}
+	}
 
-	// Filter out args that are in HARPER_SET_CONFIG
+	if (runtimeConfigKeys.size === 0) {
+		return args;
+	}
+
 	const filteredArgs: Record<string, any> = {};
 	for (const key in args) {
-		if (!setConfigKeys.has(key.toLowerCase())) {
+		const lowerKey = key.toLowerCase();
+		const canonicalKey = (hdbTerms.CONFIG_PARAM_MAP[lowerKey] ?? lowerKey).toLowerCase();
+		if (!runtimeConfigKeys.has(lowerKey) && !runtimeConfigKeys.has(canonicalKey)) {
 			filteredArgs[key] = args[key];
 		}
 	}
@@ -738,6 +746,27 @@ function detectConfigDrift(fileConfig: ConfigObject, state: ConfigState): string
 	return driftedPaths;
 }
 
+function hasRespectedSource(state: ConfigState, path: string, respectSources: ConfigSource[]): boolean {
+	if (respectSources.length === 0) return false;
+	const parts = path.split('.');
+	for (let i = 1; i <= parts.length; i++) {
+		const ancestorOrSelf = parts.slice(0, i).join('.');
+		const src = Object.prototype.hasOwnProperty.call(state.sources, ancestorOrSelf)
+			? state.sources[ancestorOrSelf]
+			: undefined;
+		if (src && respectSources.includes(src)) {
+			return true;
+		}
+	}
+	const prefix = `${path}.`;
+	for (const [trackedPath, src] of Object.entries(state.sources)) {
+		if (trackedPath.startsWith(prefix) && respectSources.includes(src)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /**
  * Apply a configuration layer (DEFAULT or SET)
  */
@@ -755,14 +784,13 @@ function applyConfigLayer(
 		const currentSource = Object.prototype.hasOwnProperty.call(state.sources, path) ? state.sources[path] : undefined;
 		const currentValue = getNestedValue(fileConfig, path);
 
-		// Skip if this path has a source we should respect
-		if (currentSource && respectSources.includes(currentSource)) {
+		if (hasRespectedSource(state, path, respectSources)) {
 			continue;
 		}
 
 		// Store original value if requested and this is first time overriding
 		if (storeOriginals) {
-			if (!currentSource && currentValue != null) {
+			if ((!currentSource || currentSource === 'user') && currentValue != null) {
 				if (!Object.prototype.hasOwnProperty.call(state.originalValues, path)) {
 					state.originalValues[path] = currentValue;
 				}
@@ -877,7 +905,7 @@ function processEnvVar(
 	} else if (sourceName === 'HARPER_CONFIG') {
 		// HARPER_CONFIG merges: it sets exactly the keys it names and reasserts them on
 		// every boot (winning over the config file, user edits, and DEFAULT), yielding
-		// only to HARPER_SET_CONFIG. Same behavior at install and runtime.
+		// only to HARPER_SET_CONFIG.
 		applyConfigLayer(fileConfig, state, parsedConfig, sourceName, {
 			respectSources: ['HARPER_SET_CONFIG'],
 			storeOriginals: true,
@@ -984,9 +1012,8 @@ function cleanupRemovedEnvVar(
  *
  * HARPER_DEFAULT_CONFIG provides scaffolding defaults, the base (e.g., the
  * user's existing config file) is layered on top, HARPER_CONFIG merges its
- * keys over that, and HARPER_SET_CONFIG force-overrides everything. This
- * matches the precedence applied by the runtime pipeline in
- * applyRuntimeEnvConfig.
+ * keys over that, and HARPER_SET_CONFIG force-overrides everything. This matches
+ * the precedence applied by prepareRuntimeEnvConfig.
  *
  * Unlike applyRuntimeEnvConfig, this does NOT read or write the config state
  * file and does NOT track sources — it returns a fresh object. Use when you
@@ -996,12 +1023,6 @@ function cleanupRemovedEnvVar(
 export function composeConfigFromEnv(base: ConfigObject = {}): ConfigObject {
 	return composeEnvLayers(['HARPER_DEFAULT_CONFIG'], base, ['HARPER_CONFIG', 'HARPER_SET_CONFIG']);
 }
-
-/**
- * The config env vars that reassert every key they name, at each start and at each runtime config refresh, over
- * the file and over edits to it. HARPER_DEFAULT_CONFIG is not one: at runtime it only fills in what is missing.
- */
-export const REASSERTING_CONFIG_ENV_VARS = ['HARPER_CONFIG', 'HARPER_SET_CONFIG'] as const;
 
 /**
  * `base` as the reasserting env vars leave it, or only the named ones: what the next start, or the next config
@@ -1103,7 +1124,7 @@ export function applyRuntimeEnvConfig(
 export function prepareRuntimeEnvConfig(
 	fileConfig: ConfigObject,
 	rootPath: string,
-	options: { isInstall?: boolean } = {}
+	options: { isInstall?: boolean; userPaths?: Iterable<string> } = {}
 ): {
 	config: ConfigObject;
 	saveState: () => boolean;
@@ -1131,10 +1152,16 @@ export function prepareRuntimeEnvConfig(
 	// commit window would call its half-written config file a user edit and drop the env-supplied
 	// value for itself alone - serving different config than its siblings, with nothing on disk to
 	// show why.
-	if (!options.isInstall && !interruptedCommit && isMainThread) {
-		const driftedPaths = detectConfigDrift(fileConfig, state);
-		for (const path of driftedPaths) {
-			state.sources[path] = 'user';
+	if (!options.isInstall) {
+		if (!interruptedCommit && isMainThread) {
+			const driftedPaths = detectConfigDrift(fileConfig, state);
+			for (const path of driftedPaths) {
+				state.sources[path] = 'user';
+			}
+		}
+	} else if (options.userPaths) {
+		for (const userPath of options.userPaths) {
+			state.sources[userPath] = 'user';
 		}
 	}
 

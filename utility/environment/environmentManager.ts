@@ -25,11 +25,12 @@ const installPropsToSave = {
 let installProps: any = {};
 export { BOOT_PROPS_FILE_PATH };
 
-// Every param passed to setProperty() on this thread, keyed by its canonical config param so
-// aliases collapse to one last-write-wins entry. Workers inherit this map (getConfigOverrides() and
-// the workerDataProvider registration in server/threads/manageThreads.js) and it is replayed after
-// a forced config reload; `base` is the configured value the override displaced, which is how
-// reapplyAllOverrides() tells a reload that left the param alone from one that is itself the change.
+// Every non-undefined param passed to setProperty() on this thread (passing undefined clears the
+// entry), keyed by its canonical config param so aliases collapse to one last-write-wins entry.
+// Workers inherit this map (getConfigOverrides() and the workerDataProvider registration in
+// server/threads/manageThreads.js) and it is replayed after a forced config reload; `base` is the
+// configured value the override displaced, which is how reapplyAllOverrides() tells a reload that
+// left the param alone from one that is itself the change.
 //
 // setProperty() therefore means operator/harness *intent* only. Code caching a value it derived
 // from config it just read (initializePaths.js, utility/lmdb/environmentUtility.ts) must call
@@ -78,39 +79,43 @@ export function get(propName: string): any {
  *
  * The override is also recorded so it propagates to every worker thread spawned from here and
  * survives a forced config reload — except a reload that changes this param on disk, which wins
- * and retires the override (see reapplyAllOverrides()). `value` must be structured-cloneable.
+ * and retires the override (see reapplyAllOverrides()). Passing `undefined` as `value` clears any
+ * recorded override for `propName`. Otherwise, `value` must be structured-cloneable.
  *
  * This function should only be used by the installer and unit tests.
  * @param propName
  * @param value
  */
 export function setProperty(propName: string, value: any) {
-	// Snapshot rather than keep the caller's reference: initializePaths.js and environmentUtility.ts
-	// cache derived per-database paths by mutating the live `databases` value in place, which is
-	// often the very object handed to setProperty. Cloning here also settles cloneability at the
-	// caller that can still fix it — manageThreads.js's provider only logs a clone failure and
-	// spawns the worker on the on-disk config anyway.
-	let snapshot;
-	try {
-		snapshot = structuredClone(value);
-	} catch (err) {
-		throw new Error(`Config property '${propName}' cannot be set to a value that is not structured-cloneable`, {
-			cause: err,
-		});
-	}
-
 	// Key by the canonical param name, not the raw alias passed in: CONFIG_PARAM_MAP is many-to-one
 	// (e.g. SERVER_PORT_KEY and OPERATIONSAPI_NETWORK_PORT both canonicalize to
 	// 'operationsApi_network_port'), and replay of a stale alias after the canonical one would
 	// reintroduce the parent/worker skew this map exists to prevent.
 	const canonicalName = (hdbTerms.CONFIG_PARAM_MAP as any)[propName.toLowerCase()] ?? propName;
-	const existing = appliedOverrides.get(canonicalName);
-	appliedOverrides.set(canonicalName, {
-		value: snapshot,
-		// Keep the first override's base: everything after it displaced an override, not a
-		// configured value, so it says nothing about what the config file held.
-		base: existing ? existing.base : snapshotConfigValue(configUtils.getConfigValue(propName)),
-	});
+	if (value === undefined) {
+		appliedOverrides.delete(canonicalName);
+	} else {
+		// Snapshot rather than keep the caller's reference: initializePaths.js and environmentUtility.ts
+		// cache derived per-database paths by mutating the live `databases` value in place, which is
+		// often the very object handed to setProperty. Cloning here also settles cloneability at the
+		// caller that can still fix it — manageThreads.js's provider only logs a clone failure and
+		// spawns the worker on the on-disk config anyway.
+		let snapshot;
+		try {
+			snapshot = structuredClone(value);
+		} catch (err) {
+			throw new Error(`Config property '${propName}' cannot be set to a value that is not structured-cloneable`, {
+				cause: err,
+			});
+		}
+		const existing = appliedOverrides.get(canonicalName);
+		appliedOverrides.set(canonicalName, {
+			value: snapshot,
+			// Keep the first override's base: everything after it displaced an override, not a
+			// configured value, so it says nothing about what the config file held.
+			base: existing ? existing.base : snapshotConfigValue(configUtils.getConfigValue(propName)),
+		});
+	}
 
 	if (installPropsToSave[propName]) {
 		installProps[propName] = value;
@@ -127,7 +132,7 @@ export function setProperty(propName: string, value: any) {
  */
 export function getConfigOverrides(): Record<string, any> | undefined {
 	if (!appliedOverrides.size) return undefined;
-	const overrides = {};
+	const overrides: Record<string, any> = {};
 	for (const [propName, { value }] of appliedOverrides) {
 		overrides[propName] = value;
 	}
