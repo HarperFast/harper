@@ -8,6 +8,10 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
+## Runtime health checks (`status/healthChecks.ts`)
+
+`startHTTPThreads()` starts main-thread health polling after listeners and workers are ready, including zero-worker mode. Importing status exports starts no OS polling. Startup reads the registered `status.healthChecks` keys; edits require restart, and re-entry is idempotent. Defaults stay in code so an upgraded config does not gain a synthetic `status` component. Poll cycles have deadlines and keep at most one pending reader per metric; a permanently wedged reader remains a warning until restart, avoiding unbounded outstanding native work. Stop suppresses late results. Disk uses the configured storage path with `getStorageSpaceStats()` quota scoping. Constrained memory uses cgroup-v2 working set (usage minus inactive file cache), with labelled process-RSS fallback; unconstrained hosts keep `systeminformation.mem().available` semantics. `healthChecks.test.js` covers fixtures, lifecycle and deadlines; `logBridge.test.js` covers expiry renewal and cancellation.
+
 ## A deploy builds off to the side, is certified, and only then goes live
 
 `deploy_component` builds the replacement at `.deploy-staging/<deploymentId>/<component>`, certifies

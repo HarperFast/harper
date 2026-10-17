@@ -279,6 +279,13 @@ export function validateModelsBlock(models) {
 let hdbRoot;
 let skipFsVal = false;
 
+const healthThresholds = (warningDefault: number, errorDefault: number) =>
+	Joi.object({ warning: number.min(0).max(100).optional(), error: number.min(0).max(100).optional() })
+		.unknown(false)
+		.custom((value, helpers) =>
+			(value.warning ?? warningDefault) <= (value.error ?? errorDefault) ? value : helpers.error('any.invalid')
+		);
+
 export function configValidator(configJson, skipFsValidation = false) {
 	skipFsVal = skipFsValidation;
 	hdbRoot = configJson.rootPath;
@@ -484,6 +491,22 @@ export function configValidator(configJson, skipFsValidation = false) {
 				.pattern(string, Joi.alternatives([string, number, boolean]))
 				.optional(),
 		}).required(),
+		status: Joi.object({
+			healthChecks: Joi.object({
+				enabled: boolean.optional(),
+				intervalSeconds: number.min(1).max(2147483).optional(),
+				thresholds: Joi.object({
+					disk: healthThresholds(80, 95),
+					memory: healthThresholds(80, 95),
+					cpu: healthThresholds(85, 95),
+				})
+					.unknown(false)
+					.optional(),
+			})
+				.unknown(false)
+				.strict()
+				.optional(),
+		}).optional(),
 		threads: Joi.alternatives(
 			threadsConstraints.optional(),
 			Joi.object({

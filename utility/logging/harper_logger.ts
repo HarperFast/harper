@@ -105,6 +105,9 @@ export let externalLogger: any = {
 	forComponent(name: string) {
 		return externalLogger.forComponent(name);
 	},
+	status(options) {
+		return externalLogger.status(options);
+	},
 };
 _assignPackageExport('logger', externalLogger);
 // default logger used for the global used by external components
@@ -408,6 +411,9 @@ class HarperLogger extends Console {
 	withTag(tag) {
 		return loggerWithTag(tag, true, this);
 	}
+	status(options) {
+		return statusLogger(options, this);
+	}
 	forComponent(_name) {
 		// to be replaced
 		return this;
@@ -457,6 +463,8 @@ module.exports = {
 	isStdioBrokenError,
 	externalLogger,
 	updateLogger,
+	setStatusHandler,
+	status,
 };
 
 // Writes past the stdio guard installed by installStdioGuard, which would otherwise route the
@@ -494,6 +502,12 @@ const STDIO_BROKEN_ERROR_CODES = new Set(['EPIPE', 'EIO', 'ERR_STREAM_DESTROYED'
  */
 export function isStdioBrokenError(error: any): boolean {
 	return STDIO_BROKEN_ERROR_CODES.has(error?.code);
+}
+
+export function status(options: any) {
+	// Route through module.exports (not mainLogger directly) so callers/tests that stub the
+	// exported notify/fatal/error/... functions still see calls made via .status().
+	return statusLogger(options, module.exports);
 }
 
 /**
@@ -667,9 +681,48 @@ function stdioLogging() {
 	installStdioGuard(process.stderr);
 }
 
+let statusHandler: any;
+export function setStatusHandler(handler: any) {
+	statusHandler = handler;
+}
+function dispatchStatus(options: any, level: string | null, tag: string, args: any[]) {
+	try {
+		statusHandler?.(options, level, tag, args);
+	} catch {
+		// Status instrumentation must not interrupt the caller's recovery or cleanup.
+	}
+}
+function statusLogger(options: any, logger: any, tag?: string) {
+	// A chained log method (.error(), .warn(), etc.) fires synchronously if the caller chains
+	// one, before this microtask runs. Deferring the options-only dispatch lets us skip it when
+	// a chained call already reported the same logical event, avoiding a double dispatch.
+	let chained = false;
+	if (statusHandler) {
+		queueMicrotask(() => {
+			if (!chained && statusHandler) {
+				dispatchStatus(options, null, tag || logger.tag || currentTag, []);
+			}
+		});
+	}
+	const wrapper: any = {};
+	for (const level of ['notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace']) {
+		wrapper[level] = function (...args: any[]) {
+			chained = true;
+			try {
+				logger[level]?.(...args);
+			} finally {
+				if (statusHandler) {
+					dispatchStatus(options, level, tag || logger.tag || currentTag, args);
+				}
+			}
+		};
+	}
+	return wrapper;
+}
+
 export function loggerWithTag(tag: string, conditional?: boolean, logger: any = mainLogger) {
 	tag = tag.replace(/ /g, '-'); // tag can't have spaces
-	return {
+	const taggedLogger = {
 		notify: logWithTag(logger.notify, 'notify'),
 		fatal: logWithTag(logger.fatal, 'fatal'),
 		error: logWithTag(logger.error, 'error'),
@@ -678,6 +731,14 @@ export function loggerWithTag(tag: string, conditional?: boolean, logger: any = 
 		debug: logWithTag(logger.debug, 'debug'),
 		trace: logWithTag(logger.trace, 'trace'),
 	};
+	// non-enumerable so `for...in` over taggedLogger (used to derive the active log levels) doesn't
+	// pick this up as a level
+	Object.defineProperty(taggedLogger, 'status', {
+		value(options) {
+			return statusLogger(options, taggedLogger, tag);
+		},
+	});
+	return taggedLogger;
 	function logWithTag(loggerMethod, level) {
 		return !conditional || logger.level <= LOG_LEVEL_HIERARCHY[level]
 			? function (...args) {
@@ -2350,4 +2411,6 @@ export default {
 	inspectForLog,
 	isErrorLike,
 	updateLogger,
+	setStatusHandler,
+	status,
 };

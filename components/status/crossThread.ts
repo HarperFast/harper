@@ -339,6 +339,8 @@ export class StatusAggregator {
 		let mostRecentCheckTime = 0;
 		let latestMessage: string | undefined;
 		let error: Error | string | undefined;
+		let source: string | undefined;
+		let totalOccurrenceCount = 0;
 		const statusCounts = new Map<ComponentStatusLevel, number>();
 		const abnormalities = new Map<string, ComponentStatusAbnormality>();
 
@@ -377,6 +379,10 @@ export class StatusAggregator {
 			if (status.error && !error) {
 				error = status.error;
 			}
+
+			// Track source and occurrence count
+			if (status.source) source = status.source;
+			if (status.occurrenceCount) totalOccurrenceCount += status.occurrenceCount;
 		}
 
 		// Determine overall status (priority: error > warning > loading > unknown > healthy)
@@ -410,6 +416,8 @@ export class StatusAggregator {
 			lastChecked: lastCheckedTimes,
 			latestMessage,
 			error,
+			source: source as any,
+			occurrenceCount: totalOccurrenceCount || undefined,
 		};
 
 		// Only add abnormalities if there are any

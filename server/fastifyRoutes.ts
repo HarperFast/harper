@@ -163,9 +163,9 @@ function buildRouteFolder(routesFolder, projectName) {
 					}))
 					.after((err, instance, next) => {
 						if (err?.message) {
-							harperLogger.error(err.message);
+							harperLogger.status({ problem: 'custom-functions.routes' }).error(err.message);
 						} else if (err) {
-							harperLogger.error(err);
+							harperLogger.status({ problem: 'custom-functions.routes' }).error(err);
 						}
 						next();
 					});

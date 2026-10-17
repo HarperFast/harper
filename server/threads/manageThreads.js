@@ -1345,7 +1345,9 @@ function startWorker(path, options = {}, startOptions = {}) {
 	worker.on('error', (error) => {
 		// log errors, and it also important that we catch errors so we can recover if a thread dies (in a recoverable
 		// way)
-		harperLogger.error(`Worker index ${options.workerIndex} error:`, error);
+		harperLogger
+			.status({ problem: 'threads.worker-error', expires: 120 })
+			.error(`Worker index ${options.workerIndex} error:`, error);
 	});
 	const exitedThreadId = worker.threadId;
 	worker.on('exit', (_code) => {
@@ -1367,7 +1369,9 @@ function startWorker(path, options = {}, startOptions = {}) {
 				const restart = () => startWorker(path, options);
 				if (!deferStartBehindCertification(options, restart)) restart();
 			} else {
-				harperLogger.error(`Thread has been restarted ${worker.unexpectedRestarts} times and will not be restarted`);
+				harperLogger
+					.status({ problem: 'threads.restart-limit' })
+					.error(`Thread has been restarted ${worker.unexpectedRestarts} times and will not be restarted`);
 				options.onRestartExhausted?.(worker);
 			}
 		}
@@ -1443,7 +1447,9 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 			// some reason, so we need to reset it to the correct path.
 			process.chdir(process.cwd());
 		} catch (e) {
-			harperLogger.error('Unable to reestablish current working directory', e);
+			harperLogger
+				.status({ problem: 'threads.cwd', expires: 120 })
+				.error('Unable to reestablish current working directory', e);
 		}
 		const freshlyStarted = new Set(); // dedicated workers the reconcile just started: already on the new code
 		// problematic cyclic dependency, bind late
