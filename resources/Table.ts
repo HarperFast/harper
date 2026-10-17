@@ -9267,6 +9267,10 @@ export function makeTable(options): TableResourceClass {
 					if (transaction.postSubmitPoisoned) transaction.next.postSubmitPoisoned = true;
 					transaction = transaction.next;
 					transaction.db = primaryStore;
+					if (context?.timestamp) {
+						transaction.timestamp = context.timestamp;
+						transaction.lastContextTimestamp = context.timestamp;
+					}
 					return transaction;
 				}
 				transaction = nextTxn;
