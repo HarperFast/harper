@@ -30,7 +30,13 @@ import type { AssertNoDrift, AssertTrue, ExactlyEqual, MemberDrift, ParitySentin
 import type { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Contract, SchemaClass } from './defineResource.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource, SEARCH_AUTHORIZATION, transformForSelect, defaultAllowReads } from './Resource.ts';
+import {
+	Resource,
+	SEARCH_AUTHORIZATION,
+	transformForSelect,
+	defaultAllowReads,
+	convertToComparableKeys,
+} from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
@@ -285,8 +291,9 @@ const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 
 // (large filtered full-scan, in-memory sort) should still be gated by config before broad exposure.
 const MAX_EXACT_COUNT_SCAN = 1_000_000;
 const MAX_EXACT_COUNT_MS = 1_000;
-// Largest page a `Prefer: count=` request will materialize. A request whose limit exceeds this (or is
-// not a finite, non-negative integer, e.g. `limit(Infinity)`/`limit(foo)`) falls through to the normal
+// Largest page a `Prefer: count=` request will materialize. A programmatic target whose limit exceeds
+// this (or is not a finite, non-negative integer, e.g. `{ limit: Infinity }` / `{ limit: NaN }`; REST
+// `parseQuery` rejects non-integer/negative `limit(...)` with 400) falls through to the normal
 // streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
 const MAX_COUNT_PAGE = 10_000;
 // How often the exact-count drain yields to the macrotask queue (must be a power of two for the bit-mask
@@ -3390,6 +3397,7 @@ export function makeTable(options): TableResourceClass {
 		 */
 		get(target?: any): any {
 			const constructor: any = this.constructor;
+			if (target?.parseError) throw target.parseError;
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target?.select);
 			if (fullTextFieldNames) {
 				assertRecordField(
@@ -3478,7 +3486,7 @@ export function makeTable(options): TableResourceClass {
 								return transform(record);
 							}
 							if (target?.property) {
-								return record[target?.property];
+								return record?.[target.property];
 							}
 							return record;
 						}
@@ -3491,7 +3499,7 @@ export function makeTable(options): TableResourceClass {
 				// if we are not explicitly using getReturnMutable, return the frozen record
 				const record = this.#record;
 				const select = target?.select;
-				if (select && record != null) {
+				if (select && record != null && constructor.loadAsInstance !== true) {
 					const transform = transformForSelect(select, this.constructor);
 					return promiseNormalize(transform(record), target);
 				}
@@ -6269,10 +6277,11 @@ export function makeTable(options): TableResourceClass {
 				// Requires a bounded page AND window. Counting is a pagination feature; both the limit and the
 				// offset must be finite, non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the
 				// window (offset + limit) no larger than MAX_EXACT_COUNT_SCAN. Anything else — a missing/
-				// oversized/non-finite/negative limit or offset (a bare collection GET, limit(Infinity),
-				// limit(foo), limit(-5,10)) or a deep-page window past the scan budget — falls through to the
-				// normal streaming path with no count. This bounds the offset too: without it a huge offset would
-				// postpone the exact guardrail (which only engages past the page) until that offset was scanned.
+				// oversized/non-finite/negative limit or offset (a bare collection GET, or programmatic targets
+				// such as `{ limit: Infinity }`, `{ limit: NaN }`, `{ offset: -5, limit: 10 }`) or a deep-page
+				// window past the scan budget — falls through to the normal streaming path with no count. This
+				// bounds the offset too: without it a huge offset would postpone the exact guardrail (which only
+				// engages past the page) until that offset was scanned.
 				const pageLimit = target.limit as number;
 				if (
 					target.count &&
@@ -6521,11 +6530,12 @@ export function makeTable(options): TableResourceClass {
 						},
 						return() {
 							if (results.onDone) results.onDone();
-							return dbIterator.return();
+							return dbIterator.return?.() ?? { done: true, value: undefined };
 						},
-						throw() {
+						throw(error) {
 							if (results.onDone) results.onDone();
-							return dbIterator.throw();
+							if (dbIterator.throw) return dbIterator.throw(error);
+							throw error;
 						},
 					};
 				};
@@ -6738,16 +6748,24 @@ export function makeTable(options): TableResourceClass {
 										));
 									if (Array.isArray(value)) {
 										const results = [];
-										const iterator = targetTable
-											.transformToOrderedSelect(
-												value,
-												attribute.select,
-												typeof attribute.sort === 'object' && attribute.sort,
-												context,
-												targetReadTxn,
-												transform
-											)
-											[this.isSync ? Symbol.iterator : Symbol.asyncIterator]();
+										let orderedIterable = targetTable.transformToOrderedSelect(
+											value,
+											attribute.select,
+											typeof attribute.sort === 'object' && attribute.sort,
+											context,
+											targetReadTxn,
+											transform
+										);
+										const offset =
+											Number.isInteger(attribute.offset) && attribute.offset >= 0 ? attribute.offset : undefined;
+										const limit =
+											Number.isInteger(attribute.limit) && attribute.limit >= 0 ? attribute.limit : undefined;
+										if (offset !== undefined || limit !== undefined) {
+											const start = offset ?? 0;
+											const end = limit !== undefined ? start + limit : undefined;
+											orderedIterable = orderedIterable.slice(start, end);
+										}
+										const iterator = orderedIterable[this.isSync ? Symbol.iterator : Symbol.asyncIterator]();
 										const nextValue = (iteration: IteratorResult<any> & Promise<any>) => {
 											while (!iteration.done) {
 												if (iteration?.then) return iteration.then(nextValue);
@@ -6756,27 +6774,21 @@ export function makeTable(options): TableResourceClass {
 											}
 											callback(results, attribute_name);
 										};
-										const promised = nextValue(iterator.next());
-										if (promised) {
-											if (!promises) promises = [];
-											promises.push(promised);
-										}
-										return;
+										return nextValue(iterator.next());
 									} else {
 										value = transform.call(this, value);
 										if (value?.then) {
-											if (!promises) promises = [];
-											promises.push(value.then((value: any) => callback(value, attribute_name)));
-											return;
+											return value.then((value: any) => callback(value, attribute_name));
 										}
 									}
 								}
 								callback(value, attribute_name);
 							};
-							if (value?.then) {
+							const promised = value?.then ? value.then(handleResolvedValue) : handleResolvedValue(value);
+							if (promised?.then) {
 								if (!promises) promises = [];
-								promises.push(value.then(handleResolvedValue));
-							} else handleResolvedValue(value);
+								promises.push(promised);
+							}
 							return;
 						} else {
 							value = record[attribute_name];
@@ -8256,6 +8268,8 @@ export function makeTable(options): TableResourceClass {
 							propertyResolvers[attribute.name] = attribute.resolve = (object, context, entry, returnEntry?) => {
 								const ids = object[relationship.from];
 								if (ids == null) return ids;
+								const ctx = context ?? contextStorage.getStore();
+								if (ctx && !('replacingVersion' in ctx)) ctx.lastModified = UNCACHEABLE_TIMESTAMP;
 								if (attribute.elements) {
 									// tolerate a scalar id in an array-typed FK field (legacy data written
 									// before attribute.set normalized single records to a one-element array)
@@ -10426,13 +10440,4 @@ function hasOtherProcesses(store) {
 			// if the pid from the reader list is different than ours, must be another process accessing the database
 			return +line.match(/\d+/)?.[0] != pid;
 		});
-}
-function convertToComparableKeys(a) {
-	if (a instanceof Date) {
-		return a.getTime();
-	}
-	if (Array.isArray(a)) {
-		return a.map(convertToComparableKeys);
-	}
-	return a;
 }

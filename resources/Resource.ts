@@ -27,6 +27,7 @@ import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
+import { compareKeys } from 'ordered-binary';
 
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
@@ -120,6 +121,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 			function handleSelect(result) {
 				let select;
 				if ((select = query?.select) && result != null && !result.selectApplied) {
+					if (query.parseError) throw query.parseError;
 					const transform = transformForSelect(select, resource.constructor);
 					if (typeof result?.map === 'function') {
 						return result.map(transform);
@@ -1244,19 +1246,90 @@ export function transformForSelect(select, resource) {
 				if (property.name) {
 					const value = getProperty(property.name);
 					if (!value || typeof value !== 'object' || value instanceof Date) return value;
-					if (!subTransforms) subTransforms = Object.create(null);
-					// TODO: Get the resource, cache this transform, and apply above
-					let transform = subTransforms[property.name];
+					if (!subTransforms) subTransforms = new WeakMap();
+					let transform = subTransforms.get(property);
 					if (!transform) {
-						const resource =
+						const subSelect = property.select ?? (Array.isArray(property) ? property : null);
+						const targetResource =
 							propertyResolvers && Object.hasOwn(propertyResolvers, property.name)
 								? propertyResolvers[property.name]?.definition?.tableClass
 								: undefined;
-						transform = subTransforms[property.name] = transformForSelect(property.select || property, resource);
+						const innerTransform = subSelect ? transformForSelect(subSelect, targetResource) : (v) => v;
+						const sort = typeof property.sort === 'object' ? property.sort : null;
+						const offset = Number.isInteger(property.offset) && property.offset >= 0 ? property.offset : undefined;
+						const limit = Number.isInteger(property.limit) && property.limit >= 0 ? property.limit : undefined;
+						if (sort || offset !== undefined || limit !== undefined) {
+							const sortClauses: { attribute: string | string[]; descending?: boolean }[] = [];
+							for (let clause = sort; clause; clause = clause.next) {
+								sortClauses.push(clause);
+							}
+							const applySubQuery = (resolvedValue) => {
+								if (!resolvedValue || typeof resolvedValue !== 'object' || resolvedValue instanceof Date)
+									return resolvedValue;
+								if (typeof resolvedValue.then === 'function') return resolvedValue.then(applySubQuery);
+								if (Array.isArray(resolvedValue)) {
+									let ordered = resolvedValue;
+									if (sortClauses.length > 0) {
+										const resolvers = targetResource?.propertyResolvers;
+										const ctx = targetResource?.getContext?.();
+										ordered = resolvedValue
+											.map((item) => ({
+												item,
+												keys: sortClauses.map((clause) => getComparableKey(item, clause.attribute, resolvers, ctx)),
+											}))
+											.sort((a, b) => {
+												for (let i = 0; i < sortClauses.length; i++) {
+													const diff = sortClauses[i].descending
+														? compareKeys(b.keys[i], a.keys[i])
+														: compareKeys(a.keys[i], b.keys[i]);
+													if (diff !== 0) return diff;
+												}
+												return 0;
+											})
+											.map((entry) => entry.item);
+									}
+									if (offset !== undefined || limit !== undefined) {
+										const start = offset ?? 0;
+										ordered = ordered.slice(start, limit !== undefined ? start + limit : undefined);
+									}
+									return innerTransform(ordered);
+								}
+								return innerTransform(resolvedValue);
+							};
+							transform = applySubQuery;
+						} else {
+							transform = innerTransform;
+						}
+						subTransforms.set(property, transform);
 					}
 					return transform(value);
 				} else return getProperty(property);
 			} else return property;
 		};
 	}
+}
+
+export function convertToComparableKeys(value) {
+	if (value instanceof Date) return value.getTime();
+	if (Array.isArray(value)) return value.map(convertToComparableKeys);
+	return value;
+}
+
+function getComparableKey(item, attribute, resolvers, ctx) {
+	if (item == null || typeof item !== 'object') return undefined;
+	if (Array.isArray(attribute)) {
+		let value = item;
+		let currentResolvers = resolvers;
+		for (const part of attribute) {
+			if (value == null || typeof value !== 'object') return undefined;
+			value = selectFromObject(value, currentResolvers, ctx)(part);
+			currentResolvers =
+				currentResolvers && Object.hasOwn(currentResolvers, part)
+					? (currentResolvers[part]?.definition || currentResolvers[part]?.elements?.definition)?.tableClass
+							?.propertyResolvers
+					: undefined;
+		}
+		return convertToComparableKeys(value);
+	}
+	return convertToComparableKeys(selectFromObject(item, resolvers, ctx)(attribute));
 }

@@ -2109,7 +2109,9 @@ export function estimateCondition(table) {
 	}
 	return estimateConditionForTable;
 }
-class SyntaxViolation extends Violation {}
+class SyntaxViolation extends Violation {
+	statusCode = 400;
+}
 const NEEDS_PARSER = /[()[\]|!<>.]|(=\w*=)/;
 const QUERY_PARSER = /([^?&|=<>!([{}\]),]*)([([{}\])|,&]|[=<>!]*)/g;
 const VALUE_PARSER = /([^&|=[\]{}]+)([[\]{}]|[&|=]*)/g;
@@ -2133,7 +2135,7 @@ export function parseQuery(queryToParse: string, query: RequestTarget) {
 			parseBlock(currentQuery, '');
 			if (lastIndex !== queryString.length) recordError(`Unable to parse query, unexpected end of query`);
 			if ((currentQuery as any).parseErrorMessage) {
-				(currentQuery as any).parseError = new SyntaxViolation((query as any).parseErrorMessage);
+				(currentQuery as any).parseError = new SyntaxViolation((currentQuery as any).parseErrorMessage);
 				if (!query) throw (currentQuery as any).parseError;
 			}
 			return currentQuery;
@@ -2165,6 +2167,11 @@ function parseBlock(query, expectedEnd) {
 	let lastBinaryOperator;
 	while ((match = parser.exec(queryString))) {
 		lastIndex = parser.lastIndex;
+		if (match[0] === '' && lastIndex < queryString.length) {
+			recordError(`unexpected character '${queryString[lastIndex]}'`);
+			lastIndex = queryString.length;
+			return query;
+		}
 		const [, value, operator] = match;
 		if (expectingDelimiter) {
 			if (value) recordError(`expected operator, but encountered '${value}'`);
@@ -2268,11 +2275,22 @@ function parseBlock(query, expectedEnd) {
 					case 'limit':
 						switch (args.length) {
 							case 1:
-								query.limit = +args[0];
+								query.limit = args[0] === '' ? NaN : +args[0];
+								if (!Number.isInteger(query.limit) || query.limit < 0) {
+									recordError('limit must be a non-negative integer');
+								}
 								break;
 							case 2:
-								query.offset = +args[0];
-								query.limit = args[1] - query.offset;
+								query.offset = args[0] === '' ? NaN : +args[0];
+								query.limit = (args[1] === '' ? NaN : +args[1]) - query.offset;
+								if (
+									!Number.isInteger(query.offset) ||
+									query.offset < 0 ||
+									!Number.isInteger(query.limit) ||
+									query.limit < 0
+								) {
+									recordError('limit and offset must be non-negative integers');
+								}
 								break;
 							default:
 								recordError('limit must have 1 or 2 arguments');
@@ -2282,7 +2300,7 @@ function parseBlock(query, expectedEnd) {
 						if (Array.isArray(args[0]) && args.length === 1 && !(args[0] as any).name) {
 							query.select = args[0];
 							query.select.asArray = true;
-						} else if (args.length === 1) query.select = args[0];
+						} else if (args.length === 1 && !(args[0] as any).name) query.select = args[0];
 						else if (args.length === 2 && args[1] === '') query.select = args.slice(0, 1);
 						else query.select = args;
 						break;
@@ -2335,7 +2353,12 @@ function parseBlock(query, expectedEnd) {
 						query.conditions.push(entry);
 						attribute = null;
 					}
-				} else query.push(entry);
+				} else {
+					if (value && entry.conditions.length) {
+						recordError('conditions/comparisons are not allowed in a property list');
+					}
+					query.push(entry);
+				}
 				if (queryString[lastIndex] === ',') {
 					parser.lastIndex = ++lastIndex;
 				} else expectingDelimiter = true;
@@ -2365,8 +2388,8 @@ function parseBlock(query, expectedEnd) {
 		}
 		if (expectedEnd !== ')') {
 			parser = attribute ? VALUE_PARSER : QUERY_PARSER;
-			parser.lastIndex = lastIndex;
 		}
+		parser.lastIndex = lastIndex;
 		if (lastIndex === queryString.length) return query;
 	}
 	if (expectedEnd) recordError(`expected '${expectedEnd}', but encountered end of string`);

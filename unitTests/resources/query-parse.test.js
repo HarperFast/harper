@@ -1,4 +1,6 @@
 const assert = require('assert');
+const { spawnSync } = require('node:child_process');
+const path = require('node:path');
 const { parseQuery } = require('#src/resources/search');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 // might want to enable an iteration with NATS being assigned as a source
@@ -149,6 +151,73 @@ describe('Parsing queries', () => {
 		assert.equal(query.select[0].select[1].select.length, 1);
 		assert.equal(query.select[0].select[1].select[0], 'other_name');
 	});
+	it('Single-argument nested select keeps outer array wrapper (#1415)', function () {
+		const braceQuery = parseQuery('select(child{id,label})');
+		assert.ok(Array.isArray(braceQuery.select));
+		assert.strictEqual(braceQuery.select.length, 1);
+		assert.strictEqual(braceQuery.select[0].name, 'child');
+		assert.deepStrictEqual(Array.from(braceQuery.select[0]), ['id', 'label']);
+
+		const bracketQuery = parseQuery('select(child[select(id,label)])');
+		assert.ok(Array.isArray(bracketQuery.select));
+		assert.strictEqual(bracketQuery.select.length, 1);
+		assert.strictEqual(bracketQuery.select[0].name, 'child');
+		assert.deepStrictEqual(Array.from(bracketQuery.select[0].select), ['id', 'label']);
+
+		const deepQuery = parseQuery('select(child{grandchild{id}})');
+		assert.ok(Array.isArray(deepQuery.select));
+		assert.strictEqual(deepQuery.select.length, 1);
+		assert.strictEqual(deepQuery.select[0].name, 'child');
+		assert.strictEqual(deepQuery.select[0][0].name, 'grandchild');
+		assert.deepStrictEqual(Array.from(deepQuery.select[0][0]), ['id']);
+
+		const scalarQuery = parseQuery('select(title)');
+		assert.strictEqual(scalarQuery.select, 'title');
+	});
+	it('Rejects bracketed filter conditions inside select(...) with 400 SyntaxViolation', function () {
+		for (const raw of [
+			'select(children[label=child-label-c1])',
+			'select(id,children[label=child-label-c1])',
+			'select(children[label=child-label-c1],id)',
+		]) {
+			assert.throws(
+				() => parseQuery(raw),
+				(err) => {
+					assert.strictEqual(err.statusCode, 400);
+					assert.match(err.message, /conditions\/comparisons are not allowed in a property list/);
+					return true;
+				}
+			);
+			const target = new RequestTarget(`?${raw}`);
+			assert.ok(target.parseError);
+			assert.strictEqual(target.parseError.statusCode, 400);
+			assert.match(target.parseError.message, /conditions\/comparisons are not allowed in a property list/);
+		}
+	});
+	it('Allows bracketed non-condition operators like sort() and limit() inside select(...)', function () {
+		const query = parseQuery('select(id,children[sort(-id)&limit(5)])');
+		assert.strictEqual(query.parseError, undefined);
+		assert.strictEqual(query.select.length, 2);
+		assert.strictEqual(query.select[0], 'id');
+		assert.strictEqual(query.select[1].name, 'children');
+		assert.strictEqual(query.select[1].sort.attribute, 'id');
+		assert.strictEqual(query.select[1].sort.descending, true);
+		assert.strictEqual(query.select[1].limit, 5);
+	});
+	it('Parses parenthesized OR group containing a bracketed relationship condition', function () {
+		const query = parseQuery('(title=x|children[label=y])');
+		assert.strictEqual(query.parseError, undefined);
+		assert.strictEqual(query.conditions.length, 1);
+		const group = query.conditions[0];
+		assert.strictEqual(group.operator, 'or');
+		assert.strictEqual(group.conditions.length, 2);
+		assert.strictEqual(group.conditions[0].attribute, 'title');
+		assert.strictEqual(group.conditions[0].value, 'x');
+		assert.strictEqual(group.conditions[1].name, 'children');
+		assert.strictEqual(group.conditions[1].conditions.length, 1);
+		assert.strictEqual(group.conditions[1].conditions[0].attribute, 'label');
+		assert.strictEqual(group.conditions[1].conditions[0].value, 'y');
+	});
 	it('Multi-part properties', function () {
 		let query = parseQuery('name.subname=2');
 		assert.equal(query.conditions.length, 1);
@@ -188,9 +257,49 @@ describe('Parsing queries', () => {
 	});
 	it('Bad calls', function () {
 		assert.throws(() => parseQuery('limit(5,10'), /expected '\)'/);
+		assert.throws(() => parseQuery('limit(-1)'), /limit must be a non-negative integer/);
+		assert.throws(() => parseQuery('limit(abc)'), /limit must be a non-negative integer/);
+		assert.throws(() => parseQuery('limit(10,5)'), /limit and offset must be non-negative integers/);
+		assert.throws(() => parseQuery('select(id,children[limit(-1)])'), /limit must be a non-negative integer/);
+		assert.throws(() => parseQuery('select(id,children[limit(abc)])'), /limit must be a non-negative integer/);
 		assert.throws(() => parseQuery('unknown(5,10)'), /unknown query function call/);
 		assert.throws(() => parseQuery('select([)'), /expected '\]'/);
 		assert.throws(() => parseQuery('select)'), /unexpected token '\)'/);
+		// Run in a subprocess with a hard timeout so a regression in the '?' empty-match guard
+		// fails fast instead of hanging the Mocha suite (which runs with timeout: 0).
+		const probe = spawnSync(
+			process.execPath,
+			[
+				...process.execArgv.filter((arg) => !arg.startsWith('--inspect')),
+				'-e',
+				`const assert = require('node:assert');
+				const { parseQuery } = require('#src/resources/search');
+				const { RequestTarget } = require('#src/resources/RequestTarget');
+				assert.throws(
+					() => parseQuery('select(id)?limit(1)'),
+					(err) => err.statusCode === 400 && /unexpected character '\\?'/.test(err.message)
+				);
+				const target = new RequestTarget('?select(id)?limit(1)');
+				assert.strictEqual(target.parseError?.statusCode, 400);
+				process.exit(0);`,
+			],
+			{ cwd: path.resolve(__dirname, '../..'), timeout: 45000, encoding: 'utf8' }
+		);
+		assert.strictEqual(
+			probe.status,
+			0,
+			probe.error?.code === 'ETIMEDOUT'
+				? 'parseQuery("select(id)?limit(1)") timed out in subprocess probe (possible parser hang)'
+				: probe.stderr || probe.error?.message
+		);
+		assert.throws(
+			() => parseQuery('select(id)?limit(1)'),
+			(err) => err.statusCode === 400 && /unexpected character '\?'/.test(err.message)
+		);
+		const target = new RequestTarget('?select(id)?limit(1)');
+		assert.ok(target.parseError);
+		assert.strictEqual(target.parseError.statusCode, 400);
+		assert.match(target.parseError.message, /unexpected character '\?'/);
 	});
 
 	it.skip('Bad queries', function () {
