@@ -5,6 +5,7 @@ const {
 	dropSessionSubscriptions,
 	restoreResourceSubscriptions,
 	SubscriptionCancelledError,
+	hasSubscriptionIntent,
 	_liveSubscriptionCount,
 	_resetSubscriptionsForTest,
 } = require('#src/components/mcp/subscriptions');
@@ -272,7 +273,7 @@ describe('mcp/subscriptions', () => {
 			assert.equal(_liveSubscriptionCount('s1'), 1);
 		});
 
-		it('keeps a URI that a newer subscribe took over after restore found it not subscribable', async () => {
+		it('reports intent for a URI that a newer subscribe took over after restore found it not subscribable', async () => {
 			const owner = registerSession('s1', 'application', USER);
 			const gate = deferred();
 			let firstCalls = 0;
@@ -285,7 +286,9 @@ describe('mcp/subscriptions', () => {
 			await turns();
 			assert.equal(await addResourceSubscription('s1', URI, USER), true);
 			gate.resolve();
-			assert.deepEqual(await restoring, [URI, URI_B]);
+			assert.deepEqual(await restoring, [URI_B]);
+			assert.equal(hasSubscriptionIntent('s1', URI), true);
+			assert.equal(hasSubscriptionIntent('s1', 'https://app.test:9926/other'), false);
 		});
 
 		it('keeps a URI whose subscribe threw, so the next reconnect retries it', async () => {

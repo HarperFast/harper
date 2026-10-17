@@ -159,10 +159,10 @@ export function dropSessionSubscriptions(sessionId: string): void {
  * by `owner` (the reconnecting GET's record). Every URI is reserved up front, so
  * an unsubscribe for one not reached yet cancels it. Stops once `owner` is no
  * longer the registered record. Returns the URIs to keep on the durable list:
- * all but those reported not subscribable. A URI whose subscribe threw stays, so
- * a transient failure is retried on the next reconnect; so does a custom URI no
- * entry matches yet (its component may still be loading on this worker), and
- * one a newer subscribe has taken over since it was reported.
+ * all but those a registered resource reported not subscribable. A URI whose
+ * subscribe threw stays, so a transient failure is retried on the next
+ * reconnect; so does a URI nothing on this worker matches yet (its component
+ * may still be loading).
  */
 export async function restoreResourceSubscriptions(
 	sessionId: string,
@@ -191,11 +191,12 @@ export async function restoreResourceSubscriptions(
 			}
 		}
 	}
-	if (kept.length === uris.length) return kept;
-	const keptSet = new Set(kept);
-	return uris.filter(
-		(uri) => keptSet.has(uri) || live.get(sessionId)?.has(uri) === true || pending.get(sessionId)?.has(uri) === true
-	);
+	return kept;
+}
+
+/** Whether `uri` is subscribed on `sessionId`, or a subscribe for it is still being set up. */
+export function hasSubscriptionIntent(sessionId: string, uri: string): boolean {
+	return live.get(sessionId)?.has(uri) === true || pending.get(sessionId)?.has(uri) === true;
 }
 
 /** Test seam — count of live subscriptions for a session. */

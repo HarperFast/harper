@@ -1557,6 +1557,33 @@ describe('mcp/transport', () => {
 				assert.ok(!requested.includes('later'), 'a URI unsubscribed before restore reached it is never acquired');
 			});
 
+			it('keeps a URI that a subscribe took over while restore was pruning it', async () => {
+				const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+				const [flaky, slow] = ['flaky', 'slow'].map((p) => `https://app.test:9926/${p}`);
+				session.subscriptions = [flaky, slow];
+				await saveSession(session);
+				let release;
+				const gate = new Promise((resolve) => (release = resolve));
+				let flakyCalls = 0;
+				_setSubscribeImplForTest(async (path) => {
+					if (path === 'flaky') return ++flakyCalls === 1 ? null : makeIdleStream();
+					await gate;
+					return makeIdleStream();
+				});
+				const get = handleMcpRequest(getReq(session));
+				for (let i = 0; i < 50 && flakyCalls < 1; i++) await new Promise((r) => setImmediate(r));
+				const subscribed = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(84, 'resources/subscribe', { uri: flaky }),
+						headers: { 'mcp-session-id': session.id, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.deepEqual(subscribed.jsonBody.result, {});
+				release();
+				assert.equal((await get).status, 200);
+				assert.deepEqual((await loadSession(session.id)).subscriptions, [flaky, slow]);
+			});
+
 			it('does not let a superseded GET prune the list the newer GET restored', async () => {
 				const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
 				const [flaky, slow] = ['flaky', 'slow'].map((p) => `https://app.test:9926/${p}`);

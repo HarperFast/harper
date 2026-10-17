@@ -49,6 +49,7 @@ import {
 	removeResourceSubscription,
 	dropSessionSubscriptions,
 	restoreResourceSubscriptions,
+	hasSubscriptionIntent,
 	SubscriptionCancelledError,
 } from './subscriptions.ts';
 import {
@@ -434,14 +435,19 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 			request.profile,
 			record
 		);
-		if (kept.length !== session.subscriptions.length && getRegisteredSession(sessionId) === record) {
+		if (kept.length !== session.subscriptions.length) {
 			const keptSet = new Set(kept);
 			const pruned = new Set(session.subscriptions.filter((uri) => !keptSet.has(uri)));
-			await updateSessionSubscriptions(sessionId, (uris) => uris.filter((uri) => !pruned.has(uri)));
+			// Checked inside the queued write: by then a newer GET may own the list, or a
+			// newer subscribe may have taken the URI over.
+			await updateSessionSubscriptions(sessionId, (uris) =>
+				getRegisteredSession(sessionId) === record
+					? uris.filter((uri) => !pruned.has(uri) || hasSubscriptionIntent(sessionId, uri))
+					: uris
+			);
 		}
 	}
-	// Superseded while restoring: this queue's 'close' has already fired, so an
-	// SSE adapter attached now would never end the response.
+	// Superseded while restoring: the client has already opened the GET that replaced this one.
 	if (getRegisteredSession(sessionId) !== record) {
 		return { status: 409, headers: {}, jsonBody: { error: { message: 'superseded by a newer GET stream' } } };
 	}
