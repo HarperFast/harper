@@ -1294,7 +1294,9 @@ function isGeneratorFunction(fn: unknown): boolean {
 /**
  * Build the subscribe dispatcher for a custom resource: the same live-class
  * instance dispatch as `makeCustomResourceReader`. The generator check repeats
- * here because the live class can be a subclass registered after the walk.
+ * here because the live class can be a subclass registered after the walk. A
+ * returned async generator is refused as well: its `return()` cannot interrupt
+ * it while it awaits its source, so unsubscribe could not release that source.
  */
 function makeCustomResourceSubscriber(path: string, capturedClass: ResourceClassLike, methodName: string) {
 	return async function (
@@ -1314,7 +1316,15 @@ function makeCustomResourceSubscriber(path: string, capturedClass: ResourceClass
 				`subscribe method '${methodName}' is a generator; return an async iterable from a regular method`
 			);
 		}
-		return await method.call(instance, params ?? {}, context);
+		const stream = await method.call(instance, params ?? {}, context);
+		if (Object.prototype.toString.call(stream) === '[object AsyncGenerator]') {
+			// not started yet, so this completes it at once
+			void (stream as unknown as AsyncGenerator).return(undefined);
+			throw new Error(
+				`subscribe method '${methodName}' returned an async generator; return a stream with end(), such as a Table.subscribe() result`
+			);
+		}
+		return stream;
 	};
 }
 

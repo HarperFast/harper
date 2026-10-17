@@ -1068,7 +1068,6 @@ const {
 	subscribeToResource: subscribeToCustomResource,
 } = require('#src/components/mcp/resources');
 
-// An idle change stream with `end()`; `ended` counts releases.
 function makeIdleStream() {
 	const stream = {
 		ended: 0,
@@ -1258,6 +1257,29 @@ describe('mcp/tools/application — custom mcpResources opt-in (#1609)', () => {
 			);
 			assert.equal(await subscribeToCustomResource(uri, SUPER, 'application'), null);
 		}
+	});
+
+	it('refuses an async generator returned by a regular subscribe method', async () => {
+		let bodyRan = false;
+		class Docs {
+			async readPage() {
+				return 'x';
+			}
+			watchPage() {
+				return this.changes();
+			}
+			async *changes() {
+				bodyRan = true;
+				yield 1;
+			}
+		}
+		Docs.mcpResources = [
+			{ uri: 'docs:///index', name: 'docs index', description: 'd', method: 'readPage', subscribe: 'watchPage' },
+		];
+		_setResourcesForTest(makeRegistry([['Docs', { Resource: Docs }]]));
+		registerApplicationTools();
+		await assert.rejects(subscribeToCustomResource('docs:///index', SUPER, 'application'), /async generator/);
+		assert.equal(bodyRan, false);
 	});
 
 	it('refuses a generator subscribe on a subclass registered after the walk', async () => {
