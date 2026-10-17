@@ -54,9 +54,9 @@
  * iterable is consumed after that transaction ends, so authorization and source
  * acquisition must happen before it returns — generator methods are rejected at
  * registration for that reason. The stream is released with `end()` when it
- * has one, else its iterator's `return()`; a stream with no `end()` whose
- * iterator is an async generator is refused, because that `return()` cannot
- * interrupt a pending await. The MCP layer adds only identity-lifetime
+ * has one, else its iterator's `return()`; a stream with no `end()` is refused
+ * when its iterator has no `return()`, or is an async generator, whose
+ * `return()` cannot interrupt a pending await. The MCP layer adds only identity-lifetime
  * revocation (token expiry, a removed user or role); resource-specific access
  * changes after subscribe are the author's to enforce.
  */
@@ -79,7 +79,10 @@ export interface CustomResourceContent {
 }
 export type CustomResourceReadResult = string | CustomResourceContent | object;
 
-/** What an author `subscribe` returns: values are opaque change triggers. */
+/**
+ * What an author `subscribe` returns: values are opaque change triggers. Without
+ * `end()`, its iterator must have a `return()` that releases the source.
+ */
 export type CustomResourceSubscription = AsyncIterable<unknown> & { end?: () => unknown };
 
 export interface CustomResourceDef {

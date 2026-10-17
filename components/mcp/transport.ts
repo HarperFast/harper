@@ -41,7 +41,13 @@ import {
 	updateSessionSubscriptions,
 	type McpSessionRecord,
 } from './session.ts';
-import { listResources, listResourceTemplates, readResource, completeResourceArgument } from './resources.ts';
+import {
+	listResources,
+	listResourceTemplates,
+	readResource,
+	completeResourceArgument,
+	describeError,
+} from './resources.ts';
 import { ensureApplicationToolsFresh } from './tools/application.ts';
 import { getPrompt, listPrompts, completePromptArgument } from './promptRegistry.ts';
 import {
@@ -63,6 +69,7 @@ import {
 	touchRegisteredSession,
 	getRegisteredSession,
 	replaySince,
+	type RegisteredSession,
 	type SseEvent,
 } from './sessionRegistry.ts';
 import { getTool, listTools, type AuthedUser, type ToolCallContext, type ToolResult } from './toolRegistry.ts';
@@ -430,33 +437,6 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	// per-call POST stream, so a GET reconnect/supersede must not reject an
 	// in-flight `serverRequest`. Those are cleared on session DELETE + by timeout.
 	record.queue.once('close', () => dropSessionSubscriptions(sessionId));
-	// Restore durable resource subscriptions (#3.6) on (re)connect. Best-effort:
-	// a URI that's no longer subscribable is dropped from the persisted list —
-	// unless a newer GET has superseded this one, since that list is then its to keep.
-	if (session.subscriptions?.length) {
-		const kept = await restoreResourceSubscriptions(
-			sessionId,
-			session.subscriptions,
-			effectiveUser(request),
-			request.profile,
-			record
-		);
-		if (kept.length !== session.subscriptions.length) {
-			const keptSet = new Set(kept);
-			const pruned = new Set(session.subscriptions.filter((uri) => !keptSet.has(uri)));
-			// Checked inside the queued write: by then a newer GET may own the list, or a
-			// newer subscribe may have taken the URI over.
-			await updateSessionSubscriptions(sessionId, (uris) =>
-				getRegisteredSession(sessionId) === record
-					? uris.filter((uri) => !pruned.has(uri) || hasSubscriptionIntent(sessionId, uri))
-					: uris
-			);
-		}
-	}
-	// Superseded while restoring: the client has already opened the GET that replaced this one.
-	if (getRegisteredSession(sessionId) !== record) {
-		return { status: 409, headers: {}, jsonBody: { error: { message: 'superseded by a newer GET stream' } } };
-	}
 	// Resumability (#3.8): on reconnect with Last-Event-ID, replay buffered frames
 	// the client missed (those with a higher id) before live frames flow. Re-sent
 	// raw so their original event ids are preserved. Best-effort + per-worker: the
@@ -464,6 +444,15 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	const lastEventId = request.headers[LAST_EVENT_ID_HEADER];
 	if (lastEventId) {
 		for (const frame of replaySince(record, lastEventId)) record.queue.send(frame);
+	}
+	// Restore durable resource subscriptions (#3.6) after the replay and without
+	// awaiting it: an author's subscribe may do I/O, and the stream opens now.
+	// Restored notifications queue on `record` until the adapter attaches.
+	if (session.subscriptions?.length) {
+		const uris = session.subscriptions;
+		restoreDurableSubscriptions(sessionId, record, uris, effectiveUser(request), request.profile).catch((err) =>
+			harperLogger.warn(`MCP subscription restore for ${sessionId} failed: ${describeError(err)}`)
+		);
 	}
 	return {
 		status: 200,
@@ -479,6 +468,30 @@ function profileMaxTools(profile: McpProfile): number {
 	const key = profile === 'operations' ? CONFIG_PARAMS.MCP_OPERATIONS_MAXTOOLS : CONFIG_PARAMS.MCP_APPLICATION_MAXTOOLS;
 	const value = env.get(key);
 	return typeof value === 'number' && value > 0 ? value : DEFAULT_MAX_TOOLS;
+}
+
+/**
+ * Restore a reconnecting GET's subscriptions, then drop from the durable list
+ * the URIs a registered resource reported not subscribable. That prune is
+ * decided inside the queued write: by then a newer GET may own the list, or a
+ * newer subscribe may have taken the URI over.
+ */
+async function restoreDurableSubscriptions(
+	sessionId: string,
+	record: RegisteredSession,
+	uris: string[],
+	user: AuthedUser,
+	profile: McpProfile
+): Promise<void> {
+	const kept = await restoreResourceSubscriptions(sessionId, uris, user, profile, record);
+	if (kept.length === uris.length) return;
+	const keptSet = new Set(kept);
+	const pruned = new Set(uris.filter((uri) => !keptSet.has(uri)));
+	await updateSessionSubscriptions(sessionId, (current) =>
+		getRegisteredSession(sessionId) === record
+			? current.filter((uri) => !pruned.has(uri) || hasSubscriptionIntent(sessionId, uri))
+			: current
+	);
 }
 
 function effectiveUser(request: NormRequest): AuthedUser {

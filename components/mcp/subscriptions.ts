@@ -88,17 +88,24 @@ async function admit(
 	owner: RegisteredSession,
 	setup: PendingSetup
 ): Promise<boolean> {
+	const cancellation = () => {
+		const cancelled =
+			setup.cancelled ?? (getRegisteredSession(sessionId) !== owner ? 'the GET SSE stream closed' : undefined);
+		return cancelled && new SubscriptionCancelledError(`resources/subscribe for ${uri} was cancelled: ${cancelled}`);
+	};
 	let subscription: ResourceSubscription | null = null;
 	try {
 		if (!setup.cancelled) subscription = await subscribeToResource(uri, user, profile);
+	} catch (err) {
+		// a setup nobody is waiting for any more answers as cancelled, not as the author's failure
+		throw cancellation() || err;
 	} finally {
 		deletePending(sessionId, uri, setup);
 	}
-	const cancelled =
-		setup.cancelled ?? (getRegisteredSession(sessionId) !== owner ? 'the GET SSE stream closed' : undefined);
+	const cancelled = cancellation();
 	if (cancelled) {
 		subscription?.stop();
-		throw new SubscriptionCancelledError(`resources/subscribe for ${uri} was cancelled: ${cancelled}`);
+		throw cancelled;
 	}
 	if (!subscription) return false;
 	// Replace any existing subscription for the same URI (idempotent re-subscribe).
