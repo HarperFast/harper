@@ -230,6 +230,42 @@ describe('mcp/subscriptions', () => {
 			assert.equal(_liveSubscriptionCount('s1'), 0);
 		});
 
+		it('never acquires a URI unsubscribed before restore reached it', async () => {
+			const owner = registerSession('s1', 'application', USER);
+			const gate = deferred();
+			const requested = [];
+			_setSubscribeImplForTest(async (path) => {
+				requested.push(path);
+				if (path === 'Product/1') await gate.promise;
+				return makeFakeStream();
+			});
+			const restoring = restoreResourceSubscriptions('s1', [URI, URI_B], USER, 'application', owner);
+			removeResourceSubscription('s1', URI_B);
+			gate.resolve();
+			await restoring;
+			assert.deepEqual(requested, ['Product/1']);
+			assert.equal(_liveSubscriptionCount('s1'), 1);
+		});
+
+		it('keeps restoring past a rejection whose reason cannot be printed', async () => {
+			registerSession('s1', 'application', USER);
+			_setSubscribeImplForTest(async (path) => {
+				if (path === 'Product/1') throw Object.create(null);
+				return fake;
+			});
+			assert.deepEqual(await restoreResourceSubscriptions('s1', [URI, URI_B], USER), [URI, URI_B]);
+			assert.equal(_liveSubscriptionCount('s1'), 1);
+		});
+
+		it('forgets a subscription whose stream ended on its own', async () => {
+			registerSession('s1', 'application', USER);
+			assert.equal(await addResourceSubscription('s1', URI, USER), true);
+			fake.end();
+			await turns();
+			assert.equal(_liveSubscriptionCount('s1'), 0);
+			assert.equal(removeResourceSubscription('s1', URI), false);
+		});
+
 		it('keeps a URI whose subscribe threw, so the next reconnect retries it', async () => {
 			registerSession('s1', 'application', USER);
 			_setSubscribeImplForTest(async (path) => {

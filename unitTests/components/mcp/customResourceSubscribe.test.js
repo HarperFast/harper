@@ -78,7 +78,6 @@ function addNotes(subscribe, extra = {}) {
 	});
 }
 
-// Rejections that escape, collected so a test can assert none did.
 function collectUnhandledRejections() {
 	const reasons = [];
 	const listener = (reason) => reasons.push(reason);
@@ -172,23 +171,28 @@ describe('mcp custom resources/subscribe (#3250)', () => {
 		assert.equal(unstarted.stats.returnCalls, 1);
 	});
 
-	it('releases the stream when iteration fails or cannot start', async () => {
+	it('releases the stream when iteration fails', async () => {
 		const failing = makeStream();
 		failing[Symbol.asyncIterator] = () => ({ next: () => Promise.reject(new Error('source lost')) });
 		addNotes(async () => failing);
-		(await subscribeToResource('notes:///n1', USER, 'application')).start(() => {});
+		const subscription = await subscribeToResource('notes:///n1', USER, 'application');
+		let stopped = false;
+		subscription.onStop(() => (stopped = true));
+		subscription.start(() => {});
 		await waitFor(() => failing.stats.endCalls === 1);
+		assert.equal(stopped, true, 'onStop runs when the stream ends itself');
+		let lateCallback = false;
+		subscription.onStop(() => (lateCallback = true));
+		assert.equal(lateCallback, true, 'onStop after stop runs at once');
+	});
 
+	it('fails the subscribe, releasing the stream, when it cannot produce an iterator', async () => {
 		const unstartable = makeStream();
-		const realIterator = unstartable[Symbol.asyncIterator];
-		let iteratorCalls = 0;
-		unstartable[Symbol.asyncIterator] = function () {
-			if (++iteratorCalls === 1) throw new Error('no iterator');
-			return realIterator.call(this);
+		unstartable[Symbol.asyncIterator] = () => {
+			throw new Error('no iterator');
 		};
-		clearProfileCustomResources('application');
 		addNotes(async () => unstartable);
-		(await subscribeToResource('notes:///n1', USER, 'application')).start(() => {});
+		await assert.rejects(subscribeToResource('notes:///n1', USER, 'application'), /no iterator/);
 		assert.equal(unstartable.stats.endCalls, 1);
 	});
 

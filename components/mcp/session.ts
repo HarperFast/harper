@@ -53,7 +53,8 @@ export interface McpSessionRecord {
 	/**
 	 * Resource URIs the client has subscribed to via `resources/subscribe`
 	 * (#1349 §3.6). Persisted so they can be restored on an SSE reconnect (the
-	 * live per-worker subscription objects can't be). Row-backed URIs only;
+	 * live per-worker subscription objects can't be). Row-backed resource URIs
+	 * and custom `mcpResources` URIs that declare `subscribe` (#3250);
 	 * undefined/empty = no subscriptions.
 	 */
 	subscriptions?: string[];
@@ -155,6 +156,21 @@ export async function loadSession(id: string): Promise<McpSessionRecord | null> 
  */
 export async function saveSession(record: McpSessionRecord): Promise<void> {
 	await (getTable() as any).put(record);
+}
+
+/**
+ * Apply `change` to the session's subscription list as stored now, not as the
+ * caller loaded it: subscribe and restore await the resource first, and a
+ * concurrent request's subscribe or unsubscribe in that window must survive.
+ * A deleted session stays deleted.
+ */
+export async function updateSessionSubscriptions(id: string, change: (uris: string[]) => string[]): Promise<void> {
+	const current = await loadSession(id);
+	if (!current) return;
+	const before = current.subscriptions ?? [];
+	const after = change(before);
+	if (after.length === before.length && after.every((uri, index) => uri === before[index])) return;
+	await saveSession({ ...current, subscriptions: after });
 }
 
 export async function deleteSession(id: string): Promise<void> {

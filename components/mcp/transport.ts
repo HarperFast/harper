@@ -33,7 +33,14 @@ import { decodeCursor } from './pagination.ts';
 import { seedSessionSnapshot } from './listChanged.ts';
 import { tryAdmit, resolveClientIdentity } from './rateLimit.ts';
 import { checkDurableQuota } from './quota.ts';
-import { deleteSession, loadSession, saveSession, touchSession, type McpSessionRecord } from './session.ts';
+import {
+	deleteSession,
+	loadSession,
+	saveSession,
+	touchSession,
+	updateSessionSubscriptions,
+	type McpSessionRecord,
+} from './session.ts';
 import { listResources, listResourceTemplates, readResource, completeResourceArgument } from './resources.ts';
 import { ensureApplicationToolsFresh } from './tools/application.ts';
 import { getPrompt, listPrompts, completePromptArgument } from './promptRegistry.ts';
@@ -427,10 +434,15 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 			request.profile,
 			record
 		);
-		if (kept.length !== session.subscriptions.length && getRegisteredSession(sessionId) === record) {
-			session.subscriptions = kept;
-			await saveSession(session);
+		const pruned = session.subscriptions.filter((uri) => !kept.includes(uri));
+		if (pruned.length && getRegisteredSession(sessionId) === record) {
+			await updateSessionSubscriptions(sessionId, (uris) => uris.filter((uri) => !pruned.includes(uri)));
 		}
+	}
+	// Superseded while restoring: this queue's 'close' has already fired, so an
+	// SSE adapter attached now would never end the response.
+	if (getRegisteredSession(sessionId) !== record) {
+		return { status: 409, headers: {}, jsonBody: { error: { message: 'superseded by a newer GET stream' } } };
 	}
 	// Resumability (#3.8): on reconnect with Last-Event-ID, replay buffered frames
 	// the client missed (those with a higher id) before live frames flow. Re-sent
@@ -956,10 +968,7 @@ async function dispatchResourcesSubscribe(
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `resource is not subscribable: ${uri}`));
 	}
 	// Persist the URI on the durable record so it survives an SSE reconnect.
-	if (!session.subscriptions?.includes(uri)) {
-		session.subscriptions = [...(session.subscriptions ?? []), uri];
-		await saveSession(session);
-	}
+	await updateSessionSubscriptions(session.id, (uris) => (uris.includes(uri) ? uris : [...uris, uri]));
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }
 
@@ -978,10 +987,7 @@ async function dispatchResourcesUnsubscribe(
 		);
 	}
 	removeResourceSubscription(session.id, uri);
-	if (session.subscriptions?.includes(uri)) {
-		session.subscriptions = session.subscriptions.filter((u) => u !== uri);
-		await saveSession(session);
-	}
+	await updateSessionSubscriptions(session.id, (uris) => uris.filter((u) => u !== uri));
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }
 
