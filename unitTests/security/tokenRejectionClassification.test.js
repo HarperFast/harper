@@ -11,7 +11,6 @@ const jwt = require('jsonwebtoken');
 
 const { JWT_ENUM, LICENSE_KEY_DIR_NAME } = require('#src/utility/hdbTerms');
 const env = require('#src/utility/environment/environmentManager');
-const { isCredentialRejection } = require('#src/security/deferredAuthentication');
 const {
 	clearJWTRSAKeysCache,
 	validateOperationToken,
@@ -86,7 +85,7 @@ describe('token rejection versus internal authentication fault', () => {
 		it('classifies a syntactically malformed token as a rejection', async () => {
 			const error = await raisedBy(() => validateOperationToken('not-a-jwt'));
 
-			assert.strictEqual(isCredentialRejection(error), true);
+			assert.strictEqual(error?.credentialRejection === true, true);
 			assert.strictEqual(error.message, 'invalid token');
 			assert.strictEqual(error.statusCode, 401);
 		});
@@ -96,7 +95,7 @@ describe('token rejection versus internal authentication fault', () => {
 
 			const error = await raisedBy(() => validateOperationToken(forged));
 
-			assert.strictEqual(isCredentialRejection(error), true);
+			assert.strictEqual(error?.credentialRejection === true, true);
 			assert.strictEqual(error.message, 'invalid token');
 		});
 
@@ -105,7 +104,7 @@ describe('token rejection versus internal authentication fault', () => {
 
 			const error = await raisedBy(() => validateOperationToken(refreshToken));
 
-			assert.strictEqual(isCredentialRejection(error), true);
+			assert.strictEqual(error?.credentialRejection === true, true);
 			assert.strictEqual(error.message, 'invalid token');
 		});
 
@@ -114,7 +113,7 @@ describe('token rejection versus internal authentication fault', () => {
 
 			const error = await raisedBy(() => validateOperationToken(expired));
 
-			assert.strictEqual(isCredentialRejection(error), true);
+			assert.strictEqual(error?.credentialRejection === true, true);
 			assert.strictEqual(error.message, 'token expired');
 			assert.strictEqual(error.statusCode, 403);
 		});
@@ -124,7 +123,7 @@ describe('token rejection versus internal authentication fault', () => {
 
 			const error = await raisedBy(() => validateOperationToken(notYet));
 
-			assert.strictEqual(isCredentialRejection(error), true);
+			assert.strictEqual(error?.credentialRejection === true, true);
 			assert.strictEqual(error.message, 'invalid token');
 		});
 
@@ -135,7 +134,7 @@ describe('token rejection versus internal authentication fault', () => {
 
 				const error = await raisedBy(() => validateOperationToken(token));
 
-				assert.strictEqual(isCredentialRejection(error), true);
+				assert.strictEqual(error?.credentialRejection === true, true);
 			} finally {
 				await testUtils.seedUsers(KNOWN_USER);
 			}
@@ -146,7 +145,7 @@ describe('token rejection versus internal authentication fault', () => {
 
 			const error = await raisedBy(() => validateRefreshToken(refreshToken));
 
-			assert.strictEqual(isCredentialRejection(error), true);
+			assert.strictEqual(error?.credentialRejection === true, true);
 			assert.strictEqual(error.message, 'invalid token');
 		});
 
@@ -166,7 +165,7 @@ describe('token rejection versus internal authentication fault', () => {
 
 			const error = await raisedBy(() => validateOperationToken(valid));
 
-			assert.strictEqual(isCredentialRejection(error), false);
+			assert.strictEqual(error?.credentialRejection === true, false);
 			assert.notStrictEqual(error.message, 'invalid token');
 			assert.strictEqual(error.statusCode, 500);
 		});
@@ -177,7 +176,7 @@ describe('token rejection versus internal authentication fault', () => {
 
 			const error = await raisedBy(() => validateOperationToken(valid));
 
-			assert.strictEqual(isCredentialRejection(error), false, `unexpectedly tagged: ${error.message}`);
+			assert.strictEqual(error?.credentialRejection === true, false, `unexpectedly tagged: ${error.message}`);
 			assert.notStrictEqual(error.message, 'invalid token');
 		});
 
@@ -189,7 +188,7 @@ describe('token rejection versus internal authentication fault', () => {
 
 				const error = await raisedBy(() => validateOperationToken(valid));
 
-				assert.strictEqual(isCredentialRejection(error), false);
+				assert.strictEqual(error?.credentialRejection === true, false);
 				assert.strictEqual(error.message, 'Table system.hdb_user not found');
 			} finally {
 				databases.system.hdb_user = userTable;
