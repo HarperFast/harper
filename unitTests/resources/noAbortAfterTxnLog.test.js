@@ -2666,5 +2666,135 @@ describe('Transactions are never aborted once durably written to the transaction
 				await lateFailHolder?.unlock?.();
 			}
 		});
+
+		it('does not sweep or drop a sibling holder unsaved deferred write when another holder ImmediateTransaction.save() retries past ERR_BUSY', async function () {
+			this.timeout(20000);
+			const key1 = id('deferred-save-1');
+			const key2 = id('deferred-save-2');
+			await AuditedA.put({ id: key1, writer: 'seed-1', count: 0 });
+			await AuditedA.put({ id: key2, writer: 'seed-2', count: 0 });
+
+			const targetDb = AuditedA.primaryStore.store.db;
+			const origCommit = Transaction.prototype.commit;
+			pendingRestores.push(() => {
+				Transaction.prototype.commit = origCommit;
+			});
+
+			let holder1TxnId;
+			let parkedInHolder1Conflict = false;
+			let releaseHolder1Retry;
+			const holder1RetryGate = new Promise((resolve) => {
+				releaseHolder1Retry = resolve;
+			});
+			pendingRestores.push(() => releaseHolder1Retry());
+
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== targetDb) return origCommit.apply(this, args);
+				if (holder1TxnId === undefined) {
+					holder1TxnId = this.id;
+					parkedInHolder1Conflict = true;
+					await holder1RetryGate;
+					throw Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY', hasLog: true });
+				}
+				return origCommit.apply(this, args);
+			};
+
+			const holder1 = await AuditedA.lock(key1, { hold: true, lease: 15_000 });
+			const sharedCtx = holder1.getContext();
+			const holder2 = await AuditedA.lock(key2, { hold: true, lease: 15_000 }, sharedCtx);
+			try {
+				assert.strictEqual(holder1.getContext().transaction, holder2.getContext().transaction);
+
+				holder1.set('writer', 'holder1-saved');
+				holder1.set('count', 1);
+				const save1Promise = holder1.save();
+
+				await waitFor(() => parkedInHolder1Conflict, {
+					message: 'holder1 should be parked in its first commit conflict',
+				});
+
+				// Stage a deferred write on holder2 WITHOUT calling holder2.save() yet.
+				holder2.set('writer', 'holder2-unsaved');
+				holder2.set('count', 2);
+
+				releaseHolder1Retry();
+				await save1Promise;
+
+				// holder1's retry must NOT have committed holder2's unsaved write, nor dropped it from this.writes.
+				assert.strictEqual(AuditedA.primaryStore.getEntry(key1).value.writer, 'holder1-saved');
+				assert.strictEqual(
+					AuditedA.primaryStore.getEntry(key2).value.writer,
+					'seed-2',
+					'holder2 unsaved deferred write must not be committed by holder1 retry'
+				);
+
+				// Now calling holder2.save() must commit holder2's staged write cleanly.
+				await holder2.save();
+				assert.strictEqual(AuditedA.primaryStore.getEntry(key2).value.writer, 'holder2-unsaved');
+				assert.strictEqual(AuditedA.primaryStore.getEntry(key2).value.count, 2);
+			} finally {
+				await holder1?.unlock?.();
+				await holder2?.unlock?.();
+			}
+		});
+
+		it('does not rotate an explicitly aborted scope back to OPEN when a logged mid-scope commit settles in the background', async function () {
+			this.timeout(20000);
+			const midKey = id('midscope-logged');
+			const afterAbortKey = id('after-abort-key');
+			await AuditedA.put({ id: midKey, writer: 'seed-mid', count: 0 });
+			await AuditedA.put({ id: afterAbortKey, writer: 'seed-after', count: 0 });
+
+			const targetDb = AuditedA.primaryStore.store.db;
+			const origCommit = Transaction.prototype.commit;
+			pendingRestores.push(() => {
+				Transaction.prototype.commit = origCommit;
+			});
+
+			let midTxnId;
+			let parkedInMidRetry = false;
+			let releaseMidRetry;
+			const midRetryGate = new Promise((resolve) => {
+				releaseMidRetry = resolve;
+			});
+			pendingRestores.push(() => releaseMidRetry());
+
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== targetDb) return origCommit.apply(this, args);
+				if (midTxnId === undefined) {
+					midTxnId = this.id;
+					parkedInMidRetry = true;
+					await midRetryGate;
+					throw Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY', hasLog: true });
+				}
+				return origCommit.apply(this, args);
+			};
+
+			const ctx = {};
+			await transaction(ctx, async () => {
+				const dbTxn = ctx.transaction;
+				await AuditedA.put({ id: midKey, writer: 'mid-committed', count: 1 }, ctx);
+				// Trigger a mid-scope commit (not doneWriting) that parks after logging its entry.
+				const midCommitPromise = Promise.resolve(dbTxn.commit({}));
+				await waitFor(() => parkedInMidRetry, {
+					message: 'mid-scope commit should park in its first conflict',
+				});
+
+				// Explicitly abort the outer scope while the logged mid-scope commit is still retrying.
+				dbTxn.abort();
+				assert.strictEqual(dbTxn.open, 0, 'explicit abort must leave the transaction CLOSED');
+
+				// Let the logged mid-scope commit finish retrying and settle.
+				releaseMidRetry();
+				await midCommitPromise;
+
+				assert.strictEqual(
+					dbTxn.open,
+					0,
+					'settling the logged mid-scope commit must not rotate an explicitly aborted scope back to OPEN'
+				);
+				assert.strictEqual(AuditedA.primaryStore.getEntry(midKey).value.writer, 'mid-committed');
+			});
+		});
 	});
 });
