@@ -4,7 +4,7 @@
  * table-level interactions, loading records, updating records, querying, and more.
  */
 
-import { CONFIG_PARAMS, OPERATIONS_ENUM, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, OPERATIONS_ENUM, MAX_SET_TIMEOUT_MS, THREAD_TYPES } from '../utility/hdbTerms.ts';
 import type { Database, Transaction as LMDBReadTransaction } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
@@ -81,7 +81,7 @@ import {
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
-import { isDedicatedPoolWorker } from '../server/threads/workerPools.ts';
+import { isDedicatedPoolWorker, isWorkerPoolActive } from '../server/threads/workerPools.ts';
 import {
 	databases,
 	table,
@@ -2848,7 +2848,20 @@ export function makeTable(options): TableResourceClass {
 			return (dbisDb as any).getSync([Symbol.for('residency_by_id'), id]);
 		}
 
+		static #residencyPoolErrorLogged = false;
+		static #reportResidencyPoolHook(hookName: 'setResidency' | 'setResidencyById') {
+			if (TableResource.#residencyPoolErrorLogged || !isWorkerPoolActive(THREAD_TYPES.REPLICATION)) return;
+			TableResource.#residencyPoolErrorLogged = true;
+			const consequence =
+				hookName === 'setResidencyById'
+					? 'outbound replication sends invalidation entries (residency partials) and inbound replication stores residency stubs for non-resident records instead of evaluating the callback'
+					: 'replicated writes that do not carry a residency list fall back to default residency placement on replication workers instead of evaluating the callback';
+			harperLogger.error?.(
+				`Table '${tableName}' registered ${hookName} while the replication worker pool is active (replication.threads > 0, or defaulted for threads.count >= 2). Replication pool workers do not load application code and cannot evaluate residency functions, so ${consequence}. Set replication.threads: 0 in harper-config.yaml if this table requires custom residency functions.`
+			);
+		}
 		static setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition) {
+			if (typeof getResidency === 'function') TableResource.#reportResidencyPoolHook('setResidency');
 			TableResource.getResidency = getResidency
 				? (record: object, context: Context) => {
 						try {
@@ -2861,6 +2874,7 @@ export function makeTable(options): TableResourceClass {
 				: defaultGetResidency;
 		}
 		static setResidencyById(getResidencyById?: (id: Id) => number | void) {
+			if (typeof getResidencyById === 'function') TableResource.#reportResidencyPoolHook('setResidencyById');
 			TableResource.getResidencyById =
 				getResidencyById &&
 				((id: Id) => {
@@ -8416,6 +8430,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			return unresolved;
 		}
+		static #computedPoolErrorLogged = false;
 		static setComputedAttribute(attribute_name, resolver) {
 			const attribute = findAttribute(attributes, attribute_name);
 			if (!attribute) {
@@ -8425,6 +8440,19 @@ export function makeTable(options): TableResourceClass {
 			if (!attribute.computed) {
 				console.error(`The attribute "${attribute_name}" is not defined as computed in the table "${tableName}"`);
 				return;
+			}
+			if (
+				typeof resolver === 'function' &&
+				!resolver.unresolved &&
+				!attribute.computedFromExpression &&
+				Boolean(indices[attribute_name] || attribute.indexed) &&
+				!TableResource.#computedPoolErrorLogged &&
+				isWorkerPoolActive(THREAD_TYPES.REPLICATION)
+			) {
+				TableResource.#computedPoolErrorLogged = true;
+				harperLogger.error?.(
+					`Table '${tableName}' registered setComputedAttribute (e.g. '${attribute_name}') for an indexed @computed attribute while the replication worker pool is active (replication.threads > 0, or defaulted for threads.count >= 2). Replication pool workers do not load application code and cannot compute this index, so applying a replicated write to this table fails (see Table.unresolvedComputedIndexes()). Set replication.threads: 0 in harper-config.yaml if this table requires replicated updates to maintain this computed index.`
+				);
 			}
 			this.userResolvers[attribute_name] = resolver;
 		}
