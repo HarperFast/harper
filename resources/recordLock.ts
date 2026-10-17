@@ -53,10 +53,8 @@ export interface ResolvedRecordLockOptions {
 /**
  * The handle returned by `lock()` and held by each gated write until its transaction completes.
  * `release()` is synchronous: it calls `store.unlock(key)` which is ownerless and fires any
- * waiting callbacks cross-thread, unless an in-flight native commit holds the key via
- * `retainForCommit()` (in which case the native unlock and cluster release are deferred until
- * `releaseCommitHold()` settles the hold). The `expired` flag is set in the holder thread by the
- * lease timer, so a stale holder cannot accidentally call unlock after its lease already fired and
+ * waiting callbacks cross-thread. The `expired` flag is set in the holder thread by the lease
+ * timer, so a stale holder cannot accidentally call unlock after its lease already fired and
  * released the key to a new holder.
  */
 export interface RecordLockHandle {
@@ -110,13 +108,8 @@ export interface RecordLockHandle {
 	 */
 	nextHolderVersion(): number;
 	release(): boolean;
-	/**
-	 * Hold the native key across an in-flight native commit attempt so a lease expiry or caller
-	 * release during a logged retry loop defers `store.unlock(key)` until the attempt settles (or
-	 * `holdDeadlineMono` expires).
-	 */
+	/** Defer `store.unlock(key)` until an in-flight native commit settles or `holdDeadlineMono` expires. */
 	retainForCommit?(holdDeadlineMono?: number): void;
-	/** Release a commit hold acquired by `retainForCommit()`, flushing a deferred unlock when the last hold drops. */
 	releaseCommitHold?(): void;
 	/**
 	 * Flip this handle to hold mode and reset its lease timer. Used during scoped→hold upgrades
