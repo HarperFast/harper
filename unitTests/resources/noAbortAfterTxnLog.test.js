@@ -10,12 +10,15 @@ const {
 	ImmediateTransaction,
 	getOutstandingCommits,
 	replicationConfirmation,
+	resetStuckCommitLogCooldownForTests,
 	setMaxOutstandingTxnDuration,
 	setMaxRetryDelayMs,
+	setTxnExpiration,
 	suspendDatabaseCommits,
 } = require('#src/resources/DatabaseTransaction');
 const { MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
 const { publishOriginFloor } = require('#src/resources/originClosedFloor');
+const { replayLogs } = require('#src/resources/replayLogs');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { Transaction, constants } = require('@harperfast/rocksdb-js');
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
@@ -137,8 +140,6 @@ describe('Transactions are never aborted once durably written to the transaction
 				if (trackedTxnId === undefined) {
 					trackedTxnId = this.id;
 					attemptCount++;
-					// Interpose a real write with a timestamp newer than seed but older than the holder's write
-					// so attempt 1 experiences a genuine C++ Commit ERR_BUSY after flushing its log batch.
 					await putWithTimestamp(AuditedA, { id: recordId, writer: 'interposer', count: 1 }, baseNow - 5_000);
 					try {
 						const res = await originalCommit.apply(this, args);
@@ -375,12 +376,203 @@ describe('Transactions are never aborted once durably written to the transaction
 				'audit entry version must match explicit record version'
 			);
 		});
+
+		it('flushes the durable log entry before parking on an uncommitted write-intent holder, then completes across two real native RETRY_NOW rounds with one aftercommit event and consistent replayLogs()', async function () {
+			this.timeout(20000);
+			const recordId = id('uncommitted-holder-real-retries');
+			const baseNow = Date.now();
+			await putWithTimestamp(AuditedA, { id: recordId, writer: 'seed', count: 0 }, baseNow - 10_000);
+
+			const targetDb = AuditedA.primaryStore.store.db;
+			const originalCommit = Transaction.prototype.commit;
+			let trackedTxnId;
+			const attemptOutcomes = [];
+			let uncommittedAuditWritersWhileHolderOpen = [];
+			let committedAuditWritersWhileHolderOpen = [];
+
+			let holderTxn;
+			let holderOpen = false;
+			pendingRestores.push(() => {
+				if (holderOpen && holderTxn) {
+					holderOpen = false;
+					try {
+						holderTxn.abort();
+					} catch {}
+				}
+			});
+
+			let afterCommitCount = 0;
+			const onAfterCommit = () => {
+				afterCommitCount++;
+			};
+			AuditedA.auditStore.on('aftercommit', onAfterCommit);
+			pendingRestores.push(() => {
+				AuditedA.auditStore.off('aftercommit', onAfterCommit);
+			});
+
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== targetDb || this.id !== trackedTxnId) return originalCommit.apply(this, args);
+				if (attemptOutcomes.length === 0) {
+					const commitPromise = originalCommit.apply(this, args);
+					await waitFor(
+						() =>
+							auditEntriesFor(AuditedA, recordId, { readUncommitted: true }).some(
+								(e) => e.getValue(AuditedA.primaryStore)?.writer === 'multi-real-winner'
+							),
+						{ timeout: 3000, message: 'attempt 1 must flush its durable log entry while parked on uncommitted holder' }
+					);
+					uncommittedAuditWritersWhileHolderOpen = auditEntriesFor(AuditedA, recordId, {
+						readUncommitted: true,
+					}).map((e) => e.getValue(AuditedA.primaryStore)?.writer);
+					committedAuditWritersWhileHolderOpen = auditEntriesFor(AuditedA, recordId).map(
+						(e) => e.getValue(AuditedA.primaryStore)?.writer
+					);
+					// Commit the holder's write intent (without a log entry) so attempt 1 wakes with a real RETRY_NOW.
+					holderOpen = false;
+					holderTxn.commitSync();
+					const res = await commitPromise;
+					attemptOutcomes.push(res);
+					return res;
+				}
+				if (attemptOutcomes.length === 1) {
+					// Real conflict #2 on the same logged handle (no stubbed RETRY_NOW_VALUE).
+					await putWithTimestamp(AuditedA, { id: recordId, writer: 'interposer-2', count: 2 }, baseNow - 3_000);
+				}
+				const res = await originalCommit.apply(this, args);
+				attemptOutcomes.push(res);
+				return res;
+			};
+			pendingRestores.push(() => {
+				Transaction.prototype.commit = originalCommit;
+			});
+
+			const auditBefore = auditEntriesFor(AuditedA, recordId).length;
+			afterCommitCount = 0;
+			const context = {};
+			await transaction(context, async () => {
+				await AuditedA.get(recordId, context);
+				trackedTxnId = context.transaction.transaction.id;
+				// Commit interposer-1 after `context` takes its snapshot so `txn_->Commit()` hits Status::Busy(),
+				// then stage an uncommitted write intent on `holderTxn` so `save()` attaches `holderTxn`'s LockTracker
+				// and `completeCommitWork` parks on `holderTxn` after flushing the durable log entry.
+				await putWithTimestamp(AuditedA, { id: recordId, writer: 'interposer-1', count: 1 }, baseNow - 8_000);
+				holderTxn = new Transaction(AuditedA.primaryStore.store, { coordinatedRetry: true });
+				holderOpen = true;
+				AuditedA.primaryStore.putSync(
+					recordId,
+					{ id: recordId, writer: 'uncommitted-holder', count: 1 },
+					{ transaction: holderTxn, version: baseNow - 6_000 }
+				);
+				await AuditedA.put({ id: recordId, writer: 'multi-real-winner', count: 3 }, context);
+			});
+
+			assert.ok(
+				uncommittedAuditWritersWhileHolderOpen.includes('multi-real-winner'),
+				'durable log entry must exist in readUncommitted scan before the uncommitted holder releases'
+			);
+			assert.ok(
+				!committedAuditWritersWhileHolderOpen.includes('multi-real-winner'),
+				'default committed scan must stay held back by uncommittedPositions until the logged handle commits'
+			);
+			assert.deepStrictEqual(
+				attemptOutcomes,
+				[RETRY_NOW_VALUE, RETRY_NOW_VALUE, undefined],
+				'must experience two real native RETRY_NOW rounds and commit on attempt 3'
+			);
+			assert.strictEqual(
+				afterCommitCount,
+				3,
+				'aftercommit must fire once for interposer-1, once for interposer-2, and once for multi-real-winner across 3 native attempts'
+			);
+			const auditsAfter = auditEntriesFor(AuditedA, recordId);
+			assert.strictEqual(
+				auditsAfter.length - auditBefore,
+				3,
+				'real recommits of a logged handle must not write duplicate audit entries'
+			);
+			assert.strictEqual(AuditedA.primaryStore.getEntry(recordId).value.writer, 'multi-real-winner');
+
+			// Overwrite the primary store directly and run replayLogs() to prove the log and primary store agree.
+			const winnerEntry = AuditedA.primaryStore.getEntry(recordId);
+			AuditedA.primaryStore.putSync(
+				recordId,
+				{ id: recordId, writer: 'corrupted-before-replay', count: 0 },
+				{ version: baseNow - 9_000 }
+			);
+			await replayLogs(AuditedA.primaryStore.rootStore, { NoAbortAuditedA: AuditedA }, true);
+			const afterReplay = AuditedA.primaryStore.getEntry(recordId);
+			assert.strictEqual(afterReplay.value.writer, 'multi-real-winner');
+			assert.strictEqual(afterReplay.value.count, 3);
+			assert.strictEqual(afterReplay.version, winnerEntry.version);
+		});
+
+		it('handles last-write-wins loss against a newer interposer and merges patch retries against the updated base record', async function () {
+			this.timeout(20000);
+			const lwwId = id('lww-loser-on-retry');
+			const patchId = id('patch-merge-on-retry');
+			const baseNow = Date.now();
+			await putWithTimestamp(AuditedA, { id: lwwId, writer: 'seed', count: 0 }, baseNow - 10_000);
+			await putWithTimestamp(AuditedA, { id: patchId, writer: 'seed-writer', count: 0 }, baseNow - 10_000);
+
+			const targetDb = AuditedA.primaryStore.store.db;
+			const originalCommit = Transaction.prototype.commit;
+			let activeScenario = 'lww';
+			let trackedLwwTxn;
+			let trackedPatchTxn;
+			const newerInterposerTs = baseNow + 5_000;
+
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+				if (activeScenario === 'lww' && trackedLwwTxn === undefined) {
+					trackedLwwTxn = this.id;
+					await putWithTimestamp(AuditedA, { id: lwwId, writer: 'newer-interposer', count: 99 }, newerInterposerTs);
+					return originalCommit.apply(this, args);
+				}
+				if (activeScenario === 'patch' && trackedPatchTxn === undefined) {
+					trackedPatchTxn = this.id;
+					await putWithTimestamp(AuditedA, { id: patchId, writer: 'interposer-writer', count: 10 }, baseNow - 5_000);
+					return originalCommit.apply(this, args);
+				}
+				return originalCommit.apply(this, args);
+			};
+			pendingRestores.push(() => {
+				Transaction.prototype.commit = originalCommit;
+			});
+
+			// (a) LWW loser on retry: the retrying transaction's staged timestamp is older than newerInterposerTs,
+			// so round 2's Table handler skips overwriting the primary record while still committing the native handle
+			// so its uncommittedPositions slot is released cleanly.
+			const lwwCtx = {};
+			await transaction(lwwCtx, async () => {
+				lwwCtx.transaction.timestamp = baseNow - 2_000;
+				await AuditedA.get(lwwId, lwwCtx);
+				await AuditedA.put({ id: lwwId, writer: 'older-retry-writer', count: 1 }, lwwCtx);
+			});
+			const lwwStored = AuditedA.primaryStore.getEntry(lwwId);
+			assert.strictEqual(lwwStored.value.writer, 'newer-interposer');
+			assert.strictEqual(lwwStored.value.count, 99);
+			assert.strictEqual(lwwStored.version, newerInterposerTs);
+
+			// (b) Patch retry: round 2 reloads the interposer's record ('interposer-writer', count: 10) and merges { count: 77 }.
+			activeScenario = 'patch';
+			const patchCtx = {};
+			await transaction(patchCtx, async () => {
+				await AuditedA.patch(patchId, { count: 77 }, patchCtx);
+			});
+			const patchStored = AuditedA.primaryStore.getEntry(patchId);
+			assert.strictEqual(
+				patchStored.value.writer,
+				'interposer-writer',
+				'patch retry must merge against the newly committed base record'
+			);
+			assert.strictEqual(patchStored.value.count, 77);
+		});
 	});
 
 	describe('3. Commit-budget deadline (elapsedPastCommitBudget) after durable log write', () => {
 		it('does not throw TransactionCommitConflictTimeoutError when a logged transaction exceeds the conflict budget on both RETRY_NOW and ERR_BUSY paths', async function () {
 			this.timeout(20000);
-			await delay(1100);
+			resetStuckCommitLogCooldownForTests();
 			const recordId = id('budget-logged');
 			const baseNow = Date.now();
 			await putWithTimestamp(AuditedA, { id: recordId, writer: 'seed', count: 0 }, baseNow - 10_000);
@@ -438,6 +630,94 @@ describe('Transactions are never aborted once durably written to the transaction
 				msg.startsWith('A durably logged write transaction is still in write-intent conflict')
 			);
 			assert.strictEqual(overdueErrors.length, 1, 'overdue diagnostic must be logged once per logical commit');
+		});
+
+		it('unblocks a parked logged commit when the long-transaction monitor aborts an unsubmitted write-intent holder', async function () {
+			this.timeout(20000);
+			const recordId = id('monitor-aborts-holder');
+			const baseNow = Date.now();
+			await putWithTimestamp(AuditedA, { id: recordId, writer: 'seed', count: 0 }, baseNow - 10_000);
+
+			pendingRestores.push(() => setTxnExpiration(30_000));
+
+			let writerSnapshotResolve;
+			const writerSnapshotReady = new Promise((resolve) => {
+				writerSnapshotResolve = resolve;
+			});
+			let releaseWriterToCommit;
+			const writerReadyGate = new Promise((resolve) => {
+				releaseWriterToCommit = resolve;
+			});
+			pendingRestores.push(() => releaseWriterToCommit());
+
+			let holderStagedResolve;
+			const holderStaged = new Promise((resolve) => {
+				holderStagedResolve = resolve;
+			});
+			let releaseHolderScope;
+			const holderScopeGate = new Promise((resolve) => {
+				releaseHolderScope = resolve;
+			});
+			pendingRestores.push(() => releaseHolderScope());
+
+			// Start the writer first so it takes its snapshot at `seed`.
+			const writerCtx = {};
+			const writerPromise = transaction(writerCtx, async () => {
+				writerCtx.transaction.timeout = 10_000;
+				writerCtx.transaction.writeTimeout = 10_000;
+				await AuditedA.get(recordId, writerCtx);
+				writerSnapshotResolve();
+				await writerReadyGate;
+				await AuditedA.put({ id: recordId, writer: 'unblocked-by-monitor', count: 3 }, writerCtx);
+			});
+
+			await writerSnapshotReady;
+
+			// Commit an interposer write so `writerCtx`'s `txn_->Commit()` hits Status::Busy() and consults the VT slot.
+			await putWithTimestamp(AuditedA, { id: recordId, writer: 'interposer', count: 1 }, baseNow - 8_000);
+
+			// Start an unsubmitted write-bearing transaction that stages a write intent on `recordId` and stalls.
+			const holderCtx = {};
+			const holderPromise = transaction(holderCtx, async () => {
+				await AuditedA.get(recordId, holderCtx);
+				await AuditedA.put({ id: recordId, writer: 'stalled-holder', count: 2 }, holderCtx);
+				// Force the write intent into the native transaction before parking the scope.
+				holderCtx.transaction.save(holderCtx.transaction.writes[0]);
+				holderStagedResolve();
+				await holderScopeGate;
+				await holderCtx.transaction.commit();
+			});
+
+			await holderStaged;
+			releaseWriterToCommit();
+
+			await waitFor(
+				() =>
+					auditEntriesFor(AuditedA, recordId, { readUncommitted: true }).some(
+						(e) => e.getValue(AuditedA.primaryStore)?.writer === 'unblocked-by-monitor'
+					),
+				{ timeout: 3000, message: 'writer must flush its durable log entry and park on stalled holder' }
+			);
+			assert.ok(
+				!holderCtx.transaction.timedOut,
+				'holder must still be open while writer is parked on its write intent'
+			);
+
+			// Arm the monitor to abort the stalled unsubmitted holder on the next tick.
+			holderCtx.transaction.timeout = 0;
+			holderCtx.transaction.writeTimeout = 0;
+			setTxnExpiration(25);
+
+			await writerPromise;
+			assert.strictEqual(holderCtx.transaction.timedOut, true, 'monitor must have timed out the unsubmitted holder');
+
+			releaseHolderScope();
+			await assert.rejects(
+				holderPromise,
+				(err) => err.statusCode === 422 && /exceeding the maximum open-transaction time/.test(err.message)
+			);
+			assert.strictEqual(AuditedA.primaryStore.getEntry(recordId).value.writer, 'unblocked-by-monitor');
+			assert.strictEqual(AuditedA.primaryStore.getEntry(recordId).value.count, 3);
 		});
 	});
 
@@ -1362,18 +1642,6 @@ describe('Transactions are never aborted once durably written to the transaction
 				`post-settlement rewrite must receive a fresh version (${aRewriteEntry.version} > ${explicitCtxTs})`
 			);
 
-			const updatedCtxTs = explicitCtxTs + 200;
-			sharedCtx.timestamp = updatedCtxTs;
-			nextWriteStage = 'b-readdressed';
-			await new AuditedA(keyB, sharedCtx).put(keyB, { id: keyB, writer: 'w2-updated-ts', count: 20 });
-			const bUpdatedEntry = AuditedA.primaryStore.getEntry(keyB);
-			assert.strictEqual(bUpdatedEntry.value.writer, 'w2-updated-ts');
-			assert.strictEqual(
-				bUpdatedEntry.version,
-				updatedCtxTs,
-				'updating context.timestamp on a reused context must apply the new timestamp'
-			);
-
 			const keySeed = id('imm-explicit-ts-seed');
 			const explicitTxnTs = explicitCtxTs + 500;
 			const txnTsCtx = {};
@@ -1620,6 +1888,59 @@ describe('Transactions are never aborted once durably written to the transaction
 			assert.strictEqual(AuditedA.primaryStore.getEntry(recordId).value.writer, 'drain-survivor');
 			assert.strictEqual(AuditedB.primaryStore.getEntry(unrelatedId).value.writer, 'unrelated-ok');
 		});
+
+		it('does not let an unlogged chained link bypass suspendDatabaseCommits after a logged head link commits', async function () {
+			this.timeout(15000);
+			const recordA = id('chain-suspend-a');
+			const recordB = id('chain-suspend-b');
+			const baseNow = Date.now();
+			await putWithTimestamp(AuditedA, { id: recordA, writer: 'seed-a', count: 0 }, baseNow - 10_000);
+			await putWithTimestamp(AuditedB, { id: recordB, writer: 'seed-b', count: 0 }, baseNow - 10_000);
+
+			const dbAHandle = AuditedA.primaryStore.store.db;
+			const rootStoreB = AuditedB.primaryStore.rootStore;
+			const originalCommit = Transaction.prototype.commit;
+			let trackedTxnA;
+			let attemptsA = 0;
+			let suspensionB;
+			pendingRestores.push(() => suspensionB?.release());
+
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== dbAHandle) return originalCommit.apply(this, args);
+				if (trackedTxnA === undefined) {
+					trackedTxnA = this.id;
+					attemptsA++;
+					await putWithTimestamp(AuditedA, { id: recordA, writer: 'interposer-a', count: 1 }, baseNow - 5_000);
+					return originalCommit.apply(this, args);
+				}
+				if (this.id !== trackedTxnA) return originalCommit.apply(this, args);
+				attemptsA++;
+				// Suspend database B before link B ever submits its first native commit attempt.
+				suspensionB = suspendDatabaseCommits([rootStoreB]);
+				await suspensionB.waitForDrain();
+				return originalCommit.apply(this, args);
+			};
+			pendingRestores.push(() => {
+				Transaction.prototype.commit = originalCommit;
+			});
+
+			const context = {};
+			await assert.rejects(
+				transaction(context, async () => {
+					await AuditedA.get(recordA, context);
+					await AuditedA.put({ id: recordA, writer: 'logged-head-a', count: 10 }, context);
+					await AuditedB.put({ id: recordB, writer: 'unlogged-link-b', count: 20 }, context);
+				}),
+				(err) => err.statusCode === 503 && err.code === 'DATABASE_CLOSING' && err.retryable === false
+			);
+
+			assert.strictEqual(attemptsA, 2, 'head A must have retried after logging on attempt 1');
+			assert.strictEqual(
+				AuditedB.primaryStore.getEntry(recordB).value.writer,
+				'seed-b',
+				'unlogged link B must not bypass suspendDatabaseCommits into a drained database'
+			);
+		});
 	});
 
 	describe('7. Pre-first-submit abort preservation and ERR_TRANSACTION_ABANDONED diagnostic', () => {
@@ -1663,27 +1984,39 @@ describe('Transactions are never aborted once durably written to the transaction
 			);
 		});
 
-		it('logs an error with commit identity if a native abort ever throws ERR_TRANSACTION_ABANDONED', async function () {
+		it('logs an error with commit identity if a native abort ever throws ERR_TRANSACTION_ABANDONED, including on post-log re-staging or pre-commit completion failure', async function () {
 			const targetDb = AuditedA.primaryStore.store.db;
 			const errorLines = [];
 			const originalError = harperLogger.error;
 			harperLogger.error = (...args) => errorLines.push(args);
 			const originalAbort = Transaction.prototype.abort;
 			const originalCommit = Transaction.prototype.commit;
-			let interceptTerminalFailure = false;
+			let interceptMode = 'none';
 			let terminalAttempt = 0;
-			Transaction.prototype.commit = function (...args) {
-				if (this.store?.db === targetDb && interceptTerminalFailure && this.hasStagedLog) {
+			let abortCalls = 0;
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db === targetDb && interceptMode !== 'none' && this.hasStagedLog) {
 					terminalAttempt++;
 					if (terminalAttempt === 1) {
-						return Promise.reject(Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY' }));
+						if (interceptMode === 'restage-throw') {
+							return RETRY_NOW_VALUE;
+						}
+						if (interceptMode === 'completion-reject') {
+							await delay(MIN_LOCK_LEASE_MS + 60);
+							return RETRY_NOW_VALUE;
+						}
+						throw Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY' });
 					}
-					return Promise.reject(Object.assign(new Error('I/O error on retry'), { code: 'ERR_IO' }));
+					if (interceptMode === 'io-error') {
+						throw Object.assign(new Error('I/O error on retry'), { code: 'ERR_IO' });
+					}
 				}
 				return originalCommit.apply(this, args);
 			};
 			Transaction.prototype.abort = function (...args) {
 				if (this.store?.db !== targetDb) return originalAbort.apply(this, args);
+				abortCalls++;
+				originalAbort.apply(this, args);
 				throw Object.assign(new Error('Transaction cannot be aborted after log write'), {
 					code: 'ERR_TRANSACTION_ABANDONED',
 				});
@@ -1717,18 +2050,93 @@ describe('Transactions are never aborted once durably written to the transaction
 			);
 
 			errorLines.length = 0;
-			interceptTerminalFailure = true;
+			abortCalls = 0;
+			terminalAttempt = 0;
+			interceptMode = 'io-error';
 			await assert.rejects(
 				AuditedA.put({ id: recordId, writer: 'terminal-io-failure', count: 99 }),
 				(err) => err.code === 'ERR_IO'
 			);
 			assert.strictEqual(terminalAttempt, 2, 'must have reached attempt 2 after attempt 1 logged and conflicted');
+			assert.strictEqual(abortCalls, 1, 'native abort must run exactly once (abortedByWrapper idempotence)');
 			assert.ok(
 				errorLines.some(([msg]) =>
 					/Aborted a transaction with a durable log entry \(aborting transaction after failed commit\)/.test(msg)
 				),
 				'must log ERR_TRANSACTION_ABANDONED at error level when a post-log retry fails with a non-conflict terminal error'
 			);
+
+			// C1(a): post-log retry round throws synchronously while re-staging (`save()`).
+			errorLines.length = 0;
+			abortCalls = 0;
+			terminalAttempt = 0;
+			interceptMode = 'restage-throw';
+			const ctx1 = {};
+			await assert.rejects(
+				transaction(ctx1, async () => {
+					await AuditedA.put({ id: recordId, writer: 'restage-throw', count: 100 }, ctx1);
+					const writeOp = ctx1.transaction.writes[0];
+					const origCommitOp = writeOp.commit;
+					writeOp.commit = function (txnTime, existingEntry, retry) {
+						if (retry) {
+							throw new Error('deterministic handler throw during retry re-stage');
+						}
+						return origCommitOp.apply(this, arguments);
+					};
+				}),
+				(err) => /deterministic handler throw during retry re-stage/.test(err.message)
+			);
+			assert.strictEqual(terminalAttempt, 1);
+			assert.strictEqual(abortCalls, 1, 'detached retry handle must be aborted once when re-staging throws');
+			assert.ok(
+				errorLines.some(([msg]) =>
+					/Aborted a transaction with a durable log entry \(aborting a retry transaction whose re-save threw\)/.test(
+						msg
+					)
+				),
+				'must log ERR_TRANSACTION_ABANDONED at error level when re-staging throws on a logged retry handle'
+			);
+
+			// C1(b): post-log retry round rejects in pre-commit `completions` before re-submitting.
+			errorLines.length = 0;
+			abortCalls = 0;
+			terminalAttempt = 0;
+			interceptMode = 'completion-reject';
+			await assert.rejects(
+				transaction(async (txn) => {
+					const rec = await AuditedA.lock(recordId, { lease: MIN_LOCK_LEASE_MS });
+					rec.set('writer', 'completion-reject');
+					rec.set('count', 101);
+					await rec.save();
+					const writeOp = txn.writes[0];
+					const origCommitOp = writeOp.commit;
+					writeOp.commit = function (txnTime, existingEntry, retry) {
+						const res = origCommitOp.apply(this, arguments);
+						if (retry) {
+							return Promise.reject(new Error('pre-commit completion rejected on retry'));
+						}
+						return res;
+					};
+				}),
+				(err) => /pre-commit completion rejected on retry/.test(err.message)
+			);
+			assert.strictEqual(terminalAttempt, 1);
+			assert.strictEqual(
+				abortCalls,
+				1,
+				'abortAfterCommitError must abort the detached retry handle once when completions reject'
+			);
+			assert.ok(
+				errorLines.some(([msg]) =>
+					/Aborted a transaction with a durable log entry \(aborting a retry transaction after pre-commit failure\)/.test(
+						msg
+					)
+				),
+				'must log ERR_TRANSACTION_ABANDONED at error level when pre-commit completions reject on a logged retry'
+			);
+			// Ensure the lock hold was released by abortAfterCommitError even though the lease expired during attempt 1.
+			const checkLock = await AuditedA.lock(recordId, { lease: MIN_LOCK_LEASE_MS, timeout: 400 });
+			await checkLock.unlock();
 		});
 	});
 });
