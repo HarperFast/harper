@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792221366134,
+  "lastUpdate": 1792221369024,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -18276,6 +18276,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 178.12,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c4e8a3493630258992ba30f5b8377b1955905bc5",
+          "message": "Rebind captured component, conditional, and tagged loggers on initLogSettings(true) (#3239)\n\n* fix(logging): rebind captured component and tagged loggers on initLogSettings(true)\n\nWhen harper_logger.ts loads before installHdb creates harperdb-config.yaml,\ninitLogSettings() falls back to an unconfigured stderr-only mainLogger at\nlevel error. Modules imported during that window (such as security/keys.ts)\ncapture component loggers (forComponent('tls').conditional) in module-scope\nbindings. When installer.ts subsequently calls initLogSettings(true),\nrebuilding mainLogger with a fresh components Map left those earlier\ncomponent and tagged loggers pointing at the stale fallback logger.\n\nCarry the existing components Map and top-level taggedLoggers list into\nthe replacement mainLogger during initLogSettings(true), re-apply the\nconfigured path, level, stdStreams, and rotation policy to every already-\nregistered component logger, and refresh loggerWithTag closures whenever\ntheir backing logger updates.\n\nDispatch-Task: harper-logger-captured-component-rebind\nCo-Authored-By: Gemini <noreply@google.com>\n\n* Address Round 1 review findings for captured logger rebinding\n\n- Replace taggedLoggers callback list with zero-retention level getters and dynamic mainLogger lookup in loggerWithTag\n- Inherit mainLoggerRef?.logToStdstreams in updateLogger when component logOptions.stdStreams is unset\n- Use updateLogger across both configured and fallback initLogSettings loops and pass per-component logging config\n- Clear path-keyed rotation entry in logger.path setter when path is set to falsy after an authoritative rotation clear\n- Preserve mainLogger.conditional across initLogSettings and export it from utility/logging/logger.ts\n- Guard conditional logger.error/warn calls with optional chaining in derivedIndexRuntime, derivedIndexes, hnswDerivedIndex, and mqtt\n- Remove redundant refreshExternalLogger helper from logConfigFixture.js and harden harper_logger.test.js\n\nDispatch-Task: harper-logger-captured-component-rebind\nCo-Authored-By: Gemini <noreply@google.com>\n\n* Guard component.logging and external logging on typeof === 'object'\n\n- Prevent scalar component.logging or logging.external values from reaching updateLogger and throwing TypeError on logOptions.root assignment in applyLogSettings and initLogSettings\n- Add test coverage in harper_logger.test.js\n\nDispatch-Task: harper-logger-captured-component-rebind\nCo-Authored-By: Gemini <noreply@google.com>\n\n* Normalize scalar logging configs and isolate component updateLogger errors\n\n- Normalize string logging blocks (root logging, logging.external, and per-component logging) to { level } via normalizeLogOptions in both initLogSettings and applyLogSettings, while ignoring non-string scalars.\n- Isolate per-component updateLogger calls in initLogSettings with try/catch so a malformed component path/root cannot reset the main logger to stdout fallback.\n- Reset logLevel before getLogConfig on forceInit so a path.join throw on logging.root preserves the configured logLevel.\n- Relax subprocess stderr assertion in the no-ambient-install test to check only for [tls] leakage.\n\nDispatch-Task: harper-logger-captured-component-rebind\nCo-Authored-By: Gemini <noreply@google.com>\n\n---------\n\nCo-authored-by: Gemini <noreply@google.com>",
+          "timestamp": "2026-10-17T03:16:01Z",
+          "url": "https://github.com/HarperFast/harper/commit/c4e8a3493630258992ba30f5b8377b1955905bc5"
+        },
+        "date": 1792221368377,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 9.42,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 9.03,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 14.09,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 8.56,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 24.83,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 9.76,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 25.61,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 9.46,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 13.32,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 102.03,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 36.72,
             "unit": "ms"
           }
         ]
