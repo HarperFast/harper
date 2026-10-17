@@ -44,6 +44,15 @@ export type TransactionLogIterable = Iterable<AuditRecord> & {
 
 const reportCorruptFrame = createCorruptFrameReporter(harperLogger);
 
+const KEY_SCRATCH = new Float64Array(1);
+const KEY_BITS = new BigInt64Array(KEY_SCRATCH.buffer);
+/** Relies on log keys being positive (`assertValidTimestamp`). */
+function nextLogKey(key: number): number {
+	KEY_SCRATCH[0] = key;
+	KEY_BITS[0]++;
+	return KEY_SCRATCH[0];
+}
+
 /**
  * Represents a transaction log store backed by RocksDB.
  * This class provides methods that conform to a standard store interface
@@ -182,7 +191,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 		return !relayed;
 	}
 
-	/** A log holds one origin, which keeps `txnLogKey` unique within it; see resources/DESIGN.md. */
+	/** A log holds one origin, so two origins never share a `txnLogKey` within it; see resources/DESIGN.md. */
 	logForOrigin(nodeId: number, relayed: boolean) {
 		const log = this.logById(nodeId);
 		if (log) return log;
@@ -218,11 +227,19 @@ export class RocksTransactionLogStore extends EventEmitter {
 				throw new Error('recordId must be provided');
 			}
 			// this a request for a transaction log entry by a timestamp
+			let keyFound = false;
 			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId })) {
-				if (entry.recordId === recordId && entry.tableId === tableId) {
-					return entry;
+				if (entry.txnLogKey !== key) break;
+				if (entry.recordId === recordId && entry.tableId === tableId) return entry;
+				keyFound = true;
+			}
+			// Explicit timestamps let unrelated transactions of one origin share a key, and an exact start
+			// only reaches the first of them. The range pass is not the default: it reads to the end of the
+			// log, which an aggregate lookup's read-ahead turns into the cost of every hit.
+			if (keyFound) {
+				for (const entry of this.getRange({ start: key, end: nextLogKey(key), log: nodeId })) {
+					if (entry.recordId === recordId && entry.tableId === tableId) return entry;
 				}
-				if (entry.txnLogKey !== key) return; // no longer in this transaction
 			}
 		} else {
 			// Harper puts some metadata in the database, we will just put this in the root store instead
