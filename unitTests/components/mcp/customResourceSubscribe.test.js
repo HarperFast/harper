@@ -186,6 +186,18 @@ describe('mcp custom resources/subscribe (#3250)', () => {
 		assert.equal(lateCallback, true, 'onStop after stop runs at once');
 	});
 
+	it('refuses a stream it could never release: no end() and an iterator with no return()', async () => {
+		addNotes(async () => ({
+			[Symbol.asyncIterator]() {
+				return { next: () => new Promise(() => {}) };
+			},
+		}));
+		await assert.rejects(
+			subscribeToResource('notes:///n1', USER, 'application'),
+			/neither end\(\) nor an iterator return\(\)/
+		);
+	});
+
 	it('fails the subscribe, releasing the stream, when it cannot produce an iterator', async () => {
 		const unstartable = makeStream();
 		unstartable[Symbol.asyncIterator] = () => {

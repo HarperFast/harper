@@ -23,7 +23,7 @@ const {
 	_setSubscribeImplForTest,
 } = require('#src/components/mcp/resources');
 const { addCustomResource, clearProfileCustomResources } = require('#src/components/mcp/customResourceRegistry');
-const { _resetSubscriptionsForTest } = require('#src/components/mcp/subscriptions');
+const { _resetSubscriptionsForTest, _liveSubscriptionCount } = require('#src/components/mcp/subscriptions');
 const { AccessViolation } = require('#src/utility/errors/hdbError');
 
 function makeIdleStream() {
@@ -1482,10 +1482,41 @@ describe('mcp/transport', () => {
 					method: 'GET',
 					headers: { 'mcp-session-id': session.id, 'mcp-protocol-version': '2025-06-18' },
 				});
+			const post = (session, id, method, uri) =>
+				handleMcpRequest(
+					makeReq({
+						body: jsonRpc(id, method, { uri }),
+						headers: { 'mcp-session-id': session.id, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+			const turns = async (n = 20) => {
+				for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
+			};
+			const until = async (condition) => {
+				for (let i = 0; i < 200 && !(await condition()); i++) await new Promise((r) => setImmediate(r));
+				assert.ok(await condition(), 'condition reached');
+			};
+			const durable = async (session) => (await loadSession(session.id)).subscriptions;
 			afterEach(() => {
 				_setSubscribeImplForTest(undefined);
 				_resetSubscriptionsForTest();
 				_resetSessionRegistryForTest();
+			});
+
+			it('opens the stream without waiting for a slow restore', async () => {
+				const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+				const slow = 'https://app.test:9926/slow';
+				session.subscriptions = [slow];
+				await saveSession(session);
+				let release;
+				const gate = new Promise((resolve) => (release = resolve));
+				_setSubscribeImplForTest(async () => (await gate, makeIdleStream()));
+				const res = await handleMcpRequest(getReq(session));
+				assert.equal(res.status, 200);
+				assert.ok(res.sseIterable, 'stream returned while restore is still waiting');
+				assert.equal(_liveSubscriptionCount(session.id), 0);
+				release();
+				await until(() => _liveSubscriptionCount(session.id) === 1);
 			});
 
 			it('prunes only a URI reported not subscribable, keeping one whose subscribe threw', async () => {
@@ -1499,30 +1530,8 @@ describe('mcp/transport', () => {
 					return makeIdleStream();
 				});
 				assert.equal((await handleMcpRequest(getReq(session))).status, 200);
-				assert.deepEqual((await loadSession(session.id)).subscriptions, [ok, failing]);
-			});
-
-			it('answers a GET superseded while restoring with 409 instead of a stream that never ends', async () => {
-				const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
-				const slow = 'https://app.test:9926/slow';
-				session.subscriptions = [slow];
-				await saveSession(session);
-				let release;
-				const gate = new Promise((resolve) => (release = resolve));
-				let calls = 0;
-				_setSubscribeImplForTest(async () => {
-					if (++calls === 1) await gate;
-					return makeIdleStream();
-				});
-				const first = handleMcpRequest(getReq(session));
-				for (let i = 0; i < 50 && calls < 1; i++) await new Promise((r) => setImmediate(r));
-				const second = await handleMcpRequest(getReq(session));
-				assert.equal(second.status, 200);
-				release();
-				const superseded = await first;
-				assert.equal(superseded.status, 409);
-				assert.equal(superseded.sseIterable, undefined);
-				assert.deepEqual((await loadSession(session.id)).subscriptions, [slow]);
+				await until(async () => (await durable(session)).length === 2);
+				assert.deepEqual(await durable(session), [ok, failing]);
 			});
 
 			it('keeps a subscribe and an unsubscribe that land while a GET is restoring', async () => {
@@ -1539,21 +1548,14 @@ describe('mcp/transport', () => {
 					if (path === 'slow') await gate;
 					return makeIdleStream();
 				});
-				const get = handleMcpRequest(getReq(session));
-				for (let i = 0; i < 50 && !requested.includes('slow'); i++) await new Promise((r) => setImmediate(r));
-				const post = (id, method, uri) =>
-					handleMcpRequest(
-						makeReq({
-							body: jsonRpc(id, method, { uri }),
-							headers: { 'mcp-session-id': session.id, 'mcp-protocol-version': '2025-06-18' },
-						})
-					);
-				assert.deepEqual((await post(81, 'resources/subscribe', added)).jsonBody.result, {});
-				assert.deepEqual((await post(82, 'resources/unsubscribe', slow)).jsonBody.result, {});
-				assert.deepEqual((await post(83, 'resources/unsubscribe', later)).jsonBody.result, {});
+				assert.equal((await handleMcpRequest(getReq(session))).status, 200);
+				await until(() => requested.includes('slow'));
+				assert.deepEqual((await post(session, 81, 'resources/subscribe', added)).jsonBody.result, {});
+				assert.deepEqual((await post(session, 82, 'resources/unsubscribe', slow)).jsonBody.result, {});
+				assert.deepEqual((await post(session, 83, 'resources/unsubscribe', later)).jsonBody.result, {});
 				release();
-				assert.equal((await get).status, 200);
-				assert.deepEqual((await loadSession(session.id)).subscriptions, [added]);
+				await until(async () => !(await durable(session)).includes(gone));
+				assert.deepEqual(await durable(session), [added]);
 				assert.ok(!requested.includes('later'), 'a URI unsubscribed before restore reached it is never acquired');
 			});
 
@@ -1570,18 +1572,13 @@ describe('mcp/transport', () => {
 					await gate;
 					return makeIdleStream();
 				});
-				const get = handleMcpRequest(getReq(session));
-				for (let i = 0; i < 50 && flakyCalls < 1; i++) await new Promise((r) => setImmediate(r));
-				const subscribed = await handleMcpRequest(
-					makeReq({
-						body: jsonRpc(84, 'resources/subscribe', { uri: flaky }),
-						headers: { 'mcp-session-id': session.id, 'mcp-protocol-version': '2025-06-18' },
-					})
-				);
-				assert.deepEqual(subscribed.jsonBody.result, {});
+				assert.equal((await handleMcpRequest(getReq(session))).status, 200);
+				await until(() => flakyCalls === 1);
+				assert.deepEqual((await post(session, 84, 'resources/subscribe', flaky)).jsonBody.result, {});
 				release();
-				assert.equal((await get).status, 200);
-				assert.deepEqual((await loadSession(session.id)).subscriptions, [flaky, slow]);
+				await until(() => _liveSubscriptionCount(session.id) === 2);
+				await turns();
+				assert.deepEqual(await durable(session), [flaky, slow]);
 			});
 
 			it('does not let a superseded GET prune the list the newer GET restored', async () => {
@@ -1599,14 +1596,14 @@ describe('mcp/transport', () => {
 					await gate;
 					return makeIdleStream();
 				});
-				const first = handleMcpRequest(getReq(session));
-				for (let i = 0; i < 50 && calls.slow < 1; i++) await new Promise((r) => setImmediate(r));
-				const second = handleMcpRequest(getReq(session));
-				for (let i = 0; i < 50 && calls.slow < 2; i++) await new Promise((r) => setImmediate(r));
-				assert.equal(calls.slow, 2, 'both GETs reached the slow restore');
+				assert.equal((await handleMcpRequest(getReq(session))).status, 200);
+				await until(() => calls.slow === 1);
+				assert.equal((await handleMcpRequest(getReq(session))).status, 200);
+				await until(() => calls.slow === 2);
 				release();
-				await Promise.all([first, second]);
-				assert.deepEqual((await loadSession(session.id)).subscriptions, [flaky, slow]);
+				await until(() => _liveSubscriptionCount(session.id) === 2);
+				await turns();
+				assert.deepEqual(await durable(session), [flaky, slow]);
 			});
 		});
 

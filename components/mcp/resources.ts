@@ -509,15 +509,16 @@ function isChangeStream(value: unknown): value is ResourceChangeStream {
  * `end()` when it has one (a Harper subscription, or an author's queue), else
  * its iterator's `return()`. The iterator is taken up front so a stream that
  * cannot produce one fails the subscribe instead of being admitted dead. With
- * `refuseGeneratorRelease`, a stream whose only release is an async generator's
- * `return()` is refused: that cannot interrupt a pending await, so unsubscribe
- * would not release its source.
+ * `requireRelease`, a stream with no `end()` is refused unless its iterator has
+ * a `return()` that is not an async generator's: there would be nothing to call,
+ * or that `return()` cannot interrupt a pending await, so unsubscribe would not
+ * release its source.
  */
 function changeStreamSubscription(
 	uri: string,
 	stream: ResourceChangeStream,
 	acknowledgeEvents: boolean,
-	refuseGeneratorRelease = false
+	requireRelease = false
 ): ResourceSubscription {
 	let iterator: AsyncIterator<unknown>;
 	try {
@@ -526,15 +527,19 @@ function changeStreamSubscription(
 		release(uri, () => stream.end?.());
 		throw err;
 	}
-	if (
-		refuseGeneratorRelease &&
-		typeof stream.end !== 'function' &&
-		Object.prototype.toString.call(iterator) === '[object AsyncGenerator]'
-	) {
-		release(uri, () => iterator.return?.());
-		throw new Error(
-			`subscribe for ${uri} returned an async generator with no end(); return a stream with end(), such as a Table.subscribe() result`
-		);
+	if (requireRelease && typeof stream.end !== 'function') {
+		const unreleasable =
+			typeof iterator.return !== 'function'
+				? 'a stream with neither end() nor an iterator return()'
+				: Object.prototype.toString.call(iterator) === '[object AsyncGenerator]'
+					? 'an async generator with no end()'
+					: undefined;
+		if (unreleasable) {
+			release(uri, () => iterator.return?.());
+			throw new Error(
+				`subscribe for ${uri} returned ${unreleasable}; return a stream with end(), such as a Table.subscribe() result`
+			);
+		}
 	}
 	let started = false;
 	let stopped = false;
@@ -542,8 +547,11 @@ function changeStreamSubscription(
 	const stop = () => {
 		if (stopped) return;
 		stopped = true;
-		for (const callback of stopCallbacks) callback();
-		release(uri, () => (typeof stream.end === 'function' ? stream.end() : iterator.return?.()));
+		try {
+			for (const callback of stopCallbacks) callback();
+		} finally {
+			release(uri, () => (typeof stream.end === 'function' ? stream.end() : iterator.return?.()));
+		}
 	};
 	return {
 		start(onUpdate) {

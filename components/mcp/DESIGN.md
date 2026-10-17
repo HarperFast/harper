@@ -69,9 +69,9 @@ A handful of design points are non-obvious and easy to break:
   `matchCustomResource(profile, uri)` first, exactly as `readResource` does, so read and subscribe always resolve
   the same entry; an entry without `subscribe` stays `-32602`. The author's method runs in the read path's
   user-carrying transaction and the returned iterable is consumed after it ends, which is why generator methods
-  are refused at registration (their body would run outside it). A stream with no `end()` whose iterator is an
-  async generator is refused at subscribe: `return()` cannot interrupt a pending await, so unsubscribe could
-  not release its source. Custom values are opaque — only audit-log events get `acknowledge()`. Release is one idempotent `stop()` for both sources: `end()` if the stream has
+  are refused at registration (their body would run outside it). A stream with no `end()` is refused at
+  subscribe when its iterator has no `return()`, or is an async generator (whose `return()` cannot interrupt a
+  pending await): unsubscribe could not release its source. Custom values are opaque — only audit-log events get `acknowledge()`. Release is one idempotent `stop()` for both sources: `end()` if the stream has
   one, else the iterator's `return()`, also run when iteration ends or throws, and for a stream acquired by a
   transaction that then failed to commit (`acquireChangeStream`). A custom stream is also registered with
   `registerLiveSubscription` for identity lifetime only (token expiry, removed user or role), which
@@ -90,9 +90,10 @@ A handful of design points are non-obvious and easy to break:
   reserves every URI before it starts, stops when its GET is superseded, and prunes only URIs a registered
   resource reported not subscribable — a thrown subscribe, and a URI nothing on the worker matches yet (its
   component may still be loading), stay. The prune is decided inside its queued write, against GET ownership
-  and current subscription intent at that moment. A GET superseded while restoring answers 409;
-  registry teardown uses `queue.close()`, which latches `closed`, so `toSseStream` ends a stream whose queue
-  closed before it attached. Subscribe, unsubscribe and restore change the durable list only through
+  and current subscription intent at that moment. Restore runs in the background after the GET returns its
+  stream (an author's subscribe may do I/O), so its notifications queue on the record until the adapter
+  attaches; registry teardown uses `queue.close()`, which latches `closed`, so `toSseStream` ends a stream
+  whose queue closed before it attached. Subscribe, unsubscribe and restore change the durable list only through
   `updateSessionSubscriptions`, a load-and-save against the stored record that this worker serializes per session
   together with `deleteSession`. `touchSession`, `logging/setLevel` and other workers' writes are not ordered by
   it and still save whole records (harper#3255).

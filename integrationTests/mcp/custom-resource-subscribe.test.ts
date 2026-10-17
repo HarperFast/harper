@@ -283,11 +283,11 @@ suite('MCP resources/subscribe on custom mcpResources (#3250)', (ctx: ContextWit
 		await waitForProbe((state) => released(state, 'reconnect', 'end'), 'the stream to be released on GET close');
 		const second = await openSse(session);
 		try {
-			const state = await probe();
-			strictEqual(
-				state.subscribes.filter((entry) => entry.params.id === 'reconnect').length,
-				2,
-				'the reconnect re-ran subscribe from the durable list'
+			await waitForProbe(
+				(state) =>
+					state.subscribes.filter((entry) => entry.params.id === 'reconnect').length === 2 &&
+					state.open.includes('reconnect'),
+				'the reconnect to re-run subscribe from the durable list'
 			);
 			ok(await emit('reconnect'));
 			ok(await second.next(updatedFor(uri), 5000), 'the restored subscription delivers on the new stream');
