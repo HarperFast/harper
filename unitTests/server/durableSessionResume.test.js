@@ -1645,6 +1645,40 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		second.handlers.close();
 	});
 
+	it('keeps every id still committing when a connection closes, whichever finishes first', async () => {
+		const { name } = topicTable();
+		const publications = [];
+		const commits = [];
+		class SlowPublish extends Resource {
+			static publish(_target, data) {
+				publications.push(data);
+				if (publications.length > 2) return;
+				return new Promise((resolve) => commits.push(resolve));
+			}
+		}
+		Resources.resources.set(name, SlowPublish, { mqtt: true }, true);
+		const open = mqttListener();
+		const clientId = `qos2-closing-two-${name}`;
+		const publish = (messageId, dup) =>
+			generate({ cmd: 'publish', topic: `${name}/m`, payload: '{"value":1}', qos: 2, messageId, dup }, v5);
+		const first = await openConnected(open, clientId);
+		first.handlers.message(publish(5, false));
+		first.handlers.message(publish(6, false));
+		await waitFor(() => commits.length === 2);
+		first.handlers.close();
+		commits[0]();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const second = open();
+		second.handlers.message(connectPacket(clientId));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		commits[1]();
+		await waitFor(() => ofCommand(second, 'connack').length > 0);
+		second.handlers.message(publish(6, true));
+		await waitFor(() => ofCommand(second, 'pubrec').length === 1);
+		assert.strictEqual(publications.length, 2, 'the retransmission was not published again');
+		second.handlers.close();
+	});
+
 	it('sends a delivery awaiting its PUBREC under its packet id when its topic is subscribed again', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
@@ -1661,7 +1695,7 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		await waitFor(() => ofCommand(socket, 'suback').length === 2);
 		// a PUBREC racing the replacement's replay: either way b keeps its id
 		socket.handlers.message(generate({ cmd: 'pubrec', messageId: b.messageId }, v5));
-		await waitFor(() => published(socket, 'a') !== a || ofCommand(socket, 'publish').some((packet) => packet.dup));
+		await waitFor(() => ofCommand(socket, 'publish').some((packet) => packet.dup));
 		await T.put('c', { value: 'c' });
 		await waitFor(() => published(socket, 'c'));
 		for (const [value, original] of [

@@ -397,7 +397,7 @@ class SubscriptionsSession {
 						if (filter && !filter(update)) continue;
 						if (needsAck) {
 							update.topic = topic;
-							const priorMessageId = this.priorDelivery(update);
+							const priorMessageId = subscriptionRequest.qos === 2 ? this.priorDelivery(update) : undefined;
 							if (priorMessageId === ALREADY_RECEIVED) {
 								update.acknowledge?.();
 								continue;
@@ -468,7 +468,6 @@ class SubscriptionsSession {
 	pendingDeliveries(): number {
 		return (this.awaitingAcks?.size ?? 0) + (this.awaitingCompletion?.size ?? 0);
 	}
-	/** The packet id a resumed delivery was sent under before, or ALREADY_RECEIVED. */
 	priorDelivery(_update): number | undefined {
 		return undefined;
 	}
@@ -526,7 +525,7 @@ class SubscriptionsSession {
 		})();
 		return exchange.release;
 	}
-	/** An outbound PUBREC; false when no QoS 2 delivery has this id. A repeated one settles with the first. */
+	/** False when no QoS 2 delivery has this id; a repeated PUBREC settles with the first. */
 	received(messageId: number, failed: boolean): Promise<boolean> | boolean {
 		const owed = this.awaitingCompletion?.get(messageId);
 		if (owed !== undefined) return owed;
@@ -917,20 +916,17 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				state.keyBefore = key < state.deliveredKey ? positionBefore(key) : state.deliveredKey;
 				state.deliveredKey = key;
 			}
-			const delivery = {
+			if (qos === 2) this.inFlightChanged = true;
+			const late = key < state.highestKey;
+			if (late) state.lateUnacked++;
+			else state.highestKey = key;
+			state.unacked.set(messageId, {
 				key,
 				ordinal: state.ordinal,
 				id: qos === 2 ? deliveryId(update.id) : undefined,
 				previousKey: state.keyBefore,
-			};
-			if (qos === 2) this.inFlightChanged = true;
-			if (key < state.highestKey) {
-				state.lateUnacked++;
-				state.unacked.set(messageId, { ...delivery, late: true });
-			} else {
-				state.highestKey = key;
-				state.unacked.set(messageId, delivery);
-			}
+				late,
+			});
 		}
 		return messageId;
 	}
@@ -983,6 +979,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			this.scheduleCheckpoint();
 		}
 	}
+	receiveExactlyOnce(messageId: number, publish: () => Promise<any>) {
+		if (this.sealed) return Promise.reject(new Error(`MQTT session ${this.sessionId} has ended`));
+		return super.receiveExactlyOnce(messageId, publish);
+	}
 	saveExchanges() {
 		// an ended session's last save has been taken, so nothing it would acknowledge can be kept
 		if (this.sealed) return Promise.reject(new Error(`MQTT session ${this.sessionId} has ended`));
@@ -993,7 +993,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (this.sealing) return;
 		const publishing = [];
 		for (const exchange of this.awaitingRelease?.values() ?? []) {
-			if (!exchange.published && !exchange.release) publishing.push(exchange.reply.catch(() => {}));
+			// bounded within the takeover deadline: one that misses it is saved as not published, so a retransmission publishes
+			if (!exchange.published && !exchange.release)
+				publishing.push(Promise.race([exchange.reply.catch(() => {}), sealWait()]));
 		}
 		if (publishing.length === 0) {
 			if (save) this.persist().catch(() => {});
@@ -1189,7 +1191,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (this.discarded) return Promise.resolve();
 		if (!this.saving) {
 			this.saving = this.saveWhileDirty();
-			this.writes = this.saving.catch((error) => warn(`Failed to save MQTT session ${this.sessionId}`, error));
+			const writes = this.saving.catch((error) => warn(`Failed to save MQTT session ${this.sessionId}`, error));
+			// while sealing, `writes` is the final save a takeover waits on, which joins this one
+			if (!this.sealing) this.writes = writes;
 		}
 		return this.saving;
 	}
@@ -1281,6 +1285,11 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		// a SUBSCRIBE still in flight would otherwise save after a reconnect has claimed the record
 		this.seal((changed || this.dirty || this.hasInFlight()) && !this.discarded);
 	}
+}
+
+const SEAL_WAIT = 5_000;
+function sealWait() {
+	return new Promise<void>((resolve) => setTimeout(resolve, SEAL_WAIT).unref());
 }
 
 function newTopicState(entry: DurableEntry): TopicState {
