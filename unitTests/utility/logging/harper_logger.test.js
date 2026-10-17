@@ -1239,6 +1239,157 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
+	describe('Test caller-impact shapes for the logger rotation-inheritance fix (#1877/#1880)', () => {
+		const CALLER_SHAPES_DIR = path.join(__dirname, 'callerImpactShapesTest');
+		let shapeCaseDir;
+		let shapeCase = 0;
+		let shapeLoggersToCleanup = [];
+
+		beforeEach(() => {
+			shapeCaseDir = path.join(CALLER_SHAPES_DIR, `case${shapeCase++}`);
+			fs.mkdirpSync(shapeCaseDir);
+			shapeLoggersToCleanup = [];
+		});
+
+		afterEach(async () => {
+			for (const logger of shapeLoggersToCleanup) {
+				const currentPath = logger.path;
+				updateLogger(logger, { path: currentPath }, undefined, logger);
+				logger.closeLogFile?.();
+			}
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			if (shapeCaseDir) fs.removeSync(shapeCaseDir);
+		});
+
+		it("shape: plain logger.info/warn/error sharing main's default log path are unaffected — only the shared per-path sink (getFileLogger's cache), never a separate updateLogger call, binds this logger to main's rotation", async () => {
+			const mainRotation = { enabled: true, maxSize: '1K' };
+			const mainLogPath = path.join(shapeCaseDir, 'hdb.log');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			shapeLoggersToCleanup.push(testMainLogger);
+
+			// Created before main's own rotation is installed, so forComponent's own copy-at-creation
+			// of `protoLogger.rotation` cannot be what delivers rotation below — only the shared file
+			// sink at mainLogPath can.
+			const externalLikeLogger = testMainLogger.forComponent('external');
+			shapeLoggersToCleanup.push(externalLikeLogger);
+			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation }, undefined, testMainLogger);
+
+			for (let i = 0; i < 30; i++) externalLikeLogger.info('x'.repeat(80));
+			const rotatedDir = path.join(shapeCaseDir, 'rotated');
+			await waitFor(() => fs.pathExistsSync(rotatedDir) && fs.readdirSync(rotatedDir).length > 0, {
+				timeout: 5000,
+				message: "expected writes through the shared default path to be bound by main's rotation",
+			});
+		});
+
+		it("shape: logger.withTag()/tagged loggers write through their underlying logger's sink and never resolve rotation themselves", async () => {
+			const logPath = path.join(shapeCaseDir, 'component.log');
+			const underlying = createLogger({ path: logPath, level: 'info' });
+			shapeLoggersToCleanup.push(underlying);
+			updateLogger(underlying, { path: logPath, rotation: { enabled: true, maxSize: '1K' } }, undefined, underlying);
+			const rotationBefore = underlying.rotation;
+
+			const tagged = harperLoggerModule.loggerWithTag('shapeTwo', false, underlying);
+			tagged.info('tagged line');
+
+			await waitFor(() => fs.existsSync(logPath) && fs.readFileSync(logPath, 'utf8').includes('tagged line'));
+			const log = fs.readFileSync(logPath, 'utf8');
+			assert.ok(log.includes('[shapeTwo]'), 'the tag is prefixed onto the line written through the underlying sink');
+			assert.strictEqual(
+				underlying.rotation,
+				rotationBefore,
+				'withTag must never touch the rotation policy of the logger it wraps'
+			);
+		});
+
+		it('shape: tooling tailing a component log file by an already-open descriptor stops seeing new writes once inherited rotation renames the file out from under it', async () => {
+			const mainRotation = { enabled: true, maxSize: '1K' };
+			const mainLogPath = path.join(shapeCaseDir, 'hdb.log');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			shapeLoggersToCleanup.push(testMainLogger);
+			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation }, undefined, testMainLogger);
+
+			const componentLogPath = path.join(shapeCaseDir, 'tailed-component.log');
+			const componentLogger = testMainLogger.forComponent('tailed');
+			shapeLoggersToCleanup.push(componentLogger);
+			updateLogger(componentLogger, { path: componentLogPath }, 'tailed', testMainLogger);
+			assert.deepStrictEqual(componentLogger.rotation, mainRotation);
+
+			componentLogger.info('before rotation, line one');
+			await waitFor(
+				() => fs.existsSync(componentLogPath) && fs.readFileSync(componentLogPath, 'utf8').includes('line one')
+			);
+
+			const tailerFd = fs.openSync(componentLogPath, 'r');
+			try {
+				for (let i = 0; i < 30; i++) componentLogger.info(`padding ${i} ${'x'.repeat(80)}`);
+				const rotatedDir = path.join(shapeCaseDir, 'rotated');
+				await waitFor(() => fs.pathExistsSync(rotatedDir) && fs.readdirSync(rotatedDir).length > 0, {
+					timeout: 5000,
+					message: 'expected the inherited main maxSize to rotate the component log',
+				});
+				// The 30-line burst against a 1K cap rotates several times in a fast cascade; writing
+				// line two the instant the first archive appears can still land it in an
+				// intermediate generation that itself rotates again moments later.
+				let lastRotatedCount = -1;
+				await waitFor(
+					() => {
+						const count = fs.readdirSync(rotatedDir).length;
+						const settled = count === lastRotatedCount;
+						lastRotatedCount = count;
+						return settled;
+					},
+					{ timeout: 5000, interval: 200, message: 'expected the rotation cascade to settle' }
+				);
+
+				componentLogger.info('after rotation, line two');
+				await waitFor(
+					() =>
+						fs.existsSync(componentLogPath) &&
+						fs.readFileSync(componentLogPath, 'utf8').includes('after rotation, line two'),
+					{ timeout: 5000, message: 'expected a fresh file at the same path to receive post-rotation writes' }
+				);
+
+				const staleRead = fs.readFileSync(tailerFd, 'utf8');
+				assert.ok(staleRead.includes('line one'), 'the stale descriptor still reads the pre-rotation generation');
+				assert.ok(
+					!staleRead.includes('after rotation, line two'),
+					'a descriptor opened before rotation never sees a post-rotation write'
+				);
+			} finally {
+				fs.closeSync(tailerFd);
+			}
+
+			const freshRead = fs.readFileSync(componentLogPath, 'utf8');
+			assert.ok(freshRead.includes('after rotation, line two'));
+			assert.ok(
+				!freshRead.includes('line one'),
+				'pre-rotation content moved to the archive, not the fresh file created at the same path'
+			);
+		});
+
+		it('shape: a logger with no level of its own resolves it via mainLoggerRef, the same fallback this fix left in place — only the mainLogger -> mainLoggerRef parameter name changed on that line', () => {
+			const mainLogPath = path.join(shapeCaseDir, 'hdb.log');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			shapeLoggersToCleanup.push(testMainLogger);
+			updateLogger(testMainLogger, { path: mainLogPath, level: 'info' }, undefined, testMainLogger);
+
+			// Created while main is still at 'info', so forComponent's own copy-at-creation of
+			// `protoLogger.level` cannot be what delivers 'trace' below — only updateLogger's
+			// mainLoggerRef fallback, with no level of its own, can.
+			const probe = testMainLogger.forComponent('levelProbe');
+			shapeLoggersToCleanup.push(probe);
+			const levelBeforeFallback = probe.level;
+
+			updateLogger(testMainLogger, { path: mainLogPath, level: 'trace' }, undefined, testMainLogger);
+			updateLogger(probe, { path: path.join(shapeCaseDir, 'probe.log') }, 'levelProbe', testMainLogger);
+
+			assert.strictEqual(probe.level, testMainLogger.level);
+			// Main's level comes from the same assignment, so equality alone can't detect its removal.
+			assert.notStrictEqual(probe.level, levelBeforeFallback);
+		});
+	});
+
 	it('Test suppressLogging function', () => {
 		const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 		const fake_func = sandbox.stub().callsFake(() => {});
