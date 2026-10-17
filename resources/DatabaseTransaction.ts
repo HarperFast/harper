@@ -765,6 +765,7 @@ function clearAttemptState(txn: DatabaseTransaction): void {
 
 type RocksTransactionWithRetry = RocksTransaction & {
 	isRetry?: boolean;
+	retries?: number;
 	hasStagedLog?: boolean;
 	stagedTxnTime?: number;
 	commitStartedAt?: number;
@@ -1330,10 +1331,8 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * Retain a commit-phase hold on each lock handle whose write is about to be submitted to RocksDB,
-	 * so a lease expiry while an already-logged transaction retries its native commit keeps the
-	 * native record lock (`store.unlock(key)`) and cluster `onRelease` callback deferred until the
-	 * retry loop lands or the commit-conflict budget expires.
+	 * Carrier for the commit-conflict budget clock and overdue-log dedup flag: the chain root for a
+	 * standard/chained transaction, or the per-write native handle on an unchained ImmediateTransaction.
 	 */
 	private budgetCarrier(transaction?: RocksTransaction | null): {
 		commitStartedAt?: number;
@@ -1350,6 +1349,12 @@ export class DatabaseTransaction implements Transaction {
 		return this.root ?? this;
 	}
 
+	/**
+	 * Retain a commit-phase hold on each lock handle whose write is about to be submitted to RocksDB,
+	 * so a lease expiry while an already-logged transaction retries its native commit keeps the
+	 * native record lock (`store.unlock(key)`) and cluster `onRelease` callback deferred until the
+	 * retry loop lands or the commit-conflict budget expires.
+	 */
 	private retainTransactionLockHolds(transaction: RocksTransaction | null | undefined): void {
 		if (!transaction || !this.hasLeaseProtectedWrite) return;
 		const txn = transaction as RocksTransactionWithRetry;
@@ -1399,6 +1404,7 @@ export class DatabaseTransaction implements Transaction {
 				this.detachWrite(write);
 			}
 			this.writes = this.writes.filter((write) => write);
+			this.validated = this.writes.length;
 			if (this.hasLeaseProtectedWrite && !this.writes.some((write) => write?.lockHandle)) {
 				this.hasLeaseProtectedWrite = false;
 			}
@@ -1413,6 +1419,7 @@ export class DatabaseTransaction implements Transaction {
 			if (write) this.ownedWrites?.delete(write);
 		}
 		this.writes = [];
+		this.validated = 0;
 		this.writesByKey = undefined;
 		// The commit-fence latch belongs to the discarded batch. A reused transaction that once staged
 		// a locked write would otherwise re-scan every write of every later unlocked batch. Assigned
@@ -1766,6 +1773,7 @@ export class DatabaseTransaction implements Transaction {
 			// (boot hangs replaying its own output). Conflict retries stamp isRetry
 			// at the retry sites in commit(); this is the replay-path equivalent.
 			(transaction as RocksTransactionWithRetry).isRetry = true;
+			(transaction as RocksTransactionWithRetry).retries = this.retries;
 		} else if (!remoteOrigin) {
 			// Before the first staged write, which freezes the native timestamp. A key below the floor's
 			// admission bound is replaced on the handle only: `txnTime` keeps an explicit value as the
@@ -1776,6 +1784,7 @@ export class DatabaseTransaction implements Transaction {
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
 		operation.stagedTime ??= txnTime;
 		if (!operation.lockStamp) (transaction as RocksTransactionWithRetry).stagedTxnTime ??= txnTime;
+		if (this.saveCommits && !(this.getContext() as any)?.timestamp) this.timestamp = 0;
 		if (!operation.saved && operation.pendingPriorWrite) {
 			const pendingWrites = [];
 			for (let pending = operation.pendingPriorWrite; pending;) {
@@ -1803,9 +1812,10 @@ export class DatabaseTransaction implements Transaction {
 		// An entry read uncached through this same pinned-snapshot handle is already that base, until a retry resets
 		// the snapshot or an earlier staged write to the key changes what a read returns; the resource withholds the
 		// handle once its entry was replaced or evicted, and locked, snapshot-free and replayed writes always reload.
+		const txnRetries = (transaction as RocksTransactionWithRetry | undefined)?.retries ?? this.retries;
 		const reusesBaseRead =
 			operation.baseReadTxn === transaction &&
-			this.retries === 0 &&
+			txnRetries === 0 &&
 			!reloadEntry &&
 			!operation.priorWrite &&
 			!operation.lockHandle &&
@@ -1852,7 +1862,7 @@ export class DatabaseTransaction implements Transaction {
 				completion = operation.commit(
 					writeVersion,
 					operation.entry,
-					wasSaved && this.retries > 0,
+					wasSaved && txnRetries > 0,
 					transaction,
 					this
 				) as Promise<void>;
@@ -2277,7 +2287,9 @@ export class DatabaseTransaction implements Transaction {
 							);
 							if (this.timestamp) replayTransaction.setTimestamp(this.timestamp);
 							transferLocalKey(transaction, replayTransaction);
-							this.retries++; // a replay round: commit handlers re-base on the reloaded entries
+							const retries = ((transaction as RocksTransactionWithRetry | undefined)?.retries ?? this.retries) + 1;
+							(replayTransaction as RocksTransactionWithRetry).retries = retries;
+							this.retries = retries; // a replay round: commit handlers re-base on the reloaded entries
 							try {
 								for (const operation of this.writes) {
 									this.save(operation, replayTransaction, true, options);
@@ -2412,18 +2424,20 @@ export class DatabaseTransaction implements Transaction {
 					const commitOutcome = commitResolution.then(
 						(commitResult) => {
 							if (commitResult === RETRY_NOW_VALUE) {
-								this.retries++;
-								harperLogger.debug?.('coordinated retry', transaction.id, this.retries);
+								const txnWithRetry = transaction as RocksTransactionWithRetry;
+								const retries = (txnWithRetry.retries = (txnWithRetry.retries ?? 0) + 1);
+								this.retries = retries;
+								harperLogger.debug?.('coordinated retry', transaction.id, retries);
 								// Mark this specific native transaction as a retry so RocksTransactionLogStore
 								// skips re-writing its already-staged txn-log entries (#2).
-								(transaction as RocksTransactionWithRetry).isRetry = true;
+								txnWithRetry.isRetry = true;
 								const logged = hasDurableLog(transaction);
 								const pastBudget = this.elapsedPastCommitBudget(transaction);
 								if (pastBudget) {
 									if (logged) this.noteOverdueLoggedCommit(transaction, pastBudget);
 									else this.abandonCommitAfterDeadline(transaction, pastBudget);
 								}
-								if (this.retries > MAX_RETRIES && !this.sourceApply && !logged) {
+								if (retries > MAX_RETRIES && !this.sourceApply && !logged) {
 									// giving up: poison and abort the whole linked chain so no link leaks its native
 									// handle / read snapshot — or any unpublished transaction-log position — until GC.
 									this.abortChainAfterRetries(transaction);
@@ -2431,9 +2445,9 @@ export class DatabaseTransaction implements Transaction {
 										`After ${MAX_RETRIES} coordinated retries, unable to commit transaction, transaction is in conflict with ongoing writes`
 									);
 								}
-								if ((this.sourceApply || logged) && this.retries > 0 && this.retries % MAX_RETRIES === 0) {
+								if ((this.sourceApply || logged) && retries > 0 && retries % MAX_RETRIES === 0) {
 									harperLogger.warn?.(
-										`${this.sourceApply ? 'Source-applied' : 'Logged'} transaction ${transaction.id} still in conflict after ${this.retries} coordinated retries; continuing to retry`
+										`${this.sourceApply ? 'Source-applied' : 'Logged'} transaction ${transaction.id} still in conflict after ${retries} coordinated retries; continuing to retry`
 									);
 								}
 								return this.commit({ ...options, transaction });
@@ -2511,7 +2525,7 @@ export class DatabaseTransaction implements Transaction {
 							}
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.clearWrites(committedTransaction);
-							if (this.writes.length === 0) this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
+							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
 							if (options.doneWriting) this.endScopeOwnership();
 							this.releaseContext(!!options.doneWriting);
 							let txnTime =
@@ -2519,7 +2533,7 @@ export class DatabaseTransaction implements Transaction {
 								this.timestamp ||
 								committedTxnKey ||
 								0;
-							if (this.writes.length === 0) this.timestamp = 0; // reset the timestamp as well
+							this.timestamp = 0; // reset the timestamp as well
 							return Promise.all(completions).then(
 								() => {
 									// Only once the chained store's commit has settled, as on the synchronous path: a
@@ -2555,8 +2569,10 @@ export class DatabaseTransaction implements Transaction {
 							if (error.code === 'ERR_BUSY' || error.code === 'ERR_TRY_AGAIN') {
 								// if the transaction failed due to concurrent changes, we need to retry. First record this as an increased risk of contention/retry
 								// for future transactions
-								this.retries++;
-								harperLogger.debug?.('retrying', transaction.id, this.retries);
+								const txnWithRetry = transaction as RocksTransactionWithRetry;
+								const retries = (txnWithRetry.retries = (txnWithRetry.retries ?? 0) + 1);
+								this.retries = retries;
+								harperLogger.debug?.('retrying', transaction.id, retries);
 								// ERR_BUSY and ERR_TRY_AGAIN are both retried by recommitting the SAME native
 								// transaction. ERR_BUSY recovers because the save loop re-writes each key, re-tracking
 								// it at the current sequence. ERR_TRY_AGAIN — a snapshot stranded outside the memtable
@@ -2569,7 +2585,7 @@ export class DatabaseTransaction implements Transaction {
 								// already-staged change-feed entry publishes only when the retry really commits — no
 								// premature publish, and no fresh-transaction replay that would drop the entry.
 								// Mark the native transaction as a retry so RocksTransactionLogStore skips re-staging entries.
-								(transaction as RocksTransactionWithRetry).isRetry = true;
+								txnWithRetry.isRetry = true;
 								const logged = hasDurableLog(transaction);
 								// Before the backoff gate below: the budget can already be spent on the first
 								// retry when an earlier store in this chain consumed it.
@@ -2578,7 +2594,7 @@ export class DatabaseTransaction implements Transaction {
 									if (logged) this.noteOverdueLoggedCommit(transaction, pastBudget);
 									else this.abandonCommitAfterDeadline(transaction, pastBudget);
 								}
-								if (this.retries > 2) {
+								if (retries > 2) {
 									// Transactions applying data from a canonical source of truth (replication peer or
 									// external caching source), or transactions whose log entry is already durable on disk,
 									// must never drop a write on a transient conflict: for source-apply there is no
@@ -2586,7 +2602,7 @@ export class DatabaseTransaction implements Transaction {
 									// transaction aborting leaves an orphaned entry in the transaction log that crash
 									// recovery or replication would apply while local RocksDB state rolled it back.
 									const neverDropOnConflict = this.sourceApply || logged;
-									if (this.retries > MAX_RETRIES && !neverDropOnConflict) {
+									if (retries > MAX_RETRIES && !neverDropOnConflict) {
 										// giving up: poison and abort the whole linked chain so no link leaks its native
 										// handle / read snapshot until GC.
 										this.abortChainAfterRetries(transaction);
@@ -2596,16 +2612,16 @@ export class DatabaseTransaction implements Transaction {
 									}
 									// Uncapped retry can otherwise stall silently (debug logging is off in production);
 									// surface periodic visibility into a stalled source-apply or logged commit.
-									if (neverDropOnConflict && this.retries % MAX_RETRIES === 0) {
+									if (neverDropOnConflict && retries % MAX_RETRIES === 0) {
 										harperLogger.warn?.(
-											`${this.sourceApply ? 'Source-applied' : 'Logged'} transaction ${transaction.id} still in conflict after ${this.retries} retries; continuing to retry`
+											`${this.sourceApply ? 'Source-applied' : 'Logged'} transaction ${transaction.id} still in conflict after ${retries} retries; continuing to retry`
 										);
 									}
 									// start delaying, back off to try to space out transactions and avoid excessive conflicts.
 									// Track the backoff wait as an outstanding commit when `logged` so `suspendDatabaseCommits` /
 									// `waitForDrain` cannot see `oldestOutstandingCommit` go empty between attempts and close
 									// the store underneath an uncapped logged retry loop.
-									const backoff = delay(Math.min(this.retries * this.retries, MAX_RETRY_DELAY_MS));
+									const backoff = delay(Math.min(retries * retries, MAX_RETRY_DELAY_MS));
 									if (logged) {
 										trackOutstandingCommit(backoff, this.writes[0]?.store, this.startedFrom, transaction);
 									}
@@ -2641,7 +2657,7 @@ export class DatabaseTransaction implements Transaction {
 								this.clearWrites(transaction);
 								releaseTransactionLockHolds(transaction);
 								this.releaseRecordLocks();
-								if (this.writes.length === 0) this.timestamp = 0;
+								this.timestamp = 0;
 								throw error;
 							}
 						}
@@ -2834,7 +2850,7 @@ export class DatabaseTransaction implements Transaction {
 			// handle alive, but release every other remaining handle through the shared cleanup path.
 			if (this.transaction && !hasOpenReadIterator) this.releaseReadTxn();
 			this.open = TRANSACTION_STATE.CLOSED;
-			if ((this.commitsInFlight ?? 0) <= 1) this.timestamp = 0; // a lock stamp pinned for this write set must not leak into the next
+			this.timestamp = 0; // a lock stamp pinned for this write set must not leak into the next
 			this.drainCompletions();
 			const preserveSiblingWrites = Boolean(
 				targetTransaction &&
@@ -2853,10 +2869,8 @@ export class DatabaseTransaction implements Transaction {
 				this.open = TRANSACTION_STATE.CLOSED;
 				this.endScopeOwnership(); // the scope is over; nothing may rotate this instance again
 				this.clearWrites(targetTransaction);
-				if (this.writes.length === 0) {
-					this.timestamp = 0;
-					this.retries = 0;
-				}
+				this.timestamp = 0;
+				this.retries = 0;
 				this.releaseRecordLocks();
 				// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
 				// Resource.ts's dispatcher deliberately keeps joining a `timedOut` transaction (instead of
@@ -2914,10 +2928,11 @@ export class DatabaseTransaction implements Transaction {
 		const elapsed = Math.round(elapsedMs);
 		const budget = this.commitConflictBudget();
 		const retryable = !this.root && !this.snapshotFree;
+		const retries = (headTransaction as RocksTransactionWithRetry | undefined)?.retries ?? this.retries;
 		if (allowStuckCommitLog('abandon', performance.now())) {
 			harperLogger.error(
 				`Abandoning a write transaction: its commit has been in write-intent conflict for ${elapsed}ms ` +
-					`(exceeds the ${budget}ms limit) across ${this.retries} retries, ` +
+					`(exceeds the ${budget}ms limit) across ${retries} retries, ` +
 					describeCommitIdentity(this.writes[0]?.store, this.startedFrom, headTransaction) +
 					`.` +
 					describeHolderCandidates(this.writes[0]?.store?.rootStore?.path, headTransaction?.id) +
@@ -2928,7 +2943,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		this.abortChainAfterRetries(headTransaction);
 		throw new TransactionCommitConflictTimeoutError(
-			`Commit was in conflict with ongoing writes for ${elapsed}ms, exceeding the ${budget}ms limit; transaction abandoned after ${this.retries} retries`,
+			`Commit was in conflict with ongoing writes for ${elapsed}ms, exceeding the ${budget}ms limit; transaction abandoned after ${retries} retries`,
 			retryable
 		);
 	}
@@ -2948,9 +2963,10 @@ export class DatabaseTransaction implements Transaction {
 		carrier.commitOverdueLogged = true;
 		const elapsed = Math.round(elapsedMs);
 		const budget = this.commitConflictBudget();
+		const retries = (headTransaction as RocksTransactionWithRetry | undefined)?.retries ?? this.retries;
 		harperLogger.error(
 			`A durably logged write transaction is still in write-intent conflict after ${elapsed}ms ` +
-				`(exceeds the ${budget}ms limit) across ${this.retries} retries, ` +
+				`(exceeds the ${budget}ms limit) across ${retries} retries, ` +
 				describeCommitIdentity(this.writes[0]?.store, this.startedFrom, headTransaction) +
 				`.` +
 				describeHolderCandidates(this.writes[0]?.store?.rootStore?.path, headTransaction?.id) +

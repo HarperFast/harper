@@ -1047,13 +1047,17 @@ describe('Transactions are never aborted once durably written to the transaction
 			const k2SavePromise = holder2.save();
 			await waitFor(() => k2InCommit, { message: 'k2 commit should be parked in flight' });
 
-			// 3. Let k1 finish so isCommitting resets to false while retries === 1 and k2 remains in this.writes.
+			// 3. Let k1 finish so isCommitting resets to false while k2 remains in this.writes.
 			releaseK1();
 			await k1SavePromise;
 			assert.strictEqual(sharedCtx.transaction.isCommitting, false);
-			assert.ok(sharedCtx.transaction.retries > 0, 'shared ImmediateTransaction must have recorded a retry from k1');
+			assert.strictEqual(
+				sharedCtx.transaction.retries,
+				0,
+				'shared ImmediateTransaction must reset its retry counter when k1 settles so sibling writes do not inherit it'
+			);
 
-			// 4. While k2 is still in flight in this.writes and retries > 0, run k3.save() through the top-level
+			// 4. While k2 is still in flight in this.writes, run k3.save() through the top-level
 			//    this.commit() loop on the same ImmediateTransaction.
 			nextWriteStage = 'k3';
 			holder3.set('writer', 'w3');
@@ -1083,6 +1087,57 @@ describe('Transactions are never aborted once durably written to the transaction
 			assert.strictEqual(AuditedA.primaryStore.getEntry(k1).value.writer, 'w1');
 			assert.strictEqual(AuditedA.primaryStore.getEntry(k2).value.writer, 'w2');
 			assert.strictEqual(AuditedA.primaryStore.getEntry(k3).value.writer, 'w3');
+		});
+
+		it('allocates fresh monotonic timestamps for sequential plain writes sharing an ImmediateTransaction while a sibling commit is in flight', async function () {
+			this.timeout(15000);
+			const keyA = id('imm-ts-a');
+			const keyB = id('imm-ts-b');
+
+			let nextWriteStage = 'b';
+			let bInCommit = false;
+			let releaseB;
+			const bGate = new Promise((resolve) => {
+				releaseB = resolve;
+			});
+
+			const originalCommit = Transaction.prototype.commit;
+			Transaction.prototype.commit = function (...args) {
+				if (this.hasStagedLog && !this._immTsStage) {
+					this._immTsStage = nextWriteStage;
+				}
+				if (this._immTsStage === 'b') {
+					bInCommit = true;
+					return bGate.then(() => originalCommit.apply(this, args));
+				}
+				return originalCommit.apply(this, args);
+			};
+			pendingRestores.push(() => {
+				Transaction.prototype.commit = originalCommit;
+			});
+
+			const sharedCtx = {};
+			const bPromise = AuditedA.put({ id: keyB, writer: 'b', count: 1 }, sharedCtx);
+			await waitFor(() => bInCommit, { message: 'write B should be parked inside native commit()' });
+
+			nextWriteStage = 'a1';
+			await AuditedA.put({ id: keyA, writer: 'v1', count: 1 }, sharedCtx);
+			const v1Entry = AuditedA.primaryStore.getEntry(keyA);
+			assert.strictEqual(v1Entry.value.writer, 'v1');
+
+			nextWriteStage = 'a2';
+			await AuditedA.put({ id: keyA, writer: 'v2', count: 2 }, sharedCtx);
+			const v2Entry = AuditedA.primaryStore.getEntry(keyA);
+			assert.strictEqual(v2Entry.value.writer, 'v2');
+			assert.strictEqual(v2Entry.value.count, 2);
+			assert.ok(
+				v2Entry.version > v1Entry.version,
+				`second sequential write must receive a strictly newer record version (${v2Entry.version} > ${v1Entry.version}) while sibling B is in flight`
+			);
+
+			releaseB();
+			await bPromise;
+			assert.strictEqual(AuditedA.primaryStore.getEntry(keyB).value.writer, 'b');
 		});
 	});
 
@@ -1343,6 +1398,19 @@ describe('Transactions are never aborted once durably written to the transaction
 			const originalError = harperLogger.error;
 			harperLogger.error = (...args) => errorLines.push(args);
 			const originalAbort = Transaction.prototype.abort;
+			const originalCommit = Transaction.prototype.commit;
+			let interceptTerminalFailure = false;
+			let terminalAttempt = 0;
+			Transaction.prototype.commit = function (...args) {
+				if (interceptTerminalFailure && this.hasStagedLog) {
+					terminalAttempt++;
+					if (terminalAttempt === 1) {
+						return Promise.reject(Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY' }));
+					}
+					return Promise.reject(Object.assign(new Error('I/O error on retry'), { code: 'ERR_IO' }));
+				}
+				return originalCommit.apply(this, args);
+			};
 			Transaction.prototype.abort = function () {
 				throw Object.assign(new Error('Transaction cannot be aborted after log write'), {
 					code: 'ERR_TRANSACTION_ABANDONED',
@@ -1351,6 +1419,7 @@ describe('Transactions are never aborted once durably written to the transaction
 			pendingRestores.push(() => {
 				harperLogger.error = originalError;
 				Transaction.prototype.abort = originalAbort;
+				Transaction.prototype.commit = originalCommit;
 			});
 
 			const recordId = id('abandoned-diag');
@@ -1372,7 +1441,21 @@ describe('Transactions are never aborted once durably written to the transaction
 						msg
 					)
 				),
-				'must log ERR_TRANSACTION_ABANDONED at error level with the abort reason and commit identity'
+				'must log ERR_TRANSACTION_ABANDONED at error level on pre-submit abort diagnostic path'
+			);
+
+			errorLines.length = 0;
+			interceptTerminalFailure = true;
+			await assert.rejects(
+				AuditedA.put({ id: recordId, writer: 'terminal-io-failure', count: 99 }),
+				(err) => err.code === 'ERR_IO'
+			);
+			assert.strictEqual(terminalAttempt, 2, 'must have reached attempt 2 after attempt 1 logged and conflicted');
+			assert.ok(
+				errorLines.some(([msg]) =>
+					/Aborted a transaction with a durable log entry \(aborting transaction after failed commit\)/.test(msg)
+				),
+				'must log ERR_TRANSACTION_ABANDONED at error level when a post-log retry fails with a non-conflict terminal error'
 			);
 		});
 	});
