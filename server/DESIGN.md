@@ -723,13 +723,17 @@ conflict 503s log at `error` (once per stuck commit, rate-limited) as well as `i
 with that exact body is therefore the throttle, which now writes a rate-limited `warn` per throttle instance naming
 the queue; `resources/Table.ts`'s cache-resolution throttle throws its own 503 under the same warn. The
 gate is per instance on purpose: a shared one let a cache-fill shed silence the HTTP shed that followed.
-Reproduce with a large concurrent non-GET burst on one CPU-starved worker
+Reproduce with a large concurrent request burst on one CPU-starved worker
 (`integrationTests/resources/sourcedfrom-eav-cache-coherence.test.ts` P1 under Bun pinned to a contended
 core).
 
 ## The request-queue throttle sheds only on cycles from the current backlog (`server/throttle.ts`)
 
 The cycle-time average behind each shed decision is per `throttle()` instance and returns to 0 when that queue drains, so an earlier backlog's or another throttle's slow cycle cannot shed this one ([#3200](https://github.com/HarperFast/harper/pull/3200)). A new backlog ramps from 0, like a new process. Enforced by the stale-backlog and two-instance cases in `unitTests/server/throttle.test.js`.
+
+## HTTP reads and writes have separate queue depths and limits (`server/http.ts`)
+
+`throttleRequests` admits GET/HEAD/OPTIONS through a separate queue (`http.readRequestQueueLimit`, default 60s); `false` dispatches reads directly without the scheduler's per-cycle cost. Node TCP/UDS/h2c share their queues; uWS mirrors have transport-local queues, as do their writes. Native `Bun.serve` listeners dispatch writes immediately; Bun's default app port uses `node:http` and its write queue. Only the http component's read-limit key is registered; other usage types use the code default. Both queues measure the same event loop, so read work can increase a write queue's cycle-time estimate. The handlers skip reads disconnected before dequeue; `readQueueRejectionHeaders` applies configured response and CORS headers without running authentication. An OPTIONS preflight shed with 503 fails browser CORS preflight despite those headers, since preflight requires 2xx. `unitTests/server/httpRequestQueue.test.js` enforces classification, independent depth/limits, opt-out, disconnects and headers; `integrationTests/server/request-queue.test.ts` exercises the default port and, under Bun, a native fetch listener. These are event-loop admission queues, not limits on in-flight asynchronous work.
 
 ## Response compression dispatches on the serialized output, with one brotli policy (`server/serverHelpers/contentTypes.ts`)
 

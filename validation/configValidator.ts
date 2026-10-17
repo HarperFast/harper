@@ -2,6 +2,7 @@
 
 import * as fs from 'fs-extra';
 import Joi from 'joi';
+import { validateHeaderValue } from 'node:http';
 import * as os from 'os';
 const { boolean, string, number, array } = Joi.types();
 const v8Flag = string.trim().allow('').pattern(/^--/, 'V8 flag starting with --');
@@ -464,6 +465,20 @@ export function configValidator(configJson, skipFsValidation = false) {
 			requireAuthentication: boolean.optional(),
 		}),
 		http: Joi.object({
+			corsAccessControlAllowHeaders: Joi.custom((value, helpers) => {
+				try {
+					for (const header of Array.isArray(value) ? value : [value])
+						validateHeaderValue('Access-Control-Allow-Headers', typeof header === 'string' ? header : '' + header);
+					return value;
+				} catch {
+					return helpers.error('any.invalid');
+				}
+			})
+				.allow(null)
+				.optional(),
+			readRequestQueueLimit: Joi.alternatives([number.integer().min(0).allow(null), boolean.valid(false)])
+				.prefs({ convert: false })
+				.optional(),
 			compressionThreshold: number.optional(),
 			cors: boolean.optional(),
 			corsAccessList: array.optional(),

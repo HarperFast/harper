@@ -584,6 +584,7 @@ export const CONFIG_PARAMS = {
 	HTTP_MAXHEADERSIZE: 'http_maxHeaderSize',
 	HTTP_THREADRANGE: 'http_threadRange',
 	HTTP_REQUESTQUEUELIMIT: 'http_requestQueueLimit',
+	HTTP_READREQUESTQUEUELIMIT: 'http_readRequestQueueLimit',
 	HTTP_MAXREQUESTBODYSIZE: 'http_maxRequestBodySize',
 	HTTP_HTTP2: 'http_http2',
 	HTTP_LOGGING_LEVEL: 'http_logging_level',
