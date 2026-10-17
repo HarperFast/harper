@@ -2859,11 +2859,15 @@ describe('Transactions are never aborted once durably written to the transaction
 			const keyA1 = id('mid-multi-a1');
 			const keyB1 = id('mid-multi-b1');
 			const keyALate = id('mid-multi-alate');
+			const keyA2 = id('mid-multi-a2');
 			const keyB2 = id('mid-multi-b2');
+			const keyB3 = id('mid-multi-b3');
 			await AuditedA.put({ id: keyA1, writer: 'seed-a1', count: 0 });
 			await AuditedB.put({ id: keyB1, writer: 'seed-b1', count: 0 });
 			await AuditedA.put({ id: keyALate, writer: 'seed-alate', count: 0 });
+			await AuditedA.put({ id: keyA2, writer: 'seed-a2', count: 0 });
 			await AuditedB.put({ id: keyB2, writer: 'seed-b2', count: 0 });
+			await AuditedB.put({ id: keyB3, writer: 'seed-b3', count: 0 });
 
 			const dbA = AuditedA.primaryStore.store.db;
 			const dbB = AuditedB.primaryStore.store.db;
@@ -2948,23 +2952,51 @@ describe('Transactions are never aborted once durably written to the transaction
 							'mid-scope commit must detach the CLOSED chained link for store B so segment 2 stages into a fresh OPEN link'
 						);
 
-						// Write to store B in segment 2, then let the late immediate write on store A finish before throwing.
-						await AuditedB.put({ id: keyB2, writer: 'seg2-b-rolled-back', count: 2 }, ctx);
+						// In segment 2, acquire a scoped lock and stage writes on both head store A and chained store B
+						// BEFORE latePutPromise settles, then verify latePutPromise does not wipe segment 2's state.
+						await AuditedA.lock(keyA2, { lease: 15_000 }, ctx);
+						await AuditedA.put({ id: keyA2, writer: 'seg2-a', count: 2 }, ctx);
+						await AuditedB.put({ id: keyB2, writer: 'seg2-b', count: 2 }, ctx);
+
 						releaseLateA();
 						await latePutPromise;
 
-						throw new Error('rollback segment 2');
+						assert.ok(
+							dbTxn.writes.some((w) => w?.key === keyA2),
+							'late immediate commit must not clear segment 2 writes staged on head store A'
+						);
+						assert.ok(dbTxn.timestamp > 0, 'late immediate commit must not zero segment 2 timestamp on head store A');
+						assert.ok(
+							dbTxn.recordLocks?.get(AuditedA.primaryStore)?.has(keyA2),
+							'late immediate commit must not clear segment 2 recordLocks map on head store A'
+						);
+						await assert.rejects(
+							() => AuditedA.lock(keyA2, { timeout: 30 }, {}),
+							(err) => err?.statusCode === 423,
+							'late immediate commit must not release segment 2 record locks on head store A'
+						);
+
+						// Commit segment 2 via another mid-scope commit; both keyA2 and keyB2 must land.
+						await dbTxn.commit({});
+						assert.strictEqual(AuditedA.primaryStore.getEntry(keyA2).value.writer, 'seg2-a');
+						assert.strictEqual(AuditedB.primaryStore.getEntry(keyB2).value.writer, 'seg2-b');
+
+						// Now stage a segment 3 write on store B and roll back segment 3.
+						await AuditedB.put({ id: keyB3, writer: 'seg3-b-rolled-back', count: 3 }, ctx);
+						throw new Error('rollback segment 3');
 					}),
-					/rollback segment 2/
+					/rollback segment 3/
 				);
 
 				assert.strictEqual(AuditedA.primaryStore.getEntry(keyA1).value.writer, 'seg1-a');
 				assert.strictEqual(AuditedB.primaryStore.getEntry(keyB1).value.writer, 'seg1-b');
 				assert.strictEqual(AuditedA.primaryStore.getEntry(keyALate).value.writer, 'late-a');
+				assert.strictEqual(AuditedA.primaryStore.getEntry(keyA2).value.writer, 'seg2-a');
+				assert.strictEqual(AuditedB.primaryStore.getEntry(keyB2).value.writer, 'seg2-b');
 				assert.strictEqual(
-					AuditedB.primaryStore.getEntry(keyB2).value.writer,
-					'seed-b2',
-					'segment 2 write to store B must be rolled back when segment 2 throws, not self-committed on a leftover CLOSED link or cascaded by latePutPromise'
+					AuditedB.primaryStore.getEntry(keyB3).value.writer,
+					'seed-b3',
+					'segment 3 write to store B must be rolled back when segment 3 throws'
 				);
 			} finally {
 				await lateAHolder?.unlock?.();
