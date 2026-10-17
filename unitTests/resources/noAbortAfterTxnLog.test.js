@@ -9,6 +9,7 @@ const { transaction } = require('#src/resources/transaction');
 const {
 	ImmediateTransaction,
 	getOutstandingCommits,
+	getTxnExpiration,
 	replicationConfirmation,
 	resetStuckCommitLogCooldownForTests,
 	setMaxOutstandingTxnDuration,
@@ -241,7 +242,8 @@ describe('Transactions are never aborted once durably written to the transaction
 	describe('2. Coordinated RETRY_NOW retry cap after durable log write', () => {
 		it('retries past MAX_RETRIES without aborting when attempt 1 hits a real RETRY_NOW conflict and subsequent attempts return RETRY_NOW', async function () {
 			this.timeout(20000);
-			setMaxRetryDelayMs(1);
+			const prevMaxRetryDelay = setMaxRetryDelayMs(1);
+			pendingRestores.push(() => setMaxRetryDelayMs(prevMaxRetryDelay));
 			const recordId = id('retry-now-cap');
 			const baseNow = Date.now();
 			await putWithTimestamp(AuditedA, { id: recordId, writer: 'seed', count: 0 }, baseNow - 10_000);
@@ -585,7 +587,7 @@ describe('Transactions are never aborted once durably written to the transaction
 			assert.strictEqual(patchStored.value.count, 77);
 		});
 
-		it('breaks symmetric RETRY_NOW contention between two concurrent crossing-writes transactions after both durably log', async function () {
+		it('backs off after round 3 (retries > 2) under sustained RETRY_NOW contention after both crossing-writes transactions durably log', async function () {
 			this.timeout(20000);
 			const keyA = id('cross-a');
 			const keyB = id('cross-b');
@@ -793,7 +795,8 @@ describe('Transactions are never aborted once durably written to the transaction
 			const baseNow = Date.now();
 			await putWithTimestamp(AuditedA, { id: recordId, writer: 'seed', count: 0 }, baseNow - 10_000);
 
-			pendingRestores.push(() => setTxnExpiration(30_000));
+			const prevTxnExpiration = getTxnExpiration();
+			pendingRestores.push(() => setTxnExpiration(prevTxnExpiration));
 
 			let writerSnapshotResolve;
 			const writerSnapshotReady = new Promise((resolve) => {
@@ -1879,7 +1882,8 @@ describe('Transactions are never aborted once durably written to the transaction
 	describe('5. Chained multi-store transaction (head -> next) with a durably logged link', () => {
 		it('carries a chained transaction to completion when DbA commits and DbB logs on attempt 1 then conflicts past MAX_RETRIES and budget', async function () {
 			this.timeout(20000);
-			setMaxRetryDelayMs(1);
+			const prevMaxRetryDelay = setMaxRetryDelayMs(1);
+			pendingRestores.push(() => setMaxRetryDelayMs(prevMaxRetryDelay));
 			const recordId = id('chain-b-conflict');
 			const baseNow = Date.now();
 			await putWithTimestamp(AuditedA, { id: recordId, writer: 'seed-a', count: 0 }, baseNow - 10_000);
@@ -1940,7 +1944,8 @@ describe('Transactions are never aborted once durably written to the transaction
 
 		it('carries a chained transaction to completion when head DbA logs on attempt 1 and conflicts past MAX_RETRIES before cascading to DbB', async function () {
 			this.timeout(20000);
-			setMaxRetryDelayMs(1);
+			const prevMaxRetryDelay = setMaxRetryDelayMs(1);
+			pendingRestores.push(() => setMaxRetryDelayMs(prevMaxRetryDelay));
 			const recordId = id('chain-a-conflict');
 			const baseNow = Date.now();
 			await putWithTimestamp(AuditedA, { id: recordId, writer: 'seed-a', count: 0 }, baseNow - 10_000);
@@ -2264,7 +2269,6 @@ describe('Transactions are never aborted once durably written to the transaction
 				'must log ERR_TRANSACTION_ABANDONED at error level when a post-log retry fails with a non-conflict terminal error'
 			);
 
-			// C1(a): post-log retry round throws synchronously while re-staging (`save()`).
 			errorLines.length = 0;
 			abortCalls = 0;
 			terminalAttempt = 0;
@@ -2295,7 +2299,6 @@ describe('Transactions are never aborted once durably written to the transaction
 				'must log ERR_TRANSACTION_ABANDONED at error level when re-staging throws on a logged retry handle'
 			);
 
-			// C1(b): post-log retry round rejects in pre-commit `completions` before re-submitting.
 			errorLines.length = 0;
 			abortCalls = 0;
 			terminalAttempt = 0;
@@ -2332,9 +2335,115 @@ describe('Transactions are never aborted once durably written to the transaction
 				),
 				'must log ERR_TRANSACTION_ABANDONED at error level when pre-commit completions reject on a logged retry'
 			);
-			// Ensure the lock hold was released by abortAfterCommitError even though the lease expired during attempt 1.
 			const checkLock = await AuditedA.lock(recordId, { lease: MIN_LOCK_LEASE_MS, timeout: 400 });
 			await checkLock.unlock();
+		});
+
+		it('does not retract hasLog when a retry round throws ERR_BUSY with hasLog: false, and protects in-flight logged commits from untargeted abort() or clearWrites()', async function () {
+			this.timeout(20000);
+			const prevMaxRetryDelay = setMaxRetryDelayMs(1);
+			pendingRestores.push(() => setMaxRetryDelayMs(prevMaxRetryDelay));
+
+			const recordA = id('haslog-sticky-a');
+			const recordB = id('haslog-sticky-b');
+			const baseNow = Date.now();
+			await putWithTimestamp(AuditedA, { id: recordA, writer: 'seed', count: 0 }, baseNow - 10_000);
+			await putWithTimestamp(AuditedA, { id: recordB, writer: 'seed', count: 0 }, baseNow - 10_000);
+
+			const targetDb = AuditedA.primaryStore.store.db;
+			const aborted = trackAborts(targetDb);
+			const originalCommit = Transaction.prototype.commit;
+
+			let trackedTxnId;
+			let attemptCount = 0;
+			let parkedInRetry = false;
+			let releaseRetry;
+			const retryGate = new Promise((resolve) => {
+				releaseRetry = resolve;
+			});
+			pendingRestores.push(() => releaseRetry());
+
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+				if (trackedTxnId === undefined) {
+					trackedTxnId = this.id;
+					attemptCount++;
+					await putWithTimestamp(AuditedA, { id: recordA, writer: 'interposer', count: 1 }, baseNow - 5_000);
+					return originalCommit.apply(this, args);
+				}
+				if (this.id !== trackedTxnId) return originalCommit.apply(this, args);
+				attemptCount++;
+				if (attemptCount === 2) {
+					parkedInRetry = true;
+					await retryGate;
+				}
+				if (attemptCount <= MAX_RETRIES + 2) {
+					throw Object.assign(new Error('busy on retry round with default hasLog=false'), {
+						code: 'ERR_BUSY',
+						hasLog: false,
+					});
+				}
+				return originalCommit.apply(this, args);
+			};
+			pendingRestores.push(() => {
+				Transaction.prototype.commit = originalCommit;
+			});
+
+			const holderA = await AuditedA.lock(recordA, { hold: true, lease: 15_000 });
+			const sharedCtx = holderA.getContext();
+			holderA.set('writer', 'sticky-logged-winner');
+			holderA.set('count', 7);
+			const saveAPromise = holderA.save();
+
+			await waitFor(() => parkedInRetry, { message: 'holderA should be parked inside retry round 2' });
+			const writeA = sharedCtx.transaction.writes.find((w) => w.key === recordA);
+			assert.ok(writeA, 'in-flight logged write must remain in transaction.writes');
+			const savedBlobsA = [{}];
+			writeA.savedBlobs = savedBlobsA;
+
+			// Stage an unsubmitted sibling write on the shared ImmediateTransaction and call untargeted abort().
+			let siblingTxnAborted = false;
+			const siblingTxn = new Transaction(AuditedA.primaryStore.store);
+			const origSiblingAbort = siblingTxn.abort.bind(siblingTxn);
+			siblingTxn.abort = () => {
+				siblingTxnAborted = true;
+				return origSiblingAbort();
+			};
+			sharedCtx.transaction.transaction = siblingTxn;
+			const savedBlobsB = [{}];
+			const writeB = {
+				key: recordB,
+				store: AuditedA.primaryStore,
+				stagedOn: siblingTxn,
+				savedBlobs: savedBlobsB,
+				commit() {},
+			};
+			sharedCtx.transaction.writes.push(writeB);
+
+			sharedCtx.transaction.abort();
+			assert.strictEqual(siblingTxnAborted, true, 'untargeted abort() must abort the unsubmitted sibling handle');
+			assert.strictEqual(savedBlobsB.length, 0, 'untargeted abort() must clean up the unsubmitted sibling savedBlobs');
+			assert.ok(!sharedCtx.transaction.writes.includes(writeB), 'untargeted abort() must clear the sibling write');
+			assert.strictEqual(
+				savedBlobsA.length,
+				1,
+				'untargeted abort() must not clean up the in-flight logged commit savedBlobs'
+			);
+			assert.ok(
+				sharedCtx.transaction.writes.includes(writeA),
+				'untargeted abort() must preserve the in-flight logged write'
+			);
+			assert.ok(!aborted.includes(trackedTxnId), 'untargeted abort() must not abort the durably logged native handle');
+
+			releaseRetry();
+			await saveAPromise;
+			await holderA.unlock();
+
+			assert.strictEqual(attemptCount, MAX_RETRIES + 3, 'must survive ERR_BUSY with hasLog: false past MAX_RETRIES');
+			assert.strictEqual(savedBlobsA.length, 1, 'logged commit savedBlobs must never be cleaned up by abort()');
+			assert.ok(!aborted.includes(trackedTxnId), 'logged native handle must never be aborted');
+			assert.strictEqual(AuditedA.primaryStore.getEntry(recordA).value.writer, 'sticky-logged-winner');
+			assert.strictEqual(AuditedA.primaryStore.getEntry(recordA).value.count, 7);
 		});
 	});
 });
