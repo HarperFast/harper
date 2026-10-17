@@ -807,9 +807,17 @@ interface InFlightSurrender {
 	table: string;
 	ringKey: string;
 	token: FencingToken;
+	/** Every handle is fenced or past its lease. */
+	fenced: Promise<void>;
+	/** `fenced`, then the release written (a close has no release: the two coincide). */
 	settled: Promise<void>;
 }
-const inFlightSurrenders = new Map<string, Set<InFlightSurrender>>();
+interface DatabaseFencing {
+	entries: Set<InFlightSurrender>;
+	/** Entries whose `fenced` is still pending, counted per `table\0ringKey`, so a grant can ask in O(1). */
+	unfenced: Map<string, number>;
+}
+const inFlightSurrenders = new Map<string, DatabaseFencing>();
 
 /**
  * The highest home-map generation this thread has acted under, per DATABASE — the scope the generation
@@ -1317,8 +1325,11 @@ export class LockCoordinator {
 			this.#pendingRequests.set(keyId, pendingRequest);
 			let reply: DelegationReply;
 			try {
-				reply =
-					home === this.nodeId
+				// A handle this node admitted earlier may still be fencing after a close without a successor;
+				// a renewal from the home would admit alongside it, so the key reads as held until it is fenced.
+				reply = this.#fencingInFlight(keyId)
+					? { granted: false, reason: 'contended', retryAfterMs: 25 }
+					: home === this.nodeId
 						? this.#grantLocally(keyId, key, homeMap, leaseMs)
 						: await this.#requestRemotely(home, keyId, key, homeMap, leaseMs, deadlineMono);
 			} catch (error) {
@@ -2136,7 +2147,8 @@ export class LockCoordinator {
 		for (const [keyId, delegation] of this.#delegations) {
 			delegation.recalled = true;
 			delegation.expiresMono = -Infinity;
-			delegation.fencing = this.#trackFencing(keyId, delegation, this.#revokeAllAndSettle(delegation));
+			const fenced = this.#revokeAllAndSettle(delegation);
+			delegation.fencing = this.#trackFencing(keyId, delegation, fenced, fenced);
 			const waiters = delegation.drained;
 			if (waiters) {
 				delegation.drained = undefined;
@@ -2609,7 +2621,7 @@ export class LockCoordinator {
 		// "held by someone else" — for a key nobody holds.
 		if (quarantine > 0) return { granted: false, reason: 'quarantine', retryAfterMs: Math.min(quarantine, 250) };
 		// This node's own delegation for the key may still be fencing a sibling's handle after a close
-		// without a successor, with no grant left to say so: hold the key until that settles.
+		// without a successor, with no grant left to say so: hold the key until every handle is fenced.
 		if (this.#fencingInFlight(keyId)) return { granted: false, reason: 'contended', retryAfterMs: 25 };
 		const existing = this.#grants.get(keyId);
 		if (existing) {
@@ -2729,49 +2741,65 @@ export class LockCoordinator {
 
 	#surrenderOnce(keyId: unknown, delegation: Delegation): Promise<void> {
 		if (this.#delegations.get(keyId) === delegation) this.#delegations.delete(keyId);
-		return this.#trackFencing(keyId, delegation, this.#surrenderAndRelease(delegation));
+		const fenced = this.#fenceAll(delegation);
+		return this.#trackFencing(
+			keyId,
+			delegation,
+			fenced,
+			fenced.then(() => this.#writeRelease(delegation))
+		);
 	}
 
+	/** Whether a handle this node admitted for the key is still being fenced; the release write is not waited for. */
 	#fencingInFlight(keyId: unknown): boolean {
-		const inFlight = inFlightSurrenders.get(this.database);
-		if (!inFlight) return false;
-		const ringKey = this.#ringKey(keyId);
-		for (const fencing of inFlight) if (fencing.table === this.table && fencing.ringKey === ringKey) return true;
-		return false;
+		const fencing = inFlightSurrenders.get(this.database);
+		if (!fencing || fencing.unfenced.size === 0) return false;
+		return fencing.unfenced.has(`${this.table}\u0000${this.#ringKey(keyId)}`);
 	}
 
-	#trackFencing(keyId: unknown, delegation: Delegation, settled: Promise<void>): Promise<void> {
-		let inFlight = inFlightSurrenders.get(this.database);
-		if (!inFlight) inFlightSurrenders.set(this.database, (inFlight = new Set()));
+	#trackFencing(keyId: unknown, delegation: Delegation, fenced: Promise<void>, settled: Promise<void>): Promise<void> {
+		let fencing = inFlightSurrenders.get(this.database);
+		if (!fencing) inFlightSurrenders.set(this.database, (fencing = { entries: new Set(), unfenced: new Map() }));
+		const ringKey = this.#ringKey(keyId);
+		const unfencedKey = `${this.table}\u0000${ringKey}`;
+		fencing.unfenced.set(unfencedKey, (fencing.unfenced.get(unfencedKey) ?? 0) + 1);
 		const entry: InFlightSurrender = {
 			table: this.table,
-			ringKey: this.#ringKey(keyId),
+			ringKey,
 			token: delegation.token,
+			fenced: fenced.finally(() => {
+				const count = (fencing.unfenced.get(unfencedKey) ?? 1) - 1;
+				if (count > 0) fencing.unfenced.set(unfencedKey, count);
+				else fencing.unfenced.delete(unfencedKey);
+			}),
 			settled: settled.finally(() => {
-				inFlight.delete(entry);
-				if (inFlight.size === 0 && inFlightSurrenders.get(this.database) === inFlight)
+				fencing.entries.delete(entry);
+				if (fencing.entries.size === 0 && inFlightSurrenders.get(this.database) === fencing)
 					inFlightSurrenders.delete(this.database);
 			}),
 		};
-		inFlight.add(entry);
+		fencing.entries.add(entry);
 		return entry.settled;
 	}
 
-	async #surrenderAndRelease(delegation: Delegation): Promise<void> {
-		// Capability, not just admission: anything this delegation admitted must be unable to commit
-		// before the home is told it may re-grant. A handle admitted on another worker thread revokes
-		// over a message, so wait for its fence to land — bounded by the handle's own lease, past which
-		// it fences itself — before writing the release that lets the home re-grant the key. A close that
-		// landed during the drain already emptied the admissions; its fences are waited for here instead.
+	/**
+	 * Capability, not just admission: anything this delegation admitted must be unable to commit before
+	 * the home is told it may re-grant. A handle admitted on another worker thread revokes over a
+	 * message, so wait for its fence to land — bounded by the handle's own lease, past which it fences
+	 * itself. A close that landed during the drain already emptied the admissions; its fences count too.
+	 */
+	async #fenceAll(delegation: Delegation): Promise<void> {
 		await Promise.all([this.#revokeAllAndSettle(delegation), delegation.fencing]);
-		const entry: LockReleaseEntry = {
+	}
+
+	#writeRelease(delegation: Delegation): Promise<void> {
+		return this.#writeControlSafely({
 			type: 'lockRelease',
 			key: delegation.key,
 			requester: this.nodeId,
 			token: delegation.token,
 			dependencies: delegation.dependencies,
-		};
-		return this.#writeControlSafely(entry);
+		});
 	}
 
 	/**
@@ -2788,7 +2816,7 @@ export class LockCoordinator {
 		const drains: Promise<void>[] = [];
 		// Fences a close already fired for this table are joined whether or not the coordinator is still
 		// open: a closed one has nothing left to recall, but those may still be landing.
-		for (const fencing of inFlightSurrenders.get(this.database) ?? [])
+		for (const fencing of inFlightSurrenders.get(this.database)?.entries ?? [])
 			if (
 				fencing.table === this.table &&
 				fencing.token[0] === homeMap.generation &&
@@ -3067,7 +3095,7 @@ export async function recallDelegationsFromHome(
 		);
 		for (const coordinator of unswept) swept.add(coordinator);
 		const surrenders: Promise<void>[] = [];
-		for (const surrender of inFlightSurrenders.get(database) ?? [])
+		for (const surrender of inFlightSurrenders.get(database)?.entries ?? [])
 			if (
 				surrender.token[0] === generation &&
 				surrender.token[1] < belowIncarnation &&
