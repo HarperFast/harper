@@ -1311,11 +1311,27 @@ describe('Transactions are never aborted once durably written to the transaction
 				}
 				if (this._immExplicitTsStage === 'a') {
 					aInCommit = true;
-					return aGate.then(() => originalCommit.apply(this, args));
+					return aGate.then(() => {
+						if (!this._retriedOnce) {
+							this._retriedOnce = true;
+							return RETRY_NOW_VALUE;
+						}
+						return originalCommit.apply(this, args);
+					});
 				}
 				if (this._immExplicitTsStage === 'c') {
 					cInCommit = true;
-					return cGate.then(() => originalCommit.apply(this, args));
+					return cGate.then(() => {
+						if (!this._retriedOnce) {
+							this._retriedOnce = true;
+							return RETRY_NOW_VALUE;
+						}
+						return originalCommit.apply(this, args);
+					});
+				}
+				if (this._immExplicitTsStage === 'mid-scope-1' && !this._retriedOnce) {
+					this._retriedOnce = true;
+					return Promise.resolve(RETRY_NOW_VALUE);
 				}
 				return originalCommit.apply(this, args);
 			};
@@ -1398,6 +1414,21 @@ describe('Transactions are never aborted once durably written to the transaction
 			const cRewriteEntry = AuditedA.primaryStore.getEntry(keyC);
 			assert.strictEqual(cRewriteEntry.value.writer, 'w3-rewrite');
 			assert.ok(cRewriteEntry.version > explicitTxnTs);
+
+			const keyMid = id('mid-scope-retry-same-key');
+			nextWriteStage = 'mid-scope-1';
+			await transaction(async (ctx) => {
+				await AuditedA.put({ id: keyMid, writer: 'seg1', count: 1 }, ctx);
+				await ctx.transaction.commit();
+				nextWriteStage = 'mid-scope-2';
+				await AuditedA.put({ id: keyMid, writer: 'seg2', count: 2 }, ctx);
+			});
+			const midEntry = AuditedA.primaryStore.getEntry(keyMid);
+			assert.strictEqual(
+				midEntry.value.writer,
+				'seg2',
+				'same-key write in rotated segment after a retried mid-scope commit must not reuse segment 1 timestamp and be skipped'
+			);
 		});
 	});
 

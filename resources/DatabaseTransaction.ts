@@ -2510,7 +2510,7 @@ export class DatabaseTransaction implements Transaction {
 								this.timestamp ||
 								committedTxnKey ||
 								0;
-							if ((this.commitsInFlight ?? 0) <= 1) this.timestamp = 0; // reset the timestamp as well
+							if (this.writes.length === 0) this.timestamp = 0; // reset the timestamp as well
 							return Promise.all(completions).then(
 								() => {
 									// Only once the chained store's commit has settled, as on the synchronous path: a
@@ -2642,7 +2642,7 @@ export class DatabaseTransaction implements Transaction {
 								this.clearWrites(transaction);
 								releaseTransactionLockHolds(transaction);
 								this.releaseRecordLocks();
-								if ((this.commitsInFlight ?? 0) <= 1) this.timestamp = 0;
+								if (this.writes.length === 0) this.timestamp = 0;
 								throw error;
 							}
 						}
@@ -2686,7 +2686,7 @@ export class DatabaseTransaction implements Transaction {
 				const txnResolution: CommitResolution = {
 					txnTime: this.timestamp,
 				};
-				if ((this.commitsInFlight ?? 0) <= 1) this.timestamp = 0; // reset like the async path (~1279) so stale lock stamps don't persist
+				if (this.writes.length === 0) this.timestamp = 0; // reset like the async path (~1279) so stale lock stamps don't persist
 				if (this.next) {
 					// now run any other transactions
 					options.timestamp = txnResolution.txnTime;
@@ -2836,7 +2836,6 @@ export class DatabaseTransaction implements Transaction {
 			// handle alive, but release every other remaining handle through the shared cleanup path.
 			if (this.transaction && !hasOpenReadIterator) this.releaseReadTxn();
 			this.open = TRANSACTION_STATE.CLOSED;
-			if ((this.commitsInFlight ?? 0) <= 1) this.timestamp = 0; // a lock stamp pinned for this write set must not leak into the next
 			this.drainCompletions();
 			const preserveSiblingWrites = Boolean(
 				(this.commitsInFlight ?? 0) > 1 &&
@@ -2854,7 +2853,7 @@ export class DatabaseTransaction implements Transaction {
 				this.open = TRANSACTION_STATE.CLOSED;
 				this.endScopeOwnership(); // the scope is over; nothing may rotate this instance again
 				this.clearWrites(targetTransaction);
-				if ((this.commitsInFlight ?? 0) <= 1) this.timestamp = 0;
+				if (this.writes.length === 0) this.timestamp = 0; // a lock stamp pinned for this write set must not leak into the next
 				this.retries = 0;
 				this.releaseRecordLocks();
 				// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
