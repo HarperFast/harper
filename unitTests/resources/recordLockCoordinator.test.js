@@ -4023,6 +4023,38 @@ describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
 			}
 		});
 
+		it('a recall addressed to a coordinator that already handed off drains the successor it handed to', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const node = cluster.node('alpha');
+			const key = cluster.keyHomedOn('gamma');
+			const round = await node.coordinator.acquire(key, LEASE, WAIT);
+			node.coordinator.release(key, round.admissionId);
+			const predecessor = node.coordinator;
+			const successor = new LockCoordinator({
+				database: cluster.database,
+				table: cluster.table,
+				nodeId: 'alpha',
+				transport: predecessor.transport,
+				writeControl: cluster.writeControlFor('alpha'),
+				keyIdOf: (k) => String(k),
+				nextTimestamp: () => ++cluster.tsCounter,
+				monotonic: () => node.mono + performance.now(),
+				adopt: predecessor,
+				grantableAfterMono: -Infinity,
+				autoTick: false,
+			});
+			predecessor.close();
+			node.coordinator = successor;
+			assert.strictEqual(successor.stats.delegations, 1);
+			await predecessor.recallFromHome('gamma', successor.transport.homeMap(cluster.database), 2);
+			assert.strictEqual(
+				successor.stats.delegations,
+				0,
+				'the stale handle answered for a delegation it no longer holds'
+			);
+			assert.strictEqual(node.written.filter((e) => e.type === 'lockRelease').length, 1);
+		});
+
 		it('follows a transport swap that lands while a table is draining, and resolves only after the successor released', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const node = cluster.node('alpha');
