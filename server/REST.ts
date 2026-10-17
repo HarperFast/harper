@@ -265,6 +265,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		}
 		const replicateTo = headersObject['x-replicate-to'];
 		if (replicateTo) {
+			if (!request.user?.role?.permission?.super_user)
+				throw new ClientError('Can not specify replication parameters without super user permissions', 403);
 			const parsed = parseHeaderValue(replicateTo as any).map((node: any) => {
 				// we can use a component argument to indicate that number that should be confirmed
 				// for example, to replicate to three nodes and wait for confirmation from two: X-Replicate-To: 3;confirm=2
