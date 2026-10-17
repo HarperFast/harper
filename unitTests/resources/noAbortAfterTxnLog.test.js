@@ -1033,8 +1033,6 @@ describe('Transactions are never aborted once durably written to the transaction
 
 			await firstConflictDone;
 
-			// Waiter B requests the lock on recordId after A's lease timer has already fired while A's
-			// logged commit is parked in retry. B must stay queued until A's commit lands locally.
 			let bAcquired = false;
 			const waiterBPromise = transaction(async () => {
 				const recB = await AuditedA.lock(recordId, { lease: 5000, timeout: 5000 });
@@ -1049,14 +1047,12 @@ describe('Transactions are never aborted once durably written to the transaction
 			await delay(40);
 			assert.strictEqual(bAcquired, false, 'Waiter B must not acquire the lock while A logged commit is in flight');
 
-			// Meanwhile, saving on `otherId` on the same ImmediateTransaction must succeed and release its own lock hold.
 			holderOther.set('count', 11);
 			await holderOther.save();
 			await holderOther.unlock();
 			const checkOtherLock = await AuditedA.lock(otherId, { lease: MIN_LOCK_LEASE_MS, timeout: 300 });
 			await checkOtherLock.unlock();
 
-			// Now let A finish its retry commit.
 			releaseRetry();
 			await saveAPromise;
 			await waiterBPromise;
@@ -1118,7 +1114,6 @@ describe('Transactions are never aborted once durably written to the transaction
 			});
 
 			await waitFor(() => attemptCount >= 1, { message: 'replayTransaction should enter attempt 1' });
-			// Waiter B contends while A's replayTransaction is retrying after lease expiry.
 			const txnBPromise = transaction(async () => {
 				const recB = await AuditedA.lock(recordId, { lease: 5000, timeout: 5000 });
 				const seen = recB.get('count');
@@ -1203,7 +1198,6 @@ describe('Transactions are never aborted once durably written to the transaction
 			});
 			assert.strictEqual(parkedInOverdueRetry, true, 'logged transaction must continue to attempt 2 past budget');
 
-			// Even though txnA is still parked inside attempt 2, its lock hold was released at the budget boundary.
 			const waiterB = await AuditedA.lock(recordId, { lease: 1000, timeout: 500 });
 			await waiterB.unlock();
 
@@ -1213,7 +1207,6 @@ describe('Transactions are never aborted once durably written to the transaction
 
 		it('releases the lock hold as soon as the store commit lands locally, before chained stores or replicationConfirmation settle', async function () {
 			this.timeout(20000);
-			// Case (a): Chained second store DbB parked on a barrier after DbA commits locally.
 			const recordA = id('local-land-chain-a');
 			const recordB = id('local-land-chain-b');
 			await AuditedA.put({ id: recordA, writer: 'seed', count: 0 });
@@ -1280,7 +1273,6 @@ describe('Transactions are never aborted once durably written to the transaction
 			releaseDbB();
 			await chainPromise;
 
-			// Case (b): replicationConfirmation parked on a barrier after local commit lands.
 			const recordRep = id('local-land-rep');
 			await AuditedA.put({ id: recordRep, writer: 'seed', count: 0 });
 			let releaseRep;
@@ -1324,7 +1316,7 @@ describe('Transactions are never aborted once durably written to the transaction
 			await repPromise;
 		});
 
-		it('delays cluster onRelease (revokeLease recall drain) until an in-flight logged retry settles or hits the commit budget', async function () {
+		it('delays cluster onRelease (revokeLease recall drain) until an in-flight logged retry settles', async function () {
 			this.timeout(20000);
 			const recordId = id('lock-cluster-recall');
 			const conflictId = id('lock-cluster-conflict');
@@ -1378,7 +1370,6 @@ describe('Transactions are never aborted once durably written to the transaction
 
 			await waitFor(() => inRetry, { message: 'logged commit should be parked in retry' });
 
-			// Coordinator recalls the lease while the logged commit is in flight.
 			lockHandle.revokeLease();
 			await delay(40);
 			assert.strictEqual(
@@ -1431,7 +1422,6 @@ describe('Transactions are never aborted once durably written to the transaction
 			const savePromise = holder.save();
 
 			await waitFor(() => enteredCommit, { message: 'holder commit should enter wedged native commit' });
-			// Lease expires and the hold-deadline timer (~150ms) flushes the deferred unlock while commit is still wedged.
 			const contender = await AuditedA.lock(recordId, { lease: 1000, timeout: 1000 });
 			await contender.unlock();
 
@@ -2470,14 +2460,12 @@ describe('Transactions are never aborted once durably written to the transaction
 					holderAAttempts++;
 					if (!allowHolderACommit) {
 						if (holderAAttempts === 3) {
-							// Enter a ~400ms async backoff window (retries = 20 -> delay(400)) with commitInFlight = false.
 							this.retries = 19;
 						}
 						throw Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY' });
 					}
 					return origCommit.apply(this, args);
 				}
-				// Make sibling holderB exhaust MAX_RETRIES on its first ERR_BUSY rejection.
 				this.retries = MAX_RETRIES;
 				throw Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY' });
 			};
@@ -2571,6 +2559,115 @@ describe('Transactions are never aborted once durably written to the transaction
 			assert.strictEqual(UnauditedA.primaryStore.getEntry(recordA).value.count, 11);
 			assert.strictEqual(UnauditedA.primaryStore.getEntry(recordB).value.writer, 'seed-b');
 			assert.strictEqual(UnauditedA.primaryStore.getEntry(recordC).value.writer, 'seed-c');
+		});
+
+		it('preserves an outer request transaction write across conflict retry when a late write runs an immediate commit on the closed context', async function () {
+			this.timeout(20000);
+			const targetDb = AuditedA.primaryStore.store.db;
+			const unauditedTargetDb = UnauditedA.primaryStore.store.db;
+			const outerId = id('req-closed-imm-outer');
+			const lateOkId = id('req-closed-imm-late-ok');
+			const lateFailId = id('req-closed-imm-late-fail');
+			const baseNow = Date.now();
+			await putWithTimestamp(AuditedA, { id: outerId, writer: 'seed', count: 0 }, baseNow - 10_000);
+			await putWithTimestamp(AuditedA, { id: lateOkId, writer: 'seed-late', count: 0 }, baseNow - 10_000);
+			await putWithTimestamp(UnauditedA, { id: lateFailId, writer: 'seed-fail', count: 0 }, baseNow - 10_000);
+
+			const origCommit = Transaction.prototype.commit;
+			let outerTxnId;
+			let outerAttempt = 0;
+			let parkedAfterFirstConflict = false;
+			let releaseOuterRetry;
+			const outerRetryGate = new Promise((resolve) => {
+				releaseOuterRetry = resolve;
+			});
+			pendingRestores.push(() => releaseOuterRetry());
+			pendingRestores.push(() => {
+				Transaction.prototype.commit = origCommit;
+			});
+
+			let failNextLateCommit = false;
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== targetDb && this.store?.db !== unauditedTargetDb) return origCommit.apply(this, args);
+				if (outerTxnId === undefined) {
+					outerTxnId = this.id;
+					outerAttempt++;
+					await putWithTimestamp(AuditedA, { id: outerId, writer: 'interposer', count: 1 }, baseNow - 5_000);
+					const res = await origCommit.apply(this, args);
+					parkedAfterFirstConflict = true;
+					await outerRetryGate;
+					return res;
+				}
+				if (this.id === outerTxnId) {
+					outerAttempt++;
+					return origCommit.apply(this, args);
+				}
+				if (failNextLateCommit) {
+					this.retries = MAX_RETRIES;
+					throw Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY' });
+				}
+				return origCommit.apply(this, args);
+			};
+
+			const ctx = {};
+			let outerDbTxn;
+			let lateOkHolder;
+			let lateFailHolder;
+			const outerPromise = transaction(ctx, async () => {
+				outerDbTxn = ctx.transaction;
+				lateOkHolder = await AuditedA.lock(lateOkId, { hold: true, lease: 15_000 }, ctx);
+				lateFailHolder = await UnauditedA.lock(lateFailId, { hold: true, lease: 15_000 }, ctx);
+				await AuditedA.get(outerId, ctx);
+				await AuditedA.put({ id: outerId, writer: 'outer-winner', count: 2 }, ctx);
+			});
+
+			try {
+				await waitFor(() => parkedAfterFirstConflict, {
+					message: 'outer request transaction should be parked after attempt 1 conflict',
+				});
+
+				assert.strictEqual(ctx.transaction, outerDbTxn);
+				assert.strictEqual(outerDbTxn.saveCommits, false);
+
+				lateOkHolder.set('writer', 'late-immediate-ok');
+				lateOkHolder.set('count', 9);
+				await lateOkHolder.save();
+
+				failNextLateCommit = true;
+				lateFailHolder.set('writer', 'late-immediate-fail');
+				lateFailHolder.set('count', 99);
+				await assert.rejects(
+					() => lateFailHolder.save(),
+					/After 40 retries, unable to commit transaction/
+				);
+				failNextLateCommit = false;
+
+				releaseOuterRetry();
+				await outerPromise;
+
+				assert.ok(outerAttempt >= 2, `expected outer transaction to retry at least once, got ${outerAttempt}`);
+				assert.strictEqual(AuditedA.primaryStore.getEntry(outerId).value.writer, 'outer-winner');
+				assert.strictEqual(AuditedA.primaryStore.getEntry(outerId).value.count, 2);
+				assert.strictEqual(AuditedA.primaryStore.getEntry(lateOkId).value.writer, 'late-immediate-ok');
+				assert.strictEqual(AuditedA.primaryStore.getEntry(lateOkId).value.count, 9);
+				assert.strictEqual(UnauditedA.primaryStore.getEntry(lateFailId).value.writer, 'seed-fail');
+
+				const outerAudits = auditEntriesFor(AuditedA, outerId).map((e) => e.getValue(AuditedA.primaryStore));
+				assert.strictEqual(
+					outerAudits.filter((a) => a?.writer === 'outer-winner').length,
+					1,
+					'outer write must have exactly one audit entry'
+				);
+				const lateOkAudits = auditEntriesFor(AuditedA, lateOkId).map((e) => e.getValue(AuditedA.primaryStore));
+				assert.strictEqual(
+					lateOkAudits.filter((a) => a?.writer === 'late-immediate-ok').length,
+					1,
+					'late immediate write must have exactly one audit entry'
+				);
+			} finally {
+				await lateOkHolder?.unlock?.();
+				await lateFailHolder?.unlock?.();
+			}
 		});
 	});
 });

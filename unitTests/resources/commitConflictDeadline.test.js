@@ -4,7 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { getOutstandingCommits } = require('#src/resources/DatabaseTransaction');
+const { getOutstandingCommits, resetStuckCommitLogCooldownForTests } = require('#src/resources/DatabaseTransaction');
 const { setRegistryStatusForTests } = require('#src/resources/longLivedTransactions');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { waitFor } = require('../waitFor');
@@ -293,7 +293,7 @@ describe('request-path commits are abandoned once their conflict budget is spent
 
 	it('never abandons a durably logged commit past the conflict budget, logging the overdue diagnostic once', async function () {
 		this.timeout(20000);
-		await delay(1100);
+		resetStuckCommitLogCooldownForTests();
 		const errorLines = [];
 		const originalError = harperLogger.error;
 		harperLogger.error = (...args) => errorLines.push(args);
