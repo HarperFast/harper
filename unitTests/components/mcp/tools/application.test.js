@@ -5,6 +5,7 @@ const {
 	_setResourcesForTest,
 	_setRequestTargetForTest,
 	_resetCustomToolWarningsForTest,
+	_resetCustomResourceWarningsForTest,
 	_resetApplicationToolsRegisteredForTest,
 } = require('#src/components/mcp/tools/application');
 const { Resource } = require('#src/resources/Resource');
@@ -1259,6 +1260,30 @@ describe('mcp/tools/application — custom mcpResources opt-in (#1609)', () => {
 		}
 	});
 
+	it('warns about an unusable subscribe once, not on every rebuild', () => {
+		const harperLogger =
+			require('#src/utility/logging/harper_logger').default || require('#src/utility/logging/harper_logger');
+		const originalWarn = harperLogger.warn;
+		const warnings = [];
+		harperLogger.warn = (msg) => warnings.push(msg);
+		try {
+			_resetCustomResourceWarningsForTest();
+			class Docs {
+				async readPage() {
+					return 'page';
+				}
+			}
+			Docs.mcpResources = [{ uri: 'docs:///a', name: 'a', description: 'd', method: 'readPage', subscribe: 'nope' }];
+			_setResourcesForTest(makeRegistry([['Docs', { Resource: Docs }]]));
+			registerApplicationTools();
+			_resetApplicationToolsRegisteredForTest();
+			registerApplicationTools();
+			assert.equal(warnings.filter((m) => m.includes('registered without subscriptions')).length, 1);
+		} finally {
+			harperLogger.warn = originalWarn;
+		}
+	});
+
 	it('refuses an async generator returned by a regular subscribe method', async () => {
 		let bodyRan = false;
 		class Docs {
@@ -1280,6 +1305,50 @@ describe('mcp/tools/application — custom mcpResources opt-in (#1609)', () => {
 		registerApplicationTools();
 		await assert.rejects(subscribeToCustomResource('docs:///index', SUPER, 'application'), /async generator/);
 		assert.equal(bodyRan, false);
+	});
+
+	it('refuses an iterable whose iterator is an async generator, containing its cleanup failure', async () => {
+		const rejections = [];
+		const onRejection = (reason) => rejections.push(reason);
+		process.on('unhandledRejection', onRejection);
+		try {
+			class Docs {
+				async readPage() {
+					return 'x';
+				}
+				watchWrapped() {
+					return {
+						async *[Symbol.asyncIterator]() {
+							yield await new Promise(() => {});
+						},
+					};
+				}
+				async watchPrimed() {
+					const generator = (async function* () {
+						try {
+							yield 1;
+							yield 2;
+						} finally {
+							throw new Error('cleanup failed');
+						}
+					})();
+					await generator.next();
+					return generator;
+				}
+			}
+			Docs.mcpResources = [
+				{ uri: 'docs:///a', name: 'a', description: 'd', method: 'readPage', subscribe: 'watchWrapped' },
+				{ uri: 'docs:///b', name: 'b', description: 'd', method: 'readPage', subscribe: 'watchPrimed' },
+			];
+			_setResourcesForTest(makeRegistry([['Docs', { Resource: Docs }]]));
+			registerApplicationTools();
+			await assert.rejects(subscribeToCustomResource('docs:///a', SUPER, 'application'), /async generator/);
+			await assert.rejects(subscribeToCustomResource('docs:///b', SUPER, 'application'), /async generator/);
+			for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+			assert.deepEqual(rejections, []);
+		} finally {
+			process.off('unhandledRejection', onRejection);
+		}
 	});
 
 	it('refuses a generator subscribe on a subclass registered after the walk', async () => {

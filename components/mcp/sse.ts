@@ -45,6 +45,8 @@ export interface SseFrameSource {
 	removeListener?(event: 'close', listener: () => void): unknown;
 	once?(event: 'close', listener: () => void): unknown;
 	emit?(event: 'close'): unknown;
+	/** True once the source has closed; its `'close'` will not fire again. */
+	closed?: boolean;
 }
 
 /** Serialize one frame to SSE wire format (`event:`/`data:`/`id:` lines + blank line). */
@@ -96,6 +98,8 @@ export function toSseStream(frames: SseFrameSource): Readable {
 	};
 	frames.on?.('data', onData);
 	frames.once?.('close', onClose);
+	// A GET superseded between its handler returning and this attach has already closed.
+	if (frames.closed) onClose();
 
 	// Client/proxy disconnect → the server destroys this stream. Always unsubscribe
 	// the data listener. If the source has not already closed (i.e. this is a

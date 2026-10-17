@@ -158,23 +158,44 @@ export async function saveSession(record: McpSessionRecord): Promise<void> {
 	await (getTable() as any).put(record);
 }
 
+// Per-session queue of this worker's subscription-list updates and deletes, so
+// two of them never interleave a load and a save. Other workers' writes are not
+// ordered by it.
+const sessionWrites = new Map<string, Promise<unknown>>();
+
+function serializeSessionWrite<T>(id: string, write: () => Promise<T>): Promise<T> {
+	const result = (sessionWrites.get(id) ?? Promise.resolve()).then(write, write);
+	const settled = result.then(
+		() => {},
+		() => {}
+	);
+	sessionWrites.set(id, settled);
+	void settled.then(() => {
+		if (sessionWrites.get(id) === settled) sessionWrites.delete(id);
+	});
+	return result;
+}
+
 /**
  * Apply `change` to the session's subscription list as stored now, not as the
- * caller loaded it: subscribe and restore await the resource first, and a
- * concurrent request's subscribe or unsubscribe in that window must survive.
- * A deleted session stays deleted.
+ * caller loaded it: subscribe and restore await the resource first, so the
+ * record a request loaded is stale by the time it writes. Ordered against this
+ * worker's other updates and deletes only; a whole-record save elsewhere
+ * (`touchSession`, another worker) can still overwrite it.
  */
-export async function updateSessionSubscriptions(id: string, change: (uris: string[]) => string[]): Promise<void> {
-	const current = await loadSession(id);
-	if (!current) return;
-	const before = current.subscriptions ?? [];
-	const after = change(before);
-	if (after.length === before.length && after.every((uri, index) => uri === before[index])) return;
-	await saveSession({ ...current, subscriptions: after });
+export function updateSessionSubscriptions(id: string, change: (uris: string[]) => string[]): Promise<void> {
+	return serializeSessionWrite(id, async () => {
+		const current = await loadSession(id);
+		if (!current) return;
+		const before = current.subscriptions ?? [];
+		const after = change(before);
+		if (after.length === before.length && after.every((uri, index) => uri === before[index])) return;
+		await saveSession({ ...current, subscriptions: after });
+	});
 }
 
 export async function deleteSession(id: string): Promise<void> {
-	await (getTable() as any).delete(id);
+	await serializeSessionWrite(id, () => (getTable() as any).delete(id));
 	// Tear down ancillary per-session in-memory state — the `tools/list`
 	// pagination cache and the per-session rate-limit buckets. Without
 	// these, every session that ever paged or called a tool leaves orphan

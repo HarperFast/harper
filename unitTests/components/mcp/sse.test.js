@@ -59,6 +59,12 @@ describe('mcp/sse', () => {
 			);
 		});
 
+		it('ends at once for a source that closed before it attached (a superseded GET)', async () => {
+			const queue = new IterableEventQueue();
+			queue.close();
+			assert.equal(await collect(toSseStream(queue)), ': mcp stream open\n\n');
+		});
+
 		it('produces a real Node Readable (has pipe)', () => {
 			const stream = toSseStream(new IterableEventQueue());
 			assert.equal(typeof stream.pipe, 'function');

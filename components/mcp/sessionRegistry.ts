@@ -81,7 +81,7 @@ function pruneIdleSessions(): void {
 		// has refreshed `lastSeen` within the idle window.
 		if (record.queue.resolveNext !== null || record.queue.hasDataListeners) continue;
 		if (record.lastSeen < cutoff) {
-			record.queue.emit('close');
+			record.queue.close();
 			registry.delete(id);
 		}
 	}
@@ -92,8 +92,9 @@ export function registerSession(sessionId: string, profile: McpProfile, user: Au
 	const existing = registry.get(sessionId);
 	if (existing) {
 		// A client that opens a second GET on the same session id supersedes
-		// the first. Close the prior stream so callers don't dangle.
-		existing.queue.emit('close');
+		// the first. Close the prior stream so callers don't dangle; close()
+		// latches `closed`, so an SSE adapter that attaches later still ends.
+		existing.queue.close();
 	}
 	const queue = new IterableEventQueue<SseEvent>();
 	const record: RegisteredSession = {
@@ -150,7 +151,7 @@ export function unregisterSession(sessionId: string): void {
 	const record = registry.get(sessionId);
 	if (!record) return;
 	registry.delete(sessionId);
-	record.queue.emit('close');
+	record.queue.close();
 }
 
 export function getRegisteredSession(sessionId: string): RegisteredSession | undefined {
