@@ -46,6 +46,17 @@
  * user-carrying ambient transaction — do NOT forward the resource's own context
  * (`Order.get(target, this.getContext())`), which starts an independent
  * transaction and drops that shared, isolated snapshot.
+ *
+ * An entry may also declare `subscribe` (#3250): a method with the read calling
+ * convention that returns an async iterable; each value it yields sends
+ * `notifications/resources/updated` for the subscribed URI (the value itself is
+ * never sent). It runs in the same user-carrying transaction as a read, and the
+ * iterable is consumed after that transaction ends, so authorization and source
+ * acquisition must happen before it returns — generator methods are rejected at
+ * registration for that reason. The stream is released with `end()` when it has
+ * one, else its iterator's `return()`. The MCP layer adds only identity-lifetime
+ * revocation (token expiry, a removed user or role); resource-specific access
+ * changes after subscribe are the author's to enforce.
  */
 import type { McpProfile } from './transport.ts';
 import type { AuthedUser } from './toolRegistry.ts';
@@ -66,6 +77,9 @@ export interface CustomResourceContent {
 }
 export type CustomResourceReadResult = string | CustomResourceContent | object;
 
+/** What an author `subscribe` returns: values are opaque change triggers. */
+export type CustomResourceSubscription = AsyncIterable<unknown> & { end?: () => unknown };
+
 export interface CustomResourceDef {
 	/** Fixed URI — exactly one of `uri` / `uriTemplate` is set. */
 	uri?: string;
@@ -82,6 +96,10 @@ export interface CustomResourceDef {
 		params: Record<string, string>,
 		context: ResourceReadContext
 	) => CustomResourceReadResult | Promise<CustomResourceReadResult>;
+	subscribe?: (
+		params: Record<string, string>,
+		context: ResourceReadContext
+	) => CustomResourceSubscription | Promise<CustomResourceSubscription>;
 }
 
 interface CompiledDef {
