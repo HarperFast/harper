@@ -229,9 +229,9 @@ class SubscriptionsSession {
 	socket: any;
 	subscriptions = [];
 	awaitingAcks: Map<number, Acknowledgement>;
-	/** Inbound QoS 2 exchanges by packet id, until their PUBREL is saved. */
+	/** Kept until the PUBREL's removal is saved. */
 	awaitingRelease: Map<number, InboundExchange>;
-	/** Outbound QoS 2 packet ids whose PUBREL awaits PUBCOMP, each settling once its PUBREL may be sent. */
+	/** Each settles once its PUBREL may be sent. */
 	awaitingCompletion: Map<number, Promise<boolean> | boolean>;
 	sessionWasPresent: boolean;
 	keepalive: number;
@@ -513,7 +513,7 @@ class SubscriptionsSession {
 		exchanges.set(messageId, exchange);
 		return exchange.reply;
 	}
-	/** Ends an inbound QoS 2 exchange; false when none has this id. The client may reuse the id once it has the PUBCOMP, so the removal is saved first. */
+	/** False when no exchange has this id. The client may reuse the id once it has the PUBCOMP, so the removal is saved first. */
 	release(messageId: number): Promise<boolean> | boolean {
 		const exchange = this.awaitingRelease?.get(messageId);
 		if (!exchange) return false;
@@ -656,7 +656,9 @@ type DurableEntry = {
 	inFlight?: [...DeliveryIdentity, number][];
 };
 function deliveryId(id: unknown) {
-	return Array.isArray(id) ? keyArrayToString(id) : (id ?? null);
+	if (Array.isArray(id)) return keyArrayToString(id);
+	if (id instanceof Uint8Array) return Buffer.from(id).toString('base64');
+	return id ?? null;
 }
 const slotOf = (key: number, ordinal: number) => key + '/' + ordinal;
 type TopicState = {
@@ -671,9 +673,9 @@ type TopicState = {
 	keysPerEntry?: boolean;
 	/** In delivery order: `needsAcknowledge` is its only writer and runs as each message is sent. */
 	unacked: Map<number, { key: number; ordinal: number; id: unknown; previousKey?: number; late?: boolean }>;
-	received: Map<string, DeliveryIdentity>;
+	received?: Map<string, DeliveryIdentity>;
 	/** `entry.inFlight` from the stored record, by slot, until the replay sends each again. */
-	resend: Map<string, [...DeliveryIdentity, number]>;
+	resend?: Map<string, [...DeliveryIdentity, number]>;
 	ordinalKey?: number;
 	ordinal: number;
 	/** Unacked deliveries that arrived below a key delivered before them. */
@@ -746,10 +748,11 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	/** Packets are handled concurrently, so SUBSCRIBE, UNSUBSCRIBE and resume change `topics` one at a time. */
 	changes: Promise<unknown> = Promise.resolve();
 	reservedIds = new Set<number>();
-	receivedCount = 0;
 	inFlightChanged = false;
 	/** Set while the final save waits for inbound publishes; `sealed` follows once it is taken. */
 	sealing = false;
+	savesStarted = 0;
+	saveWaiters: { needed: number; resolve: () => void; reject: (error: Error) => void }[] = [];
 	constructor(sessionId, user, record?) {
 		super(sessionId, user);
 		this.mayCreate = !record;
@@ -776,7 +779,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			);
 			for (const identity of entry.received || []) this.addReceived(state, identity);
 			for (const delivery of entry.inFlight || []) {
-				state.resend.set(slotOf(delivery[0], delivery[1]), delivery);
+				(state.resend ??= new Map()).set(slotOf(delivery[0], delivery[1]), delivery);
 				this.reservedIds.add(delivery[3]);
 			}
 			this.topics.set(topic, state);
@@ -842,7 +845,12 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				// the replacement replays from the position, so a delivery still awaiting its PUBREC keeps its id
 				for (const [messageId, sent] of replaced.unacked) {
 					if (this.awaitingAcks?.get(messageId)?.qos !== 2) continue;
-					state.resend.set(slotOf(sent.key, sent.ordinal), [sent.key, sent.ordinal, sent.id, messageId]);
+					(state.resend ??= new Map()).set(slotOf(sent.key, sent.ordinal), [
+						sent.key,
+						sent.ordinal,
+						sent.id,
+						messageId,
+					]);
 					this.reservedIds.add(messageId);
 				}
 			} else this.forgetTopic(replaced);
@@ -866,17 +874,12 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	messageIdInUse(messageId: number): boolean {
 		return super.messageIdInUse(messageId) || this.reservedIds.has(messageId);
 	}
-	pendingDeliveries(): number {
-		return super.pendingDeliveries() + this.receivedCount;
-	}
 	addReceived(state: TopicState, identity: DeliveryIdentity) {
 		const slot = slotOf(identity[0], identity[1]);
-		if (!state.received.has(slot)) this.receivedCount++;
-		state.received.set(slot, identity);
+		(state.received ??= new Map()).set(slot, identity);
 	}
 	forgetTopic(state: TopicState) {
-		this.receivedCount -= state.received.size;
-		for (const delivery of state.resend.values()) this.reservedIds.delete(delivery[3]);
+		for (const delivery of state.resend?.values() ?? []) this.reservedIds.delete(delivery[3]);
 	}
 	priorDelivery(update) {
 		const state = this.topics.get(update.topic);
@@ -888,11 +891,11 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			state.ordinalKey = key;
 			state.ordinal = 0;
 		}
-		if (state.received.size === 0 && state.resend.size === 0) return;
+		if (!state.received?.size && !state.resend?.size) return;
 		const slot = slotOf(key, state.ordinal);
 		const id = deliveryId(update.id);
-		if (state.received.get(slot)?.[2] === id) return ALREADY_RECEIVED;
-		const resend = state.resend.get(slot);
+		if (state.received?.get(slot)?.[2] === id) return ALREADY_RECEIVED;
+		const resend = state.resend?.get(slot);
 		if (resend?.[2] !== id) return;
 		state.resend.delete(slot);
 		this.reservedIds.delete(resend[3]);
@@ -953,7 +956,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (sent) this.addReceived(state, [sent.key, sent.ordinal, sent.id]);
 		else if (state) {
 			// sent by a subscription this one replaced, and not yet sent again
-			for (const [slot, resend] of state.resend) {
+			for (const [slot, resend] of state.resend ?? []) {
 				if (resend[3] !== messageId) continue;
 				state.resend.delete(slot);
 				this.reservedIds.delete(messageId);
@@ -980,17 +983,22 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		}
 	}
 	receiveExactlyOnce(messageId: number, publish: () => Promise<any>) {
-		if (this.sealed) return Promise.reject(new Error(`MQTT session ${this.sessionId} has ended`));
+		if (this.terminated) return Promise.reject(this.endedError());
 		return super.receiveExactlyOnce(messageId, publish);
 	}
-	saveExchanges() {
+	/** Settles once a save that read the session after this call has landed: later saves are not waited for. */
+	saveExchanges(): Promise<void> {
 		// an ended session's last save has been taken, so nothing it would acknowledge can be kept
-		if (this.sealed) return Promise.reject(new Error(`MQTT session ${this.sessionId} has ended`));
-		return this.persist();
+		if (this.sealed || this.discarded) return Promise.reject(this.endedError());
+		const needed = this.savesStarted + 1;
+		return new Promise((resolve, reject) => {
+			this.saveWaiters.push({ needed, resolve, reject });
+			this.persist().catch(() => {});
+		});
 	}
 	/** The final save waits for inbound QoS 2 publishes still committing, so it keeps their ids; nothing saves after it. */
 	seal(save: boolean) {
-		if (this.sealing) return;
+		if (this.sealing || this.sealed) return;
 		const publishing = [];
 		for (const exchange of this.awaitingRelease?.values() ?? []) {
 			// bounded within the takeover deadline: one that misses it is saved as not published, so a retransmission publishes
@@ -1119,13 +1127,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (bound && !(next > state.entry.startTime)) continue;
 			if (!bound && next === state.entry.startTime) continue;
 			state.entry.startTime = next;
-			for (const [slot, [key]] of state.received) {
-				if (key <= next) {
-					state.received.delete(slot);
-					this.receivedCount--;
-				}
+			for (const [slot, [key]] of state.received ?? []) {
+				if (key <= next) state.received.delete(slot);
 			}
-			for (const [slot, delivery] of state.resend) {
+			for (const [slot, delivery] of state.resend ?? []) {
 				if (delivery[0] <= next) {
 					state.resend.delete(slot);
 					this.reservedIds.delete(delivery[3]);
@@ -1167,9 +1172,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			const saved: DurableEntry = { qos, topic };
 			if (startTime !== undefined) saved.startTime = startTime;
 			if (databaseGeneration !== undefined) saved.databaseGeneration = databaseGeneration;
-			if (state.received.size > 0) saved.received = [...state.received.values()];
+			if (state.received?.size > 0) saved.received = [...state.received.values()];
 			if (qos === 2) {
-				const inFlight = [...state.resend.values()];
+				const inFlight = [...(state.resend?.values() ?? [])];
 				for (const [messageId, { key, ordinal, id }] of state.unacked) inFlight.push([key, ordinal, id, messageId]);
 				if (inFlight.length > 0) saved.inFlight = inFlight;
 			}
@@ -1211,15 +1216,40 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		} finally {
 			// cleared with the last dirty check, so a later persist() starts a new save rather than joining this one
 			this.saving = undefined;
+			// a waiter is left only when no save will run for it
+			if (this.saveWaiters.length > 0) this.settleSaveWaiters(Infinity, this.endedError());
 		}
 	}
 	async saveOnce() {
+		const saveNumber = ++this.savesStarted;
 		const record = this.recordToWrite();
-		const stored = await getDurableSession().get(this.sessionId);
-		if (this.discarded) return;
-		if (stored ? stored.incarnation !== this.incarnation : !this.mayCreate) return this.supersede();
-		await getDurableSession().put(record, { source: true });
+		try {
+			const stored = await getDurableSession().get(this.sessionId);
+			if (this.discarded) return this.settleSaveWaiters(saveNumber, this.endedError());
+			if (stored ? stored.incarnation !== this.incarnation : !this.mayCreate) {
+				this.settleSaveWaiters(saveNumber, this.endedError());
+				return this.supersede();
+			}
+			await getDurableSession().put(record, { source: true });
+		} catch (error) {
+			this.settleSaveWaiters(saveNumber, error);
+			throw error;
+		}
 		this.mayCreate = false;
+		this.settleSaveWaiters(saveNumber);
+	}
+	endedError() {
+		return new Error(`MQTT session ${this.sessionId} has ended`);
+	}
+	settleSaveWaiters(saveNumber: number, error?: Error) {
+		if (this.saveWaiters.length === 0) return;
+		const waiting = [];
+		for (const waiter of this.saveWaiters) {
+			if (waiter.needed > saveNumber) waiting.push(waiter);
+			else if (error) waiter.reject(error);
+			else waiter.resolve();
+		}
+		this.saveWaiters = waiting;
 	}
 	/** Hands the session to a newer connection on this thread: its positions are saved, in `writes`, and it saves nothing after. */
 	yieldTo() {
@@ -1229,7 +1259,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			clearInterval(this.checkpointTimer);
 			this.seal(changed || this.dirty || this.hasInFlight());
 			this.closeConnection?.();
-		} else if (!this.sealing) this.sealed = true;
+		} else this.seal(false);
 	}
 	supersede() {
 		if (this.terminated) return;
@@ -1297,8 +1327,6 @@ function newTopicState(entry: DurableEntry): TopicState {
 		entry,
 		verified: true,
 		unacked: new Map(),
-		received: new Map(),
-		resend: new Map(),
 		ordinal: 0,
 		lateUnacked: 0,
 		consumed: 0,

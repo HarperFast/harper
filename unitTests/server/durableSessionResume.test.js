@@ -1734,6 +1734,29 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		socket.handlers.close();
 	});
 
+	it('settles an exchange save once a save including it lands, while later saves keep running', async () => {
+		const { name } = topicTable();
+		const { session } = await connect(`qos2-busy-${name}`);
+		await session.persist();
+		const sessions = databases.system.hdb_durable_session;
+		const put = sessions.put;
+		let puts = 0;
+		sessions.put = function (...args) {
+			// a steady stream of other changes keeps the save loop busy
+			if (++puts < 50) session.dirty = true;
+			return put.apply(this, args);
+		};
+		try {
+			await session.saveExchanges();
+			assert.ok(puts <= 2, `settled after ${puts} saves`);
+			assert.ok(session.saving, 'the save loop is still running');
+			await session.saving;
+		} finally {
+			sessions.put = put;
+		}
+		session.disconnect(true);
+	});
+
 	it('assigns no packet id still awaiting its PUBCOMP', async () => {
 		const { name } = topicTable();
 		const { session } = await connect(`qos2-ids-${name}`);
