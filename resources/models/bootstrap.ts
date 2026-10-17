@@ -50,6 +50,7 @@ import {
 	type CapturedInstall,
 } from './backendRegistry.ts';
 import { getSharedRootConfigWatcher, RootConfigWatcher } from '../../config/RootConfigWatcher.ts';
+import { flattenObject } from '../../config/harperConfigEnvVars.ts';
 import { validateModelsBlock } from '../../validation/configValidator.ts';
 import { registerGenerativeDecisionBackend, type GenerativeDecisionConfig } from './generativeDecision.ts';
 import type { ModelBackend, ModelKind } from './types.ts';
@@ -617,7 +618,7 @@ function modelsWatcherErrorListener(error: unknown): void {
 	harperLogger.warn(`models: config watcher error: ${(error as Error)?.message ?? error}`);
 }
 
-function envLayerNamingModels(): string | undefined {
+export function envLayerNamingModels(): string | undefined {
 	for (const name of ['HARPER_SET_CONFIG', 'HARPER_CONFIG', 'HARPER_DEFAULT_CONFIG']) {
 		const raw = process.env[name];
 		if (!raw) continue;
@@ -628,7 +629,7 @@ function envLayerNamingModels(): string | undefined {
 			if (
 				parsed &&
 				typeof parsed === 'object' &&
-				Object.keys(parsed).some((k) => k === 'models' || k.startsWith('models.'))
+				Object.keys(flattenObject(parsed, '', false)).some((k) => k === 'models' || k.startsWith('models.'))
 			)
 				return name;
 		} catch {
