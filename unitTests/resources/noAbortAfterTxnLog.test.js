@@ -2401,7 +2401,6 @@ describe('Transactions are never aborted once durably written to the transaction
 			const savedBlobsA = [{}];
 			writeA.savedBlobs = savedBlobsA;
 
-			// Stage an unsubmitted sibling write on the shared ImmediateTransaction and call untargeted abort().
 			let siblingTxnAborted = false;
 			const siblingTxn = new Transaction(AuditedA.primaryStore.store);
 			const origSiblingAbort = siblingTxn.abort.bind(siblingTxn);
@@ -2444,6 +2443,134 @@ describe('Transactions are never aborted once durably written to the transaction
 			assert.ok(!aborted.includes(trackedTxnId), 'logged native handle must never be aborted');
 			assert.strictEqual(AuditedA.primaryStore.getEntry(recordA).value.writer, 'sticky-logged-winner');
 			assert.strictEqual(AuditedA.primaryStore.getEntry(recordA).value.count, 7);
+		});
+
+		it('preserves an audit:false sibling commit sleeping in ERR_BUSY backoff when another sibling fails on a shared ImmediateTransaction', async function () {
+			this.timeout(15_000);
+			const targetDb = UnauditedA.primaryStore.store.db;
+			const recordA = id('imm-unlogged-backoff-a');
+			const recordB = id('imm-unlogged-backoff-b');
+			const recordC = id('imm-unlogged-backoff-c');
+			await UnauditedA.put({ id: recordA, writer: 'seed-a', count: 0 });
+			await UnauditedA.put({ id: recordB, writer: 'seed-b', count: 0 });
+			await UnauditedA.put({ id: recordC, writer: 'seed-c', count: 0 });
+
+			const origCommit = Transaction.prototype.commit;
+			let holderATxn = null;
+			let holderAAttempts = 0;
+			let allowHolderACommit = false;
+
+			pendingRestores.push(() => {
+				Transaction.prototype.commit = origCommit;
+			});
+
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== targetDb) return origCommit.apply(this, args);
+				if (this === holderATxn) {
+					holderAAttempts++;
+					if (!allowHolderACommit) {
+						if (holderAAttempts === 3) {
+							// Enter a ~400ms async backoff window (retries = 20 -> delay(400)) with commitInFlight = false.
+							this.retries = 19;
+						}
+						throw Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY' });
+					}
+					return origCommit.apply(this, args);
+				}
+				// Make sibling holderB exhaust MAX_RETRIES on its first ERR_BUSY rejection.
+				this.retries = MAX_RETRIES;
+				throw Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY' });
+			};
+
+			const holderA = await UnauditedA.lock(recordA, { hold: true, lease: 15_000 });
+			const sharedCtx = holderA.getContext();
+			const holderB = await UnauditedA.lock(recordB, { hold: true, lease: 15_000 }, sharedCtx);
+			const holderC = await UnauditedA.lock(recordC, { hold: true, lease: 15_000 }, sharedCtx);
+			const lockHandleC = sharedCtx.transaction.recordLockFor(UnauditedA.primaryStore, recordC);
+
+			const origSave = sharedCtx.transaction.save;
+			let capturedFirstSave = false;
+			sharedCtx.transaction.save = function (operation, transaction, isValidated, options) {
+				if (operation.key === recordC) {
+					lockHandleC.revokeLease();
+				}
+				const res = origSave.call(this, operation, transaction, isValidated, options);
+				if (!capturedFirstSave && operation.key === recordA) {
+					capturedFirstSave = true;
+					holderATxn = operation.stagedOn;
+				}
+				return res;
+			};
+
+			holderA.set('writer', 'backoff-survivor');
+			holderA.set('count', 11);
+			const saveAPromise = holderA.save();
+
+			await waitFor(() => holderAAttempts >= 3 && holderATxn?.commitInFlight === false, {
+				message: 'holderA should be parked in async ERR_BUSY backoff with commitInFlight === false',
+			});
+			assert.strictEqual(Boolean(holderATxn.hasStagedLog), false, 'audit:false sibling must not be durably logged');
+			const writeA = sharedCtx.transaction.writes.find((w) => w.key === recordA);
+			assert.ok(writeA, 'holderA write must still be present in sharedCtx.transaction.writes during backoff');
+			const savedBlobsA = [{}];
+			writeA.savedBlobs = savedBlobsA;
+
+			holderB.set('writer', 'doomed-busy-sibling');
+			holderB.set('count', 22);
+			await assert.rejects(
+				async () => holderB.save(),
+				/After 40 retries, unable to commit transaction/,
+				'unlogged sibling holderB must fail after exhausting ERR_BUSY retries'
+			);
+
+			assert.strictEqual(
+				holderATxn.commitInFlight,
+				false,
+				'holderA must still be in its between-attempt backoff window when holderB fails'
+			);
+			assert.strictEqual(
+				savedBlobsA.length,
+				1,
+				'failing sibling commit must not clean up savedBlobs of an audit:false sibling sleeping in backoff'
+			);
+			assert.ok(
+				sharedCtx.transaction.writes.includes(writeA),
+				'failing sibling commit must not clear the write of an audit:false sibling sleeping in backoff'
+			);
+
+			holderC.set('writer', 'doomed-expired-lock-sibling');
+			holderC.set('count', 33);
+			await assert.rejects(
+				async () => holderC.save(),
+				/lease expired/i,
+				'sibling failing inside save() before opening a native handle must reject'
+			);
+
+			assert.strictEqual(
+				holderATxn.commitInFlight,
+				false,
+				'holderA must still be in its between-attempt backoff window when holderC fails pre-handle'
+			);
+			assert.strictEqual(
+				savedBlobsA.length,
+				1,
+				'pre-handle save() failure must not clean up savedBlobs of an audit:false sibling sleeping in backoff'
+			);
+			assert.ok(
+				sharedCtx.transaction.writes.includes(writeA),
+				'pre-handle save() failure must not clear the write of an audit:false sibling sleeping in backoff'
+			);
+
+			allowHolderACommit = true;
+			await saveAPromise;
+			await holderA.unlock();
+			await holderB.unlock();
+			await holderC.unlock();
+
+			assert.strictEqual(UnauditedA.primaryStore.getEntry(recordA).value.writer, 'backoff-survivor');
+			assert.strictEqual(UnauditedA.primaryStore.getEntry(recordA).value.count, 11);
+			assert.strictEqual(UnauditedA.primaryStore.getEntry(recordB).value.writer, 'seed-b');
+			assert.strictEqual(UnauditedA.primaryStore.getEntry(recordC).value.writer, 'seed-c');
 		});
 	});
 });

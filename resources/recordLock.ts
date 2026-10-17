@@ -54,9 +54,9 @@ export interface ResolvedRecordLockOptions {
  * The handle returned by `lock()` and held by each gated write until its transaction completes.
  * `release()` is synchronous: it calls `store.unlock(key)` (or defers it while a commit hold
  * acquired via `retainForCommit` is still active), which is ownerless and fires any waiting
- * callbacks cross-thread. The `expired` flag is set in the holder thread by the lease timer
- * once no commit hold remains, so a stale holder cannot accidentally call unlock after its
- * lease already fired and released the key to a new holder.
+ * callbacks cross-thread. The lease timer sets `expired` in the holder thread when it fires
+ * (while a commit hold is active, only the native unlock is deferred), so a stale holder cannot
+ * accidentally call unlock after its lease already fired and released the key to a new holder.
  */
 export interface RecordLockHandle {
 	store: any;
