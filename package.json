@@ -206,7 +206,7 @@
 		"busboy": "^1.6.0",
 		"cbor-x": "1.6.6",
 		"chalk": "4.1.2",
-		"chokidar": "^4.0.3",
+		"chokidar": "^5.0.0",
 		"cli-progress": "3.12.0",
 		"clone": "2.1.2",
 		"dotenv": "^16.4.7",
