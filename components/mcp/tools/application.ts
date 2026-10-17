@@ -1274,7 +1274,7 @@ function validSubscribeMethod(
 		problem = `names generator method '${subscribeName}' as subscribe; a generator's body runs only once iteration starts, outside the subscribing user's transaction, so return an async iterable from a regular method instead`;
 	}
 	if (!problem) return subscribeName as string;
-	const dedupKey = `${path}:${def.name}`;
+	const dedupKey = `${path}:${def.name}:${problem}`;
 	if (!_warnedResourceInvalidSubscribe.has(dedupKey)) {
 		_warnedResourceInvalidSubscribe.add(dedupKey);
 		harperLogger.warn(
