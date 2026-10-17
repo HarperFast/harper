@@ -497,7 +497,7 @@
 			"properties": {
 				"writeAsync": {
 					"type": "boolean",
-					"description": "Disable fsync for faster writes (risk of data loss on crash). Default: false"
+					"description": "When true, sets LMDB noSync to disable LMDB's commit disk sync for faster writes (risk of losing recent commits on OS crash or power loss); when false, LMDB keeps commit disk sync enabled (overlapped on Linux and macOS by default). Applies only to the LMDB storage engine; this setting has no effect on RocksDB, where Harper does not fsync individual commits to disk (transaction logs are synced on memtable flush rather than per commit). Default: false"
 				},
 				"caching": { "type": "boolean", "description": "Enable in-memory caching of records. Default: true" },
 				"compression": {
