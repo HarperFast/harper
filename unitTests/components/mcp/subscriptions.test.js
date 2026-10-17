@@ -266,6 +266,28 @@ describe('mcp/subscriptions', () => {
 			assert.equal(removeResourceSubscription('s1', URI), false);
 		});
 
+		it('keeps a custom URI no entry matches yet, so a component still loading does not lose it', async () => {
+			registerSession('s1', 'application', USER);
+			assert.deepEqual(await restoreResourceSubscriptions('s1', ['notes:///1', URI], USER), ['notes:///1', URI]);
+			assert.equal(_liveSubscriptionCount('s1'), 1);
+		});
+
+		it('keeps a URI that a newer subscribe took over after restore found it not subscribable', async () => {
+			const owner = registerSession('s1', 'application', USER);
+			const gate = deferred();
+			let firstCalls = 0;
+			_setSubscribeImplForTest(async (path) => {
+				if (path === 'Product/1') return ++firstCalls === 1 ? null : makeFakeStream();
+				await gate.promise;
+				return fake;
+			});
+			const restoring = restoreResourceSubscriptions('s1', [URI, URI_B], USER, 'application', owner);
+			await turns();
+			assert.equal(await addResourceSubscription('s1', URI, USER), true);
+			gate.resolve();
+			assert.deepEqual(await restoring, [URI, URI_B]);
+		});
+
 		it('keeps a URI whose subscribe threw, so the next reconnect retries it', async () => {
 			registerSession('s1', 'application', USER);
 			_setSubscribeImplForTest(async (path) => {

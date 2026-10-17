@@ -69,9 +69,9 @@ A handful of design points are non-obvious and easy to break:
   `matchCustomResource(profile, uri)` first, exactly as `readResource` does, so read and subscribe always resolve
   the same entry; an entry without `subscribe` stays `-32602`. The author's method runs in the read path's
   user-carrying transaction and the returned iterable is consumed after it ends, which is why generator methods
-  are refused at registration (their body would run outside it) and a returned async generator is refused at
-  subscribe (its `return()` cannot interrupt a pending await, so unsubscribe could not release its source). Custom values are opaque — only audit-log
-  events get `acknowledge()`. Release is one idempotent `stop()` for both sources: `end()` if the stream has
+  are refused at registration (their body would run outside it). A stream with no `end()` whose iterator is an
+  async generator is refused at subscribe: `return()` cannot interrupt a pending await, so unsubscribe could
+  not release its source. Custom values are opaque — only audit-log events get `acknowledge()`. Release is one idempotent `stop()` for both sources: `end()` if the stream has
   one, else the iterator's `return()`, also run when iteration ends or throws, and for a stream acquired by a
   transaction that then failed to commit (`acquireChangeStream`). A custom stream is also registered with
   `registerLiveSubscription` for identity lifetime only (token expiry, removed user or role), which
@@ -87,8 +87,13 @@ A handful of design points are non-obvious and easy to break:
   it started plus a per-`(session, uri)` pending token, and installs only if that record is still registered and
   no unsubscribe, re-subscribe or drop overtook the token — otherwise it releases the stream and throws
   `SubscriptionCancelledError`. Delivery starts only after admission and pushes only to that record. Restore
-  stops when its GET is superseded, keeps a URI whose subscribe threw (only a not-subscribable answer prunes
-  it), and prunes the durable list only while its record is still the registered one.
+  reserves every URI before it starts, stops when its GET is superseded, and prunes only URIs a recognized
+  resource reported not subscribable — a thrown subscribe, a custom URI no entry matches yet (its component may
+  still be loading), and one a newer subscribe took over all stay. A GET superseded while restoring answers 409;
+  registry teardown uses `queue.close()`, which latches `closed`, so `toSseStream` ends a stream whose queue
+  closed before it attached. The durable list changes only through `updateSessionSubscriptions`, a load-and-save
+  against the stored record that this worker serializes per session together with `deleteSession`; writes from
+  other workers are not ordered by it.
 
 - **SSE resumability (`Last-Event-ID`).** Every GET-channel frame goes through `pushSessionFrame`, which
   assigns a monotonic event id and appends to a bounded per-session `replayBuffer`. On reconnect with a

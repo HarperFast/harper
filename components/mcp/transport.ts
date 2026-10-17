@@ -434,9 +434,10 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 			request.profile,
 			record
 		);
-		const pruned = session.subscriptions.filter((uri) => !kept.includes(uri));
-		if (pruned.length && getRegisteredSession(sessionId) === record) {
-			await updateSessionSubscriptions(sessionId, (uris) => uris.filter((uri) => !pruned.includes(uri)));
+		if (kept.length !== session.subscriptions.length && getRegisteredSession(sessionId) === record) {
+			const keptSet = new Set(kept);
+			const pruned = new Set(session.subscriptions.filter((uri) => !keptSet.has(uri)));
+			await updateSessionSubscriptions(sessionId, (uris) => uris.filter((uri) => !pruned.has(uri)));
 		}
 	}
 	// Superseded while restoring: this queue's 'close' has already fired, so an

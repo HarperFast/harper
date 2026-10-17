@@ -20,12 +20,11 @@
  * URI happened meanwhile; otherwise it is released and never delivers.
  */
 import harperLogger from '../../utility/logging/harper_logger.ts';
-import { describeError, subscribeToResource, type ResourceSubscription } from './resources.ts';
+import { describeError, isRecognizedResourceUri, subscribeToResource, type ResourceSubscription } from './resources.ts';
 import { getRegisteredSession, pushSessionFrame, type RegisteredSession } from './sessionRegistry.ts';
 import type { AuthedUser } from './toolRegistry.ts';
 import type { McpProfile } from './transport.ts';
 
-/** A subscribe whose setup was overtaken before it could be admitted. */
 export class SubscriptionCancelledError extends Error {}
 
 /** sessionId → (uri → live subscription). */
@@ -51,7 +50,6 @@ function cancelPending(sessionId: string, uri: string, reason: string): void {
 	deletePending(sessionId, uri, setup);
 }
 
-/** Make a new setup for `(sessionId, uri)` the one allowed to install, cancelling any earlier one. */
 function reserve(sessionId: string, uri: string): PendingSetup {
 	cancelPending(sessionId, uri, 'superseded by a newer resources/subscribe');
 	const setup: PendingSetup = {};
@@ -161,8 +159,10 @@ export function dropSessionSubscriptions(sessionId: string): void {
  * by `owner` (the reconnecting GET's record). Every URI is reserved up front, so
  * an unsubscribe for one not reached yet cancels it. Stops once `owner` is no
  * longer the registered record. Returns the URIs to keep on the durable list:
- * all but those reported not subscribable — a URI whose subscribe threw stays,
- * so a transient failure is retried on the next reconnect.
+ * all but those reported not subscribable. A URI whose subscribe threw stays, so
+ * a transient failure is retried on the next reconnect; so does a custom URI no
+ * entry matches yet (its component may still be loading on this worker), and
+ * one a newer subscribe has taken over since it was reported.
  */
 export async function restoreResourceSubscriptions(
 	sessionId: string,
@@ -183,6 +183,7 @@ export async function restoreResourceSubscriptions(
 		}
 		try {
 			if (await admit(sessionId, uri, user, profile, owner, setups[index])) kept.push(uri);
+			else if (!isRecognizedResourceUri(uri, profile)) kept.push(uri);
 		} catch (err) {
 			kept.push(uri);
 			if (!(err instanceof SubscriptionCancelledError)) {
@@ -190,7 +191,11 @@ export async function restoreResourceSubscriptions(
 			}
 		}
 	}
-	return kept;
+	if (kept.length === uris.length) return kept;
+	const keptSet = new Set(kept);
+	return uris.filter(
+		(uri) => keptSet.has(uri) || live.get(sessionId)?.has(uri) === true || pending.get(sessionId)?.has(uri) === true
+	);
 }
 
 /** Test seam — count of live subscriptions for a session. */

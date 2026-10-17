@@ -156,10 +156,8 @@ interface ResourceClassLike {
 	 * (text content), `{ text }`, `{ blob, mimeType }` (base64 binary), or any
 	 * other object (serialized as JSON). RBAC is delegated to the Resource.
 	 * `completions` optionally declares candidate values per template parameter
-	 * for `completion/complete`. `subscribe` optionally names an instance method,
-	 * called the same way, that makes the URI subscribable via
-	 * `resources/subscribe`: it returns an async iterable whose every value sends
-	 * `notifications/resources/updated` (contract in customResourceRegistry.ts).
+	 * for `completion/complete`. `subscribe` optionally names an instance method
+	 * that makes the URI subscribable (contract in customResourceRegistry.ts).
 	 */
 	mcpResources?: ReadonlyArray<{
 		uri?: string;
@@ -1115,9 +1113,11 @@ function registerCustomMcpPrompts(ResourceClass: ResourceClassLike, path: string
 // Warn-once dedup for mcpResources entries missing a description (same telemetry
 // pattern as custom tools). Keyed by `${path}:${name}`; test seam resets it.
 const _warnedResourceMissingDesc = new Set<string>();
+const _warnedResourceInvalidSubscribe = new Set<string>();
 
 export function _resetCustomResourceWarningsForTest(): void {
 	_warnedResourceMissingDesc.clear();
+	_warnedResourceInvalidSubscribe.clear();
 }
 
 /**
@@ -1219,10 +1219,6 @@ function makeCustomResourceReader(path: string, capturedClass: ResourceClassLike
 	};
 }
 
-/**
- * The entry's `subscribe` method name, or undefined (with a warning) when it is
- * absent or unusable. An unusable one leaves the entry registered read-only.
- */
 function validSubscribeMethod(
 	ResourceClass: ResourceClassLike,
 	path: string,
@@ -1234,19 +1230,21 @@ function validSubscribeMethod(
 		typeof subscribeName === 'string'
 			? (ResourceClass.prototype as Record<string, unknown>)?.[subscribeName]
 			: undefined;
+	let problem: string | undefined;
 	if (typeof fn !== 'function') {
-		harperLogger.warn(
-			`MCP application profile: '${path}' declares mcpResource '${def.name}' with subscribe ${JSON.stringify(subscribeName)}, but no such instance method exists on the prototype; the resource is registered without subscriptions`
-		);
-		return undefined;
+		problem = `declares subscribe ${JSON.stringify(subscribeName)}, but no such instance method exists on the prototype`;
+	} else if (isGeneratorFunction(fn)) {
+		problem = `names generator method '${subscribeName}' as subscribe; a generator's body runs only once iteration starts, outside the subscribing user's transaction, so return an async iterable from a regular method instead`;
 	}
-	if (isGeneratorFunction(fn)) {
+	if (!problem) return subscribeName as string;
+	const dedupKey = `${path}:${def.name}`;
+	if (!_warnedResourceInvalidSubscribe.has(dedupKey)) {
+		_warnedResourceInvalidSubscribe.add(dedupKey);
 		harperLogger.warn(
-			`MCP application profile: mcpResource '${def.name}' on '${path}' names generator method '${subscribeName}' as subscribe; a generator's body runs only once iteration starts, outside the subscribing user's transaction. Return an async iterable from a regular method instead. The resource is registered without subscriptions`
+			`MCP application profile: mcpResource '${def.name}' on '${path}' ${problem}; it is registered without subscriptions`
 		);
-		return undefined;
 	}
-	return subscribeName as string;
+	return undefined;
 }
 
 function isGeneratorFunction(fn: unknown): boolean {
@@ -1254,13 +1252,7 @@ function isGeneratorFunction(fn: unknown): boolean {
 	return tag === '[object AsyncGeneratorFunction]' || tag === '[object GeneratorFunction]';
 }
 
-/**
- * Build the subscribe dispatcher for a custom resource: the same live-class
- * instance dispatch as `makeCustomResourceReader`. The generator check repeats
- * here because the live class can be a subclass registered after the walk. A
- * returned async generator is refused as well: its `return()` cannot interrupt
- * it while it awaits its source, so unsubscribe could not release that source.
- */
+// The generator check repeats here because the live class can be a subclass registered after the walk.
 function makeCustomResourceSubscriber(path: string, capturedClass: ResourceClassLike, methodName: string) {
 	return async function (
 		params: Record<string, string>,
@@ -1279,15 +1271,7 @@ function makeCustomResourceSubscriber(path: string, capturedClass: ResourceClass
 				`subscribe method '${methodName}' is a generator; return an async iterable from a regular method`
 			);
 		}
-		const stream = await method.call(instance, params ?? {}, context);
-		if (Object.prototype.toString.call(stream) === '[object AsyncGenerator]') {
-			// not started yet, so this completes it at once
-			void (stream as unknown as AsyncGenerator).return(undefined);
-			throw new Error(
-				`subscribe method '${methodName}' returned an async generator; return a stream with end(), such as a Table.subscribe() result`
-			);
-		}
-		return stream;
+		return await method.call(instance, params ?? {}, context);
 	};
 }
 
