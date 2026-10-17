@@ -555,11 +555,14 @@ function changeStreamSubscription(
 	const stop = () => {
 		if (stopped) return;
 		stopped = true;
-		try {
-			for (const callback of stopCallbacks) callback();
-		} finally {
-			release(uri, () => (typeof stream.end === 'function' ? stream.end() : iterator.return?.()));
+		for (const callback of stopCallbacks) {
+			try {
+				callback();
+			} catch (err) {
+				harperLogger.trace(`MCP subscription ${uri} stop callback: ${describeError(err)}`);
+			}
 		}
+		release(uri, () => (typeof stream.end === 'function' ? stream.end() : iterator.return?.()));
 	};
 	return {
 		start(onUpdate) {

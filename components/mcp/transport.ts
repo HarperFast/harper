@@ -451,7 +451,7 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	if (session.subscriptions?.length) {
 		const uris = session.subscriptions;
 		restoreDurableSubscriptions(sessionId, record, uris, effectiveUser(request), request.profile).catch((err) =>
-			harperLogger.warn(`MCP subscription restore for ${sessionId} failed: ${describeError(err)}`)
+			harperLogger.warn(`MCP subscription restore for ${maskSessionId(sessionId)} failed: ${describeError(err)}`)
 		);
 	}
 	return {
