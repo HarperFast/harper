@@ -2728,7 +2728,6 @@ describe('Transactions are never aborted once durably written to the transaction
 
 			const holder1 = await AuditedA.lock(key1, { hold: true, lease: 15_000 });
 			const sharedCtx = holder1.getContext();
-			// Acquire holder2 WITHOUT hold: true so holder2.set(...) immediately registers a deferSave: true, saved: false write.
 			const holder2 = await AuditedA.lock(key2, { lease: 15_000 }, sharedCtx);
 			try {
 				assert.strictEqual(holder1.getContext().transaction, holder2.getContext().transaction);
@@ -2886,6 +2885,8 @@ describe('Transactions are never aborted once durably written to the transaction
 
 			let dbACommitCount = 0;
 			let dbBCommitCount = 0;
+			let lateTxnId;
+			let lateAttempts = 0;
 			Transaction.prototype.commit = async function (...args) {
 				if (this.store?.db === dbB) {
 					dbBCommitCount++;
@@ -2898,8 +2899,14 @@ describe('Transactions are never aborted once durably written to the transaction
 				if (this.store?.db === dbA) {
 					dbACommitCount++;
 					if (dbACommitCount === 2) {
+						lateTxnId = this.id;
+						lateAttempts++;
 						parkedInLateA = true;
 						await lateAGate;
+						throw Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY', hasLog: true });
+					}
+					if (this.id === lateTxnId) {
+						lateAttempts++;
 					}
 					return origCommit.apply(this, args);
 				}
@@ -2909,6 +2916,11 @@ describe('Transactions are never aborted once durably written to the transaction
 			const ctx = {};
 			let latePutPromise;
 			let lateAHolder;
+			let releaseSeg2Completion;
+			const seg2CompletionGate = new Promise((resolve) => {
+				releaseSeg2Completion = resolve;
+			});
+			pendingRestores.push(() => releaseSeg2Completion());
 			try {
 				await assert.rejects(
 					transaction(ctx, async () => {
@@ -2946,10 +2958,32 @@ describe('Transactions are never aborted once durably written to the transaction
 						await AuditedA.lock(keyA2, { lease: 15_000 }, ctx);
 						await AuditedA.put({ id: keyA2, writer: 'seg2-a', count: 2 }, ctx);
 						await AuditedB.put({ id: keyB2, writer: 'seg2-b', count: 2 }, ctx);
+						let seg2CompletionSettled = false;
+						dbTxn.stageCompletion(
+							seg2CompletionGate.then(() => {
+								seg2CompletionSettled = true;
+							}),
+							dbTxn.transaction
+						);
 
 						releaseLateA();
 						await latePutPromise;
 
+						assert.strictEqual(
+							lateAttempts,
+							2,
+							'late immediate commit must have retried through performCommit while segment 2 was OPEN'
+						);
+						assert.strictEqual(
+							seg2CompletionSettled,
+							false,
+							'late immediate commit retry must not await segment 2 staged completion'
+						);
+						assert.strictEqual(
+							dbTxn.completions.length,
+							1,
+							'late immediate commit retry must not steal segment 2 staged completion'
+						);
 						assert.strictEqual(
 							AuditedA.primaryStore.getEntry(keyA2).value.writer,
 							'seed-a2',
@@ -2975,7 +3009,10 @@ describe('Transactions are never aborted once durably written to the transaction
 							'late immediate commit must not release segment 2 record locks on head store A'
 						);
 
-						await dbTxn.commit({});
+						const seg2CommitPromise = Promise.resolve(dbTxn.commit({}));
+						releaseSeg2Completion();
+						await seg2CommitPromise;
+						assert.strictEqual(seg2CompletionSettled, true);
 						assert.strictEqual(AuditedA.primaryStore.getEntry(keyA2).value.writer, 'seg2-a');
 						assert.strictEqual(AuditedB.primaryStore.getEntry(keyB2).value.writer, 'seg2-b');
 
@@ -3097,6 +3134,7 @@ describe('Transactions are never aborted once durably written to the transaction
 
 			const ctx2 = {};
 			let txn2;
+			let nextTxn2;
 			let lateHolder;
 			let lateSavePromise;
 			try {
@@ -3105,6 +3143,8 @@ describe('Transactions are never aborted once durably written to the transaction
 					lateHolder = await AuditedA.lock(lateKey, { hold: true, lease: 15_000 }, ctx2);
 					await AuditedA.lock(midKey, { lease: 15_000 }, ctx2);
 					await AuditedA.put({ id: midKey, writer: 'failed-scope-write', count: 2 }, ctx2);
+					await AuditedB.put({ id: midKeyB, writer: 'failed-scope-write-b', count: 2 }, ctx2);
+					nextTxn2 = txn2.next;
 				});
 
 				await waitFor(() => parkedInFailScope, {
@@ -3121,6 +3161,18 @@ describe('Transactions are never aborted once durably written to the transaction
 				releaseFailScope();
 				await assert.rejects(scopePromise, /terminal head commit error/);
 
+				assert.ok(nextTxn2, 'chained transaction link for store B should have been created');
+				assert.strictEqual(
+					nextTxn2.writes.length,
+					0,
+					'terminal head failure must cascade abort to chained store B even while a late immediate write on store A is in flight'
+				);
+				assert.strictEqual(
+					nextTxn2.transaction,
+					null,
+					'terminal head failure must release chained store B native transaction handle'
+				);
+				assert.strictEqual(AuditedB.primaryStore.getEntry(midKeyB).value.writer, 'mid-committed-b');
 				assert.ok(
 					txn2.recordLocks?.get(AuditedA.primaryStore)?.has(midKey),
 					'record lock on failed CLOSED scope stays held while sibling late immediate commit is still in flight'
@@ -3139,6 +3191,90 @@ describe('Transactions are never aborted once durably written to the transaction
 				await verifyLock.unlock();
 			} finally {
 				await lateHolder?.unlock?.();
+			}
+
+			let exhaustedHeadTxnId;
+			let parkedInExhaustedHead = false;
+			let releaseExhaustedHead;
+			const exhaustedHeadGate = new Promise((resolve) => {
+				releaseExhaustedHead = resolve;
+			});
+			pendingRestores.push(() => releaseExhaustedHead());
+
+			let lateTxnId3;
+			let parkedInLateCommit3 = false;
+			let releaseLateCommit3;
+			const lateCommitGate3 = new Promise((resolve) => {
+				releaseLateCommit3 = resolve;
+			});
+			pendingRestores.push(() => releaseLateCommit3());
+
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== targetDb) return origCommit.apply(this, args);
+				if (exhaustedHeadTxnId === undefined || this.id === exhaustedHeadTxnId) {
+					if (exhaustedHeadTxnId === undefined) {
+						exhaustedHeadTxnId = this.id;
+						parkedInExhaustedHead = true;
+						await exhaustedHeadGate;
+					}
+					this.hasStagedLog = false;
+					this.retries = MAX_RETRIES;
+					throw Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY', hasLog: false });
+				}
+				if (lateTxnId3 === undefined) {
+					lateTxnId3 = this.id;
+					parkedInLateCommit3 = true;
+					await lateCommitGate3;
+				}
+				return origCommit.apply(this, args);
+			};
+
+			const ctx3 = {};
+			let txn3;
+			let nextTxn3;
+			let lateHolder3;
+			let lateSavePromise3;
+			try {
+				const scopePromise3 = transaction(ctx3, async () => {
+					txn3 = ctx3.transaction;
+					lateHolder3 = await AuditedA.lock(lateKey, { hold: true, lease: 15_000 }, ctx3);
+					await AuditedA.put({ id: midKey, writer: 'exhausted-scope-write', count: 4 }, ctx3);
+					await AuditedB.put({ id: midKeyB, writer: 'exhausted-scope-write-b', count: 4 }, ctx3);
+					nextTxn3 = txn3.next;
+				});
+
+				await waitFor(() => parkedInExhaustedHead, {
+					message: 'unlogged head commit should park in first conflict',
+				});
+
+				lateHolder3.set('writer', 'late-committed-3');
+				lateHolder3.set('count', 5);
+				lateSavePromise3 = Promise.resolve(lateHolder3.save());
+				await waitFor(() => parkedInLateCommit3, {
+					message: 'late immediate write 3 should park in commit',
+				});
+
+				releaseExhaustedHead();
+				await assert.rejects(scopePromise3, /unable to commit transaction/);
+
+				assert.strictEqual(txn3.next, null, 'abortChainAfterRetries must detach next link even with late sibling');
+				assert.strictEqual(
+					nextTxn3.writes.length,
+					0,
+					'abortChainAfterRetries must abort chained store B writes even while late immediate write on store A is in flight'
+				);
+				assert.strictEqual(
+					nextTxn3.transaction,
+					null,
+					'abortChainAfterRetries must release chained store B native transaction handle'
+				);
+				assert.strictEqual(AuditedB.primaryStore.getEntry(midKeyB).value.writer, 'mid-committed-b');
+
+				releaseLateCommit3();
+				await lateSavePromise3;
+				assert.strictEqual(AuditedA.primaryStore.getEntry(lateKey).value.writer, 'late-committed-3');
+			} finally {
+				await lateHolder3?.unlock?.();
 			}
 		});
 	});
