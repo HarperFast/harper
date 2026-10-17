@@ -87,13 +87,15 @@ A handful of design points are non-obvious and easy to break:
   it started plus a per-`(session, uri)` pending token, and installs only if that record is still registered and
   no unsubscribe, re-subscribe or drop overtook the token — otherwise it releases the stream and throws
   `SubscriptionCancelledError`. Delivery starts only after admission and pushes only to that record. Restore
-  reserves every URI before it starts, stops when its GET is superseded, and prunes only URIs a recognized
-  resource reported not subscribable — a thrown subscribe, a custom URI no entry matches yet (its component may
-  still be loading), and one a newer subscribe took over all stay. A GET superseded while restoring answers 409;
+  reserves every URI before it starts, stops when its GET is superseded, and prunes only URIs a registered
+  resource reported not subscribable — a thrown subscribe, and a URI nothing on the worker matches yet (its
+  component may still be loading), stay. The prune is decided inside its queued write, against GET ownership
+  and current subscription intent at that moment. A GET superseded while restoring answers 409;
   registry teardown uses `queue.close()`, which latches `closed`, so `toSseStream` ends a stream whose queue
-  closed before it attached. The durable list changes only through `updateSessionSubscriptions`, a load-and-save
-  against the stored record that this worker serializes per session together with `deleteSession`; writes from
-  other workers are not ordered by it.
+  closed before it attached. Subscribe, unsubscribe and restore change the durable list only through
+  `updateSessionSubscriptions`, a load-and-save against the stored record that this worker serializes per session
+  together with `deleteSession`. `touchSession`, `logging/setLevel` and other workers' writes are not ordered by
+  it and still save whole records (harper#3255).
 
 - **SSE resumability (`Last-Event-ID`).** Every GET-channel frame goes through `pushSessionFrame`, which
   assigns a monotonic event id and appends to a bounded per-session `replayBuffer`. On reconnect with a

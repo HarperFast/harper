@@ -626,20 +626,26 @@ async function trackPrincipalLifetime(subscription: ResourceSubscription, user: 
 	if (recheckNow && (await handle.verify()) === 'revoked') throw new AccessViolation(user);
 }
 
-/** Whether a URI names a resource this profile knows: a registered custom entry, or a built-in scheme. */
+/**
+ * Whether a URI names a resource registered on this worker: a custom entry, a
+ * `harper://` resource, or an application resource `getMatch` finds. A URI that
+ * matches nothing may belong to a component that has not loaded here yet.
+ */
 export function isRecognizedResourceUri(uri: string, profile: McpProfile): boolean {
 	if (matchCustomResource(profile, uri)) return true;
+	let parsed: URL;
 	try {
-		const { protocol } = new URL(uri);
-		return (
-			protocol === HARPER_SCHEME ||
-			protocol === HARPER_REST_SCHEME ||
-			protocol === HTTPS_SCHEME ||
-			protocol === HTTP_SCHEME
-		);
+		parsed = new URL(uri);
 	} catch {
 		return false;
 	}
+	if (parsed.protocol === HARPER_SCHEME) return true;
+	if (parsed.protocol !== HARPER_REST_SCHEME && parsed.protocol !== HTTPS_SCHEME && parsed.protocol !== HTTP_SCHEME) {
+		return false;
+	}
+	// the subscribe seam stands in for the registry in unit tests
+	if (_subscribeImplOverride) return true;
+	return !!getResources().getMatch?.(parsed.pathname.replace(/^\/+/, ''), 'mcp');
 }
 
 /** A rejection reason may be anything, `null` or a null-prototype object included. */
