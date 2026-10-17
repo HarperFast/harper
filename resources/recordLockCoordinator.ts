@@ -309,7 +309,8 @@ export interface ClusterLockTransport {
 	 * member of `homes[]` must have answered for this incarnation and generation, not "everyone
 	 * reachable" — this node included, whose own sweep cannot see a handle a sibling thread holds, so
 	 * on a coordinating-worker takeover the transport must have fenced every sibling's relayed handles
-	 * before it counts the local answer.
+	 * before it counts the local answer, and must move ownership only once the previous owner thread
+	 * has exited (its own handles die with it; an exit commits nothing out of submission order).
 	 */
 	quiescedIncarnation?(): number | undefined;
 	/**
@@ -793,13 +794,15 @@ const retiredCoordinators = new Map<
 >();
 
 /**
- * Surrenders whose release is not yet written, per database. A surrender leaves `#delegations` before
- * it waits for its relayed fences, and the coordinator that started it can be closed or replaced while
- * it waits, so a recall by incarnation (`recallDelegationsFromHome`) joins these here rather than
- * through any coordinator: answering "holds nothing" while one is pending would let the home re-grant
- * a key a handle on another worker can still commit under.
+ * Delegations whose handles are being fenced, per database: a surrender until its release is written,
+ * and a close without a successor until its revokes have settled. Both leave `#delegations` before the
+ * relayed fences land, and the coordinator that started them can be closed or replaced while they
+ * wait, so a recall by incarnation (`recallDelegationsFromHome`) joins these here rather than through
+ * any coordinator: answering "holds nothing" while one is pending would let the home re-grant a key a
+ * handle on another worker can still commit under.
  */
 interface InFlightSurrender {
+	table: string;
 	ringKey: string;
 	token: FencingToken;
 	settled: Promise<void>;
@@ -2128,10 +2131,12 @@ export class LockCoordinator {
 			tickingCoordinators.delete(this);
 			return;
 		}
-		for (const delegation of this.#delegations.values()) {
+		for (const [keyId, delegation] of this.#delegations) {
 			delegation.recalled = true;
 			delegation.expiresMono = -Infinity;
-			this.#revokeAll(delegation);
+			// Fire-and-forget for this coordinator, but a recall by incarnation still has to outwait the
+			// relayed fences, so the settle is tracked where the sweep can join it.
+			this.#trackFencing(keyId, delegation, this.#revokeAllAndSettle(delegation));
 			const waiters = delegation.drained;
 			if (waiters) {
 				delegation.drained = undefined;
@@ -2172,13 +2177,16 @@ export class LockCoordinator {
 		retiredCoordinators.set(retirementKey, {
 			grantableAfterMono: Math.max(retired?.grantableAfterMono ?? -Infinity, grantableAfterMono),
 			counter: Math.max(retired?.counter ?? 0, this.#counter),
-			// The latest incarnation any grant in the record was issued under; unknown stays unknown.
+			// The latest incarnation any grant in the record was issued under; unknown stays unknown, and a
+			// coordinator that issued nothing outstanding leaves the record's incarnation alone.
 			incarnation:
 				retired === undefined
 					? this.#coordinatingIncarnation
-					: retired.incarnation === undefined || this.#coordinatingIncarnation === undefined
-						? undefined
-						: Math.max(retired.incarnation, this.#coordinatingIncarnation),
+					: grantableAfterMono === -Infinity
+						? retired.incarnation
+						: retired.incarnation === undefined || this.#coordinatingIncarnation === undefined
+							? undefined
+							: Math.max(retired.incarnation, this.#coordinatingIncarnation),
 		});
 		this.#delegations.clear();
 		this.#pendingDelegations.clear();
@@ -2718,12 +2726,18 @@ export class LockCoordinator {
 
 	#surrenderOnce(keyId: unknown, delegation: Delegation): Promise<void> {
 		if (this.#delegations.get(keyId) === delegation) this.#delegations.delete(keyId);
+		return this.#trackFencing(keyId, delegation, this.#surrenderAndRelease(delegation));
+	}
+
+	/** Keep `settled` discoverable by a recall by incarnation until it resolves (see `inFlightSurrenders`). */
+	#trackFencing(keyId: unknown, delegation: Delegation, settled: Promise<void>): Promise<void> {
 		let inFlight = inFlightSurrenders.get(this.database);
 		if (!inFlight) inFlightSurrenders.set(this.database, (inFlight = new Set()));
 		const entry: InFlightSurrender = {
+			table: this.table,
 			ringKey: this.#ringKey(keyId),
 			token: delegation.token,
-			settled: this.#surrenderAndRelease(delegation).finally(() => {
+			settled: settled.finally(() => {
 				inFlight.delete(entry);
 				if (inFlight.size === 0 && inFlightSurrenders.get(this.database) === inFlight)
 					inFlightSurrenders.delete(this.database);
@@ -2779,6 +2793,14 @@ export class LockCoordinator {
 		for (const [keyId, delegation] of this.#delegations)
 			if (issuedByHome(keyId, delegation.token))
 				drains.push(this.onDelegationRecall({ key: delegation.key, token: delegation.token }));
+		for (const fencing of inFlightSurrenders.get(this.database) ?? [])
+			if (
+				fencing.table === this.table &&
+				fencing.token[0] === homeMap.generation &&
+				fencing.token[1] < belowIncarnation &&
+				homeFor(fencing.ringKey, homeMap.homes) === home
+			)
+				drains.push(fencing.settled);
 		await Promise.all(drains);
 	}
 

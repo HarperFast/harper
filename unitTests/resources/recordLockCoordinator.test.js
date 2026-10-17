@@ -3836,6 +3836,39 @@ describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
 			assert.strictEqual(reply.granted, true, "beta's incarnation-1 delegation was recalled by the round for 2");
 		});
 
+		it('an empty replacement that closes leaves an older retirement record at its own incarnation', async () => {
+			const table = `RetiredEmpty${Date.now()}`;
+			const database = `retiredEmpty${Date.now()}`;
+			const homes = ['alpha', 'beta'];
+			let key;
+			for (let i = 0; i < 10_000 && !key; i++)
+				if (homeFor(ringKeyFor(database, table, `k${i}`), homes) === 'alpha') key = `k${i}`;
+			incarnation = 1;
+			const first = restarted({
+				table,
+				database,
+				grantableAfterMono: -Infinity,
+				transport: { homeMap: () => ({ generation: 1, homes, homeIncarnation: incarnation }) },
+			});
+			await first.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: LEASE });
+			first.close();
+			incarnation = 2;
+			const empty = restarted({
+				table,
+				database,
+				transport: { homeMap: () => ({ generation: 1, homes, homeIncarnation: incarnation }) },
+			});
+			empty.close();
+			attested = 2;
+			const successor = restarted({
+				table,
+				database,
+				transport: { homeMap: () => ({ generation: 1, homes, homeIncarnation: incarnation }) },
+			});
+			const reply = await successor.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(reply.granted, true, 'the empty replacement relabelled incarnation 1 grants as incarnation 2');
+		});
+
 		it('a transport without the hook, or one that throws, keeps the timer', async () => {
 			const plain = restarted({ transport: { quiescedIncarnation: undefined } });
 			assert.strictEqual((await request(plain)).reason, 'quarantine');
@@ -3907,37 +3940,42 @@ describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
 			assert.strictEqual(cluster.node('alpha').written.filter((e) => e.type === 'lockRelease').length, 1);
 		});
 
-		it('a retried recall joins a surrender whose relayed fence is still pending, instead of answering early', async () => {
-			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
-			const alpha = cluster.node('alpha').coordinator;
-			const key = cluster.keyHomedOn('gamma');
-			const round = await alpha.acquire(key, LEASE, WAIT);
-			let releaseFence;
-			alpha.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
-			alpha.release(key, round.admissionId); // unlocked, but the staged write can still commit
-			registerClusterLockTransport(cluster.database, alpha.transport);
-			try {
-				let firstDone = false;
-				let secondDone = false;
-				const first = recallDelegationsFromHome(cluster.database, 'gamma', 1, 2).then(() => (firstDone = true));
-				await new Promise((resolve) => setTimeout(resolve, 10));
-				assert.strictEqual(alpha.stats.delegations, 0, 'the surrender has left the delegation table');
-				const second = recallDelegationsFromHome(cluster.database, 'gamma', 1, 2).then(() => (secondDone = true));
-				await new Promise((resolve) => setTimeout(resolve, 30));
-				assert.strictEqual(secondDone, false, 'the retry answered before the fence it depends on');
-				assert.strictEqual(firstDone, false);
-				assert.strictEqual(
-					cluster.node('alpha').written.some((e) => e.type === 'lockRelease'),
-					false,
-					'no release before the fence'
-				);
-				releaseFence();
-				await Promise.all([first, second]);
-				assert.strictEqual(cluster.node('alpha').written.filter((e) => e.type === 'lockRelease').length, 1);
-			} finally {
-				unregisterClusterLockTransport(cluster.database, true);
-			}
-		});
+		for (const direct of [false, true])
+			it(`a retried recall${direct ? ' on the table itself' : ''} joins a surrender whose relayed fence is still pending, instead of answering early`, async () => {
+				const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+				const alpha = cluster.node('alpha').coordinator;
+				const key = cluster.keyHomedOn('gamma');
+				const round = await alpha.acquire(key, LEASE, WAIT);
+				let releaseFence;
+				alpha.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
+				alpha.release(key, round.admissionId); // unlocked, but the staged write can still commit
+				registerClusterLockTransport(cluster.database, alpha.transport);
+				try {
+					let firstDone = false;
+					let secondDone = false;
+					const first = recallDelegationsFromHome(cluster.database, 'gamma', 1, 2).then(() => (firstDone = true));
+					await new Promise((resolve) => setTimeout(resolve, 10));
+					assert.strictEqual(alpha.stats.delegations, 0, 'the surrender has left the delegation table');
+					const second = (
+						direct
+							? alpha.recallFromHome('gamma', alpha.transport.homeMap(cluster.database), 2)
+							: recallDelegationsFromHome(cluster.database, 'gamma', 1, 2)
+					).then(() => (secondDone = true));
+					await new Promise((resolve) => setTimeout(resolve, 30));
+					assert.strictEqual(secondDone, false, 'the retry answered before the fence it depends on');
+					assert.strictEqual(firstDone, false);
+					assert.strictEqual(
+						cluster.node('alpha').written.some((e) => e.type === 'lockRelease'),
+						false,
+						'no release before the fence'
+					);
+					releaseFence();
+					await Promise.all([first, second]);
+					assert.strictEqual(cluster.node('alpha').written.filter((e) => e.type === 'lockRelease').length, 1);
+				} finally {
+					unregisterClusterLockTransport(cluster.database, true);
+				}
+			});
 
 		it('surrenders a grant from the dead incarnation that lands after the recall, rather than admitting on it', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
@@ -3961,6 +3999,28 @@ describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
 			);
 			assert.strictEqual(alpha.coordinator.stats.delegations, 1, 'the retry under incarnation 2 was admitted');
 			alpha.coordinator.release(key, round.admissionId);
+		});
+
+		it('outwaits the fences a close without a successor fired, when the close lands during a drain', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const alpha = cluster.node('alpha').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			let releaseFence;
+			alpha.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
+			registerClusterLockTransport(cluster.database, alpha.transport);
+			try {
+				let settled = false;
+				const sweep = recallDelegationsFromHome(cluster.database, 'gamma', 1, 2).then(() => (settled = true));
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				alpha.close();
+				await new Promise((resolve) => setTimeout(resolve, 30));
+				assert.strictEqual(settled, false, 'the sweep answered while the handle on the other worker was unfenced');
+				releaseFence();
+				await sweep;
+			} finally {
+				unregisterClusterLockTransport(cluster.database, true);
+			}
 		});
 
 		it('follows a transport swap that lands while a table is draining, and resolves only after the successor released', async () => {
