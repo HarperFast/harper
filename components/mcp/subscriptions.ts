@@ -5,92 +5,210 @@
  * session + URI; the durable list of subscribed URIs lives on the `mcp_session`
  * record (see `session.ts`) so they can be restored on an SSE reconnect. Each
  * change pushes a `notifications/resources/updated` frame onto the session's
- * GET-stream queue. Row-backed URIs only — `subscribeToResource` returns null
- * for anything that isn't a subscribable application resource.
+ * GET-stream queue. `subscribeToResource` decides what is subscribable:
+ * row-backed application resources and custom `mcpResources` entries that
+ * declare `subscribe` (#3250).
  *
  * Per-worker, like the session registry: a subscription is bound to the worker
  * holding the session's SSE stream; the audit-log broadcast delivers changes
  * locally on that worker.
+ *
+ * A subscription belongs to the GET stream (`RegisteredSession` record) that
+ * was registered when it was requested. Setup awaits the resource (an author's
+ * method may do I/O), so it is admitted only if that record is still the
+ * registered one and no later unsubscribe, re-subscribe or drop for the same
+ * URI happened meanwhile; otherwise it is released and never delivers.
  */
 import harperLogger from '../../utility/logging/harper_logger.ts';
-import { subscribeToResource, type ResourceSubscription } from './resources.ts';
-import { getRegisteredSession, pushSessionFrame } from './sessionRegistry.ts';
+import { describeError, isRecognizedResourceUri, subscribeToResource, type ResourceSubscription } from './resources.ts';
+import { getRegisteredSession, pushSessionFrame, type RegisteredSession } from './sessionRegistry.ts';
 import type { AuthedUser } from './toolRegistry.ts';
+import type { McpProfile } from './transport.ts';
+
+export class SubscriptionCancelledError extends Error {}
 
 /** sessionId → (uri → live subscription). */
 const live = new Map<string, Map<string, ResourceSubscription>>();
 
+const RESTORE_CONCURRENCY = 8;
+
+interface PendingSetup {
+	cancelled?: string;
+}
+/** sessionId → (uri → the setup currently allowed to install). */
+const pending = new Map<string, Map<string, PendingSetup>>();
+
+function deletePending(sessionId: string, uri: string, setup: PendingSetup): void {
+	const bySession = pending.get(sessionId);
+	if (bySession?.get(uri) !== setup) return;
+	bySession.delete(uri);
+	if (bySession.size === 0) pending.delete(sessionId);
+}
+
+function cancelPending(sessionId: string, uri: string, reason: string): void {
+	const setup = pending.get(sessionId)?.get(uri);
+	if (!setup) return;
+	setup.cancelled = reason;
+	deletePending(sessionId, uri, setup);
+}
+
+function reserve(sessionId: string, uri: string): PendingSetup {
+	cancelPending(sessionId, uri, 'superseded by a newer resources/subscribe');
+	const setup: PendingSetup = {};
+	let bySession = pending.get(sessionId);
+	if (!bySession) pending.set(sessionId, (bySession = new Map()));
+	bySession.set(uri, setup);
+	return setup;
+}
+
 /**
- * Start (or replace) a subscription for `uri` on `sessionId`. Pushes
- * `notifications/resources/updated` to the session's queue on each change.
- * Returns false if the URI isn't subscribable (caller maps that to `-32602`).
+ * Start (or replace) a subscription for `uri` on `sessionId`, owned by `owner`
+ * (the session's current GET-stream record unless the caller passes its own).
+ * Pushes `notifications/resources/updated` to that record's queue on each
+ * change. Returns false if the URI isn't subscribable (caller maps that to
+ * `-32602`); throws `SubscriptionCancelledError` if the setup was overtaken, and
+ * whatever the resource's subscribe threw.
  */
-export async function addResourceSubscription(sessionId: string, uri: string, user: AuthedUser): Promise<boolean> {
-	const subscription = await subscribeToResource(uri, user, () => {
-		// Re-resolve the record each push: the SSE stream may have reconnected
-		// (new queue) since the subscription started.
-		const record = getRegisteredSession(sessionId);
-		if (record) {
-			pushSessionFrame(record, {
+export async function addResourceSubscription(
+	sessionId: string,
+	uri: string,
+	user: AuthedUser,
+	profile: McpProfile = 'application',
+	owner: RegisteredSession | undefined = getRegisteredSession(sessionId)
+): Promise<boolean> {
+	if (!owner) {
+		throw new SubscriptionCancelledError(`resources/subscribe for ${uri} needs an open GET SSE stream`);
+	}
+	return admit(sessionId, uri, user, profile, owner, reserve(sessionId, uri));
+}
+
+async function admit(
+	sessionId: string,
+	uri: string,
+	user: AuthedUser,
+	profile: McpProfile,
+	owner: RegisteredSession,
+	setup: PendingSetup
+): Promise<boolean> {
+	const cancellation = () => {
+		const cancelled =
+			setup.cancelled ?? (getRegisteredSession(sessionId) !== owner ? 'the GET SSE stream closed' : undefined);
+		return cancelled && new SubscriptionCancelledError(`resources/subscribe for ${uri} was cancelled: ${cancelled}`);
+	};
+	let subscription: ResourceSubscription | null = null;
+	try {
+		if (!setup.cancelled) subscription = await subscribeToResource(uri, user, profile);
+	} catch (err) {
+		// a setup nobody is waiting for any more answers as cancelled, not as the author's failure
+		throw cancellation() || err;
+	} finally {
+		deletePending(sessionId, uri, setup);
+	}
+	const cancelled = cancellation();
+	if (cancelled) {
+		subscription?.stop();
+		throw cancelled;
+	}
+	if (!subscription) return false;
+	// Replace any existing subscription for the same URI (idempotent re-subscribe).
+	live.get(sessionId)?.get(uri)?.stop();
+	let bySession = live.get(sessionId);
+	if (!bySession) live.set(sessionId, (bySession = new Map()));
+	bySession.set(uri, subscription);
+	const installed = subscription;
+	installed.onStop(() => {
+		const current = live.get(sessionId);
+		if (current?.get(uri) !== installed) return;
+		current.delete(uri);
+		if (current.size === 0) live.delete(sessionId);
+	});
+	installed.start(() => {
+		// Only while `owner` is current: a closed or superseded stream drops its
+		// subscriptions, and a reconnect restores its own.
+		if (getRegisteredSession(sessionId) === owner) {
+			pushSessionFrame(owner, {
 				event: 'message',
 				data: { jsonrpc: '2.0', method: 'notifications/resources/updated', params: { uri } },
 			});
 		}
 	});
-	if (!subscription) return false;
-	let bySession = live.get(sessionId);
-	if (!bySession) live.set(sessionId, (bySession = new Map()));
-	// Replace any existing subscription for the same URI (idempotent re-subscribe).
-	bySession.get(uri)?.stop();
-	bySession.set(uri, subscription);
 	return true;
 }
 
 /** Stop and drop a single subscription. Returns false if it wasn't subscribed. */
 export function removeResourceSubscription(sessionId: string, uri: string): boolean {
-	const bySession = live.get(sessionId);
-	const subscription = bySession?.get(uri);
+	cancelPending(sessionId, uri, 'unsubscribed');
+	const subscription = live.get(sessionId)?.get(uri);
 	if (!subscription) return false;
 	subscription.stop();
-	bySession!.delete(uri);
-	if (bySession!.size === 0) live.delete(sessionId);
 	return true;
 }
 
 /** Stop every live subscription for a session (on SSE-stream close / DELETE / prune). */
 export function dropSessionSubscriptions(sessionId: string): void {
+	const setups = pending.get(sessionId);
+	if (setups) {
+		pending.delete(sessionId);
+		for (const setup of setups.values()) setup.cancelled = 'the session dropped its subscriptions';
+	}
 	const bySession = live.get(sessionId);
 	if (!bySession) return;
+	live.delete(sessionId);
 	for (const subscription of bySession.values()) {
 		try {
 			subscription.stop();
 		} catch (err) {
-			harperLogger.trace(`MCP subscription drop for ${sessionId}: ${(err as Error).message}`);
+			harperLogger.trace(`MCP subscription drop for ${sessionId}: ${describeError(err)}`);
 		}
 	}
-	live.delete(sessionId);
 }
 
 /**
- * Re-establish subscriptions on SSE reconnect from the durable URI list. Each is
- * best-effort: a URI that's no longer subscribable (resource removed) is skipped.
- * Returns the URIs that were successfully restored (the caller prunes the rest
- * from the durable record).
+ * Re-establish subscriptions on SSE reconnect from the durable URI list, owned
+ * by `owner` (the reconnecting GET's record). Every URI is reserved up front, so
+ * an unsubscribe for one not reached yet cancels it. Admits a few at a time and
+ * starts no new one once `owner` is no longer the registered record. Returns the URIs to keep on the durable list:
+ * all but those a registered resource reported not subscribable. A URI whose
+ * subscribe threw stays, so a transient failure is retried on the next
+ * reconnect; so does a URI nothing on this worker matches yet (its component
+ * may still be loading).
  */
 export async function restoreResourceSubscriptions(
 	sessionId: string,
 	uris: ReadonlyArray<string>,
-	user: AuthedUser
+	user: AuthedUser,
+	profile: McpProfile = 'application',
+	owner: RegisteredSession | undefined = getRegisteredSession(sessionId)
 ): Promise<string[]> {
-	const restored: string[] = [];
-	for (const uri of uris) {
-		try {
-			if (await addResourceSubscription(sessionId, uri, user)) restored.push(uri);
-		} catch (err) {
-			harperLogger.trace(`MCP subscription restore ${uri}: ${(err as Error).message}`);
+	if (!owner) return [...uris];
+	const setups = uris.map((uri) => reserve(sessionId, uri));
+	const pruned = new Set<number>();
+	let next = 0;
+	// A few at a time, so one author subscribe waiting on I/O does not hold back the rest.
+	const restoreNext = async (): Promise<void> => {
+		while (next < uris.length && getRegisteredSession(sessionId) === owner) {
+			const index = next++;
+			const uri = uris[index];
+			try {
+				const subscribed = await admit(sessionId, uri, user, profile, owner, setups[index]);
+				if (!subscribed && isRecognizedResourceUri(uri, profile)) pruned.add(index);
+			} catch (err) {
+				if (!(err instanceof SubscriptionCancelledError)) {
+					harperLogger.warn(
+						`MCP subscription restore ${uri} failed, kept for the next reconnect: ${describeError(err)}`
+					);
+				}
+			}
 		}
-	}
-	return restored;
+	};
+	await Promise.all(Array.from({ length: Math.min(RESTORE_CONCURRENCY, uris.length) }, restoreNext));
+	for (let index = next; index < uris.length; index++) deletePending(sessionId, uris[index], setups[index]);
+	return uris.filter((_, index) => !pruned.has(index));
+}
+
+/** Whether `uri` is subscribed on `sessionId`, or a subscribe for it is still being set up. */
+export function hasSubscriptionIntent(sessionId: string, uri: string): boolean {
+	return live.get(sessionId)?.has(uri) === true || pending.get(sessionId)?.has(uri) === true;
 }
 
 /** Test seam — count of live subscriptions for a session. */
@@ -100,8 +218,10 @@ export function _liveSubscriptionCount(sessionId: string): number {
 
 /** Test seam — drop all live subscriptions. */
 export function _resetSubscriptionsForTest(): void {
-	for (const bySession of live.values()) {
+	const sessions = [...live.values()];
+	live.clear();
+	pending.clear();
+	for (const bySession of sessions) {
 		for (const subscription of bySession.values()) subscription.stop();
 	}
-	live.clear();
 }
