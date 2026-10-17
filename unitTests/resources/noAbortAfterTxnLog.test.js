@@ -691,7 +691,7 @@ describe('Transactions are never aborted once durably written to the transaction
 				enteredInTurn = 0;
 				const releases = waitingInCommit.splice(0, 2);
 				for (const release of releases) release();
-				await new Promise(setImmediate);
+				for (let tick = 0; tick < 6; tick++) await Promise.resolve();
 				reenteredSynchronouslyAfterRound.push(enteredInTurn);
 			}
 
@@ -1180,8 +1180,6 @@ describe('Transactions are never aborted once durably written to the transaction
 				rec.set('writer', 'overdue-holder');
 				rec.set('count', 10);
 				await rec.save();
-				// Pre-age commitStartedAt so as soon as attempt 1 returns RETRY_NOW, noteOverdueLoggedCommit
-				// sees the commit budget spent and releases `transaction.lockHolds`.
 				context.transaction.commitStartedAt = performance.now() - WELL_PAST_BUDGET_MS;
 			});
 			txnAPromise.then(
@@ -1267,7 +1265,6 @@ describe('Transactions are never aborted once durably written to the transaction
 				'DbA native transaction must retain lockHolds during commit'
 			);
 			assert.strictEqual(Boolean(dbANativeTxn.lockHolds), false, 'DbA lockHolds must be released before DbB settles');
-			// DbA has already committed locally, so its lock on recordA must be acquirable immediately while DbB is still parked.
 			const lockDuringDbB = await AuditedA.lock(recordA, { lease: MIN_LOCK_LEASE_MS, timeout: 400 });
 			await lockDuringDbB.unlock();
 			releaseDbB();
@@ -2191,11 +2188,7 @@ describe('Transactions are never aborted once durably written to the transaction
 				if (this.store?.db === targetDb && interceptMode !== 'none' && this.hasStagedLog) {
 					terminalAttempt++;
 					if (terminalAttempt === 1) {
-						if (interceptMode === 'restage-throw') {
-							return RETRY_NOW_VALUE;
-						}
-						if (interceptMode === 'completion-reject') {
-							await delay(MIN_LOCK_LEASE_MS + 60);
+						if (interceptMode === 'restage-throw' || interceptMode === 'completion-reject') {
 							return RETRY_NOW_VALUE;
 						}
 						throw Object.assign(new Error('Resource busy'), { code: 'ERR_BUSY' });
@@ -2293,9 +2286,11 @@ describe('Transactions are never aborted once durably written to the transaction
 			abortCalls = 0;
 			terminalAttempt = 0;
 			interceptMode = 'completion-reject';
+			let completionRejectTxn;
 			await assert.rejects(
 				transaction(async (txn) => {
-					const rec = await AuditedA.lock(recordId, { lease: MIN_LOCK_LEASE_MS });
+					completionRejectTxn = txn;
+					const rec = await AuditedA.lock(recordId, { lease: 30_000 });
 					rec.set('writer', 'completion-reject');
 					rec.set('count', 101);
 					await rec.save();
@@ -2316,6 +2311,11 @@ describe('Transactions are never aborted once durably written to the transaction
 				abortCalls,
 				1,
 				'abortAfterCommitError must abort the detached retry handle once when completions reject'
+			);
+			assert.strictEqual(
+				completionRejectTxn.writes.length,
+				0,
+				'abortAfterCommitError must clear writes staged on the aborted retry handle'
 			);
 			assert.ok(
 				errorLines.some(([msg]) =>
@@ -2636,10 +2636,7 @@ describe('Transactions are never aborted once durably written to the transaction
 				failNextLateCommit = true;
 				lateFailHolder.set('writer', 'late-immediate-fail');
 				lateFailHolder.set('count', 99);
-				await assert.rejects(
-					() => lateFailHolder.save(),
-					/After 40 retries, unable to commit transaction/
-				);
+				await assert.rejects(() => lateFailHolder.save(), /After 40 retries, unable to commit transaction/);
 				failNextLateCommit = false;
 
 				releaseOuterRetry();

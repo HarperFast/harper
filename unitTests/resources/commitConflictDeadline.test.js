@@ -71,7 +71,8 @@ describe('request-path commits are abandoned once their conflict budget is spent
 	// the coordinatedRetry sentinel, `reject` rejects with the uncoordinated conflict code. Scoped to
 	// that database's handle because background timers (hdb_analytics) commit their own transactions
 	// during these tests. `failFirst` releases the stub after N attempts so an uncapped (source-apply)
-	// retry can still converge.
+	// retry can still converge. (End-to-end coverage that flushes real TransactionLog entries before
+	// conflicting lives in noAbortAfterTxnLog.test.js sections 1–2.)
 	function conflictCommits(targetTable, mode, { code, failFirst = Infinity } = {}) {
 		const { Transaction } = require('@harperfast/rocksdb-js');
 		const originalCommit = Transaction.prototype.commit;

@@ -1276,12 +1276,7 @@ export class DatabaseTransaction implements Transaction {
 	} {
 		const txn = transaction as RocksTransactionWithRetry | null | undefined;
 		if (txn?.commitStartedAt != null) return txn;
-		if (this.saveCommits && txn) {
-			const chainRoot = this.root ?? this;
-			if (chainRoot.commitStartedAt != null && !this.hasSiblingCommitInFlight(transaction ?? undefined)) {
-				txn.commitStartedAt = chainRoot.commitStartedAt;
-				chainRoot.commitStartedAt = undefined;
-			}
+		if (this.saveCommits && txn && this.hasSiblingCommitInFlight(transaction ?? undefined)) {
 			return txn;
 		}
 		return this.root ?? this;
@@ -1298,6 +1293,18 @@ export class DatabaseTransaction implements Transaction {
 			handles = this.activeCommitHandles = new Set();
 		}
 		if (this.activeCommitHandle) {
+			if (this.saveCommits) {
+				const first = this.activeCommitHandle as RocksTransactionWithRetry;
+				const chainRoot = this.root ?? this;
+				if (chainRoot.commitStartedAt != null && first.commitStartedAt == null) {
+					first.commitStartedAt = chainRoot.commitStartedAt;
+					chainRoot.commitStartedAt = undefined;
+				}
+				if (chainRoot.commitOverdueLogged) {
+					first.commitOverdueLogged = true;
+					chainRoot.commitOverdueLogged = undefined;
+				}
+			}
 			handles.add(this.activeCommitHandle);
 			this.activeCommitHandle = undefined;
 		}
@@ -1349,7 +1356,7 @@ export class DatabaseTransaction implements Transaction {
 		hasSiblingInFlight: boolean
 	): boolean {
 		const stagedOn = write?.stagedOn as RocksTransactionWithRetry | undefined;
-		if (!stagedOn || stagedOn === targetTransaction) return false;
+		if (!stagedOn || stagedOn === targetTransaction || stagedOn.abortedByWrapper || stagedOn.committed) return false;
 		if (hasSiblingInFlight && (targetTransaction || this.isActiveCommitHandle(stagedOn))) return true;
 		return Boolean(stagedOn.commitInFlight || hasDurableLog(stagedOn));
 	}
@@ -2403,7 +2410,11 @@ export class DatabaseTransaction implements Transaction {
 									this.startedFrom
 								);
 								this.releaseActiveCommitHandle(replayTransaction);
-								this.abort(false, true, this.hasSiblingCommitInFlight(replayTransaction) ? replayTransaction : undefined);
+								this.abort(
+									false,
+									true,
+									this.hasSiblingCommitInFlight(replayTransaction) ? replayTransaction : undefined
+								);
 								throw error;
 							}
 						}
@@ -2945,6 +2956,7 @@ export class DatabaseTransaction implements Transaction {
 			const retryTxn = targetTransaction as RocksTransactionWithRetry | undefined;
 			if (retryTxn) this.releaseActiveCommitHandle(retryTxn);
 			if (retryTxn && retryTxn !== this.transaction && !retryTxn.committed && !retryTxn.commitInFlight) {
+				releaseTransactionLockHolds(retryTxn);
 				abortNativeTransaction(
 					retryTxn,
 					'aborting a retry transaction after pre-commit failure',
@@ -2955,7 +2967,7 @@ export class DatabaseTransaction implements Transaction {
 			// Not "always retain": abort(true) keeps the native handle only while read iterators still
 			// own it. resources/transaction.ts's own post-error abort passes the same argument, so the
 			// two layers cannot contradict each other one frame apart.
-			this.abort(true, true, this.hasSiblingCommitInFlight(targetTransaction) ? targetTransaction : undefined);
+			this.abort(true, true, targetTransaction);
 		} catch (abortError) {
 			harperLogger.debug?.('aborting transaction after a failed commit', abortError);
 		}
@@ -2968,14 +2980,16 @@ export class DatabaseTransaction implements Transaction {
 		const next = cascade && !preserveActiveWrites ? this.next : undefined;
 		if (cascade && !retainReadTransaction && !preserveActiveWrites) this.next = null;
 		try {
-			const ownsCurrentTransaction = !targetTransaction || this.transaction === targetTransaction;
+			const ownsCurrentTransaction =
+				!hasSiblingInFlight || !targetTransaction || this.transaction === targetTransaction;
+			const currentTxn = this.transaction as RocksTransactionWithRetry | null | undefined;
 			const currentTxnActive =
-				Boolean(this.transaction) &&
-				(Boolean((this.transaction as RocksTransactionWithRetry).commitInFlight) ||
-					hasDurableLog(this.transaction) ||
-					(Boolean(targetTransaction) &&
-						this.transaction !== targetTransaction &&
-						this.isActiveCommitHandle(this.transaction)));
+				Boolean(currentTxn) &&
+				!currentTxn.abortedByWrapper &&
+				!currentTxn.committed &&
+				(Boolean(currentTxn.commitInFlight) ||
+					hasDurableLog(currentTxn) ||
+					(Boolean(targetTransaction) && currentTxn !== targetTransaction && this.isActiveCommitHandle(currentTxn)));
 			if (ownsCurrentTransaction && !currentTxnActive) {
 				const hasOpenReadIterator =
 					retainReadTransaction &&
@@ -3016,7 +3030,8 @@ export class DatabaseTransaction implements Transaction {
 				if (this.writes.length === 0 && !preserveActiveWrites) {
 					this.timestamp = 0; // a lock stamp pinned for this write set must not leak into the next
 					this.retries = 0;
-					if (!targetTransaction) releaseTransactionLockHolds(nativeTxn);
+					releaseTransactionLockHolds(nativeTxn);
+					if (this.transaction && this.transaction !== nativeTxn) releaseTransactionLockHolds(this.transaction);
 					this.releaseRecordLocks();
 				}
 				// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
