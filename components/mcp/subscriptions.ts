@@ -30,6 +30,8 @@ export class SubscriptionCancelledError extends Error {}
 /** sessionId → (uri → live subscription). */
 const live = new Map<string, Map<string, ResourceSubscription>>();
 
+const RESTORE_CONCURRENCY = 8;
+
 interface PendingSetup {
 	cancelled?: string;
 }
@@ -164,8 +166,8 @@ export function dropSessionSubscriptions(sessionId: string): void {
 /**
  * Re-establish subscriptions on SSE reconnect from the durable URI list, owned
  * by `owner` (the reconnecting GET's record). Every URI is reserved up front, so
- * an unsubscribe for one not reached yet cancels it. Stops once `owner` is no
- * longer the registered record. Returns the URIs to keep on the durable list:
+ * an unsubscribe for one not reached yet cancels it. Admits a few at a time and
+ * starts no new one once `owner` is no longer the registered record. Returns the URIs to keep on the durable list:
  * all but those a registered resource reported not subscribable. A URI whose
  * subscribe threw stays, so a transient failure is retried on the next
  * reconnect; so does a URI nothing on this worker matches yet (its component
@@ -180,25 +182,28 @@ export async function restoreResourceSubscriptions(
 ): Promise<string[]> {
 	if (!owner) return [...uris];
 	const setups = uris.map((uri) => reserve(sessionId, uri));
-	const kept: string[] = [];
-	for (let index = 0; index < uris.length; index++) {
-		const uri = uris[index];
-		if (getRegisteredSession(sessionId) !== owner) {
-			for (let rest = index; rest < uris.length; rest++) deletePending(sessionId, uris[rest], setups[rest]);
-			kept.push(...uris.slice(index));
-			break;
-		}
-		try {
-			if (await admit(sessionId, uri, user, profile, owner, setups[index])) kept.push(uri);
-			else if (!isRecognizedResourceUri(uri, profile)) kept.push(uri);
-		} catch (err) {
-			kept.push(uri);
-			if (!(err instanceof SubscriptionCancelledError)) {
-				harperLogger.warn(`MCP subscription restore ${uri} failed, kept for the next reconnect: ${describeError(err)}`);
+	const pruned = new Set<number>();
+	let next = 0;
+	// A few at a time, so one author subscribe waiting on I/O does not hold back the rest.
+	const restoreNext = async (): Promise<void> => {
+		while (next < uris.length && getRegisteredSession(sessionId) === owner) {
+			const index = next++;
+			const uri = uris[index];
+			try {
+				const subscribed = await admit(sessionId, uri, user, profile, owner, setups[index]);
+				if (!subscribed && isRecognizedResourceUri(uri, profile)) pruned.add(index);
+			} catch (err) {
+				if (!(err instanceof SubscriptionCancelledError)) {
+					harperLogger.warn(
+						`MCP subscription restore ${uri} failed, kept for the next reconnect: ${describeError(err)}`
+					);
+				}
 			}
 		}
-	}
-	return kept;
+	};
+	await Promise.all(Array.from({ length: Math.min(RESTORE_CONCURRENCY, uris.length) }, restoreNext));
+	for (let index = next; index < uris.length; index++) deletePending(sessionId, uris[index], setups[index]);
+	return uris.filter((_, index) => !pruned.has(index));
 }
 
 /** Whether `uri` is subscribed on `sessionId`, or a subscribe for it is still being set up. */
