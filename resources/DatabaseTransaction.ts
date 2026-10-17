@@ -5,6 +5,8 @@ import {
 	ClientError,
 	DatabaseClosingError,
 	DatabaseDrainTimeoutError,
+	ReplicationConfirmationError,
+	withoutReplicationUnconfirmed,
 	ServerError,
 	TransactionCommitConflictTimeoutError,
 } from '../utility/errors/hdbError.ts';
@@ -463,6 +465,39 @@ let confirmationFeasibility:
 export function replicationConfirmation(callback, feasibility?: typeof confirmationFeasibility) {
 	confirmReplication = callback;
 	confirmationFeasibility = feasibility;
+}
+
+export function confirmReplicationAfterCommit(callback: () => unknown): Promise<void> {
+	let result;
+	try {
+		result = callback();
+	} catch (error) {
+		result = Promise.reject(error);
+	}
+	const confirmation = Promise.resolve(result).then(
+		() => {},
+		(error) => {
+			throw new ReplicationConfirmationError(error);
+		}
+	);
+	confirmation.catch(() => {});
+	return confirmation;
+}
+
+export function settleCommitCompletions(completions: unknown[], confirmation?: Promise<void>): Promise<void> {
+	if (completions.length === 0) return confirmation ?? Promise.resolve();
+	let deferredConfirmationError: ReplicationConfirmationError;
+	const localCompletions = completions.map((completion) =>
+		Promise.resolve(completion).catch((error) => {
+			if (error instanceof ReplicationConfirmationError) deferredConfirmationError ??= error;
+			else throw error;
+		})
+	);
+	// A confirmation failure must not abort a chained local commit that has yet to land.
+	return Promise.all(localCompletions).then(() => {
+		if (deferredConfirmationError) throw deferredConfirmationError;
+		return confirmation;
+	});
 }
 let txnExpiration = envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONOPENTIME) ?? 30000;
 
@@ -2292,6 +2327,7 @@ export class DatabaseTransaction implements Transaction {
 								const store = this.writes[0]?.store;
 								if (store) completions.push(store.flushed);
 							}
+							let confirmation: Promise<void>;
 							if (this.replicatedConfirmation) {
 								// if we want to wait for replication confirmation, we need to track the transaction times
 								// and when replication notifications come in, we count the number of confirms until we reach the desired number
@@ -2303,7 +2339,7 @@ export class DatabaseTransaction implements Transaction {
 											? this.confirmationTarget(committedLogKey, committedTransaction)
 											: undefined;
 									if (target) {
-										completions.push(
+										confirmation = confirmReplicationAfterCommit(() =>
 											confirmReplication(
 												databaseName,
 												target.version,
@@ -2314,7 +2350,7 @@ export class DatabaseTransaction implements Transaction {
 									}
 								} catch (error) {
 									const refusal = Promise.reject(error);
-									refusal.catch(() => {}); // surfaces through Promise.all(completions), even if bookkeeping throws first
+									refusal.catch(() => {}); // surfaces through local completions, even if bookkeeping throws first
 									completions.push(refusal);
 								}
 							}
@@ -2336,7 +2372,11 @@ export class DatabaseTransaction implements Transaction {
 							this.releaseContext(!!options.doneWriting);
 							let txnTime = this.timestamp;
 							this.timestamp = 0; // reset the timestamp as well
-							return Promise.all(completions).then(
+							const completed =
+								confirmation || (this.root ?? this).replicatedConfirmation
+									? settleCommitCompletions(completions, confirmation)
+									: Promise.all(completions);
+							return completed.then(
 								() => {
 									// Only once the chained store's commit has settled, as on the synchronous path: a
 									// partially failed mid-scope commit must not leave the scope resumable.
@@ -2585,6 +2625,10 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	protected abortAfterCommitError(error): never {
+		try {
+			if (error?.replicationUnconfirmed === true && this.hasPendingWrites())
+				error = withoutReplicationUnconfirmed(error);
+		} catch {}
 		try {
 			// Not "always retain": abort(true) keeps the native handle only while read iterators still
 			// own it. resources/transaction.ts's own post-error abort passes the same argument, so the
