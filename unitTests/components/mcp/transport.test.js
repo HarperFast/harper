@@ -1556,7 +1556,7 @@ describe('mcp/transport', () => {
 				release();
 				await until(async () => !(await durable(session)).includes(gone));
 				assert.deepEqual(await durable(session), [added]);
-				assert.ok(!requested.includes('later'), 'a URI unsubscribed before restore reached it is never acquired');
+				assert.equal(_liveSubscriptionCount(session.id), 1, 'only the subscribe that landed stays live');
 			});
 
 			it('keeps a URI that a subscribe took over while restore was pruning it', async () => {

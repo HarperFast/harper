@@ -87,7 +87,8 @@ A handful of design points are non-obvious and easy to break:
   it started plus a per-`(session, uri)` pending token, and installs only if that record is still registered and
   no unsubscribe, re-subscribe or drop overtook the token — otherwise it releases the stream and throws
   `SubscriptionCancelledError`. Delivery starts only after admission and pushes only to that record. Restore
-  reserves every URI before it starts, stops when its GET is superseded, and prunes only URIs a registered
+  reserves every URI before it starts, admits up to 8 at a time, stops starting new ones when its GET is
+  superseded, and prunes only URIs a registered
   resource reported not subscribable — a thrown subscribe, and a URI nothing on the worker matches yet (its
   component may still be loading), stay. The prune is decided inside its queued write, against GET ownership
   and current subscription intent at that moment. Restore runs in the background after the GET returns its

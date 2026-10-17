@@ -213,22 +213,38 @@ describe('mcp/subscriptions', () => {
 			assert.equal(frames.length, 0);
 		});
 
-		it('stops restoring once a newer GET supersedes it, keeping every URI it did not settle', async () => {
+		it('starts no new restore once a newer GET supersedes it, keeping every URI it did not settle', async () => {
 			const owner = registerSession('s1', 'application', USER);
 			const gate = deferred();
 			const requested = [];
+			const streams = [];
 			_setSubscribeImplForTest(async (path) => {
 				requested.push(path);
 				await gate.promise;
-				return fake;
+				const stream = makeFakeStream();
+				streams.push(stream);
+				return stream;
 			});
-			const restoring = restoreResourceSubscriptions('s1', [URI, URI_B], USER, 'application', owner);
+			const uris = Array.from({ length: 10 }, (_, i) => `https://app.test:9926/Product/${i}`);
+			const restoring = restoreResourceSubscriptions('s1', uris, USER, 'application', owner);
+			await turns();
 			registerSession('s1', 'application', USER);
 			gate.resolve();
-			assert.deepEqual(await restoring, [URI, URI_B]);
-			assert.deepEqual(requested, ['Product/1'], 'the second URI is never acquired for the superseded GET');
-			assert.equal(fake.endCalls, 1);
+			assert.deepEqual(await restoring, uris);
+			assert.equal(requested.length, 8, 'only the first batch was ever acquired for the superseded GET');
+			assert.ok(
+				streams.every((stream) => stream.endCalls >= 1),
+				'every acquired stream was released'
+			);
 			assert.equal(_liveSubscriptionCount('s1'), 0);
+		});
+
+		it('restores the other URIs while one subscribe hangs', async () => {
+			const owner = registerSession('s1', 'application', USER);
+			_setSubscribeImplForTest(async (path) => (path === 'Product/1' ? new Promise(() => {}) : makeFakeStream()));
+			void restoreResourceSubscriptions('s1', [URI, URI_B], USER, 'application', owner);
+			await turns();
+			assert.equal(_liveSubscriptionCount('s1'), 1, 'the second URI is live although the first never settles');
 		});
 
 		it('never acquires a URI unsubscribed before restore reached it', async () => {
@@ -237,15 +253,16 @@ describe('mcp/subscriptions', () => {
 			const requested = [];
 			_setSubscribeImplForTest(async (path) => {
 				requested.push(path);
-				if (path === 'Product/1') await gate.promise;
+				await gate.promise;
 				return makeFakeStream();
 			});
-			const restoring = restoreResourceSubscriptions('s1', [URI, URI_B], USER, 'application', owner);
-			removeResourceSubscription('s1', URI_B);
+			const uris = Array.from({ length: 9 }, (_, i) => `https://app.test:9926/Product/${i}`);
+			const restoring = restoreResourceSubscriptions('s1', uris, USER, 'application', owner);
+			removeResourceSubscription('s1', uris[8]);
 			gate.resolve();
 			await restoring;
-			assert.deepEqual(requested, ['Product/1']);
-			assert.equal(_liveSubscriptionCount('s1'), 1);
+			assert.ok(!requested.includes('Product/8'), 'the URI past the first batch was cancelled before acquisition');
+			assert.equal(_liveSubscriptionCount('s1'), 8);
 		});
 
 		it('keeps restoring past a rejection whose reason cannot be printed', async () => {
