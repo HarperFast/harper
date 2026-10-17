@@ -790,6 +790,10 @@ and last-worker duties never land on one. The invariants:
 
 Node's `http` client is a misleading probe here: after a complete response arrives while its request waits for `'drain'`, it never resumes writing, although the server has read every byte it sent. The tests use raw sockets: `unitTests/server/serverHelpers/multipartParser.test.js`, the socket cases in `unitTests/server/serverHelpers/contentTypes.test.js`, and `integrationTests/deploy/deploy-multipart-stream.test.ts`.
 
+## `request-time` starts at dispatch entry (`server/http.ts`)
+
+`duration` starts at `requestHandler` entry, so the non-GET throttle queue is invisible to it. Every request that goes through the throttle, whether or not it waited, gets `receivedAt`, a `performance.now()` taken in `dispatchRequest` on the Node servers and in the uWS handler before it is queued, and `request-time` is recorded for it next to `duration` with the same key and `endTime`, by the HTTP response path or, for a request handed to Fastify, by `requestTimePlugin.js`; a uWS request injected into Fastify keeps no stamp and records `duration` only. GET, HEAD and OPTIONS are handled in the same synchronous call, and Bun.serve has no queue, so neither records `request-time`: it would equal `duration`. The difference between the two metrics is the server-side wait before the handler: the throttle queue and, for a request cascaded to Fastify, the Harper chain that ran before the cascade, such as authentication for operations requests. The event-loop wait before a request is read is `event-loop-delay`'s, per thread, within a report window: the histogram resets when a window opens, so a stall during an idle gap, before any request of the window arrived, is not reported; a stamp taken from the HTTP parser cannot see it, because a consumed parser runs inside the socket read callback, and only adds the client's header-transmission time.
+
 ## On a pointer-compression Node, no standard-V8-ABI addon is dlopen'ed (`server/threads/nativeAddonGuard.ts`, `utility/nativeAddonAbi.ts`)
 
 V8 pointer compression changes V8's C++ ABI but not `NODE_MODULE_VERSION`. So an addon that links

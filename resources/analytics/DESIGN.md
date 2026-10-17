@@ -37,6 +37,12 @@ analytics record, whose `time` is an end-of-cycle stamp, so a restart mid-drain 
 the backlog; and `storeMetric` discards `table.put()`'s result, so the cursor advances past raw
 records whose aggregate rows failed to commit. Both need a cursor persisted with the rows.
 
+## Per-thread rows carry a `thread` attribute under their own metric name (`resources/analytics/write.ts`)
+
+A raw entry marked `perThread: true` is rolled up per `(metric, path, method, type, threadId)` and stored as one row per thread with `thread` set, the way `path`, `method` and `type` are dimensions. `event-loop-delay` is recorded that way by every thread that has `perf_hooks.monitorEventLoopDelay` (Bun does not): a histogram at 20 ms (`server/eventLoopDelay.ts`). It is reset when a report window opens and read before the flush's first yield, so a report's delay covers its own window, and a stall during an idle gap before the window's first request is not reported (`server/DESIGN.md`). A reset discards the interval up to the next firing, so a stall that begins in the same loop turn as a reset, the flush's or the one that opens a window, is not measured, and if it runs past the deadline the report has no `event-loop-delay` entry. The flush reads one timer turn after its deadline, so a stall that began after the sampler's last firing and ran past the deadline is in that report. The sampled metrics in `PER_THREAD_METRICS` are additionally rolled up per thread under a second name (`duration` as `duration-by-thread`, `count` and `mean` only), never as extra rows of their own metric: a consumer that sums every `duration` row would double count. The per-thread rows cost one row per thread per key per period and are bounded only by the aggregate retention; there is no switch, by choice, until a deployment shows the growth matters. Rows stay flat scalars because the Grafana datasource's Go backend has no case for an object-valued attribute and panics on one.
+
+`byThread` gauges still fold into one row (sum across threads, peaks per thread). The fold sums the measures the thread records carry and leaves `period` alone, so the row keeps the aggregation window instead of a zeroed `period`, and thread records are built without `threadId`, so the row carries no summed thread id.
+
 ## Aggregation folds each measure over only the samples that carry it (`resources/analytics/write.ts`)
 
 A key's raw samples need not carry the same measures: callback metrics (`recordAction(fn)`) and
