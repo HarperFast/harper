@@ -2741,7 +2741,6 @@ describe('Transactions are never aborted once durably written to the transaction
 					message: 'holder1 should be parked in its first commit conflict',
 				});
 
-				// Stage a deferred write on holder2 WITHOUT calling holder2.save() yet.
 				holder2.set('writer', 'holder2-unsaved');
 				holder2.set('count', 2);
 				assert.strictEqual(
@@ -2753,7 +2752,6 @@ describe('Transactions are never aborted once durably written to the transaction
 				releaseHolder1Retry();
 				await save1Promise;
 
-				// holder1's retry must NOT have committed holder2's unsaved write, nor dropped it from this.writes.
 				assert.strictEqual(AuditedA.primaryStore.getEntry(key1).value.writer, 'holder1-saved');
 				assert.strictEqual(
 					AuditedA.primaryStore.getEntry(key2).value.writer,
@@ -2766,7 +2764,6 @@ describe('Transactions are never aborted once durably written to the transaction
 					'holder1 clearWrites must preserve holder2 unsaved deferred write'
 				);
 
-				// Now execute a second save on the now-CLOSED ImmediateTransaction (whose outer performCommit calls clearWrites(undefined)).
 				holder1.set('writer', 'holder1-saved-2');
 				holder1.set('count', 3);
 				await holder1.save();
@@ -2777,7 +2774,6 @@ describe('Transactions are never aborted once durably written to the transaction
 					'CLOSED-path ImmediateTransaction clearWrites(undefined) must preserve holder2 unsaved deferred write'
 				);
 
-				// Calling holder2.save() must now commit holder2's staged write cleanly with a single audit entry.
 				const auditBefore = auditEntriesFor(AuditedA, key2).length;
 				await holder2.save();
 				assert.strictEqual(AuditedA.primaryStore.getEntry(key2).value.writer, 'holder2-unsaved');
@@ -2826,7 +2822,6 @@ describe('Transactions are never aborted once durably written to the transaction
 				const siblingSavedBlobs = [{}];
 				deferredWrite2.savedBlobs = siblingSavedBlobs;
 
-				// A targeted abort from a failed sibling handle must preserve holder2's unsaved deferred write and its blobs.
 				const failedHandle = new Transaction(AuditedA.primaryStore.store);
 				failedHandle.abort();
 				sharedCtx.transaction.abort(true, true, failedHandle);
@@ -2840,7 +2835,6 @@ describe('Transactions are never aborted once durably written to the transaction
 					'targeted abort for a failed sibling handle must keep unsaved deferred write in writes'
 				);
 
-				// An untargeted abort() on the idle ImmediateTransaction must clean up the unsaved deferred write's blobs and drop it.
 				sharedCtx.transaction.abort();
 				assert.strictEqual(
 					siblingSavedBlobs.length,
@@ -2923,13 +2917,11 @@ describe('Transactions are never aborted once durably written to the transaction
 						await AuditedA.put({ id: keyA1, writer: 'seg1-a', count: 1 }, ctx);
 						await AuditedB.put({ id: keyB1, writer: 'seg1-b', count: 1 }, ctx);
 
-						// Start mid-scope commit: head store A commits, then chains into store B which parks at b1Gate.
 						const midCommitPromise = Promise.resolve(dbTxn.commit({}));
 						await waitFor(() => parkedInB1, {
 							message: 'chained store B should park in mid-scope commit',
 						});
 
-						// Issue a late write directly on CLOSED head store A while mid-scope commit is waiting on store B.
 						lateAHolder.set('writer', 'late-a');
 						lateAHolder.set('count', 9);
 						latePutPromise = Promise.resolve(lateAHolder.save());
@@ -2937,7 +2929,6 @@ describe('Transactions are never aborted once durably written to the transaction
 							message: 'late immediate write on store A should park in commit',
 						});
 
-						// Now let store B finish the mid-scope commit while latePutPromise is still in flight on store A.
 						releaseB1();
 						await midCommitPromise;
 
@@ -2952,8 +2943,6 @@ describe('Transactions are never aborted once durably written to the transaction
 							'mid-scope commit must detach the CLOSED chained link for store B so segment 2 stages into a fresh OPEN link'
 						);
 
-						// In segment 2, acquire a scoped lock and stage writes on both head store A and chained store B
-						// BEFORE latePutPromise settles, then verify latePutPromise does not wipe segment 2's state.
 						await AuditedA.lock(keyA2, { lease: 15_000 }, ctx);
 						await AuditedA.put({ id: keyA2, writer: 'seg2-a', count: 2 }, ctx);
 						await AuditedB.put({ id: keyB2, writer: 'seg2-b', count: 2 }, ctx);
@@ -2961,6 +2950,16 @@ describe('Transactions are never aborted once durably written to the transaction
 						releaseLateA();
 						await latePutPromise;
 
+						assert.strictEqual(
+							AuditedA.primaryStore.getEntry(keyA2).value.writer,
+							'seed-a2',
+							'late immediate commit must not commit segment 2 writes staged on head store A'
+						);
+						assert.strictEqual(
+							AuditedB.primaryStore.getEntry(keyB2).value.writer,
+							'seed-b2',
+							'late immediate commit must not cascade into segment 2 chained store B'
+						);
 						assert.ok(
 							dbTxn.writes.some((w) => w?.key === keyA2),
 							'late immediate commit must not clear segment 2 writes staged on head store A'
@@ -2976,12 +2975,10 @@ describe('Transactions are never aborted once durably written to the transaction
 							'late immediate commit must not release segment 2 record locks on head store A'
 						);
 
-						// Commit segment 2 via another mid-scope commit; both keyA2 and keyB2 must land.
 						await dbTxn.commit({});
 						assert.strictEqual(AuditedA.primaryStore.getEntry(keyA2).value.writer, 'seg2-a');
 						assert.strictEqual(AuditedB.primaryStore.getEntry(keyB2).value.writer, 'seg2-b');
 
-						// Now stage a segment 3 write on store B and roll back segment 3.
 						await AuditedB.put({ id: keyB3, writer: 'seg3-b-rolled-back', count: 3 }, ctx);
 						throw new Error('rollback segment 3');
 					}),
@@ -3006,9 +3003,11 @@ describe('Transactions are never aborted once durably written to the transaction
 		it('does not rotate an explicitly aborted scope back to OPEN when a logged mid-scope commit settles in the background', async function () {
 			this.timeout(20000);
 			const midKey = id('midscope-logged');
-			const afterAbortKey = id('after-abort-key');
+			const midKeyB = id('midscope-logged-b');
+			const lateKey = id('midscope-late');
 			await AuditedA.put({ id: midKey, writer: 'seed-mid', count: 0 });
-			await AuditedA.put({ id: afterAbortKey, writer: 'seed-after', count: 0 });
+			await AuditedB.put({ id: midKeyB, writer: 'seed-mid-b', count: 0 });
+			await AuditedA.put({ id: lateKey, writer: 'seed-late', count: 0 });
 
 			const targetDb = AuditedA.primaryStore.store.db;
 			const origCommit = Transaction.prototype.commit;
@@ -3039,17 +3038,15 @@ describe('Transactions are never aborted once durably written to the transaction
 			await transaction(ctx, async () => {
 				const dbTxn = ctx.transaction;
 				await AuditedA.put({ id: midKey, writer: 'mid-committed', count: 1 }, ctx);
-				// Trigger a mid-scope commit (not doneWriting) that parks after logging its entry.
+				await AuditedB.put({ id: midKeyB, writer: 'mid-committed-b', count: 1 }, ctx);
 				const midCommitPromise = Promise.resolve(dbTxn.commit({}));
 				await waitFor(() => parkedInMidRetry, {
 					message: 'mid-scope commit should park in its first conflict',
 				});
 
-				// Explicitly abort the outer scope while the logged mid-scope commit is still retrying.
 				dbTxn.abort();
 				assert.strictEqual(dbTxn.open, 0, 'explicit abort must leave the transaction CLOSED');
 
-				// Let the logged mid-scope commit finish retrying and settle.
 				releaseMidRetry();
 				await midCommitPromise;
 
@@ -3059,7 +3056,90 @@ describe('Transactions are never aborted once durably written to the transaction
 					'settling the logged mid-scope commit must not rotate an explicitly aborted scope back to OPEN'
 				);
 				assert.strictEqual(AuditedA.primaryStore.getEntry(midKey).value.writer, 'mid-committed');
+				assert.strictEqual(
+					AuditedB.primaryStore.getEntry(midKeyB).value.writer,
+					'mid-committed-b',
+					'untargeted abort while head logged commit is in flight must not abort chained store B'
+				);
 			});
+
+			let failScopeTxnId;
+			let parkedInFailScope = false;
+			let releaseFailScope;
+			const failScopeGate = new Promise((resolve) => {
+				releaseFailScope = resolve;
+			});
+			pendingRestores.push(() => releaseFailScope());
+
+			let lateTxnId;
+			let parkedInLateCommit = false;
+			let releaseLateCommit;
+			const lateCommitGate = new Promise((resolve) => {
+				releaseLateCommit = resolve;
+			});
+			pendingRestores.push(() => releaseLateCommit());
+
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== targetDb) return origCommit.apply(this, args);
+				if (failScopeTxnId === undefined) {
+					failScopeTxnId = this.id;
+					parkedInFailScope = true;
+					await failScopeGate;
+					throw new Error('terminal head commit error');
+				}
+				if (this.id !== failScopeTxnId && lateTxnId === undefined) {
+					lateTxnId = this.id;
+					parkedInLateCommit = true;
+					await lateCommitGate;
+				}
+				return origCommit.apply(this, args);
+			};
+
+			const ctx2 = {};
+			let txn2;
+			let lateHolder;
+			let lateSavePromise;
+			try {
+				const scopePromise = transaction(ctx2, async () => {
+					txn2 = ctx2.transaction;
+					lateHolder = await AuditedA.lock(lateKey, { hold: true, lease: 15_000 }, ctx2);
+					await AuditedA.lock(midKey, { lease: 15_000 }, ctx2);
+					await AuditedA.put({ id: midKey, writer: 'failed-scope-write', count: 2 }, ctx2);
+				});
+
+				await waitFor(() => parkedInFailScope, {
+					message: 'scope final commit should park',
+				});
+
+				lateHolder.set('writer', 'late-committed');
+				lateHolder.set('count', 3);
+				lateSavePromise = Promise.resolve(lateHolder.save());
+				await waitFor(() => parkedInLateCommit, {
+					message: 'late immediate write should park in commit',
+				});
+
+				releaseFailScope();
+				await assert.rejects(scopePromise, /terminal head commit error/);
+
+				assert.ok(
+					txn2.recordLocks?.get(AuditedA.primaryStore)?.has(midKey),
+					'record lock on failed CLOSED scope stays held while sibling late immediate commit is still in flight'
+				);
+
+				releaseLateCommit();
+				await lateSavePromise;
+
+				assert.strictEqual(AuditedA.primaryStore.getEntry(lateKey).value.writer, 'late-committed');
+				assert.strictEqual(
+					Boolean(txn2.recordLocks?.get(AuditedA.primaryStore)?.has(midKey)),
+					false,
+					'settling the last late immediate commit on a CLOSED scope must release its record locks'
+				);
+				const verifyLock = await AuditedA.lock(midKey, { timeout: 30 }, {});
+				await verifyLock.unlock();
+			} finally {
+				await lateHolder?.unlock?.();
+			}
 		});
 	});
 });
