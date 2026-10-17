@@ -1151,15 +1151,27 @@ describe('Transactions are never aborted once durably written to the transaction
 			pendingRestores.push(() => holdSecondRetry());
 			let parkedInOverdueRetry = false;
 
+			let parkedInAttempt1AfterLease = false;
+			let releaseAttempt1;
+			const attempt1Gate = new Promise((resolve) => {
+				releaseAttempt1 = resolve;
+			});
+			pendingRestores.push(() => releaseAttempt1());
+
 			Transaction.prototype.commit = async function (...args) {
 				if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
 				if (trackedTxnId === undefined) {
 					trackedTxnId = this.id;
 					attemptCount++;
 					await putWithTimestamp(AuditedA, { id: recordId, writer: 'interposer', count: 1 }, baseNow - 5_000);
-					const res = await originalCommit.apply(this, args);
-					await delay(lease + 60);
-					return res;
+					try {
+						return await originalCommit.apply(this, args);
+					} finally {
+						await delay(lease + 60);
+						parkedInAttempt1AfterLease = true;
+						await attempt1Gate;
+						context.transaction.commitStartedAt = performance.now() - WELL_PAST_BUDGET_MS;
+					}
 				}
 				if (this.id !== trackedTxnId) return originalCommit.apply(this, args);
 				attemptCount++;
@@ -1180,7 +1192,6 @@ describe('Transactions are never aborted once durably written to the transaction
 				rec.set('writer', 'overdue-holder');
 				rec.set('count', 10);
 				await rec.save();
-				context.transaction.commitStartedAt = performance.now() - WELL_PAST_BUDGET_MS;
 			});
 			txnAPromise.then(
 				() => {
@@ -1190,6 +1201,16 @@ describe('Transactions are never aborted once durably written to the transaction
 					txnASettled = true;
 				}
 			);
+
+			await waitFor(() => parkedInAttempt1AfterLease, {
+				message: 'attempt 1 should park after lease expiry while commit hold is still retained',
+			});
+			await assert.rejects(
+				AuditedA.lock(recordId, { lease: 1000, timeout: 40 }),
+				(err) => err.statusCode === 423,
+				'contender must be blocked by retained commit hold before overdue retry releases it'
+			);
+			releaseAttempt1();
 
 			await waitFor(() => parkedInOverdueRetry || txnASettled, {
 				message: 'logged transaction should reach attempt 2 after budget expiry',
@@ -1385,7 +1406,7 @@ describe('Transactions are never aborted once durably written to the transaction
 			const recordId = id('lock-wedged-commit');
 			await AuditedA.put({ id: recordId, writer: 'seed', count: 0 });
 
-			const prevMaxDuration = setMaxOutstandingTxnDuration(150);
+			const prevMaxDuration = setMaxOutstandingTxnDuration(350);
 			pendingRestores.push(() => setMaxOutstandingTxnDuration(prevMaxDuration));
 
 			const targetDb = AuditedA.primaryStore.store.db;
@@ -1413,12 +1434,18 @@ describe('Transactions are never aborted once durably written to the transaction
 			});
 
 			const holder = await AuditedA.lock(recordId, { hold: true, lease: MIN_LOCK_LEASE_MS });
-			holder.getContext().transaction.timeoutBudget = 150;
+			holder.getContext().transaction.timeoutBudget = 350;
 			holder.set('writer', 'wedged-holder');
 			holder.set('count', 1);
 			const savePromise = holder.save();
 
 			await waitFor(() => enteredCommit, { message: 'holder commit should enter wedged native commit' });
+			await delay(MIN_LOCK_LEASE_MS + 40);
+			await assert.rejects(
+				AuditedA.lock(recordId, { lease: 1000, timeout: 40 }),
+				(err) => err.statusCode === 423,
+				'contender must be blocked after lease expiry while hold-deadline timer is still pending'
+			);
 			const contender = await AuditedA.lock(recordId, { lease: 1000, timeout: 1000 });
 			await contender.unlock();
 
@@ -2667,7 +2694,7 @@ describe('Transactions are never aborted once durably written to the transaction
 			}
 		});
 
-		it('does not sweep or drop a sibling holder unsaved deferred write when another holder ImmediateTransaction.save() retries past ERR_BUSY', async function () {
+		it('does not sweep or drop a sibling holder unsaved deferred write when another holder ImmediateTransaction.save() retries past ERR_BUSY or commits on the CLOSED path', async function () {
 			this.timeout(20000);
 			const key1 = id('deferred-save-1');
 			const key2 = id('deferred-save-2');
@@ -2701,7 +2728,8 @@ describe('Transactions are never aborted once durably written to the transaction
 
 			const holder1 = await AuditedA.lock(key1, { hold: true, lease: 15_000 });
 			const sharedCtx = holder1.getContext();
-			const holder2 = await AuditedA.lock(key2, { hold: true, lease: 15_000 }, sharedCtx);
+			// Acquire holder2 WITHOUT hold: true so holder2.set(...) immediately registers a deferSave: true, saved: false write.
+			const holder2 = await AuditedA.lock(key2, { lease: 15_000 }, sharedCtx);
 			try {
 				assert.strictEqual(holder1.getContext().transaction, holder2.getContext().transaction);
 
@@ -2716,6 +2744,11 @@ describe('Transactions are never aborted once durably written to the transaction
 				// Stage a deferred write on holder2 WITHOUT calling holder2.save() yet.
 				holder2.set('writer', 'holder2-unsaved');
 				holder2.set('count', 2);
+				assert.strictEqual(
+					sharedCtx.transaction.writes.some((w) => w?.key === key2 && w.deferSave && !w.saved),
+					true,
+					'holder2.set() on a non-hold lock must immediately stage a deferSave: true, saved: false write'
+				);
 
 				releaseHolder1Retry();
 				await save1Promise;
@@ -2727,14 +2760,214 @@ describe('Transactions are never aborted once durably written to the transaction
 					'seed-2',
 					'holder2 unsaved deferred write must not be committed by holder1 retry'
 				);
+				assert.strictEqual(
+					sharedCtx.transaction.writes.some((w) => w?.key === key2 && w.deferSave && !w.saved),
+					true,
+					'holder1 clearWrites must preserve holder2 unsaved deferred write'
+				);
 
-				// Now calling holder2.save() must commit holder2's staged write cleanly.
+				// Now execute a second save on the now-CLOSED ImmediateTransaction (whose outer performCommit calls clearWrites(undefined)).
+				holder1.set('writer', 'holder1-saved-2');
+				holder1.set('count', 3);
+				await holder1.save();
+				assert.strictEqual(AuditedA.primaryStore.getEntry(key1).value.writer, 'holder1-saved-2');
+				assert.strictEqual(
+					sharedCtx.transaction.writes.some((w) => w?.key === key2 && w.deferSave && !w.saved),
+					true,
+					'CLOSED-path ImmediateTransaction clearWrites(undefined) must preserve holder2 unsaved deferred write'
+				);
+
+				// Calling holder2.save() must now commit holder2's staged write cleanly with a single audit entry.
+				const auditBefore = auditEntriesFor(AuditedA, key2).length;
 				await holder2.save();
 				assert.strictEqual(AuditedA.primaryStore.getEntry(key2).value.writer, 'holder2-unsaved');
 				assert.strictEqual(AuditedA.primaryStore.getEntry(key2).value.count, 2);
+				assert.strictEqual(auditEntriesFor(AuditedA, key2).length - auditBefore, 1);
 			} finally {
 				await holder1?.unlock?.();
 				await holder2?.unlock?.();
+			}
+		});
+
+		it('cleans up pre-saved blobs on unsaved deferred writes when a transaction scope aborts or an untargeted ImmediateTransaction.abort() runs, while preserving them across targeted sibling aborts', async function () {
+			this.timeout(20000);
+			const scopedKey = id('unsaved-blob-scoped');
+			const immKey1 = id('unsaved-blob-imm-1');
+			const immKey2 = id('unsaved-blob-imm-2');
+			await AuditedA.put({ id: scopedKey, writer: 'seed-scoped', count: 0 });
+			await AuditedA.put({ id: immKey1, writer: 'seed-1', count: 0 });
+			await AuditedA.put({ id: immKey2, writer: 'seed-2', count: 0 });
+
+			const scopedSavedBlobs = [{}];
+			await assert.rejects(
+				transaction(async (txn) => {
+					const scopedHolder = await AuditedA.lock(scopedKey, { lease: 15_000 });
+					scopedHolder.set('writer', 'unsaved-scoped');
+					const deferredWrite = txn.writes.find((w) => w?.key === scopedKey);
+					assert.ok(deferredWrite && deferredWrite.deferSave && !deferredWrite.saved);
+					deferredWrite.savedBlobs = scopedSavedBlobs;
+					throw new Error('abort before save');
+				}),
+				/abort before save/
+			);
+			assert.strictEqual(
+				scopedSavedBlobs.length,
+				0,
+				'aborting a transaction() scope before save() must clean up pre-saved blobs on unsaved deferred writes'
+			);
+
+			const holder1 = await AuditedA.lock(immKey1, { hold: true, lease: 15_000 });
+			const sharedCtx = holder1.getContext();
+			const holder2 = await AuditedA.lock(immKey2, { lease: 15_000 }, sharedCtx);
+			try {
+				holder2.set('writer', 'holder2-deferred-blobs');
+				const deferredWrite2 = sharedCtx.transaction.writes.find((w) => w?.key === immKey2);
+				assert.ok(deferredWrite2 && deferredWrite2.deferSave && !deferredWrite2.saved);
+				const siblingSavedBlobs = [{}];
+				deferredWrite2.savedBlobs = siblingSavedBlobs;
+
+				// A targeted abort from a failed sibling handle must preserve holder2's unsaved deferred write and its blobs.
+				const failedHandle = new Transaction(AuditedA.primaryStore.store);
+				failedHandle.abort();
+				sharedCtx.transaction.abort(true, true, failedHandle);
+				assert.strictEqual(
+					siblingSavedBlobs.length,
+					1,
+					'targeted abort for a failed sibling handle must preserve unsaved deferred write savedBlobs'
+				);
+				assert.ok(
+					sharedCtx.transaction.writes.includes(deferredWrite2),
+					'targeted abort for a failed sibling handle must keep unsaved deferred write in writes'
+				);
+
+				// An untargeted abort() on the idle ImmediateTransaction must clean up the unsaved deferred write's blobs and drop it.
+				sharedCtx.transaction.abort();
+				assert.strictEqual(
+					siblingSavedBlobs.length,
+					0,
+					'untargeted abort() must clean up pre-saved blobs on unsaved deferred writes that are being discarded'
+				);
+				assert.strictEqual(sharedCtx.transaction.writes.length, 0);
+			} finally {
+				await holder1?.unlock?.();
+				await holder2?.unlock?.();
+			}
+		});
+
+		it('rotates a multi-store mid-scope commit and detaches next even while a late immediate write on the head store is still in flight', async function () {
+			this.timeout(20000);
+			const keyA1 = id('mid-multi-a1');
+			const keyB1 = id('mid-multi-b1');
+			const keyALate = id('mid-multi-alate');
+			const keyB2 = id('mid-multi-b2');
+			await AuditedA.put({ id: keyA1, writer: 'seed-a1', count: 0 });
+			await AuditedB.put({ id: keyB1, writer: 'seed-b1', count: 0 });
+			await AuditedA.put({ id: keyALate, writer: 'seed-alate', count: 0 });
+			await AuditedB.put({ id: keyB2, writer: 'seed-b2', count: 0 });
+
+			const dbA = AuditedA.primaryStore.store.db;
+			const dbB = AuditedB.primaryStore.store.db;
+			const origCommit = Transaction.prototype.commit;
+			pendingRestores.push(() => {
+				Transaction.prototype.commit = origCommit;
+			});
+
+			let parkedInB1 = false;
+			let releaseB1;
+			const b1Gate = new Promise((resolve) => {
+				releaseB1 = resolve;
+			});
+			pendingRestores.push(() => releaseB1());
+
+			let parkedInLateA = false;
+			let releaseLateA;
+			const lateAGate = new Promise((resolve) => {
+				releaseLateA = resolve;
+			});
+			pendingRestores.push(() => releaseLateA());
+
+			let dbACommitCount = 0;
+			let dbBCommitCount = 0;
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db === dbB) {
+					dbBCommitCount++;
+					if (dbBCommitCount === 1) {
+						parkedInB1 = true;
+						await b1Gate;
+					}
+					return origCommit.apply(this, args);
+				}
+				if (this.store?.db === dbA) {
+					dbACommitCount++;
+					if (dbACommitCount === 2) {
+						parkedInLateA = true;
+						await lateAGate;
+					}
+					return origCommit.apply(this, args);
+				}
+				return origCommit.apply(this, args);
+			};
+
+			const ctx = {};
+			let latePutPromise;
+			let lateAHolder;
+			try {
+				await assert.rejects(
+					transaction(ctx, async () => {
+						const dbTxn = ctx.transaction;
+						lateAHolder = await AuditedA.lock(keyALate, { hold: true, lease: 15_000 }, ctx);
+						await AuditedA.put({ id: keyA1, writer: 'seg1-a', count: 1 }, ctx);
+						await AuditedB.put({ id: keyB1, writer: 'seg1-b', count: 1 }, ctx);
+
+						// Start mid-scope commit: head store A commits, then chains into store B which parks at b1Gate.
+						const midCommitPromise = Promise.resolve(dbTxn.commit({}));
+						await waitFor(() => parkedInB1, {
+							message: 'chained store B should park in mid-scope commit',
+						});
+
+						// Issue a late write directly on CLOSED head store A while mid-scope commit is waiting on store B.
+						lateAHolder.set('writer', 'late-a');
+						lateAHolder.set('count', 9);
+						latePutPromise = Promise.resolve(lateAHolder.save());
+						await waitFor(() => parkedInLateA, {
+							message: 'late immediate write on store A should park in commit',
+						});
+
+						// Now let store B finish the mid-scope commit while latePutPromise is still in flight on store A.
+						releaseB1();
+						await midCommitPromise;
+
+						assert.strictEqual(
+							dbTxn.open,
+							1,
+							'mid-scope commit must rotate the request transaction back to OPEN even while a late immediate write is in flight'
+						);
+						assert.strictEqual(
+							dbTxn.next,
+							null,
+							'mid-scope commit must detach the CLOSED chained link for store B so segment 2 stages into a fresh OPEN link'
+						);
+
+						// Write to store B in segment 2, then let the late immediate write on store A finish before throwing.
+						await AuditedB.put({ id: keyB2, writer: 'seg2-b-rolled-back', count: 2 }, ctx);
+						releaseLateA();
+						await latePutPromise;
+
+						throw new Error('rollback segment 2');
+					}),
+					/rollback segment 2/
+				);
+
+				assert.strictEqual(AuditedA.primaryStore.getEntry(keyA1).value.writer, 'seg1-a');
+				assert.strictEqual(AuditedB.primaryStore.getEntry(keyB1).value.writer, 'seg1-b');
+				assert.strictEqual(AuditedA.primaryStore.getEntry(keyALate).value.writer, 'late-a');
+				assert.strictEqual(
+					AuditedB.primaryStore.getEntry(keyB2).value.writer,
+					'seed-b2',
+					'segment 2 write to store B must be rolled back when segment 2 throws, not self-committed on a leftover CLOSED link or cascaded by latePutPromise'
+				);
+			} finally {
+				await lateAHolder?.unlock?.();
 			}
 		});
 
