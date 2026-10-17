@@ -527,12 +527,14 @@ old value. The gap is general to `Table.save()`, not lock-specific. Exercised by
 ## A commit retry re-saves into the transaction it is retrying; `ImmediateTransaction.save()` must forward it
 
 Every retry and replay round of `commit()` re-stages into the native handle being retried, and
-`ImmediateTransaction.save()`'s `isCommitting` branch forwards that handle: without it,
-`DatabaseTransaction.save()` opens a fresh handle and nests a `commit()` whose retry loop re-enters
-the override without bound (`RangeError`, harper#2825). A retry round's handle is detached, so a
-re-save that throws releases it before `abort()`, or its write intents park other writers until GC.
-Pinned by `immediateTransactionConflictRetry.test.js` ("…not a nested commit", "releases the replay
-transaction when a lapsed lease refuses a re-save…").
+`ImmediateTransaction.save()` forwards whenever `isCommitting` is set or the call carries `transaction`
+or `options`: without it, `DatabaseTransaction.save()` opens a fresh handle and nests a `commit()` whose
+retry loop re-enters the override without bound (`RangeError`, harper#2825), or a nested retry running
+after `isCommitting` reset starts a new top-level commit instead of re-staging onto its own handle. A
+retry round's handle is detached, so a re-save that throws releases it before `abort()`, or its write
+intents park other writers until GC. Pinned by `immediateTransactionConflictRetry.test.js` ("…not a
+nested commit", "releases the replay transaction when a lapsed lease refuses a re-save…") and
+`noAbortAfterTxnLog.test.js`.
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 
