@@ -8912,13 +8912,22 @@ export function makeTable(options): TableResourceClass {
 			if (!transaction.db && isRocksDB) {
 				// this is an uninitialized DatabaseTransaction, we can claim it
 				transaction.db = primaryStore as any;
-				if (context?.timestamp) transaction.timestamp = context.timestamp;
+				if (context?.timestamp) {
+					transaction.timestamp = context.timestamp;
+					transaction.lastContextTimestamp = context.timestamp;
+				}
 				return transaction;
 			}
 			do {
 				// See if this is a transaction for our database and if so, use it
 				if (transaction.db?.path === primaryStore.path) {
-					if (context?.timestamp && transaction.saveCommits) transaction.timestamp = context.timestamp;
+					if (
+						context?.timestamp &&
+						((transaction.commitsInFlight ?? 0) > 0 || context.timestamp !== transaction.lastContextTimestamp)
+					) {
+						transaction.timestamp = context.timestamp;
+						transaction.lastContextTimestamp = context.timestamp;
+					}
 					return transaction;
 				}
 				// try the next one:
@@ -8984,9 +8993,12 @@ export function makeTable(options): TableResourceClass {
 					if (transaction.timedOut) transaction.next.timedOut = true;
 					if (transaction.disconnected) transaction.next.disconnected = true;
 					if (transaction.postSubmitPoisoned) transaction.next.postSubmitPoisoned = true;
+					if (transaction.timestamp) {
+						transaction.next.timestamp = transaction.timestamp;
+						transaction.next.lastContextTimestamp = transaction.lastContextTimestamp;
+					}
 					transaction = transaction.next;
 					transaction.db = primaryStore;
-					if (context?.timestamp && transaction.saveCommits) transaction.timestamp = context.timestamp;
 					return transaction;
 				}
 				transaction = nextTxn;
@@ -8997,7 +9009,10 @@ export function makeTable(options): TableResourceClass {
 			) as any;
 			if (context) {
 				context.transaction = transaction;
-				if (context.timestamp) transaction.timestamp = context.timestamp;
+				if (context.timestamp) {
+					transaction.timestamp = context.timestamp;
+					transaction.lastContextTimestamp = context.timestamp;
+				}
 				if (!context.sourceApply) transaction.requestSignal = context.signal;
 			}
 			return transaction;

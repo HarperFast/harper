@@ -1281,7 +1281,7 @@ describe('Transactions are never aborted once durably written to the transaction
 			assert.strictEqual(AuditedA.primaryStore.getEntry(keyB).value.writer, 'b');
 		});
 
-		it('preserves explicit context and transaction timestamps across sequential writes on a reused ImmediateTransaction', async function () {
+		it('preserves explicit context and transaction timestamps across overlapping writes while allowing post-settlement same-key rewrites on a reused ImmediateTransaction', async function () {
 			this.timeout(15000);
 			const keyA = id('imm-explicit-ts-a');
 			const keyB = id('imm-explicit-ts-b');
@@ -1297,6 +1297,13 @@ describe('Transactions are never aborted once durably written to the transaction
 			});
 			pendingRestores.push(() => releaseA());
 
+			let cInCommit = false;
+			let releaseC;
+			const cGate = new Promise((resolve) => {
+				releaseC = resolve;
+			});
+			pendingRestores.push(() => releaseC());
+
 			const originalCommit = Transaction.prototype.commit;
 			Transaction.prototype.commit = function (...args) {
 				if (this.store?.db === targetDb && this.hasStagedLog && !this._immExplicitTsStage) {
@@ -1306,13 +1313,17 @@ describe('Transactions are never aborted once durably written to the transaction
 					aInCommit = true;
 					return aGate.then(() => originalCommit.apply(this, args));
 				}
+				if (this._immExplicitTsStage === 'c') {
+					cInCommit = true;
+					return cGate.then(() => originalCommit.apply(this, args));
+				}
 				return originalCommit.apply(this, args);
 			};
 			pendingRestores.push(() => {
 				Transaction.prototype.commit = originalCommit;
 			});
 
-			const explicitCtxTs = Date.now() + 60_000;
+			const explicitCtxTs = Date.now() - 1_000;
 			const sharedCtx = { timestamp: explicitCtxTs };
 			const aPromise = new AuditedA(keyA, sharedCtx).put(keyA, { id: keyA, writer: 'w1', count: 1 });
 			assert.strictEqual(sharedCtx.transaction.saveCommits, true);
@@ -1330,25 +1341,63 @@ describe('Transactions are never aborted once durably written to the transaction
 			await aPromise;
 			assert.strictEqual(AuditedA.primaryStore.getEntry(keyA).version, explicitCtxTs);
 
-			nextWriteStage = 'c';
-			await new AuditedA(keyC, sharedCtx).put(keyC, { id: keyC, writer: 'w3', count: 3 });
+			nextWriteStage = 'a-rewrite';
+			await new AuditedA(keyA, sharedCtx).put(keyA, { id: keyA, writer: 'w1-rewrite', count: 10 });
+			const aRewriteEntry = AuditedA.primaryStore.getEntry(keyA);
 			assert.strictEqual(
-				AuditedA.primaryStore.getEntry(keyC).version,
-				explicitCtxTs,
-				'subsequent write after in-flight writes drain must still preserve context.timestamp on a reused ImmediateTransaction'
+				aRewriteEntry.value.writer,
+				'w1-rewrite',
+				'same-key rewrite after in-flight writes settle must not tie at context.timestamp and be skipped'
+			);
+			assert.ok(
+				aRewriteEntry.version > explicitCtxTs,
+				`post-settlement rewrite must receive a fresh version (${aRewriteEntry.version} > ${explicitCtxTs})`
 			);
 
-			const explicitTxnTs = explicitCtxTs + 5_000;
+			const updatedCtxTs = explicitCtxTs + 200;
+			sharedCtx.timestamp = updatedCtxTs;
+			nextWriteStage = 'b-readdressed';
+			await new AuditedA(keyB, sharedCtx).put(keyB, { id: keyB, writer: 'w2-updated-ts', count: 20 });
+			const bUpdatedEntry = AuditedA.primaryStore.getEntry(keyB);
+			assert.strictEqual(bUpdatedEntry.value.writer, 'w2-updated-ts');
+			assert.strictEqual(
+				bUpdatedEntry.version,
+				updatedCtxTs,
+				'updating context.timestamp on a reused context must apply the new timestamp'
+			);
+
+			const keySeed = id('imm-explicit-ts-seed');
+			const explicitTxnTs = explicitCtxTs + 500;
 			const txnTsCtx = {};
-			await new AuditedA(keyD, txnTsCtx).put(keyD, { id: keyD, writer: 'seed', count: 0 });
+			nextWriteStage = 'seed';
+			await new AuditedA(keySeed, txnTsCtx).put(keySeed, { id: keySeed, writer: 'seed', count: 0 });
 			assert.strictEqual(txnTsCtx.transaction.saveCommits, true);
 			txnTsCtx.transaction.timestamp = explicitTxnTs;
+			nextWriteStage = 'c';
+			const cPromise = new AuditedA(keyC, txnTsCtx).put(keyC, { id: keyC, writer: 'w3', count: 3 });
+			await waitFor(() => cInCommit, { message: 'write C should be parked inside native commit()' });
+
+			nextWriteStage = 'd';
 			await new AuditedA(keyD, txnTsCtx).put(keyD, { id: keyD, writer: 'w4', count: 4 });
 			assert.strictEqual(
 				AuditedA.primaryStore.getEntry(keyD).version,
 				explicitTxnTs,
-				'explicitly assigning ctx.transaction.timestamp before a write must survive ImmediateTransaction reuse'
+				'overlapping write while an explicit transaction.timestamp commit is in flight must preserve transaction.timestamp'
 			);
+
+			releaseC();
+			await cPromise;
+			assert.strictEqual(
+				AuditedA.primaryStore.getEntry(keyC).version,
+				explicitTxnTs,
+				'explicitly assigning ctx.transaction.timestamp before overlapping writes must survive ImmediateTransaction reuse'
+			);
+
+			nextWriteStage = 'c-rewrite';
+			await new AuditedA(keyC, txnTsCtx).put(keyC, { id: keyC, writer: 'w3-rewrite', count: 30 });
+			const cRewriteEntry = AuditedA.primaryStore.getEntry(keyC);
+			assert.strictEqual(cRewriteEntry.value.writer, 'w3-rewrite');
+			assert.ok(cRewriteEntry.version > explicitTxnTs);
 		});
 	});
 

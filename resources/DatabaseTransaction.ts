@@ -775,7 +775,7 @@ export class DatabaseTransaction implements Transaction {
 	stagesWriteOnSave = true;
 	validated = 0;
 	timestamp = 0;
-	declare explicitTimestamp?: boolean;
+	declare lastContextTimestamp?: number;
 	retries = 0;
 	declare next: DatabaseTransaction;
 	// The head of this multi-store chain, set when the link is created; absent on the head itself.
@@ -1670,6 +1670,7 @@ export class DatabaseTransaction implements Transaction {
 			operation.stagedTime ??
 			(transaction as RocksTransactionWithRetry | undefined)?.stagedTxnTime ??
 			this.timestamp;
+		const mintedTimestamp = !txnTime;
 		const remoteOrigin = writesRemoteOrigin(operation);
 >>>>>>> 976dc602b (Never abort a transaction once durably written to the transaction log)
 		// Only an OPEN transaction accepts new staged writes. After commit, this.transaction may still
@@ -1728,7 +1729,7 @@ export class DatabaseTransaction implements Transaction {
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
 		operation.stagedTime ??= txnTime;
 		if (!operation.lockStamp) (transaction as RocksTransactionWithRetry).stagedTxnTime ??= txnTime;
-		if (this.saveCommits && !this.explicitTimestamp && !(this.getContext() as any)?.timestamp) this.timestamp = 0;
+		if (this.saveCommits && mintedTimestamp) this.timestamp = 0;
 		if (!operation.saved && operation.pendingPriorWrite) {
 			const pendingWrites = [];
 			for (let pending = operation.pendingPriorWrite; pending;) {
@@ -2509,7 +2510,7 @@ export class DatabaseTransaction implements Transaction {
 								this.timestamp ||
 								committedTxnKey ||
 								0;
-							this.timestamp = 0; // reset the timestamp as well
+							if ((this.commitsInFlight ?? 0) <= 1) this.timestamp = 0; // reset the timestamp as well
 							return Promise.all(completions).then(
 								() => {
 									// Only once the chained store's commit has settled, as on the synchronous path: a
@@ -2641,7 +2642,7 @@ export class DatabaseTransaction implements Transaction {
 								this.clearWrites(transaction);
 								releaseTransactionLockHolds(transaction);
 								this.releaseRecordLocks();
-								this.timestamp = 0;
+								if ((this.commitsInFlight ?? 0) <= 1) this.timestamp = 0;
 								throw error;
 							}
 						}
@@ -2685,7 +2686,7 @@ export class DatabaseTransaction implements Transaction {
 				const txnResolution: CommitResolution = {
 					txnTime: this.timestamp,
 				};
-				this.timestamp = 0; // reset like the async path (~1279) so stale lock stamps don't persist
+				if ((this.commitsInFlight ?? 0) <= 1) this.timestamp = 0; // reset like the async path (~1279) so stale lock stamps don't persist
 				if (this.next) {
 					// now run any other transactions
 					options.timestamp = txnResolution.txnTime;
@@ -2835,10 +2836,9 @@ export class DatabaseTransaction implements Transaction {
 			// handle alive, but release every other remaining handle through the shared cleanup path.
 			if (this.transaction && !hasOpenReadIterator) this.releaseReadTxn();
 			this.open = TRANSACTION_STATE.CLOSED;
-			this.timestamp = 0; // a lock stamp pinned for this write set must not leak into the next
+			if ((this.commitsInFlight ?? 0) <= 1) this.timestamp = 0; // a lock stamp pinned for this write set must not leak into the next
 			this.drainCompletions();
 			const preserveSiblingWrites = Boolean(
-				targetTransaction &&
 				(this.commitsInFlight ?? 0) > 1 &&
 				this.writes.some((write) => write?.stagedOn && write.stagedOn !== targetTransaction)
 			);
@@ -2854,7 +2854,7 @@ export class DatabaseTransaction implements Transaction {
 				this.open = TRANSACTION_STATE.CLOSED;
 				this.endScopeOwnership(); // the scope is over; nothing may rotate this instance again
 				this.clearWrites(targetTransaction);
-				this.timestamp = 0;
+				if ((this.commitsInFlight ?? 0) <= 1) this.timestamp = 0;
 				this.retries = 0;
 				this.releaseRecordLocks();
 				// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
@@ -3230,7 +3230,6 @@ export class ImmediateTransaction extends DatabaseTransaction {
 	}
 	set timestamp(value: number) {
 		this._timestamp = value;
-		this.explicitTimestamp = value > 0;
 	}
 	getReadTxn(): any {
 		return; // no transaction means read latest
