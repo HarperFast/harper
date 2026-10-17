@@ -306,7 +306,10 @@ export interface ClusterLockTransport {
 	 * restart quarantine for a coordinator coordinating under exactly that incarnation; any other value,
 	 * or none, keeps the construction-anchored timer. Consulted only while a grant is refused as
 	 * quarantined, never on a cached acquisition. Completeness is the transport's obligation: every
-	 * member of `homes[]` must have answered for this incarnation and generation, not "everyone reachable".
+	 * member of `homes[]` must have answered for this incarnation and generation, not "everyone
+	 * reachable" — this node included, whose own sweep cannot see a handle a sibling thread holds, so
+	 * on a coordinating-worker takeover the transport must have fenced every sibling's relayed handles
+	 * before it counts the local answer.
 	 */
 	quiescedIncarnation?(): number | undefined;
 	/**
@@ -784,7 +787,24 @@ export interface LockCoordinatorOptions {
  * RESTART; this covers it across an unregister and re-register inside one process, which a
  * process-start reading cannot see.
  */
-const retiredCoordinators = new Map<string, { grantableAfterMono: number; counter: number }>();
+const retiredCoordinators = new Map<
+	string,
+	{ grantableAfterMono: number; counter: number; incarnation: number | undefined }
+>();
+
+/**
+ * Surrenders whose release is not yet written, per database. A surrender leaves `#delegations` before
+ * it waits for its relayed fences, and the coordinator that started it can be closed or replaced while
+ * it waits, so a recall by incarnation (`recallDelegationsFromHome`) joins these here rather than
+ * through any coordinator: answering "holds nothing" while one is pending would let the home re-grant
+ * a key a handle on another worker can still commit under.
+ */
+interface InFlightSurrender {
+	ringKey: string;
+	token: FencingToken;
+	settled: Promise<void>;
+}
+const inFlightSurrenders = new Map<string, Set<InFlightSurrender>>();
 
 /**
  * The highest home-map generation this thread has acted under, per DATABASE — the scope the generation
@@ -956,7 +976,6 @@ export class LockCoordinator {
 		if (this.#ringQuiescedFor(this.#coordinatingIncarnation)) return 0;
 		return Math.max(0, this.#ownedSinceMono + horizon - this.#monotonic());
 	}
-	/** Whether the transport attests that every ring member recalled what this node issued below `incarnation`. */
 	#ringQuiescedFor(incarnation: number | undefined): boolean {
 		if (incarnation === undefined) return false;
 		let attested: number | undefined;
@@ -999,13 +1018,6 @@ export class LockCoordinator {
 	#pendingDelegations = new Map<unknown, PendingDelegation>();
 	/** Outbound requests whose grant token is not known yet, so an early recall cannot be lost. */
 	#pendingRequests = new Map<unknown, PendingRequest>();
-	/**
-	 * Delegations whose surrender has started but not yet written its release. `#surrenderOnce` removes
-	 * a delegation from `#delegations` before it waits for the relayed fences, so without this a
-	 * recall-by-incarnation retried after a timed-out attempt would find an empty table and answer
-	 * "holds nothing" while a handle on another worker can still commit.
-	 */
-	#surrendering = new Set<Delegation>();
 	/**
 	 * Every live admission, by id, and the delegation answerable for it. Coordinator-level rather than
 	 * per-delegation so a release can find its admission after the delegation was renewed or replaced.
@@ -1129,8 +1141,6 @@ export class LockCoordinator {
 		for (const [keyId, delegation] of this.#delegations) successor.#delegations.set(keyId, delegation);
 		for (const [keyId, pending] of this.#pendingDelegations) successor.#pendingDelegations.set(keyId, pending);
 		for (const [keyId, request] of this.#pendingRequests) successor.#pendingRequests.set(keyId, request);
-		for (const delegation of this.#surrendering) successor.#surrendering.add(delegation);
-		this.#surrendering = new Set();
 		for (const [keyId, grant] of this.#grants) successor.#grants.set(keyId, grant);
 		for (const [requester, count] of this.#grantsByRequester) successor.#grantsByRequester.set(requester, count);
 		// The admission index moves with the delegations it points into. Without it a handle admitted
@@ -2118,7 +2128,6 @@ export class LockCoordinator {
 			tickingCoordinators.delete(this);
 			return;
 		}
-		this.#surrendering.clear();
 		for (const delegation of this.#delegations.values()) {
 			delegation.recalled = true;
 			delegation.expiresMono = -Infinity;
@@ -2163,6 +2172,13 @@ export class LockCoordinator {
 		retiredCoordinators.set(retirementKey, {
 			grantableAfterMono: Math.max(retired?.grantableAfterMono ?? -Infinity, grantableAfterMono),
 			counter: Math.max(retired?.counter ?? 0, this.#counter),
+			// The latest incarnation any grant in the record was issued under; unknown stays unknown.
+			incarnation:
+				retired === undefined
+					? this.#coordinatingIncarnation
+					: retired.incarnation === undefined || this.#coordinatingIncarnation === undefined
+						? undefined
+						: Math.max(retired.incarnation, this.#coordinatingIncarnation),
 		});
 		this.#delegations.clear();
 		this.#pendingDelegations.clear();
@@ -2224,13 +2240,15 @@ export class LockCoordinator {
 	 * halves go: the construction horizon, because every delegation an earlier incarnation of this
 	 * process issued has been recalled, and the ownership horizon for the current interval, because a
 	 * sibling thread's grants were issued below this incarnation too. What stays is a retirement record
-	 * for this table: a coordinator closed and re-registered inside this incarnation issued under it,
-	 * which the recall did not ask for. `#ownershipHorizon` re-arms everything on the next incarnation
-	 * change, and that incarnation needs its own attestation.
+	 * for this table from this incarnation: a coordinator closed and re-registered inside it issued
+	 * under it, which the recall did not ask for. `#ownershipHorizon` re-arms everything on the next
+	 * incarnation change, and that incarnation needs its own attestation.
 	 */
 	#endQuarantineIfRingQuiesced(homeIncarnation: number): boolean {
 		if (this.#coordinatingIncarnation !== homeIncarnation || !this.#ringQuiescedFor(homeIncarnation)) return false;
-		this.#grantableAfterMono = retiredCoordinators.get(this.#retirementKey())?.grantableAfterMono ?? -Infinity;
+		const retired = retiredCoordinators.get(this.#retirementKey());
+		const retiredBelow = retired?.incarnation !== undefined && retired.incarnation < homeIncarnation;
+		this.#grantableAfterMono = retired && !retiredBelow ? retired.grantableAfterMono : -Infinity;
 		this.#quarantineWaived = true;
 		return true;
 	}
@@ -2698,41 +2716,50 @@ export class LockCoordinator {
 		return (delegation.surrendering ??= this.#surrenderOnce(keyId, delegation));
 	}
 
-	async #surrenderOnce(keyId: unknown, delegation: Delegation): Promise<void> {
+	#surrenderOnce(keyId: unknown, delegation: Delegation): Promise<void> {
 		if (this.#delegations.get(keyId) === delegation) this.#delegations.delete(keyId);
-		this.#surrendering.add(delegation);
-		try {
-			// Capability, not just admission: anything this delegation admitted must be unable to commit
-			// before the home is told it may re-grant. A handle admitted on another worker thread revokes
-			// over a message, so wait for its fence to land — bounded by the handle's own lease, past which
-			// it fences itself — before writing the release that lets the home re-grant the key.
-			await this.#revokeAllAndSettle(delegation);
-			const entry: LockReleaseEntry = {
-				type: 'lockRelease',
-				key: delegation.key,
-				requester: this.nodeId,
-				token: delegation.token,
-				dependencies: delegation.dependencies,
-			};
-			await this.#writeControlSafely(entry);
-		} finally {
-			// The swap may have landed mid-surrender; the set moved with the handoff.
-			this.#authority().#surrendering.delete(delegation);
-			this.#surrendering.delete(delegation);
-		}
+		let inFlight = inFlightSurrenders.get(this.database);
+		if (!inFlight) inFlightSurrenders.set(this.database, (inFlight = new Set()));
+		const entry: InFlightSurrender = {
+			ringKey: this.#ringKey(keyId),
+			token: delegation.token,
+			settled: this.#surrenderAndRelease(delegation).finally(() => {
+				inFlight.delete(entry);
+				if (inFlight.size === 0 && inFlightSurrenders.get(this.database) === inFlight)
+					inFlightSurrenders.delete(this.database);
+			}),
+		};
+		inFlight.add(entry);
+		return entry.settled;
+	}
+
+	async #surrenderAndRelease(delegation: Delegation): Promise<void> {
+		// Capability, not just admission: anything this delegation admitted must be unable to commit
+		// before the home is told it may re-grant. A handle admitted on another worker thread revokes
+		// over a message, so wait for its fence to land — bounded by the handle's own lease, past which
+		// it fences itself — before writing the release that lets the home re-grant the key.
+		await this.#revokeAllAndSettle(delegation);
+		const entry: LockReleaseEntry = {
+			type: 'lockRelease',
+			key: delegation.key,
+			requester: this.nodeId,
+			token: delegation.token,
+			dependencies: delegation.dependencies,
+		};
+		return this.#writeControlSafely(entry);
 	}
 
 	/**
-	 * The delegate side of a restarted home's recall by incarnation (harper#3254): stop admitting under
-	 * every delegation `home` issued below `belowIncarnation`, drain and release each one, and resolve
-	 * only once nothing on this node can admit or commit under any of them — surrenders that were
-	 * already in flight included. Resolving is the answer the home counts, so it must mean the same
-	 * thing a single recall's resolution means, for every matching delegation at once.
+	 * This table's half of `recallDelegationsFromHome` (harper#3254): stop admitting under every
+	 * delegation `home` issued below `belowIncarnation`, drain and release each one, and resolve only
+	 * once nothing admitted under them can commit. A coordinator that handed off answers for its
+	 * successor, since the delegations moved there.
 	 *
 	 * Below, not equal to the previous incarnation: a home that restarts twice inside one quarantine
 	 * still has its i-2 delegations live, and i-1 never granted anything to answer for.
 	 */
 	async recallFromHome(home: string, homeMap: LockHomeMap, belowIncarnation: number): Promise<void> {
+		if (this.#handedOff) return this.#authority().recallFromHome(home, homeMap, belowIncarnation);
 		if (this.#closed) return;
 		if (!this.transport.ownsCoordination())
 			throw new Error('Cluster record lock coordination is not owned by this worker thread');
@@ -2752,9 +2779,6 @@ export class LockCoordinator {
 		for (const [keyId, delegation] of this.#delegations)
 			if (issuedByHome(keyId, delegation.token))
 				drains.push(this.onDelegationRecall({ key: delegation.key, token: delegation.token }));
-		for (const delegation of this.#surrendering)
-			if (issuedByHome(this.#keyIdOf(delegation.key), delegation.token) && delegation.surrendering)
-				drains.push(delegation.surrendering);
 		await Promise.all(drains);
 	}
 
@@ -2965,11 +2989,17 @@ export interface QuiesceResult {
 /**
  * Recall every delegation this thread holds from `home` below `belowIncarnation`, for the transport
  * answering that home's restart recall (harper#3254). Resolves only when nothing on this node can
- * admit or commit under any of them. Throws, rather than answering, when the answer could not be
- * complete: a thread that does not coordinate the database holds no delegations and cannot speak for
- * the one that does; a withheld or differently numbered home map means the two sides do not agree
- * which ring `home` issued under. A table with no coordinator on the owner thread never acquired, so
- * an empty registry here — unlike `quiesceDelegations` — is a true "holds nothing".
+ * admit or commit under any of them, surrenders already in flight included. Its resolution is an
+ * attestation input, so it throws rather than answers whenever the answer could not be complete: an
+ * invalid bound or a home the ring does not name would match nothing and read as "holds nothing"; a
+ * thread that does not coordinate the database holds no delegations and cannot speak for the one
+ * that does; a withheld or differently numbered home map means the two sides do not agree which ring
+ * `home` issued under. A table with no coordinator on the owner thread never acquired, so an empty
+ * registry here — unlike `quiesceDelegations` — is a true "holds nothing".
+ *
+ * Tables are swept concurrently and the sweep repeats until no coordinator it has not visited exists:
+ * a transport re-registration during a drain replaces a table's coordinator, and the successor holds
+ * the delegations now.
  */
 export async function recallDelegationsFromHome(
 	database: string,
@@ -2977,6 +3007,8 @@ export async function recallDelegationsFromHome(
 	generation: number,
 	belowIncarnation: number
 ): Promise<void> {
+	if (!Number.isSafeInteger(belowIncarnation) || belowIncarnation <= 0)
+		throw new ClientError('A record lock recall needs a positive integer incarnation', 400);
 	const transport = clusterLockTransports.get(database);
 	if (!transport) throw new ClientError(`No record lock transport is registered for ${database}`, 503);
 	if (!transport.ownsCoordination())
@@ -2988,8 +3020,28 @@ export async function recallDelegationsFromHome(
 			`This node holds record lock home map generation ${homeMap.generation} for ${database}, not ${generation}`,
 			409
 		);
-	const coordinators = [...liveCoordinators].filter((coordinator) => coordinator.database === database);
-	for (const coordinator of coordinators) await coordinator.recallFromHome(home, homeMap, belowIncarnation);
+	if (!homeMap.homes.includes(home))
+		throw new ClientError(`${home} is not named in the record lock home map for ${database}`, 403);
+	const swept = new Set<LockCoordinator>();
+	for (;;) {
+		const unswept = [...liveCoordinators].filter(
+			(coordinator) => coordinator.database === database && !swept.has(coordinator)
+		);
+		for (const coordinator of unswept) swept.add(coordinator);
+		const surrenders: Promise<void>[] = [];
+		for (const surrender of inFlightSurrenders.get(database) ?? [])
+			if (
+				surrender.token[0] === generation &&
+				surrender.token[1] < belowIncarnation &&
+				homeFor(surrender.ringKey, homeMap.homes) === home
+			)
+				surrenders.push(surrender.settled);
+		if (unswept.length === 0 && surrenders.length === 0) return;
+		await Promise.all([
+			...unswept.map((coordinator) => coordinator.recallFromHome(home, homeMap, belowIncarnation)),
+			...surrenders,
+		]);
+	}
 }
 
 /**

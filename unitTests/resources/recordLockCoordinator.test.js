@@ -162,7 +162,6 @@ class FakeCluster {
 				recallDelegation: (target, database, table, recall) => this.#deliverRecall(name, target, recall),
 				establishLockFreshness: (database, table, key, dependencies, deadlineMs) =>
 					this.#establishFreshness(name, database, table, key, dependencies, deadlineMs),
-				/** Set by a test to attest a ring-wide recall for this node's incarnation (harper#3254). */
 				quiescedIncarnation: () => node.quiesced,
 			},
 			writeControl: this.writeControlFor(name),
@@ -3807,6 +3806,36 @@ describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
 			assert.strictEqual(after.granted, true);
 		});
 
+		it('releases a retirement record from an earlier incarnation once that incarnation is recalled', async () => {
+			const table = `RetiredBelow${Date.now()}`;
+			const database = `retiredBelow${Date.now()}`;
+			const homes = ['alpha', 'beta'];
+			let key;
+			for (let i = 0; i < 10_000 && !key; i++)
+				if (homeFor(ringKeyFor(database, table, `k${i}`), homes) === 'alpha') key = `k${i}`;
+			incarnation = 1;
+			const predecessor = restarted({
+				table,
+				database,
+				grantableAfterMono: -Infinity,
+				transport: { homeMap: () => ({ generation: 1, homes, homeIncarnation: incarnation }) },
+			});
+			assert.strictEqual(
+				(await predecessor.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: LEASE })).granted,
+				true
+			);
+			predecessor.close();
+			incarnation = 2;
+			attested = 2;
+			const successor = restarted({
+				table,
+				database,
+				transport: { homeMap: () => ({ generation: 1, homes, homeIncarnation: incarnation }) },
+			});
+			const reply = await successor.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(reply.granted, true, "beta's incarnation-1 delegation was recalled by the round for 2");
+		});
+
 		it('a transport without the hook, or one that throws, keeps the timer', async () => {
 			const plain = restarted({ transport: { quiescedIncarnation: undefined } });
 			assert.strictEqual((await request(plain)).reason, 'quarantine');
@@ -3833,8 +3862,6 @@ describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
 			const b1 = await alpha.coordinator.acquire(fromBeta, LEASE, WAIT);
 			alpha.coordinator.release(fromGamma, g1.admissionId);
 			alpha.coordinator.release(fromBeta, b1.admissionId);
-			// Gamma also issued one under its NEW incarnation: that one is not below the recall's bound. The
-			// restarted gamma grants under it only once its own round is attested, as the real transport does.
 			cluster.node('gamma').incarnation = 2;
 			cluster.node('gamma').quiesced = 2;
 			const fromGammaNew = cluster.keyHomedOn('gamma', 'gn-');
@@ -3850,7 +3877,6 @@ describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
 				[[fromGamma, 1]],
 				'one release, for the old gamma delegation'
 			);
-			// Idempotent: nothing left below the bound, so a retry answers at once and writes nothing.
 			await alpha.coordinator.recallFromHome('gamma', alpha.coordinator.transport.homeMap(cluster.database), 2);
 			assert.strictEqual(alpha.written.filter((entry) => entry.type === 'lockRelease').length, 1);
 		});
@@ -3882,9 +3908,6 @@ describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
 		});
 
 		it('a retried recall joins a surrender whose relayed fence is still pending, instead of answering early', async () => {
-			// The planning review's counterexample: `#surrenderOnce` removes the delegation from the table
-			// before it waits for the fence, so a second sweep that only read the table would find nothing
-			// and answer "holds nothing" while the handle on the other worker can still commit.
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const alpha = cluster.node('alpha').coordinator;
 			const key = cluster.keyHomedOn('gamma');
@@ -3892,24 +3915,28 @@ describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
 			let releaseFence;
 			alpha.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
 			alpha.release(key, round.admissionId); // unlocked, but the staged write can still commit
-			const homeMap = alpha.transport.homeMap(cluster.database);
-			let firstDone = false;
-			let secondDone = false;
-			const first = alpha.recallFromHome('gamma', homeMap, 2).then(() => (firstDone = true));
-			await new Promise((resolve) => setTimeout(resolve, 10));
-			assert.strictEqual(alpha.stats.delegations, 0, 'the surrender has left the delegation table');
-			const second = alpha.recallFromHome('gamma', homeMap, 2).then(() => (secondDone = true));
-			await new Promise((resolve) => setTimeout(resolve, 30));
-			assert.strictEqual(secondDone, false, 'the retry answered before the fence it depends on');
-			assert.strictEqual(firstDone, false);
-			assert.strictEqual(
-				cluster.node('alpha').written.some((e) => e.type === 'lockRelease'),
-				false,
-				'no release before the fence'
-			);
-			releaseFence();
-			await Promise.all([first, second]);
-			assert.strictEqual(cluster.node('alpha').written.filter((e) => e.type === 'lockRelease').length, 1);
+			registerClusterLockTransport(cluster.database, alpha.transport);
+			try {
+				let firstDone = false;
+				let secondDone = false;
+				const first = recallDelegationsFromHome(cluster.database, 'gamma', 1, 2).then(() => (firstDone = true));
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				assert.strictEqual(alpha.stats.delegations, 0, 'the surrender has left the delegation table');
+				const second = recallDelegationsFromHome(cluster.database, 'gamma', 1, 2).then(() => (secondDone = true));
+				await new Promise((resolve) => setTimeout(resolve, 30));
+				assert.strictEqual(secondDone, false, 'the retry answered before the fence it depends on');
+				assert.strictEqual(firstDone, false);
+				assert.strictEqual(
+					cluster.node('alpha').written.some((e) => e.type === 'lockRelease'),
+					false,
+					'no release before the fence'
+				);
+				releaseFence();
+				await Promise.all([first, second]);
+				assert.strictEqual(cluster.node('alpha').written.filter((e) => e.type === 'lockRelease').length, 1);
+			} finally {
+				unregisterClusterLockTransport(cluster.database, true);
+			}
 		});
 
 		it('surrenders a grant from the dead incarnation that lands after the recall, rather than admitting on it', async () => {
@@ -3920,7 +3947,6 @@ describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
 			cluster.beforeReply = async (from, to) => {
 				if (from !== 'alpha' || to !== 'gamma' || recalled) return;
 				recalled = true;
-				// The restarted home's round reaches alpha while the old incarnation's grant is in flight.
 				await alpha.coordinator.recallFromHome('gamma', alpha.coordinator.transport.homeMap(cluster.database), 2);
 				cluster.node('gamma').incarnation = 2;
 				cluster.node('gamma').quiesced = 2;
@@ -3935,6 +3961,67 @@ describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
 			);
 			assert.strictEqual(alpha.coordinator.stats.delegations, 1, 'the retry under incarnation 2 was admitted');
 			alpha.coordinator.release(key, round.admissionId);
+		});
+
+		it('follows a transport swap that lands while a table is draining, and resolves only after the successor released', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const node = cluster.node('alpha');
+			const key = cluster.keyHomedOn('gamma');
+			const round = await node.coordinator.acquire(key, LEASE, WAIT);
+			registerClusterLockTransport(cluster.database, node.coordinator.transport);
+			try {
+				let settled = false;
+				const sweep = recallDelegationsFromHome(cluster.database, 'gamma', 1, 2).then(() => (settled = true));
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				const predecessor = node.coordinator;
+				const successor = new LockCoordinator({
+					database: cluster.database,
+					table: cluster.table,
+					nodeId: 'alpha',
+					transport: predecessor.transport,
+					writeControl: cluster.writeControlFor('alpha'),
+					keyIdOf: (k) => String(k),
+					nextTimestamp: () => ++cluster.tsCounter,
+					monotonic: () => node.mono + performance.now(),
+					adopt: predecessor,
+					grantableAfterMono: -Infinity,
+					autoTick: false,
+				});
+				predecessor.close();
+				node.coordinator = successor;
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				assert.strictEqual(settled, false, 'the sweep answered while the successor still held the key');
+				successor.release(key, round.admissionId);
+				await sweep;
+				assert.strictEqual(successor.stats.delegations, 0);
+				assert.strictEqual(node.written.filter((e) => e.type === 'lockRelease').length, 1);
+			} finally {
+				unregisterClusterLockTransport(cluster.database, true);
+			}
+		});
+
+		it('refuses an invalid bound or a home the ring does not name rather than answer "holds nothing"', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const alpha = cluster.node('alpha');
+			const key = cluster.keyHomedOn('gamma');
+			const round = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			alpha.coordinator.release(key, round.admissionId);
+			registerClusterLockTransport(cluster.database, alpha.coordinator.transport);
+			try {
+				for (const bad of [NaN, 0, -1, 1.5, '2'])
+					await assert.rejects(
+						() => recallDelegationsFromHome(cluster.database, 'gamma', 1, bad),
+						(error) => error.statusCode === 400,
+						`bound ${bad}`
+					);
+				await assert.rejects(
+					() => recallDelegationsFromHome(cluster.database, 'Gamma', 1, 2),
+					(error) => error.statusCode === 403
+				);
+				assert.strictEqual(alpha.coordinator.stats.delegations, 1, 'a refused recall drained nothing');
+			} finally {
+				unregisterClusterLockTransport(cluster.database, true);
+			}
 		});
 
 		it('refuses off the owner thread, and the module entry refuses a withheld or differently numbered map', async () => {
