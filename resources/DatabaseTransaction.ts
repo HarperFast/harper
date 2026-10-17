@@ -338,7 +338,7 @@ function abortNativeTransaction(
 <<<<<<< HEAD
 =======
 	const txn = transaction as RocksTransactionWithRetry;
-	if (txn.abortedByWrapper) return;
+	if (txn.abortedByWrapper || txn.committed || txn.commitInFlight) return;
 	txn.abortedByWrapper = true;
 	releaseLocalKey(transaction);
 >>>>>>> 9826135a4 (Address plan and round-8 review findings for post-log commit retries)
@@ -719,18 +719,15 @@ type RocksTransactionWithRetry = RocksTransaction & {
 	lockHolds?: Set<RecordLockHandle>;
 	holdBudgetSpent?: boolean;
 	abortedByWrapper?: boolean;
+	commitInFlight?: boolean;
+	committed?: boolean;
 };
 
-/**
- * True once `transaction` has staged a transaction-log entry (`hasStagedLog`, set by `log.addEntry`)
- * and completed at least one native `commit()` attempt (`isRetry`). Crash-recovery replay sets
- * `isRetry` before `save()`, so `hasStagedLog` is never set there.
- */
-function hasDurableLog(transaction: RocksTransaction | null | undefined): boolean {
-	return Boolean(
-		(transaction as RocksTransactionWithRetry | null | undefined)?.isRetry &&
-		(transaction as RocksTransactionWithRetry | null | undefined)?.hasStagedLog
-	);
+// Crash-recovery replay sets `isRetry` before `save()`, so `hasStagedLog` is never set there.
+function hasDurableLog(transaction: RocksTransaction | null | undefined, error?: { hasLog?: boolean }): boolean {
+	if (typeof error?.hasLog === 'boolean') return error.hasLog;
+	const txn = transaction as RocksTransactionWithRetry | null | undefined;
+	return Boolean(txn?.isRetry && txn?.hasStagedLog);
 }
 
 function releaseTransactionLockHolds(transaction: RocksTransaction | null | undefined): void {
@@ -1272,10 +1269,6 @@ export class DatabaseTransaction implements Transaction {
 		if (recordLocks.size === 0) this.recordLocks = undefined;
 	}
 
-	/**
-	 * Carrier for `commitStartedAt` / `commitOverdueLogged`: the chain root, or the per-write native
-	 * handle on an unchained ImmediateTransaction.
-	 */
 	private budgetCarrier(transaction?: RocksTransaction | null): {
 		commitStartedAt?: number;
 		commitOverdueLogged?: boolean;
@@ -1301,10 +1294,6 @@ export class DatabaseTransaction implements Transaction {
 		return false;
 	}
 
-	/**
-	 * Retain a commit-phase hold on each lock handle whose write is being submitted to RocksDB so a
-	 * lease expiry during conflict retries defers native unlock / cluster `onRelease` until commit or budget expiry.
-	 */
 	private retainTransactionLockHolds(transaction: RocksTransaction | null | undefined): void {
 		if (!transaction || !this.hasLeaseProtectedWrite) return;
 		const txn = transaction as RocksTransactionWithRetry;
@@ -2320,6 +2309,7 @@ export class DatabaseTransaction implements Transaction {
 						// re-staged the writes into it
 						this.assertDatabaseCommitAllowed(transaction);
 						this.markNativeCommitSubmitted();
+						(transaction as RocksTransactionWithRetry).commitInFlight = true;
 						commitResolution = transaction.commit() as Promise<void>;
 						if (this.hasLeaseProtectedWrite) this.retainTransactionLockHolds(transaction);
 						recordCommitLatency(commitResolution, performance.now());
@@ -2399,6 +2389,7 @@ export class DatabaseTransaction implements Transaction {
 							// Promise<number | void>; it is handled in the resolve callback below.
 							this.assertDatabaseCommitAllowed(transaction);
 							this.markNativeCommitSubmitted();
+							(transaction as RocksTransactionWithRetry).commitInFlight = true;
 							commitResolution = transaction.commit();
 							if (this.hasLeaseProtectedWrite) this.retainTransactionLockHolds(transaction);
 							// Record how long this commit stays outstanding (submit → settle) as a distribution
@@ -2447,8 +2438,9 @@ export class DatabaseTransaction implements Transaction {
 					const completions = [];
 					const commitOutcome = commitResolution.then(
 						(commitResult) => {
+							const txnWithRetry = transaction as RocksTransactionWithRetry;
+							txnWithRetry.commitInFlight = false;
 							if (commitResult === RETRY_NOW_VALUE) {
-								const txnWithRetry = transaction as RocksTransactionWithRetry;
 								const retries = (txnWithRetry.retries = (txnWithRetry.retries ?? 0) + 1);
 								this.retries = retries;
 								harperLogger.debug?.('coordinated retry', transaction.id, retries);
@@ -2474,6 +2466,13 @@ export class DatabaseTransaction implements Transaction {
 										`${this.sourceApply ? 'Source-applied' : 'Logged'} transaction ${transaction.id} still in conflict after ${retries} coordinated retries; continuing to retry`
 									);
 								}
+								if ((this.sourceApply || logged) && retries > 2) {
+									const backoff = delay(Math.ceil(Math.min(retries * 2, MAX_RETRY_DELAY_MS) * Math.random()));
+									if (logged) {
+										trackOutstandingCommit(backoff, this.writes[0]?.store, this.startedFrom, transaction);
+									}
+									return backoff.then(() => this.commit({ ...options, transaction }));
+								}
 								return this.commit({ ...options, transaction });
 							}
 <<<<<<< HEAD
@@ -2481,6 +2480,7 @@ export class DatabaseTransaction implements Transaction {
 							const committedTxnKey = reservedLocalKey(transaction);
 							const committedLogKey = this.replicatedConfirmation ? committedTxnKey : undefined;
 							const committedTransaction = transaction;
+							txnWithRetry.committed = true;
 							releaseLocalKey(transaction);
 >>>>>>> 976dc602b (Never abort a transaction once durably written to the transaction log)
 							// onCommit may be async (e.g. RocksTransactionLogStore emits 'aftercommit'). Surface a
@@ -2565,6 +2565,8 @@ export class DatabaseTransaction implements Transaction {
 							);
 						},
 						(error) => {
+							const txnWithRetry = transaction as RocksTransactionWithRetry;
+							txnWithRetry.commitInFlight = false;
 							// Coordinated transactions surface conflicts as RETRY_NOW (handled in the
 							// resolve branch above) and never reach here with ERR_BUSY. But not every
 							// write transaction is coordinated — a write that reaches save() with no
@@ -2581,7 +2583,6 @@ export class DatabaseTransaction implements Transaction {
 							if (error.code === 'ERR_BUSY' || error.code === 'ERR_TRY_AGAIN') {
 								// if the transaction failed due to concurrent changes, we need to retry. First record this as an increased risk of contention/retry
 								// for future transactions
-								const txnWithRetry = transaction as RocksTransactionWithRetry;
 								const retries = (txnWithRetry.retries = (txnWithRetry.retries ?? 0) + 1);
 								this.retries = retries;
 								harperLogger.debug?.('retrying', transaction.id, retries);
@@ -2598,7 +2599,10 @@ export class DatabaseTransaction implements Transaction {
 								// premature publish, and no fresh-transaction replay that would drop the entry.
 								// Mark the native transaction as a retry so RocksTransactionLogStore skips re-staging entries.
 								txnWithRetry.isRetry = true;
-								const logged = hasDurableLog(transaction);
+								if (typeof (error as any)?.hasLog === 'boolean') {
+									txnWithRetry.hasStagedLog = (error as any).hasLog;
+								}
+								const logged = hasDurableLog(transaction, error as any);
 								// Before the backoff gate below: the budget can already be spent on the first
 								// retry when an earlier store in this chain consumed it.
 								const pastBudget = this.elapsedPastCommitBudget(transaction);
@@ -2607,9 +2611,6 @@ export class DatabaseTransaction implements Transaction {
 									else this.abandonCommitAfterDeadline(transaction, pastBudget);
 								}
 								if (retries > 2) {
-									// Source-applied writes (harper-pro#348) and durably logged writes must never drop
-									// on transient conflict: aborting a logged commit leaves an orphaned entry in the
-									// transaction log that crash recovery or replication would apply.
 									const neverDropOnConflict = this.sourceApply || logged;
 									if (retries > MAX_RETRIES && !neverDropOnConflict) {
 										// giving up: poison and abort the whole linked chain so no link leaks its native
@@ -2626,9 +2627,7 @@ export class DatabaseTransaction implements Transaction {
 											`${this.sourceApply ? 'Source-applied' : 'Logged'} transaction ${transaction.id} still in conflict after ${retries} retries; continuing to retry`
 										);
 									}
-									// start delaying, back off to try to space out transactions and avoid excessive conflicts.
-									// Track the backoff wait when `logged` so `waitForDrain` cannot close the store
-									// between retry attempts.
+									// start delaying, back off to try to space out transactions and avoid excessive conflicts
 									const backoff = delay(Math.min(retries * retries, MAX_RETRY_DELAY_MS));
 									if (logged) {
 										trackOutstandingCommit(backoff, this.writes[0]?.store, this.startedFrom, transaction);
@@ -2650,7 +2649,8 @@ export class DatabaseTransaction implements Transaction {
 =======
 =======
 								if ((error as any)?.hasLog) {
-									(transaction as RocksTransactionWithRetry).isRetry = true;
+									txnWithRetry.isRetry = true;
+									txnWithRetry.hasStagedLog = true;
 								}
 >>>>>>> 61dc42752 (Address Round 8 review findings on logged commit retry and lock holds)
 								abortNativeTransaction(
@@ -2667,7 +2667,7 @@ export class DatabaseTransaction implements Transaction {
 								// finished and its durability is unknown, so ownership goes with it.
 								this.endScopeOwnership();
 								this.releaseContext(!!options.doneWriting);
-								if (!hasDurableLog(transaction) && !(error as any)?.hasLog) {
+								if (!hasDurableLog(transaction, error as any)) {
 									for (const write of this.writes) {
 										if (!write?.savedBlobs || (write.stagedOn && write.stagedOn !== transaction)) continue;
 										cleanupUnusedBlobs(
@@ -2842,9 +2842,10 @@ export class DatabaseTransaction implements Transaction {
 
 	protected abortAfterCommitError(error, targetTransaction?: RocksTransaction): never {
 		try {
-			if (targetTransaction && targetTransaction !== this.transaction) {
+			const retryTxn = targetTransaction as RocksTransactionWithRetry | undefined;
+			if (retryTxn && retryTxn !== this.transaction && !retryTxn.committed && !retryTxn.commitInFlight) {
 				abortNativeTransaction(
-					targetTransaction,
+					retryTxn,
 					'aborting a retry transaction after pre-commit failure',
 					this.writes[0]?.store ?? this.db,
 					this.startedFrom
