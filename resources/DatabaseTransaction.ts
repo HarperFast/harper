@@ -1283,7 +1283,7 @@ export class DatabaseTransaction implements Transaction {
 	} {
 		const txn = transaction as RocksTransactionWithRetry | null | undefined;
 		if (txn?.commitStartedAt != null) return txn;
-		if ((this.saveCommits || txn?.immediateCommit) && txn && this.hasSiblingCommitInFlight(transaction ?? undefined)) {
+		if (this.saveCommits && txn && this.hasSiblingCommitInFlight(transaction ?? undefined)) {
 			return txn;
 		}
 		if (txn?.immediateCommit) return txn;
@@ -2813,7 +2813,11 @@ export class DatabaseTransaction implements Transaction {
 							}
 							if (this.recordLocks) this.noteCommittedLockVersions(committedTransaction);
 							releaseTransactionLockHolds(transaction);
-							if (!committedImmediate && (!this.saveCommits || !this.hasSiblingCommitInFlight(committedTransaction)))
+							if (
+								committedImmediate
+									? this.open !== TRANSACTION_STATE.OPEN && !this.hasSiblingCommitInFlight(committedTransaction)
+									: !this.saveCommits || !this.hasSiblingCommitInFlight(committedTransaction)
+							)
 								this.releaseRecordLocks();
 							if (this.next && !committedImmediate) {
 								// never forward options.transaction (a retry/replay round's HEAD-store handle) to
@@ -3024,7 +3028,11 @@ export class DatabaseTransaction implements Transaction {
 								}
 								this.clearWrites(transaction);
 								releaseTransactionLockHolds(transaction);
-								if (!isImmediateCommit && !this.hasActiveCommitHandle() && this.writes.length === 0)
+								if (
+									(!isImmediateCommit || this.open !== TRANSACTION_STATE.OPEN) &&
+									!this.hasActiveCommitHandle() &&
+									this.writes.length === 0
+								)
 									this.releaseRecordLocks();
 								if ((!isImmediateCommit || this.open !== TRANSACTION_STATE.OPEN) && !this.hasActiveCommitHandle())
 									this.timestamp = 0;
@@ -3060,7 +3068,12 @@ export class DatabaseTransaction implements Transaction {
 				if (this.recordLocks) this.noteCommittedLockVersions(transaction);
 				const committedStagedTxnTime = this.getHandleStagedTxnTime(transaction);
 				this.clearWrites(transaction);
-				if (!isImmediateCommit && !this.hasActiveCommitHandle() && this.writes.length === 0) this.releaseRecordLocks();
+				if (
+					isImmediateCommit
+						? this.open !== TRANSACTION_STATE.OPEN && !this.hasActiveCommitHandle() && this.writes.length === 0
+						: !this.saveCommits || (!this.hasActiveCommitHandle() && this.writes.length === 0)
+				)
+					this.releaseRecordLocks();
 				if (!isImmediateCommit) {
 					if (options.doneWriting) this.endScopeOwnership();
 					this.releaseContext(!!options.doneWriting);
@@ -3170,7 +3183,9 @@ export class DatabaseTransaction implements Transaction {
 		this.open = TRANSACTION_STATE.OPEN;
 		this.snapshotFree = true;
 		this.writesAbandoned = false;
-		if (this.#context) this.#context.transaction = this;
+		if (this.#context && (this.#context.transaction === this || this.#context.transaction === RELEASED_TRANSACTION)) {
+			this.#context.transaction = this;
+		}
 	}
 
 	private assertDatabaseCommitAllowed(transaction: RocksTransaction): void {
@@ -3224,7 +3239,7 @@ export class DatabaseTransaction implements Transaction {
 		const hasSiblingInFlight = this.hasSiblingCommitInFlight(targetTransaction);
 		const preserveActiveWrites =
 			isImmediateTarget || this.hasWriteOwnedByActiveCommit(targetTransaction, hasSiblingInFlight, true);
-		const cascadeNext = cascade && !isImmediateTarget && (!targetTransaction || !preserveActiveWrites);
+		const cascadeNext = cascade && !preserveActiveWrites;
 		const next = cascadeNext ? this.next : undefined;
 		if (cascadeNext && !retainReadTransaction) this.next = null;
 		try {
@@ -3288,7 +3303,12 @@ export class DatabaseTransaction implements Transaction {
 					this.timestamp = 0; // a lock stamp pinned for this write set must not leak into the next
 					this.retries = 0;
 				}
-				if (!isImmediateTarget && this.writes.length === 0 && !preserveActiveWrites) {
+				if (
+					(isImmediateTarget
+						? this.open !== TRANSACTION_STATE.OPEN && !this.hasActiveCommitHandle()
+						: !preserveActiveWrites) &&
+					this.writes.length === 0
+				) {
 					releaseTransactionLockHolds(nativeTxn);
 					if (this.transaction && this.transaction !== nativeTxn) releaseTransactionLockHolds(this.transaction);
 					this.releaseRecordLocks();
