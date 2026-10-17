@@ -51,6 +51,7 @@ import {
 	snapshotProfileCustomResources,
 	type CustomResourceDef,
 	type CustomResourceReadResult,
+	type CustomResourceSubscription,
 	type ResourceReadContext,
 } from '../customResourceRegistry.ts';
 import { notifyPromptsListChanged, notifyResourcesListChanged, notifyToolsListChanged } from '../listChanged.ts';
@@ -155,7 +156,10 @@ interface ResourceClassLike {
 	 * (text content), `{ text }`, `{ blob, mimeType }` (base64 binary), or any
 	 * other object (serialized as JSON). RBAC is delegated to the Resource.
 	 * `completions` optionally declares candidate values per template parameter
-	 * for `completion/complete`.
+	 * for `completion/complete`. `subscribe` optionally names an instance method,
+	 * called the same way, that makes the URI subscribable via
+	 * `resources/subscribe`: it returns an async iterable whose every value sends
+	 * `notifications/resources/updated` (contract in customResourceRegistry.ts).
 	 */
 	mcpResources?: ReadonlyArray<{
 		uri?: string;
@@ -165,6 +169,7 @@ interface ResourceClassLike {
 		description?: string;
 		mimeType?: string;
 		method: string;
+		subscribe?: string;
 		completions?: Readonly<Record<string, ReadonlyArray<string>>>;
 	}>;
 }
@@ -1164,6 +1169,7 @@ function registerCustomMcpResources(ResourceClass: ResourceClassLike, path: stri
 					`Clients surface it to models/users by description; add { description: '...' } to the mcpResources entry.`
 			);
 		}
+		const subscribeName = validSubscribeMethod(ResourceClass, path, def);
 		const registryDef: CustomResourceDef = {
 			...(hasUri ? { uri: def.uri } : {}),
 			...(hasTemplate ? { uriTemplate: def.uriTemplate } : {}),
@@ -1174,6 +1180,7 @@ function registerCustomMcpResources(ResourceClass: ResourceClassLike, path: stri
 			...(def.completions ? { completions: def.completions } : {}),
 			profile: 'application',
 			read: makeCustomResourceReader(path, ResourceClass, methodName),
+			...(subscribeName ? { subscribe: makeCustomResourceSubscriber(path, ResourceClass, subscribeName) } : {}),
 		};
 		try {
 			addCustomResource(registryDef);
@@ -1207,6 +1214,68 @@ function makeCustomResourceReader(path: string, capturedClass: ResourceClassLike
 			((p: Record<string, string>, ctx: ResourceReadContext) => CustomResourceReadResult) | undefined;
 		if (typeof method !== 'function') {
 			throw new Error(`method '${methodName}' is not a function on the constructed Resource`);
+		}
+		return await method.call(instance, params ?? {}, context);
+	};
+}
+
+/**
+ * The entry's `subscribe` method name, or undefined (with a warning) when it is
+ * absent or unusable. An unusable one leaves the entry registered read-only.
+ */
+function validSubscribeMethod(
+	ResourceClass: ResourceClassLike,
+	path: string,
+	def: { name: string; subscribe?: unknown }
+): string | undefined {
+	const subscribeName = def.subscribe;
+	if (subscribeName === undefined) return undefined;
+	const fn =
+		typeof subscribeName === 'string'
+			? (ResourceClass.prototype as Record<string, unknown>)?.[subscribeName]
+			: undefined;
+	if (typeof fn !== 'function') {
+		harperLogger.warn(
+			`MCP application profile: '${path}' declares mcpResource '${def.name}' with subscribe ${JSON.stringify(subscribeName)}, but no such instance method exists on the prototype; the resource is registered without subscriptions`
+		);
+		return undefined;
+	}
+	if (isGeneratorFunction(fn)) {
+		harperLogger.warn(
+			`MCP application profile: mcpResource '${def.name}' on '${path}' names generator method '${subscribeName}' as subscribe; a generator's body runs only once iteration starts, outside the subscribing user's transaction. Return an async iterable from a regular method instead. The resource is registered without subscriptions`
+		);
+		return undefined;
+	}
+	return subscribeName as string;
+}
+
+function isGeneratorFunction(fn: unknown): boolean {
+	const tag = Object.prototype.toString.call(fn);
+	return tag === '[object AsyncGeneratorFunction]' || tag === '[object GeneratorFunction]';
+}
+
+/**
+ * Build the subscribe dispatcher for a custom resource: the same live-class
+ * instance dispatch as `makeCustomResourceReader`. The generator check repeats
+ * here because the live class can be a subclass registered after the walk.
+ */
+function makeCustomResourceSubscriber(path: string, capturedClass: ResourceClassLike, methodName: string) {
+	return async function (
+		params: Record<string, string>,
+		context: ResourceReadContext
+	): Promise<CustomResourceSubscription> {
+		const ResourceClass = liveResource(path, capturedClass);
+		const Ctor = ResourceClass as unknown as new (id: unknown, ctx: unknown) => Record<string, unknown>;
+		const instance = new Ctor(undefined, buildContext(context.user));
+		const method = instance[methodName] as
+			((p: Record<string, string>, ctx: ResourceReadContext) => CustomResourceSubscription) | undefined;
+		if (typeof method !== 'function') {
+			throw new Error(`method '${methodName}' is not a function on the constructed Resource`);
+		}
+		if (isGeneratorFunction(method)) {
+			throw new Error(
+				`subscribe method '${methodName}' is a generator; return an async iterable from a regular method`
+			);
 		}
 		return await method.call(instance, params ?? {}, context);
 	};
