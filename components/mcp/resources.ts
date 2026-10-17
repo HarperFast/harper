@@ -48,9 +48,12 @@ import {
 	listCustomResources,
 	listCustomResourceTemplates,
 	matchCustomResource,
+	type CustomResourceDef,
 } from './customResourceRegistry.ts';
 import type { McpProfile } from './transport.ts';
 import { canRoleInvokeOperation } from './operationVisibility.ts';
+import type { RecheckPass } from '../../server/liveSubscriptionAuth.ts';
+import type { User } from '../../security/user.ts';
 
 interface ParamRouteEntry {
 	pattern: string;
@@ -68,6 +71,10 @@ type OpenApiGenerator = (resources: ResourcesType, serverHttpURL: string) => unk
 
 export interface AuthedUser {
 	username?: string;
+	/** JWT `exp` (seconds since epoch) of the bearer credential the request authenticated with. */
+	authExpiresAt?: number;
+	/** A scoped token's identity is its embedded role; it is never re-resolved against hdb_user. */
+	_scopedToken?: boolean;
 	role?: {
 		role?: string;
 		permission?: {
@@ -154,12 +161,12 @@ export function _setHttpUrlPrefixForTest(prefix: string | undefined): void {
 }
 
 /**
- * A live audit-log subscription started by `resource.subscribe`, viewed as an
- * async-iterable with an `.end()` to stop it (the shape MQTT's durable session
- * consumes). Test seam below injects a fake so unit tests don't need the real
- * audit log.
+ * A change stream: the audit-log subscription `resource.subscribe` starts, or
+ * what a custom resource's `subscribe` returns — an async iterable, optionally
+ * with an `.end()` to stop it (the shape MQTT's durable session consumes). Test
+ * seam below injects a fake so unit tests don't need the real audit log.
  */
-type ResourceChangeStream = AsyncIterable<{ acknowledge?: () => void }> & { end?: () => void };
+type ResourceChangeStream = AsyncIterable<unknown> & { end?: () => unknown };
 let _subscribeImplOverride: ((path: string, user: AuthedUser) => Promise<ResourceChangeStream | null>) | undefined;
 
 /** Test seam: replace the real `resource.subscribe` resolution with a fake stream. */
@@ -365,27 +372,44 @@ function enumerateMcpResourcePaths(): string[] {
 }
 
 export interface ResourceSubscription {
-	/** Stop the subscription and release the underlying audit-log iterator. */
+	/**
+	 * Begin delivering: `onUpdate` runs once per change. Deferred until the caller
+	 * has admitted the subscription, so no change reaches a session that no longer
+	 * owns it. A no-op once stopped.
+	 */
+	start: (onUpdate: () => void) => void;
+	/** Release the change stream. Idempotent; also runs when the stream ends or fails. */
 	stop: () => void;
 }
 
 /**
- * Subscribe to changes on a row-backed resource URI (#1349 §3.6), invoking
- * `onUpdate` once per committed change. Returns a handle to stop it, or `null`
- * if the URI is not subscribable — only application HTTP(S) resource URLs backed
- * by a Resource with `subscribe` qualify; synthetic `harper://*` URIs have no
- * row-change source and are list_changed-only.
+ * Subscribe to changes on a resource URI (#1349 §3.6), returning an unstarted
+ * handle, or `null` if the URI is not subscribable. Two sources qualify:
+ *   - a custom `mcpResources` entry that declares `subscribe` (#3250), matched
+ *     exactly as `readResource` matches it, so read and subscribe resolve the
+ *     same entry;
+ *   - an application HTTP(S) resource URL backed by a Resource with `subscribe`.
+ * Synthetic `harper://*` URIs have no change source and are list_changed-only.
  *
  * Mirrors the MQTT durable-subscription consumer (`server/DurableSubscriptionsSession.ts`):
  * `resource.subscribe` (a transactional static) returns an async-iterable with an
  * `.end()`; we iterate it on the worker holding the SSE stream, so the audit-log
  * `'committed'` broadcast delivers changes locally (cross-worker via the shared log).
+ * Throws when the author's method or `resource.subscribe` throws, and
+ * `AccessViolation` when a custom subscription's principal is no longer authorized.
  */
 export async function subscribeToResource(
 	uri: string,
 	user: AuthedUser,
-	onUpdate: () => void
+	profile: McpProfile
 ): Promise<ResourceSubscription | null> {
+	const custom = matchCustomResource(profile, uri);
+	if (custom) {
+		const { def, params } = custom;
+		if (!def.subscribe) return null;
+		return subscribeToCustomResource(uri, def.subscribe, params, user, profile);
+	}
+
 	let parsed: URL;
 	try {
 		parsed = new URL(uri);
@@ -414,7 +438,6 @@ export async function subscribeToResource(
 		// so we must override both cases (else a collection URI watches a phantom
 		// record named after the resource and receives nothing).
 		const recordId = (entry.relativeURL ?? '').replace(/^\/+/, '');
-		const { transaction } = transactionRuntimeModule;
 		const { RequestTarget } = RequestTargetRuntimeModule;
 		const request = new RequestTarget(path);
 		// `omitCurrent`: only deliver changes after subscribe, not a retained snapshot —
@@ -426,37 +449,176 @@ export async function subscribeToResource(
 			checkPermission: user?.role?.permission ?? {},
 		});
 		const context = { user: user as any, authorize: true, request };
-		const result = await transaction(context, async () => ResourceClass.subscribe!(request, context));
-		stream =
-			result && typeof (result as ResourceChangeStream)[Symbol.asyncIterator] === 'function'
-				? (result as ResourceChangeStream)
-				: null;
+		stream = await acquireChangeStream(uri, context, () => ResourceClass.subscribe!(request, context));
 	}
-	if (!stream) return null;
+	// Audit-log events carry `acknowledge` (the MQTT delivery receipt); custom values are opaque.
+	return stream ? changeStreamSubscription(uri, stream, true) : null;
+}
 
+/**
+ * Start a custom resource's subscription (#3250): run the author's `subscribe`
+ * in the same user-carrying transaction `readCustomResource` uses (and, as
+ * there, without `authorize`), then admit it to identity-lifetime revocation.
+ */
+async function subscribeToCustomResource(
+	uri: string,
+	subscribe: NonNullable<CustomResourceDef['subscribe']>,
+	params: Record<string, string>,
+	user: AuthedUser,
+	profile: McpProfile
+): Promise<ResourceSubscription | null> {
+	const { contextStorage } = require('../../resources/transaction');
+	const stream = await acquireChangeStream(uri, { ...contextStorage.getStore(), user }, () =>
+		subscribe(params, { user, profile })
+	);
+	if (!stream) return null;
+	const subscription = changeStreamSubscription(uri, stream, false);
+	try {
+		await trackPrincipalLifetime(subscription, user);
+	} catch (err) {
+		subscription.stop();
+		throw err;
+	}
+	return subscription;
+}
+
+/**
+ * Run `call` in a transaction and return its change stream. A stream acquired
+ * by a callback whose transaction then fails to commit is released here: the
+ * transaction wrapper only closes a result's `onDone` on that path.
+ */
+async function acquireChangeStream(
+	uri: string,
+	context: object,
+	call: () => unknown
+): Promise<ResourceChangeStream | null> {
+	const { transaction } = require('../../resources/transaction');
+	let acquired: unknown;
+	let result: unknown;
+	try {
+		result = await transaction(context, async () => (acquired = await call()));
+	} catch (err) {
+		if (isChangeStream(acquired)) changeStreamSubscription(uri, acquired, false).stop();
+		throw err;
+	}
+	return isChangeStream(result) ? result : null;
+}
+
+function isChangeStream(value: unknown): value is ResourceChangeStream {
+	return typeof (value as ResourceChangeStream | null)?.[Symbol.asyncIterator] === 'function';
+}
+
+/**
+ * Wrap a change stream in a start/stop handle. `stop` releases the stream once:
+ * `end()` when the stream has one (a Harper subscription, or an author's queue),
+ * otherwise its iterator's `return()`. Iteration ending, by completion or by an
+ * error, also stops, so the producer is released on every path.
+ */
+function changeStreamSubscription(
+	uri: string,
+	stream: ResourceChangeStream,
+	acknowledgeEvents: boolean
+): ResourceSubscription & { onStop: (callback: () => void) => void } {
+	let iterator: AsyncIterator<unknown> | undefined;
 	let stopped = false;
-	void (async () => {
+	const stopCallbacks: Array<() => void> = [];
+	const stop = () => {
+		if (stopped) return;
+		stopped = true;
+		for (const callback of stopCallbacks) callback();
 		try {
-			for await (const update of stream) {
-				if (stopped) break;
-				update?.acknowledge?.();
-				onUpdate();
+			const released =
+				typeof stream.end === 'function' ? stream.end() : (iterator ?? stream[Symbol.asyncIterator]()).return?.();
+			if (typeof (released as Promise<unknown> | undefined)?.then === 'function') {
+				(released as Promise<unknown>).then(undefined, (err: unknown) =>
+					harperLogger.trace(`MCP subscription ${uri} stop: ${describeError(err)}`)
+				);
 			}
 		} catch (err) {
-			harperLogger.trace(`MCP subscription ${uri} ended: ${(err as Error).message}`);
+			harperLogger.trace(`MCP subscription ${uri} stop: ${describeError(err)}`);
 		}
-	})();
-
+	};
 	return {
-		stop: () => {
-			stopped = true;
+		start(onUpdate) {
+			if (stopped || iterator) return;
+			let active: AsyncIterator<unknown>;
 			try {
-				stream.end?.();
+				active = iterator = stream[Symbol.asyncIterator]();
 			} catch (err) {
-				harperLogger.trace(`MCP subscription ${uri} stop: ${(err as Error).message}`);
+				harperLogger.trace(`MCP subscription ${uri} could not start: ${describeError(err)}`);
+				stop();
+				return;
 			}
+			void (async () => {
+				try {
+					for (;;) {
+						const { done, value } = await active.next();
+						if (done || stopped) break;
+						if (acknowledgeEvents) (value as { acknowledge?: () => void } | undefined)?.acknowledge?.();
+						onUpdate();
+					}
+				} catch (err) {
+					harperLogger.trace(`MCP subscription ${uri} ended: ${describeError(err)}`);
+				} finally {
+					stop();
+				}
+			})();
+		},
+		stop,
+		onStop(callback) {
+			stopCallbacks.push(callback);
 		},
 	};
+}
+
+let securityUser: typeof import('../../security/user.ts') | undefined;
+
+// One function for every custom subscription, so a recheck pass memoizes one lookup per username.
+const resolveUser = (_scope: unknown, username: string) =>
+	securityUser!.findAndValidateUser(username, undefined, false) as Promise<AuthedUser>;
+
+/**
+ * Tie a custom subscription to its principal's lifetime: revoked at bearer-token
+ * expiry, or when the user is removed or left without a role — the identity half
+ * of what `Resource.subscribe` registers (`registerLiveSubscriptionForContext`
+ * in resources/Resource.ts). An expired or no-longer-current principal is
+ * rechecked before the caller can admit the subscription.
+ */
+async function trackPrincipalLifetime(
+	subscription: ReturnType<typeof changeStreamSubscription>,
+	user: AuthedUser
+): Promise<void> {
+	const username = user?.username;
+	if (!username) return;
+	const { registerLiveSubscription } = require('../../server/liveSubscriptionAuth');
+	securityUser ??= require('../../security/user') as typeof import('../../security/user.ts');
+	const { hasRecordProvenance, isCurrentUser } = securityUser;
+	const principal = user as User;
+	const handle = registerLiveSubscription({
+		username,
+		authExpiresAt: user.authExpiresAt,
+		identityOnly: user._scopedToken === true || hasRecordProvenance(principal),
+		recheck: async (pass: RecheckPass) =>
+			user._scopedToken === true || !!(await pass.memo(resolveUser, username, resolveUser))?.role,
+		revoke: subscription.stop,
+	});
+	subscription.onStop(handle.unregister);
+	let recheckNow: boolean;
+	try {
+		recheckNow = (user.authExpiresAt != null && user.authExpiresAt * 1000 <= Date.now()) || !isCurrentUser(principal);
+	} catch {
+		recheckNow = true;
+	}
+	if (recheckNow && (await handle.verify()) === 'revoked') throw new AccessViolation(user);
+}
+
+/** A rejection reason may be anything, `null` included. */
+function describeError(err: unknown): string {
+	try {
+		return err instanceof Error ? err.message : String(err);
+	} catch {
+		return '<unprintable error>';
+	}
 }
 
 /**

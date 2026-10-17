@@ -4,6 +4,7 @@ const {
 	removeResourceSubscription,
 	dropSessionSubscriptions,
 	restoreResourceSubscriptions,
+	SubscriptionCancelledError,
 	_liveSubscriptionCount,
 	_resetSubscriptionsForTest,
 } = require('#src/components/mcp/subscriptions');
@@ -124,6 +125,120 @@ describe('mcp/subscriptions', () => {
 		dropSessionSubscriptions('s1');
 		assert.equal(fake.endCalls, 1);
 		assert.equal(_liveSubscriptionCount('s1'), 0);
+	});
+
+	describe('setup owned by the GET stream that requested it', () => {
+		const URI_B = 'https://app.test:9926/Product/2';
+		function deferred() {
+			let resolve;
+			const promise = new Promise((r) => (resolve = r));
+			return { promise, resolve };
+		}
+		const turns = async (n = 5) => {
+			for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
+		};
+
+		it('cancels and releases a setup whose GET stream closed before it resolved', async () => {
+			registerSession('s1', 'application', USER);
+			const gate = deferred();
+			_setSubscribeImplForTest(async () => (await gate.promise, fake));
+			const setup = addResourceSubscription('s1', URI, USER);
+			getRegisteredSession('s1').queue.emit('close');
+			gate.resolve();
+			await assert.rejects(
+				setup,
+				(err) => err instanceof SubscriptionCancelledError && /GET SSE stream/.test(err.message)
+			);
+			assert.equal(fake.endCalls, 1);
+			assert.equal(_liveSubscriptionCount('s1'), 0);
+		});
+
+		it('cancels a setup overtaken by unsubscribe, delivering nothing it had buffered', async () => {
+			registerSession('s1', 'application', USER);
+			const frames = framesOf('s1');
+			const gate = deferred();
+			_setSubscribeImplForTest(async () => (await gate.promise, fake));
+			const setup = addResourceSubscription('s1', URI, USER);
+			fake.push({ id: '1' });
+			assert.equal(removeResourceSubscription('s1', URI), false, 'nothing live yet');
+			gate.resolve();
+			await assert.rejects(setup, /unsubscribed/);
+			await turns();
+			assert.equal(frames.length, 0);
+			assert.equal(fake.endCalls, 1);
+		});
+
+		it('lets a newer subscribe for the same URI supersede one still in setup', async () => {
+			registerSession('s1', 'application', USER);
+			const frames = framesOf('s1');
+			const gate = deferred();
+			const first = makeFakeStream();
+			const second = makeFakeStream();
+			let calls = 0;
+			_setSubscribeImplForTest(async () => (++calls === 1 ? (await gate.promise, first) : second));
+			const older = addResourceSubscription('s1', URI, USER);
+			assert.equal(await addResourceSubscription('s1', URI, USER), true);
+			gate.resolve();
+			await assert.rejects(older, /superseded/);
+			assert.equal(first.endCalls, 1);
+			assert.equal(_liveSubscriptionCount('s1'), 1);
+			second.push({ id: '1' });
+			await turns();
+			assert.equal(frames.length, 1);
+		});
+
+		it('cancels setups in flight when the session drops its subscriptions', async () => {
+			registerSession('s1', 'application', USER);
+			const gate = deferred();
+			_setSubscribeImplForTest(async () => (await gate.promise, fake));
+			const setup = addResourceSubscription('s1', URI, USER);
+			dropSessionSubscriptions('s1');
+			gate.resolve();
+			await assert.rejects(setup, SubscriptionCancelledError);
+			assert.equal(fake.endCalls, 1);
+		});
+
+		it('refuses a subscribe with no GET stream at all', async () => {
+			await assert.rejects(addResourceSubscription('s1', URI, USER), SubscriptionCancelledError);
+		});
+
+		it('pushes only to the record that admitted it', async () => {
+			registerSession('s1', 'application', USER);
+			await addResourceSubscription('s1', URI, USER);
+			registerSession('s1', 'application', USER); // a reconnect supersedes the admitting stream
+			const frames = framesOf('s1');
+			fake.push({ id: '1' });
+			await turns();
+			assert.equal(frames.length, 0);
+		});
+
+		it('stops restoring once a newer GET supersedes it, keeping every URI it did not settle', async () => {
+			const owner = registerSession('s1', 'application', USER);
+			const gate = deferred();
+			const requested = [];
+			_setSubscribeImplForTest(async (path) => {
+				requested.push(path);
+				await gate.promise;
+				return fake;
+			});
+			const restoring = restoreResourceSubscriptions('s1', [URI, URI_B], USER, 'application', owner);
+			registerSession('s1', 'application', USER);
+			gate.resolve();
+			assert.deepEqual(await restoring, [URI, URI_B]);
+			assert.deepEqual(requested, ['Product/1'], 'the second URI is never acquired for the superseded GET');
+			assert.equal(fake.endCalls, 1);
+			assert.equal(_liveSubscriptionCount('s1'), 0);
+		});
+
+		it('keeps a URI whose subscribe threw, so the next reconnect retries it', async () => {
+			registerSession('s1', 'application', USER);
+			_setSubscribeImplForTest(async (path) => {
+				if (path === 'Product/2') throw new Error('source unavailable');
+				return fake;
+			});
+			assert.deepEqual(await restoreResourceSubscriptions('s1', [URI, URI_B], USER), [URI, URI_B]);
+			assert.equal(_liveSubscriptionCount('s1'), 1);
+		});
 	});
 
 	it('restore re-establishes durable subscriptions and reports which succeeded', async () => {

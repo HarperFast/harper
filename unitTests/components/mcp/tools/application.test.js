@@ -1063,7 +1063,24 @@ const {
 	listCustomResourceTemplates: listCustomResourceTemplateDefs,
 	clearProfileCustomResources,
 } = require('#src/components/mcp/customResourceRegistry');
-const { readResource: readResourceForCustom } = require('#src/components/mcp/resources');
+const {
+	readResource: readResourceForCustom,
+	subscribeToResource: subscribeToCustomResource,
+} = require('#src/components/mcp/resources');
+
+// An idle change stream with `end()`; `ended` counts releases.
+function makeIdleStream() {
+	const stream = {
+		ended: 0,
+		end() {
+			stream.ended++;
+		},
+		[Symbol.asyncIterator]() {
+			return { next: () => new Promise(() => {}) };
+		},
+	};
+	return stream;
+}
 
 describe('mcp/tools/application — custom mcpResources opt-in (#1609)', () => {
 	beforeEach(() => {
@@ -1179,6 +1196,90 @@ describe('mcp/tools/application — custom mcpResources opt-in (#1609)', () => {
 			['a:///good']
 		);
 		assert.equal(listCustomResourceTemplateDefs('application').length, 0);
+	});
+
+	it('subscribe dispatches to the named instance method on the live class with the session user', async () => {
+		let captured;
+		const stream = makeIdleStream();
+		class Docs extends Resource {
+			async readPage() {
+				return 'x';
+			}
+			async watchPage(params, context) {
+				captured = { params, contextUser: context.user, instanceUser: this.getContext()?.user };
+				return stream;
+			}
+		}
+		Docs.mcpResources = [
+			{
+				uriTemplate: 'docs:///{+path}',
+				name: 'docs page',
+				description: 'd',
+				method: 'readPage',
+				subscribe: 'watchPage',
+			},
+		];
+		_setResourcesForTest(makeRegistry([['Docs', { Resource: Docs }]]));
+		registerApplicationTools();
+		const subscription = await subscribeToCustomResource('docs:///guides/install.md', SUPER, 'application');
+		assert.ok(subscription);
+		assert.deepEqual(captured.params, { path: 'guides/install.md' });
+		assert.equal(captured.contextUser, SUPER);
+		assert.equal(captured.instanceUser, SUPER);
+		subscription.stop();
+		assert.equal(stream.ended, 1);
+	});
+
+	it('registers read-only when subscribe is missing, not a method, or a generator', async () => {
+		class Docs {
+			async readPage() {
+				return 'page';
+			}
+			async *watchGenerator() {}
+			*watchSyncGenerator() {}
+		}
+		Docs.prototype.notAFunction = 'nope';
+		Docs.mcpResources = [
+			{ uri: 'docs:///a', name: 'a', description: 'd', method: 'readPage', subscribe: 'doesNotExist' },
+			{ uri: 'docs:///b', name: 'b', description: 'd', method: 'readPage', subscribe: 'notAFunction' },
+			{ uri: 'docs:///c', name: 'c', description: 'd', method: 'readPage', subscribe: 'watchGenerator' },
+			{ uri: 'docs:///d', name: 'd', description: 'd', method: 'readPage', subscribe: 'watchSyncGenerator' },
+			{ uri: 'docs:///e', name: 'e', description: 'd', method: 'readPage', subscribe: 42 },
+		];
+		_setResourcesForTest(makeRegistry([['Docs', { Resource: Docs }]]));
+		registerApplicationTools();
+		for (const uri of ['docs:///a', 'docs:///b', 'docs:///c', 'docs:///d', 'docs:///e']) {
+			const match = matchCustomResource('application', uri);
+			assert.ok(match, `${uri} still registered`);
+			assert.equal(match.def.subscribe, undefined, `${uri} has no subscribe`);
+			assert.equal(
+				(await readResourceForCustom({ uri, user: SUPER, profile: 'application' })).contents[0].text,
+				'page'
+			);
+			assert.equal(await subscribeToCustomResource(uri, SUPER, 'application'), null);
+		}
+	});
+
+	it('refuses a generator subscribe on a subclass registered after the walk', async () => {
+		class Base {
+			async readPage() {
+				return 'x';
+			}
+			async watchPage() {
+				return makeIdleStream();
+			}
+		}
+		Base.mcpResources = [
+			{ uri: 'docs:///index', name: 'docs index', description: 'd', method: 'readPage', subscribe: 'watchPage' },
+		];
+		const registry = makeRegistry([['Docs', { Resource: Base }]]);
+		_setResourcesForTest(registry);
+		registerApplicationTools();
+		class Sub extends Base {
+			async *watchPage() {}
+		}
+		registry.get('Docs').Resource = Sub;
+		await assert.rejects(subscribeToCustomResource('docs:///index', SUPER, 'application'), /generator/);
 	});
 
 	it('rebuild clears stale custom resources (removed class leaves no entry behind)', () => {

@@ -42,6 +42,7 @@ import {
 	removeResourceSubscription,
 	dropSessionSubscriptions,
 	restoreResourceSubscriptions,
+	SubscriptionCancelledError,
 } from './subscriptions.ts';
 import {
 	sendServerRequest,
@@ -422,11 +423,18 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	// in-flight `serverRequest`. Those are cleared on session DELETE + by timeout.
 	record.queue.once('close', () => dropSessionSubscriptions(sessionId));
 	// Restore durable resource subscriptions (#3.6) on (re)connect. Best-effort:
-	// a URI that's no longer subscribable is dropped from the persisted list.
+	// a URI that's no longer subscribable is dropped from the persisted list —
+	// unless a newer GET has superseded this one, since that list is then its to keep.
 	if (session.subscriptions?.length) {
-		const restored = await restoreResourceSubscriptions(sessionId, session.subscriptions, effectiveUser(request));
-		if (restored.length !== session.subscriptions.length) {
-			session.subscriptions = restored;
+		const kept = await restoreResourceSubscriptions(
+			sessionId,
+			session.subscriptions,
+			effectiveUser(request),
+			request.profile,
+			record
+		);
+		if (kept.length !== session.subscriptions.length && getRegisteredSession(sessionId) === record) {
+			session.subscriptions = kept;
 			await saveSession(session);
 		}
 	}
@@ -951,17 +959,21 @@ async function dispatchResourcesSubscribe(
 	}
 	let ok: boolean;
 	try {
-		ok = await addResourceSubscription(session.id, uri, effectiveUser(request));
+		ok = await addResourceSubscription(session.id, uri, effectiveUser(request), request.profile);
 	} catch (err) {
-		// Same permission-error mapping as resources/read.
 		if (err instanceof AccessViolation) {
 			return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `permission denied: ${uri}`));
 		}
-		throw err;
+		if (err instanceof SubscriptionCancelledError) {
+			return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, err.message));
+		}
+		// The raw error (possibly an author's) stays in the server log, as for custom reads.
+		harperLogger.error(`MCP resources/subscribe failed for ${uri}:`, err);
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, `failed to subscribe: ${uri}`));
 	}
 	if (!ok) {
-		// Only row-backed application resources are subscribable; synthetic harper://*
-		// URIs (and unknown URIs) have no change source.
+		// Row-backed application resources and custom resources declaring `subscribe`
+		// are subscribable; synthetic harper://* URIs (and unknown URIs) have no change source.
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `resource is not subscribable: ${uri}`));
 	}
 	// Persist the URI on the durable record so it survives an SSE reconnect.
