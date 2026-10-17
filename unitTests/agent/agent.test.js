@@ -17,7 +17,14 @@ const assert = require('node:assert');
 const { mkdtempSync, mkdirSync, writeFileSync, realpathSync, symlinkSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
-const { mergeConfig, resolveAgentIdentity, resolveScopes, buildStaticSystemPrompt } = require('#src/agent/agent');
+const {
+	mergeConfig,
+	resolveAgentIdentity,
+	resolveOperationsApiPorts,
+	resolveScopes,
+	buildStaticSystemPrompt,
+} = require('#src/agent/agent');
+const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { readFileTool, listDirTool } = require('#src/agent/tools/fsTools');
 
@@ -205,6 +212,21 @@ describe('agent/agent mergeConfig maxTokens', () => {
 	it('falls back to the default for anything else', () => {
 		for (const maxTokens of [0, -5, 1.5, true, [8192], '', 'abc', null, 8n, { value: 1 }]) {
 			assert.strictEqual(mergeConfig({ maxTokens }).maxTokens, 16384, String(maxTokens));
+		}
+	});
+});
+
+describe('agent/agent resolveOperationsApiPorts', () => {
+	it('reads the shipped default (plain port unset, secure port 9925) as [9925]', () => {
+		const originalPort = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
+		const originalSecurePort = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
+		try {
+			env.setProperty(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, null);
+			env.setProperty(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, 9925);
+			assert.deepStrictEqual(resolveOperationsApiPorts(), [9925]);
+		} finally {
+			env.setProperty(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, originalPort);
+			env.setProperty(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, originalSecurePort);
 		}
 	});
 });
