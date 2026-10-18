@@ -342,6 +342,36 @@ describe('nested relationship constraints', function () {
 		});
 		assert.deepStrictEqual(ids(rows), [['c1'], ['c6']]);
 	});
+	it('honors readable predicates with boolean permission checks in structured search', async function () {
+		const rows = await query(
+			{ name: 'children', conditions: [{ attribute: 'state', value: 'open' }], limit: 1, select: ['id'] },
+			{ checkPermission: true }
+		);
+		assert.deepStrictEqual(ids(rows), [['c1'], ['c6']]);
+	});
+	it('honors readable predicates with boolean permission checks in structured get', async function () {
+		const row = await Parent.get(
+			{
+				id: 'p1',
+				checkPermission: true,
+				select: [
+					'id',
+					{ name: 'children', conditions: [{ attribute: 'state', value: 'open' }], limit: 1, select: ['id'] },
+				],
+			},
+			{ user: ordinaryUser }
+		);
+		assert.deepStrictEqual(ids([row]), [['c1']]);
+	});
+	it('inherits deeper outer join candidates while paging child relationships', async function () {
+		const rows = await get(
+			'/Parent/?children.siblings.state=open&select(id,children[limit(1)&select(id,siblings[limit(1)&select(id,)])])'
+		);
+		assert.deepStrictEqual(rows, [
+			{ id: 'p1', children: [{ id: 'c1', siblings: [{ id: 'c1' }] }] },
+			{ id: 'p2', children: [{ id: 'c5', siblings: [{ id: 'c6' }] }] },
+		]);
+	});
 	it('preserves FK holes when only pagination is requested', async function () {
 		const rows = await query({ name: 'references', limit: 2, select: ['id'] });
 		assert.deepStrictEqual(rows[0].references, [{ id: 'c1' }, undefined]);
