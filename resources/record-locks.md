@@ -598,16 +598,16 @@ publishing `g+1` is not by itself what stops `g`, and the note must not pretend 
 1. **Stage** `g+1` to every node named in `homes(g)` and in `homes(g+1)`.
 2. **Quiesce.** Each of those nodes acknowledges that it has stopped granting and stopped honouring
    delegations under `g`, and **its acknowledgement carries its `homeIncarnation`** (§5.1). A node
-   that does not acknowledge must be **externally fenced** — stopped, isolated, or powered off —
+   that does not acknowledge must be **externally fenced** — stopped or powered off —
    before the transition may continue. This is the step that carries the whole safety argument, and
    it is why the operator, not a protocol, is the authority: **declaring a node removed is not a
    fence; stopping it is.**
 3. **Drain.** Wait `maxDelegationMs + skew` after the last acknowledgement or fence. That interval
    bounds every delegation `g` could have issued before it stopped. A node's own drain proof
-   (harper-pro#856) replaces the wait for that node. A fenced node that is **stopped or powered
-   off** needs none, because nothing on it can commit. An **isolated** one is not a fence for this
-   purpose at all: a handle it admitted can still commit, and where peers keep digest agreement
-   across a partition, as harper-pro's do, it keeps homing its own keys under `g`. Stop it.
+   (harper-pro#856) replaces the wait for that node. A fenced node needs none, because nothing on it
+   can commit. **Isolating a node is not fencing it**: a handle it admitted can still commit, and where
+   peers keep digest agreement across a partition, as harper-pro's do, it keeps homing its own keys
+   under `g`.
 4. **Activate.** One **durable activation record**, issued by the control plane, carries the staged
    generation, the routing-capability version (§4.4), every acknowledgement with the incarnation it
    was given under, the external-fence attestations, and a not-before instant. A node answers
