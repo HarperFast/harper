@@ -6238,6 +6238,7 @@ export function makeTable(options): TableResourceClass {
 						} finally {
 							// We own the iteration here (no results.onDone consumer), so release the read
 							// transaction unconditionally — including when the drain throws — or the snapshot leaks.
+							(transformToRecord as any).return?.();
 							txn.doneReadTxn();
 						}
 						let total: number | null;
@@ -6277,6 +6278,7 @@ export function makeTable(options): TableResourceClass {
 				if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
 				results.onDone = () => {
 					results.onDone = null; // ensure that it isn't called twice
+					(transformToRecord as any).return?.();
 					txn.unregisterReadIterator(results);
 					txn.doneReadTxn();
 				};
@@ -6291,7 +6293,12 @@ export function makeTable(options): TableResourceClass {
 				throw error;
 			}
 		}
-		static _prepareRelationshipSelection(attribute, context, filtered?, ensureLoaded = true) {
+		static _prepareRelationshipSelection(
+			attribute,
+			context,
+			filtered?,
+			ensureLoaded = true
+		): (record: any, entry?: any, isSync?: boolean) => any {
 			if (attribute.conditions !== undefined && !Array.isArray(attribute.conditions))
 				throw new ClientError('Nested conditions must be an array');
 			const resolver = propertyResolvers[attribute.name];
@@ -6349,7 +6356,8 @@ export function makeTable(options): TableResourceClass {
 				};
 			let transform;
 			let transformReadTxn;
-			return (record, entry?, isSync = false) => {
+			const active = new Set<() => void>();
+			const relationshipSelection = (record, entry?, isSync = false) => {
 				let value;
 				if (filterMap?.hasMappings) {
 					const key = resolver.from ? record[resolver.from] : flattenKey(entry?.key ?? record[primaryKey]);
@@ -6402,6 +6410,7 @@ export function makeTable(options): TableResourceClass {
 						transform = targetTable.transformEntryForSelect(select, context, readTxn, childFiltered, ensureLoaded);
 						transformReadTxn = readTxn;
 					}
+					const projectEntry = transform;
 					const iterator = ordered[isSync ? Symbol.iterator : Symbol.asyncIterator]();
 					const results = [];
 					const txn = txnForContext(context);
@@ -6414,6 +6423,7 @@ export function makeTable(options): TableResourceClass {
 						if (closing) return closing;
 						const complete = () => {
 							closed = true;
+							active.delete(owned.onDone);
 							txn.unregisterReadIterator(owned);
 						};
 						const failed = (error) => {
@@ -6431,11 +6441,13 @@ export function makeTable(options): TableResourceClass {
 					};
 					const owned = {
 						onDone: () => {
+							(projectEntry as any).return?.();
 							const completion = close();
 							if (typeof completion?.catch === 'function')
 								completion.catch((error) => logger.warn?.('Failed to close a nested relationship iterator', error));
 						},
 					};
+					active.add(owned.onDone);
 					txn.registerReadIterator(owned);
 					let skipped = 0;
 					const finish = () => when(close(), () => (many ? results : results[0]));
@@ -6465,7 +6477,7 @@ export function makeTable(options): TableResourceClass {
 							if (typeof iteration?.then === 'function') return iteration.then(consume, fail);
 							while (!iteration.done && !stopped) {
 								if (skipped++ >= offset) {
-									const projected = transform.call({ isSync }, iteration.value);
+									const projected = projectEntry.call({ isSync }, iteration.value);
 									if (typeof projected?.then === 'function')
 										return projected.then((value) => {
 											if (stopped) return finish();
@@ -6486,6 +6498,16 @@ export function makeTable(options): TableResourceClass {
 					return advance();
 				});
 			};
+			(relationshipSelection as any).return = () => {
+				for (const close of [...active]) {
+					try {
+						close();
+					} catch (error) {
+						logger.warn?.('Failed to close a nested relationship iterator', error);
+					}
+				}
+			};
+			return relationshipSelection;
 		}
 		static _assertNestedReadAccess(name, context, target) {
 			if (!target.checkPermission) return;
@@ -6890,8 +6912,10 @@ export function makeTable(options): TableResourceClass {
 			}
 			const source = this.source;
 			const resourceClass = this;
+			let selectionStopped = false;
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
 			const transform = function (entry: Entry) {
+				if (selectionStopped) return SKIP;
 				let record;
 				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
@@ -7111,6 +7135,12 @@ export function makeTable(options): TableResourceClass {
 					return selected;
 				}
 				return record;
+			};
+			(transform as any).return = () => {
+				selectionStopped = true;
+				for (const cache of [relationshipSelections, transformCache]) {
+					if (cache) for (const child of Object.values(cache)) (child as any).return?.();
+				}
 			};
 			return transform;
 		}

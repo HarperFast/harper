@@ -568,4 +568,46 @@ describe('nested relationship constraints', function () {
 			const row = single ? result : result[0];
 			assert.deepStrictEqual(row.metadata, { label: 'kept' });
 		});
+	for (const nestedOnly of [false, true])
+		it(`cancels in-flight child projections when the parent iterator is returned (${nestedOnly ? 'nested-only' : 'direct'})`, async function () {
+			if (!(Child.primaryStore instanceof RocksDatabase)) return this.skip();
+			let entered, release;
+			const started = new Promise((resolve) => {
+				entered = resolve;
+			});
+			const pending = new Promise((resolve) => {
+				release = resolve;
+			});
+			Child.setComputedAttribute('observed', (record) => {
+				entered();
+				return pending.then(() => record.score);
+			});
+			try {
+				await transaction({}, async (txn) => {
+					const selection = nestedOnly
+						? { name: 'children', select: ['id', { name: 'siblings', limit: 2, select: ['id', 'observed'] }] }
+						: { name: 'children', limit: 2, select: ['id', 'observed'] };
+					const results = Parent.search({ select: ['id', selection] });
+					const iterator = results[Symbol.asyncIterator]();
+					const first = Promise.resolve(iterator.next()).then(
+						(value) => ({ value }),
+						(error) => ({ error })
+					);
+					await started;
+					await iterator.return();
+					const readsAtReturn = Child.primaryStore.readCount;
+					release();
+					const settled = await first;
+					assert.ifError(settled.error);
+					assert.strictEqual(Child.primaryStore.readCount, readsAtReturn, 'returning the parent must stop child reads');
+					assert.strictEqual(txn.closeOwnedReadIterators(), 0, 'no abandoned nested cursor remains owned');
+				});
+			} finally {
+				release();
+				Child.setComputedAttribute('observed', (record) => {
+					projected.push(record.id);
+					return record.score;
+				});
+			}
+		});
 });
