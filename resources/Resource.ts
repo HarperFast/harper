@@ -1181,8 +1181,21 @@ function selectFromObject(object, propertyResolvers, context) {
 }
 export function transformForSelect(select, resource) {
 	const propertyResolvers = resource?.propertyResolvers;
-	const context = resource?.getContext?.();
+	const context = resource?.getContext?.() ?? contextStorage.getStore();
 	let subTransforms;
+	let relationshipSelections;
+	if (resource?._prepareRelationshipSelection)
+		for (const property of Array.isArray(select) ? select : []) {
+			if (
+				propertyResolvers?.[property.name]?.definition?.tableClass &&
+				(property.conditions || property.limit !== undefined || property.offset !== undefined || property.sort)
+			) {
+				(relationshipSelections ||= Object.create(null))[property.name] = resource._prepareRelationshipSelection(
+					property,
+					context
+				);
+			}
+		}
 	if (typeof select === 'string')
 		// if select is a single string then return property value
 		return function transform(object) {
@@ -1199,7 +1212,7 @@ export function transformForSelect(select, resource) {
 				if (typeof object.then === 'function') return object.then(transform);
 				if (Array.isArray(object)) return object.map(transform);
 				const results = [];
-				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
+				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context), object);
 				for (const property of select) {
 					results.push(getProperty(property));
 				}
@@ -1214,7 +1227,7 @@ export function transformForSelect(select, resource) {
 				return object.map((value) => (value && typeof value === 'object' ? transform(value) : value));
 			// finally the case of returning objects
 			const selectedData = {};
-			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context));
+			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context), object);
 			if (selectsPrototype)
 				Object.defineProperty(selectedData, '__proto__', {
 					value: undefined,
@@ -1235,13 +1248,15 @@ export function transformForSelect(select, resource) {
 			return selectedData;
 		};
 	} else throw new Error('Invalid select argument type ' + typeof select);
-	function handleProperty(getProperty) {
+	function handleProperty(getProperty, object) {
 		return (property) => {
 			if (typeof property === 'string') {
 				return getProperty(property);
 			} else if (typeof property === 'object') {
 				// TODO: Handle aggregate functions
 				if (property.name) {
+					const selection = relationshipSelections?.[property.name];
+					if (selection) return selection(object.getRecord?.() || object);
 					const value = getProperty(property.name);
 					if (!value || typeof value !== 'object' || value instanceof Date) return value;
 					if (!subTransforms) subTransforms = Object.create(null);
