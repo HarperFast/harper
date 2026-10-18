@@ -242,20 +242,17 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 		assert.strictEqual(backend.cursor.floors.remote, emptied.currentSequenceNumber);
 		await unregister();
 
-		// A cursor from before floors (no floor for the emptied log) is condemned once and re-anchored.
 		backend.cursor = { format: 1, logs: { ...backend.cursor.logs } };
 		unregister = register();
 		await settled(2);
 		assert.strictEqual(backend.cursor.floors.remote, emptied.currentSequenceNumber);
 		await unregister();
 
-		// Nothing changed under the floor: it resumes without a rebuild.
 		unregister = register();
 		await settled(2);
 		assert.strictEqual(backend.cursor.floors.remote, emptied.currentSequenceNumber);
 		await unregister();
 
-		// A commit the index never saw is purged below the floor: the floor no longer certifies the log.
 		await writeRemote('r3');
 		const crossed = await emptyRemote();
 		assert.ok(crossed.currentSequenceNumber > emptied.currentSequenceNumber, 'the writer moved past the floor');
@@ -264,7 +261,6 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 		assert.strictEqual(backend.cursor.floors.remote, crossed.currentSequenceNumber);
 		assert.ok(scannedRecordIds().has('r3'), 'the rebuild scan indexed the record whose log entry was purged');
 
-		// The next peer commit anchors the log exactly and retires its floor.
 		await writeRemote('r4');
 		await waitFor(() => backend.cursor.logs.remote > 0, { timeout: 20_000 });
 		assert.strictEqual(backend.cursor.floors, undefined);

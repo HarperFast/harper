@@ -195,6 +195,26 @@ describe('FullTextDerivedIndexBackend', () => {
 		}
 	});
 
+	it('keeps cursor floors through delivery, flush and coverage publication', async () => {
+		const floored = { format: 1, logs: { local: 10 }, floors: { remote: 3 } };
+		const engine = new FakeEngine(encodeFullTextCursorPayload(floored));
+		const { backend } = makeBackend(
+			lifecycle({ state: 'checkpointed', committedPayload: engine.committedPayload }, [engine])
+		);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().floors }, floored.floors);
+		backend.deliver(batch(1n, [], { format: 1, logs: { local: 20 }, floors: { remote: 3 } }));
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		const published = decodeFullTextCursorPayload(engine.publications[0]);
+		assert.deepStrictEqual({ ...published.logs }, { local: 20 });
+		assert.deepStrictEqual({ ...published.floors }, { remote: 3 });
+		assert.deepStrictEqual({ ...backend.getDurableCursor().floors }, { remote: 3 });
+		backend.publishCoverage({ local: { sequence: 3, offset: 4 } }, 1n);
+		await waitFor(() => engine.publications.length === 2);
+		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(engine.publications[1]).floors }, { remote: 3 });
+		await backend.shutdown(1n);
+	});
+
 	it('round-trips cursor coverage and preserves it across ordinary publication', async () => {
 		const covered = {
 			format: 1,

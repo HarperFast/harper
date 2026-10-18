@@ -28,7 +28,8 @@ export type DerivedIndexCursor = {
 	coverage?: DerivedIndexPositions;
 };
 
-const MAX_LOG_SEQUENCE = 0xffff_ffff;
+export const MAX_LOG_SEQUENCE = 0xffff_ffff;
+const NO_FLOORS: Record<string, number> = Object.freeze({});
 
 export type DerivedIndexPositions = Record<string, { sequence: number; offset: number } | null>;
 
@@ -1165,21 +1166,13 @@ class DerivedIndexRunner {
 		}
 	}
 
-	/**
-	 * Whether a log the cursor does not anchor can still be read from its beginning: every file from
-	 * `floor` on must be retained. Retention can purge every file of a flushed log (rocksdb-js 2.12),
-	 * so no files proves nothing was lost only while the writer has not moved past the floor.
-	 */
+	/** Every file from `floor` on is retained; with none left, the writer has not moved past the floor. */
 	#retainsFrom(logName: string, floor: number): boolean {
 		const stats = this.#logStore.rootStore.useLog(logName).getStats();
 		return stats.fileCount === 0 ? stats.currentSequenceNumber <= floor : stats.oldestSequenceNumber <= floor;
 	}
 
-	/**
-	 * A log's first completed transaction replaces its floor with an exact position. Files between the
-	 * floor and this transaction may have been purged since the floor was checked, so the floor is
-	 * proven once more, after the read, before the exact position supersedes it.
-	 */
+	/** Files between the floor and this first transaction may have been purged since the install check. */
 	#anchor(through: DerivedIndexCursor, logName: string) {
 		if (!this.#retainsFrom(logName, through.floors?.[logName] ?? 1))
 			throw new RunnerError('log-retention', `transaction log '${logName}' no longer retains its beginning`);
@@ -1189,7 +1182,6 @@ class DerivedIndexRunner {
 		}
 	}
 
-	/** Logs the offered cursor has not anchored yet must still retain their floor to be caught up. */
 	#checkUnanchoredLogs(): boolean {
 		const offered = this.#offered!;
 		for (const logName of this.#knownLogs) {
@@ -1245,6 +1237,8 @@ class DerivedIndexRunner {
 				this.#finishIdlePass(capture);
 				return;
 			}
+			// A pass that reached the tail publishes catch-up below, so its unanchored logs are proven first.
+			if (this.#collectedToEnd && !this.#checkUnanchoredLogs()) return;
 			const result = this.#deliver(batch);
 			if (result === undefined) return;
 			if (result === DERIVED_INDEX_DEFERRED) {
@@ -1688,6 +1682,7 @@ class DerivedIndexRunner {
 			this.#needsRebuild('backend advanced to an unoffered cursor vector', 'cursor-unoffered');
 			return false;
 		}
+		if (!this.#checkUnanchoredLogs()) return false;
 		// Every timestamp of an offered vector was pushed to its log's pending list, so the durable one is
 		// present; everything before it is no longer needed for repeat detection.
 		for (const [logName, timestamp] of Object.entries(cursor.logs)) {
@@ -2117,9 +2112,10 @@ class DerivedIndexRunner {
 			if (range.corruptFrameStop.breaks > 0 || range.failedLogs.size > 0)
 				throw new RunnerError('log-corrupt', `transaction log '${logName}' cannot be read to its committed tail`);
 			if (tail === undefined) {
-				// The scan covers whatever this log held; its later commits land at the current sequence or above.
-				const { currentSequenceNumber } = this.#logStore.rootStore.useLog(logName).getStats();
-				if (currentSequenceNumber > 1) (boundary.floors ??= {})[logName] = currentSequenceNumber;
+				// The scan covers this log's past; an uncommitted entry in a retained file may still complete.
+				const stats = this.#logStore.rootStore.useLog(logName).getStats();
+				const floor = stats.fileCount === 0 ? stats.currentSequenceNumber : stats.oldestSequenceNumber;
+				if (floor > 1) (boundary.floors ??= {})[logName] = floor;
 				continue;
 			}
 			boundary.logs[logName] = tail;
@@ -2539,7 +2535,9 @@ function cloneCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {
 
 function sameCursor(left: DerivedIndexCursor | undefined, right: DerivedIndexCursor | undefined): boolean {
 	if (!isValidCursor(left) || !isValidCursor(right)) return false;
-	return sameEntries(left.logs, right.logs) && sameEntries(left.floors ?? {}, right.floors ?? {});
+	if (!sameEntries(left.logs, right.logs)) return false;
+	if (!left.floors && !right.floors) return true;
+	return sameEntries(left.floors ?? NO_FLOORS, right.floors ?? NO_FLOORS);
 }
 
 function sameEntries(left: Record<string, number>, right: Record<string, number>): boolean {

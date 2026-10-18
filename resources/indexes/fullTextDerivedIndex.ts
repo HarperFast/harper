@@ -2,6 +2,7 @@ import {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
 	DERIVED_INDEX_FAILED,
+	MAX_LOG_SEQUENCE,
 	sameDerivedIndexPositions,
 } from '../derivedIndexRuntime.ts';
 import type {
@@ -1233,8 +1234,9 @@ function isTerminalOpenError(error: unknown): boolean {
 function cloneCursor(cursor: DerivedIndexCursor | undefined): DerivedIndexCursor | undefined {
 	if (!cursor) return;
 	const logs = Object.freeze({ ...cursor.logs });
+	const floors = cursor.floors && Object.freeze({ ...cursor.floors });
 	const coverage = cursor.coverage && clonePositions(cursor.coverage);
-	return Object.freeze({ format: 1, logs, ...(coverage ? { coverage } : null) });
+	return Object.freeze({ format: 1, logs, ...(floors ? { floors } : null), ...(coverage ? { coverage } : null) });
 }
 
 function withDurableCoverage(
@@ -1275,15 +1277,15 @@ function normalizedCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {
 	if (cursor.floors !== undefined) {
 		if (!plainObject(cursor.floors))
 			throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid cursor');
-		floors = Object.create(null);
+		const normalizedFloors: Record<string, number> = Object.create(null);
 		for (const name in cursor.floors) {
 			if (!Object.hasOwn(cursor.floors, name)) continue;
 			const floor = cursor.floors[name];
-			if (!name || !Number.isInteger(floor) || floor < 1 || floor > 0xffff_ffff)
+			if (!name || !Number.isInteger(floor) || floor < 1 || floor > MAX_LOG_SEQUENCE)
 				throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid log floor');
-			floors![name] = floor;
+			normalizedFloors[name] = floor;
 		}
-		Object.freeze(floors);
+		floors = Object.freeze(normalizedFloors);
 	}
 	let coverage: DerivedIndexPositions | undefined;
 	if (cursor.coverage !== undefined) coverage = normalizedPositions(cursor.coverage);

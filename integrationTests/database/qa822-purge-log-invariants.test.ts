@@ -356,11 +356,8 @@ function comparePositions(left: LogPosition, right: LogPosition): number {
 	return left.sequence - right.sequence || left.offset - right.offset;
 }
 
-/**
- * The flush position as a sound witness (rocksdb-js#911): never the sentinel; with no log files left,
- * the writer has retired past the witnessed sequence (or sits on it when nothing was ever written to
- * it); with files, the position lies inside the range the purge kept.
- */
+// rocksdb-js#911's witness: never the sentinel; with no files left the writer has retired past the
+// witnessed sequence (or sits on it when nothing was ever written to it); with files, inside the kept range.
 function assertWitness(stats: LogSnapshot, preamble: string): void {
 	const position = stats.lastFlushedPosition;
 	ok(
@@ -461,35 +458,41 @@ function diskLogFiles(logDirPath: string): { seq: number; bytes: number }[] {
 		.map((name) => ({ seq: Number(name.slice(0, -'.txnlog'.length)), bytes: statSync(join(logDirPath, name)).size }));
 }
 
-// `txn.state` is eight little-endian bytes: uint32 offset, then uint32 sequence (rocksdb-js's
-// `LogPosition`), rewritten in place. Once the file it names is purged it is the only durable witness.
+// `txn.state`: rocksdb-js's `LogPosition`, eight little-endian bytes — uint32 offset, then uint32 sequence.
 function diskFlushedPosition(logDirPath: string): LogPosition {
 	const bytes = readFileSync(join(logDirPath, 'txn.state'));
 	strictEqual(bytes.length, 8, `txn.state must hold exactly one 8-byte position, got ${bytes.length} bytes`);
 	return { offset: bytes.readUInt32LE(0), sequence: bytes.readUInt32LE(4) };
 }
 
+// rocksdb-js#911: a file lying entirely at or before the flushed position is purgeable, the file the
+// position names and the current segment included; a file holding bytes above it is kept.
 function assertPurgeRuleOnDisk(
-	files: { seq: number; bytes: number }[],
-	logDirPath: string,
+	before: { seq: number; bytes: number }[],
+	after: { seq: number; bytes: number }[],
+	diskWitness: LogPosition,
 	witness: LogPosition,
 	label: string
 ): void {
 	deepStrictEqual(
-		diskFlushedPosition(logDirPath),
+		diskWitness,
 		witness,
 		`${label}: txn.state on disk must hold the exact position the process reported before it went down`
 	);
-	// rocksdb-js#911: a file lying entirely at or before the flushed position is purgeable, the file the
-	// position names and the current segment included; a file with bytes above the position is not.
-	const leftBehind = files.filter(
-		(file) => file.seq < witness.sequence || (file.seq === witness.sequence && file.bytes <= witness.offset)
-	);
+	const atOrBelow = (file: { seq: number; bytes: number }) =>
+		file.seq < witness.sequence || (file.seq === witness.sequence && file.bytes <= witness.offset);
 	deepStrictEqual(
-		leftBehind,
+		after.filter(atOrBelow),
 		[],
 		`${label}: every log file lying entirely at or before the flushed position (seq:${witness.sequence}, ` +
-			`offset:${witness.offset}) must have been purged; got files=${JSON.stringify(files)}`
+			`offset:${witness.offset}) must have been purged; got files=${JSON.stringify(after)}`
+	);
+	const overDeleted = before.filter((file) => !atOrBelow(file) && !after.some((kept) => kept.seq === file.seq));
+	deepStrictEqual(
+		overDeleted,
+		[],
+		`${label}: a log file holding bytes above the flushed position must survive the purge; ` +
+			`before=${JSON.stringify(before)} after=${JSON.stringify(after)}`
 	);
 }
 
@@ -544,6 +547,8 @@ suite(
 		let ramped = false;
 		let cleanReopenBoundary: LogSnapshot;
 		let cleanReopenDiskFiles: { seq: number; bytes: number }[];
+		let cleanReopenPrePurgeFiles: { seq: number; bytes: number }[];
+		let cleanReopenDiskWitness: LogPosition;
 		let cleanReopenReopened: LogSnapshot;
 		let cleanReopened = false;
 
@@ -750,7 +755,8 @@ suite(
 					`6. seeded ${seedRows} rows x ${VICTIM_PAD.length}B against maxFileSize=${maxFileSize}; rotations ${seedStart.rotations} -> ${rotations}`
 				);
 
-				await flushUntilPurgeable(ctx, CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB);
+				const flushed = await flushUntilPurgeable(ctx, CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB);
+				cleanReopenPrePurgeFiles = diskLogFiles(flushed.path);
 				const cutoffTimestamp = Date.now();
 
 				const ack = await rawOp(ctx, {
@@ -784,6 +790,7 @@ suite(
 				// restart's reopen sample "clean", unlike invariant 1's second sample.
 				await restart(ctx, '6.', () => {
 					cleanReopenDiskFiles = diskLogFiles(cleanReopenBoundary.path);
+					cleanReopenDiskWitness = diskFlushedPosition(cleanReopenBoundary.path);
 				});
 
 				cleanReopenReopened = await logStats(ctx, CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB);
@@ -811,13 +818,11 @@ suite(
 					`flush position must be byte-identical to the pre-restart position. Got boundary=${fmt(cleanReopenBoundary)} ` +
 					`reopened=${fmt(cleanReopenReopened)}`
 			);
-			// The HTTP samples above only prove the reopened process's own self-report; this proves the
-			// witness was actually ON DISK while the process was down, which a clever recomputation on
-			// open could satisfy without ever having persisted it, and that the purge applied #911's rule
-			// to the files themselves rather than keeping the flushed-position file as #799 did.
+			// Sampled while the process was down: a self-report after reopen cannot prove what was persisted.
 			assertPurgeRuleOnDisk(
+				cleanReopenPrePurgeFiles,
 				cleanReopenDiskFiles,
-				cleanReopenBoundary.path,
+				cleanReopenDiskWitness,
 				cleanReopenBoundary.lastFlushedPosition,
 				'CLEAN-REOPEN INVARIANT (on disk, process down)'
 			);

@@ -47,8 +47,7 @@ class FakeLogStore {
 		this.rootStore = new EventEmitter();
 		this.rootStore.listLogs = () => logNames.slice();
 		// Like rocksdb-js: a log that never wrote a file reports no files, oldest sequence 0 and current
-		// sequence 1. `logStats` overrides a log's report (a value, or a function called per read) to
-		// stand in for retention having purged files.
+		// sequence 1; one retention emptied reports no files but a current sequence past 1.
 		this.rootStore.useLog = (name) => ({
 			name,
 			getStats: () => {
@@ -1148,6 +1147,19 @@ describe('DerivedIndexRuntime for native backends', () => {
 		}
 	});
 
+	it('floors a log whose retained files hold only uncommitted entries at its oldest file', async () => {
+		// An in-flight transaction's entries sit in sequence 2 while the writer is on 3; its commit will
+		// complete below the writer, so the floor must keep sequence 2, not the writer's sequence.
+		const store = emptiedLogStore({ remote: { fileCount: 2, oldestSequenceNumber: 2, currentSequenceNumber: 3 } });
+		const backend = new AsyncBackend('floor-oldest', { applyDelay: 2 });
+		const { runtime } = runtimeFor(store, records(), { idleGraceMilliseconds: 1000 });
+		runtime.register(floorRegistration(backend));
+
+		await waitFor(() => runtime.getReadiness('floor-oldest').state === 'ready', { timeout: 5000 });
+		assert.deepStrictEqual(backend.cursor, { format: 1, logs: { local: 7 }, floors: { remote: 2 } });
+		await runtime.stop();
+	});
+
 	it('condemns a cursor whose floor-anchored log is gone', async () => {
 		const store = new FakeLogStore(new Map([[7, []]]), {
 			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]),
@@ -1166,8 +1178,6 @@ describe('DerivedIndexRuntime for native backends', () => {
 	});
 
 	it("proves the floor again before a log's first completed transaction replaces it", async () => {
-		// The floor holds when the cursor is installed, then retention moves past it before the first
-		// remote transaction is read: anchoring on that transaction would hide whatever was purged.
 		let reads = 0;
 		const store = new FakeLogStore(new Map([[7, [{ ...audit({ timestamp: 8, recordId: 'b' }), logName: 'remote' }]]]), {
 			logNames: ['local', 'remote'],
@@ -1204,6 +1214,47 @@ describe('DerivedIndexRuntime for native backends', () => {
 		);
 		await waitFor(() => runtime.getReadiness('floor-anchor').state === 'ready', { timeout: 5000 });
 		assert.deepStrictEqual(backend.cursor, { format: 1, logs: { local: 7, remote: 8 } });
+		await runtime.stop();
+	});
+
+	it('proves the floors again before a nonempty pass that reached the tail publishes catch-up', async () => {
+		// Sustained local work never leaves an idle pass, and the emptied remote log has no transaction
+		// to anchor on; the floor is still re-proven before the tail-reaching pass is delivered.
+		let reads = 0;
+		const store = new FakeLogStore(new Map([[7, [audit({ timestamp: 8, recordId: 'b' })]]]), {
+			logNames: ['local', 'remote'],
+			logEntries: new Map([
+				['local', [audit({ timestamp: 7, recordId: 'a' })]],
+				['remote', []],
+			]),
+			logStats: new Map([
+				[
+					'remote',
+					() =>
+						++reads === 1
+							? { fileCount: 0, oldestSequenceNumber: 0, currentSequenceNumber: 3 }
+							: { fileCount: 0, oldestSequenceNumber: 0, currentSequenceNumber: 4 },
+				],
+			]),
+		});
+		const backend = new AsyncBackend('floor-nonempty-pass', {
+			cursor: { format: 1, logs: { local: 7 }, floors: { remote: 3 } },
+			applyDelay: 2,
+		});
+		const { runtime } = runtimeFor(store, new Map([...records(), ['1:b', { version: 8, value: { title: 'b' } }]]), {
+			idleGraceMilliseconds: 1000,
+		});
+		runtime.register(floorRegistration(backend));
+
+		await waitFor(() => runtime.getReadiness('floor-nonempty-pass').state === 'ready' && backend.resets.length === 1, {
+			timeout: 5000,
+		});
+		assert.strictEqual(
+			backend.deliveries.some((batch) => batch.through?.logs.local === 8 && batch.through.floors?.remote === 3),
+			false,
+			'the local batch must not be delivered over a floor retention has crossed'
+		);
+		assert.deepStrictEqual(backend.cursor, { format: 1, logs: { local: 8 }, floors: { remote: 4 } });
 		await runtime.stop();
 	});
 
