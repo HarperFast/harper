@@ -2511,7 +2511,6 @@ describe('record lock delegations', () => {
 	});
 
 	describe('a home across a generation change (harper-pro#973)', () => {
-		/** Gamma holds delegations for two keys alpha homes, then stops. */
 		async function gammaHeldThenStopped() {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const keys = [cluster.keyHomedOn('alpha'), cluster.keyHomedOn('alpha', 'j')];
@@ -2556,6 +2555,21 @@ describe('record lock delegations', () => {
 				(error) => error.statusCode === 423
 			);
 			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 2);
+		});
+
+		it('serves a key whose older grant was recall-confirmed even when the delegate stays in the ring', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('alpha');
+			const gamma = cluster.node('gamma');
+			const round = await gamma.coordinator.acquire(key, LEASE, WAIT);
+			gamma.coordinator.release(key, round.admissionId);
+			// Gamma confirms the recall but its release never lands, so the grant stays recall-confirmed.
+			gamma.writerThrows = true;
+			await assert.rejects(() => cluster.node('beta').coordinator.acquire(key, LEASE, 300));
+			assert.ok(gamma.writerCalls > 0, 'gamma surrendered');
+			cluster.generation = 2;
+			const successor = await cluster.node('beta').coordinator.acquire(key, LEASE, 1_000);
+			assert.ok(successor.admissionId);
 		});
 
 		it('does not let a late release of the old grant clear its successor', async () => {
