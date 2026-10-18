@@ -20,9 +20,9 @@ export type DerivedIndexCursor = {
 	format: 1;
 	logs: Record<string, number>;
 	/**
-	 * For a log with no completed transaction when the cursor was captured: the log sequence its next
-	 * commit lands in. The log is read from its beginning only while every file from that sequence on
-	 * is retained. Absent means sequence 1 (a log that had never been written).
+	 * For a log with no completed transaction when the cursor was captured: the lowest log sequence that
+	 * must still be retained for the log to be read from its beginning — its oldest retained file, or the
+	 * writer's sequence when no file remains. Absent means sequence 1 (a log that had never been written).
 	 */
 	floors?: Record<string, number>;
 	coverage?: DerivedIndexPositions;
@@ -1166,7 +1166,6 @@ class DerivedIndexRunner {
 		}
 	}
 
-	/** Every file from `floor` on is retained; with none left, the writer has not moved past the floor. */
 	#retainsFrom(logName: string, floor: number): boolean {
 		const stats = this.#logStore.rootStore.useLog(logName).getStats();
 		return stats.fileCount === 0 ? stats.currentSequenceNumber <= floor : stats.oldestSequenceNumber <= floor;
@@ -1182,11 +1181,10 @@ class DerivedIndexRunner {
 		}
 	}
 
-	#checkUnanchoredLogs(): boolean {
-		const offered = this.#offered!;
+	#checkUnanchoredLogs(cursor: DerivedIndexCursor): boolean {
 		for (const logName of this.#knownLogs) {
-			if (offered.logs[logName] !== undefined) continue;
-			if (!this.#retainsFrom(logName, offered.floors?.[logName] ?? 1)) {
+			if (cursor.logs[logName] !== undefined) continue;
+			if (!this.#retainsFrom(logName, cursor.floors?.[logName] ?? 1)) {
 				this.#needsRebuild(`transaction log '${logName}' no longer retains its beginning`, 'log-retention');
 				return false;
 			}
@@ -1237,8 +1235,6 @@ class DerivedIndexRunner {
 				this.#finishIdlePass(capture);
 				return;
 			}
-			// A pass that reached the tail publishes catch-up below, so its unanchored logs are proven first.
-			if (this.#collectedToEnd && !this.#checkUnanchoredLogs()) return;
 			const result = this.#deliver(batch);
 			if (result === undefined) return;
 			if (result === DERIVED_INDEX_DEFERRED) {
@@ -1627,7 +1623,6 @@ class DerivedIndexRunner {
 		this.#unreadSince = undefined;
 		this.#reachedEndOfLog = true;
 		if (this.#rebuilding || !this.#offered) return;
-		if (!this.#checkUnanchoredLogs()) return;
 		const durable = this.#registration.backend.getDurableCursor();
 		if (durable === undefined && this.#boundaryPending) {
 			this.#armFlushTimer();
@@ -1682,7 +1677,8 @@ class DerivedIndexRunner {
 			this.#needsRebuild('backend advanced to an unoffered cursor vector', 'cursor-unoffered');
 			return false;
 		}
-		if (!this.#checkUnanchoredLogs()) return false;
+		// Every durable advance publishes catch-up, so the logs it leaves unanchored are proven first.
+		if (!this.#checkUnanchoredLogs(cursor)) return false;
 		// Every timestamp of an offered vector was pushed to its log's pending list, so the durable one is
 		// present; everything before it is no longer needed for repeat detection.
 		for (const [logName, timestamp] of Object.entries(cursor.logs)) {
@@ -2101,7 +2097,7 @@ class DerivedIndexRunner {
 	 * write), so nothing committed after this point can sit behind it: the scan covers everything up to
 	 * the tail and the replay from it covers everything after, including any reload marker committed
 	 * during the scan, which then demands its own rebuild. A log with no committed transaction is left
-	 * out of the cursor and read from its beginning, which it must still retain.
+	 * out of the cursor with a floor instead, and is read from its beginning while that floor is retained.
 	 */
 	#captureBoundary(): DerivedIndexCursor {
 		const boundary: DerivedIndexCursor = { format: 1, logs: {} };

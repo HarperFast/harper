@@ -46,8 +46,7 @@ class FakeLogStore {
 		this.exactStartFailures = new Map();
 		this.rootStore = new EventEmitter();
 		this.rootStore.listLogs = () => logNames.slice();
-		// Like rocksdb-js: a log that never wrote a file reports no files, oldest sequence 0 and current
-		// sequence 1; one retention emptied reports no files but a current sequence past 1.
+		// rocksdb-js: never written → no files, oldest 0, current 1; retention emptied → no files, current past 1.
 		this.rootStore.useLog = (name) => ({
 			name,
 			getStats: () => {
@@ -1249,11 +1248,6 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await waitFor(() => runtime.getReadiness('floor-nonempty-pass').state === 'ready' && backend.resets.length === 1, {
 			timeout: 5000,
 		});
-		assert.strictEqual(
-			backend.deliveries.some((batch) => batch.through?.logs.local === 8 && batch.through.floors?.remote === 3),
-			false,
-			'the local batch must not be delivered over a floor retention has crossed'
-		);
 		assert.deepStrictEqual(backend.cursor, { format: 1, logs: { local: 8 }, floors: { remote: 4 } });
 		await runtime.stop();
 	});

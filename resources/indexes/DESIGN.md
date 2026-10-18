@@ -278,10 +278,10 @@ rocksdb-js 2.12 retention can purge every file of a flushed log, so `fileCount =
 "never written": an emptied log reports `currentSequenceNumber` past 1, and its history since the
 cursor may be gone. The floor is what tells the two apart, which is why a rebuild records it instead
 of failing on a log with no committed tail (the scan covers that log's past, and later commits land
-at the floor or above). The floor is proven three times: when the cursor is installed, before the log's
-first completed transaction replaces it with an exact timestamp (files between the floor and that
-transaction may have been purged since the install check), and before each idle pass declares the
-index caught up. Rollback: an older Harper's full-text decoder rejects the `floors` field and rebuilds
+at the floor or above). The floor is proven at three sites: `#validateLogSet` when a cursor is installed, `#anchor` before the
+log's first completed transaction replaces it with an exact timestamp (files between the floor and that
+transaction may have been purged since the install check), and `#reconcileDurableCursor` before any
+durable advance publishes coverage or ready — the one path every catch-up publication takes. Rollback: an older Harper's full-text decoder rejects the `floors` field and rebuilds
 once; its runtime and HNSW drop the field on clone and judge the log by the old rule.
 
 ### Offered versus durable progress
