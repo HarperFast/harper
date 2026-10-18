@@ -108,6 +108,7 @@ export interface RecordLockHandle {
 	 * version has been noted; otherwise advances by the minimum monotonic step from the recorded floor.
 	 */
 	nextHolderVersion(): number;
+	/** True when this call returned the native key; false if already released, or while a commit hold defers the unlock. */
 	release(): boolean;
 	/** Defer `store.unlock(key)` until an in-flight native commit settles or `holdDeadlineMono` expires. */
 	retainForCommit?(holdDeadlineMono?: number): void;
@@ -325,7 +326,8 @@ class KeyLockHandle implements RecordLockHandle {
 		}
 	}
 
-	#deferOrFlushUnlock(warningMessage: string) {
+	// True when the native key went back now; false when the unlock waits on the commit hold.
+	#deferOrFlushUnlock(warningMessage: string): boolean {
 		if (this.#holdDeadlineMono !== undefined && performance.now() >= this.#holdDeadlineMono) {
 			this.#commitHolds = 0;
 			this.#deferredUnlock = false;
@@ -333,10 +335,11 @@ class KeyLockHandle implements RecordLockHandle {
 			clearTimeout(this.#holdTimer);
 			this.#holdTimer = undefined;
 			this.#unlockAndEmitRelease(warningMessage);
-			return;
+			return true;
 		}
 		this.#deferredUnlock = true;
 		this.#armHoldTimer();
+		return false;
 	}
 
 	#armHoldTimer() {
@@ -401,8 +404,7 @@ class KeyLockHandle implements RecordLockHandle {
 		this.released = true;
 		clearTimeout(this.#timer);
 		if (this.#commitHolds > 0) {
-			this.#deferOrFlushUnlock('record lock release failed (store may have been dropped)');
-			return true;
+			return this.#deferOrFlushUnlock('record lock release failed (store may have been dropped)');
 		}
 		this.#unlockAndEmitRelease('record lock release failed (store may have been dropped)');
 		return true;

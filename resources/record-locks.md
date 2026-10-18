@@ -39,20 +39,20 @@ Consequences that shape the code:
 - **`RecordLockHandle`** (`recordLock.ts`) carries `store`, `key`, `keyId`, `acquiredAt`, `expiresAt`,
   `hold`, `released`, and `expired`. `release()` sets `released` and clears the lease timer; a lease
   timer sets `expired = true` and `released = true` on fire. When no native commit is holding the
-  handle (`#commitHolds === 0`), both immediately call `store.unlock(key)` and emit `onRelease`. While a
-  submitted native `RocksTransaction` is in flight (`retainForCommit(holdDeadlineMono)` called at first
-  native submission in `DatabaseTransaction.performCommit()`), `store.unlock(key)` and `onRelease` are
-  deferred (`#deferredUnlock = true`) until `releaseCommitHold()` drains `#commitHolds` to `0` — at local
-  commit landing (immediately before `releaseRecordLocks()`), in `commitOutcome`'s rejection handler on
-  any unlogged give-up, or at the commit-conflict budget boundary via `noteOverdueLoggedCommit` or the
-  handle's own `#holdTimer` when a native commit never settles (harper#3236) — so a logged commit that
-  retries past its lease cannot be overtaken by a same-node contender or emit an early `LOCK_RELEASE`
-  while within its conflict budget. `isExpired()` flips immediately when the timer fires or
-  `revokeLease()`/`release()` runs (while `isLeaseExpired()` reflects only lease expiry or
-  `revokeLease()`, not `release()`), so any new write staged through an expired or released handle (and
-  any unlogged conflict retry) throws 409 in `DatabaseTransaction.save()` or `performCommit()` — from
-  `lockNotHeldError()`, which names the actual cause, since an expired lease and a handle already
-  released (by `unlock()` or by the commit) send a caller after different bugs.
+  handle, both immediately call `store.unlock(key)` and emit `onRelease` (and `release()` returns `true`).
+  While a submitted native `RocksTransaction` is in flight (`retainForCommit(holdDeadlineMono)` called at
+  first native submission in `DatabaseTransaction.performCommit()`), `store.unlock(key)` and `onRelease`
+  are deferred (and `release()` returns `false`) until `releaseCommitHold()` releases the last commit
+  hold — at local commit landing (immediately before `releaseRecordLocks()`), in `commitOutcome`'s
+  rejection handler on any unlogged give-up, or at the commit-conflict budget boundary via
+  `noteOverdueLoggedCommit` or the handle's own hold-deadline timer when a native commit never settles
+  (harper#3236) — so a logged commit that retries past its lease cannot be overtaken by a same-node
+  contender or emit an early `LOCK_RELEASE` while within its conflict budget. `isExpired()` flips
+  immediately when the timer fires or `revokeLease()`/`release()` runs (while `isLeaseExpired()` reflects
+  only lease expiry or `revokeLease()`, not `release()`), so any new write staged through an expired or
+  released handle (and any unlogged conflict retry) throws 409 in `DatabaseTransaction.save()` or
+  `performCommit()` — from `lockNotHeldError()`, which names the actual cause, since an expired lease and
+  a handle already released (by `unlock()` or by the commit) send a caller after different bugs.
   `acquireRecordKey` loops `tryLock` → await wake → retry until acquired or `waitMs` elapsed (then 423).
   The contender wait timer uses `.unref()` so it does not prevent process exit.
 - **Re-entrancy is per-transaction.** `DatabaseTransaction.recordLocks` is a lazily allocated
