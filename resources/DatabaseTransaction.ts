@@ -1528,15 +1528,16 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * Retry count of the handle with a durable transaction-log entry still retrying its commit on this
-	 * link (the highest when commits overlap), or -1 when there is none.
+	 * Retries so far of the handles with a durable transaction-log entry still retrying their commit on
+	 * this link, summed over overlapping commits so the total moves whenever any of them does, or -1
+	 * when there is none.
 	 */
 	activeDurableLogRetries(): number {
 		let retries = -1;
 		const note = (handle: RocksTransaction | null | undefined) => {
 			const txn = handle as RocksTransactionWithRetry | null | undefined;
 			if (!txn || !hasDurableLog(txn) || this.isHandleCommitted(txn) || txn.abortedByWrapper) return;
-			retries = Math.max(retries, txn.retries ?? 0);
+			retries = Math.max(retries, 0) + (txn.retries ?? 0);
 		};
 		note(this.activeCommitHandle);
 		if (this.activeCommitHandles) for (const handle of this.activeCommitHandles) note(handle);
@@ -4001,7 +4002,10 @@ const STALLED_COMMIT_LOG_MIN_INTERVAL_MS = 1000;
 // A logged retry parked on a write intent moves its retry counter at least every native park timeout,
 // so a counter that has not moved for two of them is a native attempt that never settled — whatever
 // the monitor's tick interval (STORAGE_MAXTRANSACTIONOPENTIME can be set far below the park timeout).
-const LOGGED_RETRY_STALL_MS = 2 * (Number(process.env.ROCKSDB_JS_PARK_TIMEOUT_MS) || 5000);
+const configuredParkTimeoutMs = Number(process.env.ROCKSDB_JS_PARK_TIMEOUT_MS);
+// Same acceptance rule as rocksdb-js: anything but a finite positive number falls back to its 5000 ms default.
+const LOGGED_RETRY_STALL_MS =
+	2 * (Number.isFinite(configuredParkTimeoutMs) && configuredParkTimeoutMs > 0 ? configuredParkTimeoutMs : 5000);
 let lastStalledCommitWarningAt = -Infinity;
 let lastStalledCommitErrorAt = -Infinity;
 
@@ -4030,7 +4034,10 @@ function collectCommitLinks(root: DatabaseTransaction, txn: DatabaseTransaction)
 
 function chainDurableLogRetries(root: DatabaseTransaction, txn: DatabaseTransaction): number {
 	let retries = -1;
-	for (const link of collectCommitLinks(root, txn)) retries = Math.max(retries, link.activeDurableLogRetries());
+	for (const link of collectCommitLinks(root, txn)) {
+		const linkRetries = link.activeDurableLogRetries();
+		if (linkRetries >= 0) retries = Math.max(retries, 0) + linkRetries;
+	}
 	return retries;
 }
 
