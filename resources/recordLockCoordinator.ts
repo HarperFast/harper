@@ -288,7 +288,8 @@ export interface ClusterLockTransport {
 	 * fenced, then `DELEGATION_LEASE_MS + skew` elapsed, unless every quiesced home proved its drain
 	 * and every fenced node is stopped, not merely isolated. On its first grant request under `g+1`
 	 * a home expires each older grant that a drain reported outstanding on a node outside the new
-	 * ring (`#retireOlderGrants`). Core cannot observe what happened on other nodes; the operator can.
+	 * ring (record-locks.md, "A delegation is authority within one generation"). Core cannot observe
+	 * what happened on other nodes; the operator can.
 	 *
 	 * The other interval — a restart of *this* process — is core's own, because a generation does not
 	 * advance on a restart and there is no external event to hang it on. See `#grantableAfterMono`.
@@ -983,8 +984,11 @@ export class LockCoordinator {
 	 * generation 1, where there is nothing to drain and no interval to skip.
 	 */
 	unprovenOwnershipMs(): number {
-		// The successor answers for the ownership it adopted.
-		if (this.#handedOff) return 0;
+		// The successor answers for the ownership it adopted, unless it closed without handing on.
+		if (this.#handedOff) {
+			const authority = this.#authority();
+			return liveCoordinators.has(authority) ? 0 : authority.unprovenOwnershipMs();
+		}
 		const horizon = DELEGATION_LEASE_MS + this.#skewMs;
 		if (this.#ownedSinceMono === undefined) return horizon;
 		// The ring-wide recall attestation covers a sibling thread's grants too: a takeover bumps the
@@ -1076,7 +1080,6 @@ export class LockCoordinator {
 	#dependencySets = new Map<unknown, LockDependencySet>();
 	#everDelegated = new DelegatedKeyFilter();
 	#freshnessGeneration: number | undefined;
-	/** The generation whose older grants `#retireOlderGrants` has already swept. */
 	#retiredBelow: number | undefined;
 	/** False after any interval whose delegation history this coordinator could not have observed. */
 	#trustVirginKeys: boolean;
@@ -2141,6 +2144,7 @@ export class LockCoordinator {
 				if (grant.recallConfirmed) result.recalled++;
 				else {
 					grant.drainOutstanding = true;
+					this.#retiredBelow = undefined;
 					result.outstanding.push({
 						table: this.table,
 						key: grant.key,
@@ -2150,6 +2154,7 @@ export class LockCoordinator {
 				}
 			} catch (error) {
 				grant.drainOutstanding = true;
+				this.#retiredBelow = undefined;
 				result.outstanding.push({
 					table: this.table,
 					key: grant.key,

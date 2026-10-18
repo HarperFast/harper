@@ -2639,45 +2639,65 @@ describe('record lock delegations', () => {
 			await Promise.all([first, second]);
 		});
 
-		it('a drain still checks the ownership of a coordinator rebuilt while it waits on a surrender', async () => {
-			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
-			const node = cluster.node('alpha');
-			const key = cluster.keyHomedOn('gamma');
-			let token;
-			cluster.beforeReply = (from, to, request, reply) => {
-				if (from === 'alpha') token = reply.token;
-			};
-			const round = await node.coordinator.acquire(key, LEASE, WAIT);
-			let releaseFence;
-			node.coordinator.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
-			node.coordinator.release(key, round.admissionId);
-			// Only alpha is still inside its ownership horizon, so only alpha's coordinator can fail the proof.
-			for (const name of ['beta', 'gamma']) cluster.advance(name, DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1);
-			const surrender = node.coordinator.onDelegationRecall({ key, token });
-			const drain = quiesceDelegations(cluster.database, 1_000);
-			await new Promise((resolve) => setTimeout(resolve, 10));
-			// The transport is replaced mid-drain, as staging a generation does; the successor adopts
-			// alpha's unproven ownership, and the predecessor no longer answers for it.
-			const predecessor = node.coordinator;
-			const successor = new LockCoordinator({
-				database: cluster.database,
-				table: cluster.table,
-				nodeId: 'alpha',
-				transport: predecessor.transport,
-				writeControl: cluster.writeControlFor('alpha'),
-				keyIdOf: (k) => String(k),
-				nextTimestamp: () => ++cluster.tsCounter,
-				monotonic: () => node.mono + performance.now(),
-				grantableAfterMono: -Infinity,
-				adopt: predecessor,
-				autoTick: false,
+		for (const coldClose of [false, true])
+			it(`a drain still checks the ownership of a coordinator rebuilt while it waits on a surrender${coldClose ? ', and closed again' : ''}`, async () => {
+				const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+				const node = cluster.node('alpha');
+				const key = cluster.keyHomedOn('gamma');
+				let token;
+				cluster.beforeReply = (from, to, request, reply) => {
+					if (from === 'alpha') token = reply.token;
+				};
+				const round = await node.coordinator.acquire(key, LEASE, WAIT);
+				let releaseFence;
+				node.coordinator.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
+				node.coordinator.release(key, round.admissionId);
+				// Only alpha is still inside its ownership horizon, so only alpha's coordinator can fail the proof.
+				for (const name of ['beta', 'gamma']) cluster.advance(name, DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1);
+				const surrender = node.coordinator.onDelegationRecall({ key, token });
+				const drain = quiesceDelegations(cluster.database, 1_000);
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				// The transport is replaced mid-drain, as staging a generation does; the successor adopts
+				// alpha's unproven ownership, and the predecessor no longer answers for it.
+				const predecessor = node.coordinator;
+				const successor = new LockCoordinator({
+					database: cluster.database,
+					table: cluster.table,
+					nodeId: 'alpha',
+					transport: predecessor.transport,
+					writeControl: cluster.writeControlFor('alpha'),
+					keyIdOf: (k) => String(k),
+					nextTimestamp: () => ++cluster.tsCounter,
+					monotonic: () => node.mono + performance.now(),
+					grantableAfterMono: -Infinity,
+					adopt: predecessor,
+					autoTick: false,
+				});
+				predecessor.close();
+				if (coldClose) successor.close();
+				releaseFence();
+				const drained = await drain;
+				await surrender;
+				assert.strictEqual(drained.complete, false, JSON.stringify(drained.outstanding));
+				successor.close();
 			});
-			predecessor.close();
-			releaseFence();
-			const drained = await drain;
-			await surrender;
-			assert.strictEqual(drained.complete, false, JSON.stringify(drained.outstanding));
-			successor.close();
+
+		it('sweeps again for grants a drain marked after this generation already swept', async () => {
+			const { cluster } = await gammaHeldThenStopped();
+			cluster.homes = ['alpha', 'beta'];
+			cluster.generation = 2;
+			const beta = cluster.node('beta').coordinator;
+			const first = cluster.keyHomedOn('alpha', 'm');
+			const round = await beta.acquire(first, LEASE, WAIT);
+			beta.release(first, round.admissionId);
+			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 3, 'nothing was marked yet');
+			await drainAlpha(cluster);
+			await beta.acquire(cluster.keyHomedOn('alpha', 'n'), LEASE, WAIT);
+			assert.strictEqual(
+				cluster.node('alpha').coordinator.stats.granted,
+				1,
+				"gamma's marked grants outlived the drain"
+			);
 		});
 
 		it('does not let a late release of the old grant clear its successor', async () => {
