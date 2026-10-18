@@ -1108,9 +1108,8 @@ export function encodeFullTextCursorPayload(
 		cursor: normalized
 			? {
 					format: 1,
-					logs: Object.fromEntries(
-						Object.entries(normalized.logs).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-					),
+					logs: sortedEntries(normalized.logs),
+					...(normalized.floors ? { floors: sortedEntries(normalized.floors) } : null),
 					...(normalized.coverage ? { coverage: sortedPositions(normalized.coverage) } : null),
 				}
 			: null,
@@ -1154,7 +1153,9 @@ export function decodeFullTextPublication(
 		!plainObject(decoded.cursor) ||
 		decoded.cursor.format !== 1 ||
 		!plainObject(decoded.cursor.logs) ||
-		Object.keys(decoded.cursor).some((name) => name !== 'format' && name !== 'logs' && name !== 'coverage')
+		Object.keys(decoded.cursor).some(
+			(name) => name !== 'format' && name !== 'logs' && name !== 'floors' && name !== 'coverage'
+		)
 	)
 		throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid cursor');
 	return { cursor: normalizedCursor(decoded.cursor as DerivedIndexCursor) };
@@ -1251,6 +1252,10 @@ function sameCursor(left: DerivedIndexCursor | undefined, right: DerivedIndexCur
 	if (leftLogs.length !== rightLogs.length) return false;
 	if (!leftLogs.every(([name, timestamp]) => Object.hasOwn(right.logs, name) && right.logs[name] === timestamp))
 		return false;
+	const leftFloors = Object.entries(left.floors ?? {});
+	if (leftFloors.length !== Object.keys(right.floors ?? {}).length) return false;
+	if (!leftFloors.every(([name, floor]) => Object.hasOwn(right.floors!, name) && right.floors![name] === floor))
+		return false;
 	if (!left.coverage || !right.coverage) return left.coverage === right.coverage;
 	return sameDerivedIndexPositions(left.coverage, right.coverage);
 }
@@ -1266,10 +1271,24 @@ function normalizedCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {
 			throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid log position');
 		logs[name] = timestamp;
 	}
+	let floors: Record<string, number> | undefined;
+	if (cursor.floors !== undefined) {
+		if (!plainObject(cursor.floors))
+			throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid cursor');
+		floors = Object.create(null);
+		for (const name in cursor.floors) {
+			if (!Object.hasOwn(cursor.floors, name)) continue;
+			const floor = cursor.floors[name];
+			if (!name || !Number.isInteger(floor) || floor < 1 || floor > 0xffff_ffff)
+				throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid log floor');
+			floors![name] = floor;
+		}
+		Object.freeze(floors);
+	}
 	let coverage: DerivedIndexPositions | undefined;
 	if (cursor.coverage !== undefined) coverage = normalizedPositions(cursor.coverage);
 	Object.freeze(logs);
-	return Object.freeze({ format: 1, logs, ...(coverage ? { coverage } : null) });
+	return Object.freeze({ format: 1, logs, ...(floors ? { floors } : null), ...(coverage ? { coverage } : null) });
 }
 
 function normalizedPositions(value: unknown): DerivedIndexPositions {
@@ -1304,6 +1323,12 @@ function clonePositions(positions: DerivedIndexPositions): DerivedIndexPositions
 		clone[name] = position && { sequence: position.sequence, offset: position.offset };
 	}
 	return Object.freeze(clone);
+}
+
+function sortedEntries(entries: Record<string, number>): Record<string, number> {
+	return Object.fromEntries(
+		Object.entries(entries).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+	);
 }
 
 function sortedPositions(positions: DerivedIndexPositions): DerivedIndexPositions {

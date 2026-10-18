@@ -177,6 +177,24 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(specialLogs.constructor, 15);
 	});
 
+	it('round-trips cursor floors in sorted order and rejects malformed ones', () => {
+		const payload = encodeFullTextCursorPayload({ format: 1, logs: { b: 2, a: 1 }, floors: { z: 3, a: 2 } });
+		assert.strictEqual(payload, '{"format":1,"cursor":{"format":1,"logs":{"a":1,"b":2},"floors":{"a":2,"z":3}}}');
+		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(payload).floors }, { a: 2, z: 3 });
+		const special = encodeFullTextCursorPayload(
+			Object.assign(cursorForLogs([['local', 5]]), { floors: Object.fromEntries([['__proto__', 4]]) })
+		);
+		const specialFloors = decodeFullTextCursorPayload(special).floors;
+		assert.strictEqual(Object.hasOwn(specialFloors, '__proto__'), true);
+		assert.strictEqual(specialFloors.__proto__, 4);
+		for (const floors of ['{"remote":0}', '{"remote":1.5}', '{"remote":4294967296}', '[3]', '{"":3}']) {
+			assert.throws(
+				() => decodeFullTextCursorPayload(`{"format":1,"cursor":{"format":1,"logs":{"local":1},"floors":${floors}}}`),
+				`floors ${floors} must be rejected`
+			);
+		}
+	});
+
 	it('round-trips cursor coverage and preserves it across ordinary publication', async () => {
 		const covered = {
 			format: 1,

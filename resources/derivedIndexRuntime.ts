@@ -19,8 +19,16 @@ export type DerivedIndexDeliveryResult =
 export type DerivedIndexCursor = {
 	format: 1;
 	logs: Record<string, number>;
+	/**
+	 * For a log with no completed transaction when the cursor was captured: the log sequence its next
+	 * commit lands in. The log is read from its beginning only while every file from that sequence on
+	 * is retained. Absent means sequence 1 (a log that had never been written).
+	 */
+	floors?: Record<string, number>;
 	coverage?: DerivedIndexPositions;
 };
+
+const MAX_LOG_SEQUENCE = 0xffff_ffff;
 
 export type DerivedIndexPositions = Record<string, { sequence: number; offset: number } | null>;
 
@@ -1139,20 +1147,59 @@ class DerivedIndexRunner {
 				return;
 			}
 		}
+		if (cursor.floors) {
+			for (const logName of Object.keys(cursor.floors)) {
+				if (!current.has(logName)) {
+					this.#needsRebuild(`saved transaction log '${logName}' is missing`, 'log-missing');
+					return;
+				}
+			}
+		}
 		this.#knownLogs = current;
 		for (const logName of currentLogs) {
 			if (cursor.logs[logName] !== undefined) continue;
-			if (!this.#retainsBeginning(logName)) {
-				this.#needsRebuild(`new transaction log '${logName}' no longer retains its beginning`, 'log-retention');
+			if (!this.#retainsFrom(logName, cursor.floors?.[logName] ?? 1)) {
+				this.#needsRebuild(`transaction log '${logName}' no longer retains its beginning`, 'log-retention');
 				return;
 			}
 		}
 	}
 
-	/** A log that never wrote a file has nothing to have lost; one with files must still hold the first. */
-	#retainsBeginning(logName: string): boolean {
+	/**
+	 * Whether a log the cursor does not anchor can still be read from its beginning: every file from
+	 * `floor` on must be retained. Retention can purge every file of a flushed log (rocksdb-js 2.12),
+	 * so no files proves nothing was lost only while the writer has not moved past the floor.
+	 */
+	#retainsFrom(logName: string, floor: number): boolean {
 		const stats = this.#logStore.rootStore.useLog(logName).getStats();
-		return stats.fileCount === 0 || stats.oldestSequenceNumber === 1;
+		return stats.fileCount === 0 ? stats.currentSequenceNumber <= floor : stats.oldestSequenceNumber <= floor;
+	}
+
+	/**
+	 * A log's first completed transaction replaces its floor with an exact position. Files between the
+	 * floor and this transaction may have been purged since the floor was checked, so the floor is
+	 * proven once more, after the read, before the exact position supersedes it.
+	 */
+	#anchor(through: DerivedIndexCursor, logName: string) {
+		if (!this.#retainsFrom(logName, through.floors?.[logName] ?? 1))
+			throw new RunnerError('log-retention', `transaction log '${logName}' no longer retains its beginning`);
+		if (through.floors) {
+			delete through.floors[logName];
+			if (Object.keys(through.floors).length === 0) delete through.floors;
+		}
+	}
+
+	/** Logs the offered cursor has not anchored yet must still retain their floor to be caught up. */
+	#checkUnanchoredLogs(): boolean {
+		const offered = this.#offered!;
+		for (const logName of this.#knownLogs) {
+			if (offered.logs[logName] !== undefined) continue;
+			if (!this.#retainsFrom(logName, offered.floors?.[logName] ?? 1)) {
+				this.#needsRebuild(`transaction log '${logName}' no longer retains its beginning`, 'log-retention');
+				return false;
+			}
+		}
+		return true;
 	}
 
 	#drain() {
@@ -1445,6 +1492,7 @@ class DerivedIndexRunner {
 				break;
 			}
 			if (transaction.complete) {
+				if (through.logs[transaction.logName] === undefined) this.#anchor(through, transaction.logName);
 				through.logs[transaction.logName] = transaction.timestamp;
 				completed++;
 				if (mutations.length)
@@ -1550,7 +1598,7 @@ class DerivedIndexRunner {
 		for (const logName of current) {
 			if (this.#registration.backend.publishCoverage) this.#logStore.ensureLogExists(logName);
 			if (this.#knownLogs.has(logName)) continue;
-			if (!this.#retainsBeginning(logName)) {
+			if (!this.#retainsFrom(logName, 1)) {
 				this.#needsRebuild(`new transaction log '${logName}' no longer retains its beginning`, 'log-retention');
 				return false;
 			}
@@ -1585,6 +1633,7 @@ class DerivedIndexRunner {
 		this.#unreadSince = undefined;
 		this.#reachedEndOfLog = true;
 		if (this.#rebuilding || !this.#offered) return;
+		if (!this.#checkUnanchoredLogs()) return;
 		const durable = this.#registration.backend.getDurableCursor();
 		if (durable === undefined && this.#boundaryPending) {
 			this.#armFlushTimer();
@@ -2068,11 +2117,9 @@ class DerivedIndexRunner {
 			if (range.corruptFrameStop.breaks > 0 || range.failedLogs.size > 0)
 				throw new RunnerError('log-corrupt', `transaction log '${logName}' cannot be read to its committed tail`);
 			if (tail === undefined) {
-				if (!this.#retainsBeginning(logName))
-					throw new RunnerError(
-						'log-retention',
-						`transaction log '${logName}' retains no committed transaction and has lost its beginning`
-					);
+				// The scan covers whatever this log held; its later commits land at the current sequence or above.
+				const { currentSequenceNumber } = this.#logStore.rootStore.useLog(logName).getStats();
+				if (currentSequenceNumber > 1) (boundary.floors ??= {})[logName] = currentSequenceNumber;
 				continue;
 			}
 			boundary.logs[logName] = tail;
@@ -2475,18 +2522,29 @@ function isValidCursor(cursor: DerivedIndexCursor | undefined): cursor is Derive
 	for (const timestamp of Object.values(cursor.logs)) {
 		if (!Number.isFinite(timestamp) || timestamp <= 0) return false;
 	}
+	if (cursor.floors !== undefined) {
+		if (!cursor.floors || typeof cursor.floors !== 'object' || Array.isArray(cursor.floors)) return false;
+		for (const floor of Object.values(cursor.floors)) {
+			if (!Number.isInteger(floor) || floor < 1 || floor > MAX_LOG_SEQUENCE) return false;
+		}
+	}
 	return true;
 }
 
 function cloneCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {
-	return { format: 1, logs: { ...cursor.logs } };
+	const clone: DerivedIndexCursor = { format: 1, logs: { ...cursor.logs } };
+	if (cursor.floors) clone.floors = { ...cursor.floors };
+	return clone;
 }
 
 function sameCursor(left: DerivedIndexCursor | undefined, right: DerivedIndexCursor | undefined): boolean {
 	if (!isValidCursor(left) || !isValidCursor(right)) return false;
-	const leftNames = Object.keys(left.logs);
-	const rightNames = Object.keys(right.logs);
-	if (leftNames.length !== rightNames.length) return false;
-	for (const name of leftNames) if (left.logs[name] !== right.logs[name]) return false;
+	return sameEntries(left.logs, right.logs) && sameEntries(left.floors ?? {}, right.floors ?? {});
+}
+
+function sameEntries(left: Record<string, number>, right: Record<string, number>): boolean {
+	const leftNames = Object.keys(left);
+	if (leftNames.length !== Object.keys(right).length) return false;
+	for (const name of leftNames) if (left[name] !== right[name]) return false;
 	return true;
 }
