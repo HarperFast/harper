@@ -286,10 +286,9 @@ export interface ClusterLockTransport {
 	 * activation record is active — every old home quiesced (each acknowledgement bound to the
 	 * acknowledger's `homeIncarnation`, so a restart during the drain invalidates it) or externally
 	 * fenced, then `DELEGATION_LEASE_MS + skew` elapsed, unless every quiesced home proved its drain
-	 * and every fenced node is stopped, not merely isolated. At its first mint under `g+1` a home
-	 * expires each older grant that a drain reported outstanding on a node outside the new ring
-	 * (`#retireOlderGrants`). Core cannot observe what happened on other
-	 * nodes; the operator can.
+	 * and every fenced node is stopped, not merely isolated. On its first grant request under `g+1`
+	 * a home expires each older grant that a drain reported outstanding on a node outside the new
+	 * ring (`#retireOlderGrants`). Core cannot observe what happened on other nodes; the operator can.
 	 *
 	 * The other interval — a restart of *this* process — is core's own, because a generation does not
 	 * advance on a restart and there is no external event to hang it on. See `#grantableAfterMono`.
@@ -2131,11 +2130,11 @@ export class LockCoordinator {
 			if (this.#closed) return;
 			if (seen?.has(grant)) continue;
 			seen?.add(grant);
+			grant.drainOutstanding = undefined;
 			if (grant.recallConfirmed) {
 				result.recalled++;
 				continue;
 			}
-			grant.drainOutstanding = undefined;
 			try {
 				this.#beginRecall(keyId, grant);
 				if (grant.recalling) await withDeadline(grant.recalling, remaining());
@@ -2334,18 +2333,32 @@ export class LockCoordinator {
 	}
 
 	/**
-	 * Once per generation, at the first mint under it, so a map read that mints nothing expires
-	 * nothing: see record-locks.md, "A delegation is authority within one generation".
+	 * Once per generation, from a grant request that passed the quarantine and fencing gates: see
+	 * record-locks.md, "A delegation is authority within one generation".
 	 */
 	#retireOlderGrants(generation: number, homes: string[]): void {
 		if (this.#retiredBelow === generation) return;
 		this.#retiredBelow = generation;
 		for (const [keyId, grant] of this.#grants)
-			if (this.#retiredByGeneration(grant, generation, homes)) this.#expireGrant(keyId, grant);
+			if (this.#retiredByGeneration(grant, generation, homes)) this.#retireGrant(keyId, grant, generation);
 	}
 
 	#retiredByGeneration(grant: HomeGrant, generation: number, homes: string[]): boolean {
-		return grant.token[0] < generation && grant.drainOutstanding === true && !homes.includes(grant.delegate);
+		return (
+			grant.token[0] < generation &&
+			grant.drainOutstanding === true &&
+			!grant.recallConfirmed &&
+			!homes.includes(grant.delegate)
+		);
+	}
+
+	/**
+	 * Retiring a grant acts on the generation that retired it, so the floor rises with it: a map that
+	 * later reads below it must not re-grant the key while the old delegate could still hold it.
+	 */
+	#retireGrant(keyId: unknown, grant: HomeGrant, generation: number): void {
+		this.#recordGenerationActedOn(generation);
+		this.#expireGrant(keyId, grant);
 	}
 
 	#loseFreshnessHistory(): void {
@@ -2675,13 +2688,15 @@ export class LockCoordinator {
 		// without a successor, with no grant left to say so: the key reads as held until every handle is
 		// fenced, here and on this node's own re-acquisition (`#acquire`), which would otherwise renew it.
 		if (this.#fencingInFlight(ringKey)) return { granted: false, reason: 'contended', retryAfterMs: 25 };
+		this.#retireOlderGrants(homeMap.generation, homeMap.homes);
 		const existing = this.#grants.get(keyId);
 		if (existing) {
 			// An expired grant is not a live one. Collecting it here rather than trusting `tick()` is
 			// what keeps a table whose expiry budget is saturated from answering `contended` forever.
 			if (existing.expiresMono <= now) this.#expireGrant(keyId, existing);
+			// Marked by a drain that ran after this generation's sweep.
 			else if (this.#retiredByGeneration(existing, homeMap.generation, homeMap.homes))
-				this.#expireGrant(keyId, existing);
+				this.#retireGrant(keyId, existing, homeMap.generation);
 			else if (existing.recalling || existing.recallConfirmed)
 				// A recall is in flight, or the delegate has already confirmed one. Renewing now — even for
 				// the node being recalled — would mint a token its own release no longer matches, and the
@@ -2691,7 +2706,6 @@ export class LockCoordinator {
 				return { granted: false, reason: 'contended', retryAfterMs: 25 };
 			else if (existing.delegate === requester) {
 				// Renewal for the node that already holds it: extend rather than recall itself.
-				this.#retireOlderGrants(homeMap.generation, homeMap.homes);
 				this.#recordGenerationActedOn(homeMap.generation);
 				existing.token = [homeMap.generation, homeMap.homeIncarnation, ++this.#counter];
 				existing.renewed = true;
@@ -2714,7 +2728,6 @@ export class LockCoordinator {
 		if (this.#grants.size >= MAX_DELEGATIONS_PER_TABLE) return { granted: false, reason: 'capacity' };
 		const perRequester = this.#grantsByRequester.get(requester) ?? 0;
 		if (perRequester >= MAX_DELEGATIONS_PER_REQUESTER) return { granted: false, reason: 'capacity' };
-		this.#retireOlderGrants(homeMap.generation, homeMap.homes);
 		this.#recordGenerationActedOn(homeMap.generation);
 		const token: FencingToken = [homeMap.generation, homeMap.homeIncarnation, ++this.#counter];
 		const dependencies = this.#freshnessFor(keyId);
@@ -3200,21 +3213,22 @@ export async function quiesceDelegations(database: string, budgetMs: number): Pr
 			coordinators.add(coordinator);
 			await coordinator.quiesce(result, remaining, seen);
 		}
-		pending = ofDatabase().filter((coordinator) => !coordinators.has(coordinator));
-	}
-	// A surrender started before the sweep (a contention recall) has left its table already, but its
-	// handles can still commit until they are fenced.
-	for (const surrender of [...(inFlightSurrenders.get(database)?.entries ?? [])]) {
-		if (seen.has(surrender.token)) continue;
-		try {
-			await withDeadline(surrender.settled, remaining());
-		} catch (error) {
-			result.outstanding.push({
-				table: surrender.table,
-				key: undefined,
-				reason: `a delegation this node is surrendering has not fenced every handle it admitted: ${(error as Error)?.message ?? error}`,
-			});
+		// A surrender started before the sweep (a contention recall) has left its table already, but its
+		// handles can still commit until they are fenced.
+		for (const surrender of [...(inFlightSurrenders.get(database)?.entries ?? [])]) {
+			if (seen.has(surrender.token)) continue;
+			seen.add(surrender.token);
+			try {
+				await withDeadline(surrender.settled, remaining());
+			} catch (error) {
+				result.outstanding.push({
+					table: surrender.table,
+					key: undefined,
+					reason: `a delegation this node is surrendering has not fenced every handle it admitted: ${(error as Error)?.message ?? error}`,
+				});
+			}
 		}
+		pending = ofDatabase().filter((coordinator) => !coordinators.has(coordinator));
 	}
 	// A sweep proves quiescence only if it could have seen everything this NODE issued, not merely what
 	// this coordinator holds. Two ways it could not have:
