@@ -3563,10 +3563,12 @@ describe('Transactions are never aborted once durably written to the transaction
 			savePromise.catch(() => {});
 
 			await untilEntered(3, savePromise);
-			assert.strictEqual(immTxn.hasActiveDurableLogCommit(), true, 'retry must report an active durable log commit');
-			assert.strictEqual(immTxn.activeDurableLogRetries(), 2);
+			assert.strictEqual(immTxn.activeDurableLogRetries(), 2, 'retry must report an active durable log commit');
 
-			assert.strictEqual(deferForCommitInFlight(immTxn, '/logged-retry', 1000), true);
+			resetStuckCommitLogCooldownForTests();
+			assert.strictEqual(deferForCommitInFlight(immTxn, '/logged-retry', 1000, 1), true);
+			// A second link visited in the same tick must read the tick's decision, not compare again.
+			assert.strictEqual(deferForCommitInFlight(immTxn, '/logged-retry', 1000, 1), true);
 			assert.strictEqual(
 				warnLines.some(([msg]) => /preserving its unknown outcome/.test(msg)),
 				false,
@@ -3578,7 +3580,9 @@ describe('Transactions are never aborted once durably written to the transaction
 			assert.strictEqual(immTxn.activeDurableLogRetries(), 3, 'attempt 3 conflicted, so the counter advanced');
 
 			immTxn.deferredPoisonDeadline = -Infinity;
-			assert.strictEqual(deferForCommitInFlight(immTxn, '/logged-retry', 1), true);
+			resetStuckCommitLogCooldownForTests();
+			assert.strictEqual(deferForCommitInFlight(immTxn, '/logged-retry', 1, 2), true);
+			assert.strictEqual(deferForCommitInFlight(immTxn, '/logged-retry', 1, 2), true);
 			assert.strictEqual(immTxn.timedOut, undefined, 'an advancing logged retry must not be poisoned past deadline');
 			assert.strictEqual(
 				immTxn.postSubmitPoisoned,
@@ -3599,9 +3603,15 @@ describe('Transactions are never aborted once durably written to the transaction
 
 			// Attempt 4 is still parked and the counter has not moved since the last tick: that is a native
 			// attempt that never settled, and the monitor must treat it as the stall it is.
-			assert.strictEqual(deferForCommitInFlight(immTxn, '/logged-retry', 1), true);
+			resetStuckCommitLogCooldownForTests();
+			assert.strictEqual(deferForCommitInFlight(immTxn, '/logged-retry', 1, 3), true);
 			assert.strictEqual(immTxn.timedOut, true, 'a logged retry whose counter stopped must still be poisoned');
 			assert.strictEqual(immTxn.postSubmitPoisoned, true);
+			assert.strictEqual(
+				errorLines.some(([msg]) => /the worker may require a restart/.test(msg)),
+				true,
+				'a stopped logged retry must be reported as an unsettled native commit'
+			);
 
 			gates.release4();
 			await savePromise;
