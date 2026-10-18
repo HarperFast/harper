@@ -41,6 +41,12 @@ function response(worker, action) {
 	});
 }
 
+async function terminateWorker(worker) {
+	if (!worker || worker.threadId < 0) return;
+	const exited = once(worker, 'exit', { signal: AbortSignal.timeout(10000) });
+	await Promise.all([exited, worker.terminate()]);
+}
+
 describe('full-text process-wide continuation admission', () => {
 	it('shares capacity across workers and releases claims when the owning worker exits', async () => {
 		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
@@ -63,9 +69,7 @@ describe('full-text process-wide continuation admission', () => {
 				reserveFullTextContinuation(128, fullTextContinuationDeadline()),
 				(error) => error.statusCode === 503
 			);
-			const exited = once(worker, 'exit');
-			await worker.terminate();
-			await exited;
+			await terminateWorker(worker);
 			let reclaimed;
 			await waitFor(async () => {
 				try {
@@ -83,7 +87,7 @@ describe('full-text process-wide continuation admission', () => {
 				(error) => error.statusCode === 503
 			);
 		} finally {
-			if (worker) await worker.terminate();
+			await terminateWorker(worker);
 			for (const claim of local) await releaseFullTextContinuation(claim.id);
 			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
 		}
@@ -150,13 +154,11 @@ describe('full-text process-wide continuation admission', () => {
 			await call({ operation: 'close', token });
 			await assert.rejects(call(read), (error) => error.statusCode === 410);
 			await response(worker, 'shutdown');
-			const exited = once(worker, 'exit');
-			await worker.terminate();
-			await exited;
+			await terminateWorker(worker);
 			await assert.rejects(call({ operation: 'resume', token }), (error) => error.statusCode === 410);
 		} finally {
-			if (requester) await requester.terminate();
-			if (worker) await worker.terminate();
+			await terminateWorker(requester);
+			await terminateWorker(worker);
 			await rm(path, { recursive: true, force: true });
 		}
 	});

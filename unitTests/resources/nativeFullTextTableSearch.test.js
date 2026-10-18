@@ -138,6 +138,34 @@ describe('published native full-text Table.search integration', () => {
 		await Product.put('b', { title: 'widget' });
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
 		const base = { conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget' }], limit: 1 };
+		class AsyncAllowedProduct extends Product {
+			allowRead() {
+				return Promise.resolve(true);
+			}
+		}
+		class AsyncDeniedProduct extends Product {
+			allowRead() {
+				return Promise.resolve(false);
+			}
+		}
+		const allowedResource = new AsyncAllowedProduct(null, {});
+		const authorized = await allowedResource.search({ ...base, continuation: true, checkPermission: true });
+		assert.strictEqual(authorized.length, 1);
+		assert(authorized.continuation);
+		await allowedResource.search({
+			...base,
+			continuation: authorized.continuation,
+			closeContinuation: true,
+			checkPermission: true,
+		});
+		await assert.rejects(
+			new AsyncDeniedProduct(null, { user: { username: 'policy-reader' } }).search({
+				...base,
+				continuation: true,
+				checkPermission: true,
+			}),
+			(error) => error.statusCode === 403
+		);
 		const first = await Product.search({ ...base, continuation: true });
 		assert(first.continuation);
 		const changed = { ...base, select: ['id'], continuation: first.continuation };
