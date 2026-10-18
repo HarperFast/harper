@@ -62,6 +62,8 @@ In an authenticated custom Resource, pass `this.getContext()` as the second argu
 `tables.Product.search()` and set `checkPermission: true` in the query. This requests the caller's
 table and searched-source permissions; passing context alone does not request that permission gate.
 Application row filters still run on each page.
+The token does not store application callbacks such as `rowFilter` or `vectorFilter`. Supply them
+again on every page, together with the caller's context and permission settings.
 
 ## Page through REST
 
@@ -111,6 +113,8 @@ To stop early, repeat the query with its current token and `closeContinuation: t
 Completion, close, expiry, index reset, definition changes, worker loss, or process restart can
 invalidate a token. Resuming an unavailable snapshot returns `410`; start a new search. Once any
 request finishes traversal, older tokens for that search also expire.
+Changing any `storage.fullText` setting also invalidates existing tokens, even when only a capacity
+setting changes. Start a new search after changing these settings.
 
 Snapshots belong to one Harper instance. Its workers can handle continuation requests for each
 other. Requests reaching a different Harper instance cannot resume that snapshot.
@@ -145,6 +149,11 @@ The usual individual configuration names also work, such as
 settings live under `storage.fullText.runtime` and require a restart when changed. Their defaults
 are 128 resident indexes, 128 indexing threads, 256 search threads, 4 GiB configured writer memory,
 8 GiB configured queue capacity, and 8 concurrent expensive searches. All limits apply together.
+
+The cursor pool is shared by all callers. Four unfinished searches fill the default pool, so a fifth
+receives `503` until a search finishes, closes, or expires. Ordinary searches remain available.
+Configure `maxCursors` for the number of unfinished searches the application needs to retain.
+There is no per-caller reservation or eviction policy.
 
 A raw-hit budget failure returns `400`; narrow the query or increase the budget. Capacity exhaustion
 and timeouts return errors instead of successful incomplete pages. If the snapshot itself runs out
