@@ -1247,6 +1247,8 @@ function withDurableCoverage(
 	return { ...cursor, coverage: durable.coverage };
 }
 
+const NO_FLOORS: Record<string, number> = Object.freeze({});
+
 function sameCursor(left: DerivedIndexCursor | undefined, right: DerivedIndexCursor | undefined): boolean {
 	if (!left || !right) return left === right;
 	const leftLogs = Object.entries(left.logs);
@@ -1254,10 +1256,15 @@ function sameCursor(left: DerivedIndexCursor | undefined, right: DerivedIndexCur
 	if (leftLogs.length !== rightLogs.length) return false;
 	if (!leftLogs.every(([name, timestamp]) => Object.hasOwn(right.logs, name) && right.logs[name] === timestamp))
 		return false;
-	const leftFloors = Object.entries(left.floors ?? {});
-	if (leftFloors.length !== Object.keys(right.floors ?? {}).length) return false;
-	if (!leftFloors.every(([name, floor]) => Object.hasOwn(right.floors!, name) && right.floors![name] === floor))
-		return false;
+	if (left.floors !== right.floors) {
+		const leftFloors = left.floors ?? NO_FLOORS;
+		const rightFloors = right.floors ?? NO_FLOORS;
+		const names = Object.keys(leftFloors);
+		if (names.length !== Object.keys(rightFloors).length) return false;
+		for (const name of names) {
+			if (!Object.hasOwn(rightFloors, name) || rightFloors[name] !== leftFloors[name]) return false;
+		}
+	}
 	if (!left.coverage || !right.coverage) return left.coverage === right.coverage;
 	return sameDerivedIndexPositions(left.coverage, right.coverage);
 }
