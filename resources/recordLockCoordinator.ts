@@ -285,8 +285,10 @@ export interface ClusterLockTransport {
 	 * operator-sequenced, so `g+1` may only be answered here once the control plane's one-shot
 	 * activation record is active — every old home quiesced (each acknowledgement bound to the
 	 * acknowledger's `homeIncarnation`, so a restart during the drain invalidates it) or externally
-	 * fenced, then `DELEGATION_LEASE_MS + skew` elapsed. Core cannot observe what happened on other
-	 * nodes; the operator can.
+	 * fenced, then `DELEGATION_LEASE_MS + skew` elapsed, unless every quiesced home proved its drain
+	 * and every fenced node is stopped, not merely isolated. A home expires its older grants to nodes
+	 * outside the new ring on that activation (`#prepareFreshnessGeneration`). Core cannot observe
+	 * what happened on other nodes; the operator can.
 	 *
 	 * The other interval — a restart of *this* process — is core's own, because a generation does not
 	 * advance on a restart and there is no external event to hang it on. See `#grantableAfterMono`.
@@ -2290,7 +2292,7 @@ export class LockCoordinator {
 		if (highest === undefined || generation > highest) highestGeneration.set(this.database, generation);
 	}
 
-	#prepareFreshnessGeneration(generation: number): void {
+	#prepareFreshnessGeneration(generation: number, homes: string[]): void {
 		if (this.#freshnessGeneration === undefined) {
 			this.#freshnessGeneration = generation;
 			return;
@@ -2298,10 +2300,11 @@ export class LockCoordinator {
 		if (this.#freshnessGeneration === generation) return;
 		this.#freshnessGeneration = generation;
 		this.#loseFreshnessHistory();
-		// The home-side half of "a delegation is authority within one generation": activation (§4.3)
-		// asserts every older grant is surrendered, expired, or held by a node stopped outside Harper,
-		// so keeping one would only answer `contended` on a key nobody can admit under.
-		for (const [keyId, grant] of this.#grants) if (grant.token[0] < generation) this.#expireGrant(keyId, grant);
+		// A delegate still in the ring keeps its lease, as the backstop against an activation that came
+		// too early; see record-locks.md, "A delegation is authority within one generation".
+		for (const [keyId, grant] of this.#grants)
+			if (grant.token[0] < generation && (grant.recallConfirmed || !homes.includes(grant.delegate)))
+				this.#expireGrant(keyId, grant);
 	}
 
 	#loseFreshnessHistory(): void {
@@ -2617,7 +2620,7 @@ export class LockCoordinator {
 		ringKey: string
 	): DelegationReply {
 		const now = this.#monotonic();
-		this.#prepareFreshnessGeneration(homeMap.generation);
+		this.#prepareFreshnessGeneration(homeMap.generation, homeMap.homes);
 		// Consulted unconditionally — it is what observes a gap in ownership, and the waiver it applies
 		// to itself is the only part `grantableAfterMono` may switch off.
 		let quarantine = Math.max(this.#grantableAfterMono, this.#ownershipHorizon(now, homeMap.homeIncarnation)) - now;

@@ -2511,36 +2511,32 @@ describe('record lock delegations', () => {
 	});
 
 	describe('a home across a generation change (harper-pro#973)', () => {
-		/** Gamma takes a delegation for a key alpha homes under {alpha, beta, gamma}, then stops. */
+		/** Gamma holds delegations for two keys alpha homes, then stops. */
 		async function gammaHeldThenStopped() {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
-			const key = cluster.keyHomedOn('alpha');
+			const keys = [cluster.keyHomedOn('alpha'), cluster.keyHomedOn('alpha', 'j')];
 			let token;
 			cluster.beforeReply = (from, to, request, reply) => {
-				if (from === 'gamma') token = reply.token;
+				if (from === 'gamma' && request.key === keys[0]) token = reply.token;
 			};
 			const gamma = cluster.node('gamma').coordinator;
-			const round = await gamma.acquire(key, LEASE, WAIT);
-			gamma.release(key, round.admissionId);
+			for (const key of keys) {
+				const round = await gamma.acquire(key, LEASE, WAIT);
+				gamma.release(key, round.admissionId);
+			}
 			cluster.beforeReply = undefined;
 			cluster.node('gamma').alive = false;
-			return { cluster, key, token };
+			return { cluster, key: keys[0], token };
 		}
 
-		it('serves a key granted under the previous generation once the next one is current', async () => {
+		it('serves a key granted to a node the next generation drops, once that generation is current', async () => {
 			const { cluster, key } = await gammaHeldThenStopped();
-			// What §4.3 activation asserts: every old-generation grant is recall-confirmed, expired, or held
-			// by a node stopped outside Harper. The key stays homed on alpha, so its grant to gamma is what
-			// would make alpha answer contended until the delegation lease ran out.
 			cluster.homes = ['alpha', 'beta'];
 			cluster.generation = 2;
 			assert.strictEqual(cluster.homeOf(key), 'alpha');
-			const beta = cluster.node('beta');
-			const round = await beta.coordinator.acquire(key, LEASE, 1_000);
+			const round = await cluster.node('beta').coordinator.acquire(key, LEASE, 1_000);
 			assert.ok(round.admissionId);
-			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 1);
-			// Gamma's release never came, so the successor has no lineage to inherit and recovers instead.
-			assert.strictEqual(beta.freshnessCalls.at(-1).dependencies, null);
+			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 1, "gamma's other grant outlived the change");
 		});
 
 		it('keeps that grant exclusive while the generation is unchanged', async () => {
@@ -2550,6 +2546,16 @@ describe('record lock delegations', () => {
 				(error) => error.statusCode === 423
 			);
 			assert.strictEqual(cluster.node('beta').coordinator.stats.delegations, 0);
+		});
+
+		it('keeps an older grant to a node still in the ring until its lease or release ends it', async () => {
+			const { cluster, key } = await gammaHeldThenStopped();
+			cluster.generation = 2;
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
+				(error) => error.statusCode === 423
+			);
+			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 2);
 		});
 
 		it('does not let a late release of the old grant clear its successor', async () => {
