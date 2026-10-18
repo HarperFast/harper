@@ -249,6 +249,24 @@ function readyQueryIndex(auditStore, readinessId, storeName) {
 	return fixture.index;
 }
 
+describe('full-text replay prefix validation', () => {
+	const { fullTextReplayPrefixMatches } = require('#src/resources/indexes/fullTextQueryProtocol');
+	const hits = [
+		{ id: 'a', score: 2, version: '1' },
+		{ id: 'é', score: 1, version: '2' },
+	];
+	it('validates a replay split across different batch sizes', () => {
+		assert.strictEqual(fullTextReplayPrefixMatches(hits, hits, 0, 2), true);
+		assert.strictEqual(fullTextReplayPrefixMatches(hits, hits.slice(1), 1, 1), true);
+	});
+	it('rejects changed order, score, version and missing prefix entries', () => {
+		assert.strictEqual(fullTextReplayPrefixMatches(hits, hits.slice().reverse(), 0, 2), false);
+		assert.strictEqual(fullTextReplayPrefixMatches(hits, [{ ...hits[0], score: 3 }], 0, 1), false);
+		assert.strictEqual(fullTextReplayPrefixMatches(hits, [{ ...hits[0], version: 'other' }], 0, 1), false);
+		assert.strictEqual(fullTextReplayPrefixMatches(hits, [], 0, 1), false);
+	});
+});
+
 describe('FullTextQueryIndex', () => {
 	it('does not treat prototype property names as full-text comparators', () => {
 		for (const comparator of ['constructor', 'toString', '__proto__'])
@@ -733,9 +751,9 @@ describe('FullTextQueryIndex', () => {
 			isEntryCurrent: (entry) => entry.metadataFlags === 0,
 		});
 		attachCurrentCoverage(index, auditStore, readinessId);
-		await assert.rejects(
-			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
-			(error) => error.name === 'DerivedIndexLagError'
+		assert.deepStrictEqual(
+			await index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+			[]
 		);
 		await index.close();
 	});
@@ -1509,8 +1527,7 @@ describe('FullTextQueryIndex', () => {
 			requests.map(({ offset, limit, exactTotal }) => ({ offset, limit, exactTotal })),
 			[
 				{ offset: 0, limit: 256, exactTotal: true },
-				{ offset: 0, limit: 256, exactTotal: undefined },
-				{ offset: 256, limit: 256, exactTotal: undefined },
+				{ offset: 0, limit: 512, exactTotal: undefined },
 			]
 		);
 		await index.close();
@@ -1547,11 +1564,11 @@ describe('FullTextQueryIndex', () => {
 			requests.map(({ offset, limit }) => ({ offset, limit })),
 			[
 				{ offset: 0, limit: 40 },
-				{ offset: 0, limit: 160 },
-				{ offset: 160, limit: 640 },
-				{ offset: 800, limit: 1_022 },
-				{ offset: 1_822, limit: 1_022 },
-				{ offset: 2_844, limit: 1_022 },
+				{ offset: 0, limit: 200 },
+				{ offset: 200, limit: 800 },
+				{ offset: 1000, limit: 1_022 },
+				{ offset: 2_022, limit: 1_022 },
+				{ offset: 3_044, limit: 1_022 },
 			]
 		);
 		assert.deepStrictEqual(
@@ -1592,7 +1609,7 @@ describe('FullTextQueryIndex', () => {
 			requests.map(({ offset, limit }) => ({ offset, limit })),
 			[
 				{ offset: 0, limit: 40 },
-				{ offset: 0, limit: 720 },
+				{ offset: 0, limit: 760 },
 			]
 		);
 		assert.deepStrictEqual(
@@ -2717,7 +2734,7 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('reports stale native versions as retryable index lag', async () => {
+	it('returns no stale native versions after exhausting the snapshot', async () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'stale-window', 'ready');
 		const index = new FullTextQueryIndex({
@@ -2761,8 +2778,8 @@ describe('FullTextQueryIndex', () => {
 			},
 		});
 		attachCurrentCoverage(index, auditStore, 'stale-window');
-		await assert.rejects(
-			index.search(
+		assert.deepStrictEqual(
+			await index.search(
 				{ attribute: 'stale-window', comparator: 'matches', value: 'shoe' },
 				{},
 				{
@@ -2775,12 +2792,12 @@ describe('FullTextQueryIndex', () => {
 					},
 				}
 			),
-			(error) => error.name === 'DerivedIndexLagError' && error.statusCode === 503 && error.retryable === true
+			[]
 		);
 		await index.close();
 	});
 
-	it('samples companion-gate rejections before classifying window exhaustion', async () => {
+	it('exhausts companion-gate rejections without returning stale matches', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'stale-gate-window';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -2801,8 +2818,8 @@ describe('FullTextQueryIndex', () => {
 			entryForKey: () => ({ version: 2, value: { title: 'shoe' } }),
 		});
 		attachCurrentCoverage(index, auditStore, readinessId);
-		await assert.rejects(
-			index.search(
+		assert.deepStrictEqual(
+			await index.search(
 				{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
 				{},
 				{
@@ -2815,9 +2832,9 @@ describe('FullTextQueryIndex', () => {
 					},
 				}
 			),
-			(error) => error.name === 'DerivedIndexLagError' && error.statusCode === 503 && error.retryable === true
+			[]
 		);
-		assert.strictEqual(sourceReads, 1, 'only the exhaustion sample should load a rejected record');
+		assert.strictEqual(sourceReads, 0, 'a complete gate can reject all hits without reading records');
 		await index.close();
 	});
 
@@ -2858,7 +2875,7 @@ describe('FullTextQueryIndex', () => {
 			),
 			[]
 		);
-		assert.strictEqual(sourceReads, 5, 'only the bounded exhaustion sample should load rejected records');
+		assert.strictEqual(sourceReads, 0, 'a complete gate can reject expired hits without reading records');
 		await index.close();
 	});
 
@@ -3056,7 +3073,7 @@ describe('FullTextQueryIndex', () => {
 					return withTraversal({
 						async search(request) {
 							pages.push({ readerIndex, offset: request.offset });
-							if (readerIndex === 0 && request.offset > 0) {
+							if (readerIndex === 0 && pages.filter((page) => page.readerIndex === 0).length === 2) {
 								firstStarted.resolve();
 								await firstSearch.promise;
 							}
@@ -3102,7 +3119,6 @@ describe('FullTextQueryIndex', () => {
 			assert.deepStrictEqual(pages, [
 				{ readerIndex: 0, offset: 0 },
 				{ readerIndex: 0, offset: 0 },
-				{ readerIndex: 0, offset: 256 },
 				{ readerIndex: 1, offset: 0 },
 			]);
 			await waitFor(() => closes === 1);
@@ -3326,7 +3342,7 @@ describe('FullTextQueryIndex', () => {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		assert.strictEqual(pauseSettled, false);
 		finishSearch.resolve();
-		assert.strictEqual((await search).length, 1);
+		await assert.rejects(search, /Full-text search exceeded its execution budget/);
 		await pause;
 		assert.strictEqual(pauseSettled, true);
 		resumeNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n);

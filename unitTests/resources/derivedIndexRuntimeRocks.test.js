@@ -385,6 +385,7 @@ class FakeNativeFullTextModule {
 			applyMutationBatch() {}
 			publish() {}
 			close() {}
+			searchPage() {}
 		};
 		this.states = new Map();
 		this.opens = [];
@@ -395,11 +396,11 @@ class FakeNativeFullTextModule {
 		return {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 5,
+			nativeAbiVersion: 9,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 5,
-			queryApiVersion: 3,
+			queryApiVersion: 4,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
@@ -408,6 +409,7 @@ class FakeNativeFullTextModule {
 				maxCandidateIds: 1_024,
 				maxCandidateBytes: 1024 * 1024,
 				maxSearchWindow: 10_000,
+				maxSearchPageSize: 10_000,
 				maxAutocompleteResults: 100,
 				maxSearchResponseBytes: 8 * 1024 * 1024,
 				maxSearchBudgetMilliseconds: 30_000,

@@ -33,3 +33,20 @@ export function fullTextComparatorMode(comparator: string | undefined): NativeFu
 		? FULL_TEXT_MODES[comparator as PositiveFullTextComparator]
 		: undefined;
 }
+
+type FullTextReplayHit = { id: string; score: number; version?: string };
+
+export function fullTextReplayPrefixMatches(
+	expected: readonly FullTextReplayHit[],
+	actual: readonly FullTextReplayHit[],
+	start: number,
+	count: number
+): boolean {
+	for (let i = 0; i < count; i++) {
+		const before = expected[start + i];
+		const after = actual[i];
+		if (!before || !after || before.id !== after.id || before.score !== after.score || before.version !== after.version)
+			return false;
+	}
+	return true;
+}
