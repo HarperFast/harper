@@ -4331,7 +4331,9 @@ export function makeTable(options): TableResourceClass {
 			return this;
 		}
 		/**
-		 * Release the lock this instance holds. Resolves true when this call cleared the native key lock.
+		 * Release the lock this instance holds. Resolves true when this call cleared the native key lock;
+		 * false when it was already released, or when a commit of this lock's writes is still in flight
+		 * and the native key is returned once that commit settles.
 		 * Works for both held (`{ hold: true }`) and transaction-scoped locks. After unlock() the
 		 * instance is no longer lock-writable; writes through it require a fresh lock.
 		 */

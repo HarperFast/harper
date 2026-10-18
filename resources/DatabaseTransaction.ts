@@ -713,6 +713,9 @@ function clearAttemptState(txn: DatabaseTransaction): void {
 	txn.stalledCommitResourcesReleased = false;
 }
 
+// Returned by takeCompletions() when nothing is staged; only its length is read before Promise.all.
+const NO_COMPLETIONS: Promise<void>[] = Object.freeze([]) as unknown as Promise<void>[];
+
 type RocksTransactionWithRetry = RocksTransaction & {
 	isRetry?: boolean;
 	retries?: number;
@@ -1454,6 +1457,20 @@ export class DatabaseTransaction implements Transaction {
 		);
 	}
 
+	/** Whether a handle with a durable transaction-log entry is still retrying its commit on this link. */
+	hasActiveDurableLogCommit(): boolean {
+		const live = (handle: RocksTransaction | null | undefined) =>
+			Boolean(handle) &&
+			hasDurableLog(handle) &&
+			!this.isHandleCommitted(handle) &&
+			!(handle as RocksTransactionWithRetry).abortedByWrapper;
+		if (live(this.activeCommitHandle)) return true;
+		if (this.activeCommitHandles) {
+			for (const handle of this.activeCommitHandles) if (live(handle)) return true;
+		}
+		return live(this.transaction);
+	}
+
 	private isActiveCommitHandle(transaction: RocksTransaction): boolean {
 		return this.activeCommitHandle === transaction || Boolean(this.activeCommitHandles?.has(transaction));
 	}
@@ -1849,11 +1866,11 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	private takeCompletions(transaction?: RocksTransaction): Promise<void>[] {
-		if (this.completions.length === 0) return [];
+		if (this.completions.length === 0) return NO_COMPLETIONS;
 		const handles = this.completionHandles;
 		const isImmediate = Boolean((transaction as RocksTransactionWithRetry | undefined)?.immediateCommit);
 		if (!handles) {
-			if (isImmediate) return [];
+			if (isImmediate) return NO_COMPLETIONS;
 			const completions = this.completions;
 			this.completions = [];
 			return completions;
@@ -3720,15 +3737,7 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	poisonAfterStalledSubmittedCommit(): void {
 		const root = this.root ?? this;
-		const links = new Set<DatabaseTransaction>();
-		const collect = (start: DatabaseTransaction | undefined) => {
-			for (let txn = start; txn; txn = txn.next) links.add(txn);
-		};
-		collect(root);
-		collect(this);
-		collect(root.submittedLink);
-		if (root.submittedLinks) for (const txn of root.submittedLinks) collect(txn);
-		for (const txn of links) {
+		for (const txn of collectCommitLinks(root, this)) {
 			txn.postSubmitPoisoned = true;
 			// Not on a link an earlier poison already aborted: abort() cleared its write set, so excusing
 			// its continuation from the poison check would let it resume onto nothing and report success.
@@ -4025,6 +4034,26 @@ function submittedCommitStillInFlight(root: DatabaseTransaction): boolean {
 	return false;
 }
 
+// Every link the monitor would poison for a stalled commit, so the two walks agree on which links count.
+function collectCommitLinks(root: DatabaseTransaction, txn: DatabaseTransaction): Set<DatabaseTransaction> {
+	const links = new Set<DatabaseTransaction>();
+	const collect = (start: DatabaseTransaction | undefined) => {
+		for (let link = start; link; link = link.next) links.add(link);
+	};
+	collect(root);
+	collect(txn);
+	collect(root.submittedLink);
+	if (root.submittedLinks) for (const link of root.submittedLinks) collect(link);
+	return links;
+}
+
+function chainHasActiveDurableLogCommit(root: DatabaseTransaction, txn: DatabaseTransaction): boolean {
+	for (const link of collectCommitLinks(root, txn)) {
+		if (link.hasActiveDurableLogCommit()) return true;
+	}
+	return false;
+}
+
 /**
  * True when this tick must leave `txn` alone because some link has submitted writes whose native
  * outcome is not known yet. Merely entering commit() is not enough: a wholly pre-submit transaction
@@ -4045,23 +4074,19 @@ export function deferForCommitInFlight(
 	// diagnostic grace, nor report a legitimately slow one early.
 	const now = performance.now();
 	const deadline = (root.deferredPoisonDeadline ??= now + MAX_DEFERRED_POISON_TICKS * expiration);
+	// A handle with a durable log entry retrying a conflict (#3236) has a known outcome — it commits
+	// once the conflicting intent clears — so it is neither stalled nor poisoned; its own overdue
+	// report (noteOverdueLoggedCommit) is the operator's signal.
+	const loggedRetry = chainHasActiveDurableLogCommit(root, txn);
 	let hasUnsubmittedCommit = false;
 	let unsubmittedCommitGraceExpired = false;
 	if (now >= deadline) {
 		// Only reclaim after the commit has genuinely stalled. Submitted writes no longer depend on these
 		// separate snapshots; pre-submit handles can still carry writes needed by the attempt.
 		txn.releaseStalledCommitReadResources();
-		if (!txn.isProtectedCommit()) {
+		if (!loggedRetry && !txn.isProtectedCommit()) {
 			if (!root.postSubmitPoisoned) txn.poisonAfterStalledSubmittedCommit();
-			const links = new Set<DatabaseTransaction>();
-			const collect = (start: DatabaseTransaction | undefined) => {
-				for (let link = start; link; link = link.next) links.add(link);
-			};
-			collect(root);
-			collect(txn);
-			collect(root.submittedLink);
-			if (root.submittedLinks) for (const link of root.submittedLinks) collect(link);
-			for (const link of links) {
+			for (const link of collectCommitLinks(root, txn)) {
 				if (link.committing && !link.nativeCommitSubmitted) {
 					hasUnsubmittedCommit = true;
 					break;
@@ -4081,7 +4106,11 @@ export function deferForCommitInFlight(
 			!(txn === root && submittedCommitStillInFlight(root))
 		)
 			return hasUnsubmittedCommit && !unsubmittedCommitGraceExpired;
-		if (!root.stalledCommitLogged && now - lastStalledCommitErrorAt >= STALLED_COMMIT_LOG_MIN_INTERVAL_MS) {
+		if (
+			!loggedRetry &&
+			!root.stalledCommitLogged &&
+			now - lastStalledCommitErrorAt >= STALLED_COMMIT_LOG_MIN_INTERVAL_MS
+		) {
 			lastStalledCommitErrorAt = now;
 			root.stalledCommitLogged = true;
 			harperLogger.error(
@@ -4093,7 +4122,7 @@ export function deferForCommitInFlight(
 					}`
 			);
 		}
-	} else if (now - lastStalledCommitWarningAt >= STALLED_COMMIT_LOG_MIN_INTERVAL_MS) {
+	} else if (!loggedRetry && now - lastStalledCommitWarningAt >= STALLED_COMMIT_LOG_MIN_INTERVAL_MS) {
 		lastStalledCommitWarningAt = now;
 		harperLogger.warn?.(
 			`Transaction exceeded the open-transaction limit after submitting a native commit; preserving its unknown outcome, from table: ${
