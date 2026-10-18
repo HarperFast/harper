@@ -1264,7 +1264,6 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 });
 
 describe('MQTT QoS 2 exactly-once exchanges', function () {
-	if (!isRocksDB) return;
 	this.timeout(60_000);
 	before(() => {
 		setupTestDBPath();
@@ -1436,7 +1435,11 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		const b = ofCommand(first, 'publish').find((packet) => payloadValue(packet) === 'b');
 		first.handlers.message(generate({ cmd: 'pubrec', messageId: b.messageId }, v5));
 		await waitFor(() => ofCommand(first, 'pubrel').length === 1);
-		assert.strictEqual((await stored(clientId)).subscriptions[0].received.length, 1, 'kept past the held position');
+		assert.deepStrictEqual(
+			(await stored(clientId)).subscriptions[0].receivedRuns?.length,
+			1,
+			'kept past the held position'
+		);
 		first.handlers.close();
 		await T.put('c', { value: 'c' });
 		const second = await openConnected(open, clientId);
@@ -1454,7 +1457,10 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		await T.put('d', { value: 'd' });
 		const d = await waitFor(() => ofCommand(second, 'publish').find((packet) => payloadValue(packet) === 'd'));
 		second.handlers.message(generate({ cmd: 'pubrec', messageId: d.messageId }, v5));
-		await waitFor(async () => (await stored(clientId)).subscriptions[0].received === undefined);
+		await waitFor(async () => {
+			const [entry] = (await stored(clientId)).subscriptions;
+			return entry.received === undefined && entry.receivedRuns === undefined;
+		});
 		second.handlers.close();
 	});
 
@@ -1742,8 +1748,7 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		const put = sessions.put;
 		let puts = 0;
 		sessions.put = function (...args) {
-			// a steady stream of other changes keeps the save loop busy
-			if (++puts < 50) session.dirty = true;
+			if (args[0]?.id === session.sessionId && ++puts < 50) session.dirty = true;
 			return put.apply(this, args);
 		};
 		try {
@@ -1755,6 +1760,65 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 			sessions.put = put;
 		}
 		session.disconnect(true);
+	});
+
+	it('keeps a transaction taken in order behind a held delivery as one entry', async function () {
+		// LMDB gives each event its own log key, so there is no shared key to run along
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const clientId = `qos2-run-${name}`;
+		const socket = await subscribed(open, clientId, `${name}/#`);
+		await T.put('held', { value: 'held' });
+		await waitFor(() => published(socket, 'held'));
+		await transaction({}, async (context) => {
+			for (let i = 0; i < 50; i++) await T.put(`r${i}`, { value: `r${i}` }, context);
+		});
+		await waitFor(() => published(socket, 'r49'));
+		for (let i = 0; i < 50; i++)
+			socket.handlers.message(generate({ cmd: 'pubrec', messageId: published(socket, `r${i}`).messageId }, v5));
+		await waitFor(() => ofCommand(socket, 'pubrel').length === 50);
+		const [entry] = (await stored(clientId)).subscriptions;
+		assert.strictEqual(entry.received, undefined);
+		assert.deepStrictEqual(
+			entry.receivedRuns.map(([, count]) => count),
+			[50]
+		);
+		socket.handlers.close();
+		const second = await openConnected(open, clientId);
+		await waitFor(() => published(second, 'held'));
+		await T.put('after', { value: 'after' });
+		await waitFor(() => published(second, 'after'));
+		assert.deepStrictEqual(ofCommand(second, 'publish').map(payloadValue), ['held', 'after']);
+		second.handlers.close();
+	});
+
+	it('retries a failed PUBREL save when the PUBREC is repeated', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const clientId = `qos2-retry-${name}`;
+		const socket = await subscribed(open, clientId, `${name}/#`);
+		await T.put('a', { value: 'a' });
+		const sent = await waitFor(() => published(socket, 'a'));
+		const sessions = databases.system.hdb_durable_session;
+		const put = sessions.put;
+		sessions.put = function (record, ...rest) {
+			if (record.id === clientId) return Promise.reject(new Error('disk full'));
+			return put.call(this, record, ...rest);
+		};
+		try {
+			socket.handlers.message(generate({ cmd: 'pubrec', messageId: sent.messageId }, v5));
+			await waitFor(() => ofCommand(socket, 'disconnect').length > 0);
+		} finally {
+			sessions.put = put;
+		}
+		socket.handlers.message(generate({ cmd: 'pubrec', messageId: sent.messageId }, v5));
+		await waitFor(() => ofCommand(socket, 'pubrel').length === 1);
+		assert.strictEqual(ofCommand(socket, 'pubrel')[0].reasonCode, 0);
+		assert.deepStrictEqual((await stored(clientId)).awaitingCompletion, [sent.messageId]);
+		socket.handlers.close();
 	});
 
 	it('assigns no packet id still awaiting its PUBCOMP', async () => {

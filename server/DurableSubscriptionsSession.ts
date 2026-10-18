@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
 
 const AWAITING_ACKS_HIGH_WATER_MARK = 100;
+const RECEIVED_HIGH_WATER_MARK = 1000;
 let _DurableSession: any;
 function getDurableSession() {
 	if (!_DurableSession) {
@@ -217,7 +218,14 @@ type Acknowledgement = {
 	timestamp?: number;
 	acknowledge?: () => any;
 };
-type InboundExchange = { reply: Promise<any>; published?: boolean; release?: Promise<boolean> };
+type InboundExchange = {
+	reply: Promise<any>;
+	published?: boolean;
+	acknowledgement?: any;
+	/** Its save failed, so a retransmission tries it again. */
+	unsaved?: boolean;
+	release?: Promise<boolean>;
+};
 const ALREADY_RECEIVED = -1;
 const MESSAGE_IDS_EXHAUSTED = 'MESSAGE_IDS_EXHAUSTED';
 
@@ -492,6 +500,10 @@ class SubscriptionsSession {
 	receiveExactlyOnce(messageId: number, publish: () => Promise<any>) {
 		const exchanges = (this.awaitingRelease ??= new Map());
 		const known = exchanges.get(messageId);
+		if (known?.unsaved) {
+			known.unsaved = false;
+			known.reply = this.saveExchange(known);
+		}
 		if (known) return known.reply;
 		const exchange: InboundExchange = { reply: undefined };
 		exchange.reply = publish().then(
@@ -502,8 +514,8 @@ class SubscriptionsSession {
 					return acknowledgement;
 				}
 				exchange.published = true;
-				await this.saveExchanges();
-				return acknowledgement;
+				exchange.acknowledgement = acknowledgement;
+				return this.saveExchange(exchange);
 			},
 			(error) => {
 				if (exchanges.get(messageId) === exchange) exchanges.delete(messageId);
@@ -513,19 +525,33 @@ class SubscriptionsSession {
 		exchanges.set(messageId, exchange);
 		return exchange.reply;
 	}
-	/** False when no exchange has this id. The client may reuse the id once it has the PUBCOMP, so the removal is saved first. */
+	async saveExchange(exchange: InboundExchange) {
+		try {
+			await this.saveExchanges();
+		} catch (error) {
+			exchange.unsaved = true;
+			throw error;
+		}
+		return exchange.acknowledgement;
+	}
+	/** The client may reuse the id once it has the PUBCOMP, so the removal is saved first. */
 	release(messageId: number): Promise<boolean> | boolean {
 		const exchange = this.awaitingRelease?.get(messageId);
 		if (!exchange) return false;
 		exchange.release ??= (async () => {
-			await exchange.reply;
-			await this.saveExchanges();
+			try {
+				await exchange.reply;
+				await this.saveExchanges();
+			} catch (error) {
+				// kept in the next save, and a retransmitted PUBREL tries again
+				exchange.release = undefined;
+				throw error;
+			}
 			if (this.awaitingRelease.get(messageId) === exchange) this.awaitingRelease.delete(messageId);
 			return true;
 		})();
 		return exchange.release;
 	}
-	/** False when no QoS 2 delivery has this id; a repeated PUBREC settles with the first. */
 	received(messageId: number, failed: boolean): Promise<boolean> | boolean {
 		const owed = this.awaitingCompletion?.get(messageId);
 		if (owed !== undefined) return owed;
@@ -652,6 +678,8 @@ type DurableEntry = {
 	databaseGeneration?: string;
 	/** QoS 2 deliveries above `startTime` that the client has taken (PUBREC), which a replay skips. */
 	received?: DeliveryIdentity[];
+	/** `[key, count]`: the first `count` deliveries sharing `key`, taken in order, kept as one entry. */
+	receivedRuns?: [number, number][];
 	/** QoS 2 deliveries sent and not yet PUBREC'd, with their packet ids, which a replay sends again as DUPs. */
 	inFlight?: [...DeliveryIdentity, number][];
 };
@@ -674,7 +702,7 @@ type TopicState = {
 	/** In delivery order: `needsAcknowledge` is its only writer and runs as each message is sent. */
 	unacked: Map<number, { key: number; ordinal: number; id: unknown; previousKey?: number; late?: boolean }>;
 	received?: Map<string, DeliveryIdentity>;
-	/** `entry.inFlight` from the stored record, by slot, until the replay sends each again. */
+	receivedRuns?: Map<number, number>;
 	resend?: Map<string, [...DeliveryIdentity, number]>;
 	ordinalKey?: number;
 	ordinal: number;
@@ -748,6 +776,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	/** Packets are handled concurrently, so SUBSCRIBE, UNSUBSCRIBE and resume change `topics` one at a time. */
 	changes: Promise<unknown> = Promise.resolve();
 	reservedIds = new Set<number>();
+	/** Entries in every topic's `received` and `receivedRuns`, which past a high water mark slow delivery. */
+	receivedCount = 0;
 	inFlightChanged = false;
 	/** Set while the final save waits for inbound publishes; `sealed` follows once it is taken. */
 	sealing = false;
@@ -777,6 +807,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 						}
 					: { qos, topic }
 			);
+			for (const [key, count] of entry.receivedRuns || []) {
+				(state.receivedRuns ??= new Map()).set(key, count);
+				this.receivedCount++;
+			}
 			for (const identity of entry.received || []) this.addReceived(state, identity);
 			for (const delivery of entry.inFlight || []) {
 				(state.resend ??= new Map()).set(slotOf(delivery[0], delivery[1]), delivery);
@@ -841,6 +875,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			this.topics.set(subscription.topic, state);
 			if (subscription.qos === 2) {
 				state.received = replaced.received;
+				state.receivedRuns = replaced.receivedRuns;
 				state.resend = replaced.resend;
 				// the replacement replays from the position, so a delivery still awaiting its PUBREC keeps its id
 				for (const [messageId, sent] of replaced.unacked) {
@@ -874,11 +909,31 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	messageIdInUse(messageId: number): boolean {
 		return super.messageIdInUse(messageId) || this.reservedIds.has(messageId);
 	}
+	pendingDeliveries(): number {
+		return super.pendingDeliveries() + Math.max(0, this.receivedCount - RECEIVED_HIGH_WATER_MARK);
+	}
 	addReceived(state: TopicState, identity: DeliveryIdentity) {
-		const slot = slotOf(identity[0], identity[1]);
+		const [key, ordinal] = identity;
+		const runs = (state.receivedRuns ??= new Map());
+		let run = runs.get(key) ?? 0;
+		if (ordinal < run) return;
+		if (ordinal === run) {
+			if (run === 0) this.receivedCount++;
+			run++;
+			// one taken out of order that now continues the run joins it
+			while (state.received?.delete(slotOf(key, run))) {
+				this.receivedCount--;
+				run++;
+			}
+			runs.set(key, run);
+			return;
+		}
+		const slot = slotOf(key, ordinal);
+		if (!state.received?.has(slot)) this.receivedCount++;
 		(state.received ??= new Map()).set(slot, identity);
 	}
 	forgetTopic(state: TopicState) {
+		this.receivedCount -= (state.received?.size ?? 0) + (state.receivedRuns?.size ?? 0);
 		for (const delivery of state.resend?.values() ?? []) this.reservedIds.delete(delivery[3]);
 	}
 	priorDelivery(update) {
@@ -891,7 +946,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			state.ordinalKey = key;
 			state.ordinal = 0;
 		}
-		if (!state.received?.size && !state.resend?.size) return;
+		if (!state.received?.size && !state.resend?.size && !state.receivedRuns?.size) return;
+		if (state.ordinal < (state.receivedRuns?.get(key) ?? 0)) return ALREADY_RECEIVED;
 		const slot = slotOf(key, state.ordinal);
 		const id = deliveryId(update.id);
 		if (state.received?.get(slot)?.[2] === id) return ALREADY_RECEIVED;
@@ -947,6 +1003,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	/** Its PUBREL waits for a save that keeps the message from being sent again and records the PUBREL owed. */
 	received(messageId: number, failed: boolean) {
 		const owed = this.awaitingCompletion?.get(messageId);
+		// false: its save failed, so a repeated PUBREC tries it again
+		if (owed === false) return this.owePubrel(messageId);
 		if (owed !== undefined) return owed;
 		const delivery = this.awaitingAcks?.get(messageId);
 		if (delivery?.qos !== 2) return false;
@@ -968,10 +1026,19 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.acknowledge(messageId);
 		if (failed) return true;
 		this.advancePositions();
+		return this.owePubrel(messageId);
+	}
+	owePubrel(messageId: number) {
 		const awaitingCompletion = (this.awaitingCompletion ??= new Map());
 		// in the map before the save starts, which reads it at once
 		awaitingCompletion.set(messageId, true);
-		const saved = Promise.resolve(this.saveExchanges()).then(() => true);
+		const saved = this.saveExchanges().then(
+			() => true,
+			(error) => {
+				if (awaitingCompletion.get(messageId) === saved) awaitingCompletion.set(messageId, false);
+				throw error;
+			}
+		);
 		awaitingCompletion.set(messageId, saved);
 		return saved;
 	}
@@ -1128,7 +1195,16 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (!bound && next === state.entry.startTime) continue;
 			state.entry.startTime = next;
 			for (const [slot, [key]] of state.received ?? []) {
-				if (key <= next) state.received.delete(slot);
+				if (key <= next) {
+					state.received.delete(slot);
+					this.receivedCount--;
+				}
+			}
+			for (const key of state.receivedRuns?.keys() ?? []) {
+				if (key <= next) {
+					state.receivedRuns.delete(key);
+					this.receivedCount--;
+				}
 			}
 			for (const [slot, delivery] of state.resend ?? []) {
 				if (delivery[0] <= next) {
@@ -1173,6 +1249,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (startTime !== undefined) saved.startTime = startTime;
 			if (databaseGeneration !== undefined) saved.databaseGeneration = databaseGeneration;
 			if (state.received?.size > 0) saved.received = [...state.received.values()];
+			if (state.receivedRuns?.size > 0) saved.receivedRuns = [...state.receivedRuns];
 			if (qos === 2) {
 				const inFlight = [...(state.resend?.values() ?? [])];
 				for (const [messageId, { key, ordinal, id }] of state.unacked) inFlight.push([key, ordinal, id, messageId]);
@@ -1203,12 +1280,14 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		return this.saving;
 	}
 	async saveWhileDirty() {
+		let failure: Error | undefined;
 		try {
 			while (this.dirty && !this.discarded) {
 				this.dirty = false;
 				await this.saveOnce();
 			}
 		} catch (error) {
+			failure = error;
 			// the next checkpoint retries
 			this.dirty = true;
 			this.startCheckpoints();
@@ -1217,7 +1296,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			// cleared with the last dirty check, so a later persist() starts a new save rather than joining this one
 			this.saving = undefined;
 			// a waiter is left only when no save will run for it
-			if (this.saveWaiters.length > 0) this.settleSaveWaiters(Infinity, this.endedError());
+			if (this.saveWaiters.length > 0) this.settleSaveWaiters(Infinity, failure ?? this.endedError());
 		}
 	}
 	async saveOnce() {
