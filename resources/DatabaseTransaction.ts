@@ -760,7 +760,7 @@ export class DatabaseTransaction implements Transaction {
 	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
 	declare writesByKey?: Map<any, Map<unknown, TransactionWrite>>;
 	completions: Promise<void>[] = []; // the set of outstanding async operations to complete
-	private completionHandles?: (RocksTransaction | undefined)[];
+	declare private completionHandles?: (RocksTransaction | undefined)[];
 	db: RootDatabaseKind;
 	transaction: RocksTransactionWithRetry;
 	readTxn: ReadTransaction;
@@ -889,11 +889,11 @@ export class DatabaseTransaction implements Transaction {
 	declare ownedReadIterators?: Set<OwnedReadIterator>;
 	// Depth of commit() attempts on this link that have not reached a native outcome.
 	commitsInFlight = 0;
-	private activeCommitHandle: RocksTransaction | undefined = undefined;
-	private activeCommitHandles: Set<RocksTransaction> | undefined = undefined;
-	private activeHandleStagedTxnTime = 0;
-	private activeHandleInFlight = false;
-	private activeHandleCommitted = false;
+	declare private activeCommitHandle?: RocksTransaction;
+	declare private activeCommitHandles?: Set<RocksTransaction>;
+	declare private activeHandleStagedTxnTime?: number;
+	declare private activeHandleInFlight?: boolean;
+	declare private activeHandleCommitted?: boolean;
 	// A poison landed while a commit was already in flight somewhere in the chain. Excuses the head's
 	// cascade into `next`, but not a link the monitor poisoned BEFORE any commit started.
 	declare poisonedMidCommit?: boolean;
@@ -1246,6 +1246,18 @@ export class DatabaseTransaction implements Transaction {
 	unregisterRecordLock(handle: RecordLockHandle): void {
 		const storeMap = this.recordLocks?.get(handle.store);
 		if (storeMap?.get(handle.keyId) === handle) storeMap.delete(handle.keyId);
+		if (this.saveCommits && this.writes.length > 0) {
+			let detachedAny = false;
+			for (let i = 0; i < this.writes.length; i++) {
+				const write = this.writes[i];
+				if (write?.deferSave && !write.saved && !write.stagedOn && write.lockHandle === handle) {
+					if (write.stagedIn === this) write.stagedIn = undefined;
+					this.detachWrite(write);
+					detachedAny = true;
+				}
+			}
+			if (detachedAny) this.writes = this.writes.filter((write) => write);
+		}
 	}
 
 	registerPendingLock(store: any, keyId: unknown, pending: Promise<RecordLockHandle>): void {
@@ -1332,21 +1344,21 @@ export class DatabaseTransaction implements Transaction {
 	private isHandleCommitInFlight(txn?: RocksTransaction | null): boolean {
 		if (!txn) return false;
 		if (this.activeCommitHandle === txn) {
-			return this.activeHandleInFlight || Boolean((txn as RocksTransactionWithRetry).commitInFlight);
+			return Boolean(this.activeHandleInFlight || (txn as RocksTransactionWithRetry).commitInFlight);
 		}
 		return Boolean((txn as RocksTransactionWithRetry).commitInFlight);
 	}
 
 	private setHandleCommitInFlight(txn: RocksTransaction, inFlight: boolean): void {
-		if (this.isSingleHandleTarget(txn)) {
-			if (inFlight && !this.activeCommitHandle) this.activeCommitHandle = txn;
-			if (this.activeCommitHandle === txn) {
-				this.activeHandleInFlight = inFlight;
-				if (!inFlight) {
-					(txn as RocksTransactionWithRetry).commitInFlight = false;
-				}
-				return;
+		if (this.isSingleHandleTarget(txn) && inFlight && !this.activeCommitHandle) {
+			this.activeCommitHandle = txn;
+		}
+		if (this.activeCommitHandle === txn) {
+			this.activeHandleInFlight = inFlight;
+			if (!inFlight) {
+				(txn as RocksTransactionWithRetry).commitInFlight = false;
 			}
+			return;
 		}
 		(txn as RocksTransactionWithRetry).commitInFlight = inFlight;
 	}
@@ -1354,15 +1366,16 @@ export class DatabaseTransaction implements Transaction {
 	private isHandleCommitted(txn?: RocksTransaction | null): boolean {
 		if (!txn) return false;
 		if (this.activeCommitHandle === txn) {
-			return this.activeHandleCommitted || Boolean((txn as RocksTransactionWithRetry).committed);
+			return Boolean(this.activeHandleCommitted || (txn as RocksTransactionWithRetry).committed);
 		}
 		return Boolean((txn as RocksTransactionWithRetry).committed);
 	}
 
 	private setHandleCommitted(txn: RocksTransaction): void {
-		if (this.isSingleHandleTarget(txn) && this.activeCommitHandle === txn) {
+		if (this.activeCommitHandle === txn) {
 			this.activeHandleInFlight = false;
 			this.activeHandleCommitted = true;
+			(txn as RocksTransactionWithRetry).commitInFlight = false;
 			return;
 		}
 		(txn as RocksTransactionWithRetry).commitInFlight = false;
@@ -1370,7 +1383,11 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	private trackActiveCommitHandle(transaction: RocksTransaction): void {
-		if (!this.activeCommitHandle && (!this.activeCommitHandles || this.activeCommitHandles.size === 0)) {
+		if (
+			!(transaction as RocksTransactionWithRetry).immediateCommit &&
+			!this.activeCommitHandle &&
+			(!this.activeCommitHandles || this.activeCommitHandles.size === 0)
+		) {
 			this.activeCommitHandle = transaction;
 			return;
 		}
@@ -1420,20 +1437,24 @@ export class DatabaseTransaction implements Transaction {
 		if (handles.size === 1) {
 			for (const remaining of handles) {
 				const rem = remaining as RocksTransactionWithRetry;
-				this.activeCommitHandle = remaining;
-				this.activeHandleStagedTxnTime = rem.stagedTxnTime ?? 0;
-				this.activeHandleInFlight = Boolean(rem.commitInFlight);
-				this.activeHandleCommitted = Boolean(rem.committed);
+				if (!rem.immediateCommit) {
+					this.activeCommitHandle = remaining;
+					this.activeHandleStagedTxnTime = rem.stagedTxnTime ?? 0;
+					this.activeHandleInFlight = Boolean(rem.commitInFlight);
+					this.activeHandleCommitted = Boolean(rem.committed);
+					handles.clear();
+				}
 			}
-			handles.clear();
 		}
 	}
 
 	private clearActiveCommitHandles(): void {
-		this.activeCommitHandle = undefined;
-		this.activeHandleStagedTxnTime = 0;
-		this.activeHandleInFlight = false;
-		this.activeHandleCommitted = false;
+		if (this.activeCommitHandle !== undefined || this.activeHandleStagedTxnTime) {
+			this.activeCommitHandle = undefined;
+			this.activeHandleStagedTxnTime = 0;
+			this.activeHandleInFlight = false;
+			this.activeHandleCommitted = false;
+		}
 		this.activeCommitHandles?.clear();
 	}
 
@@ -1471,7 +1492,9 @@ export class DatabaseTransaction implements Transaction {
 		if (write.deferSave && !write.saved && this.saveCommits)
 			return (
 				(!fromAbort || Boolean(targetTransaction) || Boolean((this as { isCommitting?: boolean }).isCommitting)) &&
-				!write.stagedOn
+				!write.stagedOn &&
+				!write.lockHandle?.released &&
+				!write.lockHandle?.isExpired()
 			);
 		if (!write.saved)
 			return !fromAbort && Boolean(targetTransaction) && this.open === TRANSACTION_STATE.OPEN && !write.stagedOn;
@@ -1517,6 +1540,24 @@ export class DatabaseTransaction implements Transaction {
 				)
 			)
 				return true;
+		}
+		return false;
+	}
+
+	private hasSavedWrite(): boolean {
+		for (let i = 0; i < this.writes.length; i++) {
+			if (this.writes[i]?.saved) return true;
+		}
+		return false;
+	}
+
+	private hasSavedWriteForHandle(transaction: RocksTransaction, isImmediateCommit: boolean): boolean {
+		for (let i = 0; i < this.writes.length; i++) {
+			const write = this.writes[i];
+			if (!write?.saved) continue;
+			if (isImmediateCommit ? write.stagedOn === transaction : !write.stagedOn || write.stagedOn === transaction) {
+				return true;
+			}
 		}
 		return false;
 	}
@@ -1808,7 +1849,13 @@ export class DatabaseTransaction implements Transaction {
 		completion.then(undefined, () => {});
 		const index = this.completions.length;
 		this.completions.push(completion);
-		if (transaction || this.completionHandles) {
+		if (
+			transaction &&
+			(this.saveCommits ||
+				Boolean((transaction as RocksTransactionWithRetry).immediateCommit) ||
+				this.hasActiveCommitHandle() ||
+				Boolean(this.completionHandles))
+		) {
 			(this.completionHandles ??= [])[index] = transaction;
 		}
 	}
@@ -1821,6 +1868,20 @@ export class DatabaseTransaction implements Transaction {
 			if (isImmediate) return [];
 			const completions = this.completions;
 			this.completions = [];
+			return completions;
+		}
+		let allMatch = true;
+		for (let i = 0; i < this.completions.length; i++) {
+			const handle = handles[i];
+			if (!(handle ? handle === transaction : !isImmediate)) {
+				allMatch = false;
+				break;
+			}
+		}
+		if (allMatch) {
+			const completions = this.completions;
+			this.completions = [];
+			this.completionHandles = undefined;
 			return completions;
 		}
 		const taken: Promise<void>[] = [];
@@ -2414,7 +2475,7 @@ export class DatabaseTransaction implements Transaction {
 		if (!this.commitsInFlight) {
 			this.clearActiveCommitHandles();
 			this.commitStartedAt = undefined;
-			this.commitOverdueLogged = undefined;
+			if (this.commitOverdueLogged) this.commitOverdueLogged = undefined;
 			this.nativeCommitSubmitted = false;
 			this.nativeCommitAttemptEnded();
 		}
@@ -2434,7 +2495,7 @@ export class DatabaseTransaction implements Transaction {
 		root.unsubmittedCommitDeadline = undefined;
 		root.stalledCommitLogged = false;
 		root.commitStartedAt = undefined;
-		root.commitOverdueLogged = undefined;
+		if (root.commitOverdueLogged) root.commitOverdueLogged = undefined;
 		const submittedLink = root.submittedLink;
 		root.submittedLink = undefined;
 		const submittedLinks = root.submittedLinks;
@@ -2586,7 +2647,7 @@ export class DatabaseTransaction implements Transaction {
 				// the local is empty: a truthy one is what the loop staged into, and the retained-handle
 				// and replay branches below deliberately commit a handle other than this.transaction.
 				if (!transaction) transaction = this.transaction;
-				if (!options.transaction && this.writes.some((write) => write?.saved)) this.renewChainForNativeCommit();
+				if (!options.transaction && this.hasSavedWrite()) this.renewChainForNativeCommit();
 				if (!isImmediateCommit) this.open = TRANSACTION_STATE.CLOSED;
 				// RocksTransaction.commit() resolves with RETRY_NOW_VALUE (a number) under
 				// coordinatedRetry, or void on a normal commit/abort.
@@ -2611,7 +2672,7 @@ export class DatabaseTransaction implements Transaction {
 					// kept the last iterator from finishing cleanly — a hung stream, the long-transaction
 					// monitor's timeout abort — dropped writes the caller had already been told committed.
 					this.writes = this.writes.filter((write) => write); // filter out removed entries
-					if (this.writes.some((write) => write?.saved) || hasDurableLog(transaction)) {
+					if (this.hasSavedWrite() || hasDurableLog(transaction)) {
 						if (!options.transaction) {
 							if (!replayedWritesWarned) {
 								replayedWritesWarned = true;
@@ -2694,8 +2755,8 @@ export class DatabaseTransaction implements Transaction {
 						// re-staged the writes into it
 						this.assertDatabaseCommitAllowed(transaction);
 						this.markNativeCommitSubmitted();
-						this.setHandleCommitInFlight(transaction, true);
 						commitResolution = transaction.commit() as Promise<void>;
+						this.setHandleCommitInFlight(transaction, true);
 						if (this.hasLeaseProtectedWrite) this.retainTransactionLockHolds(transaction);
 						recordCommitLatency(commitResolution, performance.now());
 						// Write-queue-depth accounting for this replay commit happens uniformly below, via
@@ -2719,16 +2780,7 @@ export class DatabaseTransaction implements Transaction {
 					if (!isImmediateCommit) this.detachOwnedTransaction(); // any further operations operate immediately
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
-						if (
-							this.writes.some(
-								(write) =>
-									write?.saved &&
-									(isImmediateCommit
-										? write.stagedOn === transaction
-										: !write.stagedOn || write.stagedOn === transaction)
-							) ||
-							hasDurableLog(transaction)
-						) {
+						if (this.hasSavedWriteForHandle(transaction, isImmediateCommit) || hasDurableLog(transaction)) {
 							// Commit retries can construct fresh ranges on this live handle after read ownership ends.
 							readTransactionOwners.delete(transaction);
 							// Re-fence before submitting: the loop above skips operations already marked saved, so
@@ -2789,8 +2841,8 @@ export class DatabaseTransaction implements Transaction {
 							// Promise<number | void>; it is handled in the resolve callback below.
 							this.assertDatabaseCommitAllowed(transaction);
 							this.markNativeCommitSubmitted();
-							this.setHandleCommitInFlight(transaction, true);
 							commitResolution = transaction.commit();
+							this.setHandleCommitInFlight(transaction, true);
 							if (this.hasLeaseProtectedWrite) this.retainTransactionLockHolds(transaction);
 							// Record how long this commit stays outstanding (submit → settle) as a distribution
 							// metric. This is the same clock the overload check uses (trackOutstandingCommit
@@ -2866,7 +2918,7 @@ export class DatabaseTransaction implements Transaction {
 										`${this.sourceApply ? 'Source-applied' : 'Logged'} transaction ${transaction.id} still in conflict after ${retries} coordinated retries; continuing to retry`
 									);
 								}
-								// Break symmetric crossing-write livelocks where two uncapped logged commits alternate waking on Key A and Key B.
+								// Randomized so two uncapped logged commits crossing on the same keys stop waking in lockstep.
 								if (logged && retries > 2) {
 									const backoff = delay(Math.ceil(Math.min(retries * 2, MAX_RETRY_DELAY_MS) * Math.random()));
 									trackOutstandingCommit(backoff, this.writes[0]?.store ?? this.db, this.startedFrom, transaction);
@@ -3795,12 +3847,30 @@ export class ImmediateTransaction extends DatabaseTransaction {
 	// by the per-write commit. Expired handles are pruned so a reused context does not retain every key.
 	releaseRecordLocks(): void {
 		const recordLocks = this.recordLocks;
-		if (!recordLocks) return;
-		for (const [store, storeMap] of recordLocks) {
-			for (const [keyId, handle] of storeMap) if (handle.released) storeMap.delete(keyId);
-			if (storeMap.size === 0) recordLocks.delete(store);
+		if (recordLocks) {
+			for (const [store, storeMap] of recordLocks) {
+				for (const [keyId, handle] of storeMap) if (handle.released || handle.isExpired()) storeMap.delete(keyId);
+				if (storeMap.size === 0) recordLocks.delete(store);
+			}
+			if (recordLocks.size === 0) this.recordLocks = undefined;
 		}
-		if (recordLocks.size === 0) this.recordLocks = undefined;
+		if (this.writes.length > 0) {
+			let detachedAny = false;
+			for (let i = 0; i < this.writes.length; i++) {
+				const write = this.writes[i];
+				if (
+					write?.deferSave &&
+					!write.saved &&
+					!write.stagedOn &&
+					(write.lockHandle?.released || write.lockHandle?.isExpired())
+				) {
+					if (write.stagedIn === this) write.stagedIn = undefined;
+					this.detachWrite(write);
+					detachedAny = true;
+				}
+			}
+			if (detachedAny) this.writes = this.writes.filter((write) => write);
+		}
 	}
 
 	declare _timestamp: number;
