@@ -297,7 +297,12 @@ this node's record of what it has granted. Only an explicit standalone claim cle
 token's generation against the current one and drops it on a mismatch, because a generation change
 may have re-homed the key to a node that knows nothing of this token. Bounding the window between a
 delegate noticing a new generation and the new home granting is the design note's §4.3 drain —
-operator-sequenced, and harper-pro's to hold, not core's.
+operator-sequenced, and harper-pro's to hold, not core's. The home applies the same rule to its own
+grants: the first grant under a new generation expires every grant minted under an older one
+(`#prepareFreshnessGeneration`). An unchanged home is a new arbiter under a new token prefix, and by
+activation each older grant is surrendered, expired, or held by a node stopped outside Harper — the
+last is how harper-pro's fenced transition (harper-pro#973) serves a stopped delegate's keys at once
+instead of after its delegation lease. The successor inherits no lineage and recovers.
 
 **Recall revokes capability, not just admission.** Waiting for live admissions is not enough on its
 own: a caller that staged a write and then called `unlock()` leaves nothing for a drain to wait on,

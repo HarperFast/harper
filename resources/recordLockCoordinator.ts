@@ -2298,6 +2298,10 @@ export class LockCoordinator {
 		if (this.#freshnessGeneration === generation) return;
 		this.#freshnessGeneration = generation;
 		this.#loseFreshnessHistory();
+		// The home-side half of "a delegation is authority within one generation": activation (§4.3)
+		// asserts every older grant is surrendered, expired, or held by a node stopped outside Harper,
+		// so keeping one would only answer `contended` on a key nobody can admit under.
+		for (const [keyId, grant] of this.#grants) if (grant.token[0] < generation) this.#expireGrant(keyId, grant);
 	}
 
 	#loseFreshnessHistory(): void {
