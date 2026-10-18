@@ -107,11 +107,13 @@ function allowStuckCommitLog(site: 'shed' | 'abandon' | 'overdue', now: number):
 	lastStuckCommitLogAt[site] = now;
 	return true;
 }
-/** Test seam: clears the per-site stuck-commit log cooldowns so consecutive tests can assert on log emission without sleeping. */
+/** Test seam: clears the stuck- and stalled-commit log cooldowns so consecutive tests can assert on log emission without sleeping. */
 export function resetStuckCommitLogCooldownForTests(): void {
 	lastStuckCommitLogAt.shed = -Infinity;
 	lastStuckCommitLogAt.abandon = -Infinity;
 	lastStuckCommitLogAt.overdue = -Infinity;
+	lastStalledCommitWarningAt = -Infinity;
+	lastStalledCommitErrorAt = -Infinity;
 }
 
 // Which database/table, which native transaction, and which request a stuck commit belongs to —
@@ -905,9 +907,12 @@ export class DatabaseTransaction implements Transaction {
 	// can visit every link of a chain, so a counter would advance once per link per tick.
 	declare deferredPoisonDeadline?: number;
 	declare unsubmittedCommitDeadline?: number;
-	// Retry count of the chain's logged retry at the monitor's last tick; a count that stops moving is a
-	// native attempt that never settled.
+	// Retry count of the chain's logged retry at the monitor's last tick, and the tick that decided whether
+	// it had moved: a count that stops moving is a native attempt that never settled, and every link the
+	// monitor visits in one tick must read the same decision.
 	declare loggedRetriesSeen?: number;
+	declare loggedRetriesTick?: number;
+	declare loggedRetryAdvancing?: boolean;
 	// Per-link submission state. A commit method can still be parked in pre-commit work, where an abort
 	// is safe; once storage work has been submitted, its outcome is unknown and monitor cleanup must not
 	// clear writes or blobs that the eventual commit can reference.
@@ -1475,10 +1480,6 @@ export class DatabaseTransaction implements Transaction {
 		if (this.activeCommitHandles) for (const handle of this.activeCommitHandles) note(handle);
 		note(this.transaction);
 		return retries;
-	}
-
-	hasActiveDurableLogCommit(): boolean {
-		return this.activeDurableLogRetries() >= 0;
 	}
 
 	private isActiveCommitHandle(transaction: RocksTransaction): boolean {
@@ -2507,6 +2508,8 @@ export class DatabaseTransaction implements Transaction {
 		root.deferredPoisonDeadline = undefined;
 		root.unsubmittedCommitDeadline = undefined;
 		root.loggedRetriesSeen = undefined;
+		root.loggedRetriesTick = undefined;
+		root.loggedRetryAdvancing = undefined;
 		root.stalledCommitLogged = false;
 		root.commitStartedAt = undefined;
 		if (root.commitOverdueLogged) root.commitOverdueLogged = undefined;
@@ -4072,7 +4075,8 @@ function chainDurableLogRetries(root: DatabaseTransaction, txn: DatabaseTransact
 export function deferForCommitInFlight(
 	txn: DatabaseTransaction,
 	url: string | undefined,
-	expiration = txnExpiration
+	expiration = txnExpiration,
+	tick = monitorTick
 ): boolean {
 	const root = txn.root ?? txn;
 	if (!txn.isChainCommitting() || !root.commitSubmitted) return false;
@@ -4091,8 +4095,14 @@ export function deferForCommitInFlight(
 	const loggedRetries = chainDurableLogRetries(root, txn);
 	let loggedRetry = false;
 	if (loggedRetries >= 0) {
-		loggedRetry = root.loggedRetriesSeen !== loggedRetries;
-		root.loggedRetriesSeen = loggedRetries;
+		if (root.loggedRetriesTick === tick) {
+			loggedRetry = Boolean(root.loggedRetryAdvancing);
+		} else {
+			loggedRetry = root.loggedRetriesSeen !== loggedRetries;
+			root.loggedRetriesSeen = loggedRetries;
+			root.loggedRetriesTick = tick;
+			root.loggedRetryAdvancing = loggedRetry;
+		}
 	}
 	let hasUnsubmittedCommit = false;
 	let unsubmittedCommitGraceExpired = false;
