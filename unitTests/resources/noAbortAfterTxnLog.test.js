@@ -18,7 +18,7 @@ const {
 	suspendDatabaseCommits,
 } = require('#src/resources/DatabaseTransaction');
 const { MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
-const { publishOriginFloor } = require('#src/resources/originClosedFloor');
+const { publishOriginFloor, reservedLocalKey } = require('#src/resources/originClosedFloor');
 const { replayLogs } = require('#src/resources/replayLogs');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { Transaction, constants } = require('@harperfast/rocksdb-js');
@@ -3295,6 +3295,7 @@ describe('Transactions are never aborted once durably written to the transaction
 			});
 
 			let retryRound = 0;
+			let round2Txn;
 			let round2TxnId;
 			let retryHandleAbortCount = 0;
 			Transaction.prototype.abort = function (...abortArgs) {
@@ -3310,6 +3311,7 @@ describe('Transactions are never aborted once durably written to the transaction
 					return Promise.reject(Object.assign(new Error('Transaction is busy'), { code: 'ERR_BUSY' }));
 				}
 				if (retryRound === 2) {
+					round2Txn = this;
 					round2TxnId = this.id;
 					throw new Error('simulated synchronous retry commit throw');
 				}
@@ -3328,22 +3330,32 @@ describe('Transactions are never aborted once durably written to the transaction
 				1,
 				'synchronous throw from transaction.commit() on retry round must abort the retry handle'
 			);
+			assert.strictEqual(
+				reservedLocalKey(round2Txn),
+				undefined,
+				'synchronous throw from transaction.commit() on retry round must release the retry handle local key reservation'
+			);
 
 			Transaction.prototype.commit = origCommit;
 			Transaction.prototype.abort = origAbort;
-			// Verify local key reservation was released so a subsequent transaction can acquire it immediately
-			await AuditedA.put({ id: retryKey, writer: 'after-sync-throw', count: 2 });
-			assert.strictEqual(AuditedA.primaryStore.getEntry(retryKey).value.writer, 'after-sync-throw');
 
-			// Now verify a late immediate handle after the main handle has already finished
 			const mainKey = id('sync-commit-throw-main-key');
 			const lateImmKey = id('sync-commit-throw-late-imm-key');
 			await AuditedA.put({ id: mainKey, writer: 'main-seed', count: 0 });
 			await AuditedA.put({ id: lateImmKey, writer: 'late-seed', count: 0 });
 
 			let lateImmAbortCount = 0;
+			let lateImmTxn;
 			let lateImmTxnId;
-			let interceptLateImm = false;
+			let releaseMainCommit;
+			const mainCommitGate = new Promise((resolve) => {
+				releaseMainCommit = resolve;
+			});
+			let markMainCommitEntered;
+			const mainCommitEntered = new Promise((resolve) => {
+				markMainCommitEntered = resolve;
+			});
+			let interceptCommits = false;
 			Transaction.prototype.abort = function (...abortArgs) {
 				if (this.store?.db === targetDb && lateImmTxnId !== undefined && this.id === lateImmTxnId) {
 					lateImmAbortCount++;
@@ -3351,75 +3363,102 @@ describe('Transactions are never aborted once durably written to the transaction
 				return origAbort.apply(this, abortArgs);
 			};
 			Transaction.prototype.commit = function (commitOptions) {
-				if (this.store?.db !== targetDb || !interceptLateImm) {
+				if (this.store?.db !== targetDb || !interceptCommits) {
 					return origCommit.call(this, commitOptions);
 				}
-				lateImmTxnId = this.id;
-				throw new Error('simulated synchronous late immediate commit throw');
+				if (this.immediateCommit) {
+					lateImmTxn = this;
+					lateImmTxnId = this.id;
+					throw new Error('simulated synchronous late immediate commit throw');
+				}
+				markMainCommitEntered();
+				return mainCommitGate.then(() => origCommit.call(this, commitOptions));
 			};
 
 			const ctx = {};
 			let capturedHolder;
 			let capturedTxn;
-			await transaction(ctx, async () => {
+			interceptCommits = true;
+			const scopePromise = transaction(ctx, async () => {
 				capturedTxn = ctx.transaction;
 				capturedHolder = await AuditedA.lock(lateImmKey, { hold: true, lease: 15_000 }, ctx);
 				await AuditedA.put({ id: mainKey, writer: 'main-committed', count: 1 }, ctx);
 			});
 
 			try {
-				interceptLateImm = true;
+				await mainCommitEntered;
+				assert.strictEqual(ctx.transaction, capturedTxn);
 				capturedHolder.set('writer', 'late-attempted');
 				capturedHolder.set('count', 1);
 				await assert.rejects(async () => capturedHolder.save(), /simulated synchronous late immediate commit throw/);
+				assert.strictEqual(
+					Boolean(lateImmTxn?.immediateCommit),
+					true,
+					'late save() while closed transaction is still attached to context must use an immediateCommit handle'
+				);
 				assert.strictEqual(
 					lateImmAbortCount,
 					1,
 					'synchronous throw from late immediate transaction.commit() must abort the immediate handle'
 				);
 				assert.strictEqual(
+					reservedLocalKey(lateImmTxn),
+					undefined,
+					'synchronous throw from late immediate transaction.commit() must release the immediate handle local key reservation'
+				);
+				assert.strictEqual(
+					capturedTxn.activeCommitHandles.size,
+					0,
+					'failed late immediate handle must be removed from activeCommitHandles'
+				);
+				releaseMainCommit();
+				await scopePromise;
+				assert.strictEqual(
 					capturedTxn.writes.length,
 					0,
 					'failed late immediate write must be removed from transaction writes'
 				);
 			} finally {
+				releaseMainCommit?.();
 				Transaction.prototype.commit = origCommit;
 				Transaction.prototype.abort = origAbort;
 				await capturedHolder?.unlock?.();
 			}
 
-			// Verify local key reservation for lateImmKey was released
-			await AuditedA.put({ id: lateImmKey, writer: 'late-after-throw', count: 2 });
-			assert.strictEqual(AuditedA.primaryStore.getEntry(lateImmKey).value.writer, 'late-after-throw');
+			assert.strictEqual(AuditedA.primaryStore.getEntry(mainKey).value.writer, 'main-committed');
+			assert.strictEqual(AuditedA.primaryStore.getEntry(lateImmKey).value.writer, 'late-seed');
 		});
 
-		it('detaches unsaved deferred writes when an ImmediateTransaction lock handle is unlocked without save()', async function () {
+		it('detaches unsaved deferred writes when an ImmediateTransaction lock handle expires or is unlocked without save()', async function () {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') {
 				this.skip();
 			}
 
-			const abandonedKey = id('imm-abandoned-lock-key');
+			const expiredKey = id('imm-expired-lock-key');
 			const normalKey = id('imm-normal-write-key');
-			await AuditedA.put({ id: abandonedKey, writer: 'seed-abandoned', count: 0 });
+			await AuditedA.put({ id: expiredKey, writer: 'seed-expired', count: 0 });
 			await AuditedA.put({ id: normalKey, writer: 'seed-normal', count: 0 });
 
-			const holder = await AuditedA.lock(abandonedKey);
-			// Stage a deferred write on the shared ImmediateTransaction, then unlock without calling save()
-			holder.set('writer', 'uncommitted-abandoned');
-			holder.set('count', 99);
-			await holder.unlock();
+			const expiredHolder = await AuditedA.lock(expiredKey, { lease: MIN_LOCK_LEASE_MS });
+			expiredHolder.set('writer', 'uncommitted-expired');
+			expiredHolder.set('count', 99);
+			await delay(MIN_LOCK_LEASE_MS + 60);
 
-			// Subsequent non-transactional writes share the reused ImmediateTransaction; its writes array must be clean
 			await AuditedA.put({ id: normalKey, writer: 'committed-normal', count: 1 });
 
 			assert.strictEqual(
-				AuditedA.primaryStore.getEntry(abandonedKey).value.writer,
-				'seed-abandoned',
-				'unlocked unsaved deferred write must not be committed by subsequent ImmediateTransaction writes'
+				AuditedA.primaryStore.getEntry(expiredKey).value.writer,
+				'seed-expired',
+				'expired unsaved deferred write must be detached by ImmediateTransaction.releaseRecordLocks() and not retained'
 			);
 			assert.strictEqual(AuditedA.primaryStore.getEntry(normalKey).value.writer, 'committed-normal');
 
-			const holder2 = await AuditedA.lock(abandonedKey);
+			const unlockedHolder = await AuditedA.lock(expiredKey);
+			unlockedHolder.set('writer', 'uncommitted-unlocked');
+			unlockedHolder.set('count', 88);
+			await unlockedHolder.unlock();
+
+			const holder2 = await AuditedA.lock(expiredKey);
 			try {
 				holder2.set('writer', 'saved-on-second-lock');
 				holder2.set('count', 2);
@@ -3427,7 +3466,7 @@ describe('Transactions are never aborted once durably written to the transaction
 			} finally {
 				await holder2.unlock();
 			}
-			assert.strictEqual(AuditedA.primaryStore.getEntry(abandonedKey).value.writer, 'saved-on-second-lock');
+			assert.strictEqual(AuditedA.primaryStore.getEntry(expiredKey).value.writer, 'saved-on-second-lock');
 		});
 	});
 });
