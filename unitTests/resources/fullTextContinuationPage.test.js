@@ -34,6 +34,16 @@ describe('full-text visible continuation pages', () => {
 				(error) => error.statusCode === 400
 			);
 	});
+	it('binds named properties and missing elements on array-form conditions', () => {
+		const condition = Object.assign(['catalogSearch', 'widget'], { comparator: 'matches' });
+		assert.strictEqual(hash(condition), hash(Object.assign(['catalogSearch', 'widget'], { comparator: 'matches' })));
+		assert.notStrictEqual(
+			hash(condition),
+			hash(Object.assign(['catalogSearch', 'widget'], { comparator: 'matches_prefix' }))
+		);
+		assert.notStrictEqual(hash(Array(1)), hash([undefined]));
+		assert.notStrictEqual(hash([]), hash(Array(1)));
+	});
 	it('requires bounded pages and rejects incompatible modes', () => {
 		for (const change of [
 			{ limit: 0 },

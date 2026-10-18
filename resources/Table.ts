@@ -6324,7 +6324,7 @@ export function makeTable(options): TableResourceClass {
 							for await (const _entry of entries) {
 							}
 							const result = page.result();
-							Object.defineProperty(result, 'getColumns', { value: getColumns });
+							Object.defineProperty(result, 'getColumns', { value: getColumns, writable: true, configurable: true });
 							return result;
 						} finally {
 							txn.doneReadTxn();

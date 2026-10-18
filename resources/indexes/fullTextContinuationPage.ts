@@ -91,15 +91,13 @@ function canonical(value: unknown, seen: Set<object>): unknown {
 	if (seen.has(value)) throw new ClientError('Full-text continuation query cannot be circular', 400);
 	seen.add(value);
 	try {
-		if (Array.isArray(value)) return ['array', value.map((item) => canonical(item, seen))];
-		if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)
+		const array = Array.isArray(value);
+		if (!array && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)
 			throw new ClientError('Unsupported full-text continuation query object', 400);
-		return [
-			'object',
-			Object.keys(value)
-				.sort()
-				.map((key) => [key, canonical(value[key], seen)]),
-		];
+		const entries = Object.keys(value)
+			.sort()
+			.map((key) => [key, canonical(value[key], seen)]);
+		return array ? ['array', value.length, entries] : ['object', entries];
 	} finally {
 		seen.delete(value);
 	}
