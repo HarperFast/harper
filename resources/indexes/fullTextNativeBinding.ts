@@ -1,6 +1,7 @@
 import type { FullTextDerivedIndexEngine } from './fullTextDerivedIndex.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
+const FULLTEXT_NATIVE_ABI_VERSION = 9;
 const FULLTEXT_LIFECYCLE_API_VERSION = 1;
 const FULLTEXT_MUTATION_BATCH_API_VERSION = 5;
 const FULLTEXT_QUERY_API_VERSION = 4;
@@ -248,7 +249,7 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		!info ||
 		typeof info.packageVersion !== 'string' ||
 		typeof info.tantivyVersion !== 'string' ||
-		info.nativeAbiVersion !== 9 ||
+		info.nativeAbiVersion !== FULLTEXT_NATIVE_ABI_VERSION ||
 		info.lifecycleApiVersion !== FULLTEXT_LIFECYCLE_API_VERSION ||
 		info.mutationBatchApiVersion !== FULLTEXT_MUTATION_BATCH_API_VERSION ||
 		info.queryApiVersion !== FULLTEXT_QUERY_API_VERSION ||

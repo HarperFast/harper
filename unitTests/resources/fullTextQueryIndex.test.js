@@ -267,6 +267,50 @@ describe('full-text replay prefix validation', () => {
 	});
 });
 
+describe('full-text replay page protocol', () => {
+	const { replayFullTextPrefix } = require('#src/resources/indexes/fullTextQueryProtocol');
+	const prefix = [
+		{ id: 'a', score: 3, version: '1' },
+		{ id: 'b', score: 2, version: '1' },
+		{ id: 'c', score: 1, version: '1' },
+	];
+	it('accounts for a prefix split over several lower-bound pages before returning new hits', () => {
+		const first = { hits: prefix.slice(0, 1), totalRelation: 'lower-bound', continuation: 'next' };
+		const one = replayFullTextPrefix(prefix, 3, first);
+		assert.deepStrictEqual(one, { skipped: 1, remaining: 2, hits: [] });
+		assert.strictEqual(first.totalRelation, 'lower-bound');
+		const next = { id: 'd', score: 0, version: '1' };
+		assert.deepStrictEqual(replayFullTextPrefix(prefix, one.remaining, { hits: [...prefix.slice(1), next] }), {
+			skipped: 2,
+			remaining: 0,
+			hits: [next],
+		});
+	});
+	it('rejects an empty page claiming more hits, a changed prefix and premature exhaustion', () => {
+		for (const page of [
+			{ hits: [], continuation: 'next' },
+			{ hits: [{ ...prefix[0], version: '2' }], continuation: 'next' },
+			{ hits: prefix.slice(0, 1) },
+		])
+			assert.throws(
+				() => replayFullTextPrefix(prefix, 3, page),
+				(error) => error.statusCode === 500
+			);
+		assert.deepStrictEqual(replayFullTextPrefix(undefined, 0, { hits: [] }), { skipped: 0, remaining: 0, hits: [] });
+	});
+});
+
+describe('full-text traversal ordering guard', () => {
+	it('requires a new page to advance by score and then UTF-8 ID order', () => {
+		const { fullTextHitsAdvance } = require('#src/resources/indexes/fullTextQueryProtocol');
+		assert.strictEqual(fullTextHitsAdvance({ id: 'z', score: 2 }, { id: 'a', score: 1 }), true);
+		assert.strictEqual(fullTextHitsAdvance({ id: '\uE000', score: 1 }, { id: '😀', score: 1 }), true);
+		assert.strictEqual(fullTextHitsAdvance({ id: 'a', score: 1 }, { id: 'a', score: 1 }), false);
+		assert.strictEqual(fullTextHitsAdvance({ id: 'b', score: 1 }, { id: 'a', score: 1 }), false);
+		assert.strictEqual(fullTextHitsAdvance({ id: 'a', score: 1 }, { id: 'b', score: 2 }), false);
+	});
+});
+
 describe('FullTextQueryIndex', () => {
 	it('does not treat prototype property names as full-text comparators', () => {
 		for (const comparator of ['constructor', 'toString', '__proto__'])
@@ -1565,10 +1609,10 @@ describe('FullTextQueryIndex', () => {
 			[
 				{ offset: 0, limit: 40 },
 				{ offset: 0, limit: 200 },
-				{ offset: 200, limit: 800 },
-				{ offset: 1000, limit: 1_022 },
-				{ offset: 2_022, limit: 1_022 },
-				{ offset: 3_044, limit: 1_022 },
+				{ offset: 200, limit: 640 },
+				{ offset: 840, limit: 1_022 },
+				{ offset: 1_862, limit: 1_022 },
+				{ offset: 2_884, limit: 1_022 },
 			]
 		);
 		assert.deepStrictEqual(
@@ -2760,14 +2804,15 @@ describe('FullTextQueryIndex', () => {
 				},
 				async openNativeFullTextReader() {
 					return withTraversal({
-						async search() {
+						async search(request) {
 							return {
 								total: 3,
 								totalRelation: 'lower-bound',
 								hits: [
 									{ id: nativeId(1, 'one'), version: '1', score: 2 },
 									{ id: nativeId(1, 'two'), version: '1', score: 1 },
-								],
+									{ id: nativeId(1, 'three'), version: '1', score: 0 },
+								].slice(request.offset, request.offset + request.limit),
 							};
 						},
 						committedPayload: publicationPayload(),

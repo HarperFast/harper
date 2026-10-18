@@ -69,6 +69,8 @@ operationsApi:
     securePort: 9925
 rootPath: null
 storage:
+  fullText:
+    maxRawHitsPerRequest: 100000
   writeAsync: false
   caching: true
   compression: true

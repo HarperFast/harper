@@ -357,6 +357,78 @@ describe('published native full-text Table.search integration', () => {
 			expected.slice(0, -5)
 		);
 	});
+	it('keeps native ordinary and traversal prefixes consistent across score, ID and page-size boundaries', async () => {
+		const { mkdtemp, rm } = require('node:fs/promises');
+		const { join } = require('node:path');
+		const binding = await loadFullTextNativeBinding();
+		const info = await binding.runtimeInfo();
+		const path = await mkdtemp(join(__dirname, '../envDir/', String(process.pid), 'fulltext-prefix-'));
+		const options = {
+			path,
+			indexId: 'prefix-test',
+			generation: '1',
+			fields: [{ name: 'title' }],
+			analyzer: 'english@2',
+			surfaceTerms: true,
+			limits: {
+				indexingThreads: 1,
+				searchThreads: Math.max(2, info.queryClassIsolationMinimumSearchThreads),
+				writerMemoryBytes: 30000000,
+				maxQueuedCommands: 16,
+				maxQueuedBytes: 8388608,
+				maxBatchBytes: 8388608,
+			},
+		};
+		let writer, reader;
+		try {
+			writer = await binding.openNativeFullTextIndex(options);
+			for (let start = 0; start < 1024; start += 128) {
+				await writer.applyMutationBatch({
+					upserts: Array.from({ length: 128 }, (_, i) => ({
+						id: `${start + i}-é-😀`,
+						version: String((start + i) % 3),
+						fields: { title: (start + i) % 3 ? 'widget catalog' : 'widget widget catalog' },
+					})),
+				});
+				await writer.commit();
+			}
+			reader = await binding.openNativeFullTextReader(options);
+			for (const query of [
+				{ text: 'widget catalog', mode: 'any' },
+				{ text: 'widg', mode: 'prefix' },
+				{ text: 'widg', mode: 'fuzzy-prefix' },
+				{ operator: 'and', clauses: [{ text: 'widget' }, { operator: 'not', clause: { text: 'absent' } }] },
+			]) {
+				const ordinary = await reader.search({
+					query,
+					limit: query.mode?.includes('prefix') ? info.limits.maxAutocompleteResults : 1024,
+					exactTotal: true,
+				});
+				assert.deepStrictEqual((await reader.searchPage({ query, limit: ordinary.hits.length })).hits, ordinary.hits);
+				const first = await reader.searchPage({ query, limit: 73 });
+				const walk = async (limit) => {
+					const hits = [];
+					let continuation = first.continuation;
+					do {
+						const page = await reader.searchPage({ query, limit, continuation });
+						assert.strictEqual(page.total, 1024);
+						hits.push(...page.hits);
+						continuation = page.continuation;
+					} while (continuation);
+					return hits;
+				};
+				assert.deepStrictEqual(await walk(17), await walk(113));
+				const small = await reader.searchPage({ query, limit: 17, continuation: first.continuation });
+				const large = await reader.searchPage({ query, limit: 113, continuation: first.continuation });
+				assert.deepStrictEqual(small.hits, large.hits.slice(0, 17));
+			}
+		} finally {
+			await reader?.close();
+			await writer?.close();
+			await rm(path, { recursive: true, force: true });
+		}
+	});
+
 	it('fills filtered ordinary and autocomplete pages beyond the native offset and hit windows', async () => {
 		const { toBufferKey } = require('ordered-binary');
 		const info = await (await loadFullTextNativeBinding()).runtimeInfo();
@@ -400,6 +472,19 @@ describe('published native full-text Table.search integration', () => {
 				})
 			);
 		const tail = new Set(ordered.slice(info.limits.maxSearchWindow));
+		const env = require('#src/utility/environment/environmentManager');
+		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+		const previousPolicy = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+		try {
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previousPolicy, maxRawHitsPerRequest: 128 });
+			await assert.rejects(
+				search('matches', 'widget catalog', { rowFilter: (record) => tail.has(record.id) }),
+				(error) => error.statusCode === 400 && error.message.includes('storage.fullText.maxRawHitsPerRequest')
+			);
+		} finally {
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previousPolicy);
+		}
+
 		assert.deepStrictEqual(
 			(await search('matches', 'widget catalog', { rowFilter: (record) => tail.has(record.id) })).map(({ id }) => id),
 			ordered.slice(info.limits.maxSearchWindow)

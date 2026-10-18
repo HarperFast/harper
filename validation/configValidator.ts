@@ -2,6 +2,7 @@
 
 import * as fs from 'fs-extra';
 import Joi from 'joi';
+import { resolveFullTextSearchLimits } from '../resources/indexes/fullTextSearchLimits.ts';
 import * as os from 'os';
 const { boolean, string, number, array } = Joi.types();
 const v8Flag = string.trim().allow('').pattern(/^--/, 'V8 flag starting with --');
@@ -510,6 +511,16 @@ export function configValidator(configJson, skipFsValidation = false) {
 			})
 		),
 		storage: Joi.object({
+			fullText: Joi.object()
+				.custom((value, helpers) => {
+					try {
+						resolveFullTextSearchLimits(value);
+						return value;
+					} catch (error) {
+						return helpers.message({ custom: error.message });
+					}
+				})
+				.optional(),
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
 			caching: boolean.optional(),
