@@ -298,13 +298,15 @@ token's generation against the current one and drops it on a mismatch, because a
 may have re-homed the key to a node that knows nothing of this token. Bounding the window between a
 delegate noticing a new generation and the new home granting is the design note's §4.3 drain —
 operator-sequenced, and harper-pro's to hold, not core's. The home applies the rule to its own
-grants once the drain has ruled on them: the first grant under a new generation expires every older
-grant whose recall the delegate confirmed, or that a drain (`quiesce`) reported outstanding on a
-delegate the new `homes[]` no longer names (`#prepareFreshnessGeneration`). An outstanding recall to
-a dropped node is what activation then has to cover: harper-pro activates past it only when the
-operator attests the node stopped (harper-pro#973), and otherwise waits out the lease. Expiring it serves that node's keys at once
-instead of after its delegation lease. Every other older grant keeps its lease: a delegate still in
-the ring, or one no drain reached, which is the backstop against an activation that came too early
+grants once the drain has ruled on them: the first token minted under a new generation expires every
+older grant that a drain (`quiesce`) reported outstanding on a delegate the new `homes[]` no longer
+names (`#retireOlderGrants`), and a key whose own grant qualifies is freed on its next request. An
+outstanding recall to a dropped node is what activation then has to cover: harper-pro activates past
+it only when the operator attests the node stopped (harper-pro#973), and otherwise waits out the
+lease. Expiring it serves that node's keys at once instead of after its delegation lease. Every
+other older grant keeps its lease until its release or expiry, including one whose recall was
+confirmed: that release follows the confirmation, and a recall can confirm early while a renewal's
+inherited admission still runs. The lease is the backstop against an activation that came too early
 or a drain that missed a grant.
 
 **Recall revokes capability, not just admission.** Waiting for live admissions is not enough on its

@@ -2569,7 +2569,7 @@ describe('record lock delegations', () => {
 			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 2);
 		});
 
-		it('serves a key whose older grant was recall-confirmed even when the delegate stays in the ring', async () => {
+		it('keeps a recall-confirmed older grant to a node still in the ring until its release or lease', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('alpha');
 			const gamma = cluster.node('gamma');
@@ -2580,8 +2580,10 @@ describe('record lock delegations', () => {
 			await assert.rejects(() => cluster.node('beta').coordinator.acquire(key, LEASE, 300));
 			assert.ok(gamma.writerCalls > 0, 'gamma surrendered');
 			cluster.generation = 2;
-			const successor = await cluster.node('beta').coordinator.acquire(key, LEASE, 1_000);
-			assert.ok(successor.admissionId);
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
+				(error) => error.statusCode === 423
+			);
 		});
 
 		it('serves the key when the drain recall to the dropped node is still in flight at its deadline', async () => {
@@ -2607,22 +2609,6 @@ describe('record lock delegations', () => {
 				(error) => error.statusCode === 423
 			);
 			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 2);
-		});
-
-		it('serves a key whose older grant is recall-confirmed only after the generation sweep ran', async () => {
-			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
-			const key = cluster.keyHomedOn('alpha');
-			const gamma = cluster.node('gamma');
-			const round = await gamma.coordinator.acquire(key, LEASE, WAIT);
-			gamma.coordinator.release(key, round.admissionId);
-			gamma.writerThrows = true;
-			cluster.generation = 2;
-			// Any grant runs alpha's sweep; gamma's grant is unconfirmed then, so it survives it.
-			await cluster.node('beta').coordinator.acquire(cluster.keyHomedOn('alpha', 'j'), LEASE, WAIT);
-			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 2);
-			const successor = await cluster.node('beta').coordinator.acquire(key, LEASE, 1_000);
-			assert.ok(successor.admissionId);
-			assert.ok(gamma.writerCalls > 0, 'gamma confirmed the recall and its release was lost');
 		});
 
 		it('a recall that arrives while the delegate is still fencing its surrender waits for the fence', async () => {

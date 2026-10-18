@@ -286,10 +286,10 @@ export interface ClusterLockTransport {
 	 * activation record is active — every old home quiesced (each acknowledgement bound to the
 	 * acknowledger's `homeIncarnation`, so a restart during the drain invalidates it) or externally
 	 * fenced, then `DELEGATION_LEASE_MS + skew` elapsed, unless every quiesced home proved its drain
-	 * and every fenced node is stopped, not merely isolated. A home expires its older grants whose recall was
-	 * confirmed, or that a drain reported outstanding on a node outside the new ring, on that
-	 * activation (`#prepareFreshnessGeneration`). Core cannot observe
-	 * what happened on other nodes; the operator can.
+	 * and every fenced node is stopped, not merely isolated. At its first mint under `g+1` a home
+	 * expires each older grant that a drain reported outstanding on a node outside the new ring
+	 * (`#retireOlderGrants`). Core cannot observe what happened on other
+	 * nodes; the operator can.
 	 *
 	 * The other interval — a restart of *this* process — is core's own, because a generation does not
 	 * advance on a restart and there is no external event to hang it on. See `#grantableAfterMono`.
@@ -984,6 +984,8 @@ export class LockCoordinator {
 	 * generation 1, where there is nothing to drain and no interval to skip.
 	 */
 	unprovenOwnershipMs(): number {
+		// The successor answers for the ownership it adopted.
+		if (this.#handedOff) return 0;
 		const horizon = DELEGATION_LEASE_MS + this.#skewMs;
 		if (this.#ownedSinceMono === undefined) return horizon;
 		// The ring-wide recall attestation covers a sibling thread's grants too: a takeover bumps the
@@ -1075,6 +1077,8 @@ export class LockCoordinator {
 	#dependencySets = new Map<unknown, LockDependencySet>();
 	#everDelegated = new DelegatedKeyFilter();
 	#freshnessGeneration: number | undefined;
+	/** The generation whose older grants `#retireOlderGrants` has already swept. */
+	#retiredBelow: number | undefined;
 	/** False after any interval whose delegation history this coordinator could not have observed. */
 	#trustVirginKeys: boolean;
 	#counter = 0;
@@ -1217,6 +1221,7 @@ export class LockCoordinator {
 		successor.#dependencySets = this.#dependencySets;
 		successor.#everDelegated.copyFrom(this.#everDelegated);
 		successor.#freshnessGeneration = this.#freshnessGeneration;
+		successor.#retiredBelow = this.#retiredBelow;
 		successor.#trustVirginKeys = this.#trustVirginKeys;
 		this.#dependencySets = new Map();
 		this.#everDelegated.clear();
@@ -2098,17 +2103,21 @@ export class LockCoordinator {
 	 * One table's half of `quiesceDelegations`. Never throws for a single grant: a transition needs to
 	 * know exactly what is still live, and one unreachable delegate must not hide the rest.
 	 */
-	async quiesce(result: QuiesceResult, remaining: () => number): Promise<void> {
+	async quiesce(result: QuiesceResult, remaining: () => number, seen?: WeakSet<object>): Promise<void> {
 		if (this.#closed) return;
 		// Delegate side first: this is what admits, and surrendering is purely local — it cannot be
 		// refused by an unreachable peer, so it succeeds even when the recalls below do not.
 		for (const delegation of [...this.#delegations.values()]) {
-			// Handed off mid-drain: the successor holds what is left, and the sweep visits it.
+			// Closed mid-drain: a successor holds what is left, and the sweep visits it.
 			if (this.#closed) return;
+			// A successor shares these objects, so a sweep that also visits it must count each once.
+			if (seen?.has(delegation)) continue;
+			seen?.add(delegation);
 			try {
 				await withDeadline(this.onDelegationRecall({ key: delegation.key, token: delegation.token }), remaining());
 				result.surrendered++;
 			} catch (error) {
+				seen?.add(delegation.token);
 				result.outstanding.push({
 					table: this.table,
 					key: delegation.key,
@@ -2120,6 +2129,8 @@ export class LockCoordinator {
 		// bookkeeping; this only drives it and reports what it did not confirm.
 		for (const [keyId, grant] of [...this.#grants]) {
 			if (this.#closed) return;
+			if (seen?.has(grant)) continue;
+			seen?.add(grant);
 			if (grant.recallConfirmed) {
 				result.recalled++;
 				continue;
@@ -2312,7 +2323,7 @@ export class LockCoordinator {
 		if (highest === undefined || generation > highest) highestGeneration.set(this.database, generation);
 	}
 
-	#prepareFreshnessGeneration(generation: number, homes: string[]): void {
+	#prepareFreshnessGeneration(generation: number): void {
 		if (this.#freshnessGeneration === undefined) {
 			this.#freshnessGeneration = generation;
 			return;
@@ -2320,19 +2331,21 @@ export class LockCoordinator {
 		if (this.#freshnessGeneration === generation) return;
 		this.#freshnessGeneration = generation;
 		this.#loseFreshnessHistory();
+	}
+
+	/**
+	 * Once per generation, at the first mint under it, so a map read that mints nothing expires
+	 * nothing: see record-locks.md, "A delegation is authority within one generation".
+	 */
+	#retireOlderGrants(generation: number, homes: string[]): void {
+		if (this.#retiredBelow === generation) return;
+		this.#retiredBelow = generation;
 		for (const [keyId, grant] of this.#grants)
-			if (this.#retiredByGeneration(grant, generation, homes)) {
-				// Acted on: a map that later reverts below this generation must not see the grant gone.
-				this.#recordGenerationActedOn(generation);
-				this.#expireGrant(keyId, grant);
-			}
+			if (this.#retiredByGeneration(grant, generation, homes)) this.#expireGrant(keyId, grant);
 	}
 
 	#retiredByGeneration(grant: HomeGrant, generation: number, homes: string[]): boolean {
-		return (
-			grant.token[0] < generation &&
-			(grant.recallConfirmed === true || (grant.drainOutstanding === true && !homes.includes(grant.delegate)))
-		);
+		return grant.token[0] < generation && grant.drainOutstanding === true && !homes.includes(grant.delegate);
 	}
 
 	#loseFreshnessHistory(): void {
@@ -2648,7 +2661,7 @@ export class LockCoordinator {
 		ringKey: string
 	): DelegationReply {
 		const now = this.#monotonic();
-		this.#prepareFreshnessGeneration(homeMap.generation, homeMap.homes);
+		this.#prepareFreshnessGeneration(homeMap.generation);
 		// Consulted unconditionally — it is what observes a gap in ownership, and the waiver it applies
 		// to itself is the only part `grantableAfterMono` may switch off.
 		let quarantine = Math.max(this.#grantableAfterMono, this.#ownershipHorizon(now, homeMap.homeIncarnation)) - now;
@@ -2667,11 +2680,9 @@ export class LockCoordinator {
 			// An expired grant is not a live one. Collecting it here rather than trusting `tick()` is
 			// what keeps a table whose expiry budget is saturated from answering `contended` forever.
 			if (existing.expiresMono <= now) this.#expireGrant(keyId, existing);
-			// Ruled on after this generation's sweep (`#prepareFreshnessGeneration`) already ran.
-			else if (this.#retiredByGeneration(existing, homeMap.generation, homeMap.homes)) {
-				this.#recordGenerationActedOn(homeMap.generation);
+			else if (this.#retiredByGeneration(existing, homeMap.generation, homeMap.homes))
 				this.#expireGrant(keyId, existing);
-			} else if (existing.recalling || existing.recallConfirmed)
+			else if (existing.recalling || existing.recallConfirmed)
 				// A recall is in flight, or the delegate has already confirmed one. Renewing now — even for
 				// the node being recalled — would mint a token its own release no longer matches, and the
 				// contender would never get the key. `recallConfirmed` has to be here as well as in
@@ -2680,6 +2691,7 @@ export class LockCoordinator {
 				return { granted: false, reason: 'contended', retryAfterMs: 25 };
 			else if (existing.delegate === requester) {
 				// Renewal for the node that already holds it: extend rather than recall itself.
+				this.#retireOlderGrants(homeMap.generation, homeMap.homes);
 				this.#recordGenerationActedOn(homeMap.generation);
 				existing.token = [homeMap.generation, homeMap.homeIncarnation, ++this.#counter];
 				existing.renewed = true;
@@ -2702,6 +2714,7 @@ export class LockCoordinator {
 		if (this.#grants.size >= MAX_DELEGATIONS_PER_TABLE) return { granted: false, reason: 'capacity' };
 		const perRequester = this.#grantsByRequester.get(requester) ?? 0;
 		if (perRequester >= MAX_DELEGATIONS_PER_REQUESTER) return { granted: false, reason: 'capacity' };
+		this.#retireOlderGrants(homeMap.generation, homeMap.homes);
 		this.#recordGenerationActedOn(homeMap.generation);
 		const token: FencingToken = [homeMap.generation, homeMap.homeIncarnation, ++this.#counter];
 		const dependencies = this.#freshnessFor(keyId);
@@ -3180,17 +3193,19 @@ export async function quiesceDelegations(database: string, budgetMs: number): Pr
 	// A coordinator rebuilt during the sweep (a transport replaced, as staging a generation does) adopts
 	// its predecessor's grants and delegations, and a predecessor not yet reached returns at once once
 	// closed. Sweep until a pass finds no coordinator it has not seen, so adopted authority is not missed.
-	const coordinators: LockCoordinator[] = [];
+	const coordinators = new Set<LockCoordinator>();
+	const seen = new WeakSet<object>();
 	for (let pending = ofDatabase(); pending.length > 0;) {
 		for (const coordinator of pending) {
-			coordinators.push(coordinator);
-			await coordinator.quiesce(result, remaining);
+			coordinators.add(coordinator);
+			await coordinator.quiesce(result, remaining, seen);
 		}
-		pending = ofDatabase().filter((coordinator) => !coordinators.includes(coordinator));
+		pending = ofDatabase().filter((coordinator) => !coordinators.has(coordinator));
 	}
 	// A surrender started before the sweep (a contention recall) has left its table already, but its
 	// handles can still commit until they are fenced.
 	for (const surrender of [...(inFlightSurrenders.get(database)?.entries ?? [])]) {
+		if (seen.has(surrender.token)) continue;
 		try {
 			await withDeadline(surrender.settled, remaining());
 		} catch (error) {
@@ -3210,7 +3225,7 @@ export async function quiesceDelegations(database: string, budgetMs: number): Pr
 	//   Those grants live on delegate nodes and no local sweep can see them; the same fact is what
 	//   core's own grant gate refuses on, and it is why uptime is not the right measure (a worker that
 	//   built empty coordinators early and took ownership late has plenty of uptime and no proof).
-	if (coordinators.length === 0) {
+	if (coordinators.size === 0) {
 		result.outstanding.push({
 			table: '*',
 			key: undefined,
