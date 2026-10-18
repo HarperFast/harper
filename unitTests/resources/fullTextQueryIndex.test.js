@@ -267,6 +267,17 @@ describe('full-text replay prefix validation', () => {
 	});
 });
 
+describe('full-text traversal ordering guard', () => {
+	it('requires a new page to advance by score and then UTF-8 ID order', () => {
+		const { fullTextHitsAdvance } = require('#src/resources/indexes/fullTextQueryProtocol');
+		assert.strictEqual(fullTextHitsAdvance({ id: 'z', score: 2 }, { id: 'a', score: 1 }), true);
+		assert.strictEqual(fullTextHitsAdvance({ id: '\uE000', score: 1 }, { id: '😀', score: 1 }), true);
+		assert.strictEqual(fullTextHitsAdvance({ id: 'a', score: 1 }, { id: 'a', score: 1 }), false);
+		assert.strictEqual(fullTextHitsAdvance({ id: 'b', score: 1 }, { id: 'a', score: 1 }), false);
+		assert.strictEqual(fullTextHitsAdvance({ id: 'a', score: 1 }, { id: 'b', score: 2 }), false);
+	});
+});
+
 describe('FullTextQueryIndex', () => {
 	it('does not treat prototype property names as full-text comparators', () => {
 		for (const comparator of ['constructor', 'toString', '__proto__'])
@@ -1565,10 +1576,10 @@ describe('FullTextQueryIndex', () => {
 			[
 				{ offset: 0, limit: 40 },
 				{ offset: 0, limit: 200 },
-				{ offset: 200, limit: 800 },
-				{ offset: 1000, limit: 1_022 },
-				{ offset: 2_022, limit: 1_022 },
-				{ offset: 3_044, limit: 1_022 },
+				{ offset: 200, limit: 640 },
+				{ offset: 840, limit: 1_022 },
+				{ offset: 1_862, limit: 1_022 },
+				{ offset: 2_884, limit: 1_022 },
 			]
 		);
 		assert.deepStrictEqual(
@@ -2760,14 +2771,15 @@ describe('FullTextQueryIndex', () => {
 				},
 				async openNativeFullTextReader() {
 					return withTraversal({
-						async search() {
+						async search(request) {
 							return {
 								total: 3,
 								totalRelation: 'lower-bound',
 								hits: [
 									{ id: nativeId(1, 'one'), version: '1', score: 2 },
 									{ id: nativeId(1, 'two'), version: '1', score: 1 },
-								],
+									{ id: nativeId(1, 'three'), version: '1', score: 0 },
+								].slice(request.offset, request.offset + request.limit),
 							};
 						},
 						committedPayload: publicationPayload(),

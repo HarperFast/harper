@@ -542,6 +542,13 @@
 							"maximum": 9007199254740991,
 							"default": 5000
 						},
+						"maxRawHitsPerRequest": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 9007199254740991,
+							"default": 100000,
+							"description": "Maximum native hits fetched per request, including the initial replay. Exhaustion returns an explicit error."
+						},
 						"runtime": {
 							"type": "object",
 							"additionalProperties": false,

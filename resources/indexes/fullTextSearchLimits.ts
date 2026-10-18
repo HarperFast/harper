@@ -8,6 +8,7 @@ export type FullTextSearchLimits = Readonly<{
 	maxPendingResponseBytes: number;
 	maxPageSize: number;
 	requestBudgetMilliseconds: number;
+	maxRawHitsPerRequest: number;
 	runtime: Readonly<NativeFullTextRuntimeBudget>;
 }>;
 
@@ -19,6 +20,7 @@ export const DEFAULT_FULL_TEXT_SEARCH_LIMITS: FullTextSearchLimits = Object.free
 	maxPendingResponseBytes: 16 * 1024 * 1024,
 	maxPageSize: 1_000,
 	requestBudgetMilliseconds: 5_000,
+	maxRawHitsPerRequest: 100_000,
 	runtime: Object.freeze({
 		maxResidentIndexes: 128,
 		maxIndexingThreads: 128,

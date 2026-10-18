@@ -50,3 +50,10 @@ export function fullTextReplayPrefixMatches(
 	}
 	return true;
 }
+
+export function fullTextHitsAdvance(previous: FullTextReplayHit, next: FullTextReplayHit): boolean {
+	return (
+		previous.score > next.score ||
+		(previous.score === next.score && Buffer.compare(Buffer.from(previous.id), Buffer.from(next.id)) < 0)
+	);
+}
