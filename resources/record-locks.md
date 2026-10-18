@@ -306,8 +306,11 @@ cover: harper-pro activates past it only when the operator attests the node stop
 (harper-pro#973), and otherwise waits out the lease. Expiring it serves that node's keys at once
 instead of after its delegation lease. Every other older grant keeps its lease until its release or
 expiry, including one whose recall was confirmed: that release follows the confirmation, and a
-recall can confirm early while a renewal's inherited admission still runs. The lease is the backstop
-against an activation that came too early or a drain that missed a grant.
+recall can confirm early while a renewal's inherited admission still runs. For those, the lease is
+the backstop against an activation that came too early or a drain that missed a grant. A
+drain-marked grant to a dropped node has no such backstop: activating past it is the operator's
+statement that the node is stopped, so activating early there is the same operator error as fencing
+a node that is still running.
 
 **Recall revokes capability, not just admission.** Waiting for live admissions is not enough on its
 own: a caller that staged a write and then called `unlock()` leaves nothing for a drain to wait on,

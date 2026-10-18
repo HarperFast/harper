@@ -2144,7 +2144,7 @@ export class LockCoordinator {
 				if (grant.recallConfirmed) result.recalled++;
 				else {
 					grant.drainOutstanding = true;
-					this.#retiredBelow = undefined;
+					this.#authority().#retiredBelow = undefined;
 					result.outstanding.push({
 						table: this.table,
 						key: grant.key,
@@ -2154,7 +2154,7 @@ export class LockCoordinator {
 				}
 			} catch (error) {
 				grant.drainOutstanding = true;
-				this.#retiredBelow = undefined;
+				this.#authority().#retiredBelow = undefined;
 				result.outstanding.push({
 					table: this.table,
 					key: grant.key,
@@ -2338,8 +2338,9 @@ export class LockCoordinator {
 	}
 
 	/**
-	 * Once per generation, from a grant request that passed the quarantine and fencing gates: see
-	 * record-locks.md, "A delegation is authority within one generation".
+	 * From a grant request that passed the quarantine and fencing gates, once per generation and again
+	 * after a drain marks more grants: see record-locks.md, "A delegation is authority within one
+	 * generation".
 	 */
 	#retireOlderGrants(generation: number, homes: string[]): void {
 		if (this.#retiredBelow === generation) return;

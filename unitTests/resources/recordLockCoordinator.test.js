@@ -2658,7 +2658,7 @@ describe('record lock delegations', () => {
 				const drain = quiesceDelegations(cluster.database, 1_000);
 				await new Promise((resolve) => setTimeout(resolve, 10));
 				// The transport is replaced mid-drain, as staging a generation does; the successor adopts
-				// alpha's unproven ownership, and the predecessor no longer answers for it.
+				// alpha's unproven ownership.
 				const predecessor = node.coordinator;
 				const successor = new LockCoordinator({
 					database: cluster.database,
@@ -2678,7 +2678,12 @@ describe('record lock delegations', () => {
 				releaseFence();
 				const drained = await drain;
 				await surrender;
-				assert.strictEqual(drained.complete, false, JSON.stringify(drained.outstanding));
+				assert.ok(
+					drained.outstanding.some(
+						(entry) => entry.table === cluster.table && /has not coordinated/.test(entry.reason)
+					),
+					JSON.stringify(drained.outstanding)
+				);
 				successor.close();
 			});
 
