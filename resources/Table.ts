@@ -6340,7 +6340,11 @@ export function makeTable(options): TableResourceClass {
 			};
 			const predicate = conditions.length ? compile(conditions, attribute.operator) : undefined;
 			const plural = Boolean(resolver.to || attributes.find((item) => item.name === attribute.name)?.elements);
-			if (limit === 0) return () => (plural ? [] : undefined);
+			if (limit === 0)
+				return (record) => {
+					if (resolver.from && !resolver.to && record[resolver.from] == null) return record[resolver.from];
+					return plural ? [] : undefined;
+				};
 			let transform;
 			let transformReadTxn;
 			return (record, entry?, isSync = false) => {

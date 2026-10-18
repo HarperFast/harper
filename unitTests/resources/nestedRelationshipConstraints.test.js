@@ -551,4 +551,9 @@ describe('nested relationship constraints', function () {
 		const rows = await query({ name: 'references', sort: { attribute: 'score' }, limit: 2, select: ['id'] });
 		assert.deepStrictEqual(rows[0].references, [{ id: 'c1' }, { id: 'c2' }]);
 	});
+	it('preserves an absent foreign key under a zero limit without reading children', async function () {
+		const rows = await query({ name: 'references', limit: 0, select: ['id'] });
+		assert.deepStrictEqual(rows[0].references, []);
+		assert.strictEqual(rows[1].references, undefined);
+	});
 });
