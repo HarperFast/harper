@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792228412930,
+  "lastUpdate": 1792308411763,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -7805,6 +7805,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 2101.77,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8b6939b33615f836913b0a6e7fb9493aff025004",
+          "message": "Let a restarted record-lock home end its quarantine by a ring-wide recall (#3259)\n\n* Let a restarted record-lock home end its quarantine by a ring-wide recall\n\nA home that restarts in the same generation refused to grant for\nDELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS (365 s) because it had forgotten\nwhat its previous incarnation delegated. Add the core half of harper#3254:\n\n- ClusterLockTransport.quiescedIncarnation(): the transport's attestation\n  that every member of the agreed ring has recalled everything this node\n  issued below that incarnation. A coordinator coordinating under exactly\n  that incarnation drops both halves of its quarantine on its next refused\n  grant and reports unprovenOwnershipMs() === 0; a retirement record from\n  the current incarnation is kept. Consulted only while already quarantined.\n- LockCoordinator.recallFromHome / recallDelegationsFromHome: the delegate\n  side. Drain and release every delegation the named home issued below the\n  incarnation through the ordinary recall path, join surrenders already in\n  flight (#surrendering), and stamp in-flight requests (recalledBelow) so a\n  grant from the dead incarnation that was already in the socket is handed\n  back rather than admitted on.\n- record-locks.md: §4.3 \"Ending the quarantine by recall instead\", and why\n  §7.2's dependency sets are not seeded from the recall answers.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01JzhZ6VXriL1VWShPnZ2GbH\nDispatch-Task: harper-3254-restart-quarantine-recall\n\n* Follow coordinator handoffs and in-flight surrenders in the recall by incarnation\n\nReview round 1 of the restart recall found that a transport re-registration\nlanding while one table drained left the successor's old delegation unvisited:\nthe sweep took one snapshot of the live coordinators and a handed-off\ncoordinator answered silently. The sweep now forwards a handed-off coordinator\nto its authority, drains every table concurrently, and repeats until no\ncoordinator it has not visited exists. Surrenders whose release is not yet\nwritten are tracked in a module-level registry keyed by database, so a sweep\njoins them whether the coordinator that started them is live, replaced or\nclosed. The entry validates the incarnation bound and the home against the\nring before sweeping, since its resolution is an attestation input; a\nretirement record now carries the incarnation it was issued under, so one from\nan earlier, already recalled incarnation does not outlive the attestation.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01JzhZ6VXriL1VWShPnZ2GbH\nDispatch-Task: harper-3254-restart-quarantine-recall\n\n* Track the fences a close fires so a recall by incarnation outwaits them\n\nReview round 2 of the restart recall. A close without a successor that\nlands while a delegation is draining revoked its handles fire-and-forget,\nso the surrender that followed found nothing to settle and wrote its\nrelease while a relayed fence was still pending; a recall by incarnation\nthen answered \"holds nothing\" early. The close now tracks its lease-bounded\nsettle in the same registry a surrender uses, and a per-table recall joins\nthe registry entries for its table as the database sweep already did. A\nreplacement coordinator that closes having issued nothing no longer\nrelabels an older retirement record with its own incarnation.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01JzhZ6VXriL1VWShPnZ2GbH\nDispatch-Task: harper-3254-restart-quarantine-recall\n\n* Pin the recall's handoff forward with a test that reaches it\n\nA recall addressed to a coordinator that already handed off must drain the\nsuccessor it handed to; the earlier handoff test started its recall before\nthe swap and so never reached the forward.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01JzhZ6VXriL1VWShPnZ2GbH\nDispatch-Task: harper-3254-restart-quarantine-recall\n\n* Hold a key while its own delegation is still fencing, and release only after a close's fences\n\nReview round 3 of the restart recall. A close without a successor fired\nits fences asynchronously, so a coordinator re-registered under an already\nattested incarnation could grant the key at once while a sibling's handle\ncould still commit: a grant now answers contended while a fencing for that\nkey is in flight. A close that landed during a holder drain let the surrender\nthat followed write its release before the close's relayed revoke landed\n(pre-existing, reached here): the delegation keeps the close's settle and\nthe surrender awaits it. A per-table recall joins its table's fences before\nthe closed check, the retirement record ignores a side that retains no\nhorizon, and the design note lists the two takeover obligations.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01JzhZ6VXriL1VWShPnZ2GbH\nDispatch-Task: harper-3254-restart-quarantine-recall\n\n* Index pending fences per key so a grant asks in constant time, and gate on fences only\n\nReview round 4 of the restart recall. The grant gate walked every pending\nfence in the database per cold grant; the registry now also counts entries\nwhose fences are still pending per table and ring key, so the gate is one\nmap lookup. The gate waited on the release write, which has no timeout;\nevery entry now carries `fenced` (every handle fenced or past its lease)\nand `settled` (release written), and the gate reads only the former. The\ndelegate side gets the same gate: a node whose own earlier handle for a key\nis still fencing answers itself contended rather than asking the home for\na renewal it would admit alongside that handle.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01JzhZ6VXriL1VWShPnZ2GbH\nDispatch-Task: harper-3254-restart-quarantine-recall\n\n* Key the pending-fence index by ring key and reuse the key callers already hold\n\nReview round 5 of the restart recall: the ring key already names the\ndatabase and table, so the index needs no table prefix, and both grant\npaths pass the ring key they computed for homeFor instead of building it\nagain. The unread fenced field is gone; its finally still decrements the\nindex.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01JzhZ6VXriL1VWShPnZ2GbH\nDispatch-Task: harper-3254-restart-quarantine-recall\n\n---------\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-10-18T03:15:20Z",
+          "url": "https://github.com/HarperFast/harper/commit/8b6939b33615f836913b0a6e7fb9493aff025004"
+        },
+        "date": 1792308409927,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 5789.34,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 7934.26,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 7803.32,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6123.16,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4253.41,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 7849.64,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 921.39,
             "unit": "ops/sec"
           }
         ]
