@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { once, on } from 'node:events';
+import { once } from 'node:events';
 import { resolve } from 'node:path';
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, rmSync } from 'node:fs';
 
@@ -368,7 +368,7 @@ describe('TypeStrip runtime boundaries', () => {
 		}
 	});
 
-	it('exposes the declared public globals in source and compiled facades and user workers', async () => {
+	it('exposes the declared public globals in source and compiled facades and user workers', () => {
 		const names = [
 			'contentTypes',
 			'createBlob',
@@ -385,11 +385,9 @@ describe('TypeStrip runtime boundaries', () => {
 		];
 		for (const mode of ['compiled', 'typestrip']) {
 			const modulePath = pathToFileURL(resolve(root, mode === 'compiled' ? 'dist/index.js' : 'index.ts')).href;
-			const output = execFileSync(
-				process.execPath,
-				[...(mode === 'typestrip' ? ['--conditions=typestrip'] : []), '--input-type=module'],
-				{
-					input: `const assert = (await import('node:assert')).default;
+			const output = runWithIsolatedRoot(
+				mode,
+				`const assert = (await import('node:assert')).default;
 				const facade = await import(${JSON.stringify(modulePath)});
 				const names = ${JSON.stringify(names)};
 				assert.deepStrictEqual(Object.keys(facade).filter(name => names.includes(name)).sort(), names.sort());
@@ -398,26 +396,22 @@ describe('TypeStrip runtime boundaries', () => {
 				assert.strictEqual(typeof facade.operation, 'function');
 				assert.strictEqual(typeof facade.server.http, 'function');
 				assert.ok(new facade.Resource('public-facade') instanceof facade.Resource);
-				console.log('public values preserved'); process.exit(0);`,
-					env: process.env,
-					encoding: 'utf8',
-					timeout: 30000,
-				}
+				const { Worker } = await import('node:worker_threads');
+				const { on } = await import('node:events');
+				const worker = new Worker(${JSON.stringify(resolve(root, 'unitTests/bin/user-thread.js'))}, {
+					execArgv: ${JSON.stringify(mode === 'typestrip' ? ['--conditions=typestrip'] : [])},
+					workerData: { noServerStart: true, addPorts: [], addThreadIds: [] },
+				});
+				try {
+					for await (const [message] of on(worker, 'message', { signal: AbortSignal.timeout(30000) })) {
+						if (!Object.hasOwn(message, 'hasResource')) continue;
+						assert.deepStrictEqual(message, { hasResource: true, hasServer: true });
+						break;
+					}
+				} finally { await worker.terminate(); }
+				console.log('public values preserved');`
 			);
-			assert.strictEqual(output.trim(), 'public values preserved', mode);
-			const worker = new Worker(resolve(root, 'unitTests/bin/user-thread.js'), {
-				execArgv: mode === 'typestrip' ? ['--conditions=typestrip'] : [],
-				workerData: { noServerStart: true, addPorts: [], addThreadIds: [] },
-			});
-			try {
-				for await (const [message] of on(worker, 'message', { signal: AbortSignal.timeout(30000) })) {
-					if (!Object.hasOwn(message, 'hasResource')) continue;
-					assert.deepStrictEqual(message, { hasResource: true, hasServer: true }, mode);
-					break;
-				}
-			} finally {
-				await worker.terminate();
-			}
+			assert.strictEqual(output, 'public values preserved', mode);
 		}
 	});
 
