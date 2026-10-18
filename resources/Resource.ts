@@ -1201,6 +1201,10 @@ export function assertNestedQueryOptions(select, resource) {
 	}
 }
 
+function resolveSelectedArray(values) {
+	return values.some((value) => typeof value?.then === 'function') ? Promise.all(values) : values;
+}
+
 export function transformForSelect(select, resource) {
 	assertNestedQueryOptions(select, resource);
 	const propertyResolvers = resource?.propertyResolvers;
@@ -1221,7 +1225,7 @@ export function transformForSelect(select, resource) {
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
-			if (Array.isArray(object)) return object.map(transform);
+			if (Array.isArray(object)) return resolveSelectedArray(object.map(transform));
 			return selectFromObject(object, propertyResolvers, context)(select);
 		};
 	else if (typeof select === 'object') {
@@ -1230,7 +1234,7 @@ export function transformForSelect(select, resource) {
 			return function transform(object) {
 				if (object == null || (!resource && typeof object !== 'object')) return object;
 				if (typeof object.then === 'function') return object.then(transform);
-				if (Array.isArray(object)) return object.map(transform);
+				if (Array.isArray(object)) return resolveSelectedArray(object.map(transform));
 				const results = [];
 				let promises;
 				const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context), object);
@@ -1238,7 +1242,7 @@ export function transformForSelect(select, resource) {
 					const index = results.length;
 					const value = getProperty(property);
 					results.push(value);
-					if (relationshipSelections?.[property.name] && typeof value?.then === 'function') {
+					if (typeof value?.then === 'function') {
 						(promises ||= []).push(
 							value.then((value) => {
 								results[index] = value;
@@ -1254,7 +1258,9 @@ export function transformForSelect(select, resource) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object))
-				return object.map((value) => (value && typeof value === 'object' ? transform(value) : value));
+				return resolveSelectedArray(
+					object.map((value) => (value && typeof value === 'object' ? transform(value) : value))
+				);
 			// finally the case of returning objects
 			const selectedData = {};
 			const getProperty = handleProperty(selectFromObject(object, propertyResolvers, context), object);

@@ -610,4 +610,25 @@ describe('nested relationship constraints', function () {
 				});
 			}
 		});
+	for (const single of [false, true])
+		it(`resolves constrained grandchildren below an unconstrained relationship (${single ? 'record' : 'collection'})`, async function () {
+			Child.setComputedAttribute('observed', (record) => Promise.resolve(record.score));
+			try {
+				const result = await get(
+					(single ? '/Parent/p1?' : '/Parent/?') + 'select(id,children{id,siblings[limit(1)&select(id,observed)]})'
+				);
+				const row = single ? result : result[0];
+				assert.deepStrictEqual(
+					row.children,
+					children
+						.filter((child) => child.parentId === 'p1')
+						.map((child) => ({ id: child.id, siblings: [{ id: 'c1', observed: 10 }] }))
+				);
+			} finally {
+				Child.setComputedAttribute('observed', (record) => {
+					projected.push(record.id);
+					return record.score;
+				});
+			}
+		});
 });
