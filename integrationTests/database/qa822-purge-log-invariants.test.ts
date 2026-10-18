@@ -37,14 +37,14 @@
  *      per audit entry, with the transaction boundary carried as a flag), so it is an empirical
  *      anchor on that layout rather than a published contract. Native per-transaction framing would
  *      be a deliberate change, and this assertion is meant to be the thing that notices it.
- *   3. THERE IS NO PARTIAL-LOSS WINDOW AROUND A PURGE. Markers planted at five points all survive a
- *      clean shutdown together. The first is written after the purge cutoff and before the purge runs,
- *      so the purge must keep the file holding it (the keep half of #911's rule). The sharpest is the
- *      second: rows written by the very process that ran the purge, before it has restarted, which is
- *      the residual exposure the QA-822 family named. Then a single row first thing in the new
- *      process, then two more across a write ramp. The failure mode this forbids is the expensive one: a
- *      silent prefix of the window being dropped while later rows survive, which no operator could
- *      detect from the outside.
+ *   3. THERE IS NO PARTIAL-LOSS WINDOW AFTER A PURGE. Markers planted at four points across the
+ *      post-purge window all survive a clean shutdown together. The sharpest is the first: rows
+ *      written into the emptied store by the very process that ran the purge, before it has
+ *      restarted, which is the residual exposure the QA-822 family named. Then a single row first
+ *      thing in the new process, then two more across a write ramp. The failure mode this forbids is
+ *      the expensive one: a silent prefix of the window being dropped while later rows survive, which
+ *      no operator could detect from the outside. The keep half of #911's rule is checked earlier, in
+ *      the arm: rows written after a purge's cutoff survive that purge, which deletes the older file.
  *   4. A CLEAN, WRITE-FREE REOPEN LEAVES THE FLUSH POSITION UNTOUCHED (QA-1730, promoted separately
  *      from P-584 as its own candidate). Invariant 1's second sample is a reopen AFTER writes, for
  *      the reason given above; this invariant supplies the missing no-write sample from an isolated
@@ -99,8 +99,8 @@
  * Promoted from QA-822 (qa-explorer), snapshot P-584, trimmed to the invariants: the snapshot's
  * threshold/event/exposure sweeps measured the healing boundary and asserted nothing. Invariant 4
  * is promoted separately from QA-1730, the same P-584 lineage, after hardening its oracle: the
- * banked snapshot's `assertReopen` never checked that the shutdown-time file inventory contained
- * the retained floor file (only that removed files were absent), and its post-`killHarper` check
+ * banked snapshot's `assertReopen` never checked the shutdown-time state the position depends on
+ * (only that removed files were absent), and its post-`killHarper` check
  * only ruled out SIGKILL rather than requiring the documented graceful exit.
  * Related: `qa816-purge-blast-radius.test.ts`, rocksdb-js#911 (the witness contract invariants 1 and
  * 4 pin), rocksdb-js#799 (the retention floor it replaced), rocksdb-js#808 (the wedge), harper#846.
@@ -265,6 +265,45 @@ async function flushUntilPurgeable(ctx: ContextWithHarper, table: string, databa
 		`ORACLE ARMING: ${database}.${table}'s oldest transaction-log file never became sealed and fully flushed ` +
 			`within 60s (oldest=${stats.oldestSequenceNumber} current=${stats.currentSequenceNumber} lastFlushed=${stats.lastFlushedPosition.sequence})`
 	);
+}
+
+/** Flush until nothing in the log is left unflushed, so a purge may take its current file too. */
+async function flushUntilFullyFlushed(ctx: ContextWithHarper, table: string, database = 'data'): Promise<LogSnapshot> {
+	const deadline = Date.now() + 60_000;
+	let stats: LogSnapshot;
+	do {
+		await flushPrimaryStores(ctx);
+		stats = await logStats(ctx, table, database);
+		if (comparePositions(stats.lastFlushedPosition, stats.nextLogPosition) >= 0) return stats;
+		await sleep(250);
+	} while (Date.now() < deadline);
+	throw new Error(
+		`ORACLE ARMING: ${database}.${table}'s transaction log never became fully flushed within 60s (${fmt(stats)})`
+	);
+}
+
+// Database-scoped on purpose: a RocksDB transaction log is per-database, so a `table`-scoped request
+// is refused outright (`ResourceBridge.deleteTransactionLogsBefore`, harper#2049). Every assertion in
+// this file is vacuous if the purge did nothing, so it must report deleted entries and deleted FILES.
+async function purgeLogsBefore(ctx: ContextWithHarper, database: string, cutoff: number, step: string): Promise<any> {
+	const ack = await rawOp(ctx, { operation: 'delete_transaction_logs_before', database, timestamp: cutoff });
+	strictEqual(
+		ack.status,
+		200,
+		`delete_transaction_logs_before expected 200, got ${ack.status}: ${ack.text.slice(0, 300)}`
+	);
+	ok(ack.body?.job_id, `delete_transaction_logs_before must return a job_id, got ${ack.text.slice(0, 300)}`);
+	const job = await pollJob(ctx, ack.body.job_id);
+	strictEqual(job.status, 'COMPLETE', `${step} purge job must COMPLETE, got ${job.status}: ${job.message}`);
+	ok(
+		Number(job.result?.entries_deleted) > 0,
+		`NON-VACUOUS PRECONDITION (${step}): the purge must delete audit entries, got entries_deleted=${job.result?.entries_deleted}`
+	);
+	ok(
+		Number(job.result?.log_files_deleted) > 0,
+		`NON-VACUOUS PRECONDITION (${step}): the purge must delete whole log files — deleting a file is the only thing that could strand the flush position — got log_files_deleted=${job.result?.log_files_deleted}`
+	);
+	return job;
 }
 
 // `/LogStats/` resolves a fixture table out of `tables`/`databases`, so a 200 for a given
@@ -452,9 +491,9 @@ async function waitForRotation(
 	throw new Error(`ORACLE ARMING: the seed never rotated the transaction log (rotations still ${rotations})`);
 }
 
-// QA-1730's second oracle gap: a reopened process's self-report cannot distinguish a floor file
-// that was truly persisted from one a clean recomputation on open happened to reproduce. Reading
-// the log directory directly WHILE THE PROCESS IS DOWN (between the kill and the next start) can.
+// QA-1730's second oracle gap: a reopened process's self-report cannot distinguish a witness that
+// was truly persisted from one a clean recomputation on open happened to reproduce. Reading the log
+// directory directly WHILE THE PROCESS IS DOWN (between the kill and the next start) can.
 function diskLogFiles(logDirPath: string): { seq: number; bytes: number }[] {
 	return readdirSync(logDirPath)
 		.filter((name) => /^\d+\.txnlog$/.test(name))
@@ -539,7 +578,7 @@ suite(
 		const cp0 = { label: 'cp0 (one row, before any further volume)', rows: markerRows('cp0', 1) };
 		const cp1 = { label: 'cp1 (after 260 single-row commits)', rows: markerRows('cp1', MARKER_ROWS) };
 		const cp2 = { label: 'cp2 (after one 260-row commit)', rows: markerRows('cp2', MARKER_ROWS) };
-		const checkpoints = [prePurge, sameProcess, cp0, cp1, cp2];
+		const checkpoints = [sameProcess, cp0, cp1, cp2];
 		let postPurge: LogSnapshot;
 		let postPurgeRestart: LogSnapshot;
 		let manyCommitBytes = Number.NaN;
@@ -594,38 +633,27 @@ suite(
 				);
 
 				await flushUntilPurgeable(ctx, 'PurgeVictim');
-				const cutoffTimestamp = Date.now();
-				// Newer than the cutoff, so the purge must keep the file these land in whatever its flush state.
+				const protectedCutoff = Date.now();
+				// Newer than the cutoff, so this purge must keep the file these land in whatever its flush state
+				// (the keep half of rocksdb-js#911's rule); the second purge below legitimately takes their history.
 				await insertRows(ctx, 'QuietTarget', prePurge.rows);
-
-				// Database-scoped on purpose: a RocksDB transaction log is per-database, so a `table`-scoped
-				// request is refused outright (`ResourceBridge.deleteTransactionLogsBefore`, harper#2049).
-				const ack = await rawOp(ctx, {
-					operation: 'delete_transaction_logs_before',
-					database: 'data',
-					timestamp: cutoffTimestamp,
-				});
-				strictEqual(
-					ack.status,
-					200,
-					`delete_transaction_logs_before expected 200, got ${ack.status}: ${ack.text.slice(0, 300)}`
-				);
-				ok(ack.body?.job_id, `delete_transaction_logs_before must return a job_id, got ${ack.text.slice(0, 300)}`);
-
-				const job = await pollJob(ctx, ack.body.job_id);
-				findings.push(`1. purge job ${job.status} result=${JSON.stringify(job.result)}`);
-				strictEqual(job.status, 'COMPLETE', `purge job must COMPLETE, got ${job.status}: ${job.message}`);
+				const protectedPurge = await purgeLogsBefore(ctx, 'data', protectedCutoff, '1a');
+				findings.push(`1a. purge job ${protectedPurge.status} result=${JSON.stringify(protectedPurge.result)}`);
+				const afterProtectedPurge = await logStats(ctx, 'QuietTarget');
 				ok(
-					Number(job.result?.entries_deleted) > 0,
-					`NON-VACUOUS PRECONDITION: the purge must delete audit entries, got entries_deleted=${job.result?.entries_deleted}`
+					afterProtectedPurge.fileCount > 0,
+					`KEEP HALF (rocksdb-js#911): the file holding rows newer than the cutoff must survive the purge. Got ${fmt(afterProtectedPurge)}`
 				);
-				ok(
-					Number(job.result?.log_files_deleted) > 0,
-					`NON-VACUOUS PRECONDITION: the purge must delete whole log files — deleting a file is the only thing that could strand the flush position — got log_files_deleted=${job.result?.log_files_deleted}`
-				);
+				await assertMarkersIntact(ctx, '1. PROTECTED SUFFIX pre-purge', prePurge.rows);
+
+				// Now the path #911 changed: with everything flushed and older than the cutoff, the purge may
+				// take the current file too and leave the store with no files at all.
+				await flushUntilFullyFlushed(ctx, 'QuietTarget');
+				const cutoffTimestamp = Date.now();
+				const job = await purgeLogsBefore(ctx, 'data', cutoffTimestamp, '1b');
+				findings.push(`1b. purge job ${job.status} result=${JSON.stringify(job.result)}`);
 
 				postPurge = await logStats(ctx, 'QuietTarget');
-				await assertMarkersIntact(ctx, '1. PROTECTED SUFFIX pre-purge', prePurge.rows);
 
 				// Here and nowhere else: after the restart this window is gone. These rows are written by
 				// the process that ran the purge — the residual exposure the QA-822 family named.
@@ -757,31 +785,8 @@ suite(
 				);
 
 				await flushUntilPurgeable(ctx, CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB);
-				const cutoffTimestamp = Date.now();
-
-				const ack = await rawOp(ctx, {
-					operation: 'delete_transaction_logs_before',
-					database: CLEAN_REOPEN_DB,
-					timestamp: cutoffTimestamp,
-				});
-				strictEqual(
-					ack.status,
-					200,
-					`delete_transaction_logs_before expected 200, got ${ack.status}: ${ack.text.slice(0, 300)}`
-				);
-				ok(ack.body?.job_id, `delete_transaction_logs_before must return a job_id, got ${ack.text.slice(0, 300)}`);
-
-				const job = await pollJob(ctx, ack.body.job_id);
+				const job = await purgeLogsBefore(ctx, CLEAN_REOPEN_DB, Date.now(), '6');
 				findings.push(`6. purge job ${job.status} result=${JSON.stringify(job.result)}`);
-				strictEqual(job.status, 'COMPLETE', `purge job must COMPLETE, got ${job.status}: ${job.message}`);
-				ok(
-					Number(job.result?.entries_deleted) > 0,
-					`NON-VACUOUS PRECONDITION: the purge must delete audit entries, got entries_deleted=${job.result?.entries_deleted}`
-				);
-				ok(
-					Number(job.result?.log_files_deleted) > 0,
-					`NON-VACUOUS PRECONDITION: the purge must delete whole log files, got log_files_deleted=${job.result?.log_files_deleted}`
-				);
 
 				cleanReopenBoundary = await logStats(ctx, CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB);
 				findings.push(`6. boundary (last sample before the no-write restart) ${fmt(cleanReopenBoundary)}`);
