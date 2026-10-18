@@ -504,8 +504,8 @@ function diskFlushedPosition(logDirPath: string): LogPosition {
 }
 
 // rocksdb-js#911: a file lying entirely at or before the flushed position is purgeable, the file the
-// position names and the current segment included. The keep half is invariant 3's pre-purge markers;
-// this arm writes nothing after its flush, so it has no such file to keep.
+// position names and the current segment included. The keep half is asserted in arm 1; this arm writes
+// nothing after its flush, so it has no such file to keep.
 function assertPurgeRuleOnDisk(
 	files: { seq: number; bytes: number }[],
 	diskWitness: LogPosition,
@@ -630,6 +630,8 @@ suite(
 
 				await flushUntilPurgeable(ctx, 'PurgeVictim');
 				const protectedCutoff = Date.now();
+				// Past the kernel's coarse file-time tick, so the rows' file cannot look older than the cutoff.
+				await sleep(20);
 				// Flushed, so only the cutoff keeps the file these rows land in (the keep half of rocksdb-js#911's
 				// rule); the second purge below legitimately takes their history.
 				await insertRows(ctx, 'QuietTarget', prePurge.rows);
@@ -643,8 +645,6 @@ suite(
 				);
 				await assertMarkersIntact(ctx, '1. PROTECTED SUFFIX pre-purge', prePurge.rows);
 
-				// Now the path #911 changed: with everything flushed and older than the cutoff, the purge may
-				// take the current file too and leave the store with no files at all.
 				await flushUntilFullyFlushed(ctx, 'QuietTarget');
 				const cutoffTimestamp = Date.now();
 				const job = await purgeLogsBefore(ctx, 'data', cutoffTimestamp, '1b');
@@ -825,6 +825,12 @@ suite(
 				`CLEAN-REOPEN INVARIANT: with zero writes to ${CLEAN_REOPEN_DB} between the purge and the restart, the reopened ` +
 					`flush position must be byte-identical to the pre-restart position. Got boundary=${fmt(cleanReopenBoundary)} ` +
 					`reopened=${fmt(cleanReopenReopened)}`
+			);
+			strictEqual(
+				cleanReopenReopened.currentSequenceNumber,
+				cleanReopenBoundary.currentSequenceNumber,
+				`CLEAN-REOPEN INVARIANT: load() must honour the witness the way the purge did — the reopened writer sits on the ` +
+					`same sequence the purge retired to. Got boundary=${fmt(cleanReopenBoundary)} reopened=${fmt(cleanReopenReopened)}`
 			);
 			assertPurgeRuleOnDisk(
 				cleanReopenDiskFiles,
