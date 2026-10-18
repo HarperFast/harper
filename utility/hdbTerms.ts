@@ -1044,6 +1044,8 @@ export const ITC_EVENT_TYPES = {
 	OPERATION_REGISTERED: 'operation_registered',
 	OPERATION_EXECUTE_REQUEST: 'operation_execute_request',
 	OPERATION_EXECUTE_RESPONSE: 'operation_execute_response',
+	FULL_TEXT_CONTINUATION_REQUEST: 'full_text_continuation_request',
+	FULL_TEXT_CONTINUATION_RESPONSE: 'full_text_continuation_response',
 } as const;
 
 /** Supported thread types */
