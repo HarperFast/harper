@@ -1,10 +1,22 @@
 import type { FullTextDerivedIndexEngine } from './fullTextDerivedIndex.ts';
+import * as env from '../../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
+import { resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const FULLTEXT_LIFECYCLE_API_VERSION = 1;
 const FULLTEXT_MUTATION_BATCH_API_VERSION = 5;
 const FULLTEXT_QUERY_API_VERSION = 4;
 const logger = loggerWithTag('fulltext-derived-index');
+
+export interface NativeFullTextRuntimeBudget {
+	maxResidentIndexes: number;
+	maxIndexingThreads: number;
+	maxSearchThreads: number;
+	maxWriterMemoryBytes: number;
+	maxQueuedBytes: number;
+	maxExpensiveSearches: number;
+}
 
 export interface NativeFullTextIndexConfiguration {
 	fields: Array<{ name: string; weight?: number }>;
@@ -138,6 +150,7 @@ export type NativeFullTextQueryRuntimeInfo = Pick<
 };
 
 export interface NativeFullTextModule {
+	configureNativeFullTextRuntime(limits: NativeFullTextRuntimeBudget): void;
 	NativeFullTextIndex: {
 		prototype: Pick<FullTextDerivedIndexEngine, 'applyMutationBatch' | 'publish' | 'close'> &
 			Pick<NativeFullTextReader, 'searchPage'>;
@@ -191,7 +204,15 @@ const validatedRuntimeInfo = new WeakMap<NativeFullTextModule, NativeFullTextRun
 export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule> {
 	if (!bindingPromise) {
 		const moduleName = '@harperfast/fulltext/native';
-		bindingPromise = import(moduleName).then(validateFullTextNativeBinding);
+		bindingPromise = import(moduleName).then(async (module) => {
+			const binding = await validateFullTextNativeBinding(module);
+			if (typeof binding.configureNativeFullTextRuntime !== 'function')
+				throw new TypeError('@harperfast/fulltext/native does not support process budgets');
+			binding.configureNativeFullTextRuntime(
+				resolveFullTextSearchLimits(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT)).runtime
+			);
+			return binding;
+		});
 		bindingPromise.catch((error) => {
 			bindingPromise = undefined;
 			if (!bindingWarningLogged) {

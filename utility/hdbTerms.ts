@@ -741,6 +741,7 @@ export const CONFIG_PARAMS = {
 	REPLICATION_LOGGING_TAG: 'replication_logging_tag',
 	ROOTPATH: 'rootPath',
 	SERIALIZATION_BIGINT: 'serialization_bigInt',
+	STORAGE_FULL_TEXT: 'storage_fullText',
 	STORAGE_WRITEASYNC: 'storage_writeAsync',
 	STORAGE_OVERLAPPINGSYNC: 'storage_overlappingSync',
 	STORAGE_CACHING: 'storage_caching',

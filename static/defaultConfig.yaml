@@ -69,6 +69,21 @@ operationsApi:
     securePort: 9925
 rootPath: null
 storage:
+  fullText:
+    cursorTtlMilliseconds: 60000
+    maxCursors: 4
+    maxRetainedQueryBytes: 8388608
+    maxPendingRequests: 32
+    maxPendingResponseBytes: 16777216
+    maxPageSize: 1000
+    requestBudgetMilliseconds: 5000
+    runtime:
+      maxResidentIndexes: 128
+      maxIndexingThreads: 128
+      maxSearchThreads: 256
+      maxWriterMemoryBytes: 4294967296
+      maxQueuedBytes: 8589934592
+      maxExpensiveSearches: 8
   writeAsync: false
   caching: true
   compression: true

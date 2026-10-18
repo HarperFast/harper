@@ -495,6 +495,97 @@
 			"description": "Storage engine configuration.",
 			"additionalProperties": true,
 			"properties": {
+				"fullText": {
+					"type": "object",
+					"description": "Full-text continuation and native process budgets. Native process budgets require a restart to change. These settings do not cap total traversable results or guarantee a bound on process memory or retained disk space.",
+					"additionalProperties": false,
+					"properties": {
+						"cursorTtlMilliseconds": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 2147483647,
+							"default": 60000
+						},
+						"maxCursors": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 4294967295,
+							"default": 4
+						},
+						"maxRetainedQueryBytes": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 9007199254740991,
+							"default": 8388608
+						},
+						"maxPendingRequests": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 4294967295,
+							"default": 32
+						},
+						"maxPendingResponseBytes": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 9007199254740991,
+							"default": 16777216
+						},
+						"maxPageSize": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 4294967295,
+							"default": 1000
+						},
+						"requestBudgetMilliseconds": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 9007199254740991,
+							"default": 5000
+						},
+						"runtime": {
+							"type": "object",
+							"additionalProperties": false,
+							"properties": {
+								"maxResidentIndexes": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 4294967295,
+									"default": 128
+								},
+								"maxIndexingThreads": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 4294967295,
+									"default": 128
+								},
+								"maxSearchThreads": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 4294967295,
+									"default": 256
+								},
+								"maxWriterMemoryBytes": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 9007199254740991,
+									"default": 4294967296
+								},
+								"maxQueuedBytes": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 9007199254740991,
+									"default": 8589934592
+								},
+								"maxExpensiveSearches": {
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 4294967295,
+									"default": 8
+								}
+							}
+						}
+					}
+				},
 				"writeAsync": {
 					"type": "boolean",
 					"description": "When true, sets LMDB noSync to disable LMDB's commit disk sync for faster writes (risk of losing recent commits on OS crash or power loss); when false, LMDB keeps commit disk sync enabled (overlapped on Linux and macOS by default). Applies only to the LMDB storage engine; this setting has no effect on RocksDB, where Harper does not fsync individual commits to disk (transaction logs are synced on memtable flush rather than per commit). Default: false"
