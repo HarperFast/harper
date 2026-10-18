@@ -63,7 +63,8 @@ Consequences that shape the code:
 - **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the
   locked instance as `#lockHandle`; every commit or abort calls `releaseRecordLocks()`, which calls
   `handle.release()` on each non-hold handle, so a `{ hold: true }` handle outlives the transaction.
-  `unlock()` calls `handle.release()` directly (synchronous, returns false if already released).
+  `unlock()` calls `handle.release()` directly (synchronous; returns false if already released, or
+  while a commit hold defers the native unlock until the in-flight commit settles).
   `unlock()` also accepts scoped handles: it calls `release()` early and unregisters the handle so the transaction commit does
   not release it again. After any `unlock()` call `#lockWritable` is cleared so writes through the
   instance are no longer accepted. In an explicit transaction with no staged writes and no open

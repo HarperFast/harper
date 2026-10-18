@@ -3486,7 +3486,8 @@ describe('Transactions are never aborted once durably written to the transaction
 			assert.strictEqual(AuditedA.primaryStore.getEntry(expiredKey).value.writer, 'saved-on-second-lock');
 		});
 
-		it('does not poison or log unknown-outcome restart errors in deferForCommitInFlight when a transaction has an active durably logged retry', async function () {
+		it('does not poison or log unknown-outcome restart errors in deferForCommitInFlight while a durably logged retry keeps advancing, and still reports one that stops', async function () {
+			this.timeout(20_000);
 			const recordId = id('defer-logged-retry');
 			const followUpId = id('defer-logged-followup');
 			const baseNow = Date.now();
@@ -3498,42 +3499,60 @@ describe('Transactions are never aborted once durably written to the transaction
 			const warnLines = captureLogger('warn');
 			const errorLines = captureLogger('error');
 
+			// Attempts 1 and 2 conflict against an interposer write; attempt 3 parks on gates[3] and, once
+			// released, conflicts again; attempt 4 parks on gates[4] and then commits for real.
 			let trackedTxnId;
 			let attemptCount = 0;
 			let inInterposer = false;
-			let secondAttemptEntered;
-			const secondAttemptReady = new Promise((resolve) => {
-				secondAttemptEntered = resolve;
+			const entered = {};
+			const gates = {};
+			for (const n of [3, 4]) {
+				entered[n] = new Promise((resolve) => (entered[`resolve${n}`] = resolve));
+				gates[n] = new Promise((resolve) => (gates[`release${n}`] = resolve));
+			}
+			pendingRestores.push(() => {
+				gates.release3();
+				gates.release4();
+				Transaction.prototype.commit = originalCommit;
 			});
-			let releaseSecondAttempt;
-			const secondAttemptGate = new Promise((resolve) => {
-				releaseSecondAttempt = resolve;
-			});
-
+			const interpose = async (n) => {
+				inInterposer = true;
+				try {
+					await putWithTimestamp(
+						AuditedA,
+						{ id: recordId, writer: `interposer-${n}`, count: n },
+						baseNow - 5_000 + n * 1000
+					);
+				} finally {
+					inInterposer = false;
+				}
+			};
 			Transaction.prototype.commit = async function (...args) {
 				if (this.store?.db !== targetDb || inInterposer) return originalCommit.apply(this, args);
-				if (trackedTxnId === undefined) {
-					trackedTxnId = this.id;
-					attemptCount++;
-					inInterposer = true;
-					try {
-						await putWithTimestamp(AuditedA, { id: recordId, writer: 'interposer', count: 1 }, baseNow - 5_000);
-					} finally {
-						inInterposer = false;
-					}
-					return originalCommit.apply(this, args);
-				}
+				if (trackedTxnId === undefined) trackedTxnId = this.id;
 				if (this.id !== trackedTxnId) return originalCommit.apply(this, args);
 				attemptCount++;
-				if (attemptCount === 2) {
-					secondAttemptEntered();
-					await secondAttemptGate;
+				if (attemptCount <= 2) await interpose(attemptCount);
+				if (attemptCount === 3) {
+					entered.resolve3();
+					await gates[3];
+					await interpose(3);
+				}
+				if (attemptCount === 4) {
+					entered.resolve4();
+					await gates[4];
 				}
 				return originalCommit.apply(this, args);
 			};
-			pendingRestores.push(() => {
-				Transaction.prototype.commit = originalCommit;
-			});
+			const untilEntered = (n, savePromise) =>
+				Promise.race([
+					entered[n],
+					savePromise.then(
+						() => assert.fail(`save() settled before attempt ${n} was entered`),
+						(error) => assert.fail(`save() rejected before attempt ${n} was entered: ${error.message}`)
+					),
+					delay(15_000).then(() => assert.fail(`attempt ${n} was never entered`)),
+				]);
 
 			const holder = await AuditedA.lock(recordId, { hold: true, lease: 30_000 });
 			const sharedCtx = holder.getContext();
@@ -3541,9 +3560,11 @@ describe('Transactions are never aborted once durably written to the transaction
 			holder.set('writer', 'logged-retry-owner');
 			holder.set('count', 2);
 			const savePromise = holder.save();
+			savePromise.catch(() => {});
 
-			await secondAttemptReady;
+			await untilEntered(3, savePromise);
 			assert.strictEqual(immTxn.hasActiveDurableLogCommit(), true, 'retry must report an active durable log commit');
+			assert.strictEqual(immTxn.activeDurableLogRetries(), 2);
 
 			assert.strictEqual(deferForCommitInFlight(immTxn, '/logged-retry', 1000), true);
 			assert.strictEqual(
@@ -3552,18 +3573,22 @@ describe('Transactions are never aborted once durably written to the transaction
 				'must not log unknown-outcome warning when commit is a known durably logged retry'
 			);
 
+			gates.release3();
+			await untilEntered(4, savePromise);
+			assert.strictEqual(immTxn.activeDurableLogRetries(), 3, 'attempt 3 conflicted, so the counter advanced');
+
 			immTxn.deferredPoisonDeadline = -Infinity;
 			assert.strictEqual(deferForCommitInFlight(immTxn, '/logged-retry', 1), true);
-			assert.strictEqual(immTxn.timedOut, undefined, 'durably logged retry must not be poisoned past deadline');
+			assert.strictEqual(immTxn.timedOut, undefined, 'an advancing logged retry must not be poisoned past deadline');
 			assert.strictEqual(
 				immTxn.postSubmitPoisoned,
 				undefined,
-				'durably logged retry must not set postSubmitPoisoned past deadline'
+				'an advancing logged retry must not set postSubmitPoisoned'
 			);
 			assert.strictEqual(
 				errorLines.some(([msg]) => /the worker may require a restart/.test(msg)),
 				false,
-				'must not log unknown-outcome worker restart error for a durably logged retry'
+				'must not log unknown-outcome worker restart error for an advancing durably logged retry'
 			);
 
 			assert.strictEqual(
@@ -3571,10 +3596,19 @@ describe('Transactions are never aborted once durably written to the transaction
 				false,
 				'unlock() must return false when native unlock is deferred by an active commit hold'
 			);
-			releaseSecondAttempt();
-			await savePromise;
 
-			const followUpHolder = await AuditedA.lock(followUpId, {}, sharedCtx);
+			// Attempt 4 is still parked and the counter has not moved since the last tick: that is a native
+			// attempt that never settled, and the monitor must treat it as the stall it is.
+			assert.strictEqual(deferForCommitInFlight(immTxn, '/logged-retry', 1), true);
+			assert.strictEqual(immTxn.timedOut, true, 'a logged retry whose counter stopped must still be poisoned');
+			assert.strictEqual(immTxn.postSubmitPoisoned, true);
+
+			gates.release4();
+			await savePromise;
+			assert.strictEqual(AuditedA.primaryStore.getEntry(recordId).value.writer, 'logged-retry-owner');
+			assert.strictEqual(AuditedA.primaryStore.getEntry(recordId).value.count, 2);
+
+			const followUpHolder = await AuditedA.lock(followUpId, {});
 			try {
 				followUpHolder.set('writer', 'followup-committed');
 				followUpHolder.set('count', 3);
@@ -3582,7 +3616,6 @@ describe('Transactions are never aborted once durably written to the transaction
 			} finally {
 				await followUpHolder.unlock();
 			}
-			assert.strictEqual(AuditedA.primaryStore.getEntry(recordId).value.writer, 'logged-retry-owner');
 			assert.strictEqual(AuditedA.primaryStore.getEntry(followUpId).value.writer, 'followup-committed');
 		});
 	});

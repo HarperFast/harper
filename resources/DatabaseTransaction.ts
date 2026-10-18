@@ -965,6 +965,9 @@ export class DatabaseTransaction implements Transaction {
 	// can visit every link of a chain, so a counter would advance once per link per tick.
 	declare deferredPoisonDeadline?: number;
 	declare unsubmittedCommitDeadline?: number;
+	// Retry count of the chain's logged retry at the monitor's last tick; a count that stops moving is a
+	// native attempt that never settled.
+	declare loggedRetriesSeen?: number;
 	// Per-link submission state. A commit method can still be parked in pre-commit work, where an abort
 	// is safe; once storage work has been submitted, its outcome is unknown and monitor cleanup must not
 	// clear writes or blobs that the eventual commit can reference.
@@ -1518,18 +1521,25 @@ export class DatabaseTransaction implements Transaction {
 		);
 	}
 
-	/** Whether a handle with a durable transaction-log entry is still retrying its commit on this link. */
+	/**
+	 * Retry count of the handle with a durable transaction-log entry still retrying its commit on this
+	 * link (the highest when commits overlap), or -1 when there is none.
+	 */
+	activeDurableLogRetries(): number {
+		let retries = -1;
+		const note = (handle: RocksTransaction | null | undefined) => {
+			const txn = handle as RocksTransactionWithRetry | null | undefined;
+			if (!txn || !hasDurableLog(txn) || this.isHandleCommitted(txn) || txn.abortedByWrapper) return;
+			retries = Math.max(retries, txn.retries ?? 0);
+		};
+		note(this.activeCommitHandle);
+		if (this.activeCommitHandles) for (const handle of this.activeCommitHandles) note(handle);
+		note(this.transaction);
+		return retries;
+	}
+
 	hasActiveDurableLogCommit(): boolean {
-		const live = (handle: RocksTransaction | null | undefined) =>
-			Boolean(handle) &&
-			hasDurableLog(handle) &&
-			!this.isHandleCommitted(handle) &&
-			!(handle as RocksTransactionWithRetry).abortedByWrapper;
-		if (live(this.activeCommitHandle)) return true;
-		if (this.activeCommitHandles) {
-			for (const handle of this.activeCommitHandles) if (live(handle)) return true;
-		}
-		return live(this.transaction);
+		return this.activeDurableLogRetries() >= 0;
 	}
 
 	private isActiveCommitHandle(transaction: RocksTransaction): boolean {
@@ -2505,6 +2515,7 @@ export class DatabaseTransaction implements Transaction {
 		root.submittedCommitSupervised = false;
 		root.deferredPoisonDeadline = undefined;
 		root.unsubmittedCommitDeadline = undefined;
+		root.loggedRetriesSeen = undefined;
 		root.stalledCommitLogged = false;
 		root.commitStartedAt = undefined;
 		if (root.commitOverdueLogged) root.commitOverdueLogged = undefined;
@@ -3076,7 +3087,7 @@ export class DatabaseTransaction implements Transaction {
 									// permanently diverged (harper-pro#348). Such transactions retry without a cap; the source
 									// apply loop serializes commits (backpressure), so contention clears rather than
 									// compounding. Durably logged transactions likewise retry without a cap so a written
-									// transaction-log entry is never abandoned (#3236).
+									// transaction-log entry is never abandoned.
 									const neverDropOnConflict = this.sourceApply || logged;
 									if (retries > MAX_RETRIES && !neverDropOnConflict) {
 										// giving up: poison and abort the whole linked chain so no link leaks its native
@@ -3096,7 +3107,7 @@ export class DatabaseTransaction implements Transaction {
 									// start delaying, back off to try to space out transactions and avoid excessive conflicts
 									const backoff = delay(Math.min(retries * retries, MAX_RETRY_DELAY_MS));
 									if (logged) {
-										// Keep suspendDatabaseCommits.waitForDrain() parked across the backoff window before the next attempt submits.
+										// waitForDrain() must outlast the backoff too
 										trackOutstandingCommit(backoff, this.writes[0]?.store ?? this.db, this.startedFrom, transaction);
 									}
 									return backoff.then(() => this.commit({ ...options, transaction }));
@@ -4008,11 +4019,10 @@ function collectCommitLinks(root: DatabaseTransaction, txn: DatabaseTransaction)
 	return links;
 }
 
-function chainHasActiveDurableLogCommit(root: DatabaseTransaction, txn: DatabaseTransaction): boolean {
-	for (const link of collectCommitLinks(root, txn)) {
-		if (link.hasActiveDurableLogCommit()) return true;
-	}
-	return false;
+function chainDurableLogRetries(root: DatabaseTransaction, txn: DatabaseTransaction): number {
+	let retries = -1;
+	for (const link of collectCommitLinks(root, txn)) retries = Math.max(retries, link.activeDurableLogRetries());
+	return retries;
 }
 
 /**
@@ -4035,10 +4045,16 @@ export function deferForCommitInFlight(
 	// diagnostic grace, nor report a legitimately slow one early.
 	const now = performance.now();
 	const deadline = (root.deferredPoisonDeadline ??= now + MAX_DEFERRED_POISON_TICKS * expiration);
-	// A handle with a durable log entry retrying a conflict (#3236) has a known outcome — it commits
-	// once the conflicting intent clears — so it is neither stalled nor poisoned; its own overdue
-	// report (noteOverdueLoggedCommit) is the operator's signal.
-	const loggedRetry = chainHasActiveDurableLogCommit(root, txn);
+	// A handle with a durable log entry retrying a conflict has a known outcome — it commits once the
+	// conflicting intent clears — so while its retry counter keeps advancing it is neither stalled nor
+	// poisoned, and noteOverdueLoggedCommit is the operator's signal. A counter that has not moved
+	// since the last tick is a native attempt that never settled, which is the stall handled below.
+	const loggedRetries = chainDurableLogRetries(root, txn);
+	let loggedRetry = false;
+	if (loggedRetries >= 0) {
+		loggedRetry = root.loggedRetriesSeen !== loggedRetries;
+		root.loggedRetriesSeen = loggedRetries;
+	}
 	let hasUnsubmittedCommit = false;
 	let unsubmittedCommitGraceExpired = false;
 	if (now >= deadline) {
