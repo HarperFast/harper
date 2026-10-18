@@ -10,15 +10,7 @@ const { parseQuery } = require('#src/resources/search');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 
-function supportsPublishedBinding() {
-	const glibcVersion =
-		process.platform === 'linux' ? process.report?.getReport().header.glibcVersionRuntime : undefined;
-	return (
-		(process.platform === 'darwin' && process.arch === 'arm64') ||
-		(process.platform === 'linux' && glibcVersion && ['arm64', 'x64'].includes(process.arch)) ||
-		(process.platform === 'win32' && process.arch === 'x64')
-	);
-}
+const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
 
 async function collect(iterable) {
 	const values = [];
@@ -45,8 +37,8 @@ function definition(name, fields) {
 describe('published native full-text Table.search integration', () => {
 	let Product;
 
-	before(function () {
-		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !supportsPublishedBinding()) this.skip();
+	before(async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !(await supportsPublishedFullTextBinding())) this.skip();
 		setupTestDBPath();
 		setMainIsWorker(true);
 	});
@@ -121,6 +113,53 @@ describe('published native full-text Table.search integration', () => {
 			Product.search({ ...base, continuation: beforeClose.continuation }),
 			(error) => error.statusCode === 410
 		);
+	});
+
+	it('admits sixteen concurrent retained searches when the configured pool is raised', async () => {
+		const env = require('#src/utility/environment/environmentManager');
+		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+		const pages = [];
+		const query = {
+			conditions: [
+				{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget', waitForIndexMilliseconds: 5000 },
+			],
+			limit: 1,
+		};
+		try {
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, maxCursors: 16 });
+			Product = table({
+				database: `fulltext-concurrency-${Date.now()}`,
+				table: 'Product',
+				audit: true,
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'title', type: 'String' },
+				],
+				fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1 }])],
+			});
+			await Product.put('one', { title: 'widget' });
+			await Product.put('two', { title: 'widget' });
+			await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
+			const results = await Promise.allSettled(
+				Array.from({ length: 16 }, () => Product.search({ ...query, continuation: true }))
+			);
+			for (const result of results) if (result.status === 'fulfilled') pages.push(result.value);
+			assert.strictEqual(pages.length, 16, JSON.stringify(results.filter(({ status }) => status === 'rejected')));
+			assert.strictEqual(new Set(pages.map(({ continuation }) => continuation)).size, 16);
+			for (const page of pages) {
+				assert.strictEqual(page.length, 1);
+				assert(page.continuation);
+			}
+		} finally {
+			try {
+				await Promise.all(
+					pages.map((page) => Product.search({ ...query, continuation: page.continuation, closeContinuation: true }))
+				);
+			} finally {
+				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+			}
+		}
 	});
 
 	it('validates continuation options and query binding and allows explicit close through REST syntax', async () => {

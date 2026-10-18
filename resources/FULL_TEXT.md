@@ -123,8 +123,10 @@ do {
 } while (continuation);
 ```
 
-Keep the same conditions and selected fields when resuming. The page size may change. Each request
-checks the caller's current permissions and loads current records. The retained snapshot fixes index
+Keep the same conditions and selected fields when resuming. The page size may change. Application
+callbacks such as `rowFilter` and `vectorFilter` are not stored in the token. Supply them on every
+page, along with the same context and `checkPermission: true` when searching on behalf of a caller.
+Each request checks the caller's current permissions and loads current records. The retained snapshot fixes index
 matches and their ranking; it does not retain historical Harper records. Updated, deleted, expired,
 or newly unauthorized records can be omitted. New index matches do not enter that search. Freshness controls apply when the snapshot is started; later pages keep that snapshot and do not claim current index coverage.
 
@@ -146,6 +148,8 @@ Completion, explicit close, expiry, index reset, definition changes, worker loss
 release or invalidate the search. A previous token then returns 410; start a new search. Retries
 before completion keep the same index boundary, but current record and permission changes can
 change the returned rows. Continuation stays on one Harper instance; it does not coordinate servers.
+Changing any `storage.fullText` setting also invalidates existing tokens, including when only a
+capacity setting changes. Start a new search after changing these settings.
 
 All continuation settings are under `storage.fullText`:
 
@@ -163,6 +167,10 @@ All continuation settings are under `storage.fullText`:
 Each setting also has the usual configuration parameter name, such as
 `storage_fullText_maxRawHitsPerRequest` or `storage_fullText_runtime_maxSearchThreads`, for
 `set_configuration` and environment overrides. Changing one setting preserves the others.
+
+The cursor limit is shared by all callers. Four unfinished searches fill the default pool; another
+caller receives 503 until a search closes, finishes, or expires. Set `maxCursors` for the number of
+unfinished searches the application expects to retain. There is no per-caller reservation or eviction.
 
 Capacity exhaustion returns an error rather than a successful partial page. Snapshot readers can
 keep old index segments on disk until released. Neither query bytes nor native admission settings

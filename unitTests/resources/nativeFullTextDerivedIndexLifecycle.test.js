@@ -13,6 +13,7 @@ const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNa
 const { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED } = require('#src/resources/derivedIndexRuntime');
 const { waitFor } = require('../waitFor');
 const fullTextPackageVersion = require('../../package.json').optionalDependencies['@harperfast/fulltext'];
+const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
 
 const limits = {
 	indexingThreads: 2,
@@ -142,13 +143,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 	});
 
 	it('loads the published registry package and persists a searchable checkpoint', async function () {
-		const glibcVersion =
-			process.platform === 'linux' ? process.report?.getReport().header.glibcVersionRuntime : undefined;
-		const supportedTarget =
-			(process.platform === 'darwin' && process.arch === 'arm64') ||
-			(process.platform === 'linux' && glibcVersion && ['arm64', 'x64'].includes(process.arch)) ||
-			(process.platform === 'win32' && process.arch === 'x64');
-		if (!supportedTarget) this.skip();
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
 
 		const binding = await loadFullTextNativeBinding();
 		const runtime = await binding.runtimeInfo();

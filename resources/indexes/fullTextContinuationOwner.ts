@@ -33,11 +33,14 @@ export function peekFullTextContinuationOwner(): Owner | undefined {
 }
 
 export function fullTextContinuationOwner() {
+	const routingKey = getFullTextContinuationRoutingKey();
+	if (!routingKey || !processIncarnation)
+		return Promise.reject(new ServerError('Full-text continuation requires a Harper-managed worker', 503));
 	owner ??= loadFullTextNativeBinding()
 		.then((binding) => {
 			const info = getValidatedFullTextRuntimeInfo(binding);
 			const tokens = new FullTextContinuationToken(
-				getFullTextContinuationRoutingKey(),
+				routingKey,
 				processIncarnation,
 				threadId,
 				info.limits.maxSearchPageSize

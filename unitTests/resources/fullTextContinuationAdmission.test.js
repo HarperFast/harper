@@ -16,6 +16,8 @@ const {
 	requestFullTextContinuationOwner,
 } = require('#src/resources/indexes/fullTextContinuation');
 const { waitFor } = require('../waitFor');
+const { Worker } = require('node:worker_threads');
+const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
 
 onMessageByType('full-text-admission-test-response', () => {});
 
@@ -67,6 +69,7 @@ describe('full-text process-wide continuation admission', () => {
 			local.push(await reserveFullTextContinuation(128, fullTextContinuationDeadline()));
 			const denied = await response(worker, 'reserve');
 			assert.strictEqual(denied.status, 503);
+			assert.match(denied.error, /storage.fullText.maxCursors/);
 			await assert.rejects(
 				reserveFullTextContinuation(128, fullTextContinuationDeadline()),
 				(error) => error.statusCode === 503
@@ -94,7 +97,8 @@ describe('full-text process-wide continuation admission', () => {
 			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
 		}
 	});
-	it('routes immutable native snapshot reads, resume, seal and close to another worker', async () => {
+	it('routes immutable native snapshot reads, resume, seal and close to another worker', async function () {
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
 		const path = await mkdtemp(join(__dirname, '../envDir/', String(process.pid), 'continuation-worker-'));
 		let worker, requester;
 		try {
@@ -168,7 +172,8 @@ describe('full-text process-wide continuation admission', () => {
 		}
 	});
 
-	it('answers saturated owner requests immediately instead of dropping their replies', async () => {
+	it('answers saturated owner requests immediately instead of dropping their replies', async function () {
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
 		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
 		env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, maxPendingRequests: 1 });
 		const path = await mkdtemp(join(__dirname, '../envDir/', String(process.pid), 'continuation-overload-'));
@@ -217,7 +222,7 @@ describe('full-text process-wide continuation admission', () => {
 					});
 			});
 			assert(
-				replies.some((reply) => reply.error?.status === 503),
+				replies.some((reply) => reply.error?.status === 503 && /maxPendingRequests/.test(reply.error.message)),
 				'must exercise actual owner saturation'
 			);
 			await response(worker, 'shutdown');
@@ -237,7 +242,7 @@ describe('full-text process-wide continuation admission', () => {
 			await confirmFullTextContinuation(claim.id, fullTextContinuationDeadline());
 			await assert.rejects(
 				reserveFullTextContinuation(64, fullTextContinuationDeadline()),
-				(error) => error.statusCode === 503
+				(error) => error.statusCode === 503 && /storage.fullText.maxRetainedQueryBytes/.test(error.message)
 			);
 			await releaseFullTextContinuation(claim.id);
 			claim = await reserveFullTextContinuation(64, fullTextContinuationDeadline());
@@ -273,6 +278,45 @@ describe('full-text process-wide continuation admission', () => {
 		} finally {
 			if (replacement) await releaseFullTextContinuation(replacement.id);
 			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+		}
+	});
+
+	it('refuses continuation ownership on unmanaged workers before loading the native addon', async () => {
+		const worker = new Worker(require.resolve('./fixtures/fullTextContinuationUnmanagedWorker.js'), {
+			workerData: { noServerStart: true },
+		});
+		try {
+			const [error] = await once(worker, 'message', { signal: AbortSignal.timeout(10000) });
+			assert.strictEqual(error.statusCode, 503);
+			assert.match(error.message, /Harper-managed worker/);
+		} finally {
+			await terminateWorker(worker);
+		}
+	});
+
+	it('identifies response reservations that exceed the requesting worker budget', async () => {
+		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+		let worker;
+		try {
+			worker = startWorker(require.resolve('./fixtures/fullTextContinuationAdmissionWorker.js'), {
+				name: 'full-text-byte-limit-test',
+				autoRestart: false,
+				workerIndex: 0,
+				threadCount: 1,
+			});
+			await response(worker);
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, maxPendingResponseBytes: 1 });
+			await assert.rejects(
+				requestFullTextContinuationOwner(
+					worker.threadId,
+					{ operation: 'resume', token: 'unused', queryHash: 'b'.repeat(64) },
+					fullTextContinuationDeadline()
+				),
+				(error) => error.statusCode === 503 && /storage.fullText.maxPendingResponseBytes/.test(error.message)
+			);
+		} finally {
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+			await terminateWorker(worker);
 		}
 	});
 });

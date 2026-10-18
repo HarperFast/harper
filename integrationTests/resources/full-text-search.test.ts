@@ -328,6 +328,47 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		assert.strictEqual(new Set(ids(seen)).size, PAGE_IDS.length);
 	});
 
+	test('bounds concurrent retained searches and recovers capacity after close', async () => {
+		const base = `${ctx.harper.httpURL}/Product/?catalogSearch=matches=pagination&limit(1)&select(id)`;
+		const headers = { Authorization: authorization, Connection: 'close' };
+		const open = async () => {
+			const response = await fetch(`${base}&continuation()`, { headers, signal: AbortSignal.timeout(15000) });
+			return {
+				status: response.status,
+				text: await response.text(),
+				token: response.headers.get('harper-continuation'),
+			};
+		};
+		const close = async (token: string) => {
+			const response = await fetch(`${base}&continuation(${encodeURIComponent(token)})&closeContinuation()`, {
+				headers,
+				signal: AbortSignal.timeout(15000),
+			});
+			assert.strictEqual(response.status, 200, await response.text());
+		};
+		const held: string[] = [];
+		try {
+			const results = await Promise.all(Array.from({ length: 16 }, open));
+			for (const result of results) if (result.status === 200 && result.token) held.push(result.token);
+			assert.strictEqual(held.length, 4);
+			const denied = results.filter(({ status }) => status !== 200);
+			assert.strictEqual(denied.length, 12);
+			for (const result of denied) {
+				assert.strictEqual(result.status, 503, result.text);
+				assert.match(result.text, /storage.fullText.maxCursors/);
+			}
+			assert.strictEqual((await request('/Product/?catalogSearch=matches=pagination&limit(1)')).length, 1);
+			const released = held.pop()!;
+			await close(released);
+			const replacement = await open();
+			assert.strictEqual(replacement.status, 200, replacement.text);
+			assert(replacement.token);
+			held.push(replacement.token);
+		} finally {
+			await Promise.all(held.map(close));
+		}
+	});
+
 	test('fills REST autocomplete pages after structured filtering and beyond the first native batch', async () => {
 		const all = await search(query('pagination'));
 		const expected = all

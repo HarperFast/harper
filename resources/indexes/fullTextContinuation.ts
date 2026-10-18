@@ -78,18 +78,15 @@ async function request(command: Command, deadline: bigint, owner = 0): Promise<R
 			: command.operation === 'seal' || command.operation === 'resume'
 				? 32 * 1024
 				: 512;
-	if (
-		!Number.isSafeInteger(bytes) ||
-		bytes < 1 ||
-		pending.size >= policy.maxPendingRequests ||
-		bytes > policy.maxPendingResponseBytes - pendingBytes
-	)
-		throw unavailable();
+	if (!Number.isSafeInteger(bytes) || bytes < 1) throw unavailable('response reservation is invalid');
+	if (pending.size >= policy.maxPendingRequests) throw unavailable('reached storage.fullText.maxPendingRequests');
+	if (bytes > policy.maxPendingResponseBytes - pendingBytes)
+		throw unavailable('exceeded storage.fullText.maxPendingResponseBytes');
 	const id = randomBytes(16).toString('hex');
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(() => {
 			removePending(id);
-			reject(unavailable());
+			reject(unavailable('exceeded its request budget'));
 		}, remaining);
 		timer.unref();
 		pending.set(id, { owner, resolve, reject, timer, bytes });
@@ -195,8 +192,9 @@ function dispatch(command: Command, owner: number, deadline: bigint): FullTextCu
 	if (command?.operation !== 'admit' || !Number.isSafeInteger(command.bytes) || command.bytes < 1) throw unavailable();
 	prune();
 	const policy = limits();
-	if (claims.size >= policy.maxCursors || command.bytes > policy.maxRetainedQueryBytes - retainedBytes)
-		throw unavailable();
+	if (claims.size >= policy.maxCursors) throw unavailable('reached storage.fullText.maxCursors');
+	if (command.bytes > policy.maxRetainedQueryBytes - retainedBytes)
+		throw unavailable('exceeded storage.fullText.maxRetainedQueryBytes');
 	const claim: Claim = {
 		id: randomBytes(16).toString('hex'),
 		owner,
@@ -256,12 +254,12 @@ function armExpiry(): void {
 function millisecondsRemaining(deadline: bigint): number {
 	if (typeof deadline !== 'bigint') throw unavailable();
 	const remaining = Number((deadline - process.hrtime.bigint()) / 1_000_000n);
-	if (remaining < 1) throw unavailable();
+	if (remaining < 1) throw unavailable('exceeded its request budget');
 	return Math.min(remaining, limits().requestBudgetMilliseconds, 0x7fffffff);
 }
 
-function unavailable(): ServerError {
-	return new ServerError('Full-text continuation capacity is unavailable; retry this search', 503);
+function unavailable(reason = 'capacity is unavailable'): ServerError {
+	return new ServerError(`Full-text continuation ${reason}; retry this search`, 503);
 }
 
 onThreadExit((owner: number) => {

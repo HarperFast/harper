@@ -527,7 +527,7 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE, null);
 let fullTextContinuationLoading;
 let fullTextContinuationQueued = 0;
 let fullTextContinuationResponsesQueued = 0;
-function rejectFullTextContinuation(event, port) {
+function rejectFullTextContinuation(event, port, reason = 'is unavailable') {
 	if (
 		typeof event.message?.id !== 'string' ||
 		event.message.id.length !== 32 ||
@@ -540,7 +540,7 @@ function rejectFullTextContinuation(event, port) {
 			message: {
 				id: event.message.id,
 				originator: threadId,
-				error: { status: 503, message: 'Full-text continuation is unavailable; retry this search' },
+				error: { status: 503, message: `Full-text continuation ${reason}; retry this search` },
 			},
 		});
 	} catch {}
@@ -551,7 +551,7 @@ function dispatchFullTextContinuation(event, port, response) {
 	const maximum = Number.isSafeInteger(configured) && configured > 0 ? configured : 32;
 	if (!port) return;
 	if ((response ? fullTextContinuationResponsesQueued : fullTextContinuationQueued) >= maximum) {
-		if (!response) rejectFullTextContinuation(event, port);
+		if (!response) rejectFullTextContinuation(event, port, 'reached storage.fullText.maxPendingRequests');
 		return;
 	}
 	if (response) fullTextContinuationResponsesQueued++;

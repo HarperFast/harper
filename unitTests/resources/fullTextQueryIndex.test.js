@@ -3315,87 +3315,101 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(closes, opens - 1);
 	});
 
-	it('bounds close while a native search keeps a reader lease', async () => {
-		const auditStore = sharedStore();
-		const readinessId = 'query-reader-close-timeout';
-		const storePath = '/unused';
-		const storeName = 'query-reader-close-timeout';
-		const nativePath = nativeFullTextIndexPath(storePath, storeName);
-		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-		const searchStarted = Promise.withResolvers();
-		const finishSearch = Promise.withResolvers();
-		let closes = 0;
-		const index = new FullTextQueryIndex({
-			Table: {
-				tableId: 1,
-				primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
-				_readTxnForContext: () => undefined,
-			},
-			definition: definition(),
-			auditStore,
-			readinessId,
-			indexId: readinessId,
-			storePath,
-			storeName,
-			sourceGeneration: 'generation',
-			limits: {},
-			binding: {
-				async runtimeInfo() {
-					return {
-						queryClassIsolationMinimumSearchThreads: 1,
-						limits: queryLimits({ maxSearchWindow: 10, maxSearchBudgetMilliseconds: 100, maxTraceRecords: 10 }),
-					};
-				},
-				async openNativeFullTextReader() {
-					return withTraversal({
-						async search() {
-							searchStarted.resolve();
-							await finishSearch.promise;
+	for (const exceedsBudget of [false, true]) {
+		it(
+			exceedsBudget
+				? 'bounds close while a native search keeps a reader lease'
+				: 'lets an in-budget search finish through reader retirement and pause',
+			async () => {
+				const auditStore = sharedStore();
+				const readinessId = 'query-reader-close-timeout';
+				const storePath = '/unused';
+				const storeName = 'query-reader-close-timeout';
+				const nativePath = nativeFullTextIndexPath(storePath, storeName);
+				publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+				const searchStarted = Promise.withResolvers();
+				const finishSearch = Promise.withResolvers();
+				let closes = 0;
+				const index = new FullTextQueryIndex({
+					Table: {
+						tableId: 1,
+						primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+						_readTxnForContext: () => undefined,
+					},
+					definition: definition(),
+					auditStore,
+					readinessId,
+					indexId: readinessId,
+					storePath,
+					storeName,
+					sourceGeneration: 'generation',
+					limits: {},
+					binding: {
+						async runtimeInfo() {
 							return {
-								total: 1,
-								totalRelation: 'exact',
-								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+								queryClassIsolationMinimumSearchThreads: 1,
+								limits: queryLimits({
+									maxSearchWindow: 10,
+									maxSearchBudgetMilliseconds: exceedsBudget ? 100 : 5000,
+									maxTraceRecords: 10,
+								}),
 							};
 						},
-						committedPayload: publicationPayload(),
-						async reload() {},
-						async close() {
-							closes++;
+						async openNativeFullTextReader() {
+							return withTraversal({
+								async search() {
+									searchStarted.resolve();
+									await finishSearch.promise;
+									return {
+										total: 1,
+										totalRelation: 'exact',
+										hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+									};
+								},
+								committedPayload: publicationPayload(),
+								async reload() {},
+								async close() {
+									closes++;
+								},
+							});
 						},
-					});
-				},
-			},
-		});
-		attachCurrentCoverage(index, auditStore, readinessId);
-		const search = index.search(
-			{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
-			{},
-			{ minResults: 1 }
+					},
+				});
+				attachCurrentCoverage(index, auditStore, readinessId);
+				const search = index.search(
+					{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
+					{},
+					{ minResults: 1 }
+				);
+				await searchStarted.promise;
+				let closeError;
+				const close = index.close().catch((error) => (closeError = error));
+				if (exceedsBudget) {
+					await waitFor(() => closeError, 3000);
+					assert.match(closeError.message, /reader drain did not settle/);
+					assert.strictEqual(closeError.statusCode, 503);
+				}
+				const replacement = readyQueryIndex(auditStore, 'replacement-readiness', storeName);
+				let pauseSettled = false;
+				const pause = pauseNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n).then(() => {
+					pauseSettled = true;
+				});
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.strictEqual(pauseSettled, false);
+				finishSearch.resolve();
+				if (exceedsBudget) await assert.rejects(search, /Full-text search exceeded its execution budget/);
+				else assert.strictEqual((await search).length, 1);
+				await close;
+				if (!exceedsBudget) assert.strictEqual(closeError, undefined);
+				await pause;
+				assert.strictEqual(pauseSettled, true);
+				resumeNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n);
+				await waitFor(() => closes === 1);
+				await index.close();
+				await replacement.close();
+			}
 		);
-		await searchStarted.promise;
-		let closeError;
-		const close = index.close().catch((error) => (closeError = error));
-		await new Promise((resolve) => setTimeout(resolve, 1_500));
-		assert.match(closeError?.message, /reader drain did not settle/);
-		assert.strictEqual(closeError.statusCode, 503);
-		await close;
-		const replacement = readyQueryIndex(auditStore, 'replacement-readiness', storeName);
-		let pauseSettled = false;
-		const pause = pauseNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n).then(() => {
-			pauseSettled = true;
-		});
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		assert.strictEqual(pauseSettled, false);
-		finishSearch.resolve();
-		await assert.rejects(search, /Full-text search exceeded its execution budget/);
-		await pause;
-		assert.strictEqual(pauseSettled, true);
-		resumeNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n);
-		await waitFor(() => closes === 1);
-		await index.close();
-		await replacement.close();
-	});
-
+	}
 	it('does not let a native reader close failure reject lifecycle shutdown', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'query-reader-close-failure';

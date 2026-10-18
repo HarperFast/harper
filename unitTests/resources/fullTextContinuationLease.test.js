@@ -7,6 +7,7 @@ const { waitFor } = require('../waitFor');
 const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
 const { FullTextContinuationToken } = require('#src/resources/indexes/fullTextContinuationToken');
 const { FullTextContinuationLeases } = require('#src/resources/indexes/fullTextContinuationLease');
+const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
 
 const queryHash = 'b'.repeat(64);
 const query = { text: 'widget' };
@@ -14,6 +15,9 @@ const initial = { boundary: undefined, batchSize: 17, consumed: 0 };
 
 describe('retained full-text reader leases with the native addon', () => {
 	let writer, reader, path, leases, id, released, maximum;
+	before(async function () {
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+	});
 	beforeEach(async () => {
 		const binding = await loadFullTextNativeBinding();
 		const info = await binding.runtimeInfo();
