@@ -24,7 +24,8 @@ describe('built-in component backfill after HARPER_DEFAULT_CONFIG leaves', funct
 	let rootPath;
 	let configFilePath;
 
-	// bin/run.ts: env.initSync() reads the config at module load, ensureBuiltInComponentConfigKeys() runs in initialize()
+	// bin/run.ts reads the config at module load and backfills later in initialize(). initConfig is called directly
+	// because env.initSync() exits the process on a config error instead of failing the test.
 	function boot() {
 		configUtils.initConfig(true);
 		const memoizedBeforeBackfill = structuredClone(configUtils.getConfigObj().waf);
@@ -102,7 +103,7 @@ describe('built-in component backfill after HARPER_DEFAULT_CONFIG leaves', funct
 		assertWafLeavesEverywhere();
 	});
 
-	it('fills env-supplied leaves under an empty waf block that an earlier boot backfilled', function () {
+	it('fills env-supplied leaves under an empty waf block already in the file', function () {
 		writeUpgradedConfig('waf: {}\n');
 		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ waf: WAF_LEAVES });
 
@@ -111,6 +112,20 @@ describe('built-in component backfill after HARPER_DEFAULT_CONFIG leaves', funct
 		assert.deepStrictEqual(memoizedBeforeBackfill, WAF_LEAVES);
 		assert.deepStrictEqual(backfilled, []);
 		assertWafLeavesEverywhere();
+	});
+
+	it('keeps the memoized env leaves when the file has lost the key before the backfill reads it', function () {
+		writeUpgradedConfig();
+		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ waf: WAF_LEAVES });
+		configUtils.initConfig(true);
+		const withoutWaf = configUtils.parseYamlDoc(configFilePath);
+		withoutWaf.delete('waf');
+		fs.writeFileSync(configFilePath, String(withoutWaf));
+
+		assert.deepStrictEqual(configUtils.ensureBuiltInComponentConfigKeys(), ['waf']);
+
+		assert.deepStrictEqual(configUtils.getConfigObj().waf, WAF_LEAVES);
+		assert.strictEqual(configUtils.getFlatConfigObj().waf_enabled, true);
 	});
 
 	it('still backfills an empty waf block when no env layer supplies one', function () {
