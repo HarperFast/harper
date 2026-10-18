@@ -135,6 +135,39 @@ suite(
 			await teardownHarper(ctx);
 		});
 
+		test('nested relationship predicates and pagination use the native authenticated REST path', async () => {
+			await clearAll();
+			for (const [table, records] of [
+				['Order', [{ id: 'nested-p1' }, { id: 'nested-p2' }]],
+				[
+					'OrderItem',
+					[
+						{ id: 'nested-c1', orderId: 'nested-p1', price: 10 },
+						{ id: 'nested-c2', orderId: 'nested-p1', price: 30 },
+						{ id: 'nested-c3', orderId: 'nested-p1', price: 40 },
+						{ id: 'nested-c4', orderId: 'nested-p2', price: 50 },
+					],
+				],
+			] as const) {
+				const seeded = await op({ operation: 'insert', schema: 'data', table, records });
+				strictEqual(seeded.status, 200, JSON.stringify(seeded.body));
+			}
+			try {
+				const selection = 'select(id,items[price=ge=number:30&sort(price)&limit(1)&select(id,price)])';
+				const collection = await restGet('/Order/?' + selection);
+				strictEqual(collection.status, 200);
+				deepStrictEqual(
+					collection.body.map((row: any) => row.items.map((item: any) => item.id)),
+					[['nested-c2'], ['nested-c4']]
+				);
+				const single = await restGet('/Order/nested-p1?' + selection);
+				strictEqual(single.status, 200);
+				deepStrictEqual(single.body.items, [{ id: 'nested-c2', price: 30 }]);
+			} finally {
+				await clearAll();
+			}
+		});
+
 		// =========================================================================================
 		// QA-196 — @relationship parent-DELETE cascade semantics
 		// =========================================================================================

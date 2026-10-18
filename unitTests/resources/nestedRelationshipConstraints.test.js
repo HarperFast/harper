@@ -138,7 +138,7 @@ describe('nested relationship constraints', function () {
 	});
 	after(async function () {
 		if (server) await new Promise((resolve) => server.close(resolve));
-		setMainIsWorker(previousMainIsWorker);
+		if (previousMainIsWorker !== undefined) setMainIsWorker(previousMainIsWorker);
 	});
 	beforeEach(function () {
 		projected = [];
@@ -430,14 +430,17 @@ describe('nested relationship constraints', function () {
 		});
 		try {
 			await transaction({}, async (txn) => {
-				const rows = Parent.search({ select: ['id', { name: 'children', limit: 1, select: ['id', 'observed'] }] });
+				const rows = Parent.search({ select: ['id', { name: 'children', limit: 2, select: ['id', 'observed'] }] });
 				const iterator = rows[Symbol.asyncIterator]();
 				const first = iterator.next();
 				await started;
-				assert(txn.closeOwnedReadIterators() > 0);
+				assert(txn.closeOwnedReadIterators() >= 2, 'owns both parent and nested child iterators');
 				assert.strictEqual(txn.closeOwnedReadIterators(), 0);
+				const readsAtClose = Child.primaryStore.readCount;
 				release();
-				await first;
+				const result = await first;
+				assert.deepStrictEqual(result.value.children, []);
+				assert.strictEqual(Child.primaryStore.readCount, readsAtClose, 'no reads after cancellation');
 				await iterator.return();
 			});
 		} finally {
@@ -447,5 +450,105 @@ describe('nested relationship constraints', function () {
 				return record.score;
 			});
 		}
+	});
+	it('keeps comparison reads of FK arrays synchronous and array-valued', function () {
+		const values = Parent.propertyResolvers.references(
+			{ childIds: ['c1', 'c2'] },
+			{},
+			undefined,
+			false,
+			undefined,
+			true
+		);
+		assert(Array.isArray(values));
+		assert.deepStrictEqual(
+			values.map((record) => record.id),
+			['c1', 'c2']
+		);
+	});
+	it('resolves asynchronous constrained relationships in positional single-record selections', async function () {
+		Child.setComputedAttribute('observed', (record) => Promise.resolve(record.score));
+		const select = ['id', { name: 'children', limit: 1, select: ['id', 'observed'] }];
+		select.asArray = true;
+		try {
+			assert.deepStrictEqual(await Parent.get({ id: 'p1', select }), ['p1', [{ id: 'c1', observed: 10 }]]);
+		} finally {
+			Child.setComputedAttribute('observed', (record) => {
+				projected.push(record.id);
+				return record.score;
+			});
+		}
+	});
+	it('yields while scanning rejected children before an unsatisfied limit', async function () {
+		await Parent.put('p-yield', { id: 'p-yield' });
+		const rows = Array.from({ length: 2050 }, (_, index) => ({
+			id: `yield-${index}`,
+			parentId: 'p-yield',
+			state: 'closed',
+			score: index,
+		}));
+		await Child.put(rows);
+		try {
+			const results = new Parent(undefined, {}).search({
+				conditions: [{ attribute: 'id', value: 'p-yield' }],
+				select: [
+					'id',
+					{ name: 'children', conditions: [{ attribute: 'state', value: 'absent' }], limit: 1, select: ['id'] },
+				],
+			});
+			let yielded = false;
+			setImmediate(() => {
+				yielded = true;
+			});
+			const iterator = results[Symbol.asyncIterator]();
+			try {
+				const first = await iterator.next();
+				assert.strictEqual(yielded, true, 'rejected candidates yield to the event loop');
+				assert.deepStrictEqual(first.value.children, []);
+			} finally {
+				await iterator.return();
+			}
+		} finally {
+			await Child.delete({ conditions: [{ attribute: 'parentId', value: 'p-yield' }] });
+			await Parent.delete('p-yield');
+		}
+	});
+	for (const id of [undefined, 'p1']) {
+		it(`rejects unsupported plain JSON query constraints before reading ${id || 'a collection'}`, async function () {
+			const target = { select: ['id', { name: 'metadata', limit: 1, select: ['label'] }] };
+			await assert.rejects(
+				async () => {
+					if (id) await Parent.get({ id, ...target });
+					else for await (const row of Parent.search(target)) void row;
+				},
+				(error) => error.statusCode === 400
+			);
+		});
+	}
+	it('rejects unsupported options nested below plain JSON projections', async function () {
+		await assert.rejects(
+			async () =>
+				Parent.get({
+					id: 'p1',
+					select: [{ name: 'metadata', select: [{ name: 'tags', limit: 1, select: ['label'] }] }],
+				}),
+			(error) => error.statusCode === 400
+		);
+	});
+	it('does not mutate caller selection objects when a nested sort propagates to a relationship', async function () {
+		const selection = {
+			name: 'children',
+			sort: { attribute: ['siblings', 'score'], descending: true },
+			limit: 1,
+			select: Object.freeze(['id', Object.freeze({ name: 'siblings', select: ['id', 'score'] })]),
+		};
+		const before = JSON.stringify(selection);
+		await query(selection);
+		await query(selection);
+		assert.strictEqual(JSON.stringify(selection), before);
+	});
+	it('drops missing FK targets when sorting, matching the existing sort contract', async function () {
+		const rows = await query({ name: 'references', sort: { attribute: 'score' }, limit: 2, select: ['id'] });
+		assert.deepStrictEqual(rows[0].references, [{ id: 'c1' }, { id: 'c2' }]);
 	});
 });

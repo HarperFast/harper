@@ -32,6 +32,7 @@ import type { Contract, SchemaClass } from './defineResource.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
 import { Resource, SEARCH_AUTHORIZATION, transformForSelect, defaultAllowReads } from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
+import { assertNestedQueryOptions, hasNestedQueryOptions } from './Resource.ts';
 import {
 	DatabaseTransaction,
 	ImmediateTransaction,
@@ -1198,6 +1199,20 @@ function cloneConditions(conditions: any[]): any[] {
 		if (copy.conditions) copy.conditions = cloneConditions(copy.conditions);
 		return copy;
 	});
+}
+
+function copySelection(select) {
+	if (Array.isArray(select)) {
+		const copy = Object.assign([], select);
+		for (let index = 0; index < copy.length; index++) copy[index] = copySelection(copy[index]);
+		return copy;
+	}
+	if (!select || typeof select !== 'object') return select;
+	const copy = { ...select };
+	if (copy.select) copy.select = copySelection(copy.select);
+	if (copy.sort && typeof copy.sort === 'object') copy.sort = copySelection(copy.sort);
+	if (copy.next) copy.next = copySelection(copy.next);
+	return copy;
 }
 
 function selectRequestsProperty(select: any, propertyName: string): boolean {
@@ -3405,6 +3420,7 @@ export function makeTable(options): TableResourceClass {
 		 */
 		get(target?: any): any {
 			const constructor: any = this.constructor;
+			assertNestedQueryOptions(target?.select, constructor);
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target?.select);
 			if (fullTextFieldNames) {
 				assertRecordField(
@@ -3562,6 +3578,7 @@ export function makeTable(options): TableResourceClass {
 										if (
 											!property.select &&
 											!property.conditions &&
+											!property.operator &&
 											property.limit === undefined &&
 											property.offset === undefined &&
 											!property.sort
@@ -5796,6 +5813,7 @@ export function makeTable(options): TableResourceClass {
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
+			assertNestedQueryOptions(target.select, this.constructor);
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
 			const getColumns = () => {
 				const select = target.select;
@@ -6285,7 +6303,7 @@ export function makeTable(options): TableResourceClass {
 			)
 				throw new ClientError('Nested limit and offset must be non-negative safe integers');
 			const filterMap = filtered?.[attribute.name];
-			const childFiltered = Object.assign({}, filterMap);
+			const childFiltered = Object.assign(Object.create(null), filterMap);
 			const rejectUnsupported = (conditions) => {
 				for (const condition of conditions) {
 					if (condition.conditions) rejectUnsupported(condition.conditions);
@@ -6304,18 +6322,18 @@ export function makeTable(options): TableResourceClass {
 			for (let sort = typeof attribute.sort === 'object' && attribute.sort; sort; sort = sort.next)
 				targetTable._assertNestedReadAccess(sort.attribute, context, attribute);
 			const compile = (conditions, operator) => {
-				const predicates = conditions
-					.map((condition) => {
-						if (condition.conditions) return compile(condition.conditions, condition.operator);
-						return filterByType(
-							condition,
-							targetTable,
-							context,
-							childFiltered,
-							(condition.attribute ?? condition[0]) === targetTable.primaryKey
-						);
-					})
-					.filter(Boolean);
+				const predicates = conditions.map((condition) => {
+					if (condition.conditions) return compile(condition.conditions, condition.operator);
+					const predicate = filterByType(
+						condition,
+						targetTable,
+						context,
+						childFiltered,
+						(condition.attribute ?? condition[0]) === targetTable.primaryKey
+					);
+					if (!predicate) throw new ClientError('This predicate is not supported in a relationship selection');
+					return predicate;
+				});
 				return operator === 'or'
 					? (record, entry) => predicates.some((predicate) => predicate(record, entry))
 					: (record, entry) => predicates.every((predicate) => predicate(record, entry));
@@ -6324,13 +6342,14 @@ export function makeTable(options): TableResourceClass {
 			const plural = Boolean(resolver.to || attributes.find((item) => item.name === attribute.name)?.elements);
 			if (limit === 0) return () => (plural ? [] : undefined);
 			let transform;
+			let transformReadTxn;
 			return (record, entry?, isSync = false) => {
 				let value;
 				if (filterMap?.hasMappings) {
 					const key = resolver.from ? record[resolver.from] : flattenKey(entry?.key ?? record[primaryKey]);
 					value = filterMap.get(key) || [];
 				} else if (filterMap) value = filterMap.fromRecord?.(record);
-				else value = resolver(record, context, entry, true, undefined, true);
+				else value = resolver(record, context, entry, true, undefined, undefined, true);
 				return when(value, (value) => {
 					if (value == null) return value;
 					const many =
@@ -6342,8 +6361,9 @@ export function makeTable(options): TableResourceClass {
 					candidates.iterate = (options) =>
 						options?.async && source[Symbol.asyncIterator] ? source[Symbol.asyncIterator]() : source[Symbol.iterator]();
 					const readTxn = targetTable._readTxnForContext(context);
-					candidates = candidates.map((candidate) =>
+					const readCandidate = (candidate) =>
 						when(candidate, (candidate) => {
+							if (stopped) return SKIP;
 							if (candidate == null) return predicate ? SKIP : candidate;
 							const entry =
 								typeof candidate === 'object' && candidate.key !== undefined
@@ -6352,10 +6372,18 @@ export function makeTable(options): TableResourceClass {
 							return when(entry, (entry) =>
 								predicate && (!entry?.value || !predicate(entry.value, entry)) ? SKIP : entry
 							);
-						})
-					);
-					const select = attribute.select || (Array.isArray(attribute) ? attribute : undefined);
+						});
+					let examined = 0;
+					candidates = candidates.map((candidate) => {
+						if (!isSync && (++examined & (COUNT_YIELD_INTERVAL - 1)) === 0)
+							return new Promise((resolve) => setImmediate(resolve)).then(() => readCandidate(candidate));
+						return readCandidate(candidate);
+					});
+					let select = attribute.select || (Array.isArray(attribute) ? attribute : undefined);
 					const sort = typeof attribute.sort === 'object' && attribute.sort;
+					let nestedSort = false;
+					for (let order = sort; order; order = order.next) nestedSort ||= Array.isArray(order.attribute);
+					if (nestedSort) select = copySelection(select);
 					const ordered = targetTable.transformToOrderedSelect(
 						candidates,
 						select,
@@ -6364,27 +6392,62 @@ export function makeTable(options): TableResourceClass {
 						readTxn,
 						(entry) => entry
 					);
-					transform ||= targetTable.transformEntryForSelect(select, context, readTxn, childFiltered, ensureLoaded);
+					if (!transform || transformReadTxn !== readTxn || nestedSort) {
+						transform = targetTable.transformEntryForSelect(select, context, readTxn, childFiltered, ensureLoaded);
+						transformReadTxn = readTxn;
+					}
 					const iterator = ordered[isSync ? Symbol.iterator : Symbol.asyncIterator]();
 					const results = [];
 					const txn = txnForContext(context);
+					let stopped = false;
 					let closed = false;
+					let closing;
 					const close = () => {
+						stopped = true;
 						if (closed) return;
-						closed = true;
-						txn.unregisterReadIterator(owned);
-						return iterator.return?.();
+						if (closing) return closing;
+						const complete = () => {
+							closed = true;
+							txn.unregisterReadIterator(owned);
+						};
+						const failed = (error) => {
+							closing = undefined;
+							txn.registerReadIterator(owned);
+							throw error;
+						};
+						try {
+							const returned = iterator.return?.();
+							if (typeof returned?.then === 'function') return (closing = returned.then(complete, failed));
+							complete();
+						} catch (error) {
+							return failed(error);
+						}
 					};
-					const owned = { onDone: close };
+					const owned = {
+						onDone: () => {
+							const completion = close();
+							if (typeof completion?.catch === 'function')
+								completion.catch((error) => logger.warn?.('Failed to close a nested relationship iterator', error));
+						},
+					};
 					txn.registerReadIterator(owned);
 					let skipped = 0;
-					let scanned = 0;
 					const finish = () => when(close(), () => (many ? results : results[0]));
-					const fail = (error) =>
-						when(close(), () => {
+					const fail = (error) => {
+						const rethrow = () => {
 							throw error;
-						});
+						};
+						let completion;
+						try {
+							completion = close();
+						} catch {
+							throw error;
+						}
+						if (typeof completion?.then === 'function') return completion.then(rethrow, rethrow);
+						throw error;
+					};
 					const advance = () => {
+						if (stopped) return finish();
 						try {
 							return consume(iterator.next());
 						} catch (error) {
@@ -6394,19 +6457,18 @@ export function makeTable(options): TableResourceClass {
 					const consume = (iteration) => {
 						try {
 							if (typeof iteration?.then === 'function') return iteration.then(consume, fail);
-							while (!iteration.done && !closed) {
+							while (!iteration.done && !stopped) {
 								if (skipped++ >= offset) {
 									const projected = transform.call({ isSync }, iteration.value);
 									if (typeof projected?.then === 'function')
 										return projected.then((value) => {
+											if (stopped) return finish();
 											results.push(value);
 											return results.length >= limit ? finish() : advance();
 										}, fail);
 									results.push(projected);
 									if (results.length >= limit) return finish();
 								}
-								if (!isSync && (++scanned & (COUNT_YIELD_INTERVAL - 1)) === 0)
-									return new Promise((resolve) => setImmediate(resolve)).then(advance);
 								iteration = iterator.next();
 								if (typeof iteration?.then === 'function') return iteration.then(consume, fail);
 							}
@@ -6811,10 +6873,7 @@ export function makeTable(options): TableResourceClass {
 			let transformCache;
 			let relationshipSelections;
 			for (const attribute of Array.isArray(select) ? select : []) {
-				if (
-					propertyResolvers?.[attribute.name]?.definition?.tableClass &&
-					(attribute.conditions || attribute.limit !== undefined || attribute.offset !== undefined || attribute.sort)
-				) {
+				if (propertyResolvers?.[attribute.name]?.definition?.tableClass && hasNestedQueryOptions(attribute)) {
 					(relationshipSelections ||= Object.create(null))[attribute.name] = this._prepareRelationshipSelection(
 						attribute,
 						context,
@@ -8433,6 +8492,7 @@ export function makeTable(options): TableResourceClass {
 								entry,
 								returnEntry?,
 								_sort?,
+								_comparing?,
 								lazy?
 							) => {
 								// TODO: Get raw record/entry?
@@ -8479,6 +8539,7 @@ export function makeTable(options): TableResourceClass {
 								entry,
 								returnEntry?,
 								_sort?,
+								_comparing?,
 								lazy?
 							) => {
 								const ids = object[relationship.from];
