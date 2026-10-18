@@ -61,10 +61,9 @@
  * at the `{0,0}` sentinel, a restart with zero writes did not clear it, and it took one row plus a
  * restart to move it off — because `doPurge()` emptied the store's sequence files and then
  * `remove_all`d the directory holding `txn.state` out from under its own open handle
- * (rocksdb-js#808). rocksdb-js#799 shipped a retention floor in v2.9.0 that kept the segment the
- * flush position names; rocksdb-js#911 (v2.12.0) retired that floor, because an idle store could
- * never release its last file, and made `txn.state` the sole durable witness instead (synced with
- * its directory before a store's last file is unlinked, never moved backwards, honoured by `load()`).
+ * (rocksdb-js#808). rocksdb-js#799 then kept the segment the flush position names, and rocksdb-js#911
+ * replaced that floor with `txn.state` as the sole durable witness (synced with its directory before a
+ * store's last file is unlinked, never moved backwards, honoured by `load()`).
  * So the healing behaviour is unreachable on any supported pin, and asserting it would
  * land a permanently red test. Invariant 1 pins the witness instead, which is the stronger claim;
  * the durability half of the original — "and that row survives" — is preserved among invariant 3's
@@ -267,7 +266,6 @@ async function flushUntilPurgeable(ctx: ContextWithHarper, table: string, databa
 	);
 }
 
-/** Flush until nothing in the log is left unflushed, so a purge may take its current file too. */
 async function flushUntilFullyFlushed(ctx: ContextWithHarper, table: string, database = 'data'): Promise<LogSnapshot> {
 	const deadline = Date.now() + 60_000;
 	let stats: LogSnapshot;
@@ -396,10 +394,8 @@ function comparePositions(left: LogPosition, right: LogPosition): number {
 	return left.sequence - right.sequence || left.offset - right.offset;
 }
 
-// rocksdb-js#911's witness: never the sentinel; with no files left the writer has retired past the
-// witnessed sequence (or sits on it when nothing was ever written to it); with files, the position is
-// never ahead of the writer and at most one sequence behind the oldest kept file (a flush that ends
-// exactly at the end of a sealed file lets the purge delete that file and keep its unflushed successor).
+// With files kept the position may sit one sequence behind the oldest: a flush that ends exactly at a
+// sealed file's end lets the purge delete that file and keep its unflushed successor.
 function assertWitness(stats: LogSnapshot, preamble: string): void {
 	const position = stats.lastFlushedPosition;
 	ok(
@@ -634,9 +630,10 @@ suite(
 
 				await flushUntilPurgeable(ctx, 'PurgeVictim');
 				const protectedCutoff = Date.now();
-				// Newer than the cutoff, so this purge must keep the file these land in whatever its flush state
-				// (the keep half of rocksdb-js#911's rule); the second purge below legitimately takes their history.
+				// Flushed, so only the cutoff keeps the file these rows land in (the keep half of rocksdb-js#911's
+				// rule); the second purge below legitimately takes their history.
 				await insertRows(ctx, 'QuietTarget', prePurge.rows);
+				await flushUntilFullyFlushed(ctx, 'QuietTarget');
 				const protectedPurge = await purgeLogsBefore(ctx, 'data', protectedCutoff, '1a');
 				findings.push(`1a. purge job ${protectedPurge.status} result=${JSON.stringify(protectedPurge.result)}`);
 				const afterProtectedPurge = await logStats(ctx, 'QuietTarget');
