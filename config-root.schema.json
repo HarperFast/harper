@@ -728,6 +728,12 @@
 					"minimum": 1,
 					"description": "Output-token cap sent with every model request the agent makes. Must not exceed the model's own output limit, or the provider rejects the request. A reply cut off at this cap ends the run with status error. Tunable at runtime via set_agent_config; a change applies from the next run. Default: 16384"
 				},
+				"maxToolResultBytes": {
+					"type": "integer",
+					"minimum": 1024,
+					"maximum": 1048576,
+					"description": "Largest tool result, in bytes of JSON, the agent adds to its conversation. A larger result is cut to this size with a note telling the model how to ask for less, and the filesystem read tools return pages of at most half this size. Tunable at runtime via set_agent_config. Default: 65536"
+				},
 				"maxCostUsd": {
 					"type": "number",
 					"minimum": 0,
