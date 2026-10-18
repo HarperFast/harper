@@ -18,3 +18,26 @@ export class BuiltinCheck extends Resource {
 		return typeof fs.readFile;
 	}
 }
+
+let activeSend = false;
+let messagesProduced = 0;
+
+export class SendPressure extends Resource {
+	get() {
+		return { active: activeSend, produced: messagesProduced };
+	}
+
+	async *subscribe() {
+		activeSend = true;
+		messagesProduced = 0;
+		try {
+			const value = 'x'.repeat(512 * 1024);
+			for (let id = 0; id < 128; id++) {
+				messagesProduced++;
+				yield { id, value };
+			}
+		} finally {
+			activeSend = false;
+		}
+	}
+}

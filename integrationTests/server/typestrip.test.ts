@@ -7,6 +7,9 @@ import { deepStrictEqual, strictEqual, ok } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { once } from 'node:events';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { pathToFileURL } from 'node:url';
 import WebSocket from 'ws';
 import { waitFor } from '../../unitTests/waitFor.js';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -284,6 +287,82 @@ for (const mode of ['compiled', 'typestrip']) {
 					ws.terminate();
 				}
 			});
+
+			if (!bigInt) {
+				test('bounds a stalled subscription and releases its producer on disconnect', { timeout: 30000 }, async () => {
+					const headers = {
+						Authorization: `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+					};
+					const status = async () => {
+						const response = await fetch(`${ctx.harper.httpURL}/SendPressure/`, {
+							headers,
+							signal: AbortSignal.timeout(10000),
+						});
+						strictEqual(response.status, 200);
+						return response.json();
+					};
+					const stalled = new WebSocket(`${ctx.harper.httpURL.replace(/^http/, 'ws')}/SendPressure/`, { headers });
+					stalled.on('open', () => stalled.pause());
+					try {
+						await once(stalled, 'open', { signal: AbortSignal.timeout(10000) });
+						await waitFor(async () => (await status()).produced > 0, { timeout: 10000 });
+						const state = await status();
+						strictEqual(state.active, true);
+						ok(state.produced < 128, `producer must wait for its consumer: ${JSON.stringify(state)}`);
+					} finally {
+						stalled.terminate();
+					}
+					await waitFor(async () => !(await status()).active, { timeout: 10000 });
+				});
+			}
+		});
+	}
+}
+
+if (process.env.HARPER_RUNTIME === 'bun') {
+	for (const mode of ['compiled', 'typestrip']) {
+		test(`Bun listener calls share one native bind (${mode})`, { timeout: 30000 }, async () => {
+			const runtime = mode === 'typestrip' ? '' : 'dist/';
+			const extension = mode === 'typestrip' ? 'ts' : 'js';
+			const url = (path: string) =>
+				pathToFileURL(resolve(import.meta.dirname, '../..', runtime + path + '.' + extension)).href;
+			const helper = resolve(import.meta.dirname, '../../unitTests/perPidRoot.js');
+			const code = `
+				const { createRequire } = await import('node:module');
+				const require = createRequire(${JSON.stringify(pathToFileURL(helper).href)});
+				const { materializePerPidRoot, removePerPidRoot } = require(${JSON.stringify(helper)});
+				process.env.ROOTPATH = materializePerPidRoot();
+				let server;
+				try {
+					const assert = (await import('node:assert')).default;
+					const http = await import(${JSON.stringify(url('server/http'))});
+					const { listenOnPorts } = await import(${JSON.stringify(url('server/threads/threadServer'))});
+					const { SERVERS } = await import(${JSON.stringify(url('server/serverRegistry'))});
+					const key = '127.0.0.1:0';
+					http.bunServeConfigs[key] = { fetch: () => new Response('ready'), reusePort: true };
+					const first = listenOnPorts();
+					assert.strictEqual(listenOnPorts(), first);
+					await first;
+					server = SERVERS[key];
+					assert.strictEqual(typeof server.stop, 'function');
+					const port = server.port;
+					await Promise.all([listenOnPorts(), listenOnPorts()]);
+					assert.strictEqual(listenOnPorts(), first);
+					assert.strictEqual(SERVERS[key], server);
+					assert.strictEqual(server.port, port);
+					assert.strictEqual(await (await fetch('http://127.0.0.1:' + port)).text(), 'ready');
+					console.log('Bun native bind complete');
+				} finally { server?.stop(true); removePerPidRoot(); }
+				process.exit(0);
+			`;
+			const { stdout } = await promisify(execFile)(
+				'bun',
+				[...(mode === 'typestrip' ? ['--conditions=typestrip'] : []), '--eval', code],
+				{
+					timeout: 20000,
+				}
+			);
+			ok(stdout.includes('Bun native bind complete'), stdout);
 		});
 	}
 }

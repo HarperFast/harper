@@ -400,7 +400,7 @@ const POOL_BIND_RETRY_MS = 60_000;
 let listening;
 function listenOnPorts() {
 	if (isProcessShuttingDown()) return Promise.resolve([]);
-	if (isBun) return listenOnPortsBun();
+	if (isBun) return (listening ??= listenOnPortsBun());
 	if (listening) return Promise.all(listening); // already set up
 	listening = [];
 	for (let port in SERVERS) {
@@ -687,7 +687,7 @@ async function listenOnPortsBun() {
 		}
 	}
 	// Also start any non-HTTP servers (raw socket servers) that were registered in SERVERS
-	const listening: any = [];
+	const rawListeners: any = [];
 	for (let port in SERVERS) {
 		const server = SERVERS[port];
 		// Skip Bun servers (they're already listening) and config objects
@@ -696,7 +696,7 @@ async function listenOnPortsBun() {
 			if (!shouldBindListenerHere(port)) continue;
 			if (port.includes?.('/')) {
 				if (thisThreadsIsolatedApplication() && !server.isPerThreadSocket) continue; // as in listenOnPorts
-				listening.push(listenOnDomainSocket(port, server));
+				rawListeners.push(listenOnDomainSocket(port, server));
 			} else {
 				const lastColon = String(port).lastIndexOf(':');
 				const rawHostname = lastColon > 0 ? String(port).slice(0, lastColon).replace(/[[\]]/g, '') : null;
@@ -709,10 +709,10 @@ async function listenOnPortsBun() {
 						? poolMemberIndex() !== 0
 						: server.dedicatedListener && !isMainThread && getWorkerIndex() !== 0
 				) {
-					listening.push(Promise.resolve({ port }));
+					rawListeners.push(Promise.resolve({ port }));
 					continue;
 				}
-				listening.push(
+				rawListeners.push(
 					new Promise<any>((resolve, reject) => {
 						server
 							.listen({ port: portNum, host: rawHostname || (isMac ? '0.0.0.0' : '::') }, () => {
@@ -734,7 +734,7 @@ async function listenOnPortsBun() {
 			}
 		}
 	}
-	return Promise.all(listening);
+	return Promise.all(rawListeners);
 }
 if (
 	!isMainThread &&
