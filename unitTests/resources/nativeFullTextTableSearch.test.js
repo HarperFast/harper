@@ -138,9 +138,12 @@ describe('published native full-text Table.search integration', () => {
 		await Product.put('b', { title: 'widget' });
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
 		const base = { conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget' }], limit: 1 };
+		let allow = true;
+		let checks = 0;
 		class AsyncAllowedProduct extends Product {
 			allowRead() {
-				return Promise.resolve(true);
+				checks++;
+				return Promise.resolve(allow);
 			}
 		}
 		class AsyncDeniedProduct extends Product {
@@ -148,10 +151,18 @@ describe('published native full-text Table.search integration', () => {
 				return Promise.resolve(false);
 			}
 		}
-		const allowedResource = new AsyncAllowedProduct(null, {});
-		const authorized = await allowedResource.search({ ...base, continuation: true, checkPermission: true });
+		const policyContext = { user: { username: 'policy-reader', role: { permission: { super_user: true } } } };
+		const allowedResource = new AsyncAllowedProduct(null, policyContext);
+		const sharedTarget = { ...base, continuation: true, checkPermission: true };
+		const authorized = await allowedResource.search(sharedTarget);
 		assert.strictEqual(authorized.length, 1);
 		assert(authorized.continuation);
+		assert.strictEqual(sharedTarget.checkPermission, true);
+		sharedTarget.continuation = authorized.continuation;
+		allow = false;
+		await assert.rejects(allowedResource.search(sharedTarget), (error) => error.statusCode === 403);
+		allow = true;
+
 		await allowedResource.search({
 			...base,
 			continuation: authorized.continuation,
@@ -166,8 +177,28 @@ describe('published native full-text Table.search integration', () => {
 			}),
 			(error) => error.statusCode === 403
 		);
+		assert.strictEqual(checks, 3);
+		let syncAllow = true;
+		class SyncProduct extends Product {
+			allowRead() {
+				return syncAllow;
+			}
+		}
+		const syncResource = new SyncProduct(null, policyContext);
+		const syncTarget = { ...base, continuation: true, checkPermission: true };
+		const syncPage = await syncResource.search(syncTarget);
+		assert.strictEqual(syncTarget.checkPermission, true);
+		syncTarget.continuation = syncPage.continuation;
+		syncAllow = false;
+		assert.throws(
+			() => syncResource.search(syncTarget),
+			(error) => error.statusCode === 403
+		);
+		syncAllow = true;
+		await syncResource.search({ ...syncTarget, closeContinuation: true });
 		const first = await Product.search({ ...base, continuation: true });
 		assert(first.continuation);
+		assert.deepStrictEqual(first.getColumns(), ['id', 'title']);
 		const changed = { ...base, select: ['id'], continuation: first.continuation };
 		await assert.rejects(Product.search(changed), (error) => error.statusCode === 410);
 		for (const invalid of [

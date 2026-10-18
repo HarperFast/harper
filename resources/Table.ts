@@ -1169,11 +1169,18 @@ interface TableResourceClass {
 	parsePath(path: any, context: any, query: any): any;
 }
 
-/**
- * This returns a Table class for the given table settings (determined from the metadata table)
- * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
- * @param options
- */
+function cloneContinuationTarget(target: any): RequestTarget {
+	const copy =
+		target instanceof RequestTarget
+			? new RequestTarget(target.toString())
+			: target instanceof URLSearchParams
+				? new URLSearchParams(target)
+				: Array.isArray(target)
+					? []
+					: Object.create(Object.getPrototypeOf(target));
+	return Object.assign(copy, target);
+}
+
 // Shallow-clone each condition entry (recursing into nested `and`/`or` groups) so
 // query planning never writes through to the caller's objects (harper#1572).
 // Array-form entries (`[attribute, value]`) and primitives pass through as-is;
@@ -1384,6 +1391,11 @@ function resumeRefusal(auditStore: any, generationId: string, cursor: number): E
 		: new DatabaseGenerationChangedError();
 }
 
+/**
+ * This returns a Table class for the given table settings (determined from the metadata table)
+ * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
+ * @param options
+ */
 export function makeTable(options): TableResourceClass {
 	const {
 		primaryKey,
@@ -5788,6 +5800,7 @@ export function makeTable(options): TableResourceClass {
 			const context = this.getContext();
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
+			if (target.continuation !== undefined) target = cloneContinuationTarget(target);
 			if (target.parseError) throw target.parseError;
 			if (target.closeContinuation !== undefined && target.continuation === undefined)
 				throw new ClientError('closeContinuation requires an existing continuation token', 400);
@@ -6114,9 +6127,7 @@ export function makeTable(options): TableResourceClass {
 					definitions: TableResource.fullTextIndexes,
 					limits: envMngr.get(CONFIG_PARAMS.STORAGE_FULL_TEXT),
 				});
-				target = Object.assign(Object.create(Object.getPrototypeOf(target)), target, {
-					[FULL_TEXT_CONTINUATION_PAGE]: continuationPage,
-				});
+				(target as any)[FULL_TEXT_CONTINUATION_PAGE] = continuationPage;
 			}
 			let sort = typeof target.sort === 'object' && target.sort;
 			if (
@@ -6311,7 +6322,9 @@ export function makeTable(options): TableResourceClass {
 						try {
 							for await (const _entry of entries) {
 							}
-							return page.result();
+							const result = page.result();
+							Object.defineProperty(result, 'getColumns', { value: getColumns });
+							return result;
 						} finally {
 							txn.doneReadTxn();
 						}

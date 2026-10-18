@@ -28,7 +28,7 @@ describe('full-text visible continuation pages', () => {
 		assert.doesNotThrow(() => hash([shared, shared]));
 		const circular = {};
 		circular.self = circular;
-		for (const invalid of [circular, NaN, Infinity, () => true])
+		for (const invalid of [circular, NaN, Infinity, new Date(NaN), () => true])
 			assert.throws(
 				() => hash(invalid),
 				(error) => error.statusCode === 400

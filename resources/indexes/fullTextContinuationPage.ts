@@ -79,7 +79,11 @@ function canonical(value: unknown, seen: Set<object>): unknown {
 	}
 	if (typeof value === 'string' || typeof value === 'boolean') return [typeof value, value];
 	if (typeof value !== 'object') throw new ClientError('Unsupported full-text continuation query value', 400);
-	if (value instanceof Date) return ['date', value.toISOString()];
+	if (value instanceof Date) {
+		if (!Number.isFinite(value.getTime()))
+			throw new ClientError('Full-text continuation query dates must be valid', 400);
+		return ['date', value.toISOString()];
+	}
 	if (value instanceof Uint8Array) return ['bytes', Buffer.from(value).toString('base64url')];
 	if (seen.has(value)) throw new ClientError('Full-text continuation query cannot be circular', 400);
 	seen.add(value);
