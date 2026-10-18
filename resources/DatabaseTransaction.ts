@@ -1609,7 +1609,6 @@ export class DatabaseTransaction implements Transaction {
 			for (const write of [...this.writes]) {
 				if (!write || this.isWriteOwnedByActiveCommit(write, committedTransaction, hasSiblingInFlight, fromAbort))
 					continue;
-				if (write.stagedIn === this) write.stagedIn = undefined;
 				this.detachWrite(write);
 			}
 			this.writes = this.writes.filter((write) => write);
@@ -2205,7 +2204,6 @@ export class DatabaseTransaction implements Transaction {
 					operation.commit = () => {}; // noop if we try again
 					closeWriteInstance(operation);
 					if (immediateCommit) {
-						if (operation.stagedIn === this) operation.stagedIn = undefined;
 						this.detachWrite(operation);
 						if (!this.activeCommitHandle) this.activeHandleStagedTxnTime = 0;
 						abortNativeTransaction(
@@ -2242,7 +2240,6 @@ export class DatabaseTransaction implements Transaction {
 			// is submitted must release it, and the floor reservation it carries, rather than leak both.
 			if (immediateCommit) {
 				this.drainCompletions(transaction, true);
-				if (operation.stagedIn === this) operation.stagedIn = undefined;
 				this.detachWrite(operation);
 				if (!this.activeCommitHandle) this.activeHandleStagedTxnTime = 0;
 				abortNativeTransaction(
@@ -3844,36 +3841,12 @@ export class ImmediateTransaction extends DatabaseTransaction {
 	// by the per-write commit. Expired handles are pruned so a reused context does not retain every key.
 	releaseRecordLocks(): void {
 		const recordLocks = this.recordLocks;
-		if (recordLocks) {
-			for (const [store, storeMap] of recordLocks) {
-				for (const [keyId, handle] of storeMap) if (handle.released || handle.isExpired()) storeMap.delete(keyId);
-				if (storeMap.size === 0) recordLocks.delete(store);
-			}
-			if (recordLocks.size === 0) this.recordLocks = undefined;
+		if (!recordLocks) return;
+		for (const [store, storeMap] of recordLocks) {
+			for (const [keyId, handle] of storeMap) if (handle.released || handle.isExpired()) storeMap.delete(keyId);
+			if (storeMap.size === 0) recordLocks.delete(store);
 		}
-		if (this.writes.length > 0) {
-			let detachedAny = false;
-			let hasLockedWrite = false;
-			for (let i = 0; i < this.writes.length; i++) {
-				const write = this.writes[i];
-				if (!write) continue;
-				if (
-					write.deferSave &&
-					!write.saved &&
-					!write.stagedOn &&
-					(write.lockHandle?.released || write.lockHandle?.isExpired())
-				) {
-					this.detachWrite(write);
-					detachedAny = true;
-				} else if (write.lockHandle) {
-					hasLockedWrite = true;
-				}
-			}
-			if (detachedAny) this.writes = this.writes.filter((write) => write);
-			if (this.hasLeaseProtectedWrite && !hasLockedWrite) this.hasLeaseProtectedWrite = false;
-		} else if (this.hasLeaseProtectedWrite) {
-			this.hasLeaseProtectedWrite = false;
-		}
+		if (recordLocks.size === 0) this.recordLocks = undefined;
 	}
 
 	declare _timestamp: number;

@@ -3279,6 +3279,7 @@ describe('Transactions are never aborted once durably written to the transaction
 		});
 
 		it('aborts the detached handle and releases local key reservations when transaction.commit() throws synchronously on a retry round or late immediate handle', async function () {
+			this.timeout(20000);
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') {
 				this.skip();
 			}
@@ -3386,7 +3387,10 @@ describe('Transactions are never aborted once durably written to the transaction
 			});
 
 			try {
-				await mainCommitEntered;
+				await Promise.race([
+					mainCommitEntered,
+					scopePromise.then(() => assert.fail('scope committed without reaching the gated commit')),
+				]);
 				assert.strictEqual(ctx.transaction, capturedTxn);
 				capturedHolder.set('writer', 'late-attempted');
 				capturedHolder.set('count', 1);
@@ -3440,25 +3444,42 @@ describe('Transactions are never aborted once durably written to the transaction
 			await AuditedA.put({ id: normalKey, writer: 'seed-normal', count: 0 });
 
 			const expiredHolder = await AuditedA.lock(expiredKey, { lease: MIN_LOCK_LEASE_MS });
+			const sharedCtx = expiredHolder.getContext();
+			const ctxTxn = sharedCtx.transaction;
 			expiredHolder.set('writer', 'uncommitted-expired');
 			expiredHolder.set('count', 99);
+			assert.strictEqual(ctxTxn.writes.filter(Boolean).length, 1);
 			await delay(MIN_LOCK_LEASE_MS + 60);
 
-			await AuditedA.put({ id: normalKey, writer: 'committed-normal', count: 1 });
-
+			const other = await AuditedA.lock(normalKey, {}, sharedCtx);
+			try {
+				other.set('writer', 'committed-normal');
+				other.set('count', 1);
+				await other.save();
+			} finally {
+				await other.unlock();
+			}
 			assert.strictEqual(
-				AuditedA.primaryStore.getEntry(expiredKey).value.writer,
-				'seed-expired',
-				'expired unsaved deferred write must be detached by ImmediateTransaction.releaseRecordLocks() and not retained'
+				ctxTxn.writes.filter(Boolean).length,
+				0,
+				'expired unsaved deferred write must be detached by clearWrites() on the next commit on the same ImmediateTransaction'
 			);
+			assert.strictEqual(AuditedA.primaryStore.getEntry(expiredKey).value.writer, 'seed-expired');
 			assert.strictEqual(AuditedA.primaryStore.getEntry(normalKey).value.writer, 'committed-normal');
 
-			const unlockedHolder = await AuditedA.lock(expiredKey);
+			const unlockedHolder = await AuditedA.lock(expiredKey, {}, sharedCtx);
 			unlockedHolder.set('writer', 'uncommitted-unlocked');
 			unlockedHolder.set('count', 88);
+			assert.strictEqual(ctxTxn.writes.filter(Boolean).length, 1);
 			await unlockedHolder.unlock();
+			assert.strictEqual(
+				ctxTxn.writes.filter(Boolean).length,
+				0,
+				'unlock() without save() must detach the unsaved deferred write from the shared ImmediateTransaction'
+			);
+			assert.strictEqual(AuditedA.primaryStore.getEntry(expiredKey).value.writer, 'seed-expired');
 
-			const holder2 = await AuditedA.lock(expiredKey);
+			const holder2 = await AuditedA.lock(expiredKey, {}, sharedCtx);
 			try {
 				holder2.set('writer', 'saved-on-second-lock');
 				holder2.set('count', 2);
