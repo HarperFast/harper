@@ -680,6 +680,8 @@ type DurableEntry = {
 	received?: DeliveryIdentity[];
 	/** `[key, count]`: the first `count` deliveries sharing `key`, taken in order, kept as one entry. */
 	receivedRuns?: [number, number][];
+	/** Every delivery with a key above `startTime` and at or below this was taken. */
+	receivedThrough?: number;
 	/** QoS 2 deliveries sent and not yet PUBREC'd, with their packet ids, which a replay sends again as DUPs. */
 	inFlight?: [...DeliveryIdentity, number][];
 };
@@ -703,6 +705,7 @@ type TopicState = {
 	unacked: Map<number, { key: number; ordinal: number; id: unknown; previousKey?: number; late?: boolean }>;
 	received?: Map<string, DeliveryIdentity>;
 	receivedRuns?: Map<number, number>;
+	receivedThrough?: number;
 	resend?: Map<string, [...DeliveryIdentity, number]>;
 	ordinalKey?: number;
 	ordinal: number;
@@ -807,6 +810,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 						}
 					: { qos, topic }
 			);
+			state.receivedThrough = entry.receivedThrough;
 			for (const [key, count] of entry.receivedRuns || []) {
 				(state.receivedRuns ??= new Map()).set(key, count);
 				this.receivedCount++;
@@ -876,6 +880,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (subscription.qos === 2) {
 				state.received = replaced.received;
 				state.receivedRuns = replaced.receivedRuns;
+				state.receivedThrough = replaced.receivedThrough;
 				state.resend = replaced.resend;
 				// the replacement replays from the position, so a delivery still awaiting its PUBREC keeps its id
 				for (const [messageId, sent] of replaced.unacked) {
@@ -946,16 +951,49 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			state.ordinalKey = key;
 			state.ordinal = 0;
 		}
-		if (!state.received?.size && !state.resend?.size && !state.receivedRuns?.size) return;
-		if (state.ordinal < (state.receivedRuns?.get(key) ?? 0)) return ALREADY_RECEIVED;
+		if (
+			!state.received?.size &&
+			!state.resend?.size &&
+			!state.receivedRuns?.size &&
+			state.receivedThrough === undefined
+		)
+			return;
 		const slot = slotOf(key, state.ordinal);
 		const id = deliveryId(update.id);
-		if (state.received?.get(slot)?.[2] === id) return ALREADY_RECEIVED;
 		const resend = state.resend?.get(slot);
-		if (resend?.[2] !== id) return;
-		state.resend.delete(slot);
-		this.reservedIds.delete(resend[3]);
-		return resend[3];
+		if (resend?.[2] === id) {
+			state.resend.delete(slot);
+			this.reservedIds.delete(resend[3]);
+			return resend[3];
+		}
+		// a live transaction that commits below what was delivered before it is new, not a replay
+		if (key <= state.receivedThrough && !(key < state.highestKey)) return ALREADY_RECEIVED;
+		if (state.ordinal < (state.receivedRuns?.get(key) ?? 0)) return ALREADY_RECEIVED;
+		if (state.received?.get(slot)?.[2] === id) return ALREADY_RECEIVED;
+	}
+	/**
+	 * Every key below the deliveries still awaiting PUBREC, and below the last delivered key (whose
+	 * transaction may have more queued), was taken whole, so its entries collapse into `receivedThrough`.
+	 */
+	compactReceived(state: TopicState) {
+		let bound = state.deliveredKey;
+		if (bound === undefined) return;
+		for (const { key } of state.unacked.values()) if (key < bound) bound = key;
+		for (const [key] of state.resend?.values() ?? []) if (key < bound) bound = key;
+		let through = state.receivedThrough;
+		for (const key of state.receivedRuns?.keys() ?? []) {
+			if (key >= bound) continue;
+			if (!(through >= key)) through = key;
+			state.receivedRuns.delete(key);
+			this.receivedCount--;
+		}
+		for (const [slot, [key]] of state.received ?? []) {
+			if (key >= bound) continue;
+			if (!(through >= key)) through = key;
+			state.received.delete(slot);
+			this.receivedCount--;
+		}
+		state.receivedThrough = through;
 	}
 	needsAcknowledge(update, qos: number, messageId = this.newMessageId()) {
 		if (!this.awaitingAcks) this.awaitingAcks = new Map();
@@ -1024,6 +1062,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		}
 		this.dirty = true;
 		this.acknowledge(messageId);
+		if (state) this.compactReceived(state);
 		if (failed) return true;
 		this.advancePositions();
 		return this.owePubrel(messageId);
@@ -1200,6 +1239,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					this.receivedCount--;
 				}
 			}
+			if (state.receivedThrough <= next) state.receivedThrough = undefined;
 			for (const key of state.receivedRuns?.keys() ?? []) {
 				if (key <= next) {
 					state.receivedRuns.delete(key);
@@ -1250,6 +1290,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (databaseGeneration !== undefined) saved.databaseGeneration = databaseGeneration;
 			if (state.received?.size > 0) saved.received = [...state.received.values()];
 			if (state.receivedRuns?.size > 0) saved.receivedRuns = [...state.receivedRuns];
+			if (state.receivedThrough !== undefined) saved.receivedThrough = state.receivedThrough;
 			if (qos === 2) {
 				const inFlight = [...(state.resend?.values() ?? [])];
 				for (const [messageId, { key, ordinal, id }] of state.unacked) inFlight.push([key, ordinal, id, messageId]);

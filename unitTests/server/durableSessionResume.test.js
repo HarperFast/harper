@@ -1794,6 +1794,41 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		second.handlers.close();
 	});
 
+	it('collapses what a quiet replay delivered and the client took, and sends none of it again', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const clientId = `qos2-quiet-${name}`;
+		const first = await subscribed(open, clientId, `${name}/#`);
+		await T.put('w', { value: 'w' });
+		const w = await waitFor(() => published(first, 'w'));
+		first.handlers.message(generate({ cmd: 'pubrec', messageId: w.messageId }, v5));
+		await waitFor(() => ofCommand(first, 'pubrel').length === 1);
+		first.handlers.message(generate({ cmd: 'pubcomp', messageId: w.messageId }, v5));
+		await waitFor(async () => (await stored(clientId)).awaitingCompletion === undefined);
+		first.handlers.close();
+		for (let i = 0; i < 20; i++) await T.put(`q${i}`, { value: `q${i}` });
+		const second = await openConnected(open, clientId);
+		await waitFor(() => published(second, 'q19'));
+		// as when nothing else commits during the replay: the position stays at the resume start
+		const state = [...open.sessions]
+			.find((session) => session.sessionId === clientId && !session.terminated)
+			.topics.get(`${name}/#`);
+		const resumedAt = state.entry.startTime;
+		state.subscription.progress = () => resumedAt;
+		for (const packet of ofCommand(second, 'publish'))
+			second.handlers.message(generate({ cmd: 'pubrec', messageId: packet.messageId }, v5));
+		await waitFor(() => ofCommand(second, 'pubrel').length === ofCommand(second, 'publish').length);
+		const [entry] = (await stored(clientId)).subscriptions;
+		assert.ok((entry.received?.length ?? 0) + (entry.receivedRuns?.length ?? 0) <= 1, JSON.stringify(entry));
+		second.handlers.close();
+		const third = await openConnected(open, clientId);
+		await T.put('after', { value: 'after' });
+		await waitFor(() => published(third, 'after'));
+		assert.deepStrictEqual(ofCommand(third, 'publish').map(payloadValue), ['after']);
+		third.handlers.close();
+	});
+
 	it('retries a failed PUBREL save when the PUBREC is repeated', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
