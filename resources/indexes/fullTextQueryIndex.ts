@@ -25,7 +25,7 @@ import {
 } from './fullTextNativeBinding.ts';
 import { nativeFullTextIndexPath } from './nativeFullTextDerivedIndexLifecycle.ts';
 import { decodeFullTextPublication, type FullTextPublication } from './fullTextDerivedIndex.ts';
-import { fullTextComparatorMode } from './fullTextQueryProtocol.ts';
+import { fullTextComparatorMode, fullTextReplayPrefixMatches } from './fullTextQueryProtocol.ts';
 export {
 	FULL_TEXT_QUERY_PAUSE_OPERATION,
 	FULL_TEXT_QUERY_RESUME_OPERATION,
@@ -427,7 +427,9 @@ export class FullTextQueryIndex {
 				recordEntry: any;
 			}> = [];
 			let offset = 0;
-			let traversal: { continuation?: string; skip: number } | undefined;
+			let traversal:
+				{ continuation?: string; skip: number; prefix?: NativeFullTextSearchPageResult['hits'] } | undefined;
+			let maxRawPageSize = this.#maxFilteredRawPageSize!;
 			let moreMayExist = false;
 			let staleVersionHits = 0;
 			let rejectedGateSampleCount = 0;
@@ -448,7 +450,7 @@ export class FullTextQueryIndex {
 			while (accepted.length < target) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 				const limit = traversal
-					? rawPageSize
+					? Math.min(maxRawPageSize, rawPageSize + traversal.skip)
 					: autocomplete
 						? this.#maxAutocompleteResults!
 						: Math.min(rawPageSize, maxSearchWindow);
@@ -466,17 +468,31 @@ export class FullTextQueryIndex {
 							);
 				} catch (error) {
 					if (traversal && limit > 1 && error?.code === 'E_RESULT_TOO_LARGE') {
-						rawPageSize = Math.max(1, Math.floor(limit / 2));
+						maxRawPageSize = Math.max(1, Math.floor(limit / 2));
+						rawPageSize = Math.min(rawPageSize, maxRawPageSize);
 						continue;
 					}
 					throw error;
 				}
+				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+				remainingSearchBudget(deadline);
 				if (traversal) {
 					if (result.hits.length === 0 && result.continuation !== undefined)
 						throw new ServerError('Full-text traversal returned an empty page with more results', 500);
 					traversal.continuation = result.continuation;
 					const skipped = Math.min(traversal.skip, result.hits.length);
+					if (
+						skipped > 0 &&
+						!fullTextReplayPrefixMatches(
+							traversal.prefix!,
+							result.hits,
+							traversal.prefix!.length - traversal.skip,
+							skipped
+						)
+					)
+						throw new ServerError('Full-text traversal disagreed with its initial result prefix', 500);
 					traversal.skip -= skipped;
+					if (traversal.skip === 0) traversal.prefix = undefined;
 					if (skipped > 0) result = { ...result, hits: result.hits.slice(skipped) };
 					if (traversal.skip > 0 && !result.continuation)
 						throw new ServerError('Full-text traversal ended before its previously read hits', 500);
@@ -485,6 +501,7 @@ export class FullTextQueryIndex {
 					throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
 				// Ordinary search must not claim a retrievable lower bound after a short page.
 				if (
+					!traversal &&
 					result.totalRelation === 'lower-bound' &&
 					result.hits.length < limit &&
 					offset + result.hits.length < result.total
@@ -609,7 +626,7 @@ export class FullTextQueryIndex {
 					if (accepted.length >= target) break;
 				}
 				offset += result.hits.length;
-				if (!traversal && moreMayExist && accepted.length < target) traversal = { skip: offset };
+				if (!traversal && moreMayExist && accepted.length < target) traversal = { skip: offset, prefix: result.hits };
 				if (!moreMayExist) break;
 				if (accepted.length < target) {
 					if (bounded) {
@@ -619,7 +636,7 @@ export class FullTextQueryIndex {
 							result.hits.length,
 							acceptedThisPage,
 							target - accepted.length,
-							this.#maxFilteredRawPageSize!
+							maxRawPageSize
 						);
 					}
 					await new Promise((resolve) => setImmediate(resolve));
@@ -627,7 +644,13 @@ export class FullTextQueryIndex {
 			}
 			if (!bounded && moreMayExist)
 				throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
-			if (bounded && accepted.length < target && staleVersionHits === 0 && rejectedGateSampleCount > 0) {
+			if (
+				bounded &&
+				moreMayExist &&
+				accepted.length < target &&
+				staleVersionHits === 0 &&
+				rejectedGateSampleCount > 0
+			) {
 				options.assertTransactionActive?.();
 				for (let sampleIndex = 0; sampleIndex < rejectedGateSampleCount; sampleIndex++) {
 					const entry = this.#options.Table.primaryStore.getEntry(rejectedGateKeys![sampleIndex], { transaction });
@@ -641,7 +664,7 @@ export class FullTextQueryIndex {
 					}
 				}
 			}
-			if (bounded && accepted.length < target && staleVersionHits > 0)
+			if (bounded && moreMayExist && accepted.length < target && staleVersionHits > 0)
 				throw new DerivedIndexLagError(
 					`Full-text index '${this.#definition.name}' changed while searching; retry this query`
 				);
@@ -906,6 +929,8 @@ export class FullTextQueryIndex {
 					const binding = await this.#getBinding();
 					reader = await binding.openNativeFullTextReader(this.#nativeOptions);
 					try {
+						if (typeof reader.searchPage !== 'function')
+							throw new TypeError('@harperfast/fulltext/native reader does not support traversal');
 						publication = this.#decodeReaderPublication(reader);
 					} catch (error) {
 						await reader.close().catch((closeError) => this.#warnReaderClose(closeError));
