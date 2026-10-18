@@ -1829,6 +1829,31 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		third.handlers.close();
 	});
 
+	it('restores no receipts saved against another database generation', async function () {
+		if (!isRocksDB) this.skip();
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const clientId = `qos2-generation-${name}`;
+		const first = await subscribed(open, clientId, `${name}/#`);
+		await T.put('a', { value: 'a' });
+		await T.put('b', { value: 'b' });
+		await waitFor(() => published(first, 'b'));
+		first.handlers.message(generate({ cmd: 'pubrec', messageId: published(first, 'b').messageId }, v5));
+		await waitFor(() => ofCommand(first, 'pubrel').length === 1);
+		first.handlers.close();
+		const record = await stored(clientId);
+		await waitFor(() => !open.sessions.size || [...open.sessions].every((session) => session.sealed));
+		// as when the record replicated from another node, whose log keys name nothing here
+		await databases.system.hdb_durable_session.put({
+			...record,
+			subscriptions: record.subscriptions.map((entry) => ({ ...entry, receiptsGeneration: 'elsewhere' })),
+		});
+		const second = await openConnected(open, clientId);
+		await waitFor(() => published(second, 'b'));
+		second.handlers.close();
+	});
+
 	it('retries a failed PUBREL save when the PUBREC is repeated', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });

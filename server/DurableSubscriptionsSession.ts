@@ -692,6 +692,8 @@ type DurableEntry = {
 	receivedThrough?: number;
 	/** QoS 2 deliveries sent and not yet PUBREC'd, with their packet ids, which a replay sends again as DUPs. */
 	inFlight?: [...DeliveryIdentity, number][];
+	/** The database generation whose log keys the receipts and in-flight deliveries name. */
+	receiptsGeneration?: string;
 };
 function deliveryId(id: unknown) {
 	if (Array.isArray(id)) return keyArrayToString(id);
@@ -764,6 +766,11 @@ function sessionRecordResumable(record: any): boolean {
  * Only a position from the database's current generation can be checked. One from another node's
  * generation (the record replicates), or from before a restore or copy, resumes unchecked instead.
  */
+function currentGeneration(topic: string): string | undefined {
+	const auditStore = resources.getMatch(topic.split('?')[0], 'mqtt')?.Resource?.auditStore;
+	return auditStore ? getDatabaseGeneration(auditStore)?.id : undefined;
+}
+
 function boundToCurrentGeneration(entry: DurableEntry): boolean {
 	if (entry.databaseGeneration === undefined) return false;
 	const auditStore = resources.getMatch(entry.topic.split('?')[0], 'mqtt')?.Resource?.auditStore;
@@ -787,7 +794,6 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	/** Packets are handled concurrently, so SUBSCRIBE, UNSUBSCRIBE and resume change `topics` one at a time. */
 	changes: Promise<unknown> = Promise.resolve();
 	reservedIds = new Set<number>();
-	/** Entries in every topic's `received` and `receivedRuns`. */
 	receivedCount = 0;
 	inFlightChanged = false;
 	/** Set while the final save waits for inbound publishes; `sealed` follows once it is taken. */
@@ -818,15 +824,18 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 						}
 					: { qos, topic }
 			);
-			state.receivedThrough = entry.receivedThrough;
-			for (const [key, count] of entry.receivedRuns || []) {
-				(state.receivedRuns ??= new Map()).set(key, count);
-				this.receivedCount++;
-			}
-			for (const identity of entry.received || []) this.addReceived(state, identity);
-			for (const delivery of entry.inFlight || []) {
-				(state.resend ??= new Map()).set(slotOf(delivery[0], delivery[1]), delivery);
-				this.reservedIds.add(delivery[3]);
+			// keys from another node's log, or from before a restore or copy, name nothing here
+			if (entry.receiptsGeneration === currentGeneration(topic)) {
+				state.receivedThrough = entry.receivedThrough;
+				for (const [key, count] of entry.receivedRuns || []) {
+					(state.receivedRuns ??= new Map()).set(key, count);
+					this.receivedCount++;
+				}
+				for (const identity of entry.received || []) this.addReceived(state, identity);
+				for (const delivery of entry.inFlight || []) {
+					(state.resend ??= new Map()).set(slotOf(delivery[0], delivery[1]), delivery);
+					this.reservedIds.add(delivery[3]);
+				}
 			}
 			this.topics.set(topic, state);
 		}
@@ -923,15 +932,16 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		return super.messageIdInUse(messageId) || this.reservedIds.has(messageId);
 	}
 	addReceived(state: TopicState, identity: DeliveryIdentity) {
-		if (this.receivedCount >= RECEIVED_LIMIT) return;
 		const [key, ordinal] = identity;
 		const runs = (state.receivedRuns ??= new Map());
 		let run = runs.get(key) ?? 0;
 		if (ordinal < run) return;
 		if (ordinal === run) {
-			if (run === 0) this.receivedCount++;
+			if (run === 0) {
+				if (this.receivedCount >= RECEIVED_LIMIT) return;
+				this.receivedCount++;
+			}
 			run++;
-			// one taken out of order that now continues the run joins it
 			while (state.received?.delete(slotOf(key, run))) {
 				this.receivedCount--;
 				run++;
@@ -940,7 +950,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			return;
 		}
 		const slot = slotOf(key, ordinal);
-		if (!state.received?.has(slot)) this.receivedCount++;
+		if (!state.received?.has(slot)) {
+			if (this.receivedCount >= RECEIVED_LIMIT) return;
+			this.receivedCount++;
+		}
 		(state.received ??= new Map()).set(slot, identity);
 	}
 	forgetTopic(state: TopicState) {
@@ -984,7 +997,11 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	compactReceived(state: TopicState) {
 		let bound = state.deliveredKey;
 		if (bound === undefined) return;
-		for (const { key } of state.unacked.values()) if (key < bound) bound = key;
+		for (const { key } of state.unacked.values()) {
+			if (key < bound) bound = key;
+			// with none late, the oldest unacknowledged delivery has the lowest key
+			if (state.lateUnacked === 0) break;
+		}
 		for (const [key] of state.resend?.values() ?? []) if (key < bound) bound = key;
 		let through = state.receivedThrough;
 		for (const key of state.receivedRuns?.keys() ?? []) {
@@ -1054,21 +1071,28 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (delivery?.qos !== 2) return false;
 		const state = this.topics.get(delivery.topic);
 		const sent = state?.unacked.get(messageId);
-		// the position cannot pass it while an older delivery, or the rest of its transaction, is unacknowledged
-		if (sent) this.addReceived(state, [sent.key, sent.ordinal, sent.id]);
-		else if (state) {
+		let identity: DeliveryIdentity | undefined = sent && [sent.key, sent.ordinal, sent.id];
+		if (!sent && state) {
 			// sent by a subscription this one replaced, and not yet sent again
 			for (const [slot, resend] of state.resend ?? []) {
 				if (resend[3] !== messageId) continue;
 				state.resend.delete(slot);
 				this.reservedIds.delete(messageId);
-				this.addReceived(state, [resend[0], resend[1], resend[2]]);
+				identity = [resend[0], resend[1], resend[2]];
 				break;
 			}
 		}
 		this.dirty = true;
 		this.acknowledge(messageId);
-		if (state) this.compactReceived(state);
+		if (state) {
+			// compacted first, so the receipt limit counts only what is still kept
+			this.compactReceived(state);
+			// the position cannot pass it while an older delivery, or the rest of its transaction, is unacknowledged
+			if (identity) {
+				this.addReceived(state, identity);
+				this.compactReceived(state);
+			}
+		}
 		if (failed) return true;
 		this.advancePositions();
 		return this.owePubrel(messageId);
@@ -1302,6 +1326,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				for (const [messageId, { key, ordinal, id }] of state.unacked) inFlight.push([key, ordinal, id, messageId]);
 				if (inFlight.length > 0) saved.inFlight = inFlight;
 			}
+			if (saved.received || saved.receivedRuns || saved.receivedThrough !== undefined || saved.inFlight)
+				saved.receiptsGeneration = currentGeneration(topic);
 			subscriptions.push(saved);
 		}
 		const record: any = { id: this.sessionId, incarnation: this.incarnation, subscriptions };
