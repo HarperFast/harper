@@ -287,8 +287,8 @@ export interface ClusterLockTransport {
 	 * acknowledger's `homeIncarnation`, so a restart during the drain invalidates it) or externally
 	 * fenced, then `DELEGATION_LEASE_MS + skew` elapsed, unless every quiesced home proved its drain
 	 * and every fenced node is stopped, not merely isolated. A home expires its older grants whose recall was
-	 * confirmed, or failed to a node outside the new ring, on that activation
-	 * (`#prepareFreshnessGeneration`). Core cannot observe
+	 * confirmed, or that a drain reported outstanding on a node outside the new ring, on that
+	 * activation (`#prepareFreshnessGeneration`). Core cannot observe
 	 * what happened on other nodes; the operator can.
 	 *
 	 * The other interval — a restart of *this* process — is core's own, because a generation does not
@@ -692,6 +692,8 @@ interface HomeGrant {
 	recallConfirmed?: boolean;
 	/** After a FAILED recall, the earliest this home may try that delegate again (`RECALL_RETRY_MS`). */
 	recallRetryAfterMono?: number;
+	/** A stage drain (`quiesce`) reported this grant's recall unconfirmed. */
+	drainOutstanding?: boolean;
 }
 
 interface PendingDelegation {
@@ -2113,14 +2115,17 @@ export class LockCoordinator {
 				this.#beginRecall(keyId, grant);
 				if (grant.recalling) await withDeadline(grant.recalling, remaining());
 				if (grant.recallConfirmed) result.recalled++;
-				else
+				else {
+					grant.drainOutstanding = true;
 					result.outstanding.push({
 						table: this.table,
 						key: grant.key,
 						delegate: grant.delegate,
 						reason: 'the delegate did not confirm it stopped admitting',
 					});
+				}
 			} catch (error) {
+				grant.drainOutstanding = true;
 				result.outstanding.push({
 					table: this.table,
 					key: grant.key,
@@ -2301,12 +2306,11 @@ export class LockCoordinator {
 		if (this.#freshnessGeneration === generation) return;
 		this.#freshnessGeneration = generation;
 		this.#loseFreshnessHistory();
-		// record-locks.md, "A delegation is authority within one generation". A recall that failed is
-		// what separates a stopped delegate from one a drain never reached.
+		// record-locks.md, "A delegation is authority within one generation".
 		for (const [keyId, grant] of this.#grants)
 			if (
 				grant.token[0] < generation &&
-				(grant.recallConfirmed || (grant.recallRetryAfterMono !== undefined && !homes.includes(grant.delegate)))
+				(grant.recallConfirmed || (grant.drainOutstanding && !homes.includes(grant.delegate)))
 			)
 				this.#expireGrant(keyId, grant);
 	}

@@ -299,10 +299,10 @@ may have re-homed the key to a node that knows nothing of this token. Bounding t
 delegate noticing a new generation and the new home granting is the design note's §4.3 drain —
 operator-sequenced, and harper-pro's to hold, not core's. The home applies the rule to its own
 grants once the drain has ruled on them: the first grant under a new generation expires every older
-grant whose recall the delegate confirmed, or whose recall failed to a delegate the new `homes[]` no
-longer names (`#prepareFreshnessGeneration`). A failed recall to a dropped node is what activation
-then has to cover: harper-pro activates past it only when the operator attests the node stopped
-(harper-pro#973), and otherwise waits out the lease. Expiring it serves that node's keys at once
+grant whose recall the delegate confirmed, or that a drain (`quiesce`) reported outstanding on a
+delegate the new `homes[]` no longer names (`#prepareFreshnessGeneration`). An outstanding recall to
+a dropped node is what activation then has to cover: harper-pro activates past it only when the
+operator attests the node stopped (harper-pro#973), and otherwise waits out the lease. Expiring it serves that node's keys at once
 instead of after its delegation lease. Every other older grant keeps its lease: a delegate still in
 the ring, or one no drain reached, which is the backstop against an activation that came too early
 or a drain that missed a grant.

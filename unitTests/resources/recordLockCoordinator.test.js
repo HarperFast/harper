@@ -2528,10 +2528,9 @@ describe('record lock delegations', () => {
 			return { cluster, key: keys[0], token };
 		}
 
-		/** What staging the next generation runs on alpha: its recalls to gamma fail. */
-		async function drainAlpha(cluster) {
+		async function drainAlpha(cluster, budgetMs = 1_000) {
 			const result = { complete: true, surrendered: 0, recalled: 0, outstanding: [] };
-			await cluster.node('alpha').coordinator.quiesce(result, () => 1_000);
+			await cluster.node('alpha').coordinator.quiesce(result, () => budgetMs);
 			assert.deepStrictEqual(
 				result.outstanding.map((entry) => entry.delegate),
 				['gamma', 'gamma']
@@ -2585,8 +2584,22 @@ describe('record lock delegations', () => {
 			assert.ok(successor.admissionId);
 		});
 
-		it('keeps an older grant to a dropped node that no drain reached', async () => {
+		it('serves the key when the drain recall to the dropped node is still in flight at its deadline', async () => {
 			const { cluster, key } = await gammaHeldThenStopped();
+			cluster.node('alpha').coordinator.transport.recallDelegation = () => new Promise(() => {});
+			await drainAlpha(cluster, 50);
+			cluster.homes = ['alpha', 'beta'];
+			cluster.generation = 2;
+			const round = await cluster.node('beta').coordinator.acquire(key, LEASE, 1_000);
+			assert.ok(round.admissionId);
+		});
+
+		it('keeps an older grant to a dropped node that no drain reached, even after a contended recall failed', async () => {
+			const { cluster, key } = await gammaHeldThenStopped();
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
+				(error) => error.statusCode === 423
+			);
 			cluster.homes = ['alpha', 'beta'];
 			cluster.generation = 2;
 			await assert.rejects(
