@@ -28,7 +28,7 @@ import {
 } from './fullTextNativeBinding.ts';
 import { nativeFullTextIndexPath } from './nativeFullTextDerivedIndexLifecycle.ts';
 import { decodeFullTextPublication, type FullTextPublication } from './fullTextDerivedIndex.ts';
-import { fullTextComparatorMode, fullTextReplayPrefixMatches, fullTextHitsAdvance } from './fullTextQueryProtocol.ts';
+import { fullTextComparatorMode, replayFullTextPrefix, fullTextHitsAdvance } from './fullTextQueryProtocol.ts';
 export {
 	FULL_TEXT_QUERY_PAUSE_OPERATION,
 	FULL_TEXT_QUERY_RESUME_OPERATION,
@@ -487,26 +487,12 @@ export class FullTextQueryIndex {
 				rawHitsFetched += result.hits.length;
 				let replayedHits = 0;
 				if (traversal) {
-					if (result.hits.length === 0 && result.continuation !== undefined)
-						throw new ServerError('Full-text traversal returned an empty page with more results', 500);
+					const replay = replayFullTextPrefix(traversal.prefix, traversal.skip, result);
 					traversal.continuation = result.continuation;
-					const skipped = Math.min(traversal.skip, result.hits.length);
-					replayedHits = skipped;
-					if (
-						skipped > 0 &&
-						!fullTextReplayPrefixMatches(
-							traversal.prefix!,
-							result.hits,
-							traversal.prefix!.length - traversal.skip,
-							skipped
-						)
-					)
-						throw new ServerError('Full-text traversal disagreed with its initial result prefix', 500);
-					traversal.skip -= skipped;
+					traversal.skip = replay.remaining;
+					replayedHits = replay.skipped;
 					if (traversal.skip === 0) traversal.prefix = undefined;
-					if (skipped > 0) result = { ...result, hits: result.hits.slice(skipped) };
-					if (traversal.skip > 0 && !result.continuation)
-						throw new ServerError('Full-text traversal ended before its previously read hits', 500);
+					if (replayedHits > 0) result = { ...result, hits: replay.hits };
 				}
 				if (!bounded && result.totalRelation === 'exact' && result.total > searchWindow)
 					throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
@@ -514,7 +500,6 @@ export class FullTextQueryIndex {
 					throw new ServerError('Full-text traversal did not advance past its previous page', 500);
 				if (result.hits.length > 0) previousHit = result.hits[result.hits.length - 1];
 
-				// Ordinary search must not claim a retrievable lower bound after a short page.
 				if (
 					!traversal &&
 					result.totalRelation === 'lower-bound' &&

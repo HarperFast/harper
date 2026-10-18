@@ -267,6 +267,39 @@ describe('full-text replay prefix validation', () => {
 	});
 });
 
+describe('full-text replay page protocol', () => {
+	const { replayFullTextPrefix } = require('#src/resources/indexes/fullTextQueryProtocol');
+	const prefix = [
+		{ id: 'a', score: 3, version: '1' },
+		{ id: 'b', score: 2, version: '1' },
+		{ id: 'c', score: 1, version: '1' },
+	];
+	it('accounts for a prefix split over several lower-bound pages before returning new hits', () => {
+		const first = { hits: prefix.slice(0, 1), totalRelation: 'lower-bound', continuation: 'next' };
+		const one = replayFullTextPrefix(prefix, 3, first);
+		assert.deepStrictEqual(one, { skipped: 1, remaining: 2, hits: [] });
+		assert.strictEqual(first.totalRelation, 'lower-bound');
+		const next = { id: 'd', score: 0, version: '1' };
+		assert.deepStrictEqual(replayFullTextPrefix(prefix, one.remaining, { hits: [...prefix.slice(1), next] }), {
+			skipped: 2,
+			remaining: 0,
+			hits: [next],
+		});
+	});
+	it('rejects an empty page claiming more hits, a changed prefix and premature exhaustion', () => {
+		for (const page of [
+			{ hits: [], continuation: 'next' },
+			{ hits: [{ ...prefix[0], version: '2' }], continuation: 'next' },
+			{ hits: prefix.slice(0, 1) },
+		])
+			assert.throws(
+				() => replayFullTextPrefix(prefix, 3, page),
+				(error) => error.statusCode === 500
+			);
+		assert.deepStrictEqual(replayFullTextPrefix(undefined, 0, { hits: [] }), { skipped: 0, remaining: 0, hits: [] });
+	});
+});
+
 describe('full-text traversal ordering guard', () => {
 	it('requires a new page to advance by score and then UTF-8 ID order', () => {
 		const { fullTextHitsAdvance } = require('#src/resources/indexes/fullTextQueryProtocol');

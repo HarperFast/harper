@@ -1,3 +1,4 @@
+import { ServerError } from '../../utility/errors/hdbError.ts';
 import type { NativeFullTextSearchMode } from './fullTextNativeBinding.ts';
 
 export const FULL_TEXT_QUERY_PAUSE_OPERATION = 'pause-full-text-query-readers';
@@ -56,4 +57,20 @@ export function fullTextHitsAdvance(previous: FullTextReplayHit, next: FullTextR
 		previous.score > next.score ||
 		(previous.score === next.score && Buffer.compare(Buffer.from(previous.id), Buffer.from(next.id)) < 0)
 	);
+}
+
+export function replayFullTextPrefix(
+	prefix: readonly FullTextReplayHit[] | undefined,
+	remaining: number,
+	page: { hits: FullTextReplayHit[]; continuation?: string }
+): { skipped: number; remaining: number; hits: FullTextReplayHit[] } {
+	if (page.hits.length === 0 && page.continuation !== undefined)
+		throw new ServerError('Full-text traversal returned an empty page with more results', 500);
+	const skipped = Math.min(remaining, page.hits.length);
+	if (skipped > 0 && (!prefix || !fullTextReplayPrefixMatches(prefix, page.hits, prefix.length - remaining, skipped)))
+		throw new ServerError('Full-text traversal disagreed with its initial result prefix', 500);
+	remaining -= skipped;
+	if (remaining > 0 && !page.continuation)
+		throw new ServerError('Full-text traversal ended before its previously read hits', 500);
+	return { skipped, remaining, hits: skipped > 0 ? page.hits.slice(skipped) : page.hits };
 }
