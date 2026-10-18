@@ -88,13 +88,15 @@ Weight and highlighting changes preserve the physical index and refresh query re
 
 ## Native package and limits
 
-Harper pins `@harperfast/fulltext` to **0.5.0** and validates the native runtime capabilities before activation. Full-text activation requires RocksDB and an audited table. Declare new schema tables with `@table(audit: true)` and keep audit logging enabled while an index is declared. LMDB is rejected. A missing or incompatible native package prevents activation.
+Harper pins `@harperfast/fulltext` to **0.6.0** and validates the native runtime capabilities before activation. Full-text activation requires RocksDB and an audited table. Declare new schema tables with `@table(audit: true)` and keep audit logging enabled while an index is declared. LMDB is rejected. A missing or incompatible native package prevents activation.
 
 A format-incompatible native package upgrade causes each node to rebuild its local derived index from authoritative records. Full-text queries on that node return 503 until the index is ready. Use a rolling upgrade to keep full-text search available on other replicas while each local index rebuilds.
 
 Earlier beta declarations and indexes are unsupported. This field-only API does not provide a compatibility or upgrade path for them.
 
-Native queries have finite result windows and execution budgets. Reduce the requested offset/limit or narrow the query when a window is exceeded; filtering can also exhaust the window. Prefix modes use the native autocomplete window, clamped when necessary so its maximum result set fits in one native response. Highlight tracing has separate record and source-byte bounds. These are functional constraints, not catalog-scale performance guarantees.
+Harper keeps the requested `offset + limit` within the native ordinary result window. When source checks or other conditions reject the first batch, Harper uses native traversal to reach later matches on the same reader snapshot. This also lets prefix and fuzzy-prefix queries return more than the native first-batch autocomplete limit. Raw batch sizes are bounded by the installed addon’s page and response-byte limits; all batches share one execution budget. A timeout returns an error rather than a successful incomplete page.
+
+The snapshot is retained for one request. Separate offset-based requests can observe different publications; cross-request continuation is not exposed yet. Highlight tracing has separate record and source-byte bounds. Query construction and some native operations cannot be interrupted, so the execution budget is not a hard response-time guarantee.
 
 Harper does not configure Fulltext's native filter metadata or submit native filter or candidate-ID requests. Ordinary conditions continue through Harper's secondary-index gates and authoritative record predicates.
 

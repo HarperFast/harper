@@ -357,4 +357,63 @@ describe('published native full-text Table.search integration', () => {
 			expected.slice(0, -5)
 		);
 	});
+	it('fills filtered ordinary and autocomplete pages beyond the native offset and hit windows', async () => {
+		const { toBufferKey } = require('ordered-binary');
+		const info = await (await loadFullTextNativeBinding()).runtimeInfo();
+		const count = info.limits.maxSearchWindow + 25;
+		Product = table({
+			database: `fulltext-native-traversal-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1 }])],
+		});
+		const keys = Array.from({ length: count }, (_, i) => `product-${String(i).padStart(5, '0')}`);
+		for (let start = 0; start < count; start += 250)
+			await Product.put(keys.slice(start, start + 250).map((id) => ({ id, title: 'widget catalog' })));
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30_000);
+		const ordered = keys
+			.slice()
+			.sort((a, b) =>
+				Buffer.compare(
+					Buffer.from(toBufferKey(a).toString('base64url')),
+					Buffer.from(toBufferKey(b).toString('base64url'))
+				)
+			);
+		const search = (comparator, value, options = {}) =>
+			collect(
+				Product.search({
+					conditions: [
+						{
+							attribute: 'catalogSearch',
+							comparator,
+							value,
+							maxIndexLagMilliseconds: 0,
+							waitForIndexMilliseconds: 30_000,
+						},
+					],
+					limit: 25,
+					...options,
+				})
+			);
+		const tail = new Set(ordered.slice(info.limits.maxSearchWindow));
+		assert.deepStrictEqual(
+			(await search('matches', 'widget catalog', { rowFilter: (record) => tail.has(record.id) })).map(({ id }) => id),
+			ordered.slice(info.limits.maxSearchWindow)
+		);
+		const first = new Set(ordered.slice(0, info.limits.maxAutocompleteResults));
+		for (const comparator of ['matches_prefix', 'matches_fuzzy_prefix']) {
+			assert.deepStrictEqual(
+				(await search(comparator, 'widg', { rowFilter: (record) => !first.has(record.id) })).map(({ id }) => id),
+				ordered.slice(info.limits.maxAutocompleteResults, info.limits.maxAutocompleteResults + 25)
+			);
+			assert.deepStrictEqual(
+				(await search(comparator, 'widg', { limit: info.limits.maxAutocompleteResults + 25 })).map(({ id }) => id),
+				ordered.slice(0, info.limits.maxAutocompleteResults + 25)
+			);
+		}
+	});
 });

@@ -13,6 +13,22 @@ const {
 const { encodeFullTextCursorPayload } = require('#src/resources/indexes/fullTextDerivedIndex');
 const { nativeFullTextIndexPath } = require('#src/resources/indexes/nativeFullTextDerivedIndexLifecycle');
 
+function withTraversal(reader) {
+	if (reader?.then) return reader.then(withTraversal);
+	if (typeof reader.searchPage === 'function') return reader;
+	reader.searchPage = async function ({ continuation, ...request }, options) {
+		const offset = Number(continuation ?? 0);
+		const result = await this.search({ ...request, offset }, options);
+		const next = offset + result.hits.length;
+		return {
+			...result,
+			totalRelation: 'exact',
+			continuation: result.hits.length > 0 && next < result.total ? String(next) : undefined,
+		};
+	};
+	return reader;
+}
+
 function sharedStore() {
 	const buffers = new Map();
 	const callbacks = new Map();
@@ -113,6 +129,7 @@ function queryLimits(overrides = {}) {
 		maxCandidateIds: 1_024,
 		maxCandidateBytes: 1024 * 1024,
 		maxSearchWindow,
+		maxSearchPageSize: maxSearchWindow,
 		maxAutocompleteResults: Math.min(100, maxSearchWindow),
 		maxSearchResponseBytes: 8 * 1024 * 1024,
 		maxSearchBudgetMilliseconds: 30_000,
@@ -182,7 +199,7 @@ function simpleQueryIndex({
 				};
 			},
 			async openNativeFullTextReader() {
-				return {
+				return withTraversal({
 					get committedPayload() {
 						return committedPayload;
 					},
@@ -193,6 +210,12 @@ function simpleQueryIndex({
 						const current = hits();
 						return { total: current.length, totalRelation: 'exact', hits: current.slice(offset, offset + limit) };
 					},
+					async searchPage({ continuation, ...request }) {
+						const offset = Number(continuation ?? 0);
+						const result = await this.search({ ...request, offset });
+						const next = offset + result.hits.length;
+						return { ...result, continuation: next < result.total ? String(next) : undefined };
+					},
 					async reload() {
 						reloads++;
 						onReload?.();
@@ -200,7 +223,7 @@ function simpleQueryIndex({
 					async close() {
 						onClose?.();
 					},
-				};
+				});
 			},
 		},
 	});
@@ -376,7 +399,7 @@ describe('FullTextQueryIndex', () => {
 			},
 			async openNativeFullTextReader(options) {
 				readerOptions = options;
-				return reader;
+				return withTraversal(reader);
 			},
 		};
 		const Table = {
@@ -488,7 +511,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						get committedPayload() {
 							return payload;
 						},
@@ -507,7 +530,7 @@ describe('FullTextQueryIndex', () => {
 							}
 						},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -717,7 +740,7 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('reports an expired bounded native window as expired matches', async () => {
+	it('exhausts expired native matches beyond the ordinary window', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'expired-native-window';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -729,11 +752,9 @@ describe('FullTextQueryIndex', () => {
 			entryForKey: (key) => ({ version: 1, value: { title: key }, expiresAt: Date.now() - 1 }),
 		});
 		attachCurrentCoverage(index, auditStore, readinessId);
-		await assert.rejects(
-			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
-			(error) =>
-				error.statusCode === 400 &&
-				/Expired full-text matches exhausted the 10-result search window/.test(error.message)
+		assert.deepStrictEqual(
+			await index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+			[]
 		);
 		await index.close();
 	});
@@ -854,14 +875,14 @@ describe('FullTextQueryIndex', () => {
 						};
 					},
 					async openNativeFullTextReader() {
-						return {
+						return withTraversal({
 							committedPayload: payload,
 							async search() {},
 							async reload() {},
 							async close() {
 								closes++;
 							},
-						};
+						});
 					},
 				},
 			});
@@ -936,7 +957,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return { committedPayload: undefined, async search() {}, async reload() {}, async close() {} };
+					return withTraversal({ committedPayload: undefined, async search() {}, async reload() {}, async close() {} });
 				},
 			},
 		});
@@ -980,7 +1001,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return { committedPayload: undefined, async search() {}, async reload() {}, async close() {} };
+					return withTraversal({ committedPayload: undefined, async search() {}, async reload() {}, async close() {} });
 				},
 			},
 		});
@@ -1055,14 +1076,14 @@ describe('FullTextQueryIndex', () => {
 				},
 				async openNativeFullTextReader() {
 					opens++;
-					return {
+					return withTraversal({
 						async search() {
 							return { total: 0, totalRelation: 'exact', hits: [] };
 						},
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -1149,7 +1170,7 @@ describe('FullTextQueryIndex', () => {
 					},
 					async openNativeFullTextReader() {
 						opens++;
-						return {
+						return withTraversal({
 							async search(searchRequest) {
 								request = searchRequest;
 								return { total: 0, totalRelation: 'exact', hits: [] };
@@ -1157,7 +1178,7 @@ describe('FullTextQueryIndex', () => {
 							committedPayload: publicationPayload(),
 							async reload() {},
 							async close() {},
-						};
+						});
 					},
 				},
 			});
@@ -1171,19 +1192,19 @@ describe('FullTextQueryIndex', () => {
 			}
 		};
 		await assert.rejects(
-			search('response-cannot-hold-hit', { maxSearchResponseBytes: 27 }, 'matches', 0),
+			search('response-cannot-hold-hit', { maxSearchResponseBytes: 96 }, 'matches', 0),
 			(error) => error.statusCode === 500 && error.message === "Full-text search on 'catalogSearch' failed"
 		);
-		assert.deepStrictEqual((await search('response-clamps-autocomplete', { maxSearchResponseBytes: 42 })).results, []);
+		assert.deepStrictEqual((await search('response-clamps-autocomplete', { maxSearchResponseBytes: 111 })).results, []);
 		const autocomplete = await search(
 			'response-clamps-autocomplete-query',
-			{ maxSearchResponseBytes: 42 },
+			{ maxSearchResponseBytes: 111 },
 			'matches_prefix'
 		);
 		assert.deepStrictEqual(autocomplete.results, []);
 		assert.strictEqual(autocomplete.request.limit, 1);
 		assert.deepStrictEqual(
-			(await search('response-autocomplete-boundary', { maxSearchResponseBytes: 43 })).results,
+			(await search('response-autocomplete-boundary', { maxSearchResponseBytes: 112 })).results,
 			[]
 		);
 	});
@@ -1213,14 +1234,14 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							throw errors.shift();
 						},
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -1254,7 +1275,7 @@ describe('FullTextQueryIndex', () => {
 			},
 			async openNativeFullTextReader(options) {
 				opens.push(structuredClone(options));
-				return {
+				return withTraversal({
 					async search() {
 						return {
 							total: 1,
@@ -1272,7 +1293,7 @@ describe('FullTextQueryIndex', () => {
 					async close() {
 						closes++;
 					},
-				};
+				});
 			},
 		};
 		const index = new FullTextQueryIndex({
@@ -1338,7 +1359,7 @@ describe('FullTextQueryIndex', () => {
 				},
 				async openNativeFullTextReader() {
 					opens++;
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -1353,7 +1374,7 @@ describe('FullTextQueryIndex', () => {
 						async close() {
 							closes++;
 						},
-					};
+					});
 				},
 			},
 		});
@@ -1402,7 +1423,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search(request) {
 							searches++;
 							lastRequest = request;
@@ -1418,7 +1439,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -1465,7 +1486,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search(request) {
 							requests.push(request);
 							return {
@@ -1477,7 +1498,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -1488,6 +1509,7 @@ describe('FullTextQueryIndex', () => {
 			requests.map(({ offset, limit, exactTotal }) => ({ offset, limit, exactTotal })),
 			[
 				{ offset: 0, limit: 256, exactTotal: true },
+				{ offset: 0, limit: 256, exactTotal: undefined },
 				{ offset: 256, limit: 256, exactTotal: undefined },
 			]
 		);
@@ -1525,11 +1547,11 @@ describe('FullTextQueryIndex', () => {
 			requests.map(({ offset, limit }) => ({ offset, limit })),
 			[
 				{ offset: 0, limit: 40 },
-				{ offset: 40, limit: 160 },
-				{ offset: 200, limit: 640 },
-				{ offset: 840, limit: 1_022 },
-				{ offset: 1_862, limit: 1_022 },
-				{ offset: 2_884, limit: 1_022 },
+				{ offset: 0, limit: 160 },
+				{ offset: 160, limit: 640 },
+				{ offset: 800, limit: 1_022 },
+				{ offset: 1_822, limit: 1_022 },
+				{ offset: 2_844, limit: 1_022 },
 			]
 		);
 		assert.deepStrictEqual(
@@ -1570,7 +1592,7 @@ describe('FullTextQueryIndex', () => {
 			requests.map(({ offset, limit }) => ({ offset, limit })),
 			[
 				{ offset: 0, limit: 40 },
-				{ offset: 40, limit: 720 },
+				{ offset: 0, limit: 720 },
 			]
 		);
 		assert.deepStrictEqual(
@@ -2509,7 +2531,7 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('uses the native autocomplete window for prefix expressions', async () => {
+	it('keeps the initial autocomplete window and traverses larger prefix expressions', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'autocomplete-window';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -2541,19 +2563,19 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search(request) {
 							requests.push(request);
 							return {
 								total: hits.length,
 								totalRelation: 'exact',
-								hits: hits.slice(0, request.limit),
+								hits: hits.slice(request.offset, request.offset + request.limit),
 							};
 						},
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -2570,14 +2592,16 @@ describe('FullTextQueryIndex', () => {
 				],
 			},
 		};
-		await assert.rejects(index.search(query, {}), /100-result search window; add a limit/);
-		assert.deepStrictEqual(
-			requests.map(({ offset, limit, exactTotal }) => ({ offset, limit, exactTotal })),
-			[{ offset: 0, limit: 100, exactTotal: true }]
-		);
+		assert.strictEqual((await index.search(query, {})).length, hits.length);
+		assert.deepStrictEqual((({ offset, limit, exactTotal }) => ({ offset, limit, exactTotal }))(requests[0]), {
+			offset: 0,
+			limit: 100,
+			exactTotal: true,
+		});
+		requests.length = 0;
 		assert.strictEqual((await index.search(query, {}, { minResults: 100 })).length, 100);
-		await assert.rejects(index.search(query, {}, { minResults: 101 }), /100-result autocomplete search window/);
-		assert.strictEqual(requests.length, 2);
+		assert.strictEqual(requests.length, 1);
+		assert.strictEqual((await index.search(query, {}, { minResults: 101 })).length, 101);
 		await index.close();
 	});
 
@@ -2608,7 +2632,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search(request) {
 							searches++;
 							await new Promise((resolve) => setTimeout(resolve, 25));
@@ -2625,7 +2649,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -2638,7 +2662,7 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('fails instead of returning an incomplete bounded page after filtering exhausts the native window', async () => {
+	it('returns an exhausted filtered page after traversing all raw results', async () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'filtered-window', 'ready');
 		const index = new FullTextQueryIndex({
@@ -2663,7 +2687,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 2,
@@ -2677,18 +2701,18 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
 		attachCurrentCoverage(index, auditStore, 'filtered-window');
-		await assert.rejects(
-			index.search(
+		assert.deepStrictEqual(
+			await index.search(
 				{ attribute: 'filtered-window', comparator: 'matches', value: 'shoe' },
 				{},
 				{ minResults: 1, filter: () => false }
 			),
-			/filters exhausted the 2-result search window/
+			[]
 		);
 		await index.close();
 	});
@@ -2718,7 +2742,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 3,
@@ -2732,7 +2756,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -2797,7 +2821,7 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('reports expired companion-gate rejections when they exhaust the search window', async () => {
+	it('exhausts expired companion-gate rejections beyond the search window', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'expired-gate-window';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -2818,8 +2842,8 @@ describe('FullTextQueryIndex', () => {
 			entryForKey: () => ({ version: 1, expiresAt: 0, value: { title: 'shoe' } }),
 		});
 		attachCurrentCoverage(index, auditStore, readinessId);
-		await assert.rejects(
-			index.search(
+		assert.deepStrictEqual(
+			await index.search(
 				{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
 				{},
 				{
@@ -2832,9 +2856,9 @@ describe('FullTextQueryIndex', () => {
 					},
 				}
 			),
-			/Expired full-text matches exhausted the 4-result search window/
+			[]
 		);
-		assert.strictEqual(sourceReads, 4, 'only the bounded exhaustion sample should load rejected records');
+		assert.strictEqual(sourceReads, 5, 'only the bounded exhaustion sample should load rejected records');
 		await index.close();
 	});
 
@@ -2861,7 +2885,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							throw Object.assign(new Error('corrupt'), { code: 'E_INDEX_CORRUPT' });
 						},
@@ -2870,7 +2894,7 @@ describe('FullTextQueryIndex', () => {
 						async close() {
 							if (closeAttempts++ === 0) throw new Error('close failed');
 						},
-					};
+					});
 				},
 			},
 		});
@@ -2915,14 +2939,14 @@ describe('FullTextQueryIndex', () => {
 						};
 					},
 					async openNativeFullTextReader() {
-						return {
+						return withTraversal({
 							async search() {
 								throw Object.assign(new Error('native storage cannot open'), { code });
 							},
 							committedPayload: publicationPayload(),
 							async reload() {},
 							async close() {},
-						};
+						});
 					},
 				},
 			});
@@ -2966,7 +2990,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -2977,7 +3001,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -3029,7 +3053,7 @@ describe('FullTextQueryIndex', () => {
 				async openNativeFullTextReader() {
 					const readerIndex = opens++;
 					let readerHits = publishedHits;
-					return {
+					return withTraversal({
 						async search(request) {
 							pages.push({ readerIndex, offset: request.offset });
 							if (readerIndex === 0 && request.offset > 0) {
@@ -3050,7 +3074,7 @@ describe('FullTextQueryIndex', () => {
 						async close() {
 							closes++;
 						},
-					};
+					});
 				},
 			},
 		});
@@ -3076,6 +3100,7 @@ describe('FullTextQueryIndex', () => {
 			assert.strictEqual(opens, 2);
 			assert.strictEqual(reloads, 0);
 			assert.deepStrictEqual(pages, [
+				{ readerIndex: 0, offset: 0 },
 				{ readerIndex: 0, offset: 0 },
 				{ readerIndex: 0, offset: 256 },
 				{ readerIndex: 1, offset: 0 },
@@ -3118,7 +3143,7 @@ describe('FullTextQueryIndex', () => {
 				},
 				async openNativeFullTextReader() {
 					opens++;
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -3131,7 +3156,7 @@ describe('FullTextQueryIndex', () => {
 							reloads++;
 						},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -3189,7 +3214,7 @@ describe('FullTextQueryIndex', () => {
 						throw new Error('transient replacement open failure');
 					}
 					const first = opens === 1;
-					return {
+					return withTraversal({
 						async search() {
 							if (first) {
 								firstSearchStarted.resolve();
@@ -3206,7 +3231,7 @@ describe('FullTextQueryIndex', () => {
 						async close() {
 							closes++;
 						},
-					};
+					});
 				},
 			},
 		});
@@ -3261,7 +3286,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							searchStarted.resolve();
 							await finishSearch.promise;
@@ -3276,7 +3301,7 @@ describe('FullTextQueryIndex', () => {
 						async close() {
 							closes++;
 						},
-					};
+					});
 				},
 			},
 		});
@@ -3339,7 +3364,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -3353,7 +3378,7 @@ describe('FullTextQueryIndex', () => {
 							closes++;
 							throw new Error('close failed');
 						},
-					};
+					});
 				},
 			},
 		});
@@ -3409,7 +3434,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -3439,7 +3464,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -3572,7 +3597,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 2,
@@ -3590,7 +3615,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -3647,7 +3672,7 @@ describe('FullTextQueryIndex', () => {
 				},
 				async openNativeFullTextReader() {
 					opens++;
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -3658,7 +3683,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -3712,7 +3737,7 @@ describe('FullTextQueryIndex', () => {
 						openStarted.resolve();
 						await finishOpen.promise;
 					}
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -3723,7 +3748,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -3778,7 +3803,7 @@ describe('FullTextQueryIndex', () => {
 						};
 					},
 					async openNativeFullTextReader() {
-						return {
+						return withTraversal({
 							async search() {
 								if (oldGeneration) {
 									searchStarted.resolve();
@@ -3795,7 +3820,7 @@ describe('FullTextQueryIndex', () => {
 							async close() {
 								if (oldGeneration) oldCloses++;
 							},
-						};
+						});
 					},
 				},
 			});
@@ -3907,7 +3932,7 @@ describe('FullTextQueryIndex', () => {
 						};
 					},
 					async openNativeFullTextReader() {
-						return {
+						return withTraversal({
 							async search() {
 								return {
 									total: 1,
@@ -3918,7 +3943,7 @@ describe('FullTextQueryIndex', () => {
 							committedPayload: publicationPayload(),
 							async reload() {},
 							async close() {},
-						};
+						});
 					},
 				},
 			});
@@ -3984,7 +4009,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							searchStarted.resolve();
 							await finishSearch.promise;
@@ -3997,7 +4022,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -4118,7 +4143,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -4129,7 +4154,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: publicationPayload(),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});
@@ -4296,7 +4321,7 @@ describe('FullTextQueryIndex', () => {
 					};
 				},
 				async openNativeFullTextReader() {
-					return {
+					return withTraversal({
 						async search() {
 							return {
 								total: 1,
@@ -4307,7 +4332,7 @@ describe('FullTextQueryIndex', () => {
 						committedPayload: encodeFullTextCursorPayload({ format: 1, logs: { local: 1 } }),
 						async reload() {},
 						async close() {},
-					};
+					});
 				},
 			},
 		});

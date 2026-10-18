@@ -148,7 +148,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		const packageJson = JSON.parse(await readFile(resolve(import.meta.dirname, '../..', 'package.json'), 'utf8'));
 		assert.strictEqual(info.packageVersion, packageJson.optionalDependencies['@harperfast/fulltext']);
 		assert.strictEqual(info.mutationBatchApiVersion, 5);
-		assert.strictEqual(info.queryApiVersion, 3);
+		assert.strictEqual(info.queryApiVersion, 4);
 		assert.ok(info.queryClassIsolationMinimumSearchThreads > 0);
 		const description = await operation({ operation: 'describe_table', schema: 'data', table: 'Product' });
 		const index = description.full_text_indexes.find(({ name }) => name === 'catalogSearch');
@@ -282,6 +282,28 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			rest.map(({ id }) => id),
 			page.map(({ id }) => id)
 		);
+	});
+
+	test('fills REST autocomplete pages after structured filtering and beyond the first native batch', async () => {
+		const all = await search(query('pagination'));
+		const expected = all
+			.filter(({ category }) => category === 'even')
+			.slice(0, 100)
+			.map(({ id }) => id);
+		for (const comparator of ['matches_prefix', 'matches_fuzzy_prefix']) {
+			const results = await request(
+				`/Product/?catalogSearch=${comparator}=pagin&category=even&limit(100)&select(id,title)`
+			);
+			assert.deepStrictEqual(
+				results.map(({ id }) => id),
+				expected
+			);
+			const larger = await request(`/Product/?catalogSearch=${comparator}=pagin&limit(150)&select(id,title)`);
+			assert.deepStrictEqual(
+				larger.map(({ id }) => id),
+				all.slice(0, 150).map(({ id }) => id)
+			);
+		}
 	});
 
 	test('preserves source permissions and row filters for non-admin searches', async () => {
