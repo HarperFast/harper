@@ -2700,9 +2700,6 @@ export class LockCoordinator {
 			// An expired grant is not a live one. Collecting it here rather than trusting `tick()` is
 			// what keeps a table whose expiry budget is saturated from answering `contended` forever.
 			if (existing.expiresMono <= now) this.#expireGrant(keyId, existing);
-			// Marked by a drain that ran after this generation's sweep.
-			else if (this.#retiredByGeneration(existing, homeMap.generation, homeMap.homes))
-				this.#retireGrant(keyId, existing, homeMap.generation);
 			else if (existing.recalling || existing.recallConfirmed)
 				// A recall is in flight, or the delegate has already confirmed one. Renewing now — even for
 				// the node being recalled — would mint a token its own release no longer matches, and the
