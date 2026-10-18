@@ -10,6 +10,7 @@ import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import {
 	FullTextContinuationPage,
+	type FullTextSearchPage,
 	FULL_TEXT_CONTINUATION_PAGE,
 	FULL_TEXT_CONTINUATION_VERSION,
 } from './indexes/fullTextContinuationPage.ts';
@@ -735,6 +736,9 @@ interface TableResourceInstance<Record extends object = any> {
 	_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any): any;
 	delete(target: RequestTargetOrId): Promise<boolean>;
 	_writeDelete(id: Id, options?: any): boolean;
+	search(
+		target: RequestTarget & { continuation: true | string }
+	): Promise<FullTextSearchPage<Record & Partial<RecordObject>>>;
 	search(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>>;
 	subscribe(request: SubscriptionRequest): Promise<AsyncIterable<Record>>;
 	doesExist(): boolean;
@@ -5774,13 +5778,19 @@ export function makeTable(options): TableResourceClass {
 		}
 
 		// #section: search-query
-		search(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>> {
+		search(
+			target: RequestTarget & { continuation: true | string }
+		): Promise<FullTextSearchPage<Record & Partial<RecordObject>>>;
+		search(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>>;
+		search(
+			target: RequestTarget
+		): AsyncIterable<Record & Partial<RecordObject>> | Promise<FullTextSearchPage<Record & Partial<RecordObject>>> {
 			const context = this.getContext();
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
 			if (target.parseError) throw target.parseError;
 			if (target.closeContinuation !== undefined && target.continuation === undefined)
-				throw new ClientError('closeContinuation requires an existing continuation token', 400); // if there was a parse error, we can throw it now
+				throw new ClientError('closeContinuation requires an existing continuation token', 400);
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
 			const getColumns = () => {
 				const select = target.select;

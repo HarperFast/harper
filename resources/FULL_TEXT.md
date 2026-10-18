@@ -160,6 +160,10 @@ All continuation settings are under `storage.fullText`:
 | `maxPendingRequests`        |      32 | Pending worker requests per requesting worker       |
 | `maxPendingResponseBytes`   |  16 MiB | Reserved response bytes per requesting worker       |
 
+Each setting also has the usual configuration parameter name, such as
+`storage_fullText_maxRawHitsPerRequest` or `storage_fullText_runtime_maxSearchThreads`, for
+`set_configuration` and environment overrides. Changing one setting preserves the others.
+
 Capacity exhaustion returns an error rather than a successful partial page. Snapshot readers can
 keep old index segments on disk until released. Neither query bytes nor native admission settings
 provide a hard bound on resident memory or retained disk space.

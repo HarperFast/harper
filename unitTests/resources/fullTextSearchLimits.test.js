@@ -56,6 +56,21 @@ describe('full-text search resource limits', () => {
 		}
 	});
 
+	it('exposes every limit through the conventional configuration parameter map', () => {
+		const { CONFIG_PARAM_MAP } = require('#src/utility/hdbTerms');
+		const { flattenConfig } = require('#src/config/configUtils');
+		const flattened = flattenConfig({ storage: { fullText: structuredClone(DEFAULT_FULL_TEXT_SEARCH_LIMITS) } });
+		for (const [name, value] of Object.entries(DEFAULT_FULL_TEXT_SEARCH_LIMITS)) {
+			const check = (path, expected) => {
+				const parameter = `storage_fullText_${path}`;
+				assert.strictEqual(CONFIG_PARAM_MAP[parameter.toLowerCase()], parameter);
+				assert.strictEqual(flattened[parameter.toLowerCase()], expected);
+			};
+			if (name === 'runtime') for (const [key, limit] of Object.entries(value)) check(`runtime_${key}`, limit);
+			else check(name, value);
+		}
+	});
+
 	it('rejects missing-shape, unknown and unbounded policy values', () => {
 		for (const value of [null, [], true, 'settings', new Date(), Object.create({ maxCursors: 7 })])
 			assert.throws(() => resolveFullTextSearchLimits(value));

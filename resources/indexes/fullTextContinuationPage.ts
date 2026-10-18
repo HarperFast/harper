@@ -8,6 +8,12 @@ import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { FULL_TEXT_CONTINUATION_PAGE } from './fullTextQueryProtocol.ts';
 export { FULL_TEXT_CONTINUATION_PAGE, FULL_TEXT_CONTINUATION_VERSION } from './fullTextQueryProtocol.ts';
 
+export type FullTextSearchPage<T = any> = T[] & {
+	readonly continuation?: string;
+	readonly complete: boolean;
+	readonly expiresAt?: number;
+};
+
 export class FullTextContinuationPage {
 	readonly token: true | string;
 	readonly limit: number;
@@ -52,7 +58,7 @@ export class FullTextContinuationPage {
 		this.ready.promise.catch(() => {});
 	}
 
-	result(): any[] {
+	result(): FullTextSearchPage {
 		Object.defineProperty(this.records, FULL_TEXT_CONTINUATION_PAGE, { value: true });
 		Object.defineProperties(this.records, {
 			continuation: { value: this.continuation },
@@ -60,7 +66,7 @@ export class FullTextContinuationPage {
 			expiresAt: { value: this.expiresAt },
 			selectApplied: { value: true },
 		});
-		return this.records;
+		return this.records as FullTextSearchPage;
 	}
 }
 
