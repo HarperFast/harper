@@ -1,6 +1,8 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { once } = require('node:events');
+const { mkdtemp, rm } = require('node:fs/promises');
+const { join } = require('node:path');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { startWorker, onMessageByType } = require('#js/server/threads/manageThreads');
@@ -9,6 +11,7 @@ const {
 	confirmFullTextContinuation,
 	releaseFullTextContinuation,
 	fullTextContinuationDeadline,
+	requestFullTextContinuationOwner,
 } = require('#src/resources/indexes/fullTextContinuation');
 const { waitFor } = require('../waitFor');
 
@@ -31,7 +34,10 @@ function response(worker, action) {
 		}
 		worker.on('message', receive);
 		if (action)
-			worker.postMessage({ type: 'full-text-admission-test-command', message: { originator: 0, operation: action } });
+			worker.postMessage({
+				type: 'full-text-admission-test-command',
+				message: { originator: 0, ...(typeof action === 'string' ? { operation: action } : action) },
+			});
 	});
 }
 
@@ -82,6 +88,79 @@ describe('full-text process-wide continuation admission', () => {
 			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
 		}
 	});
+	it('routes immutable native snapshot reads, resume, seal and close to another worker', async () => {
+		const path = await mkdtemp(join(__dirname, '../envDir/', String(process.pid), 'continuation-worker-'));
+		let worker, requester;
+		try {
+			worker = startWorker(require.resolve('./fixtures/fullTextContinuationAdmissionWorker.js'), {
+				name: 'full-text-owner-test',
+				autoRestart: false,
+				workerIndex: 0,
+				threadCount: 1,
+			});
+			assert.strictEqual((await response(worker)).ready, true);
+			const opened = await response(worker, { operation: 'open', path });
+			assert(opened.token, opened.error);
+			const owner = opened.originator;
+			assert.notStrictEqual(owner, 0);
+			const queryHash = 'b'.repeat(64);
+			const call = (command) =>
+				requestFullTextContinuationOwner(owner, { queryHash, ...command }, fullTextContinuationDeadline());
+			const resumed = await call({ operation: 'resume', token: opened.token });
+			assert.strictEqual(resumed.claim.id, opened.claim.id);
+			assert.deepStrictEqual(resumed.position, { batchSize: 7, consumed: 2, boundary: undefined });
+			const read = {
+				operation: 'read',
+				id: resumed.claim.id,
+				position: resumed.position,
+				responseBytes: opened.responseBytes,
+			};
+			const original = await call(read);
+			assert.strictEqual(original.total, 40);
+			assert.strictEqual(original.hits.length, 7);
+			requester = startWorker(require.resolve('./fixtures/fullTextContinuationAdmissionWorker.js'), {
+				name: 'full-text-requester-test',
+				autoRestart: false,
+				workerIndex: 1,
+				threadCount: 2,
+			});
+			assert.strictEqual((await response(requester)).ready, true);
+			const siblingRead = await response(requester, { operation: 'native', owner, command: { ...read, queryHash } });
+			assert.notStrictEqual(siblingRead.originator, owner);
+			assert.deepStrictEqual(siblingRead.value, original, siblingRead.error);
+
+			await response(worker, 'update');
+			const replay = await call(read);
+			assert.deepStrictEqual(replay, original);
+			await assert.rejects(call({ ...read, responseBytes: 1 }), (error) => error.statusCode === 503);
+			await assert.rejects(
+				call({ ...read, position: { batchSize: 64, consumed: 41 }, responseBytes: opened.responseBytes * 10 }),
+				(error) => error.statusCode === 500
+			);
+			const token = await call({
+				operation: 'seal',
+				id: resumed.claim.id,
+				position: { ...resumed.position, consumed: 5 },
+			});
+			assert.strictEqual((await call({ operation: 'resume', token })).position.consumed, 5);
+			await assert.rejects(
+				call({ operation: 'resume', token, queryHash: 'a'.repeat(64) }),
+				(error) => error.statusCode === 410
+			);
+			await call({ operation: 'close', token });
+			await assert.rejects(call(read), (error) => error.statusCode === 410);
+			await response(worker, 'shutdown');
+			const exited = once(worker, 'exit');
+			await worker.terminate();
+			await exited;
+			await assert.rejects(call({ operation: 'resume', token }), (error) => error.statusCode === 410);
+		} finally {
+			if (requester) await requester.terminate();
+			if (worker) await worker.terminate();
+			await rm(path, { recursive: true, force: true });
+		}
+	});
+
 	it('bounds retained query bytes independently of cursor count', async () => {
 		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
 		env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { maxCursors: 4, maxRetainedQueryBytes: 256 });

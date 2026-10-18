@@ -109,6 +109,8 @@ export class FullTextContinuationLeases {
 				{ remainingBudgetMilliseconds: Math.min(remaining, this.#maxNativeBudgetMilliseconds) }
 			);
 			this.#get(id, queryHash);
+			if (position.consumed > page.hits.length || (page.hits.length === 0 && page.continuation !== undefined))
+				throw new ServerError('Full-text continuation returned an invalid replay boundary', 500);
 			if (process.hrtime.bigint() >= deadline)
 				throw new ServerError('Full-text continuation exceeded its request budget', 503);
 			return page;

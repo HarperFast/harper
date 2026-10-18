@@ -526,11 +526,13 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE, null);
 let fullTextContinuationLoading;
 let fullTextContinuationQueued = 0;
+let fullTextContinuationResponsesQueued = 0;
 function dispatchFullTextContinuation(event, port, response) {
 	const configured = Number(envMgr.get(hdbTerms.CONFIG_PARAMS.STORAGE_FULL_TEXT)?.maxPendingRequests ?? 32);
 	const maximum = Number.isSafeInteger(configured) && configured > 0 ? configured : 32;
-	if (!port || fullTextContinuationQueued >= maximum) return;
-	fullTextContinuationQueued++;
+	if (!port || (response ? fullTextContinuationResponsesQueued : fullTextContinuationQueued) >= maximum) return;
+	if (response) fullTextContinuationResponsesQueued++;
+	else fullTextContinuationQueued++;
 	fullTextContinuationLoading ??= import('../../resources/indexes/fullTextContinuation.ts').catch((error) => {
 		fullTextContinuationLoading = undefined;
 		throw error;
@@ -538,7 +540,7 @@ function dispatchFullTextContinuation(event, port, response) {
 	fullTextContinuationLoading
 		.then((module) => {
 			if (response) module.fullTextContinuationResponse(event, port.threadId);
-			else module.fullTextContinuationRequest(event, port.threadId);
+			else return module.fullTextContinuationRequest(event, port.threadId);
 		})
 		.catch(() => {
 			if (response || typeof event.message?.id !== 'string' || event.message.id.length !== 32) return;
@@ -556,7 +558,8 @@ function dispatchFullTextContinuation(event, port, response) {
 			}
 		})
 		.finally(() => {
-			fullTextContinuationQueued--;
+			if (response) fullTextContinuationResponsesQueued--;
+			else fullTextContinuationQueued--;
 		});
 }
 onMessageByType(hdbTerms.ITC_EVENT_TYPES.FULL_TEXT_CONTINUATION_REQUEST, (event, port) => {

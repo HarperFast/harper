@@ -1,3 +1,4 @@
+import { NO_FULL_WORKER_COVERAGE } from '../database/recordCachingWorkers.ts';
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
@@ -284,6 +285,49 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		);
 	});
 
+	test('continues REST snapshot pages across HTTP workers and exposes opaque page headers', async () => {
+		const getPage = async (token?: string) => {
+			const continuation = token ? `continuation(${encodeURIComponent(token)})` : 'continuation()';
+			const response = await fetch(
+				`${ctx.harper.httpURL}/Product/?catalogSearch=matches=pagination&limit(75)&select(id,title)&${continuation}`,
+				{
+					headers: { Authorization: authorization, Connection: 'close' },
+					signal: AbortSignal.timeout(15000),
+				}
+			);
+			const text = await response.text();
+			assert.strictEqual(response.status, 200, text);
+			assert.strictEqual(response.headers.get('cache-control'), 'no-store');
+			assert(response.headers.get('access-control-expose-headers')?.includes('Harper-Continuation'));
+			return {
+				records: JSON.parse(text),
+				token: response.headers.get('harper-continuation'),
+				complete: response.headers.get('harper-continuation-complete'),
+				worker: response.headers.get('fulltext-test-worker'),
+			};
+		};
+		const first = await getPage();
+		assert.strictEqual(first.records.length, 75);
+		assert.strictEqual(first.complete, 'false');
+		assert(first.token);
+		assert(first.worker);
+		let second = await getPage(first.token);
+		for (let attempt = 0; !NO_FULL_WORKER_COVERAGE && second.worker === first.worker && attempt < 30; attempt++)
+			second = await getPage(first.token);
+		if (!NO_FULL_WORKER_COVERAGE)
+			assert.notStrictEqual(second.worker, first.worker, 'must exercise a resume on a different HTTP worker');
+		const seen = [...first.records, ...second.records];
+		let token = second.token;
+		while (token) {
+			const page = await getPage(token);
+			seen.push(...page.records);
+			token = page.token;
+			if (!token) assert.strictEqual(page.complete, 'true');
+		}
+		assert.deepStrictEqual(ids(seen), PAGE_IDS);
+		assert.strictEqual(new Set(ids(seen)).size, PAGE_IDS.length);
+	});
+
 	test('fills REST autocomplete pages after structured filtering and beyond the first native batch', async () => {
 		const all = await search(query('pagination'));
 		const expected = all
@@ -397,6 +441,53 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			),
 		});
 		assert.deepStrictEqual(restAllowed, allowed);
+		const continuationQuery = query(
+			'pagination',
+			{ fields: ['title'], includeHighlights: true },
+			{
+				select: ['id', 'title', '$score', '$highlights'],
+				limit: 25,
+			}
+		);
+		const startResponse = await fetch(`${ctx.harper.httpURL}/Product/`, {
+			method: 'QUERY',
+			headers: { 'Authorization': READER_AUTH, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ ...continuationQuery, continuation: true }),
+			signal: AbortSignal.timeout(15000),
+		});
+		assert.strictEqual(startResponse.status, 200, await startResponse.clone().text());
+		const started = await startResponse.json();
+		assert.strictEqual(started.length, 25);
+		assert(started.every((record) => record.$highlights.title));
+		const continuationToken = startResponse.headers.get('harper-continuation');
+		assert(continuationToken);
+		await request(
+			'/Product/',
+			{
+				method: 'QUERY',
+				headers: { Authorization: authorization },
+				body: JSON.stringify({ ...continuationQuery, continuation: continuationToken }),
+			},
+			410
+		);
+		await operation({ operation: 'alter_user', username: READER.username, role: 'fulltext_denied' });
+		await request(
+			'/Product/',
+			{
+				method: 'QUERY',
+				headers: { Authorization: READER_AUTH },
+				body: JSON.stringify({ ...continuationQuery, continuation: continuationToken }),
+			},
+			403
+		);
+		await operation({ operation: 'alter_user', username: READER.username, role: 'fulltext_reader' });
+		const afterRestore = await request('/Product/', {
+			method: 'QUERY',
+			headers: { Authorization: READER_AUTH },
+			body: JSON.stringify({ ...continuationQuery, continuation: continuationToken, closeContinuation: true }),
+		});
+		assert.deepStrictEqual(afterRestore, []);
+
 		const restHidden = await request('/Product/', {
 			method: 'QUERY',
 			headers: { Authorization: READER_AUTH },

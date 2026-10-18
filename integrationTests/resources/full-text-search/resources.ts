@@ -1,9 +1,11 @@
+import { threadId } from 'node:worker_threads';
 declare const Resource: any;
 declare const tables: any;
 declare const createBlob: any;
 
 export class Product extends tables.Product {
 	search(query) {
+		this.getContext().responseHeaders?.set('Fulltext-Test-Worker', String(threadId));
 		query.rowFilter = (record, context) =>
 			context.user?.role?.permission?.super_user || record.owner === context.user?.username;
 		return super.search(query);

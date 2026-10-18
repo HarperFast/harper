@@ -68,6 +68,103 @@ describe('published native full-text Table.search integration', () => {
 		setFullTextNativeBindingForTests(undefined);
 	});
 
+	it('continues immutable full-text pages while applying current row filters', async () => {
+		Product = table({
+			database: `fulltext-native-continuation-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'allowed', type: 'Boolean' },
+			],
+			fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1, highlight: false }])],
+		});
+		for (let n = 0; n < 35; n++)
+			await Product.put(String(n).padStart(3, '0'), { title: 'widget', allowed: n % 3 === 0 });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
+		const base = {
+			conditions: [
+				{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget', waitForIndexMilliseconds: 5000 },
+			],
+			limit: 4,
+		};
+		const first = await Product.search({ ...base, continuation: true, rowFilter: (record) => record.allowed });
+		assert(Array.isArray(first));
+		assert.strictEqual(first.length, 4);
+		assert.strictEqual(first.complete, false);
+		assert(first.continuation);
+		assert(first.expiresAt > Date.now());
+		assert.strictEqual(JSON.stringify(first).includes('continuation'), false);
+		const token = first.continuation;
+		await Product.put('new', { title: 'widget widget widget', allowed: true });
+		const second = await Product.search({ ...base, continuation: token, rowFilter: (record) => record.allowed });
+		const replay = await Product.search({ ...base, continuation: token, rowFilter: (record) => record.allowed });
+		assert.deepStrictEqual(ids(replay), ids(second));
+		const seen = new Set([...ids(first), ...ids(second)]);
+		let next = second.continuation;
+		while (next) {
+			const page = await Product.search({ ...base, continuation: next, rowFilter: (record) => record.allowed });
+			for (const record of page) {
+				assert(!seen.has(record.id));
+				seen.add(record.id);
+			}
+			next = page.continuation;
+			if (!next) assert.strictEqual(page.complete, true);
+		}
+		assert.strictEqual(seen.size, 12);
+		assert(!seen.has('new'));
+		await assert.rejects(Product.search({ ...base, continuation: token }), (error) => error.statusCode === 410);
+		const beforeClose = await Product.search({ ...base, continuation: true });
+		await Product.fullTextQueryIndexes.catalogSearch.customIndex.close();
+		await assert.rejects(
+			Product.search({ ...base, continuation: beforeClose.continuation }),
+			(error) => error.statusCode === 410
+		);
+	});
+
+	it('validates continuation options and query binding and allows explicit close through REST syntax', async () => {
+		Product = table({
+			database: `fulltext-native-continuation-close-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1, highlight: false }])],
+		});
+		await Product.put('a', { title: 'widget' });
+		await Product.put('b', { title: 'widget' });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
+		const base = { conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget' }], limit: 1 };
+		const first = await Product.search({ ...base, continuation: true });
+		assert(first.continuation);
+		const changed = { ...base, select: ['id'], continuation: first.continuation };
+		await assert.rejects(Product.search(changed), (error) => error.statusCode === 410);
+		for (const invalid of [
+			{ limit: 0 },
+			{ offset: 1 },
+			{ count: 'exact' },
+			{ limit: require('#src/resources/indexes/fullTextSearchLimits').DEFAULT_FULL_TEXT_SEARCH_LIMITS.maxPageSize + 1 },
+		])
+			assert.throws(
+				() => Product.search({ ...base, continuation: true, ...invalid }),
+				(error) => error.statusCode === 400
+			);
+		const parsed = parseQuery(
+			`catalogSearch=matches=widget&limit(1)&continuation(${first.continuation})&closeContinuation()`
+		);
+		assert.strictEqual(parsed.continuation, first.continuation);
+		const closed = await Product.search(parsed);
+		assert.strictEqual(closed.length, 0);
+		assert.strictEqual(closed.complete, true);
+		await assert.rejects(
+			Product.search({ ...base, continuation: first.continuation }),
+			(error) => error.statusCode === 410
+		);
+	});
+
 	it('executes every query mode, negation, REST syntax, field selection, and same-index OR', async () => {
 		const searchDefinition = definition('catalogSearch', [
 			{ name: 'title', weight: 2, highlight: true },
@@ -489,6 +586,22 @@ describe('published native full-text Table.search integration', () => {
 			(await search('matches', 'widget catalog', { rowFilter: (record) => tail.has(record.id) })).map(({ id }) => id),
 			ordered.slice(info.limits.maxSearchWindow)
 		);
+		const snapshotQuery = {
+			conditions: [
+				{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget catalog', waitForIndexMilliseconds: 5000 },
+			],
+			limit: require('#src/resources/indexes/fullTextSearchLimits').DEFAULT_FULL_TEXT_SEARCH_LIMITS.maxPageSize,
+			select: ['id', '$score'],
+		};
+		const snapshotIds = [];
+		let continuation = true;
+		while (continuation) {
+			const page = await Product.search({ ...snapshotQuery, continuation });
+			snapshotIds.push(...page.map(({ id }) => id));
+			continuation = page.continuation;
+			if (!continuation) assert.strictEqual(page.complete, true);
+		}
+		assert.deepStrictEqual(snapshotIds, ordered);
 		const first = new Set(ordered.slice(0, info.limits.maxAutocompleteResults));
 		for (const comparator of ['matches_prefix', 'matches_fuzzy_prefix']) {
 			assert.deepStrictEqual(

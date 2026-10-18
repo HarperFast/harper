@@ -1,7 +1,17 @@
+import { threadId } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
+import { peekFullTextContinuationOwner, fullTextContinuationOwner } from './fullTextContinuationOwner.ts';
+import {
+	reserveFullTextContinuation,
+	confirmFullTextContinuation,
+	releaseFullTextContinuation,
+	requestFullTextContinuationOwner,
+} from './fullTextContinuation.ts';
+import { FullTextContinuationPage, FULL_TEXT_CONTINUATION_VERSION } from './fullTextContinuationPage.ts';
+import type { FullTextContinuationPosition } from './fullTextContinuationToken.ts';
 import { fromBufferKey } from 'ordered-binary';
 import { ClientError, DerivedIndexLagError, IndexRebuildingError, ServerError } from '../../utility/errors/hdbError.ts';
 import {
@@ -199,6 +209,7 @@ export class FullTextQueryIndex {
 		this.#definition = definition;
 		this.#definitionSnapshot = snapshot;
 		this.#nativeOptions.fields = definition.fields.map(({ name, weight }) => ({ name, weight }));
+		this.#revokeContinuations();
 		this.#configurationRevision++;
 	}
 
@@ -218,6 +229,7 @@ export class FullTextQueryIndex {
 			resultOffset?: number;
 			assertTransactionActive?: () => void;
 			candidateKeys?: CandidateKeyPlan;
+			continuationPage?: FullTextContinuationPage;
 		} = {}
 	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
 		const maxIndexLagMilliseconds = condition.maxIndexLagMilliseconds ?? DEFAULT_MAX_INDEX_LAG_MILLISECONDS;
@@ -230,10 +242,19 @@ export class FullTextQueryIndex {
 				readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId),
 				this.#definition.name
 			);
+			if (typeof options.continuationPage?.token === 'string')
+				return this.#searchContinuation(condition, context, options);
 			if (waiting) {
 				await context?.indexSearchStart;
 				context?.signal?.throwIfAborted();
-				const waitDeadline = performance.now() + waitForIndexMilliseconds;
+				const waitDeadline =
+					performance.now() +
+					Math.min(
+						waitForIndexMilliseconds,
+						options.continuationPage
+							? Math.max(0, Number((options.continuationPage.deadline - process.hrtime.bigint()) / 1_000_000n))
+							: Infinity
+					);
 				const started = derivedIndexTime(this.#options.Table.primaryStore.rootStore);
 				let host = this.#derivedHost;
 				if (!host) {
@@ -361,24 +382,15 @@ export class FullTextQueryIndex {
 		}
 	}
 
-	async #search(
-		condition: FullTextCondition,
-		context: any,
-		options: {
-			filter?: (id: unknown, entry?: any) => boolean;
-			minResults?: number;
-			resultOffset?: number;
-			assertTransactionActive?: () => void;
-			candidateKeys?: CandidateKeyPlan;
-		}
-	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
+	async #acquireSearchReader(condition: FullTextCondition, context: any, deadline?: bigint) {
 		const readiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
 		assertReady(readiness, this.#definition.name);
 		if (!this.#derivedHost) throw new IndexRebuildingError(`Full-text index '${this.#definition.name}' is not ready`);
-		if (options.minResults === 0) return [];
 		const publicationGeneration = this.#publicationRevision();
 		const acquisitionTimeout = Math.min(
-			MAX_WAIT_FOR_INDEX_MILLISECONDS,
+			deadline === undefined
+				? MAX_WAIT_FOR_INDEX_MILLISECONDS
+				: Math.max(1, Number((deadline - process.hrtime.bigint()) / 1_000_000n)),
 			Math.max(1, condition.waitForIndexMilliseconds ?? MAX_WAIT_FOR_INDEX_MILLISECONDS)
 		);
 		const acquisition = this.#acquireReader(readiness.ownerEpoch, publicationGeneration);
@@ -406,6 +418,24 @@ export class FullTextQueryIndex {
 		} finally {
 			if (abortListener) context.signal.removeEventListener('abort', abortListener);
 		}
+		return lease;
+	}
+
+	async #search(
+		condition: FullTextCondition,
+		context: any,
+		options: {
+			filter?: (id: unknown, entry?: any) => boolean;
+			minResults?: number;
+			resultOffset?: number;
+			assertTransactionActive?: () => void;
+			candidateKeys?: CandidateKeyPlan;
+			continuationPage?: FullTextContinuationPage;
+		}
+	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
+		if (options.continuationPage) return this.#searchContinuation(condition, context, options);
+		if (options.minResults === 0) return [];
+		const lease = await this.#acquireSearchReader(condition, context);
 		const reader = lease.reader;
 		try {
 			const policy = resolveFullTextSearchLimits(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT));
@@ -602,16 +632,8 @@ export class FullTextQueryIndex {
 							}
 						}
 					}
-					const entry = this.#options.Table.primaryStore.getEntry(key, { transaction });
-					if (!entry?.value || hit.version !== String(entry.version)) {
-						continue;
-					}
-					if (this.#options.Table.isFullTextSearchEntryCurrent?.(entry) === false) {
-						continue;
-					}
-					if (entry.expiresAt !== undefined && entry.expiresAt < Date.now()) {
-						continue;
-					}
+					const entry = this.#currentSearchEntry(key, hit.version, transaction);
+					if (!entry) continue;
 					if (options.filter && !candidateDecides && !options.filter(key, entry)) continue;
 					accepted.push({ key, $score: hit.score, nativeId: hit.id, record: entry.value, recordEntry: entry });
 					if (accepted.length >= target) break;
@@ -651,6 +673,198 @@ export class FullTextQueryIndex {
 			}));
 		} finally {
 			await lease.release();
+		}
+	}
+
+	#currentSearchEntry(key: Id, version: string, transaction: any): any {
+		const entry = this.#options.Table.primaryStore.getEntry(key, { transaction });
+		if (typeof version !== 'string')
+			throw new ServerError('Full-text index returned a hit without a source version', 500);
+		if (!entry?.value || version !== String(entry.version)) return;
+		if (this.#options.Table.isFullTextSearchEntryCurrent?.(entry) === false) return;
+		if (entry.expiresAt !== undefined && entry.expiresAt < Date.now()) return;
+		return entry;
+	}
+
+	async #searchContinuation(
+		condition: FullTextCondition,
+		context: any,
+		options: {
+			continuationPage?: FullTextContinuationPage;
+			filter?: (id: unknown, entry?: any) => boolean;
+			assertTransactionActive?: () => void;
+		}
+	): Promise<any[]> {
+		const page = options.continuationPage!;
+		await page.ready.promise;
+		const assertActive = () => {
+			context?.signal?.throwIfAborted();
+			options.assertTransactionActive?.();
+			if (process.hrtime.bigint() >= page.deadline)
+				throw new ServerError('Full-text continuation exceeded its request budget', 503);
+		};
+		assertActive();
+		const owner = await fullTextContinuationOwner();
+		const policy = resolveFullTextSearchLimits(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT));
+		const query = condition.fullTextQuery ?? leafExpression(condition);
+		let claim: Awaited<ReturnType<typeof reserveFullTextContinuation>> | undefined;
+		let position: FullTextContinuationPosition;
+		let ownerId: number;
+		let readerLease:
+			{ reader: NativeFullTextReader; definition: FullTextDefinition; release: () => Promise<void> } | undefined;
+		let traceLease: typeof readerLease;
+		let registered = false;
+		try {
+			if (typeof page.token === 'string') {
+				ownerId = owner.tokens.route(page.token).owner;
+				const resumed = (await requestFullTextContinuationOwner(
+					ownerId,
+					{ operation: 'resume', token: page.token, queryHash: page.queryHash },
+					page.deadline
+				)) as { claim: NonNullable<typeof claim>; position: FullTextContinuationPosition };
+				claim = resumed.claim;
+				position = resumed.position;
+			} else {
+				claim = await reserveFullTextContinuation(Buffer.byteLength(JSON.stringify(query)) + 64, page.deadline);
+				const revision = this.#configurationRevision;
+				readerLease = await this.#acquireSearchReader(condition, context, page.deadline);
+				assertActive();
+				if (this.#closed || this.#configurationRevision !== revision || this.#pauses.size)
+					throw new ClientError('Full-text continuation expired; start a new search', 410);
+				assertReady(
+					readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId),
+					this.#definition.name
+				);
+				const lease = readerLease;
+				const id = claim.id;
+				owner.leases.register(claim, page.queryHash, query, lease.reader, () => {
+					void lease.release();
+					void releaseFullTextContinuation(id).catch((error) =>
+						logger.warn?.('Could not release a full-text continuation claim', error)
+					);
+				});
+				registered = true;
+				ownerId = threadId;
+				position = { batchSize: Math.min(RAW_PAGE_SIZE, this.#maxFilteredRawPageSize!), consumed: 0 };
+			}
+			if (page.close) {
+				await requestFullTextContinuationOwner(
+					ownerId,
+					{ operation: 'close', token: page.token as string, queryHash: page.queryHash },
+					page.deadline
+				);
+				page.complete = true;
+				return [];
+			}
+			page.expiresAt = claim.expiresAt;
+			let fetched = 0;
+			let exhausted = false;
+			const transaction = this.#options.Table._readTxnForContext(context);
+			while (page.records.length < page.limit && !exhausted) {
+				assertActive();
+				const remaining = policy.maxRawHitsPerRequest - fetched;
+				if (remaining < 1 || (position.consumed > 0 && remaining < position.batchSize))
+					throw new ClientError(
+						'Full-text continuation exhausted storage.fullText.maxRawHitsPerRequest; narrow the query or increase the budget',
+						400
+					);
+				if (position.consumed === 0) position.batchSize = Math.min(position.batchSize, remaining);
+				let raw: NativeFullTextSearchPageResult;
+				try {
+					raw = (await requestFullTextContinuationOwner(
+						ownerId,
+						{
+							operation: 'read',
+							id: claim.id,
+							queryHash: page.queryHash,
+							position,
+							responseBytes: owner.responseBytes(position.batchSize),
+						},
+						page.deadline
+					)) as NativeFullTextSearchPageResult;
+				} catch (error) {
+					if (position.consumed === 0 && position.batchSize > 1 && error.code === 'E_RESULT_TOO_LARGE') {
+						position.batchSize = Math.max(1, Math.floor(position.batchSize / 2));
+						continue;
+					}
+					throw error;
+				}
+				fetched += raw.hits.length;
+				assertActive();
+				while (position.consumed < raw.hits.length && page.records.length < page.limit) {
+					const candidates = [];
+					const accepted = [];
+					const slots = page.limit - page.records.length;
+					let work = 0;
+					while (position.consumed < raw.hits.length && candidates.length < slots) {
+						if (++work % RAW_PAGE_YIELD_INTERVAL === 0) {
+							await new Promise((resolve) => setImmediate(resolve));
+							assertActive();
+						}
+						const hit = raw.hits[position.consumed++];
+						const key = decodeNativeId(hit.id, this.#options.Table.tableId) as Id;
+						const entry = this.#currentSearchEntry(key, hit.version, transaction);
+						if (!entry || (options.filter && !options.filter(key, entry))) continue;
+						const candidate = {
+							key,
+							$score: hit.score,
+							loadedEntry: { ...entry, [FULL_TEXT_CONTINUATION_VERSION]: hit.version },
+						};
+						candidates.push(candidate);
+						accepted.push({ key, $score: hit.score, nativeId: hit.id, record: entry.value, recordEntry: entry });
+					}
+					if (condition.includeHighlights && accepted.length) {
+						traceLease ??= await this.#acquireSearchReader(condition, context, page.deadline);
+						await this.#addHighlights(
+							traceLease.reader,
+							traceLease.definition,
+							condition,
+							accepted,
+							performance.now() + Number((page.deadline - process.hrtime.bigint()) / 1_000_000n)
+						);
+						for (let n = 0; n < candidates.length; n++) candidates[n].$highlights = accepted[n].$highlights;
+					}
+					if (candidates.length) page.records.push(...(await page.materialize(candidates)));
+					assertActive();
+				}
+				if (position.consumed === raw.hits.length) {
+					if (raw.continuation) position = { batchSize: position.batchSize, consumed: 0, boundary: raw.continuation };
+					else exhausted = true;
+				}
+			}
+			assertActive();
+			const token = (await requestFullTextContinuationOwner(
+				ownerId,
+				{ operation: 'seal', id: claim.id, queryHash: page.queryHash, position },
+				page.deadline
+			)) as string;
+			assertActive();
+			if (exhausted) {
+				await requestFullTextContinuationOwner(
+					ownerId,
+					{ operation: 'close', token, queryHash: page.queryHash },
+					page.deadline
+				);
+				page.complete = true;
+			} else {
+				if (page.token === true) await confirmFullTextContinuation(claim.id, page.deadline);
+				assertActive();
+				page.continuation = token;
+			}
+			return [];
+		} catch (error) {
+			if (page.token === true && claim) {
+				if (registered) await owner.leases.revoke(claim.id);
+				else {
+					await readerLease?.release();
+					await releaseFullTextContinuation(claim.id).catch((releaseError) =>
+						logger.warn?.('Could not release a full-text continuation claim', releaseError)
+					);
+				}
+			}
+			throw error;
+		} finally {
+			await traceLease?.release();
 		}
 	}
 
@@ -1014,8 +1228,17 @@ export class FullTextQueryIndex {
 		return slot.closeOperation;
 	}
 
+	#revokeContinuations(): void {
+		const owner = peekFullTextContinuationOwner();
+		if (!owner) return;
+		if (this.#readerSlot) void owner.leases.revokeReader(this.#readerSlot.reader);
+		for (const slot of this.#retiredReaderSlots) void owner.leases.revokeReader(slot.reader);
+	}
+
 	async #retireAllReaders(): Promise<void> {
+		this.#revokeContinuations();
 		await this.#readerOperation?.catch(() => undefined);
+		this.#revokeContinuations();
 		if (this.#readerSlot) this.#retireReaderSlot(this.#readerSlot);
 		await Promise.all([...this.#retiredReaderSlots].map((slot) => this.#closeWhenIdle(slot)));
 	}

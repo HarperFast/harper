@@ -1,3 +1,4 @@
+import { FULL_TEXT_CONTINUATION_PAGE } from '../resources/indexes/fullTextQueryProtocol.ts';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -422,6 +423,20 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			if (!loadedFromSource && isFinite(lastModification)) {
 				headers.setIfNone('Age', Math.round((Date.now() - (request.lastRefreshed || lastModification)) / 1000));
 			}
+		}
+		if (Array.isArray(responseData) && (responseData as any)[FULL_TEXT_CONTINUATION_PAGE] === true) {
+			const page = responseData as any;
+			headers.set('Harper-Continuation-Complete', String(page.complete));
+			if (page.continuation) headers.set('Harper-Continuation', page.continuation);
+			if (page.expiresAt !== undefined) headers.set('Harper-Continuation-Expires', String(page.expiresAt));
+			headers.set('Cache-Control', 'no-store');
+			const exposed = headers.get('Access-Control-Expose-Headers');
+			headers.set(
+				'Access-Control-Expose-Headers',
+				[exposed, 'Harper-Continuation', 'Harper-Continuation-Complete', 'Harper-Continuation-Expires']
+					.filter(Boolean)
+					.join(', ')
+			);
 		}
 		// TODO: Handle 201 Created
 		if (responseData !== undefined) {

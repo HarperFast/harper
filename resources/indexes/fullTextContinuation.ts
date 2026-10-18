@@ -1,5 +1,7 @@
 import { isMainThread, threadId } from 'node:worker_threads';
 import { randomBytes } from 'node:crypto';
+import { serialize } from 'node:v8';
+import type { FullTextContinuationOwnerCommand, FullTextContinuationOwnerResult } from './fullTextContinuationOwner.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, ITC_EVENT_TYPES } from '../../utility/hdbTerms.ts';
@@ -9,24 +11,30 @@ import { resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
 export type FullTextCursorClaim = { id: string; expires: bigint; expiresAt: number };
 type Claim = FullTextCursorClaim & { owner: number; bytes: number; admissionDeadline?: bigint };
 type Command =
-	{ operation: 'admit'; bytes: number } | { operation: 'release'; id: string } | { operation: 'confirm'; id: string };
+	| { operation: 'admit'; bytes: number }
+	| { operation: 'release'; id: string }
+	| { operation: 'confirm'; id: string }
+	| FullTextContinuationOwnerCommand;
+type Result = FullTextCursorClaim | FullTextContinuationOwnerResult | undefined;
 type Request = { id: string; originator: number; deadline: bigint; command: Command };
 type Reply = {
 	id: string;
 	originator: number;
-	value?: FullTextCursorClaim;
-	error?: { status: number; message: string };
+	value?: Result;
+	error?: { status?: number; message: string; code?: string };
 };
 type Pending = {
 	owner: number;
-	resolve(value?: FullTextCursorClaim): void;
+	resolve(value: Result): void;
 	reject(error: Error): void;
 	timer: NodeJS.Timeout;
+	bytes: number;
 };
 
 const claims = new Map<string, Claim>();
 const pending = new Map<string, Pending>();
 let retainedBytes = 0;
+let pendingBytes = 0;
 let expiryTimer: NodeJS.Timeout | undefined;
 
 function limits() {
@@ -38,7 +46,7 @@ export function fullTextContinuationDeadline(): bigint {
 }
 
 export async function reserveFullTextContinuation(bytes: number, deadline: bigint): Promise<FullTextCursorClaim> {
-	return (await request({ operation: 'admit', bytes }, deadline))!;
+	return (await request({ operation: 'admit', bytes }, deadline)) as FullTextCursorClaim;
 }
 
 export async function confirmFullTextContinuation(id: string, deadline: bigint): Promise<void> {
@@ -49,34 +57,73 @@ export async function releaseFullTextContinuation(id: string): Promise<void> {
 	await request({ operation: 'release', id }, fullTextContinuationDeadline());
 }
 
-async function request(command: Command, deadline: bigint): Promise<FullTextCursorClaim | undefined> {
-	if (isMainThread) return dispatch(command, threadId, deadline);
-	if (hasThreadExited(0)) throw unavailable();
+export async function requestFullTextContinuationOwner(
+	owner: number,
+	command: FullTextContinuationOwnerCommand,
+	deadline: bigint
+): Promise<FullTextContinuationOwnerResult> {
+	if (hasThreadExited(owner)) throw new ClientError('Full-text continuation expired; start a new search', 410);
+	return (await request(command, deadline, owner)) as FullTextContinuationOwnerResult;
+}
+
+async function request(command: Command, deadline: bigint, owner = 0): Promise<Result> {
+	millisecondsRemaining(deadline);
+	if (!Number.isSafeInteger(owner) || owner < 0 || hasThreadExited(owner)) throw unavailable();
+	if (owner === threadId) return execute(command, threadId, deadline);
 	const remaining = millisecondsRemaining(deadline);
-	// Quota replies contain only a fixed-size ID and timestamps.
 	const policy = limits();
-	if (pending.size >= policy.maxPendingRequests || (pending.size + 1) * 512 > policy.maxPendingResponseBytes)
+	const bytes =
+		command.operation === 'read'
+			? command.responseBytes
+			: command.operation === 'seal' || command.operation === 'resume'
+				? 32 * 1024
+				: 512;
+	if (
+		!Number.isSafeInteger(bytes) ||
+		bytes < 1 ||
+		pending.size >= policy.maxPendingRequests ||
+		bytes > policy.maxPendingResponseBytes - pendingBytes
+	)
 		throw unavailable();
 	const id = randomBytes(16).toString('hex');
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(() => {
-			pending.delete(id);
+			removePending(id);
 			reject(unavailable());
 		}, remaining);
 		timer.unref();
-		pending.set(id, { owner: 0, resolve, reject, timer });
+		pending.set(id, { owner, resolve, reject, timer, bytes });
+		pendingBytes += bytes;
 		try {
-			const sent = sendToThread(0, {
+			const sent = sendToThread(owner, {
 				type: ITC_EVENT_TYPES.FULL_TEXT_CONTINUATION_REQUEST,
 				message: { id, originator: threadId, deadline, command },
 			});
 			if (!sent) throw unavailable();
 		} catch (error) {
-			clearTimeout(timer);
-			pending.delete(id);
+			removePending(id);
 			reject(error);
 		}
 	});
+}
+
+function removePending(id: string): Pending | undefined {
+	const waiting = pending.get(id);
+	if (!waiting) return;
+	pending.delete(id);
+	clearTimeout(waiting.timer);
+	pendingBytes -= waiting.bytes;
+	return waiting;
+}
+
+async function execute(command: Command, owner: number, deadline: bigint): Promise<Result> {
+	millisecondsRemaining(deadline);
+	if (command?.operation === 'admit' || command?.operation === 'confirm' || command?.operation === 'release') {
+		if (!isMainThread) throw unavailable();
+		return dispatch(command, owner, deadline);
+	}
+	const { executeFullTextContinuationOwner } = await import('./fullTextContinuationOwner.ts');
+	return executeFullTextContinuationOwner(command, deadline);
 }
 
 export function fullTextContinuationResponse(event: { message?: Reply }, sender: number): void {
@@ -84,37 +131,47 @@ export function fullTextContinuationResponse(event: { message?: Reply }, sender:
 	if (!reply || reply.originator !== sender) return;
 	const waiting = pending.get(reply.id);
 	if (!waiting || waiting.owner !== sender) return;
-	clearTimeout(waiting.timer);
-	pending.delete(reply.id);
-	if (reply.error) waiting.reject(new ClientError(reply.error.message, reply.error.status));
-	else waiting.resolve(reply.value);
+	removePending(reply.id);
+	if (serialize(reply).byteLength > waiting.bytes) {
+		waiting.reject(unavailable());
+		return;
+	}
+	if (reply.error) {
+		const error =
+			reply.error.status === undefined
+				? new Error(reply.error.message)
+				: new ClientError(reply.error.message, reply.error.status);
+		if (reply.error.code) Object.assign(error, { code: reply.error.code });
+		waiting.reject(error);
+	} else waiting.resolve(reply.value);
 }
 
-export function fullTextContinuationRequest(event: { message?: Request }, sender: number): void {
+export async function fullTextContinuationRequest(event: { message?: Request }, sender: number): Promise<void> {
 	const message = event.message;
-	if (
-		!isMainThread ||
-		!message ||
-		message.originator !== sender ||
-		typeof message.id !== 'string' ||
-		message.id.length !== 32
-	)
-		return;
+	if (!message || message.originator !== sender || typeof message.id !== 'string' || message.id.length !== 32) return;
 	let reply: Reply;
 	try {
-		reply = { id: message.id, originator: threadId, value: dispatch(message.command, sender, message.deadline) };
+		reply = { id: message.id, originator: threadId, value: await execute(message.command, sender, message.deadline) };
 	} catch (error) {
 		reply = {
 			id: message.id,
 			originator: threadId,
-			error: { status: error.statusCode ?? 503, message: error.message },
+			error: {
+				status: error.statusCode,
+				message: error.message,
+				code: typeof error.code === 'string' ? error.code : undefined,
+			},
 		};
 	}
 	try {
-		if (!sendToThread(sender, { type: ITC_EVENT_TYPES.FULL_TEXT_CONTINUATION_RESPONSE, message: reply }) && reply.value)
-			release(reply.value.id, sender);
+		if (
+			!sendToThread(sender, { type: ITC_EVENT_TYPES.FULL_TEXT_CONTINUATION_RESPONSE, message: reply }) &&
+			message.command.operation === 'admit' &&
+			reply.value
+		)
+			release((reply.value as FullTextCursorClaim).id, sender);
 	} catch {
-		if (reply.value) release(reply.value.id, sender);
+		if (message.command.operation === 'admit' && reply.value) release((reply.value as FullTextCursorClaim).id, sender);
 	}
 }
 
@@ -208,9 +265,8 @@ function unavailable(): ServerError {
 onThreadExit((owner: number) => {
 	for (const [id, waiting] of pending) {
 		if (waiting.owner !== owner) continue;
-		pending.delete(id);
-		clearTimeout(waiting.timer);
-		waiting.reject(unavailable());
+		removePending(id);
+		waiting.reject(new ClientError('Full-text continuation expired; start a new search', 410));
 	}
 	if (isMainThread) {
 		prune();

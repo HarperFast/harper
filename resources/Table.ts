@@ -8,6 +8,11 @@ import { CONFIG_PARAMS, OPERATIONS_ENUM, MAX_SET_TIMEOUT_MS } from '../utility/h
 import type { Database, Transaction as LMDBReadTransaction } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
+import {
+	FullTextContinuationPage,
+	FULL_TEXT_CONTINUATION_PAGE,
+	FULL_TEXT_CONTINUATION_VERSION,
+} from './indexes/fullTextContinuationPage.ts';
 import { performance } from 'node:perf_hooks';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping, getNodeNameForId } from './nodeIdMapping.ts';
@@ -5773,7 +5778,9 @@ export function makeTable(options): TableResourceClass {
 			const context = this.getContext();
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
-			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
+			if (target.parseError) throw target.parseError;
+			if (target.closeContinuation !== undefined && target.continuation === undefined)
+				throw new ClientError('closeContinuation requires an existing continuation token', 400); // if there was a parse error, we can throw it now
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
 			const getColumns = () => {
 				const select = target.select;
@@ -5815,6 +5822,12 @@ export function makeTable(options): TableResourceClass {
 						},
 						() => ({ allowed: false })
 					);
+					if (target.continuation !== undefined)
+						return authorization.then((state: any) => {
+							if (state.error) throw state.error;
+							if (!state.allowed) throw new AccessViolation((context as any).user);
+							return state.results;
+						}) as any;
 					gatedResults.selectApplied = true;
 					gatedResults.getColumns = getColumns;
 					gatedResults.iterate = (options: any = {}) => {
@@ -6078,6 +6091,23 @@ export function makeTable(options): TableResourceClass {
 			}
 			const operator = target.operator;
 			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
+			let continuationPage: FullTextContinuationPage | undefined;
+			if (target.continuation !== undefined) {
+				if (!conditionsContainFullText(conditions, TableResource.fullTextIndexes))
+					throw new ClientError('Continuation requires a full-text query', 400);
+				continuationPage = new FullTextContinuationPage(target, {
+					table: TableResource.tableId,
+					conditions,
+					operator: operator || 'and',
+					select: target.select,
+					user: (context as any)?.user?.username ?? null,
+					definitions: TableResource.fullTextIndexes,
+					limits: envMngr.get(CONFIG_PARAMS.STORAGE_FULL_TEXT),
+				});
+				target = Object.assign(Object.create(Object.getPrototypeOf(target)), target, {
+					[FULL_TEXT_CONTINUATION_PAGE]: continuationPage,
+				});
+			}
 			let sort = typeof target.sort === 'object' && target.sort;
 			if (
 				TableResource.fullTextIndexes.length > 0 &&
@@ -6251,6 +6281,32 @@ export function makeTable(options): TableResourceClass {
 					includeExpired,
 					postOrdering
 				);
+				if (continuationPage) {
+					const page = continuationPage;
+					page.materialize = async (candidates) => {
+						const transformed = TableResource.transformToOrderedSelect(
+							page.loadEntries(candidates),
+							select,
+							undefined,
+							context,
+							readTxn,
+							transformToRecord
+						);
+						const records = [];
+						for await (const record of transformed) records.push(record);
+						return records;
+					};
+					page.ready.resolve();
+					return (async () => {
+						try {
+							for await (const _entry of entries) {
+							}
+							return page.result();
+						} finally {
+							txn.doneReadTxn();
+						}
+					})() as any;
+				}
 				let results = TableResource.transformToOrderedSelect(
 					entries,
 					select,
@@ -6385,6 +6441,7 @@ export function makeTable(options): TableResourceClass {
 				results.getColumns = getColumns;
 				return results;
 			} catch (error) {
+				continuationPage?.ready.reject(error);
 				txn.doneReadTxn();
 				throw error;
 			}
@@ -6678,7 +6735,11 @@ export function makeTable(options): TableResourceClass {
 						swrResource.setRecord(record);
 						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context, swrResource);
 						if (loadingFromSource?.then) {
-							return loadingFromSource.then(transform.bind(this));
+							return loadingFromSource.then((refreshed) => {
+								const version = (entry as any)[FULL_TEXT_CONTINUATION_VERSION];
+								if (version !== undefined && (!refreshed || String(refreshed.version) !== version)) return SKIP;
+								return transform.call(this, refreshed);
+							});
 						}
 					}
 				}

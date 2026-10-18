@@ -521,7 +521,7 @@ Subsequent batches follow native continuations without the ordinary or autocompl
 
 Harper requires Fulltext 0.6.0, native ABI 9 and Query API 4. The traversal response body reserves 82 bytes before hits, plus 13 bytes per versioned hit before ID/version strings. Batch capacity uses advertised response, ID, version and page-size limits. The first ordinary response still uses its existing framing; the conservative traversal capacity also bounds that initial batch. Prefix first-batch capacity remains independent of the visible result target.
 
-REST exposes the index coverage header; callers requiring current coverage use `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`. Full-text score descending is the only supported ordering. Count requests return `recordCount: null` and `recordCountExact: false`; native totals cannot become exact Harper counts after authorization, structured filtering and source-version checks. No reader survives the request for client continuation in this stage.
+REST exposes the index coverage header; callers requiring current coverage use `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`. Full-text score descending is the only supported ordering. Count requests return `recordCount: null` and `recordCountExact: false`; native totals cannot become exact Harper counts after authorization, structured filtering and source-version checks. Ordinary requests release their reader at completion. Explicit continuation mode retains a revocable reader lease across requests, described below.
 
 A declared Blob source is part of one index document. An oversized, invalid UTF-8 or otherwise
 permanently unusable Blob makes that whole document unindexable rather than publishing a partial
@@ -531,6 +531,28 @@ backoff, but an unreadable authoritative record never becomes an index deletion.
 behind that record until its source is readable, preserving cursor and publication atomicity at the
 cost of delaying unrelated records in the batch. The normal derived-index lag policy makes prolonged
 failure visible and eventually applies write backpressure rather than silently diverging replicas.
+
+### Retained search snapshots
+
+The continuation infrastructure keeps the native reader on its original worker. Requests on another
+worker send only the query hash, snapshot boundary and native hit metadata through
+`fullTextContinuation.ts`; records and permission checks stay with the requesting worker.
+`fullTextContinuationOwner.ts` owns one worker registry. Native Tantivy readers and tokens still own
+ranking and snapshot traversal.
+
+Each pending request reserves a response byte allowance before sending. Native-page allowances use
+the advertised native limits and the requested batch size; the owner checks the serialized response
+before sending it. Timeouts and worker exit release pending capacity. Admission remains process-wide.
+A missing owner expires the search; no request is forwarded to another Harper server.
+
+Ordinary publication changes may retire a reader while its retained search finishes. Reset, close,
+and index-definition changes instead revoke matching leases immediately, before waiting for native
+work to drain. Releasing the reader waits for already admitted native work. `FullTextContinuationPage` binds the original query, selection, table configuration and principal.
+`Table.search` supplies the existing record materializer; `searchByIndex` supplies its existing entry
+loader. The index feeds bounded candidate groups through those callbacks until the visible page
+fills or traversal ends. Only the rare source-refresh branch needs the saved native version check.
+REST keeps the array body and returns continuation metadata in headers. A resumed request does not
+claim coverage from the worker's newer reader slot.
 
 ### Bounded delivery
 
