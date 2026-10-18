@@ -2625,6 +2625,34 @@ describe('record lock delegations', () => {
 			assert.ok(gamma.writerCalls > 0, 'gamma confirmed the recall and its release was lost');
 		});
 
+		it('a recall that arrives while the delegate is still fencing its surrender waits for the fence', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const alpha = cluster.node('alpha').coordinator;
+			const key = cluster.keyHomedOn('gamma');
+			let token;
+			cluster.beforeReply = (from, to, request, reply) => {
+				if (from === 'alpha') token = reply.token;
+			};
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			let releaseFence;
+			alpha.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
+			alpha.release(key, round.admissionId);
+			const first = alpha.onDelegationRecall({ key, token });
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			assert.strictEqual(alpha.stats.delegations, 0, 'the surrender has left the delegation table');
+			let secondDone = false;
+			const second = alpha.onDelegationRecall({ key, token }).then(() => (secondDone = true));
+			const drain = quiesceDelegations(cluster.database, 30);
+			const drained = await drain;
+			assert.ok(
+				drained.outstanding.some((entry) => /has not fenced every handle/.test(entry.reason)),
+				JSON.stringify(drained.outstanding)
+			);
+			assert.strictEqual(secondDone, false, 'the second recall confirmed while a handle could still commit');
+			releaseFence();
+			await Promise.all([first, second]);
+		});
+
 		it('does not let a late release of the old grant clear its successor', async () => {
 			const { cluster, key, token } = await gammaHeldThenStopped();
 			await drainAlpha(cluster);

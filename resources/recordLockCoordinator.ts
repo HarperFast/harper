@@ -2012,6 +2012,16 @@ export class LockCoordinator {
 			// the home already believes drained.
 			const request = this.#pendingRequests.get(keyId);
 			if (request) request.recalledToken = recall.token;
+			// A surrender already under way left the table before its handles were fenced: confirming now
+			// would let the home re-grant while one of them can still commit.
+			const ringKey = this.#ringKey(keyId);
+			for (const surrender of inFlightSurrenders.get(this.database)?.entries ?? [])
+				if (
+					surrender.table === this.table &&
+					surrender.ringKey === ringKey &&
+					compareTokens(surrender.token, recall.token) === 0
+				)
+					return surrender.settled;
 			return;
 		}
 		delegation.recalled = true;
@@ -2093,6 +2103,8 @@ export class LockCoordinator {
 		// Delegate side first: this is what admits, and surrendering is purely local — it cannot be
 		// refused by an unreachable peer, so it succeeds even when the recalls below do not.
 		for (const delegation of [...this.#delegations.values()]) {
+			// Handed off mid-drain: the successor holds what is left, and the sweep visits it.
+			if (this.#closed) return;
 			try {
 				await withDeadline(this.onDelegationRecall({ key: delegation.key, token: delegation.token }), remaining());
 				result.surrendered++;
@@ -2107,6 +2119,7 @@ export class LockCoordinator {
 		// Home side: tell delegates elsewhere to stop. `#beginRecall` owns the retry and confirmation
 		// bookkeeping; this only drives it and reports what it did not confirm.
 		for (const [keyId, grant] of [...this.#grants]) {
+			if (this.#closed) return;
 			if (grant.recallConfirmed) {
 				result.recalled++;
 				continue;
@@ -2308,11 +2321,18 @@ export class LockCoordinator {
 		this.#freshnessGeneration = generation;
 		this.#loseFreshnessHistory();
 		for (const [keyId, grant] of this.#grants)
-			if (
-				grant.token[0] < generation &&
-				(grant.recallConfirmed || (grant.drainOutstanding && !homes.includes(grant.delegate)))
-			)
+			if (this.#retiredByGeneration(grant, generation, homes)) {
+				// Acted on: a map that later reverts below this generation must not see the grant gone.
+				this.#recordGenerationActedOn(generation);
 				this.#expireGrant(keyId, grant);
+			}
+	}
+
+	#retiredByGeneration(grant: HomeGrant, generation: number, homes: string[]): boolean {
+		return (
+			grant.token[0] < generation &&
+			(grant.recallConfirmed === true || (grant.drainOutstanding === true && !homes.includes(grant.delegate)))
+		);
 	}
 
 	#loseFreshnessHistory(): void {
@@ -2647,9 +2667,11 @@ export class LockCoordinator {
 			// An expired grant is not a live one. Collecting it here rather than trusting `tick()` is
 			// what keeps a table whose expiry budget is saturated from answering `contended` forever.
 			if (existing.expiresMono <= now) this.#expireGrant(keyId, existing);
-			// Confirmed after this generation's sweep (`#prepareFreshnessGeneration`) already ran.
-			else if (existing.recallConfirmed && existing.token[0] < homeMap.generation) this.#expireGrant(keyId, existing);
-			else if (existing.recalling || existing.recallConfirmed)
+			// Ruled on after this generation's sweep (`#prepareFreshnessGeneration`) already ran.
+			else if (this.#retiredByGeneration(existing, homeMap.generation, homeMap.homes)) {
+				this.#recordGenerationActedOn(homeMap.generation);
+				this.#expireGrant(keyId, existing);
+			} else if (existing.recalling || existing.recallConfirmed)
 				// A recall is in flight, or the delegate has already confirmed one. Renewing now — even for
 				// the node being recalled — would mint a token its own release no longer matches, and the
 				// contender would never get the key. `recallConfirmed` has to be here as well as in
@@ -3166,6 +3188,19 @@ export async function quiesceDelegations(database: string, budgetMs: number): Pr
 		}
 		pending = ofDatabase().filter((coordinator) => !coordinators.includes(coordinator));
 	}
+	// A surrender started before the sweep (a contention recall) has left its table already, but its
+	// handles can still commit until they are fenced.
+	for (const surrender of [...(inFlightSurrenders.get(database)?.entries ?? [])]) {
+		try {
+			await withDeadline(surrender.settled, remaining());
+		} catch (error) {
+			result.outstanding.push({
+				table: surrender.table,
+				key: undefined,
+				reason: `a delegation this node is surrendering has not fenced every handle it admitted: ${(error as Error)?.message ?? error}`,
+			});
+		}
+	}
 	// A sweep proves quiescence only if it could have seen everything this NODE issued, not merely what
 	// this coordinator holds. Two ways it could not have:
 	//
@@ -3184,7 +3219,6 @@ export async function quiesceDelegations(database: string, budgetMs: number): Pr
 		});
 	}
 	for (const coordinator of coordinators) {
-		if (!liveCoordinators.has(coordinator)) continue;
 		const unproven = coordinator.unprovenOwnershipMs();
 		if (unproven > 0)
 			result.outstanding.push({
