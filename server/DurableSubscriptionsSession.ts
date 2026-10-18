@@ -11,7 +11,10 @@ import { randomBytes } from 'node:crypto';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
 
 const AWAITING_ACKS_HIGH_WATER_MARK = 100;
-const RECEIVED_HIGH_WATER_MARK = 1000;
+/** Inbound QoS 2 exchanges a client may hold open, advertised in the v5 CONNACK. */
+export const RECEIVE_MAXIMUM = 1000;
+/** Past this many receipts kept for a session, more are not kept: a replay resends those deliveries instead. */
+const RECEIVED_LIMIT = 1000;
 let _DurableSession: any;
 function getDurableSession() {
 	if (!_DurableSession) {
@@ -505,6 +508,11 @@ class SubscriptionsSession {
 			known.reply = this.saveExchange(known);
 		}
 		if (known) return known.reply;
+		if (exchanges.size >= RECEIVE_MAXIMUM) {
+			const error: any = new Error(`MQTT client ${this.sessionId} exceeded its Receive Maximum of ${RECEIVE_MAXIMUM}`);
+			error.mqttReasonCode = 0x93;
+			return Promise.reject(error);
+		}
 		const exchange: InboundExchange = { reply: undefined };
 		exchange.reply = publish().then(
 			async (acknowledgement) => {
@@ -779,7 +787,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	/** Packets are handled concurrently, so SUBSCRIBE, UNSUBSCRIBE and resume change `topics` one at a time. */
 	changes: Promise<unknown> = Promise.resolve();
 	reservedIds = new Set<number>();
-	/** Entries in every topic's `received` and `receivedRuns`, which past a high water mark slow delivery. */
+	/** Entries in every topic's `received` and `receivedRuns`. */
 	receivedCount = 0;
 	inFlightChanged = false;
 	/** Set while the final save waits for inbound publishes; `sealed` follows once it is taken. */
@@ -914,10 +922,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	messageIdInUse(messageId: number): boolean {
 		return super.messageIdInUse(messageId) || this.reservedIds.has(messageId);
 	}
-	pendingDeliveries(): number {
-		return super.pendingDeliveries() + Math.max(0, this.receivedCount - RECEIVED_HIGH_WATER_MARK);
-	}
 	addReceived(state: TopicState, identity: DeliveryIdentity) {
+		if (this.receivedCount >= RECEIVED_LIMIT) return;
 		const [key, ordinal] = identity;
 		const runs = (state.receivedRuns ??= new Map());
 		let run = runs.get(key) ?? 0;

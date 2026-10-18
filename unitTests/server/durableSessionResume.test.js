@@ -1856,6 +1856,26 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		socket.handlers.close();
 	});
 
+	it('advertises a Receive Maximum and disconnects a client that holds more QoS 2 exchanges open', async () => {
+		const { name } = topicTable();
+		const open = mqttListener();
+		const clientId = `qos2-receive-maximum-${name}`;
+		const socket = await openConnected(open, clientId);
+		assert.strictEqual(ofCommand(socket, 'connack')[0].properties.receiveMaximum, 1000);
+		const session = [...open.sessions].find((session) => session.sessionId === clientId);
+		session.awaitingRelease = new Map();
+		for (let messageId = 1; messageId <= 1000; messageId++)
+			session.awaitingRelease.set(messageId, { reply: Promise.resolve({}), published: true });
+		socket.handlers.message(
+			generate({ cmd: 'publish', topic: `${name}/m`, payload: '{}', qos: 2, messageId: 2000 }, v5)
+		);
+		await waitFor(() => ofCommand(socket, 'disconnect').length > 0);
+		assert.strictEqual(ofCommand(socket, 'disconnect')[0].reasonCode, 0x93);
+		assert.strictEqual(ofCommand(socket, 'pubrec').length, 0);
+		session.awaitingRelease = new Map();
+		socket.handlers.close();
+	});
+
 	it('assigns no packet id still awaiting its PUBCOMP', async () => {
 		const { name } = topicTable();
 		const { session } = await connect(`qos2-ids-${name}`);

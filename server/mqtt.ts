@@ -1,7 +1,7 @@
 // for now we are using mqtt-packet, but we may implement some of this ourselves, particularly packet generation so that
 // we can implement more efficient progressive buffer allocation.
 import { parser as makeParser, generate } from 'mqtt-packet';
-import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession.ts';
+import { getSession, DurableSubscriptionsSession, RECEIVE_MAXIMUM } from './DurableSubscriptionsSession.ts';
 import { getSuperUser } from '../security/user.ts';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
 import {
@@ -327,7 +327,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 	function closeConnection(error?: Error) {
 		try {
 			if (mqttOptions.protocolVersion >= 5) {
-				const packet: any = { cmd: 'disconnect', reasonCode: error ? 0x83 : 0x8e };
+				const packet: any = { cmd: 'disconnect', reasonCode: error ? ((error as any).mqttReasonCode ?? 0x83) : 0x8e };
 				// as for PUBACK: only failures this layer describes itself are safe to hand a client
 				const describable =
 					error instanceof DatabaseGenerationChangedError ||
@@ -544,6 +544,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						sessionPresent: session.sessionWasPresent,
 						reasonCode: 0,
 						returnCode: 0, // success
+						properties: { receiveMaximum: RECEIVE_MAXIMUM },
 					});
 					const listener = async (topic, message, messageId, subscription, version, dup) => {
 						try {
@@ -718,10 +719,12 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		} catch (error) {
 			emitEvent('error', error, socket, packet, session);
 			mqttLog.error?.(error);
-			generateAndSendPacket({
-				// Send a subscription acknowledgment
-				cmd: 'disconnect',
-			});
+			if (error?.mqttReasonCode) closeConnection(error);
+			else
+				generateAndSendPacket({
+					// Send a subscription acknowledgment
+					cmd: 'disconnect',
+				});
 		}
 		// analytics stay per subscriber even when the packet itself is shared across them
 		function sendPacket(packet, methodName, path?) {
