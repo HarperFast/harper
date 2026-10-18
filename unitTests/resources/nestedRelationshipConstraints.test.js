@@ -80,6 +80,7 @@ describe('nested relationship constraints', function () {
 			attributes: [
 				{ name: 'id', type: 'ID', isPrimaryKey: true },
 				{ name: 'childId', type: 'ID' },
+				{ name: 'metadata', type: 'Any' },
 				{ name: 'childIds', elements: { type: 'ID' } },
 				{
 					name: 'children',
@@ -94,7 +95,12 @@ describe('nested relationship constraints', function () {
 				},
 			],
 		});
-		await Parent.put('p1', { id: 'p1', childId: 'c1', childIds: ['c1', 'missing', 'c2', 'c3', 'c4'] });
+		await Parent.put('p1', {
+			id: 'p1',
+			childId: 'c1',
+			childIds: ['c1', 'missing', 'c2', 'c3', 'c4'],
+			metadata: { label: 'kept', hidden: 'omit' },
+		});
 		await Parent.put('p2', { id: 'p2', childId: 'missing' });
 		for (const child of children) await Child.put(child.id, child);
 		const resources = new Resources();
@@ -556,4 +562,10 @@ describe('nested relationship constraints', function () {
 		assert.deepStrictEqual(rows[0].references, []);
 		assert.strictEqual(rows[1].references, undefined);
 	});
+	for (const single of [false, true])
+		it(`retains plain JSON bracket projections without constraints (${single ? 'record' : 'collection'})`, async function () {
+			const result = await get((single ? '/Parent/p1?' : '/Parent/?') + 'select(id,metadata[select(label,)])');
+			const row = single ? result : result[0];
+			assert.deepStrictEqual(row.metadata, { label: 'kept' });
+		});
 });

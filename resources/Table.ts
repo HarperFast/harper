@@ -6292,6 +6292,8 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 		static _prepareRelationshipSelection(attribute, context, filtered?, ensureLoaded = true) {
+			if (attribute.conditions !== undefined && !Array.isArray(attribute.conditions))
+				throw new ClientError('Nested conditions must be an array');
 			const resolver = propertyResolvers[attribute.name];
 			const targetTable = resolver.definition.tableClass;
 			const offset = attribute.offset ?? 0;

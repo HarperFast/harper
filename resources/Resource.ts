@@ -1183,7 +1183,7 @@ export function hasNestedQueryOptions(property) {
 	return (
 		property &&
 		typeof property === 'object' &&
-		(property.conditions !== undefined ||
+		((property.conditions !== undefined && (!Array.isArray(property.conditions) || property.conditions.length > 0)) ||
 			property.operator !== undefined ||
 			property.limit !== undefined ||
 			property.offset !== undefined ||
