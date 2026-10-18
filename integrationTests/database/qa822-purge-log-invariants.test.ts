@@ -654,6 +654,12 @@ suite(
 				findings.push(`1b. purge job ${job.status} result=${JSON.stringify(job.result)}`);
 
 				postPurge = await logStats(ctx, 'QuietTarget');
+				strictEqual(
+					postPurge.fileCount,
+					0,
+					`ORACLE ARMING: purge 1b must leave the fully flushed store with no log files, or the samples below ` +
+						`run against a kept file instead of the emptied-store path. Got ${fmt(postPurge)}`
+				);
 
 				// Here and nowhere else: after the restart this window is gone. These rows are written by
 				// the process that ran the purge — the residual exposure the QA-822 family named.
