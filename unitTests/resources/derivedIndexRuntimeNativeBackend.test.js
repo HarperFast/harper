@@ -1218,7 +1218,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 
 	it('proves the floors again before a nonempty pass that reached the tail publishes catch-up', async () => {
 		// Sustained local work never leaves an idle pass, and the emptied remote log has no transaction
-		// to anchor on; the floor is still re-proven before the tail-reaching pass is delivered.
+		// to anchor on; the floor is still re-proven before the durable advance publishes catch-up.
 		let reads = 0;
 		const store = new FakeLogStore(new Map([[7, [audit({ timestamp: 8, recordId: 'b' })]]]), {
 			logNames: ['local', 'remote'],
@@ -1249,6 +1249,46 @@ describe('DerivedIndexRuntime for native backends', () => {
 			timeout: 5000,
 		});
 		assert.deepStrictEqual(backend.cursor, { format: 1, logs: { local: 8 }, floors: { remote: 4 } });
+		await runtime.stop();
+	});
+
+	it('does not re-prove a floor an accepted batch has already replaced with an exact anchor', async () => {
+		// The floor file is purged after the remote transaction was read and proven, while the backend
+		// still reports the older durable cursor: the runner has read past the floor, so no rebuild.
+		let reads = 0;
+		const store = new FakeLogStore(new Map([[7, [{ ...audit({ timestamp: 8, recordId: 'b' }), logName: 'remote' }]]]), {
+			logNames: ['local', 'remote'],
+			logEntries: new Map([
+				['local', [audit({ timestamp: 7, recordId: 'a' })]],
+				['remote', []],
+			]),
+			logStats: new Map([
+				[
+					'remote',
+					() =>
+						++reads <= 2
+							? { fileCount: 1, oldestSequenceNumber: 3, currentSequenceNumber: 3 }
+							: { fileCount: 1, oldestSequenceNumber: 4, currentSequenceNumber: 4 },
+				],
+			]),
+		});
+		const backend = new AsyncBackend('floor-replaced-late', {
+			cursor: { format: 1, logs: { local: 7 }, floors: { remote: 3 } },
+			applyDelay: 2,
+		});
+		const { runtime } = runtimeFor(store, new Map([...records(), ['1:b', { version: 8, value: { title: 'b' } }]]), {
+			idleGraceMilliseconds: 1000,
+		});
+		runtime.register(floorRegistration(backend));
+
+		await waitFor(
+			() => runtime.getReadiness('floor-replaced-late').state === 'ready' && backend.cursor?.logs.remote === 8,
+			{
+				timeout: 5000,
+			}
+		);
+		assert.strictEqual(backend.resets.length, 0);
+		assert.deepStrictEqual(backend.cursor, { format: 1, logs: { local: 7, remote: 8 } });
 		await runtime.stop();
 	});
 

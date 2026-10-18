@@ -22,7 +22,7 @@ export type DerivedIndexCursor = {
 	/**
 	 * For a log with no completed transaction when the cursor was captured: the lowest log sequence that
 	 * must still be retained for the log to be read from its beginning — its oldest retained file, or the
-	 * writer's sequence when no file remains. Absent means sequence 1 (a log that had never been written).
+	 * writer's sequence when no file remains. Absent means sequence 1.
 	 */
 	floors?: Record<string, number>;
 	coverage?: DerivedIndexPositions;
@@ -1181,7 +1181,9 @@ class DerivedIndexRunner {
 		}
 	}
 
-	#checkUnanchoredLogs(cursor: DerivedIndexCursor): boolean {
+	/** Against the newest accepted vector: a log anchored there was proven past its floor when it was read. */
+	#checkUnanchoredLogs(): boolean {
+		const cursor = this.#offered!;
 		for (const logName of this.#knownLogs) {
 			if (cursor.logs[logName] !== undefined) continue;
 			if (!this.#retainsFrom(logName, cursor.floors?.[logName] ?? 1)) {
@@ -1677,8 +1679,8 @@ class DerivedIndexRunner {
 			this.#needsRebuild('backend advanced to an unoffered cursor vector', 'cursor-unoffered');
 			return false;
 		}
-		// Every durable advance publishes catch-up, so the logs it leaves unanchored are proven first.
-		if (!this.#checkUnanchoredLogs(cursor)) return false;
+		// Every durable advance publishes catch-up, so the logs still unanchored are proven first.
+		if (!this.#checkUnanchoredLogs()) return false;
 		// Every timestamp of an offered vector was pushed to its log's pending list, so the durable one is
 		// present; everything before it is no longer needed for repeat detection.
 		for (const [logName, timestamp] of Object.entries(cursor.logs)) {

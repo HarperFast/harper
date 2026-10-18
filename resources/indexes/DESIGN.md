@@ -218,8 +218,9 @@ anyway.
 3. A cursor is `{ format: 1, logs: { <log name>: <completed transaction timestamp> }, floors?: { <log
 name>: <log sequence> } }`. `logs` advances only at `endTxn` and only after the backend's durability
    barrier covers the whole transaction. `floors` anchors a log that held no completed transaction when
-   the rebuild captured its boundary: the sequence its next commit lands in (recorded only when past 1,
-   so a never-written log needs no entry). Floors are cursor identity like `logs` — `sameCursor`
+   the rebuild captured its boundary: the lowest sequence that must stay retained for the log to be read
+   from its beginning — its oldest retained file, or the writer's sequence when none remains (recorded
+   only when past 1). Floors are cursor identity like `logs` — `sameCursor`
    compares them, so a backend cannot report a floor the owner never offered — and they survive
    backend persistence (the full-text payload codec carries them; HNSW stores the object).
 4. Live delivery and restart use the same cursor validation, iterator and dispatch code. A lost wake
@@ -281,7 +282,8 @@ of failing on a log with no committed tail (the scan covers that log's past, and
 at the floor or above). The floor is proven at three sites: `#validateLogSet` when a cursor is installed, `#anchor` before the
 log's first completed transaction replaces it with an exact timestamp (files between the floor and that
 transaction may have been purged since the install check), and `#reconcileDurableCursor` before any
-durable advance publishes coverage or ready — the one path every catch-up publication takes. Rollback: an older Harper's full-text decoder rejects the `floors` field and rebuilds
+durable advance publishes coverage or ready — the one path every catch-up publication takes, checked
+against the newest accepted vector, since a log anchored there was proven past its floor when read. Rollback: an older Harper's full-text decoder rejects the `floors` field and rebuilds
 once; its runtime and HNSW drop the field on clone and judge the log by the old rule.
 
 ### Offered versus durable progress

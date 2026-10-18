@@ -14,8 +14,10 @@
  *      (2.12.0) a purge may delete every fully flushed file, the one `txn.state` names and the
  *      writer's current segment included, so an idle flushed log legitimately has NO files left. The
  *      witness then has to carry the contract on its own: with no files, the writer has retired past
- *      the witnessed sequence so the next append lands above it; with files, the position lies inside
- *      the range the purge kept; and a restart never moves the position backwards (`txn.state` only
+ *      the witnessed sequence so the next append lands above it; with files, the position is never ahead
+ *      of the writer and at most one sequence behind the oldest kept file (a flush ending exactly at a
+ *      sealed file's end lets the purge delete that file and keep its unflushed successor); and a
+ *      restart never moves the position backwards (`txn.state` only
  *      moves forward, and `load()` starts appends at F+1). This is #911's witness contract stated as
  *      an executable claim; it is the assertion that goes red if a purge ever strands the position or
  *      a restart appends behind it.
@@ -35,11 +37,12 @@
  *      per audit entry, with the transaction boundary carried as a flag), so it is an empirical
  *      anchor on that layout rather than a published contract. Native per-transaction framing would
  *      be a deliberate change, and this assertion is meant to be the thing that notices it.
- *   3. THERE IS NO PARTIAL-LOSS WINDOW AFTER A PURGE. Markers planted at four points across the
- *      post-purge window all survive a clean shutdown together. The sharpest is the first: rows
- *      written by the very process that ran the purge, before it has restarted, which is the
- *      residual exposure the QA-822 family named. Then a single row first thing in the new process,
- *      then two more across a write ramp. The failure mode this forbids is the expensive one: a
+ *   3. THERE IS NO PARTIAL-LOSS WINDOW AROUND A PURGE. Markers planted at five points all survive a
+ *      clean shutdown together. The first is written after the purge cutoff and before the purge runs,
+ *      so the purge must keep the file holding it (the keep half of #911's rule). The sharpest is the
+ *      second: rows written by the very process that ran the purge, before it has restarted, which is
+ *      the residual exposure the QA-822 family named. Then a single row first thing in the new
+ *      process, then two more across a write ramp. The failure mode this forbids is the expensive one: a
  *      silent prefix of the window being dropped while later rows survive, which no operator could
  *      detect from the outside.
  *   4. A CLEAN, WRITE-FREE REOPEN LEAVES THE FLUSH POSITION UNTOUCHED (QA-1730, promoted separately
@@ -50,8 +53,8 @@
  *      It also checks what no self-report can, between the kill and the reopen, WHILE THE PROCESS IS
  *      DOWN: that `txn.state` physically holds those eight bytes (the only durable record once the
  *      file it names is gone), and that the purge really deleted every file lying entirely at or
- *      before the position while keeping every file with bytes above it — the #911 rule, which the
- *      #799 floor broke by keeping the fully flushed file the position names.
+ *      before the position — the #911 rule, which the #799 floor broke by keeping the fully flushed
+ *      file the position names.
  *
  * WHY INVARIANT 1 IS STATED AS "NEVER WEDGES" RATHER THAN "HEALS". The QA-822 exploration measured
  * the opposite world. On `@harperfast/rocksdb-js` 2.8.0 this same purge left `lastFlushedPosition`
@@ -466,8 +469,8 @@ function diskFlushedPosition(logDirPath: string): LogPosition {
 }
 
 // rocksdb-js#911: a file lying entirely at or before the flushed position is purgeable, the file the
-// position names and the current segment included. Survival of bytes above the position is invariant 3's
-// claim; this arm writes nothing after its flush, so it has no such file to keep.
+// position names and the current segment included. The keep half is invariant 3's pre-purge markers;
+// this arm writes nothing after its flush, so it has no such file to keep.
 function assertPurgeRuleOnDisk(
 	files: { seq: number; bytes: number }[],
 	diskWitness: LogPosition,
@@ -528,11 +531,15 @@ suite(
 	{ skip: skipSuite },
 	(ctx: ContextWithHarper) => {
 		const findings: string[] = [];
+		const prePurge = {
+			label: 'pre-purge (written after the cutoff, before the purge ran)',
+			rows: markerRows('pp', MARKER_ROWS),
+		};
 		const sameProcess = { label: 'same-process (written by the purging process)', rows: markerRows('sp', MARKER_ROWS) };
 		const cp0 = { label: 'cp0 (one row, before any further volume)', rows: markerRows('cp0', 1) };
 		const cp1 = { label: 'cp1 (after 260 single-row commits)', rows: markerRows('cp1', MARKER_ROWS) };
 		const cp2 = { label: 'cp2 (after one 260-row commit)', rows: markerRows('cp2', MARKER_ROWS) };
-		const checkpoints = [sameProcess, cp0, cp1, cp2];
+		const checkpoints = [prePurge, sameProcess, cp0, cp1, cp2];
 		let postPurge: LogSnapshot;
 		let postPurgeRestart: LogSnapshot;
 		let manyCommitBytes = Number.NaN;
@@ -588,6 +595,8 @@ suite(
 
 				await flushUntilPurgeable(ctx, 'PurgeVictim');
 				const cutoffTimestamp = Date.now();
+				// Newer than the cutoff, so the purge must keep the file these land in whatever its flush state.
+				await insertRows(ctx, 'QuietTarget', prePurge.rows);
 
 				// Database-scoped on purpose: a RocksDB transaction log is per-database, so a `table`-scoped
 				// request is refused outright (`ResourceBridge.deleteTransactionLogsBefore`, harper#2049).
@@ -616,6 +625,7 @@ suite(
 				);
 
 				postPurge = await logStats(ctx, 'QuietTarget');
+				await assertMarkersIntact(ctx, '1. PROTECTED SUFFIX pre-purge', prePurge.rows);
 
 				// Here and nowhere else: after the restart this window is gone. These rows are written by
 				// the process that ran the purge — the residual exposure the QA-822 family named.
@@ -632,8 +642,6 @@ suite(
 
 		test('2. INVARIANT 1: the purge leaves the flush position a sound witness, and the restart appends above it', async () => {
 			ok(purged, 'PRECONDITION: the purge must have run before its aftermath is asserted');
-			// One claim — the position `txn.state` holds outlived the purge as a usable witness — split so
-			// a red run names which of the states it rules out actually happened.
 			for (const [when, stats] of [
 				['immediately after the purge', postPurge],
 				['after the purging process shut down and reopened', postPurgeRestart],
@@ -810,7 +818,6 @@ suite(
 					`flush position must be byte-identical to the pre-restart position. Got boundary=${fmt(cleanReopenBoundary)} ` +
 					`reopened=${fmt(cleanReopenReopened)}`
 			);
-			// Sampled while the process was down: a self-report after reopen cannot prove what was persisted.
 			assertPurgeRuleOnDisk(
 				cleanReopenDiskFiles,
 				cleanReopenDiskWitness,
