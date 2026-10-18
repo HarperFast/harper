@@ -286,8 +286,8 @@ export interface ClusterLockTransport {
 	 * activation record is active — every old home quiesced (each acknowledgement bound to the
 	 * acknowledger's `homeIncarnation`, so a restart during the drain invalidates it) or externally
 	 * fenced, then `DELEGATION_LEASE_MS + skew` elapsed, unless every quiesced home proved its drain
-	 * and every fenced node is stopped, not merely isolated. A home expires its older grants to nodes
-	 * outside the new ring, and those whose recall was confirmed, on that activation
+	 * and every fenced node is stopped, not merely isolated. A home expires its older grants whose recall was
+	 * confirmed, or failed to a node outside the new ring, on that activation
 	 * (`#prepareFreshnessGeneration`). Core cannot observe
 	 * what happened on other nodes; the operator can.
 	 *
@@ -2301,9 +2301,13 @@ export class LockCoordinator {
 		if (this.#freshnessGeneration === generation) return;
 		this.#freshnessGeneration = generation;
 		this.#loseFreshnessHistory();
-		// record-locks.md, "A delegation is authority within one generation".
+		// record-locks.md, "A delegation is authority within one generation". A recall that failed is
+		// what separates a stopped delegate from one a drain never reached.
 		for (const [keyId, grant] of this.#grants)
-			if (grant.token[0] < generation && (grant.recallConfirmed || !homes.includes(grant.delegate)))
+			if (
+				grant.token[0] < generation &&
+				(grant.recallConfirmed || (grant.recallRetryAfterMono !== undefined && !homes.includes(grant.delegate)))
+			)
 				this.#expireGrant(keyId, grant);
 	}
 

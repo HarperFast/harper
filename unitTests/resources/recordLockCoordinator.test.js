@@ -2528,14 +2528,26 @@ describe('record lock delegations', () => {
 			return { cluster, key: keys[0], token };
 		}
 
+		/** What staging the next generation runs on alpha: its recalls to gamma fail. */
+		async function drainAlpha(cluster) {
+			const result = { complete: true, surrendered: 0, recalled: 0, outstanding: [] };
+			await cluster.node('alpha').coordinator.quiesce(result, () => 1_000);
+			assert.deepStrictEqual(
+				result.outstanding.map((entry) => entry.delegate),
+				['gamma', 'gamma']
+			);
+		}
+
 		it('serves a key granted to a node the next generation drops, once that generation is current', async () => {
 			const { cluster, key } = await gammaHeldThenStopped();
+			await drainAlpha(cluster);
 			cluster.homes = ['alpha', 'beta'];
 			cluster.generation = 2;
 			assert.strictEqual(cluster.homeOf(key), 'alpha');
 			const round = await cluster.node('beta').coordinator.acquire(key, LEASE, 1_000);
 			assert.ok(round.admissionId);
 			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 1, "gamma's other grant outlived the change");
+			assert.strictEqual(cluster.node('beta').freshnessCalls.at(-1).dependencies, null);
 		});
 
 		it('keeps that grant exclusive while the generation is unchanged', async () => {
@@ -2549,6 +2561,7 @@ describe('record lock delegations', () => {
 
 		it('keeps an older grant to a node still in the ring until its lease or release ends it', async () => {
 			const { cluster, key } = await gammaHeldThenStopped();
+			await drainAlpha(cluster);
 			cluster.generation = 2;
 			await assert.rejects(
 				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
@@ -2572,8 +2585,20 @@ describe('record lock delegations', () => {
 			assert.ok(successor.admissionId);
 		});
 
+		it('keeps an older grant to a dropped node that no drain reached', async () => {
+			const { cluster, key } = await gammaHeldThenStopped();
+			cluster.homes = ['alpha', 'beta'];
+			cluster.generation = 2;
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
+				(error) => error.statusCode === 423
+			);
+			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 2);
+		});
+
 		it('does not let a late release of the old grant clear its successor', async () => {
 			const { cluster, key, token } = await gammaHeldThenStopped();
+			await drainAlpha(cluster);
 			cluster.homes = ['alpha', 'beta'];
 			cluster.generation = 2;
 			const beta = cluster.node('beta').coordinator;
