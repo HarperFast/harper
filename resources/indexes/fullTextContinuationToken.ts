@@ -1,9 +1,7 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 
-// Covers the native v3 token (at most 5,602 characters), encryption, and routing fields.
 const MAX_TOKEN_CHARACTERS = 16 * 1024;
-const MAX_NATIVE_TOKEN_CHARACTERS = 5_602;
 
 type Route = { version: 1; process: string; owner: number; lease: string };
 export type FullTextContinuationPosition = {
@@ -124,7 +122,7 @@ function validPosition(value: FullTextContinuationPosition, maxNativePageSize: n
 		!!value &&
 		typeof value === 'object' &&
 		(value.boundary === undefined ||
-			(typeof value.boundary === 'string' && value.boundary.length <= MAX_NATIVE_TOKEN_CHARACTERS)) &&
+			(typeof value.boundary === 'string' && value.boundary.length <= MAX_TOKEN_CHARACTERS)) &&
 		Number.isSafeInteger(value.batchSize) &&
 		value.batchSize > 0 &&
 		value.batchSize <= maxNativePageSize &&

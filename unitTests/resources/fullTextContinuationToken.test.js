@@ -57,12 +57,12 @@ describe('full-text continuation tokens', () => {
 		const token = owner.seal(lease, query, position);
 		owner.seal(lease, query, { batchSize: 17, consumed: 0 });
 		assert.deepStrictEqual(owner.open(token, query).position, position);
-		const maximum = { boundary: 'x'.repeat(5602), batchSize: 10000, consumed: 9999 };
+		const maximum = { boundary: 'x'.repeat(6000), batchSize: 10000, consumed: 9999 };
 		assert.deepStrictEqual(owner.open(owner.seal(lease, query, maximum), query).position, maximum);
 		for (const bad of [
 			{ batchSize: 0, consumed: 0 },
 			{ ...position, consumed: 114 },
-			{ ...maximum, boundary: 'x'.repeat(5603) },
+			{ ...maximum, boundary: 'x'.repeat(16385) },
 		])
 			assert.throws(() => owner.seal(lease, query, bad), /Invalid/);
 	});

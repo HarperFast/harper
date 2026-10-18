@@ -527,10 +527,33 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE, null);
 let fullTextContinuationLoading;
 let fullTextContinuationQueued = 0;
 let fullTextContinuationResponsesQueued = 0;
+function rejectFullTextContinuation(event, port) {
+	if (
+		typeof event.message?.id !== 'string' ||
+		event.message.id.length !== 32 ||
+		event.message.originator !== port.threadId
+	)
+		return;
+	try {
+		port.postMessage({
+			type: hdbTerms.ITC_EVENT_TYPES.FULL_TEXT_CONTINUATION_RESPONSE,
+			message: {
+				id: event.message.id,
+				originator: threadId,
+				error: { status: 503, message: 'Full-text continuation is unavailable; retry this search' },
+			},
+		});
+	} catch {}
+}
+
 function dispatchFullTextContinuation(event, port, response) {
 	const configured = Number(envMgr.get(hdbTerms.CONFIG_PARAMS.STORAGE_FULL_TEXT)?.maxPendingRequests ?? 32);
 	const maximum = Number.isSafeInteger(configured) && configured > 0 ? configured : 32;
-	if (!port || (response ? fullTextContinuationResponsesQueued : fullTextContinuationQueued) >= maximum) return;
+	if (!port) return;
+	if ((response ? fullTextContinuationResponsesQueued : fullTextContinuationQueued) >= maximum) {
+		if (!response) rejectFullTextContinuation(event, port);
+		return;
+	}
 	if (response) fullTextContinuationResponsesQueued++;
 	else fullTextContinuationQueued++;
 	fullTextContinuationLoading ??= import('../../resources/indexes/fullTextContinuation.ts').catch((error) => {
@@ -543,19 +566,7 @@ function dispatchFullTextContinuation(event, port, response) {
 			else return module.fullTextContinuationRequest(event, port.threadId);
 		})
 		.catch(() => {
-			if (response || typeof event.message?.id !== 'string' || event.message.id.length !== 32) return;
-			try {
-				port.postMessage({
-					type: hdbTerms.ITC_EVENT_TYPES.FULL_TEXT_CONTINUATION_RESPONSE,
-					message: {
-						id: event.message.id,
-						originator: threadId,
-						error: { status: 503, message: 'Full-text continuation is unavailable; retry this search' },
-					},
-				});
-			} catch {
-				/* The requesting worker already disconnected. */
-			}
+			if (!response) rejectFullTextContinuation(event, port);
 		})
 		.finally(() => {
 			if (response) fullTextContinuationResponsesQueued--;

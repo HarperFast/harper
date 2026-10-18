@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import { fullTextContinuationDeadline } from './fullTextContinuation.ts';
-import { resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
+import { type FullTextSearchLimits, resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 
@@ -19,7 +19,8 @@ export class FullTextContinuationPage {
 	readonly limit: number;
 	readonly close: boolean;
 	readonly queryHash: string;
-	readonly deadline = fullTextContinuationDeadline();
+	readonly deadline: bigint;
+	readonly policy: FullTextSearchLimits;
 	readonly ready = Promise.withResolvers<void>();
 	loadEntries!: (entries: any[]) => any[];
 	materialize!: (entries: any[]) => Promise<any[]>;
@@ -30,6 +31,8 @@ export class FullTextContinuationPage {
 
 	constructor(target: any, identity: unknown) {
 		const policy = resolveFullTextSearchLimits(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT));
+		this.policy = policy;
+		this.deadline = fullTextContinuationDeadline(policy);
 		if (
 			(target.continuation !== true && (typeof target.continuation !== 'string' || !target.continuation)) ||
 			!Number.isSafeInteger(target.limit) ||
@@ -53,7 +56,7 @@ export class FullTextContinuationPage {
 		this.token = target.continuation;
 		this.limit = target.limit;
 		this.queryHash = createHash('sha256')
-			.update(JSON.stringify(canonical(identity, new Set())))
+			.update(JSON.stringify(canonical({ query: identity, limits: policy }, new Set())))
 			.digest('hex');
 		this.ready.promise.catch(() => {});
 	}

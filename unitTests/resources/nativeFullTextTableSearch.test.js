@@ -218,10 +218,59 @@ describe('published native full-text Table.search integration', () => {
 		const closed = await Product.search(parsed);
 		assert.strictEqual(closed.length, 0);
 		assert.strictEqual(closed.complete, true);
+		const groupedQuery = '(catalogSearch=matches=widget|catalogSearch=matches=missing)&limit(1)';
+		const grouped = await Product.search(parseQuery(`${groupedQuery}&continuation()`));
+		assert.strictEqual(grouped.length, 1);
+		assert(grouped.continuation);
+		const groupedNext = await Product.search(parseQuery(`${groupedQuery}&continuation(${grouped.continuation})`));
+		assert.strictEqual(groupedNext.length, 1);
+		assert.notStrictEqual(groupedNext[0].id, grouped[0].id);
+		if (groupedNext.continuation)
+			await Product.search(parseQuery(`${groupedQuery}&continuation(${groupedNext.continuation})&closeContinuation()`));
 		await assert.rejects(
 			Product.search({ ...base, continuation: first.continuation }),
 			(error) => error.statusCode === 410
 		);
+	});
+
+	it('binds a continuation to its database even when table IDs and definitions match', async () => {
+		let other;
+		try {
+			const make = (database) =>
+				table({
+					database,
+					table: 'Product',
+					audit: true,
+					attributes: [
+						{ name: 'id', type: 'ID', isPrimaryKey: true },
+						{ name: 'title', type: 'String' },
+					],
+					fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1 }])],
+				});
+			Product = make(`fulltext-scope-a-${Date.now()}`);
+			other = make(`fulltext-scope-b-${Date.now()}`);
+			assert.strictEqual(other.tableId, Product.tableId);
+			for (const resource of [Product, other]) {
+				await resource.put('one', { title: 'widget' });
+				await resource.put('two', { title: 'widget' });
+				await waitFor(() => fullTextDerivedIndexReadiness(resource, 'catalogSearch').state === 'ready', 30000);
+			}
+			const query = {
+				conditions: [
+					{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget', waitForIndexMilliseconds: 5000 },
+				],
+				limit: 1,
+			};
+			const first = await Product.search({ ...query, continuation: true });
+			assert(first.continuation);
+			await assert.rejects(
+				other.search({ ...query, continuation: first.continuation }),
+				(error) => error.statusCode === 410
+			);
+			await Product.search({ ...query, continuation: first.continuation, closeContinuation: true });
+		} finally {
+			await other?.derivedIndexRuntime?.close();
+		}
 	});
 
 	it('executes every query mode, negation, REST syntax, field selection, and same-index OR', async () => {

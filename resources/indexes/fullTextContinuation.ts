@@ -6,7 +6,7 @@ import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, ITC_EVENT_TYPES } from '../../utility/hdbTerms.ts';
 import { hasThreadExited, onThreadExit, sendToThread } from '../../server/threads/manageThreads.js';
-import { resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
+import { type FullTextSearchLimits, resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
 
 export type FullTextCursorClaim = { id: string; expires: bigint; expiresAt: number };
 type Claim = FullTextCursorClaim & { owner: number; bytes: number; admissionDeadline?: bigint };
@@ -41,8 +41,8 @@ function limits() {
 	return resolveFullTextSearchLimits(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT));
 }
 
-export function fullTextContinuationDeadline(): bigint {
-	return process.hrtime.bigint() + BigInt(limits().requestBudgetMilliseconds) * 1_000_000n;
+export function fullTextContinuationDeadline(policy: FullTextSearchLimits = limits()): bigint {
+	return process.hrtime.bigint() + BigInt(policy.requestBudgetMilliseconds) * 1_000_000n;
 }
 
 export async function reserveFullTextContinuation(bytes: number, deadline: bigint): Promise<FullTextCursorClaim> {
@@ -140,7 +140,9 @@ export function fullTextContinuationResponse(event: { message?: Reply }, sender:
 		const error =
 			reply.error.status === undefined
 				? new Error(reply.error.message)
-				: new ClientError(reply.error.message, reply.error.status);
+				: reply.error.status >= 500
+					? new ServerError(reply.error.message, reply.error.status)
+					: new ClientError(reply.error.message, reply.error.status);
 		if (reply.error.code) Object.assign(error, { code: reply.error.code });
 		waiting.reject(error);
 	} else waiting.resolve(reply.value);

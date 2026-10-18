@@ -6119,13 +6119,14 @@ export function makeTable(options): TableResourceClass {
 				if (!conditionsContainFullText(conditions, TableResource.fullTextIndexes))
 					throw new ClientError('Continuation requires a full-text query', 400);
 				continuationPage = new FullTextContinuationPage(target, {
-					table: TableResource.tableId,
+					database: databaseName,
+					table: tableName,
+					tableId: TableResource.tableId,
 					conditions,
 					operator: operator || 'and',
 					select: target.select,
 					user: (context as any)?.user?.username ?? null,
 					definitions: TableResource.fullTextIndexes,
-					limits: envMngr.get(CONFIG_PARAMS.STORAGE_FULL_TEXT),
 				});
 				(target as any)[FULL_TEXT_CONTINUATION_PAGE] = continuationPage;
 			}

@@ -50,6 +50,22 @@ describe('full-text visible continuation pages', () => {
 				(error) => error.statusCode === 400
 			);
 	});
+	it('binds resolved settings rather than their configuration spelling', () => {
+		const env = require('#src/utility/environment/environmentManager');
+		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+		try {
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { maxPageSize: 37 });
+			const number = hash({ query: 'widget' });
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { maxPageSize: '37' });
+			assert.strictEqual(hash({ query: 'widget' }), number);
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { maxPageSize: 38 });
+			assert.notStrictEqual(hash({ query: 'widget' }), number);
+		} finally {
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+		}
+	});
+
 	it('keeps page metadata outside the JSON array body', () => {
 		const page = new FullTextContinuationPage(target, {});
 		page.records.push({ id: 'a' });

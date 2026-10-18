@@ -705,7 +705,8 @@ export class FullTextQueryIndex {
 		};
 		assertActive();
 		const owner = await fullTextContinuationOwner();
-		const policy = resolveFullTextSearchLimits(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT));
+		assertActive();
+		const policy = page.policy;
 		const query = condition.fullTextQuery ?? leafExpression(condition);
 		let claim: Awaited<ReturnType<typeof reserveFullTextContinuation>> | undefined;
 		let position: FullTextContinuationPosition;
@@ -722,10 +723,12 @@ export class FullTextQueryIndex {
 					{ operation: 'resume', token: page.token, queryHash: page.queryHash },
 					page.deadline
 				)) as { claim: NonNullable<typeof claim>; position: FullTextContinuationPosition };
+				assertActive();
 				claim = resumed.claim;
 				position = resumed.position;
 			} else {
 				claim = await reserveFullTextContinuation(Buffer.byteLength(JSON.stringify(query)) + 64, page.deadline);
+				assertActive();
 				const revision = this.#configurationRevision;
 				readerLease = await this.#acquireSearchReader(condition, context, page.deadline);
 				assertActive();
@@ -815,6 +818,7 @@ export class FullTextQueryIndex {
 					}
 					if (condition.includeHighlights && accepted.length) {
 						traceLease ??= await this.#acquireSearchReader(condition, context, page.deadline);
+						assertActive();
 						await this.#addHighlights(
 							traceLease.reader,
 							traceLease.definition,
@@ -822,6 +826,7 @@ export class FullTextQueryIndex {
 							accepted,
 							performance.now() + Number((page.deadline - process.hrtime.bigint()) / 1_000_000n)
 						);
+						assertActive();
 						for (let n = 0; n < candidates.length; n++) candidates[n].$highlights = accepted[n].$highlights;
 					}
 					if (candidates.length) page.records.push(...(await page.materialize(candidates)));

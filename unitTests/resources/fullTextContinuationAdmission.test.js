@@ -4,7 +4,9 @@ const { once } = require('node:events');
 const { mkdtemp, rm } = require('node:fs/promises');
 const { join } = require('node:path');
 const env = require('#src/utility/environment/environmentManager');
-const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+const { CONFIG_PARAMS, ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
+const { randomBytes } = require('node:crypto');
+const { ServerError } = require('#src/utility/errors/hdbError');
 const { startWorker, onMessageByType } = require('#js/server/threads/manageThreads');
 const {
 	reserveFullTextContinuation,
@@ -136,7 +138,10 @@ describe('full-text process-wide continuation admission', () => {
 			await response(worker, 'update');
 			const replay = await call(read);
 			assert.deepStrictEqual(replay, original);
-			await assert.rejects(call({ ...read, responseBytes: 1 }), (error) => error.statusCode === 503);
+			await assert.rejects(
+				call({ ...read, responseBytes: 1 }),
+				(error) => error.statusCode === 503 && error instanceof ServerError
+			);
 			await assert.rejects(
 				call({ ...read, position: { batchSize: 64, consumed: 41 }, responseBytes: opened.responseBytes * 10 }),
 				(error) => error.statusCode === 500
@@ -159,6 +164,66 @@ describe('full-text process-wide continuation admission', () => {
 		} finally {
 			await terminateWorker(requester);
 			await terminateWorker(worker);
+			await rm(path, { recursive: true, force: true });
+		}
+	});
+
+	it('answers saturated owner requests immediately instead of dropping their replies', async () => {
+		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+		env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, maxPendingRequests: 1 });
+		const path = await mkdtemp(join(__dirname, '../envDir/', String(process.pid), 'continuation-overload-'));
+		let worker;
+		try {
+			worker = startWorker(require.resolve('./fixtures/fullTextContinuationAdmissionWorker.js'), {
+				name: 'full-text-overload-test',
+				autoRestart: false,
+				workerIndex: 0,
+				threadCount: 1,
+			});
+			await response(worker);
+			const opened = await response(worker, { operation: 'open', path });
+			assert(opened.claim, opened.error);
+			const ids = new Set(Array.from({ length: 128 }, () => randomBytes(16).toString('hex')));
+			const replies = await new Promise((resolve, reject) => {
+				const received = [];
+				const timer = setTimeout(() => finish(new Error(`Owner dropped ${ids.size} replies under load`)), 10000);
+				function receive(event) {
+					if (event.type !== ITC_EVENT_TYPES.FULL_TEXT_CONTINUATION_RESPONSE || !ids.delete(event.message.id)) return;
+					received.push(event.message);
+					if (!ids.size) finish();
+				}
+				function finish(error) {
+					clearTimeout(timer);
+					worker.off('message', receive);
+					if (error) reject(error);
+					else resolve(received);
+				}
+				worker.on('message', receive);
+				for (const id of ids)
+					worker.postMessage({
+						type: ITC_EVENT_TYPES.FULL_TEXT_CONTINUATION_REQUEST,
+						message: {
+							id,
+							originator: 0,
+							deadline: fullTextContinuationDeadline(),
+							command: {
+								operation: 'read',
+								id: opened.claim.id,
+								queryHash: 'b'.repeat(64),
+								position: { batchSize: 7, consumed: 0 },
+								responseBytes: opened.responseBytes,
+							},
+						},
+					});
+			});
+			assert(
+				replies.some((reply) => reply.error?.status === 503),
+				'must exercise actual owner saturation'
+			);
+			await response(worker, 'shutdown');
+		} finally {
+			await terminateWorker(worker);
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
 			await rm(path, { recursive: true, force: true });
 		}
 	});

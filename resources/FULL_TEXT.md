@@ -94,7 +94,7 @@ A format-incompatible native package upgrade causes each node to rebuild its loc
 
 Earlier beta declarations and indexes are unsupported. This field-only API does not provide a compatibility or upgrade path for them.
 
-Harper keeps the requested `offset + limit` within the native ordinary result window. When source checks or other conditions reject the first batch, Harper uses native traversal to reach later matches on the same reader snapshot. This also lets prefix and fuzzy-prefix queries return more than the native first-batch autocomplete limit. Raw batch sizes are bounded by the installed addon’s page and response-byte limits; all batches share one execution budget. A timeout returns an error rather than a successful incomplete page. If the snapshot runs out of eligible matches, Harper returns the remaining matches, including an empty result; filtering beyond an old native window no longer causes a 400 error.
+Harper keeps the requested `offset + limit` within the native ordinary result window. When source checks or other conditions reject the first batch, Harper uses native traversal to reach later matches on the same reader snapshot. This also lets prefix and fuzzy-prefix queries return more than the native first-batch autocomplete limit. Raw batch sizes are bounded by the installed addon’s page and response-byte limits; all batches share one execution budget. A timeout returns an error, including when native work finishes after its budget with a full batch. Harper does not accept a late batch as a completed page. If the snapshot runs out of eligible matches, Harper returns the remaining matches, including an empty result; filtering beyond an old native window no longer causes a 400 error.
 
 Each request also has a configurable work budget: `storage.fullText.maxRawHitsPerRequest` defaults to 100,000 native hits, including the initial replay. If that budget is reached before the page fills or the snapshot ends, Harper returns a 400 error. Narrow the query or increase the configured budget; Harper does not return a successful incomplete page. This limit counts fetched hits, not every record Tantivy visits while scoring.
 
@@ -126,7 +126,7 @@ do {
 Keep the same conditions and selected fields when resuming. The page size may change. Each request
 checks the caller's current permissions and loads current records. The retained snapshot fixes index
 matches and their ranking; it does not retain historical Harper records. Updated, deleted, expired,
-or newly unauthorized records can be omitted. New index matches do not enter that search.
+or newly unauthorized records can be omitted. New index matches do not enter that search. Freshness controls apply when the snapshot is started; later pages keep that snapshot and do not claim current index coverage.
 
 REST uses `continuation()` for the first request and `continuation(token)` for later requests:
 

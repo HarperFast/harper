@@ -31,16 +31,18 @@ export const DEFAULT_FULL_TEXT_SEARCH_LIMITS: FullTextSearchLimits = Object.free
 	}),
 });
 
+const policyDefaults = Object.entries(DEFAULT_FULL_TEXT_SEARCH_LIMITS).filter(([name]) => name !== 'runtime');
+const runtimeDefaults = Object.entries(DEFAULT_FULL_TEXT_SEARCH_LIMITS.runtime);
+
 export function resolveFullTextSearchLimits(value: unknown): FullTextSearchLimits {
+	if (value === undefined) return DEFAULT_FULL_TEXT_SEARCH_LIMITS;
 	const config = object(value, 'storage.fullText');
 	const runtime = object(config.runtime, 'storage.fullText.runtime');
 	const limits = {} as Record<string, number>;
-	for (const [name, fallback] of Object.entries(DEFAULT_FULL_TEXT_SEARCH_LIMITS)) {
-		if (name !== 'runtime')
-			limits[name] = positiveInteger(config[name] === undefined ? fallback : config[name], `storage.fullText.${name}`);
-	}
+	for (const [name, fallback] of policyDefaults)
+		limits[name] = positiveInteger(config[name] === undefined ? fallback : config[name], `storage.fullText.${name}`);
 	const budget = {} as Record<string, number>;
-	for (const [name, fallback] of Object.entries(DEFAULT_FULL_TEXT_SEARCH_LIMITS.runtime))
+	for (const [name, fallback] of runtimeDefaults)
 		budget[name] = positiveInteger(
 			runtime[name] === undefined ? fallback : runtime[name],
 			`storage.fullText.runtime.${name}`
