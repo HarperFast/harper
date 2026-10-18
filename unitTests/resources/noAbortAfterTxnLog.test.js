@@ -1413,7 +1413,7 @@ describe('Transactions are never aborted once durably written to the transaction
 			const recordId = id('lock-wedged-commit');
 			await AuditedA.put({ id: recordId, writer: 'seed', count: 0 });
 
-			const prevMaxDuration = setMaxOutstandingTxnDuration(350);
+			const prevMaxDuration = setMaxOutstandingTxnDuration(1500);
 			pendingRestores.push(() => setMaxOutstandingTxnDuration(prevMaxDuration));
 
 			const targetDb = AuditedA.primaryStore.store.db;
@@ -1441,7 +1441,7 @@ describe('Transactions are never aborted once durably written to the transaction
 			});
 
 			const holder = await AuditedA.lock(recordId, { hold: true, lease: MIN_LOCK_LEASE_MS });
-			holder.getContext().transaction.timeoutBudget = 350;
+			holder.getContext().transaction.timeoutBudget = 1500;
 			holder.set('writer', 'wedged-holder');
 			holder.set('count', 1);
 			const savePromise = holder.save();
@@ -1453,7 +1453,7 @@ describe('Transactions are never aborted once durably written to the transaction
 				(err) => err.statusCode === 423,
 				'contender must be blocked after lease expiry while hold-deadline timer is still pending'
 			);
-			const contender = await AuditedA.lock(recordId, { lease: 1000, timeout: 1000 });
+			const contender = await AuditedA.lock(recordId, { lease: 1000, timeout: 2500 });
 			await contender.unlock();
 
 			releaseWedged();
@@ -3601,10 +3601,14 @@ describe('Transactions are never aborted once durably written to the transaction
 				'unlock() must return false when native unlock is deferred by an active commit hold'
 			);
 
-			// Attempt 4 is still parked and the counter has not moved since the last tick: that is a native
-			// attempt that never settled, and the monitor must treat it as the stall it is.
+			// Attempt 4 is still parked and the counter has not moved for longer than two native park
+			// timeouts: that is a native attempt that never settled, and the monitor must treat it as the
+			// stall it is. A tick inside that window still counts the retry as advancing.
 			resetStuckCommitLogCooldownForTests();
 			assert.strictEqual(deferForCommitInFlight(immTxn, '/logged-retry', 1, 3), true);
+			assert.strictEqual(immTxn.timedOut, undefined, 'an unchanged counter inside the park window is not a stall');
+			immTxn.loggedRetriesChangedAt = -Infinity;
+			assert.strictEqual(deferForCommitInFlight(immTxn, '/logged-retry', 1, 4), true);
 			assert.strictEqual(immTxn.timedOut, true, 'a logged retry whose counter stopped must still be poisoned');
 			assert.strictEqual(immTxn.postSubmitPoisoned, true);
 			assert.strictEqual(

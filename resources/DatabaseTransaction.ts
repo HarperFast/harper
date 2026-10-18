@@ -971,6 +971,7 @@ export class DatabaseTransaction implements Transaction {
 	// it had moved: a count that stops moving is a native attempt that never settled, and every link the
 	// monitor visits in one tick must read the same decision.
 	declare loggedRetriesSeen?: number;
+	declare loggedRetriesChangedAt?: number;
 	declare loggedRetriesTick?: number;
 	declare loggedRetryAdvancing?: boolean;
 	// Per-link submission state. A commit method can still be parked in pre-commit work, where an abort
@@ -2517,6 +2518,7 @@ export class DatabaseTransaction implements Transaction {
 		root.deferredPoisonDeadline = undefined;
 		root.unsubmittedCommitDeadline = undefined;
 		root.loggedRetriesSeen = undefined;
+		root.loggedRetriesChangedAt = undefined;
 		root.loggedRetriesTick = undefined;
 		root.loggedRetryAdvancing = undefined;
 		root.stalledCommitLogged = false;
@@ -3996,6 +3998,10 @@ function reportIfLongLived(
 /** Diagnostic grace after a native submission outlives the ordinary transaction timeout. */
 const MAX_DEFERRED_POISON_TICKS = 2;
 const STALLED_COMMIT_LOG_MIN_INTERVAL_MS = 1000;
+// A logged retry parked on a write intent moves its retry counter at least every native park timeout,
+// so a counter that has not moved for two of them is a native attempt that never settled — whatever
+// the monitor's tick interval (STORAGE_MAXTRANSACTIONOPENTIME can be set far below the park timeout).
+const LOGGED_RETRY_STALL_MS = 2 * (Number(process.env.ROCKSDB_JS_PARK_TIMEOUT_MS) || 5000);
 let lastStalledCommitWarningAt = -Infinity;
 let lastStalledCommitErrorAt = -Infinity;
 
@@ -4051,16 +4057,19 @@ export function deferForCommitInFlight(
 	const deadline = (root.deferredPoisonDeadline ??= now + MAX_DEFERRED_POISON_TICKS * expiration);
 	// A handle with a durable log entry retrying a conflict has a known outcome — it commits once the
 	// conflicting intent clears — so while its retry counter keeps advancing it is neither stalled nor
-	// poisoned, and noteOverdueLoggedCommit is the operator's signal. A counter that has not moved
-	// since the last tick is a native attempt that never settled, which is the stall handled below.
+	// poisoned, and noteOverdueLoggedCommit is the operator's signal. A counter that has not moved for
+	// LOGGED_RETRY_STALL_MS is a native attempt that never settled, which is the stall handled below.
 	const loggedRetries = chainDurableLogRetries(root, txn);
 	let loggedRetry = false;
 	if (loggedRetries >= 0) {
 		if (root.loggedRetriesTick === tick) {
 			loggedRetry = Boolean(root.loggedRetryAdvancing);
 		} else {
-			loggedRetry = root.loggedRetriesSeen !== loggedRetries;
-			root.loggedRetriesSeen = loggedRetries;
+			if (root.loggedRetriesSeen !== loggedRetries) {
+				root.loggedRetriesSeen = loggedRetries;
+				root.loggedRetriesChangedAt = now;
+			}
+			loggedRetry = now - root.loggedRetriesChangedAt < LOGGED_RETRY_STALL_MS;
 			root.loggedRetriesTick = tick;
 			root.loggedRetryAdvancing = loggedRetry;
 		}
