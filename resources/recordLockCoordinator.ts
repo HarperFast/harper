@@ -2111,6 +2111,7 @@ export class LockCoordinator {
 				result.recalled++;
 				continue;
 			}
+			grant.drainOutstanding = undefined;
 			try {
 				this.#beginRecall(keyId, grant);
 				if (grant.recalling) await withDeadline(grant.recalling, remaining());
@@ -3150,12 +3151,20 @@ export async function recallDelegationsFromHome(
  */
 export async function quiesceDelegations(database: string, budgetMs: number): Promise<QuiesceResult> {
 	const result: QuiesceResult = { complete: true, surrendered: 0, recalled: 0, outstanding: [] };
-	const coordinators = [...liveCoordinators].filter((coordinator) => coordinator.database === database);
+	const ofDatabase = () => [...liveCoordinators].filter((coordinator) => coordinator.database === database);
 	// A DURATION, not an absolute deadline: the whole sweep gets this long, measured from here.
 	const deadline = Date.now() + Math.max(0, budgetMs);
 	const remaining = () => Math.max(0, deadline - Date.now());
-	for (const coordinator of coordinators) {
-		await coordinator.quiesce(result, remaining);
+	// A coordinator rebuilt during the sweep (a transport replaced, as staging a generation does) adopts
+	// its predecessor's grants and delegations, and a predecessor not yet reached returns at once once
+	// closed. Sweep until a pass finds no coordinator it has not seen, so adopted authority is not missed.
+	const coordinators: LockCoordinator[] = [];
+	for (let pending = ofDatabase(); pending.length > 0;) {
+		for (const coordinator of pending) {
+			coordinators.push(coordinator);
+			await coordinator.quiesce(result, remaining);
+		}
+		pending = ofDatabase().filter((coordinator) => !coordinators.includes(coordinator));
 	}
 	// A sweep proves quiescence only if it could have seen everything this NODE issued, not merely what
 	// this coordinator holds. Two ways it could not have:
@@ -3175,6 +3184,7 @@ export async function quiesceDelegations(database: string, budgetMs: number): Pr
 		});
 	}
 	for (const coordinator of coordinators) {
+		if (!liveCoordinators.has(coordinator)) continue;
 		const unproven = coordinator.unprovenOwnershipMs();
 		if (unproven > 0)
 			result.outstanding.push({

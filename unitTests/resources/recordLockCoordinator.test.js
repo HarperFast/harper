@@ -3057,7 +3057,7 @@ describe('record lock delegations', () => {
 
 describe('quiesceDelegations (harper-pro#856)', () => {
 	/** A coordinator that is a HOME for `alpha` and can grant to a peer, with a scriptable recall. */
-	function homeWithPeer(database, table, recall) {
+	function homeWithPeer(database, table, recall, adopt) {
 		// Ownership continuity is what proves quiescence, so a coordinator has to have owned for a full
 		// lease before a sweep is a proof. These tests are about the sweep itself, so they start the
 		// clock past that horizon; the handoff test below is the one that exercises the horizon.
@@ -3080,12 +3080,53 @@ describe('quiesceDelegations (harper-pro#856)', () => {
 			nextTimestamp: () => 1,
 			monotonic: () => clock.now,
 			grantableAfterMono: -Infinity,
+			adopt,
 			autoTick: false,
 		});
 		// Ownership was recorded at construction on this clock; move past its horizon.
 		clock.now += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1;
 		return coordinator;
 	}
+
+	it('sweeps a coordinator that replaced one the sweep had not reached yet', async () => {
+		const keyHomedOnAlpha = (table) =>
+			Array.from({ length: 1000 }, (_, i) => `k${i}`).find(
+				(key) => homeFor(ringKeyFor('q-rebuilt', table, key), ['alpha', 'beta']) === 'alpha'
+			);
+		const unreachable = async () => {
+			throw new Error('beta is unreachable');
+		};
+		let replaced;
+		const first = homeWithPeer('q-rebuilt', 'T1', async () => {
+			// While the sweep waits on T1, T2's transport is replaced, as staging a generation does.
+			replaced = homeWithPeer('q-rebuilt', 'T2', unreachable, second);
+			second.close();
+		});
+		const second = homeWithPeer('q-rebuilt', 'T2', unreachable);
+		for (const [coordinator, table] of [
+			[first, 'T1'],
+			[second, 'T2'],
+		])
+			assert.strictEqual(
+				(
+					await coordinator.onDelegationRequest({
+						key: keyHomedOnAlpha(table),
+						requester: 'beta',
+						generation: 1,
+						leaseMs: LEASE,
+					})
+				).granted,
+				true
+			);
+		const result = await quiesceDelegations('q-rebuilt', 1000);
+		assert.strictEqual(result.complete, false, 'the grant T2 handed to its successor was never recalled');
+		assert.deepStrictEqual(
+			result.outstanding.map((entry) => [entry.table, entry.delegate]),
+			[['T2', 'beta']]
+		);
+		first.close();
+		replaced.close();
+	});
 
 	it('reports a clean database as quiesced with nothing outstanding', async () => {
 		const coordinator = homeWithPeer('q1', 'T', async () => {});
