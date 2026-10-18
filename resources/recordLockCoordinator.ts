@@ -2306,7 +2306,6 @@ export class LockCoordinator {
 		if (this.#freshnessGeneration === generation) return;
 		this.#freshnessGeneration = generation;
 		this.#loseFreshnessHistory();
-		// record-locks.md, "A delegation is authority within one generation".
 		for (const [keyId, grant] of this.#grants)
 			if (
 				grant.token[0] < generation &&
@@ -2647,6 +2646,8 @@ export class LockCoordinator {
 			// An expired grant is not a live one. Collecting it here rather than trusting `tick()` is
 			// what keeps a table whose expiry budget is saturated from answering `contended` forever.
 			if (existing.expiresMono <= now) this.#expireGrant(keyId, existing);
+			// Confirmed after this generation's sweep (`#prepareFreshnessGeneration`) already ran.
+			else if (existing.recallConfirmed && existing.token[0] < homeMap.generation) this.#expireGrant(keyId, existing);
 			else if (existing.recalling || existing.recallConfirmed)
 				// A recall is in flight, or the delegate has already confirmed one. Renewing now — even for
 				// the node being recalled — would mint a token its own release no longer matches, and the
@@ -2659,6 +2660,7 @@ export class LockCoordinator {
 				this.#recordGenerationActedOn(homeMap.generation);
 				existing.token = [homeMap.generation, homeMap.homeIncarnation, ++this.#counter];
 				existing.renewed = true;
+				existing.drainOutstanding = undefined;
 				existing.expiresMono = now + DELEGATION_LEASE_MS + this.#skewMs;
 				return {
 					granted: true,

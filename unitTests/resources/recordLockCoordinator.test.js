@@ -2609,6 +2609,22 @@ describe('record lock delegations', () => {
 			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 2);
 		});
 
+		it('serves a key whose older grant is recall-confirmed only after the generation sweep ran', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('alpha');
+			const gamma = cluster.node('gamma');
+			const round = await gamma.coordinator.acquire(key, LEASE, WAIT);
+			gamma.coordinator.release(key, round.admissionId);
+			gamma.writerThrows = true;
+			cluster.generation = 2;
+			// Any grant runs alpha's sweep; gamma's grant is unconfirmed then, so it survives it.
+			await cluster.node('beta').coordinator.acquire(cluster.keyHomedOn('alpha', 'j'), LEASE, WAIT);
+			assert.strictEqual(cluster.node('alpha').coordinator.stats.granted, 2);
+			const successor = await cluster.node('beta').coordinator.acquire(key, LEASE, 1_000);
+			assert.ok(successor.admissionId);
+			assert.ok(gamma.writerCalls > 0, 'gamma confirmed the recall and its release was lost');
+		});
+
 		it('does not let a late release of the old grant clear its successor', async () => {
 			const { cluster, key, token } = await gammaHeldThenStopped();
 			await drainAlpha(cluster);
