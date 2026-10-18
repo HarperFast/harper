@@ -1200,6 +1200,7 @@ export class DatabaseTransaction implements Transaction {
 		const index = this.writes.indexOf(operation);
 		if (index > -1) this.writes[index] = null;
 		this.ownedWrites?.delete(operation);
+		if (operation.stagedIn === this) operation.stagedIn = undefined;
 		if (operation.key === undefined) return;
 		const writesForStore = this.writesByKey?.get(operation.store);
 		if (!writesForStore) return;
@@ -1246,18 +1247,6 @@ export class DatabaseTransaction implements Transaction {
 	unregisterRecordLock(handle: RecordLockHandle): void {
 		const storeMap = this.recordLocks?.get(handle.store);
 		if (storeMap?.get(handle.keyId) === handle) storeMap.delete(handle.keyId);
-		if (this.saveCommits && this.writes.length > 0) {
-			let detachedAny = false;
-			for (let i = 0; i < this.writes.length; i++) {
-				const write = this.writes[i];
-				if (write?.deferSave && !write.saved && !write.stagedOn && write.lockHandle === handle) {
-					if (write.stagedIn === this) write.stagedIn = undefined;
-					this.detachWrite(write);
-					detachedAny = true;
-				}
-			}
-			if (detachedAny) this.writes = this.writes.filter((write) => write);
-		}
 	}
 
 	registerPendingLock(store: any, keyId: unknown, pending: Promise<RecordLockHandle>): void {
@@ -2660,6 +2649,7 @@ export class DatabaseTransaction implements Transaction {
 					this.baseReadRefConsumed = true;
 					this.readTxnsUsed--;
 				}
+				let hadLeaseProtectedWrite = false;
 				if (!isImmediateCommit && this.readTxnsUsed > 0) {
 					// Outstanding iterators still stream through this.transaction — their native iterators
 					// live inside it (GetIterator wraps its write batch + snapshot), so committing or
@@ -2757,7 +2747,10 @@ export class DatabaseTransaction implements Transaction {
 						this.markNativeCommitSubmitted();
 						commitResolution = transaction.commit() as Promise<void>;
 						this.setHandleCommitInFlight(transaction, true);
-						if (this.hasLeaseProtectedWrite) this.retainTransactionLockHolds(transaction);
+						if (this.hasLeaseProtectedWrite) {
+							hadLeaseProtectedWrite = true;
+							this.retainTransactionLockHolds(transaction);
+						}
 						recordCommitLatency(commitResolution, performance.now());
 						// Write-queue-depth accounting for this replay commit happens uniformly below, via
 						// trackOutstandingCommit(commitResolution) — see that function's comment. Omitting
@@ -2843,7 +2836,10 @@ export class DatabaseTransaction implements Transaction {
 							this.markNativeCommitSubmitted();
 							commitResolution = transaction.commit();
 							this.setHandleCommitInFlight(transaction, true);
-							if (this.hasLeaseProtectedWrite) this.retainTransactionLockHolds(transaction);
+							if (this.hasLeaseProtectedWrite) {
+								hadLeaseProtectedWrite = true;
+								this.retainTransactionLockHolds(transaction);
+							}
 							// Record how long this commit stays outstanding (submit → settle) as a distribution
 							// metric. This is the same clock the overload check uses (trackOutstandingCommit
 							// stamps each attempt at submit), so a rising p99/p999 is the leading indicator for the
@@ -3182,6 +3178,7 @@ export class DatabaseTransaction implements Transaction {
 					// Release any lock holds remaining if `commitOutcome` rejects (for example when a chained
 					// store's commit or a completion fails) through the returned promise rather than a second
 					// subscriber that would mark an unawaited commit rejection as handled.
+					if (!hadLeaseProtectedWrite) return commitOutcome;
 					return commitOutcome.then(undefined, (error) => {
 						releaseTransactionLockHolds(transaction);
 						throw error;
@@ -3856,20 +3853,26 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		}
 		if (this.writes.length > 0) {
 			let detachedAny = false;
+			let hasLockedWrite = false;
 			for (let i = 0; i < this.writes.length; i++) {
 				const write = this.writes[i];
+				if (!write) continue;
 				if (
-					write?.deferSave &&
+					write.deferSave &&
 					!write.saved &&
 					!write.stagedOn &&
 					(write.lockHandle?.released || write.lockHandle?.isExpired())
 				) {
-					if (write.stagedIn === this) write.stagedIn = undefined;
 					this.detachWrite(write);
 					detachedAny = true;
+				} else if (write.lockHandle) {
+					hasLockedWrite = true;
 				}
 			}
 			if (detachedAny) this.writes = this.writes.filter((write) => write);
+			if (this.hasLeaseProtectedWrite && !hasLockedWrite) this.hasLeaseProtectedWrite = false;
+		} else if (this.hasLeaseProtectedWrite) {
+			this.hasLeaseProtectedWrite = false;
 		}
 	}
 
