@@ -35,6 +35,7 @@ import {
 	LEGACY_DATABASES_DIR_NAME,
 	DATABASES_DIR_NAME,
 	MIGRATING_DIR_SUFFIX,
+	PROTOTYPE_POLLUTING_NAMES,
 	RESERVED_DATABASE_NAMES,
 } from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
@@ -2526,6 +2527,7 @@ interface TableDefinition {
 function ensureDB(databaseName) {
 	let dbTables = databases[databaseName];
 	if (!dbTables) {
+		warnPrototypeName('database', databaseName);
 		if (databaseName === 'data')
 			// preserve the data tables objet
 			dbTables = databases[databaseName] = tables;
@@ -2554,8 +2556,18 @@ function ensureDB(databaseName) {
  * @returns
  */
 function setTable(tables, tableName, Table) {
+	warnPrototypeName('table', tableName);
 	tables[tableName] = Table;
 	return Table;
+}
+const warnedPrototypeNames = new Set<string>();
+/** A database or table with such a name predates the refusal of new ones; it loads, and the operator should drop it. */
+function warnPrototypeName(kind: 'database' | 'table', name: string) {
+	if (!(PROTOTYPE_POLLUTING_NAMES as readonly string[]).includes(name)) return;
+	const key = `${kind}:${name}`;
+	if (warnedPrototypeNames.has(key)) return;
+	warnedPrototypeNames.add(key);
+	logger.warn(`A ${kind} is named '${name}', an object prototype key; drop it and recreate it under another name`);
 }
 /**
  * Resolve the directory that holds (or would hold) a database's storage, from the databases
@@ -3667,7 +3679,7 @@ interface TableTarget {
 
 const GLOBAL_TARGET: TableTarget = {
 	rootStore: (databaseName, tableName) => database({ database: databaseName, table: tableName }),
-	tables: (databaseName) => databases[databaseName],
+	tables: (databaseName) => getDatabases()[databaseName],
 	reload: () => resetDatabases(),
 	// a real database's stores live until the process (or `closeDatabase`, which walks the graph) ends
 	adopt: () => {},
@@ -3785,6 +3797,20 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	// fix still loads (data stays accessible) and can be dropped to remediate.
 	if ((RESERVED_DATABASE_NAMES as readonly string[]).includes(databaseName)) {
 		throw new ClientError(`'${databaseName}' is a reserved name and cannot be used as a database name`);
+	}
+	// Only a database or table that does not exist yet is refused: one loaded from disk comes back
+	// through here for every attribute, audit and replicated-schema change, and must keep working
+	// until it is dropped.
+	const existingTables = target.tables(databaseName);
+	if (existingTables == null && (PROTOTYPE_POLLUTING_NAMES as readonly string[]).includes(databaseName)) {
+		throw new ClientError(`'${databaseName}' is a reserved name and cannot be used as a database name`);
+	}
+	if (
+		tableName != null &&
+		!(existingTables != null && Object.hasOwn(existingTables, tableName)) &&
+		(PROTOTYPE_POLLUTING_NAMES as readonly string[]).includes(tableName)
+	) {
+		throw new ClientError(`'${tableName}' is a reserved name and cannot be used as a table name`);
 	}
 	// A branch resolves its blob root from its store identity, so a database created under that same
 	// name would share the root: two allocators minting the same file paths and truncating each other,

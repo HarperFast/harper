@@ -119,6 +119,9 @@ export const RESERVED_DATABASE_NAMES = [
 	'_expandedOperations',
 ] as const;
 
+/** Keys that address a plain object's prototype rather than an own entry; refused as new database and table names. */
+export const PROTOTYPE_POLLUTING_NAMES = ['__proto__', 'constructor', 'prototype'] as const;
+
 /** Email address for support requests */
 export const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
 
