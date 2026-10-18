@@ -997,6 +997,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	compactReceived(state: TopicState) {
 		let bound = state.deliveredKey;
 		if (bound === undefined) return;
+		// a transaction that took a key below the delivered ones can still commit until progress passes it
+		const progress = state.subscription?.progress?.();
+		if (progress !== undefined && progress < bound) bound = progress;
 		for (const { key } of state.unacked.values()) {
 			if (key < bound) bound = key;
 			// with none late, the oldest unacknowledged delivery has the lowest key

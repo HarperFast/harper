@@ -1794,7 +1794,7 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		second.handlers.close();
 	});
 
-	it('collapses what a quiet replay delivered and the client took, and sends none of it again', async () => {
+	it('sends none of what a replay with a pinned position delivered and the client took again', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
 		const open = mqttListener();
@@ -1819,8 +1819,6 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		for (const packet of ofCommand(second, 'publish'))
 			second.handlers.message(generate({ cmd: 'pubrec', messageId: packet.messageId }, v5));
 		await waitFor(() => ofCommand(second, 'pubrel').length === ofCommand(second, 'publish').length);
-		const [entry] = (await stored(clientId)).subscriptions;
-		assert.ok((entry.received?.length ?? 0) + (entry.receivedRuns?.length ?? 0) <= 1, JSON.stringify(entry));
 		second.handlers.close();
 		const third = await openConnected(open, clientId);
 		await T.put('after', { value: 'after' });
@@ -1899,6 +1897,32 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		assert.strictEqual(ofCommand(socket, 'pubrec').length, 0);
 		session.awaitingRelease = new Map();
 		socket.handlers.close();
+	});
+
+	it('publishes a retransmitted QoS 2 PUBLISH once on a clean session', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const watcher = await connect(`qos2-clean-watch-${name}`);
+		await watcher.session.addSubscription({ topic: `${name}/#`, qos: 0, rh: 2 }, false);
+		const open = mqttListener();
+		const socket = open();
+		socket.handlers.message(connectPacket(`qos2-clean-${name}`, { clean: true }));
+		await waitFor(() => ofCommand(socket, 'connack').length > 0);
+		const publish = (dup) =>
+			generate(
+				{ cmd: 'publish', topic: `${name}/m`, payload: JSON.stringify({ value: 'clean' }), qos: 2, messageId: 8, dup },
+				v5
+			);
+		socket.handlers.message(publish(false));
+		socket.handlers.message(publish(true));
+		await waitFor(() => ofCommand(socket, 'pubrec').length === 2);
+		socket.handlers.message(generate({ cmd: 'pubrel', messageId: 8 }, v5));
+		await waitFor(() => ofCommand(socket, 'pubcomp').length === 1);
+		assert.strictEqual(ofCommand(socket, 'pubcomp')[0].reasonCode, 0);
+		await settled(socket, watcher, name, 'marker');
+		assert.strictEqual(values(watcher.received).filter((value) => value === 'clean').length, 1);
+		socket.handlers.close();
+		watcher.session.disconnect(true);
 	});
 
 	it('assigns no packet id still awaiting its PUBCOMP', async () => {
