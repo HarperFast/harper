@@ -1480,7 +1480,7 @@ export function makeTable(options): TableResourceClass {
 	const warnedUnresolvedComputed = new Set<string>();
 	let hasRelationships = false;
 	// a stored table permission (stable per role record version) -> that permission with the primary key's implicit grant
-	const primaryKeyGranted = new WeakMap<object, any>();
+	let primaryKeyGranted = new WeakMap<object, any>();
 	let declaredAttributeNames: Set<string>;
 	// Attribute names surfaced by the struct `toJSON` on the default (no-select) read: everything that is
 	// @enumerable, PLUS @computed attributes whose declared type is NOT a table type (scalars/objects/arrays
@@ -1781,7 +1781,7 @@ export function makeTable(options): TableResourceClass {
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		#writeGeneration?: WriteGeneration;
-		// set by allowUpdate for an attribute-restricted role; restricts every later full put on this request's instance
+		// set by allowUpdate for an attribute-restricted role; restricts every later full put through this instance
 		#updatableAttributes?: { [attribute: string]: boolean };
 		declare getProperty: (name: string) => any;
 		#evaluateWriteCondition(id: Id, condition: any, transaction: any): void {
@@ -3670,6 +3670,9 @@ export function makeTable(options): TableResourceClass {
 			if (tablePermission?.update) {
 				const attribute_permissions = tablePermission.attribute_permissions;
 				if (attribute_permissions?.length > 0) {
+					// a REST body arrives here as a promise of the record
+					if (typeof (updatedData as any)?.then === 'function')
+						return (updatedData as any).then((data: Record) => this.allowUpdate(user, data, context));
 					// an array body's keys are indices, not attributes, and its elements are later written unchecked
 					if (Array.isArray(updatedData)) return false;
 					const attrsForType = attributesAsObject(attribute_permissions, 'update');
@@ -3693,6 +3696,8 @@ export function makeTable(options): TableResourceClass {
 				if (tablePermission?.insert) {
 					const attribute_permissions = tablePermission.attribute_permissions;
 					if (attribute_permissions?.length > 0) {
+						if (typeof (newData as any)?.then === 'function')
+							return (newData as any).then((data: Record) => this.allowCreate(user, data, context));
 						if (Array.isArray(newData)) return false;
 						const attrsForType = attributesAsObject(attribute_permissions, 'insert');
 						for (const key in materialized(newData)) {
@@ -8361,6 +8366,7 @@ export function makeTable(options): TableResourceClass {
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
 			declaredAttributeNames = new Set((this.attributes as any[]).map((attribute) => attribute.name));
+			primaryKeyGranted = new WeakMap();
 			// Declarations are refused before they are saved; here a descriptor an earlier build
 			// accepted must still load, so a violation is logged and the table keeps working.
 			try {
@@ -9293,7 +9299,15 @@ export function makeTable(options): TableResourceClass {
 							...tablePermission,
 							attribute_permissions: [
 								...attributePermissions,
-								implicitPrimaryKeyPermission(attributePermissions, primaryKey),
+								implicitPrimaryKeyPermission(
+									// a sealed table can never store an undeclared attribute, so it grants nothing
+									sealed
+										? attributePermissions.filter((permission: any) =>
+												declaredAttributeNames.has(permission.attribute_name)
+											)
+										: attributePermissions,
+									primaryKey
+								),
 							],
 						};
 			primaryKeyGranted.set(tablePermission, effective);

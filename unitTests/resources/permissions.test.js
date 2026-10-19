@@ -463,6 +463,21 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		assert.equal((await DocTable.get('promise-3')).secret, 'promise-3 secret');
 	});
 
+	it('an allowUpdate override still receives a promised body', async function () {
+		class PromiseHookDoc extends DocTable {
+			allowUpdate(user, data) {
+				return data.then((record) => record.title !== 'refused');
+			}
+		}
+		await seed('hook-1');
+		await PromiseHookDoc.put('hook-1', Promise.resolve({ title: 'accepted' }), asUser());
+		await assert.rejects(
+			async () => PromiseHookDoc.put('hook-1', Promise.resolve({ title: 'refused' }), asUser()),
+			/Unauthorized/
+		);
+		assert.equal((await DocTable.get('hook-1')).title, 'accepted');
+	});
+
 	it('a restricted full put creates a missing record with its primary key', async function () {
 		await DocTable.put('new-1', { title: 'created', owner: 'o' }, asUser());
 		assert.deepEqual(JSON.parse(JSON.stringify(await DocTable.get('new-1'))), {
@@ -887,5 +902,72 @@ describe('Attribute permissions on a keyless table (harper#3284)', () => {
 		};
 		await Sealed.put('s-1', { title: 'new' }, { user: sealedUser, authorize: true });
 		assert.deepEqual(JSON.parse(JSON.stringify(await Sealed.get('s-1'))), { id: 's-1', title: 'new', secret: 'kept' });
+	});
+
+	it('a restricted full put omitting a required attribute the role may update is rejected', async function () {
+		const Required = table({
+			table: 'AttrPermRequired',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'title', type: 'String', nullable: false },
+				{ name: 'note' },
+			],
+		});
+		await Required.put('r-1', { id: 'r-1', title: 'kept', note: 'n' });
+		const requiredUser = {
+			role: {
+				permission: {
+					test: {
+						tables: {
+							AttrPermRequired: {
+								read: true,
+								insert: true,
+								update: true,
+								delete: false,
+								attribute_permissions: [
+									{ attribute_name: 'title', read: true, insert: true, update: true },
+									{ attribute_name: 'note', read: true, insert: true, update: true },
+								],
+							},
+						},
+					},
+				},
+			},
+		};
+		await assert.rejects(
+			async () => Required.put('r-1', { note: 'changed' }, { user: requiredUser, authorize: true }),
+			/title is required/
+		);
+		assert.equal((await Required.get('r-1')).title, 'kept');
+	});
+
+	it('a sealed table grants no primary key from an undeclared listed attribute', async function () {
+		const Sealed = table({
+			table: 'AttrPermSealedKey',
+			database: 'test',
+			sealed: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
+		});
+		await Sealed.put('sk-1', { id: 'sk-1', title: 'hidden' });
+		const user = {
+			role: {
+				permission: {
+					test: {
+						tables: {
+							AttrPermSealedKey: {
+								read: true,
+								insert: false,
+								update: false,
+								delete: false,
+								attribute_permissions: [{ attribute_name: 'dropped', read: true, insert: false, update: false }],
+							},
+						},
+					},
+				},
+			},
+		};
+		const request = { user, authorize: true, id: 'sk-1' };
+		assert.deepEqual(JSON.parse(JSON.stringify(await Sealed.get(request, request))), {});
 	});
 });
