@@ -46,7 +46,7 @@ const NO_AUTH_OPERATIONS = [
 	terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN,
 ];
 
-const UNSAFE_REQUEST_BODY_PROPERTIES = ['__proto__', 'constructor', 'prototype'];
+const UNSAFE_REQUEST_BODY_PROPERTIES = terms.PROTOTYPE_POLLUTING_NAMES;
 
 function validateRequestBodyProperties(body) {
 	if (!body || typeof body !== 'object') {

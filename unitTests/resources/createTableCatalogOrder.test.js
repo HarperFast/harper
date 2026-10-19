@@ -1,7 +1,7 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { Worker } = require('node:worker_threads');
-const { setupTestDBPath } = require('../testUtils');
+const { setupTestDBPath, routePutThroughPutSync } = require('../testUtils');
 const { database, databases, getDatabases, resetDatabases, table } = require('#src/resources/databases');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const storageReclamation = require('#src/server/storageReclamation');
@@ -33,6 +33,7 @@ describe('create table catalog write order', () => {
 			};
 			patched.push([method, original]);
 		}
+		const restorePut = routePutThroughPutSync(Seed.dbisDB);
 		try {
 			table({
 				table: 'CatalogOrderTest',
@@ -45,6 +46,7 @@ describe('create table catalog write order', () => {
 				],
 			});
 		} finally {
+			restorePut();
 			for (const [method, original] of patched) catalogPrototype[method] = original;
 		}
 		assert(writes.includes('CatalogOrderTest/name'), `attribute row for 'name' was not written: ${writes}`);
@@ -82,6 +84,7 @@ describe('create table catalog write order', () => {
 			};
 			patched.push([method, original]);
 		}
+		const restorePut = routePutThroughPutSync(Target.dbisDB);
 		try {
 			table({
 				table: 'CatalogRelationHost',
@@ -101,6 +104,7 @@ describe('create table catalog write order', () => {
 				],
 			});
 		} finally {
+			restorePut();
 			for (const [method, original] of patched) catalogPrototype[method] = original;
 		}
 		const keys = writes.map((write) => write.key);
@@ -177,6 +181,7 @@ describe('create table catalog write order', () => {
 			};
 			patched.push([method, original]);
 		}
+		const restorePut = routePutThroughPutSync(Seed.dbisDB);
 		let Retried;
 		try {
 			assert.throws(() => table(definition()), /injected table id write failure/);
@@ -210,6 +215,7 @@ describe('create table catalog write order', () => {
 			Retried = table(definition());
 		} finally {
 			storageReclamation.removeStorageReclamationHandler = originalRemoveHandler;
+			restorePut();
 			for (const [method, original] of patched) catalogPrototype[method] = original;
 		}
 		assert.strictEqual(databases.test[tableName], Retried, 'the retry must register the class');
@@ -312,6 +318,7 @@ describe('create table catalog write order', () => {
 				};
 				patched.push([method, original]);
 			}
+			const restorePut = routePutThroughPutSync(Seed.dbisDB);
 			table({
 				table: tableName,
 				database: 'test',
@@ -322,6 +329,7 @@ describe('create table catalog write order', () => {
 					{ name: 'tag', type: 'String', indexed: true },
 				],
 			});
+			restorePut();
 			for (const [method, original] of patched) catalogPrototype[method] = original;
 			assert.strictEqual(pausedStatus, 'ok', `the other thread never finished its mid-create scan (${pausedStatus})`);
 			Atomics.store(phase, 0, 3);

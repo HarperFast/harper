@@ -300,6 +300,20 @@ export interface ClusterLockTransport {
 	 */
 	coordinationIncarnation?(): number | undefined;
 	/**
+	 * The incarnation for which the transport has established, by asking every member of the agreed
+	 * ring to recall what it holds from this node (`recallDelegationsFromHome` on each member), that no
+	 * member can still admit under a delegation this node issued below that incarnation. Ends the §4.3
+	 * restart quarantine for a coordinator coordinating under exactly that incarnation; any other value,
+	 * or none, keeps the construction-anchored timer. Consulted only while a grant is refused as
+	 * quarantined, never on a cached acquisition. Completeness is the transport's obligation: every
+	 * member of `homes[]` must have answered for this incarnation and generation, not "everyone
+	 * reachable" — this node included, whose own sweep cannot see a handle a sibling thread holds, so
+	 * on a coordinating-worker takeover the transport must have fenced every sibling's relayed handles
+	 * before it counts the local answer, and must move ownership only once the previous owner thread
+	 * has exited (its own handles die with it; an exit commits nothing out of submission order).
+	 */
+	quiescedIncarnation?(): number | undefined;
+	/**
 	 * Overrides core's cold-start grant quarantine (§4.3). Set it only where a previous incarnation
 	 * of this process provably issued nothing — a fresh database, a first start, or a test. Because the
 	 * same attestation enables the virgin-key freshness fast path, it must prove that no earlier
@@ -615,6 +629,8 @@ interface Delegation {
 	drained?: (() => void)[];
 	/** The one in-flight `#surrender` for this delegation; see there for why it is memoized. */
 	surrendering?: Promise<void>;
+	/** The fences a close without a successor fired for it, which its release must still wait for. */
+	fencing?: Promise<void>;
 }
 
 /**
@@ -704,6 +720,12 @@ function createPendingDelegation(key: any, token: FencingToken, recalledBeforeRe
 
 interface PendingRequest {
 	recalledToken?: FencingToken;
+	/**
+	 * Set by a recall-by-incarnation while this request was in flight: a grant whose token's incarnation
+	 * is below this was issued by a home incarnation that has since been recalled, and is surrendered
+	 * rather than admitted on. The reply can still arrive — it was in the socket before the home died.
+	 */
+	recalledBelow?: number;
 }
 
 export interface LockRound {
@@ -768,7 +790,32 @@ export interface LockCoordinatorOptions {
  * RESTART; this covers it across an unregister and re-register inside one process, which a
  * process-start reading cannot see.
  */
-const retiredCoordinators = new Map<string, { grantableAfterMono: number; counter: number }>();
+const retiredCoordinators = new Map<
+	string,
+	{ grantableAfterMono: number; counter: number; incarnation: number | undefined }
+>();
+
+/**
+ * Delegations whose handles are being fenced, per database: a surrender until its release is written,
+ * and a close without a successor until its revokes have settled. Both leave `#delegations` before the
+ * relayed fences land, and the coordinator that started them can be closed or replaced while they
+ * wait, so a recall by incarnation (`recallDelegationsFromHome`) joins these here rather than through
+ * any coordinator: answering "holds nothing" while one is pending would let the home re-grant a key a
+ * handle on another worker can still commit under.
+ */
+interface InFlightSurrender {
+	table: string;
+	ringKey: string;
+	token: FencingToken;
+	/** Every handle fenced or past its lease, then the release written (a close has no release). */
+	settled: Promise<void>;
+}
+interface DatabaseFencing {
+	entries: Set<InFlightSurrender>;
+	/** Entries whose handles are not all fenced yet, counted per ring key, so a grant can ask in O(1). */
+	unfenced: Map<string, number>;
+}
+const inFlightSurrenders = new Map<string, DatabaseFencing>();
 
 /**
  * The highest home-map generation this thread has acted under, per DATABASE — the scope the generation
@@ -934,7 +981,21 @@ export class LockCoordinator {
 	unprovenOwnershipMs(): number {
 		const horizon = DELEGATION_LEASE_MS + this.#skewMs;
 		if (this.#ownedSinceMono === undefined) return horizon;
+		// The ring-wide recall attestation covers a sibling thread's grants too: a takeover bumps the
+		// incarnation before the successor may coordinate (§5.1), so everything a previous owner issued
+		// is below the incarnation the attestation names.
+		if (this.#ringQuiescedFor(this.#coordinatingIncarnation)) return 0;
 		return Math.max(0, this.#ownedSinceMono + horizon - this.#monotonic());
+	}
+	#ringQuiescedFor(incarnation: number | undefined): boolean {
+		if (incarnation === undefined) return false;
+		let attested: number | undefined;
+		try {
+			attested = this.transport.quiescedIncarnation?.();
+		} catch {
+			return false;
+		}
+		return Number.isSafeInteger(attested) && attested === incarnation;
 	}
 	/**
 	 * When this coordinator was last observed to own coordination, and `undefined` while it does not.
@@ -1250,7 +1311,8 @@ export class LockCoordinator {
 			const delegation = this.#liveDelegation(keyId, leaseMs, homeMap.generation);
 			if (delegation) return this.#admit(delegation, leaseMs);
 
-			const home = homeFor(this.#ringKey(keyId), homeMap.homes);
+			const ringKey = this.#ringKey(keyId);
+			const home = homeFor(ringKey, homeMap.homes);
 			if (!home)
 				throw new LockUnavailableError(`The record lock home map for ${this.database} names no nodes to home a key on`);
 
@@ -1262,9 +1324,10 @@ export class LockCoordinator {
 			this.#pendingRequests.set(keyId, pendingRequest);
 			let reply: DelegationReply;
 			try {
-				reply =
-					home === this.nodeId
-						? this.#grantLocally(keyId, key, homeMap, leaseMs)
+				reply = this.#fencingInFlight(ringKey)
+					? { granted: false, reason: 'contended', retryAfterMs: 25 }
+					: home === this.nodeId
+						? this.#grantLocally(keyId, key, homeMap, leaseMs, ringKey)
 						: await this.#requestRemotely(home, keyId, key, homeMap, leaseMs, deadlineMono);
 			} catch (error) {
 				const requestAuthority = this.#authority();
@@ -1290,7 +1353,9 @@ export class LockCoordinator {
 				replyDependencies !== undefined
 			) {
 				const recalledBeforeReply =
-					pendingRequest.recalledToken !== undefined && compareTokens(pendingRequest.recalledToken, reply.token) === 0;
+					(pendingRequest.recalledToken !== undefined &&
+						compareTokens(pendingRequest.recalledToken, reply.token) === 0) ||
+					(pendingRequest.recalledBelow !== undefined && reply.token[1] < pendingRequest.recalledBelow);
 				const existing = authority.#delegations.get(keyId);
 				if (
 					existing &&
@@ -1908,8 +1973,9 @@ export class LockCoordinator {
 		if (!homeMap.homes.includes(request.requester)) return { granted: false, reason: 'unknown-node' };
 		// Both sides must agree we are the home, or two arbiters could issue for one key.
 		const keyId = this.#keyIdOf(request.key);
-		if (homeFor(this.#ringKey(keyId), homeMap.homes) !== this.nodeId) return { granted: false, reason: 'not-home' };
-		return this.#grant(keyId, request.key, homeMap, request.leaseMs, request.requester);
+		const ringKey = this.#ringKey(keyId);
+		if (homeFor(ringKey, homeMap.homes) !== this.nodeId) return { granted: false, reason: 'not-home' };
+		return this.#grant(keyId, request.key, homeMap, request.leaseMs, request.requester, ringKey);
 	}
 
 	/**
@@ -2076,10 +2142,11 @@ export class LockCoordinator {
 			tickingCoordinators.delete(this);
 			return;
 		}
-		for (const delegation of this.#delegations.values()) {
+		for (const [keyId, delegation] of this.#delegations) {
 			delegation.recalled = true;
 			delegation.expiresMono = -Infinity;
-			this.#revokeAll(delegation);
+			const fenced = this.#revokeAllAndSettle(delegation);
+			delegation.fencing = this.#trackFencing(keyId, delegation, fenced, fenced);
 			const waiters = delegation.drained;
 			if (waiters) {
 				delegation.drained = undefined;
@@ -2120,6 +2187,14 @@ export class LockCoordinator {
 		retiredCoordinators.set(retirementKey, {
 			grantableAfterMono: Math.max(retired?.grantableAfterMono ?? -Infinity, grantableAfterMono),
 			counter: Math.max(retired?.counter ?? 0, this.#counter),
+			incarnation:
+				retired === undefined || retired.grantableAfterMono === -Infinity
+					? this.#coordinatingIncarnation
+					: grantableAfterMono === -Infinity
+						? retired.incarnation
+						: retired.incarnation === undefined || this.#coordinatingIncarnation === undefined
+							? undefined
+							: Math.max(retired.incarnation, this.#coordinatingIncarnation),
 		});
 		this.#delegations.clear();
 		this.#pendingDelegations.clear();
@@ -2174,6 +2249,24 @@ export class LockCoordinator {
 		}
 		if (this.#quarantineWaived) return -Infinity;
 		return this.#ownedSinceMono + DELEGATION_LEASE_MS + this.#skewMs;
+	}
+
+	/**
+	 * End the restart quarantine on the transport's ring-wide recall attestation (harper#3254). Both
+	 * halves go: the construction horizon, because every delegation an earlier incarnation of this
+	 * process issued has been recalled, and the ownership horizon for the current interval, because a
+	 * sibling thread's grants were issued below this incarnation too. What stays is a retirement record
+	 * for this table from this incarnation: a coordinator closed and re-registered inside it issued
+	 * under it, which the recall did not ask for. `#ownershipHorizon` re-arms everything on the next
+	 * incarnation change, and that incarnation needs its own attestation.
+	 */
+	#endQuarantineIfRingQuiesced(homeIncarnation: number): boolean {
+		if (this.#coordinatingIncarnation !== homeIncarnation || !this.#ringQuiescedFor(homeIncarnation)) return false;
+		const retired = retiredCoordinators.get(this.#retirementKey());
+		const retiredBelow = retired?.incarnation !== undefined && retired.incarnation < homeIncarnation;
+		this.#grantableAfterMono = retired && !retiredBelow ? retired.grantableAfterMono : -Infinity;
+		this.#quarantineWaived = true;
+		return true;
 	}
 
 	/** Fail closed on a generation older than one already ACTED on here (see `highestGeneration`). */
@@ -2433,8 +2526,8 @@ export class LockCoordinator {
 	}
 
 	/** This node is the key's home: grant to itself through exactly the same table a peer would use. */
-	#grantLocally(keyId: unknown, key: any, homeMap: LockHomeMap, leaseMs: number): DelegationReply {
-		return this.#grant(keyId, key, homeMap, leaseMs, this.nodeId);
+	#grantLocally(keyId: unknown, key: any, homeMap: LockHomeMap, leaseMs: number, ringKey: string): DelegationReply {
+		return this.#grant(keyId, key, homeMap, leaseMs, this.nodeId, ringKey);
 	}
 
 	async #requestRemotely(
@@ -2511,16 +2604,29 @@ export class LockCoordinator {
 		return this.#writeControlSafely({ type: 'lockRelease', key, requester: this.nodeId, token, dependencies: null });
 	}
 
-	#grant(keyId: unknown, key: any, homeMap: LockHomeMap, leaseMs: number, requester: string): DelegationReply {
+	#grant(
+		keyId: unknown,
+		key: any,
+		homeMap: LockHomeMap,
+		leaseMs: number,
+		requester: string,
+		ringKey: string
+	): DelegationReply {
 		const now = this.#monotonic();
 		this.#prepareFreshnessGeneration(homeMap.generation);
 		// Consulted unconditionally — it is what observes a gap in ownership, and the waiver it applies
 		// to itself is the only part `grantableAfterMono` may switch off.
-		const quarantine = Math.max(this.#grantableAfterMono, this.#ownershipHorizon(now, homeMap.homeIncarnation)) - now;
+		let quarantine = Math.max(this.#grantableAfterMono, this.#ownershipHorizon(now, homeMap.homeIncarnation)) - now;
+		if (quarantine > 0 && this.#endQuarantineIfRingQuiesced(homeMap.homeIncarnation))
+			quarantine = Math.max(this.#grantableAfterMono, this.#ownershipHorizon(now, homeMap.homeIncarnation)) - now;
 		// NOT `contended`: the quarantine runs for a full delegation lease, and `MAX_LOCK_TIMEOUT_MS` is
 		// shorter than that, so retrying it would spend the caller's whole budget and then answer 423 —
 		// "held by someone else" — for a key nobody holds.
 		if (quarantine > 0) return { granted: false, reason: 'quarantine', retryAfterMs: Math.min(quarantine, 250) };
+		// This node's own delegation for the key may still be fencing a sibling's handle after a close
+		// without a successor, with no grant left to say so: the key reads as held until every handle is
+		// fenced, here and on this node's own re-acquisition (`#acquire`), which would otherwise renew it.
+		if (this.#fencingInFlight(ringKey)) return { granted: false, reason: 'contended', retryAfterMs: 25 };
 		const existing = this.#grants.get(keyId);
 		if (existing) {
 			// An expired grant is not a live one. Collecting it here rather than trusting `tick()` is
@@ -2637,21 +2743,109 @@ export class LockCoordinator {
 		return (delegation.surrendering ??= this.#surrenderOnce(keyId, delegation));
 	}
 
-	async #surrenderOnce(keyId: unknown, delegation: Delegation): Promise<void> {
+	#surrenderOnce(keyId: unknown, delegation: Delegation): Promise<void> {
 		if (this.#delegations.get(keyId) === delegation) this.#delegations.delete(keyId);
-		// Capability, not just admission: anything this delegation admitted must be unable to commit
-		// before the home is told it may re-grant. A handle admitted on another worker thread revokes
-		// over a message, so wait for its fence to land — bounded by the handle's own lease, past which
-		// it fences itself — before writing the release that lets the home re-grant the key.
-		await this.#revokeAllAndSettle(delegation);
-		const entry: LockReleaseEntry = {
+		const fenced = this.#fenceAll(delegation);
+		return this.#trackFencing(
+			keyId,
+			delegation,
+			fenced,
+			fenced.then(() => this.#writeRelease(delegation))
+		);
+	}
+
+	/** Whether a handle this node admitted for the key is still being fenced; the release write is not waited for. */
+	#fencingInFlight(ringKey: string): boolean {
+		const fencing = inFlightSurrenders.get(this.database);
+		return fencing !== undefined && fencing.unfenced.size > 0 && fencing.unfenced.has(ringKey);
+	}
+
+	#trackFencing(keyId: unknown, delegation: Delegation, fenced: Promise<void>, settled: Promise<void>): Promise<void> {
+		let fencing = inFlightSurrenders.get(this.database);
+		if (!fencing) inFlightSurrenders.set(this.database, (fencing = { entries: new Set(), unfenced: new Map() }));
+		const ringKey = this.#ringKey(keyId);
+		fencing.unfenced.set(ringKey, (fencing.unfenced.get(ringKey) ?? 0) + 1);
+		fenced.finally(() => {
+			const count = (fencing.unfenced.get(ringKey) ?? 1) - 1;
+			if (count > 0) fencing.unfenced.set(ringKey, count);
+			else fencing.unfenced.delete(ringKey);
+		});
+		const entry: InFlightSurrender = {
+			table: this.table,
+			ringKey,
+			token: delegation.token,
+			settled: settled.finally(() => {
+				fencing.entries.delete(entry);
+				if (fencing.entries.size === 0 && inFlightSurrenders.get(this.database) === fencing)
+					inFlightSurrenders.delete(this.database);
+			}),
+		};
+		fencing.entries.add(entry);
+		return entry.settled;
+	}
+
+	/**
+	 * Capability, not just admission: anything this delegation admitted must be unable to commit before
+	 * the home is told it may re-grant. A handle admitted on another worker thread revokes over a
+	 * message, so wait for its fence to land — bounded by the handle's own lease, past which it fences
+	 * itself. A close that landed during the drain already emptied the admissions; its fences count too.
+	 */
+	async #fenceAll(delegation: Delegation): Promise<void> {
+		await Promise.all([this.#revokeAllAndSettle(delegation), delegation.fencing]);
+	}
+
+	#writeRelease(delegation: Delegation): Promise<void> {
+		return this.#writeControlSafely({
 			type: 'lockRelease',
 			key: delegation.key,
 			requester: this.nodeId,
 			token: delegation.token,
 			dependencies: delegation.dependencies,
-		};
-		return this.#writeControlSafely(entry);
+		});
+	}
+
+	/**
+	 * This table's half of `recallDelegationsFromHome` (harper#3254): stop admitting under every
+	 * delegation `home` issued below `belowIncarnation`, drain and release each one, and resolve only
+	 * once nothing admitted under them can commit. A coordinator that handed off answers for its
+	 * successor, since the delegations moved there.
+	 *
+	 * Below, not equal to the previous incarnation: a home that restarts twice inside one quarantine
+	 * still has its i-2 delegations live, and i-1 never granted anything to answer for.
+	 */
+	async recallFromHome(home: string, homeMap: LockHomeMap, belowIncarnation: number): Promise<void> {
+		if (this.#handedOff) return this.#authority().recallFromHome(home, homeMap, belowIncarnation);
+		const drains: Promise<void>[] = [];
+		for (const fencing of inFlightSurrenders.get(this.database)?.entries ?? [])
+			if (
+				fencing.table === this.table &&
+				fencing.token[0] === homeMap.generation &&
+				fencing.token[1] < belowIncarnation &&
+				homeFor(fencing.ringKey, homeMap.homes) === home
+			)
+				drains.push(fencing.settled);
+		if (this.#closed) {
+			await Promise.all(drains);
+			return;
+		}
+		if (!this.transport.ownsCoordination())
+			throw new Error('Cluster record lock coordination is not owned by this worker thread');
+		const issuedByHome = (keyId: unknown, token: FencingToken) =>
+			token[0] === homeMap.generation &&
+			token[1] < belowIncarnation &&
+			homeFor(this.#ringKey(keyId), homeMap.homes) === home;
+		// Fences on what is still arriving go in before the first await, so a reply that lands during
+		// the drain cannot install authority the home already counts as recalled.
+		for (const [keyId, request] of this.#pendingRequests) {
+			if (homeFor(this.#ringKey(keyId), homeMap.homes) !== home) continue;
+			request.recalledBelow = Math.max(request.recalledBelow ?? 0, belowIncarnation);
+		}
+		for (const [keyId, pending] of this.#pendingDelegations)
+			if (issuedByHome(keyId, pending.token)) pending.markRecalled();
+		for (const [keyId, delegation] of this.#delegations)
+			if (issuedByHome(keyId, delegation.token))
+				drains.push(this.onDelegationRecall({ key: delegation.key, token: delegation.token }));
+		await Promise.all(drains);
 	}
 
 	/**
@@ -2856,6 +3050,64 @@ export interface QuiesceResult {
 	 * entry here rather than reporting a clean sweep it cannot back.
 	 */
 	outstanding: QuiesceOutstanding[];
+}
+
+/**
+ * Recall every delegation this thread holds from `home` below `belowIncarnation`, for the transport
+ * answering that home's restart recall (harper#3254). Resolves only when nothing on this node can
+ * admit or commit under any of them, surrenders already in flight included. Its resolution is an
+ * attestation input, so it throws rather than answers whenever the answer could not be complete: an
+ * invalid bound or a home the ring does not name would match nothing and read as "holds nothing"; a
+ * thread that does not coordinate the database holds no delegations and cannot speak for the one
+ * that does; a withheld or differently numbered home map means the two sides do not agree which ring
+ * `home` issued under. A table with no coordinator on the owner thread never acquired, so an empty
+ * registry here — unlike `quiesceDelegations` — is a true "holds nothing".
+ *
+ * Tables are swept concurrently and the sweep repeats until no coordinator it has not visited exists:
+ * a transport re-registration during a drain replaces a table's coordinator, and the successor holds
+ * the delegations now.
+ */
+export async function recallDelegationsFromHome(
+	database: string,
+	home: string,
+	generation: number,
+	belowIncarnation: number
+): Promise<void> {
+	if (!Number.isSafeInteger(belowIncarnation) || belowIncarnation <= 0)
+		throw new ClientError('A record lock recall needs a positive integer incarnation', 400);
+	const transport = clusterLockTransports.get(database);
+	if (!transport) throw new ClientError(`No record lock transport is registered for ${database}`, 503);
+	if (!transport.ownsCoordination())
+		throw new Error('Cluster record lock coordination is not owned by this worker thread');
+	const homeMap = transport.homeMap(database);
+	if (!homeMap) throw new ClientError(`No agreed record lock home map for ${database}`, 503);
+	if (homeMap.generation !== generation)
+		throw new ClientError(
+			`This node holds record lock home map generation ${homeMap.generation} for ${database}, not ${generation}`,
+			409
+		);
+	if (!homeMap.homes.includes(home))
+		throw new ClientError(`${home} is not named in the record lock home map for ${database}`, 403);
+	const swept = new Set<LockCoordinator>();
+	for (;;) {
+		const unswept = [...liveCoordinators].filter(
+			(coordinator) => coordinator.database === database && !swept.has(coordinator)
+		);
+		for (const coordinator of unswept) swept.add(coordinator);
+		const surrenders: Promise<void>[] = [];
+		for (const surrender of inFlightSurrenders.get(database)?.entries ?? [])
+			if (
+				surrender.token[0] === generation &&
+				surrender.token[1] < belowIncarnation &&
+				homeFor(surrender.ringKey, homeMap.homes) === home
+			)
+				surrenders.push(surrender.settled);
+		if (unswept.length === 0 && surrenders.length === 0) return;
+		await Promise.all([
+			...unswept.map((coordinator) => coordinator.recallFromHome(home, homeMap, belowIncarnation)),
+			...surrenders,
+		]);
+	}
 }
 
 /**

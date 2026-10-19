@@ -96,8 +96,7 @@ class SQLSearch {
 		this.comparator_search_values = {};
 		this.tables = [];
 
-		//holds the data to be evaluated by the sql processor
-		this.data = {};
+		this.data = Object.create(null);
 
 		this.has_aggregator = false;
 		this.has_ordinal = false;
@@ -206,9 +205,9 @@ class SQLSearch {
 			const schemaTable = `${table.databaseid}_${table.as ? table.as : table.tableid}`;
 			this.data[schemaTable] = {};
 			this.data[schemaTable].__hashName = getDatabases()[table.databaseid][table.tableid].primaryKey;
-			this.data[schemaTable].__mergedData = {};
+			this.data[schemaTable].__mergedData = Object.create(null);
 			this.data[schemaTable].__mergedAttributes = [];
-			this.data[schemaTable].__mergedAttrMap = {};
+			this.data[schemaTable].__mergedAttrMap = Object.create(null);
 		});
 	}
 
@@ -649,7 +648,7 @@ class SQLSearch {
 			}
 
 			return acc;
-		}, {});
+		}, Object.create(null));
 
 		for (const attribute of this.fetch_attributes) {
 			const schemaTable = `${attribute.table.databaseid}_${
@@ -1129,7 +1128,7 @@ class SQLSearch {
 					acc[tableKey].columns.push(column.attribute);
 				}
 				return acc;
-			}, {});
+			}, Object.create(null));
 
 			for (const schemaTable in tableSearches) {
 				const table = tableSearches[schemaTable];
@@ -1370,16 +1369,16 @@ class SQLSearch {
 				acc[col.columnid_orig] = col.columnid_orig;
 			}
 			return acc;
-		}, {});
+		}, Object.create(null));
 
 		const fetchAttributesObjs = this.fetch_attributes.reduce((acc, attr) => {
 			const schemaTable = `${attr.table.databaseid}_${attr.table.as ? attr.table.as : attr.table.tableid}`;
 			if (!acc[schemaTable]) {
-				acc[schemaTable] = {};
+				acc[schemaTable] = Object.create(null);
 			}
 			acc[schemaTable][aliasMap[attr.attribute]] = null;
 			return acc;
-		}, {});
+		}, Object.create(null));
 
 		for (const attribute of this.fetch_attributes) {
 			const schemaTable = `${attribute.table.databaseid}_${

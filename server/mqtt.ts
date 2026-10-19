@@ -1,7 +1,7 @@
 // for now we are using mqtt-packet, but we may implement some of this ourselves, particularly packet generation so that
 // we can implement more efficient progressive buffer allocation.
 import { parser as makeParser, generate } from 'mqtt-packet';
-import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession.ts';
+import { getSession, DurableSubscriptionsSession, RECEIVE_MAXIMUM } from './DurableSubscriptionsSession.ts';
 import { getSuperUser } from '../security/user.ts';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
 import {
@@ -323,7 +323,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 	function closeConnection(error?: Error) {
 		try {
 			if (mqttOptions.protocolVersion >= 5) {
-				const packet: any = { cmd: 'disconnect', reasonCode: error ? 0x83 : 0x8e };
+				const packet: any = { cmd: 'disconnect', reasonCode: error ? ((error as any).mqttReasonCode ?? 0x83) : 0x8e };
 				// as for PUBACK: only failures this layer describes itself are safe to hand a client
 				const describable =
 					error instanceof DatabaseGenerationChangedError ||
@@ -540,8 +540,9 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						sessionPresent: session.sessionWasPresent,
 						reasonCode: 0,
 						returnCode: 0, // success
+						properties: { receiveMaximum: RECEIVE_MAXIMUM },
 					});
-					const listener = async (topic, message, messageId, subscription, version) => {
+					const listener = async (topic, message, messageId, subscription, version, dup) => {
 						try {
 							if (disconnected) throw new Error('Session disconnected while trying to send message to', topic);
 							const slashIndex = topic.indexOf('/', 1);
@@ -564,6 +565,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 									payload,
 									messageId: messageId || Math.floor(Math.random() * 100000000),
 									qos,
+									dup,
 								};
 								sendPacket(generate(packetData, mqttOptions), packetMethodName(packetData), generalTopic);
 							} else {
@@ -598,7 +600,12 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						}
 					};
 					session.setListener(listener);
-					if (session.sessionWasPresent) await session.resume();
+					if (session.sessionWasPresent) {
+						// [MQTT-4.4.0-1] a PUBREL the client never completed is sent again before anything new
+						for (const messageId of session.awaitingCompletion?.keys() ?? [])
+							generateAndSendPacket({ cmd: 'pubrel', messageId, reasonCode: 0 });
+						await session.resume();
+					}
 					break;
 				case 'subscribe':
 					const granted = [];
@@ -654,89 +661,38 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					});
 					break;
 				}
-				case 'pubrel':
+				case 'pubrel': {
+					const released = await session.release(packet.messageId);
 					generateAndSendPacket({
-						// Send a publish response
 						cmd: 'pubcomp',
 						messageId: packet.messageId,
-						reasonCode: 0,
+						reasonCode: released ? 0 : 0x92, // packet identifier not found
 					});
 					return;
-				case 'publish':
-					const responseCmd = packet.qos === 2 ? 'pubrec' : 'puback';
-					// deserialize
-					const deserialize =
-						socket.deserialize ||
-						(socket.deserialize = getDeserializer(request?.headers.get?.('content-type') as string, false));
-					const messageLength = packet.payload?.length || 0;
-					const data = messageLength > 0 ? deserialize(packet.payload) : undefined; // zero payload length maps to a delete
-					let published;
-					try {
-						published = await session.publish(packet, data);
-					} catch (error) {
-						emitEvent('error', error, socket, packet, session);
-						mqttLog.warn?.(error);
-						if (packet.qos > 0) {
-							// A publish to a topic no resource handles is the same miss addSubscription already
-							// answers with a specific code; reporting it as "unspecified error" leaves it
-							// indistinguishable from an internal failure.
-							const publishPacket: any = {
-								// Send a publish acknowledgment
-								cmd: responseCmd,
-								messageId: packet.messageId,
-								reasonCode:
-									mqttOptions.protocolVersion < 5
-										? 0x80 // the only error code in v3.1.1
-										: error?.statusCode === 403
-											? 0x87 // not authorized
-											: error?.statusCode === 404
-												? 0x90 // topic name invalid
-												: 0x80, // unspecified error
-							};
-							// Only errors this layer maps to a code of their own are safe to describe: any other
-							// failure carries an internal message that a client must not be handed. Both limits
-							// are in encoded bytes, so measure and trim the string in bytes too.
-							const describable =
-								mqttOptions.protocolVersion >= 5 &&
-								sendProblemInformation &&
-								error?.message &&
-								(error.statusCode === 403 || error.statusCode === 404);
-							const reasonString = describable
-								? Buffer.from(String(error.message), 'utf8').subarray(0, REASON_STRING_LIMIT).toString('utf8')
-								: undefined;
-							if (
-								reasonString &&
-								(!maximumPacketSize || maximumPacketSize >= Buffer.byteLength(reasonString) + ACK_PACKET_OVERHEAD)
-							)
-								publishPacket.properties = { reasonString };
-							generateAndSendPacket(publishPacket, packet.topic);
-						}
-						break;
-					}
-					if (packet.qos > 0) {
-						generateAndSendPacket(
-							{
-								// Send a publish acknowledgment
-								cmd: responseCmd,
-								messageId: packet.messageId,
-								reasonCode:
-									published === false
-										? 0x90 // Topic name invalid
-										: 0, //success
-							},
-							packet.topic
-						);
-					}
+				}
+				case 'publish': {
+					const acknowledgement =
+						packet.qos === 2
+							? await session.receiveExactlyOnce(packet.messageId, () => publish(packet))
+							: await publish(packet);
+					if (acknowledgement) generateAndSendPacket(acknowledgement, packet.topic);
 					break;
-				case 'pubrec':
-					generateAndSendPacket({
-						// Send a publish response
-						cmd: 'pubrel',
-						messageId: packet.messageId,
-						reasonCode: 0,
-					});
+				}
+				case 'pubrec': {
+					const failed = packet.reasonCode >= 0x80;
+					const known = await session.received(packet.messageId, failed);
+					if (!failed)
+						generateAndSendPacket({
+							cmd: 'pubrel',
+							messageId: packet.messageId,
+							reasonCode: known ? 0 : 0x92, // packet identifier not found
+						});
 					break;
+				}
 				case 'pubcomp':
+					await session.completed(packet.messageId);
+					emitEvent('acknowledged', session, packet);
+					break;
 				case 'puback':
 					await session.acknowledge(packet.messageId);
 					emitEvent('acknowledged', session, packet);
@@ -759,10 +715,12 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		} catch (error) {
 			emitEvent('error', error, socket, packet, session);
 			mqttLog.error?.(error);
-			generateAndSendPacket({
-				// Send a subscription acknowledgment
-				cmd: 'disconnect',
-			});
+			if (error?.mqttReasonCode) closeConnection(error);
+			else
+				generateAndSendPacket({
+					// Send a subscription acknowledgment
+					cmd: 'disconnect',
+				});
 		}
 		// analytics stay per subscriber even when the packet itself is shared across them
 		function sendPacket(packet, methodName, path?) {
@@ -775,9 +733,66 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		function packetMethodName(packet) {
 			return packet.qos > 0 ? packet.cmd + ',qos=' + packet.qos : packet.cmd;
 		}
+		async function publish(packet) {
+			const responseCmd = packet.qos === 2 ? 'pubrec' : 'puback';
+			const deserialize =
+				socket.deserialize ||
+				(socket.deserialize = getDeserializer(request?.headers.get?.('content-type') as string, false));
+			const messageLength = packet.payload?.length || 0;
+			const data = messageLength > 0 ? deserialize(packet.payload) : undefined; // zero payload length maps to a delete
+			let published;
+			try {
+				published = await session.publish(packet, data);
+			} catch (error) {
+				emitEvent('error', error, socket, packet, session);
+				mqttLog.warn?.(error);
+				if (!(packet.qos > 0)) return;
+				// A publish to a topic no resource handles is the same miss addSubscription already
+				// answers with a specific code; reporting it as "unspecified error" leaves it
+				// indistinguishable from an internal failure.
+				const acknowledgement: any = {
+					cmd: responseCmd,
+					messageId: packet.messageId,
+					reasonCode:
+						mqttOptions.protocolVersion < 5
+							? 0x80 // the only error code in v3.1.1
+							: error?.statusCode === 403
+								? 0x87 // not authorized
+								: error?.statusCode === 404
+									? 0x90 // topic name invalid
+									: 0x80, // unspecified error
+				};
+				// Only errors this layer maps to a code of their own are safe to describe: any other
+				// failure carries an internal message that a client must not be handed. Both limits
+				// are in encoded bytes, so measure and trim the string in bytes too.
+				const describable =
+					mqttOptions.protocolVersion >= 5 &&
+					sendProblemInformation &&
+					error?.message &&
+					(error.statusCode === 403 || error.statusCode === 404);
+				const reasonString = describable
+					? Buffer.from(String(error.message), 'utf8').subarray(0, REASON_STRING_LIMIT).toString('utf8')
+					: undefined;
+				if (
+					reasonString &&
+					(!maximumPacketSize || maximumPacketSize >= Buffer.byteLength(reasonString) + ACK_PACKET_OVERHEAD)
+				)
+					acknowledgement.properties = { reasonString };
+				return acknowledgement;
+			}
+			if (packet.qos > 0)
+				return {
+					cmd: responseCmd,
+					messageId: packet.messageId,
+					reasonCode:
+						published === false
+							? 0x90 // Topic name invalid
+							: 0, //success
+				};
+		}
 	});
 	parser.on('error', (error) => {
-		mqttLog.warn('MQTT parsing error, closing connection:', error.message);
+		mqttLog.warn?.('MQTT parsing error, closing connection:', error.message);
 		if (socket?.destroy) socket.destroy();
 		else socket?.terminate();
 	});

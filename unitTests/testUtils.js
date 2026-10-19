@@ -711,7 +711,38 @@ async function seedUsers(users = []) {
 	await new Promise((resolve) => setImmediate(resolve));
 }
 
+/**
+ * A catalog (`__dbis__`) wrapper is opened once per root and reused, and its own `put` is a snapshot of
+ * `putSync` taken at open, so a test patching the prototype's `putSync` must route `put` through it.
+ */
+function routePutThroughPutSync(instance) {
+	if (!Object.hasOwn(instance, 'put')) return () => {};
+	const ownPut = instance.put;
+	instance.put = function (...args) {
+		return this.putSync(...args);
+	};
+	return () => {
+		instance.put = ownPut;
+	};
+}
+
+/**
+ * Install `replacement` as `instance[name]`; the returned restore puts the instance back exactly as it was. A reused
+ * wrapper must not keep an own copy of a prototype method, which would shadow later prototype patches.
+ */
+function stubMethod(instance, name, replacement) {
+	const hadOwn = Object.prototype.hasOwnProperty.call(instance, name);
+	const saved = instance[name];
+	instance[name] = replacement;
+	return function restore() {
+		if (hadOwn) instance[name] = saved;
+		else delete instance[name];
+	};
+}
+
 module.exports = {
+	stubMethod,
+	routePutThroughPutSync,
 	changeProcessToBinDir,
 	deepClone,
 	mochaAsyncWrapper,

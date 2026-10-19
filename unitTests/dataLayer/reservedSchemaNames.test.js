@@ -1,6 +1,6 @@
 const assert = require('node:assert');
 const schema = require('#src/dataLayer/schema');
-const { table } = require('#src/resources/databases');
+const { table, databases, dropDatabase } = require('#src/resources/databases');
 
 // harper#1016: a role's `permission` object keys per-database permissions by
 // database name alongside named flags (super_user / cluster_user /
@@ -51,5 +51,78 @@ describe('#1016 reserved database names', () => {
 		for (const name of RESERVED) {
 			assert.match(schema.validateDatabaseName(name).message, /reserved name/);
 		}
+	});
+});
+
+const PROTOTYPE_POLLUTING = ['__proto__', 'constructor', 'prototype'];
+
+describe('prototype-polluting database and table names', () => {
+	for (const name of PROTOTYPE_POLLUTING) {
+		it(`create_schema rejects database '${name}'`, async () => {
+			await assert.rejects(
+				() => schema.createSchemaStructure({ operation: 'create_schema', schema: name }),
+				/reserved name/,
+				`create_schema accepted prototype-polluting name '${name}'`
+			);
+		});
+
+		it(`create_table rejects database '${name}'`, async () => {
+			await assert.rejects(
+				() => schema.createTableStructure({ operation: 'create_table', schema: name, table: 't', primary_key: 'id' }),
+				/reserved name/,
+				`create_table accepted prototype-polluting database '${name}'`
+			);
+		});
+
+		it(`create_table rejects table '${name}'`, async () => {
+			await assert.rejects(
+				() => schema.createTableStructure({ operation: 'create_table', schema: 'dev', table: name, primary_key: 'id' }),
+				/reserved name/,
+				`create_table accepted prototype-polluting table '${name}'`
+			);
+		});
+
+		it(`schema authoring (table()) rejects database '${name}'`, () => {
+			assert.throws(
+				() => table({ database: name, table: 't', attributes: [{ name: 'id', isPrimaryKey: true }] }),
+				/reserved name/,
+				`table() accepted prototype-polluting database '${name}'`
+			);
+		});
+
+		it(`schema authoring (table()) rejects table '${name}'`, () => {
+			assert.throws(
+				() => table({ database: 'dev', table: name, attributes: [{ name: 'id', isPrimaryKey: true }] }),
+				/reserved name/,
+				`table() accepted prototype-polluting table '${name}'`
+			);
+		});
+
+		it(`validateDatabaseName flags '${name}'`, () => {
+			assert.match(schema.validateDatabaseName(name).message, /reserved name/);
+		});
+	}
+});
+
+describe('a prototype-polluting table that already exists keeps accepting schema changes', () => {
+	const DATABASE = 'proto_alias_db';
+
+	after(async () => {
+		delete databases[DATABASE]?.prototype;
+		await dropDatabase(DATABASE);
+	});
+
+	it("adds an attribute to an existing table named 'prototype'", () => {
+		const Source = table({ database: DATABASE, table: 'src', attributes: [{ name: 'id', isPrimaryKey: true }] });
+		databases[DATABASE].prototype = Source; // stands in for a table loaded from disk under that name
+		const Table = table({
+			database: DATABASE,
+			table: 'prototype',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'extra' }],
+		});
+		assert.ok(
+			Table.attributes.some((attribute) => attribute.name === 'extra'),
+			'the existing table did not take the new attribute'
+		);
 	});
 });

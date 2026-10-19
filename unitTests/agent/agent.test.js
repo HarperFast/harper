@@ -100,6 +100,27 @@ describe('agent/agent resolveAgentIdentity', () => {
 	});
 });
 
+describe('agent/agent mergeConfig maxToolResultBytes', () => {
+	it('defaults to 65536', () => {
+		assert.strictEqual(mergeConfig({ server: {} }).maxToolResultBytes, 65536);
+	});
+
+	it('accepts an integer in range, including the numeric string an env var supplies', () => {
+		assert.strictEqual(mergeConfig({ server: {}, maxToolResultBytes: 131072 }).maxToolResultBytes, 131072);
+		assert.strictEqual(mergeConfig({ server: {}, maxToolResultBytes: '16384' }).maxToolResultBytes, 16384);
+	});
+
+	it('falls back to the default rather than running uncapped on a bad value', () => {
+		for (const maxToolResultBytes of [0, 512, 2_000_000_000, 'lots', 4096.5, true]) {
+			assert.strictEqual(
+				mergeConfig({ server: {}, maxToolResultBytes }).maxToolResultBytes,
+				65536,
+				String(maxToolResultBytes)
+			);
+		}
+	});
+});
+
 describe('agent/agent resolveScopes (harper#3041)', () => {
 	let root;
 	beforeEach(() => {
