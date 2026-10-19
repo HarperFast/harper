@@ -17,7 +17,7 @@ import getServerOptions from './fastifyRoutes/helpers/getServerOptions.ts';
 import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions.ts';
 import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig.ts';
 import { serverErrorHandler } from '../server/serverHelpers/serverHandlers.ts';
-import { authenticationChallenge, isCredentialRejection } from '../security/deferredAuthentication.ts';
+import { authenticationChallengeForError } from '../security/deferredAuthentication.ts';
 import { registerContentHandlers } from '../server/serverHelpers/contentTypes.ts';
 import { server } from './Server.ts';
 import { registerFastifyInstance } from './http.ts';
@@ -210,8 +210,8 @@ async function buildServer(isHttps) {
 	// can be handled in a coordinated way
 	app.setErrorHandler((error: any, request, reply) => {
 		if (error?.statusCode === 401 && !reply.hasHeader('WWW-Authenticate')) {
-			const scheme = request.headers.authorization?.split(' ', 1)[0];
-			reply.header('WWW-Authenticate', authenticationChallenge(scheme, isCredentialRejection(error)));
+			const presentedScheme = request.headers.authorization?.split(' ', 1)[0];
+			reply.header('WWW-Authenticate', authenticationChallengeForError(error, presentedScheme));
 		}
 		return serverErrorHandler(error, request, reply);
 	});

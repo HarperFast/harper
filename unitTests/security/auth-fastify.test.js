@@ -17,6 +17,7 @@ function setTokenTimeout(param, value) {
 	env.setProperty(param, value);
 	return () => env.setProperty(param, original);
 }
+const serverModule = require('#src/server/Server');
 const {
 	credentialRejectionError,
 	deferCredentialRejection,
@@ -232,6 +233,30 @@ describe('Test authorize function', function () {
 			assert.strictEqual(err.message, 'Account blocked');
 			assert.strictEqual(err.statusCode, 401);
 			assert.strictEqual(isCredentialRejection(err), true);
+			done();
+		});
+	});
+
+	it('settles a rejection that its own authentication run deferred instead of falling to passport', function (done) {
+		const originalGetUser = serverModule.server.getUser;
+		serverModule.server.getUser = async () => {
+			throw credentialRejectionError('Account blocked', 401);
+		};
+		const headerObject = { authorization: active_basic_request.headers.authorization };
+		const baseRequest = {
+			method: 'POST',
+			url: '/legacy-auth',
+			pathname: '/legacy-auth',
+			ip: '203.0.113.7',
+			headers: { asObject: headerObject, get: (name) => headerObject[name.toLowerCase()] },
+			peerCertificate: { subject: null },
+		};
+		const request = { ...active_basic_request, raw: { baseRequest } };
+
+		auth.authorize(request, null, function (err, user) {
+			serverModule.server.getUser = originalGetUser;
+			assert.strictEqual(user, undefined);
+			assert.strictEqual(err?.message, 'Account blocked', 'passport must not accept a credential getUser refused');
 			done();
 		});
 	});

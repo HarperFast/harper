@@ -12,7 +12,7 @@ import * as _tokenAuthentication from './tokenAuthentication.ts';
 const tokenAuthentication = _tokenAuthentication;
 import { AccessViolation } from '../utility/errors/hdbError.ts';
 import { authentication } from './auth.ts';
-import { credentialRejectionError, getDeferredCredentialRejection } from './deferredAuthentication.ts';
+import { deferredCredentialRejectionError } from './deferredAuthentication.ts';
 
 passport.use(
 	new LocalStrategy(function (username, password, done) {
@@ -82,9 +82,8 @@ export function authorize(req: any, res: any, next: any) {
 		);
 	}
 	if (req.raw?.user === undefined && req.raw?.baseRequest) {
-		// authentication already rejected this credential and left the decision to the route owner
-		const deferred = getDeferredCredentialRejection(req.raw.baseRequest);
-		if (deferred) return next(credentialRejectionError(deferred.message, deferred.status));
+		const settledRejection = deferredCredentialRejectionError(req.raw.baseRequest);
+		if (settledRejection) return next(settledRejection);
 		let nextCalled = false;
 		return authentication(req.raw?.baseRequest, (request: any) => {
 			nextCalled = true;
@@ -92,6 +91,8 @@ export function authorize(req: any, res: any, next: any) {
 				req.raw.user = request.user;
 				return next(null, req.raw.user);
 			} else {
+				const rejection = deferredCredentialRejectionError(request);
+				if (rejection) return next(rejection);
 				req.raw.user = null; // don't fall in this branch again
 				return authorize(req, res, next);
 			}

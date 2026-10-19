@@ -500,7 +500,7 @@ export async function authentication(request, nextHandler) {
 					response.status = 302;
 					response.headers.set('Location', resources.loginPath(request));
 				} // the HTTP specified way of indicating HTTP authentication methods supported:
-				else response.headers.set('WWW-Authenticate', authenticationChallenge());
+				else response.headers.set('WWW-Authenticate', authenticationChallenge(authorization?.split(' ', 1)[0]));
 			}
 		}
 		return applyResponseHeaders(response);
