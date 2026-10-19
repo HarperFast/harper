@@ -22,6 +22,7 @@ import harperLogger from '../utility/logging/harper_logger.ts';
 import {
 	addPendingApproval,
 	answerInterruptedCalls,
+	answerToolCall,
 	appendMessage,
 	cancelledObservation,
 	claimApproval,
@@ -411,12 +412,7 @@ async function consumeResolvedApprovals(
 		// The claim makes this run the only writer that can answer the call; a cancel that landed during
 		// the claim gets that answer instead of the action.
 		if (ctx.signal?.aborted) {
-			await appendMessage(sessionId, {
-				role: 'tool',
-				content: cancelledObservation(approval.toolName),
-				toolCallId: approval.toolCallId,
-				createdAt: Date.now(),
-			});
+			await answerToolCall(sessionId, approval.toolCallId, cancelledObservation(approval.toolName));
 			return;
 		}
 		const observation = approval.approved
@@ -426,12 +422,7 @@ async function consumeResolvedApprovals(
 					ctx
 				)
 			: deniedObservation(approval);
-		await appendMessage(sessionId, {
-			role: 'tool',
-			content: observation,
-			toolCallId: approval.toolCallId,
-			createdAt: Date.now(),
-		});
+		await answerToolCall(sessionId, approval.toolCallId, observation);
 	}
 }
 

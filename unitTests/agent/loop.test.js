@@ -1913,6 +1913,49 @@ describe('agent/loop never overwrites a cancel', () => {
 		});
 	});
 
+	// Harper stopped after the approval was saved and before its run started, then the operator prompted.
+	async function approvedThenPrompted() {
+		const sessionId = await newSession();
+		await session.appendMessage(sessionId, {
+			role: 'assistant',
+			content: '',
+			toolCalls: [{ id: 'c1', name: 'drop', arguments: {} }],
+			createdAt: 1,
+		});
+		const approval = await session.addPendingApproval(sessionId, {
+			toolName: 'drop',
+			arguments: {},
+			toolCallId: 'c1',
+			reason: 'destructive',
+		});
+		await session.resolveApproval(sessionId, approval.id, true);
+		await session.appendMessage(sessionId, { role: 'user', content: 'and then?', createdAt: 2 });
+		return sessionId;
+	}
+
+	it('places an approved result ahead of a prompt appended while the approval waited for its run', async () => {
+		const sessionId = await approvedThenPrompted();
+		let sentToModel;
+		const models = {
+			async generate(input) {
+				sentToModel = input.messages;
+				return { content: 'done', finishReason: 'stop' };
+			},
+		};
+		await runAgent({ sessionId, models, tools: [tool('drop', { destructive: true })], scopes, maxTurns: 5 });
+		assert.deepStrictEqual(
+			sentToModel.map((m) => m.toolCallId ?? m.role),
+			['user', 'assistant', 'c1', 'user']
+		);
+	});
+
+	it('places a cancelled approval answer ahead of a prompt appended while the approval waited', async () => {
+		const sessionId = await approvedThenPrompted();
+		await session.cancelSession(sessionId);
+		const order = (await session.getSession(sessionId)).messages.map((m) => m.toolCallId ?? m.role);
+		assert.deepStrictEqual(order, ['user', 'assistant', 'c1', 'user']);
+	});
+
 	it('answers a claimed approval whose run died before its result, in place and without running it again', async () => {
 		const sessionId = await newSession();
 		const drop = tool('drop', { destructive: true, handler: async () => assert.fail('must not run twice') });

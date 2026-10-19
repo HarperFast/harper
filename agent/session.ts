@@ -253,7 +253,12 @@ function closeOpenApprovals(
 ): void {
 	for (const approval of session.pendingApprovals) {
 		if (approval.consumed) continue;
-		session.messages.push({ role: 'tool', content: answer(approval), toolCallId: approval.toolCallId, createdAt: now });
+		session.messages.splice(responseIndex(session, approval.toolCallId), 0, {
+			role: 'tool',
+			content: answer(approval),
+			toolCallId: approval.toolCallId,
+			createdAt: now,
+		});
 		approval.approved ??= false;
 		approval.resolvedAt ??= now;
 		approval.resolved = true;
@@ -294,9 +299,40 @@ function unansweredCalls(session: AgentSessionRow): { calls: ToolCall[]; at: num
 		(call) => !answered.has(call.id) && !awaitingApproval.has(call.id)
 	);
 	if (calls.length === 0) return undefined;
+	return { calls, at: endOfResponses(session, turn) };
+}
+
+/**
+ * Where a response to `toolCallId` goes: after the responses that already follow the latest turn calling
+ * it, so a prompt appended after that turn stays after its responses, as a provider requires.
+ */
+function responseIndex(session: AgentSessionRow, toolCallId: string): number {
+	let turn = session.messages.length - 1;
+	while (turn >= 0 && !session.messages[turn].toolCalls?.some((call) => call.id === toolCallId)) turn--;
+	return turn < 0 ? session.messages.length : endOfResponses(session, turn);
+}
+
+function endOfResponses(session: AgentSessionRow, turn: number): number {
 	let at = turn + 1;
 	while (at < session.messages.length && session.messages[at].role === 'tool') at++;
-	return { calls, at };
+	return at;
+}
+
+/** An approval's result, which a prompt appended while it waited must not precede. */
+export function answerToolCall(sessionId: string, toolCallId: string, content: string): Promise<AgentSessionRow> {
+	return withSessionLock(sessionId, async () => {
+		const session = await requireSession(sessionId);
+		const now = Date.now();
+		session.messages.splice(responseIndex(session, toolCallId), 0, {
+			role: 'tool',
+			content,
+			toolCallId,
+			createdAt: now,
+		});
+		session.updatedAt = now;
+		await getAgentSessionTable().put(session);
+		return session;
+	});
 }
 
 /**
