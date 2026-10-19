@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { createServer } from 'node:http';
 import {
+	discardBody,
 	githubHeaders,
 	peerRevision,
 	readGitHubText,
@@ -32,6 +33,19 @@ test('credentials are attached only to the exact GitHub API origin', () => {
 	])
 		assert.strictEqual(githubHeaders(url, token).Authorization, undefined);
 	assert.strictEqual(githubHeaders('https://api.github.com/repos/HarperFast/harper').Authorization, undefined);
+});
+
+test('discarding an already errored response body preserves HTTP failure handling', async () => {
+	const response = new Response(
+		new ReadableStream({
+			start(controller) {
+				controller.error(new Error('discarded stream failed'));
+			},
+		}),
+		{ status: 503 }
+	);
+	await assert.rejects(response.body.cancel(), /discarded stream failed/);
+	await assert.doesNotReject(discardBody(response));
 });
 
 test('companion revisions fail closed for closed-unmerged or malformed peers', () => {

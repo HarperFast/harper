@@ -60,6 +60,9 @@ suite('documented nested relationship requests and responses', { timeout: 120_00
 		test(example.key, async () => {
 			assert.deepStrictEqual(await get(example.url), example.response);
 		});
+	test('the outer limit uses an exclusive end with three eligible parents', async () => {
+		assert.deepStrictEqual(await get('/Brand/?sort(id)&limit(1,2)&select(id,)'), [{ id: 43 }]);
+	});
 	test('grouped OR preserves both branches before sorting and pagination', async () => {
 		const example = examples.cases.find((example: { key: string }) => example.key === 'grouped_or_page');
 		assert(example, 'grouped OR documentation example is missing');
@@ -100,21 +103,30 @@ suite('documented nested relationship requests and responses', { timeout: 120_00
 	});
 
 	test('the unique child sort key breaks equal-price ties', async () => {
-		await insert('Product', [{ id: 'p0', brandId: 42, name: 'Adapter', price: 35 }]);
-		const bounded = examples.cases.find((example: { key: string }) => example.key === 'bounded_parent_page');
-		const rows = await get(bounded.url);
-		assert.deepStrictEqual(rows[0].products, [{ id: 'p0', name: 'Adapter', price: 35 }]);
-		const descending = await get(bounded.url.replace('sort(price,id)', 'sort(price,-id)'));
-		assert.deepStrictEqual(descending[0].products, [{ id: 'p2', name: 'Keyboard', price: 35 }]);
-		const window = await get(bounded.url.replace('limit(1)', 'limit(1,2)'));
-		assert.deepStrictEqual(window[0].products, [{ id: 'p2', name: 'Keyboard', price: 35 }]);
+		try {
+			await insert('Product', [{ id: 'p0', brandId: 42, name: 'Adapter', price: 35 }]);
+			const bounded = examples.cases.find((example: { key: string }) => example.key === 'bounded_parent_page');
+			const rows = await get(bounded.url);
+			assert.deepStrictEqual(rows[0].products, [{ id: 'p0', name: 'Adapter', price: 35 }]);
+			const descending = await get(bounded.url.replace('sort(price,id)', 'sort(price,-id)'));
+			assert.deepStrictEqual(descending[0].products, [{ id: 'p2', name: 'Keyboard', price: 35 }]);
+			const window = await get(bounded.url.replace('limit(1)', 'limit(1,2)'));
+			assert.deepStrictEqual(window[0].products, [{ id: 'p2', name: 'Keyboard', price: 35 }]);
+		} finally {
+			await sendOperation(ctx.harper, { operation: 'delete', schema: 'data', table: 'Product', ids: ['p0'] });
+		}
 	});
 	test('the unique parent sort key breaks equal-name ties', async () => {
-		await insert('Brand', [{ id: 45, name: 'Acme' }]);
-		await insert('Product', [{ id: 'p7', brandId: 45, name: 'Hub', price: 50 }]);
-		const bounded = examples.cases.find((example: { key: string }) => example.key === 'bounded_parent_page');
-		const page = bounded.url.replace('limit(0,20)', 'limit(0,1)');
-		assert.strictEqual((await get(page))[0].id, 42);
-		assert.strictEqual((await get(page.replace('sort(name,id)', 'sort(name,-id)')))[0].id, 45);
+		try {
+			await insert('Brand', [{ id: 45, name: 'Acme' }]);
+			await insert('Product', [{ id: 'p7', brandId: 45, name: 'Hub', price: 50 }]);
+			const bounded = examples.cases.find((example: { key: string }) => example.key === 'bounded_parent_page');
+			const page = bounded.url.replace('limit(0,20)', 'limit(0,1)');
+			assert.strictEqual((await get(page))[0].id, 42);
+			assert.strictEqual((await get(page.replace('sort(name,id)', 'sort(name,-id)')))[0].id, 45);
+		} finally {
+			await sendOperation(ctx.harper, { operation: 'delete', schema: 'data', table: 'Product', ids: ['p7'] });
+			await sendOperation(ctx.harper, { operation: 'delete', schema: 'data', table: 'Brand', ids: [45] });
+		}
 	});
 });

@@ -11,6 +11,14 @@ export function githubHeaders(url, token) {
 	};
 }
 
+export async function discardBody(response) {
+	try {
+		await response.body?.cancel();
+	} catch {
+		// An errored discarded body must not replace the HTTP failure or suppress retries.
+	}
+}
+
 export async function readGitHubText(url, { token, signal, timeout = 15_000 } = {}) {
 	for (let attempt = 1; attempt <= 3; attempt++) {
 		let response;
@@ -30,7 +38,7 @@ export async function readGitHubText(url, { token, signal, timeout = 15_000 } = 
 		let wait = 250 * 2 ** (attempt - 1);
 		if (response) {
 			const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
-			await response.body?.cancel();
+			await discardBody(response);
 			if (!retryable || attempt === 3)
 				throw new Error(
 					'Cannot read fixture URL ' + url + ': HTTP ' + response.status + ' after ' + attempt + ' attempt(s)'
