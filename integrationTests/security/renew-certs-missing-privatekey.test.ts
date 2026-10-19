@@ -1,14 +1,6 @@
 /**
  * `harper renew-certs` when the effective `tls` config names no `privateKey`: renewal must
  * generate a key, replace the self-signed pair, and leave a root that `harper run` boots.
- *
- * Arms:
- *   - default install (control).
- *   - array: `tls` is a single CA-only array entry (no entry carries a `privateKey`).
- *   - file edit: object `tls` whose `privateKey` line was removed from harper-config.yaml.
- *
- * Each arm: boot, kill, run `renew-certs` against the root, then restart and compare the
- * self-signed CA and replication certificate serials with the ones from before the renewal.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
@@ -109,6 +101,12 @@ function renewArm(name: string, options: () => StartHarperOptions, editConfig?: 
 			const serialsAfter = await selfSignedSerials(ctx);
 			assert.notEqual(serialsAfter.ca, serialsBefore.ca, 'self-signed CA serial must change');
 			assert.notEqual(serialsAfter.cert, serialsBefore.cert, 'self-signed certificate serial must change');
+			// the new pair must come from renew-certs, not from the restart regenerating a missing one;
+			// a restart's main-thread log lines go to its stdout
+			const restartOutput = ctx.harper.startupOutput?.stdout ?? '';
+			assert.match(restartOutput, /\[main\/0\] \[info\]: Harper PID/, 'restart main-thread log not captured');
+			assert.doesNotMatch(restartOutput, /A matching Certificate Authority and key was not found/);
+			assert.doesNotMatch(restartOutput, /A suitable replication certificate was not found/);
 		});
 	});
 }

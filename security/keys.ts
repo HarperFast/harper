@@ -738,10 +738,7 @@ export async function generateCertsKeys() {
 }
 
 /**
- * Replace the self-signed CA and replication certificate. The replacements are built before any
- * row changes, and written together with the removal of the old self-signed rows in one
- * transaction, so a failed renewal leaves the previous pair in place.
- * @returns {Promise<void>}
+ * Replace the self-signed CA and replication certificate. A failed renewal leaves the previous pair in place.
  */
 export async function renewSelfSigned() {
 	clearThisNodeName();
@@ -751,16 +748,7 @@ export async function renewSelfSigned() {
 	for await (const cert of certificateTable.search([{ attribute: 'is_self_signed', value: true }])) {
 		retiring.push(cert.name);
 	}
-	const records = await prepareSelfSignedCerts(true);
-	const replaced = new Set(records.map((record) => record.name));
-	await transaction({}, async () => {
-		for (const name of retiring) {
-			if (replaced.has(name)) continue;
-			// an external certificate may have been installed under this name since the snapshot
-			if ((await certificateTable.get(name))?.is_self_signed) await certificateTable.delete(name);
-		}
-		for (const record of records) await setCertTable(record);
-	});
+	await publishSelfSignedCerts(await prepareSelfSignedCerts(true), retiring);
 }
 
 export async function reviewSelfSignedCert() {
@@ -768,16 +756,49 @@ export async function reviewSelfSignedCert() {
 	clearThisNodeName();
 	await loadCertificates();
 	getCertTable();
-	for (const record of await prepareSelfSignedCerts(false)) await setCertTable(record);
+	await publishSelfSignedCerts(await prepareSelfSignedCerts(false));
 }
 
 /**
- * Build the self-signed CA and replication certificate records that are missing, without writing
- * them to the certificate table.
+ * Write the prepared records and delete the retiring names they do not reuse. Rows are re-read in the
+ * transaction because an external certificate may have been installed since they were selected; one
+ * that is not self-signed is never replaced or deleted.
+ */
+async function publishSelfSignedCerts(
+	{ records, generatedKeyPath }: { records: any[]; generatedKeyPath?: string },
+	retiring: string[] = []
+) {
+	const replaced = new Set(records.map((record) => record.name));
+	try {
+		await transaction({}, async () => {
+			for (const name of retiring) {
+				if (!replaced.has(name) && (await certificateTable.get(name))?.is_self_signed)
+					await certificateTable.delete(name);
+			}
+			for (const record of records) {
+				const current = await certificateTable.get(record.name);
+				if (current && !current.is_self_signed) {
+					logger.warn?.(
+						`Not replacing certificate ${record.name} with a self-signed certificate; it is not self-signed`
+					);
+					continue;
+				}
+				await setCertTable(record);
+			}
+		});
+	} catch (error) {
+		if (generatedKeyPath) await fs.remove(generatedKeyPath);
+		throw error;
+	}
+}
+
+/**
  * @param replacing ignore existing self-signed rows, as renewal is about to retire them
  */
 async function prepareSelfSignedCerts(replacing: boolean) {
 	const records = [];
+	const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
+	let generatedKeyPem: string;
 	let caAndKey = await getCertAuthority(replacing);
 	if (!caAndKey) {
 		logger.notify?.(
@@ -797,7 +818,6 @@ async function prepareSelfSignedCerts(replacing: boolean) {
 		const configuredKeyPaths = Array.isArray(tlsConfig)
 			? tlsConfig.map((config) => config.privateKey)
 			: [envManager.get(CONFIG_PARAMS.TLS_PRIVATEKEY)];
-		const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
 		let privateKey;
 		let keyName;
 		for (const keyPath of configuredKeyPaths) {
@@ -815,7 +835,7 @@ async function prepareSelfSignedCerts(replacing: boolean) {
 			// Currently we can only parse RSA keys, so if it's not an RSA key, we need to generate a new one
 			// There is a ticket to add support for other key types CORE-2457
 			({ privateKey } = await generateKeys());
-			keyName = await writeGeneratedKey(keysPath, loadForge().pki.privateKeyToPem(privateKey));
+			generatedKeyPem = loadForge().pki.privateKeyToPem(privateKey);
 		}
 
 		const hdbCa = await generateCertAuthority(
@@ -832,7 +852,7 @@ async function prepareSelfSignedCerts(replacing: boolean) {
 			is_self_signed: true,
 		};
 		records.push(caRecord);
-		caAndKey = { ca: caRecord, private_key: loadForge().pki.privateKeyToPem(privateKey) };
+		caAndKey = { ca: caRecord, private_key: generatedKeyPem ?? loadForge().pki.privateKeyToPem(privateKey) };
 	}
 
 	if (!(await getReplicationCert(replacing))) {
@@ -856,18 +876,18 @@ async function prepareSelfSignedCerts(replacing: boolean) {
 			is_self_signed: true,
 		});
 	}
-	return records;
+	if (!generatedKeyPem) return { records };
+	// written last, so a failure in building the records leaves no key file behind
+	const keyName = await writeGeneratedKey(keysPath, generatedKeyPem);
+	for (const record of records) record.private_key_name = keyName;
+	return { records, generatedKeyPath: path.join(keysPath, keyName) };
 }
 
-/**
- * Write a generated private key into the keys directory without replacing any existing file.
- * @returns the key's file name
- */
 async function writeGeneratedKey(keysPath: string, pem: string): Promise<string> {
 	let keyName = certificatesTerms.PRIVATEKEY_PEM_NAME;
 	for (;;) {
 		try {
-			await fs.writeFile(path.join(keysPath, keyName), pem, { flag: 'wx' });
+			await fs.writeFile(path.join(keysPath, keyName), pem, { flag: 'wx', mode: 0o600 });
 			return keyName;
 		} catch (error) {
 			if (error.code !== 'EEXIST') throw error;

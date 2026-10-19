@@ -2066,7 +2066,6 @@ describe('Test keys module', () => {
 			await realKeys.reviewSelfSignedCert();
 			const before = await selfSignedRows();
 			assertUsablePair(before);
-			// renewal must generate a key, and the keys directory it writes to does not exist
 			env_mgr.setProperty('tls_privateKey', null);
 			env_mgr.setHdbBasePath(path.join(test_dir, 'missing'));
 			try {
@@ -2078,6 +2077,62 @@ describe('Test keys module', () => {
 				(await selfSignedRows()).map((row) => row.certificate).sort(),
 				before.map((row) => row.certificate).sort()
 			);
+		}).timeout(60000);
+
+		it('a renewal that fails while publishing rolls back and removes its generated key', async () => {
+			await startWithoutSelfSigned({ privateKey: null });
+			await realKeys.reviewSelfSignedCert();
+			const before = await selfSignedRows();
+			assertUsablePair(before);
+			const keyFiles = fs.readdirSync(keysDir).sort();
+			const hadOwnPatch = Object.prototype.hasOwnProperty.call(certTable, 'patch');
+			const patch = certTable.patch;
+			let patches = 0;
+			// the CA name repeats (node.hostname is set), so the first patch replaces the CA row in place
+			certTable.patch = function (...args) {
+				if (++patches === 2) throw new Error('injected leaf write failure');
+				return patch.apply(this, args);
+			};
+			try {
+				await assert.rejects(realKeys.renewSelfSigned(), /injected leaf write failure/);
+			} finally {
+				if (hadOwnPatch) certTable.patch = patch;
+				else delete certTable.patch;
+			}
+			assert.strictEqual(patches, 2);
+			assert.deepStrictEqual(
+				(await selfSignedRows()).map((row) => row.certificate).sort(),
+				before.map((row) => row.certificate).sort()
+			);
+			assert.deepStrictEqual(fs.readdirSync(keysDir).sort(), keyFiles);
+		}).timeout(60000);
+
+		it('never replaces a certificate that is not self-signed', async () => {
+			// named after this node but not covering its hostname, so selection does not find it
+			const external = await mkcert.createCert({
+				domains: ['elsewhere.harper.local'],
+				validityDays: 1,
+				ca: { key: ca_key, cert: test_ca },
+			});
+			await startWithoutSelfSigned({ privateKey: test_private_key_path });
+			const externalRow = {
+				name: nodeName,
+				uses: ['replication'],
+				certificate: external.cert,
+				private_key_name: 'external-key.pem',
+				is_authority: false,
+				is_self_signed: false,
+			};
+			await certTable.put(externalRow);
+			try {
+				await realKeys.reviewSelfSignedCert();
+				await realKeys.renewSelfSigned();
+				const current = await certTable.get(nodeName);
+				assert.strictEqual(current.certificate, external.cert);
+				assert.strictEqual(current.is_self_signed, false);
+			} finally {
+				await certTable.delete(nodeName);
+			}
 		}).timeout(60000);
 
 		it('renewal keeps an external certificate for this node instead of a self-signed one', async () => {
