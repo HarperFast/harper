@@ -9,6 +9,22 @@ const token_auth = rewire('#src/security/tokenAuthentication');
 const password_function = require('#src/utility/password');
 const user = require('#src/security/user');
 const insert = require('#src/dataLayer/insert');
+<<<<<<< HEAD
+=======
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+
+function setTokenTimeout(param, value) {
+	const original = env.get(param);
+	env.setProperty(param, value);
+	return () => env.setProperty(param, original);
+}
+const {
+	credentialRejectionError,
+	deferCredentialRejection,
+	isCredentialRejection,
+} = require('#src/security/deferredAuthentication');
+>>>>>>> 0974ce0db (Settle deferred credential rejections on legacy Fastify routes and challenge every authentication 401)
 
 const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE =
@@ -203,6 +219,22 @@ describe('Test authorize function', function () {
 			assert.equal(user.role.id, VALID_ROLE.id);
 			assert.equal(user.role.role, VALID_ROLE.role);
 			assert.equal(user.role.permission.super_user, true);
+			done();
+		});
+	});
+
+	it('settles a credential the middleware deferred instead of authenticating it again', function (done) {
+		// a request passport would accept, carrying a rejection the middleware already recorded; the base
+		// request has no headers, so re-running authentication() on it would fail differently
+		const baseRequest = {};
+		deferCredentialRejection(baseRequest, credentialRejectionError('Account blocked', 401), 'Basic');
+		const request = { ...active_basic_request, raw: { baseRequest } };
+
+		auth.authorize(request, null, function (err, user) {
+			assert.strictEqual(user, undefined);
+			assert.strictEqual(err.message, 'Account blocked');
+			assert.strictEqual(err.statusCode, 401);
+			assert.strictEqual(isCredentialRejection(err), true);
 			done();
 		});
 	});

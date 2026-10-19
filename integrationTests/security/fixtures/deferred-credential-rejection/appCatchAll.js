@@ -1,6 +1,7 @@
 export function handleApplication(scope) {
 	scope.server.http(
-		async (request) => {
+		async (request, nextHandler) => {
+			if (request.pathname.startsWith('/legacy-')) return nextHandler(request);
 			if (request.pathname === '/mint-session') {
 				const user = new URL(request.url, 'http://localhost').searchParams.get('user');
 				await request.session.update({ user });

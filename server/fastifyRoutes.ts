@@ -13,10 +13,18 @@ import { realExit } from './threads/workerProcessGuard.ts';
 import * as hdbCore from './fastifyRoutes/plugins/hdbCore.js';
 // installs server.getUser/authenticateUser
 import '../security/user.ts';
+<<<<<<< HEAD
 import getServerOptions from './fastifyRoutes/helpers/getServerOptions.js';
 import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions.js';
 import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig.js';
 import { serverErrorHandler } from '../server/serverHelpers/serverHandlers.js';
+=======
+import getServerOptions from './fastifyRoutes/helpers/getServerOptions.ts';
+import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions.ts';
+import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig.ts';
+import { serverErrorHandler } from '../server/serverHelpers/serverHandlers.ts';
+import { authenticationChallenge, isCredentialRejection } from '../security/deferredAuthentication.ts';
+>>>>>>> 0974ce0db (Settle deferred credential rejections on legacy Fastify routes and challenge every authentication 401)
 import { registerContentHandlers } from '../server/serverHelpers/contentTypes.ts';
 import { server } from './Server.ts';
 import { registerFastifyInstance } from './http.ts';
@@ -192,7 +200,13 @@ async function buildServer(isHttps) {
 
 	//set top-level error handler for server - all errors caught/thrown within the API will bubble up to this handler so they
 	// can be handled in a coordinated way
-	app.setErrorHandler(serverErrorHandler);
+	app.setErrorHandler((error: any, request, reply) => {
+		if (error?.statusCode === 401 && !reply.hasHeader('WWW-Authenticate')) {
+			const scheme = request.headers.authorization?.split(' ', 1)[0];
+			reply.header('WWW-Authenticate', authenticationChallenge(scheme, isCredentialRejection(error)));
+		}
+		return serverErrorHandler(error, request, reply);
+	});
 
 	const corsOptions = getCORSOptions();
 	if (corsOptions) {

@@ -41,14 +41,44 @@ export function getDeferredCredentialRejection(request: any): DeferredCredential
 }
 
 /**
+ * The `WWW-Authenticate` value for a 401 Harper renders on the application port (RFC 9110 §15.5.2).
+ * A Bearer credential gets a Bearer challenge, which browsers do not answer with a credential dialog,
+ * and `invalid_token` only when the token itself was rejected rather than its verification failing
+ * (RFC 6750 §3.1).
+ */
+export function authenticationChallenge(scheme?: string, credentialRejected = false): string {
+	if (scheme === 'Bearer')
+		return credentialRejected ? 'Bearer realm="Harper", error="invalid_token"' : 'Bearer realm="Harper"';
+	return 'Basic realm="Harper"';
+}
+
+/**
+ * The 401 authentication answers for a credential it decided: `{error: message}` in the request's
+ * negotiated content type, challenged on the application port. The operations API gets no challenge.
+ */
+export function credentialRejectionResponse(
+	request: any,
+	status: number,
+	message: string,
+	strategy: string,
+	credentialRejected: boolean
+): { status: number; headers: Headers; body: string | Buffer } {
+	const contentType = (request?.headers ? findBestSerializer(request).type : undefined) ?? 'application/json';
+	const headers = new Headers({ 'Content-Type': contentType });
+	if (!request?.isOperationsServer)
+		headers.set('WWW-Authenticate', authenticationChallenge(strategy, credentialRejected));
+	return { status, headers, body: serializeMessage({ error: message }, request) as string | Buffer };
+}
+
+/**
  * The response an owning layer returns once it has established Harper owns the route: exactly the
  * descriptor `security/auth.ts` returns in-line, so immediate and deferred rejection share a wire
  * contract.
  *
  * Owner-specific error mapping must not run first. REST renders a thrown error as an RFC 9457
  * Problem Details document and GraphQL as `{errors:[…]}` rather than authentication's negotiated
- * `{error: message}` response. `security/auth.ts` likewise leaves a settled rejection's status and
- * challenge headers alone, so it stays byte-identical to the in-line 401 it replaced.
+ * `{error: message}` response. `security/auth.ts` leaves a settled rejection's status and headers
+ * alone, so it stays identical to the in-line 401.
  *
  * Returns `undefined` when nothing was deferred, so a caller can `return settled ?? …` inline.
  */
@@ -57,12 +87,7 @@ export function settleDeferredCredentialRejection(
 ): { status: number; headers: Headers; body: string | Buffer } | undefined {
 	const deferred = getDeferredCredentialRejection(request);
 	if (!deferred) return undefined;
-	const contentType = (request?.headers ? findBestSerializer(request).type : undefined) ?? 'application/json';
-	return {
-		status: deferred.status,
-		headers: new Headers({ 'Content-Type': contentType }),
-		body: serializeMessage({ error: deferred.message }, request) as string | Buffer,
-	};
+	return credentialRejectionResponse(request, deferred.status, deferred.message, deferred.strategy, true);
 }
 
 const REJECTED_IN_PLACE = Symbol('harper.authenticationRejectedInPlace');

@@ -12,13 +12,14 @@ import { Headers, addVaryHeader, SHARED_CACHE_OPTIN, PRIVATE_SCOPE } from '../se
 import { convertToMS } from '../utility/common_utils.ts';
 import { verifyCertificate } from './certificateVerification/index.ts';
 import {
+	authenticationChallenge,
 	credentialRejectionError,
+	credentialRejectionResponse,
 	deferCredentialRejection,
 	getDeferredCredentialRejection,
 	isCredentialRejection,
 	markAuthenticationRejectedInPlace,
 } from './deferredAuthentication.ts';
-import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
 import { hdbErrors } from '../utility/errors/hdbError.ts';
 const { AUTHENTICATION_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const authLogger = forComponent('authentication');
@@ -73,20 +74,20 @@ export function bypassAuth() {
  * Returns a response descriptor for the caller to pass through `applyResponseHeaders`, or
  * `undefined` once the rejection has been deferred for the route owner to settle (#2703).
  */
-function settleAuthFailure(request, error, strategy: string): { status: number; body: any } | undefined {
+function settleAuthFailure(request, error, strategy: string) {
 	const internalFault = !isCredentialRejection(error);
 	if (request.isOperationsServer || internalFault) {
 		if (internalFault) authLogger.error('Authentication failed internally', errorForLog(error));
 		const message = internalFault ? AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL : error.message;
-		return rejectAuthenticationInPlace(request, message);
+		return rejectAuthenticationInPlace(request, message, strategy, !internalFault);
 	}
 	deferCredentialRejection(request, error, strategy);
 	return undefined;
 }
 
-function rejectAuthenticationInPlace(request, message: string): { status: number; body: any } {
+function rejectAuthenticationInPlace(request, message: string, strategy: string, credentialRejected: boolean) {
 	markAuthenticationRejectedInPlace(request, 401, message);
-	return { status: 401, body: serializeMessage({ error: message }, request) };
+	return credentialRejectionResponse(request, 401, message, strategy, credentialRejected);
 }
 
 // TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
@@ -186,7 +187,9 @@ export async function authentication(request, nextHandler) {
 					'for',
 					request.peerCertificate.subject.CN
 				);
-				return applyResponseHeaders(rejectAuthenticationInPlace(request, 'Certificate revoked or verification failed'));
+				return applyResponseHeaders(
+					rejectAuthenticationInPlace(request, 'Certificate revoked or verification failed', 'mTLS', true)
+				);
 			}
 
 			// Alternative behavior: Instead of returning 401 above, we could just not set the user
@@ -427,7 +430,7 @@ export async function authentication(request, nextHandler) {
 					response.status = 302;
 					response.headers.set('Location', resources.loginPath(request));
 				} // the HTTP specified way of indicating HTTP authentication methods supported:
-				else response.headers.set('WWW-Authenticate', 'Basic');
+				else response.headers.set('WWW-Authenticate', authenticationChallenge());
 			}
 		}
 		return applyResponseHeaders(response);

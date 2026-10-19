@@ -2,7 +2,9 @@ const assert = require('node:assert');
 
 const {
 	assertNoDeferredCredentialRejection,
+	authenticationChallenge,
 	credentialRejectionError,
+	credentialRejectionResponse,
 	deferCredentialRejection,
 	getDeferredCredentialRejection,
 	isCredentialRejection,
@@ -182,15 +184,26 @@ describe('deferredAuthentication', () => {
 			assert.strictEqual(settleDeferredCredentialRejection(requestAccepting('application/json')), undefined);
 		});
 
-		it('returns a real Headers, which the middleware 401 post-processing writes into', () => {
-			const request = requestAccepting('application/json');
-			deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
+		it('challenges in the scheme the rejected credential used', () => {
+			const basic = requestAccepting('application/json');
+			deferCredentialRejection(basic, credentialRejectionError('Login failed', 401), 'Basic');
+			const session = requestAccepting('application/json');
+			deferCredentialRejection(session, credentialRejectionError('SSO session expired', 401), 'Session');
+			const bearer = requestAccepting('application/json');
+			deferCredentialRejection(bearer, credentialRejectionError('invalid token', 401), 'Bearer');
 
-			const settled = settleDeferredCredentialRejection(request);
-
-			assert.strictEqual(typeof settled.headers.set, 'function');
-			assert.doesNotThrow(() => settled.headers.set('WWW-Authenticate', 'Basic'));
-			assert.strictEqual(settled.headers.get('WWW-Authenticate'), 'Basic');
+			assert.strictEqual(
+				settleDeferredCredentialRejection(basic).headers.get('WWW-Authenticate'),
+				'Basic realm="Harper"'
+			);
+			assert.strictEqual(
+				settleDeferredCredentialRejection(session).headers.get('WWW-Authenticate'),
+				'Basic realm="Harper"'
+			);
+			assert.strictEqual(
+				settleDeferredCredentialRejection(bearer).headers.get('WWW-Authenticate'),
+				'Bearer realm="Harper", error="invalid_token"'
+			);
 		});
 
 		it('reproduces the authentication middleware response: 401 with an {error} body', () => {
@@ -222,6 +235,30 @@ describe('deferredAuthentication', () => {
 
 			assert.strictEqual(settled.status, 401);
 			assert.deepStrictEqual(JSON.parse(settled.body.toString()), { error: 'token expired' });
+		});
+	});
+
+	describe('authenticationChallenge', () => {
+		it('calls a Bearer token invalid only when the token itself was rejected', () => {
+			assert.strictEqual(authenticationChallenge('Bearer', true), 'Bearer realm="Harper", error="invalid_token"');
+			assert.strictEqual(authenticationChallenge('Bearer', false), 'Bearer realm="Harper"');
+		});
+
+		it('falls back to Basic for every other scheme and for no credential', () => {
+			assert.strictEqual(authenticationChallenge('Digest', true), 'Basic realm="Harper"');
+			assert.strictEqual(authenticationChallenge(), 'Basic realm="Harper"');
+		});
+	});
+
+	describe('credentialRejectionResponse', () => {
+		it('gives the operations API a Content-Type but no challenge', () => {
+			const request = { ...requestAccepting('application/json'), isOperationsServer: true };
+
+			const response = credentialRejectionResponse(request, 401, 'Login failed', 'Basic', true);
+
+			assert.strictEqual(response.headers.get('Content-Type'), 'application/json');
+			assert.strictEqual(response.headers.get('WWW-Authenticate') ?? null, null);
+			assert.deepStrictEqual(JSON.parse(response.body.toString()), { error: 'Login failed' });
 		});
 	});
 
