@@ -159,7 +159,7 @@ GET /Product/?brand.name=Microsoft&select(name,brand{name})
 
 ### `limit(end)` or `limit(start,end)`
 
-Limit the number of results returned, with an optional starting offset.
+Return records in the zero-based window from `start` (inclusive) to `end` (exclusive). `limit(end)` starts at zero; `limit(start,end)` returns at most `end - start` records. The same window semantics apply inside relationship selections.
 
 ```http
 GET /Product/?rating=gt=3&inStock=true&select(rating,name)&limit(20)
@@ -506,15 +506,15 @@ Keep relationship lookup fields and outer filter fields indexed, and project onl
 
 #### Nested option reference
 
-| Nested option      | Behavior                                                                                      |
-| ------------------ | --------------------------------------------------------------------------------------------- |
-| Conditions         | Qualify children of the selected relationship; combine with `&` (AND), `\|` (OR), and groups. |
-| `sort(price)`      | Order that parent's eligible children before pagination.                                      |
-| `limit(end)`       | Return at most `end` children per parent.                                                     |
-| `limit(start,end)` | Skip `start` eligible children and return at most `end - start`.                              |
-| `select(id,price)` | Project fields from returned children; omit it to return whole child records.                 |
+| Nested option      | Behavior                                                                                                   |
+| ------------------ | ---------------------------------------------------------------------------------------------------------- |
+| Conditions         | Qualify children of the selected relationship; combine with `&` (AND), `\|` (OR), and [groups](#grouping). |
+| `sort(price)`      | Order that parent's eligible children before pagination.                                                   |
+| `limit(end)`       | Return at most `end` children per parent.                                                                  |
+| `limit(start,end)` | Skip `start` eligible children and return at most `end - start`.                                           |
+| `select(id,price)` | Project fields from returned children; omit it to return whole child records.                              |
 
-Use a non-negative safe-integer window; `limit(0)` returns no children without reading them; an absent foreign key keeps its missing-value shape. A missing singular relationship remains absent. For array-valued foreign keys, pagination alone preserves missing target positions; adding conditions or a sort drops missing targets. Child conditions and sort fields remain subject to read permissions.
+Use a non-negative safe-integer window; invalid bounds such as negative or fractional values return HTTP 400; `limit(0)` returns no children without reading them; an absent foreign key keeps its missing-value shape. A missing singular relationship remains absent. For array-valued foreign keys, pagination alone preserves missing target positions; adding conditions or a sort drops missing targets. Child conditions and sort fields remain subject to read permissions.
 
 A condition that traverses another relationship qualifies the immediate child; it does not narrow that child's projected descendants. To filter or page grandchildren, put those constraints on the grandchild's own bracket selection. Outer join restrictions are still inherited.
 
