@@ -2,9 +2,18 @@ const assert = require('node:assert');
 const {
 	DEFAULT_FULL_TEXT_SEARCH_LIMITS,
 	resolveFullTextSearchLimits,
+	fullTextContinuationDeadline,
 } = require('#src/resources/indexes/fullTextSearchLimits');
 
 describe('full-text search resource limits', () => {
+	it('calculates deadlines from an explicit policy without loading admission', () => {
+		const policy = resolveFullTextSearchLimits({ requestBudgetMilliseconds: 1234 });
+		const before = process.hrtime.bigint();
+		const deadline = fullTextContinuationDeadline(policy);
+		const after = process.hrtime.bigint();
+		assert(deadline >= before + 1234000000n);
+		assert(deadline <= after + 1234000000n);
+	});
 	it('resolves missing settings without changing the defaults', () => {
 		assert.deepStrictEqual(resolveFullTextSearchLimits(undefined), DEFAULT_FULL_TEXT_SEARCH_LIMITS);
 		assert(Object.isFrozen(DEFAULT_FULL_TEXT_SEARCH_LIMITS.runtime));

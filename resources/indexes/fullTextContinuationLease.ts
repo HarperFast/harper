@@ -107,8 +107,7 @@ export class FullTextContinuationLeases {
 		const remaining = Number((deadline - process.hrtime.bigint()) / 1_000_000n);
 		if (!Number.isSafeInteger(remaining) || remaining < 1)
 			throw new ServerError('Full-text continuation exceeded its request budget', 503);
-		lease.active++;
-		try {
+		return this.#use(lease, async () => {
 			const page = await lease.reader.searchPage(
 				{ query: lease.query, limit: position.batchSize, continuation: position.boundary },
 				{ remainingBudgetMilliseconds: Math.min(remaining, this.#maxNativeBudgetMilliseconds) }
@@ -123,6 +122,22 @@ export class FullTextContinuationLeases {
 			if (process.hrtime.bigint() >= deadline)
 				throw new ServerError('Full-text continuation exceeded its request budget', 503);
 			return page;
+		});
+	}
+
+	withReader<T>(id: string, queryHash: string, operation: (reader: NativeFullTextReader) => Promise<T>): Promise<T> {
+		const lease = this.#get(id, queryHash);
+		return this.#use(lease, async () => {
+			const result = await operation(lease.reader);
+			this.#get(id, queryHash);
+			return result;
+		});
+	}
+
+	async #use<T>(lease: Lease, operation: () => Promise<T>): Promise<T> {
+		lease.active++;
+		try {
+			return await operation();
 		} finally {
 			lease.active--;
 			this.#releaseIfDrained(lease);

@@ -1,0 +1,12 @@
+type Product @table(audit: true) @export {
+	id: ID @primaryKey
+	title: String
+	owner: String
+	category: String @indexed
+	catalogSearch: FullText @fullText(fields: [{ name: "title", highlight: true }])
+}
+
+type Control @table @export {
+	id: ID @primaryKey
+	value: String
+}

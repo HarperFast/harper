@@ -555,6 +555,14 @@ still apply, but the search deadline cannot discard a terminal page whose token 
 `Table.search` supplies the existing record materializer; `searchByIndex` supplies its existing entry
 loader. The index feeds bounded candidate groups through those callbacks until the visible page
 fills or traversal ends. Only the rare source-refresh branch needs the saved native version check.
+
+First-page highlighting uses the retained reader through the lease registry's active-use guard.
+Native reads and tracing share its drain accounting, so expiry or revocation cannot release a
+reader underneath either operation. Resumed highlighting still owns a separate local tracing
+lease. Only that independently acquired lease is released at page end. Page validation imports
+the pure deadline helper from the limits module; the adapter loads admission on first continuation
+use, preserving lazy admission initialization even when database startup loads the query adapter.
+
 REST keeps the array body and returns continuation metadata in headers. A resumed request does not
 claim coverage from the worker's newer reader slot.
 

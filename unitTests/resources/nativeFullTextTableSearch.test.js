@@ -235,6 +235,51 @@ describe('published native full-text Table.search integration', () => {
 		assert.strictEqual(second.complete, true);
 	});
 
+	it('preserves native highlights and the retained reader across publication and resume', async () => {
+		Product = table({
+			database: `fulltext-highlight-reuse-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [
+				{
+					...definition('catalogSearch', [{ name: 'title', weight: 1, highlight: true }]),
+					highlighting: { fragmentLength: 80, maxFragments: 2 },
+				},
+			],
+		});
+		await Product.put('a', { title: 'widget' });
+		await Product.put('b', { title: 'widget' });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
+		const query = {
+			conditions: [
+				{
+					attribute: 'catalogSearch',
+					comparator: 'matches',
+					value: 'widget',
+					includeHighlights: true,
+					waitForIndexMilliseconds: 5000,
+				},
+			],
+			limit: 1,
+			select: ['id', 'title', '$highlights'],
+		};
+		const before = await collect(Product.search({ ...query, limit: 2 }));
+		assert(before.every((record) => record.$highlights?.title?.length));
+		const first = await Product.search({ ...query, continuation: true });
+		assert(first.continuation);
+		assert.deepStrictEqual(first[0].$highlights, before[0].$highlights);
+		await Product.put('c', { title: 'widget' });
+		await waitFor(async () => (await collect(Product.search({ ...query, limit: 3 }))).length === 3, 30000);
+		const last = await Product.search({ ...query, continuation: first.continuation });
+		assert.strictEqual(last.complete, true);
+		assert.deepStrictEqual(ids([...first, ...last]), ['a', 'b']);
+		assert.deepStrictEqual(last[0].$highlights, before[1].$highlights);
+	});
+
 	it('validates continuation options and query binding and allows explicit close through REST syntax', async () => {
 		Product = table({
 			database: `fulltext-native-continuation-close-${Date.now()}`,

@@ -157,6 +157,8 @@ function simpleQueryIndex({
 	hits,
 	onReload,
 	onClose,
+	onOpen,
+	onTrace,
 	onGetEntry,
 	onSearch,
 	entryForKey,
@@ -200,7 +202,9 @@ function simpleQueryIndex({
 				};
 			},
 			async openNativeFullTextReader() {
+				const readerId = onOpen?.();
 				return withTraversal({
+					...(onTrace ? { traceMatches: (request, records) => onTrace(request, records, readerId) } : null),
 					get committedPayload() {
 						return committedPayload;
 					},
@@ -314,6 +318,71 @@ describe('full-text traversal ordering guard', () => {
 });
 
 describe('FullTextQueryIndex', () => {
+	it('traces the first page with its retained reader and keeps it through publication and resume', async function () {
+		this.timeout(10000);
+		if (!(await require('./fullTextNativePlatform').supportsPublishedFullTextBinding())) this.skip();
+		const { FullTextContinuationPage } = require('#src/resources/indexes/fullTextContinuationPage');
+		const auditStore = sharedStore();
+		const readinessId = 'borrowed-highlight-reader';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let opens = 0,
+			closes = 0,
+			published = false;
+		const tracedReaders = [];
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			storeName: readinessId,
+			payload: publicationPayload(),
+			hits: () => ['a', 'b'].map((key) => ({ id: nativeId(1, key), version: '1', score: 1 })),
+			onOpen: () => ++opens,
+			onClose: () => closes++,
+			onGetEntry: () => {
+				if (!published) {
+					published = true;
+					auditStore.publish(readinessId, false);
+				}
+			},
+			onTrace: async (_request, records, readerId) => {
+				tracedReaders.push(readerId);
+				return {
+					complete: true,
+					records: records.map(({ id }) => ({
+						id,
+						values: [{ field: 'title', valueIndex: 0, spans: [{ start: 0, end: 4 }] }],
+					})),
+				};
+			},
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const condition = { comparator: 'matches', value: 'shoe', includeHighlights: true };
+		const page = (continuation) => {
+			const value = new FullTextContinuationPage({ continuation, limit: 1 }, readinessId);
+			value.materialize = async (entries) => entries;
+			value.ready.resolve();
+			return value;
+		};
+		try {
+			const first = page(true);
+			await index.search(condition, {}, { continuationPage: first });
+			assert.strictEqual(opens, 1);
+			assert.strictEqual(closes, 0);
+			assert.deepStrictEqual(tracedReaders, [1]);
+			assert(first.continuation);
+			const last = page(first.continuation);
+			await index.search(condition, {}, { continuationPage: last });
+			assert.strictEqual(last.complete, true);
+			assert.deepStrictEqual(
+				[...first.records, ...last.records].map(({ key }) => key),
+				['a', 'b']
+			);
+			assert.deepStrictEqual(tracedReaders, [1, 2]);
+		} finally {
+			await index.close();
+		}
+		assert.strictEqual(closes, 2);
+	});
+
 	for (const explicitClose of [false, true]) {
 		it(`preserves an acknowledged ${explicitClose ? 'explicit close' : 'terminal page'} after the search budget expires`, async function () {
 			this.timeout(10000);

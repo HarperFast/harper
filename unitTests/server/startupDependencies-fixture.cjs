@@ -27,6 +27,8 @@ const modules = [
 for (const module of modules) require(module);
 const packages = new Set();
 for (const path of Object.keys(require.cache)) {
+	if (/[\\/]resources[\\/]indexes[\\/]fullTextContinuation\.(js|ts)$/.test(path))
+		packages.add('full-text continuation admission');
 	const match = path.match(/[\\/]node_modules[\\/]((?:@[^\\/]+[\\/])?[^\\/]+)[\\/](.*)$/);
 	if (match) packages.add(match[2] === 'lodash.js' ? 'lodash (full build)' : match[1].replace('\\', '/'));
 }

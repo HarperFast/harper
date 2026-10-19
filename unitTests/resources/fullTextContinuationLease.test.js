@@ -29,6 +29,7 @@ describe('retained full-text reader leases with the native addon', () => {
 			generation: '1',
 			fields: [{ name: 'title' }],
 			analyzer: 'english@2',
+			surfaceTerms: true,
 			limits: {
 				indexingThreads: 1,
 				searchThreads: Math.max(2, info.queryClassIsolationMinimumSearchThreads),
@@ -70,6 +71,51 @@ describe('retained full-text reader leases with the native addon', () => {
 		);
 	}
 	const deadline = () => process.hrtime.bigint() + 5000000000n;
+
+	for (const expire of [false, true]) {
+		it(`keeps a borrowed native reader alive while ${expire ? 'expiry' : 'revocation'} waits for tracing`, async function () {
+			this.timeout(10000);
+			const entered = Promise.withResolvers();
+			const resume = Promise.withResolvers();
+			let traced = false;
+			register(expire ? 40 : 60000, () => {
+				released++;
+			});
+			const token = leases.seal(id, queryHash, initial);
+			const borrowed = leases.withReader(id, queryHash, async (activeReader) => {
+				entered.resolve();
+				await resume.promise;
+				const trace = await activeReader.traceMatches({ text: 'widget', mode: 'all', fields: ['title'] }, [
+					{ id: '0', fields: { title: 'widget' } },
+				]);
+				assert.strictEqual(trace.complete, true);
+				traced = true;
+			});
+			const rejected = assert.rejects(borrowed, (error) => error.statusCode === 410);
+			await entered.promise;
+			let draining;
+			try {
+				if (expire)
+					await waitFor(() => {
+						try {
+							leases.resume(token, queryHash);
+							return false;
+						} catch (error) {
+							return error.statusCode === 410;
+						}
+					}, 2000);
+				else draining = leases.revokeReader(reader);
+				await new Promise(setImmediate);
+				assert.strictEqual(released, 0);
+			} finally {
+				resume.resolve();
+				await rejected;
+				await draining;
+			}
+			await waitFor(() => released === 1, 2000);
+			assert.strictEqual(traced, true);
+		});
+	}
 
 	it('keeps concurrent revocations pending until asynchronous release is acknowledged', async function () {
 		this.timeout(10000);

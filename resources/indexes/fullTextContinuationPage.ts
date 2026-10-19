@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import { ClientError } from '../../utility/errors/hdbError.ts';
-import { fullTextContinuationDeadline } from './fullTextContinuation.ts';
-import { type FullTextSearchLimits, resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
+import {
+	fullTextContinuationDeadline,
+	type FullTextSearchLimits,
+	resolveFullTextSearchLimits,
+} from './fullTextSearchLimits.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 

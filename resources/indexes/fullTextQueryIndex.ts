@@ -2,15 +2,8 @@ import { threadId } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
-import { resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
+import { fullTextContinuationDeadline, resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
 import { peekFullTextContinuationOwner, fullTextContinuationOwner } from './fullTextContinuationOwner.ts';
-import {
-	reserveFullTextContinuation,
-	confirmFullTextContinuation,
-	fullTextContinuationDeadline,
-	releaseFullTextContinuation,
-	requestFullTextContinuationOwner,
-} from './fullTextContinuation.ts';
 import { FullTextContinuationPage, FULL_TEXT_CONTINUATION_VERSION } from './fullTextContinuationPage.ts';
 import type { FullTextContinuationPosition } from './fullTextContinuationToken.ts';
 import { fromBufferKey } from 'ordered-binary';
@@ -711,6 +704,13 @@ export class FullTextQueryIndex {
 				throw new ServerError('Full-text continuation exceeded its request budget', 503);
 		};
 		assertActive();
+		const {
+			reserveFullTextContinuation,
+			confirmFullTextContinuation,
+			releaseFullTextContinuation,
+			requestFullTextContinuationOwner,
+		} = await import('./fullTextContinuation.ts');
+		assertActive();
 		const owner = await fullTextContinuationOwner();
 		assertActive();
 		const policy = page.policy;
@@ -823,15 +823,19 @@ export class FullTextQueryIndex {
 						accepted.push({ key, $score: hit.score, nativeId: hit.id, record: entry.value, recordEntry: entry });
 					}
 					if (condition.includeHighlights && accepted.length) {
-						traceLease ??= await this.#acquireSearchReader(condition, context, page.deadline);
+						const trace =
+							readerLease ?? (traceLease ??= await this.#acquireSearchReader(condition, context, page.deadline));
 						assertActive();
-						await this.#addHighlights(
-							traceLease.reader,
-							traceLease.definition,
-							condition,
-							accepted,
-							performance.now() + Number((page.deadline - process.hrtime.bigint()) / 1_000_000n)
-						);
+						const highlight = (reader: NativeFullTextReader) =>
+							this.#addHighlights(
+								reader,
+								trace.definition,
+								condition,
+								accepted,
+								performance.now() + Number((page.deadline - process.hrtime.bigint()) / 1_000_000n)
+							);
+						if (readerLease) await owner.leases.withReader(claim.id, page.queryHash, highlight);
+						else await highlight(trace.reader);
 						assertActive();
 						for (let n = 0; n < candidates.length; n++) candidates[n].$highlights = accepted[n].$highlights;
 					}

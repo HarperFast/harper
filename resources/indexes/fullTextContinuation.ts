@@ -6,7 +6,8 @@ import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, ITC_EVENT_TYPES } from '../../utility/hdbTerms.ts';
 import { hasThreadExited, onThreadExit, sendToThread } from '../../server/threads/manageThreads.js';
-import { type FullTextSearchLimits, resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
+import { fullTextContinuationDeadline, resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
+export { fullTextContinuationDeadline } from './fullTextSearchLimits.ts';
 
 export type FullTextCursorClaim = { id: string; expires: bigint; expiresAt: number };
 type Claim = FullTextCursorClaim & { owner: number; bytes: number; admissionDeadline?: bigint };
@@ -41,10 +42,6 @@ function limits() {
 	return resolveFullTextSearchLimits(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT));
 }
 
-export function fullTextContinuationDeadline(policy: FullTextSearchLimits = limits()): bigint {
-	return process.hrtime.bigint() + BigInt(policy.requestBudgetMilliseconds) * 1_000_000n;
-}
-
 export async function reserveFullTextContinuation(bytes: number, deadline: bigint): Promise<FullTextCursorClaim> {
 	return (await request({ operation: 'admit', bytes }, deadline)) as FullTextCursorClaim;
 }
@@ -54,7 +51,7 @@ export async function confirmFullTextContinuation(id: string, deadline: bigint):
 }
 
 export async function releaseFullTextContinuation(id: string): Promise<void> {
-	await request({ operation: 'release', id }, fullTextContinuationDeadline());
+	await request({ operation: 'release', id }, fullTextContinuationDeadline(limits()));
 }
 
 export async function requestFullTextContinuationOwner(
