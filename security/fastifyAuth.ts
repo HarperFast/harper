@@ -11,7 +11,7 @@ import * as hdbTerms from '../utility/hdbTerms.ts';
 import * as tokenAuthentication from './tokenAuthentication.ts';
 import { AccessViolation } from '../utility/errors/hdbError.ts';
 import { authentication } from './auth.ts';
-import { deferredCredentialRejectionError } from './deferredAuthentication.ts';
+import { bearerTokenRejection, deferredCredentialRejectionError } from './deferredAuthentication.ts';
 
 passport.use(
 	new LocalStrategy(function (username, password, done) {
@@ -147,7 +147,7 @@ export function authorize(req: any, res: any, next: any) {
 						next(null, user);
 					})
 					.catch((e) => {
-						next(e);
+						next(bearerTokenRejection(e));
 					});
 			} else {
 				tokenAuthentication
@@ -156,7 +156,7 @@ export function authorize(req: any, res: any, next: any) {
 						next(null, user);
 					})
 					.catch((e) => {
-						next(e);
+						next(bearerTokenRejection(e));
 					});
 			}
 			break;

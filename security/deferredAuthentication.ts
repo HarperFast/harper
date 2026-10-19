@@ -103,8 +103,16 @@ export function deferredCredentialRejectionError(request: any): ClientError | un
 	return error;
 }
 
+/** Marks a token-validation error as proof the presented Bearer token itself was rejected. */
+export function bearerTokenRejection<E>(error: E): E {
+	if (isCredentialRejection(error)) error[CHALLENGE] = authenticationChallenge('Bearer', true);
+	return error;
+}
+
+// Only an error that recorded what was rejected claims `invalid_token`: a tagged rejection of something
+// else (a body password) says nothing about the presented token.
 export function authenticationChallengeForError(error: any, presentedScheme?: string): string {
-	return error?.[CHALLENGE] ?? authenticationChallenge(presentedScheme, isCredentialRejection(error));
+	return error?.[CHALLENGE] ?? authenticationChallenge(presentedScheme);
 }
 
 const REJECTED_IN_PLACE = Symbol('harper.authenticationRejectedInPlace');
