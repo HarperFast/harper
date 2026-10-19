@@ -2219,7 +2219,8 @@ export function makeTable(options): TableResourceClass {
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		#writeGeneration?: WriteGeneration;
-		#updatableAttributes?: { [attribute: string]: boolean }; // set by allowUpdate for an attribute-restricted role, taken by a full put
+		// set by allowUpdate for an attribute-restricted role; the next full put on this request's instance takes it
+		#updatableAttributes?: { [attribute: string]: boolean };
 		declare getProperty: (name: string) => any;
 		#evaluateWriteCondition(id: Id, condition: any, transaction: any): void {
 			if (!condition) return;
@@ -4507,8 +4508,8 @@ export function makeTable(options): TableResourceClass {
 				return this;
 			}
 			if (typeof updates === 'object' && updates) {
-				const updatableAttributes = this.#takeUpdatableAttributes();
-				if (fullUpdate && updatableAttributes && isRecordRoot(updates)) {
+				const updatableAttributes = fullUpdate && this.#takeUpdatableAttributes();
+				if (updatableAttributes && isRecordRoot(updates)) {
 					this.#changes = restrictedReplacement(id, updates, updatableAttributes);
 					return when(this._writeUpdate(id, this.#changes, false, RESTRICTED_REPLACEMENT), () => this);
 				} else if (fullUpdate) {
@@ -4559,7 +4560,6 @@ export function makeTable(options): TableResourceClass {
 		}
 
 		#stageChanges(id: Id, target: RequestTarget, changes: any, options?: any) {
-			this.#updatableAttributes = undefined;
 			let loading: Promise<any>;
 			if (!this.#entry && (this.constructor as any).loadAsInstance === false) {
 				// load the record if it hasn't been done yet
@@ -10114,7 +10114,6 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 		_writePublish(id: Id, message, options?: any) {
-			this.#updatableAttributes = undefined;
 			const transaction = txnForContext(this.getContext());
 			id ??= null;
 			if (id !== null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
@@ -12078,15 +12077,16 @@ export function makeTable(options): TableResourceClass {
 		let effective = primaryKeyGranted.get(tablePermission);
 		if (!effective) {
 			const attributePermissions = tablePermission.attribute_permissions;
-			effective = attributePermissions.some((permission: any) => permission.attribute_name === primaryKey)
-				? tablePermission
-				: {
-						...tablePermission,
-						attribute_permissions: [
-							...attributePermissions,
-							implicitPrimaryKeyPermission(attributePermissions, primaryKey),
-						],
-					};
+			effective =
+				!primaryKey || attributePermissions.some((permission: any) => permission.attribute_name === primaryKey)
+					? tablePermission
+					: {
+							...tablePermission,
+							attribute_permissions: [
+								...attributePermissions,
+								implicitPrimaryKeyPermission(attributePermissions, primaryKey),
+							],
+						};
 			primaryKeyGranted.set(tablePermission, effective);
 		}
 		return effective;
