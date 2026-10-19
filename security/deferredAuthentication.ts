@@ -53,7 +53,6 @@ export function authenticationChallenge(scheme?: string, credentialRejected = fa
 	return 'Basic realm="Harper"';
 }
 
-/** The operations API gets no challenge. */
 export function credentialRejectionResponse(
 	request: any,
 	status: number,
