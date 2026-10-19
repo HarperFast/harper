@@ -110,6 +110,23 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 	// trip `maxToolTokens` / `maxCostUsd` after each backend round.
 	let totalTokens = 0;
 	let totalCostUsd = 0;
+	// Also checked before each call, so a cap of 0 allows none, as the built-in agent's caps do.
+	const throwIfBudgetReached = () => {
+		if (maxToolTokens !== undefined && totalTokens >= maxToolTokens) {
+			throw new BudgetExceededError(
+				'tokens',
+				`agent loop exceeded maxToolTokens=${maxToolTokens} (cumulative=${totalTokens})`,
+				trace
+			);
+		}
+		if (maxCostUsd !== undefined && totalCostUsd >= maxCostUsd) {
+			throw new BudgetExceededError(
+				'cost',
+				`agent loop exceeded maxCostUsd=${maxCostUsd} (cumulative=${totalCostUsd})`,
+				trace
+			);
+		}
+	};
 
 	// `conversation` is a one-way SINK for NEW turns produced by this loop — the loop
 	// does NOT re-append the caller's input messages, even when they include user
@@ -138,6 +155,7 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 			// call. The inner `models.generate` would itself throw on the in-flight check,
 			// but throwing here saves the round-trip and the spurious analytics row.
 			composedSignal.throwIfAborted();
+			throwIfBudgetReached();
 
 			const result = await models.generate(buildInnerInput(messages, tools, system), innerOpts);
 
@@ -174,8 +192,7 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 			// Tally this round's usage BEFORE deciding terminal vs continue. A round
 			// that crosses the cap trips even if it would otherwise have been the last
 			// one — the cap is on what we paid for, not on what we'd have paid for next.
-			// Cost trip semantics: `>= cap`, so `maxCostUsd: 0` stops after the first call
-			// whether or not the model is priced. Token trip uses `>=` for symmetry.
+			// Both caps trip at `>= cap`.
 			//
 			// Discarded-content asymmetry: a TERMINAL round that trips returns
 			// BudgetExceededError instead of the final assistant content. The content is
@@ -185,20 +202,7 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 			// the per-iteration analytics rows (one row per round in `hdb_model_calls`).
 			totalTokens += sumTokens(result.usage);
 			totalCostUsd += result.costUsd ?? 0;
-			if (maxToolTokens !== undefined && totalTokens >= maxToolTokens) {
-				throw new BudgetExceededError(
-					'tokens',
-					`agent loop exceeded maxToolTokens=${maxToolTokens} (cumulative=${totalTokens})`,
-					trace
-				);
-			}
-			if (maxCostUsd !== undefined && totalCostUsd >= maxCostUsd) {
-				throw new BudgetExceededError(
-					'cost',
-					`agent loop exceeded maxCostUsd=${maxCostUsd} (cumulative=${totalCostUsd})`,
-					trace
-				);
-			}
+			throwIfBudgetReached();
 
 			const calls = result.toolCalls;
 			// Backends (notably OpenAI) leave `content` as `null` / undefined on tool-call

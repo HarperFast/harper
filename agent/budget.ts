@@ -94,7 +94,7 @@ export function parseBudgetCap(name: keyof BudgetCaps, value: unknown): number |
 	return cap;
 }
 
-/** `maxTurns` has a default rather than an "off", so `null` is refused like any other non-integer (a bare config key is skipped before this). */
+/** `maxTurns` has a default rather than an "off", so `null`, which a bare config key reads as, is refused like any other non-integer. */
 export function parseMaxTurns(value: unknown): number {
 	const turns = configNumber(value);
 	if (typeof turns === 'number' && Number.isInteger(turns) && turns >= 1) return turns;

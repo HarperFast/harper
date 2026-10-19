@@ -1264,6 +1264,21 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			assert.strictEqual(result.content, 'over');
 		});
 
+		for (const [kind, cap] of [
+			['cost', { maxCostUsd: 0 }],
+			['tokens', { maxToolTokens: 0 }],
+		]) {
+			it(`a ${kind} cap of 0 makes no backend call`, async () => {
+				setBackendPricing(backend, { inputPerMtok: 100, outputPerMtok: 100 });
+				backend.queue(tokenRound('unreached'));
+				await assert.rejects(
+					() => models.generate('q', { toolMode: 'auto', ...cap }),
+					(err) => err instanceof BudgetExceededError && err.kind === kind
+				);
+				assert.strictEqual(backend.calls.length, 0);
+			});
+		}
+
 		it("maxCostUsd trips BudgetExceededError({kind: 'cost'}) from the serving entry's pricing", async () => {
 			// 100 tokens per round at $100/Mtok both ways = $0.01 per round; two rounds cross $0.015.
 			setBackendPricing(backend, { inputPerMtok: 100, outputPerMtok: 100 });

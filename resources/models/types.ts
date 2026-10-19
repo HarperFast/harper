@@ -344,22 +344,19 @@ export type GenerateOpts = {
 	maxToolIterations?: number;
 	/**
 	 * `toolMode: 'auto'` only. Cumulative prompt+completion token cap across all
-	 * iterations. Trips `BudgetExceededError({kind: 'tokens'})` when exceeded.
-	 *
-	 * Best-effort: enforcement depends on the backend reporting `usage`. Against a
-	 * backend that returns no usage the cap is unmeasurable — the loop warns once and
-	 * continues (it does NOT silently pretend the cap is in force); `maxToolIterations`
-	 * remains the hard bound. Not yet supported on `generateStream` (throws 501).
+	 * iterations. Throws `BudgetExceededError({kind: 'tokens'})` once the total reaches
+	 * it, so `0` allows no call. A round whose backend reports no token counts makes the
+	 * cap unmeasurable and throws the same error. Not yet supported on `generateStream`
+	 * (throws 501).
 	 */
 	maxToolTokens?: number;
 	/**
-	 * `toolMode: 'auto'` only. Cumulative cost cap across all iterations. The v1
-	 * cost-per-call function returns 0 (no rate card yet) so this trips only when
-	 * a test or follow-up wires a non-zero function — the seam is in place.
-	 *
-	 * Same best-effort caveat as `maxToolTokens`: cost is derived from backend usage,
-	 * so a backend reporting no usage makes the cap unmeasurable (warn-once, continue).
-	 * Not yet supported on `generateStream` (throws 501).
+	 * `toolMode: 'auto'` only. Cumulative USD cap across all iterations, each priced
+	 * from the `pricing` of the entry that served it (`GenerateResult.costUsd`). Throws
+	 * `BudgetExceededError({kind: 'cost'})` once the total reaches it, so `0` allows no
+	 * call. An unpriced round, or one without both token counts, makes the cap
+	 * unmeasurable and throws the same error. Not yet supported on `generateStream`
+	 * (throws 501).
 	 */
 	maxCostUsd?: number;
 	/**

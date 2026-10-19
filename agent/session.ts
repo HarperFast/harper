@@ -170,9 +170,8 @@ export function shrinkNewestToolResults(
 
 /**
  * Every status the loop writes after `running` goes through here, in one write with its closing messages
- * and any open approvals answered under the lock: a crash cannot persist an assistant's tool calls
- * without the responses a provider requires before the next call, and a cancel that landed first keeps
- * its `aborted` status.
+ * and any open approvals answered under the lock: an ending never leaves a tool call without the response
+ * a provider requires before the next call, and a cancel that landed first keeps its `aborted` status.
  */
 export function endRun(
 	sessionId: string,
