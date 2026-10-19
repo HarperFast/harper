@@ -423,7 +423,7 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		assert.equal((await DocTable.get('promise-1')).secret, 'promise-1 secret');
 	});
 
-	it('patch and collection post bodies that resolve after dispatch are still checked', async function () {
+	it('patch, collection post and publish bodies that resolve after dispatch are still checked', async function () {
 		await seed('promise-2');
 		await assert.rejects(
 			async () => DocTable.patch('promise-2', Promise.resolve({ secret: 'overwritten' }), asUser()),
@@ -435,7 +435,32 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 			async () => DocTable.post(collection, Promise.resolve({ title: 't', secret: 's' }), asUser()),
 			/Unauthorized/
 		);
+		await assert.rejects(
+			async () => DocTable.publish('promise-2', Promise.resolve({ secret: 's' }), asUser()),
+			/Unauthorized/
+		);
 		assert.equal((await DocTable.get('promise-2')).secret, 'promise-2 secret');
+	});
+
+	it('a promised falsy body is passed through as the body', async function () {
+		let received = 'not called';
+		class ScalarBody extends DocTable {
+			static loadAsInstance = false;
+			put(target, data) {
+				received = data;
+			}
+		}
+		await ScalarBody.put('scalar-1', Promise.resolve(0));
+		assert.equal(received, 0);
+	});
+
+	it('a static update with a body that resolves after dispatch is still checked', async function () {
+		await seed('promise-3');
+		await assert.rejects(
+			async () => DocTable.update('promise-3', Promise.resolve({ secret: 'overwritten' }), asUser()),
+			/Unauthorized/
+		);
+		assert.equal((await DocTable.get('promise-3')).secret, 'promise-3 secret');
 	});
 
 	it('a restricted full put creates a missing record with its primary key', async function () {

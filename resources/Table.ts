@@ -9303,7 +9303,8 @@ export function makeTable(options): TableResourceClass {
 	function restrictedReplacement(id: Id, record: any, updatableAttributes: { [attribute: string]: boolean }) {
 		record = materialized(record);
 		const changes: any = { ...record };
-		if (primaryKey) changes[primaryKey] = id;
+		if (primaryKey)
+			Object.defineProperty(changes, primaryKey, { value: id, enumerable: true, writable: true, configurable: true });
 		// a full put keeps the stored created time whatever the payload says; the write stamps both times
 		if (createdTimeProperty) delete changes[createdTimeProperty.name];
 		if (updatedTimeProperty) delete changes[updatedTimeProperty.name];
