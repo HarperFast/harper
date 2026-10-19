@@ -33,6 +33,26 @@ export class ChoiceScoringUnsupportedError extends ServerError {
 	}
 }
 
+// Provider wording for an input that does not fit the model's context window: OpenAI and compatible
+// servers (vLLM, Mistral, Gemini's OpenAI endpoint), Anthropic, and Bedrock's ValidationException.
+const CONTEXT_WINDOW_REJECTION =
+	/context[ _](?:length|window|limit)|maximum context length|prompt is too long|input is too long|too many (?:input )?tokens|exceeds the maximum number of tokens/i;
+
+/**
+ * Whether a provider rejected a request because its input does not fit the model's context window.
+ * A backend sets `contextWindowExceeded` on the error it throws when this holds, so callers branch
+ * on {@link isContextWindowExceeded} instead of parsing provider wording.
+ */
+export function isContextWindowRejection(status: number | undefined, message: unknown, code?: unknown): boolean {
+	if (code === 'context_length_exceeded') return true;
+	if (status !== 400 && status !== 413) return false;
+	return typeof message === 'string' && CONTEXT_WINDOW_REJECTION.test(message);
+}
+
+export function isContextWindowExceeded(err: unknown): boolean {
+	return (err as { contextWindowExceeded?: unknown } | null | undefined)?.contextWindowExceeded === true;
+}
+
 /**
  * Combine a caller-supplied AbortSignal with a per-call timeout via
  * `AbortSignal.any`. Returns the caller signal directly when no timeout is

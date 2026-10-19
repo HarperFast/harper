@@ -53,6 +53,7 @@ interface AlaSQLYY {
 	StringValue: new (props: { value: any }) => any;
 	NumValue: new (props: { value: any }) => any;
 	Op: new (props: any) => any;
+	UniOp: new (props: any) => any;
 	Columnid: new (props: any) => any;
 	Param: new (props: any) => any;
 	FuncValue: new (props?: any) => any;
@@ -95,8 +96,7 @@ class SQLSearch {
 		this.comparator_search_values = {};
 		this.tables = [];
 
-		//holds the data to be evaluated by the sql processor
-		this.data = {};
+		this.data = Object.create(null);
 
 		this.has_aggregator = false;
 		this.has_ordinal = false;
@@ -205,9 +205,9 @@ class SQLSearch {
 			const schemaTable = `${table.databaseid}_${table.as ? table.as : table.tableid}`;
 			this.data[schemaTable] = {};
 			this.data[schemaTable].__hashName = getDatabases()[table.databaseid][table.tableid].primaryKey;
-			this.data[schemaTable].__mergedData = {};
+			this.data[schemaTable].__mergedData = Object.create(null);
 			this.data[schemaTable].__mergedAttributes = [];
-			this.data[schemaTable].__mergedAttrMap = {};
+			this.data[schemaTable].__mergedAttrMap = Object.create(null);
 		});
 	}
 
@@ -260,7 +260,33 @@ class SQLSearch {
 			return;
 		}
 
-		for (let { node } of new RecursiveIterator(this.statement.where)) {
+		// the narrowing maps are keyed by physical table, not alias, so in a self-join one occurrence's restriction would narrow the other
+		for (let i = 1; i < this.tables.length; i++) {
+			for (let j = 0; j < i; j++) {
+				if (
+					this.tables[i].databaseid === this.tables[j].databaseid &&
+					this.tables[i].tableid === this.tables[j].tableid
+				) {
+					log.trace('Where clause joins a table to itself, exact match search not performed on attributes.');
+					return;
+				}
+			}
+		}
+
+		// only a top-level AND conjunct holds for every result row; a predicate under NOT or inside any other expression must see every row
+		const yy = (alasql as any).yy as AlaSQLYY;
+		const conjuncts = [this.statement.where.expression];
+		while (conjuncts.length > 0) {
+			const node = conjuncts.pop();
+			if (node instanceof yy.Op && node.op === 'AND') {
+				conjuncts.push(node.right, node.left);
+				continue;
+			}
+			// AlaSQL parses parentheses as a UniOp with no op
+			if (node instanceof yy.UniOp && node.op === undefined) {
+				conjuncts.push(node.right);
+				continue;
+			}
 			if (node && node.left && node.right && (node.left.columnid || node.right.value) && node.op) {
 				let values = new Set();
 				let column = node.left.columnid ? node.left : node.right;
@@ -622,7 +648,7 @@ class SQLSearch {
 			}
 
 			return acc;
-		}, {});
+		}, Object.create(null));
 
 		for (const attribute of this.fetch_attributes) {
 			const schemaTable = `${attribute.table.databaseid}_${
@@ -1102,7 +1128,7 @@ class SQLSearch {
 					acc[tableKey].columns.push(column.attribute);
 				}
 				return acc;
-			}, {});
+			}, Object.create(null));
 
 			for (const schemaTable in tableSearches) {
 				const table = tableSearches[schemaTable];
@@ -1343,16 +1369,16 @@ class SQLSearch {
 				acc[col.columnid_orig] = col.columnid_orig;
 			}
 			return acc;
-		}, {});
+		}, Object.create(null));
 
 		const fetchAttributesObjs = this.fetch_attributes.reduce((acc, attr) => {
 			const schemaTable = `${attr.table.databaseid}_${attr.table.as ? attr.table.as : attr.table.tableid}`;
 			if (!acc[schemaTable]) {
-				acc[schemaTable] = {};
+				acc[schemaTable] = Object.create(null);
 			}
 			acc[schemaTable][aliasMap[attr.attribute]] = null;
 			return acc;
-		}, {});
+		}, Object.create(null));
 
 		for (const attribute of this.fetch_attributes) {
 			const schemaTable = `${attribute.table.databaseid}_${

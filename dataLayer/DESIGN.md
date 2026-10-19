@@ -1,8 +1,8 @@
 # dataLayer/ — Design notes
 
-Backup and restore, version gating, system-table bootstrap and storage migration.
+Backup and restore, version gating, system-table bootstrap, storage migration and the legacy SQL executor.
 
-**Read this when:** touching `rocksdbBackup.ts`, `restoreMarker.ts`, `blobBackup.ts`, `hdbInfoController.ts`, `bin/copyDb.ts` or `json/systemSchema.json`.
+**Read this when:** touching `rocksdbBackup.ts`, `restoreMarker.ts`, `blobBackup.ts`, `hdbInfoController.ts`, `bin/copyDb.ts`, `json/systemSchema.json` or `SQLSearch.ts`.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -14,6 +14,7 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 - The prompt's answer can be supplied non-interactively via `CONFIRM_DOWNGRADE` — env var or `--CONFIRM_DOWNGRADE` CLI arg; argv wins (`assignCMDENVVariables`). With no override and no TTY on stdin, the prompt throws instead of blocking on stdin forever (#2046 — services/CI hung with nothing in the log; the mismatch is also logged to hdb.log now).
 - Upgrades never prompt (see the rationale comment in `bin/upgrade.js`); only the downgrade direction confirms. `upgradeCertsPrompt()` (4.x upgrade path; currently has no in-core caller) has the same no-TTY guard as `forceDowngradePrompt()` — a `GENERATE_CERTS` override is honored first, and with no TTY and no override it throws instead of blocking.
+- Enforced end to end by `integrationTests/upgrade/minor-downgrade.test.ts`: each release in `HARPER_PREVIOUS_MINOR_PATH` (CI: pinned releases of the previous minor and of `package.json`'s own minor) reads and writes what the current build wrote, and the data survives re-upgrading. Known exception (#3102): a table created on 5.3.0+ reads as empty on 5.2.x, because its stores carry a generation 5.2 does not read; rows 5.2.x writes to it land in a separate legacy store and vanish again on re-upgrade.
 - Test-suite gotcha: a suite that supplies the override via `process.argv` affects every later test file in the same mocha process — save and restore `process.argv` in `before`/`after` (see `unitTests/dataLayer/hdbInfoController.test.js`).
 
 ## Opening a source LMDB DBI for migration must thread through `compression`
@@ -297,3 +298,17 @@ a multi-gigabyte archive just to decide whether to reject it.
   `producer` block came from this instance's own lineage, so it is reported as unidentified. A
   manifest that is present but malformed is an error — that is a different situation, and only the
   first is eligible for an operator's provenance override.
+
+## Legacy SQL pre-fetch narrows only by top-level AND conjuncts (`dataLayer/SQLSearch.ts`)
+
+The legacy executor loads each WHERE column into one row pool (a union across columns, null where a
+row was not fetched for a column) and lets AlaSQL evaluate the WHERE over that pool.
+`_conditionsToFetchAttributeValues` may narrow a column's fetch to the values a predicate names only
+when every result row must satisfy that predicate: a leaf of the top-level AND chain, parentheses
+transparent. A predicate under `NOT` or inside any other expression must see every row, or the rows
+it rejects never reach AlaSQL and the negation runs over the wrong set (`NOT (c = 'alpha')` returned
+nothing, #1397 §D). Two blunter guards stay: any `OR` disables narrowing, and so does a self-join,
+because the narrowing maps are keyed by physical table, not alias. Under the default `auto` engine
+parenthesized predicates are handled by `sqlEngine` v2, so only queries v2 still rejects (such as
+`IIF(...)` or standalone unindexed predicates) fall back here. Enforced by
+`unitTests/dataLayer/SQLSearch.test.js` and `integrationTests/database/sql-not-predicate.test.ts`.

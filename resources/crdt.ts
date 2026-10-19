@@ -109,12 +109,14 @@ export function applyReverse(record, update, unknowns: Set<string>) {
 	}
 }
 
-// Apply an audit update onto a record moving forward in time (the inverse of applyReverse). Used
-// when reconstructing a record from a known-good base after the reverse walk crosses a delete.
-export function applyForward(record, update) {
+// Apply an audit update onto a record moving forward in time (the inverse of applyReverse). When
+// `skipUnseededOps` is true (a partial replay whose base was pruned), CRDT operations on keys not
+// yet present on `record` are skipped rather than folded onto undefined.
+export function applyForward(record, update, skipUnseededOps = false) {
 	for (const key in update) {
 		const value = update[key];
 		if (value?.__op__) {
+			if (skipUnseededOps && !Object.hasOwn(record, key)) continue;
 			const operation = operations[value.__op__];
 			if (operation) operation(record, key, { value: value.value });
 			else throw new Error(`Unsupported operation ${value.__op__}`);
@@ -126,27 +128,44 @@ export function applyForward(record, update) {
 
 /**
  * Reconstruct the record state at `timestamp` by walking the audit history forward from the most
- * recent full `put` at or before `timestamp`. Used when the reverse-from-current walk in
- * getRecordAtTime crosses a `delete`: a delete erases the record, leaving no base to keep reversing
- * against, and everything newer than the delete is irrelevant to a `timestamp` that precedes it (a
- * key that was deleted then re-inserted, see issue #1330).
+ * recent full `put` at or before `timestamp`. Used when `getRecordAtTime` has no usable live base
+ * (missing/evicted `currentEntry`, a reverse walk that crosses a `delete`, or a post-eviction
+ * re-insert with a broken `previousVersion` chain) and when filling `unknowns` on a live record.
  *
- * `fromPosition` is the newest pre-delete audit position; the walk follows the previous links from
- * there. Entries newer than `timestamp` are skipped (the cutoff may fall
- * between entries). Returns null if the record did not exist at `timestamp` (the nearest in-range
- * history boundary is a delete with no surviving writes, or there is no in-range history).
+ * `fromPosition` is the starting audit position; the walk follows the previous links from there.
+ * Entries newer than `timestamp` are skipped (the cutoff may fall between entries). Returns `null`
+ * if the record did not exist at `timestamp` (the nearest in-range history boundary is a delete
+ * with no surviving writes, or there is no in-range history). When a prior link leads to a pruned
+ * entry, returns `undefined` if `allowPartial` is false (history is incomplete for a whole-record
+ * caller) or replays the surviving plain-set writes when `allowPartial` is true (for `unknowns`
+ * fill on a live record).
  */
-function reconstructForward(auditStore, store, tableId: number, recordId: any, fromPosition, timestamp) {
+function reconstructForward(
+	auditStore,
+	store,
+	tableId: number,
+	recordId: any,
+	fromPosition,
+	timestamp,
+	allowPartial = false
+) {
 	// Collect the in-range entries (at or before `timestamp`) back to a base boundary, newest-first.
 	// The boundary is a full `put` (snapshot) or a `delete` (everything older is erased); a record
 	// whose first write was a `patch` has no put and bottoms out at the start of history. Only
 	// `put`/`patch` contribute to the value, matching the reverse walk's switch (other partial types
 	// such as `invalidate` are ignored).
 	const entries = [];
+	let truncated = false;
 	let { txnLogKey: auditTime, nodeId: auditNodeId } = fromPosition;
 	while (auditTime > 0) {
 		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
-		if (!auditEntry) break;
+		if (!auditEntry) {
+			if (allowPartial) {
+				truncated = true;
+				break;
+			}
+			return entries.length === 0 ? null : undefined;
+		}
 		if (auditEntry.type === 'delete') {
 			// A delete at or before `timestamp` bounds the history; the record is rebuilt from the
 			// writes collected after it (an empty base). A delete newer than `timestamp` (a later
@@ -176,7 +195,7 @@ function reconstructForward(auditStore, store, tableId: number, recordId: any, f
 		if (auditEntry.type === 'put') record = { ...value };
 		else {
 			if (record == null) record = {};
-			applyForward(record, value);
+			applyForward(record, value, truncated);
 		}
 	}
 	return record;
@@ -221,8 +240,11 @@ function previousAuditPosition(auditStore, tableId: number, recordId: any, audit
  * @param store
  * @returns
  */
-export function getRecordAtTime(currentEntry, timestamp, store, tableId: number, recordId: any) {
+export function getRecordAtTime(currentEntry, timestamp, store, tableId: number, recordId: any, nodeId?: number) {
 	const auditStore = store.rootStore.auditStore;
+	if (!currentEntry) {
+		return reconstructForward(auditStore, store, tableId, recordId, { txnLogKey: timestamp, nodeId }, timestamp);
+	}
 	let record = { ...currentEntry.value };
 	// `localTime` is the record's audit head on both engines: the audit-store key on LMDB, where it
 	// is a different clock than the record version, and the transaction-log key on RocksDB. Only a
@@ -268,6 +290,9 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 		auditTime = previousPosition.txnLogKey;
 		auditNodeId = previousPosition.nodeId;
 	}
+	if (!(auditTime > 0 && auditTime <= timestamp)) {
+		return reconstructForward(auditStore, store, tableId, recordId, { txnLogKey: timestamp, nodeId }, timestamp);
+	}
 	// If the most recent entry at or before `timestamp` is a delete, the record did not exist then.
 	// (A delete reached as a boundary — rather than crossed, which returns via reconstructForward —
 	// is otherwise missed, leaving `record` holding a newer re-inserted value. See issue #1330.)
@@ -289,7 +314,8 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 			tableId,
 			recordId,
 			{ txnLogKey: auditTime, nodeId: auditNodeId },
-			timestamp
+			timestamp,
+			true
 		);
 		if (priorRecord) {
 			for (const key of unknowns) {

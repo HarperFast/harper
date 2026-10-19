@@ -17,18 +17,25 @@ export function hasBudget(caps: BudgetCaps): boolean {
 	return caps.maxSessionTokens !== undefined || caps.maxCostUsd !== undefined;
 }
 
-export function summarizeSessionUsage(messages: Iterable<AgentMessage>): AgentSessionUsage {
+/** Every assistant message is a call, and so is every rejected call kept beside the transcript. */
+export function summarizeSessionUsage(
+	messages: Iterable<AgentMessage>,
+	rejectedCalls: Iterable<AgentCallUsage> = []
+): AgentSessionUsage {
 	let calls = 0;
 	let promptTokens: number | undefined = 0;
 	let completionTokens: number | undefined = 0;
 	let costUsd: number | undefined = 0;
-	for (const message of messages) {
-		if (message.role !== 'assistant') continue;
+	const add = (usage: AgentCallUsage | undefined) => {
 		calls++;
-		promptTokens = addMeasured(promptTokens, message.usage?.promptTokens);
-		completionTokens = addMeasured(completionTokens, message.usage?.completionTokens);
-		costUsd = addMeasured(costUsd, message.usage?.costUsd);
+		promptTokens = addMeasured(promptTokens, usage?.promptTokens);
+		completionTokens = addMeasured(completionTokens, usage?.completionTokens);
+		costUsd = addMeasured(costUsd, usage?.costUsd);
+	};
+	for (const message of messages) {
+		if (message.role === 'assistant') add(message.usage);
 	}
+	for (const usage of rejectedCalls) add(usage);
 	const usage: AgentSessionUsage = { calls };
 	if (promptTokens !== undefined) usage.promptTokens = promptTokens;
 	if (completionTokens !== undefined) usage.completionTokens = completionTokens;

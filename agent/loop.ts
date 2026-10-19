@@ -16,6 +16,9 @@
  */
 
 import type { GenerateOpts, GenerateResult, Message, Models, ToolCall, ToolDef } from '../resources/models/types.ts';
+import { errorInfo, serializeToolResult, truncateWithMarker } from '../resources/models/agentLoop.ts';
+import { isContextWindowExceeded } from '../resources/models/backendHelpers.ts';
+import harperLogger from '../utility/logging/harper_logger.ts';
 import {
 	addPendingApproval,
 	appendMessage,
@@ -24,10 +27,32 @@ import {
 	endRun,
 	getSession,
 	setStatus,
+	shrinkNewestToolResults,
 } from './session.ts';
 import type { AgentMessage, AgentScopes, AgentTool, AgentToolContext, ApprovalRequest } from './types.ts';
 import { toolMapByName } from './toolset.ts';
 import { budgetViolation, callUsage, hasBudget, summarizeSessionUsage } from './budget.ts';
+
+const log = harperLogger.loggerWithTag('agent');
+
+/** The `toolMode: 'auto'` orchestrator's default `toolResultMaxBytes`. */
+export const DEFAULT_MAX_TOOL_RESULT_BYTES = 65_536;
+// Below the minimum the truncation marker leaves almost no room for the result; above the maximum
+// (~250k tokens) the cap no longer keeps one result inside any model's context window.
+export const MIN_MAX_TOOL_RESULT_BYTES = 1024;
+export const MAX_MAX_TOOL_RESULT_BYTES = 1_048_576;
+
+export function isValidMaxToolResultBytes(value: unknown): value is number {
+	return (
+		Number.isSafeInteger(value) &&
+		(value as number) >= MIN_MAX_TOOL_RESULT_BYTES &&
+		(value as number) <= MAX_MAX_TOOL_RESULT_BYTES
+	);
+}
+
+const CONTEXT_SHRINK_BYTES = 2048;
+const ASK_FOR_LESS =
+	'Ask for less: read_file with startLine/lineCount, tail_file with fewer lines, grep_files with a narrower pattern, or a narrower query';
 
 export interface RunAgentOpts {
 	sessionId: string;
@@ -44,8 +69,10 @@ export interface RunAgentOpts {
 	autoApprove?: boolean;
 	signal?: AbortSignal;
 	generateOpts?: Omit<GenerateOpts, 'toolMode' | 'signal'>;
-	/** System prompt injected as the first turn when the transcript is empty. */
+	/** Sent as `system` with every request; never stored in the transcript. */
 	systemPrompt?: string;
+	/** Cap on each tool result appended to the transcript. Default {@link DEFAULT_MAX_TOOL_RESULT_BYTES}. */
+	maxToolResultBytes?: number;
 }
 
 const inFlight = new Map<string, Promise<void>>();
@@ -87,7 +114,12 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 	// goes through `endRun`, which keeps `aborted` under the session lock.
 	if (opts.signal?.aborted) return;
 	await setStatus(opts.sessionId, 'running');
-	const ctx: AgentToolContext = { sessionId: opts.sessionId, signal: opts.signal, scopes: opts.scopes };
+	const ctx: AgentToolContext = {
+		sessionId: opts.sessionId,
+		signal: opts.signal,
+		scopes: opts.scopes,
+		maxResultBytes: opts.maxToolResultBytes ?? DEFAULT_MAX_TOOL_RESULT_BYTES,
+	};
 
 	try {
 		// Before the approvals below can execute anything: a cap lowered while a run sat awaiting
@@ -112,13 +144,23 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 
 		for (let turn = 0; turn < opts.maxTurns; turn++) {
 			if (opts.signal?.aborted) return; // status was already set to `aborted` by cancelRun
-			const session = await getSession(opts.sessionId);
-			if (!session) throw new Error(`Session ${opts.sessionId} vanished mid-run`);
-			const messages = toModelMessages(session.messages, opts.systemPrompt);
-			const result: GenerateResult = await opts.models.generate(
-				{ messages, tools: toolDefs, system: opts.systemPrompt },
-				{ ...opts.generateOpts, toolMode: 'return', signal: opts.signal }
+			const result = await generateTurn(opts, toolDefs);
+			if (opts.signal?.aborted) return;
+			log.debug?.(
+				`Session ${opts.sessionId} turn ${turn}: finishReason=${result.finishReason} toolCalls=${result.toolCalls?.length ?? 0} contentChars=${result.content?.length ?? 0} completionTokens=${result.usage?.completionTokens ?? 'unknown'}`
 			);
+
+			// Must run before appendMessage: nothing from a rejected turn may reach the transcript (agent/DESIGN.md).
+			const rejection = rejectTurn(result, opts.generateOpts?.maxTokens);
+			if (rejection) {
+				// The rejected call was still billed, so its usage is kept on the session, outside the transcript.
+				await endRun(opts.sessionId, {
+					status: 'error',
+					lastError: rejection,
+					rejectedCall: callUsage(result.usage, result.costUsd) ?? {},
+				});
+				return;
+			}
 
 			const assistantMessage: AgentMessage = {
 				role: 'assistant',
@@ -129,8 +171,9 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 			const usage = callUsage(result.usage, result.costUsd);
 			if (usage) assistantMessage.usage = usage;
 
-			const violation = hasBudget(opts)
-				? budgetViolation(summarizeSessionUsage([...session.messages, assistantMessage]), opts)
+			const session = hasBudget(opts) ? await getSession(opts.sessionId) : undefined;
+			const violation = session
+				? budgetViolation(summarizeSessionUsage([...session.messages, assistantMessage], session.rejectedCalls), opts)
 				: undefined;
 			if (violation) {
 				const refusals = (result.toolCalls ?? []).map((call) => budgetRefusal(call.id, violation));
@@ -166,6 +209,74 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 	}
 }
 
+function rejectTurn(result: GenerateResult, maxTokens: number | undefined): string | undefined {
+	const toolCallCount = result.toolCalls?.length ?? 0;
+	const notExecuted = toolCallCount > 0 ? `; its ${toolCallCount} tool call(s) were not executed` : '';
+	if (result.finishReason === 'length') {
+		return `Model response was cut off (finishReason=length)${notExecuted}: it reached either the output-token limit (maxTokens=${maxTokens ?? 'backend default'}; raise agent.maxTokens) or the model's context window (start a new session).`;
+	}
+	if (result.finishReason === 'content_filter') {
+		return `Model response was stopped by the provider's content filter or a model refusal${notExecuted}.`;
+	}
+	if (toolCallCount > 0) return undefined;
+	if (result.finishReason === 'tool_calls') return 'Model requested a tool call that could not be parsed.';
+	if (!result.content?.trim()) return `Model returned an empty response (finishReason=${result.finishReason}).`;
+	return undefined;
+}
+
+/**
+ * When the provider says the request does not fit the model's context window, shrink the newest
+ * oversized tool results in the stored transcript and retry once. Best effort: the overflow can also
+ * come from a long prompt or a long history, which shrinking the newest results does not fix.
+ */
+async function generateTurn(opts: RunAgentOpts, toolDefs: ToolDef[]): Promise<GenerateResult> {
+	try {
+		return await requestTurn(opts, toolDefs);
+	} catch (err) {
+		if (!isContextWindowExceeded(err) || opts.signal?.aborted) throw err;
+		const shrunk = await shrinkNewestToolResults(opts.sessionId, CONTEXT_SHRINK_BYTES, shrinkForContext);
+		if (shrunk === 0) {
+			throw contextWindowError(
+				err,
+				`no tool result over ${CONTEXT_SHRINK_BYTES} bytes is left to shrink; shorten the prompt or start a new session`
+			);
+		}
+		log.warn?.(
+			`Session ${opts.sessionId}: request exceeded the model's context window; shrank ${shrunk} tool result(s) to ${CONTEXT_SHRINK_BYTES} bytes and retrying once`
+		);
+		if (opts.signal?.aborted) throw err;
+		try {
+			return await requestTurn(opts, toolDefs);
+		} catch (retryErr) {
+			if (!isContextWindowExceeded(retryErr)) throw retryErr;
+			throw contextWindowError(
+				retryErr,
+				'it still does not fit after shrinking the newest tool results; start a new session'
+			);
+		}
+	}
+}
+
+async function requestTurn(opts: RunAgentOpts, toolDefs: ToolDef[]): Promise<GenerateResult> {
+	const session = await getSession(opts.sessionId);
+	if (!session) throw new Error(`Session ${opts.sessionId} vanished mid-run`);
+	opts.signal?.throwIfAborted();
+	return opts.models.generate(
+		{ messages: toModelMessages(session.messages), tools: toolDefs, system: opts.systemPrompt },
+		{ ...opts.generateOpts, toolMode: 'return', signal: opts.signal }
+	);
+}
+
+function shrinkForContext(content: string): string {
+	const marker = `…[cut from ${Buffer.byteLength(content, 'utf8')} bytes: a request including this result exceeded the model's context window. ${ASK_FOR_LESS}.]`;
+	return truncateWithMarker(content, CONTEXT_SHRINK_BYTES, marker);
+}
+
+function contextWindowError(cause: unknown, detail: string): Error {
+	const reason = cause instanceof Error ? cause.message : String(cause);
+	return new Error(`The conversation no longer fits the model's context window: ${detail}. (${reason})`, { cause });
+}
+
 /**
  * Every open approval, resolved or not, is answered without executing it, so no tool call is left
  * without a response once the session leaves `awaiting_approval`.
@@ -174,7 +285,7 @@ async function stopIfOverBudget(opts: RunAgentOpts): Promise<boolean> {
 	if (!hasBudget(opts)) return false;
 	const session = await getSession(opts.sessionId);
 	if (!session) return false;
-	const violation = budgetViolation(summarizeSessionUsage(session.messages), opts);
+	const violation = budgetViolation(summarizeSessionUsage(session.messages, session.rejectedCalls), opts);
 	if (!violation) return false;
 	await endRun(opts.sessionId, {
 		answerOpenApprovals: (approval) => approvalRefusal(approval, violation),
@@ -296,27 +407,26 @@ async function consumeResolvedApprovals(
 
 async function invokeTool(call: ToolCall, toolMap: Map<string, AgentTool>, ctx: AgentToolContext): Promise<string> {
 	const tool = toolMap.get(call.name);
-	if (!tool) return JSON.stringify({ error: 'unknown_tool', name: call.name });
+	if (!tool) return capObservation({ error: 'unknown_tool', name: call.name }, ctx);
 	try {
 		const result = await tool.handler(call.arguments ?? {}, ctx);
-		return JSON.stringify({ ok: true, result });
+		return capObservation({ ok: true, result }, ctx);
 	} catch (err) {
-		return JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) });
+		return capObservation({ ok: false, error: errorInfo(err).message }, ctx);
 	}
 }
 
-function toModelMessages(items: AgentMessage[], systemPrompt: string | undefined): Message[] {
-	const out: Message[] = [];
-	if (systemPrompt && !items.some((m) => m.role === 'system')) {
-		out.push({ role: 'system', content: systemPrompt });
-	}
-	for (const item of items) {
+function capObservation(observation: object, ctx: AgentToolContext): string {
+	return serializeToolResult(observation, ctx.maxResultBytes ?? DEFAULT_MAX_TOOL_RESULT_BYTES, ASK_FOR_LESS).content;
+}
+
+function toModelMessages(items: AgentMessage[]): Message[] {
+	return items.map((item) => {
 		const message: Message = { role: item.role, content: item.content };
 		if (item.toolCalls) message.toolCalls = item.toolCalls;
 		if (item.toolCallId) message.toolCallId = item.toolCallId;
-		out.push(message);
-	}
-	return out;
+		return message;
+	});
 }
 
 /** Test-only: clear the in-flight tracking map. */

@@ -111,6 +111,22 @@ describe('BedrockBackend', () => {
 			assert.ok(body.max_tokens > 0);
 		});
 
+		it('reports an Anthropic reply cut short by the context window or a refusal as not finished', async () => {
+			for (const [stopReason, finishReason] of [
+				['max_tokens', 'length'],
+				['model_context_window_exceeded', 'length'],
+				['refusal', 'content_filter'],
+			]) {
+				const { sdk } = fakeSdk(() =>
+					jsonBodyResponse({ content: [{ type: 'text', text: 'partial' }], stop_reason: stopReason, usage: {} })
+				);
+				_injectSdkForTests(sdk);
+				const b = new BedrockBackend({ region: 'us-east-1', model: 'anthropic.claude-opus-4-v1:0' });
+				const result = await b.generate('hello', { accounting: ACCOUNTING });
+				assert.strictEqual(result.output.finishReason, finishReason, stopReason);
+			}
+		});
+
 		it('dispatches meta.* models to Llama prompt shape', async () => {
 			const { sdk, sent } = fakeSdk(() =>
 				jsonBodyResponse({
@@ -367,6 +383,32 @@ describe('BedrockBackend', () => {
 					return true;
 				}
 			);
+		});
+
+		it('flags a ValidationException saying the input is too long, without surfacing its message', async () => {
+			for (const [message, flagged] of [
+				['Input is too long for requested model.', true],
+				['prompt is too long: 215000 tokens > 200000 maximum', true],
+				['Malformed input request: #: extraneous key [foo] is not permitted', false],
+			]) {
+				const { sdk } = fakeSdk(() => {
+					const err = new Error(message);
+					err.name = 'ValidationException';
+					err.$metadata = { httpStatusCode: 400 };
+					throw err;
+				});
+				_injectSdkForTests(sdk);
+				const b = new BedrockBackend({ region: 'us-east-1', model: 'anthropic.claude' });
+				await assert.rejects(
+					() => b.generate('q', { accounting: ACCOUNTING }),
+					(err) => {
+						assert.ok(err instanceof BedrockBackendError);
+						assert.strictEqual(err.contextWindowExceeded === true, flagged, message);
+						assert.strictEqual(err.message, 'Bedrock request failed (ValidationException)');
+						return true;
+					}
+				);
+			}
 		});
 
 		it('leaves upstreamStatus undefined when the SDK error carries no HTTP status', async () => {

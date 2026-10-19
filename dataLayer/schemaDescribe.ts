@@ -31,8 +31,8 @@ export async function describeAll(opObj: any = {}) {
 			isSu = rolePerms?.super_user;
 		}
 		let databases = getDatabases();
-		let schemaList = {};
-		let schemaPerms = {};
+		let schemaList = Object.create(null);
+		let schemaPerms = Object.create(null);
 		let tResults = [];
 		const exact_count = opObj?.exact_count;
 		const skip_record_count = opObj?.skip_record_count;
@@ -59,11 +59,11 @@ export async function describeAll(opObj: any = {}) {
 			}
 		}
 
-		let hdbDescription = {};
+		let hdbDescription = Object.create(null);
 		for (let t in tResults) {
 			if (sysCall || isSu || bypassAuth) {
 				if (hdbDescription[tResults[t].schema] == null) {
-					hdbDescription[tResults[t].schema] = {};
+					hdbDescription[tResults[t].schema] = Object.create(null);
 				}
 
 				hdbDescription[tResults[t].schema][tResults[t].name] = tResults[t];
@@ -72,7 +72,7 @@ export async function describeAll(opObj: any = {}) {
 				}
 			} else if (schemaPerms[tResults[t].schema]) {
 				if (hdbDescription[tResults[t].schema] == null) {
-					hdbDescription[tResults[t].schema] = {};
+					hdbDescription[tResults[t].schema] = Object.create(null);
 				}
 
 				hdbDescription[tResults[t].schema][tResults[t].name] = tResults[t];
@@ -84,9 +84,9 @@ export async function describeAll(opObj: any = {}) {
 
 		for (let schema in schemaList) {
 			if (sysCall || isSu || bypassAuth) {
-				hdbDescription[schema] = {};
+				hdbDescription[schema] = Object.create(null);
 			} else if (schemaPerms[schema]) {
-				hdbDescription[schema] = {};
+				hdbDescription[schema] = Object.create(null);
 			}
 		}
 		return hdbDescription;
@@ -183,8 +183,8 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 	let attributes = [];
 	let readableAttributes: Set<string> | undefined;
 	if (tableAttrPerms?.length) {
-		let permittedAttr = {};
-		let readableAttr = {};
+		let permittedAttr = Object.create(null);
+		let readableAttr = Object.create(null);
 		tableAttrPerms.forEach((a) => {
 			if (a.describe) permittedAttr[a.attribute_name] = true;
 			if (a.read) readableAttr[a.attribute_name] = true;
@@ -337,7 +337,7 @@ export async function describeSchema(describeSchemaObject: any) {
 			HTTP_STATUS_CODES.NOT_FOUND
 		);
 	}
-	let results = {};
+	let results = Object.create(null);
 	for (let tableName in schema) {
 		let table_perms;
 		if (schemaPerms && schemaPerms.tables[tableName]) {

@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { setupTestDBPath } = require('../testUtils');
+const { setupTestDBPath, routePutThroughPutSync } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { compileFullTextDefinitions, compileValidFullTextDefinitions } = require('#src/resources/fullTextSchema');
 const { getDatabases, resetDatabases, table } = require('#src/resources/databases');
@@ -533,6 +533,7 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 		let putOwner = Addition.dbisDB;
 		while (putOwner && !Object.hasOwn(putOwner, 'putSync')) putOwner = Object.getPrototypeOf(putOwner);
 		const originalPut = putOwner.putSync;
+		const restoreAdditionPut = routePutThroughPutSync(Addition.dbisDB);
 		putOwner.putSync = function (key, value, ...args) {
 			if (String(key) === 'FullTextAdditionOrder/title' && value?.type === 'String')
 				throw new Error('crash before source publication');
@@ -551,6 +552,7 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 				/crash before source publication/
 			);
 		} finally {
+			restoreAdditionPut();
 			putOwner.putSync = originalPut;
 		}
 		assert.strictEqual(primaryDescriptor(Addition).fullTextIndexes, undefined);
@@ -578,6 +580,7 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 		let putOwner = Table.dbisDB;
 		while (putOwner && !Object.hasOwn(putOwner, 'putSync')) putOwner = Object.getPrototypeOf(putOwner);
 		const originalPut = putOwner.putSync;
+		const restorePut = routePutThroughPutSync(Table.dbisDB);
 		putOwner.putSync = function (key, value, ...args) {
 			if (String(key) === 'FullTextNestedRollback/title' && value?.type === 'Int')
 				throw new Error('crash during nested schema update');
@@ -586,6 +589,7 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 		try {
 			await assert.rejects(loadGQLSchema(declaration('Int', false)), /crash during nested schema update/);
 		} finally {
+			restorePut();
 			putOwner.putSync = originalPut;
 		}
 

@@ -579,7 +579,7 @@ export function attachDerivedIndexes(
 						for (const result of results) {
 							if (result.status === 'rejected') {
 								failures.push(result.reason);
-								derivedIndexLogger.error(
+								derivedIndexLogger.error?.(
 									`Could not settle a superseded derived-index backend for table ${Table.tableId}`,
 									result.reason
 								);
@@ -878,7 +878,7 @@ export function refreshDerivedIndexes(Table: any): void {
 					if (Table.derivedIndexRuntime === current) Table.derivedIndexRuntime = undefined;
 				},
 				(error) => {
-					derivedIndexLogger.error(`Could not settle suspended derived indexes for table ${Table.tableId}`, error);
+					derivedIndexLogger.error?.(`Could not settle suspended derived indexes for table ${Table.tableId}`, error);
 				}
 			);
 		return;
@@ -895,7 +895,7 @@ export function refreshDerivedIndexes(Table: any): void {
 				if (!next && Table.derivedIndexRuntime === current) Table.derivedIndexRuntime = undefined;
 			},
 			(error) => {
-				derivedIndexLogger.error(`Could not settle replaced derived indexes for table ${Table.tableId}`, error);
+				derivedIndexLogger.error?.(`Could not settle replaced derived indexes for table ${Table.tableId}`, error);
 			}
 		);
 	next = attachDerivedIndexes(Table, {

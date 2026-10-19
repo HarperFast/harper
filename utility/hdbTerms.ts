@@ -119,6 +119,9 @@ export const RESERVED_DATABASE_NAMES = [
 	'_expandedOperations',
 ] as const;
 
+/** Keys that address a plain object's prototype rather than an own entry; refused as new database and table names. */
+export const PROTOTYPE_POLLUTING_NAMES = ['__proto__', 'constructor', 'prototype'] as const;
+
 /** Email address for support requests */
 export const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
 
@@ -554,6 +557,7 @@ export const CONFIG_PARAMS = {
 	THREADS_HEAPSNAPSHOTNEARLIMIT: 'threads_heapSnapshotNearLimit',
 	THREADS_PRELOAD: 'threads_preload',
 	THREADS_PRELOADREQUIRE: 'threads_preloadRequire',
+	THREADS_V8FLAGS: 'threads_v8Flags',
 	HTTP_SESSIONAFFINITY: 'http_sessionAffinity',
 	HTTP_COMPRESSIONTHRESHOLD: 'http_compressionThreshold',
 	HTTP_CORS: 'http_cors',
@@ -666,7 +670,9 @@ export const CONFIG_PARAMS = {
 	AGENT_PROVIDER: 'agent_provider',
 	AGENT_MODEL: 'agent_model',
 	AGENT_MAXTURNS: 'agent_maxTurns',
+	AGENT_MAXTOKENS: 'agent_maxTokens',
 	AGENT_MAXSESSIONTOKENS: 'agent_maxSessionTokens',
+	AGENT_MAXTOOLRESULTBYTES: 'agent_maxToolResultBytes',
 	AGENT_MAXCOSTUSD: 'agent_maxCostUsd',
 	AGENT_AUTOAPPROVE: 'agent_autoApprove',
 	AGENT_ALLOWDESTRUCTIVE: 'agent_allowDestructive',

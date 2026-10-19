@@ -24,6 +24,7 @@ import {
 } from './session.ts';
 import { parseBudgetCap, parseMaxTurns, summarizeSessionUsage } from './budget.ts';
 import type { AgentConfig, AgentMessage, AgentRunStatus, AgentSessionRow, AgentSessionUsage } from './types.ts';
+import { isValidMaxToolResultBytes, MAX_MAX_TOOL_RESULT_BYTES, MIN_MAX_TOOL_RESULT_BYTES } from './loop.ts';
 
 export interface OperationDeps {
 	getConfig: () => AgentConfig;
@@ -138,7 +139,7 @@ function withUsage(session: AgentSessionRow): Record<string, unknown> & { usage:
 		const value = session[name as keyof AgentSessionRow];
 		if (value !== undefined) view[name] = value;
 	}
-	return Object.assign(view, { usage: summarizeSessionUsage(session.messages) });
+	return Object.assign(view, { usage: summarizeSessionUsage(session.messages, session.rejectedCalls) });
 }
 
 async function cancelAgentRun(op: any, deps: OperationDeps) {
@@ -175,8 +176,26 @@ async function setAgentConfig(op: any, deps: OperationDeps) {
 			throw new ClientError(`agent.${key} is fixed at startup; change it in the config file and restart`, 400);
 		}
 	}
+	if (op?.maxTokens !== undefined && !(Number.isSafeInteger(op.maxTokens) && op.maxTokens > 0)) {
+		throw new ClientError('maxTokens must be a positive integer', 400);
+	}
+	if (op?.maxToolResultBytes !== undefined && !isValidMaxToolResultBytes(op.maxToolResultBytes)) {
+		throw new ClientError(
+			`maxToolResultBytes must be an integer from ${MIN_MAX_TOOL_RESULT_BYTES} to ${MAX_MAX_TOOL_RESULT_BYTES}`,
+			400
+		);
+	}
 	const patch: Partial<AgentConfig> = {};
-	for (const key of ['enabled', 'provider', 'model', 'autoApprove', 'allowDestructive', 'systemPromptAppend']) {
+	for (const key of [
+		'enabled',
+		'provider',
+		'model',
+		'maxTokens',
+		'maxToolResultBytes',
+		'autoApprove',
+		'allowDestructive',
+		'systemPromptAppend',
+	]) {
 		if (op?.[key] !== undefined) (patch as any)[key] = op[key];
 	}
 	if (op?.maxTurns !== undefined) patch.maxTurns = parseMaxTurns(op.maxTurns);

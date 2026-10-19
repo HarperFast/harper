@@ -1,6 +1,6 @@
 require('../testUtils');
 const assert = require('node:assert');
-const { setupTestDBPath } = require('../testUtils');
+const { setupTestDBPath, routePutThroughPutSync } = require('../testUtils');
 const { closeDatabase, database: openDatabase, databases, resetDatabases, table } = require('#src/resources/databases');
 const { suspendDerivedIndexActivation } = require('#src/resources/derivedIndexes');
 
@@ -13,6 +13,7 @@ function attributes() {
 function definition(name = 'search') {
 	return { name, fields: [{ name: 'title', weight: 1 }] };
 }
+
 const rocksOnly = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
 rocksOnly('durable full-text declarations', () => {
 	let database;
@@ -282,6 +283,7 @@ rocksOnly('durable full-text declarations', () => {
 			};
 			patched.push([method, original]);
 		}
+		const restorePut = routePutThroughPutSync(Product.dbisDB);
 		try {
 			assert.throws(
 				() =>
@@ -292,6 +294,7 @@ rocksOnly('durable full-text declarations', () => {
 				/peer attribute write failed/
 			);
 		} finally {
+			restorePut();
 			for (const [method, original] of patched) catalogPrototype[method] = original;
 		}
 

@@ -4,6 +4,7 @@
 // from component code (e.g. Next.js's `unhandledRejection` handler) is
 // intercepted in workers.
 const { realExit } = require('./workerProcessGuard.ts');
+const { nativeAddonGuardExecArgv } = require('./nativeAddonGuard.ts');
 
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { spawnSync } = require('node:child_process');
@@ -21,9 +22,10 @@ const envMgr = require('../../utility/environment/environmentManager.ts');
 const harperLogger = require('../../utility/logging/harper_logger.ts');
 const { randomBytes } = require('crypto');
 const { _assignPackageExport } = require('../../globals.js');
-const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
+const { PACKAGE_ROOT, PRODUCT_NAME } = require('../../utility/packageUtils.js');
 const { resolvePreloadModules } = require('./resolvePreload.ts');
 const { resolveThreadHeapMemoryMb } = require('./threadHeapMemory.ts');
+const { applyConfiguredV8Flags } = require('./v8Flags.ts');
 const { getConfigPath } = require('../../config/configUtils.ts');
 const { resolveWatchTarget } = require('../../utility/watchPath.ts');
 const {
@@ -1218,6 +1220,7 @@ function startWorker(path, options = {}, startOptions = {}) {
 		error.code = 'ERR_HARPER_PROCESS_SHUTTING_DOWN';
 		throw error;
 	}
+	applyConfiguredV8Flags();
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
 	// on the thread count. Generally, it is unrealistic to efficiently use the majority of total memory for a single
 	// NodeJS worker since it would lead to massive swap space usage with other processes and there is significant
@@ -1256,6 +1259,8 @@ function startWorker(path, options = {}, startOptions = {}) {
 	const execArgv = isBun
 		? []
 		: [
+				// first: --require modules run in order and before every --import, so the guard precedes the preloads below
+				...nativeAddonGuardExecArgv(),
 				'--experimental-vm-modules', // used for giving applications their own top level scope
 				'--disable-warning=ExperimentalWarning', // yeah, yeah, we know it is experimental
 				'--expose-internals', // expose Node.js internal utils so jsLoader can use `decorateErrorStack()`
@@ -3178,7 +3183,7 @@ if (isMainThread) {
 					queuedRestart = setTimeout(async () => {
 						if (beforeRestart) await beforeRestart();
 						await restartWorkers(undefined, undefined, true, null, '*');
-						console.log('Reloaded Harper components, changed files:', Array.from(changedFiles));
+						console.log(`Reloaded ${PRODUCT_NAME} components, changed files:`, Array.from(changedFiles));
 						changedFiles.clear();
 					}, 100);
 				});

@@ -1,13 +1,7 @@
 /** Like harperLogger, but conditionally exports functions based on the log level. */
 import harperLogger from './harper_logger.ts';
 
-export const logger: Logger = {};
-
-for (let level of ['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'notify']) {
-	if (harperLogger.logsAtLevel(level)) {
-		logger[level] = harperLogger[level];
-	}
-}
+export const logger: Logger = harperLogger.conditional;
 
 export function loggerWithTag(tag: string): Logger {
 	return harperLogger.loggerWithTag(tag, true) as Logger;

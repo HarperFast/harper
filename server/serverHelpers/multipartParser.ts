@@ -2,6 +2,7 @@ import busboy from 'busboy';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { Readable, Writable } from 'node:stream';
 import { ClientError } from '../../utility/errors/hdbError.ts';
+import { PROTOTYPE_POLLUTING_NAMES } from '../../utility/hdbTerms.ts';
 import { logger } from '../../utility/logging/logger.ts';
 
 interface MultipartBody {
@@ -11,7 +12,7 @@ interface MultipartBody {
 
 const FIELD_SIZE_LIMIT = 1024 * 1024; // 1 MB per non-file field — generous for JSON params
 const MAX_FIELDS = 64;
-const UNSAFE_FIELD_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
+const UNSAFE_FIELD_NAMES: ReadonlySet<string> = new Set(PROTOTYPE_POLLUTING_NAMES);
 // Operation handlers stream the file part directly into extraction (gunzip + tar-fs),
 // so there is no separate filesize cap to enforce here. Backpressure flows through busboy
 // → the file Readable → the consumer, bounded by disk space rather than memory.

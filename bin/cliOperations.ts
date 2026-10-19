@@ -16,6 +16,7 @@ import { encode as encodeCbor } from 'cbor-x';
 import { buildMultipartBody } from './multipartBuilder.ts';
 import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
+import { PRODUCT_NAME } from '../utility/packageUtils.js';
 import { getHdbPid } from '../utility/processManagement/processManagement.js';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
 // The `deploy setup` seal and this by-reference flag both name the same hdb_secret row, and the
@@ -29,7 +30,7 @@ const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
 // socket, or a refused/ENOENT connect against it) — they're all the same user-facing
 // scenario: Harper isn't running. Remote-target failures keep the detailed error instead,
 // since there's no single "just start it" fix for those.
-const LOCAL_NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or `harperdb start`) to start it.';
+const LOCAL_NOT_RUNNING_MESSAGE = `${PRODUCT_NAME} is not running. Use \`harperdb run\` (or \`harperdb start\`) to start it.`;
 
 // Operations whose responses should be consumed as text/event-stream so live phase events
 // (prepare, load, replicate, restart) render as they happen instead of after the whole
@@ -306,6 +307,7 @@ export {
 	refreshExpiredOperationToken,
 	transportContext,
 	resolveGitTarget,
+	resolveGitRepo,
 	resolveCredentialHost,
 	deriveGitSecretName,
 };
@@ -628,12 +630,18 @@ const PREPARE_OPERATION: any = {
  */
 function buildRequest(): any {
 	const req: any = {};
+	// Each value as typed, before JSON parsing, for a client-side flow whose arguments are opaque text
+	// (`harper deploy setup=true branch=1.0`). Non-enumerable so it never reaches a request body or a
+	// log: the raw strings include `auth_password=` and every other credential argument.
+	const rawArgs: Record<string, string> = {};
+	Object.defineProperty(req, '_rawArgs', { value: rawArgs, enumerable: false, writable: true });
 	for (const arg of process.argv.slice(2)) {
 		if (OP_ALIASES.hasOwnProperty(arg)) {
 			req.operation = OP_ALIASES[arg];
 		} else if (arg.includes('=')) {
 			let [first, ...rest] = arg.split('=');
 			let restStr: any = rest.join('=');
+			rawArgs[first] = restStr;
 
 			if (!RAW_STRING_FIELDS.has(first)) {
 				try {
@@ -770,7 +778,7 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 	} else {
 		// if we aren't doing a targeted operation (like deploy), we initialize the config and verify that local harper
 		// is running and that we can communicate with it.
-		console.error('Connecting to local Harper instance');
+		console.error(`Connecting to local ${PRODUCT_NAME} instance`);
 		initConfig();
 		if (!getHdbPid()) {
 			console.error(LOCAL_NOT_RUNNING_MESSAGE);

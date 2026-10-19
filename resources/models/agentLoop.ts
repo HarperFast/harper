@@ -733,7 +733,7 @@ function collectDeclaredToolNames(tools: ToolDef[] | undefined): Set<string> {
 	return names;
 }
 
-function errorInfo(err: unknown): { name: string; message: string } {
+export function errorInfo(err: unknown): { name: string; message: string } {
 	if (err instanceof Error) {
 		return { name: err.name, message: err.message };
 	}
@@ -756,7 +756,12 @@ interface SerializedResult {
 	truncated: boolean;
 }
 
-function serializeToolResult(value: unknown, maxBytes: number): SerializedResult {
+/**
+ * JSON-serialize a tool result, cutting it to at most `maxBytes` UTF-8 bytes (whenever `maxBytes`
+ * exceeds the marker) with a marker naming the original size and, when given, `hint`. Throws what
+ * `JSON.stringify` throws (BigInt, cycles), so callers keep it inside their tool-error handling.
+ */
+export function serializeToolResult(value: unknown, maxBytes: number, hint?: string): SerializedResult {
 	// `JSON.stringify(Symbol())` (and `JSON.stringify(function(){})`) return `undefined`.
 	// `value ?? null` only catches null/undefined inputs, not unsupported types — fall
 	// back to the string 'null' so downstream `Buffer.byteLength` never sees undefined.
@@ -769,19 +774,29 @@ function serializeToolResult(value: unknown, maxBytes: number): SerializedResult
 	}
 	// Truncated form: head of the JSON + a marker that names the original size. The
 	// content is no longer valid JSON — that's intentional, the model reads it as text
-	// alongside the marker. Pre-slice the JSON string by CHARACTERS to `headBudget`
-	// before converting to a Buffer — any character takes at least one UTF-8 byte, so
-	// the pre-sliced string already fits in (4 * headBudget) bytes worst-case. Without
-	// this, a multi-MB JSON result would materialize a multi-MB Buffer copy just to
-	// throw away >99 % of it via `subarray`. After conversion, `subarray(0, headBudget)`
-	// trims to exact byte budget; `toString('utf8')` folds a split codepoint at the
-	// boundary into U+FFFD.
-	const marker = `…[truncated; full result is ${totalBytes} bytes]`;
-	const markerBytes = Buffer.byteLength(marker, 'utf8');
-	const headBudget = Math.max(0, maxBytes - markerBytes);
-	const buf = Buffer.from(json.slice(0, headBudget), 'utf8');
-	const body = buf.subarray(0, headBudget).toString('utf8');
-	return { content: body + marker, totalBytes, truncated: true };
+	// alongside the marker.
+	const marker = `…[truncated; full result is ${totalBytes} bytes${hint ? `. ${hint}` : ''}]`;
+	return { content: truncateWithMarker(json, maxBytes, marker), totalBytes, truncated: true };
+}
+
+/** The head of `text` followed by `marker`, at most `maxBytes` UTF-8 bytes whenever `marker` itself fits. */
+export function truncateWithMarker(text: string, maxBytes: number, marker: string): string {
+	return utf8Head(text, Math.max(0, maxBytes - Buffer.byteLength(marker, 'utf8'))) + marker;
+}
+
+/** The longest prefix of `text` whose UTF-8 encoding fits in `maxBytes`, without splitting a character. */
+function utf8Head(text: string, maxBytes: number): string {
+	// Every character takes at least one UTF-8 byte, so slicing to `maxBytes` characters first bounds
+	// the Buffer copy to 4 * maxBytes bytes, however large `text` is. Dropping a trailing high
+	// surrogate keeps a split pair from encoding as U+FFFD.
+	let chars = Math.min(text.length, maxBytes);
+	const last = text.charCodeAt(chars - 1);
+	if (chars < text.length && last >= 0xd800 && last <= 0xdbff) chars--;
+	const buf = Buffer.from(text.slice(0, chars), 'utf8');
+	if (buf.length <= maxBytes) return buf.toString('utf8');
+	let end = maxBytes;
+	while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+	return buf.subarray(0, end).toString('utf8');
 }
 
 /**

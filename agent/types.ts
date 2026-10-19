@@ -66,6 +66,8 @@ export interface AgentSessionRow {
 	createdAt: number;
 	updatedAt: number;
 	lastError?: string;
+	/** Usage of billed model calls whose reply was rejected and kept out of `messages`; folded into the session's usage. */
+	rejectedCalls?: AgentCallUsage[];
 }
 
 export interface AgentToolHandler {
@@ -84,6 +86,8 @@ export interface AgentToolContext {
 	signal?: AbortSignal;
 	/** Filesystem scope roots accessible to FS tools. Read-only after composition. */
 	scopes: AgentScopes;
+	/** Byte cap the loop applies to each tool result; read tools size their pages to fit under it. */
+	maxResultBytes?: number;
 }
 
 export interface AgentScopes {
@@ -105,6 +109,9 @@ export interface AgentConfig {
 	provider?: string;
 	model?: string;
 	maxTurns: number;
+	maxTokens: number;
+	/** Largest tool result, in bytes of serialized JSON, the loop appends to the transcript. */
+	maxToolResultBytes: number;
 	/** Per-session cap on prompt + completion tokens. Unset: uncapped. */
 	maxSessionTokens?: number;
 	/** Per-session cap in USD, from the serving model entry's `pricing`. Unset: uncapped. */

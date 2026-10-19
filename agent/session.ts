@@ -12,7 +12,7 @@
 import { randomUUID } from 'node:crypto';
 import { table } from '../resources/databases.ts';
 import { SYSTEM_SCHEMA_NAME, SYSTEM_TABLE_NAMES } from '../utility/hdbTerms.ts';
-import type { AgentMessage, AgentRunStatus, AgentSessionRow, ApprovalRequest } from './types.ts';
+import type { AgentCallUsage, AgentMessage, AgentRunStatus, AgentSessionRow, ApprovalRequest } from './types.ts';
 
 let cachedTable: any;
 
@@ -28,6 +28,7 @@ export const AGENT_SESSION_ATTRIBUTES = [
 	{ name: 'createdAt', type: 'number', indexed: true },
 	{ name: 'updatedAt', type: 'number', indexed: true },
 	{ name: 'lastError', type: 'string' },
+	{ name: 'rejectedCalls' },
 ];
 
 export function getAgentSessionTable(): any {
@@ -136,6 +137,37 @@ export function setStatus(sessionId: string, status: AgentRunStatus, lastError?:
 }
 
 /**
+ * Find the newest tool message larger than `maxBytes` and replace every message over `maxBytes` in
+ * its run of consecutive tool messages with `shrink(content)`, which must return at most `maxBytes`.
+ * Returns how many messages changed; 0 means no tool message is over `maxBytes`.
+ */
+export function shrinkNewestToolResults(
+	sessionId: string,
+	maxBytes: number,
+	shrink: (content: string) => string
+): Promise<number> {
+	return withSessionLock(sessionId, async () => {
+		const session = await requireSession(sessionId);
+		const { messages } = session;
+		const oversized = (message: AgentMessage) =>
+			message.role === 'tool' && Buffer.byteLength(message.content, 'utf8') > maxBytes;
+		let index = messages.length - 1;
+		while (index >= 0 && !oversized(messages[index])) index--;
+		if (index < 0) return 0;
+		while (index > 0 && messages[index - 1].role === 'tool') index--;
+		let shrunk = 0;
+		for (; index < messages.length && messages[index].role === 'tool'; index++) {
+			if (!oversized(messages[index])) continue;
+			messages[index] = { ...messages[index], content: shrink(messages[index].content) };
+			shrunk++;
+		}
+		session.updatedAt = Date.now();
+		await getAgentSessionTable().put(session);
+		return shrunk;
+	});
+}
+
+/**
  * Every status the loop writes after `running` goes through here, in one write with its closing messages
  * and any open approvals answered under the lock: a crash cannot persist an assistant's tool calls
  * without the responses a provider requires before the next call, and a cancel that landed first keeps
@@ -146,6 +178,8 @@ export function endRun(
 	end: {
 		append?: AgentMessage[];
 		answerOpenApprovals?: (approval: ApprovalRequest) => string;
+		/** A billed call whose reply was rejected; recorded beside the transcript, never in it. */
+		rejectedCall?: AgentCallUsage;
 		status: AgentRunStatus;
 		lastError?: string;
 	}
@@ -153,6 +187,7 @@ export function endRun(
 	return withSessionLock(sessionId, async () => {
 		const session = await requireSession(sessionId);
 		if (end.append) session.messages.push(...end.append);
+		if (end.rejectedCall) (session.rejectedCalls ??= []).push(end.rejectedCall);
 		const now = Date.now();
 		if (end.answerOpenApprovals) closeOpenApprovals(session, end.answerOpenApprovals, now);
 		if (session.status !== 'aborted') {
