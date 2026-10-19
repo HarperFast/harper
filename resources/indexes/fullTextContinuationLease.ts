@@ -1,3 +1,4 @@
+import { fullTextContinuationNow } from './fullTextContinuationClock.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import type { FullTextCursorClaim } from './fullTextContinuation.ts';
 import { FullTextContinuationToken, type FullTextContinuationPosition } from './fullTextContinuationToken.ts';
@@ -44,7 +45,7 @@ export class FullTextContinuationLeases {
 		reader: NativeFullTextReader,
 		release: () => void | Promise<void>
 	): void {
-		const duration = Number((claim.expires - process.hrtime.bigint()) / 1_000_000n);
+		const duration = Number((claim.expires - fullTextContinuationNow()) / 1_000_000n);
 		if (
 			this.#leases.has(claim.id) ||
 			duration < 1 ||
@@ -58,7 +59,7 @@ export class FullTextContinuationLeases {
 			() => {
 				this.#expire(claim.id);
 			},
-			Math.max(1, Number((claim.expires - process.hrtime.bigint()) / 1_000_000n))
+			Math.max(1, Number((claim.expires - fullTextContinuationNow()) / 1_000_000n))
 		);
 		timer.unref();
 		this.#leases.set(claim.id, {
@@ -104,7 +105,7 @@ export class FullTextContinuationLeases {
 			position.consumed > position.batchSize
 		)
 			throw new ClientError('Invalid full-text continuation page', 400);
-		const remaining = Number((deadline - process.hrtime.bigint()) / 1_000_000n);
+		const remaining = Number((deadline - fullTextContinuationNow()) / 1_000_000n);
 		if (!Number.isSafeInteger(remaining) || remaining < 1)
 			throw new ServerError('Full-text continuation exceeded its request budget', 503);
 		return this.#use(lease, async () => {
@@ -119,7 +120,7 @@ export class FullTextContinuationLeases {
 				(position.boundary !== undefined && page.continuation === position.boundary)
 			)
 				throw new ServerError('Full-text continuation returned an invalid replay boundary', 500);
-			if (process.hrtime.bigint() >= deadline)
+			if (fullTextContinuationNow() >= deadline)
 				throw new ServerError('Full-text continuation exceeded its request budget', 503);
 			return page;
 		});
@@ -169,7 +170,7 @@ export class FullTextContinuationLeases {
 	#get(id: string, queryHash: string): Lease {
 		const lease = this.#leases.get(id);
 		if (!lease || lease.revoked || lease.queryHash !== queryHash) throw expired();
-		if (lease.claim.expires <= process.hrtime.bigint()) {
+		if (lease.claim.expires <= fullTextContinuationNow()) {
 			this.#expire(id);
 			throw expired();
 		}

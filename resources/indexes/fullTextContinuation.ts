@@ -6,12 +6,9 @@ import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, ITC_EVENT_TYPES } from '../../utility/hdbTerms.ts';
 import { hasThreadExited, onThreadExit, sendToThread } from '../../server/threads/manageThreads.js';
-import {
-	fullTextContinuationDeadline,
-	type FullTextSearchLimits,
-	resolveFullTextSearchLimits,
-} from './fullTextSearchLimits.ts';
-export { fullTextContinuationDeadline } from './fullTextSearchLimits.ts';
+import { type FullTextSearchLimits, resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
+import { fullTextContinuationDeadline, fullTextContinuationNow } from './fullTextContinuationClock.ts';
+export { fullTextContinuationDeadline } from './fullTextContinuationClock.ts';
 
 export type FullTextCursorClaim = { id: string; expires: bigint; expiresAt: number };
 type Claim = FullTextCursorClaim & { owner: number; bytes: number; admissionDeadline?: bigint };
@@ -162,9 +159,9 @@ export async function fullTextContinuationRequest(event: { message?: Request }, 
 			id: message.id,
 			originator: threadId,
 			error: {
-				status: error.statusCode,
-				message: error.message,
-				code: typeof error.code === 'string' ? error.code : undefined,
+				status: error?.statusCode,
+				message: error instanceof Error ? error.message : String(error),
+				code: typeof error?.code === 'string' ? error.code : undefined,
 			},
 		};
 	}
@@ -211,8 +208,8 @@ function dispatch(
 		id: randomBytes(16).toString('hex'),
 		owner,
 		bytes: command.bytes,
-		admissionDeadline: process.hrtime.bigint() + BigInt(millisecondsRemaining(deadline, policy)) * 1_000_000n,
-		expires: process.hrtime.bigint() + BigInt(policy.cursorTtlMilliseconds) * 1_000_000n,
+		admissionDeadline: fullTextContinuationNow() + BigInt(millisecondsRemaining(deadline, policy)) * 1_000_000n,
+		expires: fullTextContinuationNow() + BigInt(policy.cursorTtlMilliseconds) * 1_000_000n,
 		expiresAt: Date.now() + policy.cursorTtlMilliseconds,
 	};
 	claims.set(claim.id, claim);
@@ -230,7 +227,7 @@ function release(id: string, owner: number): void {
 }
 
 function prune(): void {
-	const now = process.hrtime.bigint();
+	const now = fullTextContinuationNow();
 	for (const [id, claim] of claims) {
 		if (
 			claim.expires <= now ||
@@ -255,7 +252,7 @@ function armExpiry(): void {
 		if (earliest === undefined || expires < earliest) earliest = expires;
 	}
 	if (earliest === undefined) return;
-	const delay = Math.max(1, Number((earliest - process.hrtime.bigint()) / 1_000_000n));
+	const delay = Math.max(1, Number((earliest - fullTextContinuationNow()) / 1_000_000n));
 	expiryTimer = setTimeout(() => {
 		prune();
 		armExpiry();
@@ -265,7 +262,7 @@ function armExpiry(): void {
 
 function millisecondsRemaining(deadline: bigint, policy: FullTextSearchLimits): number {
 	if (typeof deadline !== 'bigint') throw unavailable();
-	const remaining = Number((deadline - process.hrtime.bigint()) / 1_000_000n);
+	const remaining = Number((deadline - fullTextContinuationNow()) / 1_000_000n);
 	if (remaining < 1) throw unavailable('exceeded its request budget');
 	return Math.min(remaining, policy.requestBudgetMilliseconds, 0x7fffffff);
 }

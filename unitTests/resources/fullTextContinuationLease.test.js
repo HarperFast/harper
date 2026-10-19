@@ -1,5 +1,6 @@
 require('../testUtils');
 const assert = require('node:assert');
+const { fullTextContinuationNow } = require('#src/resources/indexes/fullTextContinuationClock');
 const { randomBytes } = require('node:crypto');
 const { mkdtemp, rm } = require('node:fs/promises');
 const { join } = require('node:path');
@@ -63,14 +64,14 @@ describe('retained full-text reader leases with the native addon', () => {
 		}
 	) {
 		leases.register(
-			{ id, expires: process.hrtime.bigint() + BigInt(ttl) * 1000000n, expiresAt: Date.now() + ttl },
+			{ id, expires: fullTextContinuationNow() + BigInt(ttl) * 1000000n, expiresAt: Date.now() + ttl },
 			queryHash,
 			query,
 			reader,
 			release
 		);
 	}
-	const deadline = () => process.hrtime.bigint() + 5000000000n;
+	const deadline = () => fullTextContinuationNow() + 5000000000n;
 
 	for (const expire of [false, true]) {
 		it(`keeps a borrowed native reader alive while ${expire ? 'expiry' : 'revocation'} waits for tracing`, async function () {

@@ -560,8 +560,17 @@ First-page highlighting uses the retained reader through the lease registry's ac
 Native reads and tracing share its drain accounting, so expiry or revocation cannot release a
 reader underneath either operation. Resumed highlighting still owns a separate local tracing
 lease. Only that independently acquired lease is released at page end. Page validation imports
-the pure deadline helper from the limits module; the adapter loads admission on first continuation
-use, preserving lazy admission initialization even when database startup loads the query adapter.
+its deadline helper from `fullTextContinuationClock.ts`; the limits module stays native-free. The
+adapter loads admission on first continuation use, preserving lazy admission initialization even
+when database startup loads the query adapter.
+
+Request deadlines and reader expiry use `steadyClockNow()` from the pinned RocksDB dependency.
+It has one steady clock domain across all workers, including workers started later. Bun's
+`process.hrtime.bigint()` has a separate origin in each worker, so those readings cannot be
+exchanged as absolute deadlines. `derivedIndexTime()` is a wall-clock transaction timestamp and
+cannot replace this clock. Convert to local `performance.now()` deadlines only by transferring
+the remaining duration. The wall-clock `expiresAt` value is display metadata; it does not govern
+expiry. Timers and native reader cleanup are cooperative and can run late under event-loop load.
 
 REST keeps the array body and returns continuation metadata in headers. A resumed request does not
 claim coverage from the worker's newer reader slot.

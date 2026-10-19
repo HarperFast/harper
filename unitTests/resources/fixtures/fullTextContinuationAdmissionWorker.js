@@ -8,7 +8,7 @@ const {
 	fullTextContinuationDeadline,
 } = require('#src/resources/indexes/fullTextContinuation');
 const claims = [];
-let writer, reader, releaseGate, restoreReleasePolicy;
+let writer, reader, releaseGate, restoreReleasePolicy, releaseFailure;
 onMessageByType('full-text-admission-test-command', async (event) => {
 	try {
 		if (event.message.operation === 'table-terminal-release') {
@@ -129,6 +129,7 @@ onMessageByType('full-text-admission-test-command', async (event) => {
 				}
 				try {
 					await releaseFullTextContinuation(claim.id);
+					if (releaseFailure) throw releaseFailure.value;
 				} finally {
 					restoreReleasePolicy?.();
 					restoreReleasePolicy = undefined;
@@ -154,13 +155,15 @@ onMessageByType('full-text-admission-test-command', async (event) => {
 			await writer.close();
 			for (const claim of claims.splice(0)) await releaseFullTextContinuation(claim.id);
 		} else if (event.message.operation === 'unblock-release') {
-			if (event.message.failRelease) {
+			if (event.message.failRelease === true) {
 				const env = require('#src/utility/environment/environmentManager');
 				const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 				const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
 				restoreReleasePolicy = () => env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
 				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, maxPendingResponseBytes: 1 });
 			}
+			if (event.message.failRelease !== false && event.message.failRelease !== true)
+				releaseFailure = { value: event.message.failRelease };
 			releaseGate?.resolve();
 		} else if (event.message.operation === 'reserve')
 			claims.push(await reserveFullTextContinuation(128, fullTextContinuationDeadline()));

@@ -2,7 +2,8 @@ import { threadId } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
-import { fullTextContinuationDeadline, resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
+import { resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
+import { fullTextContinuationDeadline, fullTextContinuationNow } from './fullTextContinuationClock.ts';
 import { peekFullTextContinuationOwner, fullTextContinuationOwner } from './fullTextContinuationOwner.ts';
 import { FullTextContinuationPage, FULL_TEXT_CONTINUATION_VERSION } from './fullTextContinuationPage.ts';
 import type { FullTextContinuationPosition } from './fullTextContinuationToken.ts';
@@ -246,7 +247,7 @@ export class FullTextQueryIndex {
 					Math.min(
 						waitForIndexMilliseconds,
 						options.continuationPage
-							? Math.max(0, Number((options.continuationPage.deadline - process.hrtime.bigint()) / 1_000_000n))
+							? Math.max(0, Number((options.continuationPage.deadline - fullTextContinuationNow()) / 1_000_000n))
 							: Infinity
 					);
 				const started = derivedIndexTime(this.#options.Table.primaryStore.rootStore);
@@ -384,7 +385,7 @@ export class FullTextQueryIndex {
 		const acquisitionTimeout = Math.min(
 			deadline === undefined
 				? MAX_WAIT_FOR_INDEX_MILLISECONDS
-				: Math.max(1, Number((deadline - process.hrtime.bigint()) / 1_000_000n)),
+				: Math.max(1, Number((deadline - fullTextContinuationNow()) / 1_000_000n)),
 			Math.max(1, condition.waitForIndexMilliseconds ?? MAX_WAIT_FOR_INDEX_MILLISECONDS)
 		);
 		const acquisition = this.#acquireReader(readiness.ownerEpoch, publicationGeneration);
@@ -700,7 +701,7 @@ export class FullTextQueryIndex {
 		};
 		const assertActive = () => {
 			assertContextActive();
-			if (process.hrtime.bigint() >= page.deadline)
+			if (fullTextContinuationNow() >= page.deadline)
 				throw new ServerError('Full-text continuation exceeded its request budget', 503);
 		};
 		assertActive();
@@ -789,7 +790,7 @@ export class FullTextQueryIndex {
 						page.deadline
 					)) as NativeFullTextSearchPageResult;
 				} catch (error) {
-					if (position.consumed === 0 && position.batchSize > 1 && error.code === 'E_RESULT_TOO_LARGE') {
+					if (position.consumed === 0 && position.batchSize > 1 && error?.code === 'E_RESULT_TOO_LARGE') {
 						position.batchSize = Math.max(1, Math.floor(position.batchSize / 2));
 						continue;
 					}
@@ -832,7 +833,7 @@ export class FullTextQueryIndex {
 								trace.definition,
 								condition,
 								accepted,
-								performance.now() + Number((page.deadline - process.hrtime.bigint()) / 1_000_000n)
+								performance.now() + Number((page.deadline - fullTextContinuationNow()) / 1_000_000n)
 							);
 						if (readerLease) await owner.leases.withReader(claim.id, page.queryHash, highlight);
 						else await highlight(trace.reader);

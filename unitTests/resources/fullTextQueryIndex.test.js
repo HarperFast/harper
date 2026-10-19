@@ -1,5 +1,6 @@
 require('../testUtils');
 const assert = require('node:assert');
+const { fullTextContinuationNow } = require('#src/resources/indexes/fullTextContinuationClock');
 const { toBufferKey } = require('ordered-binary');
 const { waitFor } = require('../waitFor');
 const { publishDerivedIndexReadiness } = require('#src/resources/derivedIndexRuntime');
@@ -431,7 +432,7 @@ describe('FullTextQueryIndex', () => {
 								if (!crossedDeadline) {
 									crossedDeadline = true;
 									const waiting = new Int32Array(new SharedArrayBuffer(4));
-									while (process.hrtime.bigint() <= page.deadline) Atomics.wait(waiting, 0, 0, 1);
+									while (fullTextContinuationNow() <= page.deadline) Atomics.wait(waiting, 0, 0, 1);
 								}
 							}
 						},
@@ -520,6 +521,42 @@ describe('FullTextQueryIndex', () => {
 			await index.close();
 		}
 	});
+
+	for (const failure of [null, 'native interruption', 17]) {
+		it(`preserves a non-Error cancellation from a continuation read: ${String(failure)}`, async function () {
+			const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
+			if (!(await supportsPublishedFullTextBinding())) this.skip();
+			const { FullTextContinuationPage } = require('#src/resources/indexes/fullTextContinuationPage');
+			const controller = new AbortController();
+			const auditStore = sharedStore();
+			const readinessId = `continuation-non-error-${String(failure)}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				hits: () => [],
+				searchPageResult() {
+					controller.abort(failure);
+					throw failure;
+				},
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			const page = new FullTextContinuationPage({ continuation: true, limit: 1 }, readinessId);
+			page.materialize = async (entries) => entries;
+			page.ready.resolve();
+			try {
+				await index
+					.search({ comparator: 'matches', value: 'shoe' }, { signal: controller.signal }, { continuationPage: page })
+					.then(
+						() => assert.fail('Expected cancellation'),
+						(error) => assert.strictEqual(error, failure)
+					);
+			} finally {
+				await index.close();
+			}
+		});
+	}
 
 	for (const repeatBoundary of [true, false]) {
 		it(`rejects repeated continuation hits with ${repeatBoundary ? 'the same' : 'a different'} native boundary`, async function () {

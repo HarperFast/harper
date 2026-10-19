@@ -1,3 +1,4 @@
+import { fullTextContinuationNow } from './fullTextContinuationClock.ts';
 import { threadId } from 'node:worker_threads';
 import { serialize } from 'node:v8';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
@@ -75,7 +76,7 @@ export async function executeFullTextContinuationOwner(
 	deadline: bigint
 ): Promise<FullTextContinuationOwnerResult> {
 	const { leases, responseBytes } = await fullTextContinuationOwner();
-	if (process.hrtime.bigint() >= deadline)
+	if (fullTextContinuationNow() >= deadline)
 		throw new ServerError('Full-text continuation exceeded its request budget', 503);
 	if (!command || !/^[a-f0-9]{64}$/.test(command.queryHash))
 		throw new ClientError('Invalid full-text continuation request', 400);

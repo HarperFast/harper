@@ -517,7 +517,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 						resolveFullTextSearchLimits(value);
 						return value;
 					} catch (error) {
-						return helpers.message({ custom: error.message });
+						return helpers.message({ custom: error instanceof Error ? error.message : String(error) });
 					}
 				})
 				.optional(),

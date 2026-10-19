@@ -34,10 +34,6 @@ export const DEFAULT_FULL_TEXT_SEARCH_LIMITS: FullTextSearchLimits = Object.free
 const policyDefaults = Object.entries(DEFAULT_FULL_TEXT_SEARCH_LIMITS).filter(([name]) => name !== 'runtime');
 const runtimeDefaults = Object.entries(DEFAULT_FULL_TEXT_SEARCH_LIMITS.runtime);
 
-export function fullTextContinuationDeadline(policy: FullTextSearchLimits = DEFAULT_FULL_TEXT_SEARCH_LIMITS): bigint {
-	return process.hrtime.bigint() + BigInt(policy.requestBudgetMilliseconds) * 1_000_000n;
-}
-
 export function resolveFullTextSearchLimits(value: unknown): FullTextSearchLimits {
 	if (value === undefined) return DEFAULT_FULL_TEXT_SEARCH_LIMITS;
 	const config = object(value, 'storage.fullText');

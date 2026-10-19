@@ -1,5 +1,6 @@
 require('../testUtils');
 const assert = require('node:assert');
+const { fullTextContinuationNow } = require('#src/resources/indexes/fullTextContinuationClock');
 const { once } = require('node:events');
 const { mkdtemp, rm } = require('node:fs/promises');
 const { join } = require('node:path');
@@ -54,7 +55,7 @@ async function terminateWorker(worker) {
 describe('full-text process-wide continuation admission', () => {
 	it('rejects a real worker Table.search terminal page when admission release fails', async function () {
 		this.timeout(20000);
-		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !(await supportsPublishedFullTextBinding())) this.skip();
 		const database = `fulltext-worker-release-${process.pid}-${Date.now()}`;
 		require('#src/resources/databases').database({ database });
 		let worker;
@@ -196,10 +197,63 @@ describe('full-text process-wide continuation admission', () => {
 		}
 	});
 
-	for (const failRelease of [false, true]) {
+	it('keeps the original worker lease expiry and recovers admission after expiry', async function () {
+		this.timeout(15000);
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+		env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, maxCursors: 1, cursorTtlMilliseconds: 1000 });
+		const path = await mkdtemp(join(__dirname, '../envDir/', String(process.pid), 'continuation-expiry-'));
+		let worker, replacement;
+		try {
+			worker = startWorker(require.resolve('./fixtures/fullTextContinuationAdmissionWorker.js'), {
+				name: 'full-text-expiry-test',
+				autoRestart: false,
+				workerIndex: 0,
+				threadCount: 1,
+			});
+			assert.strictEqual((await response(worker)).ready, true);
+			const opened = await response(worker, { operation: 'open', path });
+			assert(opened.token, opened.error);
+			const resume = () =>
+				requestFullTextContinuationOwner(
+					worker.threadId,
+					{ operation: 'resume', token: opened.token, queryHash: 'b'.repeat(64) },
+					fullTextContinuationDeadline()
+				);
+			assert.strictEqual((await resume()).claim.expires, opened.claim.expires);
+			assert(opened.claim.expires <= fullTextContinuationNow() + 1000000000n);
+			await waitFor(async () => {
+				try {
+					await resume();
+					return false;
+				} catch (error) {
+					if (error.statusCode !== 410) throw error;
+					return true;
+				}
+			}, 5000);
+			await waitFor(async () => {
+				try {
+					replacement = await reserveFullTextContinuation(128, fullTextContinuationDeadline());
+					return true;
+				} catch (error) {
+					if (error.statusCode !== 503) throw error;
+					return false;
+				}
+			}, 5000);
+			assert(replacement.id);
+			await response(worker, 'shutdown');
+		} finally {
+			if (replacement) await releaseFullTextContinuation(replacement.id);
+			await terminateWorker(worker);
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+			await rm(path, { recursive: true, force: true });
+		}
+	});
+
+	for (const failRelease of [false, true, null, 'release interrupted']) {
 		it(
-			failRelease
-				? 'reports real admission-release failure through owner close'
+			failRelease !== false
+				? `reports admission-release failure through owner close: ${String(failRelease)}`
 				: 'acknowledges owner release before close permits an immediate replacement search',
 			async function () {
 				this.timeout(15000);
@@ -242,10 +296,14 @@ describe('full-text process-wide continuation admission', () => {
 					);
 					await response(worker, { operation: 'unblock-release', failRelease });
 					await waitFor(() => closed || closeError, 10000);
-					if (failRelease) {
+					if (failRelease === true) {
 						assert(closeError instanceof ServerError);
 						assert.strictEqual(closeError.statusCode, 503);
 						assert.match(closeError.message, /maxPendingResponseBytes/);
+						assert.strictEqual(closed, false);
+					} else if (failRelease !== false) {
+						assert(closeError instanceof Error);
+						assert.strictEqual(closeError.message, String(failRelease));
 						assert.strictEqual(closed, false);
 					} else {
 						assert.ifError(closeError);
@@ -370,7 +428,7 @@ describe('full-text process-wide continuation admission', () => {
 		env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { maxCursors: 1 });
 		let replacement;
 		try {
-			const lost = await reserveFullTextContinuation(128, process.hrtime.bigint() + 100_000_000n);
+			const lost = await reserveFullTextContinuation(128, fullTextContinuationNow() + 100_000_000n);
 			await assert.rejects(
 				reserveFullTextContinuation(128, fullTextContinuationDeadline()),
 				(error) => error.statusCode === 503
