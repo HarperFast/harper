@@ -2022,6 +2022,38 @@ describe('agent/loop never overwrites a cancel', () => {
 		assert.ok(answers.every((m) => JSON.parse(m.content).error === 'run_failed'));
 	});
 
+	it("a failed run answers a dead run's unanswered call in place, ahead of a later prompt", async () => {
+		const sessionId = await newSession();
+		await session.appendMessage(sessionId, {
+			role: 'assistant',
+			content: '',
+			toolCalls: [{ id: 'c1', name: 'read', arguments: {} }],
+			createdAt: 1,
+		});
+		await session.cancelSession(sessionId);
+		await session.appendMessage(sessionId, { role: 'user', content: 'what happened?', createdAt: 2 });
+		const table = session.getAgentSessionTable();
+		const put = table.put.bind(table);
+		let faulted = false;
+		table.put = async (row) => {
+			if (!faulted && row.messages.some((m) => m.role === 'tool')) {
+				faulted = true;
+				throw new Error('storage fault');
+			}
+			return put(row);
+		};
+		await assert.rejects(
+			runAgent({ sessionId, models: stubModels([]), tools: [tool('read')], scopes, maxTurns: 5, autoApprove: false }),
+			/storage fault/
+		);
+		const failed = await session.getSession(sessionId);
+		assert.deepStrictEqual(
+			failed.messages.map((m) => m.toolCallId ?? m.role),
+			['user', 'assistant', 'c1', 'user']
+		);
+		assert.equal(JSON.parse(failed.messages[2].content).error, 'run_failed');
+	});
+
 	it('answers an interrupted claim even when a budget stop ends the run first', async () => {
 		const sessionId = await newSession();
 		await runAgent({

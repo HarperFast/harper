@@ -123,10 +123,10 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 	};
 
 	try {
-		// Before the approvals below can execute anything: a cap lowered while a run sat awaiting
-		// approval must stop the approved action, not just the next model call.
 		// Calls a dead run left unanswered are repaired first, so no later path sends them unanswered.
 		await answerInterruptedCalls(opts.sessionId);
+		// Before the approvals below can execute anything: a cap lowered while a run sat awaiting
+		// approval must stop the approved action, not just the next model call.
 		if (await stopIfOverBudget(opts)) return;
 		if (!(await drainApprovals(opts, toolMap, ctx))) return;
 

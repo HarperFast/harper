@@ -225,16 +225,24 @@ export function cancelSession(sessionId: string): Promise<boolean> {
 	});
 }
 
-function answerUnansweredCalls(session: AgentSessionRow, answer: (toolName: string) => string, now: number): void {
-	let last = session.messages.length - 1;
-	while (last >= 0 && session.messages[last].role !== 'assistant') last--;
-	const calls = last >= 0 ? (session.messages[last].toolCalls ?? []) : [];
-	const answered = new Set(session.messages.slice(last + 1).map((m) => m.toolCallId));
-	for (const call of calls) {
-		if (!answered.has(call.id)) {
-			session.messages.push({ role: 'tool', content: answer(call.name), toolCallId: call.id, createdAt: now });
-		}
-	}
+/**
+ * Inserted right after the turn's existing responses, so the transcript stays sendable even when a prompt
+ * was appended after the turn. Returns whether it answered anything.
+ */
+function answerUnansweredCalls(session: AgentSessionRow, answer: (toolName: string) => string, now: number): boolean {
+	const unanswered = unansweredCalls(session);
+	if (!unanswered) return false;
+	session.messages.splice(
+		unanswered.at,
+		0,
+		...unanswered.calls.map((call) => ({
+			role: 'tool' as const,
+			content: answer(call.name),
+			toolCallId: call.id,
+			createdAt: now,
+		}))
+	);
+	return true;
 }
 
 /** Decided on the row read under the lock, so an approval another writer already claimed is never answered twice. */
@@ -256,27 +264,17 @@ function closeOpenApprovals(
 /**
  * Runs are serialized per session, so a tool call of the latest turn still without a response belongs to
  * a run that died before writing it: an approval claimed but never given its result, or an inline call.
- * Each is answered `interrupted`, inserted right after the turn's existing responses so the transcript
- * stays sendable even if a prompt was appended since. Nothing is run again.
+ * Each is answered `interrupted`. Nothing is run again.
  */
 export async function answerInterruptedCalls(sessionId: string): Promise<void> {
 	const current = await getSession(sessionId);
-	if (!current || !interruptedCalls(current)) return;
+	if (!current || !unansweredCalls(current)) return;
 	await withSessionLock(sessionId, async () => {
 		const session = await requireSession(sessionId);
-		const interrupted = interruptedCalls(session);
-		if (!interrupted) return;
 		const now = Date.now();
-		session.messages.splice(
-			interrupted.at,
-			0,
-			...interrupted.calls.map((call) => ({
-				role: 'tool' as const,
-				content: JSON.stringify({ ok: false, error: 'interrupted', outcome: 'unknown', tool: call.name }),
-				toolCallId: call.id,
-				createdAt: now,
-			}))
-		);
+		const interrupted = (toolName: string) =>
+			JSON.stringify({ ok: false, error: 'interrupted', outcome: 'unknown', tool: toolName });
+		if (!answerUnansweredCalls(session, interrupted, now)) return;
 		session.updatedAt = now;
 		await getAgentSessionTable().put(session);
 	});
@@ -284,9 +282,9 @@ export async function answerInterruptedCalls(sessionId: string): Promise<void> {
 
 /**
  * Matched on the latest turn only, as a provider may reuse a tool-call id. A call still waiting on its
- * approval is the drain's to answer.
+ * approval is left for the drain or `closeOpenApprovals` to answer.
  */
-function interruptedCalls(session: AgentSessionRow): { calls: ToolCall[]; at: number } | undefined {
+function unansweredCalls(session: AgentSessionRow): { calls: ToolCall[]; at: number } | undefined {
 	let turn = session.messages.length - 1;
 	while (turn >= 0 && session.messages[turn].role !== 'assistant') turn--;
 	if (turn < 0) return undefined;
