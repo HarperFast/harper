@@ -8191,6 +8191,7 @@ export function makeTable(options): TableResourceClass {
 				},
 			};
 			propertyResolvers.$highlights.directReturn = true;
+			primaryKeyAttribute = undefined;
 			for (const attribute of this.attributes) {
 				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 				attribute.resolve = null; // reset this
