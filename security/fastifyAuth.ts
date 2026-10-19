@@ -39,6 +39,8 @@ export function authorize(req: any, res: any, next: any) {
 	if (req.raw?.user != undefined) {
 		return next(null, req.raw.user);
 	}
+	const settledRejection = deferredCredentialRejectionError(req.raw?.baseRequest);
+	if (settledRejection) return next(settledRejection);
 	// On Bun, Harper's auth middleware passes pre-authenticated users via this internal header.
 	// bunDelegateToNodeServer strips it from real network requests before injecting into Fastify,
 	// so it is only safe to trust under Bun — on Node.js the raw socket path delivers headers
@@ -81,8 +83,6 @@ export function authorize(req: any, res: any, next: any) {
 		);
 	}
 	if (req.raw?.user === undefined && req.raw?.baseRequest) {
-		const settledRejection = deferredCredentialRejectionError(req.raw.baseRequest);
-		if (settledRejection) return next(settledRejection);
 		let nextCalled = false;
 		return authentication(req.raw?.baseRequest, (request: any) => {
 			nextCalled = true;
