@@ -1,10 +1,4 @@
 'use strict';
-/**
- * `COUNT(*)` counts rows and references no attribute, so the statement bucket must not record `*`
- * as one — checkAttributePerms refuses it for any role with a non-empty attribute_permissions list.
- * End-to-end role behavior: integrationTests/security/sql-count-star-attribute-roles.test.ts.
- */
-
 const assert = require('assert');
 const alasql = require('alasql');
 

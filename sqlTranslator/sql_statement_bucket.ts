@@ -205,11 +205,7 @@ function filterReadRestrictedAttrs(attrPerms: any[]) {
 	return attrPerms.filter((perm) => perm[terms.PERMS_CRUD_ENUM.READ]);
 }
 
-/**
- * `COUNT(*)` counts rows and reads no attribute, so it is not an attribute reference — table READ
- * already gates it. Other wildcard aggregates (`FIRST(*)`, `ARRAY(*)`, `COUNT(DISTINCT *)`) consume
- * the value of an attribute literally named `*`, so they stay collected.
- */
+// FIRST(*), ARRAY(*) and COUNT(DISTINCT *) read the value of an attribute literally named `*`, so they stay collected.
 function isRowCountWildcard(parent: any, node: any): boolean {
 	return node.columnid === '*' && parent?.aggregatorid === 'COUNT' && parent.expression === node && !parent.distinct;
 }

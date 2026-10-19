@@ -1,14 +1,3 @@
-/**
- * `SELECT COUNT(*)` for a role whose table permission lists attributes.
- *
- * The SQL permission check records every column reference as an attribute the role must be allowed
- * to read. The `*` inside `COUNT(*)` is a row count, not an attribute, so table `read` alone must
- * be enough — while a real column in the same statement, and any other use of a wildcard, is still
- * checked.
- *
- * Reproduction:
- *   npm run build && npm run test:integration -- "integrationTests/security/sql-count-star-attribute-roles.test.ts"
- */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, deepStrictEqual } from 'node:assert';
 import { resolve } from 'node:path';
@@ -40,8 +29,6 @@ const ROWS = [
 	{ id: 'd', dept: 'y', name: 'n4', salary: 400 },
 ];
 
-// `auto` serves a statement from the new engine when it can; `legacy` never does. The permission
-// check runs before either, so both must agree.
 for (const sqlEngine of ['auto', 'legacy']) {
 	suite(
 		`SQL COUNT(*) under attribute permissions [sql.engine=${sqlEngine}]`,
