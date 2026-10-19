@@ -1,5 +1,5 @@
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual, match } from 'node:assert';
+import { ok, strictEqual, match, doesNotMatch } from 'node:assert';
 import { execFile } from 'node:child_process';
 import { closeSync, existsSync, openSync, readdirSync, writeSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -165,7 +165,8 @@ suite('restore_backup verifies before it replaces (harper#2965)', { skip: skipSu
 
 		const job = await runJob({ operation: 'restore_backup', database: DATABASE, backup_id: backupId });
 		strictEqual(job.status, 'ERROR', `restore of a corrupt backup must fail: ${JSON.stringify(job)}`);
-		match(String(job.message), /did not modify/);
+		doesNotMatch(String(job.message), /held open/, 'refused at the closure check before verification ran (harper#3120?)');
+		match(String(job.message), /failed verification, so this restore did not modify/);
 
 		await expectIds([...baseIds, ...postIds], 'after refused restore');
 		await insert(['after-refusal']);
@@ -180,7 +181,7 @@ suite('restore_backup verifies before it replaces (harper#2965)', { skip: skipSu
 
 		const { exit, out } = await cliRestore(corruptId);
 		ok(exit !== 0, `CLI restore of a corrupt backup must fail; output:\n${out}`);
-		match(out, /did not modify/);
+		match(out, /failed verification, so this restore did not modify/);
 
 		await start();
 		await expectIds(before, 'after offline refusal and restart');
