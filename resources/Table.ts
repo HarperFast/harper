@@ -3666,6 +3666,8 @@ export function makeTable(options): TableResourceClass {
 			if (tablePermission?.update) {
 				const attribute_permissions = tablePermission.attribute_permissions;
 				if (attribute_permissions?.length > 0) {
+					// an array body's keys are indices, not attributes, and its elements are later written unchecked
+					if (Array.isArray(updatedData)) return false;
 					const attrsForType = attributesAsObject(attribute_permissions, 'update');
 					for (const key in updatedData) {
 						if (!attrsForType[key]) return false;
@@ -3687,7 +3689,7 @@ export function makeTable(options): TableResourceClass {
 				if (tablePermission?.insert) {
 					const attribute_permissions = tablePermission.attribute_permissions;
 					if (attribute_permissions?.length > 0) {
-						// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
+						if (Array.isArray(newData)) return false;
 						const attrsForType = attributesAsObject(attribute_permissions, 'insert');
 						for (const key in newData) {
 							if (!attrsForType[key]) return false;
@@ -4831,6 +4833,7 @@ export function makeTable(options): TableResourceClass {
 		// local copy
 		_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any) {
 			this.#assertLiveHandle(id);
+			this.#updatableAttributes = undefined; // authorized for one write
 			const context = this.getContext();
 			const condition = conditionForWrite(context, id);
 			const locking = lockConditionalWrite(this, id, condition);
@@ -7730,6 +7733,7 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 		_writePublish(id: Id, message, options?: any) {
+			this.#updatableAttributes = undefined;
 			const transaction = txnForContext(this.getContext());
 			id ??= null;
 			if (id !== null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
@@ -9313,7 +9317,9 @@ export function makeTable(options): TableResourceClass {
 				updatableAttributes[key] &&
 				!(key in record) &&
 				key !== primaryKey &&
-				!propertyResolvers?.[key] &&
+				key !== createdTimeProperty?.name &&
+				key !== updatedTimeProperty?.name &&
+				!(propertyResolvers && Object.hasOwn(propertyResolvers, key)) &&
 				!fullTextFieldNames?.has(key)
 			)
 				changes[key] = undefined;

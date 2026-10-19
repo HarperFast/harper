@@ -3,6 +3,8 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
+const { transaction } = require('#src/resources/transaction');
+const { setTimeout } = require('node:timers/promises');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 // might want to enable an iteration with NATS being assigned as a source
 describe('Permissions through Resource API', () => {
@@ -512,8 +514,12 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 				break;
 			}
 		})();
-		await DocTable.publish('pub-1', { title: 'message' }, { user, authorize: true });
-		await reading;
+		try {
+			await DocTable.publish('pub-1', { title: 'message' }, { user, authorize: true });
+			await Promise.race([reading, setTimeout(5000).then(() => assert.fail('no message delivered'))]);
+		} finally {
+			subscription.return?.();
+		}
 		assert.deepEqual(JSON.parse(JSON.stringify(received[0])), { title: 'message' });
 	});
 
@@ -547,6 +553,7 @@ describe('Primary key grant edge cases (harper#3284)', () => {
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'title' },
 				{ name: 'secret', type: 'String', nullable: false },
+				{ name: '__createdtime__' },
 			],
 		});
 		await KeyTable.put('k-1', { id: 'k-1', title: 'seed', secret: 'kept' });
@@ -605,5 +612,46 @@ describe('Primary key grant edge cases (harper#3284)', () => {
 			if (keyUpdatable) await write();
 			else await assert.rejects(write, /Unauthorized/);
 		}
+	});
+
+	it('a restricted full put keeps the created time even when the role lists it as updatable', async function () {
+		const created = (await KeyTable.get('k-1')).__createdtime__;
+		assert.ok(created > 0);
+		const user = roleWith([
+			{ attribute_name: 'title', read: true, insert: true, update: true },
+			{ attribute_name: '__createdtime__', read: true, insert: true, update: true },
+		]);
+		await KeyTable.put('k-1', { title: 'timestamped' }, { user, authorize: true });
+		assert.equal((await KeyTable.get('k-1')).__createdtime__, created);
+	});
+
+	it('an authorized write leaves no attribute restriction behind on its instance', async function () {
+		const user = roleWith([{ attribute_name: 'title', read: true, insert: true, update: true }]);
+		await KeyTable.put('k-2', { id: 'k-2', title: 'seed', secret: 'kept' });
+		const context = { user };
+		// a later unauthorized full put on the same instance replaces the record, so it must carry the required secret
+		await assert.rejects(
+			transaction(context, async () => {
+				const resource = await KeyTable.getResource('k-2', context);
+				assert.ok(resource.allowUpdate(user, { title: 'patched' }, context));
+				await resource.patch({ id: 'k-2' }, { title: 'patched' });
+				await resource.put({ id: 'k-2' }, { title: 'replaced' });
+			}),
+			/secret is required/
+		);
+	});
+
+	it('an attribute-restricted role cannot write an array body, even through an attribute named like an index', async function () {
+		const user = roleWith([
+			{ attribute_name: '0', read: true, insert: true, update: true },
+			{ attribute_name: 'title', read: true, insert: true, update: true },
+		]);
+		const target = new RequestTarget('/');
+		target.isCollection = true;
+		await assert.rejects(
+			async () => KeyTable.put(target, [{ id: 'k-1', title: 't', secret: 'overwritten' }], { user, authorize: true }),
+			/Unauthorized/
+		);
+		assert.equal((await KeyTable.get('k-1')).secret, 'kept');
 	});
 });

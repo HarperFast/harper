@@ -27,13 +27,13 @@ import { waitForRouteReady } from '../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/resource-attribute-permissions');
 // mqtt.js's WebSocket transport doesn't complete CONNACK on Bun — the same skip the MQTT suites carry.
-const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
+const skipMqtt = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
 const ROLE = 'doc_title_owner_role';
 const USER = { username: 'doc_title_owner_user', password: 'Doc-title-owner-3284!' };
 const MQTT_NOT_AUTHORIZED = 0x87;
 
-suite('Attribute permissions on the resource path (harper#3284)', { skip: skipSuite }, (ctx: ContextWithHarper) => {
+suite('Attribute permissions on the resource path (harper#3284)', (ctx: ContextWithHarper) => {
 	let apiClient: ReturnType<typeof createApiClient>;
 	let restURL: string;
 	let mqttURL: string;
@@ -116,8 +116,10 @@ suite('Attribute permissions on the resource path (harper#3284)', { skip: skipSu
 
 	/** Resolves with the PUBACK reason code (0 on success). */
 	function publish(client: MqttClient, topic: string, payload: object, retain: boolean): Promise<number> {
-		return new Promise((res) => {
+		return new Promise((res, reject) => {
+			const timer = setTimeout(() => reject(new Error(`no PUBACK for ${topic} within 10s`)), 10_000);
 			client.publish(topic, JSON.stringify(payload), { qos: 1, retain }, (error: any, packet: any) => {
+				clearTimeout(timer);
 				res(error ? (error.code ?? -1) : (packet?.reasonCode ?? 0));
 			});
 		});
@@ -166,7 +168,7 @@ suite('Attribute permissions on the resource path (harper#3284)', { skip: skipSu
 		});
 	});
 
-	test('MQTT publish carrying the primary key is accepted', async () => {
+	test('MQTT publish carrying the primary key is accepted', { skip: skipMqtt }, async () => {
 		await seed('mqtt-1');
 		const client = await connectAsUser('doc-3284-publish');
 		try {
@@ -183,7 +185,7 @@ suite('Attribute permissions on the resource path (harper#3284)', { skip: skipSu
 		});
 	});
 
-	test('retained MQTT publish without an unwritable attribute keeps its stored value', async () => {
+	test('retained MQTT publish without an unwritable attribute keeps its stored value', { skip: skipMqtt }, async () => {
 		await seed('mqtt-2');
 		const client = await connectAsUser('doc-3284-retain');
 		try {
@@ -199,7 +201,18 @@ suite('Attribute permissions on the resource path (harper#3284)', { skip: skipSu
 		});
 	});
 
-	test('a payload setting an unwritable attribute is still refused', async () => {
+	test('a REST PUT setting an unwritable attribute is refused', async () => {
+		await seed('put-2');
+		const put = await fetch(`${restURL}/Doc/put-2`, {
+			method: 'PUT',
+			headers: userHeaders,
+			body: JSON.stringify({ title: 't', owner: 'o', secret: 'overwritten' }),
+		});
+		strictEqual(put.status, 403, await put.text());
+		strictEqual((await storedAsAdmin('put-2')).secret, 'put-2 secret');
+	});
+
+	test('an MQTT payload setting an unwritable attribute is still refused', { skip: skipMqtt }, async () => {
 		await seed('mqtt-3');
 		const client = await connectAsUser('doc-3284-refuse');
 		try {
@@ -210,12 +223,6 @@ suite('Attribute permissions on the resource path (harper#3284)', { skip: skipSu
 		} finally {
 			client.end(true);
 		}
-		const put = await fetch(`${restURL}/Doc/mqtt-3`, {
-			method: 'PUT',
-			headers: userHeaders,
-			body: JSON.stringify({ title: 't', owner: 'o', secret: 'overwritten' }),
-		});
-		strictEqual(put.status, 403, await put.text());
 		strictEqual((await storedAsAdmin('mqtt-3')).secret, 'mqtt-3 secret');
 	});
 
