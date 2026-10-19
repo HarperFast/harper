@@ -1,0 +1,6 @@
+type Doc @table @export {
+	id: ID @primaryKey
+	title: String
+	owner: String
+	secret: String
+}

@@ -7,6 +7,7 @@ const logger = require('../utility/logging/harper_logger.ts');
 
 module.exports = {
 	getRolePermissions,
+	implicitPrimaryKeyPermission,
 };
 
 const rolePermsMap = Object.create(null);
@@ -307,6 +308,27 @@ function getSchemaTableDescribePerm(permObj) {
 
 function getAttributeDescribePerm(permObj) {
 	return attrCrudPermKeys.filter((perm) => permObj[perm]).length > 0;
+}
+
+/**
+ * The access an unlisted primary key receives: any CRUD access a listed attribute has, with listed timestamp
+ * attributes counting for read only (as getTableAttrPerms normalizes them).
+ *
+ * @param attributePermissions - a table's attribute_permissions, which does not list the primary key
+ * @param primaryKey
+ * @returns {{attribute_name, describe, read, insert, update}}
+ */
+function implicitPrimaryKeyPermission(attributePermissions, primaryKey) {
+	// a repeated attribute name takes its last entry, as getTableAttrPerms does
+	const byName = new Map(attributePermissions.map((permission) => [permission.attribute_name, permission]));
+	const keyPermission = attrPermsTemplate(primaryKey);
+	for (const [name, permission] of byName) {
+		checkForHashPerms(
+			terms.TIME_STAMP_NAMES.includes(name) ? timestampAttrPermsTemplate(name, permission[READ]) : permission,
+			keyPermission
+		);
+	}
+	return keyPermission;
 }
 
 /**

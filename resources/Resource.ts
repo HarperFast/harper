@@ -762,9 +762,10 @@ function transactional(
 				data = dataOrContext;
 			}
 		}
-		if (options.method === 'query' && typeof (data as any)?.then === 'function') {
+		if ((options.method === 'query' || options.method === 'put') && typeof (data as any)?.then === 'function') {
 			// HTTP request bodies are resolved asynchronously. QUERY projection and permission-control
-			// sanitization must happen before resource resolution and allowRead, not later in runAction.
+			// sanitization, and PUT attribute authorization, must see the body before resource resolution and
+			// the allow* check, not later in runAction.
 			const dataWasFirstArgument = data === idOrQuery;
 			return (data as Promise<any>).then((resolvedData) =>
 				dataWasFirstArgument
