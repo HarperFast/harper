@@ -250,12 +250,13 @@ describe('published native full-text Table.search integration', () => {
 		await Product.put('b', { title: 'widget' });
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
 		const base = { conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget' }], limit: 1 };
+		const { RequestTarget } = require('#src/resources/RequestTarget');
 		await assert.rejects(
 			Product.delete({ ...base, continuation: true }),
 			(error) => error.statusCode === 400 && error.message.includes('continuation')
 		);
 		await assert.rejects(
-			new Product().delete(parseQuery('catalogSearch=matches=widget&limit(1)&continuation(unsupported)')),
+			new Product().delete(new RequestTarget('/?catalogSearch=matches=widget&limit(1)&continuation(unsupported)')),
 			(error) => error.statusCode === 400 && error.message.includes('continuation')
 		);
 		assert.deepStrictEqual(ids(await collect(Product.search({ ...base, limit: 2 }))), ['a', 'b']);
@@ -314,7 +315,6 @@ describe('published native full-text Table.search integration', () => {
 		await assert.rejects(syncResource.search(syncTarget), (error) => error.statusCode === 403);
 		syncAllow = true;
 		await syncResource.search({ ...syncTarget, closeContinuation: true });
-		const { RequestTarget } = require('#src/resources/RequestTarget');
 		const edited = new RequestTarget('/?catalogSearch=matches=widget&limit(1)&continuation()&debug=ignored');
 		edited.delete('debug');
 		assert.strictEqual(edited.parseError, undefined);
