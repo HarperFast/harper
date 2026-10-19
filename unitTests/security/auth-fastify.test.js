@@ -17,6 +17,11 @@ function setTokenTimeout(param, value) {
 	env.setProperty(param, value);
 	return () => env.setProperty(param, original);
 }
+const {
+	credentialRejectionError,
+	deferCredentialRejection,
+	isCredentialRejection,
+} = require('#src/security/deferredAuthentication');
 
 const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE =
@@ -211,6 +216,22 @@ describe('Test authorize function', function () {
 			assert.equal(user.role.id, VALID_ROLE.id);
 			assert.equal(user.role.role, VALID_ROLE.role);
 			assert.equal(user.role.permission.super_user, true);
+			done();
+		});
+	});
+
+	it('settles a credential the middleware deferred instead of authenticating it again', function (done) {
+		// a request passport would accept, carrying a rejection the middleware already recorded; the base
+		// request has no headers, so re-running authentication() on it would fail differently
+		const baseRequest = {};
+		deferCredentialRejection(baseRequest, credentialRejectionError('Account blocked', 401), 'Basic');
+		const request = { ...active_basic_request, raw: { baseRequest } };
+
+		auth.authorize(request, null, function (err, user) {
+			assert.strictEqual(user, undefined);
+			assert.strictEqual(err.message, 'Account blocked');
+			assert.strictEqual(err.statusCode, 401);
+			assert.strictEqual(isCredentialRejection(err), true);
 			done();
 		});
 	});
