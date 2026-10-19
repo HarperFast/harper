@@ -3670,9 +3670,13 @@ export function makeTable(options): TableResourceClass {
 			if (tablePermission?.update) {
 				const attribute_permissions = tablePermission.attribute_permissions;
 				if (attribute_permissions?.length > 0) {
-					// a REST body arrives here as a promise of the record
+					// A REST body arrives here as a promise of the record. A body that fails to parse is left to fail the
+					// write itself, with its own error rather than an authorization one.
 					if (typeof (updatedData as any)?.then === 'function')
-						return (updatedData as any).then((data: Record) => this.allowUpdate(user, data, context));
+						return (updatedData as any).then(
+							(data: Record) => TableResource.prototype.allowUpdate.call(this, user, data, context),
+							() => true
+						);
 					// an array body's keys are indices, not attributes, and its elements are later written unchecked
 					if (Array.isArray(updatedData)) return false;
 					const attrsForType = attributesAsObject(attribute_permissions, 'update');
@@ -3697,7 +3701,10 @@ export function makeTable(options): TableResourceClass {
 					const attribute_permissions = tablePermission.attribute_permissions;
 					if (attribute_permissions?.length > 0) {
 						if (typeof (newData as any)?.then === 'function')
-							return (newData as any).then((data: Record) => this.allowCreate(user, data, context));
+							return (newData as any).then(
+								(data: Record) => TableResource.prototype.allowCreate.call(this, user, data, context),
+								() => true
+							);
 						if (Array.isArray(newData)) return false;
 						const attrsForType = attributesAsObject(attribute_permissions, 'insert');
 						for (const key in materialized(newData)) {

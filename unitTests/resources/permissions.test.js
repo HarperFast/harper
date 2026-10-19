@@ -463,6 +463,28 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		assert.equal((await DocTable.get('promise-3')).secret, 'promise-3 secret');
 	});
 
+	it('a body that fails to resolve fails the write with its own error', async function () {
+		await seed('reject-1');
+		await assert.rejects(
+			async () => DocTable.put('reject-1', Promise.reject(new SyntaxError('bad body')), asUser()),
+			/bad body/
+		);
+	});
+
+	it('an allowUpdate override that calls super is called once', async function () {
+		let calls = 0;
+		class CountingDoc extends DocTable {
+			allowUpdate(user, data, context) {
+				calls++;
+				return super.allowUpdate(user, data, context);
+			}
+		}
+		await seed('count-1');
+		await CountingDoc.put('count-1', Promise.resolve({ title: 'counted' }), asUser());
+		assert.equal(calls, 1);
+		assert.equal((await DocTable.get('count-1')).secret, 'count-1 secret');
+	});
+
 	it('an allowUpdate override still receives a promised body', async function () {
 		class PromiseHookDoc extends DocTable {
 			allowUpdate(user, data) {
