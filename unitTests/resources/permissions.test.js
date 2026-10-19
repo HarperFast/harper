@@ -4,6 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { transaction } = require('#src/resources/transaction');
+const { GenericTrackedObject } = require('#src/resources/tracked');
 const { setTimeout } = require('node:timers/promises');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 // might want to enable an iteration with NATS being assigned as a source
@@ -500,6 +501,42 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 			title: 'new',
 			secret: 'kept',
 		});
+	});
+
+	it('a restricted full put whose id is only in the body keeps protected attributes', async function () {
+		await seed('body-id-1');
+		await DocTable.put({ id: 'body-id-1', title: 'by body id' }, asUser());
+		assert.deepEqual(JSON.parse(JSON.stringify(await DocTable.get('body-id-1'))), {
+			id: 'body-id-1',
+			title: 'by body id',
+			secret: 'body-id-1 secret',
+			extra: 'undeclared',
+		});
+	});
+
+	it('a restricted full put of a tracked object stores its values', async function () {
+		await seed('tracked-1');
+		await DocTable.put('tracked-1', new GenericTrackedObject({ title: 'tracked' }), asUser());
+		assert.deepEqual(JSON.parse(JSON.stringify(await DocTable.get('tracked-1'))), {
+			id: 'tracked-1',
+			title: 'tracked',
+			secret: 'tracked-1 secret',
+			extra: 'undeclared',
+		});
+	});
+
+	it('an override that retries super.put keeps the restriction on the retry', async function () {
+		class RetryingDoc extends DocTable {
+			put(record, target) {
+				super.put(record, target);
+				return super.put(record, target);
+			}
+		}
+		await seed('retry-1');
+		await RetryingDoc.put('retry-1', { title: 'retried' }, asUser());
+		const stored = await DocTable.get('retry-1');
+		assert.equal(stored.title, 'retried');
+		assert.equal(stored.secret, 'retry-1 secret');
 	});
 
 	it('an override that updates the instance before super.put keeps the restriction', async function () {

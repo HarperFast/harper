@@ -607,7 +607,6 @@ function propagateSearchAuthorization(iterable: any, authorization: Promise<any>
 	}
 	return iterable;
 }
-// _writeUpdate options marking a full put by an attribute-restricted role, staged as a patch
 const RESTRICTED_REPLACEMENT = Object.freeze({});
 // any other root is left to the full-put validation, which rejects it
 function isRecordRoot(value: unknown): boolean {
@@ -1778,7 +1777,7 @@ export function makeTable(options): TableResourceClass {
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		#writeGeneration?: WriteGeneration;
-		// set by allowUpdate for an attribute-restricted role; the next full put on this request's instance takes it
+		// set by allowUpdate for an attribute-restricted role; restricts every later full put on this request's instance
 		#updatableAttributes?: { [attribute: string]: boolean };
 		declare getProperty: (name: string) => any;
 		#evaluateWriteCondition(id: Id, condition: any, transaction: any): void {
@@ -3757,7 +3756,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			if (typeof updates === 'object' && updates) {
 				if (fullUpdate && this.#updatableAttributes && isRecordRoot(updates)) {
-					this.#changes = restrictedReplacement(id, updates, this.#takeUpdatableAttributes());
+					this.#changes = restrictedReplacement(id, updates, this.#updatableAttributes);
 					return when(this._writeUpdate(id, this.#changes, false, RESTRICTED_REPLACEMENT), () => this);
 				} else if (fullUpdate) {
 					// legacy full update where we need to update the entire record, but the instance needs to continue
@@ -3792,12 +3791,6 @@ export function makeTable(options): TableResourceClass {
 			// A supplied root must reach validation as itself, not as the staged changes (harper#1298).
 			const recordRoot = updates === undefined ? this.#changes : updates;
 			return when(this._writeUpdate(id, recordRoot, fullUpdate), () => this);
-		}
-
-		#takeUpdatableAttributes() {
-			const updatableAttributes = this.#updatableAttributes;
-			this.#updatableAttributes = undefined;
-			return updatableAttributes;
 		}
 
 		#stageChanges(id: Id, target: RequestTarget, changes: any, options?: any) {
@@ -4736,7 +4729,7 @@ export function makeTable(options): TableResourceClass {
 								this.#stageChanges(
 									id,
 									target,
-									restrictedReplacement(id, record, this.#takeUpdatableAttributes()),
+									restrictedReplacement(id, record, this.#updatableAttributes),
 									RESTRICTED_REPLACEMENT
 								),
 								() => this.save() as any
@@ -9308,7 +9301,9 @@ export function makeTable(options): TableResourceClass {
 	 * role may update that the payload omits. Attributes the role may not update are left as stored.
 	 */
 	function restrictedReplacement(id: Id, record: any, updatableAttributes: { [attribute: string]: boolean }) {
+		record = updateAndFreeze(record); // a tracked payload keeps its values behind getRecord()
 		const changes: any = { ...record };
+		const declared = sealed && new Set(attributes.map((attribute) => attribute.name));
 		if (primaryKey) changes[primaryKey] = id;
 		// a full put keeps the stored created time whatever the payload says; the write stamps both times
 		if (createdTimeProperty) delete changes[createdTimeProperty.name];
@@ -9321,7 +9316,7 @@ export function makeTable(options): TableResourceClass {
 				key !== createdTimeProperty?.name &&
 				key !== updatedTimeProperty?.name &&
 				!(propertyResolvers && Object.hasOwn(propertyResolvers, key)) &&
-				(!sealed || attributes.some((attribute) => attribute.name === key)) &&
+				(!declared || declared.has(key)) &&
 				!fullTextFieldNames?.has(key)
 			)
 				changes[key] = undefined;
