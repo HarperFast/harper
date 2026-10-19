@@ -525,6 +525,19 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		});
 	});
 
+	it('a tracked payload is checked by the values it carries', async function () {
+		await seed('tracked-2');
+		await assert.rejects(
+			async () => DocTable.put('tracked-2', new GenericTrackedObject({ title: 't', secret: 'overwritten' }), asUser()),
+			/Unauthorized/
+		);
+		await assert.rejects(
+			async () => DocTable.patch('tracked-2', new GenericTrackedObject({ secret: 'overwritten' }), asUser()),
+			/Unauthorized/
+		);
+		assert.equal((await DocTable.get('tracked-2')).secret, 'tracked-2 secret');
+	});
+
 	it('an override that retries super.put keeps the restriction on the retry', async function () {
 		class RetryingDoc extends DocTable {
 			put(record, target) {

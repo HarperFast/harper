@@ -608,7 +608,10 @@ function propagateSearchAuthorization(iterable: any, authorization: Promise<any>
 	return iterable;
 }
 const RESTRICTED_REPLACEMENT = Object.freeze({});
-// any other root is left to the full-put validation, which rejects it
+// a tracked payload keeps its values behind getRecord()
+function materialized(record: any) {
+	return record?.getRecord ? updateAndFreeze(record) : record;
+}
 function isRecordRoot(value: unknown): boolean {
 	return (
 		value !== null &&
@@ -1478,6 +1481,7 @@ export function makeTable(options): TableResourceClass {
 	let hasRelationships = false;
 	// a stored table permission (stable per role record version) -> that permission with the primary key's implicit grant
 	const primaryKeyGranted = new WeakMap<object, any>();
+	let declaredAttributeNames: Set<string>;
 	// Attribute names surfaced by the struct `toJSON` on the default (no-select) read: everything that is
 	// @enumerable, PLUS @computed attributes whose declared type is NOT a table type (scalars/objects/arrays
 	// that don't resolve to another entity — harper#1484). Table-typed computed attributes and non-enumerable
@@ -3669,7 +3673,7 @@ export function makeTable(options): TableResourceClass {
 					// an array body's keys are indices, not attributes, and its elements are later written unchecked
 					if (Array.isArray(updatedData)) return false;
 					const attrsForType = attributesAsObject(attribute_permissions, 'update');
-					for (const key in updatedData) {
+					for (const key in materialized(updatedData)) {
 						if (!attrsForType[key]) return false;
 					}
 					this.#updatableAttributes = attrsForType;
@@ -3691,7 +3695,7 @@ export function makeTable(options): TableResourceClass {
 					if (attribute_permissions?.length > 0) {
 						if (Array.isArray(newData)) return false;
 						const attrsForType = attributesAsObject(attribute_permissions, 'insert');
-						for (const key in newData) {
+						for (const key in materialized(newData)) {
 							if (!attrsForType[key]) return false;
 						}
 					}
@@ -4959,7 +4963,6 @@ export function makeTable(options): TableResourceClass {
 							// by replayLogs). Records were valid when originally written; post-crash schema
 							// evolution (e.g. newly required fields) must not prevent replaying them
 							// (harper#1316, facet b).
-							// a restricted replacement with no record to patch is a whole new record
 							if (!committedBy.isReplay)
 								this.validate(
 									recordUpdate,
@@ -8357,6 +8360,7 @@ export function makeTable(options): TableResourceClass {
 		static updatedAttributes() {
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
+			declaredAttributeNames = new Set((this.attributes as any[]).map((attribute) => attribute.name));
 			// Declarations are refused before they are saved; here a descriptor an earlier build
 			// accepted must still load, so a violation is logged and the table keeps working.
 			try {
@@ -9296,14 +9300,10 @@ export function makeTable(options): TableResourceClass {
 		}
 		return effective;
 	}
-	/**
-	 * A full put by an attribute-restricted role, as a patch: the payload, plus a removal of each stored attribute the
-	 * role may update that the payload omits. Attributes the role may not update are left as stored.
-	 */
+	/** A full put by an attribute-restricted role, as a patch that leaves attributes the role may not update as stored. */
 	function restrictedReplacement(id: Id, record: any, updatableAttributes: { [attribute: string]: boolean }) {
-		record = updateAndFreeze(record); // a tracked payload keeps its values behind getRecord()
+		record = materialized(record);
 		const changes: any = { ...record };
-		const declared = sealed && new Set(attributes.map((attribute) => attribute.name));
 		if (primaryKey) changes[primaryKey] = id;
 		// a full put keeps the stored created time whatever the payload says; the write stamps both times
 		if (createdTimeProperty) delete changes[createdTimeProperty.name];
@@ -9316,10 +9316,10 @@ export function makeTable(options): TableResourceClass {
 				key !== createdTimeProperty?.name &&
 				key !== updatedTimeProperty?.name &&
 				!(propertyResolvers && Object.hasOwn(propertyResolvers, key)) &&
-				(!declared || declared.has(key)) &&
+				(!sealed || declaredAttributeNames.has(key)) &&
 				!fullTextFieldNames?.has(key)
 			)
-				changes[key] = undefined;
+				Object.defineProperty(changes, key, { value: undefined, enumerable: true, writable: true, configurable: true });
 		}
 		return changes;
 	}
