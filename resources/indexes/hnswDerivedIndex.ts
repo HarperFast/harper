@@ -185,7 +185,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 					this.#queue.length = 0;
 					this.#queuedBytes = 0;
 					this.#position = 0;
-					logger.error(`Derived index '${this.id}' could not apply a record; requesting a rebuild`, error);
+					logger.error?.(`Derived index '${this.id}' could not apply a record; requesting a rebuild`, error);
 					this.#wake?.('failed');
 					return;
 				}
@@ -265,7 +265,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 			},
 			(error) => {
 				this.#flushing = undefined;
-				logger.error(`Derived index '${this.id}' durability barrier failed`, error);
+				logger.error?.(`Derived index '${this.id}' durability barrier failed`, error);
 				this.#wake?.('failed');
 			}
 		);

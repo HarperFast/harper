@@ -1,5 +1,5 @@
 import { realpathSync, existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { Scope } from '../components/Scope';
 import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
 import { convertToMS } from '../utility/common_utils.ts';
@@ -120,14 +120,18 @@ function serveFile(req, path: string, scope: Scope) {
 	// The staticFiles map keys are the mount-relative URL path (leading slash stripped for matching);
 	// for a directory-index serve req.pathname is the directory, so also match the served basename.
 	const urlKey = typeof req.pathname === 'string' ? req.pathname.replace(/^\//, '') : '';
-	const basename = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1);
+	const fileName = basename(path);
 	const { cacheControlDisabled, maxAgeMs, immutable, customCacheControl } = resolveCacheOptions(
 		scope,
 		urlKey,
-		basename
+		fileName
 	);
 
-	const stream = send(req, path, {
+	// `send` URI-decodes its path argument and 404s any dot segment, as it does for a request path. A
+	// static entry is a filesystem path chosen by the `files` globs, so `send` gets only the file's own
+	// name, with its directory as `root`: an ancestor directory never reaches the decode or dot check.
+	const stream = send(req, encodeURIComponent(fileName), {
+		root: dirname(path),
 		// suppress send's own header when we set a full override below (or when disabled)
 		cacheControl: cacheControlDisabled || customCacheControl !== undefined ? false : true,
 		maxAge: maxAgeMs,
@@ -419,10 +423,11 @@ export function handleApplication(scope: Scope) {
 				throw new Error(`Not found file does not exist: ${notFoundPath}`);
 			}
 
+			const resolvedNotFound = realpathSync(notFoundPath);
 			return {
 				status: statusCode,
 				handlesHeaders: true,
-				body: send(req, realpathSync(notFoundPath)),
+				body: send(req, encodeURIComponent(basename(resolvedNotFound)), { root: dirname(resolvedNotFound) }),
 			};
 		},
 		{

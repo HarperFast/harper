@@ -19,8 +19,17 @@ export type DerivedIndexDeliveryResult =
 export type DerivedIndexCursor = {
 	format: 1;
 	logs: Record<string, number>;
+	/**
+	 * For a log with no completed transaction when the cursor was captured: the lowest log sequence that
+	 * must still be retained for the log to be read from its beginning — its oldest retained file, or the
+	 * writer's sequence when no file remains. Absent means sequence 1.
+	 */
+	floors?: Record<string, number>;
 	coverage?: DerivedIndexPositions;
 };
+
+export const MAX_LOG_SEQUENCE = 0xffff_ffff;
+const NO_FLOORS: Record<string, number> = Object.freeze({});
 
 export type DerivedIndexPositions = Record<string, { sequence: number; offset: number } | null>;
 
@@ -988,7 +997,7 @@ class DerivedIndexRunner {
 		try {
 			acquired = this.#logStore.tryLock(this.#lockKey);
 		} catch (error) {
-			logger.error(`Derived index '${this.id}' could not attempt the runner lock; retrying`, error);
+			logger.error?.(`Derived index '${this.id}' could not attempt the runner lock; retrying`, error);
 			this.#lockBackoff = true;
 			// Replace an armed contention retry rather than inheriting its deadline.
 			clearTimeout(this.#lockRetryTimer);
@@ -1139,20 +1148,50 @@ class DerivedIndexRunner {
 				return;
 			}
 		}
+		if (cursor.floors) {
+			for (const logName of Object.keys(cursor.floors)) {
+				if (!current.has(logName)) {
+					this.#needsRebuild(`saved transaction log '${logName}' is missing`, 'log-missing');
+					return;
+				}
+			}
+		}
 		this.#knownLogs = current;
 		for (const logName of currentLogs) {
 			if (cursor.logs[logName] !== undefined) continue;
-			if (!this.#retainsBeginning(logName)) {
-				this.#needsRebuild(`new transaction log '${logName}' no longer retains its beginning`, 'log-retention');
+			if (!this.#retainsFrom(logName, cursor.floors?.[logName] ?? 1)) {
+				this.#needsRebuild(`transaction log '${logName}' no longer retains its beginning`, 'log-retention');
 				return;
 			}
 		}
 	}
 
-	/** A log that never wrote a file has nothing to have lost; one with files must still hold the first. */
-	#retainsBeginning(logName: string): boolean {
+	#retainsFrom(logName: string, floor: number): boolean {
 		const stats = this.#logStore.rootStore.useLog(logName).getStats();
-		return stats.fileCount === 0 || stats.oldestSequenceNumber === 1;
+		return stats.fileCount === 0 ? stats.currentSequenceNumber <= floor : stats.oldestSequenceNumber <= floor;
+	}
+
+	/** Files between the floor and this first transaction may have been purged since the install check. */
+	#anchor(through: DerivedIndexCursor, logName: string) {
+		if (!this.#retainsFrom(logName, through.floors?.[logName] ?? 1))
+			throw new RunnerError('log-retention', `transaction log '${logName}' no longer retains its beginning`);
+		if (through.floors) {
+			delete through.floors[logName];
+			if (Object.keys(through.floors).length === 0) delete through.floors;
+		}
+	}
+
+	/** Against the newest accepted vector: a log anchored there was proven past its floor when it was read. */
+	#checkUnanchoredLogs(): boolean {
+		const cursor = this.#offered!;
+		for (const logName of this.#knownLogs) {
+			if (cursor.logs[logName] !== undefined) continue;
+			if (!this.#retainsFrom(logName, cursor.floors?.[logName] ?? 1)) {
+				this.#needsRebuild(`transaction log '${logName}' no longer retains its beginning`, 'log-retention');
+				return false;
+			}
+		}
+		return true;
 	}
 
 	#drain() {
@@ -1445,6 +1484,7 @@ class DerivedIndexRunner {
 				break;
 			}
 			if (transaction.complete) {
+				if (through.logs[transaction.logName] === undefined) this.#anchor(through, transaction.logName);
 				through.logs[transaction.logName] = transaction.timestamp;
 				completed++;
 				if (mutations.length)
@@ -1550,7 +1590,7 @@ class DerivedIndexRunner {
 		for (const logName of current) {
 			if (this.#registration.backend.publishCoverage) this.#logStore.ensureLogExists(logName);
 			if (this.#knownLogs.has(logName)) continue;
-			if (!this.#retainsBeginning(logName)) {
+			if (!this.#retainsFrom(logName, 1)) {
 				this.#needsRebuild(`new transaction log '${logName}' no longer retains its beginning`, 'log-retention');
 				return false;
 			}
@@ -1639,6 +1679,8 @@ class DerivedIndexRunner {
 			this.#needsRebuild('backend advanced to an unoffered cursor vector', 'cursor-unoffered');
 			return false;
 		}
+		// Every durable advance publishes catch-up, so the logs still unanchored are proven first.
+		if (!this.#checkUnanchoredLogs()) return false;
 		// Every timestamp of an offered vector was pushed to its log's pending list, so the durable one is
 		// present; everything before it is no longer needed for repeat detection.
 		for (const [logName, timestamp] of Object.entries(cursor.logs)) {
@@ -1725,7 +1767,7 @@ class DerivedIndexRunner {
 			return true;
 		} catch (error) {
 			// Without the marker a crash mid-reset would reopen on the condemned cursor, so no reset runs.
-			logger.error(`Derived index '${this.id}' could not persist its condemnation`, error);
+			logger.error?.(`Derived index '${this.id}' could not persist its condemnation`, error);
 			return false;
 		}
 	}
@@ -1736,14 +1778,14 @@ class DerivedIndexRunner {
 			this.#condemned = this.#logStore.rootStore.getSync(this.#markerKey) !== undefined;
 			return this.#condemned;
 		} catch (error) {
-			logger.error(`Derived index '${this.id}' could not read its condemnation marker`, error);
+			logger.error?.(`Derived index '${this.id}' could not read its condemnation marker`, error);
 			return true;
 		}
 	}
 
 	/** No rebuild attempt is spent on a refused marker; the next acquirer retries it before any reset. */
 	#deferForCondemnation(code: DerivedIndexReadinessReason) {
-		logger.error(`Derived index '${this.id}' condemnation could not be persisted; retrying at the next wake`);
+		logger.error?.(`Derived index '${this.id}' condemnation could not be persisted; retrying at the next wake`);
 		const reason = this.status.state === 'needs-rebuild' ? this.status.reason : 'condemnation not persisted';
 		this.status = { state: 'needs-rebuild', reason, ownerEpoch: this.#ownerEpoch };
 		this.#publishReadiness('needs-rebuild', code);
@@ -1763,7 +1805,7 @@ class DerivedIndexRunner {
 			this.#logStore.rootStore.removeSync(this.#markerKey);
 			this.#condemned = false;
 		} catch (error) {
-			logger.error(`Derived index '${this.id}' could not clear its condemnation marker`, error);
+			logger.error?.(`Derived index '${this.id}' could not clear its condemnation marker`, error);
 		}
 	}
 
@@ -1810,7 +1852,7 @@ class DerivedIndexRunner {
 			return;
 		}
 		if (this.status.state !== 'needs-rebuild')
-			logger.error(`Derived index '${this.#registration.backend.id}' needs rebuild: ${reason}`, error);
+			logger.error?.(`Derived index '${this.#registration.backend.id}' needs rebuild: ${reason}`, error);
 		this.status = { state: 'needs-rebuild', reason, ownerEpoch: this.#ownerEpoch };
 		this.#discardProgress();
 		if (!this.#owned) return;
@@ -1835,7 +1877,7 @@ class DerivedIndexRunner {
 	}
 
 	#becomeUnavailable(reason: string, code: DerivedIndexReadinessReason, error?: unknown) {
-		logger.error(
+		logger.error?.(
 			`Derived index '${this.#registration.backend.id}' is unavailable after ${this.#rebuildAttempts} rebuild attempts: ${reason}`,
 			error
 		);
@@ -2057,7 +2099,7 @@ class DerivedIndexRunner {
 	 * write), so nothing committed after this point can sit behind it: the scan covers everything up to
 	 * the tail and the replay from it covers everything after, including any reload marker committed
 	 * during the scan, which then demands its own rebuild. A log with no committed transaction is left
-	 * out of the cursor and read from its beginning, which it must still retain.
+	 * out of the cursor with a floor instead, and is read from its beginning while that floor is retained.
 	 */
 	#captureBoundary(): DerivedIndexCursor {
 		const boundary: DerivedIndexCursor = { format: 1, logs: {} };
@@ -2068,11 +2110,10 @@ class DerivedIndexRunner {
 			if (range.corruptFrameStop.breaks > 0 || range.failedLogs.size > 0)
 				throw new RunnerError('log-corrupt', `transaction log '${logName}' cannot be read to its committed tail`);
 			if (tail === undefined) {
-				if (!this.#retainsBeginning(logName))
-					throw new RunnerError(
-						'log-retention',
-						`transaction log '${logName}' retains no committed transaction and has lost its beginning`
-					);
+				// The scan covers this log's past; an uncommitted entry in a retained file may still complete.
+				const stats = this.#logStore.rootStore.useLog(logName).getStats();
+				const floor = stats.fileCount === 0 ? stats.currentSequenceNumber : stats.oldestSequenceNumber;
+				if (floor > 1) (boundary.floors ??= {})[logName] = floor;
 				continue;
 			}
 			boundary.logs[logName] = tail;
@@ -2088,7 +2129,7 @@ class DerivedIndexRunner {
 			this.#becomeUnavailable(reason, code, error);
 			return;
 		}
-		logger.error(
+		logger.error?.(
 			`Derived index '${this.#registration.backend.id}' rebuild attempt ${this.#rebuildAttempts} failed: ${reason}`,
 			error
 		);
@@ -2152,7 +2193,7 @@ class DerivedIndexRunner {
 			try {
 				this.#logStore.unlock(this.#lockKey);
 			} catch (error) {
-				logger.error(`Failed to release derived index runner '${backend.id}'`, error);
+				logger.error?.(`Failed to release derived index runner '${backend.id}'`, error);
 			}
 			// A skip left standing by an absent or throwing `notify` swallows a peer's release instead.
 			if (this.#wakeBuffer.notify) {
@@ -2170,7 +2211,7 @@ class DerivedIndexRunner {
 			this.#releasingSince = undefined;
 			this.#heldLock = true;
 			const reason = `backend shutdown failed; runner lock held: ${error instanceof Error ? error.message : String(error)}`;
-			logger.error(`Derived index '${backend.id}' ${reason}`, error);
+			logger.error?.(`Derived index '${backend.id}' ${reason}`, error);
 			this.#releaseFailure = new Error(reason, { cause: error });
 			this.status = { state: 'unavailable', reason, ownerEpoch: epoch };
 			this.#publishReadiness('unavailable', 'shutdown-failed');
@@ -2475,18 +2516,31 @@ function isValidCursor(cursor: DerivedIndexCursor | undefined): cursor is Derive
 	for (const timestamp of Object.values(cursor.logs)) {
 		if (!Number.isFinite(timestamp) || timestamp <= 0) return false;
 	}
+	if (cursor.floors !== undefined) {
+		if (!cursor.floors || typeof cursor.floors !== 'object' || Array.isArray(cursor.floors)) return false;
+		for (const floor of Object.values(cursor.floors)) {
+			if (!Number.isInteger(floor) || floor < 1 || floor > MAX_LOG_SEQUENCE) return false;
+		}
+	}
 	return true;
 }
 
 function cloneCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {
-	return { format: 1, logs: { ...cursor.logs } };
+	const clone: DerivedIndexCursor = { format: 1, logs: { ...cursor.logs } };
+	if (cursor.floors) clone.floors = { ...cursor.floors };
+	return clone;
 }
 
 function sameCursor(left: DerivedIndexCursor | undefined, right: DerivedIndexCursor | undefined): boolean {
 	if (!isValidCursor(left) || !isValidCursor(right)) return false;
-	const leftNames = Object.keys(left.logs);
-	const rightNames = Object.keys(right.logs);
-	if (leftNames.length !== rightNames.length) return false;
-	for (const name of leftNames) if (left.logs[name] !== right.logs[name]) return false;
+	if (!sameEntries(left.logs, right.logs)) return false;
+	if (!left.floors && !right.floors) return true;
+	return sameEntries(left.floors ?? NO_FLOORS, right.floors ?? NO_FLOORS);
+}
+
+function sameEntries(left: Record<string, number>, right: Record<string, number>): boolean {
+	const leftNames = Object.keys(left);
+	if (leftNames.length !== Object.keys(right).length) return false;
+	for (const name of leftNames) if (left[name] !== right[name]) return false;
 	return true;
 }

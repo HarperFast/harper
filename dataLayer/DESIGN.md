@@ -339,6 +339,6 @@ transparent. A predicate under `NOT` or inside any other expression must see eve
 it rejects never reach AlaSQL and the negation runs over the wrong set (`NOT (c = 'alpha')` returned
 nothing, #1397 §D). Two blunter guards stay: any `OR` disables narrowing, and so does a self-join,
 because the narrowing maps are keyed by physical table, not alias. Under the default `auto` engine
-every parenthesized expression still lands here, since the new engine's normalizer refuses the
-parenthesis node. Enforced by `unitTests/dataLayer/SQLSearch.test.js` and
-`integrationTests/database/sql-not-predicate.test.ts`.
+parenthesized predicates are handled by `sqlEngine` v2, so only queries v2 still rejects (such as
+`IIF(...)` or standalone unindexed predicates) fall back here. Enforced by
+`unitTests/dataLayer/SQLSearch.test.js` and `integrationTests/database/sql-not-predicate.test.ts`.
