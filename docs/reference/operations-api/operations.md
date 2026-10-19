@@ -1894,7 +1894,16 @@ Response:
 { "session_id": "3f7c...", "status": "running" }
 ```
 
-A session that is `running` or `awaiting_approval` rejects a new prompt with a 409 — resolve the pending approval or cancel the run first. From v5.4.0 a session also answers 409 while a cancelled run is still finishing its current model call or tool. Nothing is recorded, and the session already reads `aborted`, so retry with backoff; the wait lasts as long as that call, at most the model's `requestTimeoutMs` or the tool's own run time. A prompt accepted while a [`cancel_agent_run`](#cancel_agent_run) for the same session arrives also answers 409, with a message saying it was recorded but not run. Do not resend that one: it is already in the transcript, and the next prompt's run sees it.
+A session that is `running` or `awaiting_approval` rejects a new prompt with a 409 — resolve the pending approval or cancel the run first. From v5.4.0 a session also answers 409 while a cancelled run is still finishing its current model call or tool. Nothing is recorded, and the session already reads `aborted`, so send the prompt again once [`get_agent_session`](#get_agent_session) reports `runInFlight: false`; the wait lasts as long as that call, at most the model's `requestTimeoutMs` or the tool's own run time. A prompt accepted while a [`cancel_agent_run`](#cancel_agent_run) for the same session arrives also answers 409. That prompt may already be in the transcript, where the next prompt's run sees it.
+
+From v5.4.0 each of these 409s carries a `code` and `retryable` beside `error`. `retryable: true` means nothing was recorded, so the same prompt can be sent again once the condition clears; `retryable: false` means the prompt was saved, and sending it again would add it twice:
+
+| `code`                   | `retryable` | When                                                                         |
+| ------------------------ | ----------- | ---------------------------------------------------------------------------- |
+| `AGENT_SESSION_BUSY`     | `true`      | The session is `running` or `awaiting_approval`                              |
+| `AGENT_RUN_FINISHING`    | `true`      | A cancelled run is still finishing; `runInFlight` turns `false` when it ends |
+| `AGENT_PROMPT_CANCELLED` | `true`      | A cancel arrived before the prompt was saved                                 |
+| `AGENT_PROMPT_NOT_RUN`   | `false`     | A cancel arrived after the prompt was saved, so no run started               |
 
 ### `get_agent_session`
 
@@ -1906,11 +1915,12 @@ From v5.4.0 each assistant message carries the `usage` its model call reported (
 {
 	"session_id": "3f7c...",
 	"status": "completed",
-	"usage": { "calls": 3, "promptTokens": 41230, "completionTokens": 2210, "costUsd": 0.157 }
+	"usage": { "calls": 3, "promptTokens": 41230, "completionTokens": 2210, "costUsd": 0.157 },
+	"runInFlight": false
 }
 ```
 
-`calls` counts the model calls that returned, including a reply the agent rejected as cut off or empty. That reply is kept out of `messages`, and its usage is listed in the session's `rejectedCalls`. A failed call is not counted. A total is left out once any call in the session did not report it, such as an unpriced model for `costUsd`, so a missing total means unmeasured, not zero. The [spend caps](../configuration/options.md#agent-spend-caps) read the same totals.
+`calls` counts the model calls that returned, including a reply the agent rejected as cut off or empty. That reply is kept out of `messages`, and its usage is listed in the session's `rejectedCalls`. A failed call is not counted. A total is left out once any call in the session did not report it, such as an unpriced model for `costUsd`, so a missing total means unmeasured, not zero. The [spend caps](../configuration/options.md#agent-spend-caps) read the same totals. `runInFlight` is `true` while a run for the session is still executing on the node that answered, including a cancelled run finishing its current step.
 
 ```json
 { "operation": "get_agent_session", "session_id": "3f7c..." }
