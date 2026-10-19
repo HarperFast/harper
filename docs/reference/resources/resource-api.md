@@ -1216,7 +1216,7 @@ Sort order object:
 | `descending` | Sort descending if `true` (default: `false`)               |
 | `next`       | Secondary sort to resolve ties (same structure)            |
 
-Harper uses an index to provide sort order, so a `sort` needs one of:
+For top-level collection queries, Harper uses an index to provide sort order, so a `sort` needs one of:
 
 - An `@indexed` sort `attribute`. Harper aligns the scan with the index automatically — **no condition is required**, and the condition (if any) does not have to be on the sort attribute.
 - At least one `conditions` entry (on **any** attribute) when the sort `attribute` is not indexed. Harper filters by the condition and then orders the result set in memory.
