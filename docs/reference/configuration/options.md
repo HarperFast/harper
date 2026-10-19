@@ -486,7 +486,7 @@ A cap is checked when a run starts, before it executes an approved action, and a
 - **Pending approvals are closed too.** A run stopped before it executes an approved action answers that action, and any approval still awaiting a decision, with `budget_exceeded`, so nothing is left pending. The action does not run later, even once the cap is raised; the model sees the refusal and can ask again.
 - **A capped session stays capped.** Raise the cap with `set_agent_config` or start a new session.
 
-A cap is a threshold checked after each call, not a guarantee: the call that reaches it can overshoot it. Every call that returns is counted, including a reply the agent rejects as cut off or empty: that reply stays out of the transcript, but its usage is kept on the session. A call that fails, for example on a timeout or a provider error and whether or not another model then serves it, is not counted, even if the provider billed it.
+A cap is a threshold checked after each call, not a guarantee: the call that reaches it can overshoot it. Every call that returns is counted, including a reply the agent rejects as cut off or empty: that reply stays out of the transcript, but its usage is kept on the session. A call that fails, for example on a timeout or a provider error and whether or not another model then serves it, is not counted, even if the provider billed it. The caps bound one session only: there is no cross-session or per-user budget, so a caller allowed to run `agent_prompt` can keep spending by starting new sessions.
 
 A cap, or a `maxTurns`, that is not a usable number fails the agent's start: Harper logs the error and registers no agent operation. Through `set_agent_config` the same value is rejected with a 400.
 
