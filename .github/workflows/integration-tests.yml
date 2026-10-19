@@ -33,6 +33,22 @@ env:
 # the `if: failure()` Harper-log upload still runs, while a job timeout CANCELS it and skips the
 # upload.
 jobs:
+  documentation-fixture-parity:
+    name: Documentation fixture parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Test fixture fetch reliability
+        run: node --test .github/scripts/github-fixture-fetch.test.mjs
+      - name: Compare companion fixtures
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node --test .github/scripts/nested-relationship-fixture-parity.test.mjs
+
   generate-node-version-matrix:
     name: Generate Node Version Matrix
     runs-on: ubuntu-latest

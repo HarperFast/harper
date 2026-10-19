@@ -60,6 +60,20 @@ suite('documented nested relationship requests and responses', { timeout: 120_00
 		test(example.key, async () => {
 			assert.deepStrictEqual(await get(example.url), example.response);
 		});
+	test('grouped OR preserves both branches before sorting and pagination', async () => {
+		const example = examples.cases.find((example: { key: string }) => example.key === 'grouped_or_page');
+		assert(example, 'grouped OR documentation example is missing');
+		const unskipped = await get(example.url.replace('limit(1,2)', 'limit(0,3)'));
+		assert.deepStrictEqual(
+			unskipped.map((brand: { products: { id: string }[] }) => brand.products.map((product) => product.id)),
+			[['p3', 'p1'], ['p4'], ['p6']]
+		);
+		const intersection = await get(example.url.replace('|', '&').replace('limit(1,2)', 'limit(0,3)'));
+		assert.deepStrictEqual(
+			intersection.map((brand: { products: unknown[] }) => brand.products),
+			[[], [], []]
+		);
+	});
 	test('both exact programmatic snippets produce their documented responses', async () => {
 		assert.deepStrictEqual(await get('/DocumentedQueries/'), {
 			single: examples.single,
@@ -104,41 +118,3 @@ suite('documented nested relationship requests and responses', { timeout: 120_00
 		assert.strictEqual((await get(page.replace('sort(name,id)', 'sort(name,-id)')))[0].id, 45);
 	});
 });
-
-async function readPeerFile(path: string) {
-	const response = await fetch(
-		'https://raw.githubusercontent.com/HarperFast/documentation/' +
-			peerRevision +
-			'/scripts/fixtures/nested-relationship-docs/' +
-			path,
-		{ signal: AbortSignal.timeout(15_000) }
-	);
-	assert.strictEqual(response.status, 200, 'Cannot read peer fixture: ' + response.url);
-	return response.text();
-}
-let peerRevision = '';
-test(
-	'paired documentation fixtures stay synchronized across repositories',
-	{ skip: !process.env.CI && !process.env.HARPER_DOCS_FIXTURE_ROOT },
-	async () => {
-		const peerRoot = process.env.HARPER_DOCS_FIXTURE_ROOT;
-		if (!peerRoot) {
-			const response = await fetch('https://api.github.com/repos/HarperFast/documentation/pulls/736', {
-				signal: AbortSignal.timeout(15_000),
-			});
-			assert.strictEqual(response.status, 200, 'Cannot resolve companion PR revision');
-			const pr = await response.json();
-			peerRevision = pr.merged_at ? 'main' : pr.head.sha;
-			assert(peerRevision === 'main' || /^[a-f0-9]{40}$/.test(peerRevision));
-		}
-		for (const name of ['examples.json', 'schema.graphql', 'resources.js']) {
-			const expected = readFileSync(resolve(fixture, name), 'utf8');
-			const actual = peerRoot ? readFileSync(resolve(peerRoot, name), 'utf8') : await readPeerFile(name);
-			assert.strictEqual(
-				actual.replace(/\r\n/g, '\n'),
-				expected.replace(/\r\n/g, '\n'),
-				name + ' differs from the companion repository; update both fixtures together'
-			);
-		}
-	}
-);
