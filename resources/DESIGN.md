@@ -384,7 +384,7 @@ Blobs flagged with `saveBeforeCommit` (or `saveInRecord`) are written to disk in
 The mitigations live in three places:
 
 - `startPreCommitBlobsForRecord` (`blob.ts`) returns the blob list alongside its completion callback so each `TransactionWrite` can attach a `savedBlobs: Blob[]`. `cleanupUnusedBlobs(blobs)` (`blob.ts`) waits for each blob's `saving` promise to settle, then `deleteBlob`s the file — it clears the input list so it's idempotent across repeated calls (e.g. an early-return that also gets caught by the abort path).
-- `Table.ts` commit handlers set `write.skipped = true` (and reset to `false` at the top of each invocation) on early-return paths that don't write the record/audit: duplicate-tie, superseded-by-put, no-audit-fullUpdate-loses, and cache-resolve version-changed. The transaction commit success paths (`DatabaseTransaction.commit` and `LMDBTransaction.commit`) walk writes and call `cleanupUnusedBlobs(write.savedBlobs)` for every still-skipped write. Cleanup is deferred (rather than run inline in the commit handler) because the commit handler runs again on optimistic-lock retries, and a retry can flip a previously-skipped write into a successful one (e.g. the existing record gets deleted between attempts so the older replicated update suddenly wins). Inline cleanup would race the deletion's `setTimeout` against the retry that referenced the blob.
+- `Table.ts` commit handlers set `write.skipped = true` (and reset to `false` at the top of each invocation) on early-return paths that don't write the record/audit: duplicate-tie, superseded-by-put, no-audit-fullUpdate-loses, a losing invalidate, relocate or delete, and cache-resolve version-changed. Staging reads the same flag as "appended nothing" (`appendedTo`, below), so an unmarked early return also makes `replicatedConfirmation` wait on a log key nothing was written at (harper#3182). The transaction commit success paths (`DatabaseTransaction.commit` and `LMDBTransaction.commit`) walk writes and call `cleanupUnusedBlobs(write.savedBlobs)` for every still-skipped write. Cleanup is deferred (rather than run inline in the commit handler) because the commit handler runs again on optimistic-lock retries, and a retry can flip a previously-skipped write into a successful one (e.g. the existing record gets deleted between attempts so the older replicated update suddenly wins). Inline cleanup would race the deletion's `setTimeout` against the retry that referenced the blob.
 - `LMDBTransaction.abort` and `DatabaseTransaction.abort` walk all writes and run the same cleanup unconditionally (regardless of `skipped`), since nothing was committed. `DatabaseTransaction.commit` adds an explicit reject handler so a `Promise.all` failure on `completions` (e.g. a blob save errored) aborts the underlying transaction instead of leaking it _and_ the blob files. Both engines funnel synchronous throws and returned rejections from the whole commit chain through that cleanup once (`abortAfterCommitError`); LMDB captures `next` before its success path detaches the link, so a child's rejection still closes every uncommitted link. The cascade skips a link whose native commit is still outstanding — clearing its writes would unlink blobs that commit still references.
 
 **A blob instance outlives its file, so deletion tombstones it.** The `fileId` stays set on a `Blob` whose file has been unlinked, and `saveBlob` short-circuits on a set `fileId` — so a caller still holding the instance (the deploy recorder re-puts the same record object across a deploy) would re-encode a reference to a file that is gone. `cleanupUnusedBlobs` marks the blob's shared file state when transaction cleanup decides the file is no longer usable, before an in-flight save settles; slices share that state with their source. Ordinary supersession keeps its retention and re-reference window; reclamation marks every queued instance only after it claims the unlink. `saveBlob` throws on a discarded instance rather than minting a second reference (issue #2062).
@@ -818,7 +818,8 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
 A `TableTarget` is the small binding the declaration body needs and nothing more: the root store, the
 `tables` graph the class is published into, what to do after a lost create race (another thread created
 the table first), and who owns the column-family wrappers the declaration opens. The global target is
-`database()` / `databases[name]` / `resetDatabases()`; a branch target (harper#2264) is that branch's
+`database()` / `databases[name]` / `resetDatabases()`, and it adopts every RocksDB wrapper into the
+root's owned list (see [the teardown note](#a-rocksdb-databases-teardown-closes-every-wrapper-its-loads-and-declarations-opened-databasests-harper3120)); a branch target (harper#2264) is that branch's
 `rootStore` / `tables` / `reloadBranch`, and it adopts every wrapper into `branch.openedStores` so
 `close()` releases them.
 
@@ -890,6 +891,30 @@ an LMDB root once, only while `open`, skips its dbis, and closes every alias sha
 column families are independently refcounted handles, so they are still closed one by one. Enforced by
 the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
 
+## A RocksDB database's teardown closes every wrapper its loads and declarations opened (`databases.ts`, harper#3120)
+
+A redeclare (an insert that adds an attribute, `addAttributes`, a cluster definition) used to reopen
+`__dbis__` and every indexed attribute's column family and overwrite the references the table graph
+holds. rocksdb-js releases a wrapper's native handle only when it closes or is garbage-collected, so the
+replaced wrappers kept the process-global refCount up until a collection happened to run, and online
+`restore_backup`, which waits 3 s for closure, refused the database as held open. `declareTable` now
+reuses the root's one `__dbis__` wrapper (`internalDbisFor`) and, on a redeclare, a plain index's open
+wrapper on an unchanged store (`indexFor`); a custom index (HNSW) is always reopened, since `openIndex`
+builds its state from the current options, and is never reused for a plain declaration. Every wrapper
+`initStores` or `declareTable` opens for a global RocksDB root is also recorded in `ownedRocksStores` under
+the root path, so a close reaches one the graph stopped pointing at. The record is a `WeakRef`: an unreachable wrapper is
+still released by collection, as before, rather than kept alive until the database closes.
+`closeDatabaseStores` closes the live entries before the root, and drains the record again after it for a
+declaration that resolved the root mid-close. A wrapper whose close failed, including a custom index whose
+setup threw and whose cleanup close failed, is held strongly instead, since collection may not release its
+handle; the record is keyed by path because a lenient close discards the root object even after a failure. A
+wrapper is never closed when the graph stops pointing at it: a query that took it before the redeclare
+opens its ranges through it afterward, and a closed wrapper refuses them (a range already open keeps
+reading either way). Short-lived wrappers (column-family drops, the blob sweep) close themselves and are not
+recorded. `destroy()` closes every wrapper on the root, so a drop only forgets the record. Enforced by the
+redeclare and close-failure cases in `unitTests/resources/closeLoadedDatabases.test.js` and, end to end,
+`integrationTests/database/restore-backup-online.test.ts`.
+
 ## Every `.mdb` under a storage path must open as LMDB (`databases.ts` `getDatabases`)
 
 A rescan (`resetDatabases()`, which any schema change triggers) opens each `.mdb` file at the top level
@@ -937,7 +962,7 @@ confirmable writes (`residentPeerLists`); the waiter needs the full count from e
 residency adds no list. The position is the committed transaction's reserved log key (`confirmationTarget`),
 not a record version, which can sit below the key (an explicit timestamp under the origin floor) or above it
 (a remote-origin version kept by a merge). Only when no confirmable write appended to the committed handle
-(every write lost to a newer entry) does it fall back to the stored entry's version, as before.
+(every write lost to a newer entry, which its commit handler marks `skipped`) does it fall back to the stored entry's version, as before.
 
 The commit handler stamps `write.residencyId` on each round that appends an audit entry and keeps it on a
 coordinated retry, which appends nothing, so the residents counted are the ones the replicated entry names.

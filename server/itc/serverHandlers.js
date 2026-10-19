@@ -256,8 +256,12 @@ async function componentStatusRequestHandler(event) {
 		const { getWorkerIndex } = require('../threads/manageThreads.js');
 		const componentStatuses = internal.componentStatusRegistry.getAllStatuses();
 
-		// Convert Map to array for serialization
-		const statusArray = Array.from(componentStatuses.entries());
+		// Convert Map to array for ITC serialization, rendering Error objects on the
+		// reporting thread so custom error class names survive structured clone.
+		const statusArray = Array.from(componentStatuses.entries(), ([name, status]) => [
+			name,
+			status.error !== undefined ? { ...status, error: internal.serializeStatusError(status.error) } : status,
+		]);
 
 		// Get worker index and determine if this is the main thread
 		const workerIndex = getWorkerIndex();

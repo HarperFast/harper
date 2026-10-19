@@ -28,7 +28,9 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
 import {
-	beginRestore,
+	claimRestore,
+	markRestoreDestructive,
+	restoreLockHeldExclusively,
 	clearRestoringMarker,
 	abandonRestore,
 	checkRestoreState,
@@ -529,8 +531,9 @@ files by hand.
 
 ## Restore
 
-Restore is destructive: it purges and rewrites the database directory — and every blob root — from
-the backup (blobs are restored automatically). Restore the latest backup in place:
+Restore is destructive: once the backup passes verification, it purges and rewrites the database
+directory — and every blob root — from the backup (blobs are restored automatically). Restore the
+latest backup in place:
 
     harper restore_backup database=${databaseName}
 
@@ -616,8 +619,9 @@ export async function validateRestoreBackup(request: any) {
 
 /**
  * Online restore of a user database (see the design's restore lock + marker protocol):
- * take the per-database restore lock, write the restoring marker, close the database across all
- * worker threads, restore, delete the marker, release the lock, and reload everywhere.
+ * claim the per-database restore lock, close the database across all worker threads, verify the
+ * backup, write the restoring marker, restore, delete the marker, release the lock, and reload
+ * everywhere.
  */
 export async function restoreBackup(request: any) {
 	const databaseName = getDatabaseName(request);
@@ -632,13 +636,7 @@ export async function restoreBackup(request: any) {
 		);
 	}
 	const backupDir = backupDirForDatabase(databaseName);
-	// choose the latest complete backup (or the requested id, rejected if incomplete); the manifest
-	// tells us whether blobs were captured so we restore them only when they were
-	const { backupId, manifest } = await resolveCompleteBackup(
-		backupDir,
-		request.backup_id === undefined ? undefined : requireBackupId(request.backup_id),
-		databaseName
-	);
+	const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
 	// a loaded database *with tables* knows its real directory via its root store (which can differ
 	// from the computed default, e.g. legacy layouts); fall back to the computed path when the
 	// database is unloaded (recovering an interrupted restore) or empty (no table to resolve a root
@@ -648,28 +646,30 @@ export async function restoreBackup(request: any) {
 		loaded != null && Object.keys(loaded).length > 0
 			? requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP).path
 			: resolveDatabasePath(databaseName);
-	// reject a backup with more blob roots than the current config *before* anything destructive —
-	// restoring it would mis-address blobs (records persist their root index)
 	const blobRoots = getBlobPathsForDatabaseName(databaseName);
-	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
 	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
-	// Once is enough: the decision reads the manifest and the opt-in, never the destination, so no
-	// concurrent writer can change the answer between here and the purge.
-	assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
 	const pinId = restorePinId(databaseDir);
 	const restoreToken = randomUUID();
 	let destructionStarted = false;
-	// Re-check before replacing a previous attempt's claim; publish the new claim before the marker
-	// under both locks, so a crash cannot leave a marked database with an unprotected source.
-	const lock = await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		await findBackup(backupDir, backupId, databaseName);
-		return beginRestoreForDatabase(databaseDir, databaseName, () =>
-			pinBackup(backupDir, pinId, backupId, `restore of database '${databaseName}'`, databaseDir)
+	// Selection and every check derived from it run under the repository lock, so they apply to the
+	// backup the claim pins; the claim is published before the marker under both locks, so a crash
+	// cannot leave a marked database with an unprotected source.
+	const { lock, backupId, manifest } = await withBackupRepositoryLock(backupDir, databaseName, async () => {
+		// choose the latest complete backup (or the requested id, rejected if incomplete); the manifest
+		// tells us whether blobs were captured so we restore them only when they were
+		const selected = await resolveCompleteBackup(backupDir, requestedBackupId, databaseName);
+		// reject a backup with more blob roots than the current config *before* anything destructive —
+		// restoring it would mis-address blobs (records persist their root index)
+		await assertBlobSnapshotRestorable(backupDir, selected.backupId, blobRoots);
+		assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: selected.manifest.blobs, allowEngineOnly });
+		const claimed = await beginRestoreForDatabase(databaseDir, databaseName, () =>
+			pinBackup(backupDir, pinId, selected.backupId, `restore of database '${databaseName}'`, databaseDir)
 		);
+		return { lock: claimed, ...selected };
 	});
 	try {
 		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
-		// Each thread also rescans, and the restoring marker keeps it from reloading mid-restore.
+		// Each thread also rescans, and the held restore lock (later the marker) keeps it from reloading.
 		try {
 			await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'close', restoreToken));
 		} catch {
@@ -682,6 +682,11 @@ export async function restoreBackup(request: any) {
 		// purging — restoring under an open instance would corrupt it. If handles remain, fail
 		// with a clear pointer to the offline CLI path rather than purging.
 		await verifyDatabaseClosed(databaseDir, databaseName);
+		// Only once writes are refused: a write acknowledged during verification would be lost to the purge.
+		await assertBackupReadable(backupDir, backupId, manifest, databaseName, databaseName, () => lock.preexisting);
+		// The claim keeps Harper from reopening it, but a component opening the path directly could have.
+		await verifyDatabaseClosed(databaseDir, databaseName);
+		markRestoreDestructive(lock);
 		destructionStarted = true;
 		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
 		// restore blobs only for a backup that captured them (an engine-only backup leaves the live
@@ -820,7 +825,7 @@ export function restorePinId(databaseDir: string): string {
 }
 
 /**
- * beginRestore's own error message carries the filesystem path (useful in CLI/server logs);
+ * claimRestore's own error message carries the filesystem path (useful in CLI/server logs);
  * client-facing operations report by database name instead.
  */
 function beginRestoreForDatabase(
@@ -829,7 +834,7 @@ function beginRestoreForDatabase(
 	beforePublishMarker: (preexisting: boolean) => void
 ): RestoreLock {
 	try {
-		return beginRestore(databaseDir, beforePublishMarker);
+		return claimRestore(databaseDir, beforePublishMarker);
 	} catch (error) {
 		if (error.statusCode === 409) {
 			throw new BackupInProgressError(
@@ -1206,7 +1211,9 @@ export async function createBackupOffline(databaseName: string, excludeBlobs = f
 	if (!existsSync(join(databaseDir, 'CURRENT'))) {
 		throw new BackupNotFoundError(`No RocksDB database found at ${databaseDir}`);
 	}
-	const restoreState = checkRestoreState(databaseDir);
+	// A claimed restore publishes no marker until it purges, so its held lock counts as active too.
+	const marked = checkRestoreState(databaseDir);
+	const restoreState = marked === 'clear' && restoreLockHeldExclusively(databaseDir) ? 'in-progress' : marked;
 	if (restoreState !== 'clear') {
 		throw new BackupInProgressError(
 			`Database '${databaseName}' has an ${restoreState === 'in-progress' ? 'active' : 'incomplete'} restore; rerun restore_backup before backing up`
@@ -1250,7 +1257,7 @@ export async function createBackupOffline(databaseName: string, excludeBlobs = f
  */
 export async function restoreBackupOffline(
 	databaseName: string,
-	backupId?: number,
+	requestedBackupId?: number,
 	targetDatabase?: string,
 	allowEngineOnlyOption?: boolean
 ) {
@@ -1259,23 +1266,32 @@ export async function restoreBackupOffline(
 	const allowEngineOnly = requireBooleanOption(allowEngineOnlyOption, 'allow_engine_only');
 	validateDatabaseName(databaseName);
 	const backupDir = backupDirForDatabase(databaseName);
-	// resolve to the latest complete backup (or the requested id, rejected if incomplete)
-	const resolved = await resolveCompleteBackup(backupDir, backupId, databaseName);
-	backupId = resolved.backupId;
-	const manifest = resolved.manifest;
 	if (targetDatabase !== undefined) validateDatabaseName(targetDatabase);
 	const databaseDir = resolveDatabasePath(targetDatabase ?? databaseName);
-	// reject a backup with more blob roots than the target's current config before anything
-	// destructive (records persist their root index, so collapsing would mis-address blobs)
 	const blobRoots = getBlobPathsForDatabaseName(targetDatabase ?? databaseName);
-	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
-	assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
 	const pinId = restorePinId(databaseDir);
 	let destructionStarted = false;
-	// As online, claim before marking under both locks, and mark before probing the destination.
-	const lock = await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		await findBackup(backupDir, backupId as number, databaseName);
-		return beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName, (preexisting) => {
+	// Unlike online, verify before the claim: with no live writers to refuse, a crash mid-verify then
+	// leaves the database loadable. Claim before marking under both locks, and mark before probing.
+	const { lock, backupId, manifest } = await withBackupRepositoryLock(backupDir, databaseName, async () => {
+		// resolve to the latest complete backup (or the requested id, rejected if incomplete)
+		const selected = await resolveCompleteBackup(backupDir, requestedBackupId, databaseName);
+		// reject a backup with more blob roots than the target's current config before anything
+		// destructive (records persist their root index, so collapsing would mis-address blobs)
+		await assertBlobSnapshotRestorable(backupDir, selected.backupId, blobRoots);
+		assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, {
+			backupHasBlobs: selected.manifest.blobs,
+			allowEngineOnly,
+		});
+		await assertBackupReadable(
+			backupDir,
+			selected.backupId,
+			selected.manifest,
+			databaseName,
+			targetDatabase ?? databaseName,
+			() => checkRestoreState(databaseDir) === 'incomplete'
+		);
+		const claimed = await beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName, (preexisting) => {
 			// Inside the reservation, so a create_database racing this restore cannot pass the absence
 			// check and then lose the database it just made. Debris this source left is exempt, or the
 			// rerun wedges for good — a drop refuses a marked directory too, and the marker keeps the pin
@@ -1296,11 +1312,12 @@ export async function restoreBackupOffline(
 			pinBackup(
 				backupDir,
 				pinId,
-				backupId as number,
+				selected.backupId,
 				`restore of database '${targetDatabase ?? databaseName}'`,
 				databaseDir
 			);
 		});
+		return { lock: claimed, ...selected };
 	});
 	try {
 		// The offline path is entered only when the CLI sees no running server (getHdbPid), but that is
@@ -1324,6 +1341,7 @@ export async function restoreBackupOffline(
 			}
 			handle?.close();
 		}
+		markRestoreDestructive(lock);
 		destructionStarted = true;
 		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
 		// restore blobs only for a backup that captured them (per the manifest, not snapshot presence)
@@ -1365,6 +1383,49 @@ export async function restoreBackupOffline(
 	};
 }
 
+/** Where each restore path calls this, and why, is in dataLayer/DESIGN.md (harper#2965). */
+async function assertBackupReadable(
+	backupDir: string,
+	backupId: number,
+	manifest: BackupManifest,
+	sourceDatabaseName: string,
+	databaseName: string,
+	resumesInterruptedRestore: () => boolean
+): Promise<void> {
+	try {
+		await verifyBackupFiles(backupDir, backupId, manifest, sourceDatabaseName, true, true);
+	} catch (error: any) {
+		let interrupted = false;
+		try {
+			interrupted = resumesInterruptedRestore();
+		} catch {
+			// the verification failure is the diagnosis; an unreadable marker must not replace it
+		}
+		const destination = interrupted
+			? `database '${databaseName}' still holds an earlier restore that did not finish and stays unloadable until a restore succeeds; restore a backup that verifies`
+			: `this restore did not modify database '${databaseName}'`;
+		const message = `Backup ${backupId} failed verification, so ${destination}: ${error instanceof Error ? error.message : String(error)}`;
+		const refusal = error instanceof ClientError ? new ClientError(message, error.statusCode) : new Error(message);
+		throw Object.assign(refusal, { cause: error });
+	}
+}
+
+async function verifyBackupFiles(
+	backupDir: string,
+	backupId: number,
+	manifest: BackupManifest,
+	databaseName: string,
+	verifyWithChecksum: boolean,
+	verifyTables = false
+): Promise<void> {
+	if (manifest.blobs && !existsSync(blobSnapshotDir(backupDir, backupId))) {
+		throw new ClientError(
+			`Backup ${backupId} of database '${databaseName}' declares captured blobs but its blob snapshot is missing (corrupt backup)`
+		);
+	}
+	await backups.verify(backupDir, backupId, { verifyWithChecksum, verifyTables });
+}
+
 function isMissingOrEmptyDir(path: string): boolean {
 	try {
 		return readdirSync(path).length === 0;
@@ -1393,12 +1454,7 @@ export async function verifyBackupOffline(databaseName: string, backupId: number
 	const backupDir = backupDirForDatabase(databaseName);
 	await findBackup(backupDir, backupId, databaseName);
 	const manifest = await requireBackupComplete(backupDir, backupId, databaseName);
-	await backups.verify(backupDir, backupId, { verifyWithChecksum });
-	if (manifest.blobs && !existsSync(blobSnapshotDir(backupDir, backupId))) {
-		throw new ClientError(
-			`Backup ${backupId} of database '${databaseName}' declares captured blobs but its blob snapshot is missing (corrupt backup)`
-		);
-	}
+	await verifyBackupFiles(backupDir, backupId, manifest, databaseName, verifyWithChecksum);
 	return { database: databaseName, backup_id: backupId, ok: true, blobs: manifest.blobs };
 }
 

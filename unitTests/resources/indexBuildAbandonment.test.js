@@ -15,7 +15,7 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
-const { setupTestDBPath } = require('../testUtils');
+const { setupTestDBPath, stubMethod } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const manageThreads = require('#js/server/threads/manageThreads');
 const { forComponent } = require('#src/utility/logging/harper_logger');
@@ -141,7 +141,7 @@ describe('an index build that ends without completing is marked and recovered', 
 				return originalTransactionSync.apply(this, args);
 			};
 		}
-		dbisDB.getSync = (readKey, ...rest) => {
+		const restoreGetSync = stubMethod(dbisDB, 'getSync', (readKey, ...rest) => {
 			const value = originalGetSync(readKey, ...rest);
 			if (readKey === key && ++reads === 2) {
 				// tryLock fails even for the thread already holding it, so this observes the locked section
@@ -152,7 +152,7 @@ describe('an index build that ends without completing is marked and recovered', 
 				return { ...value, indexingBuildId: 'a-replacement-build' };
 			}
 			return value;
-		};
+		});
 		const originalStatus = Object.getOwnPropertyDescriptor(rootStore, 'status');
 		const originalGetRange = Rebuilding.primaryStore.getRange;
 		Rebuilding.primaryStore.getRange = () => {
@@ -165,7 +165,7 @@ describe('an index build that ends without completing is marked and recovered', 
 			Rebuilding.primaryStore.getRange = originalGetRange;
 			if (originalStatus) Object.defineProperty(rootStore, 'status', originalStatus);
 			else delete rootStore.status;
-			dbisDB.getSync = originalGetSync;
+			restoreGetSync();
 			if (!isRocksDatabase) rootStore.transactionSync = originalTransactionSync;
 		}
 
@@ -208,8 +208,8 @@ describe('an index build that ends without completing is marked and recovered', 
 				return result;
 			};
 		}
-		dbisDB.put = throwAfterMarkerWrite(originalPut);
-		dbisDB.putSync = throwAfterMarkerWrite(originalPutSync);
+		const restorePut = stubMethod(dbisDB, 'put', throwAfterMarkerWrite(originalPut));
+		const restorePutSync = stubMethod(dbisDB, 'putSync', throwAfterMarkerWrite(originalPutSync));
 		const rootStore = Rebuilding.primaryStore.rootStore;
 		const originalStatus = Object.getOwnPropertyDescriptor(rootStore, 'status');
 		const originalGetRange = Rebuilding.primaryStore.getRange;
@@ -223,8 +223,8 @@ describe('an index build that ends without completing is marked and recovered', 
 			Rebuilding.primaryStore.getRange = originalGetRange;
 			if (originalStatus) Object.defineProperty(rootStore, 'status', originalStatus);
 			else delete rootStore.status;
-			dbisDB.put = originalPut;
-			dbisDB.putSync = originalPutSync;
+			restorePut();
+			restorePutSync();
 		}
 
 		assert.strictEqual(

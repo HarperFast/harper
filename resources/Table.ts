@@ -3981,7 +3981,11 @@ export function makeTable(options): TableResourceClass {
 					const txnLogKey = isRocksDB
 						? (reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime)
 						: txnTime;
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) return;
+					write.skipped = false;
+					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+						write.skipped = true;
+						return;
+					}
 					const residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
 					let newRecord = null;
@@ -8574,6 +8578,7 @@ export function makeTable(options): TableResourceClass {
 			return entriesDeleted;
 		}
 		static async *getHistory(startTime = 0, endTime = Infinity) {
+			let loggedEntryError = false;
 			for (const auditRecord of auditStore.getRange({
 				start: startTime || 1, // if startTime is 0, we actually want to shift to 1 because 0 is encoded as all zeros with audit store's special encoder, and will include symbols
 				end: endTime,
@@ -8581,13 +8586,22 @@ export function makeTable(options): TableResourceClass {
 				await rest(); // yield to other async operations
 				if (auditRecord.tableId !== tableId || auditRecord.type === 'evict' || isLockControlType(auditRecord.type))
 					continue;
+				let value;
+				try {
+					value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
+				} catch (error) {
+					if (!loggedEntryError) {
+						loggedEntryError = true;
+						logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
+					}
+				}
 				yield {
 					id: auditRecord.recordId,
 					// Compatibility-facing LMDB history has always reported/grouped by record version.
 					localTime: isRocksDB ? auditRecord.txnLogKey : auditRecord.version,
 					version: auditRecord.version,
 					type: auditRecord.type,
-					value: auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey),
+					value,
 					user: auditRecord.user,
 					operation: auditRecord.originatingOperation,
 				};
@@ -8604,6 +8618,7 @@ export function makeTable(options): TableResourceClass {
 			if (!nextVersion) throw new Error('The entry does not have a local audit time');
 			const count = 0;
 			const auditWindow = 100;
+			let loggedEntryError = false;
 			do {
 				await rest(); // yield to other async operations
 				let insertionPoint = history.length;
@@ -8616,14 +8631,23 @@ export function makeTable(options): TableResourceClass {
 						!isLockControlType(auditRecord.type) &&
 						compareKeys(auditRecord.recordId, id) === 0
 					) {
+						let value;
+						try {
+							// reconstruct each entry's record image as of its own log position, not the audit
+							// window boundary (nextVersion), matching getHistory (issue #1330)
+							value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
+						} catch (error) {
+							if (!loggedEntryError) {
+								loggedEntryError = true;
+								logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
+							}
+						}
 						history.splice(insertionPoint, 0, {
 							id: auditRecord.recordId,
 							localTime: isRocksDB ? auditRecord.txnLogKey : auditRecord.version,
 							version: auditRecord.version,
 							type: auditRecord.type,
-							// reconstruct each entry's record image as of its own log position, not the audit
-							// window boundary (nextVersion), matching getHistory (issue #1330)
-							value: auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey),
+							value,
 							user: auditRecord.user,
 							operation: auditRecord.originatingOperation,
 						});
