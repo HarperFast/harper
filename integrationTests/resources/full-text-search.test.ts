@@ -295,6 +295,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		const first: { id: string }[] = await firstResponse.json();
 		const token = firstResponse.headers.get('harper-continuation');
 		assert(token);
+		const held = [token];
 		await request(`${base}&continuation()`, { method: 'OPTIONS' }, 204);
 		await request(
 			`${base}&continuation()`,
@@ -317,8 +318,21 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			const resumed = await request(`${base}&continuation(${encodeURIComponent(token)})`);
 			assert.strictEqual(resumed.length, 75);
 			assert(!resumed.some(({ id }) => first.some((record) => record.id === id)));
+			for (let index = 1; index < 4; index++) {
+				const response = await fetch(`${ctx.harper.httpURL}${base}&continuation()`, {
+					headers: { Authorization: authorization },
+					signal: AbortSignal.timeout(15000),
+				});
+				const nextToken = response.headers.get('harper-continuation');
+				if (nextToken) held.push(nextToken);
+				assert.strictEqual(response.status, 200, await response.text());
+				assert(nextToken);
+			}
+			assert(Number(firstResponse.headers.get('harper-continuation-expires')) > Date.now());
 		} finally {
-			await request(`${base}&continuation(${encodeURIComponent(token)})&closeContinuation()`);
+			await Promise.all(
+				held.map((token) => request(`${base}&continuation(${encodeURIComponent(token)})&closeContinuation()`))
+			);
 		}
 	});
 
