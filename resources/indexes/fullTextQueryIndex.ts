@@ -696,6 +696,7 @@ export class FullTextQueryIndex {
 		}
 	): Promise<any[]> {
 		const page = options.continuationPage!;
+		const revision = this.#configurationRevision;
 		await page.ready.promise;
 		const assertActive = () => {
 			context?.signal?.throwIfAborted();
@@ -729,7 +730,6 @@ export class FullTextQueryIndex {
 			} else {
 				claim = await reserveFullTextContinuation(Buffer.byteLength(JSON.stringify(query)) + 64, page.deadline);
 				assertActive();
-				const revision = this.#configurationRevision;
 				readerLease = await this.#acquireSearchReader(condition, context, page.deadline);
 				assertActive();
 				if (this.#closed || this.#configurationRevision !== revision || this.#pauses.size)

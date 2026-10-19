@@ -314,6 +314,37 @@ describe('full-text traversal ordering guard', () => {
 });
 
 describe('FullTextQueryIndex', () => {
+	it('rejects a first continuation whose definition changed during page setup', async function () {
+		this.timeout(10000);
+		const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		const { FullTextContinuationPage } = require('#src/resources/indexes/fullTextContinuationPage');
+		const auditStore = sharedStore();
+		const readinessId = 'continuation-setup-definition-change';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => ['a', 'b'].map((key) => ({ id: nativeId(1, key), version: '1', score: 1 })),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const page = new FullTextContinuationPage({ continuation: true, limit: 1 }, readinessId);
+		page.materialize = async (entries) => entries;
+		const searching = index.search(
+			{ comparator: 'matches', value: 'shoe' },
+			{ signal: AbortSignal.timeout(5000) },
+			{ continuationPage: page }
+		);
+		index.updateDefinition({ ...definition(), fields: [{ name: 'title', weight: 7 }] });
+		page.ready.resolve();
+		try {
+			await assert.rejects(searching, (error) => error.statusCode === 410);
+		} finally {
+			await index.close();
+		}
+	});
+
 	for (const repeatBoundary of [true, false]) {
 		it(`rejects repeated continuation hits with ${repeatBoundary ? 'the same' : 'a different'} native boundary`, async function () {
 			this.timeout(10000);
