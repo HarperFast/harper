@@ -285,7 +285,7 @@ Any layer that establishes Harper owns the route then settles the deferred state
 | `static.ts`                             | after a static file entry matches                                                                                                                                          |
 | `mqtt.ts` WebSocket handler             | once the pending HTTP chain settles, before the first packet                                                                                                               |
 | `components/mcp/adapters/harperHttp.ts` | after the WebSocket hand-off, before the body is read                                                                                                                      |
-| `security/fastifyAuth.ts → authorize()` | when a legacy Fastify route runs `hdbCore.preValidation` (not under uWS: `injectToFastify()` carries no base request)                                                      |
+| `security/fastifyAuth.ts → authorize()` | when a legacy Fastify route runs `hdbCore.preValidation` (not under uWS or Bun: `injectToFastify()` carries no base request)                                               |
 
 **Every Harper-owned handler registered `after: 'authentication'` owes this settlement**, because
 declining to call `nextHandler` is precisely the moment ownership is settled. A handler that skips
