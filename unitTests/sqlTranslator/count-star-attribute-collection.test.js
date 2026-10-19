@@ -1,5 +1,5 @@
 'use strict';
-const assert = require('assert');
+const assert = require('node:assert');
 const alasql = require('alasql');
 
 const SqlStatementBucket = require('#src/sqlTranslator/sql_statement_bucket').default;
