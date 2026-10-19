@@ -286,7 +286,7 @@ Use square brackets inside `select()` to apply conditions, sort, and pagination 
 
 **An outer relationship filter also narrows that relationship's nested results.** For example, `products.price=ge=number:30` selects brands with a qualifying product and restricts their selected products to those costing at least 30. **You do not need to repeat that price filter inside `products[...]`.** Add a nested condition only when you want to narrow the already-eligible products further without removing their parents.
 
-The following scenarios use this self-contained schema, including string product IDs and an indexed price field:
+The following scenarios use this self-contained schema, including string product IDs and an indexed price field. In a fresh application, use this schema instead of the earlier Brand/Product example; do not combine the two definitions:
 
 ```graphql
 type Brand @table @export {
