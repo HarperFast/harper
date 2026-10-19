@@ -422,6 +422,21 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		assert.equal((await DocTable.get('promise-1')).secret, 'promise-1 secret');
 	});
 
+	it('patch and collection post bodies that resolve after dispatch are still checked', async function () {
+		await seed('promise-2');
+		await assert.rejects(
+			async () => DocTable.patch('promise-2', Promise.resolve({ secret: 'overwritten' }), asUser()),
+			/Unauthorized/
+		);
+		const collection = new RequestTarget('/');
+		collection.isCollection = true;
+		await assert.rejects(
+			async () => DocTable.post(collection, Promise.resolve({ title: 't', secret: 's' }), asUser()),
+			/Unauthorized/
+		);
+		assert.equal((await DocTable.get('promise-2')).secret, 'promise-2 secret');
+	});
+
 	it('a restricted full put creates a missing record with its primary key', async function () {
 		await DocTable.put('new-1', { title: 'created', owner: 'o' }, asUser());
 		assert.deepEqual(JSON.parse(JSON.stringify(await DocTable.get('new-1'))), {
@@ -622,6 +637,8 @@ describe('Primary key grant edge cases (harper#3284)', () => {
 			{ attribute_name: '__createdtime__', read: true, insert: true, update: true },
 		]);
 		await KeyTable.put('k-1', { title: 'timestamped' }, { user, authorize: true });
+		assert.equal((await KeyTable.get('k-1')).__createdtime__, created);
+		await KeyTable.put('k-1', { title: 'timestamped', __createdtime__: 0 }, { user, authorize: true });
 		assert.equal((await KeyTable.get('k-1')).__createdtime__, created);
 	});
 

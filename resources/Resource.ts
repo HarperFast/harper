@@ -672,6 +672,7 @@ function settleElements(results: any[]): Promise<any[]> {
 	});
 }
 
+const RESOLVE_BODY_BEFORE_AUTHORIZATION = new Set(['query', 'put', 'patch', 'post']);
 /**
  * This is responsible for arranging arguments in the main static methods and creating the appropriate context and default transaction wrapping
  * @param action
@@ -762,10 +763,10 @@ function transactional(
 				data = dataOrContext;
 			}
 		}
-		if ((options.method === 'query' || options.method === 'put') && typeof (data as any)?.then === 'function') {
+		if (RESOLVE_BODY_BEFORE_AUTHORIZATION.has(options.method) && typeof (data as any)?.then === 'function') {
 			// HTTP request bodies are resolved asynchronously. QUERY projection and permission-control
-			// sanitization, and PUT attribute authorization, must see the body before resource resolution and
-			// the allow* check, not later in runAction.
+			// sanitization, and attribute authorization of a write, must see the body before resource resolution
+			// and the allow* check, not later in runAction.
 			const dataWasFirstArgument = data === idOrQuery;
 			return (data as Promise<any>).then((resolvedData) =>
 				dataWasFirstArgument

@@ -3755,8 +3755,8 @@ export function makeTable(options): TableResourceClass {
 				return this;
 			}
 			if (typeof updates === 'object' && updates) {
-				const updatableAttributes = fullUpdate && this.#takeUpdatableAttributes();
-				if (updatableAttributes && isRecordRoot(updates)) {
+				const updatableAttributes = this.#takeUpdatableAttributes();
+				if (fullUpdate && updatableAttributes && isRecordRoot(updates)) {
 					this.#changes = restrictedReplacement(id, updates, updatableAttributes);
 					return when(this._writeUpdate(id, this.#changes, false, RESTRICTED_REPLACEMENT), () => this);
 				} else if (fullUpdate) {
@@ -3801,6 +3801,7 @@ export function makeTable(options): TableResourceClass {
 		}
 
 		#stageChanges(id: Id, target: RequestTarget, changes: any, options?: any) {
+			this.#updatableAttributes = undefined;
 			let loading: Promise<any>;
 			if (!this.#entry && (this.constructor as any).loadAsInstance === false) {
 				// load the record if it hasn't been done yet
@@ -4833,7 +4834,6 @@ export function makeTable(options): TableResourceClass {
 		// local copy
 		_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any) {
 			this.#assertLiveHandle(id);
-			this.#updatableAttributes = undefined; // authorized for one write
 			const context = this.getContext();
 			const condition = conditionForWrite(context, id);
 			const locking = lockConditionalWrite(this, id, condition);
@@ -9312,6 +9312,9 @@ export function makeTable(options): TableResourceClass {
 	function restrictedReplacement(id: Id, record: any, updatableAttributes: { [attribute: string]: boolean }) {
 		const changes: any = { ...record };
 		if (primaryKey) changes[primaryKey] = id;
+		// a full put keeps the stored created time whatever the payload says; the write stamps both times
+		if (createdTimeProperty) delete changes[createdTimeProperty.name];
+		if (updatedTimeProperty) delete changes[updatedTimeProperty.name];
 		for (const key in updatableAttributes) {
 			if (
 				updatableAttributes[key] &&
