@@ -250,7 +250,7 @@ describe('full-text process-wide continuation admission', () => {
 		}
 	});
 
-	for (const failRelease of [false, true, null, 'release interrupted']) {
+	for (const failRelease of [false, true, null, undefined, 'release interrupted']) {
 		it(
 			failRelease !== false
 				? `reports admission-release failure through owner close: ${String(failRelease)}`

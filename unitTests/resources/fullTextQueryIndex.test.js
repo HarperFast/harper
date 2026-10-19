@@ -558,6 +558,38 @@ describe('FullTextQueryIndex', () => {
 		});
 	}
 
+	it('normalizes an undefined continuation failure when no request was aborted', async function () {
+		const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		const { FullTextContinuationPage } = require('#src/resources/indexes/fullTextContinuationPage');
+		const auditStore = sharedStore();
+		const readinessId = 'continuation-undefined-failure';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [],
+			searchPageResult() {
+				throw undefined;
+			},
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		try {
+			for (const context of [{}, { signal: new AbortController().signal }]) {
+				const page = new FullTextContinuationPage({ continuation: true, limit: 1 }, readinessId);
+				page.materialize = async (entries) => entries;
+				page.ready.resolve();
+				await assert.rejects(
+					index.search({ comparator: 'matches', value: 'shoe' }, context, { continuationPage: page }),
+					(error) => error?.statusCode === 500
+				);
+			}
+		} finally {
+			await index.close();
+		}
+	});
+
 	for (const repeatBoundary of [true, false]) {
 		it(`rejects repeated continuation hits with ${repeatBoundary ? 'the same' : 'a different'} native boundary`, async function () {
 			this.timeout(10000);

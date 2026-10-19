@@ -285,7 +285,7 @@ export class FullTextQueryIndex {
 			return result;
 		};
 		const operation = execute().catch((error) => {
-			if (error === context?.signal?.reason) throw error;
+			if (context?.signal?.aborted && error === context.signal.reason) throw error;
 			if (nativeErrorNeedsRebuild(error)) {
 				this.#requestRebuild();
 				void this.#retireAllReaders().catch(() => undefined);
