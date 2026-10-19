@@ -2126,7 +2126,12 @@ describe('Test keys module', () => {
 			await certTable.put(externalRow);
 			try {
 				await realKeys.reviewSelfSignedCert();
-				await realKeys.renewSelfSigned();
+				const pair = await selfSignedRows();
+				await assert.rejects(realKeys.renewSelfSigned(), /is not self-signed/);
+				assert.deepStrictEqual(
+					(await selfSignedRows()).map((row) => row.certificate),
+					pair.map((row) => row.certificate)
+				);
 				const current = await certTable.get(nodeName);
 				assert.strictEqual(current.certificate, external.cert);
 				assert.strictEqual(current.is_self_signed, false);

@@ -748,7 +748,7 @@ export async function renewSelfSigned() {
 	for await (const cert of certificateTable.search([{ attribute: 'is_self_signed', value: true }])) {
 		retiring.push(cert.name);
 	}
-	await publishSelfSignedCerts(await prepareSelfSignedCerts(true), retiring);
+	await publishSelfSignedCerts(await prepareSelfSignedCerts(true), { retiring });
 }
 
 export async function reviewSelfSignedCert() {
@@ -760,35 +760,43 @@ export async function reviewSelfSignedCert() {
 }
 
 /**
- * Write the prepared records and delete the retiring names they do not reuse. Rows are re-read in the
- * transaction because an external certificate may have been installed since they were selected; one
- * that is not self-signed is never replaced or deleted.
+ * Write the prepared records and, when renewing, delete the retiring names they do not reuse. Rows are
+ * re-read in the transaction because an external certificate may have been installed since they were
+ * selected; one that is not self-signed is not replaced. Renewal then fails, and boot review only warns.
  */
 async function publishSelfSignedCerts(
 	{ records, generatedKeyPath }: { records: any[]; generatedKeyPath?: string },
-	retiring: string[] = []
+	{ retiring }: { retiring?: string[] } = {}
 ) {
 	const replaced = new Set(records.map((record) => record.name));
+	let keyUnused = false;
 	try {
 		await transaction({}, async () => {
-			for (const name of retiring) {
+			for (const name of retiring ?? []) {
 				if (!replaced.has(name) && (await certificateTable.get(name))?.is_self_signed)
 					await certificateTable.delete(name);
 			}
 			for (const record of records) {
 				const current = await certificateTable.get(record.name);
 				if (current && !current.is_self_signed) {
-					logger.warn?.(
-						`Not replacing certificate ${record.name} with a self-signed certificate; it is not self-signed`
-					);
+					const message = `Certificate ${record.name} is not self-signed, so it is not replaced with a self-signed certificate`;
+					if (retiring) throw new Error(message);
+					logger.warn?.(message);
+					// the leaf is signed by this CA, and would have no issuer in the table
+					if (record.is_authority) {
+						keyUnused = true;
+						break;
+					}
 					continue;
 				}
 				await setCertTable(record);
 			}
 		});
 	} catch (error) {
-		if (generatedKeyPath) await fs.remove(generatedKeyPath);
+		keyUnused = true;
 		throw error;
+	} finally {
+		if (keyUnused && generatedKeyPath) await fs.remove(generatedKeyPath);
 	}
 }
 
@@ -858,7 +866,7 @@ async function prepareSelfSignedCerts(replacing: boolean) {
 	if (!(await getReplicationCert(replacing))) {
 		const certName = getThisNodeName();
 		logger.notify?.(
-			`A suitable replication certificate was not found, creating new self singed cert named: ${certName}`
+			`A suitable replication certificate was not found, creating new self signed cert named: ${certName}`
 		);
 
 		const hdbCa = loadForge().pki.certificateFromPem(caAndKey.ca.certificate);
@@ -890,7 +898,11 @@ async function writeGeneratedKey(keysPath: string, pem: string): Promise<string>
 			await fs.writeFile(path.join(keysPath, keyName), pem, { flag: 'wx', mode: 0o600 });
 			return keyName;
 		} catch (error) {
-			if (error.code !== 'EEXIST') throw error;
+			if (error.code !== 'EEXIST') {
+				// with `wx`, any other failure came after this call created the file
+				await fs.remove(path.join(keysPath, keyName));
+				throw error;
+			}
 			keyName = `privateKey${uuidv4().split('-')[0]}.pem`;
 		}
 	}
@@ -1140,7 +1152,6 @@ export function getEffectiveTlsCiphers(type, mtlsOptions?): string | undefined {
  * @param mtlsOptions
  * @param liveReload when true (default) the selector subscribes to certificate-table updates.
  *   Pass false for transient, single-use selectors (e.g. getReplicationCert) so they don't accumulate.
- * @param excludeSelfSigned skip self-signed certificates
  * @return {(function(*, *): (*|undefined))|*}
  */
 export function createTLSSelector(type, mtlsOptions?, liveReload = true, excludeSelfSigned = false): any {
