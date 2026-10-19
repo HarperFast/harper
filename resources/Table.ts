@@ -51,6 +51,7 @@ import type { AssertNoDrift, AssertTrue, ExactlyEqual, MemberDrift, ParitySentin
 import type { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Contract, SchemaClass } from './defineResource.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.ts';
+import { implicitPrimaryKeyPermission } from '../security/permissionsTranslator.ts';
 import {
 	Resource,
 	SEARCH_AUTHORIZATION,
@@ -828,6 +829,18 @@ function propagateSearchAuthorization(iterable: any, authorization: Promise<any>
 		});
 	}
 	return iterable;
+}
+// _writeUpdate options marking a full put by an attribute-restricted role, staged as a patch
+const RESTRICTED_REPLACEMENT = Object.freeze({});
+// any other root is left to the full-put validation, which rejects it
+function isRecordRoot(value: unknown): boolean {
+	return (
+		value !== null &&
+		typeof value === 'object' &&
+		!Array.isArray(value) &&
+		!ArrayBuffer.isView(value) &&
+		!(value instanceof ArrayBuffer)
+	);
 }
 const FULL_PERMISSIONS = {
 	read: true,
@@ -1826,6 +1839,8 @@ export function makeTable(options): TableResourceClass {
 	let propertyResolvers: any;
 	const warnedUnresolvedComputed = new Set<string>();
 	let hasRelationships = false;
+	// a stored table permission (stable per role record version) -> that permission with the primary key's implicit grant
+	const primaryKeyGranted = new WeakMap<object, any>();
 	// Attribute names surfaced by the struct `toJSON` on the default (no-select) read: everything that is
 	// @enumerable, PLUS @computed attributes whose declared type is NOT a table type (scalars/objects/arrays
 	// that don't resolve to another entity — harper#1484). Table-typed computed attributes and non-enumerable
@@ -2204,6 +2219,7 @@ export function makeTable(options): TableResourceClass {
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		#writeGeneration?: WriteGeneration;
+		#updatableAttributes?: { [attribute: string]: boolean }; // set by allowUpdate for an attribute-restricted role, taken by a full put
 		declare getProperty: (name: string) => any;
 		#evaluateWriteCondition(id: Id, condition: any, transaction: any): void {
 			if (!condition) return;
@@ -4394,20 +4410,49 @@ export function makeTable(options): TableResourceClass {
 		 * Determine if the user is allowed to update data from the current resource
 		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
-		allowUpdate(user: User, updatedData: Record, context: Context): boolean;
-		allowUpdate(user: User, updatedData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
-		allowUpdate(user: User, updatedData: Record | Promise<Record>, _context: Context): boolean | Promise<boolean> {
-			return allowTableUpdate(this, user, updatedData);
+		// @ts-expect-error Tables only allow synchronous allowUpdate checks.
+		// eslint-disable-next-line no-unused-vars
+		allowUpdate(user: User, updatedData: Record, context: Context): boolean {
+			this.#updatableAttributes = undefined;
+			const tablePermission = getTablePermissions(user);
+			if (tablePermission?.update) {
+				const attribute_permissions = tablePermission.attribute_permissions;
+				if (attribute_permissions?.length > 0) {
+					const attrsForType = attributesAsObject(attribute_permissions, 'update');
+					for (const key in updatedData) {
+						if (!attrsForType[key]) return false;
+					}
+					this.#updatableAttributes = attrsForType;
+				}
+				return true;
+			}
 		}
 
 		/**
 		 * Determine if the user is allowed to create new data in the current resource
 		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
-		allowCreate(user: User, newData: Record, context: Context): boolean;
-		allowCreate(user: User, newData: Record | Promise<Record>, context: Context): boolean | Promise<boolean>;
-		allowCreate(user: User, newData: Record | Promise<Record>, context: Context): boolean | Promise<boolean> {
-			return allowTableCreate(this, user, newData, context);
+		// @ts-expect-error Tables only allow synchronous allowCreate checks.
+		allowCreate(user: User, newData: Record, context: Context): boolean {
+			if (this.isCollection) {
+				const tablePermission = getTablePermissions(user);
+				if (tablePermission?.insert) {
+					const attribute_permissions = tablePermission.attribute_permissions;
+					if (attribute_permissions?.length > 0) {
+						// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
+						const attrsForType = attributesAsObject(attribute_permissions, 'insert');
+						for (const key in newData) {
+							if (!attrsForType[key]) return false;
+						}
+					}
+					return true;
+				}
+			} else {
+				// creating *within* a record resource just means we are adding some data to a current record, which is
+				// an update to the record, it is not an insert of a new record into the table, so not a table create operation
+				// so does not use table insert permissions
+				return this.allowUpdate(user, newData, context);
+			}
 		}
 
 		/**
@@ -4460,7 +4505,11 @@ export function makeTable(options): TableResourceClass {
 				return this;
 			}
 			if (typeof updates === 'object' && updates) {
-				if (fullUpdate) {
+				const updatableAttributes = fullUpdate && this.#takeUpdatableAttributes();
+				if (updatableAttributes && isRecordRoot(updates)) {
+					this.#changes = restrictedReplacement(id, updates, updatableAttributes);
+					return when(this._writeUpdate(id, this.#changes, false, RESTRICTED_REPLACEMENT), () => this);
+				} else if (fullUpdate) {
 					// legacy full update where we need to update the entire record, but the instance needs to continue
 					// track any further changes
 					if (Object.isFrozen(updates)) updates = { ...updates };
@@ -4484,17 +4533,7 @@ export function makeTable(options): TableResourceClass {
 						if (!allowed) {
 							throw new AccessViolation((context as any).user);
 						}
-						let loading: Promise<any>;
-						if (!this.#entry && (this.constructor as any).loadAsInstance === false) {
-							// load the record if it hasn't been done yet
-							loading = this._loadRecord(target, context, { ensureLoaded: true, async: true }) as Promise<any>;
-						}
-						return when(loading, () => {
-							this.#changes = updates;
-							// `when` awaits the embed hook (when `@embed` is active) before resolving,
-							// so the caller's `save()` doesn't run before the write is staged.
-							return this.#whenStaged(this._writeUpdate(id, this.#changes, false));
-						});
+						return this.#stageChanges(id, target, updates);
 					});
 				}
 			}
@@ -4509,6 +4548,26 @@ export function makeTable(options): TableResourceClass {
 			const saving = this.#savingOperation;
 			if (saving instanceof ConditionLockWait && staging === saving.staged) (updated as Promise<this>).catch(noop);
 			return updated;
+		}
+
+		#takeUpdatableAttributes() {
+			const updatableAttributes = this.#updatableAttributes;
+			this.#updatableAttributes = undefined;
+			return updatableAttributes;
+		}
+
+		#stageChanges(id: Id, target: RequestTarget, changes: any, options?: any) {
+			let loading: Promise<any>;
+			if (!this.#entry && (this.constructor as any).loadAsInstance === false) {
+				// load the record if it hasn't been done yet
+				loading = this._loadRecord(target, this.getContext(), { ensureLoaded: true, async: true }) as Promise<any>;
+			}
+			return when(loading, () => {
+				this.#changes = changes;
+				// `when` awaits the embed hook (when `@embed` is active) before resolving,
+				// so the caller's `save()` doesn't run before the write is staged.
+				return this.#whenStaged(this._writeUpdate(id, this.#changes, false, options));
+			});
 		}
 
 		/**
@@ -5660,6 +5719,19 @@ export function makeTable(options): TableResourceClass {
 						if (!allowed) {
 							throw new AccessViolation((context as any).user);
 						}
+						const updatableAttributes = this.#takeUpdatableAttributes();
+						if (updatableAttributes && isRecordRoot(record)) {
+							const id = requestTargetToId(target as any);
+							return when(
+								this.#stageChanges(
+									id,
+									target,
+									restrictedReplacement(id, record, updatableAttributes),
+									RESTRICTED_REPLACEMENT
+								),
+								() => this.save() as any
+							);
+						}
 						// standard path, handle arrays as multiple updates, and otherwise do a direct update
 						if (Array.isArray(record)) {
 							const condition = context?.[WRITE_CONDITION];
@@ -5949,8 +6021,12 @@ export function makeTable(options): TableResourceClass {
 							// by replayLogs). Records were valid when originally written; post-crash schema
 							// evolution (e.g. newly required fields) must not prevent replaying them
 							// (harper#1316, facet b).
+							// a restricted replacement with no record to patch is a whole new record
 							if (!committedBy.isReplay) {
-								this.validate(recordUpdate, !fullUpdate);
+								this.validate(
+									recordUpdate,
+									!fullUpdate && !(options === RESTRICTED_REPLACEMENT && !write.entry?.value)
+								);
 								if (ownMerged) applyOwnChanges(this, recordUpdate, ownKeys);
 							}
 							if (updatedTimeProperty) {
@@ -11977,65 +12053,6 @@ export function makeTable(options): TableResourceClass {
 		}
 		return withEntry(entry, id);
 	}
-	function allowTableUpdate<Record extends object>(
-		resource: TableResource<Record>,
-		user: User,
-		updatedData: Record | Promise<Record>
-	): boolean | Promise<boolean> {
-		const tablePermission = getTablePermissions(user);
-		if (tablePermission?.update) {
-			const attribute_permissions = tablePermission.attribute_permissions;
-			if (attribute_permissions?.length > 0) {
-				if (typeof (updatedData as Promise<Record>)?.then === 'function') {
-					return (updatedData as Promise<Record>).then((data) => allowTableUpdate(resource, user, data));
-				}
-				const attrsForType = attributesAsObject(attribute_permissions, 'update');
-				for (const key in updatedData) {
-					if (!attrsForType[key]) return false;
-				}
-				// if this is a full put operation that removes missing properties, we don't want to remove properties
-				// that the user doesn't have permission to remove
-				for (const permission of attribute_permissions) {
-					const key = permission.attribute_name;
-					if (!permission.update && !fullTextFieldNames?.has(key) && !(key in updatedData)) {
-						updatedData[key] = resource.getProperty(key);
-					}
-				}
-			}
-			return true;
-		}
-	}
-
-	function allowTableCreate<Record extends object>(
-		resource: TableResource<Record>,
-		user: User,
-		newData: Record | Promise<Record>,
-		context: Context
-	): boolean | Promise<boolean> {
-		if (resource.isCollection) {
-			const tablePermission = getTablePermissions(user);
-			if (tablePermission?.insert) {
-				const attribute_permissions = tablePermission.attribute_permissions;
-				if (attribute_permissions?.length > 0) {
-					if (typeof (newData as Promise<Record>)?.then === 'function') {
-						return (newData as Promise<Record>).then((data) => allowTableCreate(resource, user, data, context));
-					}
-					const attrsForType = attributesAsObject(attribute_permissions, 'insert');
-					for (const key in newData) {
-						if (!attrsForType[key]) return false;
-					}
-					return true;
-				} else {
-					return true;
-				}
-			}
-		} else {
-			// creating *within* a record resource just means we are adding some data to a current record, which is
-			// an update to the record, it is not an insert of a new record into the table, so not a table create operation
-			// so does not use table insert permissions
-			return resource.allowUpdate(user, newData, context);
-		}
-	}
 
 	function getTablePermissions(user: User, target?: RequestTarget) {
 		let permission = target?.checkPermission; // first check to see the request target specifically provides the permissions to authorize
@@ -12044,14 +12061,50 @@ export function makeTable(options): TableResourceClass {
 			permission = user.role.permission;
 		}
 		if (permission.super_user) return FULL_PERMISSIONS;
-		const dbPermission = permission[databaseName];
 		let table: any;
-		const tables = dbPermission?.tables;
-		if (tables) {
-			return tables[tableName];
-		} else if (databaseName === 'data' && (table = permission[tableName]) && !table.tables) {
-			return table;
+		const tables = permission[databaseName]?.tables;
+		if (tables) table = tables[tableName];
+		else if (databaseName === 'data') {
+			table = permission[tableName];
+			if (table?.tables) return;
 		}
+		return table?.attribute_permissions?.length > 0 ? withPrimaryKeyPermission(table) : table;
+	}
+	function withPrimaryKeyPermission(tablePermission: any) {
+		let effective = primaryKeyGranted.get(tablePermission);
+		if (!effective) {
+			const attributePermissions = tablePermission.attribute_permissions;
+			effective = attributePermissions.some((permission: any) => permission.attribute_name === primaryKey)
+				? tablePermission
+				: {
+						...tablePermission,
+						attribute_permissions: [
+							...attributePermissions,
+							implicitPrimaryKeyPermission(attributePermissions, primaryKey),
+						],
+					};
+			primaryKeyGranted.set(tablePermission, effective);
+		}
+		return effective;
+	}
+	/**
+	 * A full put by an attribute-restricted role, as a patch: the payload, plus a removal of each stored attribute the
+	 * role may update that the payload omits. Attributes the role may not update are left as stored.
+	 */
+	function restrictedReplacement(id: Id, record: any, updatableAttributes: { [attribute: string]: boolean }) {
+		const changes: any = { ...record };
+		if (primaryKey) changes[primaryKey] = id;
+		for (const key in updatableAttributes) {
+			if (
+				updatableAttributes[key] &&
+				!(key in record) &&
+				key !== primaryKey &&
+				!propertyResolvers?.[key] &&
+				!fullTextFieldNames?.has(key)
+			)
+				changes[key] = undefined;
+		}
+		return changes;
 	}
 	function authorizeRead(tablePermission: any, user: User, target: RequestTarget, context: Context): boolean {
 		if (hasRelationships && target && someRelationshipPath(target, user, true)) return false;
