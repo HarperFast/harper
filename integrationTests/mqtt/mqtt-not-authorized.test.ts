@@ -22,6 +22,7 @@ const FIXTURE_PATH = resolve(import.meta.dirname, 'mqtt-not-authorized');
 
 const NOT_AUTHORIZED = 0x87;
 const UNSPECIFIED_ERROR = 0x80;
+const ACK_TIMEOUT_MS = 8_000;
 
 // mqtt.js's WebSocket transport doesn't complete CONNACK on Bun.
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
@@ -51,25 +52,40 @@ suite('MQTT: a request with no user is refused as Not authorized', { skip: skipS
 		return new Promise((resolvePromise) => client.end(true, {}, () => resolvePromise()));
 	}
 
+	/** The connect timeout covers the CONNACK only, so an acknowledgment that never comes needs its own deadline. */
+	function acknowledged<T>(what: string, pending: Promise<T>): Promise<T> {
+		let timer: ReturnType<typeof setTimeout>;
+		const expired = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => reject(new Error(`no ${what} within ${ACK_TIMEOUT_MS} ms`)), ACK_TIMEOUT_MS);
+		});
+		return Promise.race([pending, expired]).finally(() => clearTimeout(timer));
+	}
+
 	/** On a refusal mqtt.js hands the callback an error carrying the broker's SUBACK; its `granted` argument is the request. */
 	function subscribe(client: MqttClient, topic: string) {
-		return new Promise<{ code: number | undefined; reasonString: string | undefined }>((resolvePromise) => {
-			client.subscribe(topic, { qos: 1 }, (error, granted) => {
-				const packet = (error as any)?.packet;
-				resolvePromise({
-					code: Array.isArray(packet?.granted) ? packet.granted[0] : (granted?.[0] as any)?.qos,
-					reasonString: packet?.properties?.reasonString,
+		return acknowledged(
+			`SUBACK for ${topic}`,
+			new Promise<{ code: number | undefined; reasonString: string | undefined }>((resolvePromise) => {
+				client.subscribe(topic, { qos: 1 }, (error, granted) => {
+					const packet = (error as any)?.packet;
+					resolvePromise({
+						code: Array.isArray(packet?.granted) ? packet.granted[0] : (granted?.[0] as any)?.qos,
+						reasonString: packet?.properties?.reasonString,
+					});
 				});
-			});
-		});
+			})
+		);
 	}
 
 	function publish(client: MqttClient, topic: string) {
-		return new Promise<number | undefined>((resolvePromise) => {
-			client.publish(topic, JSON.stringify({ id: 'a', value: 'x' }), { qos: 1 }, (error) =>
-				resolvePromise(error ? (error as any).code : 0)
-			);
-		});
+		return acknowledged(
+			`PUBACK for ${topic}`,
+			new Promise<number | undefined>((resolvePromise) => {
+				client.publish(topic, JSON.stringify({ id: 'a', value: 'x' }), { qos: 1 }, (error) =>
+					resolvePromise(error ? (error as any).code : 0)
+				);
+			})
+		);
 	}
 
 	before(async () => {
