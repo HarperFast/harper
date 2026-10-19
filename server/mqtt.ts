@@ -212,9 +212,11 @@ const isNotAuthorized = (error: any) => error?.statusCode === 401 || error?.stat
 const hasClientSafeMessage = (error: any) => isNotAuthorized(error) || error?.statusCode === 404;
 /** REASON_STRING_LIMIT counts encoded bytes, and a character must not be cut in half. */
 function boundedReasonString(message: unknown): string {
-	const bytes = Buffer.from(String(message), 'utf8');
-	let end = Math.min(bytes.length, REASON_STRING_LIMIT);
-	while (end < bytes.length && end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+	const text = String(message);
+	if (Buffer.byteLength(text) <= REASON_STRING_LIMIT) return text;
+	const bytes = Buffer.from(text, 'utf8');
+	let end = REASON_STRING_LIMIT;
+	while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
 	return bytes.subarray(0, end).toString('utf8');
 }
 

@@ -95,8 +95,8 @@ async function connect(open, { user = anonymous, protocolVersion = 5, properties
 			const subscriptions = [].concat(topics).map((topic) => ({ topic, qos, nl: false, rap: false, rh: 0 }));
 			return this.request({ cmd: 'subscribe', subscriptions }, 'suback');
 		},
-		publish(topic, qos = 1) {
-			const payload = Buffer.from(JSON.stringify({ id: 'a', value: 1 }));
+		publish(topic, qos = 1, value = 1) {
+			const payload = Buffer.from(JSON.stringify({ id: 'a', value }));
 			return this.request(
 				{ cmd: 'publish', topic, payload, qos, retain: false, dup: false },
 				qos === 2 ? 'pubrec' : 'puback'
@@ -266,13 +266,18 @@ describe('mqtt.ts reason codes for a refused request', () => {
 			const name = protectedTable();
 			const subscriber = await connect(open, { user: superUser });
 			await subscriber.subscribe(`${name}/#`);
-			const refused = await (await connect(open)).publish(`${name}/a`, 1);
+			const refused = await (await connect(open)).publish(`${name}/a`, 1, 'refused');
 			assert.strictEqual(refused.reasonCode, NOT_AUTHORIZED);
-			const accepted = await (await connect(open, { user: superUser })).publish(`${name}/a`, 1);
+			const accepted = await (await connect(open, { user: superUser })).publish(`${name}/a`, 1, 'accepted');
 			assert.strictEqual(accepted.reasonCode, 0);
-			await waitFor(() => subscriber.parse().some((packet) => packet.cmd === 'publish'), { message: 'no delivery' });
+			const delivered = () =>
+				subscriber
+					.parse()
+					.filter((packet) => packet.cmd === 'publish')
+					.map((packet) => JSON.parse(packet.payload).value);
+			await waitFor(() => delivered().includes('accepted'), { message: () => `delivered ${delivered()}` });
 			// the refused publish was answered first, so a leak would have been delivered ahead of the accepted one
-			assert.strictEqual(subscriber.parse().filter((packet) => packet.cmd === 'publish').length, 1);
+			assert.deepStrictEqual(delivered(), ['accepted']);
 		});
 	});
 
