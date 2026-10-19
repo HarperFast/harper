@@ -325,6 +325,27 @@ describe('full-text process-wide continuation admission', () => {
 		}
 	});
 
+	it('rechecks in-place policy changes on the next admission command', async () => {
+		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+		env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { maxCursors: 2 });
+		const claims = [];
+		try {
+			claims.push(await reserveFullTextContinuation(128, fullTextContinuationDeadline()));
+			await confirmFullTextContinuation(claims[0].id, fullTextContinuationDeadline());
+			const settings = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+			settings.maxCursors = 1;
+			await assert.rejects(
+				reserveFullTextContinuation(128, fullTextContinuationDeadline()),
+				(error) => error.statusCode === 503 && /storage.fullText.maxCursors/.test(error.message)
+			);
+			settings.maxCursors = 2;
+			claims.push(await reserveFullTextContinuation(128, fullTextContinuationDeadline()));
+		} finally {
+			for (const claim of claims) await releaseFullTextContinuation(claim.id);
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+		}
+	});
+
 	it('bounds retained query bytes independently of cursor count', async () => {
 		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
 		env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { maxCursors: 4, maxRetainedQueryBytes: 256 });

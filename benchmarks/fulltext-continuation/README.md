@@ -7,6 +7,8 @@ npm run build
 npm run test:integration -- benchmarks/fulltext-continuation.bench.ts
 npx mocha benchmarks/fulltext-continuation-workers.cjs
 node benchmarks/fulltext-limits.cjs
+FT_BENCH_PROFILE=1 npm run test:integration -- benchmarks/fulltext-continuation.bench.ts
+FT_BENCH_PROFILE=1 npx mocha benchmarks/fulltext-continuation-workers.cjs
 ```
 
 The HTTP fixture creates synthetic catalogs of 10,000, 50,000 and 100,000 short records.
@@ -27,7 +29,8 @@ two real Harper workers and production continuation messages on every supported 
 It compares replay of the same five-row page on its owner and on the other worker, asserting
 identical rows. Its timings exclude the controller's benchmark-command transport.
 
-Separate, untimed requests use V8 coverage to record limits-resolver and traversal function
+The two profiling commands run separately from timing: V8 coverage can change optimization and
+allocation behavior even after profiling stops. They record limits-resolver and traversal function
 counts on the workers and admission authority. Coverage counts are diagnostic function counts,
 not CPU time or wire-message counts. Small inlined private helpers are deliberately excluded.
 The limits microbenchmark measures the real resolver with populated settings and with absent

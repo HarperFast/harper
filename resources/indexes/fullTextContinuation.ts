@@ -6,7 +6,11 @@ import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, ITC_EVENT_TYPES } from '../../utility/hdbTerms.ts';
 import { hasThreadExited, onThreadExit, sendToThread } from '../../server/threads/manageThreads.js';
-import { fullTextContinuationDeadline, resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
+import {
+	fullTextContinuationDeadline,
+	type FullTextSearchLimits,
+	resolveFullTextSearchLimits,
+} from './fullTextSearchLimits.ts';
 export { fullTextContinuationDeadline } from './fullTextSearchLimits.ts';
 
 export type FullTextCursorClaim = { id: string; expires: bigint; expiresAt: number };
@@ -64,11 +68,11 @@ export async function requestFullTextContinuationOwner(
 }
 
 async function request(command: Command, deadline: bigint, owner = 0): Promise<Result> {
-	millisecondsRemaining(deadline);
-	if (!Number.isSafeInteger(owner) || owner < 0 || hasThreadExited(owner)) throw unavailable();
-	if (owner === threadId) return execute(command, threadId, deadline);
-	const remaining = millisecondsRemaining(deadline);
 	const policy = limits();
+	millisecondsRemaining(deadline, policy);
+	if (!Number.isSafeInteger(owner) || owner < 0 || hasThreadExited(owner)) throw unavailable();
+	if (owner === threadId) return execute(command, threadId, deadline, policy);
+	const remaining = millisecondsRemaining(deadline, policy);
 	const bytes =
 		command.operation === 'read'
 			? command.responseBytes
@@ -110,11 +114,16 @@ function removePending(id: string): Pending | undefined {
 	return waiting;
 }
 
-async function execute(command: Command, owner: number, deadline: bigint): Promise<Result> {
-	millisecondsRemaining(deadline);
+async function execute(
+	command: Command,
+	owner: number,
+	deadline: bigint,
+	policy: FullTextSearchLimits = limits()
+): Promise<Result> {
+	millisecondsRemaining(deadline, policy);
 	if (command?.operation === 'admit' || command?.operation === 'confirm' || command?.operation === 'release') {
 		if (!isMainThread) throw unavailable();
-		return dispatch(command, owner, deadline);
+		return dispatch(command, owner, deadline, policy);
 	}
 	const { executeFullTextContinuationOwner } = await import('./fullTextContinuationOwner.ts');
 	return executeFullTextContinuationOwner(command, deadline);
@@ -171,8 +180,13 @@ export async function fullTextContinuationRequest(event: { message?: Request }, 
 	}
 }
 
-function dispatch(command: Command, owner: number, deadline: bigint): FullTextCursorClaim | undefined {
-	millisecondsRemaining(deadline);
+function dispatch(
+	command: Command,
+	owner: number,
+	deadline: bigint,
+	policy: FullTextSearchLimits
+): FullTextCursorClaim | undefined {
+	millisecondsRemaining(deadline, policy);
 	if (hasThreadExited(owner)) throw unavailable();
 	if (command?.operation === 'confirm') {
 		prune();
@@ -190,7 +204,6 @@ function dispatch(command: Command, owner: number, deadline: bigint): FullTextCu
 	}
 	if (command?.operation !== 'admit' || !Number.isSafeInteger(command.bytes) || command.bytes < 1) throw unavailable();
 	prune();
-	const policy = limits();
 	if (claims.size >= policy.maxCursors) throw unavailable('reached storage.fullText.maxCursors');
 	if (command.bytes > policy.maxRetainedQueryBytes - retainedBytes)
 		throw unavailable('exceeded storage.fullText.maxRetainedQueryBytes');
@@ -198,7 +211,7 @@ function dispatch(command: Command, owner: number, deadline: bigint): FullTextCu
 		id: randomBytes(16).toString('hex'),
 		owner,
 		bytes: command.bytes,
-		admissionDeadline: process.hrtime.bigint() + BigInt(millisecondsRemaining(deadline)) * 1_000_000n,
+		admissionDeadline: process.hrtime.bigint() + BigInt(millisecondsRemaining(deadline, policy)) * 1_000_000n,
 		expires: process.hrtime.bigint() + BigInt(policy.cursorTtlMilliseconds) * 1_000_000n,
 		expiresAt: Date.now() + policy.cursorTtlMilliseconds,
 	};
@@ -250,11 +263,11 @@ function armExpiry(): void {
 	expiryTimer.unref();
 }
 
-function millisecondsRemaining(deadline: bigint): number {
+function millisecondsRemaining(deadline: bigint, policy: FullTextSearchLimits): number {
 	if (typeof deadline !== 'bigint') throw unavailable();
 	const remaining = Number((deadline - process.hrtime.bigint()) / 1_000_000n);
 	if (remaining < 1) throw unavailable('exceeded its request budget');
-	return Math.min(remaining, limits().requestBudgetMilliseconds, 0x7fffffff);
+	return Math.min(remaining, policy.requestBudgetMilliseconds, 0x7fffffff);
 }
 
 function unavailable(reason = 'capacity is unavailable'): ServerError {

@@ -8,6 +8,7 @@ const { database } = require('#src/resources/databases');
 const { startWorker, onMessageByType } = require('#js/server/threads/manageThreads');
 const sizes = (process.env.FT_BENCH_SIZES ?? '10000,50000,100000').split(',').map(Number);
 const samples = Number(process.env.FT_BENCH_SAMPLES ?? 20);
+const profileOnly = process.env.FT_BENCH_PROFILE === '1';
 let requestId = 0;
 onMessageByType('fulltext-benchmark-result', () => {});
 function command(worker, body) {
@@ -116,6 +117,16 @@ describe('managed-worker continuation measurements', function () {
 							const request = { query: { ...base, continuation: first.continuation } };
 							const warm = await command(worker, request);
 							assert(!warm.error, JSON.stringify(warm));
+							if (profileOnly) {
+								await Promise.all(
+									workers.map((target, index) => command(target, { action: 'profile-start', main: index === 0 }))
+								);
+								const result = await command(worker, request);
+								assert(!result.error, JSON.stringify(result));
+								const counts = await Promise.all(workers.map((target) => command(target, { action: 'profile-stop' })));
+								console.log('FT_WORKER_PROFILE ' + JSON.stringify({ size, comparator, route, counts }));
+								continue;
+							}
 							const times = [],
 								delays = [];
 							for (let n = 0; n < samples; n++) {
@@ -128,12 +139,6 @@ describe('managed-worker continuation measurements', function () {
 								times.push(result.milliseconds);
 								delays.push(result.eventLoopMaxMilliseconds);
 							}
-							await Promise.all(
-								workers.map((target, index) => command(target, { action: 'profile-start', main: index === 0 }))
-							);
-							const profiled = await command(worker, request);
-							assert(!profiled.error, JSON.stringify(profiled));
-							const counts = await Promise.all(workers.map((target) => command(target, { action: 'profile-stop' })));
 							console.log(
 								'FT_WORKER_MEASUREMENT ' +
 									JSON.stringify({
@@ -145,7 +150,6 @@ describe('managed-worker continuation measurements', function () {
 										visibleLimit: 5,
 										latencyMilliseconds: stats(times),
 										eventLoopDelayMilliseconds: stats(delays),
-										counts,
 									})
 							);
 						}

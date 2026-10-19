@@ -12,6 +12,7 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 const sizes = (process.env.FT_BENCH_SIZES ?? '10000,50000,100000').split(',').map(Number);
 const samples = Number(process.env.FT_BENCH_SAMPLES ?? 20);
 const reachableWorkers = NO_FULL_WORKER_COVERAGE ? 1 : 2;
+const profileOnly = process.env.FT_BENCH_PROFILE === '1';
 const fixture = resolve(import.meta.dirname, 'fulltext-continuation');
 const idFor = (index: number) => `p${String(index).padStart(6, '0')}`;
 const ordered = (ids: string[]) =>
@@ -163,6 +164,15 @@ for (const size of sizes) {
 								const warm = await bench({ query });
 								validate(warm, expected);
 								await close(query, warm);
+								if (profileOnly) {
+									const profiled = await profileQuery(query);
+									validate(profiled.result, expected);
+									await close(query, profiled.result);
+									console.log(
+										'FT_PROFILE ' + JSON.stringify({ size, comparator, filter, mode, counts: profiled.workers })
+									);
+									continue;
+								}
 								const times: number[] = [],
 									delays: number[] = [],
 									loaded: number[] = [],
@@ -189,9 +199,6 @@ for (const size of sizes) {
 									outcomes.push(result.error?.status ?? 'success');
 									await close(query, result);
 								}
-								const profiled = await profileQuery(query);
-								validate(profiled.result, expected);
-								await close(query, profiled.result);
 								console.log(
 									'FT_MEASUREMENT ' +
 										JSON.stringify({
@@ -205,34 +212,6 @@ for (const size of sizes) {
 											eventLoopDelayMilliseconds: distribution(delays),
 											peakProcessRssBytes: Math.max(...rss),
 											outcomes,
-											counts: profiled.workers,
-										})
-								);
-							}
-							if (filter === 'sparse-unindexed' && !NO_FULL_WORKER_COVERAGE) {
-								const query = { ...base, limit: 5 };
-								const first = await bench({ query: { ...query, continuation: true } });
-								assert(first.continuation);
-								const routes: Record<string, number[]> = { local: [], remote: [] };
-								for (let n = 0; n < 40 && (routes.local.length < samples || routes.remote.length < samples); n++) {
-									const resumed = await bench({ query: { ...query, continuation: first.continuation } });
-									validate(resumed, rare.slice(5, 10));
-									routes[resumed.worker === first.worker ? 'local' : 'remote'].push(resumed.milliseconds);
-								}
-								assert(routes.local.length >= samples && routes.remote.length >= samples, JSON.stringify(routes));
-								const profiled = await profileQuery({ ...query, continuation: first.continuation });
-								validate(profiled.result, rare.slice(5, 10));
-								await close(query, first);
-								console.log(
-									'FT_RESUME ' +
-										JSON.stringify({
-											size,
-											comparator,
-											visibleLimit: 5,
-											localMilliseconds: distribution(routes.local),
-											remoteMilliseconds: distribution(routes.remote),
-											profiledRoute: profiled.result.worker === first.worker ? 'local' : 'remote',
-											counts: profiled.workers,
 										})
 								);
 							}
