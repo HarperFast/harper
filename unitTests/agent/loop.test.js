@@ -1824,6 +1824,95 @@ describe('agent/loop never overwrites a cancel', () => {
 		assert.equal(after.status, 'idle');
 	});
 
+	it("drains an approval resolved while the same turn's later calls are still running", async () => {
+		const sessionId = await newSession();
+		const runs = [];
+		const drop = tool('drop', {
+			destructive: true,
+			handler: async () => {
+				runs.push('drop');
+				return { ok: true };
+			},
+		});
+		// The operator approves while this inline call runs; `startRun` folds that request into the live run.
+		const slow = tool('slow', {
+			handler: async () => {
+				const parked = await session.getSession(sessionId);
+				await session.resolveApproval(sessionId, parked.pendingApprovals[0].id, true);
+				return { ok: true };
+			},
+		});
+		const replies = [
+			{
+				content: '',
+				finishReason: 'tool_calls',
+				toolCalls: [
+					{ id: 'c1', name: 'drop', arguments: {} },
+					{ id: 'c2', name: 'slow', arguments: {} },
+				],
+			},
+		];
+		let sentToModel;
+		let statusDuringNextCall;
+		const models = {
+			async generate(input) {
+				if (replies.length > 0) return replies.shift();
+				sentToModel = input.messages;
+				statusDuringNextCall = (await session.getSession(sessionId)).status;
+				return { content: 'done', finishReason: 'stop' };
+			},
+		};
+		await runAgent({ sessionId, models, tools: [drop, slow], scopes, maxTurns: 5, autoApprove: false });
+
+		assert.deepStrictEqual(runs, ['drop']);
+		const answered = sentToModel.filter((m) => m.role === 'tool').map((m) => m.toolCallId);
+		assert.deepStrictEqual(
+			answered.sort(),
+			['c1', 'c2'],
+			'every tool call has its response before the next model call'
+		);
+		assert.equal(statusDuringNextCall, 'running');
+		assert.equal((await session.getSession(sessionId)).status, 'completed');
+	});
+
+	it('answers inline calls a dead run left without results, in place and without running them again', async () => {
+		const sessionId = await newSession();
+		await session.appendMessage(sessionId, {
+			role: 'assistant',
+			content: '',
+			toolCalls: [
+				{ id: 'c1', name: 'read', arguments: {} },
+				{ id: 'c2', name: 'read', arguments: {} },
+			],
+			createdAt: 1,
+		});
+		await session.appendMessage(sessionId, { role: 'tool', content: '{}', toolCallId: 'c1', createdAt: 2 });
+		// What an operator does after the crash: cancel the stuck run, then prompt again.
+		await session.cancelSession(sessionId);
+		await session.appendMessage(sessionId, { role: 'user', content: 'what happened?', createdAt: 3 });
+
+		const read = tool('read', { handler: async () => assert.fail('must not run again') });
+		let sentToModel;
+		const models = {
+			async generate(input) {
+				sentToModel = input.messages;
+				return { content: 'done', finishReason: 'stop' };
+			},
+		};
+		await runAgent({ sessionId, models, tools: [read], scopes, maxTurns: 5, autoApprove: false });
+
+		assert.deepStrictEqual(
+			sentToModel.map((m) => m.toolCallId ?? m.role),
+			['user', 'assistant', 'c1', 'c2', 'user']
+		);
+		assert.deepStrictEqual(JSON.parse(sentToModel[3].content), {
+			ok: false,
+			error: 'interrupted',
+			outcome: 'unknown',
+			tool: 'read',
+		});
+	});
+
 	it('answers a claimed approval whose run died before its result, in place and without running it again', async () => {
 		const sessionId = await newSession();
 		const drop = tool('drop', { destructive: true, handler: async () => assert.fail('must not run twice') });
@@ -1891,7 +1980,7 @@ describe('agent/loop never overwrites a cancel', () => {
 		await session.resolveApproval(sessionId, approval.id, true);
 		await session.claimApproval(sessionId, approval.id);
 
-		await session.answerInterruptedClaims(sessionId);
+		await session.answerInterruptedCalls(sessionId);
 		const roles = (await session.getSession(sessionId)).messages.map((m) => m.role);
 		assert.deepStrictEqual(roles, ['user', 'assistant', 'tool', 'assistant', 'tool']);
 	});

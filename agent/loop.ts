@@ -21,7 +21,7 @@ import { isContextWindowExceeded } from '../resources/models/backendHelpers.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import {
 	addPendingApproval,
-	answerInterruptedClaims,
+	answerInterruptedCalls,
 	appendMessage,
 	cancelledObservation,
 	claimApproval,
@@ -125,24 +125,10 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 	try {
 		// Before the approvals below can execute anything: a cap lowered while a run sat awaiting
 		// approval must stop the approved action, not just the next model call.
-		// Runs are serialized per session, so a claim still without a result belongs to a run that died
-		// between the claim and its result. Repaired first, so no later path sends its tool call unanswered.
-		await answerInterruptedClaims(opts.sessionId);
+		// Calls a dead run left unanswered are repaired first, so no later path sends them unanswered.
+		await answerInterruptedCalls(opts.sessionId);
 		if (await stopIfOverBudget(opts)) return;
-
-		// Drain resolved approvals until none is left. An approval resolved while the drain runs joins this run
-		// (`startRun`), so it is drained here, not left unanswered for the next model call. While any approval
-		// is unresolved the run pauses: generating now would send tool calls without their responses, which
-		// the provider rejects.
-		for (;;) {
-			if (opts.signal?.aborted) return;
-			await consumeResolvedApprovals(opts.sessionId, toolMap, ctx);
-			const approvals = (await getSession(opts.sessionId))?.pendingApprovals ?? [];
-			if (approvals.some((a) => a.resolved && !a.consumed)) continue;
-			if (!approvals.some((a) => !a.resolved)) break;
-			const paused = await endRun(opts.sessionId, { status: 'awaiting_approval', pauseWhileApprovalsOpen: true });
-			if (paused.status === 'aborted' || paused.pendingApprovals.some((a) => !a.resolved)) return;
-		}
+		if (!(await drainApprovals(opts, toolMap, ctx))) return;
 
 		for (let turn = 0; turn < opts.maxTurns; turn++) {
 			if (opts.signal?.aborted) return; // status was already set to `aborted` by cancelRun
@@ -203,7 +189,8 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 			}
 
 			const paused = await dispatchToolCalls(result.toolCalls, toolMap, ctx, opts);
-			if (paused || opts.signal?.aborted) return;
+			if (opts.signal?.aborted) return;
+			if (paused && !(await drainApprovals(opts, toolMap, ctx))) return;
 		}
 		await endRun(opts.sessionId, {
 			status: 'completed',
@@ -290,6 +277,34 @@ function shrinkForContext(content: string): string {
 function contextWindowError(cause: unknown, detail: string): Error {
 	const reason = cause instanceof Error ? cause.message : String(cause);
 	return new Error(`The conversation no longer fits the model's context window: ${detail}. (${reason})`, { cause });
+}
+
+/**
+ * Drain resolved approvals until none is left; false when the run must stop here (cancelled, or paused on
+ * an unresolved approval). An approval resolved while this run is live, during the drain or during the
+ * turn's later inline calls, joins this run (`startRun`), so it is drained here, not left unanswered for
+ * the next model call. Generating while any approval is unresolved would send tool calls without their
+ * responses, which the provider rejects, so the run pauses; the pause is decided under the lock.
+ */
+async function drainApprovals(
+	opts: RunAgentOpts,
+	toolMap: Map<string, AgentTool>,
+	ctx: AgentToolContext
+): Promise<boolean> {
+	for (;;) {
+		if (opts.signal?.aborted) return false;
+		await consumeResolvedApprovals(opts.sessionId, toolMap, ctx);
+		const session = await getSession(opts.sessionId);
+		const approvals = session?.pendingApprovals ?? [];
+		if (approvals.some((a) => a.resolved && !a.consumed)) continue;
+		if (!approvals.some((a) => !a.resolved)) {
+			// `resolveApproval` writes `idle` when it resolves the last approval, even into a live run.
+			if (session && session.status !== 'running') await endRun(opts.sessionId, { status: 'running' });
+			return true;
+		}
+		const paused = await endRun(opts.sessionId, { status: 'awaiting_approval', pauseWhileApprovalsOpen: true });
+		if (paused.status === 'aborted' || paused.pendingApprovals.some((a) => !a.resolved)) return false;
+	}
 }
 
 /**

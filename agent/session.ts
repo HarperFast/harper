@@ -12,6 +12,7 @@
 import { randomUUID } from 'node:crypto';
 import { table } from '../resources/databases.ts';
 import { SYSTEM_SCHEMA_NAME, SYSTEM_TABLE_NAMES } from '../utility/hdbTerms.ts';
+import type { ToolCall } from '../resources/models/types.ts';
 import type { AgentCallUsage, AgentMessage, AgentRunStatus, AgentSessionRow, ApprovalRequest } from './types.ts';
 
 let cachedTable: any;
@@ -253,49 +254,51 @@ function closeOpenApprovals(
 }
 
 /**
- * Answer `interrupted` each approval that was claimed but never got its result, inserted right after its
- * tool call's existing responses so the transcript stays sendable even if a prompt was appended since.
- * The action is not run again.
+ * Runs are serialized per session, so a tool call of the latest turn still without a response belongs to
+ * a run that died before writing it: an approval claimed but never given its result, or an inline call.
+ * Each is answered `interrupted`, inserted right after the turn's existing responses so the transcript
+ * stays sendable even if a prompt was appended since. Nothing is run again.
  */
-export async function answerInterruptedClaims(sessionId: string): Promise<void> {
+export async function answerInterruptedCalls(sessionId: string): Promise<void> {
 	const current = await getSession(sessionId);
-	if (!current || interruptedClaims(current).length === 0) return;
+	if (!current || !interruptedCalls(current)) return;
 	await withSessionLock(sessionId, async () => {
 		const session = await requireSession(sessionId);
+		const interrupted = interruptedCalls(session);
+		if (!interrupted) return;
 		const now = Date.now();
-		for (const { approval, at } of interruptedClaims(session)) {
-			session.messages.splice(at, 0, {
-				role: 'tool',
-				content: JSON.stringify({ ok: false, error: 'interrupted', outcome: 'unknown', tool: approval.toolName }),
-				toolCallId: approval.toolCallId,
+		session.messages.splice(
+			interrupted.at,
+			0,
+			...interrupted.calls.map((call) => ({
+				role: 'tool' as const,
+				content: JSON.stringify({ ok: false, error: 'interrupted', outcome: 'unknown', tool: call.name }),
+				toolCallId: call.id,
 				createdAt: now,
-			});
-		}
+			}))
+		);
 		session.updatedAt = now;
 		await getAgentSessionTable().put(session);
 	});
 }
 
 /**
- * Claimed approvals whose latest tool call has no response after it, each with the index just past that
- * call's existing responses. Matched on the most recent turn, as a provider may reuse a tool-call id.
+ * Matched on the latest turn only, as a provider may reuse a tool-call id. A call still waiting on its
+ * approval is the drain's to answer.
  */
-function interruptedClaims(session: AgentSessionRow): Array<{ approval: ApprovalRequest; at: number }> {
-	const found: Array<{ approval: ApprovalRequest; at: number }> = [];
-	for (const approval of session.pendingApprovals) {
-		if (!approval.consumed) continue;
-		let call = session.messages.length - 1;
-		while (call >= 0 && !session.messages[call].toolCalls?.some((c) => c.id === approval.toolCallId)) call--;
-		if (call < 0) continue;
-		let at = call + 1;
-		let answered = false;
-		for (; at < session.messages.length && session.messages[at].role === 'tool'; at++) {
-			if (session.messages[at].toolCallId === approval.toolCallId) answered = true;
-		}
-		if (!answered) found.push({ approval, at });
-	}
-	// Later insertions first, so an earlier index is not shifted by them.
-	return found.sort((a, b) => b.at - a.at);
+function interruptedCalls(session: AgentSessionRow): { calls: ToolCall[]; at: number } | undefined {
+	let turn = session.messages.length - 1;
+	while (turn >= 0 && session.messages[turn].role !== 'assistant') turn--;
+	if (turn < 0) return undefined;
+	const answered = new Set(session.messages.slice(turn + 1).map((message) => message.toolCallId));
+	const awaitingApproval = new Set(session.pendingApprovals.filter((a) => !a.consumed).map((a) => a.toolCallId));
+	const calls = (session.messages[turn].toolCalls ?? []).filter(
+		(call) => !answered.has(call.id) && !awaitingApproval.has(call.id)
+	);
+	if (calls.length === 0) return undefined;
+	let at = turn + 1;
+	while (at < session.messages.length && session.messages[at].role === 'tool') at++;
+	return { calls, at };
 }
 
 /**
