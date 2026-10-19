@@ -1,0 +1,228 @@
+{
+	"brands": [
+		{
+			"id": 42,
+			"name": "Acme"
+		},
+		{
+			"id": 43,
+			"name": "Budget Basics"
+		},
+		{
+			"id": 44,
+			"name": "Studio Gear"
+		}
+	],
+	"products": [
+		{
+			"id": "p1",
+			"brandId": 42,
+			"name": "Cable",
+			"price": 10
+		},
+		{
+			"id": "p2",
+			"brandId": 42,
+			"name": "Keyboard",
+			"price": 35
+		},
+		{
+			"id": "p3",
+			"brandId": 42,
+			"name": "Dock",
+			"price": 60
+		},
+		{
+			"id": "p4",
+			"brandId": 43,
+			"name": "Mouse",
+			"price": 15
+		},
+		{
+			"id": "p5",
+			"brandId": 44,
+			"name": "Stand",
+			"price": 45
+		},
+		{
+			"id": "p6",
+			"brandId": 44,
+			"name": "Monitor",
+			"price": 120
+		}
+	],
+	"programmatic": [
+		{
+			"id": 42,
+			"name": "Acme",
+			"products": [
+				{
+					"id": "p2",
+					"name": "Keyboard",
+					"price": 35
+				}
+			]
+		},
+		{
+			"id": 44,
+			"name": "Studio Gear",
+			"products": [
+				{
+					"id": "p5",
+					"name": "Stand",
+					"price": 45
+				}
+			]
+		}
+	],
+	"single": {
+		"id": 42,
+		"products": [
+			{
+				"id": "p2",
+				"price": 35
+			}
+		]
+	},
+	"cases": [
+		{
+			"key": "nested_only",
+			"url": "/Brand/?select(id,name,products[price=ge=number:30&sort(price)&limit(1)&select(id,name,price)])",
+			"response": [
+				{
+					"id": 42,
+					"name": "Acme",
+					"products": [
+						{
+							"id": "p2",
+							"name": "Keyboard",
+							"price": 35
+						}
+					]
+				},
+				{
+					"id": 43,
+					"name": "Budget Basics",
+					"products": []
+				},
+				{
+					"id": 44,
+					"name": "Studio Gear",
+					"products": [
+						{
+							"id": "p5",
+							"name": "Stand",
+							"price": 45
+						}
+					]
+				}
+			]
+		},
+		{
+			"key": "outer_inherited",
+			"url": "/Brand/?products.price=ge=number:30&select(id,name,products[sort(price)&limit(1)&select(id,name,price)])",
+			"response": [
+				{
+					"id": 42,
+					"name": "Acme",
+					"products": [
+						{
+							"id": "p2",
+							"name": "Keyboard",
+							"price": 35
+						}
+					]
+				},
+				{
+					"id": 44,
+					"name": "Studio Gear",
+					"products": [
+						{
+							"id": "p5",
+							"name": "Stand",
+							"price": 45
+						}
+					]
+				}
+			]
+		},
+		{
+			"key": "additional_nested",
+			"url": "/Brand/?products.price=ge=number:30&select(id,name,products[price=ge=number:100&sort(price)&limit(1)&select(id,name,price)])",
+			"response": [
+				{
+					"id": 42,
+					"name": "Acme",
+					"products": []
+				},
+				{
+					"id": 44,
+					"name": "Studio Gear",
+					"products": [
+						{
+							"id": "p6",
+							"name": "Monitor",
+							"price": 120
+						}
+					]
+				}
+			]
+		},
+		{
+			"key": "per_parent_offset",
+			"url": "/Brand/?products.price=ge=number:30&select(id,name,products[sort(price)&limit(1,2)&select(id,name,price)])",
+			"response": [
+				{
+					"id": 42,
+					"name": "Acme",
+					"products": [
+						{
+							"id": "p3",
+							"name": "Dock",
+							"price": 60
+						}
+					]
+				},
+				{
+					"id": 44,
+					"name": "Studio Gear",
+					"products": [
+						{
+							"id": "p6",
+							"name": "Monitor",
+							"price": 120
+						}
+					]
+				}
+			]
+		},
+		{
+			"key": "bounded_parent_page",
+			"url": "/Brand/?products.price=ge=number:30&sort(name,id)&limit(0,20)&select(id,name,products[sort(price,id)&limit(1)&select(id,name,price)])",
+			"response": [
+				{
+					"id": 42,
+					"name": "Acme",
+					"products": [
+						{
+							"id": "p2",
+							"name": "Keyboard",
+							"price": 35
+						}
+					]
+				},
+				{
+					"id": 44,
+					"name": "Studio Gear",
+					"products": [
+						{
+							"id": "p5",
+							"name": "Stand",
+							"price": 45
+						}
+					]
+				}
+			]
+		}
+	]
+}
