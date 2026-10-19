@@ -285,6 +285,40 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		);
 	});
 
+	test('rejects continuation on mutating REST methods without changing records or consuming the token', async () => {
+		const base = '/Product/?catalogSearch=matches=pagination&limit(75)&select(id,title)';
+		const firstResponse = await fetch(`${ctx.harper.httpURL}${base}&continuation()`, {
+			headers: { Authorization: authorization },
+			signal: AbortSignal.timeout(15000),
+		});
+		assert.strictEqual(firstResponse.status, 200);
+		const first: { id: string }[] = await firstResponse.json();
+		const token = firstResponse.headers.get('harper-continuation');
+		assert(token);
+		await request(`${base}&continuation()`, { method: 'OPTIONS' }, 204);
+		await request(
+			`${base}&continuation()`,
+			{
+				method: 'DELETE',
+				headers: { Authorization: `Basic ${Buffer.from('fulltext-missing-user:wrong').toString('base64')}` },
+			},
+			401
+		);
+		try {
+			for (const method of ['DELETE', 'PUT', 'PATCH', 'POST']) {
+				for (const continuation of [`continuation(${encodeURIComponent(token)})`, 'continuation()']) {
+					await request(`${base}&${continuation}`, { method }, 400);
+				}
+			}
+			assert.deepStrictEqual(ids(await request('/Product/?catalogSearch=matches=pagination&select(id,title)')), PAGE_IDS);
+			const resumed = await request(`${base}&continuation(${encodeURIComponent(token)})`);
+			assert.strictEqual(resumed.length, 75);
+			assert(!resumed.some(({ id }) => first.some((record) => record.id === id)));
+		} finally {
+			await request(`${base}&continuation(${encodeURIComponent(token)})&closeContinuation()`);
+		}
+	});
+
 	test('continues REST snapshot pages across HTTP workers and exposes opaque page headers', async () => {
 		const headPage = async (continuation: string, credential = authorization, status = 400) => {
 			const response = await fetch(

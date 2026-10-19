@@ -5643,6 +5643,8 @@ export function makeTable(options): TableResourceClass {
 
 		async delete(target: RequestTargetOrId): Promise<boolean> {
 			if (isSearchTarget(target)) {
+				if (target.continuation !== undefined)
+					throw new ClientError('Full-text continuation cannot be used to delete records', 400);
 				let scanTarget = target;
 				if ((target as any).checkPermission && (this.constructor as any).loadAsInstance === false) {
 					// False mode keeps model hooks at request scope. Authorize the destructive operation

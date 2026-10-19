@@ -236,8 +236,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		}
 		const settledCredentialRejection = settleDeferredCredentialRejection(request);
 		if (settledCredentialRejection) return settledCredentialRejection;
-		if (method === 'HEAD' && target?.continuation !== undefined)
-			throw new ClientError('Full-text continuation requires GET or QUERY; HEAD cannot return page records', 400);
+		if (method !== 'GET' && method !== 'QUERY' && method !== 'OPTIONS' && target?.continuation !== undefined)
+			throw new ClientError('Full-text continuation requires GET or QUERY', 400);
 		if ((resource as any)?.isCaching) {
 			const cacheControl = headersObject['cache-control'];
 			if (cacheControl) {
