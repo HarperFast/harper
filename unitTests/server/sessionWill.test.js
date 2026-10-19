@@ -42,7 +42,6 @@ const willRows = async (clientId) => {
 	return rows;
 };
 
-/** Records calls to the will table's static methods until restored. */
 function spyWills(methods) {
 	const wills = databases.system.hdb_session_will;
 	const original = Object.fromEntries(methods.map((method) => [method, wills[method]]));
@@ -133,6 +132,10 @@ describe('MQTT last will authorization', function () {
 			await connectWithWill(name, scoped(publisher, Math.floor(Date.now() / 1000) - 1), 'scoped-expired', 6),
 			await connectWithWill(name, scoped(reader, inAnHour), 'scoped-denied', 7),
 		];
+		// the session's own user is the opposite of each will's role, so only the will's role can decide
+		sessions[0].user = reader;
+		sessions[1].user = publisher;
+		sessions[2].user = publisher;
 		for (const session of sessions) session.disconnect(false);
 		await waitFor(async () => (await T.get('scoped-live'))?.value === 5, { message: 'the live will was published' });
 		for (const clientId of ['scoped-live', 'scoped-expired', 'scoped-denied'])

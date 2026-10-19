@@ -619,10 +619,7 @@ class SubscriptionsSession {
 		}
 		this.subscriptions = [];
 	}
-	/**
-	 * The will row is this session's own bookkeeping, so it is read and deleted on contexts of its own,
-	 * never the session's: only the publish is authorized, and the row is deleted even when it is refused.
-	 */
+	/** The will row is session bookkeeping on contexts of its own; only the publish runs as the session (server/DESIGN.md). */
 	async settleWill(willId: [string, string], publish: boolean) {
 		try {
 			if (publish) {

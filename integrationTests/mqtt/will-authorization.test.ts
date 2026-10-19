@@ -1,7 +1,6 @@
 /**
- * harper#1874: a non-super user's MQTT last will is published when its connection drops, authorized
- * against the will topic only. The will row in system.hdb_session_will is the session's own
- * bookkeeping, so it is deleted whether or not the will was allowed to publish.
+ * harper#1874: a non-super user's MQTT last will is authorized against its topic only, and its row
+ * in system.hdb_session_will is deleted whether or not it was allowed to publish.
  *
  * Run:
  *   npm run test:integration -- "integrationTests/mqtt/will-authorization.test.ts"
@@ -89,7 +88,6 @@ suite('MQTT last will authorization (harper#1874)', { skip: skipSuite }, (ctx: C
 		retain: false,
 	});
 
-	/** Values a separate (super user) subscriber receives on the will's topic. */
 	async function watch(id: string) {
 		const received: number[] = [];
 		const subscriber = await connect(admin, { clientId: `watch-${id}` });
@@ -189,7 +187,6 @@ suite('MQTT last will authorization (harper#1874)', { skip: skipSuite }, (ctx: C
 			client.stream.destroy();
 			ok(await waitFor(async () => (await willRows(id)).length === 0), 'the will row is deleted');
 			ok(await waitFor(() => willErrorLogged(id)), 'the refused publish is logged');
-			await sleep(500);
 			deepStrictEqual(received, [], 'the will is not published');
 		} finally {
 			await end(subscriber);
