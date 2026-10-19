@@ -284,15 +284,15 @@ GET /Brand/?select(id,products[price=ge=number:30&sort(price)&limit(1)&select(id
 
 Each brand receives at most one product priced at 30 or more, ordered by price. A brand with no qualifying products remains in the result with an empty `products` array. By comparison, an outer condition such as `/Brand/?products.price=ge=number:30` filters which brands are returned. Existing outer relationship filters also constrain the related candidates available to a nested selection.
 
-| Nested option      | Behavior                                                                          |
-| ------------------ | --------------------------------------------------------------------------------- | -------------- |
-| Conditions         | Qualify children of the selected relationship; combine with `&`, `                | `, and groups. |
-| `sort(price)`      | Order that parent's eligible children before pagination.                          |
-| `limit(end)`       | Return at most `end` children per parent.                                         |
-| `limit(start,end)` | Skip `start` eligible children and return at most `end - start`.                  |
-| `select(id,price)` | Project fields from the returned children. Omit it to return whole child records. |
+| Nested option      | Behavior                                                                         |
+| ------------------ | -------------------------------------------------------------------------------- |
+| Conditions         | Qualify children of the selected relationship; combine with AND, OR, and groups. |
+| `sort(price)`      | Order that parent's eligible children before pagination.                         |
+| `limit(end)`       | Return at most `end` children per parent.                                        |
+| `limit(start,end)` | Skip `start` eligible children and return at most `end - start`.                 |
+| `select(id,price)` | Project fields from returned children; omit it to return whole child records.    |
 
-Use a non-negative safe-integer window; `limit(0)` produces an empty to-many selection without reading children. A missing singular relationship remains absent. For array-valued foreign keys, unsorted pagination preserves missing target positions; sorting drops missing targets. Child conditions and sort fields remain subject to read permissions.
+Use a non-negative safe-integer window; `limit(0)` returns no children without reading them; an absent foreign key keeps its missing-value shape. A missing singular relationship remains absent. For array-valued foreign keys, unsorted pagination preserves missing target positions; sorting drops missing targets. Child conditions and sort fields remain subject to read permissions.
 
 A condition that traverses another relationship qualifies the immediate child; it does not narrow that child's projected descendants. To filter or page grandchildren, put those constraints on the grandchild's own bracket selection. Outer join restrictions are still inherited.
 

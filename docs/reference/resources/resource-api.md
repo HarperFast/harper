@@ -1137,6 +1137,8 @@ const brand = await Brand.get({
 });
 ```
 
+`operator` defaults to `and`; use `or` to combine the nested conditions as alternatives.
+
 These options apply independently to each parent's children in both single-record `get()` and collection queries. `limit` is a count; `offset` is the number of eligible children to skip. Neither changes which parents are returned. Nested conditions qualify immediate children; descendant filtering requires a selection on that descendant. Inherited outer join restrictions still apply.
 
 See [Filtering and Paging Each Relationship](../rest/querying.md#filtering-and-paging-each-relationship) for missing-value behavior, authorization, cache-local eligibility and ordering, scan costs, and unsupported constraints.
