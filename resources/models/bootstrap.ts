@@ -520,8 +520,12 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 function installedConfiguration(): Record<string, unknown> | undefined {
 	const configuration: Record<string, unknown> = {};
 	for (const [key, slot] of installedSlots) {
-		if (slot.backend)
-			configuration[key] = JSON.parse(slot.configJson ?? JSON.stringify(expandEnvVarsDeep(JSON.parse(slot.entryJson))));
+		if (!slot.backend) continue;
+		// What a call costs is not part of what produced a decision.
+		const { pricing: _pricing, ...entry } = JSON.parse(
+			slot.configJson ?? JSON.stringify(expandEnvVarsDeep(JSON.parse(slot.entryJson)))
+		);
+		configuration[key] = entry;
 	}
 	return Object.keys(configuration).length > 0 ? configuration : undefined;
 }

@@ -1824,7 +1824,7 @@ describe('agent/loop never overwrites a cancel', () => {
 		assert.equal(after.status, 'idle');
 	});
 
-	it('answers a claimed approval whose run died before its result, without running it again', async () => {
+	it('answers a claimed approval whose run died before its result, in place and without running it again', async () => {
 		const sessionId = await newSession();
 		const drop = tool('drop', { destructive: true, handler: async () => assert.fail('must not run twice') });
 		await runAgent({
@@ -1838,24 +1838,59 @@ describe('agent/loop never overwrites a cancel', () => {
 		const paused = await session.getSession(sessionId);
 		await session.resolveApproval(sessionId, paused.pendingApprovals[0].id, true);
 		assert.equal(await session.claimApproval(sessionId, paused.pendingApprovals[0].id), true);
+		// What an operator does after the crash: cancel the stuck run, then prompt again.
+		await session.cancelSession(sessionId);
+		await session.appendMessage(sessionId, { role: 'user', content: 'what happened?', createdAt: Date.now() });
 
-		await runAgent({
-			sessionId,
-			models: stubModels([{ content: 'done', finishReason: 'stop' }]),
-			tools: [drop],
-			scopes,
-			maxTurns: 5,
-			autoApprove: false,
-		});
+		let sentToModel;
+		const models = {
+			async generate(input) {
+				sentToModel = input.messages;
+				return { content: 'done', finishReason: 'stop' };
+			},
+		};
+		await runAgent({ sessionId, models, tools: [drop], scopes, maxTurns: 5, autoApprove: false });
 		const reloaded = await session.getSession(sessionId);
-		const response = reloaded.messages.find((m) => m.role === 'tool' && m.toolCallId === 'c1');
+		const order = reloaded.messages.map((m) => m.toolCallId ?? m.role);
+		assert.deepStrictEqual(order.slice(1, 4), ['assistant', 'c1', 'user'], 'the answer sits right after its tool call');
+		const response = reloaded.messages.find((m) => m.toolCallId === 'c1');
 		assert.deepStrictEqual(JSON.parse(response.content), {
 			ok: false,
 			error: 'interrupted',
 			outcome: 'unknown',
 			tool: 'drop',
 		});
+		assert.ok(
+			sentToModel.findIndex((m) => m.toolCallId === 'c1') <
+				sentToModel.findIndex((m) => m.role === 'user' && m.content === 'what happened?')
+		);
 		assert.equal(reloaded.status, 'completed');
+	});
+
+	it('answers an interrupted claim even when a budget stop ends the run first', async () => {
+		const sessionId = await newSession();
+		await runAgent({
+			sessionId,
+			models: stubModels([
+				{
+					content: '',
+					finishReason: 'tool_calls',
+					toolCalls: [{ id: 'c1', name: 'drop', arguments: {} }],
+					usage: { promptTokens: 60, completionTokens: 10 },
+				},
+			]),
+			tools: [tool('drop', { destructive: true })],
+			scopes,
+			maxTurns: 5,
+			autoApprove: false,
+		});
+		const paused = await session.getSession(sessionId);
+		await session.resolveApproval(sessionId, paused.pendingApprovals[0].id, true);
+		await session.claimApproval(sessionId, paused.pendingApprovals[0].id);
+		await runAgent({ sessionId, models: stubModels([]), tools: [], scopes, maxTurns: 5, maxSessionTokens: 50 });
+		const reloaded = await session.getSession(sessionId);
+		assert.equal(reloaded.status, 'error');
+		assert.equal(JSON.parse(reloaded.messages.find((m) => m.toolCallId === 'c1').content).error, 'interrupted');
 	});
 
 	it('counts a billed call that returns after the cancel', async () => {

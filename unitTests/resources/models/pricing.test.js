@@ -14,6 +14,7 @@ const {
 const { setFallbackGroup, clearRouting } = require('#src/resources/models/routing');
 const { bootstrapModels, applyModelsConfig, resetModelsProjection } = require('#src/resources/models/bootstrap');
 const { Models } = require('#src/resources/models/Models');
+const { getModelsConfigHash } = require('#src/resources/models/decisionStore');
 
 const PRICING = { inputPerMtok: 3, outputPerMtok: 15 };
 const writer = () => ({ write: () => {} });
@@ -164,6 +165,17 @@ describe('models.generative.<name>.pricing from config', () => {
 		});
 		assert.deepStrictEqual(getBackendPricing(getBackend('generative', 'default')), PRICING);
 		assert.strictEqual(getBackendPricing(getBackend('embedding', 'default')), undefined);
+	});
+
+	it('leaves the decision config hash unchanged by a price edit', async () => {
+		await bootstrapModels({ models: { generative: { default: { backend: 'ollama', model: 'm', pricing: PRICING } } } });
+		const priced = getModelsConfigHash();
+		await applyModelsConfig({
+			generative: { default: { backend: 'ollama', model: 'm', pricing: { inputPerMtok: 1, outputPerMtok: 2 } } },
+		});
+		assert.strictEqual(getModelsConfigHash(), priced);
+		await applyModelsConfig({ generative: { default: { backend: 'ollama', model: 'n', pricing: PRICING } } });
+		assert.notStrictEqual(getModelsConfigHash(), priced, 'a real setting still changes it');
 	});
 
 	it('a reload that changes or removes the price reprices the entry', async () => {

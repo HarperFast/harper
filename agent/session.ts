@@ -238,6 +238,39 @@ function closeOpenApprovals(
 }
 
 /**
+ * Answer `interrupted` each approval that was claimed but never got its result, inserted right after its
+ * tool call's existing responses so the transcript stays sendable even if a prompt was appended since.
+ * The action is not run again.
+ */
+export async function answerInterruptedClaims(sessionId: string): Promise<void> {
+	const unanswered = (session: AgentSessionRow) => {
+		const answered = new Set(session.messages.filter((m) => m.role === 'tool').map((m) => m.toolCallId));
+		return session.pendingApprovals.filter((a) => a.consumed && !answered.has(a.toolCallId));
+	};
+	const current = await getSession(sessionId);
+	if (!current || unanswered(current).length === 0) return;
+	await withSessionLock(sessionId, async () => {
+		const session = await requireSession(sessionId);
+		const now = Date.now();
+		for (const approval of unanswered(session)) {
+			const call = session.messages.findIndex((m) => m.toolCalls?.some((c) => c.id === approval.toolCallId));
+			let at = call + 1;
+			while (at > 0 && at < session.messages.length && session.messages[at].role === 'tool') at++;
+			const response: AgentMessage = {
+				role: 'tool',
+				content: JSON.stringify({ ok: false, error: 'interrupted', outcome: 'unknown', tool: approval.toolName }),
+				toolCallId: approval.toolCallId,
+				createdAt: now,
+			};
+			if (call < 0) session.messages.push(response);
+			else session.messages.splice(at, 0, response);
+		}
+		session.updatedAt = now;
+		await getAgentSessionTable().put(session);
+	});
+}
+
+/**
  * Park a gated tool call for the operator. On a session a cancel already marked `aborted`, the call is
  * answered `cancelled_by_operator` instead, so the cancel is not undone and the call is not left open.
  */

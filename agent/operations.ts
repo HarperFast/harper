@@ -93,10 +93,7 @@ async function agentPrompt(op: any, deps: OperationDeps) {
 		// A cancelled run can still be finishing a model call or a handler; a prompt appended now would land
 		// between that call's tool calls and their results, or be folded into the cancelled run and lost.
 		if (deps.isRunInFlight(sessionId)) {
-			throw new ClientError(
-				`Session ${sessionId} is still finishing a cancelled run; send the prompt again shortly`,
-				409
-			);
+			throw new ClientError(`Session ${sessionId} still has a run finishing; send the prompt again shortly`, 409);
 		}
 		await appendMessage(sessionId, asUserMessage(message));
 	} else {

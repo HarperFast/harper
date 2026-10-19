@@ -215,7 +215,7 @@ describe('agent/operations budgets (#3040)', () => {
 			});
 			await assert.rejects(execute({ session_id: created.session_id, message: 'again' }), (err) => {
 				assert.strictEqual(err.statusCode, 409);
-				assert.match(err.message, /still finishing a cancelled run/);
+				assert.match(err.message, /still has a run finishing/);
 				return true;
 			});
 			assert.deepStrictEqual(started, []);

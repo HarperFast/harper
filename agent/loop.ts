@@ -21,6 +21,7 @@ import { isContextWindowExceeded } from '../resources/models/backendHelpers.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import {
 	addPendingApproval,
+	answerInterruptedClaims,
 	appendMessage,
 	cancelledObservation,
 	claimApproval,
@@ -124,6 +125,9 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 	try {
 		// Before the approvals below can execute anything: a cap lowered while a run sat awaiting
 		// approval must stop the approved action, not just the next model call.
+		// Runs are serialized per session, so a claim still without a result belongs to a run that died
+		// between the claim and its result. Repaired first, so no later path sends its tool call unanswered.
+		await answerInterruptedClaims(opts.sessionId);
 		if (await stopIfOverBudget(opts)) return;
 
 		// Drain resolved approvals until none is left. An approval resolved while the drain runs joins this run
@@ -380,18 +384,6 @@ async function consumeResolvedApprovals(
 ): Promise<void> {
 	const session = await getSession(sessionId);
 	if (!session) return;
-	// A claimed approval with no response belongs to a run that died between the claim and its result
-	// (runs are serialized per session, so none is still running). Answer it, without running it again.
-	const answered = new Set(session.messages.filter((m) => m.role === 'tool').map((m) => m.toolCallId));
-	for (const approval of session.pendingApprovals) {
-		if (!approval.consumed || answered.has(approval.toolCallId)) continue;
-		await appendMessage(sessionId, {
-			role: 'tool',
-			content: JSON.stringify({ ok: false, error: 'interrupted', outcome: 'unknown', tool: approval.toolName }),
-			toolCallId: approval.toolCallId,
-			createdAt: Date.now(),
-		});
-	}
 	const toConsume = session.pendingApprovals.filter((a) => a.resolved && !a.consumed);
 	for (const approval of toConsume) {
 		if (ctx.signal?.aborted) return;
