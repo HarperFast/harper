@@ -1971,4 +1971,145 @@ describe('Test keys module', () => {
 			expect(resolve(layers({}), records, 'server', false)).to.be.undefined;
 		});
 	});
+
+	describe('self-signed review and renewal without a configured tls.privateKey', () => {
+		const realKeys = require('#src/security/keys');
+		const { X509Certificate, createPrivateKey, generateKeyPairSync } = require('node:crypto');
+		const nodeName = `renew-test-${process.pid}.harper.local`;
+		const keysDir = path.join(test_dir, 'keys');
+		const envProps = ['tls', 'tls_privateKey', 'node_hostname', 'rootPath'];
+		let savedEnv;
+		let savedBasePath;
+		let certTable;
+
+		before(() => {
+			certTable = require('#src/resources/databases').databases.system.hdb_certificate;
+			savedEnv = envProps.map((name) => [name, env_mgr.get(name)]);
+			savedBasePath = env_mgr.getHdbBasePath();
+			env_mgr.setHdbBasePath(test_dir);
+			env_mgr.setProperty('node_hostname', nodeName);
+			env_mgr.setProperty('rootPath', test_dir);
+			fs.ensureDirSync(keysDir);
+		});
+
+		after(async () => {
+			for (const [name, value] of savedEnv) env_mgr.setProperty(name, value);
+			env_mgr.setHdbBasePath(savedBasePath);
+			for (const row of await selfSignedRows()) await certTable.delete(row.name);
+		});
+
+		async function selfSignedRows() {
+			const rows = [];
+			for await (const row of certTable.search([{ attribute: 'is_self_signed', value: true }])) rows.push({ ...row });
+			return rows;
+		}
+
+		async function startWithoutSelfSigned(tlsConfig) {
+			env_mgr.setProperty('tls', tlsConfig);
+			env_mgr.setProperty('tls_privateKey', Array.isArray(tlsConfig) ? undefined : tlsConfig.privateKey);
+			for (const row of await selfSignedRows()) await certTable.delete(row.name);
+			fs.removeSync(path.join(keysDir, 'privateKey.pem'));
+		}
+
+		function assertUsablePair(rows) {
+			assert.strictEqual(rows.length, 2, JSON.stringify(rows.map((row) => row.name)));
+			const ca = rows.find((row) => row.is_authority);
+			const leaf = rows.find((row) => !row.is_authority);
+			assert.strictEqual(leaf.name, nodeName);
+			const caCert = new X509Certificate(ca.certificate);
+			const leafCert = new X509Certificate(leaf.certificate);
+			assert.ok(leafCert.checkIssued(caCert) && leafCert.verify(caCert.publicKey), 'leaf must be signed by the CA');
+			const key = createPrivateKey(fs.readFileSync(path.join(keysDir, ca.private_key_name)));
+			assert.ok(caCert.checkPrivateKey(key), `${ca.private_key_name} must hold the CA key`);
+			assert.strictEqual(leaf.private_key_name, ca.private_key_name);
+			return { ca, leaf };
+		}
+
+		it('generates a key and pair for an array tls whose entries name no privateKey', async () => {
+			await startWithoutSelfSigned([{ certificateAuthority: test_ca_path }]);
+			await realKeys.reviewSelfSignedCert();
+			const { ca } = assertUsablePair(await selfSignedRows());
+			assert.strictEqual(ca.private_key_name, 'privateKey.pem');
+		}).timeout(30000);
+
+		it('generates a key and pair for an object tls with privateKey unset', async () => {
+			await startWithoutSelfSigned({ certificateAuthority: test_ca_path, privateKey: null });
+			await realKeys.reviewSelfSignedCert();
+			assertUsablePair(await selfSignedRows());
+		}).timeout(30000);
+
+		it('never writes the generated key over an unusable configured key', async () => {
+			const edKeyPath = path.join(test_dir, 'ed25519-key.pem');
+			const edKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' });
+			fs.writeFileSync(edKeyPath, edKey);
+			await startWithoutSelfSigned({ privateKey: edKeyPath });
+			await realKeys.reviewSelfSignedCert();
+			const { ca } = assertUsablePair(await selfSignedRows());
+			assert.strictEqual(ca.private_key_name, 'privateKey.pem');
+			assert.strictEqual(fs.readFileSync(edKeyPath, 'utf8'), edKey);
+		}).timeout(30000);
+
+		it('renewal replaces the pair and retires stale self-signed rows', async () => {
+			await startWithoutSelfSigned({ privateKey: null });
+			await realKeys.reviewSelfSignedCert();
+			const before = assertUsablePair(await selfSignedRows());
+			await certTable.put({ ...before.ca, name: 'Harper-Certificate-Authority-stale' });
+			await realKeys.renewSelfSigned();
+			const after = assertUsablePair(await selfSignedRows());
+			assert.notStrictEqual(after.ca.certificate, before.ca.certificate);
+			assert.notStrictEqual(after.leaf.certificate, before.leaf.certificate);
+			assert.notStrictEqual(after.ca.private_key_name, before.ca.private_key_name, 'the old key file is not replaced');
+		}).timeout(60000);
+
+		it('a failed renewal leaves the previous pair in place', async () => {
+			await startWithoutSelfSigned({ privateKey: test_private_key_path });
+			await realKeys.reviewSelfSignedCert();
+			const before = await selfSignedRows();
+			assertUsablePair(before);
+			// renewal must generate a key, and the keys directory it writes to does not exist
+			env_mgr.setProperty('tls_privateKey', null);
+			env_mgr.setHdbBasePath(path.join(test_dir, 'missing'));
+			try {
+				await assert.rejects(realKeys.renewSelfSigned());
+			} finally {
+				env_mgr.setHdbBasePath(test_dir);
+			}
+			assert.deepStrictEqual(
+				(await selfSignedRows()).map((row) => row.certificate).sort(),
+				before.map((row) => row.certificate).sort()
+			);
+		}).timeout(60000);
+
+		it('renewal keeps an external certificate for this node instead of a self-signed one', async () => {
+			await startWithoutSelfSigned({ privateKey: test_private_key_path });
+			await realKeys.reviewSelfSignedCert();
+			const external = await mkcert.createCert({
+				domains: [nodeName],
+				validityDays: 1,
+				ca: { key: ca_key, cert: test_ca },
+			});
+			fs.writeFileSync(path.join(keysDir, 'external-key.pem'), external.key);
+			const externalName = `external-${nodeName}`;
+			await certTable.put({
+				name: externalName,
+				uses: ['https'],
+				certificate: external.cert,
+				private_key_name: 'external-key.pem',
+				is_authority: false,
+				is_self_signed: false,
+			});
+			try {
+				await realKeys.renewSelfSigned();
+				const rows = await selfSignedRows();
+				assert.deepStrictEqual(
+					rows.map((row) => row.is_authority),
+					[true],
+					'only the self-signed CA is renewed; the external certificate serves replication'
+				);
+				assert.ok(await certTable.get(externalName));
+			} finally {
+				await certTable.delete(externalName);
+			}
+		}).timeout(60000);
+	});
 });

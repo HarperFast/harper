@@ -131,6 +131,10 @@ the latch back on a false result, synchronous throw, or rejected callback promis
 rejection cannot unlatch a newer reload) — the latch means "last successfully applied", so the
 periodic poll can heal a lost `hdb_certificate` write instead of deduplicating it forever.
 
+## Self-signed renewal replaces the pair in one transaction (`security/keys.ts`)
+
+`prepareSelfSignedCerts` builds the self-signed CA and replication-certificate records in memory; `reviewSelfSignedCert` writes whichever are missing, and `renewSelfSigned` writes the replacements and deletes the old self-signed rows in one `transaction()`. Writing new rows first is not enough on its own: `setCertTable` patches by name, and the CA name repeats when `node.hostname` is set, so a non-atomic renewal can replace the CA and then fail before the leaf. Renewal looks for a reusable CA and replication certificate with self-signed rows excluded (`getCertAuthority(true)`, `getReplicationCert(true)`), the same choice the old delete-then-review order made; a self-signed `replication` leaf would otherwise outscore an external generic one. A configured key path names the CA key only when that key parsed; a generated key is created exclusively (`wx`) in `keys/` and never overwrites a configured or existing file. Enforced by the self-signed review and renewal cases in `unitTests/security/keys.test.js` and `integrationTests/security/renew-certs-missing-privatekey.test.ts`.
+
 ## Client-certificate revocation checking keeps three tables (`security/certificateVerification/`)
 
 `verificationTables.ts` declares them, and every writable start and the verification path apply the same
