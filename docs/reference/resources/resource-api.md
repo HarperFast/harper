@@ -1141,6 +1141,63 @@ const brand = await Brand.get({
 });
 ```
 
+The single-record example returns:
+
+```json
+{
+	"id": 42,
+	"products": [
+		{
+			"id": "p2",
+			"price": 35
+		}
+	]
+}
+```
+
+**Outer relationship conditions also restrict nested results.** You do not need to repeat an outer product-price condition inside the `products` selection. For example, this returns only brands with products costing at least 30, and includes their cheapest qualifying product:
+
+```javascript
+const brands = [];
+for await (const brand of Brand.search({
+	conditions: [{ attribute: ['products', 'price'], comparator: 'greater_than_equal', value: 30 }],
+	select: ['id', 'name', { name: 'products', sort: { attribute: 'price' }, limit: 1, select: ['id', 'name', 'price'] }],
+})) {
+	brands.push(brand);
+}
+```
+
+Using the [sample brand and product data](../rest/querying.md#filtering-and-paging-each-relationship), `brands` contains:
+
+```json
+[
+	{
+		"id": 42,
+		"name": "Acme",
+		"products": [
+			{
+				"id": "p2",
+				"name": "Keyboard",
+				"price": 35
+			}
+		]
+	},
+	{
+		"id": 44,
+		"name": "Studio Gear",
+		"products": [
+			{
+				"id": "p5",
+				"name": "Stand",
+				"price": 45
+			}
+		]
+	}
+]
+```
+
+Add a nested `conditions` array only to narrow these inherited candidates further; it does not remove qualifying parents. See the [REST scenarios](../rest/querying.md#filtering-and-paging-each-relationship) for nested-only filtering, stricter child filters, and per-parent pagination.
+
 `operator` defaults to `and`; use `or` to combine the nested conditions as alternatives.
 
 These options apply independently to each parent's children in both single-record `get()` and collection queries. `limit` is a count; `offset` is the number of eligible children to skip. These nested options do not remove parents: a parent with no matching children remains present with an empty to-many array. Nested conditions qualify immediate children; descendant filtering requires a selection on that descendant. Inherited outer join restrictions still apply.

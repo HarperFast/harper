@@ -280,13 +280,171 @@ Pending a 5.3 patch release; see [Honor nested relationship filters and paginati
 
 :::
 
-Use square brackets inside `select()` to apply conditions, sort, and pagination to each parent's related records. For a `Brand.products` relationship with `price` and `id` fields:
+Use square brackets inside `select()` to apply conditions, sort, and pagination to each parent's related records.
+
+**An outer relationship filter also narrows that relationship's nested results.** For example, `products.price=ge=number:30` selects brands with a qualifying product and restricts their selected products to those costing at least 30. **You do not need to repeat that price filter inside `products[...]`.** Add a nested condition only when you want to narrow the already-eligible products further without removing their parents.
+
+The following examples use a `Brand.products` relationship with this data:
+
+| Brand ID | Brand         | Product ID | Product  | Price |
+| -------- | ------------- | ---------- | -------- | ----- |
+| 42       | Acme          | p1         | Cable    | 10    |
+| 42       | Acme          | p2         | Keyboard | 35    |
+| 42       | Acme          | p3         | Dock     | 60    |
+| 43       | Budget Basics | p4         | Mouse    | 15    |
+| 44       | Studio Gear   | p5         | Stand    | 45    |
+| 44       | Studio Gear   | p6         | Monitor  | 120   |
+
+Each response below contains only the requested fields. Parent order is shown for this sample; the nested `sort(price)` orders products within each brand, not the brands themselves.
+
+#### Keep every brand; show its cheapest product costing at least 30
+
+The price filter is inside the relationship selection, so Budget Basics remains in the response with an empty product list.
 
 ```http
-GET /Brand/?select(id,products[price=ge=number:30&sort(price)&limit(1)&select(id,price)])
+GET /Brand/?select(id,name,products[price=ge=number:30&sort(price)&limit(1)&select(id,name,price)])
 ```
 
-Each brand receives at most one product priced at 30 or more, ordered by price. A brand with no qualifying products remains in the result with an empty `products` array. By comparison, an outer condition such as `/Brand/?products.price=ge=number:30` filters which brands are returned. Existing outer relationship filters also constrain the related candidates available to a nested selection.
+Response:
+
+```json
+[
+	{
+		"id": 42,
+		"name": "Acme",
+		"products": [
+			{
+				"id": "p2",
+				"name": "Keyboard",
+				"price": 35
+			}
+		]
+	},
+	{
+		"id": 43,
+		"name": "Budget Basics",
+		"products": []
+	},
+	{
+		"id": 44,
+		"name": "Studio Gear",
+		"products": [
+			{
+				"id": "p5",
+				"name": "Stand",
+				"price": 45
+			}
+		]
+	}
+]
+```
+
+#### Return only qualifying brands; inherit the price filter
+
+The outer price filter removes Budget Basics and also removes cheaper products from the nested candidates. The nested selection only needs sorting, a limit, and a projection; repeating the price filter is unnecessary.
+
+```http
+GET /Brand/?products.price=ge=number:30&select(id,name,products[sort(price)&limit(1)&select(id,name,price)])
+```
+
+Response:
+
+```json
+[
+	{
+		"id": 42,
+		"name": "Acme",
+		"products": [
+			{
+				"id": "p2",
+				"name": "Keyboard",
+				"price": 35
+			}
+		]
+	},
+	{
+		"id": 44,
+		"name": "Studio Gear",
+		"products": [
+			{
+				"id": "p5",
+				"name": "Stand",
+				"price": 45
+			}
+		]
+	}
+]
+```
+
+#### Use a stricter condition for the displayed products
+
+Both Acme and Studio Gear qualify because each has a product costing at least 30. The additional nested condition displays only products costing at least 100. Acme remains with an empty array: the nested condition does not remove a parent. It further narrows the inherited candidates; it cannot restore products excluded by the outer filter.
+
+```http
+GET /Brand/?products.price=ge=number:30&select(id,name,products[price=ge=number:100&sort(price)&limit(1)&select(id,name,price)])
+```
+
+Response:
+
+```json
+[
+	{
+		"id": 42,
+		"name": "Acme",
+		"products": []
+	},
+	{
+		"id": 44,
+		"name": "Studio Gear",
+		"products": [
+			{
+				"id": "p6",
+				"name": "Monitor",
+				"price": 120
+			}
+		]
+	}
+]
+```
+
+#### Page through each brand's qualifying products
+
+After the outer price filter and per-brand sort, `limit(1,2)` skips the first eligible product and returns the second for each qualifying brand. Acme returns Dock, not Keyboard; Studio Gear returns Monitor, not Stand. The offset applies independently to each brand.
+
+```http
+GET /Brand/?products.price=ge=number:30&select(id,name,products[sort(price)&limit(1,2)&select(id,name,price)])
+```
+
+Response:
+
+```json
+[
+	{
+		"id": 42,
+		"name": "Acme",
+		"products": [
+			{
+				"id": "p3",
+				"name": "Dock",
+				"price": 60
+			}
+		]
+	},
+	{
+		"id": 44,
+		"name": "Studio Gear",
+		"products": [
+			{
+				"id": "p6",
+				"name": "Monitor",
+				"price": 120
+			}
+		]
+	}
+]
+```
+
+#### Nested option reference
 
 | Nested option      | Behavior                                                                         |
 | ------------------ | -------------------------------------------------------------------------------- |
