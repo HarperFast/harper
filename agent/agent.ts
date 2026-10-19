@@ -91,7 +91,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		return;
 	}
 	// A malformed limit fails the agent's start rather than running it uncapped or turnless.
-	if (opts.maxTurns != null) config.maxTurns = parseMaxTurns(opts.maxTurns);
+	if (opts.maxTurns !== undefined) config.maxTurns = parseMaxTurns(opts.maxTurns);
 	config.maxSessionTokens = parseBudgetCap('maxSessionTokens', opts.maxSessionTokens);
 	config.maxCostUsd = parseBudgetCap('maxCostUsd', opts.maxCostUsd);
 

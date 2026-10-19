@@ -216,6 +216,8 @@ describe('agent/operations budgets (#3040)', () => {
 			await assert.rejects(execute({ session_id: created.session_id, message: 'again' }), (err) => {
 				assert.strictEqual(err.statusCode, 409);
 				assert.match(err.message, /still has a run finishing/);
+				assert.strictEqual(err.code, 'AGENT_RUN_FINISHING');
+				assert.strictEqual(err.retryable, true);
 				return true;
 			});
 			assert.deepStrictEqual(started, []);
@@ -267,6 +269,8 @@ describe('agent/operations budgets (#3040)', () => {
 			await assert.rejects(execute({ session_id: created.session_id, message: 'again' }), (err) => {
 				assert.strictEqual(err.statusCode, 409);
 				assert.match(err.message, /recorded but not run/);
+				assert.strictEqual(err.code, 'AGENT_PROMPT_NOT_RUN');
+				assert.strictEqual(err.retryable, false, 'the prompt was saved, so sending it again would duplicate it');
 				return true;
 			});
 		});
@@ -284,6 +288,8 @@ describe('agent/operations budgets (#3040)', () => {
 			await assert.rejects(execute({ session_id: created.session_id, message: 'again' }), (err) => {
 				assert.strictEqual(err.statusCode, 409);
 				assert.match(err.message, /arrived while this prompt was being accepted$/);
+				assert.strictEqual(err.code, 'AGENT_PROMPT_CANCELLED');
+				assert.strictEqual(err.retryable, true);
 				return true;
 			});
 			assert.deepStrictEqual(started, []);
@@ -296,6 +302,31 @@ describe('agent/operations budgets (#3040)', () => {
 			assert.strictEqual(result.session_id, sessionId);
 			assert.strictEqual(result.messages.length, 2);
 			assert.deepStrictEqual(result.usage, { calls: 1, promptTokens: 7, completionTokens: 3, costUsd: 0.001 });
+			assert.strictEqual(result.runInFlight, false);
+		});
+
+		it('session reads say whether a run, even a cancelled one, is still in flight', async () => {
+			const sessionId = await seed();
+			await session.cancelSession(sessionId);
+			const inFlight = { isRunInFlight: (id) => id === sessionId };
+			const read = await operation('get_agent_session', inFlight).execute({ session_id: sessionId });
+			assert.strictEqual(read.status, 'aborted');
+			assert.strictEqual(read.runInFlight, true);
+			const { sessions } = await operation('list_agent_sessions', inFlight).execute({});
+			assert.strictEqual(sessions[0].runInFlight, true);
+		});
+
+		it('agent_prompt marks a busy session retryable, since nothing was recorded', async () => {
+			const sessionId = await seed();
+			await session.setStatus(sessionId, 'running');
+			const { execute } = operation('agent_prompt', { getConfig: () => ({ enabled: true }) });
+			await assert.rejects(execute({ session_id: sessionId, message: 'again' }), (err) => {
+				assert.strictEqual(err.statusCode, 409);
+				assert.strictEqual(err.code, 'AGENT_SESSION_BUSY');
+				assert.strictEqual(err.retryable, true);
+				return true;
+			});
+			assert.strictEqual((await session.getSession(sessionId)).messages.length, 2);
 		});
 
 		it('list_agent_sessions returns each row with usage, even when the row exposes fields as accessors', async () => {

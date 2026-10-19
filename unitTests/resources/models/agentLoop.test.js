@@ -1449,7 +1449,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			};
 		}
 
-		// Spy on logger.warn for the warn-once assertions, restoring the original after.
+		// Spy on logger.warn for the warn assertions, restoring the original after.
 		let warnings;
 		let origWarn;
 		beforeEach(() => {
@@ -1461,39 +1461,30 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			logger.warn = origWarn;
 		});
 
-		describe('budget warn-once when backend reports no usage', () => {
-			it('maxToolTokens set but no usage → warns once, does NOT trip, loop completes', async () => {
-				// Two tool rounds + terminal, all with usage: undefined.
+		describe('a budget the loop cannot measure stops it', () => {
+			const unenforceable = (kind) => (err) =>
+				err instanceof BudgetExceededError && err.kind === kind && /cannot be enforced/.test(err.message);
+
+			it('maxToolTokens with no usage reported stops after the first round, before its tools run', async () => {
 				backend.queue(
 					{ output: { content: 'r1', finishReason: 'tool_calls', toolCalls: [tc('c1', 'echo', { i: 1 })] } },
-					{ output: { content: 'r2', finishReason: 'tool_calls', toolCalls: [tc('c2', 'echo', { i: 2 })] } },
 					{ output: { content: 'final', finishReason: 'stop' } }
 				);
-				const result = await models.generate('q', {
-					toolMode: 'auto',
-					maxToolTokens: 1, // would trip instantly IF usage were measurable
-					toolHandlers: { echo: (a) => a },
-				});
-				assert.strictEqual(result.content, 'final', 'unmeasurable budget must not falsely trip');
-				const budgetWarns = warnings.filter((w) => /budget is unenforceable/.test(w));
-				assert.strictEqual(budgetWarns.length, 1, 'warns exactly once across the run, not per-round');
-			});
-
-			it('an empty usage object counts as no usage for maxToolTokens', async () => {
-				backend.queue(
-					{ output: { content: 'r1', finishReason: 'tool_calls', toolCalls: [tc('c1', 'echo', { i: 1 })] }, usage: {} },
-					{ output: { content: 'final', finishReason: 'stop' }, usage: {} }
+				let ran = 0;
+				await assert.rejects(
+					() =>
+						models.generate('q', {
+							toolMode: 'auto',
+							maxToolTokens: 1000,
+							toolHandlers: { echo: (a) => (ran++, a) },
+						}),
+					unenforceable('tokens')
 				);
-				const result = await models.generate('q', {
-					toolMode: 'auto',
-					maxToolTokens: 1,
-					toolHandlers: { echo: (a) => a },
-				});
-				assert.strictEqual(result.content, 'final');
-				assert.strictEqual(warnings.filter((w) => /budget is unenforceable/.test(w)).length, 1);
+				assert.strictEqual(ran, 0);
 			});
 
 			for (const [label, usage] of [
+				['an empty', {}],
 				['a half', { completionTokens: 5 }],
 				['a negative', { promptTokens: -1, completionTokens: 5 }],
 			]) {
@@ -1505,35 +1496,27 @@ describe("agentLoop (toolMode: 'auto')", () => {
 						},
 						{ output: { content: 'final', finishReason: 'stop' }, usage }
 					);
-					const result = await models.generate('q', {
-						toolMode: 'auto',
-						maxToolTokens: 1000,
-						toolHandlers: { echo: (a) => a },
-					});
-					assert.strictEqual(result.content, 'final');
-					assert.strictEqual(warnings.filter((w) => /budget is unenforceable/.test(w)).length, 1);
+					await assert.rejects(
+						() => models.generate('q', { toolMode: 'auto', maxToolTokens: 1000, toolHandlers: { echo: (a) => a } }),
+						unenforceable('tokens')
+					);
 				});
 			}
 
-			it('maxCostUsd set against an unpriced entry → warns once, does NOT trip, loop completes', async () => {
+			it('maxCostUsd against an unpriced entry stops after the first round', async () => {
 				backend.queue(toolCallRound('r1', [tc('c1', 'echo', { i: 1 })]), final('final'));
-				const result = await models.generate('q', {
-					toolMode: 'auto',
-					maxCostUsd: 0.000001,
-					toolHandlers: { echo: (a) => a },
-				});
-				assert.strictEqual(result.content, 'final');
-				assert.strictEqual(result.costUsd, undefined);
-				assert.strictEqual(warnings.filter((w) => /budget is unenforceable/.test(w)).length, 1);
+				await assert.rejects(
+					() => models.generate('q', { toolMode: 'auto', maxCostUsd: 5, toolHandlers: { echo: (a) => a } }),
+					unenforceable('cost')
+				);
 			});
 
 			it('maxToolTokens still trips normally when the backend DOES report usage', async () => {
 				backend.queue(toolCallRound('r1', [tc('c1', 'echo', { i: 1 })]), final('unreached'));
 				await assert.rejects(
 					() => models.generate('q', { toolMode: 'auto', maxToolTokens: 1, toolHandlers: { echo: (a) => a } }),
-					(err) => err instanceof BudgetExceededError && err.kind === 'tokens'
+					(err) => err instanceof BudgetExceededError && err.kind === 'tokens' && /exceeded/.test(err.message)
 				);
-				assert.strictEqual(warnings.filter((w) => /budget is unenforceable/.test(w)).length, 0);
 			});
 		});
 

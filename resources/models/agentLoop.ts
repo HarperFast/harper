@@ -38,7 +38,7 @@
  *     name is a model hallucination, surfaced as a recoverable tool error (`toolErrorMode`
  *     decides recover-vs-abort).
  *   - A token budget against a backend that reports no `usage`, or a cost budget against an
- *     entry with no `pricing`, warns once that it is unenforceable rather than silently no-opping.
+ *     entry with no `pricing`, stops the loop with a `BudgetExceededError` rather than running uncapped.
  *   - An incomplete streamed tool call (id without a name) is recorded in the trace + warned,
  *     not silently dropped.
  *   - `toolErrorMode: 'abort'` throws BEFORE the conversation sink sees the round's tool
@@ -110,9 +110,6 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 	// trip `maxToolTokens` / `maxCostUsd` after each backend round.
 	let totalTokens = 0;
 	let totalCostUsd = 0;
-	// Warn-once latch: a token/cost budget is set but the backend isn't reporting
-	// usage, so the cap can't be measured. We refuse to silently pretend it's enforced.
-	let budgetUnmeasurableWarned = false;
 
 	// `conversation` is a one-way SINK for NEW turns produced by this loop — the loop
 	// does NOT re-append the caller's input messages, even when they include user
@@ -157,17 +154,20 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 				`[models] auto-loop iteration ${iteration}: finishReason=${result.finishReason} toolCalls=${result.toolCalls?.length ?? 0} cumulativeTokens=${totalTokens}`
 			);
 
-			// A budget is only as good as its measurement: a token cap needs reported usage,
-			// a cost cap needs a priced entry. When this round can't be measured, warn once
-			// rather than letting the caller believe spend is bounded when it isn't.
-			if (
-				!budgetUnmeasurableWarned &&
-				((maxToolTokens !== undefined && !reportsTokenCounts(result.usage)) ||
-					(maxCostUsd !== undefined && result.costUsd === undefined))
-			) {
-				budgetUnmeasurableWarned = true;
-				logger.warn?.(
-					`[models] auto-loop budget set but model '${opts.model ?? 'default'}' reported no usage or has no pricing; budget is unenforceable for this run (maxToolIterations still applies)`
+			// A token cap needs reported usage and a cost cap a priced entry; a round neither can measure
+			// stops the loop, as the built-in agent's caps do, rather than letting it run uncapped.
+			if (maxToolTokens !== undefined && !reportsTokenCounts(result.usage)) {
+				throw new BudgetExceededError(
+					'tokens',
+					`agent loop maxToolTokens=${maxToolTokens} cannot be enforced: model '${opts.model ?? 'default'}' reported no token usage`,
+					trace
+				);
+			}
+			if (maxCostUsd !== undefined && result.costUsd === undefined) {
+				throw new BudgetExceededError(
+					'cost',
+					`agent loop maxCostUsd=${maxCostUsd} cannot be enforced: model '${opts.model ?? 'default'}' has no pricing or reported incomplete usage`,
+					trace
 				);
 			}
 

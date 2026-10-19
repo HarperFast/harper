@@ -45,12 +45,12 @@ export function buildOperations(deps: OperationDeps): OperationDefinition[] {
 		},
 		{
 			name: OPERATIONS_ENUM.GET_AGENT_SESSION,
-			execute: async (op) => getAgentSession(op),
+			execute: async (op) => getAgentSession(op, deps),
 			requiresSuperUser: true,
 		},
 		{
 			name: OPERATIONS_ENUM.LIST_AGENT_SESSIONS,
-			execute: async (op) => listAgentSessions(op),
+			execute: async (op) => listAgentSessions(op, deps),
 			requiresSuperUser: true,
 		},
 		{
@@ -85,18 +85,27 @@ async function agentPrompt(op: any, deps: OperationDeps) {
 		const existing = await getSession(sessionId);
 		if (!existing) throw new ClientError(`Unknown session ${sessionId}`, 404);
 		if (existing.status === 'running' || existing.status === 'awaiting_approval') {
-			throw new ClientError(
+			throw promptConflict(
 				`Session ${sessionId} is ${existing.status}; resolve or cancel before sending another prompt`,
-				409
+				'AGENT_SESSION_BUSY',
+				true
 			);
 		}
 		// A cancelled run can still be finishing a model call or a handler; a prompt appended now would land
 		// between that call's tool calls and their results, or be folded into the cancelled run and lost.
 		if (deps.isRunInFlight(sessionId)) {
-			throw new ClientError(`Session ${sessionId} still has a run finishing; send the prompt again shortly`, 409);
+			throw promptConflict(
+				`Session ${sessionId} still has a run finishing; send the prompt again shortly`,
+				'AGENT_RUN_FINISHING',
+				true
+			);
 		}
 		if (deps.admitRun(sessionId) !== admitted) {
-			throw new ClientError(`A cancel for session ${sessionId} arrived while this prompt was being accepted`, 409);
+			throw promptConflict(
+				`A cancel for session ${sessionId} arrived while this prompt was being accepted`,
+				'AGENT_PROMPT_CANCELLED',
+				true
+			);
 		}
 		await appendMessage(sessionId, asUserMessage(message));
 	} else {
@@ -110,35 +119,48 @@ async function agentPrompt(op: any, deps: OperationDeps) {
 	}
 
 	if (!deps.startRun(sessionId, admitted)) {
-		throw new ClientError(
+		throw promptConflict(
 			`A cancel for session ${sessionId} arrived while this prompt was being accepted; the prompt was recorded but not run`,
-			409
+			'AGENT_PROMPT_NOT_RUN',
+			false
 		);
 	}
 	return { session_id: sessionId, status: 'running' satisfies AgentRunStatus };
 }
 
-async function getAgentSession(op: any) {
+/** `retryable` tells a client whether the prompt was left unrecorded, so sending it again cannot duplicate it. */
+function promptConflict(message: string, code: string, retryable: boolean): ClientError {
+	return Object.assign(new ClientError(message, 409), { code, retryable });
+}
+
+async function getAgentSession(op: any, deps: OperationDeps) {
 	const sessionId = String(op?.session_id ?? '');
 	if (!sessionId) throw new ClientError('session_id is required', 400);
 	const session = await getSession(sessionId);
 	if (!session) throw new ClientError(`Unknown session ${sessionId}`, 404);
-	return withUsage(session);
+	return withUsage(session, deps);
 }
 
-async function listAgentSessions(op: any) {
+async function listAgentSessions(op: any, deps: OperationDeps) {
 	const limit = Number.isFinite(op?.limit) ? Number(op.limit) : undefined;
-	return { sessions: (await listSessions({ limit })).map(withUsage) };
+	return { sessions: (await listSessions({ limit })).map((session) => withUsage(session, deps)) };
 }
 
 /** Copies fields by name, never by spread: a stored record may expose fields as accessors a spread skips. */
-function withUsage(session: AgentSessionRow): Record<string, unknown> & { usage: AgentSessionUsage } {
-	const view: Record<string, unknown> & { usage?: AgentSessionUsage } = {};
+function withUsage(
+	session: AgentSessionRow,
+	deps: OperationDeps
+): Record<string, unknown> & { usage: AgentSessionUsage; runInFlight: boolean } {
+	const view: Record<string, unknown> = {};
 	for (const { name } of AGENT_SESSION_ATTRIBUTES) {
 		const value = session[name as keyof AgentSessionRow];
 		if (value !== undefined) view[name] = value;
 	}
-	return Object.assign(view, { usage: summarizeSessionUsage(session.messages, session.rejectedCalls) });
+	// A cancelled session reads `aborted` before its run has finished; this is what says a prompt can be sent.
+	return Object.assign(view, {
+		usage: summarizeSessionUsage(session.messages, session.rejectedCalls),
+		runInFlight: deps.isRunInFlight(session.session_id),
+	});
 }
 
 async function cancelAgentRun(op: any, deps: OperationDeps) {
