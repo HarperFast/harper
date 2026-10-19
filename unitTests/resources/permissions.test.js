@@ -485,6 +485,25 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		assert.equal((await DocTable.get('count-1')).secret, 'count-1 secret');
 	});
 
+	it('a promise handed straight to put is never staged as a restricted replacement', async function () {
+		await seed('direct-1');
+		const context = { user: title_owner_user };
+		await transaction(context, async () => {
+			const resource = await DocTable.getResource('direct-1', context);
+			assert.ok(resource.allowUpdate(title_owner_user, { title: 't' }, context));
+			const target = new RequestTarget('/direct-1');
+			target.id = 'direct-1';
+			await resource.put(target, Promise.resolve({ title: 'x' }));
+		}).catch(() => {});
+		assert.deepEqual(JSON.parse(JSON.stringify(await DocTable.get('direct-1'))), {
+			id: 'direct-1',
+			title: 'seed',
+			owner: 'o',
+			secret: 'direct-1 secret',
+			extra: 'undeclared',
+		});
+	});
+
 	it('an allowUpdate override still receives a promised body', async function () {
 		class PromiseHookDoc extends DocTable {
 			allowUpdate(user, data) {
