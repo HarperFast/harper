@@ -310,7 +310,10 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 					await request(`${base}&${continuation}`, { method }, 400);
 				}
 			}
-			assert.deepStrictEqual(ids(await request('/Product/?catalogSearch=matches=pagination&select(id,title)')), PAGE_IDS);
+			assert.deepStrictEqual(
+				ids(await request('/Product/?catalogSearch=matches=pagination&select(id,title)')),
+				PAGE_IDS
+			);
 			const resumed = await request(`${base}&continuation(${encodeURIComponent(token)})`);
 			assert.strictEqual(resumed.length, 75);
 			assert(!resumed.some(({ id }) => first.some((record) => record.id === id)));
