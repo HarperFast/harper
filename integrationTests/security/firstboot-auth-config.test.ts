@@ -39,6 +39,28 @@ async function createTokens(ctx: ContextWithHarper, username: string, password: 
 	return sendOperation(ctx.harper, { operation: 'create_authentication_tokens', username, password });
 }
 
+// refresh_operation_token hangs on Harper-on-Bun (#697)
+const skipOnBun = process.env.HARPER_RUNTIME === 'bun';
+
+async function assertSupersededRefreshTokenRejected(ctx: ContextWithHarper) {
+	const { username, password } = ctx.harper.admin;
+	const { refresh_token: superseded } = await createTokens(ctx, username, password);
+	// tokens minted in the same second are byte-identical
+	await new Promise((resolve) => setTimeout(resolve, 1100));
+	const { refresh_token: current } = await createTokens(ctx, username, password);
+	notEqual(current, superseded);
+	const refreshWith = (refreshToken: string) =>
+		fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${refreshToken}` },
+			body: JSON.stringify({ operation: 'refresh_operation_token' }),
+		});
+	const rejected = await refreshWith(superseded);
+	equal(rejected.status, 401, await rejected.text());
+	const accepted = await refreshWith(current);
+	equal(accepted.status, 200, await accepted.text());
+}
+
 suite('authentication config on the first boot', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx, { config: CONFIG });
@@ -66,39 +88,31 @@ suite('authentication config on the first boot', (ctx: ContextWithHarper) => {
 		await createTokens(ctx, 'firstboot_added', 'second-pass');
 	});
 
-	test('tokens are minted with the configured lifetimes, and the refresh token refreshes', async () => {
-		const { operation_token, refresh_token } = await createTokens(
-			ctx,
-			ctx.harper.admin.username,
-			ctx.harper.admin.password
-		);
-		equal(tokenLifetimeSeconds(operation_token), OPERATION_TOKEN_SECONDS);
-		equal(tokenLifetimeSeconds(refresh_token), REFRESH_TOKEN_SECONDS);
-		const refreshed = await sendOperation(ctx.harper, { operation: 'refresh_operation_token', refresh_token });
-		equal(tokenLifetimeSeconds(refreshed.operation_token), OPERATION_TOKEN_SECONDS);
-		const scoped = await sendOperation(ctx.harper, {
-			operation: 'create_authentication_tokens',
-			username: 'firstboot_scoped',
-			role: { permission: { operations: ['read_only'] } },
-		});
-		equal(tokenLifetimeSeconds(scoped.operation_token), OPERATION_TOKEN_SECONDS);
-	});
+	test(
+		'tokens are minted with the configured lifetimes, and the refresh token refreshes',
+		{ skip: skipOnBun },
+		async () => {
+			const { operation_token, refresh_token } = await createTokens(
+				ctx,
+				ctx.harper.admin.username,
+				ctx.harper.admin.password
+			);
+			equal(tokenLifetimeSeconds(operation_token), OPERATION_TOKEN_SECONDS);
+			equal(tokenLifetimeSeconds(refresh_token), REFRESH_TOKEN_SECONDS);
+			const refreshed = await sendOperation(ctx.harper, { operation: 'refresh_operation_token', refresh_token });
+			equal(tokenLifetimeSeconds(refreshed.operation_token), OPERATION_TOKEN_SECONDS);
+			const scoped = await sendOperation(ctx.harper, {
+				operation: 'create_authentication_tokens',
+				username: 'firstboot_scoped',
+				role: { permission: { operations: ['read_only'] } },
+			});
+			equal(tokenLifetimeSeconds(scoped.operation_token), OPERATION_TOKEN_SECONDS);
+		}
+	);
 
-	test('a refresh token replaced by a newer one is rejected', async () => {
-		const { username, password } = ctx.harper.admin;
-		const { refresh_token: superseded } = await createTokens(ctx, username, password);
-		// tokens minted in the same second are byte-identical
-		await new Promise((resolve) => setTimeout(resolve, 1100));
-		const { refresh_token: current } = await createTokens(ctx, username, password);
-		notEqual(current, superseded);
-		const response = await fetch(ctx.harper.operationsAPIURL, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ operation: 'refresh_operation_token', refresh_token: superseded }),
-		});
-		equal(response.status, 401, await response.text());
-		await sendOperation(ctx.harper, { operation: 'refresh_operation_token', refresh_token: current });
-	});
+	test('a refresh token replaced by a newer one is rejected', { skip: skipOnBun }, () =>
+		assertSupersededRefreshTokenRejected(ctx)
+	);
 
 	suite('after a restart', () => {
 		before(async () => {
@@ -123,5 +137,9 @@ suite('authentication config on the first boot', (ctx: ContextWithHarper) => {
 			});
 			equal(await storedHashFunction(ctx, 'restart_added'), 'argon2id');
 		});
+
+		test('a refresh token replaced by a newer one is rejected', { skip: skipOnBun }, () =>
+			assertSupersededRefreshTokenRejected(ctx)
+		);
 	});
 });
