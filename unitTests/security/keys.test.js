@@ -1525,7 +1525,7 @@ describe('Test keys module', () => {
 		});
 
 		it("chokidar's 'change' event reloads even when it emits no stats (alwaysStat off)", () => {
-			// chokidar v4 defaults alwaysStat:false, so the 'change' handler is called with undefined
+			// chokidar defaults alwaysStat:false, so the 'change' handler is called with undefined
 			// stats; loadFile must stat the file itself rather than throw and silently skip the reload.
 			let changeHandler;
 			chokidar.default.watch = () =>

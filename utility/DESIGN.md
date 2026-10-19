@@ -17,7 +17,7 @@ and libuv **aborts the process** rather than failing the watch — there is no J
 `isWatcherExhaustionError`/polling recovery never runs (harper#2234).
 
 The trap is that libuv only stores that directory for **file** targets, which reads as a narrow
-surface until you follow chokidar: v4 opens a per-file `fs.watch` for every file it discovers inside
+surface until you follow chokidar: it opens a per-file `fs.watch` for every file it discovers inside
 a watched tree, so one directory watch arms hundreds of file watches.
 
 So `canonicalizeWatchPath` runs on every path before it reaches `fs.watch` (directly or through
