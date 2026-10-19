@@ -318,11 +318,13 @@ negotiated `Content-Type` and, on the application port, `WWW-Authenticate` from 
 rejected, not when verifying it faulted), `Basic realm="Harper"` otherwise. A Bearer credential never gets
 a Basic challenge because browsers raise a credential dialog for Basic, even on `fetch`. The operations API
 gets no challenge. `security/auth.ts` post-processes only a 401 from `nextHandler` when nothing was
-deferred — the Basic challenge, or a 302 at `resources.loginPath` for a browser. It skips a settled 401
+deferred — a challenge by the presented scheme, or a 302 at `resources.loginPath` for a browser. It skips a settled 401
 (already challenged; a redirect would loop, since `static.ts` settles the login page itself) and a 401 an
-application catch-all raised for its own scheme (a WooCommerce or Bearer challenge), which is that
-application's to make. The legacy Fastify server (`fastifyRoutes.ts`) challenges any 401 its error handler
-renders, by the presented `Authorization` scheme, unless the reply already set one. The #1565 identity floor
+application catch-all raised for its own scheme under a deferred credential (a WooCommerce or Bearer
+challenge), which is that application's to make. The legacy Fastify server (`fastifyRoutes.ts`) challenges any 401 its error handler
+renders unless the reply already set one: a settled rejection's error carries the deferred strategy's
+challenge (an mTLS rejection never evaluated a Bearer header beside it), anything else is challenged
+by the presented `Authorization` scheme. The #1565 identity floor
 still applies either way — it is stamped in `applyResponseHeaders`, not in the challenge.
 
 **The identity cache floor survives the legacy Fastify fallbacks.** A response produced under a

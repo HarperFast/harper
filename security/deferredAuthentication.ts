@@ -1,4 +1,5 @@
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { credentialRejectionError, isCredentialRejection } from './credentialRejection.ts';
 import { serializeMessage, findBestSerializer } from '../server/serverHelpers/contentTypes.ts';
 import { Headers } from '../server/serverHelpers/Headers.ts';
 
@@ -52,10 +53,7 @@ export function authenticationChallenge(scheme?: string, credentialRejected = fa
 	return 'Basic realm="Harper"';
 }
 
-/**
- * The 401 authentication answers for a credential it decided: `{error: message}` in the request's
- * negotiated content type, challenged on the application port. The operations API gets no challenge.
- */
+/** The operations API gets no challenge. */
 export function credentialRejectionResponse(
 	request: any,
 	status: number,
@@ -88,6 +86,25 @@ export function settleDeferredCredentialRejection(
 	const deferred = getDeferredCredentialRejection(request);
 	if (!deferred) return undefined;
 	return credentialRejectionResponse(request, deferred.status, deferred.message, deferred.strategy, true);
+}
+
+const CHALLENGE = Symbol('harper.authenticationChallenge');
+
+/**
+ * The error a Fastify route owner passes to `next` to settle a deferred rejection. It carries the
+ * deferred strategy's challenge, which the presented `Authorization` header can misstate (an mTLS
+ * rejection never evaluated the Bearer header beside it).
+ */
+export function deferredCredentialRejectionError(request: any): ClientError | undefined {
+	const deferred = getDeferredCredentialRejection(request);
+	if (!deferred) return undefined;
+	const error = credentialRejectionError(deferred.message, deferred.status);
+	error[CHALLENGE] = authenticationChallenge(deferred.strategy, true);
+	return error;
+}
+
+export function authenticationChallengeForError(error: any, presentedScheme?: string): string {
+	return error?.[CHALLENGE] ?? authenticationChallenge(presentedScheme, isCredentialRejection(error));
 }
 
 const REJECTED_IN_PLACE = Symbol('harper.authenticationRejectedInPlace');

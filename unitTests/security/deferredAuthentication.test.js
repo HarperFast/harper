@@ -3,9 +3,11 @@ const assert = require('node:assert');
 const {
 	assertNoDeferredCredentialRejection,
 	authenticationChallenge,
+	authenticationChallengeForError,
 	credentialRejectionError,
 	credentialRejectionResponse,
 	deferCredentialRejection,
+	deferredCredentialRejectionError,
 	getDeferredCredentialRejection,
 	isCredentialRejection,
 	markCredentialRejection,
@@ -247,6 +249,36 @@ describe('deferredAuthentication', () => {
 		it('falls back to Basic for every other scheme and for no credential', () => {
 			assert.strictEqual(authenticationChallenge('Digest', true), 'Basic realm="Harper"');
 			assert.strictEqual(authenticationChallenge(), 'Basic realm="Harper"');
+		});
+	});
+
+	describe('deferredCredentialRejectionError', () => {
+		it('returns nothing when nothing was deferred', () => {
+			assert.strictEqual(deferredCredentialRejectionError(requestAccepting('application/json')), undefined);
+		});
+
+		it('challenges by the deferred strategy, not by an Authorization header it never evaluated', () => {
+			const request = requestAccepting('application/json', { authorization: 'Bearer some-downstream-token' });
+			deferCredentialRejection(request, credentialRejectionError('Certificate rejected', 401), 'mTLS');
+
+			const error = deferredCredentialRejectionError(request);
+
+			assert.strictEqual(error.message, 'Certificate rejected');
+			assert.strictEqual(error.statusCode, 401);
+			assert.strictEqual(isCredentialRejection(error), true);
+			assert.strictEqual(authenticationChallengeForError(error, 'Bearer'), 'Basic realm="Harper"');
+		});
+
+		it('falls back to the presented scheme for an error that settled no deferral', () => {
+			assert.strictEqual(
+				authenticationChallengeForError(credentialRejectionError('invalid token', 401), 'Bearer'),
+				'Bearer realm="Harper", error="invalid_token"'
+			);
+			assert.strictEqual(
+				authenticationChallengeForError(new Error('key store down'), 'Bearer'),
+				'Bearer realm="Harper"'
+			);
+			assert.strictEqual(authenticationChallengeForError(undefined, undefined), 'Basic realm="Harper"');
 		});
 	});
 
