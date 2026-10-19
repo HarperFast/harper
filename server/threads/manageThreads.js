@@ -19,6 +19,7 @@ const { totalmem } = require('os');
 const { setHeapSnapshotNearHeapLimit } = typeof globalThis.Bun !== 'undefined' ? {} : require('v8');
 const hdbTerms = require('../../utility/hdbTerms.ts');
 const envMgr = require('../../utility/environment/environmentManager.ts');
+const { DEFAULT_FULL_TEXT_SEARCH_LIMITS } = require('../../resources/indexes/fullTextSearchLimits.ts');
 const harperLogger = require('../../utility/logging/harper_logger.ts');
 const { randomBytes } = require('crypto');
 const { _assignPackageExport } = require('../../globals.js');
@@ -547,8 +548,14 @@ function rejectFullTextContinuation(event, port, reason = 'is unavailable') {
 }
 
 function dispatchFullTextContinuation(event, port, response) {
-	const configured = Number(envMgr.get(hdbTerms.CONFIG_PARAMS.STORAGE_FULL_TEXT)?.maxPendingRequests ?? 32);
-	const maximum = Number.isSafeInteger(configured) && configured > 0 ? configured : 32;
+	const configured = Number(
+		envMgr.get(hdbTerms.CONFIG_PARAMS.STORAGE_FULL_TEXT)?.maxPendingRequests ??
+			DEFAULT_FULL_TEXT_SEARCH_LIMITS.maxPendingRequests
+	);
+	const maximum =
+		Number.isSafeInteger(configured) && configured > 0
+			? configured
+			: DEFAULT_FULL_TEXT_SEARCH_LIMITS.maxPendingRequests;
 	if (!port) return;
 	if ((response ? fullTextContinuationResponsesQueued : fullTextContinuationQueued) >= maximum) {
 		if (!response) rejectFullTextContinuation(event, port, 'reached storage.fullText.maxPendingRequests');
