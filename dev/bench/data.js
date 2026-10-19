@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792395840823,
+  "lastUpdate": 1792395843760,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -18544,6 +18544,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 44.11,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "2831668e55b24ac63fdb102124ebf37051df09c4",
+          "message": "fix(status): serialize component status errors and abnormalities for wire transport (#3211)\n\n* fix(status): serialize component status errors/abnormalities and surface load failure causes\n\nIn getAllStatus (server/status/index.ts), AggregatedComponentStatus entries hold\nError instances in status.error and Map instances in status.abnormalities (which\nmay themselves carry Error instances). Spreading them directly into the response\ncaused Fastify's JSON serialization to emit {} for both fields. Convert Error\nvalues to their message strings and abnormalities Maps to plain objects before\nreturning.\n\nIn ComponentStatusRegistry.getAggregatedStatusFor (used by get_components),\nonly latestMessage was read while status.error was ignored, dropping the\nunderlying load failure cause recorded by componentLifecycle.failed(). Extract\nand include the error message in both the aggregated status message and the\nper-component details entry.\n\nPart of HarperFast/harper#2095\n\nDispatch-Task: harper-status-wire-serialization\nCo-Authored-By: Gemini <noreply@google.com>\n\n* Address pre-push review findings for status serialization\n\n- Deduplicate error serialization into serializeStatusError exported via\n  components/status/internal.ts and used by both ComponentStatusRegistry\n  and server/status/index.ts; preserve Error subclass names (e.g.\n  TypeError) and guard fallback stringification against null-prototype\n  or hostile objects. Serializing errors to strings also avoids spreading\n  arbitrary enumerable properties of thrown objects onto the admin\n  get_status / get_components wire responses.\n- Avoid repeating the generic 'Could not load ...' prefix when combining\n  latestMessage and errorMessage in formatProblemMessage.\n- Pair latestMessage and error in StatusAggregator.aggregateComponentGroup\n  from the highest-priority, most-recent non-healthy thread so a newer\n  loading thread cannot clobber an older error thread's message.\n- Tighten unit tests to assert exact rendered messages and avoid creating\n  an unclosed Scope in operations.test.js.\n\nDispatch-Task: harper-status-wire-serialization\nCo-Authored-By: Gemini <noreply@google.com>\n\n* fix(status): preserve custom error classes across ITC and redact URL credentials\n\n- Prefer a non-Error constructor.name over an inherited 'Error' name in\n  serializeStatusError so Harper's ClientError and ServerError (which do\n  not assign this.name) render with their class prefix.\n- Pre-serialize status.error on the reporting thread in\n  componentStatusRequestHandler before posting COMPONENT_STATUS_RESPONSE\n  over ITC so custom Error class names survive V8 structured clone.\n- Redact embedded URL userinfo credentials (scheme://user:pass@host ->\n  scheme://[REDACTED]@host) in serializeStatusError and document the\n  deliberate operator-diagnostics exposure decision for get_status and\n  get_components.\n- Narrow formatProblemMessage's 'Could not load' deduplication rule to\n  the component loader's 'Could not load component ...' template so\n  plugin-authored messages starting with 'Could not load ' are preserved.\n- Document the get_status and get_components wire-shape changes and\n  update AggregatedComponentStatus JSDoc comments.\n\nDispatch-Task: harper-status-wire-serialization\nCo-Authored-By: Gemini <noreply@google.com>\n\n* fix(status): redact status messages at write time and dedupe folder load failures\n\nRedact embedded URL userinfo credentials in ComponentStatusRegistry.setStatus\nso status messages (latestMessage, abnormalities[*].message, details[*].message)\nand string errors are sanitized at write time, ensuring fail-closed canary\nrefusals and plugin status messages never leak URL credentials or break\nformatProblemMessage deduplication.\n\nAlso match the directory-level loader failure template ('Could not load <folder>'\nwith 'Could not load application due to <msg>') in formatProblemMessage and\nremove redundant wire-shape JSDoc blocks from source files.\n\nWire shape and exposure note:\n- get_status: componentStatus[].error and abnormalities[*].error are serialized\n  as wire-safe strings ('ClassName: message', or 'message' for plain Error)\n  rather than Error instances (which JSON.stringify collapsed to {}), and\n  abnormalities is a plain Record rather than a Map. Note for CBOR/MessagePack\n  clients and main-thread system errors: error is now a formatted string rather\n  than a native Error object with enumerable properties.\n- get_components: details[*] gains error, and message/details[*].message include\n  the serialized failure cause.\n- Component failure causes are surfaced intentionally on get_status and\n  get_components for operator diagnostics with URL credentials redacted.\n\nDispatch-Task: harper-status-wire-serialization\nCo-Authored-By: Gemini <noreply@google.com>\n\n---------\n\nCo-authored-by: Gemini <noreply@google.com>",
+          "timestamp": "2026-10-19T04:59:24Z",
+          "url": "https://github.com/HarperFast/harper/commit/2831668e55b24ac63fdb102124ebf37051df09c4"
+        },
+        "date": 1792395843193,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 17.17,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 17.87,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 24.47,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 20.06,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 27.36,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 19.49,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 39.25,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 18.13,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 24.25,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 44.19,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 201,
             "unit": "ms"
           }
         ]
