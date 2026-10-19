@@ -472,6 +472,21 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		});
 	});
 
+	it('an override that updates the instance before super.put keeps the restriction', async function () {
+		class IntermediateUpdateDoc extends DocTable {
+			put(record, target) {
+				this.update({ owner: 'set by override' });
+				return super.put(record, target);
+			}
+		}
+		await seed('override-1');
+		await IntermediateUpdateDoc.put('override-1', { title: 'via override' }, asUser());
+		const stored = await DocTable.get('override-1');
+		assert.equal(stored.title, 'via override');
+		assert.equal(stored.secret, 'override-1 secret');
+		assert.equal(stored.extra, 'undeclared');
+	});
+
 	it('a restricted full put is logged as a patch, which replay and replication apply onto their own base', async function () {
 		await seed('log-1');
 		await DocTable.put('log-1', { title: 'logged' }, asUser());
@@ -642,20 +657,19 @@ describe('Primary key grant edge cases (harper#3284)', () => {
 		assert.equal((await KeyTable.get('k-1')).__createdtime__, created);
 	});
 
-	it('an authorized write leaves no attribute restriction behind on its instance', async function () {
+	it("a request's attribute restriction applies to a later full put on the same instance", async function () {
 		const user = roleWith([{ attribute_name: 'title', read: true, insert: true, update: true }]);
 		await KeyTable.put('k-2', { id: 'k-2', title: 'seed', secret: 'kept' });
 		const context = { user };
-		// a later unauthorized full put on the same instance replaces the record, so it must carry the required secret
-		await assert.rejects(
-			transaction(context, async () => {
-				const resource = await KeyTable.getResource('k-2', context);
-				assert.ok(resource.allowUpdate(user, { title: 'patched' }, context));
-				await resource.patch({ id: 'k-2' }, { title: 'patched' });
-				await resource.put({ id: 'k-2' }, { title: 'replaced' });
-			}),
-			/secret is required/
-		);
+		await transaction(context, async () => {
+			const resource = await KeyTable.getResource('k-2', context);
+			assert.ok(resource.allowUpdate(user, { title: 'patched' }, context));
+			await resource.patch({ id: 'k-2' }, { title: 'patched' });
+			await resource.put({ id: 'k-2' }, { title: 'replaced' });
+		});
+		const stored = await KeyTable.get('k-2');
+		assert.equal(stored.title, 'replaced');
+		assert.equal(stored.secret, 'kept');
 	});
 
 	it('an attribute-restricted role cannot write an array body, even through an attribute named like an index', async function () {
@@ -670,5 +684,49 @@ describe('Primary key grant edge cases (harper#3284)', () => {
 			/Unauthorized/
 		);
 		assert.equal((await KeyTable.get('k-1')).secret, 'kept');
+	});
+});
+
+describe('Attribute permissions on a keyless table (harper#3284)', () => {
+	let Keyless, user;
+	before(async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		Keyless = table({
+			table: 'AttrPermKeyless',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'title', type: 'String' },
+				{ name: 'secret', type: 'String' },
+			],
+		});
+		user = {
+			role: {
+				permission: {
+					test: {
+						tables: {
+							AttrPermKeyless: {
+								read: true,
+								insert: true,
+								update: true,
+								delete: false,
+								attribute_permissions: [{ attribute_name: 'title', read: true, insert: true, update: true }],
+							},
+						},
+					},
+				},
+			},
+		};
+	});
+
+	it('grants no primary key and still reads and refuses as listed', async function () {
+		const id = await Keyless.post({ title: 'keyless', secret: 'kept' });
+		const request = { user, authorize: true, id };
+		assert.deepEqual(JSON.parse(JSON.stringify(await Keyless.get(request, request))), { title: 'keyless' });
+		await assert.rejects(
+			async () => Keyless.patch(id, { undefined: 'overwritten' }, { user, authorize: true }),
+			/Unauthorized/
+		);
 	});
 });

@@ -672,7 +672,7 @@ function settleElements(results: any[]): Promise<any[]> {
 	});
 }
 
-const RESOLVE_BODY_BEFORE_AUTHORIZATION = new Set(['query', 'put', 'patch', 'post']);
+const RESOLVE_BODY_BEFORE_AUTHORIZATION = new Set(['query', 'put', 'patch', 'post', 'publish']);
 /**
  * This is responsible for arranging arguments in the main static methods and creating the appropriate context and default transaction wrapping
  * @param action
