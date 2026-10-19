@@ -142,13 +142,14 @@ Harper supports special query functions using call syntax, included in the query
 
 Specify which properties to include in the response.
 
-| Syntax                                 | Returns                                     |
-| -------------------------------------- | ------------------------------------------- |
-| `?select(property)`                    | Values of a single property directly        |
-| `?select(property1,property2)`         | Objects with only the specified properties  |
-| `?select([property1,property2])`       | Arrays of property values                   |
-| `?select(property1,)`                  | Objects with a single specified property    |
-| `?select(property{subProp1,subProp2})` | Nested objects with specific sub-properties |
+| Syntax                                 | Returns                                                                                                                |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `?select(property)`                    | Values of a single property directly                                                                                   |
+| `?select(property1,property2)`         | Objects with only the specified properties                                                                             |
+| `?select([property1,property2])`       | Arrays of property values                                                                                              |
+| `?select(property1,)`                  | Objects with a single specified property                                                                               |
+| `?select(property{subProp1,subProp2})` | Nested objects with specific sub-properties                                                                            |
+| `?select(id,products[limit(1)])`       | Parents with a constrained relationship selection; see [relationship options](#filtering-and-paging-each-relationship) |
 
 **Examples**:
 
@@ -502,7 +503,7 @@ With the sample data, the response is:
 
 The outer `sort(name,id)` orders brands; the nested `sort(price,id)` orders products within each brand. Use a unique field such as `id` as the final sort key so equal names or prices have a deterministic order. This does not prevent records moving between offset pages when data changes between requests.
 
-Keep relationship lookup fields and outer filter fields indexed, and project only the fields the client needs. The sample schema indexes `brandId`, `price`, and `Brand.name`. A child sort may still collect and sort all eligible related records before returning its page; an index on `price` does not guarantee an index-ordered nested scan. Keep parent pages small and consider a separately paginated child endpoint for very large relationships. Unsorted nested limits can stop early, but are appropriate only when child order does not matter.
+Keep relationship lookup fields and outer filter fields indexed, and project only the fields the client needs. The sample schema indexes `brandId`, `price`, and `Brand.name`. Nested sorting can use an unindexed child field because it orders the already-related candidates. A child sort may still collect and sort all eligible related records before returning its page; an index on `price` does not guarantee an index-ordered nested scan. Keep parent pages small and consider a separately paginated child endpoint for very large relationships. Unsorted nested limits can stop early, but are appropriate only when child order does not matter.
 
 #### Nested option reference
 
