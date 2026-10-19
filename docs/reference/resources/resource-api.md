@@ -1114,6 +1114,33 @@ A to-many relationship resolves to an array of records; depending on access patt
 
 **Join behavior:** selecting a relationship _without_ filtering on it behaves as a **LEFT JOIN** — records with no related row are still returned (the relationship property is omitted or empty). Adding a condition on a related attribute (e.g. `attribute: ['author', 'name']`) behaves as an **INNER JOIN** — only records with a matching related row are returned.
 
+#### Constraining related records
+
+Pending a 5.3 patch release; see [Honor nested relationship filters and pagination](https://github.com/HarperFast/harper/pull/3279).
+
+A relationship selection object accepts `conditions`, `operator`, `sort`, `offset`, and `limit`, with an optional `select` projection:
+
+```javascript
+const brand = await Brand.get({
+	id: 42,
+	select: [
+		'id',
+		{
+			name: 'products',
+			conditions: [{ attribute: 'price', comparator: 'greater_than_equal', value: 30 }],
+			sort: { attribute: 'price' },
+			offset: 0,
+			limit: 1,
+			select: ['id', 'price'],
+		},
+	],
+});
+```
+
+These options apply independently to each parent's children in both single-record `get()` and collection queries. `limit` is a count; `offset` is the number of eligible children to skip. Neither changes which parents are returned. Nested conditions qualify immediate children; descendant filtering requires a selection on that descendant. Inherited outer join restrictions still apply.
+
+See [Filtering and Paging Each Relationship](../rest/querying.md#filtering-and-paging-each-relationship) for missing-value behavior, authorization, cache-local eligibility and ordering, scan costs, and unsupported constraints.
+
 ### `sort`
 
 Sort order object:

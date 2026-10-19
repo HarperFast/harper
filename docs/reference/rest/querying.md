@@ -272,6 +272,38 @@ GET /Product/?name=Keyboard&select(name,brand{name,id})
 
 When selecting without a filter on the related table, this acts as a LEFT JOIN — the relationship property is omitted if the foreign key is null or references a non-existent record.
 
+### Filtering and Paging Each Relationship
+
+Pending a 5.3 patch release; see [Honor nested relationship filters and pagination](https://github.com/HarperFast/harper/pull/3279).
+
+Use square brackets inside `select()` to apply conditions, sort, and pagination to each parent's related records. For a `Brand.products` relationship with `price` and `id` fields:
+
+```http
+GET /Brand/?select(id,products[price=ge=number:30&sort(price)&limit(1)&select(id,price)])
+```
+
+Each brand receives at most one product priced at 30 or more, ordered by price. A brand with no qualifying products remains in the result with an empty `products` array. By comparison, an outer condition such as `/Brand/?products.price=ge=number:30` filters which brands are returned. Existing outer relationship filters also constrain the related candidates available to a nested selection.
+
+| Nested option      | Behavior                                                                          |
+| ------------------ | --------------------------------------------------------------------------------- | -------------- |
+| Conditions         | Qualify children of the selected relationship; combine with `&`, `                | `, and groups. |
+| `sort(price)`      | Order that parent's eligible children before pagination.                          |
+| `limit(end)`       | Return at most `end` children per parent.                                         |
+| `limit(start,end)` | Skip `start` eligible children and return at most `end - start`.                  |
+| `select(id,price)` | Project fields from the returned children. Omit it to return whole child records. |
+
+Use a non-negative safe-integer window; `limit(0)` produces an empty to-many selection without reading children. A missing singular relationship remains absent. For array-valued foreign keys, unsorted pagination preserves missing target positions; sorting drops missing targets. Child conditions and sort fields remain subject to read permissions.
+
+A condition that traverses another relationship qualifies the immediate child; it does not narrow that child's projected descendants. To filter or page grandchildren, put those constraints on the grandchild's own bracket selection. Outer join restrictions are still inherited.
+
+For source-backed caches, eligibility and sort keys use local cached entries, as in a top-level table query. Returned children can refresh from source; a refreshed child that no longer matches, or has been deleted, does not consume offset or limit. A locally rejected child is not fetched to discover whether its source value now matches. Ordering is not recomputed from refreshed source values.
+
+Unsorted pagination can stop when the requested page is filled. Sorting or a predicate with few matches can still examine all related candidates; a small output limit does not guarantee a small scan.
+
+Query constraints on plain JSON projections and full-text predicates inside a relationship selection are unsupported and return a client error. Projection-only JSON syntax remains supported. Earlier versions accepted nested filters and pagination but could silently ignore them and return all related children; this correction can reduce child arrays and reject previously ignored unsupported options.
+
+The [Resource API](../resources/resource-api.md#constraining-related-records) accepts the same options in a nested selection object.
+
 ### Many-to-Many Relationships
 
 Many-to-many relationships can be modeled with an array of foreign key values, without a junction table:
