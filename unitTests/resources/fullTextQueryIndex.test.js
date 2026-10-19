@@ -314,6 +314,73 @@ describe('full-text traversal ordering guard', () => {
 });
 
 describe('FullTextQueryIndex', () => {
+	for (const explicitClose of [false, true]) {
+		it(`preserves an acknowledged ${explicitClose ? 'explicit close' : 'terminal page'} after the search budget expires`, async function () {
+			this.timeout(10000);
+			const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
+			if (!(await supportsPublishedFullTextBinding())) this.skip();
+			const env = require('#src/utility/environment/environmentManager');
+			const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+			const { FullTextContinuationPage } = require('#src/resources/indexes/fullTextContinuationPage');
+			const { fullTextContinuationOwner } = require('#src/resources/indexes/fullTextContinuationOwner');
+			const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, requestBudgetMilliseconds: 1000 });
+			const auditStore = sharedStore();
+			const readinessId = `completed-close-${explicitClose}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				storeName: readinessId,
+				payload: publicationPayload(),
+				hits: () => ['a', 'b'].map((key) => ({ id: nativeId(1, key), version: '1', score: 1 })),
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			const first = new FullTextContinuationPage({ continuation: true, limit: 1 }, readinessId);
+			first.materialize = async (entries) => entries;
+			first.ready.resolve();
+			try {
+				await index.search({ comparator: 'matches', value: 'shoe' }, {}, { continuationPage: first });
+				const owner = await fullTextContinuationOwner();
+				const page = new FullTextContinuationPage(
+					{ continuation: first.continuation, limit: 1, closeContinuation: explicitClose },
+					readinessId
+				);
+				page.materialize = async (entries) => entries;
+				page.ready.resolve();
+				let crossedDeadline = false;
+				await index.search(
+					{ comparator: 'matches', value: 'shoe' },
+					{},
+					{
+						continuationPage: page,
+						assertTransactionActive() {
+							try {
+								owner.leases.resume(first.continuation, page.queryHash);
+							} catch (error) {
+								if (error.statusCode !== 410) throw error;
+								if (!crossedDeadline) {
+									crossedDeadline = true;
+									const waiting = new Int32Array(new SharedArrayBuffer(4));
+									while (process.hrtime.bigint() <= page.deadline) Atomics.wait(waiting, 0, 0, 1);
+								}
+							}
+						},
+					}
+				);
+				assert.strictEqual(crossedDeadline, true);
+				assert.strictEqual(page.complete, true);
+				assert.strictEqual(page.expiresAt, undefined);
+				assert.deepStrictEqual(
+					page.records.map(({ key }) => key),
+					explicitClose ? [] : ['b']
+				);
+			} finally {
+				await index.close();
+				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+			}
+		});
+	}
 	it('rejects a resumed continuation when the requesting index changes during setup', async function () {
 		this.timeout(10000);
 		const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');

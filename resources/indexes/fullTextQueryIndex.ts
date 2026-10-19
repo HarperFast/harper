@@ -7,6 +7,7 @@ import { peekFullTextContinuationOwner, fullTextContinuationOwner } from './full
 import {
 	reserveFullTextContinuation,
 	confirmFullTextContinuation,
+	fullTextContinuationDeadline,
 	releaseFullTextContinuation,
 	requestFullTextContinuationOwner,
 } from './fullTextContinuation.ts';
@@ -698,11 +699,14 @@ export class FullTextQueryIndex {
 		const page = options.continuationPage!;
 		const revision = this.#configurationRevision;
 		await page.ready.promise;
-		const assertActive = () => {
+		const assertContextActive = () => {
 			context?.signal?.throwIfAborted();
 			options.assertTransactionActive?.();
 			if (this.#closed || this.#configurationRevision !== revision || this.#pauses.size)
 				throw new ClientError('Full-text continuation expired; start a new search', 410);
+		};
+		const assertActive = () => {
+			assertContextActive();
 			if (process.hrtime.bigint() >= page.deadline)
 				throw new ServerError('Full-text continuation exceeded its request budget', 503);
 		};
@@ -751,9 +755,9 @@ export class FullTextQueryIndex {
 				await requestFullTextContinuationOwner(
 					ownerId,
 					{ operation: 'close', token: page.token as string, queryHash: page.queryHash },
-					page.deadline
+					fullTextContinuationDeadline(policy)
 				);
-				assertActive();
+				assertContextActive();
 				page.complete = true;
 				return [];
 			}
@@ -850,9 +854,9 @@ export class FullTextQueryIndex {
 				await requestFullTextContinuationOwner(
 					ownerId,
 					{ operation: 'close', token, queryHash: page.queryHash },
-					page.deadline
+					fullTextContinuationDeadline(policy)
 				);
-				assertActive();
+				assertContextActive();
 				page.expiresAt = undefined;
 				page.complete = true;
 			} else {

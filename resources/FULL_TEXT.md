@@ -159,6 +159,8 @@ Close and terminal pages wait for admission release before reporting success. A 
 returns an error instead; the revoked token may then return 410, and its admission slot can remain
 occupied until absolute expiry or worker exit. This acknowledgement covers admission capacity,
 not immediate removal of old index segments from disk.
+Closing has a separate cleanup budget. Once release is acknowledged, the completed page can return
+after its search-work deadline; cancellation, transaction and index-lifecycle checks still apply.
 Completion, explicit close, expiry, index reset, definition changes, worker loss, and process restart
 release or invalidate the search. A previous token then returns 410; start a new search. Retries
 before completion keep the same index boundary, but current record and permission changes can

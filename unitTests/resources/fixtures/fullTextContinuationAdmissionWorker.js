@@ -24,7 +24,7 @@ onMessageByType('full-text-admission-test-command', async (event) => {
 			let Product, leaseId, value;
 			try {
 				Product = table({
-					database: `fulltext-worker-release-${threadId}-${Date.now()}`,
+					database: event.message.database,
 					table: 'Product',
 					audit: true,
 					attributes: [
@@ -52,6 +52,15 @@ onMessageByType('full-text-admission-test-command', async (event) => {
 					],
 					limit: 1,
 				};
+				let indexedIds = [];
+				await waitFor(
+					async () => {
+						indexedIds = [];
+						for await (const record of Product.search({ ...query, limit: 2 })) indexedIds.push(record.id);
+						return indexedIds.length === 2;
+					},
+					{ timeout: 10000, message: () => `Expected two indexed records, got ${JSON.stringify(indexedIds)}` }
+				);
 				const first = await Product.search({ ...query, continuation: true });
 				leaseId = (await fullTextContinuationOwner()).tokens.route(first.continuation).lease;
 				const last = await Product.search({

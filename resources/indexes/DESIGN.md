@@ -550,6 +550,8 @@ and index-definition changes instead revoke matching leases immediately, before 
 work to drain. Releasing the reader waits for already admitted native work. `FullTextContinuationPage` binds the original query, selection, table configuration and principal.
 Only the reserving worker can release its process-wide claim. The lease's shared drain promise
 carries that acknowledgement through close; reader-retirement failures are observed separately.
+Close has a separate bounded cleanup window. After acknowledgement, context and lifecycle fences
+still apply, but the search deadline cannot discard a terminal page whose token is already revoked.
 `Table.search` supplies the existing record materializer; `searchByIndex` supplies its existing entry
 loader. The index feeds bounded candidate groups through those callbacks until the visible page
 fills or traversal ends. Only the rare source-refresh branch needs the saved native version check.

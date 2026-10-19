@@ -55,6 +55,8 @@ describe('full-text process-wide continuation admission', () => {
 	it('rejects a real worker Table.search terminal page when admission release fails', async function () {
 		this.timeout(20000);
 		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		const database = `fulltext-worker-release-${process.pid}-${Date.now()}`;
+		require('#src/resources/databases').database({ database });
 		let worker;
 		try {
 			worker = startWorker(require.resolve('./fixtures/fullTextContinuationAdmissionWorker.js'), {
@@ -64,7 +66,7 @@ describe('full-text process-wide continuation admission', () => {
 				threadCount: 1,
 			});
 			assert.strictEqual((await response(worker)).ready, true);
-			const result = await response(worker, 'table-terminal-release', 15000);
+			const result = await response(worker, { operation: 'table-terminal-release', database }, 15000);
 			assert.strictEqual(result.status, 503, JSON.stringify(result));
 			assert.match(result.error, /maxPendingResponseBytes/);
 			assert.strictEqual(result.value, undefined);
