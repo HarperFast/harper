@@ -43,6 +43,17 @@ describe('agent/budget', () => {
 			assert.deepStrictEqual(usage, { calls: 3 });
 		});
 
+		it('counts rejected calls kept beside the transcript as calls', () => {
+			assert.deepStrictEqual(
+				summarizeSessionUsage(
+					[assistant({ promptTokens: 10, completionTokens: 2, costUsd: 0.5 })],
+					[{ promptTokens: 5, completionTokens: 1, costUsd: 0.25 }]
+				),
+				{ calls: 2, promptTokens: 15, completionTokens: 3, costUsd: 0.75 }
+			);
+			assert.deepStrictEqual(summarizeSessionUsage([], [{}]), { calls: 1 });
+		});
+
 		it('treats a non-finite or negative figure as unreported', () => {
 			assert.deepStrictEqual(
 				summarizeSessionUsage([assistant({ promptTokens: Number.NaN, completionTokens: -1, costUsd: Infinity })]),

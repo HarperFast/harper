@@ -1497,6 +1497,56 @@ describe('agent/loop per-session budgets (#3040)', () => {
 		assert.equal(reloaded.messages.at(-1).toolCallId, 'c1');
 	});
 
+	it("records a rejected reply's usage beside the transcript and counts it toward the caps", async () => {
+		const sessionId = await newSession();
+		const cutOff = { content: 'partial', finishReason: 'length', ...usage(80, 30, 0.5) };
+		await runAgent({ sessionId, models: stubModels([cutOff]), tools: noTools, scopes, maxTurns: 5 });
+
+		const rejected = await session.getSession(sessionId);
+		assert.equal(rejected.status, 'error');
+		assert.equal(
+			rejected.messages.filter((m) => m.role === 'assistant').length,
+			0,
+			'the reply stays out of the transcript'
+		);
+		assert.deepStrictEqual(rejected.rejectedCalls, [{ promptTokens: 80, completionTokens: 30, costUsd: 0.5 }]);
+		assert.deepStrictEqual(summarizeSessionUsage(rejected.messages, rejected.rejectedCalls), {
+			calls: 1,
+			promptTokens: 80,
+			completionTokens: 30,
+			costUsd: 0.5,
+		});
+
+		await session.appendMessage(sessionId, { role: 'user', content: 'again', createdAt: Date.now() });
+		let generateCalls = 0;
+		const models = {
+			async generate() {
+				generateCalls++;
+				return finalTurn('unreached', usage(1, 1));
+			},
+		};
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, maxSessionTokens: 100 });
+		assert.equal(generateCalls, 0, 'the rejected call alone already reached the cap');
+		assert.match(
+			(await session.getSession(sessionId)).lastError,
+			/maxSessionTokens=100 reached: this session used 110 tokens/
+		);
+	});
+
+	it('a rejected reply that reported no usage makes a capped session unmeasured', async () => {
+		const sessionId = await newSession();
+		await runAgent({
+			sessionId,
+			models: stubModels([{ content: '', finishReason: 'stop' }]),
+			tools: noTools,
+			scopes,
+			maxTurns: 5,
+		});
+		const rejected = await session.getSession(sessionId);
+		assert.deepStrictEqual(rejected.rejectedCalls, [{}]);
+		assert.deepStrictEqual(summarizeSessionUsage(rejected.messages, rejected.rejectedCalls), { calls: 1 });
+	});
+
 	it('an assistant turn written before usage was recorded makes a capped session unmeasured, not free', async () => {
 		const sessionId = await newSession();
 		await session.appendMessage(sessionId, { role: 'assistant', content: 'legacy', createdAt: Date.now() });
@@ -1695,6 +1745,18 @@ describe('agent/loop never overwrites a cancel', () => {
 
 		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5, admitted: admitRun(sessionId) });
 		assert.equal(generateCalls, 1, 'a request admitted after the cancel runs');
+	});
+
+	it('keeps a cancel that lands while a rejected reply is generated', async () => {
+		const sessionId = await newSession();
+		const models = {
+			async generate() {
+				await cancel(sessionId);
+				return { content: 'partial', finishReason: 'length' };
+			},
+		};
+		await runAgent({ sessionId, models, tools: noTools, scopes, maxTurns: 5 });
+		await expectStillAborted(sessionId);
 	});
 
 	it('does not mark a run that was cancelled before it started as running', async () => {
