@@ -144,8 +144,8 @@ Read the next token from `Harper-Continuation` and pass it back unchanged, URL-e
 a JSON array. `Harper-Continuation-Complete` says whether traversal finished;
 `Harper-Continuation-Expires` is the absolute expiry time in milliseconds since the Unix epoch.
 Completed pages omit the token and expiry.
-Only GET and QUERY can return continuation pages. HEAD and mutating methods reject continuation
-parameters with 400. OPTIONS still returns request metadata without running a search.
+GET and QUERY can return continuation pages. OPTIONS returns request metadata without running a
+search. Other methods reject continuation parameters with 400.
 These headers are exposed to browser clients. Continuation responses use `Cache-Control: no-store`.
 Nonzero offsets, count requests, and other result ordering cannot be combined with continuation.
 
