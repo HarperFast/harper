@@ -94,6 +94,11 @@ absolute expiry time in milliseconds since the Unix epoch. These headers are exp
 clients. Continuation responses use `Cache-Control: no-store`. JSON `QUERY` requests return the
 same headers when their query body enables continuation.
 
+Long record IDs make continuation tokens larger. Qualification with the released library produced
+tokens of about 600 bytes for short IDs and nearly 8 KB near the supported ID limit. Review Harper's
+`http.maxHeaderSize` setting and any proxy response-header and request-line limits. Leave room for the
+token, query, authentication, and other headers; a token that fits Harper may exceed a proxy limit.
+
 ## Records and permissions can change
 
 The snapshot fixes the index matches and their ranking. It does not retain historical Harper
@@ -154,6 +159,12 @@ The cursor pool is shared by all callers. Four unfinished searches fill the defa
 receives `503` until a search finishes, closes, or expires. Ordinary searches remain available.
 Configure `maxCursors` for the number of unfinished searches the application needs to retain.
 There is no per-caller reservation or eviction policy.
+
+Cursor slots, pending-request counts, and response-byte allowances apply separately. Raising
+`maxCursors` does not raise `maxPendingRequests` or `maxPendingResponseBytes`. Across workers,
+Harper reserves response space using the library's largest supported IDs and versions, rather than
+the average size of the current records. Many searches may be retained while fewer pages can run
+at once.
 
 A raw-hit budget failure returns `400`; narrow the query or increase the budget. Capacity exhaustion
 and timeouts return errors instead of successful incomplete pages. If the snapshot itself runs out
