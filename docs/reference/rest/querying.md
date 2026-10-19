@@ -274,7 +274,11 @@ When selecting without a filter on the related table, this acts as a LEFT JOIN â
 
 ### Filtering and Paging Each Relationship
 
+:::note Pending release
+
 Pending a 5.3 patch release; see [Honor nested relationship filters and pagination](https://github.com/HarperFast/harper/pull/3279).
+
+:::
 
 Use square brackets inside `select()` to apply conditions, sort, and pagination to each parent's related records. For a `Brand.products` relationship with `price` and `id` fields:
 
@@ -292,7 +296,7 @@ Each brand receives at most one product priced at 30 or more, ordered by price. 
 | `limit(start,end)` | Skip `start` eligible children and return at most `end - start`.                 |
 | `select(id,price)` | Project fields from returned children; omit it to return whole child records.    |
 
-Use a non-negative safe-integer window; `limit(0)` returns no children without reading them; an absent foreign key keeps its missing-value shape. A missing singular relationship remains absent. For array-valued foreign keys, unsorted pagination preserves missing target positions; sorting drops missing targets. Child conditions and sort fields remain subject to read permissions.
+Use a non-negative safe-integer window; `limit(0)` returns no children without reading them; an absent foreign key keeps its missing-value shape. A missing singular relationship remains absent. For array-valued foreign keys, pagination alone preserves missing target positions; adding conditions or a sort drops missing targets. Child conditions and sort fields remain subject to read permissions.
 
 A condition that traverses another relationship qualifies the immediate child; it does not narrow that child's projected descendants. To filter or page grandchildren, put those constraints on the grandchild's own bracket selection. Outer join restrictions are still inherited.
 

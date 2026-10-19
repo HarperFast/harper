@@ -1116,7 +1116,11 @@ A to-many relationship resolves to an array of records; depending on access patt
 
 #### Constraining related records
 
+:::note Pending release
+
 Pending a 5.3 patch release; see [Honor nested relationship filters and pagination](https://github.com/HarperFast/harper/pull/3279).
+
+:::
 
 A relationship selection object accepts `conditions`, `operator`, `sort`, `offset`, and `limit`, with an optional `select` projection:
 
@@ -1139,7 +1143,7 @@ const brand = await Brand.get({
 
 `operator` defaults to `and`; use `or` to combine the nested conditions as alternatives.
 
-These options apply independently to each parent's children in both single-record `get()` and collection queries. `limit` is a count; `offset` is the number of eligible children to skip. Neither changes which parents are returned. Nested conditions qualify immediate children; descendant filtering requires a selection on that descendant. Inherited outer join restrictions still apply.
+These options apply independently to each parent's children in both single-record `get()` and collection queries. `limit` is a count; `offset` is the number of eligible children to skip. These nested options do not remove parents: a parent with no matching children remains present with an empty to-many array. Nested conditions qualify immediate children; descendant filtering requires a selection on that descendant. Inherited outer join restrictions still apply.
 
 See [Filtering and Paging Each Relationship](../rest/querying.md#filtering-and-paging-each-relationship) for missing-value behavior, authorization, cache-local eligibility and ordering, scan costs, and unsupported constraints.
 
