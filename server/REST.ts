@@ -207,8 +207,6 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			request.handlerPath = entry.path;
 			target = new RequestTarget(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
 			if (entry.params) Object.assign(target, entry.params); // bind parameterised path segments (e.g. :id, *rest)
-			if (method === 'HEAD' && target.continuation !== undefined)
-				throw new ClientError('Full-text continuation requires GET or QUERY; HEAD cannot return page records', 400);
 
 			(target as any).async = true;
 			resource = entry.Resource;
@@ -238,6 +236,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		}
 		const settledCredentialRejection = settleDeferredCredentialRejection(request);
 		if (settledCredentialRejection) return settledCredentialRejection;
+		if (method === 'HEAD' && target?.continuation !== undefined)
+			throw new ClientError('Full-text continuation requires GET or QUERY; HEAD cannot return page records', 400);
 		if ((resource as any)?.isCaching) {
 			const cacheControl = headersObject['cache-control'];
 			if (cacheControl) {

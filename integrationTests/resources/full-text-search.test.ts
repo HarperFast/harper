@@ -286,14 +286,15 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 	});
 
 	test('continues REST snapshot pages across HTTP workers and exposes opaque page headers', async () => {
-		const headPage = async (continuation: string) => {
+		const headPage = async (continuation: string, credential = authorization, status = 400) => {
 			const response = await fetch(
 				`${ctx.harper.httpURL}/Product/?catalogSearch=matches=pagination&limit(75)&select(id,title)&${continuation}`,
-				{ method: 'HEAD', headers: { Authorization: authorization }, signal: AbortSignal.timeout(15000) }
+				{ method: 'HEAD', headers: { Authorization: credential }, signal: AbortSignal.timeout(15000) }
 			);
-			assert.strictEqual(response.status, 400);
+			assert.strictEqual(response.status, status);
 			assert.strictEqual(response.headers.get('harper-continuation'), null);
 		};
+		await headPage('continuation()', `Basic ${Buffer.from('fulltext-missing-user:wrong').toString('base64')}`, 401);
 		await headPage('continuation()');
 		const getPage = async (token?: string) => {
 			const continuation = token ? `continuation(${encodeURIComponent(token)})` : 'continuation()';

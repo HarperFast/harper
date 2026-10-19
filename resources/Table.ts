@@ -1172,12 +1172,14 @@ interface TableResourceClass {
 function cloneContinuationTarget(target: any): RequestTarget {
 	const copy =
 		target instanceof RequestTarget
-			? new RequestTarget(target.toString())
+			? new RequestTarget()
 			: target instanceof URLSearchParams
 				? new URLSearchParams(target)
 				: Array.isArray(target)
 					? []
 					: Object.create(Object.getPrototypeOf(target));
+	if (target instanceof RequestTarget)
+		for (const [name, value] of target) URLSearchParams.prototype.append.call(copy, name, value);
 	return Object.assign(copy, target);
 }
 

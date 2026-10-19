@@ -305,6 +305,19 @@ describe('published native full-text Table.search integration', () => {
 		await assert.rejects(syncResource.search(syncTarget), (error) => error.statusCode === 403);
 		syncAllow = true;
 		await syncResource.search({ ...syncTarget, closeContinuation: true });
+		const { RequestTarget } = require('#src/resources/RequestTarget');
+		const edited = new RequestTarget('/?catalogSearch=matches=widget&limit(1)&continuation()&debug=ignored');
+		edited.delete('debug');
+		assert.strictEqual(edited.parseError, undefined);
+		const editedFirst = await Product.search(edited);
+		assert(editedFirst.continuation);
+		const editedResume = new RequestTarget(
+			`/?catalogSearch=matches=widget&limit(1)&continuation(${editedFirst.continuation})&debug=ignored`
+		);
+		editedResume.delete('debug');
+		const editedLast = await Product.search(editedResume);
+		assert.strictEqual(editedLast.complete, true);
+		assert.deepStrictEqual(ids([...editedFirst, ...editedLast]), ['a', 'b']);
 		const first = await Product.search({ ...base, continuation: true });
 		assert(first.continuation);
 		assert.deepStrictEqual(first.getColumns(), ['id', 'title']);

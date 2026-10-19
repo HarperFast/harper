@@ -181,6 +181,18 @@ All continuation settings are under `storage.fullText`:
 | `maxPendingRequests`        |      32 | Pending worker requests per requesting worker       |
 | `maxPendingResponseBytes`   |  16 MiB | Reserved response bytes per requesting worker       |
 
+Search work and cleanup use separate windows based on `requestBudgetMilliseconds`. With the
+5,000 ms default, a search that uses its full work budget and then closes can take about 10 seconds.
+Waiting for other page requests already using the snapshot can add time. Native work checks its
+deadline while running; these settings are not a hard limit on total response time.
+
+Ordinary searches can use secondary indexes to skip record reads and enlarge batches when many
+matches are filtered out. Continued searches do not yet use those optimizations; they fetch up to
+256 native hits per batch and check current records. A selective filter can therefore add many
+record reads and, when the snapshot belongs to another worker, many worker requests.
+Qualification and these optimizations are tracked in
+[Qualify native full-text filtering and catalog-scale operation for v5.4](https://github.com/HarperFast/harper/issues/2512).
+
 Each setting also has the usual configuration parameter name, such as
 `storage_fullText_maxRawHitsPerRequest` or `storage_fullText_runtime_maxSearchThreads`, for
 `set_configuration` and environment overrides. Changing one setting preserves the others.
