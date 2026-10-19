@@ -1200,6 +1200,8 @@ Add a nested `conditions` array only to narrow these inherited candidates furthe
 
 `operator` defaults to `and`; use `or` to combine the nested conditions as alternatives.
 
+For production collections, also set a top-level `limit` to bound parents. Use a unique final sort key for both parent and child order, and remember that a small child limit does not bound sorting work. See [parent pagination and stable sorting](../rest/querying.md#bound-parent-pages-and-use-stable-sorting) for an example and performance guidance.
+
 These options apply independently to each parent's children in both single-record `get()` and collection queries. `limit` is a count; `offset` is the number of eligible children to skip. These nested options do not remove parents: a parent with no matching children remains present with an empty to-many array. Nested conditions qualify immediate children; descendant filtering requires a selection on that descendant. Top-level `conditions` on that relationship still restrict the child candidates available to the nested selection, so an identical condition need not be repeated.
 
 See [Filtering and Paging Each Relationship](../rest/querying.md#filtering-and-paging-each-relationship) for missing-value behavior, authorization, cache-local eligibility and ordering, scan costs, and unsupported constraints.

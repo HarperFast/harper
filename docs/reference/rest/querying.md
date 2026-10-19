@@ -463,6 +463,47 @@ Response:
 ]
 ```
 
+#### Bound parent pages and use stable sorting
+
+The examples above focus on child selection. For a production collection, also limit the parents: a nested `limit(1)` bounds products per brand, not the number of brands. For example, return up to 20 qualifying brands with one product each:
+
+```http
+GET /Brand/?products.price=ge=number:30&sort(name,id)&limit(0,20)&select(id,name,products[sort(price,id)&limit(1)&select(id,name,price)])
+```
+
+With the sample data, the response is:
+
+```json
+[
+	{
+		"id": 42,
+		"name": "Acme",
+		"products": [
+			{
+				"id": "p2",
+				"name": "Keyboard",
+				"price": 35
+			}
+		]
+	},
+	{
+		"id": 44,
+		"name": "Studio Gear",
+		"products": [
+			{
+				"id": "p5",
+				"name": "Stand",
+				"price": 45
+			}
+		]
+	}
+]
+```
+
+The outer `sort(name,id)` orders brands; the nested `sort(price,id)` orders products within each brand. Use a unique field such as `id` as the final sort key so equal names or prices have a deterministic order. This does not prevent records moving between offset pages when data changes between requests.
+
+Keep relationship lookup fields and outer filter fields indexed, and project only the fields the client needs. The sample schema indexes `brandId`, `price`, and `Brand.name`. A child sort may still collect and sort all eligible related records before returning its page; an index on `price` does not guarantee an index-ordered nested scan. Keep parent pages small and consider a separately paginated child endpoint for very large relationships. Unsorted nested limits can stop early, but are appropriate only when child order does not matter.
+
 #### Nested option reference
 
 | Nested option      | Behavior                                                                                      |
