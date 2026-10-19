@@ -289,30 +289,106 @@ for (const mode of ['compiled', 'typestrip']) {
 			});
 
 			if (!bigInt) {
-				test('bounds a stalled subscription and releases its producer on disconnect', { timeout: 30000 }, async () => {
-					const headers = {
-						Authorization: `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
-					};
-					const status = async () => {
-						const response = await fetch(`${ctx.harper.httpURL}/SendPressure/`, {
-							headers,
-							signal: AbortSignal.timeout(10000),
+				const requestResource = async (path: string, method = 'GET') => {
+					const response = await fetch(`${ctx.harper.httpURL}/${path}/`, {
+						method,
+						headers: {
+							'Authorization': `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+							'Content-Type': 'application/json',
+						},
+						...(method === 'POST' ? { body: '{}' } : {}),
+						signal: AbortSignal.timeout(10000),
+					});
+					ok(response.ok, await response.clone().text());
+					return response.json();
+				};
+				const openStalled = () => {
+					const socket = new WebSocket(`${ctx.harper.httpURL.replace(/^http/, 'ws')}/SendPressure/`, {
+						headers: {
+							Authorization: `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+						},
+					});
+					socket.on('open', () => socket.pause());
+					return socket;
+				};
+
+				test(
+					'bounds and resumes a stalled subscription, then releases its producer on disconnect',
+					{ timeout: 40000 },
+					async () => {
+						let expectedThreadId: number;
+						const status = async () => {
+							const state = await requestResource('SendPressure');
+							ok(state.threadId > 0);
+							if (expectedThreadId !== undefined) strictEqual(state.threadId, expectedThreadId);
+							return state;
+						};
+						const assertStalled = async () => {
+							await waitFor(
+								async () => {
+									const state = await status();
+									return state.active && state.produced > 0;
+								},
+								{ timeout: 10000 }
+							);
+							// A paused reader must not let the bounded producer finish.
+							await new Promise((resolve) => setTimeout(resolve, 1000));
+							const state = await status();
+							strictEqual(state.active, true);
+							ok(state.produced < 128, `producer must wait for its consumer: ${JSON.stringify(state)}`);
+							return state;
+						};
+						const received: number[] = [];
+						const threadIds = new Set<number>();
+						const draining = openStalled();
+						draining.on('message', (data) => {
+							const message = JSON.parse(data.toString());
+							received.push(message.id);
+							threadIds.add(message.threadId);
 						});
-						strictEqual(response.status, 200);
-						return response.json();
-					};
-					const stalled = new WebSocket(`${ctx.harper.httpURL.replace(/^http/, 'ws')}/SendPressure/`, { headers });
-					stalled.on('open', () => stalled.pause());
-					try {
-						await once(stalled, 'open', { signal: AbortSignal.timeout(10000) });
-						await waitFor(async () => (await status()).produced > 0, { timeout: 10000 });
-						const state = await status();
-						strictEqual(state.active, true);
-						ok(state.produced < 128, `producer must wait for its consumer: ${JSON.stringify(state)}`);
-					} finally {
-						stalled.terminate();
+						try {
+							await once(draining, 'open', { signal: AbortSignal.timeout(10000) });
+							expectedThreadId = (await assertStalled()).threadId;
+							draining.resume();
+							await waitFor(() => received.length >= 128, { timeout: 15000 });
+							deepStrictEqual(
+								received,
+								Array.from({ length: 128 }, (_, id) => id)
+							);
+							deepStrictEqual([...threadIds], [expectedThreadId]);
+						} finally {
+							draining.terminate();
+						}
+						await waitFor(async () => !(await status()).active, { timeout: 10000 });
+
+						const disconnecting = openStalled();
+						try {
+							await once(disconnecting, 'open', { signal: AbortSignal.timeout(10000) });
+							await assertStalled();
+						} finally {
+							disconnecting.terminate();
+						}
+						await waitFor(async () => !(await status()).active, { timeout: 10000 });
 					}
-					await waitFor(async () => !(await status()).active, { timeout: 10000 });
+				);
+
+				test('returns a subscription that resolves after the client disconnected', { timeout: 30000 }, async () => {
+					const socket = new WebSocket(`${ctx.harper.httpURL.replace(/^http/, 'ws')}/DelayedConnect/`, {
+						headers: {
+							Authorization: `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+						},
+					});
+					try {
+						await once(socket, 'open', { signal: AbortSignal.timeout(10000) });
+						await waitFor(async () => (await requestResource('DelayedConnect')).awaiting, { timeout: 10000 });
+						socket.terminate();
+						await waitFor(async () => (await requestResource('DelayedConnect')).disconnected, { timeout: 10000 });
+						await requestResource('DelayedConnect', 'POST');
+						await waitFor(async () => (await requestResource('DelayedConnect')).closed, { timeout: 10000 });
+					} finally {
+						socket.terminate();
+						await requestResource('DelayedConnect', 'POST');
+					}
 				});
 			}
 		});

@@ -81,9 +81,13 @@ describe('cold public package import', () => {
 					const assert = (await import('node:assert')).default;
 					const core = await import(${JSON.stringify(url('index'))});
 					const { SERVERS } = await import(${JSON.stringify(url('server/serverRegistry'))});
+					const { hasStarted } = await import(${JSON.stringify(url('utility/lifecycle'))});
+					assert.strictEqual(hasStarted(), false);
 					assert.strictEqual(core.tables, globalThis.tables);
 					assert.ok(core.tables.Dog, 'public import must discover persisted tables');
 					assert.deepStrictEqual({ ...await core.tables.Dog.get('rex') }, { id: 'rex', name: 'Rex' });
+					await new Promise(resolve => setTimeout(resolve, 100));
+					assert.strictEqual(hasStarted(), false);
 					assert.strictEqual(core.threads.length, 0);
 					assert.ok(Object.values(SERVERS).every(server => !server.listening && !server.port));
 					console.log('Read-only package import complete');

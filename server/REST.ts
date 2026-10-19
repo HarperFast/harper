@@ -586,11 +586,12 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				connectionCount--;
 				recordActionBinary(!hasError, 'connection', 'ws', 'disconnect');
 				incomingMessages.emit('close');
-				if (iterator) iterator.return();
+				iterator?.return?.();
 				request._abort?.();
 			});
 			try {
 				await chainCompletion;
+				if (closed) return;
 				// before the route lookup: the same credential is a 401 over HTTP, so a rejected client
 				// must not learn from the close code whether the resource exists
 				assertNoDeferredCredentialRejection(request);
@@ -621,6 +622,10 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 						return resource.connect(resourceRequest, incomingMessages, request);
 					});
 					iterator = responseStream[Symbol.asyncIterator]();
+					if (closed) {
+						await iterator.return?.();
+						return;
+					}
 
 					let result;
 					while (!closed && !(result = await iterator.next()).done) {
@@ -629,12 +634,18 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 						if (!socket && (ws as any).bufferedAmount > 0) {
 							await new Promise<void>((resolve, reject) => {
 								finishPendingSend = (error) => (error ? reject(error) : resolve());
-								(ws as any).send(messageBinary, onSend);
+								(ws as any).send(messageBinary, undefined, onSend);
 							});
 						} else ws.send(messageBinary as string | Buffer<ArrayBuffer>);
 						recordAction(messageBinary.length, 'bytes-sent', request.handlerPath, 'message', 'ws');
-						if (socket?.writableNeedDrain) {
-							await new Promise((resolve) => socket.once('drain', resolve));
+						if (socket?.writableNeedDrain && !closed) {
+							await new Promise<void>((resolve) => {
+								finishPendingSend = () => {
+									socket.off('drain', onSend);
+									resolve();
+								};
+								socket.once('drain', onSend);
+							});
 						}
 					}
 				}

@@ -167,7 +167,6 @@ if (isMainThread) {
 			}
 		}
 	}
-	// Interrupted runs can leave roots behind for this sweep; completed runs remove them on exit.
 }
 materializePerPidRoot();
 process.env.ROOTPATH = PID_DIR_PATH;
