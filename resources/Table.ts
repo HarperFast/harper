@@ -3756,9 +3756,8 @@ export function makeTable(options): TableResourceClass {
 				return this;
 			}
 			if (typeof updates === 'object' && updates) {
-				const updatableAttributes = fullUpdate && this.#takeUpdatableAttributes();
-				if (updatableAttributes && isRecordRoot(updates)) {
-					this.#changes = restrictedReplacement(id, updates, updatableAttributes);
+				if (fullUpdate && this.#updatableAttributes && isRecordRoot(updates)) {
+					this.#changes = restrictedReplacement(id, updates, this.#takeUpdatableAttributes());
 					return when(this._writeUpdate(id, this.#changes, false, RESTRICTED_REPLACEMENT), () => this);
 				} else if (fullUpdate) {
 					// legacy full update where we need to update the entire record, but the instance needs to continue
@@ -4731,14 +4730,13 @@ export function makeTable(options): TableResourceClass {
 						if (!allowed) {
 							throw new AccessViolation((context as any).user);
 						}
-						const updatableAttributes = this.#takeUpdatableAttributes();
-						if (updatableAttributes && isRecordRoot(record)) {
+						if (this.#updatableAttributes && isRecordRoot(record)) {
 							const id = requestTargetToId(target as any);
 							return when(
 								this.#stageChanges(
 									id,
 									target,
-									restrictedReplacement(id, record, updatableAttributes),
+									restrictedReplacement(id, record, this.#takeUpdatableAttributes()),
 									RESTRICTED_REPLACEMENT
 								),
 								() => this.save() as any
@@ -9318,11 +9316,12 @@ export function makeTable(options): TableResourceClass {
 		for (const key in updatableAttributes) {
 			if (
 				updatableAttributes[key] &&
-				!(key in record) &&
+				!Object.hasOwn(record, key) &&
 				key !== primaryKey &&
 				key !== createdTimeProperty?.name &&
 				key !== updatedTimeProperty?.name &&
 				!(propertyResolvers && Object.hasOwn(propertyResolvers, key)) &&
+				(!sealed || attributes.some((attribute) => attribute.name === key)) &&
 				!fullTextFieldNames?.has(key)
 			)
 				changes[key] = undefined;

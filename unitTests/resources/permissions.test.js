@@ -472,6 +472,36 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		});
 	});
 
+	it('a restricted full put removes an omitted writable property named like an Object.prototype member', async function () {
+		await DocTable.put('proto-1', { id: 'proto-1', title: 'old', toString: 'stale', secret: 'kept' });
+		const user = {
+			role: {
+				permission: {
+					test: {
+						tables: {
+							AttrPermDoc: {
+								read: true,
+								insert: true,
+								update: true,
+								delete: false,
+								attribute_permissions: [
+									{ attribute_name: 'title', read: true, insert: true, update: true },
+									{ attribute_name: 'toString', read: true, insert: true, update: true },
+								],
+							},
+						},
+					},
+				},
+			},
+		};
+		await DocTable.put('proto-1', { title: 'new' }, { user, authorize: true });
+		assert.deepEqual(JSON.parse(JSON.stringify(await DocTable.get('proto-1'))), {
+			id: 'proto-1',
+			title: 'new',
+			secret: 'kept',
+		});
+	});
+
 	it('an override that updates the instance before super.put keeps the restriction', async function () {
 		class IntermediateUpdateDoc extends DocTable {
 			put(record, target) {
@@ -728,5 +758,37 @@ describe('Attribute permissions on a keyless table (harper#3284)', () => {
 			async () => Keyless.patch(id, { undefined: 'overwritten' }, { user, authorize: true }),
 			/Unauthorized/
 		);
+	});
+
+	it('a sealed table accepts a restricted full put when the role lists an undeclared attribute', async function () {
+		const Sealed = table({
+			table: 'AttrPermSealed',
+			database: 'test',
+			sealed: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }, { name: 'secret' }],
+		});
+		await Sealed.put('s-1', { id: 's-1', title: 'old', secret: 'kept' });
+		const sealedUser = {
+			role: {
+				permission: {
+					test: {
+						tables: {
+							AttrPermSealed: {
+								read: true,
+								insert: true,
+								update: true,
+								delete: false,
+								attribute_permissions: [
+									{ attribute_name: 'title', read: true, insert: true, update: true },
+									{ attribute_name: 'dropped', read: true, insert: true, update: true },
+								],
+							},
+						},
+					},
+				},
+			},
+		};
+		await Sealed.put('s-1', { title: 'new' }, { user: sealedUser, authorize: true });
+		assert.deepEqual(JSON.parse(JSON.stringify(await Sealed.get('s-1'))), { id: 's-1', title: 'new', secret: 'kept' });
 	});
 });
