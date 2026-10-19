@@ -610,7 +610,7 @@ function propagateSearchAuthorization(iterable: any, authorization: Promise<any>
 const RESTRICTED_REPLACEMENT = Object.freeze({});
 // a tracked payload keeps its values behind getRecord()
 function materialized(record: any) {
-	return record?.getRecord ? updateAndFreeze(record) : record;
+	return typeof record?.getRecord === 'function' ? updateAndFreeze(record) : record;
 }
 function isRecordRoot(value: unknown): boolean {
 	return (
@@ -9300,7 +9300,6 @@ export function makeTable(options): TableResourceClass {
 		}
 		return effective;
 	}
-	/** A full put by an attribute-restricted role, as a patch that leaves attributes the role may not update as stored. */
 	function restrictedReplacement(id: Id, record: any, updatableAttributes: { [attribute: string]: boolean }) {
 		record = materialized(record);
 		const changes: any = { ...record };

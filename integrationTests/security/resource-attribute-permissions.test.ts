@@ -1,14 +1,6 @@
 /**
- * Attribute-level role permissions on the resource path (REST, GraphQL, MQTT) follow the documented
- * translation the operations API applies (harper#3284):
- *
- *   - the primary key is granted whatever access the listed attributes have, even when unlisted;
- *   - a full put (REST PUT, retained MQTT publish) by an attribute-restricted role keeps every stored
- *     attribute the role cannot update, instead of erasing it;
- *   - a payload that sets an attribute the role cannot update is still refused.
- *
- * Role under test: read/insert/update on `Doc`, `attribute_permissions` listing only `title` and
- * `owner` (no `id`, no `secret`).
+ * Attribute permissions on REST, GraphQL and MQTT for a role listing only `title` and `owner` of `Doc`
+ * (harper#3284, harper#1434).
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/security/resource-attribute-permissions.test.ts"

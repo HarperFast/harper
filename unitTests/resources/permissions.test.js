@@ -525,6 +525,28 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		});
 	});
 
+	it('a published message may carry a field named getRecord', async function () {
+		const permission = title_owner_user.role.permission.test.tables.AttrPermDoc;
+		const user = {
+			role: {
+				permission: {
+					test: {
+						tables: {
+							AttrPermDoc: {
+								...permission,
+								attribute_permissions: [
+									...permission.attribute_permissions,
+									{ attribute_name: 'getRecord', read: true, insert: true, update: true },
+								],
+							},
+						},
+					},
+				},
+			},
+		};
+		await DocTable.publish('pub-2', { getRecord: 'a value' }, { user, authorize: true });
+	});
+
 	it('a tracked payload is checked by the values it carries', async function () {
 		await seed('tracked-2');
 		await assert.rejects(
