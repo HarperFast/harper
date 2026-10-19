@@ -114,7 +114,7 @@ Use parentheses or square brackets to control order of operations:
 GET /Product/?rating=5|(price=gt=100&price=lt=200)
 ```
 
-Square brackets are recommended when constructing queries from user input because standard URI encoding safely encodes `[` and `]` (but not `(`):
+Square brackets are recommended when constructing queries from user input because standard URI encoding safely encodes `[` and `]` (but not `(`). Brackets after a relationship name inside `select()` instead form a [nested relationship query](#filtering-and-paging-each-relationship):
 
 ```http
 GET /Product/?rating=5&[tag=fast|tag=scalable|tag=efficient]
@@ -284,7 +284,24 @@ Use square brackets inside `select()` to apply conditions, sort, and pagination 
 
 **An outer relationship filter also narrows that relationship's nested results.** For example, `products.price=ge=number:30` selects brands with a qualifying product and restricts their selected products to those costing at least 30. **You do not need to repeat that price filter inside `products[...]`.** Add a nested condition only when you want to narrow the already-eligible products further without removing their parents.
 
-The following examples use a `Brand.products` relationship with this data:
+The following scenarios use this self-contained schema, including string product IDs and an indexed price field:
+
+```graphql
+type Brand @table @export {
+	id: Int @primaryKey
+	name: String @indexed
+	products: [Product] @relationship(to: "brandId")
+}
+
+type Product @table @export {
+	id: ID @primaryKey
+	brandId: Int @indexed
+	name: String
+	price: Int @indexed
+}
+```
+
+Use this sample data:
 
 | Brand ID | Brand         | Product ID | Product  | Price |
 | -------- | ------------- | ---------- | -------- | ----- |
@@ -446,13 +463,13 @@ Response:
 
 #### Nested option reference
 
-| Nested option      | Behavior                                                                         |
-| ------------------ | -------------------------------------------------------------------------------- |
-| Conditions         | Qualify children of the selected relationship; combine with AND, OR, and groups. |
-| `sort(price)`      | Order that parent's eligible children before pagination.                         |
-| `limit(end)`       | Return at most `end` children per parent.                                        |
-| `limit(start,end)` | Skip `start` eligible children and return at most `end - start`.                 |
-| `select(id,price)` | Project fields from returned children; omit it to return whole child records.    |
+| Nested option      | Behavior                                                                                      |
+| ------------------ | --------------------------------------------------------------------------------------------- |
+| Conditions         | Qualify children of the selected relationship; combine with `&` (AND), `\|` (OR), and groups. |
+| `sort(price)`      | Order that parent's eligible children before pagination.                                      |
+| `limit(end)`       | Return at most `end` children per parent.                                                     |
+| `limit(start,end)` | Skip `start` eligible children and return at most `end - start`.                              |
+| `select(id,price)` | Project fields from returned children; omit it to return whole child records.                 |
 
 Use a non-negative safe-integer window; `limit(0)` returns no children without reading them; an absent foreign key keeps its missing-value shape. A missing singular relationship remains absent. For array-valued foreign keys, pagination alone preserves missing target positions; adding conditions or a sort drops missing targets. Child conditions and sort fields remain subject to read permissions.
 
