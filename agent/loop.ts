@@ -126,26 +126,32 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 		// approval must stop the approved action, not just the next model call.
 		if (await stopIfOverBudget(opts)) return;
 
-		// First, drain any resolved-but-unconsumed approvals from a prior pause. Either execute
-		// or refuse each saved call, recording an observation, so the next model turn sees the
-		// result of the operator decision.
-		await consumeResolvedApprovals(opts.sessionId, toolMap, ctx);
-
-		// If a turn produced multiple gated tool calls and the operator has only resolved some of
-		// them, the remaining approvals are still pending — meaning the assistant's tool_calls do
-		// not yet all have tool responses. Re-entering the generate loop now would send an
-		// incomplete tool-response set and the provider would 400. Stay paused until every gated
-		// call for this turn is resolved (each `approve_agent_action` re-runs this path).
-		const afterConsume = await getSession(opts.sessionId);
-		if (afterConsume?.pendingApprovals.some((a) => !a.resolved)) {
-			await endRun(opts.sessionId, { status: 'awaiting_approval' });
-			return;
+		// Drain resolved approvals until none is left. An approval resolved while the drain runs joins this run
+		// (`startRun`), so it is drained here, not left unanswered for the next model call. While any approval
+		// is unresolved the run pauses: generating now would send tool calls without their responses, which
+		// the provider rejects.
+		for (;;) {
+			if (opts.signal?.aborted) return;
+			await consumeResolvedApprovals(opts.sessionId, toolMap, ctx);
+			const approvals = (await getSession(opts.sessionId))?.pendingApprovals ?? [];
+			if (approvals.some((a) => a.resolved && !a.consumed)) continue;
+			if (!approvals.some((a) => !a.resolved)) break;
+			const paused = await endRun(opts.sessionId, { status: 'awaiting_approval', pauseWhileApprovalsOpen: true });
+			if (paused.status === 'aborted' || paused.pendingApprovals.some((a) => !a.resolved)) return;
 		}
 
 		for (let turn = 0; turn < opts.maxTurns; turn++) {
 			if (opts.signal?.aborted) return; // status was already set to `aborted` by cancelRun
 			const result = await generateTurn(opts, toolDefs);
-			if (opts.signal?.aborted) return;
+			if (opts.signal?.aborted) {
+				// The call returned after the cancel; its reply is discarded but it was billed, so it is counted.
+				await endRun(opts.sessionId, {
+					status: 'aborted',
+					lastError: 'Cancelled by operator',
+					rejectedCall: callUsage(result.usage, result.costUsd) ?? {},
+				});
+				return;
+			}
 			log.debug?.(
 				`Session ${opts.sessionId} turn ${turn}: finishReason=${result.finishReason} toolCalls=${result.toolCalls?.length ?? 0} contentChars=${result.content?.length ?? 0} completionTokens=${result.usage?.completionTokens ?? 'unknown'}`
 			);
@@ -374,6 +380,18 @@ async function consumeResolvedApprovals(
 ): Promise<void> {
 	const session = await getSession(sessionId);
 	if (!session) return;
+	// A claimed approval with no response belongs to a run that died between the claim and its result
+	// (runs are serialized per session, so none is still running). Answer it, without running it again.
+	const answered = new Set(session.messages.filter((m) => m.role === 'tool').map((m) => m.toolCallId));
+	for (const approval of session.pendingApprovals) {
+		if (!approval.consumed || answered.has(approval.toolCallId)) continue;
+		await appendMessage(sessionId, {
+			role: 'tool',
+			content: JSON.stringify({ ok: false, error: 'interrupted', outcome: 'unknown', tool: approval.toolName }),
+			toolCallId: approval.toolCallId,
+			createdAt: Date.now(),
+		});
+	}
 	const toConsume = session.pendingApprovals.filter((a) => a.resolved && !a.consumed);
 	for (const approval of toConsume) {
 		if (ctx.signal?.aborted) return;

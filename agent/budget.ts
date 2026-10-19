@@ -17,7 +17,6 @@ export function hasBudget(caps: BudgetCaps): boolean {
 	return caps.maxSessionTokens !== undefined || caps.maxCostUsd !== undefined;
 }
 
-/** Every assistant message is a call, and so is every rejected call kept beside the transcript. */
 export function summarizeSessionUsage(
 	messages: Iterable<AgentMessage>,
 	rejectedCalls: Iterable<AgentCallUsage> = []

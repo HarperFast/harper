@@ -46,6 +46,8 @@ import type { AgentConfig, AgentScopes, AgentTool, HttpFetchConfig } from './typ
 
 const log = harperLogger.loggerWithTag('agent');
 
+const FOLLOWUP_RETRY_MS = 1000;
+
 const DEFAULT_CONFIG: AgentConfig = {
 	enabled: false,
 	maxTurns: 50,
@@ -136,7 +138,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		return composeToolset({
 			allowDestructive: liveConfig.allowDestructive,
 			httpFetchTool,
-			onFollowup: handleFollowup,
+			onFollowup: (sessionId, prompt) => handleFollowup(sessionId, prompt),
 			inspectorTools,
 			registryTools,
 			extraTools,
@@ -160,14 +162,19 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		}
 	}
 
-	async function handleFollowup(sessionId: string, prompt: string): Promise<void> {
-		const admitted = admitRun(sessionId);
+	async function handleFollowup(sessionId: string, prompt: string, admitted = admitRun(sessionId)): Promise<void> {
 		const session = await getSession(sessionId);
 		if (!session) {
 			log.warn?.(`schedule_followup target session ${sessionId} not found`);
 			return;
 		}
 		if (admitRun(sessionId) !== admitted) return;
+		// A prompt appended mid-run or mid-approval would land between tool calls and their results, so it
+		// waits; the token makes a cancel drop the retry, as it clears the scheduled timer.
+		if (isRunInFlight(sessionId) || session.status === 'awaiting_approval') {
+			setTimeout(() => void handleFollowup(sessionId, prompt, admitted), FOLLOWUP_RETRY_MS).unref?.();
+			return;
+		}
 		await appendMessage(sessionId, { role: 'user', content: prompt, createdAt: Date.now() });
 		startRun(sessionId, admitted);
 	}

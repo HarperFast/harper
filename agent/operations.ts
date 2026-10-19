@@ -29,8 +29,7 @@ import { isValidMaxToolResultBytes, MAX_MAX_TOOL_RESULT_BYTES, MIN_MAX_TOOL_RESU
 export interface OperationDeps {
 	getConfig: () => AgentConfig;
 	setConfig: (patch: Partial<AgentConfig>) => AgentConfig;
-	/** `admitted` is the `admitRun` token taken before the request's first await. */
-	/** Returns false when a cancel since `admitted` fenced the run out. */
+	/** `admitted` is the `admitRun` token taken before the request's first await; false when a cancel fenced it out. */
 	startRun: (sessionId: string, admitted?: number) => boolean;
 	cancelRun: (sessionId: string) => boolean;
 	admitRun: (sessionId: string) => number;

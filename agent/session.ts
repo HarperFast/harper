@@ -178,8 +178,9 @@ export function endRun(
 	end: {
 		append?: AgentMessage[];
 		answerOpenApprovals?: (approval: ApprovalRequest) => string;
-		/** A billed call whose reply was rejected; recorded beside the transcript, never in it. */
 		rejectedCall?: AgentCallUsage;
+		/** Leave the status alone when no approval is still unresolved under the lock. */
+		pauseWhileApprovalsOpen?: boolean;
 		status: AgentRunStatus;
 		lastError?: string;
 	}
@@ -190,7 +191,8 @@ export function endRun(
 		if (end.rejectedCall) (session.rejectedCalls ??= []).push(end.rejectedCall);
 		const now = Date.now();
 		if (end.answerOpenApprovals) closeOpenApprovals(session, end.answerOpenApprovals, now);
-		if (session.status !== 'aborted') {
+		const nothingToPauseFor = end.pauseWhileApprovalsOpen && !session.pendingApprovals.some((a) => !a.resolved);
+		if (session.status !== 'aborted' && !nothingToPauseFor) {
 			session.status = end.status;
 			session.lastError = end.lastError;
 		}
