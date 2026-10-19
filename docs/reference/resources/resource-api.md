@@ -1112,7 +1112,7 @@ When a field is defined as a [relationship](../database/schema.md#relationships)
 
 A to-many relationship resolves to an array of records; depending on access pattern you may need to `await` the property before iterating it.
 
-**Join behavior:** selecting a relationship _without_ filtering on it behaves as a **LEFT JOIN** — records with no related row are still returned (the relationship property is omitted or empty). Adding a condition on a related attribute (e.g. `attribute: ['author', 'name']`) behaves as an **INNER JOIN** — only records with a matching related row are returned.
+**Join behavior:** selecting a relationship without an outer condition on it behaves as a **LEFT JOIN**: parents with no related row remain present, with the relationship omitted or empty. A top-level `conditions` entry on a related attribute (for example, `attribute: ['author', 'name']`) behaves as an **INNER JOIN**: it removes parents without a matching related row and restricts the selected related records. A `conditions` array inside a nested `select` object only filters the displayed children; it does not remove a parent.
 
 #### Constraining related records
 
@@ -1200,7 +1200,7 @@ Add a nested `conditions` array only to narrow these inherited candidates furthe
 
 `operator` defaults to `and`; use `or` to combine the nested conditions as alternatives.
 
-These options apply independently to each parent's children in both single-record `get()` and collection queries. `limit` is a count; `offset` is the number of eligible children to skip. These nested options do not remove parents: a parent with no matching children remains present with an empty to-many array. Nested conditions qualify immediate children; descendant filtering requires a selection on that descendant. Inherited outer join restrictions still apply.
+These options apply independently to each parent's children in both single-record `get()` and collection queries. `limit` is a count; `offset` is the number of eligible children to skip. These nested options do not remove parents: a parent with no matching children remains present with an empty to-many array. Nested conditions qualify immediate children; descendant filtering requires a selection on that descendant. Top-level `conditions` on that relationship still restrict the child candidates available to the nested selection, so an identical condition need not be repeated.
 
 See [Filtering and Paging Each Relationship](../rest/querying.md#filtering-and-paging-each-relationship) for missing-value behavior, authorization, cache-local eligibility and ordering, scan costs, and unsupported constraints.
 

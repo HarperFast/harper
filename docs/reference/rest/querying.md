@@ -114,7 +114,7 @@ Use parentheses or square brackets to control order of operations:
 GET /Product/?rating=5|(price=gt=100&price=lt=200)
 ```
 
-Square brackets are recommended when constructing queries from user input because standard URI encoding safely encodes `[` and `]` (but not `(`). Brackets after a relationship name inside `select()` instead form a [nested relationship query](#filtering-and-paging-each-relationship):
+Square brackets are recommended when constructing queries from user input because standard URI encoding safely encodes `[` and `]` (but not `(`):
 
 ```http
 GET /Product/?rating=5&[tag=fast|tag=scalable|tag=efficient]
@@ -125,6 +125,8 @@ Constructing from JavaScript:
 ```javascript
 let url = `/Product/?rating=5&[${tags.map(encodeURIComponent).join('|')}]`;
 ```
+
+These root-level brackets group conditions. Brackets after a relationship name inside `select()`, such as `select(id,products[limit(1)])`, instead form a [nested relationship query](#filtering-and-paging-each-relationship).
 
 Groups can be nested for complex conditions:
 
@@ -270,7 +272,7 @@ GET /Product/?brand.name=Microsoft&select(name,brand{name})
 GET /Product/?name=Keyboard&select(name,brand{name,id})
 ```
 
-When selecting without a filter on the related table, this acts as a LEFT JOIN — the relationship property is omitted if the foreign key is null or references a non-existent record.
+Selecting a relationship without an outer dot-syntax filter on it behaves as a LEFT JOIN: parents remain present even when there are no related records. For a singular foreign key that is null or references a missing record, the relationship property is omitted. An outer filter such as `products.price=ge=number:30` instead removes parents without a qualifying product and also narrows the selected products. A filter inside `select(...,products[...])` only narrows the projected products; it does not remove a parent. See the [worked scenarios](#filtering-and-paging-each-relationship) below.
 
 ### Filtering and Paging Each Relationship
 
