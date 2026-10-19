@@ -243,6 +243,16 @@ suite('Attribute permissions on the resource path (harper#3284)', (ctx: ContextW
 		deepStrictEqual(await storedAsAdmin('admin-1'), { id: 'admin-1', title: 'admin title' });
 	});
 
+	test('a REST PUT or PATCH body with a then field is accepted', async () => {
+		for (const [method, body] of [
+			['PUT', { title: 'then put', then: 'not a function' }],
+			['PATCH', { then: 'patched' }],
+		] as const) {
+			const res = await fetch(`${restURL}/Doc/then-1`, { method, headers: adminHeaders, body: JSON.stringify(body) });
+			ok(res.ok, `${method}: ${res.status} ${await res.text()}`);
+		}
+	});
+
 	test('operations API behavior is unchanged', async () => {
 		await seed('ops-1');
 		const asUser = (body: object) => apiClient.reqAs(userHeaders).send(body);
