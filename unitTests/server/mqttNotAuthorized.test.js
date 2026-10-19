@@ -56,7 +56,10 @@ function mqttListener() {
 	};
 }
 
-async function connect(open, { user = anonymous, protocolVersion = 5, properties } = {}) {
+async function connect(
+	open,
+	{ user = anonymous, protocolVersion = 5, properties, clientId = `not-authorized-${++sequence}`, clean = true } = {}
+) {
 	const { socket, sessions } = open(user);
 	const registeredBefore = new Set(sessions);
 	const parse = () => {
@@ -71,8 +74,8 @@ async function connect(open, { user = anonymous, protocolVersion = 5, properties
 		cmd: 'connect',
 		protocolId: 'MQTT',
 		protocolVersion,
-		clientId: `not-authorized-${++sequence}`,
-		clean: true,
+		clientId,
+		clean,
 		properties,
 	});
 	await waitFor(() => parse().find((packet) => packet.cmd === 'connack'), { message: 'no CONNACK' });
@@ -228,6 +231,26 @@ describe('mqtt.ts reason codes for a refused request', () => {
 		});
 	});
 
+	describe('DISCONNECT for a durable session whose subscription is refused on resume', () => {
+		for (const [label, resumingUser, reasonString] of [
+			['no user', anonymous, 'Must login'],
+			['a user without permission', unprivileged, 'Unauthorized access to resource'],
+		]) {
+			it(`reports ${label} as Not authorized`, async () => {
+				const name = protectedTable();
+				const clientId = `resume-${++sequence}`;
+				const original = await connect(open, { user: superUser, clientId, clean: false });
+				await original.subscribe(`${name}/#`);
+				original.socket.handlers.close();
+				const resumed = await connect(open, { user: resumingUser, clientId, clean: false });
+				const disconnect = () => resumed.parse().find((packet) => packet.cmd === 'disconnect');
+				await waitFor(disconnect, { message: () => `no DISCONNECT; got ${resumed.parse().map((p) => p.cmd)}` });
+				assert.strictEqual(disconnect().reasonCode, NOT_AUTHORIZED);
+				assert.strictEqual(disconnect().properties?.reasonString, reasonString);
+			});
+		}
+	});
+
 	describe('PUBACK and PUBREC', () => {
 		it('reports a request with no user as Not authorized, with "Must login"', async () => {
 			const client = await connect(open);
@@ -326,8 +349,9 @@ describe('mqtt.ts reason codes for a refused request', () => {
 				const ours = () => debug.lines.filter((line) => String(line[0]).includes(`${name}/k`));
 				await waitFor(() => ours().length > 0, { message: 'no debug line naming the topic' });
 				assert.match(String(ours()[0][0]), new RegExp(`disconnected while trying to send message to ${name}/k`));
+				// the original error never named the topic, so the filter is on its wording, not on the fixture's names
 				assert.deepStrictEqual(
-					error.lines.filter((line) => String(line[0]?.message ?? line[0]).includes(name)),
+					error.lines.filter((line) => /disconnected while trying to send/.test(String(line[0]?.message ?? line[0]))),
 					[],
 					'an expected disconnect race must not be an error'
 				);
