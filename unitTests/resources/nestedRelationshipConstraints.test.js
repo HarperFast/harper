@@ -46,7 +46,7 @@ const ordinaryAllUser = {
 
 describe('nested relationship constraints', function () {
 	this.timeout(15000);
-	let Parent, Child, server, base, previousMainIsWorker;
+	let Parent, Child, server, base, previousMainIsWorker, resources;
 	let projected;
 	before(async function () {
 		setupTestDBPath();
@@ -103,7 +103,7 @@ describe('nested relationship constraints', function () {
 		});
 		await Parent.put('p2', { id: 'p2', childId: 'missing' });
 		for (const child of children) await Child.put(child.id, child);
-		const resources = new Resources();
+		resources = new Resources();
 		resources.set('Parent', Parent);
 		resources.set('Child', Child);
 		let rest;
@@ -661,4 +661,343 @@ describe('nested relationship constraints', function () {
 				});
 			}
 		});
+	it('each half of the joined query works independently', async function () {
+		const expected = [
+			['c1', 'c2', 'c3', 'c4'],
+			['c5', 'c6', 'c7'],
+		];
+		assert.deepStrictEqual(ids(await get('/Parent/?children.siblings.state=open&select(id,children{id})')), expected);
+		assert.deepStrictEqual(
+			ids(await get('/Parent/?select(id,children[siblings.score=ge=number:30&select(id,)])')),
+			expected
+		);
+	});
+	it('combines outer joined paths and nested relationship predicates', async function () {
+		const rows = await get(
+			'/Parent/?children.siblings.state=open&select(id,children[siblings.score=ge=number:30&select(id,)])'
+		);
+		assert.deepStrictEqual(ids(rows), [
+			['c1', 'c2', 'c3', 'c4'],
+			['c5', 'c6', 'c7'],
+		]);
+	});
+	for (const abandonTransaction of [false, true])
+		it(`cancellation at the candidate yield stops upstream FK reads (${abandonTransaction ? 'transaction' : 'parent'})`, async function () {
+			if (!(Child.primaryStore instanceof RocksDatabase)) return this.skip();
+			await Parent.put('p1', { id: 'p1', childIds: Array(4098).fill('c1') });
+			try {
+				await transaction({}, async (txn) => {
+					const results = Parent.search({
+						conditions: [{ attribute: 'id', value: 'p1' }],
+						select: [
+							'id',
+							{ name: 'references', conditions: [{ attribute: 'state', value: 'never' }], select: ['id'] },
+						],
+					});
+					const iterator = results[Symbol.asyncIterator]();
+					let readsAtReturn;
+					const initialReads = Child.primaryStore.readCount;
+					const cancelled = new Promise((resolve, reject) => {
+						const deadline = Date.now() + 5000;
+						const cancelAtYield = () => {
+							if (Date.now() > deadline) return reject(new Error('Candidate scan never reached its yield'));
+							if (Child.primaryStore.readCount - initialReads < 2048) return setImmediate(cancelAtYield);
+							Promise.resolve(abandonTransaction ? txn.closeOwnedReadIterators() : iterator.return()).then(() => {
+								readsAtReturn = Child.primaryStore.readCount;
+								resolve();
+							}, reject);
+						};
+						setImmediate(cancelAtYield);
+					});
+					const first = Promise.resolve(iterator.next());
+					await cancelled;
+					await first;
+
+					assert.strictEqual(readsAtReturn - initialReads, 2048, 'must cancel at the first candidate yield');
+					assert.strictEqual(
+						Child.primaryStore.readCount,
+						readsAtReturn,
+						'no child entry reads after parent return during candidate yield'
+					);
+					assert.strictEqual(txn.closeOwnedReadIterators(), 0);
+				});
+			} finally {
+				await Parent.put('p1', {
+					id: 'p1',
+					childId: 'c1',
+					metadata: { label: 'kept', hidden: 'omit' },
+					childIds: ['c1', 'missing', 'c2', 'c3', 'c4'],
+				});
+			}
+		});
+	it('refreshed cache children still satisfy the nested predicate', async function () {
+		if (!(Child.primaryStore instanceof RocksDatabase)) return this.skip();
+		const CachedChild = table({
+			database: 'nested_opposition',
+			table: 'CachedChild',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'state', type: 'String' },
+			],
+		});
+		let loads = 0;
+		CachedChild.sourcedFrom({
+			get(id) {
+				loads++;
+				return { id, state: 'closed' };
+			},
+		});
+		const CachedParent = table({
+			database: 'nested_opposition',
+			table: 'CachedParent',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'childId', type: 'ID' },
+				{ name: 'child', relationship: { from: 'childId' }, definition: { tableClass: CachedChild } },
+			],
+		});
+		await CachedParent.put('p', { id: 'p', childId: 'cached' });
+		await CachedChild.put('cached', { id: 'cached', state: 'open' }, { expiresAt: 1 });
+		const rows = [];
+		for await (const row of CachedParent.search({
+			select: ['id', { name: 'child', conditions: [{ attribute: 'state', value: 'open' }], select: ['id', 'state'] }],
+		}))
+			rows.push(row);
+		assert.strictEqual(loads, 1, 'must exercise source refresh');
+		assert.strictEqual(rows[0].child, undefined, 'refreshed nonmatching child must be excluded');
+	});
+
+	it('nested cache ordering retains the top-level local-entry contract', async function () {
+		if (!(Child.primaryStore instanceof RocksDatabase)) return this.skip();
+		const C = table({
+			database: 'nested_opposition_sort',
+			table: 'Child',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'score', type: 'Int', indexed: true },
+			],
+		});
+		let loads = 0;
+		C.sourcedFrom({
+			get(id) {
+				loads++;
+				return { id, score: id === 'a' ? 100 : 1 };
+			},
+		});
+		const P = table({
+			database: 'nested_opposition_sort',
+			table: 'Parent',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'ids', elements: { type: 'ID' } },
+				{ name: 'children', relationship: { from: 'ids' }, elements: { type: 'Child', definition: { tableClass: C } } },
+			],
+		});
+		await P.put('p', { id: 'p', ids: ['a', 'b'] });
+		await C.put('a', { id: 'a', score: 0 }, { expiresAt: 1 });
+		await C.put('b', { id: 'b', score: 10 }, { expiresAt: 1 });
+		const rows = [];
+		for await (const row of P.search({
+			select: ['id', { name: 'children', sort: { attribute: 'score' }, limit: 1, select: ['id', 'score'] }],
+		}))
+			rows.push(row);
+
+		assert.strictEqual(loads, 1, 'only the selected cached row is refreshed');
+		assert.deepStrictEqual(rows[0].children, [{ id: 'a', score: 100 }]);
+		await C.put('a', { id: 'a', score: 0 }, { expiresAt: 1 });
+		await C.put('b', { id: 'b', score: 10 }, { expiresAt: 1 });
+		const direct = [];
+		for await (const row of C.search({ sort: { attribute: 'score' }, limit: 1, select: ['id', 'score'] }))
+			direct.push(row);
+		assert.deepStrictEqual(rows[0].children, direct);
+	});
+
+	it('reordering OR terms leaves projection unchanged', async function () {
+		const conditions = [
+			{ attribute: ['siblings', 'state'], value: 'open' },
+			{ attribute: ['siblings', 'score'], comparator: 'ge', value: 30 },
+		];
+		const selection = {
+			name: 'children',
+			operator: 'or',
+			conditions,
+			select: ['id', { name: 'siblings', select: ['id'] }],
+		};
+		const forward = await query(selection);
+		const reverse = await query({ ...selection, conditions: [...conditions].reverse() });
+		assert.deepStrictEqual(forward[1].children[0].siblings, [{ id: 'c5' }, { id: 'c6' }, { id: 'c7' }]);
+		assert.deepStrictEqual(forward, reverse, 'OR operand order must not change projected values');
+	});
+	it('OR scalar branches leave unrelated projected relationships unrestricted', async function () {
+		const rows = await query({
+			name: 'children',
+			operator: 'or',
+			conditions: [
+				{ attribute: 'state', value: 'open' },
+				{ attribute: ['siblings', 'score'], comparator: 'ge', value: 30 },
+			],
+			select: ['id', { name: 'siblings', select: ['id'] }],
+		});
+		assert.deepStrictEqual(
+			rows[0].children[0].siblings,
+			children.filter((child) => child.parentId === 'p1').map((child) => ({ id: child.id }))
+		);
+		assert.deepStrictEqual(
+			rows[0].children[1].siblings,
+			children.filter((child) => child.parentId === 'p1').map((child) => ({ id: child.id }))
+		);
+	});
+	it('nested predicates qualify children without implicitly narrowing their descendants', async function () {
+		const rows = await query({
+			name: 'children',
+			conditions: [
+				{ attribute: ['siblings', 'state'], value: 'open' },
+				{ attribute: ['siblings', 'score'], comparator: 'ge', value: 30 },
+			],
+			select: ['id', { name: 'siblings', select: ['id'] }],
+		});
+		assert.deepStrictEqual(
+			rows[0].children[0].siblings,
+			children.filter((child) => child.parentId === 'p1').map((child) => ({ id: child.id }))
+		);
+		assert.deepStrictEqual(
+			rows[1].children[0].siblings,
+			children.filter((child) => child.parentId === 'p2').map((child) => ({ id: child.id }))
+		);
+	});
+	it('retains inherited join narrowing when the nested predicate uses OR', async function () {
+		const rows = await query(
+			{
+				name: 'children',
+				operator: 'or',
+				conditions: [
+					{ attribute: ['siblings', 'score'], comparator: 'ge', value: 30 },
+					{ attribute: 'state', value: 'closed' },
+				],
+				select: ['id', { name: 'siblings', select: ['id'] }],
+			},
+			{ conditions: [{ attribute: ['children', 'siblings', 'state'], value: 'open' }] }
+		);
+		assert.deepStrictEqual(rows[1].children[0].siblings, [{ id: 'c6' }]);
+	});
+	it('explicit descendant OR selections return the union of matching children', async function () {
+		const row = await Parent.get({
+			id: 'p2',
+			select: [
+				'id',
+				{
+					name: 'children',
+					limit: 1,
+					select: [
+						'id',
+						{
+							name: 'siblings',
+							operator: 'or',
+							conditions: [
+								{ attribute: 'state', value: 'open' },
+								{ attribute: 'score', comparator: 'ge', value: 30 },
+							],
+							select: ['id'],
+						},
+					],
+				},
+			],
+		});
+		assert.deepStrictEqual(row.children[0].siblings, [{ id: 'c6' }, { id: 'c7' }]);
+	});
+	for (const single of [false, true])
+		for (const offset of [0, 1])
+			it(`refreshed nonmatches do not consume HTTP pagination (${single ? 'record' : 'collection'}, offset ${offset})`, async function () {
+				if (!(Child.primaryStore instanceof RocksDatabase)) return this.skip();
+				const CachedChild = table({
+					database: `nested_refresh_${single}_${offset}`,
+					table: 'Child',
+					attributes: [
+						{ name: 'id', type: 'ID', isPrimaryKey: true },
+						{ name: 'state', type: 'String' },
+						{ name: 'observed', computed: true },
+					],
+				});
+				const projectedIds = [];
+				CachedChild.setComputedAttribute('observed', (record) => {
+					projectedIds.push(record.id);
+					return record.state;
+				});
+				const loaded = [];
+				CachedChild.sourcedFrom({
+					get(id) {
+						loaded.push(id);
+						return { id, state: id === 'reject' ? 'closed' : 'open' };
+					},
+				});
+				const CachedParent = table({
+					database: `nested_refresh_${single}_${offset}`,
+					table: 'Parent',
+					attributes: [
+						{ name: 'id', type: 'ID', isPrimaryKey: true },
+						{ name: 'ids', elements: { type: 'ID' } },
+						{
+							name: 'children',
+							relationship: { from: 'ids' },
+							elements: { type: 'Child', definition: { tableClass: CachedChild } },
+						},
+					],
+				});
+				await CachedParent.put('p', { id: 'p', ids: ['nonmatch', 'reject', 'first', 'second'] });
+				for (const id of ['nonmatch', 'reject', 'first', 'second'])
+					await CachedChild.put(id, { id, state: id === 'nonmatch' ? 'closed' : 'open' }, { expiresAt: 1 });
+				const resourceName = `RefreshParent_${single}_${offset}`;
+				resources.set(resourceName, CachedParent);
+				const value = await get(
+					`/${resourceName}/${single ? 'p' : ''}?select(id,children[state=open&limit(${offset},${offset + 1})&select(id,observed)])`
+				);
+				const row = single ? value : value[0];
+				const expected = offset ? 'second' : 'first';
+				assert.deepStrictEqual(row.children, [{ id: expected, observed: 'open' }]);
+				assert.deepStrictEqual(projectedIds, [expected], 'offset and rejected rows must not compute output fields');
+				assert.deepStrictEqual(loaded, offset ? ['reject', 'first', 'second'] : ['reject', 'first']);
+			});
+	it('a deleted source candidate does not consume the nested limit', async function () {
+		if (!(Child.primaryStore instanceof RocksDatabase)) return this.skip();
+		const CachedChild = table({
+			database: 'nested_source_delete',
+			table: 'Child',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'state', type: 'String' },
+			],
+		});
+		const loaded = [];
+		CachedChild.sourcedFrom({
+			get(id) {
+				loaded.push(id);
+				return undefined;
+			},
+		});
+		const CachedParent = table({
+			database: 'nested_source_delete',
+			table: 'Parent',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'ids', elements: { type: 'ID' } },
+				{
+					name: 'children',
+					relationship: { from: 'ids' },
+					elements: { type: 'Child', definition: { tableClass: CachedChild } },
+				},
+			],
+		});
+		await CachedParent.put('p', { id: 'p', ids: ['gone', 'kept'] });
+		await CachedChild.put('gone', { id: 'gone', state: 'open' }, { expiresAt: 1 });
+		await CachedChild.put('kept', { id: 'kept', state: 'open' });
+		const row = await CachedParent.get({
+			id: 'p',
+			select: [
+				'id',
+				{ name: 'children', conditions: [{ attribute: 'state', value: 'open' }], limit: 1, select: ['id'] },
+			],
+		});
+		assert.deepStrictEqual(row.children, [{ id: 'kept' }]);
+		assert.deepStrictEqual(loaded, ['gone']);
+	});
 });

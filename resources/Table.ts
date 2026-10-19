@@ -6337,7 +6337,7 @@ export function makeTable(options): TableResourceClass {
 						condition,
 						targetTable,
 						context,
-						childFiltered,
+						null,
 						(condition.attribute ?? condition[0]) === targetTable.primaryKey
 					);
 					if (!predicate) throw new ClientError('This predicate is not supported in a relationship selection');
@@ -6355,6 +6355,7 @@ export function makeTable(options): TableResourceClass {
 					return plural ? [] : undefined;
 				};
 			let transform;
+			let offsetGuard;
 			let transformReadTxn;
 			const active = new Set<() => void>();
 			const relationshipSelection = (record, entry?, isSync = false) => {
@@ -6372,8 +6373,23 @@ export function makeTable(options): TableResourceClass {
 						typeof value[Symbol.asyncIterator] === 'function';
 					const source = many ? value : [value];
 					let candidates = new ExtendedIterable();
-					candidates.iterate = (options) =>
-						options?.async && source[Symbol.asyncIterator] ? source[Symbol.asyncIterator]() : source[Symbol.iterator]();
+					candidates.iterate = (options) => {
+						const sourceIterator =
+							options?.async && source[Symbol.asyncIterator]
+								? source[Symbol.asyncIterator]()
+								: source[Symbol.iterator]();
+						let ended = false;
+						return {
+							next: () => (stopped || ended ? { done: true } : sourceIterator.next()),
+							return: () => {
+								if (ended) return { done: true };
+								return when(sourceIterator.return?.() || { done: true }, (result) => {
+									ended = true;
+									return result;
+								});
+							},
+						};
+					};
 					const readTxn = targetTable._readTxnForContext(context);
 					const readCandidate = (candidate) =>
 						when(candidate, (candidate) => {
@@ -6407,10 +6423,31 @@ export function makeTable(options): TableResourceClass {
 						(entry) => entry
 					);
 					if (!transform || transformReadTxn !== readTxn || nestedSort) {
-						transform = targetTable.transformEntryForSelect(select, context, readTxn, childFiltered, ensureLoaded);
+						transform = targetTable.transformEntryForSelect(
+							select,
+							context,
+							readTxn,
+							childFiltered,
+							ensureLoaded,
+							Boolean(predicate),
+							predicate
+						);
+						offsetGuard =
+							predicate && offset
+								? targetTable.transformEntryForSelect(
+										undefined,
+										context,
+										readTxn,
+										undefined,
+										ensureLoaded,
+										true,
+										predicate
+									)
+								: undefined;
 						transformReadTxn = readTxn;
 					}
 					const projectEntry = transform;
+					const checkOffsetEntry = offsetGuard;
 					const iterator = ordered[isSync ? Symbol.iterator : Symbol.asyncIterator]();
 					const results = [];
 					const txn = txnForContext(context);
@@ -6442,6 +6479,7 @@ export function makeTable(options): TableResourceClass {
 					const owned = {
 						onDone: () => {
 							(projectEntry as any).return?.();
+							(checkOffsetEntry as any)?.return?.();
 							const completion = close();
 							if (typeof completion?.catch === 'function')
 								completion.catch((error) => logger.warn?.('Failed to close a nested relationship iterator', error));
@@ -6476,15 +6514,26 @@ export function makeTable(options): TableResourceClass {
 						try {
 							if (typeof iteration?.then === 'function') return iteration.then(consume, fail);
 							while (!iteration.done && !stopped) {
-								if (skipped++ >= offset) {
+								if (skipped < offset) {
+									const checked = checkOffsetEntry
+										? checkOffsetEntry.call({ isSync }, iteration.value)
+										: iteration.value;
+									if (typeof checked?.then === 'function')
+										return checked.then((value) => {
+											if (stopped) return finish();
+											if (value !== SKIP) skipped++;
+											return advance();
+										}, fail);
+									if (checked !== SKIP) skipped++;
+								} else {
 									const projected = projectEntry.call({ isSync }, iteration.value);
 									if (typeof projected?.then === 'function')
 										return projected.then((value) => {
 											if (stopped) return finish();
-											results.push(value);
+											if (value !== SKIP) results.push(value);
 											return results.length >= limit ? finish() : advance();
 										}, fail);
-									results.push(projected);
+									if (projected !== SKIP) results.push(projected);
 									if (results.length >= limit) return finish();
 								}
 								iteration = iterator.next();
