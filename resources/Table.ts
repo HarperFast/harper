@@ -839,6 +839,7 @@ function isRecordRoot(value: unknown): boolean {
 	return (
 		value !== null &&
 		typeof value === 'object' &&
+		typeof (value as any).then !== 'function' &&
 		!Array.isArray(value) &&
 		!ArrayBuffer.isView(value) &&
 		!(value instanceof ArrayBuffer)
