@@ -1894,7 +1894,7 @@ Response:
 { "session_id": "3f7c...", "status": "running" }
 ```
 
-A session that is `running` or `awaiting_approval` rejects a new prompt with a 409 — resolve the pending approval or cancel the run first. From v5.4.0 a session also answers 409 while a cancelled run is still finishing its current model call or tool. The session already reads `aborted` then, so retry with backoff; the wait lasts as long as that call, at most the model's `requestTimeoutMs` or the tool's own run time. A prompt accepted while a [`cancel_agent_run`](#cancel_agent_run) for the same session arrives is recorded but not run, and answers 409 too.
+A session that is `running` or `awaiting_approval` rejects a new prompt with a 409 — resolve the pending approval or cancel the run first. From v5.4.0 a session also answers 409 while a cancelled run is still finishing its current model call or tool. Nothing is recorded, and the session already reads `aborted`, so retry with backoff; the wait lasts as long as that call, at most the model's `requestTimeoutMs` or the tool's own run time. A prompt accepted while a [`cancel_agent_run`](#cancel_agent_run) for the same session arrives also answers 409, with a message saying it was recorded but not run. Do not resend that one: it is already in the transcript, and the next prompt's run sees it.
 
 ### `get_agent_session`
 
