@@ -132,7 +132,7 @@ describe('MQTT last will authorization', function () {
 			await connectWithWill(name, scoped(publisher, Math.floor(Date.now() / 1000) - 1), 'scoped-expired', 6),
 			await connectWithWill(name, scoped(reader, inAnHour), 'scoped-denied', 7),
 		];
-		// the session's own user is the opposite of each will's role, so only the will's role can decide
+		// each session's own user would decide the publish the other way, so only the will's role and expiry can
 		sessions[0].user = reader;
 		sessions[1].user = publisher;
 		sessions[2].user = publisher;
