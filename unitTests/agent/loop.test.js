@@ -1867,6 +1867,72 @@ describe('agent/loop never overwrites a cancel', () => {
 		assert.equal(reloaded.status, 'completed');
 	});
 
+	it('answers an interrupted claim on the latest turn when a provider reused its tool-call id', async () => {
+		const sessionId = await newSession();
+		await session.appendMessage(sessionId, {
+			role: 'assistant',
+			content: '',
+			toolCalls: [{ id: 'c1', name: 'read', arguments: {} }],
+			createdAt: 1,
+		});
+		await session.appendMessage(sessionId, { role: 'tool', content: '{}', toolCallId: 'c1', createdAt: 2 });
+		await session.appendMessage(sessionId, {
+			role: 'assistant',
+			content: '',
+			toolCalls: [{ id: 'c1', name: 'drop', arguments: {} }],
+			createdAt: 3,
+		});
+		const approval = await session.addPendingApproval(sessionId, {
+			toolName: 'drop',
+			arguments: {},
+			toolCallId: 'c1',
+			reason: 'destructive',
+		});
+		await session.resolveApproval(sessionId, approval.id, true);
+		await session.claimApproval(sessionId, approval.id);
+
+		await session.answerInterruptedClaims(sessionId);
+		const roles = (await session.getSession(sessionId)).messages.map((m) => m.role);
+		assert.deepStrictEqual(roles, ['user', 'assistant', 'tool', 'assistant', 'tool']);
+	});
+
+	it('a failed run answers its open approvals and unanswered tool calls in its final write', async () => {
+		const sessionId = await newSession();
+		const table = session.getAgentSessionTable();
+		const put = table.put.bind(table);
+		let parked = 0;
+		table.put = async (row) => {
+			if (row.pendingApprovals.length === 2 && ++parked === 1) throw new Error('storage fault');
+			return put(row);
+		};
+		await assert.rejects(
+			runAgent({
+				sessionId,
+				models: stubModels([
+					{
+						content: '',
+						finishReason: 'tool_calls',
+						toolCalls: [
+							{ id: 'c1', name: 'drop', arguments: {} },
+							{ id: 'c2', name: 'drop', arguments: {} },
+						],
+					},
+				]),
+				tools: [tool('drop', { destructive: true })],
+				scopes,
+				maxTurns: 5,
+				autoApprove: false,
+			}),
+			/storage fault/
+		);
+		const failed = await session.getSession(sessionId);
+		assert.equal(failed.status, 'error');
+		assert.ok(failed.pendingApprovals.every((a) => a.consumed));
+		const answers = failed.messages.filter((m) => m.role === 'tool');
+		assert.deepStrictEqual(answers.map((m) => m.toolCallId).sort(), ['c1', 'c2']);
+		assert.ok(answers.every((m) => JSON.parse(m.content).error === 'run_failed'));
+	});
+
 	it('answers an interrupted claim even when a budget stop ends the run first', async () => {
 		const sessionId = await newSession();
 		await runAgent({

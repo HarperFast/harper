@@ -179,6 +179,8 @@ export function endRun(
 		append?: AgentMessage[];
 		answerOpenApprovals?: (approval: ApprovalRequest) => string;
 		rejectedCall?: AgentCallUsage;
+		/** Answers each tool call of the last assistant turn that is still without a response. */
+		answerUnansweredCalls?: (toolName: string) => string;
 		/** Leave the status alone when no approval is still unresolved under the lock. */
 		pauseWhileApprovalsOpen?: boolean;
 		status: AgentRunStatus;
@@ -191,6 +193,7 @@ export function endRun(
 		if (end.rejectedCall) (session.rejectedCalls ??= []).push(end.rejectedCall);
 		const now = Date.now();
 		if (end.answerOpenApprovals) closeOpenApprovals(session, end.answerOpenApprovals, now);
+		if (end.answerUnansweredCalls) answerUnansweredCalls(session, end.answerUnansweredCalls, now);
 		const nothingToPauseFor = end.pauseWhileApprovalsOpen && !session.pendingApprovals.some((a) => !a.resolved);
 		if (session.status !== 'aborted' && !nothingToPauseFor) {
 			session.status = end.status;
@@ -221,6 +224,18 @@ export function cancelSession(sessionId: string): Promise<boolean> {
 	});
 }
 
+function answerUnansweredCalls(session: AgentSessionRow, answer: (toolName: string) => string, now: number): void {
+	let last = session.messages.length - 1;
+	while (last >= 0 && session.messages[last].role !== 'assistant') last--;
+	const calls = last >= 0 ? (session.messages[last].toolCalls ?? []) : [];
+	const answered = new Set(session.messages.slice(last + 1).map((m) => m.toolCallId));
+	for (const call of calls) {
+		if (!answered.has(call.id)) {
+			session.messages.push({ role: 'tool', content: answer(call.name), toolCallId: call.id, createdAt: now });
+		}
+	}
+}
+
 /** Decided on the row read under the lock, so an approval another writer already claimed is never answered twice. */
 function closeOpenApprovals(
 	session: AgentSessionRow,
@@ -243,31 +258,44 @@ function closeOpenApprovals(
  * The action is not run again.
  */
 export async function answerInterruptedClaims(sessionId: string): Promise<void> {
-	const unanswered = (session: AgentSessionRow) => {
-		const answered = new Set(session.messages.filter((m) => m.role === 'tool').map((m) => m.toolCallId));
-		return session.pendingApprovals.filter((a) => a.consumed && !answered.has(a.toolCallId));
-	};
 	const current = await getSession(sessionId);
-	if (!current || unanswered(current).length === 0) return;
+	if (!current || interruptedClaims(current).length === 0) return;
 	await withSessionLock(sessionId, async () => {
 		const session = await requireSession(sessionId);
 		const now = Date.now();
-		for (const approval of unanswered(session)) {
-			const call = session.messages.findIndex((m) => m.toolCalls?.some((c) => c.id === approval.toolCallId));
-			let at = call + 1;
-			while (at > 0 && at < session.messages.length && session.messages[at].role === 'tool') at++;
-			const response: AgentMessage = {
+		for (const { approval, at } of interruptedClaims(session)) {
+			session.messages.splice(at, 0, {
 				role: 'tool',
 				content: JSON.stringify({ ok: false, error: 'interrupted', outcome: 'unknown', tool: approval.toolName }),
 				toolCallId: approval.toolCallId,
 				createdAt: now,
-			};
-			if (call < 0) session.messages.push(response);
-			else session.messages.splice(at, 0, response);
+			});
 		}
 		session.updatedAt = now;
 		await getAgentSessionTable().put(session);
 	});
+}
+
+/**
+ * Claimed approvals whose latest tool call has no response after it, each with the index just past that
+ * call's existing responses. Matched on the most recent turn, as a provider may reuse a tool-call id.
+ */
+function interruptedClaims(session: AgentSessionRow): Array<{ approval: ApprovalRequest; at: number }> {
+	const found: Array<{ approval: ApprovalRequest; at: number }> = [];
+	for (const approval of session.pendingApprovals) {
+		if (!approval.consumed) continue;
+		let call = session.messages.length - 1;
+		while (call >= 0 && !session.messages[call].toolCalls?.some((c) => c.id === approval.toolCallId)) call--;
+		if (call < 0) continue;
+		let at = call + 1;
+		let answered = false;
+		for (; at < session.messages.length && session.messages[at].role === 'tool'; at++) {
+			if (session.messages[at].toolCallId === approval.toolCallId) answered = true;
+		}
+		if (!answered) found.push({ approval, at });
+	}
+	// Later insertions first, so an earlier index is not shifted by them.
+	return found.sort((a, b) => b.at - a.at);
 }
 
 /**

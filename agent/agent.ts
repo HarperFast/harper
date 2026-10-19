@@ -179,7 +179,13 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		// waits; the token makes a cancel drop the retry, as it clears the scheduled timer.
 		if (isRunInFlight(sessionId) || session.status === 'awaiting_approval') {
 			const next = Math.min(retryMs * 2, FOLLOWUP_RETRY_MAX_MS);
-			setTimeout(() => void handleFollowup(sessionId, prompt, admitted, next), retryMs).unref?.();
+			setTimeout(
+				() =>
+					handleFollowup(sessionId, prompt, admitted, next).catch((err) =>
+						log.error?.(`schedule_followup for ${sessionId} failed: ${(err as Error)?.message ?? err}`)
+					),
+				retryMs
+			).unref?.();
 			return;
 		}
 		await appendMessage(sessionId, { role: 'user', content: prompt, createdAt: Date.now() });

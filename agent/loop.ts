@@ -214,7 +214,12 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 		// don't clobber that with `error`. The rejection here is just the awaited generate/tool
 		// honoring the signal, not a real failure.
 		if (opts.signal?.aborted) return;
-		await endRun(opts.sessionId, { status: 'error', lastError: err instanceof Error ? err.message : String(err) });
+		await endRun(opts.sessionId, {
+			status: 'error',
+			lastError: err instanceof Error ? err.message : String(err),
+			answerOpenApprovals: (approval) => JSON.stringify({ ok: false, error: 'run_failed', tool: approval.toolName }),
+			answerUnansweredCalls: (toolName) => JSON.stringify({ ok: false, error: 'run_failed', tool: toolName }),
+		});
 		throw err;
 	}
 }

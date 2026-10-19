@@ -271,6 +271,25 @@ describe('agent/operations budgets (#3040)', () => {
 			});
 		});
 
+		it('agent_prompt records nothing when a cancel arrives before the prompt is saved', async () => {
+			const created = await session.createSession({ user: 'admin' });
+			let reads = 0;
+			const started = [];
+			const { execute } = operation('agent_prompt', {
+				getConfig: () => ({ enabled: true }),
+				startRun: (id) => started.push(id) > 0,
+				admitRun: () => (reads++ === 0 ? 0 : 1),
+				isRunInFlight: () => false,
+			});
+			await assert.rejects(execute({ session_id: created.session_id, message: 'again' }), (err) => {
+				assert.strictEqual(err.statusCode, 409);
+				assert.match(err.message, /arrived while this prompt was being accepted$/);
+				return true;
+			});
+			assert.deepStrictEqual(started, []);
+			assert.strictEqual((await session.getSession(created.session_id)).messages.length, 0);
+		});
+
 		it('get_agent_session returns the row plus its usage', async () => {
 			const sessionId = await seed();
 			const result = await operation('get_agent_session').execute({ session_id: sessionId });

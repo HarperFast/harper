@@ -95,6 +95,9 @@ async function agentPrompt(op: any, deps: OperationDeps) {
 		if (deps.isRunInFlight(sessionId)) {
 			throw new ClientError(`Session ${sessionId} still has a run finishing; send the prompt again shortly`, 409);
 		}
+		if (deps.admitRun(sessionId) !== admitted) {
+			throw new ClientError(`A cancel for session ${sessionId} arrived while this prompt was being accepted`, 409);
+		}
 		await appendMessage(sessionId, asUserMessage(message));
 	} else {
 		const created = await createSession({
