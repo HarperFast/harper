@@ -615,7 +615,7 @@ type Product @table {
 }
 ```
 
-When using a JavaScript function for an indexed computed property, use the `version` argument to ensure re-indexing when the function changes:
+When using a JavaScript function for an indexed computed property, use the `version` argument to ensure re-indexing when the function changes. An indexed computed property resolved by JavaScript cannot be replicated by [dedicated replication threads](../replication/overview.md#dedicated-replication-threads); use `from` expressions instead, or keep `replication.threads: 0`:
 
 ```graphql
 type Product @table {

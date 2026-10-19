@@ -534,6 +534,8 @@ Packages a project folder as a base64-encoded `.tar` string.
 
 Returns all local component files, folders, and configuration from `harper-config.yaml`. The response includes an `entries` array; each direct child's `name` identifies a component. CI cleanup can inspect `entries[].name` to check whether the project is present on this node.
 
+<VersionBadge version="v5.2.0" /> An entry for a `.env` file carries `protected: true`, unless it is a template such as `.env.example`. See [Environment File Operations](../operations-api/operations.md#environment-file-operations).
+
 ```json
 {
 	"operation": "get_components"
@@ -543,6 +545,8 @@ Returns all local component files, folders, and configuration from `harper-confi
 ### `get_component_file`
 
 Returns the contents of a file within a component project.
+
+<VersionBadge version="v5.2.0" /> A `.env` file is returned **masked**: one `KEY=********` line per key, never a value. Template files such as `.env.example` are returned as they are. See [Environment File Operations](../operations-api/operations.md#environment-file-operations).
 
 - `project` _(required)_ — Project name
 - `file` _(required)_ — Path relative to project folder
@@ -559,6 +563,8 @@ Returns the contents of a file within a component project.
 ### `set_component_file`
 
 Creates or updates a file within a component project.
+
+On a `.env` file it replaces the whole file with the payload, so saving back the masked body from `get_component_file` sets every value to `********`. To change one key and keep the others, use `set_env_value`; see [Environment File Operations](../operations-api/operations.md#environment-file-operations).
 
 - `project` _(required)_ — Project name
 - `file` _(required)_ — Path relative to project folder
