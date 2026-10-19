@@ -5797,12 +5797,26 @@ export function makeTable(options): TableResourceClass {
 		search(
 			target: RequestTarget
 		): AsyncIterable<Record & Partial<RecordObject>> | Promise<FullTextSearchPage<Record & Partial<RecordObject>>> {
+			if (target?.continuation !== undefined)
+				return Promise.resolve().then(
+					() => this.#search(target) as Promise<FullTextSearchPage<Record & Partial<RecordObject>>>
+				);
+			return this.#search(target);
+		}
+
+		#search(
+			target: RequestTarget
+		): AsyncIterable<Record & Partial<RecordObject>> | Promise<FullTextSearchPage<Record & Partial<RecordObject>>> {
 			const context = this.getContext();
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
 			if (target.continuation !== undefined) target = cloneContinuationTarget(target);
 			if (target.parseError) throw target.parseError;
-			if (target.closeContinuation !== undefined && target.continuation === undefined)
+			if (
+				target.closeContinuation !== undefined &&
+				target.closeContinuation !== false &&
+				target.continuation === undefined
+			)
 				throw new ClientError('closeContinuation requires an existing continuation token', 400);
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
 			const getColumns = () => {

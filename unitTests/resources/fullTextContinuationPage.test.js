@@ -13,6 +13,8 @@ describe('full-text visible continuation pages', () => {
 			null,
 			undefined,
 			0,
+			0n,
+			9007199254740993n,
 			-0,
 			'0',
 			false,
@@ -31,6 +33,17 @@ describe('full-text visible continuation pages', () => {
 		for (const invalid of [circular, NaN, Infinity, new Date(NaN), () => true])
 			assert.throws(
 				() => hash(invalid),
+				(error) => error.statusCode === 400
+			);
+	});
+	it('treats false closeContinuation as a normal page request', () => {
+		for (const continuation of [true, 'opaque']) {
+			const page = new FullTextContinuationPage({ ...target, continuation, closeContinuation: false }, {});
+			assert.strictEqual(page.close, false);
+		}
+		for (const closeContinuation of [0, '', 'false', null])
+			assert.throws(
+				() => new FullTextContinuationPage({ ...target, continuation: 'opaque', closeContinuation }, {}),
 				(error) => error.statusCode === 400
 			);
 	});

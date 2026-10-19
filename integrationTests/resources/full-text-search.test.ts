@@ -286,6 +286,15 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 	});
 
 	test('continues REST snapshot pages across HTTP workers and exposes opaque page headers', async () => {
+		const headPage = async (continuation: string) => {
+			const response = await fetch(
+				`${ctx.harper.httpURL}/Product/?catalogSearch=matches=pagination&limit(75)&select(id,title)&${continuation}`,
+				{ method: 'HEAD', headers: { Authorization: authorization }, signal: AbortSignal.timeout(15000) }
+			);
+			assert.strictEqual(response.status, 400);
+			assert.strictEqual(response.headers.get('harper-continuation'), null);
+		};
+		await headPage('continuation()');
 		const getPage = async (token?: string) => {
 			const continuation = token ? `continuation(${encodeURIComponent(token)})` : 'continuation()';
 			const response = await fetch(
@@ -313,6 +322,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		assert(first.token);
 		assert(Number(first.expires) > Date.now());
 		assert(first.worker);
+		await headPage(`continuation(${encodeURIComponent(first.token)})`);
 		let second = await getPage(first.token);
 		for (let attempt = 0; !NO_FULL_WORKER_COVERAGE && second.worker === first.worker && attempt < 30; attempt++)
 			second = await getPage(first.token);

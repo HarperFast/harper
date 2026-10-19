@@ -314,6 +314,46 @@ describe('full-text traversal ordering guard', () => {
 });
 
 describe('FullTextQueryIndex', () => {
+	it('rejects a resumed continuation when the requesting index changes during setup', async function () {
+		this.timeout(10000);
+		const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		const { FullTextContinuationPage } = require('#src/resources/indexes/fullTextContinuationPage');
+		const auditStore = sharedStore();
+		const indexes = ['resume-owner', 'resume-requester'].map((readinessId) => {
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				storeName: readinessId,
+				payload: publicationPayload(),
+				hits: () => ['a', 'b'].map((key) => ({ id: nativeId(1, key), version: '1', score: 1 })),
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			return index;
+		});
+		const search = (index, page) =>
+			index.search(
+				{ comparator: 'matches', value: 'shoe' },
+				{ signal: AbortSignal.timeout(5000) },
+				{ continuationPage: page }
+			);
+		try {
+			const first = new FullTextContinuationPage({ continuation: true, limit: 1 }, 'resume-fence');
+			first.materialize = async (entries) => entries;
+			first.ready.resolve();
+			await search(indexes[0], first);
+			assert(first.continuation);
+			const resumed = new FullTextContinuationPage({ continuation: first.continuation, limit: 1 }, 'resume-fence');
+			resumed.materialize = async (entries) => entries;
+			const pending = search(indexes[1], resumed);
+			indexes[1].updateDefinition({ ...definition(), fields: [{ name: 'title', weight: 7 }] });
+			resumed.ready.resolve();
+			await assert.rejects(pending, (error) => error.statusCode === 410);
+		} finally {
+			await Promise.all(indexes.map((index) => index.close()));
+		}
+	});
 	it('rejects a first continuation whose definition changed during page setup', async function () {
 		this.timeout(10000);
 		const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');

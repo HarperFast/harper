@@ -701,6 +701,8 @@ export class FullTextQueryIndex {
 		const assertActive = () => {
 			context?.signal?.throwIfAborted();
 			options.assertTransactionActive?.();
+			if (this.#closed || this.#configurationRevision !== revision || this.#pauses.size)
+				throw new ClientError('Full-text continuation expired; start a new search', 410);
 			if (process.hrtime.bigint() >= page.deadline)
 				throw new ServerError('Full-text continuation exceeded its request budget', 503);
 		};
@@ -732,8 +734,6 @@ export class FullTextQueryIndex {
 				assertActive();
 				readerLease = await this.#acquireSearchReader(condition, context, page.deadline);
 				assertActive();
-				if (this.#closed || this.#configurationRevision !== revision || this.#pauses.size)
-					throw new ClientError('Full-text continuation expired; start a new search', 410);
 				assertReady(
 					readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId),
 					this.#definition.name

@@ -49,6 +49,7 @@ export class FullTextContinuationPage {
 			);
 		if (
 			target.closeContinuation !== undefined &&
+			target.closeContinuation !== false &&
 			(target.closeContinuation !== true || typeof target.continuation !== 'string')
 		)
 			throw new ClientError('closeContinuation requires an existing continuation token', 400);
@@ -81,6 +82,7 @@ function canonical(value: unknown, seen: Set<object>): unknown {
 		return ['number', Object.is(value, -0) ? '-0' : String(value)];
 	}
 	if (typeof value === 'string' || typeof value === 'boolean') return [typeof value, value];
+	if (typeof value === 'bigint') return ['bigint', String(value)];
 	if (typeof value !== 'object') throw new ClientError('Unsupported full-text continuation query value', 400);
 	if (value instanceof Date) {
 		if (!Number.isFinite(value.getTime()))

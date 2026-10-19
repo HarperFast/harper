@@ -205,6 +205,36 @@ describe('published native full-text Table.search integration', () => {
 		}
 	});
 
+	it('continues through coerced BigInt filters with closeContinuation disabled', async () => {
+		Product = table({
+			database: `fulltext-native-bigint-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'rank', type: 'BigInt', indexed: true },
+			],
+			fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1, highlight: false }])],
+		});
+		for (const id of ['a', 'b']) await Product.put(id, { title: 'widget', rank: 9007199254740993n });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
+		const query = {
+			conditions: [
+				{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget' },
+				{ attribute: 'rank', comparator: 'equals', value: '9007199254740993' },
+			],
+			limit: 1,
+			closeContinuation: false,
+		};
+		assert.strictEqual((await collect(Product.search(query))).length, 1);
+		const first = await Product.search({ ...query, continuation: true });
+		assert(first.continuation);
+		const second = await Product.search({ ...query, continuation: first.continuation });
+		assert.deepStrictEqual(ids([...first, ...second]), ['a', 'b']);
+		assert.strictEqual(second.complete, true);
+	});
+
 	it('validates continuation options and query binding and allows explicit close through REST syntax', async () => {
 		Product = table({
 			database: `fulltext-native-continuation-close-${Date.now()}`,
@@ -272,10 +302,7 @@ describe('published native full-text Table.search integration', () => {
 		assert.strictEqual(syncTarget.checkPermission, true);
 		syncTarget.continuation = syncPage.continuation;
 		syncAllow = false;
-		assert.throws(
-			() => syncResource.search(syncTarget),
-			(error) => error.statusCode === 403
-		);
+		await assert.rejects(syncResource.search(syncTarget), (error) => error.statusCode === 403);
 		syncAllow = true;
 		await syncResource.search({ ...syncTarget, closeContinuation: true });
 		const first = await Product.search({ ...base, continuation: true });
@@ -289,8 +316,8 @@ describe('published native full-text Table.search integration', () => {
 			{ count: 'exact' },
 			{ limit: require('#src/resources/indexes/fullTextSearchLimits').DEFAULT_FULL_TEXT_SEARCH_LIMITS.maxPageSize + 1 },
 		])
-			assert.throws(
-				() => Product.search({ ...base, continuation: true, ...invalid }),
+			await assert.rejects(
+				Product.search({ ...base, continuation: true, ...invalid }),
 				(error) => error.statusCode === 400
 			);
 		const parsed = parseQuery(
