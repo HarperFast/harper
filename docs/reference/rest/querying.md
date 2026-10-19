@@ -507,7 +507,7 @@ Keep relationship lookup fields and outer filter fields indexed, and project onl
 
 #### Combine OR filters with child sorting and pagination
 
-Group the OR conditions inside the relationship selection, then separate the sort, page, and projection options with `&`. This request selects products costing less than $30 **or** at least $60, sorts each brand's matches by descending price (then `id`), skips its first match, and returns at most one more:
+Always group OR conditions inside the relationship selection when combining them with query functions, then separate the sort, page, and projection options with `&`. This request selects products costing less than $30 **or** at least $60, sorts each brand's matches by descending price (then `id`), skips its first match, and returns at most one more:
 
 ```http
 GET /Brand/?sort(name,id)&limit(0,20)&select(id,name,products[[price=lt=number:30|price=ge=number:60]&sort(-price,id)&limit(1,2)&select(id,name,price)])
