@@ -375,8 +375,8 @@ have received, and can never reach an application catch-all. Only a URL that rea
 The contract is route-ownership-based, not path-based. There is no exemption list, no carrier
 header, no credential rename, and no pre-auth stripping shim.
 
-**Every 401 Harper renders for an authentication decision is challenged; one an application raised is
-not re-decorated.** `credentialRejectionResponse()` builds both the in-place and the settled 401 with a
+**Every 401 Harper renders for an authentication decision is challenged; one an application raised
+under a deferred credential is not re-decorated.** `credentialRejectionResponse()` builds both the in-place and the settled 401 with a
 negotiated `Content-Type` and, on the application port, `WWW-Authenticate` from `authenticationChallenge()`:
 `Bearer realm="Harper"` for a Bearer credential (`error="invalid_token"` only when the token itself was
 rejected, not when verifying it faulted), `Basic realm="Harper"` otherwise. A Bearer credential never gets
@@ -387,8 +387,9 @@ deferred — a challenge by the presented scheme, or a 302 at `resources.loginPa
 application catch-all raised for its own scheme under a deferred credential (a WooCommerce or Bearer
 challenge), which is that application's to make. The legacy Fastify server (`fastifyRoutes.ts`) challenges any 401 its error handler
 renders unless the reply already set one: a settled rejection's error carries the deferred strategy's
-challenge (an mTLS rejection never evaluated a Bearer header beside it), anything else is challenged
-by the presented `Authorization` scheme. The #1565 identity floor
+challenge (an mTLS rejection never evaluated a Bearer header beside it), and the `authorize()` Bearer
+branch marks a token it rejected (`bearerTokenRejection()`); anything else is challenged by the
+presented `Authorization` scheme without `invalid_token`. The #1565 identity floor
 still applies either way — it is stamped in `applyResponseHeaders`, not in the challenge.
 
 **The identity cache floor survives the legacy Fastify fallbacks.** A response produced under a
