@@ -206,6 +206,17 @@ const SERVER_SHUTTING_DOWN = 0x8b; // MQTT v5 DISCONNECT reason code
 const REASON_STRING_LIMIT = 256; // bytes
 /** Fixed header, message id and reason code, plus the property identifier and its length prefix. */
 const ACK_PACKET_OVERHEAD = 16;
+/** `AccessViolation` is 401 for a request with no user and 403 for a user lacking permission; an MQTT client sees both as "Not authorized". */
+const isNotAuthorized = (error: any) => error?.statusCode === 401 || error?.statusCode === 403;
+/** Only failures this layer maps to a code of their own are safe to describe: any other carries an internal message. */
+const hasClientSafeMessage = (error: any) => isNotAuthorized(error) || error?.statusCode === 404;
+/** The limit is in encoded bytes, so the string is trimmed in bytes too, never inside a character. */
+function boundedReasonString(message: unknown): string {
+	const bytes = Buffer.from(String(message), 'utf8');
+	let end = Math.min(bytes.length, REASON_STRING_LIMIT);
+	while (end < bytes.length && end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+	return bytes.subarray(0, end).toString('utf8');
+}
 
 /**
  * Every live MQTT connection on this worker, so a shutdown can announce itself: a bare socket close
@@ -332,12 +343,9 @@ function onSocket(socket, send, request, user, mqttSettings) {
 				const describable =
 					error instanceof DatabaseGenerationChangedError ||
 					error instanceof ResumeHistoryUnavailableError ||
-					(error as any)?.statusCode === 403 ||
-					(error as any)?.statusCode === 404;
+					hasClientSafeMessage(error);
 				const reasonString =
-					describable && error.message && sendProblemInformation
-						? Buffer.from(String(error.message), 'utf8').subarray(0, REASON_STRING_LIMIT).toString('utf8')
-						: undefined;
+					describable && error.message && sendProblemInformation ? boundedReasonString(error.message) : undefined;
 				if (
 					reasonString &&
 					(!maximumPacketSize || maximumPacketSize >= Buffer.byteLength(reasonString) + ACK_PACKET_OVERHEAD)
@@ -548,7 +556,11 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					});
 					const listener = async (topic, message, messageId, subscription, version, dup) => {
 						try {
-							if (disconnected) throw new Error('Session disconnected while trying to send message to', topic);
+							if (disconnected) {
+								// a delivery already past the subscription when the client left; the disconnect has ended the session
+								mqttLog.debug?.(`Session ${session?.sessionId} disconnected while trying to send message to ${topic}`);
+								return false;
+							}
 							const slashIndex = topic.indexOf('/', 1);
 							const generalTopic = slashIndex > 0 ? topic.slice(0, slashIndex) : topic;
 							const qos = subscription.qos || 0;
@@ -613,6 +625,8 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					break;
 				case 'subscribe':
 					const granted = [];
+					// a SUBACK carries one reason string for the whole packet, so the first refusal's is the one sent
+					let refusalMessage: string | undefined;
 					for (const subscription of packet.subscriptions) {
 						let grantedQos;
 						try {
@@ -631,21 +645,28 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							grantedQos =
 								mqttOptions.protocolVersion < 5
 									? 0x80 // the only error code in v3.1.1
-									: error.statusCode === 403
-										? 0x87 // unauthorized
+									: isNotAuthorized(error)
+										? 0x87 // not authorized
 										: error.statusCode === 404
 											? 0x8f // invalid topic
 											: 0x80; // generic failure
+							if (mqttOptions.protocolVersion >= 5 && error.message && hasClientSafeMessage(error))
+								refusalMessage ??= error.message;
 						}
 						granted.push(grantedQos);
 					}
 					await session.committed;
-					generateAndSendPacket({
-						// Send a subscription acknowledgment
-						cmd: 'suback',
-						granted,
-						messageId: packet.messageId,
-					});
+					const subackPacket: any = { cmd: 'suback', granted, messageId: packet.messageId };
+					let suback = generate(subackPacket, mqttOptions);
+					if (refusalMessage !== undefined && sendProblemInformation) {
+						// the result vector grows with the filter count, so only the encoded packet says whether the string fits
+						const described = generate(
+							{ ...subackPacket, properties: { reasonString: boundedReasonString(refusalMessage) } },
+							mqttOptions
+						);
+						if (!maximumPacketSize || described.length <= maximumPacketSize) suback = described;
+					}
+					sendPacket(suback, 'suback');
 					break;
 				case 'unsubscribe': {
 					const granted = [];
@@ -760,23 +781,15 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					reasonCode:
 						mqttOptions.protocolVersion < 5
 							? 0x80 // the only error code in v3.1.1
-							: error?.statusCode === 403
+							: isNotAuthorized(error)
 								? 0x87 // not authorized
 								: error?.statusCode === 404
 									? 0x90 // topic name invalid
 									: 0x80, // unspecified error
 				};
-				// Only errors this layer maps to a code of their own are safe to describe: any other
-				// failure carries an internal message that a client must not be handed. Both limits
-				// are in encoded bytes, so measure and trim the string in bytes too.
 				const describable =
-					mqttOptions.protocolVersion >= 5 &&
-					sendProblemInformation &&
-					error?.message &&
-					(error.statusCode === 403 || error.statusCode === 404);
-				const reasonString = describable
-					? Buffer.from(String(error.message), 'utf8').subarray(0, REASON_STRING_LIMIT).toString('utf8')
-					: undefined;
+					mqttOptions.protocolVersion >= 5 && sendProblemInformation && error?.message && hasClientSafeMessage(error);
+				const reasonString = describable ? boundedReasonString(error.message) : undefined;
 				if (
 					reasonString &&
 					(!maximumPacketSize || maximumPacketSize >= Buffer.byteLength(reasonString) + ACK_PACKET_OVERHEAD)
