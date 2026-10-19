@@ -349,7 +349,7 @@ describe('mqtt.ts reason codes for a refused request', () => {
 				const ours = () => debug.lines.filter((line) => String(line[0]).includes(`${name}/k`));
 				await waitFor(() => ours().length > 0, { message: 'no debug line naming the topic' });
 				assert.match(String(ours()[0][0]), new RegExp(`disconnected while trying to send message to ${name}/k`));
-				// the original error never named the topic, so the filter is on its wording, not on the fixture's names
+				// the message built without the topic must be caught too, so the filter is on its wording, not on the fixture's names
 				assert.deepStrictEqual(
 					error.lines.filter((line) => /disconnected while trying to send/.test(String(line[0]?.message ?? line[0]))),
 					[],
