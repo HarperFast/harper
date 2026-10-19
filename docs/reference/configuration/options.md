@@ -488,7 +488,7 @@ A cap is checked when a run starts, before it executes an approved action, and a
 
 A cap is a threshold checked after each call, not a guarantee: the call that reaches it can overshoot it. Every call that returns is counted, including a reply the agent rejects as cut off or empty: that reply stays out of the transcript, but its usage is kept on the session. A call that fails, for example on a timeout or a provider error and whether or not another model then serves it, is not counted, even if the provider billed it. The caps bound one session only: there is no cross-session or per-user budget, so a caller allowed to run `agent_prompt` can keep spending by starting new sessions.
 
-A cap, or a `maxTurns`, that is not a usable number fails the agent's start: Harper logs the error and registers no agent operation. Through `set_agent_config` the same value is rejected with a 400.
+A cap, or a `maxTurns`, that is not a usable number fails the agent's start: Harper logs the error and registers no agent operation. Through `set_agent_config` the same value is rejected with a 400. A bare `maxSessionTokens:` or `maxCostUsd:` with no value leaves that cap unset, as `null` does through `set_agent_config`; a bare `maxTurns:` fails, because `maxTurns` cannot be unset.
 
 If you upgrade with `maxCostUsd` already set in your configuration, it starts being enforced, and needs `pricing` on the generative entry the agent uses.
 
