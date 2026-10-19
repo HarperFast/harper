@@ -90,8 +90,8 @@ do {
 ```
 
 `Harper-Continuation-Complete` reports completion. `Harper-Continuation-Expires` contains the
-absolute expiry time in milliseconds since the Unix epoch. These headers are exposed to browser
-clients. Continuation responses use `Cache-Control: no-store`. JSON `QUERY` requests return the
+absolute expiry time in milliseconds since the Unix epoch. Completed pages omit the token and
+expiry. These headers are exposed to browser clients. Continuation responses use `Cache-Control: no-store`. JSON `QUERY` requests return the
 same headers when their query body enables continuation.
 
 Long record IDs make continuation tokens larger. Qualification with the released library produced
@@ -114,6 +114,11 @@ use the continuation token or completion flag to decide when to stop.
 
 To stop early, repeat the query with its current token and `closeContinuation: true`. In REST, add
 `closeContinuation()` alongside `continuation(token)`. Closing returns an empty completed page.
+
+Close and terminal pages wait for admission release before reporting success. If release fails, the
+request returns an error instead. The revoked token may then return `410`, and its admission slot
+can remain occupied until absolute expiry or worker exit. A successful close releases admission
+capacity; it does not promise immediate removal of old index segments from disk.
 
 Completion, close, expiry, index reset, definition changes, worker loss, or process restart can
 invalidate a token. Resuming an unavailable snapshot returns `410`; start a new search. Once any
