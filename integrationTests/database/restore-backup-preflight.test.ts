@@ -165,7 +165,11 @@ suite('restore_backup verifies before it replaces (harper#2965)', { skip: skipSu
 
 		const job = await runJob({ operation: 'restore_backup', database: DATABASE, backup_id: backupId });
 		strictEqual(job.status, 'ERROR', `restore of a corrupt backup must fail: ${JSON.stringify(job)}`);
-		doesNotMatch(String(job.message), /held open/, 'refused at the closure check before verification ran (harper#3120?)');
+		doesNotMatch(
+			String(job.message),
+			/held open/,
+			'refused at the closure check before verification ran (harper#3120?)'
+		);
 		match(String(job.message), /failed verification, so this restore did not modify/);
 
 		await expectIds([...baseIds, ...postIds], 'after refused restore');
