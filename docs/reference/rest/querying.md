@@ -505,6 +505,44 @@ The outer `sort(name,id)` orders brands; the nested `sort(price,id)` orders prod
 
 Keep relationship lookup fields and outer filter fields indexed, and project only the fields the client needs. The sample schema indexes `brandId`, `price`, and `Brand.name`. Nested sorting can use an unindexed child field because it orders the already-related candidates. A child sort may still collect and sort all eligible related records before returning its page; an index on `price` does not guarantee an index-ordered nested scan. Keep parent pages small and consider a separately paginated child endpoint for very large relationships. Unsorted nested limits can stop early, but are appropriate only when child order does not matter.
 
+#### Combine OR filters with child sorting and pagination
+
+Group the OR conditions inside the relationship selection, then separate the sort, page, and projection options with `&`. This request selects products costing less than $30 **or** at least $60, sorts each brand's matches by descending price (then `id`), skips its first match, and returns at most one more:
+
+```http
+GET /Brand/?sort(name,id)&limit(0,20)&select(id,name,products[[price=lt=number:30|price=ge=number:60]&sort(-price,id)&limit(1,2)&select(id,name,price)])
+```
+
+The literal `|` is the OR operator in the query syntax; encode individual values rather than the assembled expression. The inner `[price=lt=number:30|price=ge=number:60]` groups only the price conditions; the following `sort()`, `limit()`, and `select()` options apply to the combined matches.
+
+```json
+[
+	{
+		"id": 42,
+		"name": "Acme",
+		"products": [
+			{
+				"id": "p1",
+				"name": "Cable",
+				"price": 10
+			}
+		]
+	},
+	{
+		"id": 43,
+		"name": "Budget Basics",
+		"products": []
+	},
+	{
+		"id": 44,
+		"name": "Studio Gear",
+		"products": []
+	}
+]
+```
+
+Acme's matching products sort to Dock ($60), then Cable ($10), so `limit(1,2)` returns Cable. Budget Basics and Studio Gear each have only one match, leaving an empty child page after the offset. All three brands remain because these are nested filters; there is no outer relationship filter to remove parents. Use `limit(0,3)` to see the unskipped matches: Acme returns Dock and Cable, Budget Basics returns Mouse, and Studio Gear returns Monitor.
+
 #### Nested option reference
 
 | Nested option      | Behavior                                                                                                   |
