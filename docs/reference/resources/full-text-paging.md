@@ -94,6 +94,8 @@ absolute expiry time in milliseconds since the Unix epoch. Completed pages omit 
 expiry. These headers are exposed to browser clients. Continuation responses use `Cache-Control: no-store`. JSON `QUERY` requests return the
 same headers when their query body enables continuation.
 
+HEAD rejects continuation requests because it cannot return the page records. Use GET or QUERY.
+
 Long record IDs make continuation tokens larger. Qualification with the released library produced
 tokens of about 600 bytes for short IDs and nearly 8 KB near the supported ID limit. Review Harper's
 `http.maxHeaderSize` setting and any proxy response-header and request-line limits. Leave room for the
