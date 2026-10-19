@@ -488,13 +488,19 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 	it('a promise handed straight to put is never staged as a restricted replacement', async function () {
 		await seed('direct-1');
 		const context = { user: title_owner_user };
+		let putAttempted = false;
 		await transaction(context, async () => {
 			const resource = await DocTable.getResource('direct-1', context);
 			assert.ok(resource.allowUpdate(title_owner_user, { title: 't' }, context));
 			const target = new RequestTarget('/direct-1');
 			target.id = 'direct-1';
+			putAttempted = true;
 			await resource.put(target, Promise.resolve({ title: 'x' }));
-		}).catch(() => {});
+		}).catch((error) => {
+			// both engines refuse to store a promise; anything before the put is a test failure
+			if (!putAttempted) throw error;
+		});
+		assert.ok(putAttempted);
 		assert.deepEqual(JSON.parse(JSON.stringify(await DocTable.get('direct-1'))), {
 			id: 'direct-1',
 			title: 'seed',
