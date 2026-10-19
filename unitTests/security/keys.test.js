@@ -2107,7 +2107,7 @@ describe('Test keys module', () => {
 			assert.deepStrictEqual(fs.readdirSync(keysDir).sort(), keyFiles);
 		}).timeout(60000);
 
-		it('never replaces a certificate that is not self-signed', async () => {
+		it('keeps an unusable external row named after the node and names the self-signed leaf apart', async () => {
 			// named after this node but not covering its hostname, so selection does not find it
 			const external = await mkcert.createCert({
 				domains: ['elsewhere.harper.local'],
@@ -2127,16 +2127,45 @@ describe('Test keys module', () => {
 			try {
 				await realKeys.reviewSelfSignedCert();
 				const pair = await selfSignedRows();
-				await assert.rejects(realKeys.renewSelfSigned(), /is not self-signed/);
-				assert.deepStrictEqual(
-					(await selfSignedRows()).map((row) => row.certificate),
-					pair.map((row) => row.certificate)
+				assert.deepStrictEqual(pair.map((row) => row.name).sort(), [
+					`Harper-Certificate-Authority-${nodeName}`,
+					`${nodeName}-self-signed`,
+				]);
+				await realKeys.renewSelfSigned();
+				const renewed = await selfSignedRows();
+				assert.deepStrictEqual(renewed.map((row) => row.name).sort(), pair.map((row) => row.name).sort());
+				assert.notDeepStrictEqual(
+					renewed.map((row) => row.certificate).sort(),
+					pair.map((row) => row.certificate).sort()
 				);
 				const current = await certTable.get(nodeName);
 				assert.strictEqual(current.certificate, external.cert);
 				assert.strictEqual(current.is_self_signed, false);
 			} finally {
 				await certTable.delete(nodeName);
+			}
+		}).timeout(60000);
+
+		it('a non-self-signed row under the CA name skips the CA and its leaf at boot, and fails renewal', async () => {
+			const caName = `Harper-Certificate-Authority-${nodeName}`;
+			await startWithoutSelfSigned({ privateKey: null });
+			await certTable.put({
+				name: caName,
+				uses: [],
+				certificate: test_ca,
+				private_key_name: 'missing-key.pem',
+				is_authority: true,
+				is_self_signed: false,
+			});
+			const keyFiles = fs.readdirSync(keysDir).sort();
+			try {
+				await realKeys.reviewSelfSignedCert();
+				assert.deepStrictEqual(await selfSignedRows(), []);
+				assert.deepStrictEqual(fs.readdirSync(keysDir).sort(), keyFiles, 'the unused generated key is removed');
+				await assert.rejects(realKeys.renewSelfSigned(), { statusCode: 409 });
+				assert.strictEqual((await certTable.get(caName)).certificate, test_ca);
+			} finally {
+				await certTable.delete(caName);
 			}
 		}).timeout(60000);
 

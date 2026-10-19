@@ -18,11 +18,13 @@ import * as hdbTerms from '../utility/hdbTerms.ts';
 import * as certificatesTerms from '../utility/terms/certificates.js';
 const tls = require('node:tls');
 import { relative, join, dirname, resolve } from 'node:path';
+import { open } from 'node:fs/promises';
 
 import assignCmdenvVars from '../utility/assignCmdEnvVariables.ts';
 import * as configUtils from '../config/configUtils.ts';
 import { table, getDatabases, databases } from '../resources/databases.ts';
 import { transaction } from '../resources/transaction.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 const logger = forComponent('tls').conditional;
 const { CONFIG_PARAMS } = hdbTerms;
 const { CERTIFICATE_VALUES } = certificatesTerms;
@@ -780,7 +782,7 @@ async function publishSelfSignedCerts(
 				const current = await certificateTable.get(record.name);
 				if (current && !current.is_self_signed) {
 					const message = `Certificate ${record.name} is not self-signed, so it is not replaced with a self-signed certificate`;
-					if (retiring) throw new Error(message);
+					if (retiring) throw new ClientError(message, 409);
 					logger.warn?.(message);
 					// the leaf is signed by this CA, and would have no issuer in the table
 					if (record.is_authority) {
@@ -864,7 +866,10 @@ async function prepareSelfSignedCerts(replacing: boolean) {
 	}
 
 	if (!(await getReplicationCert(replacing))) {
-		const certName = getThisNodeName();
+		let certName = getThisNodeName();
+		const existing = await certificateTable.get(certName);
+		// an external certificate that cannot serve this node already holds its name
+		if (existing && !existing.is_self_signed) certName += '-self-signed';
 		logger.notify?.(
 			`A suitable replication certificate was not found, creating new self signed cert named: ${certName}`
 		);
@@ -893,19 +898,25 @@ async function prepareSelfSignedCerts(replacing: boolean) {
 
 async function writeGeneratedKey(keysPath: string, pem: string): Promise<string> {
 	let keyName = certificatesTerms.PRIVATEKEY_PEM_NAME;
+	let file;
 	for (;;) {
 		try {
-			await fs.writeFile(path.join(keysPath, keyName), pem, { flag: 'wx', mode: 0o600 });
-			return keyName;
+			file = await open(path.join(keysPath, keyName), 'wx', 0o600);
+			break;
 		} catch (error) {
-			if (error.code !== 'EEXIST') {
-				// with `wx`, any other failure came after this call created the file
-				await fs.remove(path.join(keysPath, keyName));
-				throw error;
-			}
+			if (error.code !== 'EEXIST') throw error;
 			keyName = `privateKey${uuidv4().split('-')[0]}.pem`;
 		}
 	}
+	try {
+		await file.writeFile(pem);
+	} catch (error) {
+		await file.close();
+		await fs.remove(path.join(keysPath, keyName));
+		throw error;
+	}
+	await file.close();
+	return keyName;
 }
 
 // Update the cert config in harperdb-config.yaml
