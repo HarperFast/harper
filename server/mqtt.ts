@@ -340,7 +340,14 @@ function onSocket(socket, send, request, user, mqttSettings) {
 	function closeConnection(error?: Error) {
 		try {
 			if (mqttOptions.protocolVersion >= 5) {
+<<<<<<< HEAD
 				const packet: any = { cmd: 'disconnect', reasonCode: error ? 0x83 : 0x8e };
+=======
+				const packet: any = {
+					cmd: 'disconnect',
+					reasonCode: error ? ((error as any).mqttReasonCode ?? (isNotAuthorized(error) ? 0x87 : 0x83)) : 0x8e,
+				};
+>>>>>>> be22f4636 (Answer a refused durable resume with DISCONNECT Not authorized)
 				// as for PUBACK: only failures this layer describes itself are safe to hand a client
 				const describable =
 					error instanceof DatabaseGenerationChangedError ||
