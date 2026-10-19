@@ -166,6 +166,7 @@ function simpleQueryIndex({
 	sourceGeneration = 'generation',
 	maxSearchWindow = 10,
 	searchResult,
+	searchPageResult,
 }) {
 	let committedPayload = payload;
 	let reloads = 0;
@@ -211,6 +212,7 @@ function simpleQueryIndex({
 						return { total: current.length, totalRelation: 'exact', hits: current.slice(offset, offset + limit) };
 					},
 					async searchPage({ continuation, ...request }) {
+						if (searchPageResult) return searchPageResult({ continuation, ...request });
 						const offset = Number(continuation ?? 0);
 						const result = await this.search({ ...request, offset });
 						const next = offset + result.hits.length;
@@ -312,6 +314,51 @@ describe('full-text traversal ordering guard', () => {
 });
 
 describe('FullTextQueryIndex', () => {
+	for (const repeatBoundary of [true, false]) {
+		it(`rejects repeated continuation hits with ${repeatBoundary ? 'the same' : 'a different'} native boundary`, async function () {
+			this.timeout(10000);
+			const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
+			if (!(await supportsPublishedFullTextBinding())) this.skip();
+			const { FullTextContinuationPage } = require('#src/resources/indexes/fullTextContinuationPage');
+			const auditStore = sharedStore();
+			const readinessId = `continuation-progress-${repeatBoundary}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			let calls = 0;
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				hits: () => [],
+				searchPageResult: () => {
+					calls++;
+					return {
+						total: 100,
+						totalRelation: 'exact',
+						hits: ['a', 'b'].map((key) => ({ id: nativeId(1, key), version: '1', score: 1 })),
+						continuation: repeatBoundary ? 'same' : String(calls),
+					};
+				},
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			const page = new FullTextContinuationPage({ continuation: true, limit: 3 }, readinessId);
+			page.materialize = async (entries) => entries;
+			page.ready.resolve();
+			try {
+				await assert.rejects(
+					index.search(
+						{ comparator: 'matches', value: 'shoe' },
+						{ signal: AbortSignal.timeout(5000) },
+						{ continuationPage: page }
+					),
+					(error) => error.statusCode === 500 && /boundary|advance/.test(error.message)
+				);
+				assert.strictEqual(calls, 2);
+			} finally {
+				await index.close();
+			}
+		});
+	}
+
 	it('does not treat prototype property names as full-text comparators', () => {
 		for (const comparator of ['constructor', 'toString', '__proto__'])
 			assert.strictEqual(fullTextComparatorMode(comparator), undefined);

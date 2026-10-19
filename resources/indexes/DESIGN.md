@@ -548,6 +548,8 @@ A missing owner expires the search; no request is forwarded to another Harper se
 Ordinary publication changes may retire a reader while its retained search finishes. Reset, close,
 and index-definition changes instead revoke matching leases immediately, before waiting for native
 work to drain. Releasing the reader waits for already admitted native work. `FullTextContinuationPage` binds the original query, selection, table configuration and principal.
+Only the reserving worker can release its process-wide claim. The lease's shared drain promise
+carries that acknowledgement through close; reader-retirement failures are observed separately.
 `Table.search` supplies the existing record materializer; `searchByIndex` supplies its existing entry
 loader. The index feeds bounded candidate groups through those callbacks until the visible page
 fills or traversal ends. Only the rare source-refresh branch needs the saved native version check.

@@ -8,10 +8,69 @@ const {
 	fullTextContinuationDeadline,
 } = require('#src/resources/indexes/fullTextContinuation');
 const claims = [];
-let writer, reader;
+let writer, reader, releaseGate, restoreReleasePolicy;
 onMessageByType('full-text-admission-test-command', async (event) => {
 	try {
-		if (event.message.operation === 'native') {
+		if (event.message.operation === 'table-terminal-release') {
+			const { setupTestDBPath } = require('../../testUtils');
+			const { table } = require('#src/resources/databases');
+			const { fullTextDerivedIndexReadiness } = require('#src/resources/derivedIndexes');
+			const { fullTextContinuationOwner } = require('#src/resources/indexes/fullTextContinuationOwner');
+			const env = require('#src/utility/environment/environmentManager');
+			const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+			const { waitFor } = require('../../waitFor');
+			setupTestDBPath();
+			const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+			let Product, leaseId, value;
+			try {
+				Product = table({
+					database: `fulltext-worker-release-${threadId}-${Date.now()}`,
+					table: 'Product',
+					audit: true,
+					attributes: [
+						{ name: 'id', type: 'ID', isPrimaryKey: true },
+						{ name: 'title', type: 'String' },
+					],
+					fullTextIndexes: [
+						{
+							name: 'catalogSearch',
+							fields: [{ name: 'title', weight: 1 }],
+							analyzer: 'english@2',
+							stopWords: true,
+							positions: true,
+							surfaceTerms: true,
+							synonyms: [],
+						},
+					],
+				});
+				await Product.put('one', { title: 'widget' });
+				await Product.put('two', { title: 'widget' });
+				await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 10000);
+				const query = {
+					conditions: [
+						{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget', waitForIndexMilliseconds: 5000 },
+					],
+					limit: 1,
+				};
+				const first = await Product.search({ ...query, continuation: true });
+				leaseId = (await fullTextContinuationOwner()).tokens.route(first.continuation).lease;
+				const last = await Product.search({
+					...query,
+					continuation: first.continuation,
+					rowFilter: () => {
+						env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, maxPendingResponseBytes: 1 });
+						return true;
+					},
+				});
+				value = { complete: last.complete, count: last.length };
+			} finally {
+				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+				if (leaseId) await releaseFullTextContinuation(leaseId);
+				await Product?.derivedIndexRuntime?.close();
+			}
+			parentPort.postMessage({ type: 'full-text-admission-test-response', message: { originator: threadId, value } });
+			return;
+		} else if (event.message.operation === 'native') {
 			const { requestFullTextContinuationOwner } = require('#src/resources/indexes/fullTextContinuation');
 			const value = await requestFullTextContinuationOwner(
 				event.message.owner,
@@ -50,7 +109,22 @@ onMessageByType('full-text-admission-test-command', async (event) => {
 			const owner = await fullTextContinuationOwner();
 			const claim = await reserveFullTextContinuation(128, fullTextContinuationDeadline());
 			claims.push(claim);
-			owner.leases.register(claim, 'b'.repeat(64), { text: 'widget' }, reader, () => {});
+			if (event.message.holdRelease) releaseGate = Promise.withResolvers();
+			owner.leases.register(claim, 'b'.repeat(64), { text: 'widget' }, reader, async () => {
+				if (releaseGate) {
+					parentPort.postMessage({
+						type: 'full-text-admission-test-response',
+						message: { originator: threadId, releaseStarted: true },
+					});
+					await releaseGate.promise;
+				}
+				try {
+					await releaseFullTextContinuation(claim.id);
+				} finally {
+					restoreReleasePolicy?.();
+					restoreReleasePolicy = undefined;
+				}
+			});
 			await confirmFullTextContinuation(claim.id, fullTextContinuationDeadline());
 			const token = owner.leases.seal(claim.id, 'b'.repeat(64), { batchSize: 7, consumed: 2 });
 			parentPort.postMessage({
@@ -64,11 +138,21 @@ onMessageByType('full-text-admission-test-command', async (event) => {
 			});
 			await writer.commit();
 		} else if (event.message.operation === 'shutdown') {
+			releaseGate?.resolve();
 			const { fullTextContinuationOwner } = require('#src/resources/indexes/fullTextContinuationOwner');
 			await (await fullTextContinuationOwner()).leases.revokeReader(reader);
 			await reader.close();
 			await writer.close();
 			for (const claim of claims.splice(0)) await releaseFullTextContinuation(claim.id);
+		} else if (event.message.operation === 'unblock-release') {
+			if (event.message.failRelease) {
+				const env = require('#src/utility/environment/environmentManager');
+				const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+				const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+				restoreReleasePolicy = () => env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, maxPendingResponseBytes: 1 });
+			}
+			releaseGate?.resolve();
 		} else if (event.message.operation === 'reserve')
 			claims.push(await reserveFullTextContinuation(128, fullTextContinuationDeadline()));
 		else if (event.message.operation === 'release') await releaseFullTextContinuation(claims.pop().id);

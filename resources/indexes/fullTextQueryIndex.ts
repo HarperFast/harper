@@ -740,11 +740,8 @@ export class FullTextQueryIndex {
 				);
 				const lease = readerLease;
 				const id = claim.id;
-				owner.leases.register(claim, page.queryHash, query, lease.reader, () => {
-					void lease.release();
-					void releaseFullTextContinuation(id).catch((error) =>
-						logger.warn?.('Could not release a full-text continuation claim', error)
-					);
+				owner.leases.register(claim, page.queryHash, query, lease.reader, async () => {
+					await Promise.all([lease.release(), releaseFullTextContinuation(id)]);
 				});
 				registered = true;
 				ownerId = threadId;
@@ -756,12 +753,14 @@ export class FullTextQueryIndex {
 					{ operation: 'close', token: page.token as string, queryHash: page.queryHash },
 					page.deadline
 				);
+				assertActive();
 				page.complete = true;
 				return [];
 			}
 			page.expiresAt = claim.expiresAt;
 			let fetched = 0;
 			let exhausted = false;
+			let previousHit: NativeFullTextSearchPageResult['hits'][number] | undefined;
 			const transaction = this.#options.Table._readTxnForContext(context);
 			while (page.records.length < page.limit && !exhausted) {
 				assertActive();
@@ -794,6 +793,9 @@ export class FullTextQueryIndex {
 				}
 				fetched += raw.hits.length;
 				assertActive();
+				if (previousHit && raw.hits.length > 0 && !fullTextHitsAdvance(previousHit, raw.hits[0]))
+					throw new ServerError('Full-text traversal did not advance past its previous page', 500);
+				if (raw.hits.length > 0) previousHit = raw.hits[raw.hits.length - 1];
 				while (position.consumed < raw.hits.length && page.records.length < page.limit) {
 					const candidates = [];
 					const accepted = [];
@@ -850,6 +852,8 @@ export class FullTextQueryIndex {
 					{ operation: 'close', token, queryHash: page.queryHash },
 					page.deadline
 				);
+				assertActive();
+				page.expiresAt = undefined;
 				page.complete = true;
 			} else {
 				if (page.token === true) await confirmFullTextContinuation(claim.id, page.deadline);
@@ -859,7 +863,10 @@ export class FullTextQueryIndex {
 			return [];
 		} catch (error) {
 			if (page.token === true && claim) {
-				if (registered) await owner.leases.revoke(claim.id);
+				if (registered)
+					await owner.leases
+						.revoke(claim.id)
+						.catch((releaseError) => logger.warn?.('Could not release a full-text continuation claim', releaseError));
 				else {
 					await readerLease?.release();
 					await releaseFullTextContinuation(claim.id).catch((releaseError) =>
@@ -1236,8 +1243,13 @@ export class FullTextQueryIndex {
 	#revokeContinuations(): void {
 		const owner = peekFullTextContinuationOwner();
 		if (!owner) return;
-		if (this.#readerSlot) void owner.leases.revokeReader(this.#readerSlot.reader);
-		for (const slot of this.#retiredReaderSlots) void owner.leases.revokeReader(slot.reader);
+		const revoke = (reader: NativeFullTextReader) => {
+			void owner.leases
+				.revokeReader(reader)
+				.catch((error) => logger.warn?.('Could not release a revoked full-text continuation', error));
+		};
+		if (this.#readerSlot) revoke(this.#readerSlot.reader);
+		for (const slot of this.#retiredReaderSlots) revoke(slot.reader);
 	}
 
 	async #retireAllReaders(): Promise<void> {

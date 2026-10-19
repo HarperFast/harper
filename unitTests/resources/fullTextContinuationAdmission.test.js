@@ -21,11 +21,11 @@ const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform')
 
 onMessageByType('full-text-admission-test-response', () => {});
 
-function response(worker, action) {
+function response(worker, action, timeout = 10000) {
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(
 			() => finish(new Error(`Continuation admission worker did not answer: ${action ?? 'ready'}`)),
-			10000
+			timeout
 		);
 		const receive = (event) => {
 			if (event.type === 'full-text-admission-test-response') finish(undefined, event.message);
@@ -52,6 +52,27 @@ async function terminateWorker(worker) {
 }
 
 describe('full-text process-wide continuation admission', () => {
+	it('rejects a real worker Table.search terminal page when admission release fails', async function () {
+		this.timeout(20000);
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		let worker;
+		try {
+			worker = startWorker(require.resolve('./fixtures/fullTextContinuationAdmissionWorker.js'), {
+				name: 'full-text-table-release-test',
+				autoRestart: false,
+				workerIndex: 0,
+				threadCount: 1,
+			});
+			assert.strictEqual((await response(worker)).ready, true);
+			const result = await response(worker, 'table-terminal-release', 15000);
+			assert.strictEqual(result.status, 503, JSON.stringify(result));
+			assert.match(result.error, /maxPendingResponseBytes/);
+			assert.strictEqual(result.value, undefined);
+		} finally {
+			await terminateWorker(worker);
+		}
+	});
+
 	it('shares capacity across workers and releases claims when the owning worker exits', async () => {
 		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
 		env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { maxCursors: 2 });
@@ -111,6 +132,7 @@ describe('full-text process-wide continuation admission', () => {
 			assert.strictEqual((await response(worker)).ready, true);
 			const opened = await response(worker, { operation: 'open', path });
 			assert(opened.token, opened.error);
+			await assert.rejects(releaseFullTextContinuation(opened.claim.id), (error) => error.statusCode === 503);
 			const owner = opened.originator;
 			assert.notStrictEqual(owner, 0);
 			const queryHash = 'b'.repeat(64);
@@ -171,6 +193,74 @@ describe('full-text process-wide continuation admission', () => {
 			await rm(path, { recursive: true, force: true });
 		}
 	});
+
+	for (const failRelease of [false, true]) {
+		it(
+			failRelease
+				? 'reports real admission-release failure through owner close'
+				: 'acknowledges owner release before close permits an immediate replacement search',
+			async function () {
+				this.timeout(15000);
+				if (!(await supportsPublishedFullTextBinding())) this.skip();
+				const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, maxCursors: 1 });
+				const path = await mkdtemp(join(__dirname, '../envDir/', String(process.pid), 'continuation-release-'));
+				let worker, replacement, closing, closeError;
+				let closed = false;
+				try {
+					worker = startWorker(require.resolve('./fixtures/fullTextContinuationAdmissionWorker.js'), {
+						name: 'full-text-release-test',
+						autoRestart: false,
+						workerIndex: 0,
+						threadCount: 1,
+					});
+					assert.strictEqual((await response(worker)).ready, true);
+					const opened = await response(worker, { operation: 'open', path, holdRelease: true });
+					assert(opened.token, opened.error);
+					const started = response(worker);
+					closing = requestFullTextContinuationOwner(
+						worker.threadId,
+						{ operation: 'close', token: opened.token, queryHash: 'b'.repeat(64) },
+						fullTextContinuationDeadline()
+					).then(
+						() => {
+							closed = true;
+						},
+						(error) => {
+							closeError = error;
+						}
+					);
+					assert.strictEqual((await started).releaseStarted, true);
+					await new Promise(setImmediate);
+					assert.ifError(closeError);
+					assert.strictEqual(closed, false);
+					await assert.rejects(
+						reserveFullTextContinuation(128, fullTextContinuationDeadline()),
+						(error) => error.statusCode === 503
+					);
+					await response(worker, { operation: 'unblock-release', failRelease });
+					await waitFor(() => closed || closeError, 10000);
+					if (failRelease) {
+						assert(closeError instanceof ServerError);
+						assert.strictEqual(closeError.statusCode, 503);
+						assert.match(closeError.message, /maxPendingResponseBytes/);
+						assert.strictEqual(closed, false);
+					} else {
+						assert.ifError(closeError);
+						replacement = await reserveFullTextContinuation(128, fullTextContinuationDeadline());
+						assert(replacement.id);
+					}
+					await response(worker, 'shutdown');
+				} finally {
+					if (replacement) await releaseFullTextContinuation(replacement.id);
+					await terminateWorker(worker);
+					await closing;
+					env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+					await rm(path, { recursive: true, force: true });
+				}
+			}
+		);
+	}
 
 	it('answers saturated owner requests immediately instead of dropping their replies', async function () {
 		if (!(await supportsPublishedFullTextBinding())) this.skip();

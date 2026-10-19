@@ -1,6 +1,7 @@
 const assert = require('node:assert');
 const { randomBytes } = require('node:crypto');
 const { FullTextContinuationToken } = require('#src/resources/indexes/fullTextContinuationToken');
+const { ServerError } = require('#src/utility/errors/hdbError');
 
 describe('full-text continuation tokens', () => {
 	const key = randomBytes(32).toString('base64url');
@@ -65,5 +66,13 @@ describe('full-text continuation tokens', () => {
 			{ ...maximum, boundary: 'x'.repeat(16385) },
 		])
 			assert.throws(() => owner.seal(lease, query, bad), /Invalid/);
+	});
+
+	it('reports a server-generated token overflow without including its boundary', () => {
+		const owner = new FullTextContinuationToken(key, 'process-1', 7, 10000);
+		assert.throws(
+			() => owner.seal(lease, query, { boundary: 'x'.repeat(12300), batchSize: 1, consumed: 0 }),
+			(error) => error instanceof ServerError && error.statusCode === 500 && !error.message.includes('xxxxx')
+		);
 	});
 });

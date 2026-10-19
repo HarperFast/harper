@@ -303,6 +303,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 				records: JSON.parse(text),
 				token: response.headers.get('harper-continuation'),
 				complete: response.headers.get('harper-continuation-complete'),
+				expires: response.headers.get('harper-continuation-expires'),
 				worker: response.headers.get('fulltext-test-worker'),
 			};
 		};
@@ -310,6 +311,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		assert.strictEqual(first.records.length, 75);
 		assert.strictEqual(first.complete, 'false');
 		assert(first.token);
+		assert(Number(first.expires) > Date.now());
 		assert(first.worker);
 		let second = await getPage(first.token);
 		for (let attempt = 0; !NO_FULL_WORKER_COVERAGE && second.worker === first.worker && attempt < 30; attempt++)
@@ -322,7 +324,10 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			const page = await getPage(token);
 			seen.push(...page.records);
 			token = page.token;
-			if (!token) assert.strictEqual(page.complete, 'true');
+			if (!token) {
+				assert.strictEqual(page.complete, 'true');
+				assert.strictEqual(page.expires, null);
+			}
 		}
 		assert.deepStrictEqual(ids(seen), PAGE_IDS);
 		assert.strictEqual(new Set(ids(seen)).size, PAGE_IDS.length);

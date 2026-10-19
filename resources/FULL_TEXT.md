@@ -96,6 +96,10 @@ Earlier beta declarations and indexes are unsupported. This field-only API does 
 
 Harper keeps the requested `offset + limit` within the native ordinary result window. When source checks or other conditions reject the first batch, Harper uses native traversal to reach later matches on the same reader snapshot. This also lets prefix and fuzzy-prefix queries return more than the native first-batch autocomplete limit. Raw batch sizes are bounded by the installed addon’s page and response-byte limits; all batches share one execution budget. A timeout returns an error, including when native work finishes after its budget with a full batch. Harper does not accept a late batch as a completed page. If the snapshot runs out of eligible matches, Harper returns the remaining matches, including an empty result; filtering beyond an old native window no longer causes a 400 error.
 
+Earlier bounded searches could raise `DerivedIndexLagError` when source-version changes left a
+short page. Snapshot exhaustion now returns the eligible records instead. The explicit freshness
+checks still apply before the search and can raise a retryable lag error.
+
 Each request also has a configurable work budget: `storage.fullText.maxRawHitsPerRequest` defaults to 100,000 native hits, including the initial replay. If that budget is reached before the page fills or the snapshot ends, Harper returns a 400 error. Narrow the query or increase the configured budget; Harper does not return a successful incomplete page. This limit counts fetched hits, not every record Tantivy visits while scoring.
 
 Ordinary offset-based requests each use their own snapshot and may observe different index publications. Use continuation mode below to keep the original search across requests. Highlight tracing has separate record and source-byte bounds. Query construction and some native operations cannot be interrupted, so the execution budget is not a hard response-time guarantee.
@@ -139,11 +143,21 @@ GET /Product/?catalogSearch=matches=trail%20shoes&limit(25)&continuation()
 Read the next token from `Harper-Continuation` and pass it back unchanged, URL-encoded. The body stays
 a JSON array. `Harper-Continuation-Complete` says whether traversal finished;
 `Harper-Continuation-Expires` is the absolute expiry time in milliseconds since the Unix epoch.
+Completed pages omit the token and expiry.
 These headers are exposed to browser clients. Continuation responses use `Cache-Control: no-store`.
 Nonzero offsets, count requests, and other result ordering cannot be combined with continuation.
 
+Long IDs make tokens larger. Qualification with the released library produced tokens of about
+600 bytes for short IDs and nearly 8 KB near the supported ID limit. Review `http.maxHeaderSize`
+and any proxy response-header and request-line limits, allowing room for the token, query,
+authentication, and other headers. A token that fits Harper may exceed a proxy limit.
+
 To stop early, repeat the query with its token and `closeContinuation: true`. In REST, add
 `closeContinuation()` alongside `continuation(token)`. Closing returns an empty completed page.
+Close and terminal pages wait for admission release before reporting success. A release failure
+returns an error instead; the revoked token may then return 410, and its admission slot can remain
+occupied until absolute expiry or worker exit. This acknowledgement covers admission capacity,
+not immediate removal of old index segments from disk.
 Completion, explicit close, expiry, index reset, definition changes, worker loss, and process restart
 release or invalidate the search. A previous token then returns 410; start a new search. Retries
 before completion keep the same index boundary, but current record and permission changes can
@@ -171,6 +185,11 @@ Each setting also has the usual configuration parameter name, such as
 The cursor limit is shared by all callers. Four unfinished searches fill the default pool; another
 caller receives 503 until a search closes, finishes, or expires. Set `maxCursors` for the number of
 unfinished searches the application expects to retain. There is no per-caller reservation or eviction.
+
+Cursor slots, pending-request counts, and response-byte allowances apply separately. Raising
+`maxCursors` does not raise `maxPendingRequests` or `maxPendingResponseBytes`. Across workers,
+response reservations use the library's largest supported IDs and versions, rather than the
+average size of the current records. More searches may be retained than can fetch a page at once.
 
 Capacity exhaustion returns an error rather than a successful partial page. Snapshot readers can
 keep old index segments on disk until released. Neither query bytes nor native admission settings

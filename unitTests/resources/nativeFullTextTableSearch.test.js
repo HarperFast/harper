@@ -102,7 +102,10 @@ describe('published native full-text Table.search integration', () => {
 				seen.add(record.id);
 			}
 			next = page.continuation;
-			if (!next) assert.strictEqual(page.complete, true);
+			if (!next) {
+				assert.strictEqual(page.complete, true);
+				assert.strictEqual(page.expiresAt, undefined);
+			}
 		}
 		assert.strictEqual(seen.size, 12);
 		assert(!seen.has('new'));
@@ -159,6 +162,46 @@ describe('published native full-text Table.search integration', () => {
 			} finally {
 				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
 			}
+		}
+	});
+
+	it('continues batch-aligned pages within a one-hit raw budget', async function () {
+		this.timeout(15000);
+		const env = require('#src/utility/environment/environmentManager');
+		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+		try {
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, maxRawHitsPerRequest: 1 });
+			Product = table({
+				database: `fulltext-single-hit-${Date.now()}`,
+				table: 'Product',
+				audit: true,
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'title', type: 'String' },
+				],
+				fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1 }])],
+			});
+			for (const id of ['a', 'b', 'c']) await Product.put(id, { title: 'widget' });
+			await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 10000);
+			const seen = [];
+			let continuation = true;
+			for (let pageNumber = 0; continuation && pageNumber < 4; pageNumber++) {
+				const page = await Product.search({
+					conditions: [
+						{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget', waitForIndexMilliseconds: 5000 },
+					],
+					limit: 1,
+					continuation,
+				});
+				assert.strictEqual(page.length, 1);
+				seen.push(...ids(page));
+				continuation = page.continuation;
+			}
+			assert.strictEqual(continuation, undefined);
+			assert.deepStrictEqual(seen.sort(), ['a', 'b', 'c']);
+		} finally {
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
 		}
 	});
 
@@ -746,7 +789,10 @@ describe('published native full-text Table.search integration', () => {
 			const page = await Product.search({ ...snapshotQuery, continuation });
 			snapshotIds.push(...page.map(({ id }) => id));
 			continuation = page.continuation;
-			if (!continuation) assert.strictEqual(page.complete, true);
+			if (!continuation) {
+				assert.strictEqual(page.complete, true);
+				assert.strictEqual(page.expiresAt, undefined);
+			}
 		}
 		assert.deepStrictEqual(snapshotIds, ordered);
 		const first = new Set(ordered.slice(0, info.limits.maxAutocompleteResults));

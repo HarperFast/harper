@@ -186,6 +186,8 @@ function dispatch(command: Command, owner: number, deadline: bigint): FullTextCu
 		return;
 	}
 	if (command?.operation === 'release') {
+		const claim = claims.get(command.id);
+		if (claim && claim.owner !== owner) throw unavailable('cannot release a claim owned by another worker');
 		release(command.id, owner);
 		return;
 	}

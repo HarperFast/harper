@@ -55,18 +55,122 @@ describe('retained full-text reader leases with the native addon', () => {
 		await writer?.close();
 		if (path) await rm(path, { recursive: true, force: true });
 	});
-	function register(ttl = 60000) {
+	function register(
+		ttl = 60000,
+		release = () => {
+			released++;
+		}
+	) {
 		leases.register(
 			{ id, expires: process.hrtime.bigint() + BigInt(ttl) * 1000000n, expiresAt: Date.now() + ttl },
 			queryHash,
 			query,
 			reader,
-			() => {
-				released++;
-			}
+			release
 		);
 	}
 	const deadline = () => process.hrtime.bigint() + 5000000000n;
+
+	it('keeps concurrent revocations pending until asynchronous release is acknowledged', async function () {
+		this.timeout(10000);
+		const gate = Promise.withResolvers();
+		let closed = 0;
+		let first, second;
+		register(60000, async () => {
+			released++;
+			await gate.promise;
+		});
+		const token = leases.seal(id, queryHash, initial);
+		try {
+			first = leases.close(token, queryHash).then(() => closed++);
+			await waitFor(() => released === 1, 2000);
+			second = leases.revoke(id).then(() => closed++);
+			await new Promise(setImmediate);
+			assert.strictEqual(closed, 0);
+			assert.throws(
+				() => leases.resume(token, queryHash),
+				(error) => error.statusCode === 410
+			);
+		} finally {
+			gate.resolve();
+			await Promise.all([first, second]);
+		}
+		assert.strictEqual(released, 1);
+		assert.strictEqual(closed, 2);
+	});
+
+	it('rejects close when asynchronous release fails after revocation', async function () {
+		this.timeout(10000);
+		const failure = new Error('admission release failed');
+		const failedRelease = Promise.reject(failure);
+		await assert.rejects(failedRelease, (error) => error === failure);
+		register(60000, () => {
+			released++;
+			return failedRelease;
+		});
+		const token = leases.seal(id, queryHash, initial);
+		await assert.rejects(leases.close(token, queryHash), (error) => error === failure);
+		assert.throws(
+			() => leases.resume(token, queryHash),
+			(error) => error.statusCode === 410
+		);
+		await leases.revoke(id);
+		assert.strictEqual(released, 1);
+	});
+
+	it('reports a synchronous release failure through the close promise', async function () {
+		this.timeout(10000);
+		const failure = new Error('release callback failed');
+		register(60000, () => {
+			released++;
+			throw failure;
+		});
+		const token = leases.seal(id, queryHash, initial);
+		let closing;
+		assert.doesNotThrow(() => {
+			closing = leases.close(token, queryHash);
+		});
+		await assert.rejects(closing, (error) => error === failure);
+		assert.strictEqual(released, 1);
+	});
+
+	it('observes sibling releases before reporting a reader revocation failure', async function () {
+		this.timeout(10000);
+		const failure = new Error('one admission release failed');
+		const failedRelease = Promise.reject(failure);
+		await assert.rejects(failedRelease, (error) => error === failure);
+		register(60000, () => {
+			released++;
+			return failedRelease;
+		});
+		id = randomBytes(16).toString('hex');
+		const gate = Promise.withResolvers();
+		register(60000, async () => {
+			released++;
+			await gate.promise;
+		});
+		let settled = false;
+		let rejected;
+		const draining = leases.revokeReader(reader).then(
+			() => {
+				settled = true;
+			},
+			(error) => {
+				settled = true;
+				rejected = error;
+			}
+		);
+		try {
+			await waitFor(() => released === 2, 2000);
+			await new Promise(setImmediate);
+			assert.strictEqual(settled, false);
+		} finally {
+			gate.resolve();
+			await draining;
+		}
+		assert.strictEqual(rejected, failure);
+		assert.strictEqual(released, 2);
+	});
 
 	it('replays an immutable partially consumed batch against the original publication', async () => {
 		register();
@@ -104,6 +208,24 @@ describe('retained full-text reader leases with the native addon', () => {
 		await draining;
 		assert.strictEqual(released, 1);
 		await leases.revokeReader(reader);
+		assert.strictEqual(released, 1);
+	});
+
+	it('preserves in-flight revocation while observing a failed asynchronous release', async function () {
+		this.timeout(10000);
+		const failure = new Error('release failed after native read');
+		const failedRelease = Promise.reject(failure);
+		await assert.rejects(failedRelease, (error) => error === failure);
+		register(60000, () => {
+			released++;
+			return failedRelease;
+		});
+		const reading = leases.read(id, queryHash, initial, deadline());
+		const draining = leases.revokeReader(reader);
+		await Promise.all([
+			assert.rejects(reading, (error) => error.statusCode === 410),
+			assert.rejects(draining, (error) => error === failure),
+		]);
 		assert.strictEqual(released, 1);
 	});
 

@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { ClientError } from '../../utility/errors/hdbError.ts';
+import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 
 const MAX_TOKEN_CHARACTERS = 16 * 1024;
 
@@ -56,7 +56,8 @@ export class FullTextContinuationToken {
 		]).toString('base64url');
 		const signed = `${header}.${body}`;
 		const token = `${signed}.${this.#mac(signed).toString('base64url')}`;
-		if (token.length > MAX_TOKEN_CHARACTERS) throw new TypeError('Full-text continuation exceeds its framing limit');
+		if (token.length > MAX_TOKEN_CHARACTERS)
+			throw new ServerError('Full-text continuation exceeds its token byte limit', 500);
 		return token;
 	}
 

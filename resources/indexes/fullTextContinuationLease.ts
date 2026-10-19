@@ -6,19 +6,23 @@ import type {
 	NativeFullTextSearchExpression,
 	NativeFullTextSearchPageResult,
 } from './fullTextNativeBinding.ts';
+import { loggerWithTag } from '../../utility/logging/logger.ts';
+
+const logger = loggerWithTag('fulltext-continuation');
 
 type Lease = {
 	claim: FullTextCursorClaim;
 	queryHash: string;
 	query: NativeFullTextSearchExpression;
 	reader: NativeFullTextReader;
-	release(): void;
+	release(): void | Promise<void>;
 	active: number;
 	revoked: boolean;
-	released: boolean;
+	releaseStarted: boolean;
 	timer: NodeJS.Timeout;
 	drained: Promise<void>;
 	resolveDrained(): void;
+	rejectDrained(error: unknown): void;
 };
 
 export class FullTextContinuationLeases {
@@ -38,7 +42,7 @@ export class FullTextContinuationLeases {
 		queryHash: string,
 		query: NativeFullTextSearchExpression,
 		reader: NativeFullTextReader,
-		release: () => void
+		release: () => void | Promise<void>
 	): void {
 		const duration = Number((claim.expires - process.hrtime.bigint()) / 1_000_000n);
 		if (
@@ -49,10 +53,10 @@ export class FullTextContinuationLeases {
 			!/^[a-f0-9]{64}$/.test(queryHash)
 		)
 			throw expired();
-		const { promise: drained, resolve: resolveDrained } = Promise.withResolvers<void>();
+		const { promise: drained, resolve: resolveDrained, reject: rejectDrained } = Promise.withResolvers<void>();
 		const timer = setTimeout(
 			() => {
-				void this.revoke(claim.id);
+				this.#expire(claim.id);
 			},
 			Math.max(1, Number((claim.expires - process.hrtime.bigint()) / 1_000_000n))
 		);
@@ -65,10 +69,11 @@ export class FullTextContinuationLeases {
 			release,
 			active: 0,
 			revoked: false,
-			released: false,
+			releaseStarted: false,
 			timer,
 			drained,
 			resolveDrained,
+			rejectDrained,
 		});
 	}
 
@@ -109,7 +114,11 @@ export class FullTextContinuationLeases {
 				{ remainingBudgetMilliseconds: Math.min(remaining, this.#maxNativeBudgetMilliseconds) }
 			);
 			this.#get(id, queryHash);
-			if (position.consumed > page.hits.length || (page.hits.length === 0 && page.continuation !== undefined))
+			if (
+				position.consumed > page.hits.length ||
+				(page.hits.length === 0 && page.continuation !== undefined) ||
+				(position.boundary !== undefined && page.continuation === position.boundary)
+			)
 				throw new ServerError('Full-text continuation returned an invalid replay boundary', 500);
 			if (process.hrtime.bigint() >= deadline)
 				throw new ServerError('Full-text continuation exceeded its request budget', 503);
@@ -130,36 +139,47 @@ export class FullTextContinuationLeases {
 		const lease = this.#leases.get(id);
 		if (!lease) return Promise.resolve();
 		lease.revoked = true;
-		this.#leases.delete(id);
 		clearTimeout(lease.timer);
 		this.#releaseIfDrained(lease);
 		return lease.drained;
 	}
 
-	revokeReader(reader: NativeFullTextReader): Promise<void> {
+	async revokeReader(reader: NativeFullTextReader): Promise<void> {
 		const draining: Promise<void>[] = [];
 		for (const [id, lease] of this.#leases) if (lease.reader === reader) draining.push(this.revoke(id));
-		return Promise.all(draining).then(() => {});
+		const outcomes = await Promise.allSettled(draining);
+		for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
 	}
 
 	#get(id: string, queryHash: string): Lease {
 		const lease = this.#leases.get(id);
-		if (!lease || lease.queryHash !== queryHash) throw expired();
+		if (!lease || lease.revoked || lease.queryHash !== queryHash) throw expired();
 		if (lease.claim.expires <= process.hrtime.bigint()) {
-			void this.revoke(id);
+			this.#expire(id);
 			throw expired();
 		}
 		return lease;
 	}
 
 	#releaseIfDrained(lease: Lease): void {
-		if (!lease.revoked || lease.released || lease.active !== 0) return;
-		lease.released = true;
-		try {
-			lease.release();
-		} finally {
-			lease.resolveDrained();
-		}
+		if (!lease.revoked || lease.releaseStarted || lease.active !== 0) return;
+		lease.releaseStarted = true;
+		void Promise.resolve()
+			.then(() => lease.release())
+			.then(
+				() => {
+					this.#leases.delete(lease.claim.id);
+					lease.resolveDrained();
+				},
+				(error) => {
+					this.#leases.delete(lease.claim.id);
+					lease.rejectDrained(error);
+				}
+			);
+	}
+
+	#expire(id: string): void {
+		void this.revoke(id).catch((error) => logger.warn?.('Could not release an expired full-text continuation', error));
 	}
 }
 

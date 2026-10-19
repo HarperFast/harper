@@ -1,4 +1,4 @@
-import { FULL_TEXT_CONTINUATION_PAGE } from './indexes/fullTextContinuationPage.ts';
+import { FULL_TEXT_CONTINUATION_PAGE } from './indexes/fullTextQueryProtocol.ts';
 import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
