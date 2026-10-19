@@ -121,6 +121,8 @@ Close and terminal pages wait for admission release before reporting success. If
 request returns an error instead. The revoked token may then return `410`, and its admission slot
 can remain occupied until absolute expiry or worker exit. A successful close releases admission
 capacity; it does not promise immediate removal of old index segments from disk.
+Closing has a separate cleanup budget. Once release is acknowledged, the completed page can return
+after its search-work deadline. Cancellation, transaction, and index-lifecycle checks still apply.
 
 Completion, close, expiry, index reset, definition changes, worker loss, or process restart can
 invalidate a token. Resuming an unavailable snapshot returns `410`; start a new search. Once any
