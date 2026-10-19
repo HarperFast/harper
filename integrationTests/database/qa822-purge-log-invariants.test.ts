@@ -9,11 +9,18 @@
  * The four invariants, each asserted once and each able to fail for exactly one reason:
  *
  *   1. A PURGE NEVER STRANDS THE FLUSH POSITION. After a purge that really deleted files, the
- *      log's `lastFlushedPosition` still names a file the purge retained — never the
- *      `{sequence:0, offset:0}` sentinel — and it still does once that process has shut down and
- *      reopened. This is rocksdb-js#799's retention-floor contract ("the sequence file named by
- *      `txn.state` and every newer file remain") stated as an executable claim. It is the assertion
- *      that goes red if that floor is ever removed or the dependency pin rolls back below it.
+ *      log's `lastFlushedPosition` is still a sound witness — never the `{sequence:0, offset:0}`
+ *      sentinel — and it still is once that process has shut down and reopened. Since rocksdb-js#911
+ *      (2.12.0) a purge may delete every fully flushed file, the one `txn.state` names and the
+ *      writer's current segment included, so an idle flushed log legitimately has NO files left. The
+ *      witness then has to carry the contract on its own: with no files, the writer has retired past
+ *      the witnessed sequence so the next append lands above it; with files, the position is never ahead
+ *      of the writer and at most one sequence behind the oldest kept file (a flush ending exactly at a
+ *      sealed file's end lets the purge delete that file and keep its unflushed successor); and a
+ *      restart never moves the position backwards (`txn.state` only
+ *      moves forward, and `load()` starts appends at F+1). This is #911's witness contract stated as
+ *      an executable claim; it is the assertion that goes red if a purge ever strands the position or
+ *      a restart appends behind it.
  *      What the second sample does NOT isolate: invariant 3 needs rows written by the purging
  *      process before it restarts, and those writes are themselves enough to rewrite flush state,
  *      so a regression visible only on a no-write reopen would be masked there. The first sample —
@@ -32,33 +39,35 @@
  *      be a deliberate change, and this assertion is meant to be the thing that notices it.
  *   3. THERE IS NO PARTIAL-LOSS WINDOW AFTER A PURGE. Markers planted at four points across the
  *      post-purge window all survive a clean shutdown together. The sharpest is the first: rows
- *      written by the very process that ran the purge, before it has restarted, which is the
- *      residual exposure the QA-822 family named. Then a single row first thing in the new process,
- *      then two more across a write ramp. The failure mode this forbids is the expensive one: a
- *      silent prefix of the window being dropped while later rows survive, which no operator could
- *      detect from the outside.
+ *      written into the emptied store by the very process that ran the purge, before it has
+ *      restarted, which is the residual exposure the QA-822 family named. Then a single row first
+ *      thing in the new process, then two more across a write ramp. The failure mode this forbids is
+ *      the expensive one: a silent prefix of the window being dropped while later rows survive, which
+ *      no operator could detect from the outside. The keep half of #911's rule is checked earlier, in
+ *      the arm: rows written after a purge's cutoff survive that purge, which deletes the older file.
  *   4. A CLEAN, WRITE-FREE REOPEN LEAVES THE FLUSH POSITION UNTOUCHED (QA-1730, promoted separately
  *      from P-584 as its own candidate). Invariant 1's second sample is a reopen AFTER writes, for
  *      the reason given above; this invariant supplies the missing no-write sample from an isolated
  *      second database (`qa1730`.`ReopenTarget`) that never takes a write after its own purge, so its
  *      restart really is clean — the position must come back byte-identical, not merely non-sentinel.
- *      It also checks what no self-report can: that the retained floor file is physically ON DISK
- *      WHILE THE PROCESS IS DOWN, between the kill and the reopen, rather than inferring persistence
- *      from how the reopened process's own recomputation happens to look.
+ *      It also checks what no self-report can, between the kill and the reopen, WHILE THE PROCESS IS
+ *      DOWN: that `txn.state` physically holds those eight bytes (the only durable record once the
+ *      file it names is gone), and that the purge really deleted every file lying entirely at or
+ *      before the position — the #911 rule, which the #799 floor broke by keeping the fully flushed
+ *      file the position names.
  *
  * WHY INVARIANT 1 IS STATED AS "NEVER WEDGES" RATHER THAN "HEALS". The QA-822 exploration measured
  * the opposite world. On `@harperfast/rocksdb-js` 2.8.0 this same purge left `lastFlushedPosition`
  * at the `{0,0}` sentinel, a restart with zero writes did not clear it, and it took one row plus a
  * restart to move it off — because `doPurge()` emptied the store's sequence files and then
  * `remove_all`d the directory holding `txn.state` out from under its own open handle
- * (rocksdb-js#808). rocksdb-js#799 shipped the retention floor in v2.9.0, and the purge now keeps
- * the segment the flush position names. That was re-measured before this file was written, by
- * swapping only `@harperfast/rocksdb-js` under one unchanged harper build — 2.8.0 deletes both log
- * files and reports `{0,0}`, while 2.9.1 and 2.10.0 delete the eligible prefix only and report a
- * live position. The suite itself does no such swap. So the healing behaviour is unreachable on any
- * supported pin, and asserting it would land a permanently red test. Invariant 1 pins the fix
- * instead, which is the stronger claim; the durability half of the original — "and that row
- * survives" — is preserved among invariant 3's checkpoints.
+ * (rocksdb-js#808). rocksdb-js#799 then kept the segment the flush position names, and rocksdb-js#911
+ * replaced that floor with `txn.state` as the sole durable witness (synced with its directory before a
+ * store's last file is unlinked, never moved backwards, honoured by `load()`).
+ * So the healing behaviour is unreachable on any supported pin, and asserting it would
+ * land a permanently red test. Invariant 1 pins the witness instead, which is the stronger claim;
+ * the durability half of the original — "and that row survives" — is preserved among invariant 3's
+ * checkpoints.
  *
  * Deliberately NOT asserted, because asserting it would make this file drift or go red for reasons
  * that are not regressions:
@@ -89,16 +98,16 @@
  * Promoted from QA-822 (qa-explorer), snapshot P-584, trimmed to the invariants: the snapshot's
  * threshold/event/exposure sweeps measured the healing boundary and asserted nothing. Invariant 4
  * is promoted separately from QA-1730, the same P-584 lineage, after hardening its oracle: the
- * banked snapshot's `assertReopen` never checked that the shutdown-time file inventory contained
- * the retained floor file (only that removed files were absent), and its post-`killHarper` check
+ * banked snapshot's `assertReopen` never checked the shutdown-time state the position depends on
+ * (only that removed files were absent), and its post-`killHarper` check
  * only ruled out SIGKILL rather than requiring the documented graceful exit.
- * Related: `qa816-purge-blast-radius.test.ts`, rocksdb-js#799 (the retention floor invariant 1 and
- * 4 pin), rocksdb-js#808 (the wedge it removed), harper#846.
+ * Related: `qa816-purge-blast-radius.test.ts`, rocksdb-js#911 (the witness contract invariants 1 and
+ * 4 pin), rocksdb-js#799 (the retention floor it replaced), rocksdb-js#808 (the wedge), harper#846.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, deepStrictEqual, throws } from 'node:assert';
 import { resolve, join } from 'node:path';
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
 	setupHarperWithFixture,
@@ -257,6 +266,44 @@ async function flushUntilPurgeable(ctx: ContextWithHarper, table: string, databa
 	);
 }
 
+async function flushUntilFullyFlushed(ctx: ContextWithHarper, table: string, database = 'data'): Promise<LogSnapshot> {
+	const deadline = Date.now() + 60_000;
+	let stats: LogSnapshot;
+	do {
+		await flushPrimaryStores(ctx);
+		stats = await logStats(ctx, table, database);
+		if (comparePositions(stats.lastFlushedPosition, stats.nextLogPosition) >= 0) return stats;
+		await sleep(250);
+	} while (Date.now() < deadline);
+	throw new Error(
+		`ORACLE ARMING: ${database}.${table}'s transaction log never became fully flushed within 60s (${fmt(stats)})`
+	);
+}
+
+// Database-scoped on purpose: a RocksDB transaction log is per-database, so a `table`-scoped request
+// is refused outright (`ResourceBridge.deleteTransactionLogsBefore`, harper#2049). Every assertion in
+// this file is vacuous if the purge did nothing, so it must report deleted entries and deleted FILES.
+async function purgeLogsBefore(ctx: ContextWithHarper, database: string, cutoff: number, step: string): Promise<any> {
+	const ack = await rawOp(ctx, { operation: 'delete_transaction_logs_before', database, timestamp: cutoff });
+	strictEqual(
+		ack.status,
+		200,
+		`delete_transaction_logs_before expected 200, got ${ack.status}: ${ack.text.slice(0, 300)}`
+	);
+	ok(ack.body?.job_id, `delete_transaction_logs_before must return a job_id, got ${ack.text.slice(0, 300)}`);
+	const job = await pollJob(ctx, ack.body.job_id);
+	strictEqual(job.status, 'COMPLETE', `${step} purge job must COMPLETE, got ${job.status}: ${job.message}`);
+	ok(
+		Number(job.result?.entries_deleted) > 0,
+		`NON-VACUOUS PRECONDITION (${step}): the purge must delete audit entries, got entries_deleted=${job.result?.entries_deleted}`
+	);
+	ok(
+		Number(job.result?.log_files_deleted) > 0,
+		`NON-VACUOUS PRECONDITION (${step}): the purge must delete whole log files — deleting a file is the only thing that could strand the flush position — got log_files_deleted=${job.result?.log_files_deleted}`
+	);
+	return job;
+}
+
 // `/LogStats/` resolves a fixture table out of `tables`/`databases`, so a 200 for a given
 // database.table proves that one is open. A 404 is the component still loading, and a 500 from a
 // half-started server would read as ready and resurface later as an opaque failure. Both databases
@@ -343,6 +390,32 @@ function isSentinel(position: LogPosition): boolean {
 	return position?.sequence === 0 && position?.offset === 0;
 }
 
+function comparePositions(left: LogPosition, right: LogPosition): number {
+	return left.sequence - right.sequence || left.offset - right.offset;
+}
+
+// With files kept the position may sit one sequence behind the oldest: a flush that ends exactly at a
+// sealed file's end lets the purge delete that file and keep its unflushed successor.
+function assertWitness(stats: LogSnapshot, preamble: string): void {
+	const position = stats.lastFlushedPosition;
+	ok(
+		!isSentinel(position),
+		`${preamble} The position is the {0,0} sentinel, which is what a stranded position reads as. Got ${fmt(stats)}`
+	);
+	if (stats.fileCount === 0) {
+		ok(
+			stats.currentSequenceNumber > position.sequence ||
+				(position.offset === 0 && stats.currentSequenceNumber === position.sequence),
+			`${preamble} With no log files left the writer must have retired past the witnessed sequence, so the next append lands above it. Got ${fmt(stats)}`
+		);
+	} else {
+		ok(
+			position.sequence + 1 >= stats.oldestSequenceNumber && position.sequence <= stats.currentSequenceNumber,
+			`${preamble} The position names a sequence outside the range of files the purge kept. Got ${fmt(stats)}`
+		);
+	}
+}
+
 function fmt(stats: LogSnapshot): string {
 	const position = stats.lastFlushedPosition;
 	return (
@@ -414,20 +487,44 @@ async function waitForRotation(
 	throw new Error(`ORACLE ARMING: the seed never rotated the transaction log (rotations still ${rotations})`);
 }
 
-// QA-1730's second oracle gap: a reopened process's self-report cannot distinguish a floor file
-// that was truly persisted from one a clean recomputation on open happened to reproduce. Reading
-// the log directory directly WHILE THE PROCESS IS DOWN (between the kill and the next start) can.
+// QA-1730's second oracle gap: a reopened process's self-report cannot distinguish a witness that
+// was truly persisted from one a clean recomputation on open happened to reproduce. Reading the log
+// directory directly WHILE THE PROCESS IS DOWN (between the kill and the next start) can.
 function diskLogFiles(logDirPath: string): { seq: number; bytes: number }[] {
 	return readdirSync(logDirPath)
 		.filter((name) => /^\d+\.txnlog$/.test(name))
 		.map((name) => ({ seq: Number(name.slice(0, -'.txnlog'.length)), bytes: statSync(join(logDirPath, name)).size }));
 }
 
-function assertRetainedFloorOnDisk(files: { seq: number; bytes: number }[], floor: LogPosition, label: string): void {
-	ok(
-		files.some((file) => file.seq === floor.sequence && file.bytes >= floor.offset),
-		`${label}: the file covering the retained floor (seq:${floor.sequence}, offset:${floor.offset}) must physically ` +
-			`exist on disk while the process is down; got files=${JSON.stringify(files)}`
+// `txn.state`: rocksdb-js's `LogPosition`, eight little-endian bytes — uint32 offset, then uint32 sequence.
+function diskFlushedPosition(logDirPath: string): LogPosition {
+	const bytes = readFileSync(join(logDirPath, 'txn.state'));
+	strictEqual(bytes.length, 8, `txn.state must hold exactly one 8-byte position, got ${bytes.length} bytes`);
+	return { offset: bytes.readUInt32LE(0), sequence: bytes.readUInt32LE(4) };
+}
+
+// rocksdb-js#911: a file lying entirely at or before the flushed position is purgeable, the file the
+// position names and the current segment included. The keep half is asserted in arm 1; this arm writes
+// nothing after its flush, so it has no such file to keep.
+function assertPurgeRuleOnDisk(
+	files: { seq: number; bytes: number }[],
+	diskWitness: LogPosition,
+	witness: LogPosition,
+	label: string
+): void {
+	deepStrictEqual(
+		diskWitness,
+		witness,
+		`${label}: txn.state on disk must hold the exact position the process reported before it went down`
+	);
+	const leftBehind = files.filter(
+		(file) => file.seq < witness.sequence || (file.seq === witness.sequence && file.bytes <= witness.offset)
+	);
+	deepStrictEqual(
+		leftBehind,
+		[],
+		`${label}: every log file lying entirely at or before the flushed position (seq:${witness.sequence}, ` +
+			`offset:${witness.offset}) must have been purged; got files=${JSON.stringify(files)}`
 	);
 }
 
@@ -469,6 +566,10 @@ suite(
 	{ skip: skipSuite },
 	(ctx: ContextWithHarper) => {
 		const findings: string[] = [];
+		const prePurge = {
+			label: 'pre-purge (written after the cutoff, before the purge ran)',
+			rows: markerRows('pp', MARKER_ROWS),
+		};
 		const sameProcess = { label: 'same-process (written by the purging process)', rows: markerRows('sp', MARKER_ROWS) };
 		const cp0 = { label: 'cp0 (one row, before any further volume)', rows: markerRows('cp0', 1) };
 		const cp1 = { label: 'cp1 (after 260 single-row commits)', rows: markerRows('cp1', MARKER_ROWS) };
@@ -482,6 +583,7 @@ suite(
 		let ramped = false;
 		let cleanReopenBoundary: LogSnapshot;
 		let cleanReopenDiskFiles: { seq: number; bytes: number }[];
+		let cleanReopenDiskWitness: LogPosition;
 		let cleanReopenReopened: LogSnapshot;
 		let cleanReopened = false;
 
@@ -527,35 +629,34 @@ suite(
 				);
 
 				await flushUntilPurgeable(ctx, 'PurgeVictim');
+				const protectedCutoff = Date.now();
+				// Past the kernel's coarse file-time tick, so the rows' file cannot look older than the cutoff.
+				await sleep(20);
+				// Flushed, so only the cutoff keeps the file these rows land in (the keep half of rocksdb-js#911's
+				// rule); the second purge below legitimately takes their history.
+				await insertRows(ctx, 'QuietTarget', prePurge.rows);
+				await flushUntilFullyFlushed(ctx, 'QuietTarget');
+				const protectedPurge = await purgeLogsBefore(ctx, 'data', protectedCutoff, '1a');
+				findings.push(`1a. purge job ${protectedPurge.status} result=${JSON.stringify(protectedPurge.result)}`);
+				const afterProtectedPurge = await logStats(ctx, 'QuietTarget');
+				ok(
+					afterProtectedPurge.fileCount > 0,
+					`KEEP HALF (rocksdb-js#911): the file holding rows newer than the cutoff must survive the purge. Got ${fmt(afterProtectedPurge)}`
+				);
+				await assertMarkersIntact(ctx, '1. PROTECTED SUFFIX pre-purge', prePurge.rows);
+
+				await flushUntilFullyFlushed(ctx, 'QuietTarget');
 				const cutoffTimestamp = Date.now();
-
-				// Database-scoped on purpose: a RocksDB transaction log is per-database, so a `table`-scoped
-				// request is refused outright (`ResourceBridge.deleteTransactionLogsBefore`, harper#2049).
-				const ack = await rawOp(ctx, {
-					operation: 'delete_transaction_logs_before',
-					database: 'data',
-					timestamp: cutoffTimestamp,
-				});
-				strictEqual(
-					ack.status,
-					200,
-					`delete_transaction_logs_before expected 200, got ${ack.status}: ${ack.text.slice(0, 300)}`
-				);
-				ok(ack.body?.job_id, `delete_transaction_logs_before must return a job_id, got ${ack.text.slice(0, 300)}`);
-
-				const job = await pollJob(ctx, ack.body.job_id);
-				findings.push(`1. purge job ${job.status} result=${JSON.stringify(job.result)}`);
-				strictEqual(job.status, 'COMPLETE', `purge job must COMPLETE, got ${job.status}: ${job.message}`);
-				ok(
-					Number(job.result?.entries_deleted) > 0,
-					`NON-VACUOUS PRECONDITION: the purge must delete audit entries, got entries_deleted=${job.result?.entries_deleted}`
-				);
-				ok(
-					Number(job.result?.log_files_deleted) > 0,
-					`NON-VACUOUS PRECONDITION: the purge must delete whole log files — deleting a file is the only thing that could strand the flush position — got log_files_deleted=${job.result?.log_files_deleted}`
-				);
+				const job = await purgeLogsBefore(ctx, 'data', cutoffTimestamp, '1b');
+				findings.push(`1b. purge job ${job.status} result=${JSON.stringify(job.result)}`);
 
 				postPurge = await logStats(ctx, 'QuietTarget');
+				strictEqual(
+					postPurge.fileCount,
+					0,
+					`ORACLE ARMING: purge 1b must leave the fully flushed store with no log files, or the samples below ` +
+						`run against a kept file instead of the emptied-store path. Got ${fmt(postPurge)}`
+				);
 
 				// Here and nowhere else: after the restart this window is gone. These rows are written by
 				// the process that ran the purge — the residual exposure the QA-822 family named.
@@ -570,29 +671,24 @@ suite(
 			}
 		);
 
-		test('2. INVARIANT 1: the purge leaves the flush position inside the log it retained', async () => {
+		test('2. INVARIANT 1: the purge leaves the flush position a sound witness, and the restart appends above it', async () => {
 			ok(purged, 'PRECONDITION: the purge must have run before its aftermath is asserted');
-			// One claim — the segment `txn.state` names outlived the purge — split so a red run names
-			// which of the three states it rules out actually happened.
 			for (const [when, stats] of [
 				['immediately after the purge', postPurge],
 				['after the purging process shut down and reopened', postPurgeRestart],
 			] as const) {
-				const preamble =
-					`RETENTION-FLOOR INVARIANT (${when}): the purge must retain the log file lastFlushedPosition names. ` +
-					`A purge that deletes it strands the position and everything written before the next flush is lost ` +
-					`at shutdown (rocksdb-js#808); rocksdb-js#799's retention floor is what keeps it.`;
-				ok(
-					!isSentinel(stats.lastFlushedPosition),
-					`${preamble} The position is the {0,0} sentinel, which is what a stranded position reads as. Got ${fmt(stats)}`
-				);
-				ok(stats.fileCount > 0, `${preamble} The purge left no log files at all. Got ${fmt(stats)}`);
-				ok(
-					stats.lastFlushedPosition.sequence >= stats.oldestSequenceNumber &&
-						stats.lastFlushedPosition.sequence <= stats.currentSequenceNumber,
-					`${preamble} The position names a sequence outside the range of files the purge kept. Got ${fmt(stats)}`
+				assertWitness(
+					stats,
+					`RETENTION-WITNESS INVARIANT (${when}): a purge may delete every fully flushed log file, the one ` +
+						`lastFlushedPosition names included (rocksdb-js#911), but the position itself must stay a sound ` +
+						`witness. A stranded position loses everything written before the next flush at shutdown (rocksdb-js#808).`
 				);
 			}
+			ok(
+				comparePositions(postPurgeRestart.lastFlushedPosition, postPurge.lastFlushedPosition) >= 0,
+				`RETENTION-WITNESS INVARIANT: the flush position must never move backwards across a restart — txn.state ` +
+					`only moves forward and load() appends past it. Got post-purge=${fmt(postPurge)} reopened=${fmt(postPurgeRestart)}`
+			);
 		});
 
 		test(
@@ -692,31 +788,8 @@ suite(
 				);
 
 				await flushUntilPurgeable(ctx, CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB);
-				const cutoffTimestamp = Date.now();
-
-				const ack = await rawOp(ctx, {
-					operation: 'delete_transaction_logs_before',
-					database: CLEAN_REOPEN_DB,
-					timestamp: cutoffTimestamp,
-				});
-				strictEqual(
-					ack.status,
-					200,
-					`delete_transaction_logs_before expected 200, got ${ack.status}: ${ack.text.slice(0, 300)}`
-				);
-				ok(ack.body?.job_id, `delete_transaction_logs_before must return a job_id, got ${ack.text.slice(0, 300)}`);
-
-				const job = await pollJob(ctx, ack.body.job_id);
+				const job = await purgeLogsBefore(ctx, CLEAN_REOPEN_DB, Date.now(), '6');
 				findings.push(`6. purge job ${job.status} result=${JSON.stringify(job.result)}`);
-				strictEqual(job.status, 'COMPLETE', `purge job must COMPLETE, got ${job.status}: ${job.message}`);
-				ok(
-					Number(job.result?.entries_deleted) > 0,
-					`NON-VACUOUS PRECONDITION: the purge must delete audit entries, got entries_deleted=${job.result?.entries_deleted}`
-				);
-				ok(
-					Number(job.result?.log_files_deleted) > 0,
-					`NON-VACUOUS PRECONDITION: the purge must delete whole log files, got log_files_deleted=${job.result?.log_files_deleted}`
-				);
 
 				cleanReopenBoundary = await logStats(ctx, CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB);
 				findings.push(`6. boundary (last sample before the no-write restart) ${fmt(cleanReopenBoundary)}`);
@@ -725,6 +798,7 @@ suite(
 				// restart's reopen sample "clean", unlike invariant 1's second sample.
 				await restart(ctx, '6.', () => {
 					cleanReopenDiskFiles = diskLogFiles(cleanReopenBoundary.path);
+					cleanReopenDiskWitness = diskFlushedPosition(cleanReopenBoundary.path);
 				});
 
 				cleanReopenReopened = await logStats(ctx, CLEAN_REOPEN_TABLE, CLEAN_REOPEN_DB);
@@ -733,21 +807,16 @@ suite(
 			}
 		);
 
-		test('7. INVARIANT 4 (QA-1730): a clean, write-free reopen leaves the flush position exactly where the purge left it, with the retained floor physically on disk', () => {
+		test('7. INVARIANT 4 (QA-1730): a clean, write-free reopen leaves the flush position exactly where the purge left it, with txn.state physically on disk and no fully flushed file left behind', () => {
 			ok(cleanReopened, 'PRECONDITION: the clean-reopen restart (test 6) must have run first');
 			for (const [when, stats] of [
 				['immediately after the purge', cleanReopenBoundary],
 				['after a clean, write-free restart', cleanReopenReopened],
 			] as const) {
-				const preamble =
-					`CLEAN-REOPEN INVARIANT (${when}): the purge must retain the log file lastFlushedPosition names, ` +
-					`the same contract invariant 1 pins — this is that contract's missing no-write sample.`;
-				ok(!isSentinel(stats.lastFlushedPosition), `${preamble} Got ${fmt(stats)}`);
-				ok(stats.fileCount > 0, `${preamble} The purge left no log files at all. Got ${fmt(stats)}`);
-				ok(
-					stats.lastFlushedPosition.sequence >= stats.oldestSequenceNumber &&
-						stats.lastFlushedPosition.sequence <= stats.currentSequenceNumber,
-					`${preamble} The position names a sequence outside the range of files the purge kept. Got ${fmt(stats)}`
+				assertWitness(
+					stats,
+					`CLEAN-REOPEN INVARIANT (${when}): the purge must leave lastFlushedPosition a sound witness, the same ` +
+						`contract invariant 1 pins — this is that contract's missing no-write sample.`
 				);
 			}
 			deepStrictEqual(
@@ -757,11 +826,15 @@ suite(
 					`flush position must be byte-identical to the pre-restart position. Got boundary=${fmt(cleanReopenBoundary)} ` +
 					`reopened=${fmt(cleanReopenReopened)}`
 			);
-			// The HTTP samples above only prove the reopened process's own self-report; this proves the
-			// floor file the position names was actually ON DISK while the process was down, which a
-			// clever recomputation on open could satisfy without ever having persisted it.
-			assertRetainedFloorOnDisk(
+			strictEqual(
+				cleanReopenReopened.currentSequenceNumber,
+				cleanReopenBoundary.currentSequenceNumber,
+				`CLEAN-REOPEN INVARIANT: load() must honour the witness the way the purge did — the reopened writer sits on the ` +
+					`same sequence the purge retired to. Got boundary=${fmt(cleanReopenBoundary)} reopened=${fmt(cleanReopenReopened)}`
+			);
+			assertPurgeRuleOnDisk(
 				cleanReopenDiskFiles,
+				cleanReopenDiskWitness,
 				cleanReopenBoundary.lastFlushedPosition,
 				'CLEAN-REOPEN INVARIANT (on disk, process down)'
 			);
