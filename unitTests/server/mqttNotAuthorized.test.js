@@ -17,7 +17,7 @@ const TOPIC_FILTER_INVALID = 0x8f;
 const TOPIC_NAME_INVALID = 0x90;
 
 const anonymous = undefined;
-// no username, so the principal is not registered for live re-authorization and revoked as unknown
+// no username: a named principal absent from hdb_user is revoked by live re-authorization
 const unprivileged = { role: { permission: {} } };
 const superUser = { role: { permission: { super_user: true } } };
 
@@ -56,7 +56,6 @@ function mqttListener() {
 	};
 }
 
-/** A connected client; `request` sends one packet and resolves with the broker's answer to it. */
 async function connect(open, { user = anonymous, protocolVersion = 5, properties } = {}) {
 	const { socket, sessions } = open(user);
 	const registeredBefore = new Set(sessions);
@@ -106,7 +105,6 @@ async function connect(open, { user = anonymous, protocolVersion = 5, properties
 	};
 }
 
-/** Collect the lines a logger method receives; the caller filters them by its own identity. */
 function captureLog(method) {
 	const logger = forComponent('mqtt');
 	const original = logger[method];
@@ -190,7 +188,6 @@ describe('mqtt.ts reason codes for a refused request', () => {
 
 		describe('against the largest packet the client accepts', () => {
 			const filterCount = 20;
-			// what the broker is expected to send, built the way a client would see it
 			const encodedSize = (reasonString) =>
 				mqttPacket.generate(
 					{

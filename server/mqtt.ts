@@ -210,7 +210,7 @@ const ACK_PACKET_OVERHEAD = 16;
 const isNotAuthorized = (error: any) => error?.statusCode === 401 || error?.statusCode === 403;
 /** Only failures this layer maps to a code of their own are safe to describe: any other carries an internal message. */
 const hasClientSafeMessage = (error: any) => isNotAuthorized(error) || error?.statusCode === 404;
-/** The limit is in encoded bytes, so the string is trimmed in bytes too, never inside a character. */
+/** REASON_STRING_LIMIT counts encoded bytes, and a character must not be cut in half. */
 function boundedReasonString(message: unknown): string {
 	const bytes = Buffer.from(String(message), 'utf8');
 	let end = Math.min(bytes.length, REASON_STRING_LIMIT);
@@ -646,7 +646,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 								mqttOptions.protocolVersion < 5
 									? 0x80 // the only error code in v3.1.1
 									: isNotAuthorized(error)
-										? 0x87 // not authorized
+										? 0x87 // unauthorized
 										: error.statusCode === 404
 											? 0x8f // invalid topic
 											: 0x80; // generic failure
@@ -657,14 +657,13 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					}
 					await session.committed;
 					const subackPacket: any = { cmd: 'suback', granted, messageId: packet.messageId };
+					if (refusalMessage !== undefined && sendProblemInformation)
+						subackPacket.properties = { reasonString: boundedReasonString(refusalMessage) };
 					let suback = generate(subackPacket, mqttOptions);
-					if (refusalMessage !== undefined && sendProblemInformation) {
-						// the result vector grows with the filter count, so only the encoded packet says whether the string fits
-						const described = generate(
-							{ ...subackPacket, properties: { reasonString: boundedReasonString(refusalMessage) } },
-							mqttOptions
-						);
-						if (!maximumPacketSize || described.length <= maximumPacketSize) suback = described;
+					// the result vector grows with the filter count, so only the encoded packet says whether the string fits
+					if (subackPacket.properties && maximumPacketSize && suback.length > maximumPacketSize) {
+						delete subackPacket.properties;
+						suback = generate(subackPacket, mqttOptions);
 					}
 					sendPacket(suback, 'suback');
 					break;
