@@ -201,7 +201,7 @@ suite('Attribute permissions on the resource path (harper#3284)', (ctx: ContextW
 		});
 	});
 
-	test('a REST PUT setting an unwritable attribute is refused', async () => {
+	test('a REST PUT or PATCH setting an unwritable attribute is refused', async () => {
 		await seed('put-2');
 		const put = await fetch(`${restURL}/Doc/put-2`, {
 			method: 'PUT',
@@ -209,6 +209,12 @@ suite('Attribute permissions on the resource path (harper#3284)', (ctx: ContextW
 			body: JSON.stringify({ title: 't', owner: 'o', secret: 'overwritten' }),
 		});
 		strictEqual(put.status, 403, await put.text());
+		const patch = await fetch(`${restURL}/Doc/put-2`, {
+			method: 'PATCH',
+			headers: userHeaders,
+			body: JSON.stringify({ secret: 'overwritten' }),
+		});
+		strictEqual(patch.status, 403, await patch.text());
 		strictEqual((await storedAsAdmin('put-2')).secret, 'put-2 secret');
 	});
 
