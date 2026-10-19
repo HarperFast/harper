@@ -1,13 +1,9 @@
 /**
- * Authentication settings are honoured on the first boot, the one that installs a fresh root.
- *
- * `harper run` on an empty root loads the user and token modules before install() writes the config, so a
- * setting those modules captured at load stayed at its default for the whole first boot: the install-time
- * admin and every add_user/alter_user were stored with sha256 while argon2id was configured, and tokens
- * were minted with the default lifetimes. The admin row kept its sha256 hash across restarts.
+ * `harper run` on an empty root loads the user and token modules before install() writes the config, so any
+ * authentication setting they read at load would hold its default for the whole first boot.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual as equal } from 'node:assert';
+import { strictEqual as equal, notStrictEqual as notEqual } from 'node:assert';
 import {
 	startHarper,
 	killHarper,
@@ -86,6 +82,22 @@ suite('authentication config on the first boot', (ctx: ContextWithHarper) => {
 			role: { permission: { operations: ['read_only'] } },
 		});
 		equal(tokenLifetimeSeconds(scoped.operation_token), OPERATION_TOKEN_SECONDS);
+	});
+
+	test('a refresh token replaced by a newer one is rejected', async () => {
+		const { username, password } = ctx.harper.admin;
+		const { refresh_token: superseded } = await createTokens(ctx, username, password);
+		// tokens minted in the same second are byte-identical
+		await new Promise((resolve) => setTimeout(resolve, 1100));
+		const { refresh_token: current } = await createTokens(ctx, username, password);
+		notEqual(current, superseded);
+		const response = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ operation: 'refresh_operation_token', refresh_token: superseded }),
+		});
+		equal(response.status, 401, await response.text());
+		await sendOperation(ctx.harper, { operation: 'refresh_operation_token', refresh_token: current });
 	});
 
 	suite('after a restart', () => {

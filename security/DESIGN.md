@@ -222,9 +222,9 @@ There is no per-thread copy of `hdb_user`/`hdb_role`: every lookup point-reads t
 
 LMDB lookups use the thread's shared read txn, which lmdb-js renews at most once per event-loop turn, so a commit on another thread is seen from the next turn. Resetting it per lookup would give each in-flight transaction its own reader slot. Enforced by `unitTests/security/userRecordLookups.test.js` and `unitTests/resources/replicatedUserWrites.test.js`.
 
-## Authentication settings are read when used, never at module load (`security/user.ts`, `security/tokenAuthentication.ts`, `utility/password.ts`)
+## The password hash function and token lifetimes are read when used, never at module load (`security/user.ts`, `security/tokenAuthentication.ts`, `utility/password.ts`)
 
-`harper run` on an empty root evaluates these modules before `install()` writes the config, and then serves operations from that same process, so a value captured at load is the default for the whole first boot. `authentication.hashFunction` is resolved once per password write (`password.configuredHashFunction()`) and that same value is stored as the row's `hash_function`; validation always uses the stored value. `password.hash`/`validate` default to SHA-256 regardless of config, because refresh tokens are hashed with SHA-256 and validated synchronously with the default. Token lifetimes are read per mint. Enforced by `integrationTests/security/firstboot-auth-config.test.ts`.
+`harper run` on an empty root evaluates these three modules (and `installer.ts`) on the main thread before `install()` writes the config, then serves operations from that thread, so a value captured at load is the default for the whole first boot; `auth.ts` and `mqtt.ts` load after it. `authentication.hashFunction` is resolved once per password write (`password.configuredHashFunction()`) and that same value is stored as the row's `hash_function`; validation always uses the stored value. `password.hash`/`validate` default to SHA-256 regardless of config, because refresh tokens are hashed with SHA-256 and validated synchronously with the default. Token lifetimes are read per mint. Enforced by `integrationTests/security/firstboot-auth-config.test.ts`.
 
 ## Named component children are identified by lifetime (`security/jsLoader.ts`, `security/spawnPidFile.ts`)
 

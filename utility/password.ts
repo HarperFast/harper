@@ -13,7 +13,6 @@ export const HASH_FUNCTION = {
 
 type HashFunction = (typeof HASH_FUNCTION)[keyof typeof HASH_FUNCTION];
 
-/** The hash function new passwords are stored with (`authentication.hashFunction`, default SHA-256). */
 export function configuredHashFunction(): HashFunction {
 	return HASH_FUNCTION[get(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION)?.toUpperCase()] ?? HASH_FUNCTION.SHA256;
 }
