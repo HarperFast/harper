@@ -7,6 +7,7 @@ const { COMPONENT_STATUS_LEVELS } = require('#src/components/status/types');
 const { waitFor } = require('../../waitFor.js');
 const { setTimeout: delay } = require('node:timers/promises');
 const { setStatusHandler, createLogger, updateLogger } = require('#src/utility/logging/harper_logger');
+const { runInNewContext } = require('node:vm');
 
 describe('logBridge', function () {
 	beforeEach(function () {
@@ -17,6 +18,88 @@ describe('logBridge', function () {
 	afterEach(function () {
 		initLogBridge();
 		componentStatusRegistry.reset();
+	});
+
+	it('redacts complete URL credentials before bounding the status message', function () {
+		const logger = createLogger({ level: 'error', writeToLog: () => {} });
+		logger
+			.status({ problem: 'test.long-url' })
+			.debug('https://qa-user:synthetic-password-' + 'x'.repeat(600) + '@example.invalid/status');
+		const message = componentStatusRegistry.getStatus('test.long-url').message;
+		assert.ok(!message.includes('qa-user'));
+		assert.ok(!message.includes('synthetic-password'));
+		assert.ok(message.includes('[REDACTED]'));
+		assert.ok(message.length <= 500);
+	});
+
+	it('recognizes a native error created in a VM context', function () {
+		const logger = createLogger({ level: 'error', writeToLog: () => {} });
+		const error = runInNewContext('new TypeError("VM failure")');
+		logger.status({ problem: 'test.vm-error' }).debug('Failed', error);
+		assert.strictEqual(componentStatusRegistry.getStatus('test.vm-error').error, error);
+	});
+
+	it('does not invoke Proxy traps or object coercions for a filtered log', function () {
+		const logger = createLogger({ level: 'error', writeToLog: () => {} });
+		let calls = 0;
+		const proxy = new Proxy(
+			{},
+			{
+				getPrototypeOf() {
+					calls++;
+					return null;
+				},
+				get() {
+					calls++;
+					return undefined;
+				},
+			}
+		);
+		const object = {
+			[Symbol.toPrimitive]() {
+				calls++;
+				return 'coerced';
+			},
+		};
+		logger.status({ problem: 'test.passive-summary' }).debug(proxy, Object.create(proxy), object);
+		assert.strictEqual(calls, 0);
+		assert.strictEqual(componentStatusRegistry.getStatus('test.passive-summary').occurrenceCount, 1);
+	});
+
+	it('keeps a long expiry active instead of overflowing the native timer', async function () {
+		const key = 'test.long-expiry';
+		const logger = createLogger({ level: 'error', writeToLog: () => {} });
+		try {
+			logger.status({ problem: key, expires: 30 * 86400 }).error('Still failing');
+			await delay(25);
+			assert.strictEqual(componentStatusRegistry.getStatus(key).status, COMPONENT_STATUS_LEVELS.ERROR);
+		} finally {
+			handleStatusLog({ resolves: key }, null, undefined, []);
+		}
+	});
+
+	it('leaves invalid expiry durations persistent', async function () {
+		const logger = createLogger({ level: 'error', writeToLog: () => {} });
+		const values = [0, -1, NaN, Infinity, 'abc'];
+		const keys = values.map((_, index) => 'test.invalid-expiry-' + index);
+		try {
+			for (let i = 0; i < values.length; i++) {
+				logger.status({ problem: keys[i], expires: values[i] }).error('Still failing');
+			}
+			await delay(25);
+			for (const key of keys) {
+				assert.strictEqual(componentStatusRegistry.getStatus(key).status, COMPONENT_STATUS_LEVELS.ERROR);
+			}
+		} finally {
+			for (const key of keys) handleStatusLog({ resolves: key }, null, undefined, []);
+		}
+	});
+
+	it('preserves numeric-string expiry compatibility', async function () {
+		const key = 'test.numeric-string-expiry';
+		const logger = createLogger({ level: 'error', writeToLog: () => {} });
+		logger.status({ problem: key, expires: '0.03' }).error('Transient');
+		await waitFor(() => componentStatusRegistry.getStatus(key)?.status === COMPONENT_STATUS_LEVELS.HEALTHY);
 	});
 
 	it('keeps captured conditional and tagged status loggers working after a level update', function () {
@@ -173,7 +256,7 @@ describe('logBridge', function () {
 		const logger = createLogger({ level: 'error', writeToLog: () => {} });
 		assert.doesNotThrow(() => logger.status({ problem: 'test.revoked-proxy' }).debug(proxy));
 		assert.equal(componentStatusRegistry.getStatus('test.revoked-proxy').occurrenceCount, 1);
-		assert.equal(componentStatusRegistry.getStatus('test.revoked-proxy').message, '[unserializable]');
+		assert.equal(componentStatusRegistry.getStatus('test.revoked-proxy').message, '[Proxy]');
 	});
 
 	it('preserves tagged status logs and still reports status at filtered log levels', async function () {
@@ -219,14 +302,10 @@ describe('logBridge', function () {
 		}
 	});
 
-	// Regression for #372: statusLogger() used to fire the level===null (status-only) dispatch
-	// immediately and unconditionally, so a chained call like .status({problem}).error(msg) always
-	// dispatched twice, doubling occurrenceCount for nearly every problem key this feature reports.
 	it('logger.status({problem}).error(msg) registers exactly one occurrence', async function () {
 		const logger = createLogger({ level: 'trace', writeToLog: () => {} });
 		logger.status({ problem: 'test.harper-372-chained' }).error('boom');
 
-		// the options-only dispatch (if any) is deferred to a microtask; let it flush
 		await new Promise((resolve) => setImmediate(resolve));
 
 		const status = componentStatusRegistry.getStatus('test.harper-372-chained');

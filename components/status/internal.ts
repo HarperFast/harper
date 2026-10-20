@@ -26,7 +26,6 @@ export * from './errors.ts';
 // All type definitions
 export * from './types.ts';
 
-// Log bridge and health checks
 export { initLogBridge } from './logBridge.ts';
 export { startHealthChecks } from './healthChecks.ts';
 

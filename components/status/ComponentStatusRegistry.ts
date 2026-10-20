@@ -69,7 +69,7 @@ export class ComponentStatusRegistry {
 		if (existing && existing.status === status) {
 			existing.lastChecked = new Date();
 			existing.message = sanitizedMessage;
-			if (error !== undefined) existing.error = sanitizedError;
+			existing.error = sanitizedError;
 			if (source !== undefined) existing.source = source;
 			existing.occurrenceCount++;
 		} else {
@@ -274,7 +274,7 @@ const CREDENTIAL_URL_USERINFO_PATTERN = /(?<=[a-z][a-z0-9+.-]*:\/\/)[^/?#\s]+@/g
 const LOADER_COMPONENT_FAILURE_MESSAGE = /^Could not load component '[^']*'$/;
 const LOADER_DIRECTORY_FAILURE_MESSAGE = /^Could not load \S+$/;
 
-function redactUrlCredentials(text: string): string {
+export function redactUrlCredentials(text: string): string {
 	return text.replace(CREDENTIAL_URL_USERINFO_PATTERN, '[REDACTED]@');
 }
 

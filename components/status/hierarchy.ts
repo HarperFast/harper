@@ -60,7 +60,6 @@ export function buildHierarchy(statuses: Map<string, AggregatedComponentStatus>)
 			const node = currentLevel[part];
 
 			if (i === parts.length - 1) {
-				// Leaf node -- set actual status from aggregated data
 				node.status = status.status;
 				node.message = status.latestMessage;
 				node.source = status.source;
@@ -68,7 +67,6 @@ export function buildHierarchy(statuses: Map<string, AggregatedComponentStatus>)
 				node.occurrenceCount = status.occurrenceCount;
 				if (status.error !== undefined) node.error = serializeStatusError(status.error);
 			} else {
-				// Intermediate node -- ensure children map exists
 				if (!node.children) node.children = {};
 				currentLevel = node.children;
 			}
@@ -91,7 +89,6 @@ function rollUpStatus(nodes: Record<string, StatusNode>): ComponentStatusLevel {
 
 		if (node.children) {
 			const childWorst = rollUpStatus(node.children);
-			// Parent status = worst of own status and children's worst
 			if (STATUS_PRIORITY[childWorst] > STATUS_PRIORITY[nodeStatus]) {
 				nodeStatus = childWorst;
 				node.status = nodeStatus;

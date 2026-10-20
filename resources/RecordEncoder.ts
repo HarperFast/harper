@@ -683,9 +683,8 @@ export class RecordEncoder extends StructonEncoder {
 				);
 				return null;
 			}
-			harperLogger
-				.status({ problem: 'database.record-decode', expires: 120 })
-				.error('Error decoding record', error, 'data: ' + hexPreview);
+			harperLogger.status({ problem: 'database.record-decode', expires: 120 });
+			harperLogger.error('Error decoding record', error, 'data: ' + hexPreview);
 			return null;
 		}
 	}

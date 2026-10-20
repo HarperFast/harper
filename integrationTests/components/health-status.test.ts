@@ -1,4 +1,3 @@
-/** Verify PR #372 health configuration and quota pressure through the real get_status operation. */
 import { suite, test } from 'node:test';
 import assert from 'node:assert';
 import { writeFile } from 'node:fs/promises';
