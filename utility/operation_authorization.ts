@@ -983,7 +983,10 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	if (!isSuperUser && table != undefined && SEARCH_OPS.has(op))
 		checkRelationshipReads(requestJson, operationSchema, table, permsResponse);
 
-	const tableClass = SEARCH_OPS.has(op) && table != undefined ? getDatabases()[operationSchema]?.[table] : undefined;
+	const tableClass =
+		requestJson.conditions && SEARCH_OPS.has(op) && table != undefined
+			? getDatabases()[operationSchema]?.[table]
+			: undefined;
 	const recordAttrs = getRecordAttributes(
 		requestJson,
 		op,

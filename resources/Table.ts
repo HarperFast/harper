@@ -2200,6 +2200,9 @@ export function makeTable(options): TableResourceClass {
 				return property;
 			}
 			if (!property.name) property = { name: property };
+			// a sorted REST property set is projected entry by entry, so its entries are the sub-selection
+			if (Array.isArray(property) && (property as any).select == null && typeof property.sort === 'object')
+				(property as any).select = [...property];
 			// authority comes from the request being authorized, never from the selection itself
 			if (checkPermission) property.checkPermission = checkPermission;
 			else delete property.checkPermission;
