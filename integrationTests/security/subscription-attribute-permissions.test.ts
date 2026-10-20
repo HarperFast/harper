@@ -21,8 +21,9 @@ import { createApiClient, createHeaders } from '../apiTests/utils/client.mjs';
 import { waitForRouteReady } from '../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/subscription-attribute-permissions');
-// mqtt.js's WebSocket transport doesn't complete CONNACK on Bun — the same skip the MQTT suites carry.
-const skipMqtt = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
+// WebSocket transports (REST WebSocket and mqtt.js over WebSocket) are skipped on Bun and Windows, as in the
+// other WebSocket and MQTT suites.
+const skipWebSocket = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
 const ROLE = 'doc_no_secret_role';
 const USER = { username: 'doc_no_secret_user', password: 'Doc-no-secret-1!' };
@@ -232,7 +233,7 @@ suite('Attribute read permissions on subscription deliveries', (ctx: ContextWith
 		await assertDelivered('super user SSE', superUser.frames, titles, true);
 	});
 
-	test('REST WebSocket deliveries omit attributes the role cannot read', async () => {
+	test('REST WebSocket deliveries omit attributes the role cannot read', { skip: skipWebSocket }, async () => {
 		await putAsAdmin('ws-1', 'ws current');
 		const restricted = await openWs('/Doc/ws-1', userAuth);
 		const superUser = await openWs('/Doc/ws-1', adminAuth);
@@ -242,7 +243,7 @@ suite('Attribute read permissions on subscription deliveries', (ctx: ContextWith
 	});
 
 	for (const qos of [0, 1] as const) {
-		test(`MQTT QoS ${qos} deliveries omit attributes the role cannot read`, { skip: skipMqtt }, async () => {
+		test(`MQTT QoS ${qos} deliveries omit attributes the role cannot read`, { skip: skipWebSocket }, async () => {
 			const id = `mqtt${qos}-1`;
 			await putAsAdmin(id, `mqtt${qos} current`);
 			const restricted = await connectMqtt(`restricted-${id}`, USER);
@@ -255,7 +256,7 @@ suite('Attribute read permissions on subscription deliveries', (ctx: ContextWith
 		});
 	}
 
-	test('a resumed MQTT session replays without attributes the role cannot read', { skip: skipMqtt }, async () => {
+	test('a resumed MQTT session replays without attributes the role cannot read', { skip: skipWebSocket }, async () => {
 		await putAsAdmin('resume-1', 'resume current');
 		const clientId = 'restricted-resume-1';
 		const first = await connectMqtt(clientId, USER, false);
@@ -275,7 +276,7 @@ suite('Attribute read permissions on subscription deliveries', (ctx: ContextWith
 
 	test(
 		'a non-retained MQTT publish delivers and records exactly the published fields',
-		{ skip: skipMqtt },
+		{ skip: skipWebSocket },
 		async () => {
 			await putAsAdmin('pub-1', 'pub stored');
 			const superUser = await connectMqtt('admin-pub-1', admin());
@@ -312,7 +313,7 @@ suite('Attribute read permissions on subscription deliveries', (ctx: ContextWith
 		await putAsAdmin('keep-put', 'stored');
 		await write('PUT', 'keep-put', { id: 'keep-put', title: 'put by role' }, userAuth);
 		deepStrictEqual(await storedAsAdmin('keep-put'), expected('keep-put', 'put by role'));
-		if (skipMqtt) return t.skip('MQTT is not available on this runtime');
+		if (skipWebSocket) return t.skip('MQTT is not available on this runtime');
 		await putAsAdmin('keep-retain', 'stored');
 		const publisher = await connectMqtt('restricted-keep-retain', USER);
 		strictEqual(await publish(publisher.client, 'Doc/keep-retain', { title: 'retained by role' }, true), 0);
