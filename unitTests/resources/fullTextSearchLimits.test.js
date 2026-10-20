@@ -15,6 +15,13 @@ describe('full-text search resource limits', () => {
 			timeout: 15000,
 		});
 		assert.strictEqual(JSON.parse(unmanaged.trim().split('\n').at(-1)).unmanaged, 'ready');
+		const early = execFileSync(process.execPath, [fixture, '256', 'early-worker'], {
+			encoding: 'utf8',
+			timeout: 15000,
+		});
+		const rejection = JSON.parse(early.trim().split('\n').at(-1)).unmanaged;
+		assert.strictEqual(rejection.status, 503);
+		assert.match(rejection.error, /Initialize Harper before creating application workers/);
 		for (const value of [257, 258]) {
 			const result = execFileSync(process.execPath, [fixture, String(value)], { encoding: 'utf8', timeout: 15000 });
 			assert.strictEqual(JSON.parse(result.trim().split('\n').at(-1)).runtime.maxSearchThreads, value);

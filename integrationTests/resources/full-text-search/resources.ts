@@ -48,6 +48,47 @@ export class IterableSearchProduct extends Resource {
 	}
 }
 
+export class CopiedPagingProduct extends Resource {
+	allowRead(user) {
+		return Boolean(user);
+	}
+
+	async get(target) {
+		const page = await Product.searchPage({ ...target, checkPermission: true }, this.getContext());
+		return page.filter(() => true);
+	}
+
+	search(target) {
+		return this.get(target);
+	}
+}
+
+export class IgnoredPagingProduct extends Resource {
+	allowRead(user) {
+		return Boolean(user);
+	}
+
+	get() {
+		return [];
+	}
+
+	search() {
+		return [];
+	}
+}
+
+export class ManualPagingResponse extends IgnoredPagingProduct {
+	get() {
+		return new Response('[]', {
+			headers: {
+				'Content-Type': 'application/json',
+				'Harper-Continuation-Complete': 'true',
+				'Cache-Control': 'no-store',
+			},
+		});
+	}
+}
+
 export class FullTextState extends Resource {
 	allowRead(user) {
 		return Boolean(user?.role?.permission?.super_user);

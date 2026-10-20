@@ -555,8 +555,8 @@ and hit metadata through `fullTextContinuation.ts`; they load records and check 
 `fullTextContinuationOwner.ts` holds the worker registry. Native readers own ranking and traversal.
 
 Each pending request reserves reply bytes before sending. Native-page allowances use native limits
-and batch size; other operations use fixed allowances. The owner checks serialized native pages
-before sending them. Timeouts and worker exit release pending capacity. Admission is process-wide;
+and batch size; other operations use fixed allowances. The owner bounds hit strings at two bytes per code unit
+before sending; read replies are not serialized again for measurement. Timeouts and worker exit release pending capacity. Admission is process-wide;
 losing the owner expires the search rather than forwarding it to another server.
 
 Publication may retire a reader while its searches finish. Reset, close and definition changes
@@ -566,7 +566,7 @@ drain promise carries that acknowledgement, separately from reader-retirement fa
 its own bounded cleanup window: context and lifecycle checks still apply afterward, but an expired
 search budget cannot discard a terminal page whose token is already revoked.
 
-`Table.search` and `searchByIndex` supply their existing materializer and entry loader. The index
+`Table.searchPage` and `searchByIndex` supply their existing materializer and entry loader. The index
 feeds bounded candidate groups through them until the page fills or traversal ends. Source refresh
 rechecks the saved native version. First-page highlighting shares the retained lease's active-use
 and drain accounting; resumed highlighting releases only its separately acquired local reader.

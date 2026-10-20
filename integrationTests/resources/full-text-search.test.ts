@@ -295,6 +295,28 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await search(query('pagination', {}, { limit: 1, continuation: true }), authorization, 400);
 	});
 
+	test('rejects ignored or copied continuation pages while preserving explicit HTTP responses', async () => {
+		assert.deepStrictEqual(await request('/IgnoredPagingProduct/'), []);
+		for (const resource of ['IgnoredPagingProduct', 'CopiedPagingProduct']) {
+			const base = `/${resource}/?catalogSearch=matches=pagination&limit(1000)&select(id,title)`;
+			for (const options of [
+				{},
+				{ method: 'QUERY', body: JSON.stringify(query('pagination', {}, { limit: 1000, continuation: true })) },
+			]) {
+				const path = options.method ? `/${resource}/` : `${base}&continuation()`;
+				const error = await request(path, options, 400);
+				assert.match(JSON.stringify(error), /original searchPage\(\) array/);
+			}
+		}
+		const response = await fetch(`${ctx.harper.httpURL}/ManualPagingResponse/?limit(1)&continuation()`, {
+			headers: { Authorization: authorization },
+			signal: AbortSignal.timeout(15000),
+		});
+		assert.strictEqual(response.status, 200);
+		assert.strictEqual(response.headers.get('harper-continuation-complete'), 'true');
+		assert.deepStrictEqual(await response.json(), []);
+	});
+
 	test('rejects continuation on mutating REST methods without changing records or consuming the token', async () => {
 		const base = '/Product/?catalogSearch=matches=pagination&limit(75)&select(id,title)';
 		const firstResponse = await fetch(`${ctx.harper.httpURL}${base}&continuation()`, {

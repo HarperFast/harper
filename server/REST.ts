@@ -353,6 +353,18 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			}
 		});
 		let status = request.response.status;
+		if (
+			(method === 'GET' || method === 'QUERY') &&
+			(hasFullTextContinuationOptions(target) ||
+				(method === 'QUERY' && hasFullTextContinuationOptions(await request.data))) &&
+			!responseData?.headers &&
+			!(status >= 400) &&
+			(!Array.isArray(responseData) || (responseData as any)[FULL_TEXT_CONTINUATION_PAGE] !== true)
+		)
+			throw new ClientError(
+				'This resource must return the original searchPage() array for full-text continuation',
+				400
+			);
 		let lastModification = request.lastModified;
 		if (responseData == undefined) {
 			status ??= method === 'GET' || method === 'HEAD' ? 404 : 204;
