@@ -108,19 +108,21 @@ describe('Attribute read permissions on subscription deliveries', () => {
 			await Doc.put(id, { title: 'current', secret: 's' });
 			const events = await subscribe(Table, { id }, asUser());
 			const superUser = await subscribe(Table, { id });
-			await waitFor(() => delivered(events, 'current'));
+			// a write not yet delivered when the next one commits is superseded, so each is awaited
+			const deliveredToBoth = (title) => waitFor(() => delivered(events, title) && delivered(superUser, title));
+			await deliveredToBoth('current');
 			await Doc.put(id, { title: 'put', secret: 's' });
+			await deliveredToBoth('put');
 			await Doc.patch(id, { title: 'patch' });
+			await deliveredToBoth('patch');
 			await Doc.publish(id, { title: 'message', secret: 's' });
-			await waitFor(() => delivered(events, 'message') && delivered(superUser, 'message'));
-			// a put superseded before delivery is coalesced into the patch
+			await deliveredToBoth('message');
 			const expected = [{ id, title: 'current' }, { id, title: 'put' }, { id, title: 'patch' }, { title: 'message' }];
 			for (const event of recordEvents(events))
 				assert.ok(
 					expected.some((value) => isDeepStrictEqual(event.value, value)),
 					JSON.stringify(event.value)
 				);
-			assert.ok(delivered(events, 'patch'));
 			assertNoSecret(events);
 			assert.ok(recordEvents(superUser).every((event) => event.value.secret === 's'));
 		});
@@ -164,6 +166,7 @@ describe('Attribute read permissions on subscription deliveries', () => {
 		await Doc.put('computed', { title: 'computed', secret: 's' });
 		const callsBefore = resolverCalls;
 		const events = await subscribe(Doc, { id: 'computed', select: ['title', 'shout', 'secret'] }, asUser());
+		await waitFor(() => delivered(events, 'computed'));
 		await Doc.put('computed', { title: 'computed again', secret: 's' });
 		await waitFor(() => delivered(events, 'computed again'));
 		assert.deepStrictEqual(
