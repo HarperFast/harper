@@ -817,7 +817,7 @@ function checkpointAdmissible(Resource: any, checkpoint: unknown): boolean {
 		const token = validateCheckpoint(checkpoint);
 		// a token for another table is a 409 and a scalar fallback after CONNACK, not a reset
 		const [database, table] = JSON.parse(token.scope);
-		if (database !== Resource.auditStore.rootStore?.databaseName || table !== Resource.name) return true;
+		if (database !== Resource.databaseName || table !== Resource.name) return true;
 		admitCheckpoint(Resource.auditStore, Resource.dbisDB, token);
 		return true;
 	} catch (error) {

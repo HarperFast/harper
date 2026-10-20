@@ -149,21 +149,30 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 			}
 		}
 	}
-	// qualifiers are sticky across rows of one origin generation; of two generations the most recently updated
-	// row's is current (a removed peer's retained row never advances), and the floor counts only from that one
+	// qualifiers are sticky across rows of one origin generation. Generations are unordered ids, but every
+	// floor is a sample of the origin's own clock: the generation whose rows saw the highest floor (a revoked
+	// row keeps the floor it was revoked at) is the one the origin certified most recently, so a removed
+	// peer's retained row, frozen at its death, loses to a live route for a restored origin
 	for (const [nodeId, nodeRows] of rows) {
 		const state = states.get(nodeId)!;
-		let current: { generation: string; seqId: number } | undefined;
-		for (const { node, seqId } of nodeRows) {
+		const recency = new Map<string, number>();
+		for (const { node } of nodeRows) {
 			if (typeof node.originGeneration !== 'string') continue;
-			if (!current || seqId > current.seqId) current = { generation: node.originGeneration, seqId };
+			const seen = Math.max(
+				isValidFloor(node.closedFloor) ? node.closedFloor : 0,
+				isValidFloor(node.revokedFloor) ? node.revokedFloor : 0
+			);
+			if (!(recency.get(node.originGeneration) >= seen)) recency.set(node.originGeneration, seen);
 		}
-		if (current && state.generation !== current.generation) {
+		let current: string | undefined;
+		for (const [generation, seen] of recency)
+			if (current === undefined || seen > recency.get(current)!) current = generation;
+		if (current !== undefined && state.generation !== current) {
 			state.floor = undefined;
 			state.certifiedFrom = undefined;
-			state.generation = current.generation;
+			state.generation = current;
 			for (const { node } of nodeRows) {
-				if (node.originGeneration !== current.generation) continue;
+				if (node.originGeneration !== current) continue;
 				if (
 					isValidFloor(node.closedFloor) &&
 					node.fullCoverage === true &&
@@ -180,7 +189,8 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 			}
 		}
 		for (const { node } of nodeRows) {
-			if (typeof node.originGeneration === 'string' && node.originGeneration !== state.generation) continue;
+			// only rows of the current generation speak for the origin
+			if (node.originGeneration !== state.generation) continue;
 			if (node.floorRevoked === true) state.floorRevoked = true;
 			if (node.hole === true) state.hole = true;
 		}
