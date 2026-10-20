@@ -1032,7 +1032,6 @@ function normalizeSearchRequest(requestJson: any) {
 	stripPermissionControls(requestJson.get_attributes);
 }
 
-/** Refuses selections, conditions and sorts that read a related table or attribute the role cannot read. */
 function checkRelationshipReads(requestJson: any, operationSchema: string, table: string, permsResponse) {
 	const tableClass = getDatabases()[operationSchema]?.[table];
 	if (!tableClass?.hasRelationships) return;

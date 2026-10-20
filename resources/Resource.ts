@@ -919,7 +919,12 @@ function transactional(
 			// an instance resource executes the body's conditions and sort, which allowRead authorizes
 			if (this.loadAsInstance !== false) {
 				if (Array.isArray(data)) query.conditions = data;
-				else if (Object.prototype.hasOwnProperty.call(data, 'conditions')) query.conditions = data.conditions;
+				else if (Object.prototype.hasOwnProperty.call(data, 'conditions')) {
+					// admission and execution both read a one-shot iterator
+					if (data.conditions && !Array.isArray(data.conditions) && data.conditions[Symbol.iterator])
+						data.conditions = Array.from(data.conditions);
+					query.conditions = data.conditions;
+				}
 				if (Object.prototype.hasOwnProperty.call(data, 'sort')) query.sort = data.sort;
 			}
 		}
