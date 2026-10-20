@@ -373,12 +373,23 @@ describe('Permissions through Resource API', () => {
 				},
 			},
 		};
-		const target = new RequestTarget('?id=r1&select(id,middle{grand})');
-		target.checkPermission = true;
-		const results = [];
-		for await (const result of Root.search(target, { user })) results.push(result);
-		assert.equal(results.length, 1);
-		assert.deepStrictEqual(JSON.parse(JSON.stringify(results)), [{ id: 'r1', middle: { id: 'm1', grandId: 'g1' } }]);
+		const select = async (query, asUser = user) => {
+			const target = new RequestTarget(query);
+			target.checkPermission = true;
+			const results = [];
+			for await (const result of Root.search(target, { user: asUser })) results.push(result);
+			return JSON.parse(JSON.stringify(results));
+		};
+		assert.deepStrictEqual(
+			await select('?id=r1&select(id,middle{id,grand,sort(+id)})', { role: { permission: { super_user: true } } }),
+			[{ id: 'r1', middle: { id: 'm1', grand: { id: 'g1' } } }]
+		);
+		assert.deepStrictEqual(await select('?id=r1&select(id,middle{grand})'), [
+			{ id: 'r1', middle: { id: 'm1', grandId: 'g1' } },
+		]);
+		assert.deepStrictEqual(await select('?id=r1&select(id,middle{id,grand,sort(+id)})'), [
+			{ id: 'r1', middle: { id: 'm1' } },
+		]);
 	});
 	it('Reports the first unreadable step of a relationship path', function () {
 		assert.equal(TestTable._readDenial(['related', 'name'], { role: { permission: { super_user: true } } }), undefined);
