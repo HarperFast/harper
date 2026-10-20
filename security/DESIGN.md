@@ -231,3 +231,12 @@ Synchronous spawning uses a filesystem bakery lock: contenders atomically publis
 Version replacement signals the verified PID through `process.kill(pid)`. Node reports PID-based termination on Windows through the original `ChildProcess.exitCode`, leaving `signalCode` null.
 
 Named-process probe and lock failures use `NamedProcessError`, a `ServerError` subtype with the original cause; native child-process argument errors retain their original class and code.
+
+## A scoped mirror is never advertised before its allowlist is read (`security/networkAccess.ts`)
+
+`system.hdb_network_access` holds one row per scope (`operations` today), replicated like any system table. A fronting proxy enforces the list; Harper only publishes it as `allowedSources` in the mirror metadata (`writeUdsMetadata`, `server/http.ts`) of servers tagged with `networkAccessScope` (operations API servers and Bun pseudo-servers).
+
+- **No unrestricted advertisement.** `writeUdsMetadata` returns false and writes nothing for a scoped server while `allowedSourcesFor(scope)` is undefined, which it is until this thread's first successful read. That gate sits in the writer, not at `ready`, because `security/keys.ts` fires `secureContextsListeners` before it resolves its readiness promise. A system table absent after databases load is genuine absence (unrestricted); `onUpdatedTable` re-reads when it appears via upgrade or replication.
+- **One reconciler per scope.** `table.subscribe({ id: scope })` only signals; every signal, the 60 s tick and `onUpdatedTable` run the same `table.get(scope)`, one at a time, with a dirty flag that reruns it and a check that discards a read from a replaced table object. Event payloads and their order are never used, so a reload marker, an error event or a missed notification all converge on the next read.
+- **Published, not just desired.** Each publisher records the list it last wrote successfully; a failed write (`atomicWriteFile` threw) stays stale and is retried by the tick without another change.
+- **Lockout check.** `set_network_access` refuses a list excluding `hdb_client_address`, which `handlePostRequest` sets from the Harper request's `ip` for that operation only, overwriting any client value. No address (operations domain socket, in-process calls, Bun/uWS requests injected into Fastify) means no check: that is the recovery path, and the proxy is never in front of it.

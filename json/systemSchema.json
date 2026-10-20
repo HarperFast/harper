@@ -569,5 +569,31 @@
 				"attribute": "id"
 			}
 		]
+	},
+	"hdb_network_access": {
+		"hash_attribute": "scope",
+		"name": "hdb_network_access",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "scope"
+			},
+			{
+				"attribute": "allow"
+			},
+			{
+				"attribute": "updatedBy"
+			},
+			{
+				"attribute": "updatedAt"
+			},
+			{
+				"attribute": "__createdtime__"
+			},
+			{
+				"attribute": "__updatedtime__"
+			}
+		]
 	}
 }

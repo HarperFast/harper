@@ -458,6 +458,21 @@ describe('Test serverHandlers.js module ', () => {
 			}
 		});
 
+		it('Should set the server-derived caller address for set_network_access only, overwriting a client value', async () => {
+			const raw = { baseRequest: { ip: '203.0.113.9' } };
+			const forged = { operation: 'set_network_access', hdb_client_address: '10.0.0.1' };
+			await serverHandlers_rw.handlePostRequest({ body: forged, raw });
+			assert.strictEqual(forged.hdb_client_address, '203.0.113.9');
+
+			const local = { operation: 'set_network_access', hdb_client_address: '10.0.0.1' };
+			await serverHandlers_rw.handlePostRequest({ body: local });
+			assert.strictEqual(local.hdb_client_address, undefined, 'no transport address means none, not the client value');
+
+			const other = { operation: 'create_schema' };
+			await serverHandlers_rw.handlePostRequest({ body: other, raw });
+			assert.strictEqual(Object.hasOwn(other, 'hdb_client_address'), false);
+		});
+
 		it('Should reject a null request body with a client error', async () => {
 			await assert.rejects(serverHandlers_rw.handlePostRequest({ body: null }), /Invalid request body/);
 			assert.strictEqual(choose_op_stub.callCount, 0);

@@ -42,6 +42,7 @@ import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../../components/deploymentOperations.ts';
 import * as secretOperations from '../../components/secretOperations.ts';
 import * as trustPolicyOperations from '../../security/authn/oidc/trustPolicyOperations.ts';
+import * as networkAccess from '../../security/networkAccess.ts';
 import * as tokenExchange from '../../security/authn/oidc/tokenExchange.ts';
 import { contextStorage } from '../../resources/transaction.ts';
 import { isMainThread } from 'node:worker_threads';
@@ -816,6 +817,8 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN,
 		new OperationFunctionObject(tokenExchange.exchangeOidcToken)
 	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.SET_NETWORK_ACCESS, new OperationFunctionObject(networkAccess.setNetworkAccess));
+	opFuncMap.set(terms.OPERATIONS_ENUM.GET_NETWORK_ACCESS, new OperationFunctionObject(networkAccess.getNetworkAccess));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,
 		new OperationFunctionObject(transactionLog.readTransactionLog)

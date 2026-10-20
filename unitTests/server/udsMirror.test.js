@@ -13,6 +13,7 @@ const terms = require('#src/utility/hdbTerms');
 const EventEmitter = require('events');
 const {
 	writeUdsMetadata,
+	publishUdsMetadata,
 	registerUdsCleanupPaths,
 	recordUdsBindSuccess,
 	cleanupUdsFiles,
@@ -182,9 +183,82 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			const harperLogger = require('#src/utility/logging/harper_logger');
 			const errorStub = sandbox.stub(harperLogger, 'error');
 			// Use an invalid path that cannot be written
-			writeUdsMetadata('/nonexistent-dir/missing/0-9926.yaml', 9926, makeSecureServer());
+			assert.strictEqual(writeUdsMetadata('/nonexistent-dir/missing/0-9926.yaml', 9926, makeSecureServer()), false);
 			assert.ok(errorStub.calledOnce, 'should log the write error');
 			assert.ok(errorStub.firstCall.args[0].includes('Error writing UDS metadata'));
+		});
+
+		describe('network access scope (allowedSources)', () => {
+			const { databases } = require('#src/resources/databases');
+			const networkAccess = require('#src/security/networkAccess');
+			const TABLE = terms.SYSTEM_TABLE_NAMES.NETWORK_ACCESS_TABLE_NAME;
+			let rows, subscribers, prior;
+			const yamlPath = path.join(TEST_SOCKETS_DIR, '0-9925.yaml');
+			const read = () => fs.readFileSync(yamlPath, 'utf8');
+			const until = async (condition, what) => {
+				for (let i = 0; i < 200 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+				assert.ok(condition(), `timed out waiting for ${what}`);
+			};
+			const changeRow = (row) => {
+				if (row) rows.set('operations', row);
+				else rows.delete('operations');
+				for (const listener of subscribers) listener({ type: 'put' });
+			};
+
+			before(() => testUtils.ensureSystemTables());
+			beforeEach(() => {
+				networkAccess.resetNetworkAccessWatches();
+				rows = new Map();
+				subscribers = [];
+				prior = databases.system[TABLE];
+				databases.system[TABLE] = {
+					get: async (id) => rows.get(id),
+					subscribe: async ({ listener }) => {
+						subscribers.push(listener);
+						return { on() {}, end() {} };
+					},
+				};
+			});
+			afterEach(() => {
+				networkAccess.resetNetworkAccessWatches();
+				databases.system[TABLE] = prior;
+			});
+
+			it('writes nothing for a scoped server until its list has been read', () => {
+				const server = { ...makeSecureServer(), networkAccessScope: 'operations' };
+				assert.strictEqual(writeUdsMetadata(yamlPath, 9925, server), false);
+				assert.strictEqual(fs.existsSync(yamlPath), false);
+			});
+
+			it('publishes the list, rewrites it on change, and omits it once cleared', async () => {
+				rows.set('operations', { allow: ['10.0.0.0/8', '2001:db8::/32'] });
+				const server = { ...makeSecureServer(), networkAccessScope: 'operations', secureContextsListeners: [] };
+				const write = () => writeUdsMetadata(yamlPath, 9925, server);
+				let ready;
+				publishUdsMetadata(new Promise((resolve) => (ready = resolve)), server, write);
+				// a certificate listener firing before TLS readiness and the first read must not publish
+				server.secureContextsListeners.forEach((listener) => listener());
+				assert.strictEqual(fs.existsSync(yamlPath), false);
+				ready();
+				await until(() => fs.existsSync(yamlPath), 'the first write');
+				assert.match(read(), /^allowedSources:\n {2}- "10\.0\.0\.0\/8"\n {2}- "2001:db8::\/32"\n/m);
+
+				changeRow({ allow: ['192.168.0.0/16'] });
+				await until(() => read().includes('192.168.0.0/16'), 'the rewrite');
+				assert.ok(!read().includes('10.0.0.0/8'));
+
+				changeRow(undefined);
+				await until(() => !read().includes('allowedSources'), 'the cleared list');
+				assert.match(read(), /^certificates:/m);
+			});
+
+			it('never adds allowedSources to a server outside a scope', async () => {
+				rows.set('operations', { allow: ['10.0.0.0/8'] });
+				const server = { ...makeSecureServer(), secureContextsListeners: [] };
+				publishUdsMetadata(Promise.resolve(), server, () => writeUdsMetadata(yamlPath, 9926, server));
+				await until(() => fs.existsSync(yamlPath), 'the write');
+				assert.ok(!read().includes('allowedSources'));
+			});
 		});
 	});
 
