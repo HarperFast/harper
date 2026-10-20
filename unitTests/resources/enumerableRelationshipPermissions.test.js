@@ -93,10 +93,11 @@ describe('Default reads authorize @enumerable relationships against the related 
 	});
 
 	const plain = (value) => JSON.parse(JSON.stringify(value));
-	async function getAs(Table, user, id, select) {
+	async function getAs(Table, user, id, select, property) {
 		const target = new RequestTarget('/' + id);
 		target.id = id;
 		if (select) target.select = select;
+		if (property) target.property = property;
 		target.checkPermission = true;
 		return plain(await Table.get(target, { user }));
 	}
@@ -140,6 +141,21 @@ describe('Default reads authorize @enumerable relationships against the related 
 		assert.deepStrictEqual(await searchAs(EnumEmp, user, ['id', { name: 'dept', select: ['*'] }]), [
 			{ id: 'e1', dept },
 		]);
+	});
+
+	it('authorizes a relationship read as a property against the related table', async () => {
+		await assert.rejects(getAs(EnumEmp, roleWith({ EnumEmp: READ }), 'e1', undefined, 'dept'), /Unauthorized access/);
+		const restricted = roleWith({ EnumEmp: READ, EnumDept: readOnly('id', 'name') });
+		assert.deepStrictEqual(await getAs(EnumEmp, restricted, 'e1', undefined, 'dept'), { id: 'd1', name: 'Eng' });
+		const noOrg = roleWith({ EnumEmp: READ, EnumDept: READ });
+		assert.deepStrictEqual(await getAs(EnumEmp, noOrg, 'e1', undefined, 'dept'), {
+			id: 'd1',
+			name: 'Eng',
+			budget: 100,
+			orgId: 'o1',
+		});
+		const readAll = roleWith({ EnumEmp: READ, EnumDept: READ, EnumOrg: READ });
+		assert.deepStrictEqual(await getAs(EnumEmp, readAll, 'e1', undefined, 'dept'), fullEmp.dept);
 	});
 
 	it('returns default reads unchanged to roles that can read every related table', async () => {

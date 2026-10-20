@@ -434,7 +434,24 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 				const collection = await rest(as, '/Seat/');
 				strictEqual(collection.status, 200, `${as}: ${JSON.stringify(collection.body)}`);
 				deepStrictEqual(collection.body, [seat], as);
+				const search = await op(as, {
+					operation: 'search_by_conditions',
+					table: 'Seat',
+					conditions: [{ search_attribute: 'id', search_type: 'equals', search_value: SEAT.id }],
+				});
+				strictEqual(search.status, 200, `${as}: ${JSON.stringify(search.body)}`);
+				// operations API results serialize stored attributes only
+				deepStrictEqual(search.body, [SEAT], `${as} operations API without get_attributes`);
 			}
+		});
+		test('a relationship read as a property path is authorized against the related table', async () => {
+			const full = await rest('full', `/Emp/${EMP.id}.dept`);
+			strictEqual(full.status, 200, JSON.stringify(full.body));
+			deepStrictEqual(full.body, DEPT);
+			assertRefused(await rest('empOnly', `/Emp/${EMP.id}.dept`), 'empOnly property path');
+			const restricted = await rest('restricted', `/Emp/${EMP.id}.dept`);
+			strictEqual(restricted.status, 200, JSON.stringify(restricted.body));
+			deepStrictEqual(restricted.body, { id: DEPT.id, name: DEPT.name });
 		});
 	});
 });
