@@ -1,6 +1,5 @@
 import { handleHDBError, hdbErrors } from '../../utility/errors/hdbError.ts';
 
-/** The status and body the operations API answers a failed operation with. */
 export function operationErrorResponse(error: any): { statusCode: number; body: unknown } {
 	error ??= handleHDBError(new Error('The request failed without an error'), undefined, 500);
 	if (error.statusCode) {

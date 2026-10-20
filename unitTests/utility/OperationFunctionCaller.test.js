@@ -290,7 +290,7 @@ describe(`Test callOperationFunctionAsAwait`, function () {
 			assert.ok(logged.includes('looks safe'), `expected the single classified/logged value, got: ${logged}`);
 		});
 
-		it('logs only the operation and status for a sealed request (harper#3288)', async function () {
+		it('logs only the operation and status for a sealed request', async function () {
 			const { setOperationLogView } = require('#src/server/serverHelpers/operationLogView');
 			const input = new TestInputObject();
 			setOperationLogView(input, () => ({ operation: 'insert' }));

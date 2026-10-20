@@ -9,8 +9,13 @@ const BIGINT_SERIALIZATION = { message: 'Cannot serialize BigInt to JSON' };
 	throw BIGINT_SERIALIZATION;
 };
 const { errorToString } = harperLogger;
-export function streamAsJSON(value) {
-	return new JSONStream({ value });
+/**
+ * `strict`: a value that fails to serialize destroys the stream with that error, instead of appending
+ * the error text to output that has already started (invalid JSON, which a client that must parse the
+ * whole body cannot tell from a result).
+ */
+export function streamAsJSON(value, options?: { strict?: boolean }) {
+	return new JSONStream({ value, strict: options?.strict === true });
 }
 // a readable stream for serializing a set of variables to a JSON stream
 class JSONStream extends Readable {
@@ -20,12 +25,14 @@ class JSONStream extends Readable {
 	activeIterators: (Iterator<any> | AsyncIterator<any>)[];
 	_amReading?: boolean;
 	done?: boolean;
+	strict: boolean;
 
 	constructor(options) {
 		// Calls the stream.Readable(options) constructor
 		super(options);
 		this.buffer = [];
 		this.bufferSize = 0;
+		this.strict = options.strict === true;
 		this.jsonIterator = this.serialize(options.value, true);
 		this.activeIterators = [];
 	}
@@ -132,6 +139,7 @@ class JSONStream extends Readable {
 				}
 			},
 			(error) => {
+				if (this.strict) return this.destroy(error);
 				console.error(harperLogger.errorForLog(error));
 				this.done = true;
 				this.push(errorToString(error));
@@ -204,6 +212,10 @@ class JSONStream extends Readable {
 				}
 			} while (this.push(nextString));
 		} catch (error) {
+			if (this.strict) {
+				this.destroy(error);
+				return true;
+			}
 			console.error(harperLogger.errorForLog(error));
 			this.push(errorToString(error));
 			this.push(null);
@@ -212,17 +224,23 @@ class JSONStream extends Readable {
 	}
 
 	_destroy(error, callback) {
+		// `throw` and `return` are optional on an iterator (a Set's has neither), and one iterator's
+		// failing cleanup must not skip the others or the callback.
 		for (const iterator of this.activeIterators) {
-			const closing: any = error ? iterator.throw(error) : iterator.return();
-			// an async iterator's cleanup settles later; a rejection there must not go unhandled
-			if (typeof closing?.then === 'function') {
-				closing.then(undefined, (cleanupError) =>
-					harperLogger.warn('Error closing a serialized iterator', cleanupError)
-				);
+			try {
+				const close = error && iterator.throw ? iterator.throw : iterator.return;
+				const closing: any = close?.call(iterator, error);
+				if (typeof closing?.then === 'function') closing.then(undefined, warnCleanupFailure);
+			} catch (cleanupError) {
+				warnCleanupFailure(cleanupError);
 			}
 		}
 		callback();
 	}
+}
+
+function warnCleanupFailure(error) {
+	harperLogger.warn('Error closing a serialized iterator', error);
 }
 
 function handleError(error) {

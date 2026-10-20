@@ -1,5 +1,5 @@
 /**
- * Pure cryptography for `encrypted_operation` (harper#3288), free of Harper imports like
+ * Pure cryptography for `encrypted_operation`, free of Harper imports like
  * `secretEnvelope.ts`, so it is unit-testable alone and is the reference client.
  *
  * Request: `{ operation: 'encrypted_operation', envelope: 'enc:v1:…', mode?, op? }`. The envelope is
@@ -48,11 +48,11 @@ export function decodeBase64(value: unknown, byteLength?: number): Buffer | unde
 	return byteLength === undefined || bytes.length === byteLength ? bytes : undefined;
 }
 
-export function responseAad(nonce: string): Buffer {
+function responseAad(nonce: string): Buffer {
 	return Buffer.from(RESPONSE_AAD_PREFIX + nonce, 'utf8');
 }
 
-export function fieldAad(nonce: string, pointer: string): Buffer {
+function fieldAad(nonce: string, pointer: string): Buffer {
 	return Buffer.from(`${FIELD_AAD_PREFIX}${nonce}:${pointer}`, 'utf8');
 }
 
@@ -69,7 +69,9 @@ function aesGcmSeal(plaintext: Buffer, key: Buffer, aad: Buffer) {
 	const iv = randomBytes(IV_BYTES);
 	const cipher = createCipheriv('aes-256-gcm', key, iv);
 	cipher.setAAD(aad);
-	const ct = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+	// GCM is a stream mode: final() emits no bytes, so update() already holds the whole ciphertext.
+	const ct = cipher.update(plaintext);
+	cipher.final();
 	return { iv, ct, tag: cipher.getAuthTag() };
 }
 
@@ -80,9 +82,10 @@ function aesGcmOpen(iv: Buffer, ct: Buffer, tag: Buffer, key: Buffer, aad: Buffe
 	return Buffer.concat([decipher.update(ct), decipher.final()]);
 }
 
-/** Seal the node's answer: `resultJson` is the JSON text of a {@link SealedResult}. */
-export function sealResponse(resultJson: string, responseKey: Buffer, nonce: string): SealedPayload {
-	const { iv, ct, tag } = aesGcmSeal(Buffer.from(resultJson, 'utf8'), responseKey, responseAad(nonce));
+/** Seal the node's answer: `result` is the UTF-8 JSON of a {@link SealedResult}. */
+export function sealResponse(result: string | Buffer, responseKey: Buffer, nonce: string): SealedPayload {
+	const plaintext = typeof result === 'string' ? Buffer.from(result, 'utf8') : result;
+	const { iv, ct, tag } = aesGcmSeal(plaintext, responseKey, responseAad(nonce));
 	return {
 		v: SEALED_OPERATION_VERSION,
 		iv: iv.toString('base64'),

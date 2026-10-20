@@ -205,6 +205,33 @@ describe('Test JSONStream module ', () => {
 				process.removeListener('unhandledRejection', onUnhandled);
 			}
 		});
+
+		it('closes an iterator with no return method, or whose cleanup throws, without failing the stream', async function () {
+			const throwingReturn = {
+				return() {
+					throw new Error('sync cleanup failure');
+				},
+			};
+			for (const extra of [{}, throwingReturn]) {
+				let index = 0;
+				const stream = streamAsJSON({
+					[Symbol.iterator]() {
+						return {
+							next: () => (index++ < 5000 ? { done: false, value: 'y'.repeat(100) } : { done: true }),
+							...extra,
+						};
+					},
+				});
+				const errors = [];
+				stream.on('error', (error) => errors.push(error));
+				const closed = new Promise((resolve) => stream.once('close', resolve));
+				// destroyed from the first chunk, as a client disconnect would, before the iterator is exhausted
+				stream.once('data', () => stream.destroy());
+				await closed;
+				assert.ok(index < 5000, 'the stream was not destroyed mid-iteration');
+				assert.deepStrictEqual(errors, []);
+			}
+		});
 	});
 });
 

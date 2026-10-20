@@ -51,7 +51,7 @@ import {
 } from './registeredOperations.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from './requestSanitization.ts';
-import { operationLogViewOf } from './operationLogView.ts';
+import { isOperationLogEnabled, operationLogViewOf } from './operationLogView.ts';
 import * as encryptedOperation from '../../components/encryptedOperation.ts';
 
 const pSearchSearch = util.promisify(search.search);
@@ -134,12 +134,7 @@ export function redactForOperationLog(body: Record<string, any>): Record<string,
 
 export async function processLocalTransaction(req: OperationRequest, operationFunction: Function) {
 	try {
-		if (
-			req.body.operation !== 'read_log' &&
-			(harperLogger.logLevel === terms.LOG_LEVELS.INFO ||
-				harperLogger.logLevel === terms.LOG_LEVELS.DEBUG ||
-				harperLogger.logLevel === terms.LOG_LEVELS.TRACE)
-		) {
+		if (req.body.operation !== 'read_log' && isOperationLogEnabled()) {
 			const logView = operationLogViewOf(req.body);
 			operationLog.info(redactForOperationLog(logView ? logView() : req.body));
 		}

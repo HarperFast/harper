@@ -241,14 +241,14 @@ describe('Test configValidator module', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.operationsApi.encryptedOperation = { maxAge: 1000, maxSize: 1024 };
 			assert.strictEqual(configValidator(config).error, undefined);
-			config.operationsApi.encryptedOperation = { maxAge: 600000, maxSize: 1024 * 1024 * 1024 };
+			config.operationsApi.encryptedOperation = { maxAge: 600000, maxSize: 64 * 1024 * 1024 };
 			assert.strictEqual(configValidator(config).error, undefined);
 			for (const [encryptedOperation, field] of [
 				[{ maxAge: 999 }, 'maxAge'],
 				[{ maxAge: 600001 }, 'maxAge'],
 				[{ maxAge: 1500.5 }, 'maxAge'],
 				[{ maxSize: 1023 }, 'maxSize'],
-				[{ maxSize: 1024 * 1024 * 1024 + 1 }, 'maxSize'],
+				[{ maxSize: 64 * 1024 * 1024 + 1 }, 'maxSize'],
 			]) {
 				config.operationsApi.encryptedOperation = encryptedOperation;
 				assert.match(

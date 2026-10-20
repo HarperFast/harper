@@ -1,7 +1,7 @@
 /**
- * `encrypted_operation` (harper#3288): run an operation sealed to this node's secrets custody key and
- * seal its result, so a relay between the client and the node carries opaque bytes. Wire format and
- * the reference client: utility/sealedOperation.ts. Invariants: components/DESIGN.md.
+ * `encrypted_operation`: run an operation sealed to this node's secrets custody key and seal its
+ * result, so a relay between the client and the node carries opaque bytes. Wire format and the
+ * reference client: utility/sealedOperation.ts. Invariants: components/DESIGN.md.
  */
 import { isMainThread } from 'node:worker_threads';
 import { performance } from 'node:perf_hooks';
@@ -10,7 +10,7 @@ import { Readable } from 'node:stream';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
-import { ClientError, ServerError, handleHDBError } from '../utility/errors/hdbError.ts';
+import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import { getSecretCustody, type SecretCustody } from '../resources/secretDecryptor.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 import { parseEnvelopeFields } from '../utility/secretEnvelope.ts';
@@ -42,7 +42,8 @@ const MIN_MAX_AGE_MS = 1_000;
 const MAX_MAX_AGE_MS = 600_000;
 const DEFAULT_MAX_SIZE = 16 * 1024 * 1024;
 const MIN_MAX_SIZE = 1024;
-const MAX_MAX_SIZE = 1024 * 1024 * 1024;
+// A result is buffered and sealed whole, holding about four copies at once on the main thread.
+const MAX_MAX_SIZE = 64 * 1024 * 1024;
 // A fields-mode envelope carries only the header: keys, nonce, timestamp, actor and a hash.
 const FIELDS_ENVELOPE_MAX_LENGTH = 16 * 1024;
 const MAX_DEPTH = 64;
@@ -138,15 +139,13 @@ function isPlainObject(value: unknown): value is Record<string, any> {
 	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function rejection(message: string, statusCode: number, detail: Record<string, unknown>) {
-	return handleHDBError(
-		new Error(message),
-		{ error: message, ...detail },
-		statusCode,
-		terms.LOG_LEVELS.INFO,
-		undefined,
-		true
-	);
+/** A plaintext refusal whose body carries a field the client acts on (`custody_fingerprint`, `server_time`). */
+class AdmissionRefusal extends ClientError {
+	http_resp_msg: Record<string, unknown>;
+	constructor(message: string, statusCode: number, detail: Record<string, unknown>) {
+		super(message, statusCode);
+		this.http_resp_msg = { error: message, ...detail };
+	}
 }
 
 /**
@@ -175,7 +174,7 @@ export async function encryptedOperation(req: any) {
 		throw new ClientError('The operation exceeds the encrypted operation size limit', 413);
 	}
 	const validation = validator.encryptedOperationValidator(req);
-	if (validation) throw handleHDBError(validation, validation.message, 400, undefined, undefined, true);
+	if (validation) throw new ClientError(validation.message, 400);
 	if (!isMainThread) throw new ClientError('encrypted_operation runs only through the operations API', 400);
 	const bypassAuth = isOperationAuthorizationBypassed();
 	if (!req.hdb_user && !bypassAuth) throw new ClientError('encrypted_operation requires an authenticated caller', 401);
@@ -186,13 +185,18 @@ export async function encryptedOperation(req: any) {
 	const { header, kid } = openHeader(req.envelope, custody, mode);
 	const now = wallNow();
 	if (Math.abs(now - header.ts) > maxAge) {
-		throw rejection('The sealed request is outside the accepted time window', 400, { server_time: now });
+		throw new AdmissionRefusal('The sealed request is outside the accepted time window', 400, { server_time: now });
 	}
 	reserveNonce(header.nonce, maxAge);
 
 	const responseKey = decodeBase64(header.rk, RESPONSE_KEY_BYTES);
-	const answer = await runSealedOperation(req, header, mode, kid, responseKey, maxSize, bypassAuth);
-	const sealed = sealResponse(answer.json, responseKey, header.nonce);
+	let answer: { status: number; plaintext: Buffer };
+	try {
+		answer = await runSealedOperation(req, header, mode, kid, responseKey, maxSize, bypassAuth);
+	} catch {
+		answer = sealedResult({ status: 500, body: { error: 'The sealed operation failed' } });
+	}
+	const sealed = sealResponse(answer.plaintext, responseKey, header.nonce);
 	return mode === 'fields' ? { status: answer.status, encrypted_response: sealed } : { encrypted_response: sealed };
 }
 
@@ -210,7 +214,7 @@ function openHeader(envelope: string, custody: SecretCustody, mode: SealedMode) 
 	} catch {
 		const { fingerprint } = custody.getPublicKey();
 		if (kid !== fingerprint) {
-			throw rejection("The envelope's kid does not match this node's secrets key", 409, {
+			throw new AdmissionRefusal("The envelope's kid does not match this node's secrets key", 409, {
 				custody_fingerprint: fingerprint,
 			});
 		}
@@ -251,7 +255,9 @@ function reserveNonce(nonce: string, maxAge: number): void {
 			throw new ClientError('Too many sealed requests in the replay window; retry later', 503);
 		}
 	}
-	reservedNonces.set(nonce, now + 2 * maxAge);
+	// Admitted with ts <= now + maxAge, the envelope stays fresh until ts + (any later maxAge), which is
+	// at most now + maxAge + MAX_MAX_AGE_MS; keep the nonce one millisecond past that.
+	reservedNonces.set(nonce, now + maxAge + MAX_MAX_AGE_MS + 1);
 }
 
 function pruneReservedNonces(now: number, fullSweep: boolean): void {
@@ -269,28 +275,29 @@ async function runSealedOperation(
 	responseKey: Buffer,
 	maxSize: number,
 	bypassAuth: boolean
-): Promise<{ status: number; json: string }> {
+): Promise<{ status: number; plaintext: Buffer }> {
 	const metadata: Record<string, unknown> = { mode, kid };
 	if (header.actor !== undefined) metadata.actor = header.actor;
 	let inner: Record<string, any>;
-	let logView: OperationLogView;
+	let buildView: () => Record<string, unknown>;
 	try {
 		if (mode === 'fields') {
 			inner = openFields(req.op, header, responseKey);
-			logView = () => ({ ...maskSealedLeaves(JSON.parse(req.op)), encrypted_operation: metadata });
+			buildView = () => ({ ...maskSealedLeaves(JSON.parse(req.op)), encrypted_operation: metadata });
 		} else {
 			inner = header.op;
 			visit(inner, '', 0, { sealable: false, responseKey, nonce: header.nonce, leaves: 0 });
-			logView = () => ({ operation: inner.operation, encrypted_operation: metadata });
+			buildView = () => ({ operation: inner.operation, encrypted_operation: metadata });
 		}
 		checkInnerOperation(inner);
 	} catch (error) {
-		if (error instanceof SealedRefusal)
-			return sealedResult({ status: error.statusCode, body: { error: error.message } });
-		return sealedResult({ status: 500, body: { error: 'The sealed operation could not be read' } });
+		if (!(error instanceof SealedRefusal)) throw error;
+		return sealedResult({ status: error.statusCode, body: { error: error.message } });
 	}
 
 	inner.hdb_user = req.hdb_user;
+	let view: Record<string, unknown> | undefined;
+	const logView: OperationLogView = () => (view ??= buildView());
 	setOperationLogView(inner, logView);
 	let result: any;
 	try {
@@ -312,24 +319,42 @@ async function runSealedOperation(
 			executed: true,
 		});
 	}
-	let json: string | undefined;
+	let chunks: Buffer[] | undefined;
 	try {
-		json = await collectJSON(result, maxSize);
+		chunks = await collectJSON(result, maxSize);
 	} catch {
 		return sealedResult({ status: 500, body: { error: 'The result could not be serialized' }, executed: true });
 	}
-	if (json === undefined) {
+	if (chunks === undefined) {
 		return sealedResult({
 			status: 413,
 			body: { error: `The result exceeds ${maxSize} bytes; use a direct connection` },
 			executed: true,
 		});
 	}
-	return { status: 200, json: `{"status":200,"body":${json}}` };
+	return {
+		status: 200,
+		plaintext: Buffer.concat([SUCCESS_PREFIX, ...(chunks.length ? chunks : [NULL_JSON]), SUCCESS_SUFFIX]),
+	};
 }
 
-function sealedResult(result: SealedResult): { status: number; json: string } {
-	return { status: result.status, json: JSON.stringify(result) };
+const SUCCESS_PREFIX = Buffer.from('{"status":200,"body":');
+const SUCCESS_SUFFIX = Buffer.from('}');
+const NULL_JSON = Buffer.from('null');
+
+function sealedResult(result: SealedResult): { status: number; plaintext: Buffer } {
+	let json: string;
+	try {
+		json = JSON.stringify(result);
+	} catch {
+		// an error body with a BigInt or a cycle
+		json = JSON.stringify({
+			status: result.status,
+			body: { error: 'The error could not be serialized' },
+			...(result.executed ? { executed: true } : {}),
+		});
+	}
+	return { status: result.status, plaintext: Buffer.from(json, 'utf8') };
 }
 
 function openFields(opText: string, header: SealedHeader, responseKey: Buffer): Record<string, any> {
@@ -421,9 +446,9 @@ function maskSealedLeaves(value: any): any {
 	return masked;
 }
 
-/** The JSON text `streamAsJSON` would send on the plaintext path, or undefined past `maxSize` bytes. */
-function collectJSON(result: unknown, maxSize: number): Promise<string | undefined> {
-	const stream = streamAsJSON(result);
+/** The JSON the plaintext path would send, as chunks, or undefined past `maxSize` bytes. */
+function collectJSON(result: unknown, maxSize: number): Promise<Buffer[] | undefined> {
+	const stream = streamAsJSON(result, { strict: true });
 	return new Promise((resolve, reject) => {
 		const chunks: Buffer[] = [];
 		let size = 0;
@@ -434,8 +459,8 @@ function collectJSON(result: unknown, maxSize: number): Promise<string | undefin
 			size += bytes.length;
 			if (size > maxSize) {
 				settled = true;
-				stream.destroy();
 				resolve(undefined);
+				stream.destroy();
 				return;
 			}
 			chunks.push(bytes);
@@ -443,12 +468,18 @@ function collectJSON(result: unknown, maxSize: number): Promise<string | undefin
 		stream.on('end', () => {
 			if (settled) return;
 			settled = true;
-			resolve(Buffer.concat(chunks).toString('utf8'));
+			resolve(chunks);
 		});
 		stream.on('error', (error) => {
 			if (settled) return;
 			settled = true;
 			reject(error);
+		});
+		// JSONStream's destroy never forwards its error, so a strict serialization failure arrives as close
+		stream.on('close', () => {
+			if (settled) return;
+			settled = true;
+			reject(new Error('The result stream closed before it ended'));
 		});
 	});
 }

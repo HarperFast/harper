@@ -449,7 +449,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 				maxSize: number
 					.integer()
 					.min(1024)
-					.max(1024 * 1024 * 1024)
+					.max(64 * 1024 * 1024)
 					.optional(),
 			}).optional(),
 			tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),

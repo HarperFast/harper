@@ -32,7 +32,7 @@ import {
 	unregisterWorkerGrantableOperation,
 } from '../../utility/operationPermissions.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
-import { operationLogViewOf, setOperationLogView } from './operationLogView.ts';
+import { isOperationLogEnabled, operationLogViewOf, setOperationLogView } from './operationLogView.ts';
 
 const operationLog = harperLogger.loggerWithTag('operation');
 
@@ -199,8 +199,10 @@ async function executeRemoteOperation(name: string, body: any, bypassAuth: boole
 	const workerIds = registeredByWorker.get(name);
 	const forwardBody = { ...body };
 	for (const field of NON_FORWARDABLE_FIELDS) delete forwardBody[field];
-	// The view is metadata or a masked copy, never a sealed value, so it may cross threads.
-	const logView = operationLogViewOf(body)?.();
+	// The worker needs a view whenever the body has one (its error logging keys off it), but the full
+	// view only when the operation log will print it. A view never holds a sealed value.
+	const view = operationLogViewOf(body);
+	const logView = view && (isOperationLogEnabled() ? view() : { operation: body.operation });
 
 	// Pick one live registering worker (rotating for spread), pruning ids whose port is gone.
 	// sendToThread returning false means the worker exited; try the next one.

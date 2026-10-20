@@ -46,7 +46,7 @@ export async function callOperationFunctionAsAwait(
 
 		return result;
 	} catch (err) {
-		// An error message can echo a request value, so a sealed request's failure logs no message (harper#3288).
+		// An error message can echo a request value, so a sealed request's failure logs no message.
 		if (operationLogViewOf(functionInput)) {
 			log.error(
 				`Error calling operation: ${promisifiedFunction.name} (sealed request, status ${err?.statusCode ?? 500})`

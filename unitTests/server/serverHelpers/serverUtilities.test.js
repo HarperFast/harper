@@ -287,7 +287,7 @@ describe('Test serverUtilities.js module ', () => {
 			}
 		});
 
-		it('carries a sealed body’s log view beside the body, never in it (harper#3288)', async function () {
+		it('carries a sealed body’s log view beside the body, never in it', async function () {
 			const { setOperationLogView } = require('#src/server/serverHelpers/operationLogView');
 			const operationName = 'test_remote_log_view';
 			const sentMessages = [];
@@ -298,18 +298,34 @@ describe('Test serverUtilities.js module ', () => {
 					return false;
 				},
 			};
-			try {
+			const originalLevel = logger.logLevel;
+			// The fake worker never accepts the send, so each attempt drops the registration; re-announce it.
+			const announce = () =>
 				registeredOperations.operationRegisteredHandler({ message: { name: operationName, originator: 9_000_018 } });
+			try {
 				const body = { operation: operationName, records: [{ secret: 'forwarded-secret' }] };
-				setOperationLogView(body, () => ({ operation: operationName, encrypted_operation: { mode: 'sealed' } }));
-				await assert.rejects(registeredOperations.getRemoteOperationFunction(operationName)(body));
+				let built = 0;
+				setOperationLogView(body, () => {
+					built++;
+					return { operation: operationName, encrypted_operation: { mode: 'sealed' } };
+				});
 
-				assert.deepStrictEqual(sentMessages[0].message.logView, {
+				logger.logLevel = 'warn';
+				announce();
+				await assert.rejects(registeredOperations.getRemoteOperationFunction(operationName)(body));
+				assert.deepStrictEqual(sentMessages[0].message.logView, { operation: operationName });
+				assert.strictEqual(built, 0, 'the full view was built although the operation log is off');
+
+				logger.logLevel = 'info';
+				announce();
+				await assert.rejects(registeredOperations.getRemoteOperationFunction(operationName)(body));
+				assert.deepStrictEqual(sentMessages[1].message.logView, {
 					operation: operationName,
 					encrypted_operation: { mode: 'sealed' },
 				});
-				assert.ok(!Object.hasOwn(sentMessages[0].message.body, 'logView'));
+				assert.ok(!Object.hasOwn(sentMessages[1].message.body, 'logView'));
 			} finally {
+				logger.logLevel = originalLevel;
 				global.threads = originalThreads;
 			}
 		});

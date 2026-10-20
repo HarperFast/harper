@@ -74,6 +74,17 @@ const TEST_OPERATIONS = {
 	},
 	test_eo_stream: async () => lateErroringStream,
 	test_eo_iterable: async () => rejectingCleanupIterable(),
+	test_eo_circular: async () => {
+		writes.count++;
+		const result = { name: 'loop' };
+		result.self = result;
+		return result;
+	},
+	test_eo_bigint_error: async () => {
+		const error = new ClientError('unserializable detail', 409);
+		error.http_resp_msg = { error: 'unserializable detail', size: 10n };
+		throw error;
+	},
 };
 
 // Stands in for a file/blob stream: something with pipe/destroy that emits `error` after it was dropped.
@@ -489,9 +500,42 @@ describe('encrypted_operation', function () {
 				restore = withConfig(CONFIG_PARAMS.OPERATIONSAPI_ENCRYPTEDOPERATION_MAXAGE, 1_000);
 				await call(seal({ operation: 'test_eo_echo' }, { now: wall }).request);
 				await call(seal({ operation: 'test_eo_echo' }, { now: wall }).request);
-				monotonic += 3_000;
+				// past the two short reservations (maxAge + 600s), short of the first one
+				monotonic += 602_000;
 				const { result } = await roundTrip({ operation: 'test_eo_echo' }, { now: wall });
 				assert.strictEqual(result.status, 200);
+			} finally {
+				restore();
+			}
+		});
+
+		it('keeps a nonce while its envelope can still be fresh, even after maxAge is raised', async () => {
+			let clock = 0;
+			const start = 1_800_000_000_000;
+			encryptedOperationModule._setClocksForTest({ monotonic: () => clock, wall: () => start + clock });
+			let restore = withConfig(CONFIG_PARAMS.OPERATIONSAPI_ENCRYPTEDOPERATION_MAXAGE, 60_000);
+			try {
+				const { request } = seal({ operation: 'test_eo_echo' }, { now: start });
+				await call(request);
+				restore();
+				restore = withConfig(CONFIG_PARAMS.OPERATIONSAPI_ENCRYPTEDOPERATION_MAXAGE, 600_000);
+				clock += 200_000;
+				await assert.rejects(call(request), { statusCode: 409 });
+			} finally {
+				restore();
+			}
+		});
+
+		it('keeps a nonce through the last millisecond its envelope is fresh', async () => {
+			let clock = 0;
+			const start = 1_800_000_000_000;
+			encryptedOperationModule._setClocksForTest({ monotonic: () => clock, wall: () => start + clock });
+			const restore = withConfig(CONFIG_PARAMS.OPERATIONSAPI_ENCRYPTEDOPERATION_MAXAGE, 60_000);
+			try {
+				const { request } = seal({ operation: 'test_eo_echo' }, { now: start + 60_000 });
+				await call(request);
+				clock = 120_000;
+				await assert.rejects(call(request), { statusCode: 409 });
 			} finally {
 				restore();
 			}
@@ -662,6 +706,23 @@ describe('encrypted_operation', function () {
 				restore();
 				process.removeListener('unhandledRejection', onUnhandled);
 			}
+		});
+
+		it('says a result that cannot be serialized ran, rather than sealing broken JSON as a success', async () => {
+			const before = writes.count;
+			const { result } = await roundTrip({ operation: 'test_eo_circular' });
+			assert.deepStrictEqual(result, {
+				status: 500,
+				body: { error: 'The result could not be serialized' },
+				executed: true,
+			});
+			assert.strictEqual(writes.count, before + 1);
+		});
+
+		it('seals an error whose body cannot be serialized instead of answering in plaintext', async () => {
+			const { reply, result } = await roundTrip({ operation: 'test_eo_bigint_error' });
+			assert.deepStrictEqual(Object.keys(reply), ['encrypted_response']);
+			assert.deepStrictEqual(result, { status: 409, body: { error: 'The error could not be serialized' } });
 		});
 	});
 
