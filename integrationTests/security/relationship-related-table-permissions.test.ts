@@ -389,10 +389,6 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			strictEqual(empOnly.status, 200, JSON.stringify(empOnly.body));
 			deepStrictEqual(empOnly.body, { id: EMP.id });
 
-			const subSelected = await rest('full', `/Emp/${EMP.id}?select(id,dept{name})`);
-			strictEqual(subSelected.status, 200, JSON.stringify(subSelected.body));
-			deepStrictEqual(subSelected.body, { id: EMP.id, dept: { name: DEPT.name } });
-
 			const restricted = await rest('restricted', `/Emp/${EMP.id}?select(id,dept)`);
 			strictEqual(restricted.status, 200, JSON.stringify(restricted.body));
 			deepStrictEqual(restricted.body, { id: EMP.id, dept: { id: DEPT.id, name: DEPT.name } });

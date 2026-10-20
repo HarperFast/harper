@@ -340,6 +340,100 @@ describe('Permissions through Resource API', () => {
 			/Unauthorized access/
 		);
 	});
+	it('Requires the name of an inverse relationship, whose key lives in the related table', async function () {
+		const Child = table({
+			table: 'PermInverseChild',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+				{ name: 'parentId', indexed: true },
+			],
+		});
+		const Parent = table({
+			table: 'PermInverseParent',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'children', relationship: { to: 'parentId' }, elements: { definition: { tableClass: Child } } },
+			],
+		});
+		await Parent.put({ id: 'p1' });
+		await Child.put({ id: 'c1', name: 'Ann', parentId: 'p1' });
+		const roleReading = (parentAttributes) => ({
+			role: {
+				permission: {
+					test: {
+						tables: {
+							PermInverseParent: {
+								read: true,
+								attribute_permissions: parentAttributes.map((attribute_name) => ({ attribute_name, read: true })),
+							},
+							PermInverseChild: {
+								read: true,
+								attribute_permissions: ['id', 'name'].map((attribute_name) => ({ attribute_name, read: true })),
+							},
+						},
+					},
+				},
+			},
+		});
+		const searchParents = async (user) => {
+			const target = new RequestTarget('?children.name=Ann&select(id)');
+			target.checkPermission = true;
+			const results = [];
+			for await (const result of Parent.search(target, { user })) results.push(result.id);
+			return results;
+		};
+		await assert.rejects(searchParents(roleReading(['id'])), /Unauthorized access/);
+		assert.deepEqual(await searchParents(roleReading(['id', 'children'])), ['p1']);
+	});
+	it('Does not resolve a second relationship hop through a REST property set', async function () {
+		const Grand = table({
+			table: 'PermHopGrand',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const Middle = table({
+			table: 'PermHopMiddle',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'grandId' },
+				{ name: 'grand', relationship: { from: 'grandId' }, definition: { tableClass: Grand } },
+			],
+		});
+		const Root = table({
+			table: 'PermHopRoot',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'middleId' },
+				{ name: 'middle', relationship: { from: 'middleId' }, definition: { tableClass: Middle } },
+			],
+		});
+		await Grand.put({ id: 'g1' });
+		await Middle.put({ id: 'm1', grandId: 'g1' });
+		await Root.put({ id: 'r1', middleId: 'm1' });
+		const user = {
+			role: {
+				permission: {
+					test: {
+						tables: {
+							PermHopRoot: { read: true, attribute_permissions: [] },
+							PermHopMiddle: { read: true, attribute_permissions: [] },
+						},
+					},
+				},
+			},
+		};
+		const target = new RequestTarget('?id=r1&select(id,middle{grand})');
+		target.checkPermission = true;
+		const results = [];
+		for await (const result of Root.search(target, { user })) results.push(result);
+		assert.equal(results.length, 1);
+		assert.deepStrictEqual(JSON.parse(JSON.stringify(results)), [{ id: 'r1', middle: { id: 'm1', grandId: 'g1' } }]);
+	});
 	it('Reports the first unreadable step of a relationship path', function () {
 		assert.equal(TestTable._readDenial(['related', 'name'], { role: { permission: { super_user: true } } }), undefined);
 		assert.deepEqual(TestTable._readDenial(['related'], authorized_role), {
