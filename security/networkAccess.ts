@@ -1,5 +1,6 @@
 // Rows reach peers through system-table replication, so these operations do not call replicateOperation.
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { BlockList, SocketAddress, isIP } from 'node:net';
 import Joi from 'joi';
 import { getDatabases, onUpdatedTable } from '../resources/databases.ts';
@@ -8,12 +9,13 @@ import * as terms from '../utility/hdbTerms.ts';
 import { ClientError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { validateBySchema } from '../validation/validationWrapper.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
+import * as env from '../utility/environment/environmentManager.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 const NETWORK_ACCESS_TABLE = terms.SYSTEM_TABLE_NAMES.NETWORK_ACCESS_TABLE_NAME;
 const logger = loggerWithTag('network-access');
 
-export const NETWORK_ACCESS_SCOPES = ['operations'] as const;
+const NETWORK_ACCESS_SCOPES = ['operations'] as const;
 export type NetworkAccessScope = (typeof NETWORK_ACCESS_SCOPES)[number];
 const MAX_ALLOW_ENTRIES = 1000;
 const MAPPED_IPV4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/;
@@ -101,11 +103,22 @@ function validate(validation: any): void {
 	if (validation) throw new ClientError(validation.message);
 }
 
+// Async context, not the operation body, which is untrusted (server/DESIGN.md, "Operations authorization
+// boundary").
+const callerAddressStorage = new AsyncLocalStorage<{ address: string | null | undefined }>();
+
 /**
- * Replaces the scope's list; an empty `allow` removes the restriction. Refuses a list that excludes
- * the caller's own address unless `force: true`. The address is set by the operations server
- * (`hdb_client_address`); without one (the local operations domain socket, an in-process call) there
- * is nothing to check, and that is the recovery path: the fronting proxy never sits in front of it.
+ * Runs an operations API request with its source address, as `clientAddressOf` in serverHandlers.js
+ * derives it: a string; undefined for the local operations domain socket, which no proxy fronts; or null
+ * when a network request's address is unknown.
+ */
+export function runWithCallerAddress<T>(address: string | null | undefined, callback: () => T): T {
+	return callerAddressStorage.run({ address }, callback);
+}
+
+/**
+ * The lockout check skips a local or in-process caller (no address): that is the recovery path. An
+ * unknown network address needs `force`.
  */
 export async function setNetworkAccess(req: any) {
 	requireSuperUser(req);
@@ -122,7 +135,14 @@ export async function setNetworkAccess(req: any) {
 	);
 	const scope: NetworkAccessScope = req.scope;
 	const allow = normalizeAllowList(req.allow);
-	const callerAddress = req.hdb_client_address;
+	const callerAddress = callerAddressStorage.getStore()?.address;
+	if (allow.length > 0 && req.force !== true && callerAddress === null) {
+		throw new ClientError(
+			`This request's source address is unknown, so the new '${scope}' allowlist may block this connection. ` +
+				`Pass force: true to set it anyway.`,
+			HTTP_STATUS_CODES.CONFLICT
+		);
+	}
 	if (
 		allow.length > 0 &&
 		req.force !== true &&
@@ -142,7 +162,13 @@ export async function setNetworkAccess(req: any) {
 		return { message: `Removed the '${scope}' network access restriction`, scope, allow };
 	}
 	await table.put(scope, { scope, allow, updatedBy: req.hdb_user?.username ?? null, updatedAt: Date.now() });
-	return { message: `Set the '${scope}' network access allowlist`, scope, allow };
+	const result: Record<string, unknown> = { message: `Set the '${scope}' network access allowlist`, scope, allow };
+	if (!env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
+		result.warning =
+			'This node publishes no socket metadata (tls.unixDomainSockets is off), so nothing here enforces the list; ' +
+			'it is stored and replicated to nodes that do.';
+	}
+	return result;
 }
 
 function viewOf(scope: string, row: any) {

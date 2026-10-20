@@ -13,6 +13,7 @@ const {
 	allowedSourcesFor,
 	watchNetworkAccess,
 	resetNetworkAccessWatches,
+	runWithCallerAddress,
 } = require('#src/security/networkAccess');
 const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
@@ -228,51 +229,58 @@ describe('networkAccess', () => {
 
 		describe('lockout check', () => {
 			const body = (extra) => su('set_network_access', { scope: 'operations', allow: ['10.0.0.0/8'], ...extra });
+			const as = (address, request) => runWithCallerAddress(address, () => setNetworkAccess(request));
 
 			it('refuses a list that excludes the caller address', async () => {
-				await assert.rejects(setNetworkAccess(body({ hdb_client_address: '203.0.113.9' })), {
-					statusCode: 409,
-					message: /203\.0\.113\.9/,
-				});
+				await assert.rejects(as('203.0.113.9', body()), { statusCode: 409, message: /203\.0\.113\.9/ });
 				assert.strictEqual(installed.mock.rows.size, 0);
 			});
 
 			it('refuses an IPv6-only list for an IPv4 caller', async () => {
-				await assert.rejects(
-					setNetworkAccess(
-						su('set_network_access', { scope: 'operations', allow: ['::/0'], hdb_client_address: '203.0.113.9' })
-					),
-					{ statusCode: 409 }
-				);
+				await assert.rejects(as('203.0.113.9', body({ allow: ['::/0'] })), { statusCode: 409 });
 			});
 
 			it('accepts a list that includes the caller, IPv4-mapped included', async () => {
-				await setNetworkAccess(body({ hdb_client_address: '10.9.9.9' }));
-				await setNetworkAccess(body({ hdb_client_address: '::ffff:10.9.9.9' }));
+				await as('10.9.9.9', body());
+				await as('::ffff:10.9.9.9', body());
 				assert.deepStrictEqual(installed.mock.rows.get('operations').allow, ['10.0.0.0/8']);
 			});
 
 			it('accepts an excluding list with force: true', async () => {
-				await setNetworkAccess(body({ hdb_client_address: '203.0.113.9', force: true }));
+				await as('203.0.113.9', body({ force: true }));
 				assert.ok(installed.mock.rows.has('operations'));
 			});
 
 			it('rejects a non-boolean force rather than reading it as an override', async () => {
-				await assert.rejects(setNetworkAccess(body({ hdb_client_address: '203.0.113.9', force: 'true' })), {
-					statusCode: 400,
-				});
+				await assert.rejects(as('203.0.113.9', body({ force: 'true' })), { statusCode: 400 });
 				assert.strictEqual(installed.mock.rows.size, 0);
 			});
 
-			it('skips the check when the caller address is unknown (local domain socket)', async () => {
-				await setNetworkAccess(body({}));
+			it('requires force when a network request carried no address', async () => {
+				await assert.rejects(as(null, body()), { statusCode: 409, message: /unknown/ });
+				assert.strictEqual(installed.mock.rows.size, 0);
+				await as(null, body({ force: true }));
 				assert.ok(installed.mock.rows.has('operations'));
 			});
 
+			it('skips the check for a local connection and an in-process call', async () => {
+				await as(undefined, body());
+				installed.mock.rows.clear();
+				await setNetworkAccess(body());
+				assert.ok(installed.mock.rows.has('operations'));
+			});
+
+			it('ignores an address supplied in the operation body', async () => {
+				await assert.rejects(as('203.0.113.9', body({ hdb_client_address: '10.0.0.1' })), { statusCode: 409 });
+			});
+
 			it('does not check when clearing the list', async () => {
-				await setNetworkAccess(
-					su('set_network_access', { scope: 'operations', allow: [], hdb_client_address: '1.1.1.1' })
-				);
+				await as('1.1.1.1', su('set_network_access', { scope: 'operations', allow: [] }));
+			});
+
+			it('warns when this node publishes no socket metadata', async () => {
+				const result = await setNetworkAccess(body());
+				assert.match(result.warning, /tls\.unixDomainSockets/);
 			});
 		});
 
