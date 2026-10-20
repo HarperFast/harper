@@ -11,6 +11,10 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
+// mqtt.ts binds this at load; v5.3's initLogSettings(true), run by other suites' pinLogConfig(), hands
+// forComponent a new logger afterwards, so it is taken here while it is still the one mqtt.ts writes to
+const mqttLogger = forComponent('mqtt');
+
 const NOT_AUTHORIZED = 0x87;
 const UNSPECIFIED_ERROR = 0x80;
 const TOPIC_FILTER_INVALID = 0x8f;
@@ -109,7 +113,7 @@ async function connect(
 }
 
 function captureLog(method) {
-	const logger = forComponent('mqtt');
+	const logger = mqttLogger;
 	const original = logger[method];
 	const lines = [];
 	logger[method] = (...args) => lines.push(args);
