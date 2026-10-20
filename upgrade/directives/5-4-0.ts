@@ -1,7 +1,6 @@
 'use strict';
 
-// 5.4.0 — system.hdb_network_access for existing installs; fresh installs get it from json/systemSchema.json
-// (dataLayer/DESIGN.md, "System table bootstrap").
+// dataLayer/DESIGN.md, "System table bootstrap".
 
 import * as terms from '../../utility/hdbTerms.ts';
 import { createSystemTableIfMissing } from './5-3-0.ts';
