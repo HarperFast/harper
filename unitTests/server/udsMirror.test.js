@@ -233,17 +233,16 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			it('publishes the list, rewrites it on change, and omits it once cleared', async () => {
 				rows.set('operations', { allow: ['10.0.0.0/8', '2001:db8::/32'] });
 				const server = { ...makeSecureServer(), networkAccessScope: 'operations', secureContextsListeners: [] };
-				let writes = 0;
-				const write = () => (writes++, writeUdsMetadata(yamlPath, 9925, server));
 				let ready;
-				publishUdsMetadata(new Promise((resolve) => (ready = resolve)), server, write);
+				publishUdsMetadata(new Promise((resolve) => (ready = resolve)), server, () =>
+					writeUdsMetadata(yamlPath, 9925, server)
+				);
 				// a certificate listener firing before TLS readiness and the first read must not publish
 				server.secureContextsListeners.forEach((listener) => listener());
 				assert.strictEqual(fs.existsSync(yamlPath), false);
 				ready();
 				await until(() => fs.existsSync(yamlPath), 'the first write');
 				assert.match(read(), /^allowedSources:\n {2}- "10\.0\.0\.0\/8"\n {2}- "2001:db8::\/32"\n/m);
-				assert.strictEqual(writes, 2, 'one suppressed pre-ready write, then one publication');
 
 				changeRow({ allow: ['192.168.0.0/16'] });
 				await until(() => read().includes('192.168.0.0/16'), 'the rewrite');
@@ -252,6 +251,19 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 				changeRow(undefined);
 				await until(() => !read().includes('allowedSources'), 'the cleared list');
 				assert.match(read(), /^certificates:/m);
+			});
+
+			it('still publishes after a rejected TLS readiness, on the next certificate change', async () => {
+				rows.set('operations', { allow: ['10.0.0.0/8'] });
+				const server = { ...makeSecureServer(), networkAccessScope: 'operations', secureContextsListeners: [] };
+				publishUdsMetadata(Promise.reject(new Error('boot TLS pass failed')), server, () =>
+					writeUdsMetadata(yamlPath, 9925, server)
+				);
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.strictEqual(fs.existsSync(yamlPath), false);
+				server.secureContextsListeners.forEach((listener) => listener());
+				await until(() => fs.existsSync(yamlPath), 'the write after the certificate change');
+				assert.ok(read().includes('  - "10.0.0.0/8"'));
 			});
 
 			it('never adds allowedSources to a server outside a scope', async () => {

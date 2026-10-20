@@ -1,5 +1,6 @@
 'use strict';
 
+const assert = require('node:assert');
 const chai = require('chai');
 const { expect } = chai;
 
@@ -114,12 +115,12 @@ describe('directivesController — decision tables in the 5.3.0 directive', () =
 describe('directivesController — hdb_network_access in the 5.4.0 directive', () => {
 	it('registers the table creator on the 5.4.0 directive', () => {
 		const directive = directivesController.getDirectiveByVersion('5.4.0');
-		expect(directive, 'expected a directive registered for version 5.4.0').to.exist;
-		expect(directive.async_functions.map((fn) => fn.name)).to.include('createHdbNetworkAccessIfMissing');
+		assert.ok(directive, 'expected a directive registered for version 5.4.0');
+		assert.ok(directive.async_functions.map((fn) => fn.name).includes('createHdbNetworkAccessIfMissing'));
 	});
 
 	it('runs on the 5.3.x -> 5.4.0 upgrade path and not before it', () => {
-		expect(directivesController.getVersionsForUpgrade(new UpgradeObject('5.3.2', '5.4.0'))).to.include('5.4.0');
-		expect(directivesController.getVersionsForUpgrade(new UpgradeObject('5.2.1', '5.3.2'))).to.not.include('5.4.0');
+		assert.ok(directivesController.getVersionsForUpgrade(new UpgradeObject('5.3.2', '5.4.0')).includes('5.4.0'));
+		assert.ok(!directivesController.getVersionsForUpgrade(new UpgradeObject('5.2.1', '5.3.2')).includes('5.4.0'));
 	});
 });
