@@ -400,6 +400,194 @@ describe('Replication confirmation failure after a local commit', () => {
 		assert.equal(await Second.get(`outer-${id}`), null);
 	});
 
+	for (const sourceFailure of [false, true]) {
+		for (const abort of ['timeout', 'disconnect', 'explicit']) {
+			it(`removes a nested flag after ${abort} discarded outer writes in ${sourceFailure ? 'source work' : 'the callback'}`, async () => {
+				const id = nextId();
+				const gate = Promise.withResolvers();
+				const controller = new AbortController();
+				const context = { signal: controller.signal };
+				const failure = new ServerError('Nested peer timeout', 504);
+				let entered = false;
+				let scope;
+				let settled = false;
+				registerConfirmation(() => {
+					entered = true;
+					return gate.promise;
+				});
+				class OuterSource extends Second {}
+				OuterSource.sourcedFrom({ get() {}, put: () => confirmedWrite(`inner-${id}`) });
+				const completing = transaction(context, async (txn) => {
+					scope = txn;
+					await (sourceFailure ? OuterSource : Second).put({ id: `outer-${id}` });
+					if (!sourceFailure) await confirmedWrite(`inner-${id}`);
+				}).then(
+					() => (settled = true),
+					(error) => {
+						settled = true;
+						return error;
+					}
+				);
+				try {
+					await waitFor(() => entered);
+					assert.strictEqual(scope.hasPendingWrites(), true);
+					if (abort === 'timeout') scope.abortDueToTimeout();
+					else if (abort === 'disconnect') controller.abort();
+					else scope.abort();
+					assert.strictEqual(scope.hasPendingWrites(), false);
+					if (!sourceFailure) assert.strictEqual(scope.isChainCommitting(), false);
+					gate.reject(failure);
+					await waitFor(() => settled);
+					const error = await completing;
+					assert.strictEqual(error.replicationUnconfirmed, undefined);
+					assert.strictEqual(error.cause.replicationUnconfirmed, true);
+					assert.strictEqual(error.retryable, false);
+					assert.strictEqual((await First.get(`inner-${id}`)).id, `inner-${id}`);
+					assert.equal(await Second.get(`outer-${id}`), null);
+				} finally {
+					gate.resolve();
+					await waitFor(() => settled);
+					await completing;
+				}
+			});
+		}
+	}
+
+	for (const explicit of [false, true]) {
+		for (const poison of ['timeout', 'disconnect']) {
+			it(`keeps an own committed outcome after ${poison}${explicit ? ' in an explicitly awaited commit' : ''}`, async () => {
+				const id = nextId();
+				const gate = Promise.withResolvers();
+				const controller = new AbortController();
+				const context = { replicatedConfirmation: 1, signal: controller.signal };
+				let entered = false;
+				let scope;
+				let settled = false;
+				registerConfirmation(() => {
+					entered = true;
+					return gate.promise;
+				});
+				const completing = transaction(context, async (txn) => {
+					scope = txn;
+					await First.put({ id });
+					requestConfirmation(context);
+					if (explicit) await txn.commit();
+				}).then(
+					() => (settled = true),
+					(error) => {
+						settled = true;
+						return error;
+					}
+				);
+				try {
+					await waitFor(() => entered);
+					if (poison === 'timeout') scope.abortDueToTimeout();
+					else controller.abort();
+					gate.reject(new ServerError('Own peer timeout', 504));
+					await waitFor(() => settled);
+					const error = await completing;
+					assert.strictEqual(error.replicationUnconfirmed, true);
+					assert.strictEqual(error.retryable, false);
+					assert.strictEqual((await First.get(id)).id, id);
+				} finally {
+					gate.resolve();
+					await waitFor(() => settled);
+					await completing;
+				}
+			});
+		}
+	}
+
+	it('keeps the committed outcome when its synchronous confirmation hook aborts the scope', async () => {
+		const id = nextId();
+		const context = { replicatedConfirmation: 1 };
+		let scope;
+		registerConfirmation(() => {
+			scope.abort();
+			throw new ServerError('Own peer timeout', 504);
+		});
+		await assert.rejects(
+			transaction(context, async (txn) => {
+				scope = txn;
+				await First.put({ id });
+				requestConfirmation(context);
+			}),
+			(error) => error.replicationUnconfirmed === true && error.retryable === false
+		);
+		assert.strictEqual((await First.get(id)).id, id);
+	});
+
+	it('does not certify outer writes after a swallowed local commit failure', async () => {
+		const id = nextId();
+		const context = {};
+		registerConfirmation(() => Promise.reject(new ServerError('Nested peer timeout', 504)));
+		await assert.rejects(
+			transaction(context, async (scope) => {
+				if (isLMDB) {
+					await Second.getResource(`outer-${id}`, context, {});
+					let link = scope;
+					while (link.db?.path !== Second.primaryStore.path) link = link.next;
+					link.addWrite({
+						key: `failed-${id}`,
+						store: Second.primaryStore,
+						commit() {
+							throw new Error('Application write failed inside the native batch');
+						},
+					});
+				}
+				await Second.put({ id: `outer-${id}` });
+				if (!isLMDB) {
+					let link = scope;
+					while (link.db?.path !== Second.primaryStore.path) link = link.next;
+					link.transaction.abort();
+				}
+				const previousRisk = Second.primaryStore.retryRisk;
+				if (isLMDB) Second.primaryStore.retryRisk = 101;
+				try {
+					await assert.rejects(Promise.resolve().then(() => scope.commit()));
+				} finally {
+					Second.primaryStore.retryRisk = previousRisk;
+				}
+				assert.strictEqual(scope.hasPendingWrites(), false);
+				await confirmedWrite(`inner-${id}`);
+			}),
+			(error) => error.replicationUnconfirmed === undefined && error.retryable === false
+		);
+		assert.equal(await Second.get(`outer-${id}`), null);
+		assert.strictEqual((await First.get(`inner-${id}`)).id, `inner-${id}`);
+	});
+
+	it('keeps a later own outcome on a reused RocksDB self-committing context after a failed write', async function () {
+		if (isLMDB) this.skip();
+		const id = nextId();
+		const context = {};
+		await First.getResource(id, context, {});
+		const scope = context.transaction;
+		assert.strictEqual(scope.saveCommits, true);
+		class Failing extends First {}
+		Failing.sourcedFrom({
+			get() {},
+			put() {
+				throw new ServerError('Source write failed', 502);
+			},
+		});
+		const failing = await Failing.getResource(`failed-${id}`, context, {});
+		await assert.rejects(
+			Promise.resolve().then(() => failing.put({ id: `failed-${id}` }, { id: `failed-${id}` })),
+			/Source write failed/
+		);
+		assert.strictEqual(context.transaction, scope);
+		scope.replicatedConfirmation = 1;
+		registerConfirmation(() => Promise.reject(new ServerError('Own peer timeout', 504)));
+		const later = await First.getResource(`later-${id}`, context, {});
+		await assert.rejects(
+			Promise.resolve().then(() => later.put({ id: `later-${id}` }, { id: `later-${id}` })),
+			(error) => error.replicationUnconfirmed === true && error.retryable === false
+		);
+		assert.equal(await First.get(`failed-${id}`), null);
+		assert.strictEqual((await First.get(`later-${id}`)).id, `later-${id}`);
+	});
+
 	it('removes a nested outcome flag even when structured error details cannot be copied', async () => {
 		const id = nextId();
 		const failure = new ServerError('Nested peer timeout', 504);
@@ -633,8 +821,8 @@ describe('Replication confirmation failure after a local commit', () => {
 		});
 	}
 
-	for (const rollback of [false, true]) {
-		it(`publishes the REST outcome${rollback ? ' after outer rollback' : ''} while retaining the original public code`, async () => {
+	for (const rollback of [false, true, 'aborted']) {
+		it(`publishes the REST outcome${rollback === 'aborted' ? ' after an earlier outer abort' : rollback ? ' after outer rollback' : ''} while retaining the original public code`, async () => {
 			const id = nextId();
 			registerConfirmation(() => Promise.reject(new ServerError('Peer timeout', 504)));
 			class Signup extends Resource {
@@ -642,6 +830,7 @@ describe('Replication confirmation failure after a local commit', () => {
 				async post(target) {
 					if (rollback) {
 						await Second.put({ id: `outer-rest-${target.id}` });
+						if (rollback === 'aborted') contextStorage.getStore().transaction.abort();
 						await confirmedWrite(target.id);
 					} else {
 						await First.put({ id: target.id });

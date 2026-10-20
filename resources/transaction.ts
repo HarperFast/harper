@@ -109,7 +109,7 @@ export function transaction<T>(
 			if (
 				callbackThrew &&
 				error?.replicationUnconfirmed === true &&
-				(transaction.hasPendingWrites() || transaction.isChainCommitting())
+				(transaction.hasPendingWrites() || transaction.isChainCommitting() || transaction.writesRolledBack)
 			)
 				error = withoutReplicationUnconfirmed(error);
 		} catch {}

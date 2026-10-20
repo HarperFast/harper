@@ -402,9 +402,10 @@ export class LMDBTransaction extends DatabaseTransaction {
 
 	private abortCommitFailure(error, next: DatabaseTransaction | undefined): never {
 		try {
-			if (error?.replicationUnconfirmed === true && this.hasPendingWrites())
+			if (error?.replicationUnconfirmed === true && (this.hasPendingWrites() || (this.root ?? this).writesRolledBack))
 				error = withoutReplicationUnconfirmed(error);
 		} catch {}
+		if (!this.saveCommits && this.writes.some((write) => write)) (this.root ?? this).writesRolledBack = true;
 		const nextWasAttached = Boolean(next && this.next === next);
 		try {
 			this.abort(true);
@@ -433,6 +434,8 @@ export class LMDBTransaction extends DatabaseTransaction {
 	}
 
 	abort(retainReadTransaction = false, cascade = true): void {
+		if (!this.saveCommits && !this.nativeCommitSubmitted && this.writes.some((write) => write))
+			(this.root ?? this).writesRolledBack = true;
 		const next = cascade ? this.next : undefined;
 		if (cascade && !retainReadTransaction) this.next = null;
 		try {

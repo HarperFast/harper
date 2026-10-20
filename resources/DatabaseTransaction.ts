@@ -1035,6 +1035,8 @@ export class DatabaseTransaction implements Transaction {
 	declare scopeAbandoned?: boolean;
 	declare abandonedLinks?: DatabaseTransaction[];
 	committingWrites = false;
+	// Root-scoped history survives abort cleanup until the logical scope ends.
+	declare writesRolledBack?: boolean;
 
 	rangeReadActive = false;
 
@@ -3186,6 +3188,12 @@ export class DatabaseTransaction implements Transaction {
 									this.releaseContext(!!options.doneWriting);
 								}
 								if (!hasDurableLog(transaction, error as any)) {
+									if (
+										!isImmediateCommit &&
+										!this.saveCommits &&
+										this.writes.some((write) => write && (!write.stagedOn || write.stagedOn === transaction))
+									)
+										(this.root ?? this).writesRolledBack = true;
 									for (const write of this.writes) {
 										if (
 											!write?.saved ||
@@ -3380,7 +3388,7 @@ export class DatabaseTransaction implements Transaction {
 
 	protected abortAfterCommitError(error, targetTransaction?: RocksTransaction): never {
 		try {
-			if (error?.replicationUnconfirmed === true && this.hasPendingWrites())
+			if (error?.replicationUnconfirmed === true && (this.hasPendingWrites() || (this.root ?? this).writesRolledBack))
 				error = withoutReplicationUnconfirmed(error);
 		} catch {}
 		try {
@@ -3415,6 +3423,20 @@ export class DatabaseTransaction implements Transaction {
 			isImmediateTarget || this.hasWriteOwnedByActiveCommit(targetTransaction, hasSiblingInFlight, true);
 		const preserveNonImmediateActiveWrites =
 			isImmediateTarget || this.hasWriteOwnedByActiveCommit(targetTransaction, hasSiblingInFlight, true, true);
+		if (
+			!isImmediateTarget &&
+			!this.saveCommits &&
+			this.writes.some((write) => {
+				if (
+					!write ||
+					(preserveActiveWrites && this.isWriteOwnedByActiveCommit(write, targetTransaction, hasSiblingInFlight, true))
+				)
+					return false;
+				const owner = write.stagedOn ?? this.activeCommitHandle ?? nativeTxn;
+				return !this.isHandleCommitted(owner) && !hasDurableLog(owner);
+			})
+		)
+			(this.root ?? this).writesRolledBack = true;
 		const cascadeNext = cascade && !preserveNonImmediateActiveWrites;
 		const next = cascadeNext ? this.next : undefined;
 		if (cascadeNext && !retainReadTransaction) this.next = null;
