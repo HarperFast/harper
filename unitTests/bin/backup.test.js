@@ -202,7 +202,7 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 				const calls = trackRouting();
 				await assert.rejects(runBackupCommand(command), (error) => {
 					assert.strictEqual(error.statusCode, 400);
-					assert.ok(error.message.includes(`target='${lastTarget}'`), error.message);
+					assert.ok(error.message.includes(`target=${lastTarget}`), error.message);
 					assert.match(error.message, /harper logout/);
 					return true;
 				});
@@ -238,10 +238,13 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 		assert.ok(calls.api && !calls.offline);
 	});
 
-	it('does not echo credentials embedded in a saved last_target', async () => {
-		cliCredentialsModule.loadCredentials = () => ({ last_target: 'http://admin:secret@localhost:9925/' });
-		processMgmtModule.getHdbPid = () => null;
-		trackRouting();
-		await assert.rejects(runBackupCommand('delete_backup'), (error) => !error.message.includes('secret'));
-	});
+	for (const lastTarget of ['http://admin:secret@localhost:9925/', 'HTTP://admin:secret@localhost:9925/']) {
+		it(`does not echo credentials embedded in a saved last_target ${lastTarget}`, async () => {
+			cliCredentialsModule.loadCredentials = () => ({ last_target: lastTarget });
+			processMgmtModule.getHdbPid = () => null;
+			trackRouting();
+			const error = await runBackupCommand('delete_backup').catch((error) => error);
+			assert.ok(!String(error?.message).includes('secret'), error?.message);
+		});
+	}
 });

@@ -119,11 +119,12 @@ function isLocalTarget(target: string): boolean {
  * exist to work on local files while the local server is stopped, so a local/absent target falls
  * through to the liveness check — the API only when the local instance is actually running
  * (`getHdbPid` verifies process liveness, so a stale pid file reads as stopped). A loopback URL can
- * still be a tunnel, container or another install, so a destructive command refuses to guess which
- * one was meant.
+ * still be a tunnel, container or another install, so for a destructive command this throws rather
+ * than guess which one was meant.
  */
 function useOperationApi(request: any, command: string): boolean {
-	const lastTarget = loadCredentials()?.last_target;
+	// normalized once so routing and the message read the same URL, with any userinfo stripped
+	const lastTarget = normalizeTarget(loadCredentials()?.last_target);
 	if (
 		request.target ||
 		process.env.HARPER_CLI_TARGET ||
@@ -135,11 +136,10 @@ function useOperationApi(request: any, command: string): boolean {
 	initConfig();
 	if (getHdbPid()) return true;
 	if (lastTarget && !NON_DESTRUCTIVE_COMMANDS.has(command)) {
-		const target = normalizeTarget(lastTarget);
 		throw new ClientError(
-			`Harper is not running here, and the saved CLI target '${target}' may be a different Harper instance. ` +
-				`To run ${command} on that server, pass target='${target}'. ` +
-				`To run it on this installation's files, first run: harper logout '${target}' (this removes its saved login).`
+			`Harper is not running here, and the saved CLI target ${lastTarget} may be a different Harper instance. ` +
+				`To run ${command} on that server, pass target=${lastTarget}. ` +
+				`To run it on this installation's files, first run: harper logout ${lastTarget} (this removes its saved login).`
 		);
 	}
 	return false;
