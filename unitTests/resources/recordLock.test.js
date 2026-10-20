@@ -1832,16 +1832,16 @@ describe('Record locks (harper#483)', () => {
 			assert.ok(second.version > first.version, 'the second hold save advanced past the first');
 		});
 
-		it('reserves an immediate batch log key at or above every version the batch carries', async function () {
+		it('reserves an immediate lock write a log key at or above its version', async function () {
 			if (isLMDB) return this.skip();
 			const idA = id();
 			const idB = id();
 			await LockTest.put({ id: idA, n: 0 });
-			// Beyond storage.maxLockClockSkew, so no claim lifts the batch key and only its ceiling can.
+			// Beyond storage.maxLockClockSkew, so no claim lifts the key and only the write's own stamp reserves it.
 			const predecessorTimestamp = Date.now() + 60_000;
 			await transaction({ timestamp: predecessorTimestamp }, () => LockTest.put({ id: idB, n: 0 }));
 			const context = {};
-			// Each scoped lock commits its own write on the shared immediate context.
+			// Each scoped lock commits its own write on the shared immediate context, one log key apiece.
 			const a = await LockTest.lock(idA, { lease: 5000 }, context);
 			const b = await LockTest.lock(idB, { lease: 5000 }, context);
 			a.set('n', 1);
@@ -1856,7 +1856,6 @@ describe('Record locks (harper#483)', () => {
 			// A replica applies a write at no more than its log key, so a version above it would not survive.
 			const auditA = auditOf(idA, versionA);
 			const auditB = auditOf(idB, versionB);
-			assert.strictEqual(auditA.txnLogKey, auditB.txnLogKey, 'one batch, one log key');
 			assert.ok(auditA.txnLogKey >= versionA, 'the log key covers the unfloored lock write');
 			assert.ok(auditB.txnLogKey >= versionB, 'the log key covers the floored lock write');
 		});
@@ -1914,7 +1913,24 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual(entryOf(otherId).value.n, 2, 'the later write is the stored one');
 		});
 
-		it('an unlocked write in an immediate batch keeps the clock when a lock stamp raises the batch key', async function () {
+		it('saves a second instance of one lock after the first, rather than repeating its version', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const context = {};
+			const first = await LockTest.lock(recordId, { lease: 5000 }, context);
+			const second = await LockTest.lock(recordId, { lease: 5000 }, context);
+			first.set('n', 1);
+			second.set('n', 2);
+			await first.save();
+			const firstVersion = entryOf(recordId).version;
+			await second.save();
+			await first.unlock();
+			assert.strictEqual(entryOf(recordId).value.n, 2, 'the second save is not dropped as a duplicate of the first');
+			assert.ok(entryOf(recordId).version > firstVersion, 'the second save is stamped above the first');
+		});
+
+		it('an unlocked write on an immediate context with a lock keeps the clock when a lock stamp is far ahead', async function () {
 			if (isLMDB) return this.skip();
 			const lockedId = id();
 			const otherId = id();

@@ -23,14 +23,7 @@ import { convertToMS } from '../utility/common_utils.ts';
 import { settleBeforeDeadline, when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
-import {
-	freshLocalKey,
-	isReservedForLocalAppend,
-	releaseLocalKey,
-	reserveLocalKey,
-	reservedLocalKey,
-	transferLocalKey,
-} from './originClosedFloor.ts';
+import { releaseLocalKey, reserveLocalKey, reservedLocalKey, transferLocalKey } from './originClosedFloor.ts';
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import { isReadOnlyMode, readOnlyModeError } from './readOnlyMode.ts';
@@ -1834,23 +1827,6 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * An immediate batch commits every staged write under the log key its first write reserves, and a
-	 * replica applies each write at no more than that key, so the key must cover every version in it.
-	 */
-	private lockStampCeiling(transaction: RocksTransaction, txnTime: number): number {
-		if (isReservedForLocalAppend(transaction)) return txnTime;
-		let ceiling = txnTime;
-		for (const write of this.writes) {
-			if (!write || write.saved) continue;
-			const version = write.lockHandle
-				? (write.lockStamp ||= write.lockHandle.holderVersionCandidate())
-				: this.timestamp;
-			if (version > ceiling) ceiling = version;
-		}
-		return ceiling;
-	}
-
-	/**
 	 * Whether an unlocked write is staged. Resumes where the last call stopped, so a transaction that
 	 * takes N locks scans its writes once in all; a detached write it already counted stays counted.
 	 */
@@ -2381,17 +2357,11 @@ export class DatabaseTransaction implements Transaction {
 			(transaction as RocksTransactionWithRetry).isRetry = true;
 			(transaction as RocksTransactionWithRetry).retries = this.retries;
 		} else if (!remoteOrigin) {
-			const lockBatch = this.saveCommits && this.recordLocks;
 			try {
-				const key = reserveLocalKey(
-					operation.store.rootStore,
-					transaction,
-					(lockBatch ? this.lockStampCeiling(transaction, txnTime) : txnTime) || undefined
-				);
-				// A lock's batch key can exceed the skew cap, so it must not raise unrelated writes to that stamp.
+				const key = reserveLocalKey(operation.store.rootStore, transaction, txnTime || undefined);
 				if (!txnTime) {
-					txnTime = lockBatch ? Math.min(freshLocalKey(operation.store.rootStore), key) : key;
-					if (!concurrentClosedWrite) this.timestamp = txnTime;
+					txnTime = key;
+					if (!concurrentClosedWrite) this.timestamp = key;
 				}
 			} catch (error) {
 				if (immediateCommit)

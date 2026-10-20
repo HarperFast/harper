@@ -212,10 +212,10 @@ while nothing else would move with it — no log key reserved yet and no unlocke
 (`hasUnlockedWrite`, one pass over the writes for all of a transaction's locks); otherwise the clock
 stays put, the holder's ordering is best-effort, and nothing throws. Likewise a hold saved later in a
 different explicit transaction is stamped by that transaction's clock, not the floor. An
-`ImmediateTransaction` stamps holder writes from the handle as above, and reserves its batch's log key
-at or above every version the batch carries (`lockStampCeiling`), because a replica applies a write at
-no more than its log key; the batch's unlocked writes take the allocator's key instead when that is
-lower, so a lock stamp does not carry them ahead. One route escapes it: a holder write saved while the
+`ImmediateTransaction` stamps holder writes from the handle as above, and each write commits on its own
+native handle whose log key is reserved at or above that write's stamp, because a replica applies a write
+at no more than its log key. A deferred write that has not been saved takes its stamp at its own save. One
+route escapes it: a holder write saved while the
 same context's previous commit is still in flight (awaiting a streamed blob) joins that batch under its
 already-reserved key, so a replica applies it at that lower key and can keep the predecessor's value
 there while the origin keeps the holder's (harper#3238). A hold steps one ulp past its last version,
