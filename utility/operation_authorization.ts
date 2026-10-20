@@ -979,67 +979,85 @@ function stripPermissionControls(select: any) {
 	}
 }
 
+interface RelationshipReadCheck {
+	tableClass: any;
+	user: any;
+	denials?: Map<string, { denial: ReadDenial; attributes: Set<string> }>;
+}
+
 function checkRelationshipReads(requestJson: any, operationSchema: string, table: string, permsResponse) {
 	const tableClass = getDatabases()[operationSchema]?.[table];
 	if (!tableClass?.hasRelationships) return;
-	const relatedTableOf = (currentTable: any, name: any) =>
-		currentTable.propertyResolvers?.[name]?.definition?.tableClass;
-	let denials: Map<string, { denial: ReadDenial; attributes: Set<string> }>;
-	const check = (path: any[]) => {
-		if (!relatedTableOf(tableClass, path[0])) return;
-		const denial = tableClass._readDenial(path, requestJson.hdb_user);
-		if (!denial) return;
-		denials ??= new Map();
-		const key = `${denial.database}_${denial.table}`;
-		let entry = denials.get(key);
-		if (!entry) denials.set(key, (entry = { denial, attributes: new Set() }));
-		if (denial.attribute === undefined) entry.denial = denial;
-		else entry.attributes.add(denial.attribute);
-	};
-	const checkSort = (sort: any, prefix: any[]) => {
-		for (; sort && typeof sort === 'object'; sort = sort.next) {
-			if (sort.attribute !== undefined) check(prefix.concat(sort.attribute));
-		}
-	};
-	// `prefix` is the relationship path from the root to `currentTable`. A plain JSON sub-selection is
-	// projected with the resolvers of the table it belongs to, so it keeps that prefix, and its own
-	// fields are data rather than attributes.
-	const checkSelect = (select: any, prefix: any[], currentTable: any, inJson = false) => {
-		if (select == null) return;
-		for (const property of Array.isArray(select) ? select : [select]) {
-			const name = property?.name ?? property;
-			const relatedTable = relatedTableOf(currentTable, name);
-			if (relatedTable) {
-				const path = [...prefix, name];
-				check(path);
-				checkSelect(property?.select, path, relatedTable);
-				checkSort(property?.sort, path);
-				continue;
-			}
-			if (prefix.length > 0 && !inJson) check([...prefix, name]);
-			if (property?.select != null && typeof property === 'object')
-				checkSelect(property.select, prefix, currentTable, true);
-		}
-	};
-	const checkConditions = (conditions: any) => {
-		if (!Array.isArray(conditions)) return;
-		for (const condition of conditions) {
-			if (condition?.conditions) checkConditions(condition.conditions);
-			else if (condition?.attribute !== undefined)
-				check(Array.isArray(condition.attribute) ? condition.attribute : [condition.attribute]);
-		}
-	};
-	checkSelect(requestJson.get_attributes, [], tableClass);
-	checkConditions(requestJson.conditions);
-	checkSort(requestJson.sort, []);
-	if (!denials) return;
-	for (const { denial, attributes } of denials.values()) {
+	const state: RelationshipReadCheck = { tableClass, user: requestJson.hdb_user };
+	checkSelectPaths(state, requestJson.get_attributes, [], tableClass, false);
+	checkConditionPaths(state, requestJson.conditions);
+	checkSortPaths(state, requestJson.sort, []);
+	if (!state.denials) return;
+	for (const { denial, attributes } of state.denials.values()) {
 		if (denial.attribute === undefined) permsResponse.addUnauthorizedTable(denial.database, denial.table, [READ_PERM]);
 		else {
 			const required = {};
 			for (const attribute of attributes) required[attribute] = [READ_PERM];
 			permsResponse.addUnauthorizedAttributes([...attributes], denial.database, denial.table, required);
 		}
+	}
+}
+
+function relatedTableOf(currentTable: any, name: any) {
+	return currentTable.propertyResolvers?.[name]?.definition?.tableClass;
+}
+
+function checkRelationshipPath(state: RelationshipReadCheck, path: any[]) {
+	if (!relatedTableOf(state.tableClass, path[0])) return;
+	const denial = state.tableClass._readDenial(path, state.user);
+	if (!denial) return;
+	state.denials ??= new Map();
+	const key = `${denial.database}_${denial.table}`;
+	let entry = state.denials.get(key);
+	if (!entry) state.denials.set(key, (entry = { denial, attributes: new Set() }));
+	if (denial.attribute === undefined) entry.denial = denial;
+	else entry.attributes.add(denial.attribute);
+}
+
+function checkSortPaths(state: RelationshipReadCheck, sort: any, prefix: any[]) {
+	for (; sort && typeof sort === 'object'; sort = sort.next) {
+		if (sort.attribute !== undefined) checkRelationshipPath(state, prefix.concat(sort.attribute));
+	}
+}
+
+// `prefix` is the relationship path from the root to `currentTable`. A plain JSON sub-selection is
+// projected with the resolvers of the table it belongs to, so it keeps that prefix, and its own
+// fields are data rather than attributes.
+function checkSelectPaths(
+	state: RelationshipReadCheck,
+	select: any,
+	prefix: any[],
+	currentTable: any,
+	inJson: boolean
+) {
+	if (select == null) return;
+	for (const property of Array.isArray(select) ? select : [select]) {
+		const name = property?.name ?? property;
+		const relatedTable = relatedTableOf(currentTable, name);
+		if (relatedTable) {
+			const path = [...prefix, name];
+			checkRelationshipPath(state, path);
+			checkSelectPaths(state, property?.select, path, relatedTable, false);
+			checkSortPaths(state, property?.sort, path);
+			continue;
+		}
+		if (prefix.length > 0 && !inJson) checkRelationshipPath(state, [...prefix, name]);
+		if (property?.select != null && typeof property === 'object')
+			checkSelectPaths(state, property.select, prefix, currentTable, true);
+	}
+}
+
+function checkConditionPaths(state: RelationshipReadCheck, conditions: any) {
+	if (!Array.isArray(conditions)) return;
+	for (const condition of conditions) {
+		if (condition?.conditions) checkConditionPaths(state, condition.conditions);
+		else if (condition?.attribute !== undefined)
+			checkRelationshipPath(state, Array.isArray(condition.attribute) ? condition.attribute : [condition.attribute]);
 	}
 }
 
