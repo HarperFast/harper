@@ -4,11 +4,12 @@ title: Full-Text Paging
 
 # Full-Text Paging
 
-<VersionBadge version="v5.3.1" />
+<VersionBadge version="v5.4.0" />
 
 Full-text continuation lets a client page through the original search matches while indexing
 updates arrive. It is available through `Table.search()` and REST. Ordinary offset-based paging
 continues to run each request against its own index snapshot.
+The same continuation options work with autocomplete searches using `matches_prefix` and `matches_fuzzy_prefix`.
 
 ## Declare a full-text index
 
@@ -28,7 +29,8 @@ Full-text matches use descending relevance order.
 
 ## Page through `Table.search()`
 
-Set `continuation: true` to start. Continuation mode returns a promise for a bounded array;
+Set `continuation: true` and a positive `limit` to start. The limit must not exceed `maxPageSize`.
+Continuation mode returns a promise for a bounded array;
 ordinary searches keep their async iterable return value.
 
 ```javascript
@@ -56,7 +58,7 @@ The returned array has three additional properties:
 
 These properties are not included when the array is serialized as JSON. Keep the same conditions
 and selected fields when resuming. The page size may change. Do not combine continuation with a
-nonzero offset, count request, or another sort order.
+nonzero offset, count request, another sort order, `explain`, or `sync`.
 
 In an authenticated custom Resource, pass `this.getContext()` as the second argument to
 `tables.Product.search()` and set `checkPermission: true` in the query. This requests the caller's
@@ -93,6 +95,9 @@ do {
 absolute expiry time in milliseconds since the Unix epoch. Completed pages omit the token and
 expiry. These headers are exposed to browser clients. Continuation responses use `Cache-Control: no-store`. JSON `QUERY` requests return the
 same headers when their query body enables continuation.
+
+Read and parse the complete response body before saving its next token. A stream can fail after
+headers are sent. If that happens, retry with the previous token while the snapshot remains valid.
 
 GET and QUERY can return continuation pages. OPTIONS returns request metadata without running a
 search. Other methods reject continuation parameters with 400.
