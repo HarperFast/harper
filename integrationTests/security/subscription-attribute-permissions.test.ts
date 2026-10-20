@@ -21,8 +21,8 @@ import { createApiClient, createHeaders } from '../apiTests/utils/client.mjs';
 import { waitForRouteReady } from '../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/subscription-attribute-permissions');
-// WebSocket transports (REST WebSocket and mqtt.js over WebSocket) are skipped on Bun and Windows, as in the
-// other WebSocket and MQTT suites.
+// On Bun, mqtt.js's WebSocket transport never completes CONNACK and REST WebSocket stops after the first
+// message; the other WebSocket and MQTT suites skip Bun and Windows for the same reasons.
 const skipWebSocket = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
 const ROLE = 'doc_no_secret_role';
