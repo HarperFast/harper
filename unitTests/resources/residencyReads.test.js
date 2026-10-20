@@ -165,6 +165,53 @@ describe('Reads of residency stubs', function () {
 		assert.deepEqual(await query(['id'], [{ attribute: 'name', value: 'indexed' }]), []);
 	});
 
+	it('retains inherited non-indexed source fields when copying a frozen invalidation', async () => {
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Records.getResource('record', context, { ensureLoaded: false });
+			resource._writeInvalidate('record', Object.freeze(Object.create({ name: 'inherited', body: 'source body' })));
+		});
+		const entry = Records.primaryStore.getEntry('record');
+		assert.ok(entry.metadataFlags & INVALIDATED);
+		assert.equal(entry.value.body, 'source body');
+	});
+
+	it('never promotes an incomplete cache patch after invalidation in the same transaction', async () => {
+		await Records.put('cache-patch', { name: 'before', body: 'complete' });
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Records.getResource('cache-patch', context, { ensureLoaded: false });
+			resource._writeInvalidate('cache-patch');
+			await Records.patch('cache-patch', { name: 'after' }, context);
+		});
+		const entry = Records.primaryStore.getEntry('cache-patch');
+		assert.equal(entry.value.name, 'after');
+		assert.ok(
+			entry.metadataFlags & INVALIDATED || entry.value.body === 'complete',
+			'a patch cannot turn an incomplete base into a complete record'
+		);
+	});
+
+	it('retains audit-referenced blobs from a superseded invalidation', async () => {
+		const Blobs = table({
+			database: 'test',
+			table: 'ResidencyInvalidationBlobs',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'blob' }],
+			audit: true,
+		});
+		const data = require('node:crypto').randomBytes(25_000);
+		const first = await createBlob(data);
+		const second = await createBlob(require('node:crypto').randomBytes(25_000));
+		const context = {};
+		await transaction(context, () => {
+			new Blobs('blob-record', context)._writeInvalidate('blob-record', { blob: first });
+			new Blobs('blob-record', context)._writeInvalidate('blob-record', { blob: second });
+		});
+		// A retained audit blob is still readable and can be referenced by a later write.
+		await Blobs.put('blob-record', { blob: first });
+		assert.deepEqual(Buffer.from(await (await Blobs.get('blob-record')).blob.arrayBuffer()), data);
+	});
+
 	it('keeps a primary-key projection when a residency table has no secondary indexes', async () => {
 		const PrimaryOnly = table({
 			database: 'test',

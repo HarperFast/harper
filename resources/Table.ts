@@ -3935,10 +3935,11 @@ export function makeTable(options): TableResourceClass {
 					// Received projections can be frozen. Missing fields in a residency projection are removals;
 					// only a local/cache invalidation carries forward the committed indexed fields.
 					partialRecord = incomingRecord
-						? { ...incomingRecord }
+						? Object.create(null)
 						: options?.residencyId && primaryKey
 							? { [primaryKey]: id }
 							: null;
+					if (incomingRecord) for (const name in incomingRecord) partialRecord[name] = incomingRecord[name];
 					for (const name in indices) {
 						if (!partialRecord) partialRecord = {};
 						if (primaryStore.encoder.resolvedAttributeNames?.has(name)) continue;
@@ -3975,6 +3976,7 @@ export function makeTable(options): TableResourceClass {
 						'invalidate'
 					);
 					write.stagedEntry = { value: partialRecord, metadataFlags: INVALIDATED, residencyId: options?.residencyId };
+					write.blobsAuditReferenced = Boolean(audit);
 					if (priorStagedOp) priorStagedOp.superseded = true;
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					// TODO: recordDeletion?
@@ -5425,13 +5427,11 @@ export function makeTable(options): TableResourceClass {
 					this.#record = recordToStore;
 					if (recordToStore && recordToStore.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');
-					// A patch onto a stub has no complete base, so it can't decide placement; the stub's list names the
-					// nodes holding the complete record.
+					// A patch onto an incomplete base must stay invalidated; any residency list still names
+					// the nodes holding the complete record.
 					const baseEntry = priorStaged ?? existingEntry;
 					const patchesStub =
-						!fullUpdate &&
-						!TableResource.getResidencyById &&
-						Boolean(baseEntry?.residencyId && baseEntry.metadataFlags & INVALIDATED);
+						!fullUpdate && !TableResource.getResidencyById && Boolean(baseEntry?.metadataFlags & INVALIDATED);
 					if (patchesStub) {
 						omitLocalRecord = true;
 						residencyId ??= baseEntry.residencyId;
