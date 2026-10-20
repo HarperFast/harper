@@ -2282,15 +2282,23 @@ export function makeTable(options): TableResourceClass {
 										// a new history identity: what was certified under the old one is void, and the route
 										// must prove its prefix again (certifiedFrom) before this generation qualifies
 										nodeState.floorRevoked = undefined;
+										nodeState.hole = undefined;
 										nodeState.closedFloor = undefined;
 										nodeState.relayable = false;
 										nodeState.certifiedFrom = undefined;
 										nodeState.originGeneration = originGeneration;
 										qualifiersChanged = true;
-										continue;
 									}
 									// a revoked origin keeps no floor within its generation: a later or higher certificate never clears it
 									if (nodeState.floorRevoked === true) continue;
+									// a certificate without a generation from a route that had one: that route no longer certifies
+									// at level 2, so its checkpoint-grade qualifiers no longer hold for what follows
+									if (typeof originGeneration !== 'string' && typeof nodeState.originGeneration === 'string') {
+										nodeState.originGeneration = undefined;
+										nodeState.fullCoverage = undefined;
+										nodeState.certifiedFrom = undefined;
+										qualifiersChanged = true;
+									}
 									if (!(nodeState.closedFloor >= closedFloor)) {
 										nodeState.closedFloor = closedFloor;
 										nodeState.relayable = relayable === true;
@@ -2388,7 +2396,13 @@ export function makeTable(options): TableResourceClass {
 								return commitTrackedRocksTransaction(seqTransaction, dbisDb, (primaryStore as any).rootStore).then(
 									(result) => {
 										// once the row is readable on every thread, an admitted checkpoint rechecks against it
-										if (qualifiersChanged) bumpOriginStateEpoch((primaryStore as any).rootStore);
+										if (qualifiersChanged) {
+											try {
+												bumpOriginStateEpoch((primaryStore as any).rootStore);
+											} catch (error) {
+												logger.warn?.('Could not publish the origin state epoch', error);
+											}
+										}
 										return result;
 									},
 									(error) => {
@@ -7527,13 +7541,14 @@ export function makeTable(options): TableResourceClass {
 					pendingRealTimeQueue = null;
 					dropDuringReplay = true;
 					const targetKey = isCollection ? undefined : keyArrayToString(thisId);
-					const prefix = thisId == null ? '' : keyArrayToString(thisId);
+					const prefix = thisId == null ? '' : String(keyArrayToString(thisId)).replace(/\/$/, '') + '/';
 					const inScope = (id: Id): boolean => {
 						if (!isCollection) return keyArrayToString(id) === targetKey;
 						if (thisId != null && !isDescendantId(thisId, id)) return false;
 						if (!request.onlyChildren) return true;
 						// a direct child, as live routing's ancestor depth decides it
-						const rest = keyArrayToString(id).slice(prefix.length).replace(/\/$/, '');
+						const path = String(keyArrayToString(id));
+						const rest = (path.startsWith(prefix) ? path.slice(prefix.length) : path).replace(/\/$/, '');
 						return !rest.includes('/');
 					};
 					const refuse = (refusal: Error): false => {
@@ -7545,15 +7560,15 @@ export function makeTable(options): TableResourceClass {
 						}
 						return false;
 					};
-					// the lowest certified start, raised to the key in hand as the merged replay reads past it: a prune
-					// raises the floor before deleting, so a floor at or below it deleted nothing unread (as checkResume)
-					let checkedThrough = Infinity;
-					for (const start of plan.startByLog.values()) if (start > 0 && start < checkedThrough) checkedThrough = start;
+					// a log is read in physical order, so an unread entry can carry any key above its start: a prune
+					// that passes the lowest certified start may have deleted one, whatever has been read so far
+					let lowestStart = Infinity;
+					for (const start of plan.startByLog.values()) if (start > 0 && start < lowestStart) lowestStart = start;
 					// admission facts are mutable: a revocation, hole or generation change bumps the epoch
 					const recheck = (range: any): boolean => {
 						const unreadable = unreadableLogRefusal(range);
 						if (unreadable) return refuse(unreadable);
-						if (getAuditResumeFloor(auditStore) > checkedThrough) {
+						if (getAuditResumeFloor(auditStore) > lowestStart) {
 							return refuse(
 								new ResumeHistoryUnavailableError(
 									'The history after a checkpoint boundary is no longer retained; resubscribe to resynchronize'
@@ -7564,7 +7579,7 @@ export function makeTable(options): TableResourceClass {
 						if (epoch !== admittedEpoch) {
 							try {
 								admittedEpoch = epoch;
-								admitCheckpoint(auditStore, TableResource.dbisDB, checkpointToken!);
+								admitCheckpoint(auditStore, TableResource.dbisDB, checkpointToken!, { checkRetention: false });
 							} catch (error) {
 								return refuse(error);
 							}
@@ -7585,7 +7600,6 @@ export function makeTable(options): TableResourceClass {
 								await rest();
 								if (!isActive()) return;
 								if (!recheck(replayRange)) return;
-								checkedThrough = auditRecord.txnLogKey;
 							}
 							if (auditRecord.type === undefined) {
 								refuse(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
@@ -7609,7 +7623,6 @@ export function makeTable(options): TableResourceClass {
 							if (!send(event)) return;
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								if (!recheck(replayRange)) return;
-								checkedThrough = auditRecord.txnLogKey;
 								if ((await subscription.waitForDrain()) === false) return;
 							}
 						}
