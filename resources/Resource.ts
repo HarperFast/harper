@@ -916,14 +916,18 @@ function transactional(
 			// target reaches application or table code.
 			if (hasPermissionControl(data)) data = cloneRequestTarget(data);
 			if (Object.prototype.hasOwnProperty.call(data, 'select')) query.select = data.select;
-			// an instance resource executes the body's conditions and sort, which allowRead authorizes
+			// An instance resource executes the body, so allowRead must see the body's conditions and
+			// sort. Iterables are materialized first: admission and execution both read them.
 			if (this.loadAsInstance !== false) {
-				if (Array.isArray(data)) query.conditions = data;
-				else if (Object.prototype.hasOwnProperty.call(data, 'conditions')) {
-					// admission and execution both read a one-shot iterator
+				if (Object.prototype.hasOwnProperty.call(data, 'conditions')) {
 					if (data.conditions && !Array.isArray(data.conditions) && data.conditions[Symbol.iterator])
 						data.conditions = Array.from(data.conditions);
 					query.conditions = data.conditions;
+				} else if (data instanceof URLSearchParams) query.conditions = Array.from(data);
+				else if (data[Symbol.iterator]) {
+					// an iterable body (an array, or a Set from CBOR tag 258) is the condition list
+					if (!Array.isArray(data)) data = Array.from(data);
+					query.conditions = data;
 				}
 				if (Object.prototype.hasOwnProperty.call(data, 'sort')) query.sort = data.sort;
 			}

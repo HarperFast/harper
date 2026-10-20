@@ -2164,7 +2164,6 @@ export function makeTable(options): TableResourceClass {
 		static assertFullTextRecordField(name: unknown): void {
 			assertFullTextRecordField(name);
 		}
-		/** The first table, or attribute, along an attribute path that the role cannot read. */
 		static _readDenial(path: readonly any[], user: User, target?: RequestTarget, index = 0): ReadDenial | undefined {
 			const permission = getTablePermissions(user, target);
 			if (permission?.isSuperUser) return;
@@ -2187,7 +2186,6 @@ export function makeTable(options): TableResourceClass {
 		static _referencesRelationship(target: RequestTarget): boolean {
 			return hasRelationships && someRelationshipPath(target, () => true);
 		}
-		/** A selected property narrowed to what the role can read, or false when it cannot read the related table. */
 		static _authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any {
 			const relatedTable = propertyResolvers[property?.name || property]?.definition?.tableClass;
 			if (!relatedTable) {
@@ -11651,28 +11649,36 @@ export function makeTable(options): TableResourceClass {
 			return table;
 		}
 	}
+	function relationshipPathMatches(attribute: any, test: (path: readonly any[]) => boolean): boolean {
+		const first = Array.isArray(attribute) ? attribute[0] : attribute;
+		return (
+			propertyResolvers[first]?.definition?.tableClass !== undefined &&
+			test(Array.isArray(attribute) ? attribute : [attribute])
+		);
+	}
+	function someConditionPath(conditions: Iterable<any>, test: (path: readonly any[]) => boolean): boolean {
+		for (const condition of conditions) {
+			if (
+				condition?.conditions
+					? someConditionPath(condition.conditions, test)
+					: relationshipPathMatches(condition?.[0] ?? condition?.attribute, test)
+			)
+				return true;
+		}
+		return false;
+	}
 	function someRelationshipPath(target: RequestTarget, test: (path: readonly any[]) => boolean): boolean {
 		const conditions = target.conditions as any;
-		// search reads the conditions again, so a one-shot iterator is materialized once here
-		if (conditions && !Array.isArray(conditions) && conditions[Symbol.iterator])
+		if (conditions == null) {
+			if (target.sort == null && (typeof target[Symbol.iterator] !== 'function' || (target as any).size === 0))
+				return false;
+		} else if (!Array.isArray(conditions) && conditions[Symbol.iterator]) {
+			// search reads the conditions again
 			target.conditions = Array.from(conditions);
-		const visit = (attribute: any) => {
-			const first = Array.isArray(attribute) ? attribute[0] : attribute;
-			return (
-				propertyResolvers[first]?.definition?.tableClass !== undefined &&
-				test(Array.isArray(attribute) ? attribute : [attribute])
-			);
-		};
-		const inConditions = (conditions: Iterable<any>) => {
-			for (const condition of conditions) {
-				if (condition?.conditions ? inConditions(condition.conditions) : visit(condition?.[0] ?? condition?.attribute))
-					return true;
-			}
-			return false;
-		};
-		if (inConditions(searchConditions(target))) return true;
+		}
+		if (someConditionPath(searchConditions(target), test)) return true;
 		for (let sort = typeof target.sort === 'object' && target.sort; sort; sort = sort.next) {
-			if (visit(sort.attribute)) return true;
+			if (relationshipPathMatches(sort.attribute, test)) return true;
 		}
 		return false;
 	}

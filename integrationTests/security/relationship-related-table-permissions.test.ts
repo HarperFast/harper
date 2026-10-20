@@ -13,6 +13,7 @@
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
+import { encode as encodeCbor } from 'cbor-x';
 
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
@@ -327,6 +328,12 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			strictEqual(single.status, 403, await single.text());
 			const arrayBody = await query('restricted', [{ attribute: ['dept', 'budget'], value: DEPT.budget }]);
 			strictEqual(arrayBody.status, 403, await arrayBody.text());
+			const setBody = await fetch(`${restURL}/Emp/`, {
+				method: 'QUERY',
+				headers: { ...headers.restricted, 'Content-Type': 'application/cbor', 'Accept': 'application/json' },
+				body: encodeCbor(new Set([{ attribute: ['dept', 'budget'], value: DEPT.budget }])),
+			});
+			strictEqual(setBody.status, 403, await setBody.text());
 		});
 
 		test('REST refuses a condition on a related table or attribute the role cannot read', async () => {
