@@ -311,6 +311,35 @@ describe('Permissions through Resource API', () => {
 			queried.push(result.id);
 		assert.deepEqual(queried, ['id-2']);
 	});
+	it('Reads through a relationship whose name or join key the role can read', async function () {
+		const roleReading = (attributes) => ({
+			role: {
+				permission: {
+					test: {
+						tables: {
+							TestTable: {
+								read: true,
+								attribute_permissions: attributes.map((attribute_name) => ({ attribute_name, read: true })),
+							},
+							RelatedTestTable: { read: true, attribute_permissions: [] },
+						},
+					},
+				},
+			},
+		});
+		const byJoinKey = await searchAs(
+			roleReading(['id', 'name', 'relatedId']),
+			'?related.name=related name-2&select(name)'
+		);
+		assert.deepEqual(
+			byJoinKey.map((result) => result.name),
+			['name-2']
+		);
+		await assert.rejects(
+			searchAs(roleReading(['id', 'name']), '?related.name=related name-2&select(name)'),
+			/Unauthorized access/
+		);
+	});
 	it('Reports the first unreadable step of a relationship path', function () {
 		assert.equal(TestTable._readDenial(['related', 'name'], { role: { permission: { super_user: true } } }), undefined);
 		assert.deepEqual(TestTable._readDenial(['related'], authorized_role), {

@@ -2170,15 +2170,20 @@ export function makeTable(options): TableResourceClass {
 			if (!permission?.read) return { database: databaseName, table: tableName };
 			if (index >= path.length) return;
 			const name = path[index];
+			const resolver = propertyResolvers[name];
 			const attributePermissions = permission.attribute_permissions;
-			if (
-				attributePermissions?.length > 0 &&
-				!attributesAsObject(attributePermissions, 'read')[name] &&
-				// a full-text index name is query-only, and search rejects it through a relationship
-				!fullTextFieldNames?.has(name)
-			)
-				return { database: databaseName, table: tableName, attribute: name };
-			return propertyResolvers[name]?.definition?.tableClass?._readDenial(path, user, target, index + 1);
+			if (attributePermissions?.length > 0) {
+				const readable = attributesAsObject(attributePermissions, 'read');
+				if (
+					!readable[name] &&
+					// a full-text index name is query-only, and search rejects it through a relationship
+					!fullTextFieldNames?.has(name) &&
+					// a relationship reveals no more than its join key on this side
+					!(resolver?.definition?.tableClass && readable[resolver.from ?? primaryKey])
+				)
+					return { database: databaseName, table: tableName, attribute: name };
+			}
+			return resolver?.definition?.tableClass?._readDenial(path, user, target, index + 1);
 		}
 		static get hasRelationships(): boolean {
 			return hasRelationships;
