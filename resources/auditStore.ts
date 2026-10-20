@@ -20,6 +20,7 @@ import {
 	forgetOriginFloorRegistry,
 	isValidFloor,
 	publishOriginFloor,
+	originFloorsDurable,
 } from './originClosedFloor.ts';
 import { isReadOnlyMode, openRocksDatabase } from './databases.ts';
 
@@ -456,8 +457,9 @@ export function openAuditStore(rootStore) {
 		scheduleAuditCleanup();
 		if (isRocksAuditStore && !isReadOnlyMode()) {
 			let floorErrorLoggedAt = 0;
+			let floorSyncing = false;
 			const certify = () => {
-				if (storeClosing()) return;
+				if (storeClosing() || floorSyncing) return;
 				try {
 					const floor = certifyOriginFloor(rootStore);
 					if (floor === null) {
@@ -467,7 +469,27 @@ export function openAuditStore(rootStore) {
 					}
 					if (floor === undefined) return;
 					persistOriginClosedFloor(auditStore, floor);
-					publishOriginFloor(rootStore, floor);
+					// Readers consume only the published value, so a floor is advertised only once its record is
+					// on disk: a restart after power loss then still seeds the ratchet above it (harper-pro#922 item 4).
+					const sync = originFloorsDurable(rootStore) ? rootStore.syncWal() : undefined;
+					if (!sync) {
+						publishOriginFloor(rootStore, floor);
+						return;
+					}
+					floorSyncing = true;
+					sync.then(
+						() => {
+							floorSyncing = false;
+							if (!storeClosing()) publishOriginFloor(rootStore, floor);
+						},
+						(error: unknown) => {
+							floorSyncing = false;
+							if (Date.now() - floorErrorLoggedAt > 60_000) {
+								floorErrorLoggedAt = Date.now();
+								warnContained('Error syncing the origin-closed floor', error);
+							}
+						}
+					);
 				} catch (error) {
 					// The last persisted floor stays advertised; a stuck floor is reported through its lag.
 					if (Date.now() - floorErrorLoggedAt > 60_000) {
