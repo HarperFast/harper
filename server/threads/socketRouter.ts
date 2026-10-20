@@ -278,16 +278,18 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
  * restart) and for a drop. With `only`, it starts or stops that application's worker and no other.
  */
 let reconciling: Promise<string[]> = Promise.resolve([]);
-export function reconcileIsolatedWorkers(only?: string): Promise<string[]> {
-	const reconcile = () => reconcileIsolatedWorkersNow(only);
+export function reconcileIsolatedWorkers(only?: string, refused = false): Promise<string[]> {
+	const reconcile = () => reconcileIsolatedWorkersNow(only, refused);
 	// serialized: two reloads in flight must not compute `wanted` against each other's half-done work
 	reconciling = reconciling.then(reconcile, reconcile);
 	return reconciling;
 }
 
-async function reconcileIsolatedWorkersNow(only?: string): Promise<string[]> {
+async function reconcileIsolatedWorkersNow(only?: string, refused = false): Promise<string[]> {
 	if (!isMainThread || poolSize === 0) return [];
 	const wanted = new Set(admittedIsolatedApplications([...isolatedSlots.keys()], await failedClosedApplications()));
+	// main already knows its release is refused, whatever this reading of the records says
+	if (refused && only !== undefined) wanted.delete(only);
 	const stopping = [];
 	for (const [application, slot] of isolatedSlots) {
 		if (wanted.has(application) || (only !== undefined && application !== only)) continue;
@@ -300,18 +302,18 @@ async function reconcileIsolatedWorkersNow(only?: string): Promise<string[]> {
 		const { cleanupApplicationSockets } = await import('../http.ts');
 		for (const application of stoppedApplications) cleanupApplicationSockets(application);
 	}
-	const started: string[] = [];
-	const heapShareCount = poolSize + dedicatedWorkerCount + wanted.size;
+	const starting = [...wanted].filter(
+		(application) => !isolatedSlots.has(application) && (only === undefined || application === only)
+	);
+	const heapShareCount = poolSize + dedicatedWorkerCount + isolatedSlots.size + starting.length;
 	for (const slot of poolSlots) slot.setHeapShareCount(heapShareCount);
 	for (const slot of isolatedSlots.values()) slot.setHeapShareCount(heapShareCount);
-	for (const application of wanted) {
-		if (isolatedSlots.has(application) || (only !== undefined && application !== only)) continue;
+	for (const application of starting) {
 		const slot = startWorkerSlot(nextIsolatedIndex++, poolSize, application, heapShareCount);
 		isolatedSlots.set(application, slot);
-		started.push(application);
 		void watchDedicatedStart(application, slot);
 	}
-	return started;
+	return starting;
 }
 if (isMainThread) {
 	setIsolatedWorkerReconciler(reconcileIsolatedWorkers);

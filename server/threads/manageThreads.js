@@ -693,6 +693,8 @@ async function completeCertification(certification, outcome) {
 			error
 		);
 	}
+	// Still registered, so no other release of it arms, until its slot is gone.
+	await certification.withdrawn;
 	if (certifications.get(certification.component) === certification) certifications.delete(certification.component);
 	if (stillRead(certification)) {
 		settledCertifications.set(settledKey(certification.component, certification.deploymentId), certification);
@@ -767,8 +769,11 @@ async function decideCertification(certification, decision, canary) {
 			reason: `its certification could not be recorded: ${settled.recordError}`,
 		});
 	}
-	// Before the decision is read, so no deploy of a fixed release can find the refused one's slot still there.
-	if (leavesNothingToLoad(certification, certification.component, settled)) await withdrawRefusedSlot(certification);
+	// Queued before the decision is read, so any later reconcile runs after it; awaited by the rollout's close, not here,
+	// since a worker it stops may be the requester, whose deploy answers only once it reads the decision.
+	if (leavesNothingToLoad(certification, certification.component, settled)) {
+		certification.withdrawn = withdrawRefusedSlot(certification);
+	}
 	certification.decision = settled;
 	certification.decided.resolve(settled);
 	settleHeldStarts();
@@ -830,7 +835,7 @@ function leavesNothingToLoad(certification, application, decision = certificatio
 /** Its dedicated slot is withdrawn and any worker still in it stopped, so no worker or mirror outlives the refusal. */
 async function withdrawRefusedSlot(certification) {
 	try {
-		await isolatedWorkerReconciler?.(certification.component);
+		await isolatedWorkerReconciler?.(certification.component, true);
 	} catch (error) {
 		harperLogger.error(`Could not withdraw the dedicated worker slot of ${certification.component}`, error);
 	}
@@ -1211,9 +1216,10 @@ function requestFromMainThread(type, payload, timeoutMs) {
 		const onMessage = (message) => {
 			if (message?.type !== hdbTerms.ITC_EVENT_TYPES.MAIN_THREAD_RESPONSE || message.requestId !== requestId) return;
 			settle();
-			if (message.error)
-				reject(Object.assign(new Error(message.error.message), { statusCode: message.error.statusCode }));
-			else resolve(message.result);
+			if (message.error) {
+				const { message: text, ...identity } = message.error;
+				reject(Object.assign(new Error(text), identity));
+			} else resolve(message.result);
 		};
 		const timer = setTimeout(() => {
 			settle();
@@ -1258,6 +1264,8 @@ function answerMainThreadRequests(type, handler) {
 						error: {
 							message: typeof error?.http_resp_msg === 'string' ? error.http_resp_msg : errorMessageOf(error),
 							statusCode: error?.statusCode,
+							errorName: error?.constructor?.name,
+							code: error?.code,
 						},
 					})
 			);

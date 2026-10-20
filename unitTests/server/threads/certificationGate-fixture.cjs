@@ -63,7 +63,6 @@ parentPort.on('message', (message) => {
 		parentPort.postMessage({ type: 'fixture-left' });
 		return;
 	}
-	// Asks main to do something for it and reports the answer, as a worker handing a drop to main does.
 	if (message?.type === 'fixture-main-request') {
 		const { requestFromMainThread } = require('#js/server/threads/manageThreads');
 		requestFromMainThread(message.requestType, message.payload, message.timeoutMs).then(

@@ -405,7 +405,6 @@ suite(
 			const { status, body } = await deployIsolated('reborn', { version: 2 });
 			strictEqual(status, 200, JSON.stringify(body));
 			const after = await waitFor(threads, (list) => dedicatedTo(list, 'reborn').length === 1, 'reborn got no worker');
-			// the pool still held the shared release it loaded at boot
 			for (const id of pool(after)) ok(!pool(loaded).includes(id), `pool worker ${id} was replaced`);
 			await served('reborn', 2);
 		});

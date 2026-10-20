@@ -1491,8 +1491,8 @@ describe('the release certification gate', function () {
 		const earlier = await startFixture(3, { application: FRESH.component });
 		plan([{ outcome: 'failed' }]);
 		const calls = [];
-		setIsolatedWorkerReconciler(async (only) => {
-			calls.push(only);
+		setIsolatedWorkerReconciler(async (only, refused) => {
+			calls.push([only, refused]);
 			return [];
 		});
 		assert.deepStrictEqual(await certificationRequest('arm', { ...FRESH, isolated: true, scope: FRESH.component }), {
@@ -1500,8 +1500,14 @@ describe('the release certification gate', function () {
 		});
 		assert.equal(await certificationRequest('commit', FRESH), true);
 		assert.equal((await certificationRequest('decision', FRESH)).status, 'rejected');
-		await waitFor(() => calls.length === 2, { message: 'its slot was never withdrawn' });
-		assert.deepStrictEqual(calls, [FRESH.component, FRESH.component]);
+		assert.deepStrictEqual(
+			calls,
+			[
+				[FRESH.component, undefined],
+				[FRESH.component, true],
+			],
+			'its withdrawal was asked for, as refused, before the decision could be read'
+		);
 		assert.ok(!earlier.exitedAt, 'the reconcile, not the gate, stops the worker that was serving');
 		await waitFor(() => completions.length > 0, { timeout: 45000, message: 'the rollout never ended' });
 	});

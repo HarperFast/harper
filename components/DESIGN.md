@@ -162,10 +162,12 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    deploy), or a restore that did not land, the release stays live and FAILS CLOSED: every thread's loader
    refuses it (`failClosedReleases`), boot does not reinstall it, and only a deploy, an activation or a drop moves
    on. An isolated application left that way gets no dedicated worker, which would load nothing and publish a
-   mirror to it: the gate starts no copy of its stopped canary (`leavesNothingToLoad`), main withdraws its slot and
-   stops any worker still in it before the decision is read, so a fixed redeploy never finds that slot, and the
-   reconcile and boot refuse it (`failedClosedApplications` in `socketRouter.ts`; refusals that cannot be read
-   start no new dedicated worker). A record belongs to the component the deployment's ownership sidecar names, else its own `component`, else
+   mirror to it: the gate starts no copy of its stopped canary (`leavesNothingToLoad`); before the decision is read,
+   main queues a withdrawal of its slot that stops any worker still in it, which the rollout's close waits for while the
+   release stays registered, so a fixed redeploy neither arms nor reconciles before it (not awaited by the decision
+   itself, since the worker it stops can be the requester, whose deploy answers only once it reads the decision); and the
+   reconcile and boot refuse it (`failedClosedApplications` in `socketRouter.ts`; refusals that cannot be read start no
+   new dedicated worker). A record belongs to the component the deployment's ownership sidecar names, else its own `component`, else
    the component it is live for, so an unreadable sidecar never lets a refused release load; retention pins its
    predecessor the same way, and pins everything when a record can be attributed to no one. When even the record
    write fails, main refuses it in memory, bound to that deployment id so a later release
@@ -749,16 +751,18 @@ restarts the pool. A named restart reconciles only that application's dedicated 
 
 A whole-component drop runs on the main thread under the component's lock (`dropApplication` in
 `operations.js`); a worker that receives one, as a replicated peer does, hands it over and waits, holding no lock,
-for its own node's drop and its peers' (`startBy` is the deadline after which main refuses to begin it). A component that has no directory and no
-root-config entry is not on this node: nothing is removed and nothing restarts, whatever `restart` says, but a
-dedicated worker a failed earlier drop left running is still stopped. An isolated application's worker is
-stopped with or without `restart`, through the narrowed reconcile, which shuts its slot down and removes its
-mirrors; the pool restarts only when asked and only when it may hold the application. Branched databases go last,
-once nothing holds them, unless `keepBranches` keeps them; they also stay while the pool may still have them open,
-and a later drop of the now-absent application discards them. Each node answers `{ node, componentRemoved,
-workerStopped, branchesRemoved }`, and the origin returns its peers' in `replicated` (`dropPeerResults`), where
-`null` is a peer that did not say and `error` a peer that failed. A worker the coming stop or restart replaces is
-answered just before it, with any retention already decided and `null` for what is not done yet (harper#3091).
+for its own node's drop and its peers' (`startBy` is the deadline after which main refuses to begin it). A component
+that has no directory and no root-config entry is not on this node: nothing is removed and nothing restarts, whatever
+`restart` says, but a dedicated worker a failed earlier drop left running is still stopped. An isolated application's
+worker is stopped with or without `restart`, through the narrowed reconcile, which shuts its slot down and removes its
+mirrors, before the wait for peers; the pool restarts only when asked and only when it may hold the application.
+Branched databases go last, once nothing holds them, unless `keepBranches` keeps them; they also stay while the pool
+may still have them open, and a later drop of the now-absent application discards them. `keepBranches` is refused with
+`restart: true`: a peer on an earlier version ignores it, and its restart path removes the branches. Each node answers
+`{ node, componentRemoved, workerStopped, branchesRemoved }`, and the origin returns its peers' in `replicated`
+(`dropPeerResults`), where `null` is a peer that did not say and `error` a peer that failed. A worker the coming stop or
+restart replaces is answered just before it, with any retention already decided and `null` for what is not done yet;
+a later failure to remove branches is only logged, and a second drop retries it (harper#3091).
 
 ## A replicated deploy reports each node's install fingerprint, and never acts on it
 

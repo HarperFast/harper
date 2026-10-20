@@ -54,9 +54,25 @@ describe('a replicated drop_component', () => {
 		]);
 	});
 
-	it('accepts keepBranches only as a boolean', () => {
+	it('reads an outcome a peer wrapped in its answer', () => {
+		const outcome = { componentRemoved: true, workerStopped: false, branchesRemoved: false };
+		for (const wrapped of [
+			{ node: 'peer-a', value: outcome },
+			{ node: 'peer-a', body: outcome },
+		]) {
+			assert.deepStrictEqual(dropPeerResults([wrapped]), [{ ...wrapped, node: 'peer-a', ...outcome, error: null }]);
+		}
+	});
+
+	it('accepts keepBranches only as a boolean, and never with restart: true', () => {
 		assert.equal(dropComponentFileValidator({ project: 'preview', keepBranches: true }), undefined);
+		assert.equal(dropComponentFileValidator({ project: 'preview', keepBranches: false, restart: true }), undefined);
 		assert.equal(dropComponentFileValidator({ project: 'preview' }), undefined);
 		assert.match(dropComponentFileValidator({ project: 'preview', keepBranches: 'true' }).message, /keepBranches/);
+		// a node on an earlier version would ignore keepBranches, and its restart would remove the branches
+		assert.match(
+			dropComponentFileValidator({ project: 'preview', keepBranches: true, restart: true }).message,
+			/cannot be combined with 'restart: true'/
+		);
 	});
 });

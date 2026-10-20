@@ -1655,23 +1655,33 @@ function dropAnswerTimeoutMs() {
 	);
 }
 
-/** Each peer's outcome in the per-node shape, beside whatever else its answer carried; `null` where it did not say. */
+/**
+ * Each peer's outcome in the per-node shape, beside whatever else its answer carried; `null` where it did not say. The
+ * answer is read flat or from a wrapped body, as `isConfirmedStaging` reads it.
+ */
 function dropPeerResults(replicated) {
-	return replicated.map((peer) => ({
-		...peer,
-		node: peer?.node,
-		componentRemoved: peer?.componentRemoved ?? null,
-		workerStopped: peer?.workerStopped ?? null,
-		branchesRemoved: peer?.branchesRemoved ?? null,
-		error: peer?.status === 'failed' ? (peer.reason ?? 'failed') : (peer?.error ?? null),
-	}));
+	return replicated.map((peer) => {
+		const said = (field) => peer?.[field] ?? peer?.value?.[field] ?? peer?.body?.[field] ?? null;
+		return {
+			...peer,
+			node: peer?.node,
+			componentRemoved: said('componentRemoved'),
+			workerStopped: said('workerStopped'),
+			branchesRemoved: said('branchesRemoved'),
+			error: peer?.status === 'failed' ? (peer.reason ?? 'failed') : said('error'),
+		};
+	});
 }
 
-async function replicateDrop(req, outcome) {
-	const { getThisNodeName } = require('../server/nodeName.ts');
+async function replicateDrop(req) {
 	const response = await server.replication.replicateOperation(req, { timeoutMs: dropAnswerTimeoutMs() });
 	if (response.replicated) response.replicated = dropPeerResults(response.replicated);
-	return Object.assign(response, { node: getThisNodeName(), workerStopped: false, branchesRemoved: false }, outcome);
+	return response;
+}
+
+function nodeOutcome(componentRemoved) {
+	const { getThisNodeName } = require('../server/nodeName.ts');
+	return { node: getThisNodeName(), componentRemoved, workerStopped: false, branchesRemoved: false };
 }
 
 /**
@@ -1701,9 +1711,12 @@ async function dropComponent(req) {
 			Math.min(2 * dropAnswerTimeoutMs(), hdbTerms.MAX_SET_TIMEOUT_MS)
 		);
 	} catch (error) {
-		throw error.statusCode < 500
-			? new ClientError(error.message, error.statusCode)
-			: new ServerError(error.message, error.statusCode);
+		const rebuilt = new (error.errorName === 'ClientError' ? ClientError : ServerError)(
+			error.message,
+			error.statusCode
+		);
+		if (error.code !== undefined) rebuilt.code = error.code;
+		throw rebuilt;
 	}
 }
 
@@ -1736,26 +1749,34 @@ async function dropApplication(request, requester, answerEarly) {
 			const running = (await manageThreads.getRunningIsolatedApplications()).includes(project);
 			const isolated = configuredIsolated(project) || running;
 			const poolMayHold = manageThreads.poolMayHold(project);
+			const hadWorker = manageThreads.workersForApplication(project).length > 0;
 			if (present) await removeApplication(project, componentPath);
 			const restartsPool = present && req.restart === true && (!isolated || poolMayHold);
-			response = await replicateDrop(req, { componentRemoved: present });
-			response.message = present
+			const outcome = nodeOutcome(present);
+			let message = present
 				? `Successfully dropped: ${project}${restartsPool ? ', restarting Harper' : ''}`
 				: `Successfully dropped: ${project}, which was not on this node`;
 			const branched = applicationHasBranchStorage(project);
 			let retained;
 			if (branched && req.keepBranches === true) retained = 'keepBranches';
 			else if (branched && ((present && !isolated) || poolMayHold) && !restartsPool) retained = 'loaded';
-			if (retained) response.message += BRANCH_STORAGE_RETAINED[retained];
+			if (retained) message += BRANCH_STORAGE_RETAINED[retained];
 			const answerBeforeStop = (known) =>
-				answerEarly?.({ ...response, branchesRemoved: branched && !retained ? null : false, ...known });
+				answerEarly?.({
+					...response,
+					...outcome,
+					message,
+					branchesRemoved: branched && !retained ? null : false,
+					...known,
+				});
 
+			// Before the peers' wait, which a concurrent reconcile could otherwise use to stop it first.
 			if (isolated && (present || running)) {
 				if (requester?.application === project) answerBeforeStop({ workerStopped: null });
-				const hadWorker = manageThreads.workersForApplication(project).length > 0;
 				await manageThreads.reconcileIsolatedApplication(project);
-				response.workerStopped = hadWorker && manageThreads.workersForApplication(project).length === 0;
+				outcome.workerStopped = hadWorker && manageThreads.workersForApplication(project).length === 0;
 			}
+			response = Object.assign(await replicateDrop(req), outcome, { message });
 			let restart;
 			if (restartsPool) {
 				if (requester?.name === hdbTerms.THREAD_TYPES.HTTP && !requester.application) answerBeforeStop();
@@ -1858,7 +1879,7 @@ async function dropComponentFile(req) {
 				if (runningApplications.includes(project)) restartScope = project;
 			}
 			if (await fs.pathExists(pathToComponent)) await fs.remove(pathToComponent);
-			response = await replicateDrop(req, { componentRemoved: false });
+			response = Object.assign(await replicateDrop(req), nodeOutcome(false));
 			if (!present || req.restart !== true) {
 				response.message = `Successfully dropped: ${projectPath}`;
 				return;
