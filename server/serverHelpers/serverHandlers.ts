@@ -195,13 +195,16 @@ function authAndEnsureUserOnRequest(req?: any, resp?: any, done?: any) {
 }
 
 /**
- * The source address set_network_access checks its new list against: a string, undefined for a local
- * connection (the operations domain socket, which no proxy fronts), or null when it is unknown. Only the
- * Node path has a baseRequest; Bun and uWS inject into Fastify and carry the address in a header.
+ * The source address set_network_access checks its new list against: a string; undefined for Node's
+ * operations domain socket, which no proxy fronts (the same test security/auth.ts uses for its local
+ * bypass); or null when it is unknown. Only the Node path has a baseRequest; Bun and uWS inject into
+ * Fastify and carry the address in a header.
  */
 function clientAddressOf(req: any) {
 	const baseRequest = req.raw?.baseRequest;
-	if (baseRequest) return baseRequest.ip;
+	if (baseRequest?.ip) return baseRequest.ip;
+	const server = baseRequest?._nodeRequest?.socket?.server;
+	if (server?._pipeName && server.bypassLocalAuth) return undefined;
 	return req.headers?.[terms.INTERNAL_CLIENT_ADDRESS_HEADER] || null;
 }
 

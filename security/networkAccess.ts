@@ -16,7 +16,7 @@ const NETWORK_ACCESS_TABLE = terms.SYSTEM_TABLE_NAMES.NETWORK_ACCESS_TABLE_NAME;
 const logger = loggerWithTag('network-access');
 
 const NETWORK_ACCESS_SCOPES = ['operations'] as const;
-export type NetworkAccessScope = (typeof NETWORK_ACCESS_SCOPES)[number];
+type NetworkAccessScope = (typeof NETWORK_ACCESS_SCOPES)[number];
 const MAX_ALLOW_ENTRIES = 1000;
 const MAPPED_IPV4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/;
 const SUBSCRIPTION_RETRY_MS = 1000;
@@ -110,15 +110,15 @@ const callerAddressStorage = new AsyncLocalStorage<{ address: string | null | un
 /**
  * Runs an operations API request with its source address, as `clientAddressOf` in serverHandlers.js
  * derives it: a string; undefined for the local operations domain socket, which no proxy fronts; or null
- * when a network request's address is unknown.
+ * when it is unknown.
  */
 export function runWithCallerAddress<T>(address: string | null | undefined, callback: () => T): T {
 	return callerAddressStorage.run({ address }, callback);
 }
 
 /**
- * The lockout check skips a local or in-process caller (no address): that is the recovery path. An
- * unknown network address needs `force`.
+ * The lockout check skips only the local operations domain socket, the recovery path. An unknown address,
+ * including a call with no caller context (MCP, `server.operation()`), needs `force`.
  */
 export async function setNetworkAccess(req: any) {
 	requireSuperUser(req);
@@ -135,7 +135,8 @@ export async function setNetworkAccess(req: any) {
 	);
 	const scope: NetworkAccessScope = req.scope;
 	const allow = normalizeAllowList(req.allow);
-	const callerAddress = callerAddressStorage.getStore()?.address;
+	const context = callerAddressStorage.getStore();
+	const callerAddress = context ? context.address : null;
 	if (allow.length > 0 && req.force !== true && callerAddress === null) {
 		throw new ClientError(
 			`This request's source address is unknown, so the new '${scope}' allowlist may block this connection. ` +
@@ -163,10 +164,14 @@ export async function setNetworkAccess(req: any) {
 	}
 	await table.put(scope, { scope, allow, updatedBy: req.hdb_user?.username ?? null, updatedAt: Date.now() });
 	const result: Record<string, unknown> = { message: `Set the '${scope}' network access allowlist`, scope, allow };
-	if (!env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
+	// mirrors exist only for secure listeners
+	if (
+		!env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) ||
+		!env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT)
+	) {
 		result.warning =
-			'This node publishes no socket metadata (tls.unixDomainSockets is off), so nothing here enforces the list; ' +
-			'it is stored and replicated to nodes that do.';
+			'This node publishes no operations API socket metadata (it needs tls.unixDomainSockets and ' +
+			'operationsApi.network.securePort), so nothing here enforces the list; it is stored and replicated to nodes that do.';
 	}
 	return result;
 }
