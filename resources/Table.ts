@@ -1827,8 +1827,8 @@ export function makeTable(options): TableResourceClass {
 					!readable[name] &&
 					// a full-text index name is query-only, and search rejects it through a relationship
 					!fullTextFieldNames?.has(name) &&
-					// a relationship reveals no more than its join key on this side
-					!(resolver?.definition?.tableClass && readable[resolver.from ?? primaryKey])
+					// a forward relationship reveals no more than its foreign key; an inverse one's key lives in the related table
+					!(resolver?.definition?.tableClass && !resolver.to && resolver.from && readable[resolver.from])
 				)
 					return { database: databaseName, table: tableName, attribute: name };
 			}
@@ -1859,7 +1859,7 @@ export function makeTable(options): TableResourceClass {
 			// Invoke the related table's allowRead on a properly-bound instance rather than
 			// `.call(null, ...)` so `this` is a valid resource of the related type.
 			if (!new relatedTable(undefined, context).allowRead(user, property, context)) return false;
-			return property.select || property.sort ? property : property.name;
+			return property.select || (typeof property.sort === 'object' && property.sort) ? property : property.name;
 		}
 		static isFullTextSearchEntryCurrent(entry: Entry): boolean {
 			return !(entry.metadataFlags & (INVALIDATED | EVICTED | VERSION_REUSED));
@@ -9152,8 +9152,11 @@ export function makeTable(options): TableResourceClass {
 				typeof target[Symbol.iterator] === 'function' &&
 				(target as any).size !== 0 &&
 				(target as any).name === undefined
-			)
+			) {
 				conditions = searchConditions(target);
+				// search reads a one-shot iterator target again
+				if (!Array.isArray(target) && !(target instanceof URLSearchParams)) (target as any).conditions = conditions;
+			}
 		} else {
 			// search reads the conditions again
 			if (!Array.isArray(conditions) && conditions[Symbol.iterator]) target.conditions = Array.from(conditions);
