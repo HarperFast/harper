@@ -35,6 +35,8 @@ function tableInOwnDatabase(name = `Checkpoint${++sequence}`) {
 /** One certification round, as the maintenance tick runs it. */
 function certify(T) {
 	const rootStore = T.primaryStore.rootStore;
+	// a floor certifies only once synced; the pinned engine may predate syncWal, so the tick's sync is stood in for
+	if (typeof rootStore.syncWal !== 'function') rootStore.syncWal = () => Promise.resolve();
 	let floor = certifyOriginFloor(rootStore);
 	for (let retry = 0; floor === null && retry < 100; retry++) floor = certifyOriginFloor(rootStore);
 	if (floor) {
@@ -446,7 +448,12 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			await waitFor(() => (both = subscription.checkpoint()) !== undefined);
 			assert.strictEqual(both.members, membersDigest([...ownMembers(T), ['legacy-peer', 'peer-generation']]));
 			// a token naming a revoked origin is refused, since it may have written below its boundary
-			writeSeqRow(T, 'legacy-peer', { floorRevoked: true, originGeneration: 'peer-generation', certifiedFrom: 0 });
+			writeSeqRow(T, 'legacy-peer', {
+				floorRevoked: true,
+				originGeneration: 'peer-generation',
+				fullCoverage: true,
+				certifiedFrom: 0,
+			});
 			await assert.rejects(T.subscribe({ resume: both, omitCurrent: true }), (error) => error.statusCode === 410);
 			// an older token that never certified it replays it from its first entry, where revocation cannot matter
 			const older = await T.subscribe({ resume: checkpoint, omitCurrent: true, listener: collector() });

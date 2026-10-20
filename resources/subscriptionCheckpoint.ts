@@ -3,10 +3,10 @@ import { getThisNodeName } from '../server/nodeName.ts';
 import { ClientError, ResumeHistoryUnavailableError } from '../utility/errors/hdbError.ts';
 import { getAuditResumeFloor, getDatabaseGeneration } from './auditStore.ts';
 import { getNodeNameForId } from './nodeIdMapping.ts';
-import { getOriginClosedFloor, isValidFloor } from './originClosedFloor.ts';
+import { getOriginClosedFloor, isValidFloor, originFloorsDurable } from './originClosedFloor.ts';
 
 /**
- * Compact per-origin subscription checkpoint (harper-pro#922 items 3–4). `S = time - overlap` is the inclusive
+ * Compact per-origin subscription checkpoint. `S = time - overlap` is the inclusive
  * replay boundary of every member not named in `exceptions`; an exception resumes at its own boundary. The member
  * set is bound by `members`, a digest over every member origin and its database generation, so healthy origins
  * are neither named nor counted while an origin the issuer never saw can still be told apart on resume.
@@ -22,10 +22,31 @@ export interface SubscriptionCheckpoint {
 
 /** The event-origin tag a progress-reporting subscription carries on each event: the origin's local node id. */
 export const ORIGIN_ID = Symbol.for('subscription-origin');
-export const SEQ_KEY = Symbol.for('seq');
+const SEQ_KEY = Symbol.for('seq');
+const EPOCH_BUFFER = 'origin-state-epoch';
+const epochWords = new WeakMap<object, Int32Array>();
+
+function epochWord(rootStore: any): Int32Array | undefined {
+	if (typeof rootStore?.getUserSharedBuffer !== 'function') return;
+	let word = epochWords.get(rootStore);
+	if (!word)
+		epochWords.set(rootStore, (word = new Int32Array(rootStore.getUserSharedBuffer(EPOCH_BUFFER, new ArrayBuffer(4)))));
+	return word;
+}
+
+/** Every thread sees a qualifier change once its seq row is committed; an admitted checkpoint rechecks on a change. */
+export function bumpOriginStateEpoch(rootStore: any): void {
+	const word = epochWord(rootStore);
+	if (word) Atomics.add(word, 0, 1);
+}
+
+export function readOriginStateEpoch(rootStore: any): number {
+	const word = epochWord(rootStore);
+	return word ? Atomics.load(word, 0) : 0;
+}
 /** Above the 30 s certificate cadence plus the 5 s idle round, so a healthy cluster folds into one boundary. */
 export const MAX_OVERLAP_MS = 60_000;
-export const MAX_ORIGINS = 1024;
+const MAX_ORIGINS = 1024;
 const MAX_EXCLUSIONS = 4;
 const MAX_COMBINATIONS = 100_000;
 const DIGEST_BYTES = 32;
@@ -59,15 +80,26 @@ function xorInto(target: Buffer, source: Buffer) {
 	for (let i = 0; i < DIGEST_BYTES; i++) target[i] ^= source[i];
 }
 
+const originHashes = new Map<string, Buffer>();
+function cachedOriginHash(name: string, generation: string): Buffer {
+	const key = name + '\0' + generation;
+	let hash = originHashes.get(key);
+	if (!hash) {
+		if (originHashes.size >= 4096) originHashes.clear();
+		originHashes.set(key, (hash = originHash(name, generation)));
+	}
+	return hash;
+}
+
 /** Order-independent so that a resume can test candidate member sets by subtraction. */
 export function membersDigest(members: Iterable<[name: string, generation: string]>): string {
 	const digest = Buffer.alloc(DIGEST_BYTES);
-	for (const [name, generation] of members) xorInto(digest, originHash(name, generation));
+	for (const [name, generation] of members) xorInto(digest, cachedOriginHash(name, generation));
 	return digest.toString('hex');
 }
 
 /** Reads every `[seq, peerId]` row and merges the checkpoint-grade state of each origin it names. */
-export function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState> {
+function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState> {
 	const states = new Map<number, OriginState>();
 	const generation = getDatabaseGeneration(auditStore)?.id;
 	const own: OriginState = {
@@ -77,7 +109,8 @@ export function readOriginStates(auditStore: any, dbisDb: any): Map<number, Orig
 		certifiedFrom: 0,
 		fullCoverage: true,
 	};
-	const published = getOriginClosedFloor(auditStore.rootStore);
+	// the own floor certifies only when it was on disk before it was published (`syncWal`)
+	const published = originFloorsDurable(auditStore.rootStore) ? getOriginClosedFloor(auditStore.rootStore) : undefined;
 	if (published) own.floor = published.floor;
 	states.set(0, own);
 	for (const { key, value } of dbisDb.getRange({ start: SEQ_KEY, end: [SEQ_KEY, Buffer.from([0xff])] })) {
@@ -92,7 +125,13 @@ export function readOriginStates(auditStore: any, dbisDb: any): Map<number, Orig
 				states.set(node.id, (state = { nodeId: node.id, name }));
 			}
 			// revocation and holes are sticky across every row; a floor qualifies only with its own row's qualifiers
-			if (node.floorRevoked === true) state.floorRevoked = true;
+			if (node.floorRevoked === true) {
+				state.floorRevoked = true;
+				// still a member of the sets it was certified in, so a token naming it is refused, not misread
+				if (state.generation === undefined && typeof node.originGeneration === 'string') {
+					state.generation = node.originGeneration;
+				}
+			}
 			if (node.hole === true) state.hole = true;
 			if (
 				isValidFloor(node.closedFloor) &&
@@ -106,11 +145,17 @@ export function readOriginStates(auditStore: any, dbisDb: any): Map<number, Orig
 			) {
 				state.floor = node.closedFloor;
 				state.generation = node.originGeneration;
-				state.certifiedFrom = node.certifiedFrom;
 				state.fullCoverage = true;
 			}
-			if (typeof node.certifiedFrom === 'number' && !(state.certifiedFrom <= node.certifiedFrom)) {
+			// a whole route's start bounds what this node holds of the origin; a partial route proves nothing
+			if (
+				node.fullCoverage === true &&
+				node.partialHistory !== true &&
+				typeof node.certifiedFrom === 'number' &&
+				!(state.certifiedFrom <= node.certifiedFrom)
+			) {
 				state.certifiedFrom = node.certifiedFrom;
+				state.fullCoverage = true;
 			}
 		}
 	}
@@ -288,9 +333,10 @@ export interface ResumePlan {
 	boundaries: Map<string, MemberBoundary>;
 }
 
-/** Whether `name`'s log here begins at that origin's first entry and still retains it. */
+/** Whether this node's log of the origin is whole from the origin's first entry and still retains it. */
 function retainsBeginning(auditStore: any, state: OriginState): boolean {
-	if (state.certifiedFrom !== 0) return false;
+	if (state.certifiedFrom !== 0 || state.hole || state.partialHistory) return false;
+	if (state.nodeId !== 0 && state.fullCoverage !== true) return false;
 	// read, never useLog: that would create the log
 	const log = auditStore.logByName?.get(state.nodeId === 0 ? 'local' : state.name);
 	if (!log) return true; // no log yet: nothing of the origin has arrived, so nothing is behind
@@ -303,7 +349,7 @@ function retainsBeginning(auditStore: any, state: OriginState): boolean {
 }
 
 /**
- * Admission (harper-pro#922 item 4) against this node's current origin state: membership through the digest,
+ * Admission against this node's current origin state: membership through the digest,
  * every member boundary above the resume floor, its origin not revoked, and this node holding a complete
  * full-coverage route for it from at or below the boundary. Throws 410 with the reason; the planned replay seeks
  * each member's log inclusively at its boundary.
@@ -330,6 +376,17 @@ export function admitCheckpoint(auditStore: any, dbisDb: any, token: Subscriptio
 	const logName = (state: OriginState) => (state.nodeId === 0 ? 'local' : state.name);
 	for (const [name, boundary] of membership.members) {
 		const state = byName.get(name)!;
+		if (boundary === 0) {
+			// a whole-log replay is complete while the log keeps its beginning, whatever the key-domain floor
+			if (!retainsBeginning(auditStore, state)) {
+				throw new ResumeHistoryUnavailableError(
+					`The log of origin ${name} is no longer retained from its beginning; resubscribe to resynchronize`
+				);
+			}
+			startByLog.set(logName(state), 0);
+			boundaries.set(name, { boundary: 0, generation: state.generation! });
+			continue;
+		}
 		if (!(boundary >= resumeFloor)) {
 			throw new ResumeHistoryUnavailableError(
 				`The history after the checkpoint boundary of ${name} is no longer retained; resubscribe to resynchronize`
@@ -370,9 +427,9 @@ export function checkpointScope(parts: {
 	table: string;
 	tableGeneration?: string | number;
 	target: unknown;
+	collection: boolean;
 	rawEvents?: boolean;
 	includeSuperseded?: boolean;
-	omitCurrent?: boolean;
 	onlyChildren?: boolean;
 	filterKey?: string;
 }): string {
@@ -381,6 +438,7 @@ export function checkpointScope(parts: {
 		parts.table,
 		parts.tableGeneration ?? null,
 		parts.target ?? null,
+		parts.collection,
 		Boolean(parts.rawEvents),
 		Boolean(parts.includeSuperseded),
 		Boolean(parts.onlyChildren),
