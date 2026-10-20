@@ -484,10 +484,8 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				certifiedFrom: 0,
 			});
 			await assert.rejects(T.subscribe({ resume: both, omitCurrent: true }), (error) => error.statusCode === 410);
-			// an older token that never certified it replays it from its first entry, where revocation cannot matter
-			const older = await T.subscribe({ resume: checkpoint, omitCurrent: true, listener: collector() });
-			assert.strictEqual(await older.resumeVerified, true);
-			older.end();
+			// an older token that never certified it is refused too: a revoked route cannot be shown whole
+			await assert.rejects(T.subscribe({ resume: checkpoint, omitCurrent: true }), (error) => error.statusCode === 410);
 			subscription.end();
 		});
 	});

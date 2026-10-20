@@ -951,6 +951,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 						);
 						delete state.entry.checkpoint;
 						this.dropForeignReceipts(state);
+						if (this.terminated) return;
 					}
 				}
 				await this.resumeSubscription(
@@ -1306,6 +1307,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					);
 					delete existing.entry.checkpoint;
 					this.dropForeignReceipts(existing);
+					if (this.terminated) throw error;
 					delete request.resume;
 					request.startTime = existing.entry.startTime;
 					if (boundToCurrentGeneration(existing.entry)) request.databaseGeneration = existing.entry.databaseGeneration;
