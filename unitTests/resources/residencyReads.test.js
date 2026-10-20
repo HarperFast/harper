@@ -109,6 +109,16 @@ describe('Reads of residency stubs', function () {
 		assert.equal(resource.getMetadata().version, 123);
 	});
 
+	it('advances request freshness when ensureLoaded adopts a newer resident version', async () => {
+		const context = {};
+		const resource = await Records.getResource('record', context, { ensureLoaded: false });
+		const version = resource.getMetadata().version + 1;
+		response = { key: 'record', value: { id: 'record', name: 'indexed', body: 'newer' }, version };
+		await resource.ensureLoaded();
+		assert.equal(context.lastModified, version);
+		assert.equal(resource.getMetadata().version, version);
+	});
+
 	it('uses indexed-only projections without contacting a resident', async () => {
 		assert.deepEqual(await query(['id', 'name']), [{ id: 'record', name: 'indexed' }]);
 		assert.deepEqual(calls, []);

@@ -9176,7 +9176,10 @@ export function makeTable(options): TableResourceClass {
 			return;
 		}
 		if (entry?.residencyId && entry.metadataFlags & INVALIDATED && sourceLoad && context?.replicateFrom !== false)
-			return sourceLoad(entry);
+			return sourceLoad(entry).then((loaded) => {
+				if (context && loaded?.version > (context.lastModified || 0)) context.lastModified = loaded.version;
+				return loaded;
+			});
 		if (hasSourceGet) {
 			let needsSourceData = false;
 			if (context.noCache) needsSourceData = true;
