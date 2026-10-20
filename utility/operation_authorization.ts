@@ -989,13 +989,7 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 		table != undefined
 			? getDatabases()[operationSchema]?.[table]
 			: undefined;
-	const recordAttrs = getRecordAttributes(
-		requestJson,
-		op,
-		tableClass?.hasRelationships
-			? (name) => tableClass.propertyResolvers?.[name]?.definition?.tableClass !== undefined
-			: undefined
-	);
+	const recordAttrs = getRecordAttributes(requestJson, op, tableClass?.hasRelationships ? tableClass : undefined);
 	const attrPermissions = getAttributePermissions(requestJson.hdb_user?.role?.permission, operationSchema, table);
 	// A `put` replaces the whole record, so it REMOVES every attribute the request omits — and
 	// `checkAttributePerms` below only sees the attributes a request SUPPLIES, so it cannot police
@@ -1052,13 +1046,13 @@ function checkRelationshipReads(requestJson: any, operationSchema: string, table
 	const tableClass = getDatabases()[operationSchema]?.[table];
 	if (!tableClass?.hasRelationships) return;
 	const state: RelationshipReadCheck = { tableClass, user: requestJson.hdb_user };
-	checkSelectPaths(state, requestJson.get_attributes, [], tableClass, false);
+	checkSelectPaths(state, requestJson.get_attributes, undefined, tableClass, false);
 	checkConditionPaths(state, requestJson.conditions);
-	checkSortPaths(state, requestJson.sort, []);
+	checkSortPaths(state, requestJson.sort, undefined);
 	// search_by_value runs one condition from these, preferring search_attribute; a `*` value runs none
 	const valueAttribute = requestJson.search_attribute ?? requestJson.attribute;
 	const value = requestJson.search_value !== undefined ? requestJson.search_value : requestJson.value;
-	if (Array.isArray(valueAttribute) && value !== '*') checkRelationshipPath(state, valueAttribute);
+	if (valueAttribute !== undefined && value !== '*') checkRelationshipPath(state, valueAttribute);
 	if (!state.denials) return;
 	for (const { denial, attributes } of state.denials.values()) {
 		if (denial.attribute === undefined) permsResponse.addUnauthorizedTable(denial.database, denial.table, [READ_PERM]);
@@ -1071,12 +1065,13 @@ function checkRelationshipReads(requestJson: any, operationSchema: string, table
 }
 
 function relatedTableOf(currentTable: any, name: any) {
-	return currentTable.propertyResolvers?.[name]?.definition?.tableClass;
+	return currentTable?.propertyResolvers?.[name]?.definition?.tableClass;
 }
 
-function checkRelationshipPath(state: RelationshipReadCheck, path: any[]) {
-	if (!relatedTableOf(state.tableClass, path[0])) return;
-	const denial = state.tableClass._readDenial(path, state.user);
+function checkRelationshipPath(state: RelationshipReadCheck, attribute: any) {
+	const path = Array.isArray(attribute);
+	if (!relatedTableOf(state.tableClass, path ? attribute[0] : attribute)) return;
+	const denial = state.tableClass._readDenial(path ? attribute : [attribute], state.user);
 	if (!denial) return;
 	state.denials ??= new Map();
 	const key = `${denial.database}_${denial.table}`;
@@ -1086,19 +1081,20 @@ function checkRelationshipPath(state: RelationshipReadCheck, path: any[]) {
 	else entry.attributes.add(denial.attribute);
 }
 
-function checkSortPaths(state: RelationshipReadCheck, sort: any, prefix: any[]) {
+function checkSortPaths(state: RelationshipReadCheck, sort: any, prefix: any[] | undefined) {
 	for (; sort && typeof sort === 'object'; sort = sort.next) {
-		if (sort.attribute !== undefined) checkRelationshipPath(state, prefix.concat(sort.attribute));
+		if (sort.attribute !== undefined)
+			checkRelationshipPath(state, prefix ? prefix.concat(sort.attribute) : sort.attribute);
 	}
 }
 
-// `prefix` is the relationship path from the root to `currentTable`. A plain JSON sub-selection is
+// `prefix` is the relationship path from the root to `currentTable`, undefined at the root. A plain JSON sub-selection is
 // projected with the resolvers of the table it belongs to, so it keeps that prefix, and its own
 // fields are data rather than attributes.
 function checkSelectPaths(
 	state: RelationshipReadCheck,
 	select: any,
-	prefix: any[],
+	prefix: any[] | undefined,
 	currentTable: any,
 	inJson: boolean
 ) {
@@ -1107,13 +1103,13 @@ function checkSelectPaths(
 		const name = property?.name ?? property;
 		const relatedTable = relatedTableOf(currentTable, name);
 		if (relatedTable) {
-			const path = [...prefix, name];
+			const path = prefix ? [...prefix, name] : [name];
 			checkRelationshipPath(state, path);
 			checkSelectPaths(state, property?.select, path, relatedTable, false);
 			checkSortPaths(state, property?.sort, path);
 			continue;
 		}
-		if (prefix.length > 0 && !inJson) checkRelationshipPath(state, [...prefix, name]);
+		if (prefix && !inJson) checkRelationshipPath(state, [...prefix, name]);
 		if (property?.select != null && typeof property === 'object')
 			checkSelectPaths(state, property.select, prefix, currentTable, true);
 	}
@@ -1123,8 +1119,7 @@ function checkConditionPaths(state: RelationshipReadCheck, conditions: any) {
 	if (!Array.isArray(conditions)) return;
 	for (const condition of conditions) {
 		if (condition?.conditions) checkConditionPaths(state, condition.conditions);
-		else if (condition?.attribute !== undefined)
-			checkRelationshipPath(state, Array.isArray(condition.attribute) ? condition.attribute : [condition.attribute]);
+		else if (condition?.attribute !== undefined) checkRelationshipPath(state, condition.attribute);
 	}
 }
 
@@ -1332,7 +1327,8 @@ function isBulkLoadOperation(operationName): boolean {
 	return BULK_OP_NAMES.has(operationName);
 }
 
-function getRecordAttributes(json, operationName?, isRelationship?: (name: any) => boolean) {
+// a path rooted at a relationship of `relationshipTable` is checked by checkRelationshipReads instead
+function getRecordAttributes(json, operationName?, relationshipTable?: any) {
 	let affectedAttributes = new Set();
 	try {
 		// Bulk load operations have their attribute permissions checked per chunk instead, in
@@ -1357,8 +1353,7 @@ function getRecordAttributes(json, operationName?, isRelationship?: (name: any) 
 						attribute = condition.search_attribute;
 					}
 					if (Array.isArray(attribute)) {
-						// a relationship path is checked by checkRelationshipReads
-						if (!isRelationship?.(attribute[0])) affectedAttributes.add(attribute[0]);
+						if (!relatedTableOf(relationshipTable, attribute[0])) affectedAttributes.add(attribute[0]);
 					} else affectedAttributes.add(attribute);
 				}
 			};
@@ -1371,7 +1366,7 @@ function getRecordAttributes(json, operationName?, isRelationship?: (name: any) 
 				attribute = json.search_attribute;
 			}
 			if (Array.isArray(attribute)) {
-				if (!isRelationship?.(attribute[0])) affectedAttributes.add(attribute[0]);
+				if (!relatedTableOf(relationshipTable, attribute[0])) affectedAttributes.add(attribute[0]);
 			} else affectedAttributes.add(attribute);
 		}
 
