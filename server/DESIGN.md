@@ -362,10 +362,11 @@ set `request.user` itself would have to re-implement, per plugin, what this path
   probe rejected as `invalid token`; an expired Harper token never reaches them.
 - **A validator names a user; Harper supplies the role.** The contract is
   `{ username, authExpiresAt?, authCacheable? }`, resolved through `server.getUser` (the Basic path's
-  `userRecordVersions` → `getUser` → `trackUserRecords`), so `isCurrentUser`, live-subscription
-  rechecks and MCP session refreshes treat it like any `hdb_user`. A component's `server.getUser`
-  override stays authoritative, so the user need not have an `hdb_user` row. Any other field is
-  refused, `role` included. Inline-permission principals (a per-token narrowed role under the scoped-token ceiling)
+  `userRecordVersions` → `getUser` → `trackUserRecords`), so `isCurrentUser` and the authorization
+  cache treat it like a Basic login. A component's `server.getUser` override stays authoritative at
+  login, but live-subscription rechecks and MCP session refreshes re-read `hdb_user` by name, so a
+  user only the override knows loses those at its first recheck, as a Basic login through the same
+  override already does. Any other field is refused, `role` included. Inline-permission principals (a per-token narrowed role under the scoped-token ceiling)
   were built and dropped: the first consumer's tokens name a Harper user and carry no permissions,
   and a principal no `hdb_user` backs needs its own revocation at every by-name rehydration site
   (`security/DESIGN.md`). Refusing `role` now keeps adding it later from changing an existing
@@ -384,13 +385,18 @@ set `request.user` itself would have to re-implement, per plugin, what this path
   registration was disposed is evicted, so registering never flushes cached Basic or session users.
   Declines are not cached: a validator caches its own.
 - **Faults fail closed.** A tagged throw is a credential rejection (deferred, or 401 on Harper-owned
-  routes); an untagged throw, a malformed return, or exceeding `timeoutMs` answers 401 in place.
+  routes); an untagged throw, a malformed return, or exceeding `timeoutMs` answers 401 in place. The
+  claim's `server.getUser` lookup shares the chain budget, so total authentication latency stays
+  bounded; a deadline only bounds waiting, it cannot interrupt a synchronous validator.
 - **No minting, no operations port.** `_bearerValidator` principals cannot mint operation, refresh or
   scoped tokens (`createTokens`), also after impersonation, and a dedicated operations API port never runs validators or serves their
   cache entries. On a shared port they reach `verifyPerms` like any principal.
 
-Registrations are worker-global and outlive `scope.close()`, so in-flight requests drain;
-`sequentiallyHandleApplication` disposes an application's registrations if it fails to load.
+Registrations are worker-global and outlive `scope.close()`, so in-flight requests drain. The
+`Scope` proxy records what a plugin registers through `scope.server`, and
+`sequentiallyHandleApplication` disposes those if that load fails. A module's `import { server } from
+'harper'` is the application's shared server, not tied to one plugin load, so its registrations stay,
+like its `server.http` middleware.
 
 ### Response Cache-Control / Vary policy (#1518, #1565)
 

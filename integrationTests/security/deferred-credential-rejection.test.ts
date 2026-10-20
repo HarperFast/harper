@@ -17,7 +17,7 @@ const DOWNSTREAM_BEARER = 'Bearer eyJhbGciOiJIUzI1NiJ9.d29vLXNlc3Npb24.not-a-har
 const REJECTED_SESSION_USER = 'expired-staff';
 const FAULTING_SESSION_USER = 'faulting-staff';
 
-// the hdb_user the fixture's Bearer validator maps ext-valid-bearer to
+// must match the fixture's Bearer validator (fixtures/deferred-credential-rejection/appCatchAll.js)
 const BEARER_USER = 'ext-bearer-user';
 const BEARER_ROLE = 'ext_bearer_reader';
 

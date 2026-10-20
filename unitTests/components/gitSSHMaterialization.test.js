@@ -120,7 +120,7 @@ describe('materializeGitSSH', () => {
 		logger.warn = originalWarn;
 		secretDecryptor.clearSecretDecryptor();
 		// the root is deleted with the scoped tmpdir; a later suite must not resolve system keys under it
-		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, originalRootPath);
+		if (originalRootPath !== undefined) env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, originalRootPath);
 		scopedTmpdir.restore();
 	});
 
@@ -381,7 +381,7 @@ describe('nonInteractiveSpawn transient ssh lifetime', () => {
 	});
 
 	afterEach(() => {
-		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, originalRootPath);
+		if (originalRootPath !== undefined) env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, originalRootPath);
 		scopedTmpdir.restore();
 	});
 

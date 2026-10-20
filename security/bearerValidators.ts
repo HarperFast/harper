@@ -23,7 +23,6 @@ export interface BearerValidatorClaim {
 	deadline: ValidatorDeadline;
 }
 
-/** The first validator's claim, or `undefined` when all decline; throws and timeouts propagate. */
 export async function runBearerValidators(token: string, request: Request): Promise<BearerValidatorClaim | undefined> {
 	const entries = getBearerValidators();
 	let budgetMs = 0;
@@ -115,7 +114,6 @@ async function resolveUser(
 	request: Request,
 	deadline: ValidatorDeadline
 ): Promise<User> {
-	// read first: a component's server.getUser principal carries no record versions itself
 	const versions = userRecordVersions(username);
 	const resolved: any = await withinDeadline(server.getUser(username, null, request), entry.timeoutMs, deadline);
 	// core server.getUser answers an unknown username with a role-less view
@@ -146,7 +144,6 @@ function isPlainObject(value: unknown): value is Record<string, any> {
 	return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** Rejects untagged, so the request fails closed, once `timeoutMs` or the chain budget runs out. */
 async function withinDeadline<T>(
 	value: T | Promise<T>,
 	timeoutMs: number,

@@ -325,7 +325,6 @@ export async function authentication(request, nextHandler) {
 									const claim = hasActiveValidators ? await runBearerValidators(credentials, request) : undefined;
 									if (claim) username = claim.result.username;
 									const principal = claim && (await principalFromClaim(claim, decoded, request));
-									// disposed while the claim resolved
 									if (!principal || !claim.entry.active) {
 										warnDeferredTokenRejection(error);
 										warnDeferredTokenRejection(deferredRefreshError);

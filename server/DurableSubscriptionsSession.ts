@@ -51,7 +51,6 @@ function isWillFromExpiredScopedToken(will: any): boolean {
 	return !user.authExpiresAt || user.authExpiresAt * 1000 <= Date.now();
 }
 
-/** A component Bearer token's will must not publish past the token, even though its user still exists. */
 function isPastBearerExpiry(willUser: any): boolean {
 	const exp = willUser?.authExpiresAt;
 	return typeof exp === 'number' && exp * 1000 <= Date.now();
@@ -97,7 +96,6 @@ if (getWorkerIndex() === 0) {
 	})();
 }
 
-/** Publishes, or drops, a will a session persisted before a restart, then deletes its row. */
 export async function replayLastWill(will: any): Promise<void> {
 	const data = will.data;
 	const message = { ...will };

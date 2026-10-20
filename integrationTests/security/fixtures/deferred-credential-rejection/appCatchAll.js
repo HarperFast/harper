@@ -10,7 +10,6 @@ const FAULTING_BEARER_TOKEN = 'ext-faulting-bearer';
 export function handleApplication(scope) {
 	scope.server.registerBearerValidator(async (token) => {
 		if (token === ACCEPTED_BEARER_TOKEN) {
-			// a read-only hdb_user the test suite creates
 			return { username: 'ext-bearer-user', authExpiresAt: Math.floor(Date.now() / 1000) + 300 };
 		}
 		if (token === REJECTED_BEARER_TOKEN) {

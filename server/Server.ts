@@ -25,10 +25,11 @@ export interface BearerValidatorIdentity {
 }
 export interface BearerValidatorOptions {
 	/**
-	 * Per-call deadline in milliseconds for `validator(token, request, signal)`. Defaults to `5_000`
-	 * (5s), max `60_000` (60s); the total validator-chain budget per request is capped at
-	 * `max(timeoutMs)` across active validators. Exceeding the deadline aborts `signal`
-	 * (cooperative: pass `{ signal }` to `fetch`/timers) and fails closed in place with 401.
+	 * How long, in milliseconds, to wait for `validator(token, request, signal)` to settle. Defaults to
+	 * `5_000`, max `60_000`. The whole chain, including the `server.getUser` lookup of a claimed
+	 * username, shares one budget of the largest `timeoutMs` among active validators. Exceeding it
+	 * aborts `signal` (pass it to `fetch` and timers) and fails closed in place with 401; it cannot
+	 * interrupt synchronous work.
 	 */
 	timeoutMs?: number;
 }
@@ -76,8 +77,8 @@ export interface Server {
 	 * while that is in the future; with neither, 300 s. Live subscriptions and MQTT wills it opens end
 	 * then too. The principal is cached by the Authorization header alone, so a validator whose answer
 	 * depends on the request (audience per route or host) must return `authCacheable: false`. Returns a
-	 * disposer; registrations survive `scope.close()` so in-flight requests drain, and are rolled back
-	 * if the application fails to load.
+	 * disposer. Registrations survive `scope.close()` so in-flight requests drain; those made through
+	 * the `scope.server` passed to `handleApplication` are rolled back if that load fails.
 	 */
 	registerBearerValidator(validator: BearerValidator, options?: BearerValidatorOptions): () => void;
 	operation(operation: any, context: any, authorize?: boolean): Promise<any>;
