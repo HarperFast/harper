@@ -88,7 +88,9 @@ With both in place, the exported name becomes the base path (`Product` above, or
 Notes on this surface:
 
 - The trailing slash is significant throughout: `/Product` addresses the resource itself, `/Product/` addresses its collection of records. See [URL Structure](#url-structure).
-- `HEAD` is served exactly as `GET` with the response body omitted. `QUERY` is accepted on the collection path (`QUERY /Product/`) and runs a search taken from the request body rather than the URL.
+- `HEAD` is served as `GET` with the response body omitted, except that
+  [full-text continuation requests](../resources/full-text-paging.md#page-through-rest) return `400`
+  before opening or advancing a search. `QUERY` is accepted on the collection path (`QUERY /Product/`) and runs a search taken from the request body rather than the URL.
 - A collection `POST` only generates a primary key when the body omits the table's primary-key property. If the body supplies one, Harper stores the record under that value rather than replacing it, and a `POST` to a key that already exists fails with `409` instead of overwriting.
 - On a successful `POST`, the new record's primary key — supplied or generated — is returned in the `Location` response header. The header carries the bare key value, not a URL, so it is not a link to follow.
 - `PUT` replaces the stored record, with three exceptions that Harper always applies: a [`@createdTime`](../database/schema.md#createdtime) attribute keeps the original record's value, an [`@updatedTime`](../database/schema.md#updatedtime) attribute is re-stamped with the time of the write, and the primary key is forced to match the `{id}` in the URL even if the body carries a different one.

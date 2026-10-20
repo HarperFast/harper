@@ -22,11 +22,17 @@ These headers are included in all Harper REST API responses:
 
 Collection responses to a [count request](./querying.md#pagination-and-total-count) additionally include `Content-Range`, `Range-Unit`, and `Preference-Applied` (<VersionBadge version="v5.3.0" />).
 
+Full-text continuation responses also return `Harper-Continuation-Complete`, plus
+`Harper-Continuation` and `Harper-Continuation-Expires` while the search remains open. These names
+are added to `Access-Control-Expose-Headers`. See
+[Full-Text Paging](../resources/full-text-paging.md#page-through-rest). <VersionBadge version="v5.4.0" />
+
 ## Cache-Control
 
 <VersionBadge version="v5.2.0" />
 
 Harper applies a tiered Cache-Control policy to REST responses.
+Full-text continuation responses override this policy with `Cache-Control: no-store`.
 
 ### Anonymous reads
 

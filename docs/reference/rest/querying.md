@@ -136,6 +136,16 @@ GET /Product/?price=lt=100|[rating=5&[tag=fast|tag=scalable|tag=efficient]&inSto
 
 Harper supports special query functions using call syntax, included in the query string separated by `&`.
 
+### `continuation()` and `closeContinuation()`
+
+<VersionBadge version="v5.4.0" />
+
+Full-text searches can retain their original index snapshot between requests. Start with
+`continuation()`, resume with `continuation(token)`, and close early with `closeContinuation()`
+alongside the token. Use `limit(n)` without a nonzero offset or a count request. See
+[Full-Text Paging](../resources/full-text-paging.md#page-through-rest) for the token headers,
+query restrictions and recovery steps.
+
 ### `select(properties)`
 
 Specify which properties to include in the response.

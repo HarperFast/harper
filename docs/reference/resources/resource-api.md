@@ -1035,6 +1035,10 @@ Array of condition objects to filter records. Each condition:
 | `conditions` | Nested conditions array                                                                                                                                  |
 | `operator`   | `and` (default) or `or` for the nested `conditions`                                                                                                      |
 
+Full-text conditions name a query-only `FullText` declaration and use comparators such as `matches`,
+`matches_prefix`, and `matches_fuzzy_prefix`. See
+[Full-Text Paging](./full-text-paging.md) for snapshot continuation and its query restrictions.
+
 Example with nested conditions:
 
 ```javascript
