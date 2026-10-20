@@ -1239,7 +1239,9 @@ function conditionsContainFullText(entries: any[], definitions: readonly FullTex
 let structSerializationVisited: Map<any, Set<any>> | null = null;
 // Tables whose default projection allowRead is writing; an @enumerable edge back to one stops at its key.
 let implicitProjectionPath: Set<any> | null = null;
-const readableInFullPath: any[] = [];
+// Identifies the current _readableInFull walk; a table marked with it is on the walk's path or found readable
+let readableInFullWalk = 0;
+let readableInFullDepth = 0;
 // Resolve Harper records within a guarded serialization, so none escape back to an encoder that would call
 // their toJSON after our path-scoped unwind and miss the cycle. Native values (Date, Buffer/typed arrays,
 // ArrayBuffer, etc.) stay intact for CBOR/MessagePack.
@@ -1496,6 +1498,7 @@ export function makeTable(options): TableResourceClass {
 	let enumerableAttributeNames: string[] = [];
 	const enumerableRelationDefs = new Set<any>();
 	let enumerableRelationshipNames: string[] = [];
+	let readableInFullMark = 0;
 	// True when the table surfaces any non-table @computed attribute. A resolver can return a live (possibly
 	// cyclic) entity at runtime regardless of its declared scalar type, and the static edge graph can't see
 	// it, so such a table takes the guarded serialization path rather than the raw fast path.
@@ -1849,9 +1852,11 @@ export function makeTable(options): TableResourceClass {
 			const permission = getTablePermissions(user, target);
 			if (permission?.isSuperUser) return true;
 			if (!permission?.read || permission.attribute_permissions?.length > 0) return false;
-			// a table already on the walk is being checked by an outer call
-			if (enumerableRelationshipNames.length === 0 || readableInFullPath.includes(TableResource)) return true;
-			readableInFullPath.push(TableResource);
+			if (enumerableRelationshipNames.length === 0) return true;
+			if (readableInFullDepth === 0) readableInFullWalk++;
+			else if (readableInFullMark === readableInFullWalk) return true;
+			readableInFullMark = readableInFullWalk;
+			readableInFullDepth++;
 			try {
 				for (const name of enumerableRelationshipNames) {
 					const relatedTable = propertyResolvers[name]?.definition?.tableClass;
@@ -1859,10 +1864,9 @@ export function makeTable(options): TableResourceClass {
 				}
 				return true;
 			} finally {
-				readableInFullPath.pop();
+				readableInFullDepth--;
 			}
 		}
-		/** Copies what a default read serializes, other than relationships: stored attributes and surfaced computed ones. */
 		static _copyUnlistedAttributes(record: any, selected: any): void {
 			for (const key of Object.keys(record)) selected[key] = record[key];
 			for (const name of enumerableAttributeNames) {
@@ -3623,7 +3627,7 @@ export function makeTable(options): TableResourceClass {
 					if (attribute_permissions?.length > 0 && !attributesAsObject(attribute_permissions, 'read')[property])
 						return false;
 					const selection = TableResource._authorizeRelatedSelection(
-						property,
+						target.select == null ? property : { name: property, select: target.select },
 						user,
 						(target as any).checkPermission,
 						context
