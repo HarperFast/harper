@@ -28,6 +28,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [Origin-closed timestamp floor](resources/DESIGN.md#origin-closed-timestamp-floor) — Every key appended to the `local` log is reserved on its thread first; a certifier publishes a persisted floor no later transaction can append below, held by stalled commits and ratcheted across a restart.
 - [Path routing & parameterised routes](resources/DESIGN.md#path-routing--parameterised-routes) — How resource paths and route parameters resolve.
 - [Persisted relationship catalog](resources/DESIGN.md#persisted-relationship-catalog) — Where relationship definitions are stored and rebuilt.
+- [A relationship read is authorized against the related table](resources/DESIGN.md#a-relationship-read-is-authorized-against-the-related-table) — Selects, conditions and sorts through `@relationship` need the role's read on the related table and its attributes, checked at each API's entry point.
 - [Typed, discoverable resources (code-first schema + request contract)](resources/DESIGN.md#typed-discoverable-resources-code-first-schema--request-contract) — Declaring schema and request contracts from code.
 - [Conventions](resources/DESIGN.md#conventions) — Obligations when overriding a static entry point; relationship accessor and join contracts.
 - [RecordObject prototype and entryMap](resources/DESIGN.md#recordobject-prototype-and-entrymap) — Records get a per-encoder `RecordObject` prototype; storage metadata lives in `entryMap`. Never copy a record other code still mutates.

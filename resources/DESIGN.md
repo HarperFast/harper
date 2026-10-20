@@ -241,6 +241,19 @@ Tests: `../unitTests/resources/schemaMigrationFragility.test.js` (catalog round-
 
 ---
 
+## A relationship read is authorized against the related table
+
+Selecting a `@relationship`, or filtering or sorting by a path through one, reads the related table, so it needs the role's `read` on that table and, for every attribute of the path, that table's `attribute_permissions`. `Table._readDenial(path, user, target)` is the one statement of that rule: it walks the path through `propertyResolvers` and returns the first table or attribute the role cannot read. Each read API applies it where it already authorizes, in that API's own refusal shape:
+
+- REST and GraphQL: `allowRead` refuses a condition or sort path that is denied (403). Select keeps its narrowing semantics: an unreadable relationship is dropped and a related record is narrowed to readable attributes, through `Table._authorizeRelatedSelection`.
+- Operations API: `verifyPerms` (`utility/operation_authorization.ts`) reports a denied `get_attributes` entry, condition or sort path as `unauthorized_access` on the related table, and drops denied relationships from the non-super `*` rewrite. It authorizes the `select` alias by moving it onto `get_attributes`, because the search handlers read `select` in place of `get_attributes`. `ResourceBridge.getSelect` then narrows the selected related records with `_authorizeRelatedSelection`, after validation, since `search_by_hash` accepts only string `get_attributes`.
+
+The search layer (`search.ts`) does not check permissions: `Resource.search` clears `checkPermission` after `allowRead`, and operations API reads carry none. A new read path that resolves related records must authorize at its entry point, not rely on the join.
+
+Tests: `../unitTests/resources/permissions.test.js` and `../integrationTests/security/relationship-related-table-permissions.test.ts`.
+
+---
+
 ## Typed, discoverable resources (code-first schema + request contract)
 
 Design record: the full RFC and its type-level design proofs live in the design PR (**HarperFast/harper#1503**); this section is the retained summary.
