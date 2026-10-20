@@ -201,6 +201,20 @@ settings live under `storage.fullText.runtime` and require a restart when change
 are 128 resident indexes, 128 indexing threads, 256 search threads, 4 GiB configured writer memory,
 8 GiB configured queue capacity, and 8 concurrent expensive searches. All limits apply together.
 
+The runtime keys use integer counts or bytes:
+
+```yaml
+storage:
+  fullText:
+    runtime:
+      maxResidentIndexes: 128
+      maxIndexingThreads: 128
+      maxSearchThreads: 256
+      maxWriterMemoryBytes: 4294967296
+      maxQueuedBytes: 8589934592
+      maxExpensiveSearches: 8
+```
+
 The cursor pool is shared by all callers. Four unfinished searches fill the default pool, so a fifth
 receives `503` until a search finishes, closes, or expires. Ordinary searches remain available.
 Configure `maxCursors` for the number of unfinished searches the application needs to retain.
