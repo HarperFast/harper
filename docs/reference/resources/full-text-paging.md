@@ -55,7 +55,7 @@ The returned array has three additional properties:
 
 | Property       | Meaning                                                             |
 | -------------- | ------------------------------------------------------------------- |
-| `continuation` | Token for the next page; absent when traversal is complete          |
+| `continuation` | Token for the next page; `undefined` when traversal is complete     |
 | `complete`     | Whether the original search has been exhausted or explicitly closed |
 | `expiresAt`    | Absolute expiry time in milliseconds since the Unix epoch           |
 
@@ -72,13 +72,14 @@ table and searched-source permissions; passing context alone does not request th
 Changing the caller identity, including switching from an authenticated request to an internal
 call without that context, returns 410. Permission changes for the same caller are checked on each
 page. Application row filters still run on each page.
-The token does not store application callbacks such as `rowFilter`. Supply them
+The token does not store application callbacks such as `rowFilter` or
+[`vectorFilter`](../database/schema.md#filtered-vector-search-with-a-function-predicate). Supply them
 again on every page, together with the caller's context and permission settings.
 
 ## Page through REST
 
 Use the single-argument `limit(n)` page size and start with `continuation()`. Do not use
-`limit(start,end)`, request a count with `Prefer: count=`, or change the relevance order. The same
+a nonzero starting offset with `limit(start,end)`, request a count with `Prefer: count=`, or change the relevance order. The same
 `explain` and `sync` restrictions as `Table.search()` apply; violations return 400.
 
 ```http
@@ -193,7 +194,9 @@ Qualification and these optimizations are tracked in
 [Qualify native full-text filtering and catalog-scale operation for v5.4](https://github.com/HarperFast/harper/issues/2512).
 
 The usual individual configuration names also work, such as
-`storage_fullText_maxRawHitsPerRequest` with `set_configuration`. Native process-wide admission
+`storage_fullText_maxRawHitsPerRequest` with `set_configuration`. Follow the
+[configuration restart procedure](../configuration/operations.md#set-configuration) after applying
+changes with that operation. Native process-wide admission
 settings live under `storage.fullText.runtime` and require a restart when changed. Their defaults
 are 128 resident indexes, 128 indexing threads, 256 search threads, 4 GiB configured writer memory,
 8 GiB configured queue capacity, and 8 concurrent expensive searches. All limits apply together.
