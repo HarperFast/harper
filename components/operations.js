@@ -1710,10 +1710,11 @@ async function dropComponent(req) {
 			Math.min(2 * dropAnswerTimeoutMs(), hdbTerms.MAX_SET_TIMEOUT_MS)
 		);
 	} catch (error) {
-		const ErrorClass = { ClientError, ServerError }[error.errorName];
-		const rebuilt = ErrorClass ? new ErrorClass(error.message, error.statusCode) : new Error(error.message);
-		if (!ErrorClass && error.errorName) rebuilt.name = error.errorName;
-		if (!ErrorClass && error.statusCode !== undefined) rebuilt.statusCode = error.statusCode;
+		// Errors render by constructor name, so another class is rebuilt as one that carries its name.
+		const name = error.errorName ?? 'Error';
+		const ErrorClass = { ClientError, ServerError }[name] ?? { [name]: class extends Error {} }[name];
+		const rebuilt = new ErrorClass(error.message, error.statusCode);
+		if (rebuilt.statusCode === undefined && error.statusCode !== undefined) rebuilt.statusCode = error.statusCode;
 		if (error.code !== undefined) rebuilt.code = error.code;
 		throw rebuilt;
 	}
@@ -1842,7 +1843,6 @@ async function removeApplication(project, componentPath) {
 	}
 }
 
-/** One file of a component. A component this node does not have is left alone, and nothing restarts. */
 async function dropComponentFile(req) {
 	const { project, file } = req;
 	const projectPath = path.join(project, file);
