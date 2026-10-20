@@ -96,7 +96,7 @@ const BULK_OPS = {
 /** The same set, precomputed: `isBulkLoadOperation` runs on every operations authorization. */
 const BULK_OP_NAMES = new Set(Object.values(BULK_OPS));
 const FULL_TEXT_COMPARATOR_SET = new Set<string>(FULL_TEXT_COMPARATORS);
-const SELECT_ALIAS_OPS = new Set([search.searchByConditions.name, search.searchByHash.name, search.searchByValue.name]);
+const SEARCH_OPS = new Set([search.searchByConditions.name, search.searchByHash.name, search.searchByValue.name]);
 
 const STRUCTURE_USER_OPS = [
 	schema.createTable.name,
@@ -728,12 +728,7 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	// `bulkLoad.validateChunk`, not from here.
 	let action = isBulkLoadOperation(op) ? requestJson.action : undefined;
 
-	// The search handlers read `select` in place of `get_attributes`, so the attribute checks below
-	// must see that list, and the handlers must see the list after any rewrite here.
-	if (SELECT_ALIAS_OPS.has(op) && requestJson.select !== undefined) {
-		requestJson.get_attributes = requestJson.select;
-		delete requestJson.select;
-	}
+	if (SEARCH_OPS.has(op)) normalizeSearchRequest(requestJson);
 
 	// Resolved through the same helper the handlers use (`transformReq` delegates to it), because
 	// authorization runs BEFORE `transformReq` and any disagreement about the target means the
@@ -944,6 +939,40 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 }
 
 /**
+ * Rewrites a search request so the attributes checked here are the ones its handler executes:
+ * `select` and a condition's `attribute` take precedence over `get_attributes` and
+ * `search_attribute` there, and a selection's `checkPermission` would otherwise be trusted as the
+ * permissions to narrow it by.
+ */
+function normalizeSearchRequest(requestJson: any) {
+	if (requestJson.select !== undefined) {
+		requestJson.get_attributes = requestJson.select;
+		delete requestJson.select;
+	}
+	const normalizeConditions = (conditions: any) => {
+		if (!Array.isArray(conditions)) return;
+		for (const condition of conditions) {
+			if (!condition || typeof condition !== 'object') continue;
+			if (condition.conditions) normalizeConditions(condition.conditions);
+			else if (condition.search_attribute !== undefined) {
+				condition.attribute ??= condition.search_attribute;
+				delete condition.search_attribute;
+			}
+		}
+	};
+	normalizeConditions(requestJson.conditions);
+	const stripPermissionControls = (select: any) => {
+		if (!Array.isArray(select)) return;
+		for (const property of select) {
+			if (!property || typeof property !== 'object') continue;
+			delete property.checkPermission;
+			stripPermissionControls(property.select);
+		}
+	};
+	stripPermissionControls(requestJson.get_attributes);
+}
+
+/**
  * Refuses any attribute path in the request's get_attributes, conditions or sort that reaches a
  * related table, or related attribute, the role cannot read. The root table's own attributes are
  * checked by checkAttributePerms.
@@ -962,13 +991,20 @@ function checkRelationshipReads(requestJson: any, operationSchema: string, table
 		if (denial.attribute === undefined) entry.denial = denial;
 		else entry.attributes.add(denial.attribute);
 	};
+	const checkSort = (sort: any, prefix: any[]) => {
+		for (; sort && typeof sort === 'object'; sort = sort.next) {
+			if (sort.attribute !== undefined) check(prefix.concat(sort.attribute));
+		}
+	};
 	const checkSelect = (select: any, prefix: any[]) => {
 		if (!Array.isArray(select)) return;
 		for (const property of select) {
 			if (property?.name === undefined) check([...prefix, property]);
 			else {
-				check([...prefix, property.name]);
-				checkSelect(property.select, [...prefix, property.name]);
+				const path = [...prefix, property.name];
+				check(path);
+				checkSelect(property.select, path);
+				checkSort(property.sort, path);
 			}
 		}
 	};
@@ -976,16 +1012,13 @@ function checkRelationshipReads(requestJson: any, operationSchema: string, table
 		if (!Array.isArray(conditions)) return;
 		for (const condition of conditions) {
 			if (condition?.conditions) checkConditions(condition.conditions);
-			else {
-				const attribute = condition?.search_attribute ?? condition?.attribute;
-				if (attribute !== undefined) check(Array.isArray(attribute) ? attribute : [attribute]);
-			}
+			else if (condition?.attribute !== undefined)
+				check(Array.isArray(condition.attribute) ? condition.attribute : [condition.attribute]);
 		}
 	};
 	checkSelect(requestJson.get_attributes, []);
 	checkConditions(requestJson.conditions);
-	const sortAttribute = requestJson.sort?.attribute;
-	if (sortAttribute !== undefined) check(Array.isArray(sortAttribute) ? sortAttribute : [sortAttribute]);
+	checkSort(requestJson.sort, []);
 	for (const { denial, attributes } of denials.values()) {
 		if (denial.attribute === undefined) permsResponse.addUnauthorizedTable(denial.database, denial.table, [READ_PERM]);
 		else {

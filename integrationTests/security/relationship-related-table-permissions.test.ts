@@ -197,6 +197,21 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 				'unreadable attribute via select'
 			);
 		});
+		test('a selection cannot carry its own permissions or sort by an unreadable related attribute', async () => {
+			const injected = await byConditions(
+				'restricted',
+				[{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }],
+				{ get_attributes: ['id', { name: 'dept', checkPermission: { super_user: true } }] }
+			);
+			strictEqual(injected.status, 200, JSON.stringify(injected.body));
+			deepStrictEqual(injected.body, [{ id: EMP.id, dept: { id: DEPT.id, name: DEPT.name } }]);
+			assertRefused(
+				await byConditions('restricted', [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }], {
+					get_attributes: ['id', { name: 'dept', select: ['name'], sort: { attribute: 'budget' } }],
+				}),
+				'nested sort'
+			);
+		});
 	});
 
 	suite('conditions through the relationship', () => {
@@ -238,6 +253,37 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 
 		test('operations API refuses a condition on a related attribute the role cannot read', async () => {
 			assertRefused(await byConditions('restricted', deptBudget), 'condition');
+		});
+
+		test('operations API authorizes the condition attribute that executes', async () => {
+			assertRefused(
+				await byConditions('restricted', [
+					{ attribute: ['dept', 'budget'], search_attribute: 'id', search_type: 'equals', search_value: DEPT.budget },
+				]),
+				'attribute with a search_attribute decoy'
+			);
+		});
+
+		test('REST QUERY refuses body conditions and sort through an unreadable relationship', async () => {
+			const query = (as: RoleName, body: any) =>
+				fetch(`${restURL}/Emp/`, {
+					method: 'QUERY',
+					headers: { ...headers[as], 'Content-Type': 'application/json', 'Accept': 'application/json' },
+					body: JSON.stringify(body),
+				});
+			const allowed = await query('full', {
+				select: ['id'],
+				conditions: [{ attribute: ['dept', 'budget'], value: DEPT.budget }],
+			});
+			strictEqual(allowed.status, 200);
+			deepStrictEqual(await allowed.json(), [{ id: EMP.id }]);
+			const condition = await query('restricted', {
+				select: ['id'],
+				conditions: [{ attribute: ['dept', 'budget'], value: DEPT.budget }],
+			});
+			strictEqual(condition.status, 403, await condition.text());
+			const sort = await query('empOnly', { select: ['id'], sort: { attribute: ['dept', 'name'] } });
+			strictEqual(sort.status, 403, await sort.text());
 		});
 
 		test('REST refuses a condition on a related table or attribute the role cannot read', async () => {
