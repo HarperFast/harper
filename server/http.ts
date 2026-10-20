@@ -287,14 +287,11 @@ export function writeUdsMetadata(
 	}
 }
 
-/**
- * Writes a mirror's metadata once its TLS contexts are ready and on every certificate change, and, for a
- * server in a network access scope, whenever that scope's allowlist changes.
- */
 export function publishUdsMetadata(ready: Promise<unknown>, secureServer: any, writeMetadata: () => boolean) {
 	ready.then(() => {
-		writeMetadata();
+		// the watch makes the first write once the scope's list is known
 		if (secureServer.networkAccessScope) watchNetworkAccess(secureServer.networkAccessScope, writeMetadata);
+		else writeMetadata();
 	});
 	secureServer.secureContextsListeners?.push(writeMetadata);
 }
@@ -1211,6 +1208,7 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 					headers: request.headers.asObject,
 					body: request.body, // stream; inject() consumes it as the payload
 					user: request.user,
+					ip: request.ip,
 				});
 				const respHeaders = new Headers();
 				for (const [k, v] of Object.entries(injectResult.headers)) {
@@ -1611,6 +1609,8 @@ export function registerFallbackServer(port: string | number, listener: any) {
 	fallbackServers[port] = listener;
 }
 const INTERNAL_USER_HEADER = 'x-harper-internal-pre-auth-user';
+// inject()'s mock socket reports 127.0.0.1 whatever the client was; serverHandlers.js reads this instead
+const INTERNAL_CLIENT_ADDRESS_HEADER = 'x-harper-internal-client-address';
 
 /**
  * Run a request through a Fastify instance via inject() — its internal router, no socket needed.
@@ -1624,12 +1624,22 @@ const INTERNAL_USER_HEADER = 'x-harper-internal-pre-auth-user';
  */
 function injectToFastify(
 	fastify: any,
-	req: { method: string; url: string; headers: Record<string, any>; body?: Buffer | Readable; user?: any }
+	req: {
+		method: string;
+		url: string;
+		headers: Record<string, any>;
+		body?: Buffer | Readable;
+		user?: any;
+		ip?: string;
+	}
 ) {
 	const headers: Record<string, any> = {};
 	for (const key in req.headers) {
-		if (key.toLowerCase() !== INTERNAL_USER_HEADER) headers[key] = req.headers[key];
+		const lowerKey = key.toLowerCase();
+		if (lowerKey !== INTERNAL_USER_HEADER && lowerKey !== INTERNAL_CLIENT_ADDRESS_HEADER)
+			headers[key] = req.headers[key];
 	}
+	if (req.ip) headers[INTERNAL_CLIENT_ADDRESS_HEADER] = req.ip;
 	// Both callers pass already-lowercased header keys (uWS lowercases at the protocol level →
 	// RequestHeaders.asObject; Bun's webRequest.headers.forEach yields lowercase), so the literal
 	// 'authorization' lookup is reliable — the pre-auth user is only forwarded when the client sent
@@ -1662,6 +1672,7 @@ export async function bunDelegateToNodeServer(
 				headers,
 				body,
 				user: bunRequest?.user,
+				ip: bunRequest?.ip,
 			});
 			const webHeaders = new globalThis.Headers();
 			for (const [k, v] of Object.entries(injectResult.headers)) {

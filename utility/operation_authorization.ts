@@ -431,7 +431,7 @@ requiredPermissions.set(
 	tokenExchange.exchangeOidcToken.name,
 	new permission(false, [], terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)
 );
-// Network access allowlists (#3358): SU-only, enforced in the handlers too (gate-2 bypass below).
+// SU-only, enforced in the handlers too (gate-2 bypass below).
 requiredPermissions.set(
 	networkAccess.setNetworkAccess.name,
 	new permission(true, [], terms.OPERATIONS_ENUM.SET_NETWORK_ACCESS)
