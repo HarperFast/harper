@@ -1537,7 +1537,8 @@ describe('Record locks (harper#483)', () => {
 			if (isLMDB) return;
 			const rootStore = LockTest.primaryStore.rootStore;
 			const coveredUntil = () => Math.max(aheadUntil, readLocalIssuanceCeiling(LockTest.auditStore));
-			while (rootStore.getMonotonicTimestamp() <= coveredUntil()) await delay(10);
+			const deadline = Date.now() + 30_000;
+			while (rootStore.getMonotonicTimestamp() <= coveredUntil() && Date.now() < deadline) await delay(10);
 		});
 		const handleOf = (txn) => [...txn.recordLocks.values()][0].values().next().value;
 		const auditOf = (recordId, version) => {
@@ -1715,7 +1716,6 @@ describe('Record locks (harper#483)', () => {
 			const predecessorTimestamp = Date.now() + 60_000;
 			await transaction({ timestamp: predecessorTimestamp }, () => LockTest.put({ id: idB, n: 0 }));
 			const context = {};
-			// Each scoped lock commits its own write on the shared immediate context, one log key apiece.
 			const a = await LockTest.lock(idA, { lease: 5000 }, context);
 			const b = await LockTest.lock(idB, { lease: 5000 }, context);
 			a.set('n', 1);
