@@ -622,6 +622,27 @@ function isRecordRoot(value: unknown): boolean {
 		!(value instanceof ArrayBuffer)
 	);
 }
+// An own `undefined` is a patch removing the attribute, so it is kept; an absent attribute stays absent.
+function selectAttributes(value: any, names: readonly string[]): any {
+	if (Array.isArray(value))
+		return value.map((element) =>
+			element !== null && typeof element === 'object' ? selectAttributes(element, names) : element
+		);
+	if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
+	const selected: any = {};
+	for (const name of names) {
+		let attributeValue: any;
+		if (Object.hasOwn(value, name)) attributeValue = value[name];
+		else if (name === '__proto__' || (attributeValue = value[name]) === undefined) continue;
+		Object.defineProperty(selected, name, {
+			value: attributeValue,
+			enumerable: true,
+			writable: true,
+			configurable: true,
+		});
+	}
+	return selected;
+}
 const FULL_PERMISSIONS = {
 	read: true,
 	insert: true,
@@ -7081,6 +7102,10 @@ export function makeTable(options): TableResourceClass {
 				if (!allowed) throw new AccessViolation(context?.user);
 			}
 			if (!auditStore) throw new Error('Can not subscribe to a table without an audit log');
+			// only an authorization-narrowed select applies to deliveries; a caller's own select is not honored here
+			const deliveredAttributes = (request as any)[AUTHORIZATION_SELECT]
+				? storedAttributeNames(request.select)
+				: undefined;
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
 			const resumeGeneration = request.databaseGeneration;
 			const resuming = resumeGeneration !== undefined;
@@ -7190,6 +7215,14 @@ export function makeTable(options): TableResourceClass {
 				request.startTime || 0,
 				request
 			);
+			if (deliveredAttributes) {
+				const sendSelected = subscription.send;
+				subscription.send = function (event) {
+					if (event.value !== null && typeof event.value === 'object')
+						event.value = selectAttributes(event.value, deliveredAttributes);
+					return sendSelected.call(this, event);
+				};
+			}
 			const isActive = () => !subscription.closed && Boolean(subscription.subscriptions);
 			let progressLive = false;
 			let progressFloor: number | undefined;
@@ -7481,10 +7514,9 @@ export function makeTable(options): TableResourceClass {
 							if (auditRecord && !(checkResume && auditRecord.type === undefined)) {
 								if (startTime < nextTime) {
 									const event = eventFromAudit(thisId, auditRecord, nextTime);
-									const historyEntry = event && { ...auditRecord, ...event };
-									if (historyEntry && (!allowsEvent || allowsEvent(historyEntry))) {
+									if (event && (!allowsEvent || allowsEvent(event))) {
 										request.omitCurrent = true;
-										history.push(historyEntry);
+										history.push(event);
 										if (count) count--;
 									} else if (!isActive()) return;
 								}
@@ -7519,7 +7551,7 @@ export function makeTable(options): TableResourceClass {
 					} else if (checkResume && !entry && !checkResume()) return;
 					if (!request.omitCurrent && entry?.value && !isHiddenExpiry(entry.expiresAt)) {
 						// if retain and it exists, send the current value first
-						const current: any = { id: thisId, ...entry, type: 'put' };
+						const current: any = currentRecordEvent(thisId, entry);
 						if (reportingProgress) current.fromScan = true;
 						if (!send(current)) return;
 					}
@@ -7558,6 +7590,16 @@ export function makeTable(options): TableResourceClass {
 							ref.version === txnLogKey && (ref.nodeId ?? 0) === (nodeId ?? 0)
 					)
 				);
+			}
+			function currentRecordEvent(id: Id, entry: any) {
+				return {
+					id,
+					localTime: entry.localTime,
+					value: entry.value,
+					version: entry.version,
+					type: 'put',
+					size: entry.size,
+				};
 			}
 			function keepCurrentRecordEvent(event: any) {
 				const type = event.type;
@@ -7647,7 +7689,7 @@ export function makeTable(options): TableResourceClass {
 					}
 				} else {
 					const entry = primaryStore.getEntry(thisId);
-					if (entry?.value && !isHiddenExpiry(entry.expiresAt)) yield { id: thisId, ...entry, type: 'put' };
+					if (entry?.value && !isHiddenExpiry(entry.expiresAt)) yield currentRecordEvent(thisId, entry);
 				}
 			}
 			// Drain the current scope into the subscription with the same back-pressure as the live path.
@@ -9321,6 +9363,17 @@ export function makeTable(options): TableResourceClass {
 			primaryKeyGranted.set(tablePermission, effective);
 		}
 		return effective;
+	}
+	// Only stored attributes: reading a computed or relationship attribute off a record runs its resolver.
+	function storedAttributeNames(select: any): string[] {
+		return (Array.isArray(select) ? select : [select])
+			.map((property: any) => property?.name ?? property)
+			.filter(
+				(name: unknown) =>
+					typeof name === 'string' &&
+					!(propertyResolvers && Object.hasOwn(propertyResolvers, name)) &&
+					!fullTextFieldNames?.has(name)
+			);
 	}
 	function restrictedReplacement(id: Id, record: any, updatableAttributes: { [attribute: string]: boolean }) {
 		record = materialized(record);
