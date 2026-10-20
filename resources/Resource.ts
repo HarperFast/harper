@@ -916,10 +916,10 @@ function transactional(
 			// target reaches application or table code.
 			if (hasPermissionControl(data)) data = cloneRequestTarget(data);
 			if (Object.prototype.hasOwnProperty.call(data, 'select')) query.select = data.select;
-			// Table.allowRead authorizes condition and sort paths through relationships; for an instance
-			// resource the body's are the ones that execute.
+			// an instance resource executes the body's conditions and sort, which allowRead authorizes
 			if (this.loadAsInstance !== false) {
-				if (Object.prototype.hasOwnProperty.call(data, 'conditions')) query.conditions = data.conditions;
+				if (Array.isArray(data)) query.conditions = data;
+				else if (Object.prototype.hasOwnProperty.call(data, 'conditions')) query.conditions = data.conditions;
 				if (Object.prototype.hasOwnProperty.call(data, 'sort')) query.sort = data.sort;
 			}
 		}
