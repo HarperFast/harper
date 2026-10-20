@@ -185,7 +185,6 @@ for (const isolated of [false, true]) {
 					};
 					const deployed = await operation(deployment);
 					assert.strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
-					// an isolated application's first worker is its canary too
 					assert.strictEqual(deployed.body.certification, 'certified');
 					const rootConfig = parse(await readFile(join(ctx.harper.dataRootDir, 'harper-config.yaml'), 'utf8'));
 					assert.strictEqual(rootConfig[project].package, pkg);

@@ -916,13 +916,11 @@ async function deployComponent(req) {
 			// when the per-peer callback already fired for these.
 			recorder.recordPeers(response.replicated);
 		}
-		// The restart covers the workers that loaded the component or will load it. The pool loads it when it is
-		// shared now, and loaded it when it was here and shared before; the reconcile in restartWorkers starts or
-		// stops its dedicated worker. So a new or still-isolated application restarts only its own worker, and main
-		// widens that to the pool when a pool worker booted while it was shared. An already-live retry cannot know
-		// which workers loaded the previous release, so it restarts them all.
-		const poolLoadedIt = !application.isNewComponent && !wasIsolated;
-		const restartScope = application.alreadyActive ? '*' : poolLoadedIt || !nowIsolated ? undefined : application.name;
+		// The restart covers the workers that loaded the component or will load it. A shared application is loaded by
+		// the pool; an isolated one restarts its own worker, and main adds the pool when a pool worker reported loading
+		// it, as after an isolation flip. An already-live retry cannot know which workers loaded the previous release,
+		// so it restarts them all.
+		const restartScope = application.alreadyActive ? '*' : nowIsolated ? application.name : undefined;
 		const { awaitRestart } = require('./awaitRestart.ts');
 		// Main started this release's rollout at its commit; the origin only waits for it.
 		const awaitCertifiedRollout = async () => {
@@ -1645,12 +1643,14 @@ async function deleteEnvValue(req) {
 	return response;
 }
 
-/** How long a drop may take on one node: its lock wait, a restart, and a dedicated worker's drain. */
+const DROP_START_BUDGET_MS = DROP_COMPONENT_LOCK_TIMEOUT_MS + DROP_ANSWER_MARGIN_MS;
+
+/** How long a drop may take on one node: its wait to start, a restart, and a dedicated worker's drain. */
 function dropAnswerTimeoutMs() {
 	const { RESTART_WAIT_CEILING_MS } = require('./awaitRestart.ts');
 	const { getShutdownDrainCeilingMs } = require('./shutdownDrain.ts');
 	return Math.min(
-		DROP_COMPONENT_LOCK_TIMEOUT_MS + RESTART_WAIT_CEILING_MS + getShutdownDrainCeilingMs() + DROP_ANSWER_MARGIN_MS,
+		DROP_START_BUDGET_MS + RESTART_WAIT_CEILING_MS + getShutdownDrainCeilingMs() + DROP_ANSWER_MARGIN_MS,
 		hdbTerms.MAX_SET_TIMEOUT_MS
 	);
 }
@@ -1686,9 +1686,6 @@ async function dropComponent(req) {
 	}
 	if (req.file) return dropComponentFile(req);
 	if (isMainThread) return dropApplication(req);
-	// Main owns a whole-component drop, from its lock to the worker it stops and the storage it removes, so this thread
-	// holds no lock while it waits.
-	const timeoutMs = dropAnswerTimeoutMs();
 	try {
 		return await manageThreads.requestFromMainThread(
 			hdbTerms.ITC_EVENT_TYPES.DROP_COMPONENT_REQUEST,
@@ -1698,12 +1695,15 @@ async function dropComponent(req) {
 				restart: req.restart,
 				keepBranches: req.keepBranches,
 				replicated: req.replicated,
-				answerBy: Date.now() + timeoutMs,
+				startBy: Date.now() + DROP_START_BUDGET_MS,
 			},
-			timeoutMs
+			// this node's drop, then its peers' alongside one another
+			Math.min(2 * dropAnswerTimeoutMs(), hdbTerms.MAX_SET_TIMEOUT_MS)
 		);
 	} catch (error) {
-		throw handleHDBError(error, error.message, error.statusCode);
+		throw error.statusCode < 500
+			? new ClientError(error.message, error.statusCode)
+			: new ServerError(error.message, error.statusCode);
 	}
 }
 
@@ -1716,26 +1716,25 @@ async function dropComponent(req) {
  */
 async function dropApplication(request, requester, answerEarly) {
 	// the asker's own deadline, on its own clock: never sent to a peer
-	const { answerBy, ...req } = request;
+	const { startBy, ...req } = request;
 	const { project } = req;
 	const componentPath = path.join(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), project);
-	const { isIsolatedApplication } = require('../server/threads/isolatedApplications.ts');
 	const { applicationHasBranchStorage, removeBranchesForApplication } = require('../resources/branchDatabase.ts');
 	let response;
 	await withComponentPreparationLock(
 		componentPath,
 		async () => {
-			// The worker that asked has given up, and would report it not dropped: so it is not.
-			if (answerBy !== undefined && Date.now() > answerBy) {
-				throw new ServerError(`Did not drop ${project}: the drop waited for its lock past the time it had to answer`);
+			// Past this, the worker that asked could give up before the drop finished, and report it not dropped.
+			if (startBy !== undefined && Date.now() > startBy) {
+				throw new ServerError(
+					`Did not drop ${project}: it waited for the component lock past the time it had to start`
+				);
 			}
 			await assertNotCertifying(componentPath, project);
-			// this thread's cached config may predate a deploy another thread published
-			env.initSync(true);
 			const present = (await fs.pathExists(componentPath)) || hasRootConfigEntry(project);
 			// a worker left running by a drop that failed after it removed the entry still counts
 			const running = (await manageThreads.getRunningIsolatedApplications()).includes(project);
-			const isolated = isIsolatedApplication(project) || running;
+			const isolated = configuredIsolated(project) || running;
 			const poolMayHold = manageThreads.poolMayHold(project);
 			if (present) await removeApplication(project, componentPath);
 			const restartsPool = present && req.restart === true && (!isolated || poolMayHold);
@@ -1744,8 +1743,12 @@ async function dropApplication(request, requester, answerEarly) {
 				? `Successfully dropped: ${project}${restartsPool ? ', restarting Harper' : ''}`
 				: `Successfully dropped: ${project}, which was not on this node`;
 			const branched = applicationHasBranchStorage(project);
+			let retained;
+			if (branched && req.keepBranches === true) retained = 'keepBranches';
+			else if (branched && ((present && !isolated) || poolMayHold) && !restartsPool) retained = 'loaded';
+			if (retained) response.message += BRANCH_STORAGE_RETAINED[retained];
 			const answerBeforeStop = (known) =>
-				answerEarly?.({ ...response, branchesRemoved: branched && !req.keepBranches ? null : false, ...known });
+				answerEarly?.({ ...response, branchesRemoved: branched && !retained ? null : false, ...known });
 
 			if (isolated && (present || running)) {
 				if (requester?.application === project) answerBeforeStop({ workerStopped: null });
@@ -1762,13 +1765,9 @@ async function dropApplication(request, requester, answerEarly) {
 				);
 				logRestartOutcome(restart, `dropping ${project}`);
 			}
-			if (!branched) return;
-			let retained;
-			if (req.keepBranches === true) retained = 'keepBranches';
-			else if (((present && !isolated) || poolMayHold) && !restartsPool) retained = 'loaded';
-			else if (restart && (!restart.completed || restart.workersKeptOnOldCode)) retained = 'restart';
-			if (retained) {
-				response.message += BRANCH_STORAGE_RETAINED[retained];
+			if (!branched || retained) return;
+			if (restart && (!restart.completed || restart.workersKeptOnOldCode)) {
+				response.message += BRANCH_STORAGE_RETAINED.restart;
 				return;
 			}
 			try {
@@ -1785,6 +1784,20 @@ async function dropApplication(request, requester, answerEarly) {
 		componentDropLockOptions(project)
 	);
 	return response;
+}
+
+/**
+ * Whether the root config marks `project` isolated, in this thread's view or in the file, which a worker may have
+ * published since. Read without refreshing this thread's config, which exits the process on a malformed file.
+ */
+function configuredIsolated(project) {
+	const { isIsolatedApplication } = require('../server/threads/isolatedApplications.ts');
+	if (isIsolatedApplication(project)) return true;
+	try {
+		return isIsolatedApplication(project, configUtils.parseYamlDoc(configUtils.getRootConfigFilePath()).toJSON());
+	} catch {
+		return false;
+	}
 }
 
 /** The tree, its root-config entry, and its install links. The entry goes last, so a failure never leaves it live without one. */

@@ -162,8 +162,10 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    deploy), or a restore that did not land, the release stays live and FAILS CLOSED: every thread's loader
    refuses it (`failClosedReleases`), boot does not reinstall it, and only a deploy, an activation or a drop moves
    on. An isolated application left that way gets no dedicated worker, which would load nothing and publish a
-   mirror to it: the gate starts no copy of its stopped canary (`leavesNothingToLoad`), main withdraws a slot left
-   empty, and the reconcile and boot refuse it (`failedClosedApplications` in `socketRouter.ts`). A record belongs to the component the deployment's ownership sidecar names, else its own `component`, else
+   mirror to it: the gate starts no copy of its stopped canary (`leavesNothingToLoad`), main withdraws its slot and
+   stops any worker still in it before the decision is read, so a fixed redeploy never finds that slot, and the
+   reconcile and boot refuse it (`failedClosedApplications` in `socketRouter.ts`; refusals that cannot be read
+   start no new dedicated worker). A record belongs to the component the deployment's ownership sidecar names, else its own `component`, else
    the component it is live for, so an unreadable sidecar never lets a refused release load; retention pins its
    predecessor the same way, and pins everything when a record can be attributed to no one. When even the record
    write fails, main refuses it in memory, bound to that deployment id so a later release
@@ -734,19 +736,20 @@ read as success.
 
 ## A restart covers exactly the workers that loaded a component or will load it
 
-A deploy restarts the pool when the application is shared now, or was here and shared before; otherwise only its
-dedicated worker (`restartScope` in `deployComponent`), so a new or still-isolated application's first and later
-deploys leave every other worker alone. A tree on disk does not say what the pool loaded: a shared application
-dropped without a restart is still loaded there. So main adds the pool to a named restart whenever a pool worker
-may hold that application (`poolMayHold` in `server/threads/manageThreads.js`, from what each worker's loader
-reported), and a named restart reconciles only that application's dedicated worker, never another one a
-`restart: false` deploy left pending (harper#3045).
+A deploy of an application that is shared after it restarts the pool; one that is isolated after it names the
+application (`restartScope` in `deployComponent`), so a new or still-isolated application's deploys leave every
+other worker alone. A tree on disk does not say what the pool loaded: a shared application dropped without a restart
+is still loaded there, and one deployed without a restart never was. So main adds the pool to a named restart, when
+the restart takes its turn, only if a pool worker may hold that application (`poolMayHold` in
+`server/threads/manageThreads.js`, from what each worker's loader reported), which is also how an isolation flip
+restarts the pool. A named restart reconciles only that application's dedicated worker, never another one a
+`restart: false` deploy left pending; a pool restart reconciles every one, as before (harper#3045).
 
 ## `drop_component`: main owns the whole-component drop
 
 A whole-component drop runs on the main thread under the component's lock (`dropApplication` in
 `operations.js`); a worker that receives one, as a replicated peer does, hands it over and waits, holding no lock,
-until a deadline after which main refuses to start it (`answerBy`). A component that has no directory and no
+for its own node's drop and its peers' (`startBy` is the deadline after which main refuses to begin it). A component that has no directory and no
 root-config entry is not on this node: nothing is removed and nothing restarts, whatever `restart` says, but a
 dedicated worker a failed earlier drop left running is still stopped. An isolated application's worker is
 stopped with or without `restart`, through the narrowed reconcile, which shuts its slot down and removes its
@@ -755,7 +758,7 @@ once nothing holds them, unless `keepBranches` keeps them; they also stay while 
 and a later drop of the now-absent application discards them. Each node answers `{ node, componentRemoved,
 workerStopped, branchesRemoved }`, and the origin returns its peers' in `replicated` (`dropPeerResults`), where
 `null` is a peer that did not say and `error` a peer that failed. A worker the coming stop or restart replaces is
-answered just before it, with `null` for what is not done yet (harper#3091).
+answered just before it, with any retention already decided and `null` for what is not done yet (harper#3091).
 
 ## A replicated deploy reports each node's install fingerprint, and never acts on it
 

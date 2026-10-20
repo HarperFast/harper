@@ -9,13 +9,14 @@ import {
 	stopWorker,
 	failedClosedInMemory,
 	processIncarnation,
+	canaryVerdictTimeoutMs,
 } from './manageThreads.js';
 import {
 	presentIsolatedApplicationNames,
 	isolatedApplicationRefusal,
 	isolatedApplicationCapacityRefusal,
 } from './isolatedApplications.ts';
-import { failClosedReleases } from '../../components/releaseCertification.ts';
+import { failClosedReleases, liveDeploymentId } from '../../components/releaseCertification.ts';
 import { getConfigPath } from '../../config/configUtils.ts';
 import { lifecycle as componentLifecycle } from '../../components/status/index.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
@@ -152,7 +153,8 @@ let poolSize = 0;
 let dedicatedPoolsStarted = false;
 let dedicatedWorkerCount = 0;
 const refusedIsolated = new Set<string>(); // reported once, not on every reconcile
-const ISOLATED_WORKER_READY_TIMEOUT_MS = 60_000; // the pool replacement path's backstop
+// A first release's start is held as its canary, so it may take the canary's whole report window before it binds.
+const isolatedWorkerReadyTimeoutMs = () => canaryVerdictTimeoutMs() + 60_000;
 let nextIsolatedIndex = 0;
 type IsolatedSlot = {
 	ready: Promise<void>;
@@ -169,10 +171,10 @@ const poolSlots: IsolatedSlot[] = [];
  * ones are admitted up to `threads.maxIsolated`, and only while a dedicated worker would be reachable
  * at all. Everything refused is refused loudly and loaded nowhere -- never downgraded to the pool.
  */
-function admittedIsolatedApplications(running: string[], failedClosed: Map<string, Error>): string[] {
+function admittedIsolatedApplications(running: string[], failedClosed: Map<string, Error> | undefined): string[] {
 	const names = presentIsolatedApplicationNames();
 	const admitted = [];
-	const refusalOf = (name: string) => failedClosed.get(name)?.message ?? isolatedApplicationRefusal(name);
+	const refusalOf = (name: string) => failedClosed?.get(name)?.message ?? isolatedApplicationRefusal(name);
 	for (const name of running) {
 		if (!names.includes(name)) continue;
 		const refusal = refusalOf(name);
@@ -184,7 +186,9 @@ function admittedIsolatedApplications(running: string[], failedClosed: Map<strin
 	}
 	for (const name of names) {
 		if (admitted.includes(name)) continue;
-		const refusal = refusalOf(name) ?? isolatedApplicationCapacityRefusal(name, admitted);
+		const refusal =
+			(failedClosed ? refusalOf(name) : 'which releases may load could not be read') ??
+			isolatedApplicationCapacityRefusal(name, admitted);
 		if (refusal) {
 			reportIsolatedRefusal(name, refusal);
 			continue;
@@ -195,17 +199,24 @@ function admittedIsolatedApplications(running: string[], failedClosed: Map<strin
 	return admitted;
 }
 
-/** Applications whose live release must not load: their dedicated worker would load nothing. */
-async function failedClosedApplications(): Promise<Map<string, Error>> {
+/**
+ * Applications whose live release must not load: their dedicated worker would load nothing. Undefined when that cannot
+ * be read, which keeps running workers running and starts no new one.
+ */
+async function failedClosedApplications(): Promise<Map<string, Error> | undefined> {
+	const componentsRoot = getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	let failedClosed: Map<string, Error>;
 	try {
-		failedClosed = await failClosedReleases(getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), processIncarnation);
+		failedClosed = await failClosedReleases(componentsRoot, processIncarnation);
 	} catch (error) {
-		harperLogger.error('Could not read which releases are refused; starting dedicated workers as configured', error);
-		failedClosed = new Map();
+		harperLogger.error('Could not read which releases are refused; starting no new dedicated worker', error);
+		return undefined;
 	}
-	for (const name of failedClosedInMemory()) {
-		if (!failedClosed.has(name)) failedClosed.set(name, new Error('its live release was refused'));
+	// each holds only while the release it refused is still the live one, as the loader's own check does
+	for (const [name, { deploymentId }] of failedClosedInMemory()) {
+		if (failedClosed.has(name)) continue;
+		if ((await liveDeploymentId(componentsRoot, name).catch(() => undefined)) !== deploymentId) continue;
+		failedClosed.set(name, new Error(`its live release ${deploymentId} was refused`));
 	}
 	return failedClosed;
 }
@@ -232,7 +243,7 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 		new Promise<never>((_, reject) =>
 			setTimeout(
 				() => reject(new Error(`Dedicated worker for '${application}' did not become ready in time`)),
-				ISOLATED_WORKER_READY_TIMEOUT_MS
+				isolatedWorkerReadyTimeoutMs()
 			).unref()
 		),
 	])

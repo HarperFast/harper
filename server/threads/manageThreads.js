@@ -767,11 +767,12 @@ async function decideCertification(certification, decision, canary) {
 			reason: `its certification could not be recorded: ${settled.recordError}`,
 		});
 	}
+	// Before the decision is read, so no deploy of a fixed release can find the refused one's slot still there.
+	if (leavesNothingToLoad(certification, certification.component, settled)) await withdrawRefusedSlot(certification);
 	certification.decision = settled;
 	certification.decided.resolve(settled);
 	settleHeldStarts();
 	startDeferredStarts(certification);
-	void withdrawRefusedSlot(certification);
 }
 
 /** Every held start loading a release about to be refused stops first, so no restore runs under one still holding it. */
@@ -820,16 +821,14 @@ function startDeferredStarts(certification) {
 }
 
 /** An isolated application whose refused release stays live: its dedicated worker would load nothing. */
-function leavesNothingToLoad(certification, application) {
-	const { decision, component, deploymentId } = certification;
+function leavesNothingToLoad(certification, application, decision = certification.decision) {
+	const { component, deploymentId } = certification;
 	if (!certification.isolated || application !== component || !decision || !refusesRelease(decision)) return false;
 	return decision.failedClosed === true || failClosedInMemory.get(component)?.deploymentId === deploymentId;
 }
 
-/** Its dedicated slot, once no worker is left in it, is withdrawn, so no later start or mirror outlives the refusal. */
+/** Its dedicated slot is withdrawn and any worker still in it stopped, so no worker or mirror outlives the refusal. */
 async function withdrawRefusedSlot(certification) {
-	if (!leavesNothingToLoad(certification, certification.component)) return;
-	if (workersForApplication(certification.component).length > 0) return;
 	try {
 		await isolatedWorkerReconciler?.(certification.component);
 	} catch (error) {
@@ -1144,9 +1143,9 @@ function forgetIfUnread(certification) {
 	if (settledCertifications.get(key) === certification && !stillRead(certification)) settledCertifications.delete(key);
 }
 
-/** Components main refused in memory, because the record of their refusal could not be written. */
+/** Releases main refused in memory, because the record of their refusal could not be written: component → refusal. */
 function failedClosedInMemory() {
-	return new Set(failClosedInMemory.keys());
+	return new Map(failClosedInMemory);
 }
 
 function failClosedComponentsPlacedBy(options) {
@@ -1254,7 +1253,13 @@ function answerMainThreadRequests(type, handler) {
 			.then(() => handler(message.payload ?? {}, port, (result) => answer({ result })))
 			.then(
 				(result) => answer({ result }),
-				(error) => answer({ error: { message: errorMessageOf(error), statusCode: error?.statusCode } })
+				(error) =>
+					answer({
+						error: {
+							message: typeof error?.http_resp_msg === 'string' ? error.http_resp_msg : errorMessageOf(error),
+							statusCode: error?.statusCode,
+						},
+					})
 			);
 	});
 }
@@ -1512,16 +1517,12 @@ async function restartWorkers(
 ) {
 	if (arguments.length < 5) application = '*';
 	if (isMainThread) {
-		const withPool = application !== undefined && application !== '*' && poolMayHold(application);
-		if (withPool) {
-			harperLogger.info(`Restarting the shared workers with ${application}: one of them loaded it while it was shared`);
-		}
 		if (!startReplacementThreads) {
-			return replaceWorkers(name, maxWorkersDown, false, onProgress, application, undefined, withPool);
+			return replaceWorkers(name, maxWorkersDown, false, onProgress, application, undefined, withPoolFor(application));
 		}
 		// One at a time, so no restart starts a worker on a release another restart's canary has not decided.
 		const replacing = replacementRestarts.then(() =>
-			replaceWorkers(name, maxWorkersDown, true, onProgress, application, certification, withPool)
+			replaceWorkers(name, maxWorkersDown, true, onProgress, application, certification, withPoolFor(application))
 		);
 		replacementRestarts = replacing.catch(() => {});
 		return replacing;
@@ -1535,7 +1536,7 @@ async function restartWorkers(
 }
 
 /**
- * A pool worker keeps the applications it loaded until it is replaced, whatever the config says now. Each reports them
+ * A pool worker keeps the applications it loaded until it exits, whatever the config says now. Each reports them
  * before it is admitted; one that has not reported yet may hold any.
  */
 function poolMayHold(application) {
@@ -1543,9 +1544,15 @@ function poolMayHold(application) {
 		(worker) =>
 			worker.name === hdbTerms.THREAD_TYPES.HTTP &&
 			!worker.application &&
-			!worker.wasShutdown &&
 			(!worker.loadedApplications || worker.loadedApplications.has(application))
 	);
+}
+
+/** Read when the restart takes its turn, so no earlier restart's replacement is still booting unreported. */
+function withPoolFor(application) {
+	if (application === undefined || application === '*' || !poolMayHold(application)) return false;
+	harperLogger.info(`Restarting the shared workers with ${application}: one of them loaded it while it was shared`);
+	return true;
 }
 
 function recordLoadedApplications(worker, message) {
@@ -1689,7 +1696,6 @@ async function replaceWorkers(
 			if ((name && !typeMatches(name, worker.name)) || worker.wasShutdown) continue; // filter by type, if specified
 			// exited on its own since the snapshot; its exit handler restarts it (or holds that start for a decision)
 			if (!workers.includes(worker)) continue;
-			// and by isolated application
 			if (application !== '*' && worker.application !== application && !(withPool && !worker.application)) continue;
 			if (worker.application && freshlyStarted.has(worker.application)) continue;
 			// A deploy whose release is decided waits on no rollout, and a drain would give it only the shutdown ceiling,
@@ -2179,7 +2185,6 @@ let runningIsolatedApplicationsGetter = () => [];
 function setIsolatedWorkerReconciler(reconcile) {
 	isolatedWorkerReconciler = reconcile;
 }
-/** Start or stop this one application's dedicated worker to match the root config, and nothing else. */
 function reconcileIsolatedApplication(application) {
 	return isolatedWorkerReconciler?.(application) ?? Promise.resolve([]);
 }

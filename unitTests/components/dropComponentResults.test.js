@@ -19,7 +19,6 @@ describe('a replicated drop_component', () => {
 				workerStopped: true,
 				branchesRemoved: false,
 			},
-			// a peer where it was absent
 			{
 				message: 'Successfully dropped: preview, which was not on this node',
 				node: 'peer-b',

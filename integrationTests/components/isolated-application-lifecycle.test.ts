@@ -60,7 +60,6 @@ async function writeRelease(dir: string, project: string, { version, throwAtLoad
 			'\tstatic loadAsInstance = false;\n' +
 			`\tget() { return { application: '${project}', version: ${version}, threadId }; }\n` +
 			'}\n' +
-			// the application dropping itself, from its own dedicated worker
 			'export class SelfDrop extends Resource {\n' +
 			'\tstatic loadAsInstance = false;\n' +
 			`\tpost() { return server.operation({ operation: 'drop_component', project: '${project}', replicated: false }); }\n` +

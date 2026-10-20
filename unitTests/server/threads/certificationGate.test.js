@@ -1479,6 +1479,51 @@ describe('the release certification gate', function () {
 		);
 	});
 
+	it('withdraws the slot of an isolated release refused with nothing to put back, while its earlier worker still runs', async () => {
+		setCertificationHandler(
+			handler({
+				decide: async (certification, decision) => {
+					decisions.push({ component: certification.component, ...decision });
+					return decision.status === 'rejected' ? { ...decision, restored: null, failedClosed: true } : decision;
+				},
+			})
+		);
+		const earlier = await startFixture(3, { application: FRESH.component });
+		plan([{ outcome: 'failed' }]);
+		const calls = [];
+		setIsolatedWorkerReconciler(async (only) => {
+			calls.push(only);
+			return [];
+		});
+		assert.deepStrictEqual(await certificationRequest('arm', { ...FRESH, isolated: true, scope: FRESH.component }), {
+			armed: true,
+		});
+		assert.equal(await certificationRequest('commit', FRESH), true);
+		assert.equal((await certificationRequest('decision', FRESH)).status, 'rejected');
+		await waitFor(() => calls.length === 2, { message: 'its slot was never withdrawn' });
+		assert.deepStrictEqual(calls, [FRESH.component, FRESH.component]);
+		assert.ok(!earlier.exitedAt, 'the reconcile, not the gate, stops the worker that was serving');
+		await waitFor(() => completions.length > 0, { timeout: 45000, message: 'the rollout never ended' });
+	});
+
+	it('decides whether the pool may hold an application when its restart takes its turn', async () => {
+		const loading = Promise.withResolvers();
+		rootLoad = loading.promise;
+		releaseRootLoad = loading.resolve;
+		setIsolatedWorkerReconciler(async () => []);
+		const before = pool.map((worker) => worker.threadId);
+		const ahead = restartWorkers('http', 1, true, undefined, 'unrelated');
+		const queued = restartWorkers('http', 1, true, undefined, 'was-shared');
+		// a pool worker reports loading it only after the restart was asked for
+		pool[0].loadedApplications = new Set(['was-shared']);
+		releaseRootLoad();
+		await ahead;
+		await queued;
+		for (const worker of httpWorkers()) {
+			assert.ok(!before.includes(worker.threadId), `pool worker ${worker.workerIndex} was replaced`);
+		}
+	});
+
 	it("answers each worker's request to main by its own id, and bounds the wait", async () => {
 		const requestType = 'certification_gate_test_request';
 		const gates = new Map();
