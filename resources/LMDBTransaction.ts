@@ -70,6 +70,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		this.readTxn = (this.db as any).useReadTransaction();
 
 		this.readTxnsUsed = 1;
+		this.readTxnGeneration++;
 		this.baseReadRefConsumed = false;
 		if ((this.readTxn as any).openTimer) (this.readTxn as any).openTimer = 0;
 		trackedTxns.add(this as any);
@@ -89,8 +90,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 		return this.readTxn;
 	}
 
-	doneReadTxn() {
-		if (!this.readTxn) return;
+	// See DatabaseTransaction.doneReadTxn(): a return for a released snapshot is a no-op.
+	doneReadTxn(generation = this.readTxnGeneration) {
+		if (!this.readTxn || generation !== this.readTxnGeneration) return;
 		if (this.readTxn instanceof RocksTransaction) {
 			// TODO: Implement this for RocksDB
 		} else {
@@ -434,7 +436,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 					this.baseReadRefConsumed = true;
 				}
 			} else {
-				while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+				while (this.readTxn && this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 			}
 			this.open = TRANSACTION_STATE.CLOSED;
 			this.drainCompletions();
