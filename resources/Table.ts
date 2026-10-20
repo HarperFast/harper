@@ -793,7 +793,7 @@ interface TableResourceClass {
 	_readDenial(path: readonly any[], user: User, target?: RequestTarget, index?: number): ReadDenial | undefined;
 	_authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any;
 	_referencesRelationship(target: RequestTarget): boolean;
-	_readableInFull(user: User, target?: RequestTarget, visited?: Set<any>): boolean;
+	_readableInFull(user: User, target?: RequestTarget): boolean;
 	_copyUnlistedAttributes(record: any, selected: any): void;
 	readonly hasRelationships: boolean;
 	isFullTextSearchEntryCurrent(entry: Entry): boolean;
@@ -1239,6 +1239,7 @@ function conditionsContainFullText(entries: any[], definitions: readonly FullTex
 let structSerializationVisited: Map<any, Set<any>> | null = null;
 // Tables whose default projection allowRead is writing; an @enumerable edge back to one stops at its key.
 let implicitProjectionPath: Set<any> | null = null;
+const readableInFullPath: any[] = [];
 // Resolve Harper records within a guarded serialization, so none escape back to an encoder that would call
 // their toJSON after our path-scoped unwind and miss the cycle. Native values (Date, Buffer/typed arrays,
 // ArrayBuffer, etc.) stay intact for CBOR/MessagePack.
@@ -1844,20 +1845,22 @@ export function makeTable(options): TableResourceClass {
 		static get hasRelationships(): boolean {
 			return hasRelationships;
 		}
-		/** Whether the role reads this table, and every table its @enumerable relationships reach, without attribute restrictions. */
-		static _readableInFull(user: User, target?: RequestTarget, visited?: Set<any>): boolean {
+		static _readableInFull(user: User, target?: RequestTarget): boolean {
 			const permission = getTablePermissions(user, target);
 			if (permission?.isSuperUser) return true;
 			if (!permission?.read || permission.attribute_permissions?.length > 0) return false;
-			if (enumerableRelationshipNames.length === 0) return true;
-			visited ??= new Set();
-			visited.add(TableResource);
-			for (const name of enumerableRelationshipNames) {
-				const relatedTable = propertyResolvers[name]?.definition?.tableClass;
-				if (relatedTable && !visited.has(relatedTable) && !relatedTable._readableInFull(user, target, visited))
-					return false;
+			// a table already on the walk is being checked by an outer call
+			if (enumerableRelationshipNames.length === 0 || readableInFullPath.includes(TableResource)) return true;
+			readableInFullPath.push(TableResource);
+			try {
+				for (const name of enumerableRelationshipNames) {
+					const relatedTable = propertyResolvers[name]?.definition?.tableClass;
+					if (relatedTable && !relatedTable._readableInFull(user, target)) return false;
+				}
+				return true;
+			} finally {
+				readableInFullPath.pop();
 			}
-			return true;
 		}
 		/** Copies what a default read serializes, other than relationships: stored attributes and surfaced computed ones. */
 		static _copyUnlistedAttributes(record: any, selected: any): void {
@@ -3614,6 +3617,23 @@ export function makeTable(options): TableResourceClass {
 				if (tablePermission.isSuperUser) return true;
 				if (hasRelationships && target && someRelationshipPath(target, user, true)) return false;
 				const attribute_permissions = tablePermission.attribute_permissions;
+				const property = target?.property;
+				if (property !== undefined && propertyResolvers[property]?.definition?.tableClass) {
+					// `/Table/id.relationship` returns the related record, so it is authorized as that selection, in scalar form
+					if (attribute_permissions?.length > 0 && !attributesAsObject(attribute_permissions, 'read')[property])
+						return false;
+					const selection = TableResource._authorizeRelatedSelection(
+						property,
+						user,
+						(target as any).checkPermission,
+						context
+					);
+					if (!selection) return false;
+					target.select = selection;
+					delete target.property;
+					(target as any)[AUTHORIZATION_SELECT] = true;
+					return true;
+				}
 				let select: any = target?.select;
 				// a default read and '*' serialize @enumerable relationships, so the related tables' permissions apply
 				const listRelationships =

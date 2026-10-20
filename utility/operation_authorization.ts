@@ -1266,7 +1266,6 @@ function isBulkLoadOperation(operationName): boolean {
 	return BULK_OP_NAMES.has(operationName);
 }
 
-// a path rooted at a relationship of `relationshipTable` is checked by checkRelationshipReads instead
 function getRecordAttributes(json, operationName?, relationshipTable?: any) {
 	let affectedAttributes = new Set();
 	try {
