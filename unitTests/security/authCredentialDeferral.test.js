@@ -785,6 +785,15 @@ describe('server.registerBearerValidator (#oauth/279)', () => {
 		return { username };
 	}
 
+	// .mocharc.json disables timeouts, so a promise that never settles would hang the run
+	function bounded(promise, label, ms = 2_000) {
+		let timer;
+		const deadline = new Promise((_, reject) => {
+			timer = setTimeout(() => reject(new Error(`${label} did not settle within ${ms}ms`)), ms);
+		});
+		return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+	}
+
 	function registerValidator(validator, options) {
 		const unregister = serverModule.server.registerBearerValidator(validator, options);
 		unregisters.push(unregister);
@@ -1842,7 +1851,7 @@ describe('server.registerBearerValidator (#oauth/279)', () => {
 				{ timeoutMs: 25 }
 			);
 			trace = [];
-			const res = await send(APP_OWNED, `Bearer ${token}`);
+			const res = await bounded(send(APP_OWNED, `Bearer ${token}`), token);
 			assert.strictEqual(res.response.status, 401, `${token}: the timeout must win`);
 			assert.strictEqual(res.body.error, 'Login failed');
 			assert.deepStrictEqual(trace, [], `${token}: a timed-out validator must not defer to the application`);
@@ -1866,10 +1875,10 @@ describe('server.registerBearerValidator (#oauth/279)', () => {
 				token === 'dispose-mid-lookup' ? { username: 'disposed-mid-lookup' } : null
 			);
 			const pending = send(HARPER_OWNED, 'Bearer dispose-mid-lookup');
-			await lookupStarted;
+			await bounded(lookupStarted, 'the server.getUser lookup');
 			unregister();
 			releaseLookup();
-			const res = await pending;
+			const res = await bounded(pending, 'authentication');
 			assert.strictEqual(res.response.status, 401);
 			assert.strictEqual(res.request.user, undefined);
 			assert.strictEqual(

@@ -65,7 +65,6 @@ const LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED)
 const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
 
 let authorizationCache = new Map();
-// the validator that resolved a cached principal; the entry goes stale when that validator is disposed
 const validatorClaims = new WeakMap<object, BearerValidatorEntry>();
 let invalidationGeneration = 0;
 server.onInvalidatedUser(() => {

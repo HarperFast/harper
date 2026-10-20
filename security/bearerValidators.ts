@@ -77,14 +77,9 @@ export async function principalFromClaim(
 	}
 	user._bearerValidator = true;
 	user.authExpiresAt = authExpiresAt;
-	// an expired self-described JWT the validator still accepted is served once, never from cache
 	return { user, cacheable: !expired && result.authCacheable !== false };
 }
 
-/**
- * The validator's `authExpiresAt`, capped by the token's own future `exp`; with neither, a short
- * default, so a principal the validator would now refuse is not served from cache for long.
- */
 function effectiveExpiry(claimedExp: unknown, decodedToken: any): { authExpiresAt: number; expired: boolean } {
 	const nowSec = Date.now() / 1000;
 	if (
@@ -101,6 +96,7 @@ function effectiveExpiry(claimedExp: unknown, decodedToken: any): { authExpiresA
 	const tokenExp =
 		typeof decodedToken?.exp === 'number' && Number.isFinite(decodedToken.exp) ? decodedToken.exp : undefined;
 	const futureTokenExp = tokenExp !== undefined && tokenExp > nowSec ? tokenExp : undefined;
+	// short, so a token the validator would now refuse does not stay cached for long
 	const exp = claimed ?? Math.floor(nowSec) + DEFAULT_TTL_SECONDS;
 	return {
 		authExpiresAt: futureTokenExp !== undefined ? Math.min(exp, futureTokenExp) : exp,
