@@ -209,6 +209,66 @@ describe('Reads of residency stubs', function () {
 		assert.deepEqual(records, [{ id: 'computed' }]);
 	});
 
+	for (const operations of [
+		['put', 'invalidate'],
+		['invalidate', 'put'],
+		['invalidate', 'invalidate'],
+		['invalidate', 'delete'],
+	]) {
+		it(`maintains indexes for ${operations.join(' then ')} in one transaction`, async () => {
+			await Records.put('record', { name: 'indexed', body: 'complete' });
+			const context = {};
+			await transaction(context, async () => {
+				for (const [index, operation] of operations.entries()) {
+					const name = index === 0 ? 'middle' : 'final';
+					if (operation === 'put') await Records.put('record', { name, body: 'complete' }, context);
+					else if (operation === 'delete') await Records.delete('record', context);
+					else {
+						const resource = await Records.getResource('record', context, { ensureLoaded: false });
+						resource._writeInvalidate('record', { name }, { residencyId: 123 });
+					}
+				}
+			});
+			for (const name of ['indexed', 'middle', 'final']) {
+				const expected = name === 'final' && operations[1] !== 'delete' ? [{ id: 'record' }] : [];
+				assert.deepEqual(await query(['id'], [{ attribute: 'name', value: name }]), expected, name);
+				const indexed = Array.from(Records.indices.name.getRange({}))
+					.filter(({ key, value }) => key === name && value === 'record')
+					.map(({ value }) => ({ id: value }));
+				assert.deepEqual(indexed, expected, `${name}: raw index must not retain orphaned entries`);
+			}
+		});
+	}
+
+	it('retains stored vectors on invalidation and maintains their graph on replacement and deletion', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip(); // Matches the existing HNSW suite's engine coverage.
+		const Vectors = table({
+			database: 'test',
+			table: 'ResidencyVectors',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', nativePlane: false, quantization: 'none' }, type: 'Array' },
+			],
+			audit: true,
+		});
+		await Vectors.put('vector', { vector: [1, 0] });
+		async function invalidate(projection, options) {
+			const context = {};
+			await transaction(context, async () => {
+				const resource = await Vectors.getResource('vector', context, { ensureLoaded: false });
+				resource._writeInvalidate('vector', projection, options);
+			});
+		}
+		await invalidate();
+		assert.deepEqual(Array.from(Vectors.primaryStore.getEntry('vector').value.vector), [1, 0]);
+		await invalidate({ vector: [0, 1] }, { residencyId: 123 });
+		const index = Vectors.indices.vector;
+		const nodeId = index.getSync('vector');
+		assert.deepEqual(Array.from(index.getSync(nodeId).vector), [0, 1]);
+		await Vectors.delete('vector');
+		assert.equal(index.getSync('vector'), undefined, 'deleting the stub must remove its graph node');
+	});
+
 	for (const [label, residents, newer, shouldInvalidate] of [
 		['an equal-version copy addressed to a resident', 'self', false, false],
 		['a newer invalidation', 'self', true, true],

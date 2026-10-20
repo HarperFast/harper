@@ -3907,17 +3907,23 @@ export function makeTable(options): TableResourceClass {
 				entry: this.#entry,
 				recordVersion: options?.version,
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				chainsStagedState: true,
 				reloadCommitBase: true,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					const txnLogKey = isRocksDB
 						? (reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime)
 						: txnTime;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
+					write.stagedEntry = undefined;
+					write.superseded = false;
+					const priorStagedOp = priorStagedWrite(write);
+					const existingRecord = priorStagedOp ? priorStagedOp.stagedEntry.value : existingEntry?.value;
 					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					// A base copy from a stub holder must not downgrade the same full record at a resident.
 					if (
 						precedesExisting < 0 ||
-						(precedesExisting === 0 &&
+						(!priorStagedOp &&
+							precedesExisting === 0 &&
 							existingEntry?.value &&
 							!(existingEntry.metadataFlags & INVALIDATED) &&
 							options?.residencyId &&
@@ -3935,15 +3941,15 @@ export function makeTable(options): TableResourceClass {
 							: null;
 					for (const name in indices) {
 						if (!partialRecord) partialRecord = {};
-						if (propertyResolvers[name]) continue;
+						if (primaryStore.encoder.resolvedAttributeNames?.has(name)) continue;
 						// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
 						const incomingValue = incomingRecord?.[name];
 						partialRecord[name] =
-							incomingValue === undefined && !options?.residencyId ? existingEntry?.value?.[name] : incomingValue;
+							incomingValue === undefined && !options?.residencyId ? existingRecord?.[name] : incomingValue;
 					}
 					if (partialRecord && primaryKey) partialRecord[primaryKey] = id;
 					// Computed indexes need the full record's inputs; keep them as committed until a full write.
-					updateIndices(id, existingEntry?.value, partialRecord, transaction && { transaction }, true);
+					updateIndices(id, existingRecord, partialRecord, transaction && { transaction }, true);
 					logger.trace?.(`Invalidating entry in ${tableName} id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 					updateRecord(
 						id,
@@ -3968,6 +3974,8 @@ export function makeTable(options): TableResourceClass {
 						},
 						'invalidate'
 					);
+					write.stagedEntry = { value: partialRecord, metadataFlags: INVALIDATED, residencyId: options?.residencyId };
+					if (priorStagedOp) priorStagedOp.superseded = true;
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					// TODO: recordDeletion?
 				},
@@ -8838,7 +8846,7 @@ export function makeTable(options): TableResourceClass {
 			const index = indices[key];
 			const isIndexing = index.isIndexing;
 			const resolver = propertyResolvers[key];
-			if (preserveComputed && resolver) continue;
+			if (preserveComputed && primaryStore.encoder.resolvedAttributeNames?.has(key)) continue;
 			// A null/undefined `record` means the record is being removed entirely (delete/eviction pass
 			// record=null), so there are NO values to index — resolve to undefined, not null. `record &&`
 			// yields `null` for record===null, which getIndexedValues() then treats as a genuine null field
@@ -9404,7 +9412,7 @@ export function makeTable(options): TableResourceClass {
 	/**
 	 * What left a delete's key without a record, for the re-delivery check (resources/DESIGN.md): the
 	 * nearest earlier write in the transaction that staged state, else the stored entry. Only writes marked
-	 * skipped are passed over, because an invalidate or relocate stores a null stub without staging it.
+	 * skipped are passed over, because a relocate can store a null stub without staging it.
 	 */
 	function removalBefore(write: any, existingEntry: Entry | undefined): Partial<Entry> | undefined {
 		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
