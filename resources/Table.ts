@@ -2344,12 +2344,15 @@ export function makeTable(options): TableResourceClass {
 											qualifiersChanged = true;
 										}
 									}
+									if (partialHistory === false && nodeState.hole === true) {
+										// a completed base copy makes the route whole again, holes included
+										nodeState.hole = undefined;
+										qualifiersChanged = true;
+									}
 									if (partialHistory !== undefined && nodeState.partialHistory !== partialHistory) {
 										nodeState.partialHistory = partialHistory;
-										// a widened route holds nothing below its position for the new tables, and a completed
-										// base copy makes the route whole again, holes included
+										// a widened route holds nothing below its position for the new tables
 										if (partialHistory) nodeState.certifiedFrom = undefined;
-										else nodeState.hole = undefined;
 										qualifiersChanged = true;
 									}
 									if (hole === true && nodeState.hole !== true) {
@@ -7568,7 +7571,7 @@ export function makeTable(options): TableResourceClass {
 					const recheck = (range: any): boolean => {
 						const unreadable = unreadableLogRefusal(range);
 						if (unreadable) return refuse(unreadable);
-						if (getAuditResumeFloor(auditStore) > lowestStart) {
+						if (getAuditResumeFloor(auditStore) > lowestStart || !plan!.retainsZeroStarts()) {
 							return refuse(
 								new ResumeHistoryUnavailableError(
 									'The history after a checkpoint boundary is no longer retained; resubscribe to resynchronize'
