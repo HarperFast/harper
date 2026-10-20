@@ -442,6 +442,9 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				await waitFor(() => listener.values().includes('b'));
 				await sleep(400);
 				assert.strictEqual(subscription.checkpoint(), undefined, 'an unsynced floor certifies nothing');
+				// the same steps with the sync available issue a token: the gate, not the timing, held it back
+				rootStore.syncWal = syncWal ?? (() => Promise.resolve());
+				await certifiedCheckpoint(T, subscription);
 				subscription.end();
 			} finally {
 				rootStore.syncWal = syncWal;

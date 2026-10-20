@@ -762,6 +762,8 @@ type TopicState = {
 	/** Unacked deliveries that arrived below a key delivered before them. */
 	lateUnacked: number;
 	consumed: number;
+	currentCheckpoint?: SubscriptionCheckpoint;
+	checkpointComputedAt?: number;
 };
 
 /** Only pruned history resets a session: a position from another generation resumes unchecked instead. */
@@ -867,6 +869,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	reservedIds = new Set<number>();
 	receivedCount = 0;
 	inFlightChanged = false;
+	/** Bumped per `advancePositions`, so each topic computes its checkpoint once per pass. */
+	advanceCount = 0;
 	/** Set while the final save waits for inbound publishes; `sealed` follows once it is taken. */
 	sealing = false;
 	savesStarted = 0;
@@ -1084,14 +1088,15 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	 * Every key below the deliveries still awaiting PUBREC, and below the last delivered key (whose
 	 * transaction may have more queued), was taken whole, so its entries collapse into `receivedThrough`.
 	 */
-	compactReceived(state: TopicState, checkpointFloor = state.subscription?.checkpointFloor?.()) {
+	compactReceived(state: TopicState, checkpointFloor?: number) {
 		let bound = state.deliveredKey;
 		if (bound === undefined) return;
 		if (state.entry.checkpoint !== undefined) {
 			// an origin can commit below the scalar watermark but never below its own certified floor, which the
 			// checkpoint's lowest boundary is at or below; without a current checkpoint nothing is compacted
-			if (checkpointFloor === undefined) return;
-			if (checkpointFloor < bound) bound = checkpointFloor;
+			const floor = checkpointFloor ?? state.subscription?.checkpointFloor?.();
+			if (floor === undefined) return;
+			if (floor < bound) bound = floor;
 		} else {
 			// a transaction that took a key below the delivered ones can still commit until progress passes it
 			const progress = state.subscription?.progress?.();
@@ -1376,6 +1381,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 	advancePositions(): boolean {
 		let changed = false;
+		this.advanceCount++;
 		for (const state of this.topics.values()) {
 			if (!(state.entry.qos > 0)) continue;
 			const next = this.nextPosition(state);
@@ -1388,10 +1394,11 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			// a checkpoint resume replays from its boundaries, below which a remote origin can sit under the scalar:
 			// once floors certify a boundary, nothing above it is pruned, from the very call that establishes the token
 			if (state.entry.checkpoint === undefined) {
-				const floor = state.subscription.checkpoint
-					? state.subscription.checkpointFloor(this.holdsOf(state))
-					: undefined;
-				this.pruneReceipts(state, floor === undefined ? next : Math.min(next, positionBefore(floor)));
+				const checkpoint = this.currentCheckpoint(state);
+				this.pruneReceipts(
+					state,
+					checkpoint === undefined ? next : Math.min(next, positionBefore(checkpointFloor(checkpoint)))
+				);
 			}
 			// only a certified position may be checked on resume
 			state.entry.databaseGeneration =
@@ -1399,10 +1406,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			changed = true;
 		}
 		for (const state of this.topics.values()) {
-			if (!(state.entry.qos > 0) || !state.verified || !state.subscription?.checkpoint) continue;
-			const holds = this.holdsOf(state);
-			if (!holds) continue;
-			const checkpoint = state.subscription.checkpoint(holds);
+			if (!(state.entry.qos > 0)) continue;
+			const checkpoint = this.currentCheckpoint(state);
 			if (!checkpoint || sameCheckpoint(checkpoint, state.entry.checkpoint)) continue;
 			// the scalar watermark was compacted against a position an origin can commit below; from the first
 			// checkpoint on, receipts are bounded by its floor only
@@ -1412,6 +1417,16 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			changed = true;
 		}
 		return changed;
+	}
+	/** The checkpoint the topic's subscription certifies now, computed once per `advancePositions` pass. */
+	currentCheckpoint(state: TopicState): SubscriptionCheckpoint | undefined {
+		if (state.checkpointComputedAt === this.advanceCount) return state.currentCheckpoint;
+		state.checkpointComputedAt = this.advanceCount;
+		state.currentCheckpoint = undefined;
+		if (!state.verified || !state.subscription?.checkpoint) return;
+		const holds = this.holdsOf(state);
+		if (holds) state.currentCheckpoint = state.subscription.checkpoint(holds);
+		return state.currentCheckpoint;
 	}
 	/** Drops receipts and resends at or below `through`, which no replay from this topic's position reaches. */
 	pruneReceipts(state: TopicState, through: number) {

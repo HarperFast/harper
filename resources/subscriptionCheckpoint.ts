@@ -59,8 +59,10 @@ export interface OriginState {
 	floor?: number;
 	/** The origin's database generation as certified; undefined from a level-1 route. */
 	generation?: string;
-	/** The origin key this node's route has been floor-only from (`0`: the origin's first entry). */
+	/** The origin key the route that certified `floor` has been floor-only from (`0`: the origin's first entry). */
 	certifiedFrom?: number;
+	/** The lowest start among this node's whole routes to the origin, floor or not: `0` means its log is whole. */
+	wholeFrom?: number;
 	fullCoverage?: boolean;
 	partialHistory?: boolean;
 	hole?: boolean;
@@ -101,13 +103,13 @@ export function membersDigest(members: Iterable<[name: string, generation: strin
 /** Reads every `[seq, peerId]` row and merges the checkpoint-grade state of each origin it names. */
 function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState> {
 	const states = new Map<number, OriginState>();
-	const wholeRoutes = new Map<number, [generation: string, certifiedFrom: number][]>();
 	const generation = getDatabaseGeneration(auditStore)?.id;
 	const own: OriginState = {
 		nodeId: 0,
 		name: getThisNodeName(),
 		generation,
 		certifiedFrom: 0,
+		wholeFrom: 0,
 		fullCoverage: true,
 	};
 	// the own floor certifies only when it was on disk before it was published (`syncWal`)
@@ -144,32 +146,22 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 				typeof node.certifiedFrom === 'number' &&
 				!(state.floor >= node.closedFloor)
 			) {
+				// the route that certified the floor is the one whose prefix below it is complete: another whole
+				// route's start says nothing about this one, since their coverage can be disjoint
 				state.floor = node.closedFloor;
 				state.generation = node.originGeneration;
+				state.certifiedFrom = node.certifiedFrom;
 				state.fullCoverage = true;
 			}
-			// a whole route's start bounds what this node holds of the origin, within one generation; a partial
-			// route, or a row of another generation, proves nothing
 			if (
 				node.fullCoverage === true &&
 				node.partialHistory !== true &&
 				node.hole !== true &&
 				typeof node.certifiedFrom === 'number' &&
-				typeof node.originGeneration === 'string'
+				!(state.wholeFrom <= node.certifiedFrom)
 			) {
-				(wholeRoutes.get(node.id) ?? wholeRoutes.set(node.id, []).get(node.id)!).push([
-					node.originGeneration,
-					node.certifiedFrom,
-				]);
+				state.wholeFrom = node.certifiedFrom;
 			}
-		}
-	}
-	for (const [nodeId, routes] of wholeRoutes) {
-		const state = states.get(nodeId)!;
-		for (const [generation, certifiedFrom] of routes) {
-			if (generation !== state.generation) continue;
-			if (!(state.certifiedFrom <= certifiedFrom)) state.certifiedFrom = certifiedFrom;
-			state.fullCoverage = true;
 		}
 	}
 	return states;
@@ -342,14 +334,15 @@ export function resolveMembership(
 export interface ResumePlan {
 	/** Inclusive start per transaction-log name; `0` for an admitted late joiner. */
 	startByLog: Map<string, number>;
+	/** Whether every log started at 0 still holds its first segment; a prune there ends a reader silently. */
+	retainsZeroStarts: () => boolean;
 	/** The per-origin boundaries the replay reports until it has handled past them, by origin name. */
 	boundaries: Map<string, MemberBoundary>;
 }
 
 /** Whether this node's log of the origin is whole from the origin's first entry and still retains it. */
 function retainsBeginning(auditStore: any, state: OriginState): boolean {
-	if (state.certifiedFrom !== 0 || state.hole || state.partialHistory) return false;
-	if (state.nodeId !== 0 && state.fullCoverage !== true) return false;
+	if (state.wholeFrom !== 0 || state.hole || state.partialHistory) return false;
 	// read, never useLog: that would create the log
 	const log = auditStore.logByName?.get(state.nodeId === 0 ? 'local' : state.name);
 	if (!log) return true; // no log yet: nothing of the origin has arrived, so nothing is behind
@@ -436,7 +429,19 @@ export function admitCheckpoint(
 			);
 		}
 	}
-	return { startByLog, boundaries };
+	const zeroStartLogs = [...startByLog].filter(([, start]) => start === 0).map(([name]) => name);
+	const retainsZeroStarts = () =>
+		zeroStartLogs.every((name) => {
+			const log = auditStore.logByName?.get(name);
+			if (!log) return true;
+			try {
+				const stats = log.getStats();
+				return stats.fileCount === 0 || stats.oldestSequenceNumber === 1;
+			} catch {
+				return false;
+			}
+		});
+	return { startByLog, boundaries, retainsZeroStarts };
 }
 
 /** Canonical scope identity: what a checkpoint's evaluation guarantee is bound to. */
