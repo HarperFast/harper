@@ -242,7 +242,7 @@ export function writeUdsMetadata(
 		yaml += `mtls: true\n`;
 		if (secureServer.mtlsRequired) yaml += `mtlsRequired: true\n`;
 	}
-	// Source CIDRs the fronting proxy admits to this socket; absent = unrestricted.
+	// absent = unrestricted
 	if (allowedSources?.length > 0) {
 		yaml += `allowedSources:\n`;
 		for (const cidr of allowedSources) yaml += `  - ${JSON.stringify(cidr)}\n`;
@@ -288,11 +288,13 @@ export function writeUdsMetadata(
 }
 
 export function publishUdsMetadata(ready: Promise<unknown>, secureServer: any, writeMetadata: () => boolean) {
-	ready.then(() => {
-		if (secureServer.networkAccessScope) watchNetworkAccess(secureServer.networkAccessScope, writeMetadata);
-		else writeMetadata();
-	});
-	secureServer.secureContextsListeners?.push(writeMetadata);
+	// A certificate change arms the watch too, so a scoped mirror is still published after a boot TLS
+	// pass that rejected `ready`; re-watching republishes.
+	const publish = secureServer.networkAccessScope
+		? () => watchNetworkAccess(secureServer.networkAccessScope, writeMetadata)
+		: writeMetadata;
+	ready.then(publish, (error) => harperLogger.error('TLS initialization failed for a UDS mirror', error));
+	secureServer.secureContextsListeners?.push(publish);
 }
 
 export function ensureSocketsDirectory(): string | undefined {
@@ -1207,7 +1209,7 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 					headers: request.headers.asObject,
 					body: request.body, // stream; inject() consumes it as the payload
 					user: request.user,
-					ip: request.ip,
+					ip: isOperationsServer ? request.ip : undefined,
 				});
 				const respHeaders = new Headers();
 				for (const [k, v] of Object.entries(injectResult.headers)) {
@@ -1669,7 +1671,7 @@ export async function bunDelegateToNodeServer(
 				headers,
 				body,
 				user: bunRequest?.user,
-				ip: bunRequest?.ip,
+				ip: bunRequest?.isOperationsServer ? bunRequest.ip : undefined,
 			});
 			const webHeaders = new globalThis.Headers();
 			for (const [k, v] of Object.entries(injectResult.headers)) {

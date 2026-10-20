@@ -21,6 +21,7 @@ function pAuthorize(req?: any, resp?: any) {
 
 import * as serverUtilities from './serverUtilities.ts';
 import { applyImpersonation } from '../../security/impersonation.ts';
+import { runWithCallerAddress } from '../../security/networkAccess.ts';
 import { createGzip, constants } from 'node:zlib';
 import { ProgressEmitter, createSSEResponseStream } from './progressEmitter.ts';
 
@@ -193,6 +194,17 @@ function authAndEnsureUserOnRequest(req?: any, resp?: any, done?: any) {
 		});
 }
 
+/**
+ * The source address set_network_access checks its new list against: a string, undefined for a local
+ * connection (the operations domain socket, which no proxy fronts), or null when it is unknown. Only the
+ * Node path has a baseRequest; Bun and uWS inject into Fastify and carry the address in a header.
+ */
+function clientAddressOf(req: any) {
+	const baseRequest = req.raw?.baseRequest;
+	if (baseRequest) return baseRequest.ip;
+	return req.headers?.[terms.INTERNAL_CLIENT_ADDRESS_HEADER] || null;
+}
+
 async function handlePostRequest(req?: any, res?: any, _bypassAuth: any = false) {
 	let operation_function;
 
@@ -203,12 +215,6 @@ async function handlePostRequest(req?: any, res?: any, _bypassAuth: any = false)
 		// code sees the body.
 		if (Object.hasOwn(req.body, 'bypass_auth')) delete req.body.bypass_auth;
 		if (Object.hasOwn(req.body, 'bypassAuth')) delete req.body.bypassAuth;
-		// Server-derived, overwriting any client value: set_network_access refuses a list excluding it.
-		// Without a baseRequest the request was injected (Bun, uWS), and only the header carries it.
-		if (req.body.operation === terms.OPERATIONS_ENUM.SET_NETWORK_ACCESS) {
-			const baseRequest = req.raw?.baseRequest;
-			req.body.hdb_client_address = baseRequest ? baseRequest.ip : req.headers?.[terms.INTERNAL_CLIENT_ADDRESS_HEADER];
-		}
 
 		operation_function = serverUtilities.chooseOperation(req.body);
 
@@ -230,7 +236,10 @@ async function handlePostRequest(req?: any, res?: any, _bypassAuth: any = false)
 			return createSSEResponseStream(emitter, () => serverUtilities.processLocalTransaction(req, operation_function));
 		}
 
-		let result: any = await serverUtilities.processLocalTransaction(req, operation_function);
+		const dispatch = () => serverUtilities.processLocalTransaction(req, operation_function);
+		let result: any = await (req.body.operation === terms.OPERATIONS_ENUM.SET_NETWORK_ACCESS
+			? runWithCallerAddress(clientAddressOf(req), dispatch)
+			: dispatch());
 		if (result instanceof Readable && (result as any).headers) {
 			for (let [name, value] of (result as any).headers) {
 				res.header(name, value);
@@ -275,6 +284,7 @@ async function handlePostRequest(req?: any, res?: any, _bypassAuth: any = false)
 }
 
 export {
+	clientAddressOf,
 	authHandler,
 	authAndEnsureUserOnRequest,
 	handlePostRequest,
