@@ -2272,6 +2272,8 @@ export class DatabaseTransaction implements Transaction {
 					if (!concurrentClosedWrite) this.timestamp = key;
 				}
 			} catch (error) {
+				// A refused write left attached would be staged by the next commit sweep after its caller saw the error.
+				if (!operation.saved) this.detachWrite(operation);
 				if (immediateCommit)
 					abortNativeTransaction(transaction, 'aborting an immediate transaction whose key was not reserved');
 				throw error;

@@ -1541,6 +1541,7 @@ describe('Record locks (harper#483)', () => {
 			const coveredUntil = () => Math.max(aheadUntil, readLocalIssuanceCeiling(LockTest.auditStore));
 			const deadline = Date.now() + 30_000;
 			while (rootStore.getMonotonicTimestamp() <= coveredUntil() && Date.now() < deadline) await delay(10);
+			assert.ok(rootStore.getMonotonicTimestamp() > coveredUntil(), 'the issuance lead cleared before the next suite');
 		});
 		const handleOf = (txn) => [...txn.recordLocks.values()][0].values().next().value;
 		const auditOf = (recordId, version) => {
