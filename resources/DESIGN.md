@@ -898,6 +898,11 @@ an LMDB root once, only while `open`, skips its dbis, and closes every alias sha
 column families are independently refcounted handles, so they are still closed one by one. Enforced by
 the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
 
+An awaited LMDB root `close()` means the environment is closed; only `closed` counts. lmdb (through 3.5.8) resolves it
+early while a read is in flight on an environment that never wrote, so a drop unlinked an open `.mdb`. `openLmdb` gives
+each root one close completion, resolved by lmdb's close callback; a close finding `closing` awaits it, and the drop
+removes the file regardless. Drop the wrapper once lmdb returns its deferred close (`lmdbCloseCompletion.test.js`).
+
 ## A RocksDB database's teardown closes every wrapper its loads and declarations opened (`databases.ts`, harper#3120)
 
 A redeclare (an insert that adds an attribute, `addAttributes`, a cluster definition) used to reopen
