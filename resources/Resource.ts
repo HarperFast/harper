@@ -1163,13 +1163,12 @@ function registerLiveSubscriptionForContext(
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
 	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
 	// A select written by authorization names no relationship, so the default allowRead's result still
-	// reads only the role's table permission; a caller's select, conditions or sort can reach related
-	// tables' permissions.
+	// reads only the role's table permission; a caller's select, or a condition or sort through a
+	// relationship, also reads related tables' permissions.
 	const sharedDecision =
 		!selectedByCaller &&
-		!admittedTarget?.conditions?.length &&
-		!admittedTarget?.sort &&
-		defaultAllowReads.has(resource.allowRead);
+		defaultAllowReads.has(resource.allowRead) &&
+		!resource.constructor._referencesRelationship?.(admittedTarget);
 	const evaluate = (principal: any) => {
 		const reTarget: any = cloneRequestTarget(admittedTarget);
 		reTarget.checkPermission = principal.role?.permission;

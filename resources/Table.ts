@@ -1005,6 +1005,7 @@ interface TableResourceClass {
 	assertFullTextRecordField(name: unknown): void;
 	_readDenial(path: readonly any[], user: User, target?: RequestTarget, index?: number): ReadDenial | undefined;
 	_authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any;
+	_referencesRelationship(target: RequestTarget): boolean;
 	isFullTextSearchEntryCurrent(entry: Entry): boolean;
 	fullTextQueryIndexes: {
 		[name: string]: {
@@ -1456,6 +1457,14 @@ function copySelection(select) {
 	if (copy.sort && typeof copy.sort === 'object') copy.sort = copySelection(copy.sort);
 	if (copy.next) copy.next = copySelection(copy.next);
 	return copy;
+}
+
+/** The conditions Table.search executes for a target, which authorization must inspect too. */
+function searchConditions(target: any): any[] {
+	const conditions = target.conditions;
+	if (!conditions) return Array.isArray(target) ? target : target[Symbol.iterator] ? Array.from(target) : [];
+	if (conditions.length === undefined) return conditions[Symbol.iterator] ? Array.from(conditions) : [conditions];
+	return conditions;
 }
 
 function selectRequestsProperty(select: any, propertyName: string): boolean {
@@ -2172,14 +2181,22 @@ export function makeTable(options): TableResourceClass {
 				return { database: databaseName, table: tableName, attribute: name };
 			return propertyResolvers[name]?.definition?.tableClass?._readDenial(path, user, target, index + 1);
 		}
+		/** Whether a condition or sort path of the target goes through a relationship. */
+		static _referencesRelationship(target: RequestTarget): boolean {
+			return hasRelationships && someRelationshipPath(target, () => true);
+		}
 		/**
 		 * A selected property narrowed by the related table's allowRead when it names a relationship, or
 		 * false when the role cannot read the related table or an attribute the selection sorts by.
 		 * Other properties are returned unchanged.
 		 */
 		static _authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any {
-			const relatedTable = propertyResolvers[property.name || property]?.definition?.tableClass;
-			if (!relatedTable) return property;
+			const relatedTable = propertyResolvers[property?.name || property]?.definition?.tableClass;
+			if (!relatedTable) {
+				if (Array.isArray(property?.select))
+					property.select = authorizeJsonSelection(property.select, user, checkPermission, context);
+				return property;
+			}
 			if (!property.name) property = { name: property };
 			// authority comes from the request being authorized, never from the selection itself
 			if (checkPermission) property.checkPermission = checkPermission;
@@ -4137,7 +4154,12 @@ export function makeTable(options): TableResourceClass {
 				(target as any)[FULL_TEXT_READ_PERMISSION] = tablePermission;
 			if (tablePermission?.read) {
 				if (tablePermission.isSuperUser) return true;
-				if (hasRelationships && target && filtersThroughUnreadableRelationship(user, target)) return false;
+				if (
+					hasRelationships &&
+					target &&
+					someRelationshipPath(target, (path) => TableResource._readDenial(path, user, target) !== undefined)
+				)
+					return false;
 				const attribute_permissions = tablePermission.attribute_permissions;
 				const select = target?.select;
 				if (attribute_permissions?.length > 0 || (hasRelationships && select)) {
@@ -7303,11 +7325,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			if (context) context.lastModified = UNCACHEABLE_TIMESTAMP;
 
-			let conditions: any = target.conditions;
-			if (!conditions) conditions = Array.isArray(target) ? target : target[Symbol.iterator] ? Array.from(target) : [];
-			else if (conditions.length === undefined) {
-				conditions = conditions[Symbol.iterator] ? Array.from(conditions) : [conditions];
-			}
+			let conditions: any = searchConditions(target);
 			const id = target.id ?? this.getId();
 			if (id) {
 				conditions = [
@@ -11634,23 +11652,40 @@ export function makeTable(options): TableResourceClass {
 			return table;
 		}
 	}
-	function filtersThroughUnreadableRelationship(user: User, target: RequestTarget): boolean {
-		const denied = (attribute: any) => {
-			const path = Array.isArray(attribute) ? attribute : [attribute];
+	/** Whether `test` holds for a condition or sort path of the target that starts at a relationship. */
+	function someRelationshipPath(target: RequestTarget, test: (path: readonly any[]) => boolean): boolean {
+		const visit = (attribute: any) => {
+			const first = Array.isArray(attribute) ? attribute[0] : attribute;
 			return (
-				propertyResolvers[path[0]]?.definition?.tableClass !== undefined &&
-				TableResource._readDenial(path, user, target) !== undefined
+				propertyResolvers[first]?.definition?.tableClass !== undefined &&
+				test(Array.isArray(attribute) ? attribute : [attribute])
 			);
 		};
-		const deniedCondition = (conditions: any[]) =>
-			conditions.some((condition) =>
-				condition.conditions ? deniedCondition(condition.conditions) : denied(condition[0] ?? condition.attribute)
-			);
-		if (Array.isArray(target.conditions) && deniedCondition(target.conditions)) return true;
+		const inConditions = (conditions: Iterable<any>) => {
+			for (const condition of conditions) {
+				if (condition?.conditions ? inConditions(condition.conditions) : visit(condition?.[0] ?? condition?.attribute))
+					return true;
+			}
+			return false;
+		};
+		if (inConditions(searchConditions(target))) return true;
 		for (let sort = typeof target.sort === 'object' && target.sort; sort; sort = sort.next) {
-			if (denied(sort.attribute)) return true;
+			if (visit(sort.attribute)) return true;
 		}
 		return false;
+	}
+	// transformEntryForSelect projects a plain JSON sub-object with this table's resolvers
+	function authorizeJsonSelection(select: any[], user: User, checkPermission: any, context: Context): any[] {
+		const permissionTarget = { checkPermission } as any;
+		const authorized = [];
+		for (const property of select) {
+			const name = property?.name ?? property;
+			if (propertyResolvers[name]?.definition?.tableClass && TableResource._readDenial([name], user, permissionTarget))
+				continue;
+			const result = TableResource._authorizeRelatedSelection(property, user, checkPermission, context);
+			if (result !== false) authorized.push(result);
+		}
+		return authorized;
 	}
 	function assertRecordField(name: unknown): void {
 		const field = Array.isArray(name) ? name[0] : name;

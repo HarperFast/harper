@@ -752,7 +752,13 @@ function getSelect({ get_attributes, hdb_user }: any, table: any) {
 		const permission = hdb_user?.role?.permission;
 		// verifyPerms has already refused unreadable relationships; this narrows the related records to
 		// the related table's readable attributes, as REST select does.
-		if (permission && !permission.super_user) {
+		if (
+			permission &&
+			!permission.super_user &&
+			get_attributes.some((property) =>
+				typeof property === 'object' ? property !== null : table.propertyResolvers?.[property]?.definition?.tableClass
+			)
+		) {
 			const context = { user: hdb_user };
 			get_attributes = get_attributes.map((property) => {
 				const authorized = table._authorizeRelatedSelection(property, hdb_user, permission, context);
