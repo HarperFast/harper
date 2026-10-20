@@ -29,7 +29,7 @@ Full-text matches use descending relevance order.
 
 ## Page through `Table.search()`
 
-Set `continuation: true` and a positive `limit` to start. The limit must not exceed `maxPageSize`.
+Set `continuation: true` and a positive integer `limit` to start. The limit must not exceed `maxPageSize`.
 Continuation mode returns a promise for a bounded array;
 ordinary searches keep their async iterable return value.
 
@@ -57,14 +57,17 @@ The returned array has three additional properties:
 | `expiresAt`    | Absolute expiry time in milliseconds since the Unix epoch           |
 
 These properties are not included when the array is serialized as JSON. Keep the same conditions
-and selected fields when resuming. The page size may change. Do not combine continuation with a
-nonzero offset, count request, another sort order, `explain`, or `sync`.
+and selected fields when resuming. The page size may change. Use the default relevance order, or explicitly sort by descending
+`$score` alone. A nonzero `offset`, another sort, or a truthy `count`, `explain`, or `sync` option
+returns 400.
 
-In an authenticated custom Resource, pass `this.getContext()` as the second argument to
-`tables.Product.search()` and set `checkPermission: true` in the query. This requests the caller's
+In a static custom Resource method, pass the method's `context` argument as the second argument
+to `tables.Product.search()`. In an instance method, use `this.getContext()` instead. See
+[Resource context](./resource-api.md#getcontext-context) for both forms. Set `checkPermission: true`
+in the query. This requests the caller's
 table and searched-source permissions; passing context alone does not request that permission gate.
 Application row filters still run on each page.
-The token does not store application callbacks such as `rowFilter` or `vectorFilter`. Supply them
+The token does not store application callbacks such as `rowFilter`. Supply them
 again on every page, together with the caller's context and permission settings.
 
 ## Page through REST
@@ -93,14 +96,16 @@ do {
 
 `Harper-Continuation-Complete` reports completion. `Harper-Continuation-Expires` contains the
 absolute expiry time in milliseconds since the Unix epoch. Completed pages omit the token and
-expiry. These headers are exposed to browser clients. Continuation responses use `Cache-Control: no-store`. JSON `QUERY` requests return the
+expiry. Harper adds these names to `Access-Control-Expose-Headers` so browser clients can read them.
+Continuation responses override the usual read-cache policy with `Cache-Control: no-store`. JSON `QUERY` requests return the
 same headers when their query body enables continuation.
 
 Read and parse the complete response body before saving its next token. A stream can fail after
 headers are sent. If that happens, retry with the previous token while the snapshot remains valid.
 
 GET and QUERY can return continuation pages. OPTIONS returns request metadata without running a
-search. Other methods reject continuation parameters with 400.
+search. HEAD is an exception to the usual GET-without-a-body behavior: it returns 400 before
+opening or advancing a continuation. Other methods also reject continuation parameters with 400.
 
 Long record IDs make continuation tokens larger. Qualification with the released library produced
 tokens of about 600 bytes for short IDs and nearly 8 KB near the supported ID limit. Review Harper's
@@ -148,6 +153,8 @@ storage:
   fullText:
     cursorTtlMilliseconds: 60000
     maxCursors: 4
+    maxRetainedQueryBytes: 8388608
+    maxPendingResponseBytes: 16777216
     maxPageSize: 1000
     requestBudgetMilliseconds: 5000
     maxRawHitsPerRequest: 100000
