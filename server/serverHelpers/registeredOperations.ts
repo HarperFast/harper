@@ -32,6 +32,7 @@ import {
 	unregisterWorkerGrantableOperation,
 } from '../../utility/operationPermissions.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
+import { operationLogViewOf, setOperationLogView } from './operationLogView.ts';
 
 const operationLog = harperLogger.loggerWithTag('operation');
 
@@ -198,6 +199,8 @@ async function executeRemoteOperation(name: string, body: any, bypassAuth: boole
 	const workerIds = registeredByWorker.get(name);
 	const forwardBody = { ...body };
 	for (const field of NON_FORWARDABLE_FIELDS) delete forwardBody[field];
+	// The view is metadata or a masked copy, never a sealed value, so it may cross threads.
+	const logView = operationLogViewOf(body)?.();
 
 	// Pick one live registering worker (rotating for spread), pruning ids whose port is gone.
 	// sendToThread returning false means the worker exited; try the next one.
@@ -209,7 +212,7 @@ async function executeRemoteOperation(name: string, body: any, bypassAuth: boole
 		try {
 			sent = threads.sendToThread(targetThreadId, {
 				type: terms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST,
-				message: { requestId, body: forwardBody, bypassAuth, originator: threadId },
+				message: { requestId, body: forwardBody, bypassAuth, originator: threadId, logView },
 			});
 		} catch (error) {
 			// Structured-clone failure (e.g. a function or native handle on the request body) is a
@@ -259,9 +262,16 @@ async function executeRemoteOperation(name: string, body: any, bypassAuth: boole
  * (permission check + processLocalTransaction) and send the result back to the main thread.
  */
 export async function operationExecuteRequestHandler(event: {
-	message: { requestId: number; body: any; bypassAuth?: boolean; originator: number };
+	message: {
+		requestId: number;
+		body: any;
+		bypassAuth?: boolean;
+		originator: number;
+		logView?: Record<string, unknown>;
+	};
 }) {
-	const { requestId, body, bypassAuth, originator } = event.message;
+	const { requestId, body, bypassAuth, originator, logView } = event.message;
+	if (logView) setOperationLogView(body, () => logView);
 	let response;
 	try {
 		if (!localDispatch) throw new ServerError('This worker thread cannot execute operations', 503);

@@ -35,7 +35,7 @@
  */
 import { Readable } from 'node:stream';
 import * as env from '../../../utility/environment/environmentManager.ts';
-import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, STREAMING_RESPONSE_OPERATIONS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
 import {
 	canRoleInvokeOperation,
@@ -193,21 +193,6 @@ const DESTRUCTIVE_OPERATIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Operations whose handler returns a raw byte stream (`Readable`) for the operations HTTP API,
- * not a value MCP can serialize. Checked and rejected BEFORE the handler runs — not after the
- * handler has already returned a stream — because these producers acquire real resources (an
- * open fd, an LMDB read transaction) before or independent of the stream being consumed, and
- * destroying an unconsumed stream does not reliably run their cleanup. Concretely,
- * `get_backup`'s LMDB path (`lmdbGetBackup.js`) opens its fd and read transaction, then returns
- * `Readable.from(asyncGenerator)`; per the async-generator spec, calling `.return()` (which
- * `.destroy()` triggers) on a generator that has never been iterated resolves it to `done` and
- * skips its body — including the `readTxn.done()` cleanup at the tail of that body — so the fd
- * and transaction leak on every rejected call. Rejecting before dispatch means the fd/txn are
- * never opened at all.
- */
-const STREAMING_OPERATIONS: ReadonlySet<string> = new Set(['get_backup', 'get_deployment_payload']);
-
-/**
  * Read-only operations carry `readOnlyHint: true`. The category is wider
  * than the default allow list (some custom-allowed ops are also read-only
  * — `system_information`, for example). Any op matching one of these
@@ -319,9 +304,9 @@ export function makeOperationToolHandler(operationName: string) {
 		// (e.g. createTokens) that trust it directly from the body.
 		delete body.bypass_auth;
 		delete body.bypassAuth;
-		if (STREAMING_OPERATIONS.has(operationName)) {
-			// Reject before the handler runs at all — see STREAMING_OPERATIONS' comment for why
-			// destroying an already-returned stream isn't sufficient cleanup for these producers.
+		if (STREAMING_RESPONSE_OPERATIONS.has(operationName)) {
+			// Reject before the handler runs at all — see STREAMING_RESPONSE_OPERATIONS' comment for
+			// why destroying an already-returned stream isn't sufficient cleanup for these producers.
 			return {
 				isError: true,
 				content: [
@@ -341,10 +326,10 @@ export function makeOperationToolHandler(operationName: string) {
 			const operationFn = chooseOperation(body);
 			const data = await processLocalTransaction({ body }, operationFn);
 			if (data instanceof Readable) {
-				// Backstop for an operation outside STREAMING_OPERATIONS unexpectedly returning a
-				// stream (e.g. a future op added without updating that set). JSON.stringify would
-				// otherwise emit stream internals, not the payload. Best-effort cleanup only — see
-				// STREAMING_OPERATIONS' comment; the real fix for a known op is adding it there.
+				// Backstop for an operation outside STREAMING_RESPONSE_OPERATIONS unexpectedly
+				// returning a stream (e.g. a future op added without updating that set). JSON.stringify
+				// would otherwise emit stream internals, not the payload. Best-effort cleanup only — see
+				// STREAMING_RESPONSE_OPERATIONS' comment; the real fix for a known op is adding it there.
 				data.destroy();
 				return {
 					isError: true,

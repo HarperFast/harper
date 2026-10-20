@@ -21,6 +21,7 @@ function pAuthorize(req, resp) {
 }
 
 const serverUtilities = require('./serverUtilities.ts');
+const { operationErrorResponse } = require('./operationErrorResponse.ts');
 const { applyImpersonation } = require('../../security/impersonation.ts');
 const { createGzip, constants } = require('zlib');
 const { ProgressEmitter, createSSEResponseStream } = require('./progressEmitter.ts');
@@ -78,24 +79,8 @@ function serverErrorHandler(error, req, resp) {
 	// Fastify passes a handler's reason through as-is, so a rejection with none arrives here as nullish.
 	error ??= handleHDBError(new Error('The request failed without an error'), undefined, 500);
 	if (!errorsLoggedByRequest.get(req)?.has(error)) harperLogger[error.logLevel || 'info'](error);
-	if (error.statusCode) {
-		if (typeof error.http_resp_msg !== 'object') {
-			const body = { error: error.http_resp_msg || error.message };
-			// surface the machine-readable signal for errors that declare retryability (e.g. a
-			// still-building index, IndexRebuildingError) so API callers can distinguish and retry
-			if (error.retryable !== undefined) {
-				body.code = error.code;
-				body.retryable = error.retryable;
-			}
-			return resp.code(error.statusCode).send(body);
-		}
-		return resp.code(error.statusCode).send(error.http_resp_msg);
-	}
-	const statusCode = error.statusCode ? error.statusCode : hdbErrors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
-	if (typeof error === 'string') {
-		return resp.code(statusCode).send({ error: error });
-	}
-	return resp.code(statusCode).send(error.message ? { error: error.message } : error);
+	const { statusCode, body } = operationErrorResponse(error);
+	return resp.code(statusCode).send(body);
 }
 
 function reqBodyValidationHandler(req, resp, done) {

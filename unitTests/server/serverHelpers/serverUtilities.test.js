@@ -286,6 +286,66 @@ describe('Test serverUtilities.js module ', () => {
 				global.threads = originalThreads;
 			}
 		});
+
+		it('carries a sealed body’s log view beside the body, never in it (harper#3288)', async function () {
+			const { setOperationLogView } = require('#src/server/serverHelpers/operationLogView');
+			const operationName = 'test_remote_log_view';
+			const sentMessages = [];
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread(_threadId, message) {
+					sentMessages.push(message);
+					return false;
+				},
+			};
+			try {
+				registeredOperations.operationRegisteredHandler({ message: { name: operationName, originator: 9_000_018 } });
+				const body = { operation: operationName, records: [{ secret: 'forwarded-secret' }] };
+				setOperationLogView(body, () => ({ operation: operationName, encrypted_operation: { mode: 'sealed' } }));
+				await assert.rejects(registeredOperations.getRemoteOperationFunction(operationName)(body));
+
+				assert.deepStrictEqual(sentMessages[0].message.logView, {
+					operation: operationName,
+					encrypted_operation: { mode: 'sealed' },
+				});
+				assert.ok(!Object.hasOwn(sentMessages[0].message.body, 'logView'));
+			} finally {
+				global.threads = originalThreads;
+			}
+		});
+
+		it('registers the forwarded log view on the worker’s copy of the body', async function () {
+			const { operationLogViewOf } = require('#src/server/serverHelpers/operationLogView');
+			const sentMessages = [];
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread(_threadId, message) {
+					sentMessages.push(message);
+					return true;
+				},
+			};
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					return () => {};
+				},
+				async processLocalTransaction({ body }) {
+					return { view: operationLogViewOf(body)?.() ?? null };
+				},
+			});
+			try {
+				const logView = { operation: 'test_worker_log_view', encrypted_operation: { mode: 'fields' } };
+				await registeredOperations.operationExecuteRequestHandler({
+					message: { requestId: 25, body: { operation: 'test_worker_log_view' }, originator: 1, logView },
+				});
+				assert.deepStrictEqual(sentMessages[0].message.result, { view: logView });
+			} finally {
+				registeredOperations.setLocalOperationDispatch({
+					chooseOperation: serverUtilities.chooseOperation,
+					processLocalTransaction: serverUtilities.processLocalTransaction,
+				});
+				global.threads = originalThreads;
+			}
+		});
 	});
 
 	// Only the receiving half is reachable here — announceRegisteredOperation returns early on the
@@ -1282,10 +1342,12 @@ describe('processLocalTransaction call-site redaction (real log file)', function
 		server.setMcpQuotaHandler = realSetMcpQuotaHandler;
 		global.operation = globals.operation = realGlobalOperation;
 		require.cache[modulePath] = originalCacheEntry;
-		registeredOperations.setLocalOperationDispatch({
+		const dispatch = {
 			chooseOperation: serverUtilities.chooseOperation,
 			processLocalTransaction: serverUtilities.processLocalTransaction,
-		});
+		};
+		registeredOperations.setLocalOperationDispatch(dispatch);
+		require('#src/components/encryptedOperation').setEncryptedOperationDispatch(dispatch);
 	});
 
 	it('fails if the call site stops redacting: neither the SSH key nor a global secret field reaches the log', async function () {

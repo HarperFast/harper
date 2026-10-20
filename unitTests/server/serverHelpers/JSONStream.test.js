@@ -177,6 +177,35 @@ describe('Test JSONStream module ', () => {
 			}));
 		});
 	});
+
+	describe('Destroying mid-stream', function () {
+		it('settles an async iterator cleanup that rejects instead of leaving it unhandled', async function () {
+			const unhandled = [];
+			const onUnhandled = (reason) => unhandled.push(reason);
+			process.prependListener('unhandledRejection', onUnhandled);
+			let returned = false;
+			try {
+				const stream = streamAsJSON({
+					[Symbol.asyncIterator]() {
+						return {
+							next: async () => (returned ? { done: true } : { done: false, value: 'x'.repeat(20000) }),
+							return: async () => {
+								returned = true;
+								throw new Error('cleanup failed');
+							},
+						};
+					},
+				});
+				await new Promise((resolve) => stream.once('data', resolve));
+				stream.destroy();
+				await delay(20);
+				assert.strictEqual(returned, true);
+				assert.deepStrictEqual(unhandled, []);
+			} finally {
+				process.removeListener('unhandledRejection', onUnhandled);
+			}
+		});
+	});
 });
 
 function delay(ms) {

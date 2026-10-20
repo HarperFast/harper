@@ -914,3 +914,27 @@ A first fork runs inside the serial root load, so later root entries wait for it
 Canary startup deadlines also apply to this first fork.
 A fork prepared before a later load failure remains durable and is adopted on retry, as for
 directory applications; only an explicit drop removes it.
+
+## A sealed operation runs exactly as its plaintext would, and nothing relays or logs its content
+
+`encrypted_operation` (`components/encryptedOperation.ts`, [#3288](https://github.com/HarperFast/harper/issues/3288))
+unseals an `enc:v1` envelope through the registered custody, runs the inner operation through the same
+`chooseOperation` → `processLocalTransaction` dispatch under the outer request's principal, and seals the result
+under the client's response key; the wire format and reference client are `utility/sealedOperation.ts`.
+
+- **No widening.** The inner body may not carry `hdb_user`, `impersonate`, `bypass_auth`/`bypassAuth` or dispatcher
+  fields; its principal is assigned, and trusted bypass is the async-context state, never a body field. Both the
+  wrapper and the inner operation pass `verifyPerms`, so a role allowlist or scoped token must list both.
+- **Plaintext only before the nonce is reserved.** Admission failures answer with constant messages; everything
+  after is sealed. Fields mode verifies the visible text's hash before parsing it, and each sealed value is bound to
+  its JSON Pointer by its AAD, so a relay can neither edit visible fields nor move a sealed value.
+- **The node logs no sealed content.** The inner body's log view (`server/serverHelpers/operationLogView.ts`) is
+  metadata in sealed mode and a masked copy in fields mode; `processLocalTransaction` and
+  `callOperationFunctionAsAwait` log the view, not the body or an error message, and the view crosses to a forwarding
+  worker beside the body, never in it. Handlers' own diagnostics are unchanged.
+- **Replay is refused per process, not exactly-once.** The nonce is reserved before dispatch and never released; a
+  restart forgets the store, so a captured envelope is replayable after a restart until its timestamp leaves the
+  window. A result that ran but cannot be delivered (stream, over `maxSize`, serialization failure) answers
+  `executed: true`, so a client never resends it blindly.
+
+Enforced by `unitTests/components/encryptedOperation.test.js` and `integrationTests/security/encrypted-operation.test.ts`.

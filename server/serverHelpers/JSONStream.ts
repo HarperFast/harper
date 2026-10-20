@@ -213,8 +213,13 @@ class JSONStream extends Readable {
 
 	_destroy(error, callback) {
 		for (const iterator of this.activeIterators) {
-			if (error) iterator.throw(error);
-			else iterator.return();
+			const closing: any = error ? iterator.throw(error) : iterator.return();
+			// an async iterator's cleanup settles later; a rejection there must not go unhandled
+			if (typeof closing?.then === 'function') {
+				closing.then(undefined, (cleanupError) =>
+					harperLogger.warn('Error closing a serialized iterator', cleanupError)
+				);
+			}
 		}
 		callback();
 	}

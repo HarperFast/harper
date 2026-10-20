@@ -179,6 +179,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [Secret custody starts before boot-time installs](components/DESIGN.md#secret-custody-starts-before-boot-time-installs) — `startSecretCustodyOnMainThread()` runs the custody built-in ahead of `installApplications()`; the root load reuses it.
 - [Startup waits for component preparation only up to `deployment.startupInstallTimeout`](components/DESIGN.md#startup-waits-for-component-preparation-only-up-to-deploymentstartupinstalltimeout) — One stalled install cannot hold listeners closed; it finishes in the background under its lock, and lock-file transitions are read-modify-write.
 - [Package applications prepare branches before importing modules](components/DESIGN.md#package-applications-prepare-branches-before-importing-modules) — Package and directory loads prepare once; nested components inherit, and root plugin callbacks cannot use a private fork.
+- [A sealed operation runs exactly as its plaintext would, and nothing relays or logs its content](components/DESIGN.md#a-sealed-operation-runs-exactly-as-its-plaintext-would-and-nothing-relays-or-logs-its-content) — `encrypted_operation` dispatches the inner operation under the outer principal with both authorized, answers in plaintext only before its nonce is reserved, logs a view rather than the body, and refuses replay per process.
 
 ## components/mcp/
 

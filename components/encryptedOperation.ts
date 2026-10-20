@@ -1,0 +1,454 @@
+/**
+ * `encrypted_operation` (harper#3288): run an operation sealed to this node's secrets custody key and
+ * seal its result, so a relay between the client and the node carries opaque bytes. Wire format and
+ * the reference client: utility/sealedOperation.ts. Invariants: components/DESIGN.md.
+ */
+import { isMainThread } from 'node:worker_threads';
+import { performance } from 'node:perf_hooks';
+import { timingSafeEqual } from 'node:crypto';
+import { Readable } from 'node:stream';
+import * as env from '../utility/environment/environmentManager.ts';
+import * as terms from '../utility/hdbTerms.ts';
+import harperLogger from '../utility/logging/harper_logger.ts';
+import { ClientError, ServerError, handleHDBError } from '../utility/errors/hdbError.ts';
+import { getSecretCustody, type SecretCustody } from '../resources/secretDecryptor.ts';
+import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
+import { parseEnvelopeFields } from '../utility/secretEnvelope.ts';
+import {
+	NONCE_BYTES,
+	OPERATION_HASH_BYTES,
+	RESPONSE_KEY_BYTES,
+	SEALED_LEAF_KEY,
+	SEALED_OPERATION_VERSION,
+	decodeBase64,
+	hashOperationText,
+	openValue,
+	pointerToken,
+	sealResponse,
+	type SealedMode,
+	type SealedResult,
+} from '../utility/sealedOperation.ts';
+import { streamAsJSON } from '../server/serverHelpers/JSONStream.ts';
+import { operationErrorResponse } from '../server/serverHelpers/operationErrorResponse.ts';
+import { setOperationLogView, type OperationLogView } from '../server/serverHelpers/operationLogView.ts';
+import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
+import * as validator from './operationsValidation.js';
+
+const operationLog = harperLogger.loggerWithTag('operation');
+const { OPERATIONS_ENUM, CONFIG_PARAMS } = terms;
+
+const DEFAULT_MAX_AGE_MS = 300_000;
+const MIN_MAX_AGE_MS = 1_000;
+const MAX_MAX_AGE_MS = 600_000;
+const DEFAULT_MAX_SIZE = 16 * 1024 * 1024;
+const MIN_MAX_SIZE = 1024;
+const MAX_MAX_SIZE = 1024 * 1024 * 1024;
+// A fields-mode envelope carries only the header: keys, nonce, timestamp, actor and a hash.
+const FIELDS_ENVELOPE_MAX_LENGTH = 16 * 1024;
+const MAX_DEPTH = 64;
+const MAX_SEALED_LEAVES = 10_000;
+const MAX_ACTOR_LENGTH = 256;
+let maxReservedNonces = 100_000;
+
+// Set by the transport or by dispatch, never by a caller; a sealed body carrying one is refused.
+const REFUSED_INNER_FIELDS = [
+	'hdb_user',
+	'hdbAuthHeader',
+	'bypass_auth',
+	'bypassAuth',
+	'impersonate',
+	'baseRequest',
+	'baseResponse',
+	'fastifyResponse',
+	'progress',
+];
+// Each authenticates its own caller or sets a session cookie; refresh-token Bearer selection also keys
+// off the outer operation name (security/fastifyAuth.ts), which here is always encrypted_operation.
+const REFUSED_INNER_OPERATIONS: ReadonlySet<string> = new Set([
+	OPERATIONS_ENUM.ENCRYPTED_OPERATION,
+	OPERATIONS_ENUM.LOGIN,
+	OPERATIONS_ENUM.LOGOUT,
+	OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN,
+	OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN,
+]);
+
+interface OperationDispatch {
+	chooseOperation(body: any, bypassAuth?: boolean): Function;
+	processLocalTransaction(req: { body: any }, operationFunction: Function): Promise<any>;
+}
+
+let dispatch: OperationDispatch | undefined;
+
+/** Injected by serverUtilities, which imports this module; a static import back would be a cycle. */
+export function setEncryptedOperationDispatch(operationDispatch: OperationDispatch): void {
+	dispatch = operationDispatch;
+}
+
+interface SealedHeader {
+	v: number;
+	rk: string;
+	nonce: string;
+	ts: number;
+	actor?: string;
+	op?: Record<string, any>;
+	oph?: string;
+}
+
+/** Refuses the sealed operation; answered inside the sealed response, never in plaintext. */
+class SealedRefusal extends Error {
+	statusCode: number;
+	constructor(message: string, statusCode = 400) {
+		super(message);
+		this.statusCode = statusCode;
+	}
+}
+
+// Nonce -> monotonic expiry. Per process: a restart forgets it (see components/DESIGN.md).
+const reservedNonces = new Map<string, number>();
+let monotonicNow = () => performance.now();
+let wallNow = () => Date.now();
+
+export function _setClocksForTest(clocks?: { monotonic?: () => number; wall?: () => number }): void {
+	monotonicNow = clocks?.monotonic ?? (() => performance.now());
+	wallNow = clocks?.wall ?? (() => Date.now());
+}
+
+export function _resetReservedNoncesForTest(limit = 100_000): void {
+	reservedNonces.clear();
+	maxReservedNonces = limit;
+}
+
+function configuredInteger(param: string, fallback: number, min: number, max: number): number {
+	const raw = env.get(param);
+	const value = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw;
+	return Number.isInteger(value) ? Math.min(Math.max(value, min), max) : fallback;
+}
+
+/** `actor` is attribution written to the log, so no control characters (no forged log lines). */
+function isLoggableActor(actor: unknown): boolean {
+	if (typeof actor !== 'string' || actor.length > MAX_ACTOR_LENGTH) return false;
+	for (let index = 0; index < actor.length; index++) {
+		const code = actor.charCodeAt(index);
+		if (code < 32 || code === 127) return false;
+	}
+	return true;
+}
+
+function isPlainObject(value: unknown): value is Record<string, any> {
+	return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function rejection(message: string, statusCode: number, detail: Record<string, unknown>) {
+	return handleHDBError(
+		new Error(message),
+		{ error: message, ...detail },
+		statusCode,
+		terms.LOG_LEVELS.INFO,
+		undefined,
+		true
+	);
+}
+
+/**
+ * Run a sealed operation. Failures before the request's nonce is reserved answer in plaintext with
+ * constant messages; everything after is sealed under the request's response key.
+ */
+export async function encryptedOperation(req: any) {
+	const maxSize = configuredInteger(
+		CONFIG_PARAMS.OPERATIONSAPI_ENCRYPTEDOPERATION_MAXSIZE,
+		DEFAULT_MAX_SIZE,
+		MIN_MAX_SIZE,
+		MAX_MAX_SIZE
+	);
+	const maxAge = configuredInteger(
+		CONFIG_PARAMS.OPERATIONSAPI_ENCRYPTEDOPERATION_MAXAGE,
+		DEFAULT_MAX_AGE_MS,
+		MIN_MAX_AGE_MS,
+		MAX_MAX_AGE_MS
+	);
+	const mode: SealedMode = req?.mode === 'fields' ? 'fields' : 'sealed';
+	const envelopeLimit = mode === 'fields' ? FIELDS_ENVELOPE_MAX_LENGTH : maxSize;
+	if (typeof req?.envelope === 'string' && req.envelope.length > envelopeLimit) {
+		throw new ClientError('The envelope exceeds the encrypted operation size limit', 413);
+	}
+	if (typeof req?.op === 'string' && req.op.length > maxSize) {
+		throw new ClientError('The operation exceeds the encrypted operation size limit', 413);
+	}
+	const validation = validator.encryptedOperationValidator(req);
+	if (validation) throw handleHDBError(validation, validation.message, 400, undefined, undefined, true);
+	if (!isMainThread) throw new ClientError('encrypted_operation runs only through the operations API', 400);
+	const bypassAuth = isOperationAuthorizationBypassed();
+	if (!req.hdb_user && !bypassAuth) throw new ClientError('encrypted_operation requires an authenticated caller', 401);
+	const custody = getSecretCustody();
+	if (!custody) throw new ClientError('secrets custody is not initialized on this node', 503);
+	if (!dispatch) throw new ServerError('encrypted_operation is not available in this process', 503);
+
+	const { header, kid } = openHeader(req.envelope, custody, mode);
+	const now = wallNow();
+	if (Math.abs(now - header.ts) > maxAge) {
+		throw rejection('The sealed request is outside the accepted time window', 400, { server_time: now });
+	}
+	reserveNonce(header.nonce, maxAge);
+
+	const responseKey = decodeBase64(header.rk, RESPONSE_KEY_BYTES);
+	const answer = await runSealedOperation(req, header, mode, kid, responseKey, maxSize, bypassAuth);
+	const sealed = sealResponse(answer.json, responseKey, header.nonce);
+	return mode === 'fields' ? { status: answer.status, encrypted_response: sealed } : { encrypted_response: sealed };
+}
+
+function openHeader(envelope: string, custody: SecretCustody, mode: SealedMode) {
+	let kid: string | undefined;
+	try {
+		kid = parseEnvelopeFields(envelope.slice(ENV_ENCRYPTED_PREFIX.length)).kid;
+	} catch {
+		throw new ClientError('The envelope is malformed', 400);
+	}
+	if (!kid) throw new ClientError("The envelope must carry a 'kid'", 400);
+	let text: string;
+	try {
+		text = custody.decrypt(envelope);
+	} catch {
+		const { fingerprint } = custody.getPublicKey();
+		if (kid !== fingerprint) {
+			throw rejection("The envelope's kid does not match this node's secrets key", 409, {
+				custody_fingerprint: fingerprint,
+			});
+		}
+		throw new ClientError('The envelope could not be decrypted', 400);
+	}
+	let header: SealedHeader;
+	try {
+		header = JSON.parse(text);
+	} catch {
+		throw new ClientError('The sealed request is malformed', 400);
+	}
+	if (
+		!isPlainObject(header) ||
+		header.v !== SEALED_OPERATION_VERSION ||
+		!decodeBase64(header.rk, RESPONSE_KEY_BYTES) ||
+		!decodeBase64(header.nonce, NONCE_BYTES) ||
+		typeof header.ts !== 'number' ||
+		!Number.isFinite(header.ts) ||
+		(header.actor !== undefined && !isLoggableActor(header.actor)) ||
+		(mode === 'fields'
+			? header.op !== undefined || !decodeBase64(header.oph, OPERATION_HASH_BYTES)
+			: header.oph !== undefined || !isPlainObject(header.op))
+	) {
+		throw new ClientError('The sealed request is malformed', 400);
+	}
+	return { header, kid };
+}
+
+/** Reserve before anything runs and never release, so a duplicate is refused even if the first failed. */
+function reserveNonce(nonce: string, maxAge: number): void {
+	const now = monotonicNow();
+	pruneReservedNonces(now, false);
+	if (reservedNonces.has(nonce)) throw new ClientError('This sealed request was already received', 409);
+	if (reservedNonces.size >= maxReservedNonces) {
+		// Expiries are in insertion order only while maxAge is unchanged; a full sweep reclaims the rest.
+		pruneReservedNonces(now, true);
+		if (reservedNonces.size >= maxReservedNonces) {
+			throw new ClientError('Too many sealed requests in the replay window; retry later', 503);
+		}
+	}
+	reservedNonces.set(nonce, now + 2 * maxAge);
+}
+
+function pruneReservedNonces(now: number, fullSweep: boolean): void {
+	for (const [nonce, expiry] of reservedNonces) {
+		if (expiry <= now) reservedNonces.delete(nonce);
+		else if (!fullSweep) break;
+	}
+}
+
+async function runSealedOperation(
+	req: any,
+	header: SealedHeader,
+	mode: SealedMode,
+	kid: string,
+	responseKey: Buffer,
+	maxSize: number,
+	bypassAuth: boolean
+): Promise<{ status: number; json: string }> {
+	const metadata: Record<string, unknown> = { mode, kid };
+	if (header.actor !== undefined) metadata.actor = header.actor;
+	let inner: Record<string, any>;
+	let logView: OperationLogView;
+	try {
+		if (mode === 'fields') {
+			inner = openFields(req.op, header, responseKey);
+			logView = () => ({ ...maskSealedLeaves(JSON.parse(req.op)), encrypted_operation: metadata });
+		} else {
+			inner = header.op;
+			visit(inner, '', 0, { sealable: false, responseKey, nonce: header.nonce, leaves: 0 });
+			logView = () => ({ operation: inner.operation, encrypted_operation: metadata });
+		}
+		checkInnerOperation(inner);
+	} catch (error) {
+		if (error instanceof SealedRefusal)
+			return sealedResult({ status: error.statusCode, body: { error: error.message } });
+		return sealedResult({ status: 500, body: { error: 'The sealed operation could not be read' } });
+	}
+
+	inner.hdb_user = req.hdb_user;
+	setOperationLogView(inner, logView);
+	let result: any;
+	try {
+		const operationFunction = dispatch.chooseOperation(inner, bypassAuth);
+		result = await dispatch.processLocalTransaction({ body: inner }, operationFunction);
+	} catch (error) {
+		const { statusCode, body } = operationErrorResponse(error);
+		return sealedResult({ status: statusCode, body });
+	}
+
+	if (result instanceof Readable || typeof result?.pipe === 'function') {
+		result.on?.('error', () =>
+			operationLog.warn(`encrypted_operation: a discarded result stream of '${inner.operation}' errored`)
+		);
+		result.destroy?.();
+		return sealedResult({
+			status: 406,
+			body: { error: `'${inner.operation}' returned a byte stream; use a direct connection` },
+			executed: true,
+		});
+	}
+	let json: string | undefined;
+	try {
+		json = await collectJSON(result, maxSize);
+	} catch {
+		return sealedResult({ status: 500, body: { error: 'The result could not be serialized' }, executed: true });
+	}
+	if (json === undefined) {
+		return sealedResult({
+			status: 413,
+			body: { error: `The result exceeds ${maxSize} bytes; use a direct connection` },
+			executed: true,
+		});
+	}
+	return { status: 200, json: `{"status":200,"body":${json}}` };
+}
+
+function sealedResult(result: SealedResult): { status: number; json: string } {
+	return { status: result.status, json: JSON.stringify(result) };
+}
+
+function openFields(opText: string, header: SealedHeader, responseKey: Buffer): Record<string, any> {
+	const expected = decodeBase64(header.oph, OPERATION_HASH_BYTES);
+	if (!timingSafeEqual(Buffer.from(hashOperationText(opText), 'base64'), expected)) {
+		throw new SealedRefusal('The visible operation does not match the sealed request');
+	}
+	let visible: unknown;
+	try {
+		visible = JSON.parse(opText);
+	} catch {
+		throw new SealedRefusal("'op' is not valid JSON");
+	}
+	if (!isPlainObject(visible) || typeof visible.operation !== 'string') {
+		throw new SealedRefusal("The visible operation must name its 'operation' in plaintext");
+	}
+	return visit(visible, '', 0, { sealable: true, responseKey, nonce: header.nonce, leaves: 0 });
+}
+
+interface WalkContext {
+	sealable: boolean;
+	responseKey: Buffer;
+	nonce: string;
+	leaves: number;
+}
+
+/**
+ * Depth-limited walk over a JSON value that opens sealed leaves (fields mode) and refuses the
+ * prototype-poisoning shapes Fastify's body parser refuses on the plaintext path, since this JSON never
+ * passed through it. An opened value is checked but not opened again: `$sealed` inside it is data.
+ */
+function visit(value: any, pointer: string, depth: number, context: WalkContext): any {
+	if (value === null || typeof value !== 'object') return value;
+	if (depth > MAX_DEPTH) throw new SealedRefusal('The operation is nested too deeply');
+	if (Array.isArray(value)) {
+		for (let index = 0; index < value.length; index++) {
+			value[index] = visit(value[index], `${pointer}/${index}`, depth + 1, context);
+		}
+		return value;
+	}
+	if (context.sealable && Object.hasOwn(value, SEALED_LEAF_KEY)) {
+		const sealed = value[SEALED_LEAF_KEY];
+		if (typeof sealed !== 'string' || Object.keys(value).length !== 1) {
+			throw new SealedRefusal(`A sealed value must be an object with only a string '${SEALED_LEAF_KEY}'`);
+		}
+		if (++context.leaves > MAX_SEALED_LEAVES) throw new SealedRefusal('The operation has too many sealed values');
+		let opened: unknown;
+		try {
+			opened = openValue(sealed, context.responseKey, context.nonce, pointer);
+		} catch {
+			throw new SealedRefusal(`The sealed value at '${pointer}' could not be opened`);
+		}
+		return visit(opened, pointer, depth, { ...context, sealable: false });
+	}
+	for (const key of Object.keys(value)) {
+		const child = value[key];
+		if (key === '__proto__' || (key === 'constructor' && isPlainObject(child) && Object.hasOwn(child, 'prototype'))) {
+			throw new SealedRefusal('The operation contains a forbidden property name');
+		}
+		value[key] = visit(child, `${pointer}/${pointerToken(key)}`, depth + 1, context);
+	}
+	return value;
+}
+
+function checkInnerOperation(inner: Record<string, any>): void {
+	if (typeof inner.operation !== 'string' || inner.operation === '') {
+		throw new SealedRefusal("The sealed operation must name an 'operation'");
+	}
+	for (const property of terms.PROTOTYPE_POLLUTING_NAMES) {
+		if (Object.hasOwn(inner, property)) throw new SealedRefusal(`Request body property "${property}" is not allowed`);
+	}
+	for (const field of REFUSED_INNER_FIELDS) {
+		if (Object.hasOwn(inner, field)) throw new SealedRefusal(`A sealed operation may not set '${field}'`);
+	}
+	if (REFUSED_INNER_OPERATIONS.has(inner.operation)) {
+		throw new SealedRefusal(`'${inner.operation}' cannot run inside encrypted_operation`);
+	}
+	if (terms.STREAMING_RESPONSE_OPERATIONS.has(inner.operation)) {
+		throw new SealedRefusal(`'${inner.operation}' returns a byte stream; use a direct connection`, 406);
+	}
+}
+
+function maskSealedLeaves(value: any): any {
+	if (value === null || typeof value !== 'object') return value;
+	if (Array.isArray(value)) return value.map(maskSealedLeaves);
+	if (Object.hasOwn(value, SEALED_LEAF_KEY)) return '[sealed]';
+	const masked: Record<string, unknown> = {};
+	for (const key of Object.keys(value)) masked[key] = maskSealedLeaves(value[key]);
+	return masked;
+}
+
+/** The JSON text `streamAsJSON` would send on the plaintext path, or undefined past `maxSize` bytes. */
+function collectJSON(result: unknown, maxSize: number): Promise<string | undefined> {
+	const stream = streamAsJSON(result);
+	return new Promise((resolve, reject) => {
+		const chunks: Buffer[] = [];
+		let size = 0;
+		let settled = false;
+		stream.on('data', (chunk: Buffer | string) => {
+			if (settled) return;
+			const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+			size += bytes.length;
+			if (size > maxSize) {
+				settled = true;
+				stream.destroy();
+				resolve(undefined);
+				return;
+			}
+			chunks.push(bytes);
+		});
+		stream.on('end', () => {
+			if (settled) return;
+			settled = true;
+			resolve(Buffer.concat(chunks).toString('utf8'));
+		});
+		stream.on('error', (error) => {
+			if (settled) return;
+			settled = true;
+			reject(error);
+		});
+	});
+}

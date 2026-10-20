@@ -51,6 +51,8 @@ import {
 } from './registeredOperations.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from './requestSanitization.ts';
+import { operationLogViewOf } from './operationLogView.ts';
+import * as encryptedOperation from '../../components/encryptedOperation.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
@@ -113,6 +115,8 @@ export const UNLOGGABLE_OPERATION_FIELDS = [
 const UNLOGGABLE_FIELDS_BY_OPERATION = new Map<string, ReadonlySet<string>>([
 	['add_ssh_key', new Set(['key'])],
 	['update_ssh_key', new Set(['key'])],
+	// fields mode: the visible operation text, whose sealed leaves would print as ciphertext
+	[terms.OPERATIONS_ENUM.ENCRYPTED_OPERATION, new Set(['op'])],
 ]);
 
 /** Callers gate this on log level: it allocates, and the operations log is often off. */
@@ -136,7 +140,8 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 				harperLogger.logLevel === terms.LOG_LEVELS.DEBUG ||
 				harperLogger.logLevel === terms.LOG_LEVELS.TRACE)
 		) {
-			operationLog.info(redactForOperationLog(req.body));
+			const logView = operationLogViewOf(req.body);
+			operationLog.info(redactForOperationLog(logView ? logView() : req.body));
 		}
 	} catch (e) {
 		operationLog.error(e);
@@ -513,8 +518,10 @@ export function getOperationFunction(json: OperationRequestBody): OperationFunct
 
 // Give the cross-thread bridge (#1736) the worker-side dispatch path for forwarded operations.
 // Injected (rather than imported there) because registeredOperations is imported above — a
-// static import back into this module would be a cycle.
+// static import back into this module would be a cycle. encrypted_operation dispatches its inner
+// operation the same way, for the same reason.
 setLocalOperationDispatch({ chooseOperation, processLocalTransaction });
+encryptedOperation.setEncryptedOperationDispatch({ chooseOperation, processLocalTransaction });
 
 _assignPackageExport('operation', operation);
 /**
@@ -797,6 +804,10 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.GET_SECRETS_PUBLIC_KEY,
 		new OperationFunctionObject(secretOperations.getSecretsPublicKey)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.ENCRYPTED_OPERATION,
+		new OperationFunctionObject(encryptedOperation.encryptedOperation)
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.ADD_OIDC_TRUST, new OperationFunctionObject(trustPolicyOperations.addOidcTrust));
 	opFuncMap.set(
