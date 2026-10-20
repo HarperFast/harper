@@ -147,6 +147,7 @@ describe('Default reads authorize @enumerable relationships against the related 
 		await assert.rejects(getAs(EnumEmp, roleWith({ EnumEmp: READ }), 'e1', undefined, 'dept'), /Unauthorized access/);
 		const restricted = roleWith({ EnumEmp: READ, EnumDept: readOnly('id', 'name') });
 		assert.deepStrictEqual(await getAs(EnumEmp, restricted, 'e1', undefined, 'dept'), { id: 'd1', name: 'Eng' });
+		assert.deepStrictEqual(await getAs(EnumEmp, restricted, 'e1', ['name', 'budget'], 'dept'), { name: 'Eng' });
 		const noOrg = roleWith({ EnumEmp: READ, EnumDept: READ });
 		assert.deepStrictEqual(await getAs(EnumEmp, noOrg, 'e1', undefined, 'dept'), {
 			id: 'd1',
