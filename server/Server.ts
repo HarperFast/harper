@@ -15,6 +15,36 @@ export type UpgradeListener = (
 	head: Buffer,
 	nextLayer: (request: Request, socket: Duplex, head: Buffer) => Promise<void>
 ) => Promise<void>;
+export interface BearerValidatorIdentity {
+	/** The Harper user the token authenticates as, resolved through `server.getUser`. */
+	username: string;
+	/** Epoch seconds the token stops authenticating; required for a token whose expiry the validator verified. */
+	authExpiresAt?: number;
+	/** `false` re-runs the validator on every request instead of caching the principal by Authorization header. */
+	authCacheable?: boolean;
+}
+export interface BearerValidatorOptions {
+	/**
+	 * Per-call deadline in milliseconds for `validator(token, request, signal)`. Defaults to `5_000`
+	 * (5s), max `60_000` (60s); the total validator-chain budget per request is capped at
+	 * `max(timeoutMs)` across active validators. Exceeding the deadline aborts `signal`
+	 * (cooperative: pass `{ signal }` to `fetch`/timers) and fails closed in place with 401.
+	 */
+	timeoutMs?: number;
+}
+export type BearerValidatorResult = BearerValidatorIdentity | null | undefined;
+export type BearerValidator = (
+	token: string,
+	request: Request,
+	signal?: AbortSignal
+) => Promise<BearerValidatorResult> | BearerValidatorResult;
+
+export interface BearerValidatorEntry {
+	readonly validator: BearerValidator;
+	readonly timeoutMs: number;
+	active: boolean;
+}
+
 /**
  * This is the central interface by which we define entry points for different server protocol plugins to listen for
  * incoming connections and requests.
@@ -31,6 +61,25 @@ export interface Server {
 	contentTypes: Map<string, ContentTypeHandler>;
 	getUser(username: string, password: string | null, request: Request): any;
 	authenticateUser(username: string, password: string, request: Request): any;
+	/**
+	 * Register a validator for Bearer tokens Harper did not issue. Harper's own operation and refresh
+	 * tokens are checked first; a token they reject is offered to each validator in registration
+	 * order (load order across applications is unspecified), on every port except a dedicated
+	 * operations API port. A validator:
+	 * - returns `null`/`undefined` for a token it does not recognize;
+	 * - returns `{ username, authExpiresAt?, authCacheable? }` to authenticate as that Harper user,
+	 *   resolved through `server.getUser` (any other field, `role` included, is refused);
+	 * - throws `credentialRejectionError(message, 401)` (or a `markCredentialRejection`-tagged error)
+	 *   for a token it recognizes but refuses. Any other throw, or exceeding `timeoutMs`, fails closed.
+	 *
+	 * The principal expires at `authExpiresAt` (epoch seconds), capped by the token's own JWT `exp`
+	 * while that is in the future; with neither, 300 s. Live subscriptions and MQTT wills it opens end
+	 * then too. The principal is cached by the Authorization header alone, so a validator whose answer
+	 * depends on the request (audience per route or host) must return `authCacheable: false`. Returns a
+	 * disposer; registrations survive `scope.close()` so in-flight requests drain, and are rolled back
+	 * if the application fails to load.
+	 */
+	registerBearerValidator(validator: BearerValidator, options?: BearerValidatorOptions): () => void;
 	operation(operation: any, context: any, authorize?: boolean): Promise<any>;
 	registerOperation(operationDefinition: OperationDefinition): void;
 	/** Register the durable MCP quota policy (opt-in). The latest registration wins; pass `undefined` to clear. */
@@ -114,7 +163,40 @@ export interface ContentTypeHandler {
 	q: number;
 }
 
+const DEFAULT_BEARER_VALIDATOR_TIMEOUT_MS = 5_000;
+const MAX_BEARER_VALIDATOR_TIMEOUT_MS = 60_000;
+const bearerValidatorEntries: BearerValidatorEntry[] = [];
+let bearerValidatorsSnapshot: readonly BearerValidatorEntry[] = Object.freeze([]);
+
+export function getBearerValidators(): readonly BearerValidatorEntry[] {
+	return bearerValidatorsSnapshot;
+}
+
 export const server: Server = {
+	registerBearerValidator(validator: BearerValidator, options?: BearerValidatorOptions): () => void {
+		if (typeof validator !== 'function') {
+			throw new TypeError('Bearer validator must be a function');
+		}
+		const timeoutMs = options?.timeoutMs ?? DEFAULT_BEARER_VALIDATOR_TIMEOUT_MS;
+		if (
+			typeof timeoutMs !== 'number' ||
+			!Number.isFinite(timeoutMs) ||
+			timeoutMs <= 0 ||
+			timeoutMs > MAX_BEARER_VALIDATOR_TIMEOUT_MS
+		) {
+			throw new TypeError('Bearer validator timeoutMs must be a positive finite number <= 60000');
+		}
+		const entry: BearerValidatorEntry = { validator, timeoutMs, active: true };
+		bearerValidatorEntries.push(entry);
+		bearerValidatorsSnapshot = Object.freeze(bearerValidatorEntries.slice());
+		return () => {
+			if (!entry.active) return;
+			// security/auth.ts evicts cached principals this entry resolved once it is inactive
+			entry.active = false;
+			bearerValidatorEntries.splice(bearerValidatorEntries.indexOf(entry), 1);
+			bearerValidatorsSnapshot = Object.freeze(bearerValidatorEntries.slice());
+		};
+	},
 	replication: {
 		replicateOperation(operation, _options) {
 			return operation.replicated

@@ -262,13 +262,14 @@ user resolution touches system-table searches (`listUsers()`) that raise a defau
 storage outage as an unknown credential and hand it to application authorization. The tag is set at
 exactly these points:
 
-| Tagged rejection                                                   | Where                                                                                        |
-| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| unknown user, inactive user, bad password                          | `security/user.ts → findAndValidateUser()`                                                   |
-| JWT syntax, signature, expiry, not-before, subject/claim rejection | `security/tokenAuthentication.ts → validateToken()`                                          |
-| refresh-token hash mismatch, malformed scoped-token claims         | `security/tokenAuthentication.ts`                                                            |
-| an `Authorization` scheme Harper does not implement                | `security/auth.ts`                                                                           |
-| a component's `server.getUser` override that tags its own error    | `markCredentialRejection` / `credentialRejectionError`, exported from `harper` (harper#2703) |
+| Tagged rejection                                                            | Where                                                                                        |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| unknown user, inactive user, bad password                                   | `security/user.ts → findAndValidateUser()`                                                   |
+| JWT syntax, signature, expiry, not-before, subject/claim rejection          | `security/tokenAuthentication.ts → validateToken()`                                          |
+| refresh-token hash mismatch, malformed scoped-token claims                  | `security/tokenAuthentication.ts`                                                            |
+| an `Authorization` scheme Harper does not implement                         | `security/auth.ts`                                                                           |
+| a component's `server.getUser` override that tags its own error             | `markCredentialRejection` / `credentialRejectionError`, exported from `harper` (harper#2703) |
+| a component's `server.registerBearerValidator` hook that tags its own error | `markCredentialRejection` / `credentialRejectionError`, exported from `harper`               |
 
 `validateToken()` separates the two in the same catch: `jsonwebtoken` reports unusable key material
 through the very same `JsonWebTokenError` type it uses for a forged token, so the public key is
@@ -277,10 +278,11 @@ as a fault. An untagged error propagates unmasked.
 
 The Bearer path's refresh-token probe follows the same rule. When operation-token validation says
 `invalid token`, authentication retries the credential as a refresh token; a fault raised by that
-retry propagates, and only an ordinary _tagged_ refresh rejection restores the original
-operation-token rejection for deferral. An in-line fail-closed response logs the original fault
-server-side and returns the same generic authentication failure a rejected credential gets, so
-internal detail never reaches an unauthenticated client.
+retry propagates, and only an ordinary _tagged_ refresh rejection lets the credential go on to the
+component validators (below) and, if they all decline, restores the original operation-token
+rejection for deferral. An in-line fail-closed response logs the original fault server-side and
+returns the same generic authentication failure a rejected credential gets, so internal detail never
+reaches an unauthenticated client.
 
 Any layer that establishes Harper owns the route then settles the deferred state before doing work:
 
@@ -348,6 +350,45 @@ Bun and uWS rebuild their headers from Fastify's reply and merge once. Node hand
 response shared-cacheable. `bridgeChainHeadersToNodeResponse()` therefore runs the same merge from a
 `writeHead` interception, the last point the header set is still mutable and the one Node also routes
 implicit headers through.
+
+### Component Bearer validators (`server.registerBearerValidator`, `security/bearerValidators.ts`)
+
+A component can accept Bearer tokens Harper did not issue (first consumer: the OAuth plugin's MCP
+authorization server). The validators run inside `authentication()`, not as `before: 'authentication'`
+middleware, so one place still decides `request.user` for every Harper-owned route. A middleware that
+set `request.user` itself would have to re-implement, per plugin, what this path enforces:
+
+- **Harper tokens win.** Validators see only a credential `validateOperationToken` and the refresh
+  probe rejected as `invalid token`; an expired Harper token never reaches them.
+- **A validator names a user; Harper supplies the role.** The contract is
+  `{ username, authExpiresAt?, authCacheable? }`, resolved through `server.getUser` (the Basic path's
+  `userRecordVersions` → `getUser` → `trackUserRecords`), so `isCurrentUser`, live-subscription
+  rechecks and MCP session refreshes treat it like any `hdb_user`. Any other field is refused, `role`
+  included. Inline-permission principals (a per-token narrowed role under the scoped-token ceiling)
+  were built and dropped: the first consumer's tokens name a Harper user and carry no permissions,
+  and a principal no `hdb_user` backs needs its own revocation at every by-name rehydration site
+  (`security/DESIGN.md`). Refusing `role` now keeps adding it later from changing an existing
+  result's meaning.
+- **Expiry is exact.** `authExpiresAt` is the validator's value capped by the token's own JWT `exp`,
+  else 300 s; it is checked again after the `server.getUser` lookup. `authorizationCache` evicts at
+  it, live subscriptions end at it (#1414), and MQTT wills persist it and are dropped past it. The
+  decoded `exp` is unverified, so it only shortens: a past `exp` on a token the validator accepted is
+  ignored for the lifetime and only keeps the principal out of the cache. A validator that verified
+  the token's expiry should return it as `authExpiresAt`.
+- **The cache key is the Authorization header.** A cached principal is served to any route and host
+  on the worker without calling the validator, so a validator whose answer depends on the request
+  (an RFC 8707 audience bound to one mount, say) must return `authCacheable: false`.
+- **Disposal is exact.** The cache records which registration resolved each principal; a hit whose
+  registration was disposed is evicted, so registering never flushes cached Basic or session users.
+  Declines are not cached: a validator caches its own.
+- **Faults fail closed.** A tagged throw is a credential rejection (deferred, or 401 on Harper-owned
+  routes); an untagged throw, a malformed return, or exceeding `timeoutMs` answers 401 in place.
+- **No minting, no operations port.** `_bearerValidator` principals cannot mint operation or refresh
+  tokens (`createTokens`), and a dedicated operations API port never runs validators or serves their
+  cache entries. On a shared port they reach `verifyPerms` like any principal.
+
+Registrations are worker-global and outlive `scope.close()`, so in-flight requests drain;
+`sequentiallyHandleApplication` disposes an application's registrations if it fails to load.
 
 ### Response Cache-Control / Vary policy (#1518, #1565)
 

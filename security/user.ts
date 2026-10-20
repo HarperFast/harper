@@ -35,6 +35,7 @@ export interface User {
 	active?: boolean;
 	username: string;
 	role?: UserRole;
+	authExpiresAt?: number;
 	__updatedtime__?: number;
 	__createdtime__?: number;
 	[other: string]: unknown;

@@ -82,6 +82,7 @@ export async function applyImpersonation(authenticatedUser: User, payload: Imper
 	// NEW principal, so dropping the marker here would let a workload token impersonate — even down to
 	// a lesser role — and then mint a 30-day credential that createTokens would no longer refuse.
 	attachWorkloadIdentityToUser(impersonatedUser, (authenticatedUser as any).fromWorkloadIdentity);
+	if ((authenticatedUser as any)._bearerValidator) (impersonatedUser as any)._bearerValidator = true;
 
 	// Re-key the synthetic role by its effective (post-downgrade) content so it can never alias
 	// another impersonation's permissions or poison a persisted role's memoized translation —

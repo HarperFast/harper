@@ -51,6 +51,12 @@ function isWillFromExpiredScopedToken(will: any): boolean {
 	return !user.authExpiresAt || user.authExpiresAt * 1000 <= Date.now();
 }
 
+/** A component Bearer token's will must not publish past the token, even though its user still exists. */
+function isWillFromExpiredBearer(will: any): boolean {
+	const exp = will?.user?.authExpiresAt;
+	return typeof exp === 'number' && exp * 1000 <= Date.now();
+}
+
 /** Drops the runtime-only pre-expanded operations Set so the permission set is storage-safe. */
 function stripRuntimePermissionState(permission: any): any {
 	if (!permission || typeof permission !== 'object') return permission;
@@ -89,6 +95,8 @@ if (getWorkerIndex() === 0) {
 					if (!isWillFromExpiredScopedToken(message)) {
 						await publishMessage(message, data, message);
 					} else warn('Dropping will from an expired scoped token', data);
+				} else if (isWillFromExpiredBearer(message)) {
+					warn('Dropping will from an expired bearer token', data);
 				} else {
 					if (message.user?.username) message.user = await (server as any).getUser(message.user.username);
 					await publishMessage(message, data, message);
@@ -190,7 +198,9 @@ export async function getSession({
 						permission: stripRuntimePermissionState(user.role.permission),
 					},
 				}
-			: { username: user?.username };
+			: user?._bearerValidator
+				? { username: user.username, authExpiresAt: user.authExpiresAt }
+				: { username: user?.username };
 		// Must be durably persisted before CONNACK is sent (getSession() resolving is what lets
 		// mqtt.ts send CONNACK). Otherwise a client that connects and then disconnects abruptly
 		// (no DISCONNECT packet) can race ahead of this write: SubscriptionsSession.disconnect()
@@ -624,7 +634,7 @@ class SubscriptionsSession {
 		try {
 			if (publish) {
 				const will = await getLastWill().get(willId, {});
-				if (will && !isWillFromExpiredScopedToken(will)) {
+				if (will && !isWillFromExpiredScopedToken(will) && !isWillFromExpiredBearer(will)) {
 					const context = this.createContext();
 					// A scoped will authorizes under its own embedded role, never the disconnecting
 					// session's user (which may be a later same-clientId reconnect).

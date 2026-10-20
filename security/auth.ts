@@ -1,7 +1,14 @@
 import { cloneUserView, getSuperUser, isCurrentUser, trackUserRecords, userRecordVersions } from './user.ts';
-import { server } from '../server/Server.ts';
+import { server, getBearerValidators, type BearerValidatorEntry } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
-import { validateOperationToken, validateRefreshToken, validateLoginToken, decodeJWT } from './tokenAuthentication.ts';
+import {
+	validateOperationToken,
+	validateRefreshToken,
+	validateLoginToken,
+	warnDeferredTokenRejection,
+	decodeJWT,
+} from './tokenAuthentication.ts';
+import { runBearerValidators, principalFromClaim } from './bearerValidators.ts';
 import { table, type Table } from '../resources/databases.ts';
 import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager.ts';
@@ -58,8 +65,12 @@ const LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED)
 const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
 
 let authorizationCache = new Map();
+// the validator that resolved a cached principal; the entry goes stale when that validator is disposed
+const validatorClaims = new WeakMap<object, BearerValidatorEntry>();
+let invalidationGeneration = 0;
 server.onInvalidatedUser(() => {
 	// TODO: Eventually we probably want to be able to invalidate individual users
+	invalidationGeneration++;
 	authorizationCache = new Map();
 });
 let bypassUser: any;
@@ -231,9 +242,14 @@ export async function authentication(request, nextHandler) {
 			// mechanism for scoped tokens, so it has to be exact, not cache-TTL-fuzzy.
 			if (
 				cachedUser &&
-				((cachedUser.authExpiresAt && cachedUser.authExpiresAt * 1000 <= Date.now()) || !isCurrentUser(cachedUser))
+				((cachedUser.authExpiresAt && cachedUser.authExpiresAt * 1000 <= Date.now()) ||
+					!isCurrentUser(cachedUser) ||
+					(cachedUser._bearerValidator && validatorClaims.get(cachedUser)?.active === false))
 			) {
 				authorizationCache.delete(authorization);
+				cachedUser = undefined;
+			}
+			if (request.isOperationsServer && (cachedUser as any)?._bearerValidator) {
 				cachedUser = undefined;
 			}
 			if (cachedUser?.role) {
@@ -250,6 +266,9 @@ export async function authentication(request, nextHandler) {
 				const credentials = authorization.slice(spaceIndex + 1);
 				let username, password;
 				let credentialDeferred = false;
+				let skipAuthorizationCache = false;
+				let validatorEntry: BearerValidatorEntry | undefined;
+				const invalidationGen = invalidationGeneration;
 				try {
 					switch (strategy) {
 						case 'Basic':
@@ -263,37 +282,67 @@ export async function authentication(request, nextHandler) {
 								const versions = userRecordVersions(username);
 								newUser = await server.getUser(username, password, request);
 								trackUserRecords(newUser, versions);
+								// cache a copy: a memoizing server.getUser hands this object to later lookups, which re-track it
+								if (newUser?.role) newUser = cloneUserView(newUser);
 							} else newUser = null;
 							break;
-						case 'Bearer':
+						case 'Bearer': {
+							const decoded = decodeJWT(credentials);
+							const hasActiveValidators = !request.isOperationsServer && getBearerValidators().length > 0;
 							try {
-								newUser = await validateOperationToken(credentials);
+								newUser = await validateOperationToken(credentials, hasActiveValidators);
 								// Capture the token's expiry so a live subscription opened with this bearer
 								// token can be revoked once it expires (#1414).
-								const decoded = decodeJWT(credentials);
 								if (newUser && decoded?.exp) newUser.authExpiresAt = decoded.exp;
 							} catch (error) {
 								if (error.message === 'invalid token') {
 									// see if they provided a refresh token; we can allow that and pass it on to operations API
-									try {
-										await validateRefreshToken(credentials);
-										return applyResponseHeaders({
-											// we explicitly declare we don't want to handle this because the operations
-											// API has its own logic for handling this
-											status: -1,
-										});
-									} catch (refreshError) {
-										// Preserve refresh-validation faults; only a tagged rejection permits falling
-										// back to the original operation-token rejection.
-										if (!isCredentialRejection(refreshError)) throw refreshError;
+									// (refresh tokens have `sub === 'refresh'`, so any other well-formed JWT skips the second verify)
+									let deferredRefreshError: any;
+									if (decoded === null || (decoded as any)?.sub === 'refresh') {
+										try {
+											await validateRefreshToken(credentials, hasActiveValidators);
+											return applyResponseHeaders({
+												// we explicitly declare we don't want to handle this because the operations
+												// API has its own logic for handling this
+												status: -1,
+											});
+										} catch (refreshError) {
+											deferredRefreshError = refreshError;
+											// Preserve refresh-validation faults; only a tagged rejection permits falling
+											// back to the original operation-token rejection.
+											if (!isCredentialRejection(refreshError)) {
+												warnDeferredTokenRejection(error);
+												throw refreshError;
+											}
+											if (refreshError.message !== 'invalid token') {
+												warnDeferredTokenRejection(error);
+												warnDeferredTokenRejection(refreshError);
+												throw error;
+											}
+										}
+									}
+
+									const claim = hasActiveValidators ? await runBearerValidators(credentials, request) : undefined;
+									if (claim) username = claim.result.username;
+									const principal = claim && (await principalFromClaim(claim, decoded, request));
+									// a validator disposed while its claim resolved no longer speaks for the token
+									if (!principal || !claim.entry.active) {
+										warnDeferredTokenRejection(error);
+										warnDeferredTokenRejection(deferredRefreshError);
 										throw error;
 									}
+									newUser = principal.user;
+									if (principal.cacheable) validatorEntry = claim.entry;
+									else skipAuthorizationCache = true;
+								} else {
+									// A non-'invalid token' rejection (e.g. expired) must propagate, not fall
+									// through to caching an undefined user (which would read as anonymous).
+									throw error;
 								}
-								// A non-'invalid token' rejection (e.g. expired) must propagate, not fall
-								// through to caching an undefined user (which would read as anonymous).
-								throw error;
 							}
 							break;
+						}
 						default:
 							throw credentialRejectionError(
 								AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL,
@@ -315,7 +364,10 @@ export async function authentication(request, nextHandler) {
 				}
 
 				if (!credentialDeferred) {
-					authorizationCache.set(authorization, newUser);
+					if (!skipAuthorizationCache && invalidationGen === invalidationGeneration) {
+						authorizationCache.set(authorization, newUser);
+						if (validatorEntry) validatorClaims.set(newUser, validatorEntry);
+					}
 					if (LOG_AUTH_SUCCESSFUL && newUser != null)
 						authAuditLog(newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
 					// Clone so verifyPerms's `role.permission = fullRolePerms` reassignment
