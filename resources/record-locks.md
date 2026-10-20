@@ -308,7 +308,20 @@ this node's record of what it has granted. Only an explicit standalone claim cle
 token's generation against the current one and drops it on a mismatch, because a generation change
 may have re-homed the key to a node that knows nothing of this token. Bounding the window between a
 delegate noticing a new generation and the new home granting is the design note's §4.3 drain —
-operator-sequenced, and harper-pro's to hold, not core's.
+operator-sequenced, and harper-pro's to hold, not core's. The home applies the rule to its own
+grants once the drain has ruled on them: the first grant request under a new generation that passes
+the quarantine expires every older grant that a drain (`quiesce`) reported outstanding on a delegate
+the new `homes[]` no longer names (`#retireOlderGrants`), and a key whose own grant qualifies is
+freed on its next request. An outstanding recall to a dropped node is what activation then has to
+cover: harper-pro activates past it only when the operator attests the node stopped
+(harper-pro#973), and otherwise waits out the lease. Expiring it serves that node's keys at once
+instead of after its delegation lease. Every other older grant keeps its lease until its release or
+expiry, including one whose recall was confirmed: that release follows the confirmation, and a
+recall can confirm early while a renewal's inherited admission still runs. For those, the lease is
+the backstop against an activation that came too early or a drain that missed a grant. A
+drain-marked grant to a dropped node has no such backstop: activating past it is the operator's
+statement that the node is stopped, so activating early there is the same operator error as fencing
+a node that is still running.
 
 **Recall revokes capability, not just admission.** Waiting for live admissions is not enough on its
 own: a caller that staged a write and then called `unlock()` leaves nothing for a drain to wait on,
@@ -601,12 +614,16 @@ publishing `g+1` is not by itself what stops `g`, and the note must not pretend 
 1. **Stage** `g+1` to every node named in `homes(g)` and in `homes(g+1)`.
 2. **Quiesce.** Each of those nodes acknowledges that it has stopped granting and stopped honouring
    delegations under `g`, and **its acknowledgement carries its `homeIncarnation`** (§5.1). A node
-   that does not acknowledge must be **externally fenced** — stopped, isolated, or powered off —
+   that does not acknowledge must be **externally fenced** — stopped or powered off —
    before the transition may continue. This is the step that carries the whole safety argument, and
    it is why the operator, not a protocol, is the authority: **declaring a node removed is not a
    fence; stopping it is.**
 3. **Drain.** Wait `maxDelegationMs + skew` after the last acknowledgement or fence. That interval
-   bounds every delegation `g` could have issued before it stopped.
+   bounds every delegation `g` could have issued before it stopped. A node's own drain proof
+   (harper-pro#856) replaces the wait for that node. A fenced node needs none, because nothing on it
+   can commit. **Isolating a node is not fencing it**: a handle it admitted can still commit, and where
+   peers keep digest agreement across a partition, as harper-pro's do, it keeps homing its own keys
+   under `g`.
 4. **Activate.** One **durable activation record**, issued by the control plane, carries the staged
    generation, the routing-capability version (§4.4), every acknowledgement with the incarnation it
    was given under, the external-fence attestations, and a not-before instant. A node answers
