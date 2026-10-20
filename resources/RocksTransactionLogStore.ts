@@ -173,6 +173,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			};
 		}
 		log.addEntry(entryBinary, options.transaction.id);
+		options.transaction.hasStagedLog = true;
 	}
 
 	isLocalOrigin(nodeId: number | undefined, relayed = false): boolean {

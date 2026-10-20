@@ -37,14 +37,24 @@ Consequences that shape the code:
   no-op. The key is `lockAttemptKey(tableId, id)` = `[LOCK_KEY_PREFIX, tableId, ...id]`, distinct from
   `getFromSource`'s bare-id single-flight lock.
 - **`RecordLockHandle`** (`recordLock.ts`) carries `store`, `key`, `keyId`, `acquiredAt`, `expiresAt`,
-  `hold`, `released`, and `expired`. `release()` is synchronous: it sets `released`, clears the lease
-  timer, and calls `store.unlock(key)`. A lease timer sets `expired = true` then calls `store.unlock()`
-  on fire; any write staged through an expired or released handle throws 409 in
-  `DatabaseTransaction.save()` before the write reaches the store — from `lockNotHeldError()`, which
-  names the actual cause, since an expired lease and a handle already released (by `unlock()` or by
-  the commit) send a caller after different bugs. `acquireRecordKey` loops
-  `tryLock` → await wake → retry until acquired or `waitMs` elapsed (then 423). The contender wait
-  timer uses `.unref()` so it does not prevent process exit.
+  `hold`, `released`, and `expired`. `release()` sets `released` and clears the lease timer; a lease
+  timer sets `expired = true` and `released = true` on fire. When no native commit is holding the
+  handle, both immediately call `store.unlock(key)` and emit `onRelease` (and `release()` returns `true`).
+  While a submitted native `RocksTransaction` is in flight (`retainForCommit(holdDeadlineMono)` called at
+  first native submission in `DatabaseTransaction.performCommit()`), `store.unlock(key)` and `onRelease`
+  are deferred (and `release()` returns `false`) until `releaseCommitHold()` releases the last commit
+  hold — at local commit landing (immediately before `releaseRecordLocks()`), in `commitOutcome`'s
+  rejection handler on any unlogged give-up, or at the commit-conflict budget boundary via
+  `noteOverdueLoggedCommit` or the handle's own hold-deadline timer when a native commit never settles
+  (harper#3236) — so a logged commit that retries past its lease cannot be overtaken by a same-node
+  contender or emit an early `LOCK_RELEASE` while within its conflict budget. `isExpired()` flips
+  immediately when the timer fires or `revokeLease()`/`release()` runs (while `isLeaseExpired()` reflects
+  only lease expiry or `revokeLease()`, not `release()`), so any new write staged through an expired or
+  released handle (and any unlogged conflict retry) throws 409 in `DatabaseTransaction.save()` or
+  `performCommit()` — from `lockNotHeldError()`, which names the actual cause, since an expired lease and
+  a handle already released (by `unlock()` or by the commit) send a caller after different bugs.
+  `acquireRecordKey` loops `tryLock` → await wake → retry until acquired or `waitMs` elapsed (then 423).
+  The contender wait timer uses `.unref()` so it does not prevent process exit.
 - **Re-entrancy is per-transaction.** `DatabaseTransaction.recordLocks` is a lazily allocated
   `Map<store, Map<keyId, handle>>` (O(1) lookup). `registerRecordLock`, `recordLockFor`, and
   `unregisterRecordLock` manage it. `lock()` consults it before calling `tryLock`; a re-entrant call
@@ -53,7 +63,8 @@ Consequences that shape the code:
 - **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the
   locked instance as `#lockHandle`; every commit or abort calls `releaseRecordLocks()`, which calls
   `handle.release()` on each non-hold handle, so a `{ hold: true }` handle outlives the transaction.
-  `unlock()` calls `handle.release()` directly (synchronous, returns false if already released).
+  `unlock()` calls `handle.release()` directly (synchronous; returns false if already released, or
+  while a commit hold defers the native unlock until the in-flight commit settles).
   `unlock()` also accepts scoped handles: it calls `release()` early and unregisters the handle so the transaction commit does
   not release it again. After any `unlock()` call `#lockWritable` is cleared so writes through the
   instance are no longer accepted. In an explicit transaction with no staged writes and no open
@@ -1124,9 +1135,12 @@ feature that has not yet been measured.
 >
 > **§2's exclusion invariant is wider than what (1) and (2) leave.** It requires a successor to
 > exclude every predecessor capability that can still admit _or commit_; what ships excludes
-> admission, and the commit half holds only up to the pre-submission expiry fence
-> (the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.performCommit()`) — a native commit that clears that fence and settles
-> afterwards is limitation (2)'s third route.
+> admission, and the commit half holds up to the pre-submission expiry fence
+> (the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.performCommit()`) plus, on the local
+> node and for clean recall drain, `KeyLockHandle`'s per-handle commit hold (`retainForCommit()` /
+> `releaseCommitHold()`, harper#3236) up to `commitConflictBudget()` — a native commit that clears the
+> pre-submission fence and settles past `commitConflictBudget()` (or after the home's own monotonic
+> delegation lease expires on a peer) is limitation (2)'s third route.
 >
 > **There is no caller-side mitigation for (2) — the obvious candidate is unreachable and, where it
 > is reachable, makes things worse.** `X-Replicate-To` / `confirm=` is meant to be super-user only —
@@ -1364,11 +1378,14 @@ drain and caps, §§5/6/8, plus the three inherited substrate defects in §11) a
 machine is gone, and the home ring, the delegation table, recall with §6 steps 1, 2 and 4, ordered
 fencing tokens, the caps, the §4.3 restart quarantine, the generation monotonicity floor and the
 transport-swap grant fence are in place, with all three inherited defects fixed. **§6 step 3 —
-settlement — is not implemented**: a recall revokes capability and then writes the release without
-waiting for a native commit already submitted to complete. That is exactly limitation (2)'s third
-route in §10, which the contract already states, so the gap is disclosed rather than hidden — but §6
-must not be read as fully implemented. Closing it means hanging the release hook off
-logical-transaction settlement rather than off the last admission unlocking. harper-pro#822 supplies
+settlement — is bounded by the commit-conflict budget (`retainForCommit(holdDeadlineMono)` /
+`releaseCommitHold()`, harper#3236)**: a submitted native `RocksTransaction` retains a commit hold
+on each write's `KeyLockHandle` until local commit landing (or `commitOutcome` rejection), so
+`revokeLease()` defers `store.unlock(key)` and `onRelease` (`LOCK_RELEASE` emission) while the
+commit is within `commitConflictBudget()`. Past `commitConflictBudget()`, `KeyLockHandle`'s
+`#holdTimer` (as well as `noteOverdueLoggedCommit` between retry attempts) releases the hold so a
+wedged conflict cannot pin the key forever, and a peer's own monotonic delegation lease (§5.2) can
+still expire first — which is limitation (2)'s third route in §10. harper-pro#822 supplies
 the operator-agreed home map and `establishLockFreshness()`; the feature is opt-in
 (`replication.recordLocks: true`). A `lockRelease` that reaches a non-coordinating thread is handed
 to the transport's `relayControlEntry` (harper-pro#977). Without the hook, a thread that has a
