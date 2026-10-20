@@ -5,6 +5,26 @@ const {
 } = require('#src/resources/indexes/fullTextSearchLimits');
 
 describe('full-text search resource limits', () => {
+	it('adopts new runtime budgets only in a fresh process and retains invalid snapshots', async function () {
+		const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		const { execFileSync } = require('node:child_process');
+		const fixture = require.resolve('./fixtures/fullTextRuntimeConfigurationProcess.cjs');
+		const unmanaged = execFileSync(process.execPath, [fixture, '256', 'unmanaged'], {
+			encoding: 'utf8',
+			timeout: 15000,
+		});
+		assert.strictEqual(JSON.parse(unmanaged.trim().split('\n').at(-1)).unmanaged, 'ready');
+		for (const value of [257, 258]) {
+			const result = execFileSync(process.execPath, [fixture, String(value)], { encoding: 'utf8', timeout: 15000 });
+			assert.strictEqual(JSON.parse(result.trim().split('\n').at(-1)).runtime.maxSearchThreads, value);
+		}
+		assert.throws(
+			() => execFileSync(process.execPath, [fixture, '0'], { encoding: 'utf8', timeout: 15000 }),
+			(error) => /positive safe integer/.test(error.stdout)
+		);
+	});
+
 	it('resolves missing settings without changing the defaults', () => {
 		assert.deepStrictEqual(resolveFullTextSearchLimits(undefined), DEFAULT_FULL_TEXT_SEARCH_LIMITS);
 		assert(Object.isFrozen(DEFAULT_FULL_TEXT_SEARCH_LIMITS.runtime));
@@ -98,6 +118,10 @@ describe('full-text search resource limits', () => {
 		for (const value of [null, 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '', '1.5', '1e3', true]) {
 			assert.throws(() => resolveFullTextSearchLimits({ maxCursors: value }), /positive safe integer/);
 			assert.throws(() => resolveFullTextSearchLimits({ maxRawHitsPerRequest: value }), /positive safe integer/);
+			assert.throws(
+				() => resolveFullTextSearchLimits({ maxRawHitsPerOrdinaryRequest: value }),
+				/positive safe integer/
+			);
 			assert.throws(
 				() => resolveFullTextSearchLimits({ runtime: { maxSearchThreads: value } }),
 				/positive safe integer/

@@ -54,6 +54,40 @@ async function terminateWorker(worker) {
 }
 
 describe('full-text process-wide continuation admission', () => {
+	it('keeps one native runtime configuration across replacement workers after a live config change', async function () {
+		this.timeout(30000);
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		const { getFullTextRuntimeConfiguration } = require('#src/resources/indexes/fullTextRuntimeConfiguration');
+		const { resolveFullTextSearchLimits } = require('#src/resources/indexes/fullTextSearchLimits');
+		const runtime = resolveFullTextSearchLimits(getFullTextRuntimeConfiguration()).runtime;
+		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+		const workers = [];
+		try {
+			for (let n = 0; n < 2; n++) {
+				if (n === 1)
+					env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, {
+						...previous,
+						runtime: { maxSearchThreads: runtime.maxSearchThreads + 1 },
+					});
+				const worker = startWorker(require.resolve('./fixtures/fullTextContinuationAdmissionWorker.js'), {
+					name: `full-text-runtime-${n}`,
+					autoRestart: false,
+					workerIndex: n,
+					threadCount: 2,
+				});
+				workers.push(worker);
+				assert.strictEqual((await response(worker)).ready, true);
+				const result = await response(worker, 'runtime-configuration');
+				assert.deepStrictEqual(result.value?.runtime, runtime, JSON.stringify(result));
+				assert.strictEqual(result.value.changedCode, 'E_RESOURCE_LIMIT');
+			}
+			assert.deepStrictEqual((await response(workers[0], 'runtime-configuration')).value.runtime, runtime);
+		} finally {
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+			for (const worker of workers) await terminateWorker(worker);
+		}
+	});
+
 	it('rejects a real worker Table.search terminal page when admission release fails', async function () {
 		this.timeout(20000);
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !(await supportsPublishedFullTextBinding())) this.skip();

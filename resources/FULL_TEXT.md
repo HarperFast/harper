@@ -100,7 +100,7 @@ Earlier bounded searches could raise `DerivedIndexLagError` when source-version 
 short page. Snapshot exhaustion now returns the eligible records instead. The explicit freshness
 checks still apply before the search and can raise a retryable lag error.
 
-Each request also has a configurable work budget: `storage.fullText.maxRawHitsPerRequest` defaults to 100,000 native hits, including the initial replay. If that budget is reached before the page fills or the snapshot ends, Harper returns a 400 error. Narrow the query or increase the configured budget; Harper does not return a successful incomplete page. This limit counts fetched hits, not every record Tantivy visits while scoring.
+Each request has a configurable work budget: `storage.fullText.maxRawHitsPerRequest` defaults to 100,000 native hits, including replay. Ordinary searches also apply `maxRawHitsPerOrdinaryRequest`, which defaults to 10,000; the lower ceiling applies. Both paths use `requestBudgetMilliseconds` (5,000 ms by default), capped by the native execution limit. If that budget is reached before the page fills or the snapshot ends, Harper returns a 400 error. Narrow the query or increase the configured budget; Harper does not return a successful incomplete page. This limit counts fetched hits, not every record Tantivy visits while scoring.
 
 Ordinary offset-based requests each use their own snapshot and may observe different index publications. Use continuation mode below to keep the original search across requests. Highlight tracing has separate record and source-byte bounds. Query construction and some native operations cannot be interrupted, so the execution budget is not a hard response-time guarantee.
 
@@ -110,9 +110,11 @@ For implementation details, see the [full-text invariants in the Resource design
 
 ## Continue a search across requests
 
-Start with `continuation: true` and a positive `limit`. Awaiting this mode returns an array with
+Call `Table.searchPage()` with a positive `limit`. It starts a new search when `continuation` is omitted or `true`, and returns a promise for an array with
 `continuation`, `complete`, and `expiresAt` properties. These properties are not part of the JSON
-array body. Ordinary searches keep their existing iterable return value.
+array body. `Table.search()` keeps its iterable return value and rejects continuation options.
+
+A custom `search()` override must explicitly implement `searchPage()` with the same row-filter policy before it can serve continuation requests. This applies to static and instance overrides, including through REST.
 
 ```js
 const query = {
@@ -121,7 +123,7 @@ const query = {
 };
 let continuation = true;
 do {
-	const page = await Product.search({ ...query, continuation });
+	const page = await Product.searchPage({ ...query, continuation });
 	for (const record of page) console.log(record);
 	continuation = page.continuation;
 } while (continuation);
@@ -175,18 +177,19 @@ change the returned rows. Continuation stays on one Harper instance; it does not
 Changing any `storage.fullText` setting also invalidates existing tokens, including when only a
 capacity setting changes. Start a new search after changing these settings.
 
-All continuation settings are under `storage.fullText`:
+Search and continuation settings are under `storage.fullText`:
 
-| Setting                     | Default | What it bounds                                      |
-| --------------------------- | ------: | --------------------------------------------------- |
-| `cursorTtlMilliseconds`     |  60,000 | Absolute lifetime; paging does not extend it        |
-| `maxCursors`                |       4 | Retained searches across all workers in one process |
-| `maxRetainedQueryBytes`     |   8 MiB | Retained native query text and identity bytes       |
-| `maxPageSize`               |   1,000 | Returned records per page                           |
-| `requestBudgetMilliseconds` |   5,000 | Freshness wait and native/page processing budget    |
-| `maxRawHitsPerRequest`      | 100,000 | Fetched native hits, including replayed batches     |
-| `maxPendingRequests`        |      32 | Pending worker requests per requesting worker       |
-| `maxPendingResponseBytes`   |  16 MiB | Reserved response bytes per requesting worker       |
+| Setting                        | Default | What it bounds                                           |
+| ------------------------------ | ------: | -------------------------------------------------------- |
+| `cursorTtlMilliseconds`        |  60,000 | Absolute lifetime; paging does not extend it             |
+| `maxCursors`                   |       4 | Retained searches across all workers in one process      |
+| `maxRetainedQueryBytes`        |   8 MiB | Retained native query text and identity bytes            |
+| `maxPageSize`                  |   1,000 | Returned records per page                                |
+| `requestBudgetMilliseconds`    |   5,000 | Freshness wait and native/page processing budget         |
+| `maxRawHitsPerRequest`         | 100,000 | Fetched native hits, including replayed batches          |
+| `maxRawHitsPerOrdinaryRequest` |  10,000 | Additional hit ceiling for searches without continuation |
+| `maxPendingRequests`           |      32 | Pending worker requests per requesting worker            |
+| `maxPendingResponseBytes`      |  16 MiB | Reserved response bytes per requesting worker            |
 
 Search work and cleanup use separate windows based on `requestBudgetMilliseconds`. With the
 5,000 ms default, a search that uses its full work budget and then closes can take about 10 seconds.
@@ -222,5 +225,5 @@ opens. Defaults allow 128 resident native indexes, 128 indexing threads, 256 sea
 of configured writer memory, 8 GiB of configured queue capacity, and 8 concurrent expensive searches.
 These limits apply together: for example, two indexing threads and 64 MiB of writer memory per index
 reach the thread and memory budgets at 64 indexes. Readers share each native index's runtime;
-retaining a reader does not allocate another index writer. Change these settings to fit the number
+retaining a reader does not allocate another index writer. Harper captures these budgets when the main thread first loads fulltext or creates a managed worker. Replacement and nested workers inherit that same configuration, even after a live configuration change. Change these settings to fit the number
 of indexes and their configured resources, and restart Harper after changing native admission limits.

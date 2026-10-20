@@ -11,7 +11,25 @@ const claims = [];
 let writer, reader, releaseGate, restoreReleasePolicy, releaseFailure, sharedProduct;
 onMessageByType('full-text-admission-test-command', async (event) => {
 	try {
-		if (event.message.operation === 'table-terminal-release') {
+		if (event.message.operation === 'runtime-configuration') {
+			const { getFullTextRuntimeConfiguration } = require('#src/resources/indexes/fullTextRuntimeConfiguration');
+			const { resolveFullTextSearchLimits } = require('#src/resources/indexes/fullTextSearchLimits');
+			const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
+			const runtime = resolveFullTextSearchLimits(getFullTextRuntimeConfiguration()).runtime;
+			const binding = await loadFullTextNativeBinding();
+			binding.configureNativeFullTextRuntime(runtime);
+			let changedCode;
+			try {
+				binding.configureNativeFullTextRuntime({ ...runtime, maxSearchThreads: runtime.maxSearchThreads + 1 });
+			} catch (error) {
+				changedCode = error.code;
+			}
+			parentPort.postMessage({
+				type: 'full-text-admission-test-response',
+				message: { originator: threadId, value: { runtime, changedCode } },
+			});
+			return;
+		} else if (event.message.operation === 'table-terminal-release') {
 			const { fullTextDerivedIndexReadiness } = require('#src/resources/derivedIndexes');
 			const { fullTextContinuationOwner } = require('#src/resources/indexes/fullTextContinuationOwner');
 			const env = require('#src/utility/environment/environmentManager');
@@ -39,9 +57,9 @@ onMessageByType('full-text-admission-test-command', async (event) => {
 					},
 					{ timeout: 10000, message: () => `Expected two indexed records, got ${JSON.stringify(indexedIds)}` }
 				);
-				const first = await Product.search({ ...query, continuation: true });
+				const first = await Product.searchPage({ ...query, continuation: true });
 				leaseId = (await fullTextContinuationOwner()).tokens.route(first.continuation).lease;
-				const last = await Product.search({
+				const last = await Product.searchPage({
 					...query,
 					continuation: first.continuation,
 					rowFilter: () => {
@@ -97,7 +115,7 @@ onMessageByType('full-text-admission-test-command', async (event) => {
 					identity: sharedProduct.fullTextQueryIndexes.catalogSearch.customIndex.configurationIdentity,
 				};
 			} else if (event.message.operation === 'table-identity-search') {
-				const page = await sharedProduct.search(event.message.query);
+				const page = await sharedProduct.searchPage(event.message.query);
 				value = {
 					ids: page.map(({ id }) => id),
 					continuation: page.continuation,

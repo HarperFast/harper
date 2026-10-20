@@ -438,7 +438,9 @@ export class FullTextQueryIndex {
 		const reader = lease.reader;
 		try {
 			const policy = resolveFullTextSearchLimits(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT));
-			const deadline = performance.now() + this.#maxSearchBudgetMilliseconds!;
+			const deadline =
+				performance.now() + Math.min(policy.requestBudgetMilliseconds, this.#maxSearchBudgetMilliseconds!);
+			const rawHitLimit = Math.min(policy.maxRawHitsPerRequest, policy.maxRawHitsPerOrdinaryRequest);
 			let rawHitsFetched = 0;
 			const maxSearchWindow = this.#maxSearchWindow!;
 			const query = condition.fullTextQuery ?? leafExpression(condition);
@@ -484,10 +486,10 @@ export class FullTextQueryIndex {
 					: autocomplete
 						? this.#maxAutocompleteResults!
 						: Math.min(rawPageSize, maxSearchWindow);
-				const remainingHits = policy.maxRawHitsPerRequest - rawHitsFetched;
+				const remainingHits = rawHitLimit - rawHitsFetched;
 				if (remainingHits <= 0)
 					throw new ClientError(
-						'Full-text search exceeded storage.fullText.maxRawHitsPerRequest; narrow the query or increase this work budget',
+						'Full-text search exceeded storage.fullText.maxRawHitsPerOrdinaryRequest or storage.fullText.maxRawHitsPerRequest; narrow the query or increase the work budget',
 						400
 					);
 				const limit = Math.min(desiredLimit, remainingHits);

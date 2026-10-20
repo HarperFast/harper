@@ -738,10 +738,8 @@ interface TableResourceInstance<Record extends object = any> {
 	_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any): any;
 	delete(target: RequestTargetOrId): Promise<boolean>;
 	_writeDelete(id: Id, options?: any): boolean;
-	search(
-		target: RequestTarget & { continuation: true | string }
-	): Promise<FullTextSearchPage<Record & Partial<RecordObject>>>;
 	search(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>>;
+	searchPage(target: RequestTarget): Promise<FullTextSearchPage<Record & Partial<RecordObject>>>;
 	subscribe(request: SubscriptionRequest): Promise<AsyncIterable<Record>>;
 	doesExist(): boolean;
 	/**
@@ -1151,6 +1149,10 @@ interface TableResourceClass {
 		reliesOnPrototype: boolean;
 	};
 	search: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	searchPage: {
 		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
 		reliesOnPrototype: boolean;
 	};
@@ -3424,7 +3426,9 @@ export function makeTable(options): TableResourceClass {
 			if (typeof target === 'string' && constructor.loadAsInstance !== false) return this.getProperty(target);
 			if (isSearchTarget(target)) {
 				// go back to the static search method so it gets a chance to override
-				return constructor.search(target, this.getContext());
+				return hasFullTextContinuationOptions(target)
+					? constructor.searchPage(target, this.getContext())
+					: constructor.search(target, this.getContext());
 			}
 			if (target && target.id == null && !target.toString()) {
 				const description = {
@@ -5802,18 +5806,36 @@ export function makeTable(options): TableResourceClass {
 		}
 
 		// #section: search-query
-		search(
-			target: RequestTarget & { continuation: true | string }
-		): Promise<FullTextSearchPage<Record & Partial<RecordObject>>>;
-		search(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>>;
-		search(
-			target: RequestTarget
-		): AsyncIterable<Record & Partial<RecordObject>> | Promise<FullTextSearchPage<Record & Partial<RecordObject>>> {
+		search(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>> {
 			if (hasFullTextContinuationOptions(target))
-				return Promise.resolve().then(
-					() => this.#search(target) as Promise<FullTextSearchPage<Record & Partial<RecordObject>>>
-				);
-			return this.#search(target);
+				throw new ClientError('Use searchPage() to request full-text continuation', 400);
+			return this.#search(target) as AsyncIterable<Record & Partial<RecordObject>>;
+		}
+
+		searchPage(target: RequestTarget): Promise<FullTextSearchPage<Record & Partial<RecordObject>>> {
+			return Promise.resolve().then(() => {
+				const constructor = this.constructor as typeof TableResource;
+				for (const [instance, base] of [
+					[this, TableResource.prototype],
+					[constructor, Resource],
+				]) {
+					let pageDeclared = false;
+					for (
+						let prototype = instance;
+						prototype && prototype !== base;
+						prototype = Object.getPrototypeOf(prototype)
+					) {
+						if (Object.hasOwn(prototype, 'searchPage')) pageDeclared = true;
+						if (Object.hasOwn(prototype, 'search') && !pageDeclared)
+							throw new ClientError('A custom search() must explicitly implement searchPage() for continuation', 400);
+					}
+				}
+				if (target?.continuation === undefined) {
+					target = cloneContinuationTarget(target ?? {});
+					target.continuation = true;
+				}
+				return this.#search(target) as Promise<FullTextSearchPage<Record & Partial<RecordObject>>>;
+			});
 		}
 
 		#search(
@@ -5864,7 +5886,12 @@ export function makeTable(options): TableResourceClass {
 							try {
 								// Initialize the real search before the static transaction settles so it reserves
 								// the same stable read snapshot as a synchronously-authorized search.
-								return { allowed: true, results: await self.search(target) };
+								return {
+									allowed: true,
+									results: await (hasFullTextContinuationOptions(target)
+										? self.searchPage(target)
+										: self.search(target)),
+								};
 							} catch (error) {
 								return { allowed: true, error };
 							}

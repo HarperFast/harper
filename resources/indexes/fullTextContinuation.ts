@@ -31,6 +31,7 @@ type Pending = {
 	reject(error: Error): void;
 	timer: NodeJS.Timeout;
 	bytes: number;
+	read: boolean;
 };
 
 const claims = new Map<string, Claim>();
@@ -87,7 +88,7 @@ async function request(command: Command, deadline: bigint, owner = 0): Promise<R
 			reject(unavailable('exceeded its request budget'));
 		}, remaining);
 		timer.unref();
-		pending.set(id, { owner, resolve, reject, timer, bytes });
+		pending.set(id, { owner, resolve, reject, timer, bytes, read: command.operation === 'read' });
 		pendingBytes += bytes;
 		try {
 			const sent = sendToThread(owner, {
@@ -132,7 +133,7 @@ export function fullTextContinuationResponse(event: { message?: Reply }, sender:
 	const waiting = pending.get(reply.id);
 	if (!waiting || waiting.owner !== sender) return;
 	removePending(reply.id);
-	if (serialize(reply).byteLength > waiting.bytes) {
+	if (!waiting.read && serialize(reply).byteLength > waiting.bytes) {
 		waiting.reject(unavailable());
 		return;
 	}
@@ -160,8 +161,10 @@ export async function fullTextContinuationRequest(event: { message?: Request }, 
 			originator: threadId,
 			error: {
 				status: error?.statusCode,
-				message: error instanceof Error ? error.message : String(error),
-				code: typeof error?.code === 'string' ? error.code : undefined,
+				message: Buffer.from(error instanceof Error ? error.message : String(error))
+					.subarray(0, 128)
+					.toString(),
+				code: typeof error?.code === 'string' ? error.code.slice(0, 32) : undefined,
 			},
 		};
 	}

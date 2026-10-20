@@ -20,6 +20,7 @@ const { setHeapSnapshotNearHeapLimit } = typeof globalThis.Bun !== 'undefined' ?
 const hdbTerms = require('../../utility/hdbTerms.ts');
 const envMgr = require('../../utility/environment/environmentManager.ts');
 const { DEFAULT_FULL_TEXT_SEARCH_LIMITS } = require('../../resources/indexes/fullTextSearchLimits.ts');
+const { getFullTextRuntimeConfiguration } = require('../../resources/indexes/fullTextRuntimeConfiguration.ts');
 const harperLogger = require('../../utility/logging/harper_logger.ts');
 const { randomBytes } = require('crypto');
 const { _assignPackageExport } = require('../../globals.js');
@@ -443,6 +444,7 @@ function registerWorkerDataProvider(name, provider) {
 // setProperty() clones each value as it records it, so this provider cannot hit the log-and-skip
 // path below — which for this one would mean spawning the worker on the on-disk config.
 registerWorkerDataProvider('configOverrides', () => envMgr.getConfigOverrides());
+registerWorkerDataProvider('fullTextRuntimeConfiguration', getFullTextRuntimeConfiguration);
 function collectProvidedWorkerData(options) {
 	if (workerDataProviders.size === 0) return undefined;
 	let provided;

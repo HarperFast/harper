@@ -80,7 +80,7 @@ exports.runBenchmark = async function (body, Product, Control, context) {
 	let result, error;
 	try {
 		const query = { ...body.query, checkPermission: true };
-		if (query.continuation !== undefined) result = await Product.search(query, context);
+		if (query.continuation !== undefined) result = await Product.searchPage(query, context);
 		else {
 			result = [];
 			for await (const record of Product.search(query, context)) result.push(record);

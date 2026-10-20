@@ -27,6 +27,7 @@ import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
+import { hasFullTextContinuationOptions } from './indexes/fullTextQueryProtocol.ts';
 
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
@@ -336,20 +337,13 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	);
 
 	static search = transactional(
-		function (resource: any, query: Query, request: Context) {
-			const result = resource.search ? resource.search(query) : missingMethod(resource, 'search');
-			return when(result, (result: any) =>
-				when(authorizeSearchResult(result, request?.user), (result: any) => {
-					const select = (request as any).select;
-					if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
-						const transform = transformForSelect(select, resource.constructor);
-						return result.map(transform);
-					}
-					return result;
-				})
-			);
-		},
+		(resource: any, query: Query, request: Context) => searchResource(resource, query, request, 'search'),
 		{ type: 'read', method: 'search', hasContent: false, syncAllowed: true }
+	);
+
+	static searchPage = transactional(
+		(resource: any, query: Query, request: Context) => searchResource(resource, query, request, 'searchPage'),
+		{ type: 'read', method: 'searchPage', hasContent: false }
 	);
 
 	static query = transactional(
@@ -379,6 +373,12 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					data.select = query.select;
 				}
 			}
+			if (
+				resource.constructor.loadAsInstance !== false &&
+				typeof resource.searchPage === 'function' &&
+				hasFullTextContinuationOptions(data)
+			)
+				return resource.constructor.searchPage(data, request);
 			const result = resource.search
 				? resource.constructor.loadAsInstance === false
 					? resource.search(query, data)
@@ -658,6 +658,20 @@ function settleElements(results: any[]): Promise<any[]> {
 		}
 		return values;
 	});
+}
+
+function searchResource(resource: any, query: Query, request: Context, method: 'search' | 'searchPage') {
+	const result = resource[method] ? resource[method](query) : missingMethod(resource, method);
+	return when(result, (result: any) =>
+		when(authorizeSearchResult(result, request?.user), (result: any) => {
+			const select = (request as any).select;
+			if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
+				const transform = transformForSelect(select, resource.constructor);
+				return result.map(transform);
+			}
+			return result;
+		})
+	);
 }
 
 /**

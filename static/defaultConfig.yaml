@@ -78,6 +78,7 @@ storage:
     maxPageSize: 1000
     requestBudgetMilliseconds: 5000
     maxRawHitsPerRequest: 100000
+    maxRawHitsPerOrdinaryRequest: 10000
     runtime:
       maxResidentIndexes: 128
       maxIndexingThreads: 128

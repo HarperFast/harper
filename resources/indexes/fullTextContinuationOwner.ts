@@ -1,6 +1,6 @@
 import { fullTextContinuationNow } from './fullTextContinuationClock.ts';
 import { threadId } from 'node:worker_threads';
-import { serialize } from 'node:v8';
+import { fullTextPageResponseBytes } from './fullTextQueryProtocol.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import { getFullTextContinuationRoutingKey, processIncarnation } from '../../server/threads/manageThreads.js';
 import { loadFullTextNativeBinding, getValidatedFullTextRuntimeInfo } from './fullTextNativeBinding.ts';
@@ -95,7 +95,7 @@ export async function executeFullTextContinuationOwner(
 			)
 				throw new ServerError('Full-text continuation response capacity is unavailable', 503);
 			const page = await leases.read(command.id, command.queryHash, command.position, deadline);
-			if (serialize(page).byteLength + 1024 > command.responseBytes)
+			if (fullTextPageResponseBytes(page) > command.responseBytes)
 				throw new ServerError('Full-text continuation response exceeded its byte budget', 503);
 			return page;
 		}

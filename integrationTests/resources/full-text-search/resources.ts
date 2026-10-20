@@ -5,10 +5,18 @@ declare const createBlob: any;
 
 export class Product extends tables.Product {
 	search(query) {
+		return super.search(this.filterQuery(query));
+	}
+
+	searchPage(query) {
+		return super.searchPage(this.filterQuery(query));
+	}
+
+	filterQuery(query) {
 		this.getContext().responseHeaders?.set('Fulltext-Test-Worker', String(threadId));
 		query.rowFilter = (record, context) =>
 			context.user?.role?.permission?.super_user || record.owner === context.user?.username;
-		return super.search(query);
+		return query;
 	}
 }
 
@@ -24,6 +32,18 @@ export class SearchProduct extends Resource {
 		for await (const record of Product.search({ ...query, checkPermission: true }, this.getContext())) {
 			records.push(record);
 		}
+		return records;
+	}
+}
+
+export class IterableSearchProduct extends Resource {
+	allowRead(user) {
+		return Boolean(user);
+	}
+
+	async get(target) {
+		const records = [];
+		for await (const record of Product.search(target, this.getContext())) records.push(record);
 		return records;
 	}
 }
@@ -80,7 +100,7 @@ export class FailingContinuationResponse extends Resource {
 	}
 
 	async get(target) {
-		const page = await tables.Product.search(
+		const page = await tables.Product.searchPage(
 			{
 				conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'pagination' }],
 				limit: 1,

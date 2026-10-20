@@ -2,6 +2,7 @@ import type { FullTextDerivedIndexEngine } from './fullTextDerivedIndex.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
+import { getFullTextRuntimeConfiguration } from './fullTextRuntimeConfiguration.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const FULLTEXT_NATIVE_ABI_VERSION = 9;
@@ -209,9 +210,11 @@ export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule>
 			const binding = await validateFullTextNativeBinding(module);
 			if (typeof binding.configureNativeFullTextRuntime !== 'function')
 				throw new TypeError('@harperfast/fulltext/native does not support process budgets');
-			binding.configureNativeFullTextRuntime(
-				resolveFullTextSearchLimits(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT)).runtime
-			);
+			const runtime = resolveFullTextSearchLimits(getFullTextRuntimeConfiguration()).runtime;
+			binding.configureNativeFullTextRuntime(runtime);
+			const requested = resolveFullTextSearchLimits(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT)).runtime;
+			if (Object.keys(runtime).some((name) => runtime[name] !== requested[name]))
+				logger.warn?.('storage.fullText.runtime changed; restart the Harper process to apply its new budgets');
 			return binding;
 		});
 		bindingPromise.catch((error) => {

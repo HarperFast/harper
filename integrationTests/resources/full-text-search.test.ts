@@ -285,6 +285,16 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		);
 	});
 
+	test('rejects paging options forwarded by an iterable custom resource', async () => {
+		const base = '/IterableSearchProduct/?catalogSearch=matches=pagination&limit(1)&select(id,title)';
+		assert.strictEqual((await request(base)).length, 1);
+		for (const suffix of ['continuation()', 'continuation(opaque-token)', 'continuation(false)', 'continuation(0)']) {
+			const error = await request(`${base}&${suffix}`, {}, 400);
+			assert.match(JSON.stringify(error), /searchPage/);
+		}
+		await search(query('pagination', {}, { limit: 1, continuation: true }), authorization, 400);
+	});
+
 	test('rejects continuation on mutating REST methods without changing records or consuming the token', async () => {
 		const base = '/Product/?catalogSearch=matches=pagination&limit(75)&select(id,title)';
 		const firstResponse = await fetch(`${ctx.harper.httpURL}${base}&continuation()`, {

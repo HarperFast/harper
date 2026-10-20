@@ -2989,62 +2989,75 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('applies one execution budget across every native result page', async () => {
-		const auditStore = sharedStore();
-		const readinessId = 'query-budget';
-		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-		let searches = 0;
-		const index = new FullTextQueryIndex({
-			Table: {
-				tableId: 1,
-				primaryStore: { getEntry: (key) => ({ version: 1, value: { title: key } }) },
-				_readTxnForContext: () => undefined,
-			},
-			definition: definition(),
-			auditStore,
-			readinessId,
-			indexId: readinessId,
-			storePath: '/unused',
-			storeName: 'unused',
-			sourceGeneration: 'generation',
-			limits: {},
-			binding: {
-				async runtimeInfo() {
-					return {
-						queryClassIsolationMinimumSearchThreads: 1,
-						limits: queryLimits({ maxSearchWindow: 10_000, maxSearchBudgetMilliseconds: 20, maxTraceRecords: 10 }),
-					};
-				},
-				async openNativeFullTextReader() {
-					return withTraversal({
-						async search(request) {
-							searches++;
-							await new Promise((resolve) => setTimeout(resolve, 25));
+	for (const configured of [false, true])
+		it(`applies the ${configured ? 'Harper' : 'native'} execution budget across every result page`, async () => {
+			const env = require('#src/utility/environment/environmentManager');
+			const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+			const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+			if (configured) env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, requestBudgetMilliseconds: 20 });
+			try {
+				const auditStore = sharedStore();
+				const readinessId = 'query-budget';
+				publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+				let searches = 0;
+				const index = new FullTextQueryIndex({
+					Table: {
+						tableId: 1,
+						primaryStore: { getEntry: (key) => ({ version: 1, value: { title: key } }) },
+						_readTxnForContext: () => undefined,
+					},
+					definition: definition(),
+					auditStore,
+					readinessId,
+					indexId: readinessId,
+					storePath: '/unused',
+					storeName: 'unused',
+					sourceGeneration: 'generation',
+					limits: {},
+					binding: {
+						async runtimeInfo() {
 							return {
-								total: 300,
-								totalRelation: 'exact',
-								hits: Array.from({ length: request.limit }, (_value, offset) => ({
-									id: nativeId(1, `record-${request.offset + offset}`),
-									version: '1',
-									score: 300 - request.offset - offset,
-								})),
+								queryClassIsolationMinimumSearchThreads: 1,
+								limits: queryLimits({
+									maxSearchWindow: 10_000,
+									maxSearchBudgetMilliseconds: configured ? 30000 : 20,
+									maxTraceRecords: 10,
+								}),
 							};
 						},
-						committedPayload: publicationPayload(),
-						async reload() {},
-						async close() {},
-					});
-				},
-			},
+						async openNativeFullTextReader() {
+							return withTraversal({
+								async search(request) {
+									searches++;
+									await new Promise((resolve) => setTimeout(resolve, 25));
+									return {
+										total: 300,
+										totalRelation: 'exact',
+										hits: Array.from({ length: request.limit }, (_value, offset) => ({
+											id: nativeId(1, `record-${request.offset + offset}`),
+											version: '1',
+											score: 300 - request.offset - offset,
+										})),
+									};
+								},
+								committedPayload: publicationPayload(),
+								async reload() {},
+								async close() {},
+							});
+						},
+					},
+				});
+				attachCurrentCoverage(index, auditStore, readinessId);
+				await assert.rejects(
+					index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}),
+					(error) => error.statusCode === 503 && /execution budget/.test(error.message)
+				);
+				assert.strictEqual(searches, 1);
+				await index.close();
+			} finally {
+				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+			}
 		});
-		attachCurrentCoverage(index, auditStore, readinessId);
-		await assert.rejects(
-			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}),
-			(error) => error.statusCode === 503 && /execution budget/.test(error.message)
-		);
-		assert.strictEqual(searches, 1);
-		await index.close();
-	});
 
 	it('returns an exhausted filtered page after traversing all raw results', async () => {
 		const auditStore = sharedStore();

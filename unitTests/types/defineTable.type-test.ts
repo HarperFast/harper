@@ -169,7 +169,10 @@ async function searchTypes() {
 	const queriedRows: AsyncIterable<TrackRecord> = await querying;
 	const unawaitedSearch: AsyncIterable<TrackRecord> = searching;
 	const unawaitedQuery: AsyncIterable<TrackRecord> = querying;
-	return { searchedRows, queriedRows, unawaitedSearch, unawaitedQuery };
+	const page = await Track.searchPage({ continuation: true });
+	const pageRows: TrackRecord[] = page;
+	const continuation: string | undefined = page.continuation;
+	return { searchedRows, queriedRows, unawaitedSearch, unawaitedQuery, pageRows, continuation };
 }
 
 // Explicit-typed forms, to show the projections stand alone too:

@@ -86,3 +86,9 @@ export function replayFullTextPrefix(
 		throw new ServerError('Full-text traversal ended before its previously read hits', 500);
 	return { skipped, remaining, hits: skipped > 0 ? page.hits.slice(skipped) : page.hits };
 }
+
+export function fullTextPageResponseBytes(page: { hits: FullTextReplayHit[]; continuation?: string }): number {
+	let bytes = 1024;
+	for (const hit of page.hits) bytes += Buffer.byteLength(hit.id) + Buffer.byteLength(hit.version ?? '') + 128;
+	return bytes + Buffer.byteLength(page.continuation ?? '');
+}
