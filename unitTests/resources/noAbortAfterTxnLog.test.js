@@ -19,7 +19,6 @@ const {
 	suspendDatabaseCommits,
 } = require('#src/resources/DatabaseTransaction');
 const { MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
-const { publishOriginFloor, reservedLocalKey } = require('#src/resources/originClosedFloor');
 const { replayLogs } = require('#src/resources/replayLogs');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { Transaction, constants } = require('@harperfast/rocksdb-js');
@@ -327,14 +326,12 @@ describe('Transactions are never aborted once durably written to the transaction
 			);
 		});
 
-		it('preserves an explicit transaction.timestamp below the origin floor across conflict retry rounds', async function () {
+		it('preserves an explicit transaction.timestamp across conflict retry rounds', async function () {
 			this.timeout(15000);
-			const recordId = id('explicit-ts-below-floor');
+			const recordId = id('explicit-ts-retry');
 			const baseNow = Date.now();
 			const explicitTs = baseNow - 2_000;
-			const originFloor = baseNow - 1_000;
 			await putWithTimestamp(AuditedA, { id: recordId, writer: 'seed', count: 0 }, baseNow - 10_000);
-			publishOriginFloor(AuditedA.primaryStore.rootStore, originFloor);
 
 			const targetDb = AuditedA.primaryStore.store.db;
 			const originalCommit = Transaction.prototype.commit;
@@ -362,18 +359,14 @@ describe('Transactions are never aborted once durably written to the transaction
 			await transaction(context, async () => {
 				context.transaction.timestamp = explicitTs;
 				await AuditedA.get(recordId, context);
-				await AuditedA.put({ id: recordId, writer: 'explicit-below-floor', count: 9 }, context);
+				await AuditedA.put({ id: recordId, writer: 'explicit-ts', count: 9 }, context);
 				commitResult = await context.transaction.commit();
 			});
 
 			assert.strictEqual(attemptCount, 2, 'must re-stage and commit on attempt 2');
 			const storedEntry = AuditedA.primaryStore.getEntry(recordId);
-			assert.strictEqual(
-				storedEntry.version,
-				explicitTs,
-				'retry round must preserve explicit record version below origin floor instead of promoting to native log key'
-			);
-			assert.strictEqual(storedEntry.value.writer, 'explicit-below-floor');
+			assert.strictEqual(storedEntry.version, explicitTs, 'retry round must preserve the explicit record version');
+			assert.strictEqual(storedEntry.value.writer, 'explicit-ts');
 			assert.strictEqual(
 				commitResult.txnTime,
 				explicitTs,
@@ -3304,7 +3297,6 @@ describe('Transactions are never aborted once durably written to the transaction
 			});
 
 			let retryRound = 0;
-			let round2Txn;
 			let round2TxnId;
 			let retryHandleAbortCount = 0;
 			Transaction.prototype.abort = function (...abortArgs) {
@@ -3320,7 +3312,6 @@ describe('Transactions are never aborted once durably written to the transaction
 					return Promise.reject(Object.assign(new Error('Transaction is busy'), { code: 'ERR_BUSY' }));
 				}
 				if (retryRound === 2) {
-					round2Txn = this;
 					round2TxnId = this.id;
 					throw new Error('simulated synchronous retry commit throw');
 				}
@@ -3338,11 +3329,6 @@ describe('Transactions are never aborted once durably written to the transaction
 				retryHandleAbortCount,
 				1,
 				'synchronous throw from transaction.commit() on retry round must abort the retry handle'
-			);
-			assert.strictEqual(
-				reservedLocalKey(round2Txn),
-				undefined,
-				'synchronous throw from transaction.commit() on retry round must release the retry handle local key reservation'
 			);
 
 			Transaction.prototype.commit = origCommit;
@@ -3412,11 +3398,6 @@ describe('Transactions are never aborted once durably written to the transaction
 					lateImmAbortCount,
 					1,
 					'synchronous throw from late immediate transaction.commit() must abort the immediate handle'
-				);
-				assert.strictEqual(
-					reservedLocalKey(lateImmTxn),
-					undefined,
-					'synchronous throw from late immediate transaction.commit() must release the immediate handle local key reservation'
 				);
 				assert.strictEqual(
 					capturedTxn.activeCommitHandles.size,
