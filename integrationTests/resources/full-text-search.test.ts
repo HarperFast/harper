@@ -799,4 +799,73 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await waitForReady('Product');
 		await waitForIds(query('waterproof'), ['one', 'two']);
 	});
+	test('rejects closeContinuation without a token before a collection DELETE', async () => {
+		const recordIds = ['close-only-one', 'close-only-two'];
+		await operation({
+			operation: 'insert',
+			schema: 'data',
+			table: 'Product',
+			records: recordIds.map((id) => ({ id, title: 'closeonlylandmine' })),
+		});
+		await waitForIds(query('closeonlylandmine'), recordIds);
+		const base = '/Product/?catalogSearch=matches=closeonlylandmine&limit(1)&select(id,title)';
+		await request(`${base}&closeContinuation()`, { method: 'DELETE' }, 400);
+		assert.deepStrictEqual(ids(await request(base.replace('limit(1)', 'limit(2)'))), recordIds);
+	});
+
+	test('rejects closeContinuation on a record PUT before changing its fields', async () => {
+		const id = 'close-only-put';
+		await operation({
+			operation: 'insert',
+			schema: 'data',
+			table: 'Product',
+			records: [{ id, title: 'unchanged close guard' }],
+		});
+		const response = await fetch(`${ctx.harper.httpURL}/Product/${id}?closeContinuation()`, {
+			method: 'PUT',
+			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ title: 'changed by an invalid close request' }),
+			signal: AbortSignal.timeout(15000),
+		});
+		const text = await response.text();
+		const record = await request(`/Product/${id}`);
+		assert.strictEqual(
+			response.status,
+			400,
+			JSON.stringify({ status: response.status, text, storedTitle: record.title })
+		);
+		assert.strictEqual(record.title, 'unchanged close guard');
+	});
+
+	for (const method of ['GET', 'QUERY']) {
+		test(`omits continuation metadata when ${method} response serialization fails`, async () => {
+			let token;
+			try {
+				const response = await fetch(`${ctx.harper.httpURL}/FailingContinuationResponse/`, {
+					method,
+					headers: { 'Authorization': authorization, 'Accept': 'text/plain', 'Content-Type': 'application/json' },
+					...(method === 'QUERY' ? { body: '{}' } : {}),
+					signal: AbortSignal.timeout(15000),
+				});
+				token = response.headers.get('Harper-Continuation');
+				let bodyError, responseText;
+				try {
+					responseText = await response.text();
+				} catch (error) {
+					bodyError = error;
+				}
+				assert.strictEqual(
+					response.status,
+					500,
+					JSON.stringify({ status: response.status, headers: [...response.headers], body: responseText })
+				);
+				assert.ifError(bodyError);
+				for (const name of ['Harper-Continuation', 'Harper-Continuation-Complete', 'Harper-Continuation-Expires'])
+					assert.strictEqual(response.headers.get(name), null, `${method} error retained ${name}`);
+			} finally {
+				if (token)
+					await request(`/FailingContinuationResponse/?continuation(${encodeURIComponent(token)})&closeContinuation()`);
+			}
+		});
+	}
 });

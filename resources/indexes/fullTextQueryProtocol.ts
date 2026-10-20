@@ -38,6 +38,15 @@ export function fullTextComparatorMode(comparator: string | undefined): NativeFu
 		: undefined;
 }
 
+export function hasFullTextContinuationOptions(
+	target: { continuation?: unknown; closeContinuation?: unknown } | undefined
+): boolean {
+	return (
+		target?.continuation !== undefined ||
+		(target?.closeContinuation !== undefined && target.closeContinuation !== false)
+	);
+}
+
 type FullTextReplayHit = { id: string; score: number; version?: string };
 
 export function fullTextReplayPrefixMatches(

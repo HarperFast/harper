@@ -10,10 +10,12 @@ import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import {
 	FullTextContinuationPage,
+	fullTextContinuationDefinitionIdentity,
 	type FullTextSearchPage,
 	FULL_TEXT_CONTINUATION_PAGE,
 	FULL_TEXT_CONTINUATION_VERSION,
 } from './indexes/fullTextContinuationPage.ts';
+import { hasFullTextContinuationOptions } from './indexes/fullTextQueryProtocol.ts';
 import { performance } from 'node:perf_hooks';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping, getNodeNameForId } from './nodeIdMapping.ts';
@@ -5643,7 +5645,7 @@ export function makeTable(options): TableResourceClass {
 
 		async delete(target: RequestTargetOrId): Promise<boolean> {
 			if (isSearchTarget(target)) {
-				if (target.continuation !== undefined)
+				if (hasFullTextContinuationOptions(target))
 					throw new ClientError('Full-text continuation cannot be used to delete records', 400);
 				let scanTarget = target;
 				if ((target as any).checkPermission && (this.constructor as any).loadAsInstance === false) {
@@ -5801,7 +5803,7 @@ export function makeTable(options): TableResourceClass {
 		search(
 			target: RequestTarget
 		): AsyncIterable<Record & Partial<RecordObject>> | Promise<FullTextSearchPage<Record & Partial<RecordObject>>> {
-			if (target?.continuation !== undefined)
+			if (hasFullTextContinuationOptions(target))
 				return Promise.resolve().then(
 					() => this.#search(target) as Promise<FullTextSearchPage<Record & Partial<RecordObject>>>
 				);
@@ -5814,7 +5816,7 @@ export function makeTable(options): TableResourceClass {
 			const context = this.getContext();
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
-			if (target.continuation !== undefined) target = cloneContinuationTarget(target);
+			if (hasFullTextContinuationOptions(target)) target = cloneContinuationTarget(target);
 			if (target.parseError) throw target.parseError;
 			if (
 				target.closeContinuation !== undefined &&
@@ -5863,7 +5865,7 @@ export function makeTable(options): TableResourceClass {
 						},
 						() => ({ allowed: false })
 					);
-					if (target.continuation !== undefined)
+					if (hasFullTextContinuationOptions(target))
 						return authorization.then((state: any) => {
 							if (state.error) throw state.error;
 							if (!state.allowed) throw new AccessViolation((context as any).user);
@@ -6133,7 +6135,7 @@ export function makeTable(options): TableResourceClass {
 			const operator = target.operator;
 			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
 			let continuationPage: FullTextContinuationPage | undefined;
-			if (target.continuation !== undefined) {
+			if (hasFullTextContinuationOptions(target)) {
 				if (!conditionsContainFullText(conditions, TableResource.fullTextIndexes))
 					throw new ClientError('Continuation requires a full-text query', 400);
 				continuationPage = new FullTextContinuationPage(target, {
@@ -6144,7 +6146,7 @@ export function makeTable(options): TableResourceClass {
 					operator: operator || 'and',
 					select: target.select,
 					user: (context as any)?.user?.username ?? null,
-					definitions: TableResource.fullTextIndexes,
+					definitions: fullTextContinuationDefinitionIdentity(TableResource.fullTextIndexes),
 				});
 				(target as any)[FULL_TEXT_CONTINUATION_PAGE] = continuationPage;
 			}

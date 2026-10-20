@@ -1,4 +1,7 @@
-import { FULL_TEXT_CONTINUATION_PAGE } from '../resources/indexes/fullTextQueryProtocol.ts';
+import {
+	FULL_TEXT_CONTINUATION_PAGE,
+	hasFullTextContinuationOptions,
+} from '../resources/indexes/fullTextQueryProtocol.ts';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -236,7 +239,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		}
 		const settledCredentialRejection = settleDeferredCredentialRejection(request);
 		if (settledCredentialRejection) return settledCredentialRejection;
-		if (method !== 'GET' && method !== 'QUERY' && method !== 'OPTIONS' && target?.continuation !== undefined)
+		if (method !== 'GET' && method !== 'QUERY' && method !== 'OPTIONS' && hasFullTextContinuationOptions(target))
 			throw new ClientError('Full-text continuation requires GET or QUERY', 400);
 		if ((resource as any)?.isCaching) {
 			const cacheControl = headersObject['cache-control'];
@@ -426,20 +429,10 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				headers.setIfNone('Age', Math.round((Date.now() - (request.lastRefreshed || lastModification)) / 1000));
 			}
 		}
-		if (Array.isArray(responseData) && (responseData as any)[FULL_TEXT_CONTINUATION_PAGE] === true) {
-			const page = responseData as any;
-			headers.set('Harper-Continuation-Complete', String(page.complete));
-			if (page.continuation) headers.set('Harper-Continuation', page.continuation);
-			if (page.expiresAt !== undefined) headers.set('Harper-Continuation-Expires', String(page.expiresAt));
-			headers.set('Cache-Control', 'no-store');
-			const exposed = headers.get('Access-Control-Expose-Headers');
-			headers.set(
-				'Access-Control-Expose-Headers',
-				[exposed, 'Harper-Continuation', 'Harper-Continuation-Complete', 'Harper-Continuation-Expires']
-					.filter(Boolean)
-					.join(', ')
-			);
-		}
+		const continuationPage =
+			Array.isArray(responseData) && (responseData as any)[FULL_TEXT_CONTINUATION_PAGE] === true
+				? (responseData as any)
+				: undefined;
 		// TODO: Handle 201 Created
 		if (responseData !== undefined) {
 			if (
@@ -457,10 +450,24 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			if (request.method === 'HEAD') {
 				discardSerializedStream(responseObject.body);
 				responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
-			} else if (request.method === 'GET') {
+			} else if (request.method === 'GET' || (request.method === 'QUERY' && continuationPage)) {
 				const startup = waitForStreamStartup(responseObject.body);
 				if (startup) await startup;
 			}
+		}
+		if (continuationPage) {
+			const page = continuationPage;
+			headers.set('Harper-Continuation-Complete', String(page.complete));
+			if (page.continuation) headers.set('Harper-Continuation', page.continuation);
+			if (page.expiresAt !== undefined) headers.set('Harper-Continuation-Expires', String(page.expiresAt));
+			headers.set('Cache-Control', 'no-store');
+			const exposed = headers.get('Access-Control-Expose-Headers');
+			headers.set(
+				'Access-Control-Expose-Headers',
+				[exposed, 'Harper-Continuation', 'Harper-Continuation-Complete', 'Harper-Continuation-Expires']
+					.filter(Boolean)
+					.join(', ')
+			);
 		}
 		// A collection read's count headers vary by the request's `Prefer` value; serialize() just reset
 		// `Vary`, so declare it here (after serialization) — otherwise a shared cache could serve count
@@ -514,6 +521,9 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			'Content-Range',
 			'Range-Unit',
 			'Preference-Applied',
+			'Harper-Continuation',
+			'Harper-Continuation-Complete',
+			'Harper-Continuation-Expires',
 			'Age',
 		])
 			headers.delete(header);

@@ -67,3 +67,36 @@ export class WriteSearchBlob extends Resource {
 		return { id: body.id };
 	}
 }
+
+export class FailingContinuationResponse extends Resource {
+	static loadAsInstance = false;
+
+	search(target, body) {
+		return this.get({ ...target, ...body });
+	}
+
+	allowRead(user) {
+		return Boolean(user?.role?.permission?.super_user);
+	}
+
+	async get(target) {
+		const page = await tables.Product.search(
+			{
+				conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'pagination' }],
+				limit: 1,
+				select: ['id'],
+				continuation: target.continuation ?? true,
+				closeContinuation: target.closeContinuation,
+			},
+			this.getContext()
+		);
+		if (page.length > 0)
+			page[0] = {
+				id: page[0].id,
+				toString() {
+					throw new Error('Continuation response serialization failed');
+				},
+			};
+		return page;
+	}
+}

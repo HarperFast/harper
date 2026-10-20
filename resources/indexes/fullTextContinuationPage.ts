@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { FullTextDefinition } from '../fullTextSchema.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import { type FullTextSearchLimits, resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
 import { fullTextContinuationDeadline } from './fullTextContinuationClock.ts';
@@ -56,9 +57,7 @@ export class FullTextContinuationPage {
 		this.close = target.closeContinuation === true;
 		this.token = target.continuation;
 		this.limit = target.limit;
-		this.queryHash = createHash('sha256')
-			.update(JSON.stringify(canonical({ query: identity, limits: policy }, new Set())))
-			.digest('hex');
+		this.queryHash = identityHash({ query: identity, limits: policy });
 		this.ready.promise.catch(() => {});
 	}
 
@@ -72,6 +71,23 @@ export class FullTextContinuationPage {
 		});
 		return this.records as FullTextSearchPage;
 	}
+}
+
+const definitionIdentities = new WeakMap<readonly FullTextDefinition[], string>();
+
+export function fullTextContinuationDefinitionIdentity(definitions: readonly FullTextDefinition[]): string {
+	let identity = definitionIdentities.get(definitions);
+	if (identity === undefined) {
+		identity = identityHash(definitions);
+		definitionIdentities.set(definitions, identity);
+	}
+	return identity;
+}
+
+function identityHash(value: unknown): string {
+	return createHash('sha256')
+		.update(JSON.stringify(canonical(value, new Set())))
+		.digest('hex');
 }
 
 function canonical(value: unknown, seen: Set<object>): unknown {

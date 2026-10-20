@@ -1,6 +1,9 @@
 require('../testUtils');
 const assert = require('node:assert');
-const { FullTextContinuationPage } = require('#src/resources/indexes/fullTextContinuationPage');
+const {
+	FullTextContinuationPage,
+	fullTextContinuationDefinitionIdentity,
+} = require('#src/resources/indexes/fullTextContinuationPage');
 const { DEFAULT_FULL_TEXT_SEARCH_LIMITS } = require('#src/resources/indexes/fullTextSearchLimits');
 
 const target = { continuation: true, limit: 3 };
@@ -36,6 +39,43 @@ describe('full-text visible continuation pages', () => {
 				(error) => error.statusCode === 400
 			);
 	});
+	it('reuses definition fingerprints and recomputes them for replaced configuration arrays', () => {
+		let reads = 0;
+		const definitions = [
+			{
+				get name() {
+					reads++;
+					return 'catalogSearch';
+				},
+				fields: [{ name: 'title', weight: 1 }],
+			},
+		];
+		const first = fullTextContinuationDefinitionIdentity(definitions);
+		assert.strictEqual(reads, 1);
+		assert.strictEqual(fullTextContinuationDefinitionIdentity(definitions), first);
+		assert.strictEqual(reads, 1);
+		assert.strictEqual(
+			fullTextContinuationDefinitionIdentity([{ fields: [{ weight: 1, name: 'title' }], name: 'catalogSearch' }]),
+			first
+		);
+		assert.notStrictEqual(
+			fullTextContinuationDefinitionIdentity([{ name: 'catalogSearch', fields: [{ name: 'title', weight: 2 }] }]),
+			first
+		);
+	});
+
+	it('detects requested continuation options without treating false close as a request', () => {
+		const { hasFullTextContinuationOptions } = require('#src/resources/indexes/fullTextQueryProtocol');
+		for (const value of [undefined, false, true, null, 0, '', 'token']) {
+			assert.strictEqual(hasFullTextContinuationOptions({ continuation: value }), value !== undefined);
+			assert.strictEqual(
+				hasFullTextContinuationOptions({ closeContinuation: value }),
+				value !== undefined && value !== false
+			);
+		}
+		assert.strictEqual(hasFullTextContinuationOptions(undefined), false);
+	});
+
 	it('treats false closeContinuation as a normal page request', () => {
 		for (const continuation of [true, 'opaque']) {
 			const page = new FullTextContinuationPage({ ...target, continuation, closeContinuation: false }, {});
