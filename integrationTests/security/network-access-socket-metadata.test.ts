@@ -142,20 +142,16 @@ suite('Operations allowlist in UDS mirror metadata (#3358)', { skip: skipSuite }
 		strictEqual(stored.updatedBy, ctx.harper.admin.username);
 	});
 
-	test('a restarted node publishes the persisted list in its first metadata write', async () => {
+	// Persistence only: the unrestricted window the writer's readiness gate closes is far shorter than any
+	// poll, so that gate is proven in unitTests/server/udsMirror.test.js.
+	test('a restarted node publishes the persisted list', async () => {
 		await killHarper(ctx);
 		await start();
-		const sawUnrestricted: string[] = [];
 		await waitFor(
-			async () => {
-				const mirrors = await operationsMirrors();
-				for (const yaml of mirrors) if (!yaml.includes('allowedSources')) sawUnrestricted.push(yaml);
-				return mirrors;
-			},
+			operationsMirrors,
 			(list) => list.length > 0 && list.every((yaml) => yaml.includes('  - "10.0.0.0/8"\n')),
 			'operations mirror metadata lacks the persisted list after restart'
 		);
-		deepStrictEqual(sawUnrestricted, [], 'an operations mirror was advertised unrestricted after restart');
 	});
 
 	test('clearing the list removes allowedSources without a restart', async () => {

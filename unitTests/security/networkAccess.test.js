@@ -69,8 +69,8 @@ const delegated = (operation, body = {}) => ({
 });
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
-async function until(condition, what) {
-	for (let i = 0; i < 200; i++) {
+async function until(condition, what, ms = 1000) {
+	for (let i = 0; i < ms / 5; i++) {
 		if (condition()) return;
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
@@ -89,7 +89,10 @@ describe('networkAccess', () => {
 			['2001:DB8:0:0::/32', '2001:db8::/32'],
 			['::1', '::1/128'],
 			['::/0', '::/0'],
-			['::FFFF:10.0.0.0/104', '::ffff:10.0.0.0/104'],
+			['::FFFF:10.0.0.0/104', '10.0.0.0/8'],
+			['::ffff:10.0.0.1', '10.0.0.1/32'],
+			['::ffff:0:0/96', '0.0.0.0/0'],
+			['::ffff:0:0/80', '::ffff:0.0.0.0/80'],
 		]) {
 			it(`accepts ${input}`, () => assert.strictEqual(normalizeCidr(input), expected));
 		}
@@ -142,7 +145,14 @@ describe('networkAccess', () => {
 		});
 		it('matches an IPv4-mapped IPv6 peer against an IPv4 entry', () => {
 			assert.strictEqual(addressIsAllowed('::ffff:10.1.2.3', allow), true);
+			assert.strictEqual(addressIsAllowed('0:0:0:0:0:FFFF:10.1.2.3', allow), true);
 			assert.strictEqual(addressIsAllowed('::ffff:11.1.2.3', allow), false);
+		});
+		it('matches only entries of the address family, as the proxy does', () => {
+			assert.strictEqual(addressIsAllowed('203.0.113.9', ['::/0']), false);
+			assert.strictEqual(addressIsAllowed('::ffff:203.0.113.9', ['::/0']), false);
+			assert.strictEqual(addressIsAllowed('2001:db8::1', ['0.0.0.0/0']), false);
+			assert.strictEqual(addressIsAllowed('203.0.113.9', ['::/0', '0.0.0.0/0']), true);
 		});
 	});
 
@@ -225,6 +235,15 @@ describe('networkAccess', () => {
 					message: /203\.0\.113\.9/,
 				});
 				assert.strictEqual(installed.mock.rows.size, 0);
+			});
+
+			it('refuses an IPv6-only list for an IPv4 caller', async () => {
+				await assert.rejects(
+					setNetworkAccess(
+						su('set_network_access', { scope: 'operations', allow: ['::/0'], hdb_client_address: '203.0.113.9' })
+					),
+					{ statusCode: 409 }
+				);
 			});
 
 			it('accepts a list that includes the caller, IPv4-mapped included', async () => {
@@ -359,12 +378,54 @@ describe('networkAccess', () => {
 			assert.deepStrictEqual(allowedSourcesFor('operations'), ['192.168.0.0/16']);
 		});
 
-		it('resubscribes after its subscription closes', async () => {
-			let calls = 0;
-			watchNetworkAccess('operations', () => ++calls > 0);
-			await until(() => installed.mock.subscriptions.length === 1, 'subscription');
-			installed.mock.subscriptions[0].listeners.close();
-			await until(() => installed.mock.subscriptions.length === 2, 'resubscription');
+		it('survives a synchronous subscribe throw and recovers on the periodic re-read', async () => {
+			const realSubscribe = installed.mock.subscribe;
+			installed.mock.subscribe = () => {
+				throw new Error('database is closing');
+			};
+			installed.mock.rows.set('operations', { allow: ['10.0.0.0/8'] });
+			const published = [];
+			watchNetworkAccess('operations', () => {
+				published.push(allowedSourcesFor('operations'));
+				return true;
+			});
+			await until(() => published.length === 1, 'publication despite the failed subscribe');
+			installed.mock.subscribe = realSubscribe;
+			await until(() => installed.mock.subscriptions.length === 1, 'the retried subscription');
+			installed.mock.rows.set('operations', { allow: ['192.168.0.0/16'] });
+			installed.mock.notify();
+			await until(() => published.at(-1)?.[0] === '192.168.0.0/16', 'the newer list');
+		});
+
+		describe('without the periodic re-read', () => {
+			beforeEach(() => resetNetworkAccessWatches(3_600_000));
+
+			it('resubscribes soon after its subscription closes', async () => {
+				let calls = 0;
+				watchNetworkAccess('operations', () => ++calls > 0);
+				await until(() => installed.mock.subscriptions[0]?.listeners.close, 'subscription');
+				installed.mock.subscriptions[0].listeners.close();
+				await until(() => installed.mock.subscriptions.length === 2, 'resubscription', 2000);
+			});
+
+			it('reruns at once when a signal arrives during a read that fails', async () => {
+				let reads = 0;
+				let failFirst;
+				const firstRead = new Promise((_, reject) => (failFirst = reject));
+				installed.mock.rows.set('operations', { allow: ['10.0.0.0/8'] });
+				const realGet = installed.mock.get;
+				installed.mock.get = (id) => (++reads === 1 ? firstRead : realGet(id));
+				const published = [];
+				watchNetworkAccess('operations', () => {
+					published.push(allowedSourcesFor('operations'));
+					return true;
+				});
+				await settle();
+				installed.mock.notify();
+				failFirst(new Error('transient'));
+				await until(() => published.length === 1, 'the rerun read');
+				assert.deepStrictEqual(published, [['10.0.0.0/8']]);
+			});
 		});
 	});
 });
