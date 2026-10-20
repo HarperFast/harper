@@ -10,7 +10,7 @@ require('#src/server/serverHelpers/serverUtilities');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('Attribute read permissions on subscription deliveries', () => {
-	let Doc, StaticDoc;
+	let Doc, StaticDoc, Related;
 	let resolverCalls = 0;
 	const subscriptions = [];
 	const EVENT_FIELDS = new Set(['id', 'localTime', 'value', 'version', 'type', 'size', 'beginTxn', 'fromScan']);
@@ -28,6 +28,8 @@ describe('Attribute read permissions on subscription deliveries', () => {
 								{ attribute_name: 'id', read: true, insert: true, update: true },
 								{ attribute_name: 'title', read: true, insert: true, update: true },
 								{ attribute_name: 'shout', read: true, insert: false, update: false },
+								{ attribute_name: 'later', read: true, insert: true, update: true },
+								{ attribute_name: 'constructor', read: true, insert: false, update: false },
 								{ attribute_name: 'secret', read: false, insert: false, update: false },
 							],
 						},
@@ -37,20 +39,34 @@ describe('Attribute read permissions on subscription deliveries', () => {
 		},
 	};
 	const asUser = () => ({ user, authorize: true });
+	const readOnlyUser = {
+		role: {
+			permission: { subselect: { tables: { SelectDoc: { read: true, insert: false, update: false, delete: false } } } },
+		},
+	};
+	const docAttributes = (later) => [
+		{ name: 'id', isPrimaryKey: true },
+		{ name: 'title' },
+		{ name: 'secret' },
+		{ name: 'shout', computed: true },
+		later,
+		{ name: 'relatedId' },
+		{ name: 'related', relationship: { from: 'relatedId' }, definition: { tableClass: Related } },
+	];
 
 	before(() => {
 		setupTestDBPath();
 		setMainIsWorker(true);
+		Related = table({
+			database: 'subselect',
+			table: 'SelectRelated',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
 		Doc = table({
 			database: 'subselect',
 			table: 'SelectDoc',
 			audit: true,
-			attributes: [
-				{ name: 'id', isPrimaryKey: true },
-				{ name: 'title' },
-				{ name: 'secret' },
-				{ name: 'shout', computed: true },
-			],
+			attributes: docAttributes({ name: 'later' }),
 		});
 		Doc.setComputedAttribute('shout', (record) => {
 			resolverCalls++;
@@ -172,5 +188,49 @@ describe('Attribute read permissions on subscription deliveries', () => {
 		await waitFor(() => delivered(events, 'stored'));
 		assert.strictEqual(events[0].value, Doc.primaryStore.getEntry('unrestricted').value);
 		assert.strictEqual(events[0].value.secret, 's');
+	});
+
+	it('an unrestricted role selecting a relationship still gets the stored record', async () => {
+		await Related.put('related-1', { name: 'related' });
+		await Doc.put('relationship', { title: 'stored', secret: 's', relatedId: 'related-1' });
+		const events = await subscribe(
+			Doc,
+			{ id: 'relationship', select: ['title', 'related'] },
+			{ user: readOnlyUser, authorize: true }
+		);
+		await waitFor(() => delivered(events, 'stored'));
+		assert.strictEqual(events[0].value, Doc.primaryStore.getEntry('relationship').value);
+	});
+
+	it('a reload re-snapshot omits unreadable attributes', async () => {
+		await Doc.put('reload', { title: 'reloaded', secret: 's' });
+		const single = await subscribe(Doc, { id: 'reload', omitCurrent: true }, asUser());
+		const collection = await subscribe(Doc, { isCollection: true, omitCurrent: true }, asUser());
+		await Doc.writeReloadMarker();
+		await waitFor(() => delivered(single, 'reloaded') && delivered(collection, 'reloaded'));
+		assertNoSecret(single);
+		assertNoSecret(collection);
+	});
+
+	it('an attribute that becomes computed while subscribed is not read through its resolver', async () => {
+		await Doc.put('schema', { title: 'before', later: 'stored', secret: 's' });
+		const events = await subscribe(Doc, { id: 'schema' }, asUser());
+		await waitFor(() => delivered(events, 'before'));
+		assert.strictEqual(events[0].value.later, 'stored');
+		let laterCalls = 0;
+		table({
+			database: 'subselect',
+			table: 'SelectDoc',
+			audit: true,
+			attributes: docAttributes({ name: 'later', computed: true }),
+		});
+		Doc.setComputedAttribute('later', () => {
+			laterCalls++;
+			return 'computed';
+		});
+		await Doc.patch('schema', { title: 'after' });
+		await waitFor(() => delivered(events, 'after'));
+		assert.deepStrictEqual(events.at(-1).value, { id: 'schema', title: 'after' });
+		assert.strictEqual(laterCalls, 0);
 	});
 });

@@ -584,6 +584,8 @@ function isSameIdAllocation(a: any, b: any): boolean {
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
+// set beside AUTHORIZATION_SELECT only when attribute permissions (not just relationships) narrowed the select
+const ATTRIBUTE_PERMISSION_SELECT = Symbol('attributePermissionSelect');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
 function propagateSearchAuthorization(iterable: any, authorization: Promise<any>, source?: any) {
@@ -622,24 +624,30 @@ function isRecordRoot(value: unknown): boolean {
 		!(value instanceof ArrayBuffer)
 	);
 }
-// An own `undefined` is a patch removing the attribute, so it is kept; an absent attribute stays absent.
-function selectAttributes(value: any, names: readonly string[]): any {
+function selectedNames(select: any): string[] {
+	return (Array.isArray(select) ? select : [select])
+		.map((property: any) => property?.name ?? property)
+		.filter((name: unknown) => typeof name === 'string');
+}
+// Own properties only: a record's stored attributes are its own, while its computed and relationship attributes
+// are prototype getters whose read runs a resolver. An own `undefined` is a patch removing the attribute.
+function selectOwnAttributes(value: any, names: readonly string[]): any {
 	if (Array.isArray(value))
 		return value.map((element) =>
-			element !== null && typeof element === 'object' ? selectAttributes(element, names) : element
+			element !== null && typeof element === 'object' ? selectOwnAttributes(element, names) : element
 		);
 	if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
 	const selected: any = {};
 	for (const name of names) {
-		let attributeValue: any;
-		if (Object.hasOwn(value, name)) attributeValue = value[name];
-		else if (name === '__proto__' || (attributeValue = value[name]) === undefined) continue;
-		Object.defineProperty(selected, name, {
-			value: attributeValue,
-			enumerable: true,
-			writable: true,
-			configurable: true,
-		});
+		if (!Object.hasOwn(value, name)) continue;
+		if (name === '__proto__')
+			Object.defineProperty(selected, name, {
+				value: value[name],
+				enumerable: true,
+				writable: true,
+				configurable: true,
+			});
+		else selected[name] = value[name];
 	}
 	return selected;
 }
@@ -3673,6 +3681,7 @@ export function makeTable(options): TableResourceClass {
 							.map((attribute) => attribute.attribute_name);
 					}
 					(target as any)[AUTHORIZATION_SELECT] = true;
+					if (attribute_permissions?.length > 0) (target as any)[ATTRIBUTE_PERMISSION_SELECT] = true;
 					return true;
 				} else {
 					return true;
@@ -7102,9 +7111,9 @@ export function makeTable(options): TableResourceClass {
 				if (!allowed) throw new AccessViolation(context?.user);
 			}
 			if (!auditStore) throw new Error('Can not subscribe to a table without an audit log');
-			// only an authorization-narrowed select applies to deliveries; a caller's own select is not honored here
-			const deliveredAttributes = (request as any)[AUTHORIZATION_SELECT]
-				? storedAttributeNames(request.select)
+			// a caller's own select is not applied to deliveries, only the one attribute permissions narrowed
+			const deliveredAttributes = (request as any)[ATTRIBUTE_PERMISSION_SELECT]
+				? selectedNames(request.select)
 				: undefined;
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
 			const resumeGeneration = request.databaseGeneration;
@@ -7219,7 +7228,7 @@ export function makeTable(options): TableResourceClass {
 				const sendSelected = subscription.send;
 				subscription.send = function (event) {
 					if (event.value !== null && typeof event.value === 'object')
-						event.value = selectAttributes(event.value, deliveredAttributes);
+						event.value = selectOwnAttributes(event.value, deliveredAttributes);
 					return sendSelected.call(this, event);
 				};
 			}
@@ -9363,17 +9372,6 @@ export function makeTable(options): TableResourceClass {
 			primaryKeyGranted.set(tablePermission, effective);
 		}
 		return effective;
-	}
-	// Only stored attributes: reading a computed or relationship attribute off a record runs its resolver.
-	function storedAttributeNames(select: any): string[] {
-		return (Array.isArray(select) ? select : [select])
-			.map((property: any) => property?.name ?? property)
-			.filter(
-				(name: unknown) =>
-					typeof name === 'string' &&
-					!(propertyResolvers && Object.hasOwn(propertyResolvers, name)) &&
-					!fullTextFieldNames?.has(name)
-			);
 	}
 	function restrictedReplacement(id: Id, record: any, updatableAttributes: { [attribute: string]: boolean }) {
 		record = materialized(record);
