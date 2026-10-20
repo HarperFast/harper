@@ -388,9 +388,10 @@ set `request.user` itself would have to re-implement, per plugin, what this path
   routes); an untagged throw, a malformed return, or exceeding `timeoutMs` answers 401 in place. The
   claim's `server.getUser` lookup shares the chain budget, so total authentication latency stays
   bounded; a deadline only bounds waiting, it cannot interrupt a synchronous validator.
-- **No minting, no operations port.** `_bearerValidator` principals cannot mint operation, refresh or
-  scoped tokens (`createTokens`), also after impersonation, and a dedicated operations API port never runs validators or serves their
-  cache entries. On a shared port they reach `verifyPerms` like any principal.
+- **No minting, no operations port.** A `_bearerValidator` principal cannot turn its token into Harper
+  tokens: `createTokens` refuses it a passwordless operation/refresh mint and (unless operation
+  authorization is bypassed) a scoped token, also after impersonation; a username and password still
+  mint as usual. A dedicated operations API port never runs validators or serves their cache entries. On a shared port they reach `verifyPerms` like any principal.
 
 Registrations are worker-global and outlive `scope.close()`, so in-flight requests drain. The
 `Scope` proxy records what a plugin registers through `scope.server`, and
