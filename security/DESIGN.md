@@ -165,7 +165,7 @@ purpose: the compartment binds `server`/`logger`/`resources`/`config`/`secrets` 
 `databases`/`tables`/`defineTable` per scope, and omits what only harper-pro consumes through `core/`.
 
 Export a value from the module that _defines_ it rather than re-exporting it through an intermediate,
-when the value closes over module state: `registerShutdownDrain` must reach core's one drain registry.
+when the value closes over module state: `verifyCertificate` must share core's revocation caches.
 Shared state a plugin only reads is a plain property instead (`request.deferredCredentialRejection`,
 `error.credentialRejection`), so it survives a second copy of the module.
 

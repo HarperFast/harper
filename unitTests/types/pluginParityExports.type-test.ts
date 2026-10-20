@@ -6,27 +6,16 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 
 import {
-	registerShutdownDrain,
 	verifyCertificate,
 	credentialRejectionError,
 	assertNoDeferredCredentialRejection,
 	settleDeferredCredentialRejection,
-	type ShutdownDrain,
 	type PeerCertificate,
 	type CertificateVerificationResult,
 	type CredentialRejection,
 	type DeferredCredentialRejection,
 	type AuthenticationRejectedInPlace,
 } from '../../dist/index.js';
-
-const drain: ShutdownDrain = {
-	hasWork: () => false,
-	drain: async (deadlineMs: number) => {},
-};
-const unregister: () => void = registerShutdownDrain(drain);
-unregister();
-// @ts-expect-error a drain implements both hooks
-registerShutdownDrain({ hasWork: () => false });
 
 declare const peerCertificate: PeerCertificate;
 const verification: Promise<CertificateVerificationResult> = verifyCertificate(peerCertificate, {

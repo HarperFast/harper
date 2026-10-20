@@ -26,9 +26,6 @@ export {
 	credentialRejectionError,
 	type CredentialRejection,
 } from './security/credentialRejection.ts';
-// Exported from the module that defines it, never re-exported through an intermediate: a plugin has
-// to share core's drain registry, and a second copy fails silently rather than loudly (#2715).
-export { registerShutdownDrain, type ShutdownDrain } from './components/shutdownDrain.ts';
 export { verifyCertificate } from './security/certificateVerification/index.ts';
 export type { PeerCertificate, CertificateVerificationResult } from './security/certificateVerification/types.ts';
 export {

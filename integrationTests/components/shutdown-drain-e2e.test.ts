@@ -4,10 +4,7 @@
  * Pins: (A) in-flight work registered via a ShutdownDrain survives a genuine worker
  * restart — the worker's EXIT marker appears only AFTER the task's DONE marker; (B) a
  * permanently-stalled drain is force-killed at the configured ceiling
- * (replication.blobSendDrainTimeout) rather than hanging shutdown indefinitely. The fixture
- * reaches the registry through `import { registerShutdownDrain } from 'harper'`, the public
- * surface a package-installed plugin uses (#2715), so both cases also prove that export shares
- * the worker's own registry.
+ * (replication.blobSendDrainTimeout) rather than hanging shutdown indefinitely.
  *
  * Run: npm run build && HARPER_INTEGRATION_TEST_INSTALL_SCRIPT=dist/bin/harper.js \
  *      npm run test:integration -- "integrationTests/components/shutdown-drain-e2e.test.ts"
@@ -26,6 +23,8 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/shutdown-drain-e2e');
+const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
+const SHUTDOWN_DRAIN_ABS_PATH = resolve(REPO_ROOT, 'dist/components/shutdownDrain.js');
 const MARKER_FILE = resolve(tmpdir(), `shutdown-drain-e2e-${randomUUID()}.log`);
 
 const TASK_DELAY_MS = 2000;
@@ -66,6 +65,9 @@ suite('shutdown-drain end-to-end (real worker restart, #1621)', { skip: skipSuit
 	let auth: string;
 
 	before(async () => {
+		if (!existsSync(SHUTDOWN_DRAIN_ABS_PATH)) {
+			throw new Error(`dist build missing: ${SHUTDOWN_DRAIN_ABS_PATH} — run \`npm run build\` first`);
+		}
 		rmSync(MARKER_FILE, { force: true });
 
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
@@ -74,6 +76,7 @@ suite('shutdown-drain end-to-end (real worker restart, #1621)', { skip: skipSuit
 				replication: { blobSendDrainTimeout: CEILING_MS },
 			},
 			env: {
+				QA519_SHUTDOWN_DRAIN_ABS_PATH: SHUTDOWN_DRAIN_ABS_PATH,
 				QA519_MARKER_FILE: MARKER_FILE,
 				QA519_TASK_DELAY_MS: String(TASK_DELAY_MS),
 			},

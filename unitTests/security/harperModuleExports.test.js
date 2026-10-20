@@ -1,11 +1,10 @@
 // `harper` resolves through two independent lists — the package's exports and the object
 // `getHarperExports` builds for a VM compartment — so a value on only one fails at component load, and
-// a second copy of a module carries a second drain registry (#2715).
+// a second copy of a module carries second copies of its state (#2715).
 const assert = require('node:assert');
 const { join } = require('node:path');
 const { scopedImport } = require('#src/security/jsLoader');
 const harper = require('#src/index');
-const { registerShutdownDrain } = require('#src/components/shutdownDrain');
 const { verifyCertificate } = require('#src/security/certificateVerification/index');
 const {
 	assertNoDeferredCredentialRejection,
@@ -13,13 +12,13 @@ const {
 } = require('#src/security/deferredAuthentication');
 
 const PLUGIN_PARITY_EXPORTS = {
-	registerShutdownDrain,
 	verifyCertificate,
 	assertNoDeferredCredentialRejection,
 	settleDeferredCredentialRejection,
 };
-// The producers: only security/auth.ts turns a principal-resolution failure into a decision.
-const INTERNAL_ONLY = ['deferCredentialRejection', 'markAuthenticationRejectedInPlace'];
+// The credential-rejection producers (only security/auth.ts turns a principal-resolution failure into a
+// decision), and the drain registry, which plugins will reach through a scope-owned API instead (#3317).
+const INTERNAL_ONLY = ['deferCredentialRejection', 'markAuthenticationRejectedInPlace', 'registerShutdownDrain'];
 // Package exports a compartment deliberately does not get (consumed by harper-pro through core/).
 const PACKAGE_ONLY = new Set([
 	'flushDatabases',
@@ -56,7 +55,7 @@ describe("the 'harper' module a plugin imports (#2715)", () => {
 		}
 	});
 
-	it('keeps the credential-rejection producers internal on both paths', () => {
+	it('keeps the internal-only helpers off both paths', () => {
 		for (const name of INTERNAL_ONLY) {
 			assert.strictEqual(harper[name], undefined, `package exports ${name}`);
 			assert.strictEqual(compartment[name], undefined, `compartment exports ${name}`);
