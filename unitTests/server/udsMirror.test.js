@@ -233,7 +233,8 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			it('publishes the list, rewrites it on change, and omits it once cleared', async () => {
 				rows.set('operations', { allow: ['10.0.0.0/8', '2001:db8::/32'] });
 				const server = { ...makeSecureServer(), networkAccessScope: 'operations', secureContextsListeners: [] };
-				const write = () => writeUdsMetadata(yamlPath, 9925, server);
+				let writes = 0;
+				const write = () => (writes++, writeUdsMetadata(yamlPath, 9925, server));
 				let ready;
 				publishUdsMetadata(new Promise((resolve) => (ready = resolve)), server, write);
 				// a certificate listener firing before TLS readiness and the first read must not publish
@@ -242,6 +243,7 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 				ready();
 				await until(() => fs.existsSync(yamlPath), 'the first write');
 				assert.match(read(), /^allowedSources:\n {2}- "10\.0\.0\.0\/8"\n {2}- "2001:db8::\/32"\n/m);
+				assert.strictEqual(writes, 2, 'one suppressed pre-ready write, then one publication');
 
 				changeRow({ allow: ['192.168.0.0/16'] });
 				await until(() => read().includes('192.168.0.0/16'), 'the rewrite');

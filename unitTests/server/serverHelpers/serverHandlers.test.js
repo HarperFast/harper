@@ -468,6 +468,22 @@ describe('Test serverHandlers.js module ', () => {
 			await serverHandlers_rw.handlePostRequest({ body: local });
 			assert.strictEqual(local.hdb_client_address, undefined, 'no transport address means none, not the client value');
 
+			const injected = { operation: 'set_network_access', hdb_client_address: '10.0.0.1' };
+			await serverHandlers_rw.handlePostRequest({
+				body: injected,
+				raw: {},
+				headers: { 'x-harper-internal-client-address': '198.51.100.4' },
+			});
+			assert.strictEqual(injected.hdb_client_address, '198.51.100.4', 'an injected request carries it in a header');
+
+			const notInjected = { operation: 'set_network_access' };
+			await serverHandlers_rw.handlePostRequest({
+				body: notInjected,
+				raw: { baseRequest: { ip: undefined } },
+				headers: { 'x-harper-internal-client-address': '198.51.100.4' },
+			});
+			assert.strictEqual(notInjected.hdb_client_address, undefined, 'the header is ignored beside a baseRequest');
+
 			const other = { operation: 'create_schema' };
 			await serverHandlers_rw.handlePostRequest({ body: other, raw });
 			assert.strictEqual(Object.hasOwn(other, 'hdb_client_address'), false);

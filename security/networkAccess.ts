@@ -1,6 +1,4 @@
-// Source allowlists per listener scope (system.hdb_network_access, #3358). Harper persists and publishes
-// them; a fronting proxy enforces them. Rows reach peers through system-table replication, so the
-// operations do not call replicateOperation.
+// Rows reach peers through system-table replication, so these operations do not call replicateOperation.
 
 import { BlockList, SocketAddress, isIP } from 'node:net';
 import Joi from 'joi';
@@ -18,11 +16,14 @@ const logger = loggerWithTag('network-access');
 export const NETWORK_ACCESS_SCOPES = ['operations'] as const;
 export type NetworkAccessScope = (typeof NETWORK_ACCESS_SCOPES)[number];
 const MAX_ALLOW_ENTRIES = 1000;
+const MAPPED_IPV4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/;
+const SUBSCRIPTION_RETRY_MS = 1000;
 let reconcileIntervalMs = 60_000;
 
 /**
  * `<ip>` or `<ip>/<prefix>`, returned as `<canonical ip>/<prefix>` (a bare IP is a /32 or /128). Host
- * bits are kept, as the consuming proxy's parser keeps them.
+ * bits are kept, as the consuming proxy's parser keeps them. An IPv4-mapped IPv6 network is stored as the
+ * IPv4 network it covers: the proxy matches by family, after unmapping a mapped peer.
  */
 export function normalizeCidr(entry: unknown): string {
 	if (typeof entry !== 'string') throw new ClientError(`Network access entry ${JSON.stringify(entry)} is not a string`);
@@ -40,6 +41,8 @@ export function normalizeCidr(entry: unknown): string {
 		}
 	}
 	const canonical = new SocketAddress({ address, family: family === 4 ? 'ipv4' : 'ipv6' }).address;
+	const mapped = MAPPED_IPV4.exec(canonical);
+	if (mapped && prefix >= 96) return `${mapped[1]}/${prefix - 96}`;
 	return `${canonical}/${prefix}`;
 }
 
@@ -47,16 +50,27 @@ export function normalizeAllowList(allow: unknown[]): string[] {
 	return [...new Set(allow.map(normalizeCidr))];
 }
 
-/** An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) matches IPv4 entries. */
+/**
+ * Matches only entries of the address's own family, after unmapping an IPv4-mapped address, as the proxy
+ * does. `BlockList` alone would also admit an IPv4 address to an IPv6 rule such as `::/0`.
+ */
 export function addressIsAllowed(address: string, allow: string[]): boolean {
-	const family = isIP(address);
+	let family = isIP(address);
 	if (family === 0) return false;
+	if (family === 6) {
+		const mapped = MAPPED_IPV4.exec(new SocketAddress({ address, family: 'ipv6' }).address);
+		if (mapped) {
+			address = mapped[1];
+			family = 4;
+		}
+	}
+	const type = family === 4 ? 'ipv4' : 'ipv6';
 	const blockList = new BlockList();
 	for (const cidr of allow) {
 		const [network, prefix] = cidr.split('/');
-		blockList.addSubnet(network, Number(prefix), isIP(network) === 4 ? 'ipv4' : 'ipv6');
+		if (isIP(network) === family) blockList.addSubnet(network, Number(prefix), type);
 	}
-	return blockList.check(address, family === 4 ? 'ipv4' : 'ipv6');
+	return blockList.check(address, type);
 }
 
 function requireSuperUser(req: any): void {
@@ -210,11 +224,16 @@ function reconcile(watch: ScopeWatch): void {
 	}
 	watch.reading = true;
 	watch.dirty = false;
-	const table = getDatabases().system?.[NETWORK_ACCESS_TABLE];
-	if (table) subscribe(watch, table);
-	// outside any request context, whose transaction snapshot the read would otherwise use
+	let table: any;
+	// outside any request context, whose transaction snapshot the read would otherwise use; async, so a
+	// synchronous throw (a closing database) reaches the rejection handler instead of wedging `reading`
 	contextStorage
-		.exit(async () => (table ? await table.get(watch.scope) : undefined))
+		.exit(async () => {
+			table = getDatabases().system?.[NETWORK_ACCESS_TABLE];
+			if (!table) return undefined;
+			subscribe(watch, table);
+			return await table.get(watch.scope);
+		})
 		.then(
 			(row: any) => {
 				watch.reading = false;
@@ -230,6 +249,7 @@ function reconcile(watch: ScopeWatch): void {
 			(error: Error) => {
 				watch.reading = false;
 				logger.warn?.(`Could not read system.${NETWORK_ACCESS_TABLE} '${watch.scope}'; keeping the last list`, error);
+				if (watch.dirty && watches.get(watch.scope) === watch) reconcile(watch);
 			}
 		);
 }
@@ -252,17 +272,21 @@ function subscribe(watch: ScopeWatch, table: any): void {
 	if (watch.subscribedTable === table) return;
 	const previous = watch.subscription;
 	watch.subscribedTable = table;
-	const subscription = contextStorage.exit(() =>
-		table.subscribe({ id: watch.scope, omitCurrent: true, listener: () => reconcile(watch) })
-	);
+	const subscription = (async () =>
+		table.subscribe({ id: watch.scope, omitCurrent: true, listener: () => reconcile(watch) }))();
 	watch.subscription = subscription;
 	const lost = () => {
 		if (watch.subscription === subscription) watch.subscribedTable = undefined;
 	};
+	// the re-read resubscribes; delayed so a subscription that closes as soon as it opens cannot spin
+	const closed = () => {
+		lost();
+		setTimeout(() => reconcile(watch), SUBSCRIPTION_RETRY_MS).unref();
+	};
 	subscription.then(
 		(opened: any) => {
-			if (opened?.closed) lost();
-			else opened?.on?.('close', lost);
+			if (opened?.closed) closed();
+			else opened?.on?.('close', closed);
 		},
 		(error: Error) => {
 			lost();

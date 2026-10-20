@@ -1,8 +1,7 @@
 'use strict';
 
-// 5.4.0 — introduces system.hdb_network_access, the per-scope source allowlists published in UDS mirror
-// socket metadata (#3358). Fresh installs get the table from json/systemSchema.json; this covers existing
-// installs. See DESIGN.md "System table bootstrap" for the three touchpoints.
+// 5.4.0 — system.hdb_network_access for existing installs; fresh installs get it from json/systemSchema.json
+// (dataLayer/DESIGN.md, "System table bootstrap").
 
 import * as terms from '../../utility/hdbTerms.ts';
 import { createSystemTableIfMissing } from './5-3-0.ts';
