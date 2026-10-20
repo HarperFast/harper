@@ -9,6 +9,7 @@ const { extract } = require('tar-stream');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const {
 	backupDirForDatabase,
+	createBackup,
 	createBackupOffline,
 	deleteBackup,
 	deleteBackupOffline,
@@ -42,7 +43,7 @@ const SU = { hdb_user: { role: { permission: { super_user: true } } } };
 const { abandonRestore, beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
 const { pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } = require('#src/dataLayer/backupRepository');
 const { backups } = require('@harperfast/rocksdb-js');
-const { closeLoadedDatabases } = require('#src/resources/databases');
+const { closeLoadedDatabases, table } = require('#src/resources/databases');
 const {
 	ARCHIVE_MANIFEST_ENTRY,
 	ARCHIVE_SCHEMA_VERSION,
@@ -891,6 +892,50 @@ describe('rocksdbBackup', function () {
 			await created;
 			assert.strictEqual((await listBackupsInDir(backupDir)).length, 1, 'and it proceeds once the lock is free');
 		});
+
+		// harper#2031: the blob snapshot and manifest are written after the engine backup returns, so the
+		// lock has to span them too, or a purge removes the backup the create is about to publish.
+		for (const mode of ['online', 'offline']) {
+			it(`makes a purge wait for an ${mode} create that is copying its blob snapshot`, async function () {
+				this.timeout(30000);
+				let create, purge;
+				if (mode === 'online') {
+					table({ table: 'Pinned', database: PINNED, attributes: [{ name: 'id', isPrimaryKey: true }] });
+					create = () => createBackup({ database: PINNED });
+					purge = () => purgeBackups({ ...SU, database: PINNED, keep_count: 0 });
+				} else {
+					const database = RocksDatabase.open(join(storageDir, PINNED));
+					try {
+						database.putSync('rec', { n: 1 });
+					} finally {
+						database.close();
+					}
+					create = () => createBackupOffline(PINNED);
+					purge = () => purgeBackupsOffline(PINNED, 0);
+				}
+				const backupDir = backupDirForDatabase(PINNED);
+				const original = blobBackupModule.snapshotBlobs;
+				let purged;
+				let purgeSettledDuringCopy;
+				blobBackupModule.snapshotBlobs = async (...args) => {
+					let settled = false;
+					purged = purge().finally(() => (settled = true));
+					purged.catch(() => {}); // settled below
+					await Promise.race([purged, delay(1000)]);
+					purgeSettledDuringCopy = settled;
+					return original(...args);
+				};
+				try {
+					const created = await create();
+					assert.strictEqual(purgeSettledDuringCopy, false, 'a purge must not run inside a create');
+					assert.deepStrictEqual(await purged, { deleted: 1, remaining: 0 }, 'the purge sees the published backup');
+					assert.strictEqual(await readBackupManifest(backupDir, created.backup_id), null, 'no manifest outlives it');
+				} finally {
+					blobBackupModule.snapshotBlobs = original;
+					if (mode === 'online') await closeLoadedDatabases();
+				}
+			});
+		}
 
 		it('refuses to publish a backup the engine no longer has by the time it finalizes', async function () {
 			this.timeout(30000);
