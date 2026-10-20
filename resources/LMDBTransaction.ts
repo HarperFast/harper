@@ -91,7 +91,6 @@ export class LMDBTransaction extends DatabaseTransaction {
 		return this.readTxn;
 	}
 
-	// See DatabaseTransaction.doneReadTxn(): a return for a released snapshot is a no-op.
 	doneReadTxn(generation = this.readTxnGeneration) {
 		if (!this.readTxn || generation !== this.readTxnGeneration) return;
 		if (this.readTxn instanceof RocksTransaction) {
