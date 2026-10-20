@@ -1005,26 +1005,29 @@ function normalizeSearchRequest(requestJson: any) {
 		requestJson.get_attributes = requestJson.select;
 		delete requestJson.select;
 	}
-	const normalizeConditions = (conditions: any) => {
-		if (!Array.isArray(conditions)) return;
-		for (const condition of conditions) {
-			if (!condition || typeof condition !== 'object') continue;
-			if (condition.conditions) normalizeConditions(condition.conditions);
-			else if (condition.search_attribute !== undefined) {
-				condition.attribute ??= condition.search_attribute;
-				delete condition.search_attribute;
-			}
-		}
-	};
-	normalizeConditions(requestJson.conditions);
-	const stripPermissionControls = (select: any) => {
-		for (const property of Array.isArray(select) ? select : [select]) {
-			if (!property || typeof property !== 'object') continue;
-			delete property.checkPermission;
-			stripPermissionControls(property.select);
-		}
-	};
+	normalizeConditionAttributes(requestJson.conditions);
 	stripPermissionControls(requestJson.get_attributes);
+}
+
+function normalizeConditionAttributes(conditions: any) {
+	if (!Array.isArray(conditions)) return;
+	for (const condition of conditions) {
+		if (!condition || typeof condition !== 'object') continue;
+		if (condition.conditions) normalizeConditionAttributes(condition.conditions);
+		else if (condition.search_attribute !== undefined) {
+			condition.attribute ??= condition.search_attribute;
+			delete condition.search_attribute;
+		}
+	}
+}
+
+function stripPermissionControls(select: any) {
+	if (select == null || typeof select !== 'object') return;
+	for (const property of Array.isArray(select) ? select : [select]) {
+		if (!property || typeof property !== 'object') continue;
+		delete property.checkPermission;
+		stripPermissionControls(property.select);
+	}
 }
 
 function checkRelationshipReads(requestJson: any, operationSchema: string, table: string, permsResponse) {

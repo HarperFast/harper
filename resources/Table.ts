@@ -8661,7 +8661,6 @@ export function makeTable(options): TableResourceClass {
 					};
 					let selected: any;
 					try {
-						// a single selection object is the scalar form, like a string
 						if (typeof select === 'string' || (!Array.isArray(select) && select?.name !== undefined)) {
 							selectAttribute(select, (value) => {
 								selected = value;
@@ -11645,25 +11644,29 @@ export function makeTable(options): TableResourceClass {
 			return table;
 		}
 	}
-	// `denied`: whether the role is refused a relationship path, rather than whether there is one
-	function relationshipPathMatches(attribute: any, target: RequestTarget, user: User, denied: boolean): boolean {
+	function relationshipPathMatches(attribute: any, target: RequestTarget, user: User, checkDenial: boolean): boolean {
 		const first = Array.isArray(attribute) ? attribute[0] : attribute;
 		if (propertyResolvers[first]?.definition?.tableClass === undefined) return false;
-		if (!denied) return true;
+		if (!checkDenial) return true;
 		return TableResource._readDenial(Array.isArray(attribute) ? attribute : [attribute], user, target) !== undefined;
 	}
-	function someConditionPath(conditions: Iterable<any>, target: RequestTarget, user: User, denied: boolean): boolean {
+	function someConditionPath(
+		conditions: Iterable<any>,
+		target: RequestTarget,
+		user: User,
+		checkDenial: boolean
+	): boolean {
 		for (const condition of conditions) {
 			if (
 				condition?.conditions
-					? someConditionPath(condition.conditions, target, user, denied)
-					: relationshipPathMatches(condition?.[0] ?? condition?.attribute, target, user, denied)
+					? someConditionPath(condition.conditions, target, user, checkDenial)
+					: relationshipPathMatches(condition?.[0] ?? condition?.attribute, target, user, checkDenial)
 			)
 				return true;
 		}
 		return false;
 	}
-	function someRelationshipPath(target: RequestTarget, user: User, denied: boolean): boolean {
+	function someRelationshipPath(target: RequestTarget, user: User, checkDenial: boolean): boolean {
 		const conditions = target.conditions as any;
 		if (conditions == null) {
 			if (target.sort == null && (typeof target[Symbol.iterator] !== 'function' || (target as any).size === 0))
@@ -11672,9 +11675,9 @@ export function makeTable(options): TableResourceClass {
 			// search reads the conditions again
 			target.conditions = Array.from(conditions);
 		}
-		if (someConditionPath(searchConditions(target), target, user, denied)) return true;
+		if (someConditionPath(searchConditions(target), target, user, checkDenial)) return true;
 		for (let sort = typeof target.sort === 'object' && target.sort; sort; sort = sort.next) {
-			if (relationshipPathMatches(sort.attribute, target, user, denied)) return true;
+			if (relationshipPathMatches(sort.attribute, target, user, checkDenial)) return true;
 		}
 		return false;
 	}
