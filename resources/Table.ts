@@ -7227,7 +7227,7 @@ export function makeTable(options): TableResourceClass {
 			if (deliveredAttributes) {
 				const sendSelected = subscription.send;
 				subscription.send = function (event) {
-					if (event.value !== null && typeof event.value === 'object')
+					if (event?.value !== null && typeof event?.value === 'object')
 						event.value = selectOwnAttributes(event.value, deliveredAttributes);
 					return sendSelected.call(this, event);
 				};
