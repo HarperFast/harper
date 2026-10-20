@@ -1285,7 +1285,7 @@ export function hasNestedQueryOptions(property) {
 }
 
 export function assertNestedQueryOptions(select, resource) {
-	for (const property of Array.isArray(select) ? select : []) {
+	for (const property of Array.isArray(select) ? select : select ? [select] : []) {
 		if (!property || typeof property !== 'object') continue;
 		const related = resource?.propertyResolvers?.[property.name]?.definition?.tableClass;
 		if (
@@ -1312,21 +1312,24 @@ export function transformForSelect(select, resource) {
 		};
 	let relationshipSelections;
 	if (resource?._prepareRelationshipSelection)
-		for (const property of Array.isArray(select) ? select : []) {
-			if (propertyResolvers?.[property.name]?.definition?.tableClass && hasNestedQueryOptions(property)) {
+		for (const property of Array.isArray(select) ? select : select ? [select] : []) {
+			if (propertyResolvers?.[property?.name]?.definition?.tableClass && hasNestedQueryOptions(property)) {
 				(relationshipSelections ||= Object.create(null))[property.name] = resource._prepareRelationshipSelection(
 					property,
 					context ?? contextStorage.getStore()
 				);
 			}
 		}
-	if (typeof select === 'string')
-		// if select is a single string then return property value
+	if (typeof select === 'string' || (!Array.isArray(select) && select?.name !== undefined))
+		// a single string or selection object returns that property's value
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object)) return settleAll(object.map(transform));
-			return readPropertyFromObject(object, select, propertyResolvers, context, select === '__proto__');
+			return handleProperty(
+				selectFromObject(object, propertyResolvers, context, (select?.name ?? select) === '__proto__'),
+				object
+			)(select);
 		};
 	else if (Array.isArray(select)) {
 		// if it is an array, return an array

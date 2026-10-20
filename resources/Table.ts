@@ -2190,7 +2190,7 @@ export function makeTable(options): TableResourceClass {
 			const relatedTable = propertyResolvers[property?.name || property]?.definition?.tableClass;
 			if (!relatedTable) {
 				// transformEntryForSelect projects a plain JSON sub-object with this table's resolvers
-				if (property?.select != null && typeof property === 'object')
+				if (property && typeof property === 'object' && (property.select != null || Array.isArray(property)))
 					return authorizeJsonSelection(property, user, checkPermission, context);
 				return property;
 			}
@@ -11682,6 +11682,8 @@ export function makeTable(options): TableResourceClass {
 		return false;
 	}
 	function authorizeJsonSelection(property: any, user: User, checkPermission: any, context: Context): any {
+		// a REST property set (`payload{dept}`) is a named array that is its own sub-selection
+		if (property.select == null) property.select = [...property];
 		const scalar = !Array.isArray(property.select);
 		const permissionTarget = { checkPermission } as any;
 		const authorized = [];
