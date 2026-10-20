@@ -2626,9 +2626,7 @@ export function makeTable(options): TableResourceClass {
 			);
 			if (loadedFromSource) {
 				return when(loadedFromSource as Promise<Entry>, (entry) => {
-					this.#entry = entry;
-					this.#record = entry.value;
-					this.#version = entry.version;
+					TableResource._updateResource(this, entry);
 				});
 			}
 		}
@@ -3895,6 +3893,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		_writeInvalidate(id: Id, partialRecord?: any, options?: any) {
 			this.#assertLiveHandle(id);
+			const incomingRecord = partialRecord;
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
@@ -3928,17 +3927,23 @@ export function makeTable(options): TableResourceClass {
 						return;
 					}
 					// Received projections can be frozen. Missing fields in a residency projection are removals;
-					// only a local/cache invalidation carries forward this resource's indexed fields.
-					partialRecord = partialRecord ? { ...partialRecord } : null;
+					// only a local/cache invalidation carries forward the committed indexed fields.
+					partialRecord = incomingRecord
+						? { ...incomingRecord }
+						: options?.residencyId && primaryKey
+							? { [primaryKey]: id }
+							: null;
 					for (const name in indices) {
 						if (!partialRecord) partialRecord = {};
+						if (propertyResolvers[name]) continue;
 						// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-						if (partialRecord[name] === undefined && !options?.residencyId) {
-							partialRecord[name] = this.getProperty(name);
-						}
+						const incomingValue = incomingRecord?.[name];
+						partialRecord[name] =
+							incomingValue === undefined && !options?.residencyId ? existingEntry?.value?.[name] : incomingValue;
 					}
 					if (partialRecord && primaryKey) partialRecord[primaryKey] = id;
-					updateIndices(id, existingEntry?.value, partialRecord, transaction && { transaction });
+					// Computed indexes need the full record's inputs; keep them as committed until a full write.
+					updateIndices(id, existingEntry?.value, partialRecord, transaction && { transaction }, true);
 					logger.trace?.(`Invalidating entry in ${tableName} id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 					updateRecord(
 						id,
@@ -8823,7 +8828,7 @@ export function makeTable(options): TableResourceClass {
 		throw error;
 	}
 	return TableResource;
-	function updateIndices(id: any, existingRecord: any, record: any, options?: any) {
+	function updateIndices(id: any, existingRecord: any, record: any, options?: any, preserveComputed = false) {
 		let hasChanges;
 		// iterate the entries from the record
 		// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it can be
@@ -8833,6 +8838,7 @@ export function makeTable(options): TableResourceClass {
 			const index = indices[key];
 			const isIndexing = index.isIndexing;
 			const resolver = propertyResolvers[key];
+			if (preserveComputed && resolver) continue;
 			// A null/undefined `record` means the record is being removed entirely (delete/eviction pass
 			// record=null), so there are NO values to index — resolve to undefined, not null. `record &&`
 			// yields `null` for record===null, which getIndexedValues() then treats as a genuine null field
