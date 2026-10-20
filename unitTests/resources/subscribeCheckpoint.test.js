@@ -422,6 +422,32 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			await assert.rejects(T.subscribe({ resume: checkpoint, omitCurrent: true }), (error) => error.statusCode === 410);
 		});
 
+		it('issues nothing on an engine that cannot sync the floor record before publishing it', async () => {
+			const T = tableInOwnDatabase();
+			const rootStore = T.primaryStore.rootStore;
+			const syncWal = rootStore.syncWal;
+			rootStore.syncWal = undefined;
+			try {
+				const listener = collector();
+				const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, listener });
+				await T.put('a', { value: 'a' });
+				await waitFor(() => listener.values().includes('a'));
+				await sleep(2);
+				let floor = certifyOriginFloor(rootStore);
+				for (let retry = 0; floor === null && retry < 100; retry++) floor = certifyOriginFloor(rootStore);
+				persistOriginClosedFloor(T.auditStore, floor);
+				publishOriginFloor(rootStore, floor);
+				await sleep(400);
+				await T.put('b', { value: 'b' });
+				await waitFor(() => listener.values().includes('b'));
+				await sleep(400);
+				assert.strictEqual(subscription.checkpoint(), undefined, 'an unsynced floor certifies nothing');
+				subscription.end();
+			} finally {
+				rootStore.syncWal = syncWal;
+			}
+		});
+
 		it('issues nothing while a known origin has no qualifying floor, and never from a revoked one', async () => {
 			const T = tableInOwnDatabase();
 			const listener = collector();

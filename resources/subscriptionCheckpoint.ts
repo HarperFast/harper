@@ -101,6 +101,7 @@ export function membersDigest(members: Iterable<[name: string, generation: strin
 /** Reads every `[seq, peerId]` row and merges the checkpoint-grade state of each origin it names. */
 function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState> {
 	const states = new Map<number, OriginState>();
+	const wholeRoutes = new Map<number, [generation: string, certifiedFrom: number][]>();
 	const generation = getDatabaseGeneration(auditStore)?.id;
 	const own: OriginState = {
 		nodeId: 0,
@@ -147,16 +148,28 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 				state.generation = node.originGeneration;
 				state.fullCoverage = true;
 			}
-			// a whole route's start bounds what this node holds of the origin; a partial route proves nothing
+			// a whole route's start bounds what this node holds of the origin, within one generation; a partial
+			// route, or a row of another generation, proves nothing
 			if (
 				node.fullCoverage === true &&
 				node.partialHistory !== true &&
+				node.hole !== true &&
 				typeof node.certifiedFrom === 'number' &&
-				!(state.certifiedFrom <= node.certifiedFrom)
+				typeof node.originGeneration === 'string'
 			) {
-				state.certifiedFrom = node.certifiedFrom;
-				state.fullCoverage = true;
+				(wholeRoutes.get(node.id) ?? wholeRoutes.set(node.id, []).get(node.id)!).push([
+					node.originGeneration,
+					node.certifiedFrom,
+				]);
 			}
+		}
+	}
+	for (const [nodeId, routes] of wholeRoutes) {
+		const state = states.get(nodeId)!;
+		for (const [generation, certifiedFrom] of routes) {
+			if (generation !== state.generation) continue;
+			if (!(state.certifiedFrom <= certifiedFrom)) state.certifiedFrom = certifiedFrom;
+			state.fullCoverage = true;
 		}
 	}
 	return states;
@@ -354,7 +367,12 @@ function retainsBeginning(auditStore: any, state: OriginState): boolean {
  * full-coverage route for it from at or below the boundary. Throws 410 with the reason; the planned replay seeks
  * each member's log inclusively at its boundary.
  */
-export function admitCheckpoint(auditStore: any, dbisDb: any, token: SubscriptionCheckpoint): ResumePlan {
+export function admitCheckpoint(
+	auditStore: any,
+	dbisDb: any,
+	token: SubscriptionCheckpoint,
+	{ checkRetention = true } = {}
+): ResumePlan {
 	const states = readOriginStates(auditStore, dbisDb);
 	const candidates = new Map<string, string>();
 	const byName = new Map<string, OriginState>();
@@ -387,7 +405,7 @@ export function admitCheckpoint(auditStore: any, dbisDb: any, token: Subscriptio
 			boundaries.set(name, { boundary: 0, generation: state.generation! });
 			continue;
 		}
-		if (!(boundary >= resumeFloor)) {
+		if (checkRetention && !(boundary >= resumeFloor)) {
 			throw new ResumeHistoryUnavailableError(
 				`The history after the checkpoint boundary of ${name} is no longer retained; resubscribe to resynchronize`
 			);

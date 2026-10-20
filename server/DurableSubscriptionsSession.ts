@@ -795,9 +795,9 @@ function checkpointInterval(): number {
 function sessionRecordResumable(record: any): boolean {
 	for (const entry of record.subscriptions || []) {
 		const match = resources.getMatch(entry.topic.split('?')[0], 'mqtt');
+		// a checkpoint names origin keys, so it is checked here whichever node issued it, record topics too
+		if (entry.checkpoint !== undefined && !checkpointAdmissible(match?.Resource, entry.checkpoint)) return false;
 		if (!/[+#]/.test(match?.relativeURL ?? '')) continue;
-		// a checkpoint names origin keys, so it is checked here whichever node issued it
-		if (entry.checkpoint !== undefined && !checkpointAdmissible(match.Resource, entry.checkpoint)) return false;
 		if (!boundToCurrentGeneration(entry)) continue;
 		if (!isResumablePosition(match.Resource.auditStore, entry.databaseGeneration, entry.startTime)) return false;
 	}
@@ -1084,15 +1084,14 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	 * Every key below the deliveries still awaiting PUBREC, and below the last delivered key (whose
 	 * transaction may have more queued), was taken whole, so its entries collapse into `receivedThrough`.
 	 */
-	compactReceived(state: TopicState) {
+	compactReceived(state: TopicState, checkpointFloor = state.subscription?.checkpointFloor?.()) {
 		let bound = state.deliveredKey;
 		if (bound === undefined) return;
 		if (state.entry.checkpoint !== undefined) {
 			// an origin can commit below the scalar watermark but never below its own certified floor, which the
 			// checkpoint's lowest boundary is at or below; without a current checkpoint nothing is compacted
-			const floor = state.subscription?.checkpointFloor?.();
-			if (floor === undefined) return;
-			if (floor < bound) bound = floor;
+			if (checkpointFloor === undefined) return;
+			if (checkpointFloor < bound) bound = checkpointFloor;
 		} else {
 			// a transaction that took a key below the delivered ones can still commit until progress passes it
 			const progress = state.subscription?.progress?.();
@@ -1188,11 +1187,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.acknowledge(messageId);
 		if (state) {
 			// compacted first, so the receipt limit counts only what is still kept
-			this.compactReceived(state);
+			const checkpointFloor =
+				state.entry.checkpoint === undefined ? undefined : state.subscription?.checkpointFloor?.();
+			this.compactReceived(state, checkpointFloor);
 			// the position cannot pass it while an older delivery, or the rest of its transaction, is unacknowledged
 			if (identity) {
 				this.addReceived(state, identity);
-				this.compactReceived(state);
+				this.compactReceived(state, checkpointFloor);
 			}
 		}
 		if (failed) return true;
@@ -1384,8 +1385,14 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (bound && !(next > state.entry.startTime)) continue;
 			if (!bound && next === state.entry.startTime) continue;
 			state.entry.startTime = next;
-			// a checkpoint resume replays from its boundaries, below which a remote origin can sit under the scalar
-			if (state.entry.checkpoint === undefined) this.pruneReceipts(state, next);
+			// a checkpoint resume replays from its boundaries, below which a remote origin can sit under the scalar:
+			// once floors certify a boundary, nothing above it is pruned, from the very call that establishes the token
+			if (state.entry.checkpoint === undefined) {
+				const floor = state.subscription.checkpoint
+					? state.subscription.checkpointFloor(this.holdsOf(state))
+					: undefined;
+				this.pruneReceipts(state, floor === undefined ? next : Math.min(next, positionBefore(floor)));
+			}
 			// only a certified position may be checked on resume
 			state.entry.databaseGeneration =
 				state.subscription.progress === undefined ? undefined : state.subscription.databaseGeneration;
