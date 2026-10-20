@@ -203,6 +203,9 @@ async function handlePostRequest(req?: any, res?: any, _bypassAuth: any = false)
 		// code sees the body.
 		if (Object.hasOwn(req.body, 'bypass_auth')) delete req.body.bypass_auth;
 		if (Object.hasOwn(req.body, 'bypassAuth')) delete req.body.bypassAuth;
+		// Server-derived, overwriting any client value: set_network_access refuses a list excluding it
+		if (req.body.operation === terms.OPERATIONS_ENUM.SET_NETWORK_ACCESS)
+			req.body.hdb_client_address = req.raw?.baseRequest?.ip;
 
 		operation_function = serverUtilities.chooseOperation(req.body);
 
