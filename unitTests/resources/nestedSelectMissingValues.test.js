@@ -387,5 +387,9 @@ describe('nested select over missing relationship values', function () {
 			zip: '80202',
 		});
 		assert.strictEqual(transformForSelect({ name: 'city' })({ city: 'Denver' }), 'Denver');
+		assert.deepStrictEqual(transformForSelect({ name: 'city' })({ city: { zip: '80202' } }), { zip: '80202' });
+		assert.deepStrictEqual(transformForSelect([{ name: 'city' }])({ city: { zip: '80202' } }), {
+			city: { zip: '80202' },
+		});
 	});
 });

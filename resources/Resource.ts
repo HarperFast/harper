@@ -1321,7 +1321,6 @@ export function transformForSelect(select, resource) {
 			}
 		}
 	if (typeof select === 'string' || (!Array.isArray(select) && select?.name !== undefined))
-		// a single string or selection object returns that property's value
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
