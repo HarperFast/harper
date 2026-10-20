@@ -1115,6 +1115,32 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			}
 		});
 
+		it('rechecks a subscription filtered or sorted by the caller on every tick', async () => {
+			await testUtils.seedUsers([{ username: 'filter_user', active: true, role: readRole('filter_role') }]);
+			const user = await resolve('filter_user');
+			const { context: plain } = await subscribe(Docs, user);
+			const filtered = { user, authorize: true };
+			const target = new RequestTarget('/topic');
+			target.id = 'topic';
+			target.conditions = [{ attribute: 'value', value: 'x' }];
+			const filteredSubscription = await Docs.subscribe(target, undefined, filtered);
+			handles.push({ unregister: () => filteredSubscription.end() });
+			const originalEpoch = userModule.userChangeNotificationEpoch;
+			userModule.userChangeNotificationEpoch = () => 13;
+			try {
+				await _sweepNow();
+				const plainUser = plain.user;
+				const filteredUser = filtered.user;
+
+				await _tickNow();
+
+				assert.strictEqual(plain.user, plainUser, 'an unfiltered subscription stays identity-only');
+				assert.notStrictEqual(filtered.user, filteredUser, 'conditions can reach related tables, so each is rechecked');
+			} finally {
+				userModule.userChangeNotificationEpoch = originalEpoch;
+			}
+		});
+
 		it('rechecks a principal with no record provenance on every tick', async () => {
 			await testUtils.seedUsers([{ username: 'component_user', active: true, role: readRole('component_role') }]);
 			const resolved = await resolve('component_user');

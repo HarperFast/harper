@@ -1003,7 +1003,7 @@ interface TableResourceClass {
 	set fullTextFields(names: readonly string[]);
 	assertFullTextSelection(select: unknown, sort?: any): void;
 	assertFullTextRecordField(name: unknown): void;
-	_readDenial(path: readonly any[], user: User, target?: RequestTarget): ReadDenial | undefined;
+	_readDenial(path: readonly any[], user: User, target?: RequestTarget, index?: number): ReadDenial | undefined;
 	_authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any;
 	isFullTextSearchEntryCurrent(entry: Entry): boolean;
 	fullTextQueryIndexes: {
@@ -2161,26 +2161,33 @@ export function makeTable(options): TableResourceClass {
 		 * attribute_permissions, then the rest of the path on the related table when `path[0]` is a
 		 * relationship. A path ending at a relationship still requires read on the related table.
 		 */
-		static _readDenial(path: readonly any[], user: User, target?: RequestTarget): ReadDenial | undefined {
+		static _readDenial(path: readonly any[], user: User, target?: RequestTarget, index = 0): ReadDenial | undefined {
 			const permission = getTablePermissions(user, target);
 			if (permission?.isSuperUser) return;
 			if (!permission?.read) return { database: databaseName, table: tableName };
-			if (path.length === 0) return;
-			const [name, ...rest] = path;
+			if (index >= path.length) return;
+			const name = path[index];
 			const attributePermissions = permission.attribute_permissions;
 			if (attributePermissions?.length > 0 && !attributesAsObject(attributePermissions, 'read')[name])
 				return { database: databaseName, table: tableName, attribute: name };
-			return propertyResolvers[name]?.definition?.tableClass?._readDenial(rest, user, target);
+			return propertyResolvers[name]?.definition?.tableClass?._readDenial(path, user, target, index + 1);
 		}
 		/**
 		 * A selected property narrowed by the related table's allowRead when it names a relationship, or
-		 * false when the role cannot read the related table. Other properties are returned unchanged.
+		 * false when the role cannot read the related table or an attribute the selection sorts by.
+		 * Other properties are returned unchanged.
 		 */
 		static _authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any {
 			const relatedTable = propertyResolvers[property.name || property]?.definition?.tableClass;
 			if (!relatedTable) return property;
 			if (!property.name) property = { name: property };
-			if (!property.checkPermission && checkPermission) property.checkPermission = checkPermission;
+			// authority comes from the request being authorized, never from the selection itself
+			if (checkPermission) property.checkPermission = checkPermission;
+			else delete property.checkPermission;
+			for (let sort = typeof property.sort === 'object' && property.sort; sort; sort = sort.next) {
+				const path = Array.isArray(sort.attribute) ? sort.attribute : [sort.attribute];
+				if (relatedTable._readDenial(path, user, property)) return false;
+			}
 			// Invoke the related table's allowRead on a properly-bound instance rather than
 			// `.call(null, ...)` so `this` is a valid resource of the related type.
 			if (!new relatedTable(undefined, context).allowRead(user, property, context)) return false;

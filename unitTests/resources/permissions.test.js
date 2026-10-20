@@ -279,6 +279,24 @@ describe('Permissions through Resource API', () => {
 			['name-2']
 		);
 	});
+	it('Drops a related selection that sorts by, or carries permissions for, what the role cannot read', async function () {
+		const searchWith = async (property) => {
+			const target = new RequestTarget('?id=id-2');
+			target.select = ['name', property];
+			target.checkPermission = true;
+			const results = [];
+			for await (const result of TestTable.search(target, { user: attribute_authorized_role })) results.push(result);
+			return results;
+		};
+		const sorted = await searchWith({ name: 'related', select: ['id'], sort: { attribute: 'name' } });
+		assert.equal(sorted[0].related, undefined);
+		const injected = await searchWith({
+			name: 'related',
+			select: ['id', 'name'],
+			checkPermission: { super_user: true },
+		});
+		assert.deepEqual(injected[0].related, { id: 'related-id-2' });
+	});
 	it('Reports the first unreadable step of a relationship path', function () {
 		assert.equal(TestTable._readDenial(['related', 'name'], { role: { permission: { super_user: true } } }), undefined);
 		assert.deepEqual(TestTable._readDenial(['related'], authorized_role), {

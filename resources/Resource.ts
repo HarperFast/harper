@@ -916,6 +916,12 @@ function transactional(
 			// target reaches application or table code.
 			if (hasPermissionControl(data)) data = cloneRequestTarget(data);
 			if (Object.prototype.hasOwnProperty.call(data, 'select')) query.select = data.select;
+			// Table.allowRead authorizes condition and sort paths through relationships; for an instance
+			// resource the body's are the ones that execute.
+			if (this.loadAsInstance !== false) {
+				if (Object.prototype.hasOwnProperty.call(data, 'conditions')) query.conditions = data.conditions;
+				if (Object.prototype.hasOwnProperty.call(data, 'sort')) query.sort = data.sort;
+			}
 		}
 		isCollection = query.isCollection;
 		if (options.method === 'post' && query.id === null && !isCollection) {
@@ -1157,8 +1163,13 @@ function registerLiveSubscriptionForContext(
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
 	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
 	// A select written by authorization names no relationship, so the default allowRead's result still
-	// reads only the role's table permission; a caller's select can reach related tables' allowRead.
-	const sharedDecision = !selectedByCaller && defaultAllowReads.has(resource.allowRead);
+	// reads only the role's table permission; a caller's select, conditions or sort can reach related
+	// tables' permissions.
+	const sharedDecision =
+		!selectedByCaller &&
+		!admittedTarget?.conditions?.length &&
+		!admittedTarget?.sort &&
+		defaultAllowReads.has(resource.allowRead);
 	const evaluate = (principal: any) => {
 		const reTarget: any = cloneRequestTarget(admittedTarget);
 		reTarget.checkPermission = principal.role?.permission;
