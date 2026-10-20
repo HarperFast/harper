@@ -1111,17 +1111,10 @@ export class DatabaseTransaction implements Transaction {
 		// the array it never got threw (issue #2222). Capturing an Error per read that nothing can dump
 		// is not worth doing either, so those reads stay untraced.
 		if (DEBUG_LONG_TXNS && this.stackTraces) this.stackTraces.push(new StartedTransaction());
-		// Past OPEN with no handle, getReadTxn() returns none and the read runs against latest state: no
-		// reference is taken, so none can be owed (harper#3308).
 		if (readTxn) this.readTxnsUsed++;
 		return readTxn;
 	}
 
-	/**
-	 * Return a reference taken by useReadTxn(). An iterator passes the readTxnGeneration it read with:
-	 * a return for a handle that has since been detached is a no-op, so it cannot take a reference owed
-	 * to the handle that replaced it. No argument means the current handle.
-	 */
 	doneReadTxn(generation = this.readTxnGeneration) {
 		if (!this.transaction || generation !== this.readTxnGeneration) return;
 		if (--this.readTxnsUsed === 0) {

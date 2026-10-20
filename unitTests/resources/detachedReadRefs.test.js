@@ -1,8 +1,4 @@
-/**
- * harper#3308 — readTxnsUsed counts references to the owned native handle, so it must be 0 whenever
- * there is no handle. A read reference taken while there was none (a read after commit) or returned
- * after its handle was detached must not move the counter, or abort()'s drain loop spins forever.
- */
+// harper#3308: read references taken with no handle, or returned after their handle was detached.
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
@@ -33,9 +29,7 @@ describe('harper#3308 read references against a detached handle', function () {
 			const txn = opened.pop();
 			try {
 				if (txn.transaction) txn.releaseReadTxn();
-			} catch {
-				/* already finalized by the test */
-			}
+			} catch {}
 		}
 	});
 
@@ -152,21 +146,25 @@ describe('harper#3308 read references against a detached handle', function () {
 		assert.equal(await Refs.get('fails'), undefined);
 		await Refs.put({ id: 'after-failure', v: 1 });
 		assert.ok(await Refs.get('after-failure'), 'the thread keeps serving writes');
+		await Refs.delete('after-failure');
 	});
 
-	rocksOnly('abort() returns after the handle is force-released under open iterators', function () {
-		const { txn } = newTransaction();
-		txn.getReadTxn();
-		assert.ok(txn.useReadTxn());
-		assert.ok(txn.useReadTxn());
-		assert.equal(txn.readTxnsUsed, 3);
-		txn.releaseReadTxn();
-		assert.equal(txn.transaction, null);
-		assert.equal(txn.readTxnsUsed, 0);
-		boundDrain(txn);
-		txn.abort(true);
-		assert.equal(txn.readTxnsUsed, 0);
-	});
+	rocksOnly(
+		'abort() returns after the monitor force-releases a handle under open iterators (the issue’s suspected path)',
+		function () {
+			const { txn } = newTransaction();
+			txn.getReadTxn();
+			assert.ok(txn.useReadTxn());
+			assert.ok(txn.useReadTxn());
+			assert.equal(txn.readTxnsUsed, 3);
+			txn.releaseReadTxn();
+			assert.equal(txn.transaction, null);
+			assert.equal(txn.readTxnsUsed, 0);
+			boundDrain(txn);
+			txn.abort(true);
+			assert.equal(txn.readTxnsUsed, 0);
+		}
+	);
 
 	rocksOnly('abort() stops draining once the handle is gone', function () {
 		const { txn } = newTransaction();
@@ -192,13 +190,18 @@ describe('harper#3308 read references against a detached handle', function () {
 			assert.equal(txn.readTxnsUsed, 0);
 			await txn.commit();
 			assert.equal(txn.open, TRANSACTION_STATE.OPEN, 'premise: the scope reopened');
-			const fresh = (await Refs.search({ conditions: [] }, context))[Symbol.asyncIterator]();
-			await fresh.next();
+			const staleGeneration = txn.readTxnGeneration;
+			// A write first: save() attaches the new handle, before any read does.
+			await Refs.put({ id: 'second-generation', v: 1 }, context);
 			freshHandle = txn.transaction;
 			freshGeneration = txn.readTxnGeneration;
 			assert.ok(freshHandle && freshHandle !== staleHandle, 'premise: a new native handle');
-			await Refs.put({ id: 'second-generation', v: 1 }, context);
+			assert.notEqual(freshGeneration, staleGeneration, 'a write-first handle is a new generation too');
+			const fresh = (await Refs.search({ conditions: [] }, context))[Symbol.asyncIterator]();
+			await fresh.next();
+			assert.equal(txn.transaction, freshHandle);
 			const freshCount = txn.readTxnsUsed;
+			assert.equal(freshCount, 2);
 			await assert.rejects(async () => {
 				while (!(await stale.next()).done);
 			}, /snapshot expired/);
@@ -235,7 +238,6 @@ describe('harper#3308 read references against a detached handle', function () {
 				const fresh = (await Refs.search({ conditions: [] }, context))[Symbol.asyncIterator]();
 				await fresh.next();
 				const freshSnapshot = txn.readTxn;
-				// lmdb-js renews the same Txn object, so only the generation tells the snapshots apart.
 				assert.ok(freshSnapshot && txn.readTxnGeneration !== staleGeneration, 'premise: a new read snapshot');
 				const freshCount = txn.readTxnsUsed;
 				await stale.return();
