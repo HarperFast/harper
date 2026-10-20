@@ -2255,6 +2255,16 @@ export class DatabaseTransaction implements Transaction {
 			// Before the first staged write, which freezes the native timestamp. A key below the floor's
 			// admission bound is replaced on the handle only: `txnTime` keeps an explicit value as the
 			// record version, and the entry then carries both clocks as an applied write does.
+			// A holder write that joins a handle already reserved below its stamp would commit under that lower
+			// log key, which a replica applies the write at; refuse it before staging so a retry gets its own key.
+			const joinedKey = operation.lockStamp && !operation.saved ? reservedLocalKey(transaction) : undefined;
+			if (joinedKey !== undefined && joinedKey < operation.lockStamp) {
+				this.detachWrite(operation);
+				throw new ClientError(
+					'Record lock write joined a commit already in flight under an earlier log key; unlock, then lock and retry once it settles',
+					409
+				);
+			}
 			try {
 				const key = reserveLocalKey(operation.store.rootStore, transaction, txnTime || undefined);
 				if (!txnTime) {

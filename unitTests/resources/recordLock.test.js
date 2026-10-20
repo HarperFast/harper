@@ -8,6 +8,8 @@ const { transaction, contextStorage } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
 const { readLocalIssuanceCeiling } = require('#src/resources/auditStore');
 const { ImmediateTransaction } = require('#src/resources/DatabaseTransaction');
+const { PassThrough } = require('node:stream');
+const { createBlob } = require('#src/resources/blob');
 const {
 	MIN_LOCK_LEASE_MS,
 	admissionFloor,
@@ -36,7 +38,7 @@ describe('Record locks (harper#483)', () => {
 		LockTest = table({
 			table: 'RecordLockTest',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }, { name: 'name' }],
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }, { name: 'name' }, { name: 'blob', type: 'Blob' }],
 		});
 	});
 
@@ -1802,6 +1804,45 @@ describe('Record locks (harper#483)', () => {
 			await first.unlock();
 			assert.strictEqual(entryOf(recordId).value.n, 2, 'the second save is not dropped as a duplicate of the first');
 			assert.ok(entryOf(recordId).version > firstVersion, 'the second save is stamped above the first');
+		});
+
+		it('refuses a holder write that would join an in-flight commit reserved below its stamp', async function () {
+			if (isLMDB) return this.skip();
+			const blobbedId = id();
+			const lockedId = id();
+			await LockTest.put({ id: blobbedId, n: 0 });
+			// Beyond storage.maxLockClockSkew, so the stamp is not claimed and the in-flight key stays below it.
+			const predecessorTimestamp = Date.now() + 60_000;
+			await transaction({ timestamp: predecessorTimestamp }, () => LockTest.put({ id: lockedId, n: 0 }));
+			const context = {};
+			const holder = await LockTest.lock(lockedId, { lease: 5000 }, context);
+			const stream = new PassThrough();
+			const blobbed = (await LockTest.getResource(blobbedId, context)).patch(blobbedId, {
+				n: 1,
+				blob: createBlob(stream),
+			});
+			await delay(100); // the commit is staged and waiting on the stream
+			holder.set('n', 2);
+			await assert.rejects(
+				async () => holder.save(),
+				(error) => error.statusCode === 409
+			);
+			assert.ok(
+				!context.transaction.writes.some((write) => write && write.key === lockedId && !write.saved),
+				'the refused write left nothing staged'
+			);
+			stream.end('payload');
+			await blobbed;
+			assert.strictEqual(entryOf(blobbedId).value.n, 1, 'the earlier commit landed');
+			await holder.unlock();
+			const retry = await LockTest.lock(lockedId, { lease: 5000 }, context);
+			retry.set('n', 2);
+			await retry.save();
+			await retry.unlock();
+			const stored = entryOf(lockedId);
+			assert.strictEqual(stored.value.n, 2, 'the retry landed');
+			assert.ok(stored.version > predecessorTimestamp, 'the retry is above its predecessor');
+			assert.ok(auditOf(lockedId, stored.version).txnLogKey >= stored.version, 'its log key covers its version');
 		});
 
 		it('an unlocked write on an immediate context with a lock keeps the clock when a lock stamp is far ahead', async function () {
