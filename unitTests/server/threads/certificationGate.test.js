@@ -1373,7 +1373,6 @@ describe('the release certification gate', function () {
 		assert.equal(shutdownOrder.at(-1), requesterThreadId);
 	});
 
-	/** Starts a dedicated worker for `fresh-app` the first time it reconciles it, as socketRouter's does for a new one. */
 	function freshAppReconciler(calls) {
 		return async (only) => {
 			calls.push(only);
@@ -1520,7 +1519,6 @@ describe('the release certification gate', function () {
 		const before = pool.map((worker) => worker.threadId);
 		const ahead = restartWorkers('http', 1, true, undefined, 'unrelated');
 		const queued = restartWorkers('http', 1, true, undefined, 'was-shared');
-		// a pool worker reports loading it only after the restart was asked for
 		pool[0].loadedApplications = new Set(['was-shared']);
 		releaseRootLoad();
 		await ahead;

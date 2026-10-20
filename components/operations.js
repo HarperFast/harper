@@ -1707,14 +1707,13 @@ async function dropComponent(req) {
 				replicated: req.replicated,
 				startBy: Date.now() + DROP_START_BUDGET_MS,
 			},
-			// this node's drop, then its peers' alongside one another
 			Math.min(2 * dropAnswerTimeoutMs(), hdbTerms.MAX_SET_TIMEOUT_MS)
 		);
 	} catch (error) {
-		const rebuilt = new (error.errorName === 'ClientError' ? ClientError : ServerError)(
-			error.message,
-			error.statusCode
-		);
+		const ErrorClass = { ClientError, ServerError }[error.errorName];
+		const rebuilt = ErrorClass ? new ErrorClass(error.message, error.statusCode) : new Error(error.message);
+		if (!ErrorClass && error.errorName) rebuilt.name = error.errorName;
+		if (!ErrorClass && error.statusCode !== undefined) rebuilt.statusCode = error.statusCode;
 		if (error.code !== undefined) rebuilt.code = error.code;
 		throw rebuilt;
 	}
@@ -1762,21 +1761,14 @@ async function dropApplication(request, requester, answerEarly) {
 			else if (branched && ((present && !isolated) || poolMayHold) && !restartsPool) retained = 'loaded';
 			if (retained) message += BRANCH_STORAGE_RETAINED[retained];
 			const answerBeforeStop = (known) =>
-				answerEarly?.({
-					...response,
-					...outcome,
-					message,
-					branchesRemoved: branched && !retained ? null : false,
-					...known,
-				});
+				answerEarly?.({ ...response, branchesRemoved: branched && !retained ? null : false, ...known });
 
-			// Before the peers' wait, which a concurrent reconcile could otherwise use to stop it first.
+			response = Object.assign(await replicateDrop(req), outcome, { message });
 			if (isolated && (present || running)) {
 				if (requester?.application === project) answerBeforeStop({ workerStopped: null });
 				await manageThreads.reconcileIsolatedApplication(project);
-				outcome.workerStopped = hadWorker && manageThreads.workersForApplication(project).length === 0;
+				response.workerStopped = hadWorker && manageThreads.workersForApplication(project).length === 0;
 			}
-			response = Object.assign(await replicateDrop(req), outcome, { message });
 			let restart;
 			if (restartsPool) {
 				if (requester?.name === hdbTerms.THREAD_TYPES.HTTP && !requester.application) answerBeforeStop();
@@ -1788,6 +1780,7 @@ async function dropApplication(request, requester, answerEarly) {
 			}
 			if (!branched || retained) return;
 			if (restart && (!restart.completed || restart.workersKeptOnOldCode)) {
+				log.warn(`Branched database storage of ${project} was left in place: the restart did not complete`);
 				response.message += BRANCH_STORAGE_RETAINED.restart;
 				return;
 			}

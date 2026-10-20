@@ -171,15 +171,26 @@ const poolSlots: IsolatedSlot[] = [];
  * ones are admitted up to `threads.maxIsolated`, and only while a dedicated worker would be reachable
  * at all. Everything refused is refused loudly and loaded nowhere -- never downgraded to the pool.
  */
-function admittedIsolatedApplications(running: string[], failedClosed: Map<string, Error> | undefined): string[] {
-	const names = presentIsolatedApplicationNames();
+function admittedIsolatedApplications(
+	running: string[],
+	failedClosed: Map<string, Error> | undefined,
+	only?: string
+): string[] {
+	// A reconcile of one application decides nothing about another's worker: one not running takes no place from it, and
+	// gets no report.
+	const names = presentIsolatedApplicationNames().filter(
+		(name) => only === undefined || name === only || running.includes(name)
+	);
 	const admitted = [];
 	const refusalOf = (name: string) => failedClosed?.get(name)?.message ?? isolatedApplicationRefusal(name);
+	const report = (name: string, refusal: string) => {
+		if (only === undefined || only === name) reportIsolatedRefusal(name, refusal);
+	};
 	for (const name of running) {
 		if (!names.includes(name)) continue;
 		const refusal = refusalOf(name);
 		if (refusal) {
-			reportIsolatedRefusal(name, refusal);
+			report(name, refusal);
 			continue;
 		}
 		admitted.push(name);
@@ -190,7 +201,7 @@ function admittedIsolatedApplications(running: string[], failedClosed: Map<strin
 			(failedClosed ? refusalOf(name) : 'which releases may load could not be read') ??
 			isolatedApplicationCapacityRefusal(name, admitted);
 		if (refusal) {
-			reportIsolatedRefusal(name, refusal);
+			report(name, refusal);
 			continue;
 		}
 		refusedIsolated.delete(name);
@@ -287,7 +298,9 @@ export function reconcileIsolatedWorkers(only?: string, refused = false): Promis
 
 async function reconcileIsolatedWorkersNow(only?: string, refused = false): Promise<string[]> {
 	if (!isMainThread || poolSize === 0) return [];
-	const wanted = new Set(admittedIsolatedApplications([...isolatedSlots.keys()], await failedClosedApplications()));
+	const wanted = new Set(
+		admittedIsolatedApplications([...isolatedSlots.keys()], await failedClosedApplications(), only)
+	);
 	// main already knows its release is refused, whatever this reading of the records says
 	if (refused && only !== undefined) wanted.delete(only);
 	const stopping = [];

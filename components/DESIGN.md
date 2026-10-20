@@ -755,7 +755,7 @@ for its own node's drop and its peers' (`startBy` is the deadline after which ma
 that has no directory and no root-config entry is not on this node: nothing is removed and nothing restarts, whatever
 `restart` says, but a dedicated worker a failed earlier drop left running is still stopped. An isolated application's
 worker is stopped with or without `restart`, through the narrowed reconcile, which shuts its slot down and removes its
-mirrors, before the wait for peers; the pool restarts only when asked and only when it may hold the application.
+mirrors, once the peers have answered; the pool restarts only when asked and only when it may hold the application.
 Branched databases go last, once nothing holds them, unless `keepBranches` keeps them; they also stay while the pool
 may still have them open, and a later drop of the now-absent application discards them. `keepBranches` is refused with
 `restart: true`: a peer on an earlier version ignores it, and its restart path removes the branches. Each node answers

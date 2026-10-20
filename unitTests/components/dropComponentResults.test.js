@@ -11,7 +11,6 @@ const { dropComponentFileValidator } = require('#src/components/operationsValida
 describe('a replicated drop_component', () => {
 	it("reports each peer's outcome in the per-node shape, and keeps what its answer carried", () => {
 		const replicated = [
-			// what a peer running this drop answers, with the node harper-pro attaches
 			{
 				message: 'Successfully dropped: preview',
 				node: 'peer-a',
@@ -26,9 +25,7 @@ describe('a replicated drop_component', () => {
 				workerStopped: false,
 				branchesRemoved: false,
 			},
-			// what harper-pro records for a peer the operation did not reach
 			{ status: 'failed', reason: 'Error: connection closed', node: 'peer-c' },
-			// a peer that predates the per-node result
 			{ message: 'Successfully dropped: preview', node: 'peer-d' },
 		];
 		assert.deepStrictEqual(dropPeerResults(replicated), [
@@ -69,7 +66,6 @@ describe('a replicated drop_component', () => {
 		assert.equal(dropComponentFileValidator({ project: 'preview', keepBranches: false, restart: true }), undefined);
 		assert.equal(dropComponentFileValidator({ project: 'preview' }), undefined);
 		assert.match(dropComponentFileValidator({ project: 'preview', keepBranches: 'true' }).message, /keepBranches/);
-		// a node on an earlier version would ignore keepBranches, and its restart would remove the branches
 		assert.match(
 			dropComponentFileValidator({ project: 'preview', keepBranches: true, restart: true }).message,
 			/cannot be combined with 'restart: true'/
