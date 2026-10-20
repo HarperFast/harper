@@ -534,46 +534,35 @@ failure visible and eventually applies write backpressure rather than silently d
 
 ### Retained search snapshots
 
-The continuation infrastructure keeps the native reader on its original worker. Requests on another
-worker send only the query hash, snapshot boundary and native hit metadata through
-`fullTextContinuation.ts`; records and permission checks stay with the requesting worker.
-`fullTextContinuationOwner.ts` owns one worker registry. Native Tantivy readers and tokens still own
-ranking and snapshot traversal.
+Native readers stay on their original worker. Other workers send a query hash, snapshot boundary
+and hit metadata through `fullTextContinuation.ts`; they load records and check permissions locally.
+`fullTextContinuationOwner.ts` holds the worker registry. Native readers own ranking and traversal.
 
-Each pending request reserves a response byte allowance before sending. Native-page allowances use
-the advertised native limits and the requested batch size; the owner checks the serialized response
-before sending it. Timeouts and worker exit release pending capacity. Admission remains process-wide.
-A missing owner expires the search; no request is forwarded to another Harper server.
+Each pending request reserves reply bytes before sending. Native-page allowances use native limits
+and batch size; other operations use fixed allowances. The owner checks serialized native pages
+before sending them. Timeouts and worker exit release pending capacity. Admission is process-wide;
+losing the owner expires the search rather than forwarding it to another server.
 
-Ordinary publication changes may retire a reader while its retained search finishes. Reset, close,
-and index-definition changes instead revoke matching leases immediately, before waiting for native
-work to drain. Releasing the reader waits for already admitted native work. `FullTextContinuationPage` binds the original query, selection, table configuration and principal.
-Only the reserving worker can release its process-wide claim. The lease's shared drain promise
-carries that acknowledgement through close; reader-retirement failures are observed separately.
-Close has a separate bounded cleanup window. After acknowledgement, context and lifecycle fences
-still apply, but the search deadline cannot discard a terminal page whose token is already revoked.
-`Table.search` supplies the existing record materializer; `searchByIndex` supplies its existing entry
-loader. The index feeds bounded candidate groups through those callbacks until the visible page
-fills or traversal ends. Only the rare source-refresh branch needs the saved native version check.
+Publication may retire a reader while its searches finish. Reset, close and definition changes
+revoke leases before draining admitted native work. `FullTextContinuationPage` binds query,
+selection, configuration and principal. Only the reserving worker can release its claim; the lease's
+drain promise carries that acknowledgement, separately from reader-retirement failures. Close has
+its own bounded cleanup window: context and lifecycle checks still apply afterward, but an expired
+search budget cannot discard a terminal page whose token is already revoked.
 
-First-page highlighting uses the retained reader through the lease registry's active-use guard.
-Native reads and tracing share its drain accounting, so expiry or revocation cannot release a
-reader underneath either operation. Resumed highlighting still owns a separate local tracing
-lease. Only that independently acquired lease is released at page end. Page validation imports
-its deadline helper from `fullTextContinuationClock.ts`; the limits module stays native-free. The
-adapter loads admission on first continuation use, preserving lazy admission initialization even
-when database startup loads the query adapter.
+`Table.search` and `searchByIndex` supply their existing materializer and entry loader. The index
+feeds bounded candidate groups through them until the page fills or traversal ends. Source refresh
+rechecks the saved native version. First-page highlighting shares the retained lease's active-use
+and drain accounting; resumed highlighting releases only its separately acquired local reader.
+The adapter loads admission on first continuation use. Page validation imports only the clock
+helper, keeping the limits module native-free and ordinary startup free of admission.
 
-Request deadlines and reader expiry use `steadyClockNow()` from the pinned RocksDB dependency.
-It has one steady clock domain across all workers, including workers started later. Bun's
-`process.hrtime.bigint()` has a separate origin in each worker, so those readings cannot be
-exchanged as absolute deadlines. `derivedIndexTime()` is a wall-clock transaction timestamp and
-cannot replace this clock. Convert to local `performance.now()` deadlines only by transferring
-the remaining duration. The wall-clock `expiresAt` value is display metadata; it does not govern
-expiry. Timers and native reader cleanup are cooperative and can run late under event-loop load.
+Deadlines and expiry use the pinned RocksDB `steadyClockNow()` shared by all workers. Bun's worker-local
+`process.hrtime.bigint()` and wall-clock `derivedIndexTime()` cannot replace it. Transfer only remaining
+durations into local `performance.now()` deadlines. `expiresAt` is display metadata; timers and cleanup
+can run late under event-loop load. See [the dependency contract](../../dependencies.md#harperfastrocksdb-js).
 
-REST keeps the array body and returns continuation metadata in headers. A resumed request does not
-claim coverage from the worker's newer reader slot.
+REST keeps array bodies and sends continuation headers. Resume does not claim newer reader coverage.
 
 ### Bounded delivery
 
