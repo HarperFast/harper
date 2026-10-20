@@ -7456,15 +7456,22 @@ export function makeTable(options): TableResourceClass {
 					if (!certified) return;
 					// an event handed to the queue and not yet taken holds its origin's boundary
 					const queued = new Map<number, number>();
+					// an event with no origin tag (a scan, or a replay path that does not tag) holds every boundary
+					let untagged = Infinity;
 					for (const event of subscription.queue ?? []) {
-						const origin = event?.[ORIGIN_ID];
 						const key = event?.localTime;
-						if (typeof origin !== 'number' || typeof key !== 'number') continue;
+						if (typeof key !== 'number') continue;
+						const origin = event[ORIGIN_ID];
+						if (typeof origin !== 'number') {
+							if (key < untagged) untagged = key;
+							continue;
+						}
 						if (!(queued.get(origin) <= key)) queued.set(origin, key);
 					}
 					const boundaries = new Map<string, MemberBoundary>();
 					for (const [nodeId, state] of certified.origins) {
 						let boundary = state.floor!;
+						if (untagged < boundary) boundary = untagged;
 						const pending = queued.get(nodeId);
 						if (pending < boundary) boundary = pending;
 						const held = holds?.get(nodeId);
@@ -8063,7 +8070,6 @@ export function makeTable(options): TableResourceClass {
 				reloadResnapshotPending = true;
 				if (!reloadResnapshotRunning) runReloadResnapshot();
 			}
-			// #endregion
 			return subscription;
 		}
 

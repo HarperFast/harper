@@ -61,8 +61,6 @@ export interface OriginState {
 	generation?: string;
 	/** The origin key the route that certified `floor` has been floor-only from (`0`: the origin's first entry). */
 	certifiedFrom?: number;
-	/** The lowest start among this node's whole routes to the origin, floor or not: `0` means its log is whole. */
-	wholeFrom?: number;
 	fullCoverage?: boolean;
 	partialHistory?: boolean;
 	hole?: boolean;
@@ -110,7 +108,6 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 		name: getThisNodeName(),
 		generation,
 		certifiedFrom: 0,
-		wholeFrom: 0,
 		fullCoverage: true,
 	};
 	// the own floor certifies only when it was on disk before it was published (`syncWal`)
@@ -149,30 +146,23 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 			}
 		}
 	}
-	// qualifiers are sticky across rows of one generation: a dead peer's row for an earlier generation of the
-	// origin says nothing about the generation another route certifies now
+	// qualifiers are sticky across rows of one generation; rows that name different generations of one origin
+	// cannot be ordered, so the origin fails closed until they agree (a removed peer's row is retained history)
 	for (const [nodeId, nodeRows] of rows) {
 		const state = states.get(nodeId)!;
-		if (state.generation === undefined) {
-			// no certified floor: a revoked row still names the generation it was certified in, so a token naming
-			// the origin is refused rather than misread; with several, the most recently seen one is as good
-			const revoked = nodeRows.find((node) => node.floorRevoked === true && typeof node.originGeneration === 'string');
-			if (revoked) state.generation = revoked.originGeneration;
+		const generations = new Set<string>();
+		for (const node of nodeRows) if (typeof node.originGeneration === 'string') generations.add(node.originGeneration);
+		if (generations.size > 1) {
+			state.floor = undefined;
+			state.certifiedFrom = undefined;
+			state.generation = undefined;
+			state.floorRevoked = true;
+			continue;
 		}
+		if (state.generation === undefined && generations.size === 1) state.generation = [...generations][0];
 		for (const node of nodeRows) {
-			const sameGeneration = state.generation === undefined || node.originGeneration === state.generation;
-			if (!sameGeneration) continue;
 			if (node.floorRevoked === true) state.floorRevoked = true;
 			if (node.hole === true) state.hole = true;
-			if (
-				node.fullCoverage === true &&
-				node.partialHistory !== true &&
-				node.hole !== true &&
-				typeof node.certifiedFrom === 'number' &&
-				!(state.wholeFrom <= node.certifiedFrom)
-			) {
-				state.wholeFrom = node.certifiedFrom;
-			}
 		}
 	}
 	return states;
@@ -353,7 +343,9 @@ export interface ResumePlan {
 
 /** Whether this node's log of the origin is whole from the origin's first entry and still retains it. */
 function retainsBeginning(auditStore: any, state: OriginState): boolean {
-	if (state.wholeFrom !== 0 || state.hole || state.partialHistory) return false;
+	// only the route that certifies the floor proves a continuous prefix, so a whole-log replay needs that route
+	// to have begun at the origin's first entry; a revoked or floorless origin cannot be shown whole
+	if (!qualifies(state) || state.certifiedFrom !== 0) return false;
 	// read, never useLog: that would create the log
 	const log = auditStore.logByName?.get(state.nodeId === 0 ? 'local' : state.name);
 	if (!log) return true; // no log yet: nothing of the origin has arrived, so nothing is behind
@@ -378,6 +370,9 @@ export function admitCheckpoint(
 	{ checkRetention = true } = {}
 ): ResumePlan {
 	const states = readOriginStates(auditStore, dbisDb);
+	if (typeof states.get(0)?.generation !== 'string') {
+		throw new ClientError('This database has no readable generation; resubscribe to resynchronize', 409);
+	}
 	const candidates = new Map<string, string>();
 	const byName = new Map<string, OriginState>();
 	const excludable: string[] = [];
