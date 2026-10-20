@@ -6200,6 +6200,7 @@ export function makeTable(options): TableResourceClass {
 			// scans), the read transaction reads against the latest committed data without pinning a
 			// consistent snapshot, so the scan doesn't hold a snapshot that blocks compaction.
 			const readTxn = txn.useReadTxn(target.snapshot === false);
+			const readTxnGeneration = txn.readTxnGeneration;
 			// The explicit row filter participates in query execution: it is pushed into HNSW
 			// traversal for vector sorts, applied after conditions otherwise, and checked again after
 			// cache/source materialization below. A policy error aborts the query instead of silently
@@ -6342,7 +6343,7 @@ export function makeTable(options): TableResourceClass {
 						} finally {
 							// We own the iteration here (no results.onDone consumer), so release the read
 							// transaction unconditionally — including when the drain throws — or the snapshot leaks.
-							txn.doneReadTxn();
+							if (readTxn) txn.doneReadTxn(readTxnGeneration);
 						}
 						let total: number | null;
 						if (wantExact) {
@@ -6382,7 +6383,7 @@ export function makeTable(options): TableResourceClass {
 				results.onDone = () => {
 					results.onDone = null; // ensure that it isn't called twice
 					txn.unregisterReadIterator(results);
-					txn.doneReadTxn();
+					if (readTxn) txn.doneReadTxn(readTxnGeneration);
 				};
 				// Recorded ownership: if the request dies before anything consumes these results, the
 				// transaction closes them itself rather than leaving its read snapshot pinned.
@@ -6391,7 +6392,7 @@ export function makeTable(options): TableResourceClass {
 				results.getColumns = getColumns;
 				return results;
 			} catch (error) {
-				txn.doneReadTxn();
+				if (readTxn) txn.doneReadTxn(readTxnGeneration);
 				throw error;
 			}
 		}
