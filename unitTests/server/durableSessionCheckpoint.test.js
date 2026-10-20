@@ -31,6 +31,8 @@ function topicTable() {
 
 function certify(T) {
 	const rootStore = T.primaryStore.rootStore;
+	// a floor certifies only once synced; the pinned engine may predate syncWal, so the tick's sync is stood in for
+	if (typeof rootStore.syncWal !== 'function') rootStore.syncWal = () => Promise.resolve();
 	let floor = certifyOriginFloor(rootStore);
 	for (let retry = 0; floor === null && retry < 100; retry++) floor = certifyOriginFloor(rootStore);
 	if (floor) {

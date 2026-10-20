@@ -372,6 +372,8 @@ export interface Subscription<Event extends object = any> extends IterableEventQ
 	 * an origin's boundary to a delivery the consumer has not yet consumed, by origin node id.
 	 */
 	checkpoint?: (holds?: Map<number, number>) => SubscriptionCheckpoint | undefined;
+	/** With `checkpoint`: its lowest boundary, below which no event can be delivered anew; cheaper than encoding one. */
+	checkpointFloor?: (holds?: Map<number, number>) => number | undefined;
 
 	end(): void;
 	toJSON(): { name: 'subscription' };

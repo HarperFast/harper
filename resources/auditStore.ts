@@ -474,7 +474,7 @@ export function openAuditStore(rootStore) {
 					if (floor === undefined) return;
 					persistOriginClosedFloor(auditStore, floor);
 					// Readers consume only the published value, so a floor is advertised only once its record is
-					// on disk: a restart after power loss then still seeds the ratchet above it (harper-pro#922 item 4).
+					// on disk: a restart after power loss then still seeds the ratchet above it.
 					const sync = originFloorsDurable(rootStore) ? rootStore.syncWal() : undefined;
 					if (!sync) {
 						publishOriginFloor(rootStore, floor);

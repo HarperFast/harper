@@ -150,7 +150,7 @@ export function setOriginCaptureIntervalForTests(ms: number) {
 }
 
 /**
- * Per-origin certified floors for checkpoints (harper-pro#922 item 3): every `ORIGIN_FLOOR_TICK_MS` the floors are
+ * Per-origin certified floors for checkpoints: every `ORIGIN_FLOOR_TICK_MS` the floors are
  * captured, then a notify pass runs; the capture a pass began with is published once that pass drains, so every
  * entry below a captured floor — all in the log before the capture — has been dispatched by then. Shared by every
  * progress-reporting subscription on the database; an idle database pays one seq-row read and an empty pass.
@@ -293,6 +293,7 @@ class Subscription extends IterableEventQueue {
 	sentCount?: number;
 	progress?: () => number | undefined;
 	checkpoint?: (holds?: Map<number, number>) => any;
+	checkpointFloor?: (holds?: Map<number, number>) => number | undefined;
 	/** A checkpoint-resumed subscription takes every live entry: its replay seeks per log, so no key gate applies. */
 	ungated?: boolean;
 	includeDescendants?: boolean;
