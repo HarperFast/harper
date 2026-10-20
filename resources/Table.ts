@@ -49,7 +49,7 @@ import {
 	confirmingResidents,
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
-import { releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
+import { isValidFloor, releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
 import {
 	acquireRecordKey,
 	lockAttemptKey,
@@ -2189,6 +2189,7 @@ export function makeTable(options): TableResourceClass {
 										// a new history identity: what was certified under the old one is void, and the route
 										// must prove its prefix again (certifiedFrom) before this generation qualifies
 										nodeState.floorRevoked = undefined;
+										nodeState.revokedFloor = undefined;
 										nodeState.hole = undefined;
 										nodeState.closedFloor = undefined;
 										nodeState.relayable = false;
@@ -2234,6 +2235,8 @@ export function makeTable(options): TableResourceClass {
 									if (nodeState.floorRevoked === true) continue;
 									if (generation !== undefined && nodeState.originGeneration !== generation) continue;
 									nodeState.floorRevoked = true;
+									// the floor it was revoked at still dates this generation against another's rows
+									if (isValidFloor(nodeState.closedFloor)) nodeState.revokedFloor = nodeState.closedFloor;
 									nodeState.closedFloor = undefined;
 									nodeState.relayable = false;
 									qualifiersChanged = true;

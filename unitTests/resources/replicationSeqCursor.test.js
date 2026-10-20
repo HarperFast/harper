@@ -324,6 +324,7 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 					partialHistory: false,
 					hole: undefined,
 					floorRevoked: undefined,
+					revokedFloor: undefined,
 				}
 			);
 		} finally {
