@@ -4,12 +4,12 @@ const { fullTextPageResponseBytes } = require('#src/resources/indexes/fullTextQu
 
 describe('full-text page response bounds', () => {
 	it('bounds structured-clone replies for ASCII, Latin-1, multibyte and supplementary text', () => {
-		for (const text of ['x', 'é', 'Ω', '😀', '\ud800']) {
+		for (const text of ['x', 'é', 'Ω', '😀', '\ud800', 'x'.repeat(4094) + 'Ω', 'x'.repeat(4092) + '😀']) {
 			const maximumString = text.repeat(Math.floor(4096 / Buffer.byteLength(text)));
 			const page = {
 				total: Number.MAX_SAFE_INTEGER,
 				totalRelation: 'lower-bound',
-				continuation: text.repeat(1024),
+				continuation: maximumString,
 				hits: Array.from({ length: 1000 }, () => ({
 					id: maximumString,
 					version: maximumString,

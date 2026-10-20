@@ -53,13 +53,12 @@ export function fullTextContinuationOwner() {
 					info.limits.maxSearchPageSize,
 					info.limits.maxSearchBudgetMilliseconds
 				),
-				// IPC uses UTF-8 strings plus structured-clone metadata rather than native framing.
 				responseBytes(batchSize: number) {
 					if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > info.limits.maxSearchPageSize)
 						throw new ClientError('Invalid full-text continuation page', 400);
 					return Math.min(
-						info.limits.maxSearchResponseBytes + batchSize * 128 + 32 * 1024,
-						batchSize * (info.limits.maxRecordIdBytes + info.limits.maxRecordVersionBytes + 128) + 32 * 1024
+						2 * info.limits.maxSearchResponseBytes + batchSize * 128 + 32 * 1024,
+						batchSize * (2 * (info.limits.maxRecordIdBytes + info.limits.maxRecordVersionBytes) + 128) + 32 * 1024
 					);
 				},
 			});

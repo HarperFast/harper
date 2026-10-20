@@ -360,7 +360,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		const getPage = async (token?: string) => {
 			const continuation = token ? `continuation(${encodeURIComponent(token)})` : 'continuation()';
 			const response = await fetch(
-				`${ctx.harper.httpURL}/Product/?catalogSearch=matches=pagination&limit(75)&select(id,title)&${continuation}`,
+				`${ctx.harper.httpURL}/Product/?catalogSearch=matches=pagination&limit(75)&select(id,title)&sort(-$score)&${continuation}`,
 				{
 					headers: { Authorization: authorization, Connection: 'close' },
 					signal: AbortSignal.timeout(15000),

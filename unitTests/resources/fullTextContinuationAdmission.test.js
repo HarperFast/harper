@@ -63,17 +63,20 @@ describe('full-text process-wide continuation admission', () => {
 		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
 		const workers = [];
 		try {
-			for (let n = 0; n < 2; n++) {
+			for (let n = 0; n < 4; n++) {
 				if (n === 1)
 					env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, {
 						...previous,
 						runtime: { maxSearchThreads: runtime.maxSearchThreads + 1 },
 					});
+				if (n === 2) env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, maxCursors: 0 });
+				if (n === 3)
+					env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, runtime: { maxSearchThreads: 0 } });
 				const worker = startWorker(require.resolve('./fixtures/fullTextContinuationAdmissionWorker.js'), {
 					name: `full-text-runtime-${n}`,
 					autoRestart: false,
 					workerIndex: n,
-					threadCount: 2,
+					threadCount: 4,
 				});
 				workers.push(worker);
 				assert.strictEqual((await response(worker)).ready, true);

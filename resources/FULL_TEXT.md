@@ -116,14 +116,18 @@ array body. `Table.search()` keeps its iterable return value and rejects continu
 
 A custom `search()` override must explicitly implement `searchPage()` with the same row-filter policy before it can serve continuation requests. This applies to static and instance overrides, including through REST.
 
+Inside an authenticated Resource instance method:
+
 ```js
+const context = this.getContext();
 const query = {
 	conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'trail shoes' }],
 	limit: 25,
+	checkPermission: true,
 };
 let continuation = true;
 do {
-	const page = await Product.searchPage({ ...query, continuation });
+	const page = await Product.searchPage({ ...query, continuation }, context);
 	for (const record of page) console.log(record);
 	continuation = page.continuation;
 } while (continuation);
@@ -190,6 +194,8 @@ Search and continuation settings are under `storage.fullText`:
 | `maxRawHitsPerOrdinaryRequest` |  10,000 | Additional hit ceiling for searches without continuation |
 | `maxPendingRequests`           |      32 | Pending worker requests per requesting worker            |
 | `maxPendingResponseBytes`      |  16 MiB | Reserved response bytes per requesting worker            |
+
+A requesting worker reserves a conservative bound for each native batch before dispatch, including two-byte string encoding and message overhead. The reservation can exceed the returned payload. `maxPendingResponseBytes` can therefore reject concurrent reads even when the cursor-count and pending-request limits have room.
 
 Search work and cleanup use separate windows based on `requestBudgetMilliseconds`. With the
 5,000 ms default, a search that uses its full work budget and then closes can take about 10 seconds.

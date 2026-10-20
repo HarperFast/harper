@@ -212,9 +212,15 @@ export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule>
 				throw new TypeError('@harperfast/fulltext/native does not support process budgets');
 			const runtime = resolveFullTextSearchLimits(getFullTextRuntimeConfiguration()).runtime;
 			binding.configureNativeFullTextRuntime(runtime);
-			const requested = resolveFullTextSearchLimits(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT)).runtime;
-			if (Object.keys(runtime).some((name) => runtime[name] !== requested[name]))
-				logger.warn?.('storage.fullText.runtime changed; restart the Harper process to apply its new budgets');
+			try {
+				const requested = resolveFullTextSearchLimits({
+					runtime: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT)?.runtime,
+				}).runtime;
+				if (Object.keys(runtime).some((name) => runtime[name] !== requested[name]))
+					logger.warn?.('storage.fullText.runtime changed; restart the Harper process to apply its new budgets');
+			} catch {
+				// A diagnostic must not reject an already-configured native binding.
+			}
 			return binding;
 		});
 		bindingPromise.catch((error) => {

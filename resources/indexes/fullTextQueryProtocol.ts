@@ -89,6 +89,6 @@ export function replayFullTextPrefix(
 
 export function fullTextPageResponseBytes(page: { hits: FullTextReplayHit[]; continuation?: string }): number {
 	let bytes = 1024;
-	for (const hit of page.hits) bytes += Buffer.byteLength(hit.id) + Buffer.byteLength(hit.version ?? '') + 128;
-	return bytes + Buffer.byteLength(page.continuation ?? '');
+	for (const hit of page.hits) bytes += 2 * (hit.id.length + (hit.version?.length ?? 0)) + 128;
+	return bytes + 2 * (page.continuation?.length ?? 0);
 }
