@@ -177,19 +177,18 @@ function createOpenDBIObject(dupSort = false, isPrimary = false) {
 // lmdb allocates a 16 MB native buffer per thread on load, so it is loaded only when an LMDB store is opened
 function openLmdb(options: Parameters<typeof import('lmdb').open>[0]): RootDatabase {
 	const environment = (require('lmdb') as typeof import('lmdb')).open(options);
-	// lmdb (through 3.5.8) resolves a root's close() before the native close while reads are in flight on an
-	// environment that has not written; its callback is called only once the environment is closed.
-	const close = environment.close as (callback?: () => void) => Promise<void> | undefined;
+	// lmdb resolves a root's close() before the native close while reads are in flight on an environment that has
+	// not written; its close callback runs only once the environment is closed
+	const close = environment.close as (callback: () => void) => Promise<void> | undefined;
 	let closed: Promise<void> | undefined;
-	environment.close = function (callback?: () => void) {
-		closed ??= new Promise<void>((resolve, reject) => {
+	environment.close = function () {
+		return (closed ??= new Promise<void>((resolve, reject) => {
 			try {
 				close.call(this, resolve)?.catch(reject);
 			} catch (error) {
 				reject(error);
 			}
-		});
-		return callback ? closed.then(callback) : closed;
+		}));
 	};
 	return environment;
 }

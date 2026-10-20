@@ -3,6 +3,7 @@
 require('../testUtils');
 const assert = require('node:assert');
 const fsPromises = require('node:fs/promises');
+const { syncBuiltinESMExports } = require('node:module');
 const { existsSync } = require('node:fs');
 const { setupTestDBPath } = require('../testUtils');
 const { closeDatabase, databases, resetDatabases, table } = require('#src/resources/databases');
@@ -30,7 +31,7 @@ describe('LMDB environment close completion', function () {
 		attributes: [{ attribute: 'id', isPrimaryKey: true }],
 	});
 
-	// lmdb defers a close only on an environment that has not written, so reload the database to get one
+	// lmdb resolves close() early only on an environment that has not written, so reload the database to get one
 	async function readOnlyTable(databaseName) {
 		const Writer = table(definition(databaseName));
 		await Writer.put({ id: 1, name: 'one' });
@@ -61,11 +62,13 @@ describe('LMDB environment close completion', function () {
 			};
 		fsPromises.rm = record(rm);
 		fsPromises.unlink = record(unlink);
+		syncBuiltinESMExports();
 		try {
 			await withDeadline(new ResourceBridge().dropSchema({ schema: databaseName }), 'the drop');
 		} finally {
 			fsPromises.rm = rm;
 			fsPromises.unlink = unlink;
+			syncBuiltinESMExports();
 		}
 
 		assert.strictEqual(closeDeferred, true, 'precondition: a read was in flight when the environment closed');
