@@ -1715,12 +1715,13 @@ describe('Record locks (harper#483)', () => {
 			const predecessorTimestamp = Date.now() + 60_000;
 			await transaction({ timestamp: predecessorTimestamp }, () => LockTest.put({ id: idB, n: 0 }));
 			const context = {};
-			// Both scoped locks stage their writes on one immediate context, so one save commits both.
+			// Each scoped lock commits its own write on the shared immediate context.
 			const a = await LockTest.lock(idA, { lease: 5000 }, context);
 			const b = await LockTest.lock(idB, { lease: 5000 }, context);
 			a.set('n', 1);
 			b.set('n', 2);
 			await a.save();
+			await b.save();
 			await a.unlock();
 			await b.unlock();
 			const versionA = entryOf(idA).version;
@@ -1799,6 +1800,7 @@ describe('Record locks (harper#483)', () => {
 			locked.set('n', 1);
 			const resource = await LockTest.getResource(otherId, context);
 			await resource.patch(otherId, { n: 1 });
+			await locked.save();
 			await locked.unlock();
 			assert.ok(context.transaction instanceof ImmediateTransaction, 'both writes took the immediate path');
 			assert.strictEqual(entryOf(lockedId).value.n, 1, 'the locked write outranks its predecessor');

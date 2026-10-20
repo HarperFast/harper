@@ -2343,6 +2343,7 @@ export class DatabaseTransaction implements Transaction {
 			!this.isReplay;
 		const wasSaved = Boolean(operation.saved);
 		let completion: Promise<void>;
+		let appliedByPriorAttempt: number | undefined;
 		try {
 			if (!reusesBaseRead && (reloadEntry || operation.entry === undefined || reloadsCommitBase)) {
 				const uncachedRead = !!operation.reloadCommitBase || reloadEntry || this.isReplay;
@@ -2376,6 +2377,7 @@ export class DatabaseTransaction implements Transaction {
 			}
 			if (shouldStampStagedOn) operation.stagedOn = transaction;
 			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
+			appliedByPriorAttempt = operation.appliedRecordVersion;
 			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
 			try {
 				completion = operation.commit(
@@ -2404,8 +2406,10 @@ export class DatabaseTransaction implements Transaction {
 			}
 			throw error;
 		}
+		// A retry that ties with the record its own earlier attempt stored skips the write, but that version stands.
 		if (operation.trackRecordVersion)
-			operation.appliedRecordVersion = operation.recordVersionApplied ? writeVersion : undefined;
+			operation.appliedRecordVersion =
+				operation.recordVersionApplied || appliedByPriorAttempt === writeVersion ? writeVersion : undefined;
 		if (typeof completion?.then === 'function') this.stageCompletion(completion, transaction);
 		// Sticky record that THIS write staged with its audit entry appended (log entries batch on the
 		// native transaction and are durably written by its commit attempt — even a failed one — so
