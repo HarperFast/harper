@@ -25,7 +25,14 @@ Every operation on this page can be run from the CLI under its operation name, f
 
 Like any [CLI operation](../cli/operations-api-commands.md), backup commands also accept a remote `target=<url>` to run against another instance instead of the local one (see [Remote Operations](../cli/overview.md#remote-operations)). With a remote target the operation is always forwarded — there is no offline path.
 
-A target set with `HARPER_CLI_TARGET` or `CLI_TARGET`, including one `harper login` added to a `.env` file, is always forwarded too. `harper logout` does not remove a `.env` entry; delete that line to run commands offline. So is a target saved by `harper login`, with one exception for the operations other than `get_backup`: if the saved target is a loopback address (`localhost`, `127.x` or `::1`) and the local server is stopped, `create_backup`, `list_backups` and `verify_backup` run offline against this installation's files, and `restore_backup`, `delete_backup` and `purge_backups` fail. They fail because a loopback address can belong to a different instance, such as an SSH tunnel, a container or another local install. To run one of them on this installation's files, first run `harper logout <target>`, which also removes that saved login. To run it on the saved target, pass `target=<url>`.
+A target set with `HARPER_CLI_TARGET` or `CLI_TARGET` is always forwarded too, including one that `harper login` added to a `.env` file. `harper logout` does not remove a `.env` entry, so delete that line to run commands offline.
+
+A target saved by `harper login` is also forwarded, with one exception. If the saved target is a loopback address (`localhost`, `127.x` or `::1`) and the local server is stopped:
+
+- `create_backup`, `list_backups` and `verify_backup` run offline against this installation's files.
+- `restore_backup`, `delete_backup` and `purge_backups` fail without changing anything, because a loopback address can belong to a different instance, such as an SSH tunnel, a container or another local install.
+
+To run one of the failing commands on this installation's files, first run `harper logout <target>`, which also removes that saved login. To run it on the saved target, pass `target=<url>`.
 
 Offline invocation matters most for restore: an in-place `restore_backup` of the `system` database, or of any database a loaded component keeps open, must be run with the server stopped. See ["when can a database be restored"](./overview.md#when-can-a-database-be-restored).
 
