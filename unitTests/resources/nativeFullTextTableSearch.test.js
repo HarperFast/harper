@@ -305,7 +305,10 @@ describe('published native full-text Table.search integration', () => {
 			(error) => error.statusCode === 400 && error.message.includes('continuation')
 		);
 		for (const closeContinuation of [true, null, 0, '']) {
-			await assert.rejects(new Product().delete({ ...base, closeContinuation }), (error) => error.statusCode === 400);
+			await assert.rejects(
+				new Product().delete({ ...base, isCollection: true, closeContinuation }),
+				(error) => error.statusCode === 400 && error.message.includes('continuation')
+			);
 			await assert.rejects(Product.search({ ...base, closeContinuation }), (error) => error.statusCode === 400);
 		}
 		assert.deepStrictEqual(ids(await collect(Product.search({ ...base, limit: 2 }))), ['a', 'b']);
