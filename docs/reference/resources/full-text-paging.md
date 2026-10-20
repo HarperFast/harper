@@ -71,8 +71,8 @@ returns 400. In REST, the accepted explicit score order is `sort(-$score)` alone
 In a static custom Resource method, pass the method's `context` argument as the second argument
 to `tables.Product.searchPage()`. In an instance method, use `this.getContext()` instead. See
 [Resource context](./resource-api.md#getcontext-context) for both forms. Set `checkPermission: true`
-in the query. This requests the caller's
-table and searched-source permissions; passing context alone does not request that permission gate.
+in the query on every page. Without it, a direct call does not request the caller's
+table and searched-source permission checks; passing context alone does not enable them.
 Changing the caller identity, including switching from an authenticated request to an internal
 call without that context, returns 410. Permission changes for the same caller are checked on each
 page. Application row filters still run on each page.
@@ -84,11 +84,17 @@ If your table overrides `search()`, also implement `searchPage()` with the same 
 This applies to static and instance methods. Otherwise paging returns 400, including through REST,
 to avoid bypassing application filters.
 
+Return the original page array from a custom Resource. Copying it with `map()`, `filter()` or
+spread drops its paging metadata and a framework-serialized continuation response returns 400.
+Use the query's `select` and filters instead. A Resource returning an explicit HTTP `Response`
+owns its response headers, serialization and cache policy.
+
 ## Page through REST
 
 Use the single-argument `limit(n)` page size and start with `continuation()`. Do not use
 a nonzero starting offset with `limit(start,end)`, request a count with `Prefer: count=`, or change the relevance order. The same
 `explain` and `sync` restrictions as `Table.searchPage()` apply; violations return 400.
+The equivalent `limit(0,n)` form is accepted; it does not skip records within the retained search.
 
 ```http
 GET /Product/?catalogSearch=matches=trail%20shoes&select(id,title,$score)&limit(25)&continuation()
@@ -115,6 +121,10 @@ absolute expiry time in milliseconds since the Unix epoch. Completed pages omit 
 expiry. Harper adds these names to `Access-Control-Expose-Headers` so browser clients can read them.
 Continuation responses override the usual read-cache policy with `Cache-Control: no-store`. JSON `QUERY` requests return the
 same headers when their query body enables continuation.
+
+Request URL logging can record continuation tokens. Keep tokens out of logs and analytics.
+QUERY accepts the token in its JSON body with the same query fields if it should stay out of the URL.
+Tokens still require the same caller and query and expire with their search.
 
 Read and parse the complete response body before saving its next token. A stream can fail after
 headers are sent. If a resumed page fails this way, retry with the previous token while the snapshot remains valid.
@@ -192,9 +202,9 @@ storage:
 | `maxPendingRequests`           |      32 | Pending requests per requesting worker                      |
 | `maxPendingResponseBytes`      |  16 MiB | Reserved response bytes per requesting worker               |
 
-Ordinary searches use the lower of `maxRawHitsPerRequest` and `maxRawHitsPerOrdinaryRequest`, and share the `requestBudgetMilliseconds` execution budget. Increase the ordinary ceiling explicitly if a selective query needs more work. Hitting a ceiling returns an error.
+Ordinary searches use the lower of `maxRawHitsPerRequest` and `maxRawHitsPerOrdinaryRequest`, and share the `requestBudgetMilliseconds` execution budget. A raw-hit ceiling returns 400 instead of a partial page. Increasing the ordinary ceiling permits more native work and record reads per request; test selective queries before raising it. Replayed batches count toward the ceiling, so the number of distinct matches reached can be lower.
 
-A requesting worker reserves a conservative bound for a complete native batch before dispatch, including two-byte string encoding and message overhead. The reservation may exceed the returned payload. `maxPendingResponseBytes` can reject concurrent reads even when the cursor-count and pending-request limits have room.
+A requesting worker reserves a conservative bound for a complete native batch before dispatch, including two-byte string encoding and message overhead. The reservation may exceed the returned payload. `maxPendingResponseBytes` can reject concurrent reads with 503 even when the cursor-count and pending-request limits have room. A reservation rejection happens before dispatch and does not advance the search. Reduce concurrency and retry with the same token while it remains valid; this rejection does not include a `Retry-After` header.
 
 Search work and cleanup use separate windows based on `requestBudgetMilliseconds`. With the
 5,000 ms default, a search that uses its full work budget and then closes can take about 10 seconds.
@@ -215,6 +225,10 @@ changes with that operation. Native process-wide admission
 settings live under `storage.fullText.runtime` and require a full process restart when changed. Restarting only worker threads does not apply new native budgets; replacement workers keep the established process budgets. Their defaults
 are 128 resident indexes, 128 indexing threads, 256 search threads, 4 GiB configured writer memory,
 8 GiB configured queue capacity, and 8 concurrent expensive searches. All limits apply together.
+
+Application-created workers inherit the established native settings too. Create them after
+Harper initializes its full-text settings; workers created before that point return 503 when
+they try to load full-text search. This prevents a worker from applying different process-wide limits.
 
 The runtime keys use integer counts or bytes:
 

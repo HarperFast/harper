@@ -1031,7 +1031,19 @@ body, so avoid putting sensitive detail in thrown error messages.
 
 ## Query Object
 
-The `Query` object is accepted by `search()` and the static `get()` method.
+The `Query` object is accepted by `search()`, `searchPage()`, and the static `get()` method.
+
+### `continuation`
+
+For `searchPage()`, omit this field or use `true` to start a search; use the returned token to resume. Keep the query and caller context consistent. See [Full-Text Paging](./full-text-paging.md#page-through-tablesearchpage).
+
+### `closeContinuation`
+
+Use `true` with an existing continuation token to close the search early. See [Close or restart a search](./full-text-paging.md#close-or-restart-a-search).
+
+### `checkPermission`
+
+Set `true` on every page when a direct table call acts for a caller, and pass that caller's context. Without it, the call does not request the caller's table and searched-source permission checks; context alone does not enable them. Automatic REST applies its permission checks. See [Full-Text Paging](./full-text-paging.md#page-through-tablesearchpage).
 
 ### `conditions`
 
@@ -1099,6 +1111,7 @@ Special properties:
 - `$id` — Returns the primary key regardless of its name
 - `$updatedtime` — Returns the last-updated timestamp
 - `$distance` — When the query ranks or filters by a vector index, returns the computed distance from the target vector. See [Vector Indexing](../database/schema.md#vector-indexing).
+- `$score` - When a query uses a full-text index, returns its relevance score. See [Full-Text Paging](./full-text-paging.md#page-through-tablesearchpage).
 
 #### Selecting related records
 

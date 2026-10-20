@@ -311,8 +311,8 @@ storage:
   engine: rocksdb
 ```
 
-- `fullText` <VersionBadge version="v5.4.0" /> - Retained full-text searches and native search capacity. See [Full-Text Paging](../resources/full-text-paging.md#configure-resource-limits) for settings, defaults and restart requirements.
 - `engine` — The database storage engine to use for new databases. Currently supported engines are `rocksdb` and `lmdb`. The default is `rocksdb`. Existing databases will use the engine that was used when they were created.
+- `fullText` - Full-text capacity controls (Added in: v5.4.0). See [Full-Text Paging](../resources/full-text-paging.md#configure-resource-limits) for settings, defaults and restart requirements. Native full-text search itself is available from v5.3.0.
 - `writeAsync` — Disable disk sync for higher throughput (**disables durability guarantees**); _Default_: `false`
 - `caching` — In-memory record caching; _Default_: `true`
 - `compression` — LZ4 record compression; _Default_: `true` (enabled by default since v4.3.0). Sub-options: `dictionary`, `threshold`
