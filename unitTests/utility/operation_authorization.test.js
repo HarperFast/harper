@@ -701,6 +701,28 @@ describe('Test operation_authorization', function () {
 			assert.equal(result.unauthorized_access.length, 0);
 		});
 
+		it('checks the select alias the search handlers read in place of get_attributes', function () {
+			const verifySelect = (select) => {
+				let req_json = getRequestJson(TEST_JSON);
+				delete req_json.records;
+				Object.assign(req_json, { operation: 'search_by_hash', hash_values: [1], get_attributes: ['name'], select });
+				let perms = clone(PERMISSION_BASE);
+				perms.dev.tables.dog.read = true;
+				perms.dev.tables.dog.attribute_permissions = [
+					{ attribute_name: 'name', describe: true, read: true, insert: false, update: false },
+					{ attribute_name: 'breed', describe: true, read: false, insert: false, update: false },
+				];
+				req_json.hdb_user.role.permission = perms;
+				return { req_json, result: op_auth_rewire.verifyPerms(req_json, search.searchByHash.name) };
+			};
+			const { req_json, result } = verifySelect(['name', 'breed']);
+			assert.equal(result instanceof PermissionResponseObject, true);
+			assert.deepStrictEqual(result.invalid_schema_items, ["Attribute 'breed' does not exist on 'dev.dog'"]);
+			assert.deepStrictEqual(req_json.get_attributes, ['name', 'breed']);
+			assert.equal('select' in req_json, false);
+			assert.equal(verifySelect(['name']).result, null);
+		});
+
 		it('(NOMINAL) - Pass in JSON with schemas and table dog defined, insert allowed, expect true', function () {
 			let req_json = getRequestJson(TEST_JSON);
 			let perms = clone(PERMISSION_BASE);
@@ -1311,6 +1333,14 @@ describe('Test operation_authorization', function () {
 				[...result],
 				['age', ...req_json.get_attributes.filter((attribute) => attribute !== 'age')]
 			);
+		});
+
+		it('records the root attribute of a relationship path and of a sub-select', function () {
+			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+			let req_json = clone(TEST_CONDITIONS_JSON);
+			req_json.get_attributes = ['id', { name: 'owner', select: ['name'] }];
+			req_json.conditions = [{ search_attribute: ['owner', 'name'], search_type: 'equals', search_value: 'x' }];
+			assert.deepStrictEqual([...getRecordAttributes(req_json)], ['owner', 'id']);
 		});
 
 		it('does not treat full-text result metadata as stored attributes', function () {

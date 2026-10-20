@@ -248,6 +248,20 @@ GraphQL `@relationship` attributes are live objects in component workers, but th
 
 Only the GraphQL authoring path persists relationships. `defineTable()` resolves its relation targets through a lazy thunk so forward references and cycles work, and the target class is not resolvable at registration time — so code-first relationships remain worker-only, and the operations API still rejects them as unknown attributes. Operations-API object entries in `get_attributes` (`{ name, select }`) are held to the same catalog invariant as string entries: top-level names must be declared in `table.attributes` (which the string form already enforced), and relationship targets recursively enforce their own `tableClass.attributes` on `select`, while nested keys under a declared non-relationship (plain JSON) attribute stay unchecked because arbitrary JSON sub-keys have no catalog entry (role permission enforcement across operations-API relationship selectors is tracked in [harper#3316](https://github.com/HarperFast/harper/issues/3316)). Tests: `../unitTests/resources/schemaMigrationFragility.test.js` (catalog round-trip and failure behavior), `../unitTests/validation/searchValidator.test.js` and `../unitTests/resources/restSelectProjectionFixes.test.js` (object `get_attributes` validation and `search_by_hash` projection), and `../integrationTests/apiTests/graphql.test.mjs` (operations API in both directions).
 
+---
+
+## A relationship read is authorized against the related table
+
+Selecting a `@relationship`, or filtering or sorting by a path through one, reads the related table, so it needs the role's `read` on that table and, for every attribute of the path, that table's `attribute_permissions`. `Table._readDenial(path, user, target)` is the one statement of that rule: it walks the path through `propertyResolvers` and returns the first table or attribute the role cannot read. Each read API applies it where it already authorizes, in that API's own refusal shape:
+
+- REST and GraphQL: `allowRead` refuses a condition or sort path that is denied (403). Select keeps its narrowing semantics: an unreadable relationship is dropped and a related record is narrowed to readable attributes, through `Table._authorizeRelatedSelection`.
+- Operations API: `verifyPerms` (`utility/operation_authorization.ts`) reports a denied `get_attributes` entry, condition or sort path as `unauthorized_access` on the related table, and drops denied relationships from the non-super `*` rewrite. It authorizes the `select` alias by moving it onto `get_attributes`, because the search handlers read `select` in place of `get_attributes`. `ResourceBridge.getSelect` then narrows the selected related records with `_authorizeRelatedSelection`, after validation, since `search_by_hash` accepts only string `get_attributes`.
+
+The search layer (`search.ts`) does not check permissions: `Resource.search` clears `checkPermission` after `allowRead`, and operations API reads carry none. A new read path that resolves related records must authorize at its entry point, not rely on the join.
+
+Tests: `../unitTests/resources/permissions.test.js` and `../integrationTests/security/relationship-related-table-permissions.test.ts`.
+
+---
 ## Typed, discoverable resources (code-first schema + request contract)
 
 **The principle** (full RFC and type-level proofs: **HarperFast/harper#1503**). Harper strips TypeScript at runtime (`--conditions=typestrip`), which erases types and rules out metadata-emitting decorators. So **runtime metadata must be values, and TypeScript types are _derived_ from those values — never the reverse.** Everything here is erasable syntax; the values survive stripping, the types are inferred, nothing can drift. One shared IR — `JsonSchemaFragment` (`jsonSchemaTypes.ts`), produced by `attributeToFragment` — feeds validation, OpenAPI, and MCP, so those surfaces cannot silently disagree.

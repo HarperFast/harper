@@ -260,6 +260,43 @@ describe('Permissions through Resource API', () => {
 		assert.equal(results[0].related.id, 'related-id-2');
 		assert.equal(results[0].related.name, undefined);
 	});
+	async function searchAs(user, query) {
+		const target = new RequestTarget(query);
+		target.checkPermission = true;
+		const results = [];
+		for await (const result of TestTable.search(target, { user })) results.push(result);
+		return results;
+	}
+	it('Can not query or sort through a relationship to a table the role cannot read', async function () {
+		await assert.rejects(searchAs(authorized_role, '?related.name=related name-2'), /Unauthorized access/);
+		await assert.rejects(searchAs(authorized_role, '?id=id-2&sort(related.name)'), /Unauthorized access/);
+	});
+	it('Can not query on a related attribute the role cannot read', async function () {
+		await assert.rejects(searchAs(attribute_authorized_role, '?related.name=related name-2'), /Unauthorized access/);
+		const results = await searchAs(attribute_authorized_role, '?related.id=related-id-2&select(name)');
+		assert.deepEqual(
+			results.map((result) => result.name),
+			['name-2']
+		);
+	});
+	it('Reports the first unreadable step of a relationship path', function () {
+		assert.equal(TestTable._readDenial(['related', 'name'], { role: { permission: { super_user: true } } }), undefined);
+		assert.deepEqual(TestTable._readDenial(['related'], authorized_role), {
+			database: 'test',
+			table: 'RelatedTestTable',
+		});
+		assert.deepEqual(TestTable._readDenial(['related', 'name'], attribute_authorized_role), {
+			database: 'test',
+			table: 'RelatedTestTable',
+			attribute: 'name',
+		});
+		assert.deepEqual(TestTable._readDenial(['prop1'], attribute_authorized_role), {
+			database: 'test',
+			table: 'TestTable',
+			attribute: 'prop1',
+		});
+		assert.equal(TestTable._readDenial(['related', 'id'], attribute_authorized_role), undefined);
+	});
 	it('QUERY body permission controls cannot authorize a related-table select', async function () {
 		let receivedCheckPermission;
 		let receivedNestedCheckPermission;
