@@ -154,7 +154,6 @@ function viewOf(scope: string, row: any) {
 	};
 }
 
-/** One scope's list, or every scope's when `scope` is omitted; a scope with no row has an empty list. */
 export async function getNetworkAccess(req: any) {
 	requireSuperUser(req);
 	validate(validateBySchema(req, Joi.object({ scope: SCOPE }).unknown(true)));

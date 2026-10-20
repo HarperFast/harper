@@ -1,8 +1,7 @@
 'use strict';
 
-// 5.4.0 — for existing installs: creates system.hdb_network_access and registers the system-table attributes
-// json/systemSchema.json gained after each table was created; fresh installs get both from the schema
-// (dataLayer/DESIGN.md, "System table bootstrap").
+// 5.4.0 — registers the system-table attributes `json/systemSchema.json` gained after each table was created,
+// such as `activated_from` on `hdb_deployment`. See dataLayer/DESIGN.md, "System table bootstrap".
 
 import * as terms from '../../utility/hdbTerms.ts';
 import { createSystemTableIfMissing } from './5-3-0.ts';
