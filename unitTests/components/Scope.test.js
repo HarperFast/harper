@@ -976,10 +976,10 @@ describe('Scope', () => {
 			const componentLoader = require('#src/components/componentLoader');
 			const failedAppDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.failed-app-'));
 			const failedPluginName = 'failedBearerPlugin';
-			let handleApplicationCalled = false;
+			let failedScope;
 			componentLoader.TRUSTED_RESOURCE_PLUGINS[failedPluginName] = {
 				async handleApplication(scope) {
-					handleApplicationCalled = true;
+					failedScope = scope;
 					scope.server.registerBearerValidator(() => null);
 					throw new Error('simulated handleApplication failure');
 				},
@@ -992,7 +992,7 @@ describe('Scope', () => {
 						registerBearerValidator: () => () => unregisterOnFailedLoadCalls++,
 					}),
 				});
-				assert.equal(handleApplicationCalled, true, 'handleApplication must have been invoked by loadComponent');
+				assert.ok(failedScope, 'handleApplication must have been invoked by loadComponent');
 				assert.equal(
 					unregisterOnFailedLoadCalls,
 					1,
@@ -1001,7 +1001,8 @@ describe('Scope', () => {
 			} finally {
 				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[failedPluginName];
 				componentLoader.loadedPaths.clear();
-				await new Promise((resolve) => setImmediate(resolve));
+				// a failed load leaves its scope open; its watchers must stop before Windows can delete the directory
+				await failedScope?.close();
 				rmSync(failedAppDir, { recursive: true, force: true });
 			}
 		});
