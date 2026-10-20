@@ -281,9 +281,8 @@ export async function authentication(request, nextHandler) {
 								// read first: a component's server.getUser principal carries no record versions itself
 								const versions = userRecordVersions(username);
 								newUser = await server.getUser(username, password, request);
-								trackUserRecords(newUser, versions);
-								// cache a copy: a memoizing server.getUser hands this object to later lookups, which re-track it
-								if (newUser?.role) newUser = cloneUserView(newUser);
+								// cache a copy of a component's user: a memoizing server.getUser hands it to later lookups, which re-track it
+								if (trackUserRecords(newUser, versions) && newUser.role) newUser = cloneUserView(newUser);
 							} else newUser = null;
 							break;
 						case 'Bearer': {
@@ -326,7 +325,7 @@ export async function authentication(request, nextHandler) {
 									const claim = hasActiveValidators ? await runBearerValidators(credentials, request) : undefined;
 									if (claim) username = claim.result.username;
 									const principal = claim && (await principalFromClaim(claim, decoded, request));
-									// a validator disposed while its claim resolved no longer speaks for the token
+									// disposed while the claim resolved
 									if (!principal || !claim.entry.active) {
 										warnDeferredTokenRejection(error);
 										warnDeferredTokenRejection(deferredRefreshError);

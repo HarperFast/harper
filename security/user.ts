@@ -545,10 +545,13 @@ function userRecordVersions(username: string): UserProvenance {
 
 /**
  * Makes `isCurrentUser` check a user resolved outside this module against the record versions read
- * before it was resolved; a write in between then shows as a change.
+ * before it was resolved; a write in between then shows as a change. Returns whether `user` was
+ * resolved outside this module.
  */
-function trackUserRecords(user: User, versions: UserProvenance): void {
-	if (user && typeof user === 'object' && !(user as any)[PROVENANCE]) trackedProvenance.set(user, versions);
+function trackUserRecords(user: User, versions: UserProvenance): boolean {
+	if (!user || typeof user !== 'object' || (user as any)[PROVENANCE]) return false;
+	trackedProvenance.set(user, versions);
+	return true;
 }
 
 /**

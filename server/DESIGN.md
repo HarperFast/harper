@@ -363,15 +363,17 @@ set `request.user` itself would have to re-implement, per plugin, what this path
 - **A validator names a user; Harper supplies the role.** The contract is
   `{ username, authExpiresAt?, authCacheable? }`, resolved through `server.getUser` (the Basic path's
   `userRecordVersions` → `getUser` → `trackUserRecords`), so `isCurrentUser`, live-subscription
-  rechecks and MCP session refreshes treat it like any `hdb_user`. Any other field is refused, `role`
-  included. Inline-permission principals (a per-token narrowed role under the scoped-token ceiling)
+  rechecks and MCP session refreshes treat it like any `hdb_user`. A component's `server.getUser`
+  override stays authoritative, so the user need not have an `hdb_user` row. Any other field is
+  refused, `role` included. Inline-permission principals (a per-token narrowed role under the scoped-token ceiling)
   were built and dropped: the first consumer's tokens name a Harper user and carry no permissions,
   and a principal no `hdb_user` backs needs its own revocation at every by-name rehydration site
   (`security/DESIGN.md`). Refusing `role` now keeps adding it later from changing an existing
   result's meaning.
 - **Expiry is exact.** `authExpiresAt` is the validator's value capped by the token's own JWT `exp`,
   else 300 s; it is checked again after the `server.getUser` lookup. `authorizationCache` evicts at
-  it, live subscriptions end at it (#1414), and MQTT wills persist it and are dropped past it. The
+  it, live subscriptions end at it (#1414), and MQTT wills persist it and are dropped past it, on
+  restart replay checked again after the replay's own `server.getUser` lookup. The
   decoded `exp` is unverified, so it only shortens: a past `exp` on a token the validator accepted is
   ignored for the lifetime and only keeps the principal out of the cache. A validator that verified
   the token's expiry should return it as `authExpiresAt`.
@@ -383,8 +385,8 @@ set `request.user` itself would have to re-implement, per plugin, what this path
   Declines are not cached: a validator caches its own.
 - **Faults fail closed.** A tagged throw is a credential rejection (deferred, or 401 on Harper-owned
   routes); an untagged throw, a malformed return, or exceeding `timeoutMs` answers 401 in place.
-- **No minting, no operations port.** `_bearerValidator` principals cannot mint operation or refresh
-  tokens (`createTokens`), and a dedicated operations API port never runs validators or serves their
+- **No minting, no operations port.** `_bearerValidator` principals cannot mint operation, refresh or
+  scoped tokens (`createTokens`), also after impersonation, and a dedicated operations API port never runs validators or serves their
   cache entries. On a shared port they reach `verifyPerms` like any principal.
 
 Registrations are worker-global and outlive `scope.close()`, so in-flight requests drain;

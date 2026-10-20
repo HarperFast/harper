@@ -23,11 +23,7 @@ export interface BearerValidatorClaim {
 	deadline: ValidatorDeadline;
 }
 
-/**
- * Offers a Bearer credential that Harper's own tokens rejected to the registered validators, in
- * registration order, and returns the first claim. Resolves `undefined` when every validator
- * declines; a validator's throw (tagged or not) and an exceeded deadline propagate.
- */
+/** The first validator's claim, or `undefined` when all decline; throws and timeouts propagate. */
 export async function runBearerValidators(token: string, request: Request): Promise<BearerValidatorClaim | undefined> {
 	const entries = getBearerValidators();
 	let budgetMs = 0;
@@ -69,10 +65,6 @@ export async function runBearerValidators(token: string, request: Request): Prom
 	return undefined;
 }
 
-/**
- * Resolves a validator's claim to that Harper user through `server.getUser`, marked `_bearerValidator`
- * and expiring at `authExpiresAt`.
- */
 export async function principalFromClaim(
 	{ entry, result, deadline }: BearerValidatorClaim,
 	decodedToken: any,
@@ -154,10 +146,7 @@ function isPlainObject(value: unknown): value is Record<string, any> {
 	return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-/**
- * Awaits a validator (or its server.getUser lookup) within its own `timeoutMs` and what is left of the
- * chain budget; on expiry aborts `abortController` and rejects untagged, so the request fails closed.
- */
+/** Rejects untagged, so the request fails closed, once `timeoutMs` or the chain budget runs out. */
 async function withinDeadline<T>(
 	value: T | Promise<T>,
 	timeoutMs: number,

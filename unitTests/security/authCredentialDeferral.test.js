@@ -769,7 +769,7 @@ describe('#2703 principal resolution failures become decisions, not thrown error
 describe('server.registerBearerValidator (#oauth/279)', () => {
 	const userModule = require('#src/security/user');
 	const logger = require('#src/utility/logging/harper_logger');
-	const { getSession } = require('#src/server/DurableSubscriptionsSession');
+	const { getSession, replayLastWill } = require('#src/server/DurableSubscriptionsSession');
 
 	let originalValidateOperationToken;
 	let originalValidateRefreshToken;
@@ -1407,7 +1407,7 @@ describe('server.registerBearerValidator (#oauth/279)', () => {
 		);
 	});
 
-	it('persists the token expiry on an MQTT last-will and drops the will once the token has expired', async () => {
+	it('persists the token expiry on an MQTT last-will and drops the will once the token has expired, on disconnect and on restart replay', async () => {
 		const { Resource } = require('#src/resources/Resource');
 		const { waitFor } = require('../waitFor');
 		const publishedWills = [];
@@ -1478,6 +1478,38 @@ describe('server.registerBearerValidator (#oauth/279)', () => {
 			expired.disconnect(false);
 			await willsGone(expiredWillId);
 			assert.deepStrictEqual(publishedWills, [], 'a will must not publish past its bearer token');
+
+			const realDateNow = Date.now;
+			let clockOffsetMs = 0;
+			const coreGetUser = serverModule.server.getUser;
+			serverModule.server.getUser = async (username, ...rest) => {
+				const user = await coreGetUser(username, ...rest);
+				clockOffsetMs = 60_000;
+				return user;
+			};
+			Date.now = () => realDateNow() + clockOffsetMs;
+			try {
+				for (const [clientId, ttlSec] of [
+					['bearer-will-replay-expiring', 30],
+					['bearer-will-replay-valid', 600],
+				]) {
+					clockOffsetMs = 0;
+					const session = await openSession(
+						clientId,
+						{ ...request.user, authExpiresAt: Math.floor(realDateNow() / 1000) + ttlSec },
+						clientId
+					);
+					await replayLastWill(await databases.system.hdb_session_will.get(session.willId));
+					assert.ok(!(await databases.system.hdb_session_will.get(session.willId)), `${clientId} row is deleted`);
+				}
+			} finally {
+				Date.now = realDateNow;
+			}
+			assert.deepStrictEqual(
+				publishedWills,
+				['bearer-will-replay-valid'],
+				'restart replay must recheck the expiry after its server.getUser lookup'
+			);
 		} finally {
 			resourcesModule.resources.delete('status');
 			for (const willId of willIds) {
@@ -2003,7 +2035,10 @@ describe('server.registerBearerValidator (#oauth/279)', () => {
 				{ timeoutMs: 30 }
 			);
 
-			const slowGetUserRes = await send(APP_OWNED, 'Bearer slow-getuser');
+			const slowGetUserRes = await Promise.race([
+				send(APP_OWNED, 'Bearer slow-getuser'),
+				new Promise((_, reject) => setTimeout(() => reject(new Error('hanging server.getUser test hung')), 2_000)),
+			]);
 			assert.strictEqual(
 				slowGetUserRes.response.status,
 				401,
