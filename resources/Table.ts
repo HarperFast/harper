@@ -4073,10 +4073,8 @@ export function makeTable(options): TableResourceClass {
 		static evict(id, existingRecord, existingVersion) {
 			if (maintenanceClosed) return Promise.resolve();
 			let entry;
-			// On RocksDB this method commits or aborts the native handle itself, so the handle is raw: one
-			// borrowed from a DatabaseTransaction's getReadTxn() leaves that wrapper registered with the
-			// open-transaction monitor, and is a coordinated-retry handle, which resolves a conflict as
-			// RETRY_NOW and stays open instead of rejecting with the ERR_BUSY the catch below expects.
+			// Raw on RocksDB: this method commits or aborts the handle itself, and its catch expects a conflict
+			// to reject with ERR_BUSY (resources/DESIGN.md, over-time transactions).
 			const lmdbTransaction = primaryStore.ifVersion
 				? txnForContext({ transaction: new DatabaseTransaction() })
 				: undefined;

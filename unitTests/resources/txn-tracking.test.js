@@ -454,10 +454,8 @@ describe('Write txn timeout', () => {
 				const link = databaseTxns(context)[0];
 				const nativeId = link.transaction.id;
 				const databasePath = link.db.rootStore.path;
-				// This thread's monitor names every holder past the threshold, including ones other suites left
-				// behind, and usually reaches them a tick before this one. Only the line carrying this handle's
-				// native id (the join key with the registry sweep) on this database may end the wait; these
-				// foreign lines, one per half of that key, prove the match rejects the rest.
+				// The monitor also names other holders on this thread, often a tick before this one, so only this
+				// handle's native id on this database may end the wait; each decoy matches one half of that key.
 				const foreign = (id, path) =>
 					`Harper transaction has held RocksDB transaction ${id} for 1s on thread 0, database test.IndexedTxnTable/ (${path}), holding 0 staged write(s), state: over-limit.`;
 				logger.warn(foreign(nativeId + 1, databasePath));

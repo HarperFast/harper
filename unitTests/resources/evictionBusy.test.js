@@ -115,11 +115,7 @@ describe('evict() swallows a commit conflict instead of rejecting (#1287)', () =
 	});
 });
 
-// evict() commits or aborts its RocksDB handle itself. Borrowing that handle from a DatabaseTransaction
-// left the wrapper registered with the open-transaction monitor for one to two monitor intervals after
-// every eviction (counted as an open read transaction, and reportable as a long-lived holder of a handle
-// that no longer existed), and its coordinated-retry handle resolved a real conflict as RETRY_NOW and
-// stayed open. Its own database, so the registry checks see only this fixture's handles.
+// Its own database, so the registry checks see only this fixture's handles.
 describe('evict() owns its RocksDB handle end to end', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	let OwnedTable;
@@ -171,7 +167,6 @@ describe('evict() owns its RocksDB handle end to end', () => {
 		await OwnedTable.put('contended', { id: 'contended', body: 'resident' });
 		const { value, version } = OwnedTable.primaryStore.getEntry('contended');
 		let commitOutcome;
-		// One-shot: the competing write lands between the eviction's staging and its native commit.
 		Transaction.prototype.commit = function (...args) {
 			Transaction.prototype.commit = originalCommit;
 			OwnedTable.primaryStore.putSync('contended', { id: 'contended', body: 'competing' }, { version: version + 1 });
