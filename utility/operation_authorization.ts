@@ -922,7 +922,14 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	if (!isSuperUser && table != undefined && SEARCH_OPS.has(op))
 		checkRelationshipReads(requestJson, operationSchema, table, permsResponse);
 
-	const recordAttrs = getRecordAttributes(requestJson, op);
+	const tableClass = table != undefined ? getDatabases()[operationSchema]?.[table] : undefined;
+	const recordAttrs = getRecordAttributes(
+		requestJson,
+		op,
+		tableClass?.hasRelationships
+			? (name) => tableClass.propertyResolvers?.[name]?.definition?.tableClass !== undefined
+			: undefined
+	);
 	const attrPermissions = getAttributePermissions(requestJson.hdb_user?.role?.permission, operationSchema, table);
 	// A `put` replaces the whole record, so it REMOVES every attribute the request omits — and
 	// `checkAttributePerms` below only sees the attributes a request SUPPLIES, so it cannot police
@@ -1237,7 +1244,7 @@ function isBulkLoadOperation(operationName): boolean {
 	return BULK_OP_NAMES.has(operationName);
 }
 
-function getRecordAttributes(json, operationName?) {
+function getRecordAttributes(json, operationName?, isRelationship?: (name: any) => boolean) {
 	let affectedAttributes = new Set();
 	try {
 		// Bulk load operations have their attribute permissions checked per chunk instead, in
@@ -1261,7 +1268,10 @@ function getRecordAttributes(json, operationName?) {
 					if (condition.search_attribute !== undefined) {
 						attribute = condition.search_attribute;
 					}
-					affectedAttributes.add(Array.isArray(attribute) ? attribute[0] : attribute);
+					if (Array.isArray(attribute)) {
+						// a relationship path is checked by checkRelationshipReads
+						if (!isRelationship?.(attribute[0])) affectedAttributes.add(attribute[0]);
+					} else affectedAttributes.add(attribute);
 				}
 			};
 			addConditionAttributes(json.conditions);
