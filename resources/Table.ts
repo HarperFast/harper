@@ -3914,18 +3914,31 @@ export function makeTable(options): TableResourceClass {
 						? (reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime)
 						: txnTime;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					// A base copy from a stub holder must not downgrade the same full record at a resident.
+					if (
+						precedesExisting < 0 ||
+						(precedesExisting === 0 &&
+							existingEntry?.value &&
+							!(existingEntry.metadataFlags & INVALIDATED) &&
+							options?.residencyId &&
+							TableResource.getResidencyRecord(options.residencyId)?.includes(server.hostname))
+					) {
 						write.skipped = true;
 						return;
 					}
-					partialRecord ??= null;
+					// Received projections can be frozen. Missing fields in a residency projection are removals;
+					// only a local/cache invalidation carries forward this resource's indexed fields.
+					partialRecord = partialRecord ? { ...partialRecord } : null;
 					for (const name in indices) {
 						if (!partialRecord) partialRecord = {};
 						// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-						if (partialRecord[name] === undefined) {
+						if (partialRecord[name] === undefined && !options?.residencyId) {
 							partialRecord[name] = this.getProperty(name);
 						}
 					}
+					if (partialRecord && primaryKey) partialRecord[primaryKey] = id;
+					updateIndices(id, existingEntry?.value, partialRecord, transaction && { transaction });
 					logger.trace?.(`Invalidating entry in ${tableName} id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 					updateRecord(
 						id,
@@ -6613,7 +6626,7 @@ export function makeTable(options): TableResourceClass {
 			let checkLoaded;
 			if (
 				ensure_loaded &&
-				hasSourceGet &&
+				(hasSourceGet || sourceLoad) &&
 				// determine if we need to fully loading the records ahead of time, this is why we would not need to load the full record:
 				!(typeof select === 'string' ? [select] : select)?.every((attribute) => {
 					let attribute_name;
@@ -6647,7 +6660,7 @@ export function makeTable(options): TableResourceClass {
 							{
 								transaction: readTxn,
 								lazy: select?.length < 4,
-								ensureLoaded: ensure_loaded,
+								ensureLoaded: checkLoaded,
 							},
 							this?.isSync,
 							(entry: Entry) => entry
@@ -8963,13 +8976,7 @@ export function makeTable(options): TableResourceClass {
 				context?.replicateFrom !== false
 			) {
 				// load from other node
-				return sourceLoad(entry).then(
-					(entry) => withEntry(entry, id),
-					(error) => {
-						logger.error?.('Error loading remote record', id, entry, options, error);
-						return withEntry(null, id);
-					}
-				);
+				return sourceLoad(entry).then((entry) => withEntry(entry, id));
 			}
 			if (entry && context) {
 				if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
@@ -9154,6 +9161,8 @@ export function makeTable(options): TableResourceClass {
 			if (!entry?.value) throw new ServerError('Entry is not cached', 504);
 			return;
 		}
+		if (entry?.residencyId && entry.metadataFlags & INVALIDATED && sourceLoad && context?.replicateFrom !== false)
+			return sourceLoad(entry);
 		if (hasSourceGet) {
 			let needsSourceData = false;
 			if (context.noCache) needsSourceData = true;

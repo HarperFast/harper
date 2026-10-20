@@ -960,6 +960,9 @@ base's list is the one naming a complete holder. An explicit received residency 
 does not make the receiver complete. A replicated or source write with no residency list, and `setResidencyById`, still omit or stub as
 before. Enforced by `unitTests/resources/writerResidency.test.js` (both engines).
 
+A stub is never sent, served, or stored as a complete record. `loadLocalRecord` and full-record query materialization propagate residency loader errors; only a successful empty response means absence.
+`_writeInvalidate` keeps the primary key and updates secondary indexes with the incoming projection (including removed fields), and keeps an equal-origin/equal-version full row when the incoming residency still includes this node. Ordinary cache invalidation and non-resident demotion still apply. Enforced by `unitTests/resources/residencyReads.test.js` on both engines.
+
 ## `replicatedConfirmation` counts only the residents of each written record (`DatabaseTransaction` `confirmationTarget`, harper-pro#1031)
 
 Peers acknowledge a database-wide log position, and a non-resident peer passes that position after
