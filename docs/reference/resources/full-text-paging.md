@@ -4,9 +4,9 @@ title: Full-Text Paging
 
 # Full-Text Paging
 
-Continuation paging is available in v5.4.0. The full-text index declaration below is a prerequisite.
-
 <VersionBadge version="v5.4.0" />
+
+The full-text index declaration below is a prerequisite.
 
 Full-text continuation lets a client page through the original search matches while indexing
 updates arrive. It is available through `Table.search()` and REST. Ordinary offset-based paging

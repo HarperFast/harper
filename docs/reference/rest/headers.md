@@ -25,7 +25,7 @@ Collection responses to a [count request](./querying.md#pagination-and-total-cou
 Full-text continuation responses also return `Harper-Continuation-Complete`, plus
 `Harper-Continuation` and `Harper-Continuation-Expires` while the search remains open. These names
 are added to `Access-Control-Expose-Headers`. See
-[Full-Text Paging](../resources/full-text-paging.md#page-through-rest). <VersionBadge version="v5.4.0" />
+[Full-Text Paging](../resources/full-text-paging.md#page-through-rest) (v5.4.0).
 
 ## Cache-Control
 

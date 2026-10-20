@@ -302,9 +302,9 @@ replication:
 
 Database storage configuration. See [Storage Tuning](../database/storage-tuning.md) for guidance on tuning these options for production workloads, [Database Overview](../database/overview.md) for general database concepts, and [Compaction](../database/compaction.md) for reclaiming space inside existing files.
 
-`storage.fullText` controls retained full-text searches and native search capacity. See
+`storage.fullText` (v5.4.0) controls retained full-text searches and native search capacity. See
 [Full-Text Paging](../resources/full-text-paging.md#configure-resource-limits) for the settings,
-defaults and restart requirements. <VersionBadge version="v5.4.0" />
+defaults and restart requirements.
 
 ```yaml
 storage:
