@@ -134,6 +134,7 @@ export function withoutReplicationUnconfirmed(error: any): ServerError {
 			responseMessage = { error: responseMessage, code, retryable: false };
 		} else if (responseMessage && typeof responseMessage === 'object') {
 			responseMessage = { ...responseMessage, retryable: false };
+			responseMessage.code ??= code;
 			delete responseMessage.replicationUnconfirmed;
 		}
 	} catch {

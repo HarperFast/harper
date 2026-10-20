@@ -232,7 +232,7 @@ All three terminal records add `replicationUnconfirmed: true` for a reported com
 but whose confirmation failed, and `retryable: false` for that outcome or another explicitly non-retryable error.
 An enclosing rollback of pending writes removes the confirmation flag while preserving the negative retry hint. Metadata getters
 on a thrown value may fail; omit unreadable extensions and still finish a valid error record. The commit-level
-scope and unchanged producer coverage are described in [resources/DESIGN.md](../resources/DESIGN.md#replication-confirmation-failure-means-the-linked-writes-committed-locally).
+scope and producer coverage are described in [resources/DESIGN.md](../resources/DESIGN.md#replication-confirmation-failure-means-the-linked-writes-committed-locally).
 The `error` value is the stable programmatic discriminator; `message` is diagnostic and follows the same thrown-message exposure policy as pre-commit Problem Details.
 
 Clean stream completion does not prove completeness; clients must inspect SSE for the `harper-error` event and NDJSON for the `$harperStreamError` control record.

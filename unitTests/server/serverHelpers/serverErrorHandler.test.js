@@ -136,6 +136,25 @@ describe('serverErrorHandler', function () {
 		});
 	}
 
+	it('keeps the public code in structured details after stripping the confirmation flag', async () => {
+		const app = fastify();
+		app.setErrorHandler(serverErrorHandler);
+		const details = { error: 'Peer timeout', peers: ['node-a'] };
+		const cause = new HdbError(new Error('Peer timeout'), details, 504);
+		cause.code = 'PEER_TIMEOUT';
+		app.post('/', async () => {
+			throw withoutReplicationUnconfirmed(new ReplicationConfirmationError(cause));
+		});
+		try {
+			const response = await app.inject({ method: 'POST', url: '/' });
+			assert.strictEqual(response.statusCode, 504);
+			assert.deepStrictEqual(response.json(), { ...details, code: 'PEER_TIMEOUT', retryable: false });
+			assert.deepStrictEqual(cause.http_resp_msg, details);
+		} finally {
+			await app.close();
+		}
+	});
+
 	for (const property of ['message', 'code']) {
 		it(`retains the operations outcome when structured fallback ${property} is unreadable`, async () => {
 			const app = fastify();
