@@ -1,4 +1,3 @@
-# Emp.dept is a relationship to Dept; roles differ only in what they may read of Dept.
 graphqlSchema:
   files: '*.graphql'
 rest: true

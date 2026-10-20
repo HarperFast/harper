@@ -243,6 +243,20 @@ describe('Permissions through Resource API', () => {
 		});
 		assert.deepEqual(injected[0].related, { id: 'related-id-2' });
 	});
+	it('Applies a one-shot conditions iterator once authorization has read it', async function () {
+		const idCondition = () => [{ attribute: 'id', value: 'id-2' }][Symbol.iterator]();
+		const context = () => ({ user: authorized_role, authorize: true });
+		const searched = [];
+		for await (const result of TestTable.search({ conditions: idCondition(), select: ['id'] }, context()))
+			searched.push(result.id);
+		assert.deepEqual(searched, ['id-2']);
+		const target = new RequestTarget('/');
+		target.isCollection = true;
+		const queried = [];
+		for await (const result of await TestTable.query(target, { conditions: idCondition(), select: ['id'] }, context()))
+			queried.push(result.id);
+		assert.deepEqual(queried, ['id-2']);
+	});
 	it('Reports the first unreadable step of a relationship path', function () {
 		assert.equal(TestTable._readDenial(['related', 'name'], { role: { permission: { super_user: true } } }), undefined);
 		assert.deepEqual(TestTable._readDenial(['related'], authorized_role), {
