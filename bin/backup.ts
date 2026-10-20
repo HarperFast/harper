@@ -123,7 +123,7 @@ function isLocalTarget(target: string): boolean {
  * than guess which one was meant.
  */
 function useOperationApi(request: any, command: string): boolean {
-	// normalized once so routing and the message read the same URL, with any userinfo stripped
+	// normalized once so routing and the message read the same URL
 	const lastTarget = normalizeTarget(loadCredentials()?.last_target);
 	if (
 		request.target ||
@@ -138,8 +138,8 @@ function useOperationApi(request: any, command: string): boolean {
 	if (lastTarget && !NON_DESTRUCTIVE_COMMANDS.has(command)) {
 		throw new ClientError(
 			`Harper is not running here, and the saved CLI target ${lastTarget} may be a different Harper instance. ` +
-				`To run ${command} on that server, pass target=${lastTarget}. ` +
-				`To run it on this installation's files, first run: harper logout ${lastTarget} (this removes its saved login).`
+				`To run ${command} on that server, pass target="${lastTarget}". ` +
+				`To run it on this installation's files, first run: harper logout "${lastTarget}" (this removes its saved login).`
 		);
 	}
 	return false;
