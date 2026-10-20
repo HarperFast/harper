@@ -1,6 +1,6 @@
 import { isMainThread, threadId } from 'node:worker_threads';
 import { resolve } from 'node:path';
-import { registryStatus } from '@harperfast/rocksdb-js';
+import { getRegistryStatus } from '@harperfast/rocksdb-js';
 import { logger } from '../utility/logging/logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -21,8 +21,9 @@ const ATTRIBUTION_STATE_TTL_MS = 3600000;
 // per tick, so pruning per call is O(N^2) in exactly the leak this reporting exists to describe.
 const ATTRIBUTION_PRUNE_INTERVAL_MS = 60000;
 
-type RegistryStatusFn = typeof registryStatus;
-let registryStatusFn: RegistryStatusFn | undefined = typeof registryStatus === 'function' ? registryStatus : undefined;
+type RegistryStatusFn = typeof getRegistryStatus;
+let registryStatusFn: RegistryStatusFn | undefined =
+	typeof getRegistryStatus === 'function' ? getRegistryStatus : undefined;
 
 // Report state is keyed by database path AND native id: rocksdb-js allocates transaction ids per
 // database descriptor, so two databases routinely both have id 2, and a reopen restarts the counter.
@@ -151,7 +152,7 @@ export function runLongLivedTransactionSweep(): void {
 		if (missingDetails && !missingDetailsWarned) {
 			missingDetailsWarned = true;
 			logger.warn?.(
-				'Long-lived transaction reporting is degraded: the installed @harperfast/rocksdb-js does not expose registryStatus().transactionDetails (requires 2.8.0)'
+				'Long-lived transaction reporting is degraded: the installed @harperfast/rocksdb-js does not expose getRegistryStatus().transactionDetails (requires 2.8.0)'
 			);
 		}
 		if (due.length === 0) return;
@@ -181,7 +182,9 @@ export function runLongLivedTransactionSweep(): void {
 export function startLongLivedTransactionReporting(): void {
 	if (!isMainThread || sweepTimer) return;
 	if (!registryStatusFn) {
-		logger.debug?.('Long-lived transaction reporting unavailable; @harperfast/rocksdb-js exposes no registryStatus()');
+		logger.debug?.(
+			'Long-lived transaction reporting unavailable; @harperfast/rocksdb-js exposes no getRegistryStatus()'
+		);
 		return;
 	}
 	sweepTimer = setInterval(runLongLivedTransactionSweep, SWEEP_INTERVAL_MS).unref();

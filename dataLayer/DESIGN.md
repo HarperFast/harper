@@ -125,7 +125,7 @@ Several non-obvious mechanics keep that safe:
   every eligible recipient acknowledges or its port closes, and aborts the restore with a retryable
   409 if that does not happen within 30s, because proceeding past an unconfirmed blob-save barrier
   would re-open the race the barrier exists to close. A destructive purge still
-  verifies closure independently: `restoreBackup` polls rocksdb-js `registryStatus()` (process-global
+  verifies closure independently: `restoreBackup` polls rocksdb-js `getRegistryStatus()` (process-global
   across worker threads) until the database path has no open instance, and aborts with a 409 if
   handles remain — before the marker on a fresh claim, so nothing is left to clean up, while a
   recovery keeps the marker it found.
@@ -158,7 +158,7 @@ Several non-obvious mechanics keep that safe:
 - **Online restore is impossible for a database a component holds open — and that failure is
   correct.** rocksdb-js's registry is process-global but records only a per-path refCount, with no
   attribution to a thread or component; Harper keeps no component→database ownership map. So when a
-  loaded component holds its own handle on the target database, `registryStatus()` stays non-zero,
+  loaded component holds its own handle on the target database, `getRegistryStatus()` stays non-zero,
   Harper can neither identify nor force-close that handle, and an in-place purge would corrupt a live
   instance.
   `verifyDatabaseClosed` therefore waits only a short grace period (`DATABASE_CLOSE_WAIT_MS`, for a
@@ -176,7 +176,7 @@ Several non-obvious mechanics keep that safe:
   down rocksdb for the _entire_ process. A job worker (`server/jobs/jobProcess.ts`) opens the whole
   database graph via `getDatabases()` and exits when the job finishes — and `create_backup` is
   itself a job, so before any `restore_backup` there is always at least one exited job worker that
-  touched the database. Without cleanup those leaked handles keep `registryStatus()` non-zero and
+  touched the database. Without cleanup those leaked handles keep `getRegistryStatus()` non-zero and
   would fail the closure check even when no component holds the database. `jobProcess` therefore
   calls `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, closing every loaded
   user database on that thread (the non-enumerable `system` DB is intentionally skipped), so an

@@ -20,7 +20,7 @@ const {
 	setRegistryStatusForTests,
 	startLongLivedTransactionReporting,
 } = require('#src/resources/longLivedTransactions');
-const { registryStatus } = require('@harperfast/rocksdb-js');
+const { getRegistryStatus } = require('@harperfast/rocksdb-js');
 const {
 	DatabaseTransaction,
 	getOutstandingCommits,
@@ -57,7 +57,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		logger.warn = originalWarn;
 		logger.error = originalError;
 		env.setProperty(THRESHOLD, originalThreshold);
-		setRegistryStatusForTests(registryStatus);
+		setRegistryStatusForTests(getRegistryStatus);
 		resetLongLivedTransactionReportsForTests();
 	});
 
@@ -118,7 +118,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			assert.match(reported[0][0], /1h/);
 		});
 
-		// registryStatus() reports an entry with no path for an ephemeral descriptor; the rest of this
+		// getRegistryStatus() reports an entry with no path for an ephemeral descriptor; the rest of this
 		// surface defaults it, and an operator reading "on database undefined" learns nothing.
 		it('names a handle whose database has no path without printing undefined', function () {
 			setRegistryStatusForTests(status(database(undefined, [7, 3600000])));
@@ -208,7 +208,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			setRegistryStatusForTests(() => [{ path: '/db/alpha', transactions: 3 }]);
 			assert.doesNotThrow(() => runLongLivedTransactionSweep());
 			runLongLivedTransactionSweep();
-			assert.strictEqual(warningsMatching('does not expose registryStatus().transactionDetails').length, 1);
+			assert.strictEqual(warningsMatching('does not expose getRegistryStatus().transactionDetails').length, 1);
 		});
 
 		it('swallows and logs a registry failure', function () {
@@ -629,14 +629,14 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		});
 	});
 
-	// A store's rootStore.path is what checkOverloaded() hands the lookup, and registryStatus() reports
+	// A store's rootStore.path is what checkOverloaded() hands the lookup, and getRegistryStatus() reports
 	// the database's own path — if those two ever stop being the same string, every candidate list goes
 	// silently empty. Asserted against the real registry rather than a stub, which is the only way to
 	// catch a drift in either producer.
 	describe('the store path joins to the registry path', () => {
 		it('finds a real table’s database in the real registry', function () {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
-			setRegistryStatusForTests(registryStatus);
+			setRegistryStatusForTests(getRegistryStatus);
 			const JoinTable = table({
 				table: 'HolderJoinTable',
 				database: 'test',
@@ -645,7 +645,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			const storePath = JoinTable.primaryStore.rootStore.path;
 			assert.ok(storePath, 'a table store must expose its database path');
 			assert.ok(
-				registryStatus().some((entry) => path.resolve(entry.path) === path.resolve(storePath)),
+				getRegistryStatus().some((entry) => path.resolve(entry.path) === path.resolve(storePath)),
 				'the path checkOverloaded() looks up must be a path the registry reports'
 			);
 		});
@@ -672,7 +672,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 				database: 'chain-attribution-secondary',
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'v' }],
 			});
-			setRegistryStatusForTests(registryStatus);
+			setRegistryStatusForTests(getRegistryStatus);
 			env.setProperty(THRESHOLD, '0.001');
 			// sourceApply is exempt from reaping, which is what keeps both links open long enough for the
 			// monitor to observe them — and is the #2471 shape besides.
@@ -876,7 +876,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 					worker.once('message', resolve);
 					worker.once('error', reject);
 				});
-				setRegistryStatusForTests(registryStatus);
+				setRegistryStatusForTests(getRegistryStatus);
 				env.setProperty(THRESHOLD, '0.05');
 				await waitFor(() => {
 					runLongLivedTransactionSweep();
@@ -896,7 +896,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 				});
 				await waitFor(
 					() =>
-						!registryStatus().some(
+						!getRegistryStatus().some(
 							(database) =>
 								database.path === dbPath && database.transactionDetails?.some((handle) => handle.id === nativeId)
 						),
