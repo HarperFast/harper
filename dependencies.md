@@ -144,7 +144,7 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 ## chokidar
 
 - Need for usage: Reliable file watching. This is the industry standard file watcher and deals with the many edge cases that node.js's watch (file replacement and changing inode for example) and watchFile (nothing but a terrible poller on a timer) don't handle well.
-- 153KB
+- ~109KB installed including readdirp (measured with chokidar 5.0.0)
 - Security: No known issues.
 - Eventual removal: This is a very well maintained package and is the industry standard for file watching. We could remove with very careful usage of `watch`, but would probably require a lot of testing and edge case handling.
 

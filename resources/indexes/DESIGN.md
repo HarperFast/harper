@@ -215,8 +215,14 @@ anyway.
 1. Only committed entries are delivered; the runtime never reads uncommitted log entries.
 2. One worker runs a given backend at a time (a process-wide `tryLock` per backend). The owner
    merges every physical log into one serial stream and keeps a cursor per log.
-3. A cursor is `{ format: 1, logs: { <log name>: <completed transaction timestamp> } }`. It advances
-   only at `endTxn` and only after the backend's durability barrier covers the whole transaction.
+3. A cursor is `{ format: 1, logs: { <log name>: <completed transaction timestamp> }, floors?: { <log
+name>: <log sequence> } }`. `logs` advances only at `endTxn` and only after the backend's durability
+   barrier covers the whole transaction. `floors` anchors a log that held no completed transaction when
+   the rebuild captured its boundary: the lowest sequence that must stay retained for the log to be read
+   from its beginning — its oldest retained file, or the writer's sequence when none remains (recorded
+   only when past 1). Floors are cursor identity like `logs` — `sameCursor`
+   compares them, so a backend cannot report a floor the owner never offered — and they survive
+   backend persistence (the full-text payload codec carries them; HNSW stores the object).
 4. Live delivery and restart use the same cursor validation, iterator and dispatch code. A lost wake
    or a full backend queue delays indexing; it cannot skip durable log work.
 5. Resume proves every saved log position with `exactStart`. A missing, incomplete or duplicate
@@ -265,10 +271,20 @@ Transaction timestamps are unique per physical log but **not monotone in physica
 (`TransactionLogStore::writeBatch` only advances `latestTimestamp` when the batch's is greater), so
 the runtime never compares timestamps to decide progress or retention. Resume is exact-start: find
 the transaction, iterate after it. Repeat detection is a per-log set of completed timestamps
-retained since the durable cursor. A log the cursor does not name is read from its beginning only
-if it still retains it — `fileCount === 0 || oldestSequenceNumber === 1`; rocksdb-js reports
-`oldestSequenceNumber: 0` for a log that has never written a file — otherwise the generation is
-condemned.
+retained since the durable cursor. A log the cursor does not anchor by timestamp is read from its
+beginning only while every file from its floor on is still retained —
+`fileCount === 0 ? currentSequenceNumber <= floor : oldestSequenceNumber <= floor`, with floor 1 for a
+log the cursor has no floor for — otherwise the generation is condemned (`log-retention`). Since
+rocksdb-js 2.12 retention can purge every file of a flushed log, so `fileCount === 0` no longer means
+"never written": an emptied log reports `currentSequenceNumber` past 1, and its history since the
+cursor may be gone. The floor is what tells the two apart, which is why a rebuild records it instead
+of failing on a log with no committed tail (the scan covers that log's past, and later commits land
+at the floor or above). The floor is proven at three sites: `#validateLogSet` when a cursor is installed, `#anchor` before the
+log's first completed transaction replaces it with an exact timestamp (files between the floor and that
+transaction may have been purged since the install check), and `#reconcileDurableCursor` before any
+durable advance publishes coverage or ready — the one path every catch-up publication takes, checked
+against the newest accepted vector, since a log anchored there was proven past its floor when read. Rollback: an older Harper's full-text decoder rejects the `floors` field and rebuilds
+once; its runtime and HNSW drop the field on clone and judge the log by the old rule.
 
 ### Offered versus durable progress
 

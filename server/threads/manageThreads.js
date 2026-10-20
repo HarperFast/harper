@@ -23,7 +23,7 @@ const { DEFAULT_FULL_TEXT_SEARCH_LIMITS } = require('../../resources/indexes/ful
 const harperLogger = require('../../utility/logging/harper_logger.ts');
 const { randomBytes } = require('crypto');
 const { _assignPackageExport } = require('../../globals.js');
-const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
+const { PACKAGE_ROOT, PRODUCT_NAME } = require('../../utility/packageUtils.js');
 const { resolvePreloadModules } = require('./resolvePreload.ts');
 const { resolveThreadHeapMemoryMb } = require('./threadHeapMemory.ts');
 const { applyConfiguredV8Flags } = require('./v8Flags.ts');
@@ -3255,7 +3255,7 @@ if (isMainThread) {
 					queuedRestart = setTimeout(async () => {
 						if (beforeRestart) await beforeRestart();
 						await restartWorkers(undefined, undefined, true, null, '*');
-						console.log('Reloaded Harper components, changed files:', Array.from(changedFiles));
+						console.log(`Reloaded ${PRODUCT_NAME} components, changed files:`, Array.from(changedFiles));
 						changedFiles.clear();
 					}, 100);
 				});

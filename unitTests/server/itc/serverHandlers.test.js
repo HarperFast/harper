@@ -187,6 +187,34 @@ describe('Test hdbChildIpcHandler module', () => {
 			expect(traceCalls.some((msg) => msg.includes('Dropping component status response'))).to.be.true;
 			sendToThreadStub.restore();
 		});
+
+		it('Test componentStatusRequestHandler pre-serializes custom Error classes on the reporting thread', async () => {
+			sandbox.resetHistory();
+			const { internal } = require('#src/components/status/index');
+			const { ServerError } = require('#src/utility/errors/hdbError');
+			internal.componentStatusRegistry.markFailed(
+				'itc-plugin',
+				new ServerError('worker failure: https://admin:pw@internal.host/api'),
+				"Could not load component 'itc-plugin'"
+			);
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
+
+			try {
+				await component_status_handler({
+					type: 'component_status_request',
+					message: { originator: 7, requestId: 'req-err' },
+				});
+
+				expect(sendToThreadStub).to.have.been.calledOnce;
+				const statuses = new Map(sendToThreadStub.firstCall.args[1].message.statuses);
+				expect(statuses.get('itc-plugin').error).to.equal(
+					'ServerError: worker failure: https://[REDACTED]@internal.host/api'
+				);
+			} finally {
+				sendToThreadStub.restore();
+				internal.componentStatusRegistry.reset();
+			}
+		});
 	});
 
 	describe('Test resourceOpenApiRequestHandler function', () => {
