@@ -21,6 +21,7 @@ import {
 } from './threads/isolatedApplications.ts';
 import { claimListener, listenerOwner, shouldBindListenerHere } from './threads/workerPools.ts';
 import { createTLSSelector, getEffectiveTlsCiphers } from '../security/keys.ts';
+import { allowedSourcesFor, watchNetworkAccess } from '../security/networkAccess.ts';
 import { createSecureServer, createServer as createH2CServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage, STATUS_CODES, validateHeaderName, validateHeaderValue } from 'node:http';
@@ -202,7 +203,11 @@ export function cleanupUdsFiles() {
 	}
 }
 
-/** Write YAML metadata for a UDS mirror socket, describing the TLS certs from the corresponding secure server. */
+/**
+ * Write YAML metadata for a UDS mirror socket, describing the TLS certs from the corresponding secure server.
+ * Returns whether the file now holds it. A server in a network access scope writes nothing until that
+ * scope's allowlist has been read, so a restricted port is never advertised as unrestricted.
+ */
 export function writeUdsMetadata(
 	yamlPath: string,
 	port: number | string,
@@ -210,7 +215,9 @@ export function writeUdsMetadata(
 	protocol?: string,
 	mtlsForwarding = true,
 	route: { application: string; hosts: string[] } | undefined = isolatedApplicationRoute()
-) {
+): boolean {
+	const allowedSources = secureServer.networkAccessScope && allowedSourcesFor(secureServer.networkAccessScope);
+	if (secureServer.networkAccessScope && !allowedSources) return false;
 	const contexts = secureServer.secureContexts;
 	let yaml = `pid: ${process.pid}\ntid: ${currentThreadId()}\nport: ${port}\n`;
 	// Routing identity, separate from certificate coverage: a proxy sends this application's hosts to
@@ -234,6 +241,11 @@ export function writeUdsMetadata(
 	if (mtlsForwarding && secureServer.verifiesClientCerts) {
 		yaml += `mtls: true\n`;
 		if (secureServer.mtlsRequired) yaml += `mtlsRequired: true\n`;
+	}
+	// Source CIDRs the fronting proxy admits to this socket; absent = unrestricted.
+	if (allowedSources?.length > 0) {
+		yaml += `allowedSources:\n`;
+		for (const cidr of allowedSources) yaml += `  - ${JSON.stringify(cidr)}\n`;
 	}
 	yaml += `certificates:\n`;
 	if (contexts?.size > 0) {
@@ -268,9 +280,23 @@ export function writeUdsMetadata(
 	}
 	try {
 		atomicWriteFile(yamlPath, yaml, { maxRetries: 0 });
+		return true;
 	} catch (error) {
 		harperLogger.error('Error writing UDS metadata to ' + yamlPath, error);
+		return false;
 	}
+}
+
+/**
+ * Writes a mirror's metadata once its TLS contexts are ready and on every certificate change, and, for a
+ * server in a network access scope, whenever that scope's allowlist changes.
+ */
+export function publishUdsMetadata(ready: Promise<unknown>, secureServer: any, writeMetadata: () => boolean) {
+	ready.then(() => {
+		writeMetadata();
+		if (secureServer.networkAccessScope) watchNetworkAccess(secureServer.networkAccessScope, writeMetadata);
+	});
+	secureServer.secureContextsListeners?.push(writeMetadata);
 }
 
 export function ensureSocketsDirectory(): string | undefined {
@@ -1032,6 +1058,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			server.appliedCiphers = options.ciphers ?? null;
 			server.verifiesClientCerts = Boolean(mtls || isMtls);
 			server.mtlsRequired = Boolean(mtlsRequired);
+			if (isOperationsServer) server.networkAccessScope = 'operations';
 			options.SNICallback.initialize(server);
 			if (mtls) server.mtlsConfig = mtls;
 			server.on('secureConnection', (socket) => {
@@ -1106,12 +1133,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			// Skip (and don't re-arm) the write if this mirror's listen() already failed — see
 			// markUdsBindFailed(). SNICallback readiness and cert reloads are independent of the
 			// socket's bind outcome, so without this check a failed mirror could still get advertised.
-			const writeMetadata = () => {
-				if (!failedUdsPaths.has(udsPath))
-					writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
-			};
-			options.SNICallback.ready.then(writeMetadata);
-			server.secureContextsListeners.push(writeMetadata);
+			const writeMetadata = () =>
+				failedUdsPaths.has(udsPath) || writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
+			publishUdsMetadata(options.SNICallback.ready, server, writeMetadata);
 
 			// Optional cleartext HTTP/2 mirror (spike: HARPER_H2C_UDS=1). A separate socket
 			// (`<worker>-<port>-h2.sock`) so a fronting proxy can route by negotiated ALPN:
@@ -1143,11 +1167,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				SERVERS[udsPathH2] = h2Front;
 				registerUdsCleanupPaths(udsPathH2, yamlPathH2);
 
-				const writeMetadataH2 = () => {
-					if (!failedUdsPaths.has(udsPathH2)) writeUdsMetadata(yamlPathH2, port, server, 'h2');
-				};
-				options.SNICallback.ready.then(writeMetadataH2);
-				server.secureContextsListeners.push(writeMetadataH2);
+				const writeMetadataH2 = () => failedUdsPaths.has(udsPathH2) || writeUdsMetadata(yamlPathH2, port, server, 'h2');
+				publishUdsMetadata(options.SNICallback.ready, server, writeMetadataH2);
 			}
 		}
 	}
@@ -1561,6 +1582,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 			const tlsSelector = createTLSSelector(usageType ?? 'server', mtls);
 			// Create a pseudo-server object so the TLS selector can store secureContexts on it
 			const pseudoServer: any = { ports: [port], secureContexts: null, secureContextsListeners: [] };
+			if (isOperationsServer) pseudoServer.networkAccessScope = 'operations';
 			tlsSelector.initialize(pseudoServer);
 			config.tlsSelector = tlsSelector;
 			config.pseudoServer = pseudoServer;

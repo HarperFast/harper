@@ -57,6 +57,7 @@ import * as deploymentOperations from '../components/deploymentOperations.ts';
 import * as releaseOperations from '../components/releaseOperations.ts';
 import * as secretOperations from '../components/secretOperations.ts';
 import * as trustPolicyOperations from '../security/authn/oidc/trustPolicyOperations.ts';
+import * as networkAccess from '../security/networkAccess.ts';
 import * as tokenExchange from '../security/authn/oidc/tokenExchange.ts';
 
 const requiredPermissions = new Map();
@@ -429,6 +430,15 @@ requiredPermissions.set(
 requiredPermissions.set(
 	tokenExchange.exchangeOidcToken.name,
 	new permission(false, [], terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)
+);
+// Network access allowlists (#3358): SU-only, enforced in the handlers too (gate-2 bypass below).
+requiredPermissions.set(
+	networkAccess.setNetworkAccess.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.SET_NETWORK_ACCESS)
+);
+requiredPermissions.set(
+	networkAccess.getNetworkAccess.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_NETWORK_ACCESS)
 );
 
 //Below are functions that are currently open to all roles
