@@ -12,6 +12,7 @@ import {
 	type AggregatedComponentStatus,
 	COMPONENT_STATUS_LEVELS,
 } from './types.ts';
+import { serializeStatusError } from './ComponentStatusRegistry.ts';
 
 export interface StatusNode {
 	status: ComponentStatusLevel;
@@ -19,7 +20,7 @@ export interface StatusNode {
 	source?: ComponentStatusSource;
 	lastChecked?: { main?: number; workers: Record<number, number> };
 	occurrenceCount?: number;
-	error?: Error | string;
+	error?: string;
 	children?: Record<string, StatusNode>;
 }
 
@@ -65,7 +66,7 @@ export function buildHierarchy(statuses: Map<string, AggregatedComponentStatus>)
 				node.source = status.source;
 				node.lastChecked = status.lastChecked;
 				node.occurrenceCount = status.occurrenceCount;
-				if (status.error) node.error = status.error;
+				if (status.error !== undefined) node.error = serializeStatusError(status.error);
 			} else {
 				// Intermediate node -- ensure children map exists
 				if (!node.children) node.children = {};

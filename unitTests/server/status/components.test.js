@@ -38,6 +38,20 @@ describe('get_status components opt-in', function () {
 		assert.ok('middlewareChains' in both);
 	});
 
+	it('uses the same wire-safe error in the tree and flat list', async function () {
+		const error = new TypeError('Failed https://user:secret@example.com/status');
+		error.privateValue = 'must not be serialized';
+		statusForComponent('opt-in.wire').error('Unavailable', error);
+		const result = await status.get({ components: true });
+		const flat = result.componentStatus.find((entry) => entry.name === 'opt-in.wire');
+		const tree = result.components['opt-in'].children.wire;
+		assert.equal(flat.error, 'TypeError: Failed https://[REDACTED]@example.com/status');
+		assert.strictEqual(tree.error, flat.error);
+		assert.ok(!JSON.stringify(result.components).includes('user:secret'));
+		assert.ok(!JSON.stringify(result.components).includes('privateValue'));
+		assert.ok(!JSON.stringify(result).includes('must not be serialized'));
+	});
+
 	it('keeps id lookups as stored records even with opt-in flags', async function () {
 		try {
 			await status.set({ id: 'maintenance', status: 'Testing' });

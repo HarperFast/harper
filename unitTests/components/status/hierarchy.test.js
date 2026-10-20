@@ -96,6 +96,6 @@ describe('buildHierarchy', function () {
 		const tree = buildHierarchy(statuses);
 
 		assert.equal(tree.database.children['write-queue-overloaded'].occurrenceCount, 3);
-		assert.equal(tree.database.children['write-queue-overloaded'].error, error);
+		assert.strictEqual(tree.database.children['write-queue-overloaded'].error, 'boom');
 	});
 });

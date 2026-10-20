@@ -6,7 +6,7 @@ const { componentStatusRegistry } = require('#src/components/status/registry');
 const { COMPONENT_STATUS_LEVELS } = require('#src/components/status/types');
 const { waitFor } = require('../../waitFor.js');
 const { setTimeout: delay } = require('node:timers/promises');
-const { setStatusHandler, createLogger } = require('#src/utility/logging/harper_logger');
+const { setStatusHandler, createLogger, updateLogger } = require('#src/utility/logging/harper_logger');
 
 describe('logBridge', function () {
 	beforeEach(function () {
@@ -17,6 +17,50 @@ describe('logBridge', function () {
 	afterEach(function () {
 		initLogBridge();
 		componentStatusRegistry.reset();
+	});
+
+	it('keeps captured conditional and tagged status loggers working after a level update', function () {
+		const output = [];
+		const logger = createLogger({ level: 'error', writeToLog: (line) => output.push(line) });
+		const conditional = logger.conditional;
+		const tagged = logger.withTag('rebase-status');
+		const child = logger.forComponent('rebase-child');
+		const childConditional = child.conditional;
+		conditional.status({ problem: 'test.rebase-before' }).debug('filtered');
+		assert.equal(output.length, 0);
+		assert.equal(componentStatusRegistry.getStatus('test.rebase-before').status, COMPONENT_STATUS_LEVELS.WARNING);
+		updateLogger(logger, { level: 'info' }, 'rebase-status');
+		updateLogger(logger, { level: 'debug' }, 'rebase-status');
+		updateLogger(child, { level: 'debug' }, 'rebase-child', logger);
+		assert.deepEqual(Object.keys(conditional).sort(), ['debug', 'error', 'fatal', 'info', 'notify', 'trace', 'warn']);
+		assert.strictEqual(child.conditional, childConditional);
+		assert.strictEqual(logger.conditional, conditional);
+		conditional.status({ problem: 'test.rebase-after' }).debug('conditional after update');
+		tagged.status({ problem: 'test.rebase-tagged' }).debug('tagged after update');
+		childConditional.status({ problem: 'test.rebase-child' }).debug('child after update');
+		assert.ok(output.some((line) => line.includes('conditional after update')));
+		assert.ok(output.some((line) => line.includes('[rebase-status]') && line.includes('tagged after update')));
+		assert.ok(output.some((line) => line.includes('child after update')));
+		assert.equal(componentStatusRegistry.getStatus('test.rebase-child').occurrenceCount, 1);
+		assert.equal(componentStatusRegistry.getStatus('test.rebase-after').occurrenceCount, 1);
+		assert.equal(componentStatusRegistry.getStatus('test.rebase-tagged').occurrenceCount, 1);
+	});
+
+	it('rebinds status when a replacement logger reuses the captured conditional object', function () {
+		const originalOutput = [];
+		const replacementOutput = [];
+		const original = createLogger({ level: 'error', writeToLog: (line) => originalOutput.push(line) });
+		const conditional = original.conditional;
+		const replacement = createLogger({
+			level: 'debug',
+			conditional,
+			writeToLog: (line) => replacementOutput.push(line),
+		});
+		assert.strictEqual(replacement.conditional, conditional);
+		conditional.status({ problem: 'test.rebase-replacement' }).debug('replacement logger');
+		assert.equal(originalOutput.length, 0);
+		assert.ok(replacementOutput.some((line) => line.includes('replacement logger')));
+		assert.equal(componentStatusRegistry.getStatus('test.rebase-replacement').occurrenceCount, 1);
 	});
 
 	for (const chained of [true, false]) {

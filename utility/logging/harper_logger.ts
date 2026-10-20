@@ -196,7 +196,11 @@ function updateConditional(logger: any) {
 	conditional.info = LOG_LEVEL_HIERARCHY.info >= logger.level ? logger.info.bind(logger) : undefined;
 	conditional.debug = LOG_LEVEL_HIERARCHY.debug >= logger.level ? logger.debug.bind(logger) : undefined;
 	conditional.trace = LOG_LEVEL_HIERARCHY.trace >= logger.level ? logger.trace.bind(logger) : undefined;
-	conditional.status = logger.status.bind(logger);
+	Object.defineProperty(conditional, 'status', {
+		value: logger.status.bind(logger),
+		writable: true,
+		configurable: true,
+	});
 }
 /**
  * Resolve a config path value against rootPath if it is relative.
@@ -773,30 +777,36 @@ export function loggerWithTag(tag: string, conditional?: boolean, logger?: any) 
 		debug: logWithTag('debug'),
 		trace: logWithTag('trace'),
 	};
-	const taggedLogger = !conditional ? methods : {
-		get notify() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.notify ? methods.notify : null;
+	const taggedLogger = !conditional
+		? methods
+		: {
+				get notify() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.notify ? methods.notify : null;
+				},
+				get fatal() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.fatal ? methods.fatal : null;
+				},
+				get error() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.error ? methods.error : null;
+				},
+				get warn() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.warn ? methods.warn : null;
+				},
+				get info() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.info ? methods.info : null;
+				},
+				get debug() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.debug ? methods.debug : null;
+				},
+				get trace() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.trace ? methods.trace : null;
+				},
+			};
+	Object.defineProperty(taggedLogger, 'status', {
+		value(options) {
+			return statusLogger(options, taggedLogger, tag);
 		},
-		get fatal() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.fatal ? methods.fatal : null;
-		},
-		get error() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.error ? methods.error : null;
-		},
-		get warn() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.warn ? methods.warn : null;
-		},
-		get info() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.info ? methods.info : null;
-		},
-		get debug() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.debug ? methods.debug : null;
-		},
-		get trace() {
-			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.trace ? methods.trace : null;
-		},
-	};
-	Object.defineProperty(taggedLogger, 'status', { value(options) { return statusLogger(options, taggedLogger, tag); } });
+	});
 	return taggedLogger;
 	function logWithTag(level) {
 		return function (...args) {
