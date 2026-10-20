@@ -266,6 +266,45 @@ describe('Reads of residency stubs', function () {
 		assert.deepEqual(records, [{ id: 'computed' }]);
 	});
 
+	it('loads resolver inputs when an indexed query selects a computed index', async () => {
+		const Computed = table({
+			database: 'test',
+			table: 'ResidencyComputedRead',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'sku', indexed: true },
+				{ name: 'name' },
+				{ name: 'upper', indexed: true, computed: true },
+			],
+			audit: true,
+		});
+		Computed.setComputedAttribute('upper', (record) => record.name.toUpperCase());
+		const loaded = [];
+		Computed.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					loaded.push(entry.key);
+					return { key: entry.key, value: { id: entry.key, sku: 'A1', name: 'resident' }, metadataFlags: 0 };
+				}
+			},
+			{ intermediateSource: true }
+		);
+		await Computed.put('computed', { id: 'computed', sku: 'A1', name: 'original' });
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Computed.getResource('computed', context, { ensureLoaded: false });
+			resource._writeInvalidate('computed', { id: 'computed', sku: 'A1', upper: 'ORIGINAL' }, { residencyId: 123 });
+		});
+		const records = [];
+		for await (const record of Computed.search({
+			conditions: [{ attribute: 'sku', value: 'A1' }],
+			select: ['id', 'upper'],
+		}))
+			records.push(record);
+		assert.deepEqual(records, [{ id: 'computed', upper: 'RESIDENT' }]);
+		assert.deepEqual(loaded, ['computed']);
+	});
+
 	for (const operations of [
 		['put', 'invalidate'],
 		['invalidate', 'put'],

@@ -6647,7 +6647,10 @@ export function makeTable(options): TableResourceClass {
 						attribute_name = attribute.name;
 					} else attribute_name = attribute;
 					// TODO: Resolvers may not need a full record, either because they are not using the record, or because they are a redirected property
-					return indices[attribute_name] || attribute_name === primaryKey;
+					return (
+						(indices[attribute_name] && !primaryStore.encoder.resolvedAttributeNames?.has(attribute_name)) ||
+						attribute_name === primaryKey
+					);
 				})
 			) {
 				checkLoaded = true;
