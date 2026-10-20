@@ -612,6 +612,12 @@ const FULL_PERMISSIONS = {
 	delete: true,
 	isSuperUser: true,
 };
+/** Where a role's read of an attribute path stops: the table, and the attribute when only that is unreadable. */
+export interface ReadDenial {
+	database: string;
+	table: string;
+	attribute?: string;
+}
 export interface Table {
 	primaryStore: Database;
 	auditStore: Database;
@@ -783,6 +789,8 @@ interface TableResourceClass {
 	set fullTextFields(names: readonly string[]);
 	assertFullTextSelection(select: unknown, sort?: any): void;
 	assertFullTextRecordField(name: unknown): void;
+	_readDenial(path: readonly any[], user: User, target?: RequestTarget): ReadDenial | undefined;
+	_authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any;
 	isFullTextSearchEntryCurrent(entry: Entry): boolean;
 	fullTextQueryIndexes: {
 		[name: string]: {
@@ -1796,6 +1804,36 @@ export function makeTable(options): TableResourceClass {
 		}
 		static assertFullTextRecordField(name: unknown): void {
 			assertFullTextRecordField(name);
+		}
+		/**
+		 * The first step of an attribute path the role cannot read: this table, then `path[0]` under its
+		 * attribute_permissions, then the rest of the path on the related table when `path[0]` is a
+		 * relationship. A path ending at a relationship still requires read on the related table.
+		 */
+		static _readDenial(path: readonly any[], user: User, target?: RequestTarget): ReadDenial | undefined {
+			const permission = getTablePermissions(user, target);
+			if (permission?.isSuperUser) return;
+			if (!permission?.read) return { database: databaseName, table: tableName };
+			if (path.length === 0) return;
+			const [name, ...rest] = path;
+			const attributePermissions = permission.attribute_permissions;
+			if (attributePermissions?.length > 0 && !attributesAsObject(attributePermissions, 'read')[name])
+				return { database: databaseName, table: tableName, attribute: name };
+			return propertyResolvers[name]?.definition?.tableClass?._readDenial(rest, user, target);
+		}
+		/**
+		 * A selected property narrowed by the related table's allowRead when it names a relationship, or
+		 * false when the role cannot read the related table. Other properties are returned unchanged.
+		 */
+		static _authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any {
+			const relatedTable = propertyResolvers[property.name || property]?.definition?.tableClass;
+			if (!relatedTable) return property;
+			if (!property.name) property = { name: property };
+			if (!property.checkPermission && checkPermission) property.checkPermission = checkPermission;
+			// Invoke the related table's allowRead on a properly-bound instance rather than
+			// `.call(null, ...)` so `this` is a valid resource of the related type.
+			if (!new relatedTable(undefined, context).allowRead(user, property, context)) return false;
+			return property.select ? property : property.name;
 		}
 		static isFullTextSearchEntryCurrent(entry: Entry): boolean {
 			return !(entry.metadataFlags & (INVALIDATED | EVICTED | VERSION_REUSED));
@@ -3514,6 +3552,7 @@ export function makeTable(options): TableResourceClass {
 				(target as any)[FULL_TEXT_READ_PERMISSION] = tablePermission;
 			if (tablePermission?.read) {
 				if (tablePermission.isSuperUser) return true;
+				if (hasRelationships && target && filtersThroughUnreadableRelationship(user, target)) return false;
 				const attribute_permissions = tablePermission.attribute_permissions;
 				const select = target?.select;
 				if (attribute_permissions?.length > 0 || (hasRelationships && select)) {
@@ -3534,19 +3573,12 @@ export function makeTable(options): TableResourceClass {
 									propertyName === '$score' ||
 									propertyName === '$highlights'
 								) {
-									const relatedTable = propertyResolvers[propertyName]?.definition?.tableClass;
-									if (relatedTable) {
-										// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
-										if (!property.name) property = { name: property };
-										if (!property.checkPermission && (target as any).checkPermission)
-											property.checkPermission = (target as any).checkPermission;
-										// Invoke the related table's allowRead on a properly-bound instance rather than
-										// `.call(null, ...)` so `this` is a valid resource of the related type.
-										const relatedResource = new relatedTable(undefined, context);
-										if (!relatedResource.allowRead(user, property, context)) return false;
-										if (!property.select) return property.name; // no select was applied, just return the name
-									}
-									return property;
+									return TableResource._authorizeRelatedSelection(
+										property,
+										user,
+										(target as any).checkPermission,
+										context
+									);
 								}
 							})
 							.filter(Boolean);
@@ -9067,6 +9099,24 @@ export function makeTable(options): TableResourceClass {
 		} else if (databaseName === 'data' && (table = permission[tableName]) && !table.tables) {
 			return table;
 		}
+	}
+	function filtersThroughUnreadableRelationship(user: User, target: RequestTarget): boolean {
+		const denied = (attribute: any) => {
+			const path = Array.isArray(attribute) ? attribute : [attribute];
+			return (
+				propertyResolvers[path[0]]?.definition?.tableClass !== undefined &&
+				TableResource._readDenial(path, user, target) !== undefined
+			);
+		};
+		const deniedCondition = (conditions: any[]) =>
+			conditions.some((condition) =>
+				condition.conditions ? deniedCondition(condition.conditions) : denied(condition[0] ?? condition.attribute)
+			);
+		if (Array.isArray(target.conditions) && deniedCondition(target.conditions)) return true;
+		for (let sort = typeof target.sort === 'object' && target.sort; sort; sort = sort.next) {
+			if (denied(sort.attribute)) return true;
+		}
+		return false;
 	}
 	function assertRecordField(name: unknown): void {
 		const field = Array.isArray(name) ? name[0] : name;

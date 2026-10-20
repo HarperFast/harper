@@ -43,6 +43,8 @@ import * as analytics from '../resources/analytics/read.ts';
 import * as status from '../server/status/index.ts';
 import { FULL_TEXT_COMPARATORS } from '../resources/indexes/fullTextQueryProtocol.ts';
 import PermissionResponseObject from '../security/data_objects/PermissionResponseObject.ts';
+import { getDatabases } from '../resources/databases.ts';
+import type { ReadDenial } from '../resources/Table.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 
 import * as regDeprecated from '../resources/registrationDeprecated.ts';
@@ -94,6 +96,7 @@ const BULK_OPS = {
 /** The same set, precomputed: `isBulkLoadOperation` runs on every operations authorization. */
 const BULK_OP_NAMES = new Set(Object.values(BULK_OPS));
 const FULL_TEXT_COMPARATOR_SET = new Set<string>(FULL_TEXT_COMPARATORS);
+const SELECT_ALIAS_OPS = new Set([search.searchByConditions.name, search.searchByHash.name, search.searchByValue.name]);
 
 const STRUCTURE_USER_OPS = [
 	schema.createTable.name,
@@ -725,6 +728,13 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	// `bulkLoad.validateChunk`, not from here.
 	let action = isBulkLoadOperation(op) ? requestJson.action : undefined;
 
+	// The search handlers read `select` in place of `get_attributes`, so the attribute checks below
+	// must see that list, and the handlers must see the list after any rewrite here.
+	if (SELECT_ALIAS_OPS.has(op) && requestJson.select !== undefined) {
+		requestJson.get_attributes = requestJson.select;
+		delete requestJson.select;
+	}
+
 	// Resolved through the same helper the handlers use (`transformReq` delegates to it), because
 	// authorization runs BEFORE `transformReq` and any disagreement about the target means the
 	// permissions checked are not the permissions for the write that happens. This used to be a
@@ -903,10 +913,18 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 			} else {
 				finalGetAttrs = global.hdb_schema[operationSchema][table].attributes.map((obj) => obj.attribute);
 			}
+			const tableClass = getDatabases()[operationSchema]?.[table];
+			finalGetAttrs = finalGetAttrs.filter(
+				(name) =>
+					!tableClass?.propertyResolvers?.[name]?.definition?.tableClass ||
+					!tableClass._readDenial([name], requestJson.hdb_user)
+			);
 
 			requestJson.get_attributes = [...new Set([...finalGetAttrs, ...requestedMetadata])];
 		}
 	}
+
+	if (!isSuperUser && table != undefined) checkRelationshipReads(requestJson, operationSchema, table, permsResponse);
 
 	const recordAttrs = getRecordAttributes(requestJson, op);
 	const attrPermissions = getAttributePermissions(requestJson.hdb_user?.role?.permission, operationSchema, table);
@@ -923,6 +941,59 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 
 	//This result value will be null if no perms issues were found in checkAttributePerms
 	return permsResponse.getPermsResponse();
+}
+
+/**
+ * Refuses any attribute path in the request's get_attributes, conditions or sort that reaches a
+ * related table, or related attribute, the role cannot read. The root table's own attributes are
+ * checked by checkAttributePerms.
+ */
+function checkRelationshipReads(requestJson: any, operationSchema: string, table: string, permsResponse) {
+	const tableClass = getDatabases()[operationSchema]?.[table];
+	if (!tableClass?.propertyResolvers) return;
+	const denials = new Map<string, { denial: ReadDenial; attributes: Set<string> }>();
+	const check = (path: any[]) => {
+		if (!tableClass.propertyResolvers[path[0]]?.definition?.tableClass) return;
+		const denial = tableClass._readDenial(path, requestJson.hdb_user);
+		if (!denial) return;
+		const key = `${denial.database}_${denial.table}`;
+		let entry = denials.get(key);
+		if (!entry) denials.set(key, (entry = { denial, attributes: new Set() }));
+		if (denial.attribute === undefined) entry.denial = denial;
+		else entry.attributes.add(denial.attribute);
+	};
+	const checkSelect = (select: any, prefix: any[]) => {
+		if (!Array.isArray(select)) return;
+		for (const property of select) {
+			if (property?.name === undefined) check([...prefix, property]);
+			else {
+				check([...prefix, property.name]);
+				checkSelect(property.select, [...prefix, property.name]);
+			}
+		}
+	};
+	const checkConditions = (conditions: any) => {
+		if (!Array.isArray(conditions)) return;
+		for (const condition of conditions) {
+			if (condition?.conditions) checkConditions(condition.conditions);
+			else {
+				const attribute = condition?.search_attribute ?? condition?.attribute;
+				if (attribute !== undefined) check(Array.isArray(attribute) ? attribute : [attribute]);
+			}
+		}
+	};
+	checkSelect(requestJson.get_attributes, []);
+	checkConditions(requestJson.conditions);
+	const sortAttribute = requestJson.sort?.attribute;
+	if (sortAttribute !== undefined) check(Array.isArray(sortAttribute) ? sortAttribute : [sortAttribute]);
+	for (const { denial, attributes } of denials.values()) {
+		if (denial.attribute === undefined) permsResponse.addUnauthorizedTable(denial.database, denial.table, [READ_PERM]);
+		else {
+			const required = {};
+			for (const attribute of attributes) required[attribute] = [READ_PERM];
+			permsResponse.addUnauthorizedAttributes([...attributes], denial.database, denial.table, required);
+		}
+	}
 }
 
 /**
@@ -1153,7 +1224,8 @@ function getRecordAttributes(json, operationName?) {
 					if (condition.search_attribute !== undefined) {
 						attribute = condition.search_attribute;
 					}
-					affectedAttributes.add(attribute);
+					// a path is authorized here by its root attribute; checkRelationshipReads covers the rest
+					affectedAttributes.add(Array.isArray(attribute) ? attribute[0] : attribute);
 				}
 			};
 			addConditionAttributes(json.conditions);
@@ -1178,7 +1250,7 @@ function getRecordAttributes(json, operationName?) {
 					(attr === '$score' || attr === '$highlights')
 				)
 					continue;
-				affectedAttributes.add(attr);
+				affectedAttributes.add(attr?.name ?? attr);
 			}
 		} else {
 			// get unique affectedAttributes
