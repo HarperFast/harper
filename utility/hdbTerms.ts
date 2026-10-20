@@ -213,6 +213,12 @@ export const UPGRADE_JSON_FIELD_NAMES_ENUM = {
 	UPGRADE_VERSION: 'upgrade_version',
 } as const;
 
+/**
+ * Set by the Fastify injection on Bun and uWS, whose mock socket always reports 127.0.0.1, and stripped
+ * from client headers there; read by set_network_access's lockout check.
+ */
+export const INTERNAL_CLIENT_ADDRESS_HEADER = 'x-harper-internal-client-address';
+
 /** System table names */
 export const SYSTEM_TABLE_NAMES = {
 	JOB_TABLE_NAME: 'hdb_job',

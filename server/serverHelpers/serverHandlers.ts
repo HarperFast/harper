@@ -46,7 +46,6 @@ const NO_AUTH_OPERATIONS: any = [
 ];
 
 const UNSAFE_REQUEST_BODY_PROPERTIES = terms.PROTOTYPE_POLLUTING_NAMES;
-const INTERNAL_CLIENT_ADDRESS_HEADER = 'x-harper-internal-client-address';
 
 function validateRequestBodyProperties(body?: any) {
 	if (!body || typeof body !== 'object') {
@@ -205,11 +204,10 @@ async function handlePostRequest(req?: any, res?: any, _bypassAuth: any = false)
 		if (Object.hasOwn(req.body, 'bypass_auth')) delete req.body.bypass_auth;
 		if (Object.hasOwn(req.body, 'bypassAuth')) delete req.body.bypassAuth;
 		// Server-derived, overwriting any client value: set_network_access refuses a list excluding it.
-		// Without a baseRequest, the request was injected (Bun, uWS), which passes the client address in a
-		// header it strips from client input.
+		// Without a baseRequest the request was injected (Bun, uWS), and only the header carries it.
 		if (req.body.operation === terms.OPERATIONS_ENUM.SET_NETWORK_ACCESS) {
 			const baseRequest = req.raw?.baseRequest;
-			req.body.hdb_client_address = baseRequest ? baseRequest.ip : req.headers?.[INTERNAL_CLIENT_ADDRESS_HEADER];
+			req.body.hdb_client_address = baseRequest ? baseRequest.ip : req.headers?.[terms.INTERNAL_CLIENT_ADDRESS_HEADER];
 		}
 
 		operation_function = serverUtilities.chooseOperation(req.body);
