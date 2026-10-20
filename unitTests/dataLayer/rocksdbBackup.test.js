@@ -1199,8 +1199,8 @@ describe('rocksdbBackup', function () {
 			assert.strictEqual((await listBackupsInDir(backupDir)).length, 1, 'and it proceeds once the lock is free');
 		});
 
-		// harper#2031: the blob snapshot and manifest are written after the engine backup returns, so the
-		// lock has to span them too, or a purge removes the backup the create is about to publish.
+		// The blob snapshot and manifest are written after the engine backup returns, so the lock has to
+		// span them too, or a purge removes the backup the create is about to publish.
 		for (const mode of ['online', 'offline']) {
 			it(`makes a purge wait for an ${mode} create that is copying its blob snapshot`, async function () {
 				this.timeout(30000);
@@ -1222,22 +1222,28 @@ describe('rocksdbBackup', function () {
 				const backupDir = backupDirForDatabase(PINNED);
 				const original = blobBackupModule.snapshotBlobs;
 				let purged;
+				let lockHeldDuringCopy;
 				let purgeSettledDuringCopy;
 				blobBackupModule.snapshotBlobs = async (...args) => {
+					const probe = tryFileLock(managementLockPath(backupDir));
+					if (probe !== 0) fileLockRelease(probe);
+					lockHeldDuringCopy = probe === 0;
 					let settled = false;
 					purged = purge().finally(() => (settled = true));
-					purged.catch(() => {}); // settled below
-					await Promise.race([purged, delay(1000)]);
+					await Promise.race([purged, delay(250)]);
 					purgeSettledDuringCopy = settled;
 					return original(...args);
 				};
 				try {
 					const created = await create();
+					assert.strictEqual(lockHeldDuringCopy, true, 'the create must hold the lock while it copies');
 					assert.strictEqual(purgeSettledDuringCopy, false, 'a purge must not run inside a create');
 					assert.deepStrictEqual(await purged, { deleted: 1, remaining: 0 }, 'the purge sees the published backup');
 					assert.strictEqual(await readBackupManifest(backupDir, created.backup_id), null, 'no manifest outlives it');
 				} finally {
 					blobBackupModule.snapshotBlobs = original;
+					// a purge left waiting by a failed create would otherwise delete the next test's backups
+					await purged?.catch(() => {});
 					if (mode === 'online') await closeLoadedDatabases();
 				}
 			});
