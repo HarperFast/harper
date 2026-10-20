@@ -59,7 +59,8 @@ const RUNTIME_SRC_ROOT = realpathSync(join(__dirname, '..'));
  */
 const RUNTIME_FILE_EXT = existsSync(join(__dirname, 'hdbTerms.ts')) ? '.ts' : '.js';
 
-function loadNativePackage(name) {
+function loadNativePackage(name, entryPath = '') {
+	if (entryPath) return require(join(dirname(require.resolve(`${name}/package.json`)), entryPath));
 	return require(name);
 }
 

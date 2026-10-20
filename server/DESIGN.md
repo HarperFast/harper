@@ -134,7 +134,9 @@ The public `index.ts` import initializes configuration and synchronously discove
 
 `threadServer.listenOnPorts()` owns one bind batch per thread. Bun caches its native/raw listener promise just as Node caches its listener batch; concurrent and later callers must share that work. Main-thread startup can call this boundary again after `startServers()` has already bound the listeners.
 
-REST WebSocket subscriptions use the underlying socket's drain signal where available. Bun's ws-compatible connection has no Node `_socket`; when it reports queued data, REST awaits its public send callback instead. The existing connection close handler settles that pending send and stops the producer, so a stalled client cannot strand the send loop. No per-message close listener is added.
+HTTP selects the installed `ws` server lazily on Bun, through `loadNativePackage('ws', 'index.js')`, instead of Bun's bare-specifier substitution. In Bun 1.4.2 the substitution retries a frame already accepted under native backpressure and miscounts buffered bytes; a paused/resumed subscriber receives duplicates. Node and uWS retain their backend selection. This also gives MQTT-over-WebSocket a real Node socket for its drain, closed-state and debug-address checks. Reconsider the substitution only when its exactly-once backpressure contract passes the regression, including secure connections.
+
+REST WebSocket subscriptions await the underlying socket's drain signal. One resolver and drain handler per connection also settle on close and remove the drain listener. Middleware completing after close starts no subscription; a connect completing after close returns its eventual iterator. No per-message close listener is added. `integrationTests/server/typestrip.test.ts` checks exact-id delivery after a paused reader resumes, producer cleanup and a gated late connect.
 
 HTTP startup separates worker-owned loading and verdict publication from main-owned admission. Shutdown waits for loading to settle and then runs the existing disposal chain; it never waits for CHILD_ADMITTED. The optional heldStart reporting callback closes the load barrier after the verdict is posted, while whenComponentsLoaded retains its post-admission timing. A rejected bind on a terminal worker follows cleanup instead of forcing an early exit. Scopes registered after shutdown remain outside the existing disposal boundary; this does not cancel initialization.
 
@@ -558,7 +560,7 @@ so ops responses **will** carry the headers there (benign).
 Worth knowing before debugging anything Bun-specific on the HTTP path: `getBunHTTPServer()` builds
 the `Bun.serve()` fetch config, but `onWebSocket()` calls `getHTTPServer()` unconditionally — it has
 a uWS branch and no Bun branch, because Bun native WebSockets are unimplemented (nothing ever sets
-`config.websocket`, so WS relies on the Node `ws` server attached to an `http.Server`). MQTT's
+`config.websocket`, so WS relies on the installed Node `ws` server attached to an `http.Server`, explicitly bypassing Bun's substitution). MQTT's
 `handleApplication` registers WS on the default port before REST's `httpServer()` call for that same
 port, so `httpServers[port]` is already a Node server by then and `getBunHTTPServer` early-returns
 without registering a serve config. The port is bound by `registerServer()`'s Node server via

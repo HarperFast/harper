@@ -573,16 +573,16 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			let iterator;
 			const socket = (ws as any)._socket;
 			let closed = false;
-			let finishPendingSend: ((error?: Error) => void) | undefined;
-			const onSend = (error?: Error) => {
-				if (error) hasError = true;
-				const finish = finishPendingSend;
-				finishPendingSend = undefined;
-				finish?.(error);
+			let resolveDrain: (() => void) | undefined;
+			const onDrain = () => {
+				const resolve = resolveDrain;
+				resolveDrain = undefined;
+				socket?.off('drain', onDrain);
+				resolve?.();
 			};
 			(ws as any).on('close', () => {
 				closed = true;
-				onSend();
+				onDrain();
 				connectionCount--;
 				recordActionBinary(!hasError, 'connection', 'ws', 'disconnect');
 				incomingMessages.emit('close');
@@ -631,20 +631,12 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					while (!closed && !(result = await iterator.next()).done) {
 						const messageBinary = await serializeMessage(result.value, request);
 						if (closed) break;
-						if (!socket && (ws as any).bufferedAmount > 0) {
-							await new Promise<void>((resolve, reject) => {
-								finishPendingSend = (error) => (error ? reject(error) : resolve());
-								(ws as any).send(messageBinary, undefined, onSend);
-							});
-						} else ws.send(messageBinary as string | Buffer<ArrayBuffer>);
+						ws.send(messageBinary as string | Buffer<ArrayBuffer>);
 						recordAction(messageBinary.length, 'bytes-sent', request.handlerPath, 'message', 'ws');
 						if (socket?.writableNeedDrain && !closed) {
 							await new Promise<void>((resolve) => {
-								finishPendingSend = () => {
-									socket.off('drain', onSend);
-									resolve();
-								};
-								socket.once('drain', onSend);
+								resolveDrain = resolve;
+								socket.once('drain', onDrain);
 							});
 						}
 					}

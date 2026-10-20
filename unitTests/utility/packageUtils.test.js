@@ -22,6 +22,14 @@ const packageUtils = require('#js/utility/packageUtils');
 // Compare the fs resolved package.json to an absolute resolution from this test file.
 // These tests will fail if this test file changes location.
 describe('packageUtils', () => {
+	it('loads installed package entries while preserving ordinary resolution', () => {
+		assert.strictEqual(typeof packageUtils.loadNativePackage('node:path').join, 'function');
+		const WebSocketServer = packageUtils.loadNativePackage('ws', 'lib/websocket-server.js');
+		assert.strictEqual(typeof WebSocketServer, 'function');
+		assert.strictEqual(typeof WebSocketServer.prototype.handleUpgrade, 'function');
+		assert.strictEqual(packageUtils.loadNativePackage('ws', 'index.js').WebSocketServer, WebSocketServer);
+	});
+
 	it('should export the HarperDB package.json as packageJson', () => {
 		assert.equal(typeof packageUtils.packageJson, 'object');
 		const expectedPackageJson = JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf8'));

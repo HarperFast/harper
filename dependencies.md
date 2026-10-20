@@ -82,7 +82,7 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 - Need for usage: We need to support WebSockets
 - Security: Had vulnerabilities, but quickly addressed: https://security.snyk.io/package/npm/ws
 - Environment interaction: None
-- Overlap: None
+- Overlap: Bun substitutes its own implementation for the bare `ws` specifier. Harper explicitly loads the installed server entry on Bun so queued frames retain Node's exactly-once socket/drain behavior; Node and uWS keep their existing backend selection.
 - Binary compilation: `bufferutil` is an optional native addon for masking acceleration. Harper does not declare `utf-8-validate`: `ws` uses Node's built-in [`buffer.isUtf8`](https://nodejs.org/api/buffer.html#bufferisutf8input) (introduced in Node 18.14 and 19.4) on the Node versions declared in `package.json`'s `engines`. The development lock still includes an older addon produced by the integration test framework's Harper peer, also referenced by React Native's optional peers. Release bundling deliberately leaves `ws` and its optional native `bufferutil` accelerator as ordinary dependencies so consumers can override this transport independently. Optional-only peers are excluded from the bundle closure. Optional UTF-8 peer declarations are cut only when they occur inside copied bundled manifests; explicit producers and required peers are preserved. See `build-tools/DESIGN.md` for the bundle boundary.
 - Eventual removal: Because this is a standard-based API, this will hopefully be rolled into a core JavaScript runtime feature at some point (and already is in Deno).
 
