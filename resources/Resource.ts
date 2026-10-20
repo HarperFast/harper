@@ -1202,13 +1202,13 @@ export function transformForSelect(select, resource) {
 	const propertyResolvers = resource?.propertyResolvers;
 	const context = resource?.getContext?.();
 	let subTransforms;
-	if (typeof select === 'string')
-		// if select is a single string then return property value
+	if (typeof select === 'string' || (!Array.isArray(select) && select?.name !== undefined))
+		// a single string or selection object returns that property's value
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
 			if (Array.isArray(object)) return object.map(transform);
-			return selectFromObject(object, propertyResolvers, context)(select);
+			return handleProperty(selectFromObject(object, propertyResolvers, context))(select);
 		};
 	else if (typeof select === 'object') {
 		// if it is an array, return an array
