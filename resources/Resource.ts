@@ -43,6 +43,7 @@ function refuseWriteInReadOnlyMode(...args: any[]): Promise<never> {
 }
 
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
+const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
 export const WRITE_CONDITION = Symbol('writeCondition');
 
@@ -409,6 +410,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 						if (data.select.asArray) narrowed.asArray = true;
 						if (data.select.forceNulls) narrowed.forceNulls = true;
 					}
+					if (allowed[RELATIONSHIPS_LISTED]) narrowed[RELATIONSHIPS_LISTED] = true;
 					data.select = narrowed;
 				} else {
 					data.select = query.select;
@@ -1171,9 +1173,9 @@ function registerLiveSubscriptionForContext(
 	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
 	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
-	// A select written by authorization names no relationship, so the default allowRead's result still
-	// reads only the role's table permission; a caller's select, or a condition or sort through a
-	// relationship, also reads related tables' permissions.
+	// A select written by authorization only narrows or omits relationships, so the default allowRead's
+	// result still reads only the role's table permission; a caller's select, or a condition or sort
+	// through a relationship, also reads related tables' permissions.
 	const sharedDecision =
 		!selectedByCaller &&
 		defaultAllowReads.has(resource.allowRead) &&
@@ -1377,7 +1379,9 @@ export function transformForSelect(select, resource) {
 			let promises;
 			for (const property of select) {
 				if (property === '*') {
-					if (wildcardSource)
+					if (select[RELATIONSHIPS_LISTED] && resource?._copyUnlistedAttributes)
+						resource._copyUnlistedAttributes(object, selectedData);
+					else if (wildcardSource)
 						for (const key in wildcardSource) {
 							const value = wildcardSource[key];
 							if (typeof value === 'function') continue;
@@ -1440,7 +1444,8 @@ export function transformForSelect(select, resource) {
 export function nestedSelectTransform(property: any, targetResource?: any): (value: any) => any {
 	const subSelect = property.select ?? (Array.isArray(property) ? property : null);
 	const innerTransform =
-		subSelect && !(subSelect.length === 1 && subSelect[0] === '*' && !subSelect.asArray)
+		subSelect &&
+		!(subSelect.length === 1 && subSelect[0] === '*' && !subSelect.asArray && !subSelect[RELATIONSHIPS_LISTED])
 			? transformForSelect(subSelect, targetResource)
 			: (value) => value;
 	const sortClauses: { attribute: string | string[]; descending?: boolean }[] = [];

@@ -19,13 +19,15 @@ const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === '
 
 const DEPT = { id: 'd1', name: 'Eng', budget: 100 };
 const EMP = { id: 'e1', name: 'Ann', deptId: 'd1', payload: { deptId: 'd1' } };
+const SEAT = { id: 's1', deptId: 'd1' };
 
 const EMP_READ = { read: true, insert: false, update: false, delete: false, attribute_permissions: [] };
 const ROLES = {
-	full: { Emp: EMP_READ, Dept: EMP_READ },
-	empOnly: { Emp: EMP_READ },
+	full: { Emp: EMP_READ, Seat: EMP_READ, Dept: EMP_READ },
+	empOnly: { Emp: EMP_READ, Seat: EMP_READ },
 	restricted: {
 		Emp: EMP_READ,
+		Seat: EMP_READ,
 		Dept: {
 			...EMP_READ,
 			attribute_permissions: [
@@ -104,6 +106,10 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 		await client
 			.req()
 			.send({ operation: 'insert', table: 'Emp', records: [EMP] })
+			.expect(200);
+		await client
+			.req()
+			.send({ operation: 'insert', table: 'Seat', records: [SEAT] })
 			.expect(200);
 	});
 
@@ -413,6 +419,22 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			const json = await rest('empOnly', `/Emp/${EMP.id}?select(id,payload{dept})`);
 			strictEqual(json.status, 200, JSON.stringify(json.body));
 			strictEqual(json.body.payload?.dept, undefined, JSON.stringify(json.body));
+		});
+		test('a read without select returns, omits or narrows an @enumerable relationship', async () => {
+			const expected = {
+				super: { ...SEAT, dept: DEPT },
+				full: { ...SEAT, dept: DEPT },
+				empOnly: SEAT,
+				restricted: { ...SEAT, dept: { id: DEPT.id, name: DEPT.name } },
+			};
+			for (const [as, seat] of Object.entries(expected) as [RoleName | 'super', any][]) {
+				const record = await rest(as, `/Seat/${SEAT.id}`);
+				strictEqual(record.status, 200, `${as}: ${JSON.stringify(record.body)}`);
+				deepStrictEqual(record.body, seat, as);
+				const collection = await rest(as, '/Seat/');
+				strictEqual(collection.status, 200, `${as}: ${JSON.stringify(collection.body)}`);
+				deepStrictEqual(collection.body, [seat], as);
+			}
 		});
 	});
 });

@@ -787,6 +787,8 @@ function isSameIdAllocation(a: any, b: any): boolean {
 	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
 }
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
+// On a select written by allowRead: its '*' leaves out relationships, because the select lists each one it returns
+const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
@@ -1005,6 +1007,8 @@ interface TableResourceClass {
 	_readDenial(path: readonly any[], user: User, target?: RequestTarget, index?: number): ReadDenial | undefined;
 	_authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any;
 	_referencesRelationship(target: RequestTarget): boolean;
+	_readableInFull(user: User, target?: RequestTarget, visited?: Set<any>): boolean;
+	_copyUnlistedAttributes(record: any, selected: any): void;
 	readonly hasRelationships: boolean;
 	isFullTextSearchEntryCurrent(entry: Entry): boolean;
 	fullTextQueryIndexes: {
@@ -1498,6 +1502,8 @@ function conditionsContainFullText(entries: any[], definitions: readonly FullTex
 // Keyed by table class → set of primary keys currently on the serialization path (avoids any tableId
 // stringification/collision concern).
 let structSerializationVisited: Map<any, Set<any>> | null = null;
+// Tables whose default projection allowRead is writing; an @enumerable edge back to one stops at its key.
+let implicitProjectionPath: Set<any> | null = null;
 // Resolve Harper records within a guarded serialization, so none escape back to an encoder that would call
 // their toJSON after our path-scoped unwind and miss the cycle. Native values (Date, Buffer/typed arrays,
 // ArrayBuffer, etc.) stay intact for CBOR/MessagePack.
@@ -1790,6 +1796,7 @@ export function makeTable(options): TableResourceClass {
 	// unset for self/forward refs at collection time); `.tableClass` is resolved lazily at detection.
 	let enumerableAttributeNames: string[] = [];
 	const enumerableRelationDefs = new Set<any>();
+	let enumerableRelationshipNames: string[] = [];
 	// True when the table surfaces any non-table @computed attribute. A resolver can return a live (possibly
 	// cyclic) entity at runtime regardless of its declared scalar type, and the static edge graph can't see
 	// it, so such a table takes the guarded serialization path rather than the raw fast path.
@@ -2187,6 +2194,30 @@ export function makeTable(options): TableResourceClass {
 		}
 		static get hasRelationships(): boolean {
 			return hasRelationships;
+		}
+		/** Whether the role reads this table, and every table its @enumerable relationships reach, without attribute restrictions. */
+		static _readableInFull(user: User, target?: RequestTarget, visited?: Set<any>): boolean {
+			const permission = getTablePermissions(user, target);
+			if (permission?.isSuperUser) return true;
+			if (!permission?.read || permission.attribute_permissions?.length > 0) return false;
+			if (enumerableRelationshipNames.length === 0) return true;
+			visited ??= new Set();
+			visited.add(TableResource);
+			for (const name of enumerableRelationshipNames) {
+				const relatedTable = propertyResolvers[name]?.definition?.tableClass;
+				if (relatedTable && !visited.has(relatedTable) && !relatedTable._readableInFull(user, target, visited))
+					return false;
+			}
+			return true;
+		}
+		/** Copies what a default read serializes, other than relationships: stored attributes and surfaced computed ones. */
+		static _copyUnlistedAttributes(record: any, selected: any): void {
+			for (const key of Object.keys(record)) selected[key] = record[key];
+			for (const name of enumerableAttributeNames) {
+				if (name in selected || propertyResolvers[name]?.definition?.tableClass) continue;
+				const value = record[name];
+				if (value !== undefined) selected[name] = value;
+			}
 		}
 		static _referencesRelationship(target: RequestTarget): boolean {
 			return hasRelationships && someRelationshipPath(target, undefined, false);
@@ -4161,16 +4192,22 @@ export function makeTable(options): TableResourceClass {
 				if (tablePermission.isSuperUser) return true;
 				if (hasRelationships && target && someRelationshipPath(target, user, true)) return false;
 				const attribute_permissions = tablePermission.attribute_permissions;
-				const select = target?.select;
+				let select: any = target?.select;
+				// a default read and '*' serialize @enumerable relationships, so the related tables' permissions apply
+				const listRelationships =
+					enumerableRelationshipNames.length > 0 &&
+					!(attribute_permissions?.length > 0) &&
+					(select == null || select === '*' || (Array.isArray(select) && select.includes('*'))) &&
+					!TableResource._readableInFull(user, target);
+				if (listRelationships && select == null) select = '*';
 				if (attribute_permissions?.length > 0 || (hasRelationships && select)) {
 					// If attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
 					// or if there are relationships, we need to ensure that the user has permission to read from the related table
-					// Note that if we do not have a select, we do not return any relationships by default.
 					if (!target) target = {} as any;
 					if (select) {
 						const selectArray = Array.isArray(select) ? select : [select];
 						const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
-						(target as any).select = selectArray
+						const authorizedSelect = selectArray
 							.map((property: any) => {
 								const propertyName = property.name || property;
 								if (
@@ -4189,6 +4226,9 @@ export function makeTable(options): TableResourceClass {
 								}
 							})
 							.filter(Boolean);
+						if (listRelationships)
+							listEnumerableRelationships(authorizedSelect, user, (target as any).checkPermission, context);
+						(target as any).select = authorizedSelect;
 					} else {
 						target.select = attribute_permissions
 							.filter(
@@ -7206,8 +7246,10 @@ export function makeTable(options): TableResourceClass {
 				if (select) {
 					const columns = [];
 					for (const column of select) {
-						if (column === '*') columns.push(...attributes.map((attribute) => attribute.name));
-						else columns.push((column as any).name || column);
+						if (column === '*') {
+							for (const attribute of attributes)
+								if (!(select[RELATIONSHIPS_LISTED] && attribute.relationship)) columns.push(attribute.name);
+						} else columns.push((column as any).name || column);
 					}
 					return columns;
 				}
@@ -8540,7 +8582,10 @@ export function makeTable(options): TableResourceClass {
 				return selectRecord.call(this, record, entry);
 			};
 			const selectRecord = function (record, entry) {
-				if (select && !(select[0] === '*' && select.length === 1 && !(select as any).asArray)) {
+				if (
+					select &&
+					!(select[0] === '*' && select.length === 1 && !(select as any).asArray && !select[RELATIONSHIPS_LISTED])
+				) {
 					let promises: Promise<any>[];
 					const selectAttribute = (attribute, callback) => {
 						let attribute_name;
@@ -8685,14 +8730,16 @@ export function makeTable(options): TableResourceClass {
 								if (selectsPrototype) Object.defineProperty(selected, '__proto__', ownDataProperty);
 								const forceNulls = (select as any).forceNulls;
 								for (const attribute of select) {
-									if (attribute === '*')
-										for (const key in record) {
-											const value = record[key];
-											if (typeof value === 'function') continue;
-											if (key === '__proto__') Object.defineProperty(selected, key, { ...ownDataProperty, value });
-											else selected[key] = value;
-										}
-									else if (typeof attribute === 'string' && !selectsPrototype && !propertyResolvers?.[attribute]) {
+									if (attribute === '*') {
+										if (select[RELATIONSHIPS_LISTED]) TableResource._copyUnlistedAttributes(record, selected);
+										else
+											for (const key in record) {
+												const value = record[key];
+												if (typeof value === 'function') continue;
+												if (key === '__proto__') Object.defineProperty(selected, key, { ...ownDataProperty, value });
+												else selected[key] = value;
+											}
+									} else if (typeof attribute === 'string' && !selectsPrototype && !propertyResolvers?.[attribute]) {
 										let value = record[attribute];
 										if (typeof value === 'function') value = undefined;
 										selected[attribute] = value === undefined && forceNulls ? null : value;
@@ -10680,6 +10727,7 @@ export function makeTable(options): TableResourceClass {
 			// accumulating stale/duplicate entries across reloads.
 			enumerableAttributeNames = [];
 			enumerableRelationDefs.clear();
+			enumerableRelationshipNames = [];
 			hasSurfacedComputed = false;
 			const resolvedAttributeNames: string[] = [];
 			for (const attribute of attributes) {
@@ -10707,6 +10755,7 @@ export function makeTable(options): TableResourceClass {
 					if (attribute.enumerable || (attribute.computed && !relationDef)) enumerableAttributeNames.push(name);
 					// Only @enumerable *table-typed* attributes create a serialization edge that can cycle.
 					if (attribute.enumerable && relationDef) enumerableRelationDefs.add(relationDef);
+					if (attribute.enumerable && attribute.relationship) enumerableRelationshipNames.push(name);
 					// Any surfaced non-table @computed can return a live (possibly cyclic) entity at runtime,
 					// regardless of its declared scalar type — the static edge graph can't see it — so route it
 					// through the guarded serialization path.
@@ -11651,6 +11700,25 @@ export function makeTable(options): TableResourceClass {
 		} else if (databaseName === 'data' && (table = permission[tableName]) && !table.tables) {
 			return table;
 		}
+	}
+	function listEnumerableRelationships(select: any[], user: User, checkPermission: any, context: Context): void {
+		const outermost = implicitProjectionPath === null;
+		implicitProjectionPath ??= new Set();
+		implicitProjectionPath.add(TableResource);
+		try {
+			for (const name of enumerableRelationshipNames) {
+				if (select.some((property) => (property?.name ?? property) === name)) continue;
+				const relatedTable = propertyResolvers[name]?.definition?.tableClass;
+				if (!relatedTable) continue;
+				const property = implicitProjectionPath.has(relatedTable) ? { name, select: [relatedTable.primaryKey] } : name;
+				const entry = TableResource._authorizeRelatedSelection(property, user, checkPermission, context);
+				if (entry) select.push(entry);
+			}
+		} finally {
+			implicitProjectionPath.delete(TableResource);
+			if (outermost) implicitProjectionPath = null;
+		}
+		(select as any)[RELATIONSHIPS_LISTED] = true;
 	}
 	function relationshipPathMatches(attribute: any, target: RequestTarget, user: User, checkDenial: boolean): boolean {
 		const first = Array.isArray(attribute) ? attribute[0] : attribute;
