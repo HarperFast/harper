@@ -8661,7 +8661,8 @@ export function makeTable(options): TableResourceClass {
 					};
 					let selected: any;
 					try {
-						if (typeof select === 'string') {
+						// a single selection object is the scalar form, like a string
+						if (typeof select === 'string' || (!Array.isArray(select) && select?.name !== undefined)) {
 							selectAttribute(select, (value) => {
 								selected = value;
 							});
@@ -11678,18 +11679,19 @@ export function makeTable(options): TableResourceClass {
 		return false;
 	}
 	function authorizeJsonSelection(property: any, user: User, checkPermission: any, context: Context): any {
-		const select = Array.isArray(property.select) ? property.select : [property.select];
+		const scalar = !Array.isArray(property.select);
 		const permissionTarget = { checkPermission } as any;
 		const authorized = [];
-		for (const entry of select) {
+		for (const entry of scalar ? [property.select] : property.select) {
 			const name = entry?.name ?? entry;
 			if (propertyResolvers[name]?.definition?.tableClass && TableResource._readDenial([name], user, permissionTarget))
 				continue;
 			const result = TableResource._authorizeRelatedSelection(entry, user, checkPermission, context);
 			if (result !== false) authorized.push(result);
 		}
-		if (Array.isArray(property.select)) property.select = authorized;
-		else if (authorized[0] !== property.select) property.select = authorized;
+		if (!scalar) property.select = authorized;
+		else if (authorized.length === 0) return false;
+		else property.select = authorized[0];
 		return property;
 	}
 	function assertRecordField(name: unknown): void {

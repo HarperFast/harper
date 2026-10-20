@@ -241,6 +241,18 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			);
 			strictEqual(restricted.status, 200, JSON.stringify(restricted.body));
 			deepStrictEqual(restricted.body, [{ id: EMP.id, payload: { dept: { id: DEPT.id, name: DEPT.name } } }]);
+			for (const [as, dept] of [
+				['full', DEPT],
+				['restricted', { id: DEPT.id, name: DEPT.name }],
+			] as const) {
+				const scalar = await byConditions(
+					as,
+					[{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }],
+					{ get_attributes: ['id', { name: 'payload', select: 'dept' }] }
+				);
+				strictEqual(scalar.status, 200, `${as}: ${JSON.stringify(scalar.body)}`);
+				deepStrictEqual(scalar.body, [{ id: EMP.id, payload: dept }], as);
+			}
 		});
 	});
 
