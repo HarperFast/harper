@@ -158,6 +158,21 @@ describe('Replication confirmation failure after a local commit', () => {
 		);
 	});
 
+	it('keeps a nested committed outcome after aborting an empty read-only scope', async () => {
+		const id = nextId();
+		registerConfirmation(() => Promise.reject(new ServerError('Nested peer timeout', 504)));
+		await assert.rejects(
+			transaction({}, async (scope) => {
+				await Second.get(`absent-${id}`);
+				assert.strictEqual(scope.hasPendingWrites(), false);
+				scope.abort();
+				await confirmedWrite(id);
+			}),
+			(error) => error.replicationUnconfirmed === true && error.retryable === false
+		);
+		assert.strictEqual((await First.get(id)).id, id);
+	});
+
 	for (const sourceFailure of [false, true]) {
 		it(`rolls back when outcome metadata throws in ${sourceFailure ? 'pre-commit source work' : 'the callback'}`, async () => {
 			const id = nextId();

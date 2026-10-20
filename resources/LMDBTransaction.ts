@@ -434,7 +434,12 @@ export class LMDBTransaction extends DatabaseTransaction {
 	}
 
 	abort(retainReadTransaction = false, cascade = true): void {
-		if (!this.saveCommits && !this.nativeCommitSubmitted && this.writes.some((write) => write))
+		if (
+			this.writes.length > 0 &&
+			!this.saveCommits &&
+			!this.nativeCommitSubmitted &&
+			this.writes.some((write) => write)
+		)
 			(this.root ?? this).writesRolledBack = true;
 		const next = cascade ? this.next : undefined;
 		if (cascade && !retainReadTransaction) this.next = null;

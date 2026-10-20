@@ -1668,6 +1668,25 @@ export class DatabaseTransaction implements Transaction {
 		return false;
 	}
 
+	private hasWriteToDiscard(
+		nativeTxn: RocksTransaction | null | undefined,
+		targetTransaction: RocksTransaction | undefined,
+		hasSiblingInFlight: boolean,
+		preserveActiveWrites: boolean
+	): boolean {
+		for (let i = 0; i < this.writes.length; i++) {
+			const write = this.writes[i];
+			if (
+				!write ||
+				(preserveActiveWrites && this.isWriteOwnedByActiveCommit(write, targetTransaction, hasSiblingInFlight, true))
+			)
+				continue;
+			const owner = write.stagedOn ?? this.activeCommitHandle ?? nativeTxn;
+			if (!this.isHandleCommitted(owner) && !hasDurableLog(owner)) return true;
+		}
+		return false;
+	}
+
 	private hasSavedWriteForHandle(transaction: RocksTransaction, isImmediateCommit: boolean): boolean {
 		for (let i = 0; i < this.writes.length; i++) {
 			const write = this.writes[i];
@@ -3424,17 +3443,10 @@ export class DatabaseTransaction implements Transaction {
 		const preserveNonImmediateActiveWrites =
 			isImmediateTarget || this.hasWriteOwnedByActiveCommit(targetTransaction, hasSiblingInFlight, true, true);
 		if (
+			this.writes.length > 0 &&
 			!isImmediateTarget &&
 			!this.saveCommits &&
-			this.writes.some((write) => {
-				if (
-					!write ||
-					(preserveActiveWrites && this.isWriteOwnedByActiveCommit(write, targetTransaction, hasSiblingInFlight, true))
-				)
-					return false;
-				const owner = write.stagedOn ?? this.activeCommitHandle ?? nativeTxn;
-				return !this.isHandleCommitted(owner) && !hasDurableLog(owner);
-			})
+			this.hasWriteToDiscard(nativeTxn, targetTransaction, hasSiblingInFlight, preserveActiveWrites)
 		)
 			(this.root ?? this).writesRolledBack = true;
 		const cascadeNext = cascade && !preserveNonImmediateActiveWrites;
