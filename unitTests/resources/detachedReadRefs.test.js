@@ -150,18 +150,26 @@ describe('harper#3308 read references against a detached handle', function () {
 	});
 
 	rocksOnly(
-		'abort() returns after the monitor force-releases a handle under open iterators (the issue’s suspected path)',
+		'after the monitor force-releases a handle under open iterators, their returns leave the next handle alone',
 		function () {
 			const { txn } = newTransaction();
 			txn.getReadTxn();
 			assert.ok(txn.useReadTxn());
 			assert.ok(txn.useReadTxn());
+			const staleGeneration = txn.readTxnGeneration;
 			assert.equal(txn.readTxnsUsed, 3);
 			txn.releaseReadTxn();
 			assert.equal(txn.transaction, null);
 			assert.equal(txn.readTxnsUsed, 0);
+			const freshHandle = txn.getReadTxn();
+			assert.ok(freshHandle, 'premise: the OPEN transaction acquires a new handle');
+			txn.doneReadTxn(staleGeneration);
+			txn.doneReadTxn(staleGeneration);
+			assert.equal(txn.transaction, freshHandle, 'the stale returns must not release the new handle');
+			assert.equal(txn.readTxnsUsed, 1);
 			boundDrain(txn);
 			txn.abort(true);
+			assert.equal(txn.transaction, null);
 			assert.equal(txn.readTxnsUsed, 0);
 		}
 	);
@@ -191,12 +199,12 @@ describe('harper#3308 read references against a detached handle', function () {
 			await txn.commit();
 			assert.equal(txn.open, TRANSACTION_STATE.OPEN, 'premise: the scope reopened');
 			const staleGeneration = txn.readTxnGeneration;
-			// A write first: save() attaches the new handle, before any read does.
+			// A put before any search acquires the new handle on the write's read-before-write path.
 			await Refs.put({ id: 'second-generation', v: 1 }, context);
 			freshHandle = txn.transaction;
 			freshGeneration = txn.readTxnGeneration;
 			assert.ok(freshHandle && freshHandle !== staleHandle, 'premise: a new native handle');
-			assert.notEqual(freshGeneration, staleGeneration, 'a write-first handle is a new generation too');
+			assert.notEqual(freshGeneration, staleGeneration, 'a handle acquired by a put is a new generation too');
 			const fresh = (await Refs.search({ conditions: [] }, context))[Symbol.asyncIterator]();
 			await fresh.next();
 			assert.equal(txn.transaction, freshHandle);
