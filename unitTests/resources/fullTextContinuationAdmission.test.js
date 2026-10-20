@@ -15,6 +15,7 @@ const {
 	releaseFullTextContinuation,
 	fullTextContinuationDeadline,
 	requestFullTextContinuationOwner,
+	fullTextContinuationRequest,
 } = require('#src/resources/indexes/fullTextContinuation');
 const { waitFor } = require('../waitFor');
 const { Worker } = require('node:worker_threads');
@@ -206,6 +207,30 @@ describe('full-text process-wide continuation admission', () => {
 			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
 		}
 	});
+	it('settles malformed requests after their originating worker exits', async () => {
+		let worker;
+		try {
+			worker = startWorker(require.resolve('./fixtures/fullTextContinuationAdmissionWorker.js'), {
+				name: 'full-text-malformed-reply-test',
+				autoRestart: false,
+				workerIndex: 0,
+				threadCount: 1,
+			});
+			assert.strictEqual((await response(worker)).ready, true);
+			const sender = worker.threadId;
+			await terminateWorker(worker);
+			for (const command of [undefined, null])
+				await assert.doesNotReject(
+					fullTextContinuationRequest(
+						{ message: { id: 'a'.repeat(32), originator: sender, deadline: 0n, command } },
+						sender
+					)
+				);
+		} finally {
+			await terminateWorker(worker);
+		}
+	});
+
 	it('routes immutable native snapshot reads, resume, seal and close to another worker', async function () {
 		if (!(await supportsPublishedFullTextBinding())) this.skip();
 		const path = await mkdtemp(join(__dirname, '../envDir/', String(process.pid), 'continuation-worker-'));

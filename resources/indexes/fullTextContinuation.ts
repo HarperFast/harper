@@ -168,12 +168,12 @@ export async function fullTextContinuationRequest(event: { message?: Request }, 
 	try {
 		if (
 			!sendToThread(sender, { type: ITC_EVENT_TYPES.FULL_TEXT_CONTINUATION_RESPONSE, message: reply }) &&
-			message.command.operation === 'admit' &&
+			message.command?.operation === 'admit' &&
 			reply.value
 		)
 			release((reply.value as FullTextCursorClaim).id, sender);
 	} catch {
-		if (message.command.operation === 'admit' && reply.value) release((reply.value as FullTextCursorClaim).id, sender);
+		if (message.command?.operation === 'admit' && reply.value) release((reply.value as FullTextCursorClaim).id, sender);
 	}
 }
 

@@ -20,8 +20,9 @@ describe('full-text continuation clock', () => {
 			if (loaded.some(path => /rocksdb-js|fullTextContinuation[./]/.test(path))) process.exitCode = 1;
 		`,
 			],
-			{ cwd: require('node:path').resolve(__dirname, '../..'), encoding: 'utf8' }
+			{ cwd: require('node:path').resolve(__dirname, '../..'), encoding: 'utf8', timeout: 10000 }
 		);
+		assert.ifError(child.error);
 		assert.strictEqual(child.status, 0, child.stderr);
 	});
 
