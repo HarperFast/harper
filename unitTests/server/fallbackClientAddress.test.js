@@ -36,6 +36,10 @@ describe('set_network_access caller address', () => {
 			);
 			assert.strictEqual(clientAddressOf({ raw: {}, headers: {} }), null);
 		});
+		it('never reads the header on a Node request, where nothing strips it from client input', () => {
+			const headers = { 'x-harper-internal-client-address': '10.1.2.3' };
+			assert.strictEqual(clientAddressOf({ raw: nodeRequest(undefined, { isPerThreadSocket: true }), headers }), null);
+		});
 	});
 
 	describe('Bun injection into the real operation', () => {

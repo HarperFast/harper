@@ -1,7 +1,7 @@
 // Rows reach peers through system-table replication, so these operations do not call replicateOperation.
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { BlockList, SocketAddress, isIP } from 'node:net';
+import { isIP } from 'node:net';
 import Joi from 'joi';
 import { getDatabases, onUpdatedTable } from '../resources/databases.ts';
 import { contextStorage } from '../resources/transaction.ts';
@@ -18,9 +18,62 @@ const logger = loggerWithTag('network-access');
 const NETWORK_ACCESS_SCOPES = ['operations'] as const;
 type NetworkAccessScope = (typeof NETWORK_ACCESS_SCOPES)[number];
 const MAX_ALLOW_ENTRIES = 1000;
-const MAPPED_IPV4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/;
 const SUBSCRIPTION_RETRY_MS = 1000;
 let reconcileIntervalMs = 60_000;
+
+interface ParsedAddress {
+	family: 4 | 6;
+	bits: bigint;
+}
+
+// Parsed and formatted here rather than with node:net's SocketAddress, which Bun does not canonicalize.
+function parseAddress(address: string): ParsedAddress | undefined {
+	const family = address.includes('%') ? 0 : isIP(address);
+	if (family === 4)
+		return { family, bits: address.split('.').reduce((bits, octet) => (bits << 8n) | BigInt(octet), 0n) };
+	if (family !== 6) return undefined;
+	let text = address;
+	const lastColon = text.lastIndexOf(':');
+	if (text.includes('.', lastColon)) {
+		const [a, b, c, d] = text
+			.slice(lastColon + 1)
+			.split('.')
+			.map(Number);
+		text = `${text.slice(0, lastColon + 1)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+	}
+	const groups = (part: string) => (part ? part.split(':') : []);
+	const [head, tail] = text.split('::');
+	const hextets =
+		tail === undefined
+			? groups(head)
+			: [...groups(head), ...Array(8 - groups(head).length - groups(tail).length).fill('0'), ...groups(tail)];
+	return { family, bits: hextets.reduce((bits, hextet) => (bits << 16n) | BigInt(parseInt(hextet, 16)), 0n) };
+}
+
+/** An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) as the IPv4 address it maps. */
+function unmapped(address: ParsedAddress): ParsedAddress {
+	return address.family === 6 && address.bits >> 32n === 0xffffn
+		? { family: 4, bits: address.bits & 0xffffffffn }
+		: address;
+}
+
+/** RFC 5952: lowercase, no leading zeros, the longest run of two or more zero groups as `::`. */
+function formatAddress({ family, bits }: ParsedAddress): string {
+	if (family === 4) return [24n, 16n, 8n, 0n].map((shift) => Number((bits >> shift) & 255n)).join('.');
+	if (bits >> 32n === 0xffffn) return `::ffff:${formatAddress({ family: 4, bits: bits & 0xffffffffn })}`;
+	const hextets = [112n, 96n, 80n, 64n, 48n, 32n, 16n, 0n].map((shift) => Number((bits >> shift) & 0xffffn));
+	let runStart = -1;
+	let runLength = 1;
+	for (let start = 0; start < 8;) {
+		let end = start;
+		while (end < 8 && hextets[end] === 0) end++;
+		if (end - start > runLength) [runStart, runLength] = [start, end - start];
+		start = end + 1;
+	}
+	const hex = hextets.map((hextet) => hextet.toString(16));
+	if (runStart === -1) return hex.join(':');
+	return `${hex.slice(0, runStart).join(':')}::${hex.slice(runStart + runLength).join(':')}`;
+}
 
 /**
  * `<ip>` or `<ip>/<prefix>`, returned as `<canonical ip>/<prefix>` (a bare IP is a /32 or /128). Host
@@ -30,11 +83,10 @@ let reconcileIntervalMs = 60_000;
 export function normalizeCidr(entry: unknown): string {
 	if (typeof entry !== 'string') throw new ClientError(`Network access entry ${JSON.stringify(entry)} is not a string`);
 	const slash = entry.indexOf('/');
-	const address = slash === -1 ? entry : entry.slice(0, slash);
 	const prefixText = slash === -1 ? undefined : entry.slice(slash + 1);
-	const family = address.includes('%') ? 0 : isIP(address);
-	if (family === 0) throw new ClientError(`'${entry}' is not an IPv4 or IPv6 address or CIDR`);
-	const maxPrefix = family === 4 ? 32 : 128;
+	let network = parseAddress(slash === -1 ? entry : entry.slice(0, slash));
+	if (!network) throw new ClientError(`'${entry}' is not an IPv4 or IPv6 address or CIDR`);
+	const maxPrefix = network.family === 4 ? 32 : 128;
 	let prefix = maxPrefix;
 	if (prefixText !== undefined) {
 		prefix = /^\d{1,3}$/.test(prefixText) ? Number(prefixText) : NaN;
@@ -42,10 +94,11 @@ export function normalizeCidr(entry: unknown): string {
 			throw new ClientError(`'${entry}' has an invalid prefix length; expected 0-${maxPrefix}`);
 		}
 	}
-	const canonical = new SocketAddress({ address, family: family === 4 ? 'ipv4' : 'ipv6' }).address;
-	const mapped = MAPPED_IPV4.exec(canonical);
-	if (mapped && prefix >= 96) return `${mapped[1]}/${prefix - 96}`;
-	return `${canonical}/${prefix}`;
+	if (network.family === 6 && prefix >= 96 && unmapped(network).family === 4) {
+		network = unmapped(network);
+		prefix -= 96;
+	}
+	return `${formatAddress(network)}/${prefix}`;
 }
 
 export function normalizeAllowList(allow: unknown[]): string[] {
@@ -54,25 +107,19 @@ export function normalizeAllowList(allow: unknown[]): string[] {
 
 /**
  * Matches only entries of the address's own family, after unmapping an IPv4-mapped address, as the proxy
- * does. `BlockList` alone would also admit an IPv4 address to an IPv6 rule such as `::/0`.
+ * does; an IPv6 rule such as `::/0` never admits an IPv4 address.
  */
 export function addressIsAllowed(address: string, allow: string[]): boolean {
-	let family = isIP(address);
-	if (family === 0) return false;
-	if (family === 6) {
-		const mapped = MAPPED_IPV4.exec(new SocketAddress({ address, family: 'ipv6' }).address);
-		if (mapped) {
-			address = mapped[1];
-			family = 4;
-		}
-	}
-	const type = family === 4 ? 'ipv4' : 'ipv6';
-	const blockList = new BlockList();
-	for (const cidr of allow) {
-		const [network, prefix] = cidr.split('/');
-		if (isIP(network) === family) blockList.addSubnet(network, Number(prefix), type);
-	}
-	return blockList.check(address, type);
+	const parsed = parseAddress(address);
+	if (!parsed) return false;
+	const caller = unmapped(parsed);
+	return allow.some((cidr) => {
+		const [networkText, prefixText] = cidr.split('/');
+		const network = parseAddress(networkText);
+		if (network?.family !== caller.family) return false;
+		const hostBits = BigInt((caller.family === 4 ? 32 : 128) - Number(prefixText));
+		return caller.bits >> hostBits === network.bits >> hostBits;
+	});
 }
 
 function requireSuperUser(req: any): void {
