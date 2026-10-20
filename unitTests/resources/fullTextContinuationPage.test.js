@@ -7,6 +7,18 @@ const target = { continuation: true, limit: 3 };
 const hash = (identity) => new FullTextContinuationPage(target, identity).queryHash;
 
 describe('full-text visible continuation pages', () => {
+	it('accepts a zero REST offset and rejects skipping within a continuation', () => {
+		const { RequestTarget } = require('#src/resources/RequestTarget');
+		const query = new RequestTarget('/?limit(0,25)&continuation()');
+		assert.strictEqual(query.offset, 0);
+		assert.strictEqual(query.limit, 25);
+		assert.doesNotThrow(() => new FullTextContinuationPage(query, {}));
+		assert.throws(
+			() => new FullTextContinuationPage(new RequestTarget('/?limit(1,25)&continuation()'), {}),
+			(error) => error.statusCode === 400
+		);
+	});
+
 	it('binds meaningful typed values while ignoring object property insertion order', () => {
 		assert.strictEqual(hash({ query: 'widget', select: ['id'] }), hash({ select: ['id'], query: 'widget' }));
 		const values = [
