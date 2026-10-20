@@ -198,6 +198,10 @@ export class FullTextQueryIndex {
 		}
 	}
 
+	get configurationIdentity(): string {
+		return `${this.#nativeOptions.generation}:${this.#definitionSnapshot}`;
+	}
+
 	updateDefinition(definition: FullTextDefinition): void {
 		const snapshot = queryDefinitionSnapshot(definition);
 		if (snapshot === this.#definitionSnapshot) return;

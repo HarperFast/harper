@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import type { FullTextDefinition } from '../fullTextSchema.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import { type FullTextSearchLimits, resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
 import { fullTextContinuationDeadline } from './fullTextContinuationClock.ts';
@@ -71,17 +70,6 @@ export class FullTextContinuationPage {
 		});
 		return this.records as FullTextSearchPage;
 	}
-}
-
-const definitionIdentities = new WeakMap<readonly FullTextDefinition[], string>();
-
-export function fullTextContinuationDefinitionIdentity(definitions: readonly FullTextDefinition[]): string {
-	let identity = definitionIdentities.get(definitions);
-	if (identity === undefined) {
-		identity = identityHash(definitions);
-		definitionIdentities.set(definitions, identity);
-	}
-	return identity;
 }
 
 function identityHash(value: unknown): string {

@@ -8,41 +8,19 @@ const {
 	fullTextContinuationDeadline,
 } = require('#src/resources/indexes/fullTextContinuation');
 const claims = [];
-let writer, reader, releaseGate, restoreReleasePolicy, releaseFailure;
+let writer, reader, releaseGate, restoreReleasePolicy, releaseFailure, sharedProduct;
 onMessageByType('full-text-admission-test-command', async (event) => {
 	try {
 		if (event.message.operation === 'table-terminal-release') {
-			const { setupTestDBPath } = require('../../testUtils');
-			const { table } = require('#src/resources/databases');
 			const { fullTextDerivedIndexReadiness } = require('#src/resources/derivedIndexes');
 			const { fullTextContinuationOwner } = require('#src/resources/indexes/fullTextContinuationOwner');
 			const env = require('#src/utility/environment/environmentManager');
 			const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 			const { waitFor } = require('../../waitFor');
-			setupTestDBPath();
 			const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
 			let Product, leaseId, value;
 			try {
-				Product = table({
-					database: event.message.database,
-					table: 'Product',
-					audit: true,
-					attributes: [
-						{ name: 'id', type: 'ID', isPrimaryKey: true },
-						{ name: 'title', type: 'String' },
-					],
-					fullTextIndexes: [
-						{
-							name: 'catalogSearch',
-							fields: [{ name: 'title', weight: 1 }],
-							analyzer: 'english@2',
-							stopWords: true,
-							positions: true,
-							surfaceTerms: true,
-							synonyms: [],
-						},
-					],
-				});
+				Product = createProduct(event.message.database);
 				await Product.put('one', { title: 'widget' });
 				await Product.put('two', { title: 'widget' });
 				await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 10000);
@@ -76,6 +54,60 @@ onMessageByType('full-text-admission-test-command', async (event) => {
 				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
 				if (leaseId) await releaseFullTextContinuation(leaseId);
 				await Product?.derivedIndexRuntime?.close();
+			}
+			parentPort.postMessage({ type: 'full-text-admission-test-response', message: { originator: threadId, value } });
+			return;
+		} else if (event.message.operation?.startsWith('table-identity-')) {
+			const { waitFor } = require('../../waitFor');
+			let value;
+			if (event.message.operation === 'table-identity-initialize') {
+				sharedProduct = createProduct(event.message.database);
+				const { fullTextDerivedIndexReadiness } = require('#src/resources/derivedIndexes');
+				await waitFor(() => fullTextDerivedIndexReadiness(sharedProduct, 'catalogSearch').state === 'ready', 10000);
+				value = { initialized: true };
+			} else if (event.message.operation === 'table-identity-seed') {
+				for (const id of ['one', 'two', 'three']) await sharedProduct.put(id, { title: 'widget' });
+				await waitFor(async () => {
+					let count = 0;
+					for await (const _record of sharedProduct.search({
+						conditions: [
+							{
+								attribute: 'catalogSearch',
+								comparator: 'matches',
+								value: 'widget',
+								maxIndexLagMilliseconds: 0,
+								waitForIndexMilliseconds: 5000,
+							},
+						],
+						limit: 3,
+					}))
+						count++;
+					return count === 3;
+				}, 10000);
+				value = { seeded: true };
+			} else if (event.message.operation === 'table-identity-update') {
+				sharedProduct.fullTextIndexes = sharedProduct.fullTextIndexes.map((definition) => ({
+					...definition,
+					fields: definition.fields.map((field) => ({ ...field, ...event.message.field })),
+					...(event.message.highlighting ? { highlighting: event.message.highlighting } : {}),
+				}));
+				sharedProduct.derivedIndexRuntime.matchesCurrent();
+				value = {
+					generation: sharedProduct.fullTextIndexGenerations.catalogSearch,
+					identity: sharedProduct.fullTextQueryIndexes.catalogSearch.customIndex.configurationIdentity,
+				};
+			} else if (event.message.operation === 'table-identity-search') {
+				const page = await sharedProduct.search(event.message.query);
+				value = {
+					ids: page.map(({ id }) => id),
+					continuation: page.continuation,
+					complete: page.complete,
+					generation: sharedProduct.fullTextIndexGenerations.catalogSearch,
+					identity: sharedProduct.fullTextQueryIndexes.catalogSearch.customIndex.configurationIdentity,
+				};
+			} else if (event.message.operation === 'table-identity-shutdown') {
+				await sharedProduct?.derivedIndexRuntime?.close();
+				value = { closed: true };
 			}
 			parentPort.postMessage({ type: 'full-text-admission-test-response', message: { originator: threadId, value } });
 			return;
@@ -181,3 +213,29 @@ onMessageByType('full-text-admission-test-command', async (event) => {
 });
 parentPort.ref();
 parentPort.postMessage({ type: 'full-text-admission-test-response', message: { originator: threadId, ready: true } });
+
+function createProduct(database) {
+	const { setupTestDBPath } = require('../../testUtils');
+	const { table } = require('#src/resources/databases');
+	setupTestDBPath();
+	return table({
+		database,
+		table: 'Product',
+		audit: true,
+		attributes: [
+			{ name: 'id', type: 'ID', isPrimaryKey: true },
+			{ name: 'title', type: 'String' },
+		],
+		fullTextIndexes: [
+			{
+				name: 'catalogSearch',
+				fields: [{ name: 'title', weight: 1 }],
+				analyzer: 'english@2',
+				stopWords: true,
+				positions: true,
+				surfaceTerms: true,
+				synonyms: [],
+			},
+		],
+	});
+}

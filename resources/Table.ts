@@ -10,12 +10,12 @@ import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import {
 	FullTextContinuationPage,
-	fullTextContinuationDefinitionIdentity,
 	type FullTextSearchPage,
 	FULL_TEXT_CONTINUATION_PAGE,
 	FULL_TEXT_CONTINUATION_VERSION,
 } from './indexes/fullTextContinuationPage.ts';
 import { hasFullTextContinuationOptions } from './indexes/fullTextQueryProtocol.ts';
+import type { FullTextQueryIndex } from './indexes/fullTextQueryIndex.ts';
 import { performance } from 'node:perf_hooks';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping, getNodeNameForId } from './nodeIdMapping.ts';
@@ -6146,7 +6146,11 @@ export function makeTable(options): TableResourceClass {
 					operator: operator || 'and',
 					select: target.select,
 					user: (context as any)?.user?.username ?? null,
-					definitions: fullTextContinuationDefinitionIdentity(TableResource.fullTextIndexes),
+					definitions: TableResource.fullTextIndexes.map(({ name }) => [
+						name,
+						(TableResource.fullTextQueryIndexes[name]?.customIndex as FullTextQueryIndex | undefined)
+							?.configurationIdentity ?? null,
+					]),
 				});
 				(target as any)[FULL_TEXT_CONTINUATION_PAGE] = continuationPage;
 			}

@@ -76,6 +76,91 @@ describe('full-text process-wide continuation admission', () => {
 		}
 	});
 
+	it('rejects query-definition skew on a different worker while the original owner stays live', async function () {
+		this.timeout(30000);
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !(await supportsPublishedFullTextBinding())) this.skip();
+		const database = `fulltext-query-identity-${process.pid}-${Date.now()}`;
+		require('#src/resources/databases').database({ database });
+		let owner, requester, token;
+		const query = {
+			conditions: [
+				{
+					attribute: 'catalogSearch',
+					comparator: 'matches',
+					value: 'widget',
+					maxIndexLagMilliseconds: 0,
+					waitForIndexMilliseconds: 5000,
+				},
+			],
+			select: ['id'],
+			limit: 1,
+		};
+		try {
+			for (const workerIndex of [0, 1]) {
+				const worker = startWorker(require.resolve('./fixtures/fullTextContinuationAdmissionWorker.js'), {
+					name: `full-text-query-identity-${workerIndex}`,
+					autoRestart: false,
+					workerIndex,
+					threadCount: 2,
+				});
+				if (workerIndex === 0) owner = worker;
+				else requester = worker;
+				assert.strictEqual((await response(worker)).ready, true);
+				const initialized = await response(worker, { operation: 'table-identity-initialize', database });
+				assert.deepStrictEqual(initialized.value, { initialized: true }, JSON.stringify(initialized));
+			}
+			const seeded = await response(owner, 'table-identity-seed', 15000);
+			assert.strictEqual(seeded.value?.seeded, true, JSON.stringify(seeded));
+			const opened = await response(owner, {
+				operation: 'table-identity-search',
+				query: { ...query, continuation: true },
+			});
+			assert(opened.value?.continuation, JSON.stringify(opened));
+			token = opened.value.continuation;
+			const resumed = await response(requester, {
+				operation: 'table-identity-search',
+				query: { ...query, continuation: token },
+			});
+			assert.strictEqual(resumed.value?.ids.length, 1, JSON.stringify(resumed));
+			assert.strictEqual(resumed.value.identity, opened.value.identity);
+			for (const update of [
+				{ field: { weight: 9 } },
+				{ field: { weight: 1, highlight: true } },
+				{ field: { weight: 1, highlight: true }, highlighting: { maxFragments: 2, fragmentLength: 80 } },
+			]) {
+				const updated = await response(requester, { operation: 'table-identity-update', ...update });
+				assert.strictEqual(updated.value?.generation, opened.value.generation, JSON.stringify(updated));
+				assert.notStrictEqual(updated.value.identity, opened.value.identity);
+				const rejected = await response(requester, {
+					operation: 'table-identity-search',
+					query: { ...query, continuation: token },
+				});
+				assert.strictEqual(rejected.status, 410, JSON.stringify(rejected));
+				const replay = await response(owner, {
+					operation: 'table-identity-search',
+					query: { ...query, continuation: token },
+				});
+				assert.deepStrictEqual(replay.value?.ids, resumed.value.ids, JSON.stringify(replay));
+			}
+			const closed = await response(owner, {
+				operation: 'table-identity-search',
+				query: { ...query, continuation: token, closeContinuation: true },
+			});
+			assert.strictEqual(closed.value?.complete, true, JSON.stringify(closed));
+			token = undefined;
+		} finally {
+			if (token && owner?.threadId >= 0)
+				await response(owner, {
+					operation: 'table-identity-search',
+					query: { ...query, continuation: token, closeContinuation: true },
+				}).catch(() => {});
+			for (const worker of [requester, owner]) {
+				if (worker?.threadId >= 0) await response(worker, 'table-identity-shutdown').catch(() => {});
+				await terminateWorker(worker);
+			}
+		}
+	});
+
 	it('shares capacity across workers and releases claims when the owning worker exits', async () => {
 		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
 		env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { maxCursors: 2 });
