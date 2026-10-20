@@ -1118,7 +1118,7 @@ A to-many relationship resolves to an array of records; depending on access patt
 
 :::note Pending release
 
-Pending a 5.3 patch release; see [Honor nested relationship filters and pagination](https://github.com/HarperFast/harper/pull/3279).
+Targeted for v5.4.0; not released yet. See [Honor nested relationship filters and pagination](https://github.com/HarperFast/harper/pull/3279).
 
 :::
 

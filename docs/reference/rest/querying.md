@@ -279,7 +279,7 @@ Selecting a relationship without an outer dot-syntax filter on it behaves as a L
 
 :::note Pending release
 
-Pending a 5.3 patch release; see [Honor nested relationship filters and pagination](https://github.com/HarperFast/harper/pull/3279).
+Targeted for v5.4.0; not released yet. See [Honor nested relationship filters and pagination](https://github.com/HarperFast/harper/pull/3279).
 
 :::
 
