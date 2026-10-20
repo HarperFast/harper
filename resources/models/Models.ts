@@ -23,6 +23,11 @@ import { populationKey, populationRank } from './calibration.ts';
 import { safeErrorMessage } from '../scheduler/engine.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { getRouter, registerRouter as registerRouterImpl } from './routing.ts';
+import {
+	backendStatus,
+	registerProcessBackend as registerProcessBackendImpl,
+	takePartialUsage,
+} from './processBackend.ts';
 import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelCallRecord } from './analyticsTable.ts';
 import { recordAction } from '../analytics/write.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
@@ -51,6 +56,7 @@ import {
 } from './decisionStore.ts';
 import type {
 	AccountingContext,
+	BackendStatus,
 	ModelCapabilities,
 	BackendOpts,
 	Capability,
@@ -74,6 +80,8 @@ import type {
 	ModelRouter,
 	ModelCallResult,
 	Models as ModelsContract,
+	ProcessBackendFactory,
+	ProcessBackendOptions,
 	ScoreChoicesOpts,
 	OutcomeReport,
 	TokenUsage,
@@ -136,6 +144,21 @@ export class Models implements ModelsContract {
 		return defineBackend(spec);
 	}
 
+	/** Register a process-wide backend; see resources/models/DESIGN.md. */
+	registerProcessBackend(
+		kind: ModelKind,
+		id: string,
+		factory: ProcessBackendFactory,
+		options?: ProcessBackendOptions
+	): void {
+		registerProcessBackendImpl(kind, id, factory, options);
+	}
+
+	/** Read this thread's backend status; see resources/models/DESIGN.md, “State”. */
+	backendStatus(kind: ModelKind, id: string): BackendStatus | undefined {
+		return backendStatus(kind, id);
+	}
+
 	/**
 	 * Replace the model selection policy with a custom router (#1326). Reachable as
 	 * `scope.models.registerRouter(...)` / `models.registerRouter(...)`; namespaced under
@@ -189,7 +212,16 @@ export class Models implements ModelsContract {
 				this.#record(backend, 'embed', opts.model, accounting, undefined, result, attemptStart);
 				return { vectors: result.output, usage: result.usage };
 			} catch (err) {
-				this.#recordFailure(backend, 'embed', opts.model, accounting, undefined, attemptStart, err);
+				this.#recordFailure(
+					backend,
+					'embed',
+					opts.model,
+					accounting,
+					undefined,
+					attemptStart,
+					err,
+					takePartialUsage(err)
+				);
 				if (!hasError) {
 					firstError = err;
 					hasError = true;
@@ -669,7 +701,7 @@ function isChoiceScoringUnsupported(err: unknown): boolean {
  * Tokens a declined scoring call consumed (`ChoiceScoringUnsupportedError.usage`), finite counts
  * only: a completion that came back without log-probabilities was billed, so they land on that
  * attempt's failure row and in the token metric while the call-count metric stays a count of
- * successes. No other error's `usage` is read, and no other method's failure row carries usage.
+ * successes.
  */
 function usageFromError(err: unknown): TokenUsage | undefined {
 	if (!isChoiceScoringUnsupported(err)) return undefined;
@@ -871,6 +903,8 @@ function classifyError(err: unknown): string {
 		if (e.name === 'ChoiceScoringUnsupportedError') return 'scoring_unsupported';
 		if (e.name === 'ModelBackendNotFoundError') return 'backend_not_found';
 		if (e.name === 'ModelPendingNotSupportedError') return 'pending_unsupported';
+		if (e.name === 'ModelBackendUnavailableError') return 'backend_unavailable';
+		if (e.name === 'ModelBackendBusyError') return 'backend_busy';
 	}
 	return 'backend_error';
 }

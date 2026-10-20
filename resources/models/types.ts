@@ -32,6 +32,15 @@ export interface Models {
 	registerBackend(kind: ModelKind, id: string, backend: ModelBackend): void;
 	/** Build a `ModelBackend` from a spec; pair with `registerBackend`. See #1325. */
 	defineBackend(spec: DefineBackendSpec): ModelBackend;
+	/** Opt-in process-wide backend registration. See resources/models/DESIGN.md. */
+	registerProcessBackend(
+		kind: ModelKind,
+		id: string,
+		factory: ProcessBackendFactory,
+		options?: ProcessBackendOptions
+	): void;
+	/** Backend status; see resources/models/DESIGN.md, “State”. */
+	backendStatus(kind: ModelKind, id: string): BackendStatus | undefined;
 	/** Replace the model selection policy with a custom router. See #1326. */
 	registerRouter(router: ModelRouter): void;
 }
@@ -148,6 +157,48 @@ export interface DefineBackendSpec {
 	/** The most choices one `scoreChoices` call accepts, a positive integer. Default: no limit. */
 	maxScoredChoices?: number;
 }
+
+/** Factory contract: see resources/models/DESIGN.md, “One live instance”. */
+export type ProcessBackendFactory = (context: { kind: ModelKind; logicalName: string; signal: AbortSignal }) => unknown;
+
+export interface ProcessBackendOptions {
+	/** Concurrent backend calls. Default 1. */
+	concurrency?: number;
+	/** Queue and caller wait limit. Default 256. */
+	maxPending?: number;
+	/** Embedding batch input limit. Unset by default. See resources/models/DESIGN.md, “Load”. */
+	maxBatchInputs?: number;
+	/** Unplanned owner losses allowed per worker generation. Default 1. */
+	maxRestarts?: number;
+	/** Caller-side timer for waiting for an owner, in milliseconds. Default 30000. */
+	ownerWaitMs?: number;
+	/** Caller-side timeout in milliseconds. Unset by default. */
+	timeoutMs?: number;
+}
+
+/** Reasons reported by process-wide backend calls or status; see resources/models/DESIGN.md. */
+export type ModelBackendUnavailableReason =
+	'owner-exited' | 'start-failed' | 'failed' | 'no-owner' | 'moved' | 'not-owner' | 'timeout' | 'dispose-failed';
+
+/** Status contract: see resources/models/DESIGN.md, “State”. */
+export type BackendStatus =
+	| { scope: 'thread'; state: 'ready' }
+	| {
+			scope: 'process';
+			state: 'starting' | 'ready' | 'failed';
+			/** The owner thread's id, while one is elected. */
+			owner?: number;
+			/** Thread held as draining; see resources/models/DESIGN.md, “Handover and election”. */
+			draining?: number;
+			restarts: number;
+			maxRestarts: number;
+			/** The worker generation (restart number) the restart budget belongs to. */
+			generation?: number;
+			/** Last loss or election reason; see resources/models/DESIGN.md. */
+			reason?: ModelBackendUnavailableReason;
+			/** Diagnostic error; see resources/models/DESIGN.md, “Failure”. */
+			error?: { name: string; message: string };
+	  };
 
 export type EmbedOpts = {
 	model?: string;
