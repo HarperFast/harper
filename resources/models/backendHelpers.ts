@@ -78,9 +78,11 @@ export function assignFiniteTokenCount(
 	key: 'promptTokens' | 'completionTokens' | 'embeddingTokens',
 	value: unknown
 ): void {
-	if (typeof value !== 'number') return;
-	if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) return;
-	usage[key] = value;
+	if (isTokenCount(value)) usage[key] = value;
+}
+
+export function isTokenCount(value: unknown): value is number {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0 && Number.isInteger(value);
 }
 
 // Body-read caps. A hostile or buggy upstream that returns a multi-GiB body
