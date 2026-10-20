@@ -1833,7 +1833,7 @@ export function makeTable(options): TableResourceClass {
 			return hasRelationships;
 		}
 		static _referencesRelationship(target: RequestTarget): boolean {
-			return hasRelationships && someRelationshipPath(target, () => true);
+			return hasRelationships && someRelationshipPath(target, undefined, false);
 		}
 		static _authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any {
 			const relatedTable = propertyResolvers[property?.name || property]?.definition?.tableClass;
@@ -3573,12 +3573,7 @@ export function makeTable(options): TableResourceClass {
 				(target as any)[FULL_TEXT_READ_PERMISSION] = tablePermission;
 			if (tablePermission?.read) {
 				if (tablePermission.isSuperUser) return true;
-				if (
-					hasRelationships &&
-					target &&
-					someRelationshipPath(target, (path) => TableResource._readDenial(path, user, target) !== undefined)
-				)
-					return false;
+				if (hasRelationships && target && someRelationshipPath(target, user, true)) return false;
 				const attribute_permissions = tablePermission.attribute_permissions;
 				const select = target?.select;
 				if (attribute_permissions?.length > 0 || (hasRelationships && select)) {
@@ -9122,25 +9117,25 @@ export function makeTable(options): TableResourceClass {
 			return table;
 		}
 	}
-	function relationshipPathMatches(attribute: any, test: (path: readonly any[]) => boolean): boolean {
+	// `denied`: whether the role is refused a relationship path, rather than whether there is one
+	function relationshipPathMatches(attribute: any, target: RequestTarget, user: User, denied: boolean): boolean {
 		const first = Array.isArray(attribute) ? attribute[0] : attribute;
-		return (
-			propertyResolvers[first]?.definition?.tableClass !== undefined &&
-			test(Array.isArray(attribute) ? attribute : [attribute])
-		);
+		if (propertyResolvers[first]?.definition?.tableClass === undefined) return false;
+		if (!denied) return true;
+		return TableResource._readDenial(Array.isArray(attribute) ? attribute : [attribute], user, target) !== undefined;
 	}
-	function someConditionPath(conditions: Iterable<any>, test: (path: readonly any[]) => boolean): boolean {
+	function someConditionPath(conditions: Iterable<any>, target: RequestTarget, user: User, denied: boolean): boolean {
 		for (const condition of conditions) {
 			if (
 				condition?.conditions
-					? someConditionPath(condition.conditions, test)
-					: relationshipPathMatches(condition?.[0] ?? condition?.attribute, test)
+					? someConditionPath(condition.conditions, target, user, denied)
+					: relationshipPathMatches(condition?.[0] ?? condition?.attribute, target, user, denied)
 			)
 				return true;
 		}
 		return false;
 	}
-	function someRelationshipPath(target: RequestTarget, test: (path: readonly any[]) => boolean): boolean {
+	function someRelationshipPath(target: RequestTarget, user: User, denied: boolean): boolean {
 		const conditions = target.conditions as any;
 		if (conditions == null) {
 			if (target.sort == null && (typeof target[Symbol.iterator] !== 'function' || (target as any).size === 0))
@@ -9149,9 +9144,9 @@ export function makeTable(options): TableResourceClass {
 			// search reads the conditions again
 			target.conditions = Array.from(conditions);
 		}
-		if (someConditionPath(searchConditions(target), test)) return true;
+		if (someConditionPath(searchConditions(target), target, user, denied)) return true;
 		for (let sort = typeof target.sort === 'object' && target.sort; sort; sort = sort.next) {
-			if (relationshipPathMatches(sort.attribute, test)) return true;
+			if (relationshipPathMatches(sort.attribute, target, user, denied)) return true;
 		}
 		return false;
 	}
