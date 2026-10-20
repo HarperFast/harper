@@ -148,6 +148,12 @@ GET and QUERY can return continuation pages. OPTIONS returns request metadata wi
 search. Other methods reject continuation parameters with 400.
 These headers are exposed to browser clients. Continuation responses use `Cache-Control: no-store`.
 Nonzero offsets, count requests, and other result ordering cannot be combined with continuation.
+The names `continuation` and `closeContinuation` are reserved REST options.
+
+These headers are added after serialization and stream startup; they do not guarantee delivery of
+the complete body. A later stream error can leave a 200 response with an incomplete body. An
+unfinished search can be retried with its previous token while that token remains valid. If no
+token was received on the first request, its cursor slot may stay occupied until expiry.
 
 Long IDs make tokens larger. Qualification with the released library produced tokens of about
 600 bytes for short IDs and nearly 8 KB near the supported ID limit. Review `http.maxHeaderSize`
