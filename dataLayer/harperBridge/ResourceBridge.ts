@@ -750,7 +750,6 @@ function getSelect({ get_attributes, hdb_user }: any, table: any) {
 			];
 		}
 		const permission = hdb_user?.role?.permission;
-		// verifyPerms has refused unreadable relationships; related records still need narrowing
 		if (
 			table.hasRelationships &&
 			permission &&

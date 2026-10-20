@@ -939,11 +939,7 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	return permsResponse.getPermsResponse();
 }
 
-/**
- * Authorization must check what the search handler executes: it prefers `select` and a condition's
- * `attribute` over `get_attributes` and `search_attribute`, and would trust a selection's
- * `checkPermission` when narrowing it.
- */
+// authorization must check what the search handler executes
 function normalizeSearchRequest(requestJson: any) {
 	if (requestJson.select !== undefined) {
 		requestJson.get_attributes = requestJson.select;
