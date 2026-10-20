@@ -7456,11 +7456,12 @@ export function makeTable(options): TableResourceClass {
 					if (!certified) return;
 					// an event handed to the queue and not yet taken holds its origin's boundary
 					const queued = new Map<number, number>();
-					// an event with no origin tag (a scan, or a replay path that does not tag) holds every boundary
+					// an event with no origin tag holds every boundary; a snapshot row (`fromScan`) is state, not a log
+					// position, and is never replayed, so it holds nothing
 					let untagged = Infinity;
 					for (const event of subscription.queue ?? []) {
 						const key = event?.localTime;
-						if (typeof key !== 'number') continue;
+						if (typeof key !== 'number' || event.fromScan) continue;
 						const origin = event[ORIGIN_ID];
 						if (typeof origin !== 'number') {
 							if (key < untagged) untagged = key;
@@ -7698,6 +7699,7 @@ export function makeTable(options): TableResourceClass {
 								if (thisId == null || isDescendantId(thisId, id)) {
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
 									if (event) {
+										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;
 										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 											// a prune while the consumer drains may reach what was read before the wait
@@ -7868,6 +7870,7 @@ export function makeTable(options): TableResourceClass {
 								if (startTime < nextTime) {
 									const event = eventFromAudit(thisId, auditRecord, nextTime);
 									const historyEntry = event && { ...auditRecord, ...event };
+									if (historyEntry && reportingProgress) historyEntry[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 									if (historyEntry && (!allowsEvent || allowsEvent(historyEntry))) {
 										request.omitCurrent = true;
 										history.push(historyEntry);

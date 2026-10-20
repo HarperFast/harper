@@ -814,7 +814,11 @@ function sessionRecordResumable(record: any): boolean {
 function checkpointAdmissible(Resource: any, checkpoint: unknown): boolean {
 	if (!Resource?.auditStore || !Resource.dbisDB) return true;
 	try {
-		admitCheckpoint(Resource.auditStore, Resource.dbisDB, validateCheckpoint(checkpoint));
+		const token = validateCheckpoint(checkpoint);
+		// a token for another table is a 409 and a scalar fallback after CONNACK, not a reset
+		const [database, table] = JSON.parse(token.scope);
+		if (database !== Resource.auditStore.rootStore?.databaseName || table !== Resource.name) return true;
+		admitCheckpoint(Resource.auditStore, Resource.dbisDB, token);
 		return true;
 	} catch (error) {
 		return error?.statusCode !== 410;
@@ -1311,7 +1315,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					);
 					delete existing.entry.checkpoint;
 					this.dropForeignReceipts(existing);
-					if (this.terminated) throw error;
+					// nothing to continue for a session that ended meanwhile, and no topic to drop
+					if (this.terminated) return subscription;
 					delete request.resume;
 					request.startTime = existing.entry.startTime;
 					if (boundToCurrentGeneration(existing.entry)) request.databaseGeneration = existing.entry.databaseGeneration;

@@ -101,7 +101,9 @@ export function membersDigest(members: Iterable<[name: string, generation: strin
 /** Reads every `[seq, peerId]` row and merges the checkpoint-grade state of each origin it names. */
 function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState> {
 	const states = new Map<number, OriginState>();
-	const rows = new Map<number, any[]>();
+	// each origin's row entries with the sequence id of the peer row holding them: a removed peer's row keeps
+	// an old one, a live route's keeps advancing, which is how two generations of one origin are ordered
+	const rows = new Map<number, { node: any; seqId: number }[]>();
 	const generation = getDatabaseGeneration(auditStore)?.id;
 	const own: OriginState = {
 		nodeId: 0,
@@ -117,6 +119,7 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 	for (const { key, value } of dbisDb.getRange({ start: SEQ_KEY, end: [SEQ_KEY, Buffer.from([0xff])] })) {
 		const nodes = value?.nodes;
 		if (!Array.isArray(nodes) || typeof key?.[1] !== 'number') continue;
+		const rowSeqId = typeof value.seqId === 'number' ? value.seqId : 0;
 		for (const node of nodes) {
 			if (!node || typeof node.id !== 'number' || node.id === 0) continue;
 			let state = states.get(node.id);
@@ -126,7 +129,7 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 				states.set(node.id, (state = { nodeId: node.id, name }));
 				rows.set(node.id, []);
 			}
-			rows.get(node.id)!.push(node);
+			rows.get(node.id)!.push({ node, seqId: rowSeqId });
 			if (
 				isValidFloor(node.closedFloor) &&
 				typeof node.originGeneration === 'string' &&
@@ -146,21 +149,38 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 			}
 		}
 	}
-	// qualifiers are sticky across rows of one generation; rows that name different generations of one origin
-	// cannot be ordered, so the origin fails closed until they agree (a removed peer's row is retained history)
+	// qualifiers are sticky across rows of one origin generation; of two generations the most recently updated
+	// row's is current (a removed peer's retained row never advances), and the floor counts only from that one
 	for (const [nodeId, nodeRows] of rows) {
 		const state = states.get(nodeId)!;
-		const generations = new Set<string>();
-		for (const node of nodeRows) if (typeof node.originGeneration === 'string') generations.add(node.originGeneration);
-		if (generations.size > 1) {
+		let current: { generation: string; seqId: number } | undefined;
+		for (const { node, seqId } of nodeRows) {
+			if (typeof node.originGeneration !== 'string') continue;
+			if (!current || seqId > current.seqId) current = { generation: node.originGeneration, seqId };
+		}
+		if (current && state.generation !== current.generation) {
 			state.floor = undefined;
 			state.certifiedFrom = undefined;
-			state.generation = undefined;
-			state.floorRevoked = true;
-			continue;
+			state.generation = current.generation;
+			for (const { node } of nodeRows) {
+				if (node.originGeneration !== current.generation) continue;
+				if (
+					isValidFloor(node.closedFloor) &&
+					node.fullCoverage === true &&
+					node.partialHistory !== true &&
+					node.hole !== true &&
+					node.floorRevoked !== true &&
+					typeof node.certifiedFrom === 'number' &&
+					!(state.floor >= node.closedFloor)
+				) {
+					state.floor = node.closedFloor;
+					state.certifiedFrom = node.certifiedFrom;
+					state.fullCoverage = true;
+				}
+			}
 		}
-		if (state.generation === undefined && generations.size === 1) state.generation = [...generations][0];
-		for (const node of nodeRows) {
+		for (const { node } of nodeRows) {
+			if (typeof node.originGeneration === 'string' && node.originGeneration !== state.generation) continue;
 			if (node.floorRevoked === true) state.floorRevoked = true;
 			if (node.hole === true) state.hole = true;
 		}
