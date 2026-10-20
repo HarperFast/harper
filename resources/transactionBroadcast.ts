@@ -2,6 +2,8 @@ import { basename } from 'node:path';
 import { warn } from '../utility/logging/harper_logger.ts';
 import { DatabaseClosingError, DatabaseGenerationChangedError } from '../utility/errors/hdbError.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
+import { ORIGIN_FLOOR_TICK_MS } from './originClosedFloor.ts';
+import { captureCertifiedFloors, type CertifiedFloors } from './subscriptionCheckpoint.ts';
 import { keyArrayToString } from './Resources.ts';
 import type { Id } from './ResourceInterface.ts';
 
@@ -135,8 +137,60 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		databaseSubscriptions.progressConsumers = (databaseSubscriptions.progressConsumers || 0) + 1;
 		subscription.reportsProgress = true;
 		subscription.registeredThrough = databaseSubscriptions.dispatchedThrough;
+		const dbisDb = table.dbisDB ?? table.constructor?.dbisDB;
+		if (dbisDb && !databaseSubscriptions.originFloorTimer) startOriginTracking(databaseSubscriptions, dbisDb);
 	}
 	return subscription;
+}
+
+let originCaptureInterval = ORIGIN_FLOOR_TICK_MS;
+/** Test-only: how often the certified floors are captured for checkpoints. */
+export function setOriginCaptureIntervalForTests(ms: number) {
+	originCaptureInterval = ms;
+}
+
+/**
+ * Per-origin certified floors for checkpoints (harper-pro#922 item 3): every `ORIGIN_FLOOR_TICK_MS` the floors are
+ * captured, then a notify pass runs; the capture a pass began with is published once that pass drains, so every
+ * entry below a captured floor — all in the log before the capture — has been dispatched by then. Shared by every
+ * progress-reporting subscription on the database; an idle database pays one seq-row read and an empty pass.
+ */
+function startOriginTracking(databaseSubscriptions: any, dbisDb: any) {
+	const auditStore = databaseSubscriptions.auditStore;
+	databaseSubscriptions.capturedFloors = undefined;
+	databaseSubscriptions.certifiedFloors = undefined;
+	const capture = () => {
+		if (!databaseSubscriptions.progressConsumers || auditStore.rootStore?.status === 'closed') {
+			stopOriginTracking(databaseSubscriptions);
+			return;
+		}
+		try {
+			databaseSubscriptions.capturedFloors = captureCertifiedFloors(auditStore, dbisDb) ?? null;
+		} catch (error) {
+			warn('Could not read the origin floors for subscription checkpoints', error);
+			databaseSubscriptions.capturedFloors = null;
+		}
+		if (databaseSubscriptions.notifyScheduled) return;
+		databaseSubscriptions.notifyScheduled = true;
+		setImmediate(() => notifyFromTransactionData(databaseSubscriptions, auditStore.subscriptionLogRange, true));
+	};
+	databaseSubscriptions.originFloorTimer = setInterval(capture, originCaptureInterval);
+	databaseSubscriptions.originFloorTimer.unref?.();
+	capture();
+}
+
+function stopOriginTracking(databaseSubscriptions: any) {
+	clearInterval(databaseSubscriptions.originFloorTimer);
+	databaseSubscriptions.originFloorTimer = undefined;
+	databaseSubscriptions.capturedFloors = undefined;
+	databaseSubscriptions.certifiedFloors = undefined;
+}
+
+/** The per-origin floors every dispatched entry below which this subscription has been handed, or undefined. */
+export function certifiedFloors(subscription: any): CertifiedFloors | undefined {
+	const databaseSubscriptions = subscription.subscriptions?.tables?.envs;
+	if (!subscription.reportsProgress || !databaseSubscriptions || databaseSubscriptions.progressStopped) return;
+	return databaseSubscriptions.certifiedFloors ?? undefined;
 }
 
 function rangeFailures(range: any): number {
@@ -238,6 +292,9 @@ class Subscription extends IterableEventQueue {
 	registeredThrough?: number;
 	sentCount?: number;
 	progress?: () => number | undefined;
+	checkpoint?: (holds?: Map<number, number>) => any;
+	/** A checkpoint-resumed subscription takes every live entry: its replay seeks per log, so no key gate applies. */
+	ungated?: boolean;
 	includeDescendants?: boolean;
 	supportsTransactions?: boolean;
 	onlyChildren?: boolean;
@@ -255,6 +312,7 @@ class Subscription extends IterableEventQueue {
 			if (this.reportsProgress) {
 				this.reportsProgress = false;
 				if (envSubscriptions?.progressConsumers > 0) envSubscriptions.progressConsumers--;
+				if (envSubscriptions && !envSubscriptions.progressConsumers) stopOriginTracking(envSubscriptions);
 			}
 			// splicing would shift the next subscriber past a loop walking this array, which compacts it when it finishes
 			if (subscriptions.traversals > 0) subscriptions.hasEnded = true;
@@ -324,6 +382,8 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 	let iteratorFailed = false;
 	let trackProgress = subscriptions.progressConsumers > 0 && !subscriptions.progressStopped;
 	let progressKey = trackProgress ? subscriptions.pendingProgressKey : undefined;
+	// the floors a fresh pass starts with are certified once it drains; a continuation keeps its pass's capture
+	if (!subscriptions.passYielded) subscriptions.passCapture = subscriptions.capturedFloors;
 	subscriptions.dispatching = true;
 	subscriptions.passYielded = false;
 	try {
@@ -389,7 +449,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 										!(subscription.includeDescendants && !(subscription.onlyChildren && ancestorLevel > 1))
 									)
 										continue;
-									if (subscription.startTime >= timestamp) {
+									if (!subscription.ungated && subscription.startTime >= timestamp) {
 										continue;
 									}
 									try {
@@ -440,7 +500,8 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 						try {
 							for (let i = 0, length = keySubscriptions.length; i < length; i++) {
 								const subscription = keySubscriptions[i];
-								if (!subscription.subscriptions || subscription.startTime >= timestamp) continue;
+								if (!subscription.subscriptions || (!subscription.ungated && subscription.startTime >= timestamp))
+									continue;
 								try {
 									subscription.listener(null, auditRecord, timestamp, false);
 								} catch (error) {
@@ -481,6 +542,14 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			advanceProgress(subscriptions, progressKey, auditLogIterable);
 		}
 		subscriptions.pendingProgressKey = undefined;
+		if (subscriptions.passCapture !== undefined) {
+			// a pass that read every entry appended before its capture certifies the capture's floors
+			subscriptions.certifiedFloors =
+				trackProgress && !iteratorFailed && !subscriptions.progressStopped && rangeFailures(auditLogIterable) === 0
+					? (subscriptions.passCapture ?? undefined)
+					: undefined;
+			subscriptions.passCapture = undefined;
+		}
 		if (subscribersWithTxns) {
 			// any subscribers with open transactions need to have an event to indicate that their transaction has been ended
 			for (const subscription of subscribersWithTxns) {

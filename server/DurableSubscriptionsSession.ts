@@ -10,6 +10,14 @@ import { server } from '../server/Server.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
 import { randomBytes } from 'node:crypto';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
+import { exportIdMapping, getNodeNameForId } from '../resources/nodeIdMapping.ts';
+import { getThisNodeName } from './nodeName.ts';
+import {
+	ORIGIN_ID,
+	admitCheckpoint,
+	validateCheckpoint,
+	type SubscriptionCheckpoint,
+} from '../resources/subscriptionCheckpoint.ts';
 
 const AWAITING_ACKS_HIGH_WATER_MARK = 100;
 /** Inbound QoS 2 exchanges a client may hold open, advertised in the v5 CONNACK. */
@@ -380,6 +388,8 @@ class SubscriptionsSession {
 			omitCurrent,
 			databaseGeneration: subscriptionRequest.databaseGeneration,
 			reportProgress: subscriptionRequest.reportProgress,
+			resume: subscriptionRequest.resume,
+			filterKey: subscriptionRequest.filterKey,
 			includeSuperseded: this instanceof DurableSubscriptionsSession && subscriptionRequest.qos > 0 ? true : undefined,
 			checkPermission: this.user?.role?.permission ?? {},
 		});
@@ -712,10 +722,19 @@ type DurableEntry = {
 	receivedRuns?: [number, number][];
 	/** Every delivery with a key above `startTime` and at or below this was taken. */
 	receivedThrough?: number;
-	/** QoS 2 deliveries sent and not yet PUBREC'd, with their packet ids, which a replay sends again as DUPs. */
-	inFlight?: [...DeliveryIdentity, number][];
+	/**
+	 * QoS 2 deliveries sent and not yet PUBREC'd, with their packet ids, which a replay sends again as DUPs; with a
+	 * checkpoint, each names its origin so a resume on another node can hold that origin's boundary.
+	 */
+	inFlight?: [...DeliveryIdentity, number, string?][];
 	/** The database generation whose log keys the receipts and in-flight deliveries name. */
 	receiptsGeneration?: string;
+	/**
+	 * The per-origin checkpoint (harper-pro#922), kept beside the scalar position an older reader resumes from.
+	 * Once established it is never replaced by the scalar: it stops advancing while floors are unavailable, and a
+	 * resume it can no longer satisfy resets the session (410).
+	 */
+	checkpoint?: SubscriptionCheckpoint;
 };
 function deliveryId(id: unknown) {
 	if (Array.isArray(id)) return keyArrayToString(id);
@@ -734,11 +753,14 @@ type TopicState = {
 	/** Each event has its own log key, as on LMDB; a RocksDB transaction's events share one. */
 	keysPerEntry?: boolean;
 	/** In delivery order: `needsAcknowledge` is its only writer and runs as each message is sent. */
-	unacked: Map<number, { key: number; ordinal: number; id: unknown; previousKey?: number; late?: boolean }>;
+	unacked: Map<
+		number,
+		{ key: number; ordinal: number; id: unknown; previousKey?: number; late?: boolean; origin?: number }
+	>;
 	received?: Map<string, DeliveryIdentity>;
 	receivedRuns?: Map<number, number>;
 	receivedThrough?: number;
-	resend?: Map<string, [...DeliveryIdentity, number]>;
+	resend?: Map<string, [...DeliveryIdentity, number, string?]>;
 	ordinalKey?: number;
 	ordinal: number;
 	/** Unacked deliveries that arrived below a key delivered before them. */
@@ -779,9 +801,47 @@ function sessionRecordResumable(record: any): boolean {
 		if (!boundToCurrentGeneration(entry)) continue;
 		const match = resources.getMatch(entry.topic.split('?')[0], 'mqtt');
 		if (!/[+#]/.test(match.relativeURL ?? '')) continue;
+		if (entry.checkpoint !== undefined && !checkpointAdmissible(match.Resource, entry.checkpoint)) return false;
 		if (!isResumablePosition(match.Resource.auditStore, entry.databaseGeneration, entry.startTime)) return false;
 	}
 	return true;
+}
+
+/** Only a 410 refuses before CONNACK; a malformed or re-scoped checkpoint falls back to the scalar after it. */
+function checkpointAdmissible(Resource: any, checkpoint: unknown): boolean {
+	if (!Resource?.auditStore || !Resource.dbisDB) return true;
+	try {
+		admitCheckpoint(Resource.auditStore, Resource.dbisDB, validateCheckpoint(checkpoint));
+		return true;
+	} catch (error) {
+		return error?.statusCode !== 410;
+	}
+}
+
+/** The lowest key the checkpoint certifies everything below: the common boundary, or the lowest exception. */
+function checkpointFloor(checkpoint: SubscriptionCheckpoint): number {
+	let floor = checkpoint.time - checkpoint.overlap;
+	for (const boundary of Object.values(checkpoint.exceptions)) if (boundary < floor) floor = boundary;
+	return floor;
+}
+
+function auditStoreOf(topic: string): any {
+	return resources.getMatch(topic.split('?')[0], 'mqtt')?.Resource?.auditStore;
+}
+
+function originNameOf(topic: string, origin: number | undefined): string | undefined {
+	if (origin === undefined) return;
+	if (origin === 0) return getThisNodeName();
+	const auditStore = auditStoreOf(topic);
+	return auditStore ? getNodeNameForId(auditStore, origin, true) : undefined;
+}
+
+function originIdOf(topic: string, name: string | undefined): number | undefined {
+	if (name === undefined) return;
+	if (name === getThisNodeName()) return 0;
+	const auditStore = auditStoreOf(topic);
+	const id = auditStore ? exportIdMapping(auditStore)?.[name] : undefined;
+	return typeof id === 'number' ? id : undefined;
 }
 
 /**
@@ -835,7 +895,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			(this.awaitingCompletion ??= new Map()).set(messageId, true);
 		}
 		for (const entry of record?.subscriptions || []) {
-			const { qos, topic, startTime, databaseGeneration } = entry;
+			const { qos, topic, startTime, databaseGeneration, checkpoint } = entry;
 			const state = newTopicState(
 				qos > 0
 					? {
@@ -843,11 +903,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 							topic,
 							startTime,
 							databaseGeneration: boundToCurrentGeneration(entry) ? databaseGeneration : undefined,
+							checkpoint,
 						}
 					: { qos, topic }
 			);
-			// keys from another node's log, or from before a restore or copy, name nothing here
-			if (entry.receiptsGeneration === currentGeneration(topic)) {
+			// keys from another node's log, or from before a restore or copy, name nothing here; receipts kept with
+			// a checkpoint name origin keys, which are the same on every node
+			if (entry.receiptsGeneration === currentGeneration(topic) || checkpoint !== undefined) {
 				state.receivedThrough = entry.receivedThrough;
 				for (const [key, count] of entry.receivedRuns || []) {
 					(state.receivedRuns ??= new Map()).set(key, count);
@@ -878,11 +940,29 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (this.topics.size > 0) this.startCheckpoints();
 		for (const state of [...this.topics.values()]) {
 			if (this.terminated) return;
-			const { qos, topic, startTime, databaseGeneration } = state.entry;
+			const { qos, topic, startTime, databaseGeneration, checkpoint } = state.entry;
 			const durable = qos > 0;
 			try {
+				if (durable && checkpoint !== undefined) {
+					try {
+						await this.resumeSubscription(
+							{ topic, qos, rh: 2, resume: checkpoint, filterKey: topic, reportProgress: true },
+							durable
+						);
+						continue;
+					} catch (error) {
+						// a checkpoint for another scope (the table was recreated) resumes from the scalar it kept
+						if (error?.statusCode !== 409 && error?.statusCode !== 400) throw error;
+						warn(
+							`Durable session ${this.sessionId} resumes ${topic} from its position; its checkpoint was refused: ${error.message}`
+						);
+						delete state.entry.checkpoint;
+					}
+				}
 				await this.resumeSubscription(
-					durable ? { topic, qos, rh: 2, startTime, databaseGeneration, reportProgress: true } : { topic, qos, rh: 2 },
+					durable
+						? { topic, qos, rh: 2, startTime, databaseGeneration, reportProgress: true, filterKey: topic }
+						: { topic, qos, rh: 2 },
 					durable
 				);
 			} catch (error) {
@@ -1016,9 +1096,18 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	compactReceived(state: TopicState) {
 		let bound = state.deliveredKey;
 		if (bound === undefined) return;
-		// a transaction that took a key below the delivered ones can still commit until progress passes it
-		const progress = state.subscription?.progress?.();
-		if (progress !== undefined && progress < bound) bound = progress;
+		if (state.entry.checkpoint !== undefined) {
+			// an origin can commit below the scalar watermark but never below its own certified floor, which the
+			// checkpoint's lowest boundary is at or below; without a current checkpoint nothing is compacted
+			const checkpoint = state.subscription?.checkpoint?.();
+			if (!checkpoint) return;
+			const floor = checkpointFloor(checkpoint);
+			if (floor < bound) bound = floor;
+		} else {
+			// a transaction that took a key below the delivered ones can still commit until progress passes it
+			const progress = state.subscription?.progress?.();
+			if (progress !== undefined && progress < bound) bound = progress;
+		}
 		for (const { key } of state.unacked.values()) {
 			if (key < bound) bound = key;
 			// with none late, the oldest unacknowledged delivery has the lowest key
@@ -1068,6 +1157,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				id: qos === 2 ? deliveryId(update.id) : undefined,
 				previousKey: state.keyBefore,
 				late,
+				origin: typeof update[ORIGIN_ID] === 'number' ? update[ORIGIN_ID] : undefined,
 			});
 		}
 		return messageId;
@@ -1194,12 +1284,15 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const replaced = existing?.subscription;
 		let request = subscription;
 		if (durable) {
-			request = { ...subscription, reportProgress: true };
+			request = { ...subscription, reportProgress: true, filterKey: topic };
 			if (existing?.entry.qos > 0) {
 				// replacing a subscription must lose nothing, so the new one continues the topic's position
 				this.advancePositions();
-				request.startTime = existing.entry.startTime;
-				if (boundToCurrentGeneration(existing.entry)) request.databaseGeneration = existing.entry.databaseGeneration;
+				if (existing.entry.checkpoint !== undefined) request.resume = existing.entry.checkpoint;
+				else {
+					request.startTime = existing.entry.startTime;
+					if (boundToCurrentGeneration(existing.entry)) request.databaseGeneration = existing.entry.databaseGeneration;
+				}
 			}
 		}
 		let started;
@@ -1309,7 +1402,34 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				state.subscription.progress === undefined ? undefined : state.subscription.databaseGeneration;
 			changed = true;
 		}
+		for (const state of this.topics.values()) {
+			if (!(state.entry.qos > 0) || !state.verified || !state.subscription?.checkpoint) continue;
+			const holds = this.holdsOf(state);
+			if (!holds) continue;
+			const checkpoint = state.subscription.checkpoint(holds);
+			if (!checkpoint || sameCheckpoint(checkpoint, state.entry.checkpoint)) continue;
+			state.entry.checkpoint = checkpoint;
+			changed = true;
+		}
 		return changed;
+	}
+	/**
+	 * The lowest key per origin among deliveries the client has not taken, which hold that origin's boundary;
+	 * undefined when a delivery's origin is unknown (restored by a build that did not record it), so the
+	 * checkpoint keeps its last value.
+	 */
+	holdsOf(state: TopicState): Map<number, number> | undefined {
+		const holds = new Map<number, number>();
+		for (const { key, origin } of state.unacked.values()) {
+			if (origin === undefined) return;
+			if (!(holds.get(origin) <= key)) holds.set(origin, key);
+		}
+		for (const delivery of state.resend?.values() ?? []) {
+			const origin = originIdOf(state.entry.topic, delivery[4]);
+			if (origin === undefined) return;
+			if (!(holds.get(origin) <= delivery[0])) holds.set(origin, delivery[0]);
+		}
+		return holds;
 	}
 	/** Settles once the scheduled checkpoint's save has, and never rejects. */
 	scheduleCheckpoint(): Promise<void> {
@@ -1344,12 +1464,18 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (state.receivedRuns?.size > 0) saved.receivedRuns = [...state.receivedRuns];
 			if (state.receivedThrough !== undefined) saved.receivedThrough = state.receivedThrough;
 			if (qos === 2) {
-				const inFlight = [...(state.resend?.values() ?? [])];
-				for (const [messageId, { key, ordinal, id }] of state.unacked) inFlight.push([key, ordinal, id, messageId]);
+				const inFlight: [...DeliveryIdentity, number, string?][] = [...(state.resend?.values() ?? [])];
+				for (const [messageId, { key, ordinal, id, origin }] of state.unacked) {
+					const originName = originNameOf(topic, origin);
+					inFlight.push(
+						originName === undefined ? [key, ordinal, id, messageId] : [key, ordinal, id, messageId, originName]
+					);
+				}
 				if (inFlight.length > 0) saved.inFlight = inFlight;
 			}
 			if (saved.received || saved.receivedRuns || saved.receivedThrough !== undefined || saved.inFlight)
 				saved.receiptsGeneration = currentGeneration(topic);
+			if (state.entry.checkpoint !== undefined) saved.checkpoint = state.entry.checkpoint;
 			subscriptions.push(saved);
 		}
 		const record: any = { id: this.sessionId, incarnation: this.incarnation, subscriptions };
@@ -1494,6 +1620,15 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 const SEAL_WAIT = 5_000;
 function sealWait() {
 	return new Promise<void>((resolve) => setTimeout(resolve, SEAL_WAIT).unref());
+}
+
+function sameCheckpoint(a: SubscriptionCheckpoint, b: SubscriptionCheckpoint | undefined): boolean {
+	if (!b) return false;
+	if (a.time !== b.time || a.overlap !== b.overlap || a.members !== b.members || a.scope !== b.scope) return false;
+	const names = Object.keys(a.exceptions);
+	if (names.length !== Object.keys(b.exceptions).length) return false;
+	for (const name of names) if (a.exceptions[name] !== b.exceptions[name]) return false;
+	return true;
 }
 
 function newTopicState(entry: DurableEntry): TopicState {

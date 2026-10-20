@@ -61,7 +61,18 @@ import {
 } from './recordLock.ts';
 import { getThisNodeName } from '../server/nodeName.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
-import { addSubscription, dispatchedThrough } from './transactionBroadcast.ts';
+import { addSubscription, certifiedFloors, dispatchedThrough } from './transactionBroadcast.ts';
+import { keyArrayToString } from './Resources.ts';
+import {
+	ORIGIN_ID,
+	admitCheckpoint,
+	checkpointScope,
+	encodeCheckpoint,
+	validateCheckpoint,
+	type MemberBoundary,
+	type ResumePlan,
+	type SubscriptionCheckpoint,
+} from './subscriptionCheckpoint.ts';
 import { databaseDropPrepared } from './databaseDropPreparation.ts';
 import {
 	DerivedIndexLagError,
@@ -149,6 +160,7 @@ import {
 	boundedAuditPruneEnd,
 	isLockControlType,
 	isAuditEntryWrite,
+	getAuditResumeFloor,
 	isResumablePosition,
 	getDatabaseGeneration,
 } from './auditStore.ts';
@@ -2203,9 +2215,14 @@ export function makeTable(options): TableResourceClass {
 						) => {
 							const originCursors: [number, number][] | undefined = event.originCursors;
 							// only a stream whose failures this loop can see may certify a floor (resources/DESIGN.md)
-							const originFloors: [number, number, boolean][] | undefined = admitsOriginFloors(event)
+							const originFloors: [number, number, boolean, string?, boolean?][] | undefined = admitsOriginFloors(event)
 								? event.originFloors
 								: undefined;
+							// checkpoint-grade route state (harper-pro#922 items 3–4): revocations and holes are sticky
+							const originFloorRevocations: number[] | undefined = event.originFloorRevocations;
+							const originRouteStates: [number, number | undefined, boolean, boolean][] | undefined =
+								event.originRouteStates;
+							let qualifiersChanged = false;
 							// the key for tracking the sequence ids and txn times received from this node
 							const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
 							// getSync (not get): dbisDb is the raw __dbis__ store, so on RocksDB get() returns a
@@ -2248,10 +2265,23 @@ export function makeTable(options): TableResourceClass {
 									}
 								}
 							if (originFloors)
-								for (const [nodeId, closedFloor, relayable] of originFloors) {
+								for (const [nodeId, closedFloor, relayable, originGeneration, fullCoverage] of originFloors) {
 									if (!(typeof closedFloor === 'number' && Number.isFinite(closedFloor) && closedFloor > 0)) continue;
 									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
 									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									// a revoked origin keeps no floor: a later or higher certificate never clears a revocation
+									if (nodeState.floorRevoked === true) continue;
+									const generationChanged =
+										typeof originGeneration === 'string' &&
+										typeof nodeState.originGeneration === 'string' &&
+										nodeState.originGeneration !== originGeneration;
+									if (generationChanged) {
+										nodeState.floorRevoked = true;
+										nodeState.closedFloor = undefined;
+										nodeState.relayable = false;
+										qualifiersChanged = true;
+										continue;
+									}
 									if (!(nodeState.closedFloor >= closedFloor)) {
 										nodeState.closedFloor = closedFloor;
 										nodeState.relayable = relayable === true;
@@ -2260,7 +2290,52 @@ export function makeTable(options): TableResourceClass {
 										nodeState.relayable = true;
 										originCursorsChanged = true;
 									}
+									// level-2 qualifiers describe this route; a level-1 certificate never sets or inherits them
+									if (typeof originGeneration === 'string' && nodeState.originGeneration !== originGeneration) {
+										nodeState.originGeneration = originGeneration;
+										qualifiersChanged = true;
+									}
+									const covers = fullCoverage === true;
+									if (typeof originGeneration === 'string' && nodeState.fullCoverage !== covers) {
+										nodeState.fullCoverage = covers;
+										qualifiersChanged = true;
+									}
 								}
+							if (originFloorRevocations)
+								for (const nodeId of originFloorRevocations) {
+									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									if (nodeState.floorRevoked === true) continue;
+									nodeState.floorRevoked = true;
+									nodeState.closedFloor = undefined;
+									nodeState.relayable = false;
+									qualifiersChanged = true;
+								}
+							if (originRouteStates)
+								for (const [nodeId, certifiedFrom, partialHistory, hole] of originRouteStates) {
+									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									if (typeof certifiedFrom === 'number' && nodeState.certifiedFrom !== certifiedFrom) {
+										// a route certifies from one point; a new floor-only start that is not lower keeps the older mark
+										if (!(nodeState.certifiedFrom <= certifiedFrom)) {
+											nodeState.certifiedFrom = certifiedFrom;
+											qualifiersChanged = true;
+										}
+									}
+									if (partialHistory !== undefined && nodeState.partialHistory !== partialHistory) {
+										nodeState.partialHistory = partialHistory;
+										qualifiersChanged = true;
+									}
+									if (hole === true && nodeState.hole !== true) {
+										nodeState.hole = true;
+										qualifiersChanged = true;
+									}
+								}
+							if (qualifiersChanged) {
+								originCursorsChanged = true;
+								// admitted checkpoints recheck their facts at every yield against this epoch
+								auditStore.originStateEpoch = (auditStore.originStateEpoch ?? 0) + 1;
+							}
 							const seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime || 0);
 							// compared with the persisted row, not the cache, which moves before this write lands
 							if (!advancesSequence && !originCursorsChanged && seqId === existingSeq?.seqId) return;
@@ -7125,6 +7200,52 @@ export function makeTable(options): TableResourceClass {
 			}
 			if (!auditStore) throw new Error('Can not subscribe to a table without an audit log');
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
+			const scope = checkpointScope({
+				database: databaseName,
+				table: tableName,
+				tableGeneration,
+				target: thisId,
+				rawEvents: request.rawEvents,
+				includeSuperseded: request.includeSuperseded ?? request.rawEvents,
+				onlyChildren: request.onlyChildren,
+				filterKey: request.filterKey,
+			});
+			// #region checkpoint resume admission (harper-pro#922 item 4)
+			const checkpointToken = request.resume === undefined ? undefined : validateCheckpoint(request.resume);
+			let plan: ResumePlan | undefined;
+			let admittedEpoch = 0;
+			if (checkpointToken) {
+				if (
+					request.startTime !== undefined ||
+					request.databaseGeneration !== undefined ||
+					request.previousCount != null
+				) {
+					throw new ClientError('resume can not be combined with startTime, databaseGeneration or previousCount');
+				}
+				if (!isRocksDB) throw new DatabaseGenerationChangedError();
+				if ((request.rowFilter || request.eventFilter) && !request.filterKey) {
+					throw new ClientError(
+						'A subscription resumed from a checkpoint with a rowFilter or eventFilter must name its filterKey'
+					);
+				}
+				if (checkpointToken.scope !== scope) {
+					throw new ClientError('The checkpoint was issued for a different subscription scope', 409);
+				}
+				plan = admitCheckpoint(auditStore, TableResource.dbisDB, checkpointToken);
+				admittedEpoch = auditStore.originStateEpoch ?? 0;
+				request.reportProgress = true;
+			}
+			if (request.checkpointInterval !== undefined) {
+				if (!(
+					typeof request.checkpointInterval === 'number' &&
+					Number.isFinite(request.checkpointInterval) &&
+					request.checkpointInterval >= 1000
+				)) {
+					throw new ClientError('checkpointInterval must be a finite number of milliseconds, at least 1000');
+				}
+				if (!request.reportProgress) throw new ClientError('checkpointInterval requires reportProgress');
+			}
+			// #endregion
 			const resumeGeneration = request.databaseGeneration;
 			const resuming = resumeGeneration !== undefined;
 			if (resuming) {
@@ -7214,6 +7335,7 @@ export function makeTable(options): TableResourceClass {
 						}
 						const event = eventFromAudit(id, auditRecord, txnLogKey, beginTxn, true);
 						if (!event) return;
+						if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 						// Queued events are filtered when the queue drains through send() below; events sent
 						// directly (queue already drained) are filtered here. Each event is filtered once.
 						if (pendingRealTimeQueue) pendingRealTimeQueue.push(event);
@@ -7233,6 +7355,7 @@ export function makeTable(options): TableResourceClass {
 				request.startTime || 0,
 				request
 			);
+			if (plan) subscription.ungated = true;
 			const isActive = () => !subscription.closed && Boolean(subscription.subscriptions);
 			let progressLive = false;
 			let progressFloor: number | undefined;
@@ -7246,14 +7369,20 @@ export function makeTable(options): TableResourceClass {
 					return queueSend.call(this, event);
 				};
 				const collection = request.isCollection ?? thisId == null;
+				// a checkpoint resume's scalar shadow is its lowest boundary: safe for an older reader, never above it
+				let planFloor: number | undefined;
+				if (plan)
+					for (const { boundary } of plan.boundaries.values()) if (!(planFloor <= boundary)) planFloor = boundary;
 				const beforeLive = (): number | undefined =>
-					resuming
-						? collection
-							? subscription.startTime
-							: request.startTime
-						: request.startTime === undefined
-							? subscription.registeredThrough
-							: undefined;
+					plan
+						? planFloor
+						: resuming
+							? collection
+								? subscription.startTime
+								: request.startTime
+							: request.startTime === undefined
+								? subscription.registeredThrough
+								: undefined;
 				subscription.progress = () => {
 					if (!isActive()) return;
 					if (!progressLive) return beforeLive();
@@ -7265,9 +7394,63 @@ export function makeTable(options): TableResourceClass {
 					progressFloor = beforeLive();
 					progressLive = true;
 				};
+				// #region per-origin checkpoint (harper-pro#922 item 3)
+				const filtersWithoutKey = Boolean(rowFilter || eventFilter) && !request.filterKey;
+				const replayBoundaries = (): Map<string, MemberBoundary> | undefined => {
+					if (!plan) return;
+					for (const { generation } of plan.boundaries.values()) if (typeof generation !== 'string') return;
+					return plan.boundaries;
+				};
+				const liveBoundaries = (holds?: Map<number, number>): Map<string, MemberBoundary> | undefined => {
+					const certified = certifiedFloors(subscription);
+					if (!certified) return;
+					// an event handed to the queue and not yet taken holds its origin's boundary
+					const queued = new Map<number, number>();
+					for (const event of subscription.queue ?? []) {
+						const origin = event?.[ORIGIN_ID];
+						const key = event?.localTime;
+						if (typeof origin !== 'number' || typeof key !== 'number') continue;
+						if (!(queued.get(origin) <= key)) queued.set(origin, key);
+					}
+					const boundaries = new Map<string, MemberBoundary>();
+					for (const [nodeId, state] of certified.origins) {
+						let boundary = state.floor!;
+						const pending = queued.get(nodeId);
+						if (pending < boundary) boundary = pending;
+						const held = holds?.get(nodeId);
+						if (held < boundary) boundary = held;
+						boundaries.set(state.name, { boundary, generation: state.generation! });
+					}
+					return boundaries;
+				};
+				subscription.checkpoint = (holds?: Map<number, number>): SubscriptionCheckpoint | undefined => {
+					if (!isActive() || filtersWithoutKey || !isRocksDB) return;
+					const boundaries = progressLive ? liveBoundaries(holds) : replayBoundaries();
+					if (!boundaries) return;
+					return Object.freeze(encodeCheckpoint(scope, boundaries));
+				};
+				if (request.checkpointInterval !== undefined) {
+					let lastEmitted: string | undefined;
+					const timer = setInterval(() => {
+						if (!isActive()) return clearInterval(timer);
+						try {
+							const checkpoint = subscription.checkpoint!();
+							if (!checkpoint) return;
+							const encoded = JSON.stringify(checkpoint);
+							if (encoded === lastEmitted) return;
+							lastEmitted = encoded;
+							subscription.send({ type: 'checkpoint', checkpoint });
+						} catch (error) {
+							failSubscription(error);
+						}
+					}, request.checkpointInterval);
+					timer.unref?.();
+					subscription.on('close', () => clearInterval(timer));
+				}
+				// #endregion
 			}
 			let settleResume: ((verified: boolean) => void) | undefined;
-			if (resuming) subscription.resumeVerified = new Promise<boolean>((resolve) => (settleResume = resolve));
+			if (resuming || plan) subscription.resumeVerified = new Promise<boolean>((resolve) => (settleResume = resolve));
 			// Each check compares the floor with the position the replay had reached at the previous check: a
 			// prune raises the floor before it deletes anything below it, so a pass means nothing unread was deleted.
 			let resumeCheckedThrough = request.startTime;
@@ -7302,7 +7485,96 @@ export function makeTable(options): TableResourceClass {
 				let startTime = request.startTime;
 				let recordsSinceYield = 0;
 
-				if (isCollection) {
+				if (plan) {
+					// #region checkpoint replay: inclusive per-log seeks at each member's boundary (item 4)
+					pendingRealTimeQueue = null;
+					dropDuringReplay = true;
+					const targetKey = isCollection ? undefined : keyArrayToString(thisId);
+					const inScope = (id: Id): boolean => {
+						if (isCollection) return thisId == null || isDescendantId(thisId, id);
+						return keyArrayToString(id) === targetKey;
+					};
+					const refuse = (refusal: Error): false => {
+						logger.debug?.(`Refused resuming a subscription to ${tableName} from a checkpoint: ${refusal.message}`);
+						try {
+							subscription.close(refusal);
+						} finally {
+							if (!subscription.closed) subscription.close();
+						}
+						return false;
+					};
+					// admission facts are mutable: a revocation, hole or generation change bumps the epoch
+					const recheck = (range: any): boolean => {
+						const unreadable = unreadableLogRefusal(range);
+						if (unreadable) return refuse(unreadable);
+						const floor = getAuditResumeFloor(auditStore);
+						for (const [logName, start] of plan!.startByLog) {
+							// a late joiner replays its retained log whole; only a certified boundary is a key-domain position
+							if (start === 0) continue;
+							if (!(start >= floor)) {
+								return refuse(
+									new ResumeHistoryUnavailableError(
+										`The history after the checkpoint boundary of ${logName === 'local' ? 'this node' : logName} is no longer retained; resubscribe to resynchronize`
+									)
+								);
+							}
+						}
+						if ((auditStore.originStateEpoch ?? 0) !== admittedEpoch) {
+							try {
+								admitCheckpoint(auditStore, TableResource.dbisDB, checkpointToken!);
+								admittedEpoch = auditStore.originStateEpoch ?? 0;
+							} catch (error) {
+								return refuse(error);
+							}
+						}
+						return true;
+					};
+					const replayRange = auditStore.getRange({
+						startByLog: plan.startByLog,
+						exclusiveStart: false,
+						exactStart: false,
+						includeLogName: true,
+						snapshot: false, // the live tail appended during the replay is read by it
+					});
+					try {
+						for (const auditRecord of replayRange) {
+							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+								recordsSinceYield = 0;
+								await rest();
+								if (!isActive()) return;
+								if (!recheck(replayRange)) return;
+							}
+							if (auditRecord.type === undefined) {
+								refuse(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
+								return;
+							}
+							if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
+							if (isLockControlType(auditRecord.type)) continue;
+							if (auditRecord.type === 'reload') {
+								refuse(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
+								return;
+							}
+							const id = auditRecord.recordId;
+							if (id === undefined) {
+								refuse(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
+								return;
+							}
+							if (!inScope(id)) continue;
+							const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
+							if (!event) continue;
+							event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+							if (!send(event)) return;
+							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+								if (!recheck(replayRange)) return;
+								if ((await subscription.waitForDrain()) === false) return;
+							}
+						}
+						if (!recheck(replayRange)) return;
+					} finally {
+						dropDuringReplay = false;
+					}
+					// #endregion
+				} else if (isCollection) {
 					// a collection should retrieve all descendant ids
 					if (startTime || resuming) {
 						if (count)
