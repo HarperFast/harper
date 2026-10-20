@@ -5,6 +5,8 @@ import {
 	ClientError,
 	DatabaseClosingError,
 	DatabaseDrainTimeoutError,
+	ReplicationConfirmationError,
+	withoutReplicationUnconfirmed,
 	ServerError,
 	TransactionCommitConflictTimeoutError,
 } from '../utility/errors/hdbError.ts';
@@ -486,6 +488,39 @@ let confirmationFeasibility:
 export function replicationConfirmation(callback, feasibility?: typeof confirmationFeasibility) {
 	confirmReplication = callback;
 	confirmationFeasibility = feasibility;
+}
+
+export function confirmReplicationAfterCommit(callback: () => unknown): Promise<void> {
+	let result;
+	try {
+		result = callback();
+	} catch (error) {
+		result = Promise.reject(error);
+	}
+	const confirmation = Promise.resolve(result).then(
+		() => {},
+		(error) => {
+			throw new ReplicationConfirmationError(error);
+		}
+	);
+	confirmation.catch(() => {});
+	return confirmation;
+}
+
+export function settleCommitCompletions(completions: unknown[], confirmation?: Promise<void>): Promise<void> {
+	if (completions.length === 0) return confirmation ?? Promise.resolve();
+	let deferredConfirmationError: ReplicationConfirmationError;
+	const localCompletions = completions.map((completion) =>
+		Promise.resolve(completion).catch((error) => {
+			if (error instanceof ReplicationConfirmationError) deferredConfirmationError ??= error;
+			else throw error;
+		})
+	);
+	// A confirmation failure must not abort a chained local commit that has yet to land.
+	return Promise.all(localCompletions).then(() => {
+		if (deferredConfirmationError) throw deferredConfirmationError;
+		return confirmation;
+	});
 }
 let txnExpiration = envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONOPENTIME) ?? 30000;
 
@@ -1000,6 +1035,8 @@ export class DatabaseTransaction implements Transaction {
 	declare scopeAbandoned?: boolean;
 	declare abandonedLinks?: DatabaseTransaction[];
 	committingWrites = false;
+	// Root-scoped history survives abort cleanup until the logical scope ends.
+	declare writesRolledBack?: boolean;
 
 	rangeReadActive = false;
 
@@ -1627,6 +1664,25 @@ export class DatabaseTransaction implements Transaction {
 	private hasSavedWrite(): boolean {
 		for (let i = 0; i < this.writes.length; i++) {
 			if (this.writes[i]?.saved) return true;
+		}
+		return false;
+	}
+
+	private hasWriteToDiscard(
+		nativeTxn: RocksTransaction | null | undefined,
+		targetTransaction: RocksTransaction | undefined,
+		hasSiblingInFlight: boolean,
+		preserveActiveWrites: boolean
+	): boolean {
+		for (let i = 0; i < this.writes.length; i++) {
+			const write = this.writes[i];
+			if (
+				!write ||
+				(preserveActiveWrites && this.isWriteOwnedByActiveCommit(write, targetTransaction, hasSiblingInFlight, true))
+			)
+				continue;
+			const owner = write.stagedOn ?? this.activeCommitHandle ?? nativeTxn;
+			if (!this.isHandleCommitted(owner) && !hasDurableLog(owner)) return true;
 		}
 		return false;
 	}
@@ -2964,6 +3020,7 @@ export class DatabaseTransaction implements Transaction {
 								const store = this.writes[0]?.store;
 								if (store) completions.push(store.flushed);
 							}
+							let confirmation: Promise<void>;
 							if (this.replicatedConfirmation) {
 								// if we want to wait for replication confirmation, we need to track the transaction times
 								// and when replication notifications come in, we count the number of confirms until we reach the desired number
@@ -2975,7 +3032,7 @@ export class DatabaseTransaction implements Transaction {
 											? this.confirmationTarget(committedLogKey, committedTransaction)
 											: undefined;
 									if (target) {
-										completions.push(
+										confirmation = confirmReplicationAfterCommit(() =>
 											confirmReplication(
 												databaseName,
 												target.version,
@@ -2986,7 +3043,7 @@ export class DatabaseTransaction implements Transaction {
 									}
 								} catch (error) {
 									const refusal = Promise.reject(error);
-									refusal.catch(() => {}); // surfaces through Promise.all(completions), even if bookkeeping throws first
+									refusal.catch(() => {}); // surfaces through local completions, even if bookkeeping throws first
 									completions.push(refusal);
 								}
 							}
@@ -3021,7 +3078,11 @@ export class DatabaseTransaction implements Transaction {
 								!this.hasActiveCommitHandle()
 							)
 								this.timestamp = 0; // reset the timestamp as well
-							return Promise.all(completions).then(
+							const completed =
+								confirmation || (this.root ?? this).replicatedConfirmation
+									? settleCommitCompletions(completions, confirmation)
+									: Promise.all(completions);
+							return completed.then(
 								() => {
 									// Only once the chained store's commit has settled, as on the synchronous path: a
 									// partially failed mid-scope commit must not leave the scope resumable.
@@ -3146,6 +3207,12 @@ export class DatabaseTransaction implements Transaction {
 									this.releaseContext(!!options.doneWriting);
 								}
 								if (!hasDurableLog(transaction, error as any)) {
+									if (
+										!isImmediateCommit &&
+										!this.saveCommits &&
+										this.writes.some((write) => write && (!write.stagedOn || write.stagedOn === transaction))
+									)
+										(this.root ?? this).writesRolledBack = true;
 									for (const write of this.writes) {
 										if (
 											!write?.saved ||
@@ -3340,6 +3407,10 @@ export class DatabaseTransaction implements Transaction {
 
 	protected abortAfterCommitError(error, targetTransaction?: RocksTransaction): never {
 		try {
+			if (error?.replicationUnconfirmed === true && (this.hasPendingWrites() || (this.root ?? this).writesRolledBack))
+				error = withoutReplicationUnconfirmed(error);
+		} catch {}
+		try {
 			const retryTxn = targetTransaction as RocksTransactionWithRetry | undefined;
 			const retryTxnCommitted = this.isHandleCommitted(retryTxn);
 			const retryTxnInFlight = this.isHandleCommitInFlight(retryTxn);
@@ -3371,6 +3442,13 @@ export class DatabaseTransaction implements Transaction {
 			isImmediateTarget || this.hasWriteOwnedByActiveCommit(targetTransaction, hasSiblingInFlight, true);
 		const preserveNonImmediateActiveWrites =
 			isImmediateTarget || this.hasWriteOwnedByActiveCommit(targetTransaction, hasSiblingInFlight, true, true);
+		if (
+			this.writes.length > 0 &&
+			!isImmediateTarget &&
+			!this.saveCommits &&
+			this.hasWriteToDiscard(nativeTxn, targetTransaction, hasSiblingInFlight, preserveActiveWrites)
+		)
+			(this.root ?? this).writesRolledBack = true;
 		const cascadeNext = cascade && !preserveNonImmediateActiveWrites;
 		const next = cascadeNext ? this.next : undefined;
 		if (cascadeNext && !retainReadTransaction) this.next = null;
