@@ -10,8 +10,10 @@
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, deepStrictEqual, match } from 'node:assert';
 import { createServer } from 'node:net';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import {
 	startHarper,
@@ -20,6 +22,9 @@ import {
 	sendOperation,
 	type ContextWithHarper,
 } from '@harperfast/integration-testing';
+
+const HARPER_BIN = resolve(import.meta.dirname, '../../dist/bin/harper.js');
+const execFileAsync = promisify(execFile);
 
 // Mirrors are unix domain sockets; Windows has no mirror to publish to.
 const skipSuite = process.platform === 'win32';
@@ -93,6 +98,23 @@ suite('Operations allowlist in UDS mirror metadata (#3358)', { skip: skipSuite }
 			(await sendOperation(ctx.harper, { operation: 'get_network_access', scope: 'operations' })).allow,
 			[]
 		);
+	});
+
+	test('the local CLI, over the operations domain socket, is the recovery path and skips the check', async () => {
+		const env: Record<string, string | undefined> = { ...process.env };
+		for (const key of Object.keys(env))
+			if (key.startsWith('HARPER_CLI_') || key.startsWith('CLI_TARGET_')) delete env[key];
+		delete env.NODE_OPTIONS;
+		const home = ctx.harper.dataRootDir;
+		const { stdout } = await execFileAsync(
+			process.execPath,
+			[HARPER_BIN, 'set_network_access', 'scope=operations', 'allow=["10.0.0.0/8"]'],
+			{ cwd: home, env: { ...env, HOME: home, USERPROFILE: home }, timeout: 30_000 }
+		);
+		match(stdout, /10\.0\.0\.0\/8/);
+		deepStrictEqual((await sendOperation(ctx.harper, { operation: 'get_network_access', scope: 'operations' })).allow, [
+			'10.0.0.0/8',
+		]);
 	});
 
 	test('publishes the list without a restart, and only on operations mirrors', async () => {
