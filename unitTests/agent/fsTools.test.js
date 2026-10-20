@@ -799,3 +799,104 @@ describe('agent/fsTools key material and the single-file config scope (harper#30
 		});
 	});
 });
+
+describe('agent/fsTools credential values in the read-only scopes (harper#3097)', () => {
+	const CONFIG =
+		'http:\n  port: 9926\nauthentication:\n  operationTokenTimeout: 1d\nmodels:\n  generative:\n    default:\n' +
+		'      backend: openai\n      apiKey: sk-live-config\n      model: gpt-5\n    other:\n' +
+		'      apiKey: ${OPENAI_API_KEY}\n';
+	let root;
+	let scopes;
+
+	beforeEach(() => {
+		root = realpathSync.native(mkdtempSync(join(tmpdir(), 'agent-mask-')));
+		mkdirSync(join(root, 'components', 'app'), { recursive: true });
+		mkdirSync(join(root, 'log'));
+		writeFileSync(join(root, 'harper-config.yaml'), CONFIG);
+		scopes = {
+			componentsRoot: join(root, 'components'),
+			logDir: join(root, 'log'),
+			configDir: root,
+			configFile: 'harper-config.yaml',
+			keyDirs: [join(root, 'keys')],
+		};
+	});
+
+	const small = () => ({ sessionId: 'sess', scopes, maxResultBytes: 1024 });
+
+	it('masks a plaintext credential in the config file and keeps ${VAR} references and other settings', async () => {
+		const expected = CONFIG.replace('sk-live-config', '**************');
+		const read = await readFileTool.handler({ root: 'config' }, ctx(scopes));
+		assert.equal(read.content, expected);
+		const tail = await tailFileTool.handler({ root: 'config', path: 'harper-config.yaml', lines: 5 }, ctx(scopes));
+		assert.deepEqual(tail.lines, expected.trimEnd().split('\n').slice(-5));
+		const grep = await grepFilesTool.handler({ root: 'config', pattern: 'apiKey|TokenTimeout' }, ctx(scopes));
+		assert.deepEqual(
+			grep.results.map((match) => match.text),
+			['  operationTokenTimeout: 1d', '      apiKey: **************', '      apiKey: ${OPENAI_API_KEY}']
+		);
+	});
+
+	it('masks credentials in the logs scope', async () => {
+		writeFileSync(join(root, 'log', 'hdb.log'), 'T [main/0] [error]: failed {"apiKey":"sk-logged","model":"m"}\n');
+		const read = await readFileTool.handler({ root: 'logs', path: 'hdb.log' }, ctx(scopes));
+		assert.equal(read.content, 'T [main/0] [error]: failed {"apiKey":"*********","model":"m"}\n');
+		const tail = await tailFileTool.handler({ root: 'logs', path: 'hdb.log' }, ctx(scopes));
+		assert.deepEqual(tail.lines, ['T [main/0] [error]: failed {"apiKey":"*********","model":"m"}']);
+	});
+
+	it('returns the writable components scope exactly, so a read and write round trip is lossless', async () => {
+		const source = 'apiKey: sk-component\n';
+		writeFileSync(join(root, 'components', 'app', 'config.yaml'), source);
+		const read = await readFileTool.handler({ path: 'app/config.yaml' }, ctx(scopes));
+		assert.equal(read.content, source);
+		const tail = await tailFileTool.handler({ path: 'app/config.yaml' }, ctx(scopes));
+		assert.deepEqual(tail.lines, ['apiKey: sk-component']);
+		const grep = await grepFilesTool.handler({ pattern: 'sk-component' }, ctx(scopes));
+		assert.equal(grep.count, 1);
+	});
+
+	it('grep_files matches the masked text, so a guessed value finds nothing', async () => {
+		const grep = await grepFilesTool.handler({ root: 'config', pattern: 'sk-live' }, ctx(scopes));
+		assert.equal(grep.count, 0);
+	});
+
+	it('read_file masks a page whose offset points into a credential value', async () => {
+		const at = CONFIG.indexOf('live-config');
+		const read = await readFileTool.handler({ root: 'config', offset: at, lineCount: 1 }, ctx(scopes));
+		assert.equal(read.content, '***********\n');
+	});
+
+	it('read_file masks every part of a credential line longer than a page', async () => {
+		writeFileSync(join(root, 'log', 'hdb.log'), `apiKey: ${'x'.repeat(3000)}\nafter\n`);
+		let cursor = { startLine: 1 };
+		let parts = 0;
+		for (;;) {
+			const page = await readFileTool.handler({ root: 'logs', path: 'hdb.log', lineCount: 1, ...cursor }, small());
+			if (!page.lineTruncated) {
+				assert.equal(page.content.replace(/\*/g, ''), parts === 0 ? 'apiKey: \n' : '\n');
+				break;
+			}
+			assert.doesNotMatch(page.content, /x/);
+			parts++;
+			cursor = { startLine: page.nextLine, offset: page.nextOffset };
+		}
+		assert.ok(parts > 1);
+	});
+
+	it('tail_file masks the cut end of a credential line longer than a page', async () => {
+		writeFileSync(join(root, 'log', 'hdb.log'), `token=${'x'.repeat(3000)}\n`);
+		const tail = await tailFileTool.handler({ root: 'logs', path: 'hdb.log' }, small());
+		assert.equal(tail.truncated, true);
+		assert.match(tail.lines[0], /^\*+$/);
+	});
+
+	it('masks the continuation lines of a folded value on a page that starts after its key', async () => {
+		writeFileSync(
+			join(root, 'harper-config.yaml'),
+			'models:\n  default:\n    password: correct horse battery\n      staple and more\n    model: m\n'
+		);
+		const page = await readFileTool.handler({ root: 'config', startLine: 4, lineCount: 2 }, ctx(scopes));
+		assert.equal(page.content, '      ***************\n    model: m\n');
+	});
+});

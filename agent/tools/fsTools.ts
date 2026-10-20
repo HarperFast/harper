@@ -13,6 +13,7 @@
 
 import { readFile, writeFile, readdir, stat, mkdir, realpath, lstat, open, type FileHandle } from 'node:fs/promises';
 import { resolve, dirname, relative, sep, isAbsolute, basename } from 'node:path';
+import { maskCredentialValues } from '../../utility/credentials.ts';
 import type { AgentTool, AgentToolContext, AgentScopes } from '../types.ts';
 
 const MAX_READ_BYTES = 5 * 1024 * 1024; // 5 MiB — grep skips larger files
@@ -62,7 +63,7 @@ function optionalInteger(value: unknown, name: string, minimum: number): number 
 const KEY_FILE_NAME = /\.(?:pem|key)$|^\.jwtPass$/i;
 // Checked against the text a tool returns, so a key without armor passes; the name and key-directory
 // rules are the guarantee.
-const PRIVATE_KEY_ARMOR = /-----(BEGIN|END) [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
+export const PRIVATE_KEY_ARMOR = /-----(BEGIN|END) [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
 const ARMOR_LINE_OVERLAP_BYTES = 64;
 // Longer than any PEM private-key block, post-quantum ones included (FrodoKEM-1344 is ~57 KB), so a window
 // whose start lies inside a key normally sees its BEGIN line.
@@ -81,7 +82,13 @@ type Scope = 'components' | 'logs' | 'config';
 const SCOPES: Scope[] = ['components', 'logs', 'config'];
 const SCOPE_DESCRIPTION =
 	"Which scope the `path` is relative to: 'components' (app source directory, the only writable scope), " +
-	"'logs' (read-only), or 'config' (read-only). Defaults to 'components'.";
+	"'logs' (read-only), or 'config' (read-only). Defaults to 'components'. In the read-only scopes, credential " +
+	'values (apiKey, password, token, secret and the like) come back as `*`s.';
+
+// The writable scope is returned exact, so a read followed by write_file never writes back a mask.
+function masksCredentials(scope: Scope): boolean {
+	return scope !== 'components';
+}
 
 function scopeRoot(scopes: AgentScopes, scope: Scope): string {
 	switch (scope) {
@@ -156,16 +163,34 @@ function assertOutsidePrivateKey(state: KeyState, path: string, insideMessage: s
 	}
 }
 
-/** Where byte `start` lies relative to a PEM private-key block, judged by what comes before it. */
-async function keyStateAt(fh: FileHandle, start: number): Promise<KeyState> {
-	if (start === 0) return 'outside';
+interface Preceding {
+	/** The look-back's text, up to byte `start`. */
+	text: string;
+	/** The same, read on past `start` far enough to hold an armor line that `start` cuts. */
+	withOverlap: string;
+	atFileStart: boolean;
+}
+
+/** The look-back before byte `start` that the key-material and credential checks judge a window by. */
+async function readPreceding(fh: FileHandle, start: number): Promise<Preceding> {
+	if (start === 0) return { text: '', withOverlap: '', atFileStart: true };
 	const from = Math.max(0, start - KEY_LOOKBACK_BYTES);
-	// Read past `start` so an armor line cut by it still matches, but count only lines that begin before it:
-	// an END line just after `start` must not clear a page that starts on the key's last body line.
 	const before = Buffer.alloc(start - from + ARMOR_LINE_OVERLAP_BYTES);
 	const { bytesRead } = await fh.read(before, 0, before.length, from);
-	const limit = before.toString('utf8', 0, Math.min(start - from, bytesRead)).length;
-	return keyStateAfter(before.toString('utf8', 0, bytesRead), limit, from === 0);
+	return {
+		text: before.toString('utf8', 0, Math.min(start - from, bytesRead)),
+		withOverlap: before.toString('utf8', 0, bytesRead),
+		atFileStart: from === 0,
+	};
+}
+
+/**
+ * Where the window after `preceding` lies relative to a PEM private-key block. Only armor lines that begin
+ * before the window count: an END line just after its start must not clear a page that starts on the key's
+ * last body line.
+ */
+function keyStateAt(preceding: Preceding): KeyState {
+	return keyStateAfter(preceding.withOverlap, preceding.text.length, preceding.atFileStart);
 }
 
 /** Coerce/validate a tool's `root` argument, defaulting to the writable components scope. */
@@ -294,12 +319,17 @@ export const readFileTool: AgentTool = {
 			}
 			const page = await readPage(fh, size, start, lineCount, pageBytes(ctx, path));
 			assertNoPrivateKey(page.content, requested);
+			const preceding = await readPreceding(fh, start);
 			assertOutsidePrivateKey(
-				await keyStateAt(fh, start),
+				keyStateAt(preceding),
 				requested,
 				`Refusing to read key material: ${requested} holds a PEM private key at that position`
 			);
-			const result: Record<string, unknown> = { path, size, offset: start, content: page.content };
+			// Masking never lengthens text, so the page still fits the budget it was cut to.
+			const content = masksCredentials(scope)
+				? maskCredentialValues(page.content, preceding.text, preceding.atFileStart)
+				: page.content;
+			const result: Record<string, unknown> = { path, size, offset: start, content };
 			const endLine = startLine === undefined || page.lines === 0 ? undefined : startLine + page.lines - 1;
 			if (startLine !== undefined) Object.assign(result, { startLine, endLine });
 			if (page.lineTruncated) result.lineTruncated = true;
@@ -546,6 +576,7 @@ export const grepFilesTool: AgentTool = {
 			throw new Error(`grep pattern exceeds ${MAX_PATTERN_LENGTH}-char cap`);
 		}
 		const pattern = new RegExp(patternSource, args.flags ?? 'i');
+		const masks = masksCredentials(scope);
 		const cap = Math.min(args.maxResults ?? MAX_GREP_RESULTS, MAX_GREP_RESULTS);
 		const budget = pageBytes(ctx, root);
 		let resultBytes = 0;
@@ -570,7 +601,8 @@ export const grepFilesTool: AgentTool = {
 			const text = await readFile(file, 'utf8').catch(() => '');
 			// Skipped whole, like an oversize file: a matched line could be one line of a key.
 			if (!text || PRIVATE_KEY_ARMOR.test(text)) return true;
-			const lines = text.split('\n');
+			// Matched after masking, or whether a guessed value matches would tell the model what was masked.
+			const lines = (masks ? maskCredentialValues(text) : text).split('\n');
 			for (let i = 0; i < lines.length; i++) {
 				if (!pattern.test(lines[i])) continue;
 				const match = { path: file, line: i + 1, text: clipLine(lines[i]) };
@@ -640,29 +672,39 @@ export const tailFileTool: AgentTool = {
 			const bytes = scanned.subarray(start - scanStart, bytesRead);
 			let firstChar = 0;
 			while (start > 0 && firstChar < bytes.length && (bytes[firstChar] & 0xc0) === 0x80) firstChar++;
-			const all = bytes.toString('utf8', firstChar).split('\n');
+			const rawText = bytes.toString('utf8', firstChar);
+			const pageAt = Math.min(start - scanStart + firstChar, bytesRead);
+			const text = masksCredentials(scope)
+				? maskCredentialValues(rawText, scanned.toString('utf8', 0, pageAt), scanStart === 0)
+				: rawText;
+			// Masking keeps every line break, so the raw and masked lines pair up by index.
+			const all = text.split('\n');
+			const rawAll = text === rawText ? all : rawText.split('\n');
 			// `split('\n')` on a file ending with `\n` leaves a trailing empty entry — drop it so the
 			// "last N lines" the agent sees matches what a human reading the file would see.
-			if (all.length > 0 && all[all.length - 1] === '') all.pop();
+			const end = all.length > 0 && all[all.length - 1] === '' ? all.length - 1 : all.length;
 			// From a mid-file offset the first "line" is almost certainly a fragment; drop it, unless it
 			// is the only line, which is then the cut end of a line longer than the page.
-			let lastLineCut = start > 0 && all.length === 1;
-			if (start > 0 && all.length > 1) all.shift();
-			const lines = all.slice(Math.max(0, all.length - wanted));
-			let used = lines.reduce((total, line) => total + escapedBytes(line) + 3, 0);
-			while (lines.length > 1 && used > budget) used -= escapedBytes(lines.shift()!) + 3;
+			let lastLineCut = start > 0 && end === 1;
+			let begin = Math.max(start > 0 && end > 1 ? 1 : 0, end - wanted);
+			let used = 0;
+			for (let index = begin; index < end; index++) used += escapedBytes(all[index]) + 3;
+			while (end - begin > 1 && used > budget) used -= escapedBytes(all[begin++]) + 3;
+			const lines = all.slice(begin, end);
+			const rawLines = rawAll.slice(begin, end);
 			if (lines.length === 1 && used > budget) {
 				lines[0] = escapedTail(lines[0], budget);
+				rawLines[0] = rawLines[0].slice(rawLines[0].length - lines[0].length);
 				lastLineCut = true;
 			}
-			assertNoPrivateKey(lines.join('\n'), requested);
+			assertNoPrivateKey(rawLines.join('\n'), requested);
 			const scannedText = scanned.toString('utf8', 0, bytesRead);
 			assertOutsidePrivateKey(
 				keyStateAfter(scannedText, scannedText.length, scanStart === 0),
 				requested,
 				`Refusing to read key material: ${requested} ends inside a PEM private key`
 			);
-			const omitted = lines.length < Math.min(wanted, start > 0 ? Infinity : all.length);
+			const omitted = lines.length < Math.min(wanted, start > 0 ? Infinity : end);
 			return { path, lines, truncated: omitted || lastLineCut };
 		} finally {
 			await fh.close();
