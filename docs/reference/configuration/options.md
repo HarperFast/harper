@@ -302,10 +302,6 @@ replication:
 
 Database storage configuration. See [Storage Tuning](../database/storage-tuning.md) for guidance on tuning these options for production workloads, [Database Overview](../database/overview.md) for general database concepts, and [Compaction](../database/compaction.md) for reclaiming space inside existing files.
 
-`storage.fullText` (v5.4.0) controls retained full-text searches and native search capacity. See
-[Full-Text Paging](../resources/full-text-paging.md#configure-resource-limits) for the settings,
-defaults and restart requirements.
-
 ```yaml
 storage:
   path: ~/hdb/database
@@ -315,6 +311,7 @@ storage:
   engine: rocksdb
 ```
 
+- `fullText` <VersionBadge version="v5.4.0" /> - Retained full-text searches and native search capacity. See [Full-Text Paging](../resources/full-text-paging.md#configure-resource-limits) for settings, defaults and restart requirements.
 - `engine` — The database storage engine to use for new databases. Currently supported engines are `rocksdb` and `lmdb`. The default is `rocksdb`. Existing databases will use the engine that was used when they were created.
 - `writeAsync` — Disable disk sync for higher throughput (**disables durability guarantees**); _Default_: `false`
 - `caching` — In-memory record caching; _Default_: `true`

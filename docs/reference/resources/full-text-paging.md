@@ -36,16 +36,20 @@ Set `continuation: true` and a positive integer `limit` to start. The limit must
 `searchPage()` returns a promise for a bounded array. Omit `continuation` or set it to `true` to start.
 `Table.search()` keeps its async iterable return value and rejects continuation options.
 
+Inside an authenticated Resource instance method:
+
 ```javascript
+const context = this.getContext();
 const query = {
 	conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'trail shoes' }],
 	select: ['id', 'title', '$score'],
 	limit: 25,
+	checkPermission: true,
 };
 
 let continuation = true;
 do {
-	const page = await tables.Product.searchPage({ ...query, continuation });
+	const page = await tables.Product.searchPage({ ...query, continuation }, context);
 	for (const record of page) console.log(record);
 	continuation = page.continuation;
 } while (continuation);
@@ -62,7 +66,7 @@ The returned array has three additional properties:
 These properties are not included when the array is serialized as JSON. Keep the same conditions
 and selected fields, and use the same authenticated caller when resuming. The page size may change. Use the default relevance order, or explicitly sort by descending
 `$score` alone. A nonzero `offset`, another sort, or a truthy `count`, `explain`, or `sync` option
-returns 400.
+returns 400. In REST, the accepted explicit score order is `sort(-$score)` alone.
 
 In a static custom Resource method, pass the method's `context` argument as the second argument
 to `tables.Product.searchPage()`. In an instance method, use `this.getContext()` instead. See
@@ -91,7 +95,7 @@ GET /Product/?catalogSearch=matches=trail%20shoes&select(id,title,$score)&limit(
 ```
 
 The body stays a JSON array. Read the next token from `Harper-Continuation`, URL-encode it, and
-send it in `continuation(token)` with the same query:
+send it in `continuation(token)` with the same conditions and selected fields. The page size may change:
 
 ```javascript
 const query = '/Product/?catalogSearch=matches=trail%20shoes&select(id,title,$score)&limit(25)';
@@ -106,7 +110,7 @@ do {
 } while (token);
 ```
 
-`Harper-Continuation-Complete` reports completion. `Harper-Continuation-Expires` contains the
+`Harper-Continuation-Complete` is present on every successful continuation page: the string `"false"` while more results remain, and `"true"` after completion or explicit close. `Harper-Continuation-Expires` contains the
 absolute expiry time in milliseconds since the Unix epoch. Completed pages omit the token and
 expiry. Harper adds these names to `Access-Control-Expose-Headers` so browser clients can read them.
 Continuation responses override the usual read-cache policy with `Cache-Control: no-store`. JSON `QUERY` requests return the
@@ -168,6 +172,7 @@ storage:
     cursorTtlMilliseconds: 60000
     maxCursors: 4
     maxRetainedQueryBytes: 8388608
+    maxPendingRequests: 32
     maxPendingResponseBytes: 16777216
     maxPageSize: 1000
     requestBudgetMilliseconds: 5000

@@ -136,16 +136,6 @@ GET /Product/?price=lt=100|[rating=5&[tag=fast|tag=scalable|tag=efficient]&inSto
 
 Harper supports special query functions using call syntax, included in the query string separated by `&`.
 
-### `continuation()` and `closeContinuation()`
-
-<VersionBadge version="v5.4.0" />
-
-Full-text searches can retain their original index snapshot between requests. Start with
-`continuation()`, resume with `continuation(token)`, and close early with `closeContinuation()`
-alongside the token. Use `limit(n)` without a nonzero offset or a count request. See
-[Full-Text Paging](../resources/full-text-paging.md#page-through-rest) for the token headers,
-query restrictions and recovery steps.
-
 ### `select(properties)`
 
 Specify which properties to include in the response.
@@ -183,9 +173,21 @@ GET /Product/?rating=gt=3&sort(+name)
 GET /Product/?sort(+rating,-price)
 ```
 
+### `continuation()` and `closeContinuation()`
+
+<VersionBadge version="v5.4.0" />
+
+Full-text searches can retain their original index snapshot between requests. Start with
+`continuation()`, resume with `continuation(token)`, and close early with `closeContinuation()`
+alongside the token. Use the single-argument `limit(end)` form without a starting offset or a count request. See
+[Full-Text Paging](../resources/full-text-paging.md#page-through-rest) for the token headers,
+query restrictions and recovery steps.
+
 ## Pagination and Total Count
 
 <VersionBadge version="v5.3.0" />
+
+For full-text paging across requests, use [continuation](#continuation-and-closecontinuation) instead of offset paging or a count request.
 
 Use `limit(start,end)` to page through a collection, and opt in to a total match count with the `Prefer` request header (`Prefer: count=exact`) so a client can render pagination (for example "1-25 of 1,234") without a second request.
 
