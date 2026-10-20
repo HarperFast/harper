@@ -516,6 +516,7 @@ export class UwsWebSocket extends EventEmitter {
 	#raw: any;
 	#open = true;
 	#closeEmitted = false;
+	#drainPending = false;
 	public _socket: UwsSocketShim;
 	public binaryType = 'nodebuffer';
 
@@ -576,7 +577,12 @@ export class UwsWebSocket extends EventEmitter {
 		this.emit('message', Buffer.from(new Uint8Array(message)), isBinary);
 	}
 	_drain(): void {
-		this._socket.emit('drain');
+		if (this.#drainPending) return;
+		this.#drainPending = true;
+		setImmediate(() => {
+			this.#drainPending = false;
+			if (this.#open && !this._socket.writableNeedDrain) this._socket.emit('drain');
+		});
 	}
 	_closed(code: number, message: ArrayBuffer): void {
 		this.#open = false;
