@@ -4,6 +4,8 @@ title: Full-Text Paging
 
 # Full-Text Paging
 
+Continuation paging is available in v5.4.0. The full-text index declaration below is a prerequisite.
+
 <VersionBadge version="v5.4.0" />
 
 Full-text continuation lets a client page through the original search matches while indexing
@@ -17,7 +19,7 @@ Full-text indexes require RocksDB and an audited table. The query names the `Ful
 not a stored source field:
 
 ```graphql
-type Product @table(audit: true) {
+type Product @table(audit: true) @export {
 	id: ID @primaryKey
 	title: String
 	catalogSearch: FullText @fullText(fields: [{ name: "title" }])
@@ -25,7 +27,8 @@ type Product @table(audit: true) {
 ```
 
 `catalogSearch` is a query-only declaration. Select the stored fields and optional `$score` in results.
-Full-text matches use descending relevance order.
+Full-text matches use descending relevance order. REST examples also require `rest: true` in the
+application configuration; see [REST setup](../rest/overview.md).
 
 ## Page through `Table.search()`
 
@@ -57,7 +60,7 @@ The returned array has three additional properties:
 | `expiresAt`    | Absolute expiry time in milliseconds since the Unix epoch           |
 
 These properties are not included when the array is serialized as JSON. Keep the same conditions
-and selected fields when resuming. The page size may change. Use the default relevance order, or explicitly sort by descending
+and selected fields, and use the same authenticated caller when resuming. The page size may change. Use the default relevance order, or explicitly sort by descending
 `$score` alone. A nonzero `offset`, another sort, or a truthy `count`, `explain`, or `sync` option
 returns 400.
 
@@ -66,13 +69,17 @@ to `tables.Product.search()`. In an instance method, use `this.getContext()` ins
 [Resource context](./resource-api.md#getcontext-context) for both forms. Set `checkPermission: true`
 in the query. This requests the caller's
 table and searched-source permissions; passing context alone does not request that permission gate.
-Application row filters still run on each page.
+Changing the caller identity, including switching from an authenticated request to an internal
+call without that context, returns 410. Permission changes for the same caller are checked on each
+page. Application row filters still run on each page.
 The token does not store application callbacks such as `rowFilter`. Supply them
 again on every page, together with the caller's context and permission settings.
 
 ## Page through REST
 
-Start with `continuation()`:
+Use the single-argument `limit(n)` page size and start with `continuation()`. Do not use
+`limit(start,end)`, request a count with `Prefer: count=`, or change the relevance order. The same
+`explain` and `sync` restrictions as `Table.search()` apply; violations return 400.
 
 ```http
 GET /Product/?catalogSearch=matches=trail%20shoes&select(id,title,$score)&limit(25)&continuation()
@@ -101,7 +108,9 @@ Continuation responses override the usual read-cache policy with `Cache-Control:
 same headers when their query body enables continuation.
 
 Read and parse the complete response body before saving its next token. A stream can fail after
-headers are sent. If that happens, retry with the previous token while the snapshot remains valid.
+headers are sent. If a resumed page fails this way, retry with the previous token while the snapshot remains valid.
+If no token was received on the first page, start a new search. The first search may keep its cursor
+slot until absolute expiry because it cannot be closed without a token.
 
 GET and QUERY can return continuation pages. OPTIONS returns request metadata without running a
 search. HEAD is an exception to the usual GET-without-a-body behavior: it returns 400 before
