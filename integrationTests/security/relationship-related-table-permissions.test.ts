@@ -22,7 +22,7 @@ const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/relationship-related
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
 const DEPT = { id: 'd1', name: 'Eng', budget: 100 };
-const EMP = { id: 'e1', name: 'Ann', deptId: 'd1' };
+const EMP = { id: 'e1', name: 'Ann', deptId: 'd1', payload: { deptId: 'd1' } };
 
 const EMP_READ = { read: true, insert: false, update: false, delete: false, attribute_permissions: [] };
 const ROLES = {
@@ -212,6 +212,21 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 				'nested sort'
 			);
 		});
+		test('a plain JSON sub-selection cannot reach the relationship', async () => {
+			assertRefused(
+				await byConditions('empOnly', [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }], {
+					get_attributes: ['id', { name: 'payload', select: ['dept'] }],
+				}),
+				'payload.dept'
+			);
+			const restricted = await byConditions(
+				'restricted',
+				[{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }],
+				{ get_attributes: ['id', { name: 'payload', select: ['dept'] }] }
+			);
+			strictEqual(restricted.status, 200, JSON.stringify(restricted.body));
+			deepStrictEqual(restricted.body, [{ id: EMP.id, payload: { dept: { id: DEPT.id, name: DEPT.name } } }]);
+		});
 	});
 
 	suite('conditions through the relationship', () => {
@@ -251,6 +266,13 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			assertRefused(await byConditions('empOnly', idCondition, { sort: { attribute: ['dept', 'name'] } }), 'sort');
 		});
 
+		test('operations API refuses a grouped condition through an unreadable relationship', async () => {
+			assertRefused(
+				await byConditions('empOnly', [{ operator: 'or', conditions: [...idCondition, ...deptName] }]),
+				'grouped condition'
+			);
+		});
+
 		test('operations API refuses a condition on a related attribute the role cannot read', async () => {
 			assertRefused(await byConditions('restricted', deptBudget), 'condition');
 		});
@@ -284,11 +306,17 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			strictEqual(condition.status, 403, await condition.text());
 			const sort = await query('empOnly', { select: ['id'], sort: { attribute: ['dept', 'name'] } });
 			strictEqual(sort.status, 403, await sort.text());
+			const single = await query('restricted', {
+				select: ['id'],
+				conditions: { attribute: ['dept', 'budget'], value: DEPT.budget },
+			});
+			strictEqual(single.status, 403, await single.text());
 		});
 
 		test('REST refuses a condition on a related table or attribute the role cannot read', async () => {
 			assertRefused(await rest('empOnly', `/Emp/?dept.name=${DEPT.name}`), 'unreadable table');
 			assertRefused(await rest('restricted', `/Emp/?dept.budget=${DEPT.budget}`), 'unreadable attribute');
+			assertRefused(await rest('empOnly', '/Emp/?select(id)&sort(+name,+dept.name)'), 'secondary sort');
 		});
 
 		test('GraphQL refuses a nested argument on a related table or attribute the role cannot read', async () => {
@@ -312,6 +340,10 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			const restricted = await rest('restricted', `/Emp/${EMP.id}?select(id,dept)`);
 			strictEqual(restricted.status, 200, JSON.stringify(restricted.body));
 			deepStrictEqual(restricted.body, { id: EMP.id, dept: { id: DEPT.id, name: DEPT.name } });
+
+			const json = await rest('empOnly', `/Emp/${EMP.id}?select(id,payload{dept})`);
+			strictEqual(json.status, 200, JSON.stringify(json.body));
+			strictEqual(json.body.payload?.dept, undefined, JSON.stringify(json.body));
 		});
 	});
 });

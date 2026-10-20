@@ -919,7 +919,8 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 		}
 	}
 
-	if (!isSuperUser && table != undefined) checkRelationshipReads(requestJson, operationSchema, table, permsResponse);
+	if (!isSuperUser && table != undefined && SEARCH_OPS.has(op))
+		checkRelationshipReads(requestJson, operationSchema, table, permsResponse);
 
 	const recordAttrs = getRecordAttributes(requestJson, op);
 	const attrPermissions = getAttributePermissions(requestJson.hdb_user?.role?.permission, operationSchema, table);
@@ -979,12 +980,15 @@ function normalizeSearchRequest(requestJson: any) {
  */
 function checkRelationshipReads(requestJson: any, operationSchema: string, table: string, permsResponse) {
 	const tableClass = getDatabases()[operationSchema]?.[table];
-	if (!tableClass?.propertyResolvers) return;
-	const denials = new Map<string, { denial: ReadDenial; attributes: Set<string> }>();
+	if (!tableClass?.attributes?.some((attribute) => attribute.relationship)) return;
+	const relatedTableOf = (currentTable: any, name: any) =>
+		currentTable.propertyResolvers?.[name]?.definition?.tableClass;
+	let denials: Map<string, { denial: ReadDenial; attributes: Set<string> }>;
 	const check = (path: any[]) => {
-		if (!tableClass.propertyResolvers[path[0]]?.definition?.tableClass) return;
+		if (!relatedTableOf(tableClass, path[0])) return;
 		const denial = tableClass._readDenial(path, requestJson.hdb_user);
 		if (!denial) return;
+		denials ??= new Map();
 		const key = `${denial.database}_${denial.table}`;
 		let entry = denials.get(key);
 		if (!entry) denials.set(key, (entry = { denial, attributes: new Set() }));
@@ -996,16 +1000,23 @@ function checkRelationshipReads(requestJson: any, operationSchema: string, table
 			if (sort.attribute !== undefined) check(prefix.concat(sort.attribute));
 		}
 	};
-	const checkSelect = (select: any, prefix: any[]) => {
+	// `prefix` is the relationship path from the root to `currentTable`. A plain JSON sub-selection is
+	// projected with the resolvers of the table it belongs to, so it keeps that prefix, and its own
+	// fields are data rather than attributes.
+	const checkSelect = (select: any, prefix: any[], currentTable: any, inJson = false) => {
 		if (!Array.isArray(select)) return;
 		for (const property of select) {
-			if (property?.name === undefined) check([...prefix, property]);
-			else {
-				const path = [...prefix, property.name];
+			const name = property?.name ?? property;
+			const relatedTable = relatedTableOf(currentTable, name);
+			if (relatedTable) {
+				const path = [...prefix, name];
 				check(path);
-				checkSelect(property.select, path);
-				checkSort(property.sort, path);
+				checkSelect(property?.select, path, relatedTable);
+				checkSort(property?.sort, path);
+				continue;
 			}
+			if (prefix.length > 0 && !inJson) check([...prefix, name]);
+			if (Array.isArray(property?.select)) checkSelect(property.select, prefix, currentTable, true);
 		}
 	};
 	const checkConditions = (conditions: any) => {
@@ -1016,9 +1027,10 @@ function checkRelationshipReads(requestJson: any, operationSchema: string, table
 				check(Array.isArray(condition.attribute) ? condition.attribute : [condition.attribute]);
 		}
 	};
-	checkSelect(requestJson.get_attributes, []);
+	checkSelect(requestJson.get_attributes, [], tableClass);
 	checkConditions(requestJson.conditions);
 	checkSort(requestJson.sort, []);
+	if (!denials) return;
 	for (const { denial, attributes } of denials.values()) {
 		if (denial.attribute === undefined) permsResponse.addUnauthorizedTable(denial.database, denial.table, [READ_PERM]);
 		else {

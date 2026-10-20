@@ -8,5 +8,6 @@ type Emp @table @export {
 	id: ID @primaryKey
 	name: String
 	deptId: ID @indexed
+	payload: Any
 	dept: Dept @relationship(from: deptId)
 }
