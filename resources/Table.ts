@@ -2445,7 +2445,11 @@ export function makeTable(options): TableResourceClass {
 									// and the sequence id is intentionally not advanced past the unapplied write.
 									if (
 										event.remoteNodeIds?.length > 0 &&
-										(advancesSequence || event.originCursors?.length > 0 || admitsOriginFloors(event))
+										(advancesSequence ||
+											event.originCursors?.length > 0 ||
+											admitsOriginFloors(event) ||
+											event.originRouteStates?.length > 0 ||
+											event.originFloorRevocations?.length > 0)
 									)
 										await updateRecordedSequenceId(event, advancesSequence, committingTxn?.nodeId);
 									continue;
