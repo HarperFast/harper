@@ -230,7 +230,7 @@ Generic JSON-array streaming retains its `{ error: "<name>: <message>" }` elemen
 REST problem details publish only an explicitly negative `retryable: false` hint; a missing hint is unknown.
 All three terminal records add `replicationUnconfirmed: true` for a reported commit whose local writes landed
 but whose confirmation failed, and `retryable: false` for that outcome or another explicitly non-retryable error.
-An enclosing rollback of pending writes removes the confirmation flag while preserving the negative retry hint. Metadata getters
+An enclosing scope that rolls back, or has already discarded, writes removes the confirmation flag while preserving the negative retry hint. Metadata getters
 on a thrown value may fail; omit unreadable extensions and still finish a valid error record. The commit-level
 scope and producer coverage are described in [resources/DESIGN.md](../resources/DESIGN.md#replication-confirmation-failure-means-the-linked-writes-committed-locally).
 The `error` value is the stable programmatic discriminator; `message` is diagnostic and follows the same thrown-message exposure policy as pre-commit Problem Details.
