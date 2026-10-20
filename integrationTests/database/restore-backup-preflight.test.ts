@@ -128,7 +128,14 @@ suite('restore_backup verifies before it replaces (harper#2965)', { skip: skipSu
 	async function cliRestore(id: number): Promise<{ exit: number; out: string }> {
 		try {
 			const r = await run(process.execPath, [HARPER_BIN, 'restore_backup', `database=${DATABASE}`, `backup_id=${id}`], {
-				env: { ...process.env, ROOTPATH: ctx.harper.dataRootDir },
+				// a developer's saved `harper login` or CLI target must not redirect or refuse this offline restore
+				env: {
+					...process.env,
+					ROOTPATH: ctx.harper.dataRootDir,
+					HOME: ctx.harper.dataRootDir,
+					HARPER_CLI_TARGET: '',
+					CLI_TARGET: '',
+				},
 				timeout: JOB_TIMEOUT_MS,
 				maxBuffer: 16 * 1024 * 1024,
 			});
