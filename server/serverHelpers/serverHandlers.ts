@@ -202,10 +202,11 @@ function authAndEnsureUserOnRequest(req?: any, resp?: any, done?: any) {
  */
 function clientAddressOf(req: any) {
 	const baseRequest = req.raw?.baseRequest;
-	if (baseRequest?.ip) return baseRequest.ip;
-	const server = baseRequest?._nodeRequest?.socket?.server;
-	if (server?._pipeName && server.bypassLocalAuth) return undefined;
-	return req.headers?.[terms.INTERNAL_CLIENT_ADDRESS_HEADER] || null;
+	// only injection strips the header from client input, so a Node request never reads it
+	if (!baseRequest) return req.headers?.[terms.INTERNAL_CLIENT_ADDRESS_HEADER] || null;
+	if (baseRequest.ip) return baseRequest.ip;
+	const server = baseRequest._nodeRequest?.socket?.server;
+	return server?._pipeName && server.bypassLocalAuth ? undefined : null;
 }
 
 async function handlePostRequest(req?: any, res?: any, _bypassAuth: any = false) {
