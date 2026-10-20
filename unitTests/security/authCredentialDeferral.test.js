@@ -1237,7 +1237,7 @@ describe('server.registerBearerValidator (#oauth/279)', () => {
 		assert.strictEqual(validatorCalls, 0);
 	});
 
-	it('caches validated Bearer tokens, defaults omitted authExpiresAt to 300s, ignores past unverified decodeJWT exp when validator claims token, and rejects expired or zero-exp tokens (#1414)', async () => {
+	it('caches validated Bearer tokens, defaults omitted authExpiresAt to 300s, and rejects a token whose JWT exp, authExpiresAt or zero exp has passed even when a validator claims it (#1414)', async () => {
 		let validatorCalls = 0;
 		let pastJwtCalls = 0;
 		const futureExpSec = Math.floor(Date.now() / 1000) + 60;
@@ -1282,20 +1282,14 @@ describe('server.registerBearerValidator (#oauth/279)', () => {
 		assert.strictEqual(validatorCalls, 1, 'second request with the same unexpired JWT must hit authorizationCache');
 
 		const nowSec = Math.floor(Date.now() / 1000);
-		const pastJwtFirst = await send(HARPER_OWNED, `Bearer ${pastExpJwtToken}`);
+		const pastJwt = await send(HARPER_OWNED, `Bearer ${pastExpJwtToken}`);
 		assert.strictEqual(
-			pastJwtFirst.response.status,
-			200,
-			'token with past unverified decodeJWT exp must still be accepted when claimed by validator'
+			pastJwt.response.status,
+			401,
+			'a JWT whose exp has passed is refused even when a validator claims it'
 		);
-		assert.ok(pastJwtFirst.request.user.authExpiresAt >= nowSec + 295);
-		const pastJwtSecond = await send(HARPER_OWNED, `Bearer ${pastExpJwtToken}`);
-		assert.strictEqual(pastJwtSecond.response.status, 200);
-		assert.strictEqual(
-			pastJwtCalls,
-			2,
-			'token whose unverified decodeJWT exp is in the past must bypass authorizationCache'
-		);
+		assert.strictEqual(pastJwt.body.error, 'token expired');
+		assert.strictEqual(pastJwtCalls, 1);
 
 		const opaqueDefault = await send(HARPER_OWNED, 'Bearer opaque-no-exp');
 		assert.strictEqual(opaqueDefault.response.status, 200);

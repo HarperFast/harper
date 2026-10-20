@@ -371,13 +371,13 @@ set `request.user` itself would have to re-implement, per plugin, what this path
   and a principal no `hdb_user` backs needs its own revocation at every by-name rehydration site
   (`security/DESIGN.md`). Refusing `role` now keeps adding it later from changing an existing
   result's meaning.
-- **Expiry is exact.** `authExpiresAt` is the validator's value capped by the token's own JWT `exp`,
-  else 300 s; it is checked again after the `server.getUser` lookup. `authorizationCache` evicts at
+- **Expiry is exact.** `authExpiresAt` is the validator's value (300 s when omitted) capped by the
+  token's own JWT `exp`; it is checked again after the `server.getUser` lookup. `authorizationCache` evicts at
   it, live subscriptions end at it (#1414), and MQTT wills persist it and are dropped past it, on
   restart replay checked again after the replay's own `server.getUser` lookup. The
-  decoded `exp` is unverified, so it only shortens: a past `exp` on a token the validator accepted is
-  ignored for the lifetime and only keeps the principal out of the cache. A validator that verified
-  the token's expiry should return it as `authExpiresAt`.
+  decoded `exp` is unverified, so it only shortens, down to refusing a token whose `exp` has passed
+  (`token expired`) even when the validator accepted it. A validator that verified the token's
+  expiry should still return it as `authExpiresAt`, since Harper decodes only JWTs.
 - **The cache key is the Authorization header.** A cached principal is served to any route and host
   on the worker without calling the validator, so a validator whose answer depends on the request
   (an RFC 8707 audience bound to one mount, say) must return `authCacheable: false`.

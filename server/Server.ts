@@ -73,9 +73,9 @@ export interface Server {
 	 * - throws `credentialRejectionError(message, 401)` (or a `markCredentialRejection`-tagged error)
 	 *   for a token it recognizes but refuses. Any other throw, or exceeding `timeoutMs`, fails closed.
 	 *
-	 * The principal expires at `authExpiresAt` (epoch seconds), capped by the token's own JWT `exp`
-	 * while that is in the future; with neither, 300 s. Live subscriptions and MQTT wills it opens end
-	 * then too. The principal is cached by the Authorization header alone, so a validator whose answer
+	 * The principal expires at `authExpiresAt` (epoch seconds, at most a year out; 300 s when omitted),
+	 * capped by the token's own JWT `exp`, so a JWT whose `exp` has passed is refused even when the
+	 * validator accepts it. Live subscriptions and MQTT wills it opens end then too. The principal is cached by the Authorization header alone, so a validator whose answer
 	 * depends on the request (audience per route or host) must return `authCacheable: false`. Returns a
 	 * disposer. Registrations survive `scope.close()` so in-flight requests drain; those made through
 	 * the `scope.server` passed to `handleApplication` are rolled back if that load fails.

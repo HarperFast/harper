@@ -69,7 +69,7 @@ export async function principalFromClaim(
 	decodedToken: any,
 	request: Request
 ): Promise<{ user: User; cacheable: boolean }> {
-	const { authExpiresAt, expired } = effectiveExpiry(result.authExpiresAt, decodedToken);
+	const authExpiresAt = effectiveExpiry(result.authExpiresAt, decodedToken);
 	const user = await resolveUser(entry, result.username, request, deadline);
 	// the server.getUser lookup can outlast the token
 	if (authExpiresAt * 1000 <= Date.now()) {
@@ -77,10 +77,10 @@ export async function principalFromClaim(
 	}
 	user._bearerValidator = true;
 	user.authExpiresAt = authExpiresAt;
-	return { user, cacheable: !expired && result.authCacheable !== false };
+	return { user, cacheable: result.authCacheable !== false };
 }
 
-function effectiveExpiry(claimedExp: unknown, decodedToken: any): { authExpiresAt: number; expired: boolean } {
+function effectiveExpiry(claimedExp: unknown, decodedToken: any): number {
 	const nowSec = Date.now() / 1000;
 	if (
 		claimedExp !== undefined &&
@@ -88,20 +88,14 @@ function effectiveExpiry(claimedExp: unknown, decodedToken: any): { authExpiresA
 	) {
 		throw new Error('Bearer validator authExpiresAt must be a finite number of epoch seconds within a year');
 	}
-	const claimed = claimedExp as number | undefined;
-	if (claimed !== undefined && claimed <= nowSec) {
+	// short, so a token the validator would now refuse does not stay cached for long
+	let exp = (claimedExp as number | undefined) ?? Math.floor(nowSec) + DEFAULT_TTL_SECONDS;
+	// decodedToken is unverified: it may shorten the lifetime (to nothing, once past), never extend it
+	if (typeof decodedToken?.exp === 'number' && Number.isFinite(decodedToken.exp)) exp = Math.min(exp, decodedToken.exp);
+	if (exp <= nowSec) {
 		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.TOKEN_EXPIRED, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
-	// decodedToken is unverified: it may shorten the lifetime, never extend it
-	const tokenExp =
-		typeof decodedToken?.exp === 'number' && Number.isFinite(decodedToken.exp) ? decodedToken.exp : undefined;
-	const futureTokenExp = tokenExp !== undefined && tokenExp > nowSec ? tokenExp : undefined;
-	// short, so a token the validator would now refuse does not stay cached for long
-	const exp = claimed ?? Math.floor(nowSec) + DEFAULT_TTL_SECONDS;
-	return {
-		authExpiresAt: futureTokenExp !== undefined ? Math.min(exp, futureTokenExp) : exp,
-		expired: tokenExp !== undefined && tokenExp <= nowSec,
-	};
+	return exp;
 }
 
 async function resolveUser(
