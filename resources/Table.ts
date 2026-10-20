@@ -1821,7 +1821,12 @@ export function makeTable(options): TableResourceClass {
 			if (index >= path.length) return;
 			const name = path[index];
 			const attributePermissions = permission.attribute_permissions;
-			if (attributePermissions?.length > 0 && !attributesAsObject(attributePermissions, 'read')[name])
+			if (
+				attributePermissions?.length > 0 &&
+				!attributesAsObject(attributePermissions, 'read')[name] &&
+				// a full-text index name is query-only, and search rejects it through a relationship
+				!fullTextFieldNames?.has(name)
+			)
 				return { database: databaseName, table: tableName, attribute: name };
 			return propertyResolvers[name]?.definition?.tableClass?._readDenial(path, user, target, index + 1);
 		}
