@@ -940,10 +940,9 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 }
 
 /**
- * Rewrites a search request so the attributes checked here are the ones its handler executes:
- * `select` and a condition's `attribute` take precedence over `get_attributes` and
- * `search_attribute` there, and a selection's `checkPermission` would otherwise be trusted as the
- * permissions to narrow it by.
+ * Authorization must check what the search handler executes: it prefers `select` and a condition's
+ * `attribute` over `get_attributes` and `search_attribute`, and would trust a selection's
+ * `checkPermission` when narrowing it.
  */
 function normalizeSearchRequest(requestJson: any) {
 	if (requestJson.select !== undefined) {
@@ -963,8 +962,7 @@ function normalizeSearchRequest(requestJson: any) {
 	};
 	normalizeConditions(requestJson.conditions);
 	const stripPermissionControls = (select: any) => {
-		if (!Array.isArray(select)) return;
-		for (const property of select) {
+		for (const property of Array.isArray(select) ? select : [select]) {
 			if (!property || typeof property !== 'object') continue;
 			delete property.checkPermission;
 			stripPermissionControls(property.select);
@@ -973,14 +971,10 @@ function normalizeSearchRequest(requestJson: any) {
 	stripPermissionControls(requestJson.get_attributes);
 }
 
-/**
- * Refuses any attribute path in the request's get_attributes, conditions or sort that reaches a
- * related table, or related attribute, the role cannot read. The root table's own attributes are
- * checked by checkAttributePerms.
- */
+/** Refuses selections, conditions and sorts that read a related table or attribute the role cannot read. */
 function checkRelationshipReads(requestJson: any, operationSchema: string, table: string, permsResponse) {
 	const tableClass = getDatabases()[operationSchema]?.[table];
-	if (!tableClass?.attributes?.some((attribute) => attribute.relationship)) return;
+	if (!tableClass?.hasRelationships) return;
 	const relatedTableOf = (currentTable: any, name: any) =>
 		currentTable.propertyResolvers?.[name]?.definition?.tableClass;
 	let denials: Map<string, { denial: ReadDenial; attributes: Set<string> }>;
@@ -1004,8 +998,8 @@ function checkRelationshipReads(requestJson: any, operationSchema: string, table
 	// projected with the resolvers of the table it belongs to, so it keeps that prefix, and its own
 	// fields are data rather than attributes.
 	const checkSelect = (select: any, prefix: any[], currentTable: any, inJson = false) => {
-		if (!Array.isArray(select)) return;
-		for (const property of select) {
+		if (select == null) return;
+		for (const property of Array.isArray(select) ? select : [select]) {
 			const name = property?.name ?? property;
 			const relatedTable = relatedTableOf(currentTable, name);
 			if (relatedTable) {
@@ -1016,7 +1010,8 @@ function checkRelationshipReads(requestJson: any, operationSchema: string, table
 				continue;
 			}
 			if (prefix.length > 0 && !inJson) check([...prefix, name]);
-			if (Array.isArray(property?.select)) checkSelect(property.select, prefix, currentTable, true);
+			if (property?.select != null && typeof property === 'object')
+				checkSelect(property.select, prefix, currentTable, true);
 		}
 	};
 	const checkConditions = (conditions: any) => {
@@ -1269,7 +1264,6 @@ function getRecordAttributes(json, operationName?) {
 					if (condition.search_attribute !== undefined) {
 						attribute = condition.search_attribute;
 					}
-					// a path is authorized here by its root attribute; checkRelationshipReads covers the rest
 					affectedAttributes.add(Array.isArray(attribute) ? attribute[0] : attribute);
 				}
 			};

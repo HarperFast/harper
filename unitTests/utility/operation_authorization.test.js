@@ -701,6 +701,28 @@ describe('Test operation_authorization', function () {
 			assert.equal(result.unauthorized_access.length, 0);
 		});
 
+		it('checks a path or sub-selection by its root attribute', function () {
+			const verifyRoot = (breedReadable) => {
+				let req_json = getRequestJson(TEST_JSON);
+				delete req_json.records;
+				Object.assign(req_json, {
+					operation: 'search_by_conditions',
+					get_attributes: ['name', { name: 'breed', select: ['name'] }],
+					conditions: [{ search_attribute: ['breed', 'name'], search_type: 'equals', search_value: 'x' }],
+				});
+				let perms = clone(PERMISSION_BASE);
+				perms.dev.tables.dog.read = true;
+				perms.dev.tables.dog.attribute_permissions = [
+					{ attribute_name: 'name', describe: true, read: true, insert: false, update: false },
+					{ attribute_name: 'breed', describe: true, read: breedReadable, insert: false, update: false },
+				];
+				req_json.hdb_user.role.permission = perms;
+				return op_auth.verifyPerms(req_json, search.searchByConditions.name);
+			};
+			assert.equal(verifyRoot(true), null);
+			assert.deepStrictEqual(verifyRoot(false).invalid_schema_items, ["Attribute 'breed' does not exist on 'dev.dog'"]);
+		});
+
 		it('checks the select alias the search handlers read in place of get_attributes', function () {
 			const verifySelect = (select) => {
 				let req_json = getRequestJson(TEST_JSON);
@@ -713,7 +735,7 @@ describe('Test operation_authorization', function () {
 					{ attribute_name: 'breed', describe: true, read: false, insert: false, update: false },
 				];
 				req_json.hdb_user.role.permission = perms;
-				return { req_json, result: op_auth_rewire.verifyPerms(req_json, search.searchByHash.name) };
+				return { req_json, result: op_auth.verifyPerms(req_json, search.searchByHash.name) };
 			};
 			const { req_json, result } = verifySelect(['name', 'breed']);
 			assert.equal(result instanceof PermissionResponseObject, true);
@@ -1333,14 +1355,6 @@ describe('Test operation_authorization', function () {
 				[...result],
 				['age', ...req_json.get_attributes.filter((attribute) => attribute !== 'age')]
 			);
-		});
-
-		it('records the root attribute of a relationship path and of a sub-select', function () {
-			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
-			let req_json = clone(TEST_CONDITIONS_JSON);
-			req_json.get_attributes = ['id', { name: 'owner', select: ['name'] }];
-			req_json.conditions = [{ search_attribute: ['owner', 'name'], search_type: 'equals', search_value: 'x' }];
-			assert.deepStrictEqual([...getRecordAttributes(req_json)], ['owner', 'id']);
 		});
 
 		it('does not treat full-text result metadata as stored attributes', function () {

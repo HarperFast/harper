@@ -153,6 +153,12 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 		test('a sub-select naming an unreadable related attribute is refused', async () => {
 			assertRefused(
 				await byConditions('restricted', [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }], {
+					get_attributes: ['id', { name: 'dept', select: 'budget' }],
+				}),
+				'scalar sub-select of budget'
+			);
+			assertRefused(
+				await byConditions('restricted', [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }], {
 					get_attributes: ['id', { name: 'dept', select: ['budget'] }],
 				}),
 				'sub-select of budget'
@@ -213,6 +219,14 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			);
 		});
 		test('a plain JSON sub-selection cannot reach the relationship', async () => {
+			for (const select of ['dept', ['dept']]) {
+				assertRefused(
+					await byConditions('empOnly', [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }], {
+						get_attributes: ['id', { name: 'payload', select }],
+					}),
+					`payload select ${JSON.stringify(select)}`
+				);
+			}
 			assertRefused(
 				await byConditions('empOnly', [{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }], {
 					get_attributes: ['id', { name: 'payload', select: ['dept'] }],
@@ -311,6 +325,8 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 				conditions: { attribute: ['dept', 'budget'], value: DEPT.budget },
 			});
 			strictEqual(single.status, 403, await single.text());
+			const arrayBody = await query('restricted', [{ attribute: ['dept', 'budget'], value: DEPT.budget }]);
+			strictEqual(arrayBody.status, 403, await arrayBody.text());
 		});
 
 		test('REST refuses a condition on a related table or attribute the role cannot read', async () => {
