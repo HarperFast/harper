@@ -285,6 +285,13 @@ describe('nested relationship constraints', function () {
 				);
 			});
 		}
+	for (const operator of ['and', 'or', 'invalid'])
+		it(`rejects a nested ${operator} operator without conditions as a client error`, async function () {
+			await assert.rejects(
+				() => query({ name: 'children', operator, select: ['id'] }),
+				(error) => error.statusCode === 400
+			);
+		});
 	it('filters singular relationships without removing the parent', async function () {
 		const rows = await query({ name: 'child', conditions: [{ attribute: 'state', value: 'closed' }], select: ['id'] });
 		assert.deepStrictEqual(

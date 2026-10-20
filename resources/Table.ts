@@ -933,12 +933,14 @@ interface TableResourceClass {
 	 */
 	lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions, context?: any): Promise<any>;
 	operation(operation: any, context: any): any;
+	/** @internal */
 	_prepareRelationshipSelection(
 		attribute: any,
 		context: any,
 		filtered?: any,
 		ensureLoaded?: boolean
 	): (record: any, entry?: any, isSync?: boolean) => any;
+	/** @internal */
 	_prepareQueryConditions(
 		conditions: any,
 		operator: any,
@@ -946,6 +948,7 @@ interface TableResourceClass {
 		context: any,
 		nested?: boolean
 	): { conditions: any; includeFullTextHighlights: boolean };
+	/** @internal */
 	_assertNestedReadAccess(name: any, context: any, target: any): void;
 	/**
 	 * This is responsible for ordering and select()ing the attributes/properties from returned entries
@@ -6571,18 +6574,19 @@ export function makeTable(options): TableResourceClass {
 		}
 		static _prepareQueryConditions(conditions, operator, target, context, nested = false) {
 			let includeFullTextHighlights = false;
+			const QueryError = nested ? ClientError : Error;
 			function prepareConditions(conditions: any[], operator: string) {
 				// some validation:
 				switch (operator) {
 					case 'and':
 					case undefined:
-						if (conditions.length < 1) throw new Error('An "and" operator requires at least one condition');
+						if (conditions.length < 1) throw new QueryError('An "and" operator requires at least one condition');
 						break;
 					case 'or':
-						if (conditions.length < 2) throw new Error('An "or" operator requires at least two conditions');
+						if (conditions.length < 2) throw new QueryError('An "or" operator requires at least two conditions');
 						break;
 					default:
-						throw new Error('Invalid operator ' + operator);
+						throw new QueryError('Invalid operator ' + operator);
 				}
 				for (const condition of conditions) {
 					if (condition.conditions) {
