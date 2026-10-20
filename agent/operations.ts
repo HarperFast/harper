@@ -13,15 +13,27 @@
 import type { OperationDefinition } from '../server/serverHelpers/serverUtilities.ts';
 import { OPERATIONS_ENUM } from '../utility/hdbTerms.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
-import { createSession, getSession, listSessions, appendMessage, resolveApproval, setStatus } from './session.ts';
+import {
+	AGENT_SESSION_ATTRIBUTES,
+	appendMessage,
+	cancelSession,
+	createSession,
+	getSession,
+	listSessions,
+	resolveApproval,
+} from './session.ts';
+import { parseBudgetCap, parseMaxTurns, summarizeSessionUsage } from './budget.ts';
+import type { AgentConfig, AgentMessage, AgentRunStatus, AgentSessionRow, AgentSessionUsage } from './types.ts';
 import { isValidMaxToolResultBytes, MAX_MAX_TOOL_RESULT_BYTES, MIN_MAX_TOOL_RESULT_BYTES } from './loop.ts';
-import type { AgentConfig, AgentMessage, AgentRunStatus } from './types.ts';
 
 export interface OperationDeps {
 	getConfig: () => AgentConfig;
 	setConfig: (patch: Partial<AgentConfig>) => AgentConfig;
-	startRun: (sessionId: string) => void;
+	/** `admitted` is the `admitRun` token taken before the request's first await; false when a cancel fenced it out. */
+	startRun: (sessionId: string, admitted?: number) => boolean;
 	cancelRun: (sessionId: string) => boolean;
+	admitRun: (sessionId: string) => number;
+	isRunInFlight: (sessionId: string) => boolean;
 }
 
 export function buildOperations(deps: OperationDeps): OperationDefinition[] {
@@ -33,12 +45,12 @@ export function buildOperations(deps: OperationDeps): OperationDefinition[] {
 		},
 		{
 			name: OPERATIONS_ENUM.GET_AGENT_SESSION,
-			execute: async (op) => getAgentSession(op),
+			execute: async (op) => getAgentSession(op, deps),
 			requiresSuperUser: true,
 		},
 		{
 			name: OPERATIONS_ENUM.LIST_AGENT_SESSIONS,
-			execute: async (op) => listAgentSessions(op),
+			execute: async (op) => listAgentSessions(op, deps),
 			requiresSuperUser: true,
 		},
 		{
@@ -68,13 +80,31 @@ async function agentPrompt(op: any, deps: OperationDeps) {
 	if (!message) throw new ClientError('message is required', 400);
 
 	let sessionId: string = op?.session_id;
+	const admitted = sessionId ? deps.admitRun(sessionId) : undefined;
 	if (sessionId) {
 		const existing = await getSession(sessionId);
 		if (!existing) throw new ClientError(`Unknown session ${sessionId}`, 404);
 		if (existing.status === 'running' || existing.status === 'awaiting_approval') {
-			throw new ClientError(
+			throw promptConflict(
 				`Session ${sessionId} is ${existing.status}; resolve or cancel before sending another prompt`,
-				409
+				'AGENT_SESSION_BUSY',
+				true
+			);
+		}
+		// A cancelled run can still be finishing a model call or a handler; a prompt appended now would land
+		// between that call's tool calls and their results, or be folded into the cancelled run and lost.
+		if (deps.isRunInFlight(sessionId)) {
+			throw promptConflict(
+				`Session ${sessionId} still has a run finishing; send the prompt again shortly`,
+				'AGENT_RUN_FINISHING',
+				true
+			);
+		}
+		if (deps.admitRun(sessionId) !== admitted) {
+			throw promptConflict(
+				`A cancel for session ${sessionId} arrived while this prompt was being accepted`,
+				'AGENT_PROMPT_CANCELLED',
+				true
 			);
 		}
 		await appendMessage(sessionId, asUserMessage(message));
@@ -88,21 +118,49 @@ async function agentPrompt(op: any, deps: OperationDeps) {
 		sessionId = created.session_id;
 	}
 
-	deps.startRun(sessionId);
+	if (!deps.startRun(sessionId, admitted)) {
+		throw promptConflict(
+			`A cancel for session ${sessionId} arrived while this prompt was being accepted; the prompt was recorded but not run`,
+			'AGENT_PROMPT_NOT_RUN',
+			false
+		);
+	}
 	return { session_id: sessionId, status: 'running' satisfies AgentRunStatus };
 }
 
-async function getAgentSession(op: any) {
+/** `retryable` tells a client whether the prompt was left unrecorded, so sending it again cannot duplicate it. */
+function promptConflict(message: string, code: string, retryable: boolean): ClientError {
+	return Object.assign(new ClientError(message, 409), { code, retryable });
+}
+
+async function getAgentSession(op: any, deps: OperationDeps) {
 	const sessionId = String(op?.session_id ?? '');
 	if (!sessionId) throw new ClientError('session_id is required', 400);
 	const session = await getSession(sessionId);
 	if (!session) throw new ClientError(`Unknown session ${sessionId}`, 404);
-	return session;
+	return withUsage(session, deps);
 }
 
-async function listAgentSessions(op: any) {
+async function listAgentSessions(op: any, deps: OperationDeps) {
 	const limit = Number.isFinite(op?.limit) ? Number(op.limit) : undefined;
-	return { sessions: await listSessions({ limit }) };
+	return { sessions: (await listSessions({ limit })).map((session) => withUsage(session, deps)) };
+}
+
+/** Copies fields by name, never by spread: a stored record may expose fields as accessors a spread skips. */
+function withUsage(
+	session: AgentSessionRow,
+	deps: OperationDeps
+): Record<string, unknown> & { usage: AgentSessionUsage; runInFlight: boolean } {
+	const view: Record<string, unknown> = {};
+	for (const { name } of AGENT_SESSION_ATTRIBUTES) {
+		const value = session[name as keyof AgentSessionRow];
+		if (value !== undefined) view[name] = value;
+	}
+	// A cancelled session reads `aborted` before its run has finished; this is what says a prompt can be sent.
+	return Object.assign(view, {
+		usage: summarizeSessionUsage(session.messages, session.rejectedCalls),
+		runInFlight: deps.isRunInFlight(session.session_id),
+	});
 }
 
 async function cancelAgentRun(op: any, deps: OperationDeps) {
@@ -114,9 +172,8 @@ async function cancelAgentRun(op: any, deps: OperationDeps) {
 	// in `awaiting_approval` or sitting `idle` between turns). Always update the persisted
 	// status so a paused session can still be terminated by the operator.
 	const signalledLiveRun = deps.cancelRun(sessionId);
-	const wasTerminal = session.status === 'completed' || session.status === 'aborted' || session.status === 'error';
-	if (!wasTerminal) await setStatus(sessionId, 'aborted', 'Cancelled by operator');
-	return { cancelled: !wasTerminal, signalledLiveRun };
+	const cancelled = await cancelSession(sessionId);
+	return { cancelled, signalledLiveRun };
 }
 
 async function approveAgentAction(op: any, deps: OperationDeps) {
@@ -126,10 +183,11 @@ async function approveAgentAction(op: any, deps: OperationDeps) {
 		throw new ClientError('session_id and approval_id are required', 400);
 	}
 	const approved = op?.approved !== false;
+	const admitted = deps.admitRun(sessionId);
 	const resolved = await resolveApproval(sessionId, approvalId, approved);
 	// Either decision should resume the loop: an approval means execute the saved tool call;
 	// a denial means hand the operator-rejection observation back to the model so it can adjust.
-	deps.startRun(sessionId);
+	deps.startRun(sessionId, admitted);
 	return resolved;
 }
 
@@ -153,15 +211,17 @@ async function setAgentConfig(op: any, deps: OperationDeps) {
 		'enabled',
 		'provider',
 		'model',
-		'maxTurns',
 		'maxTokens',
 		'maxToolResultBytes',
-		'maxCostUsd',
 		'autoApprove',
 		'allowDestructive',
 		'systemPromptAppend',
 	]) {
 		if (op?.[key] !== undefined) (patch as any)[key] = op[key];
+	}
+	if (op?.maxTurns !== undefined) patch.maxTurns = parseMaxTurns(op.maxTurns);
+	for (const key of ['maxSessionTokens', 'maxCostUsd'] as const) {
+		if (op?.[key] !== undefined) patch[key] = parseBudgetCap(key, op[key]);
 	}
 	return deps.setConfig(patch);
 }
