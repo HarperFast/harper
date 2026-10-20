@@ -298,6 +298,16 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			assertRefused(await byConditions('empOnly', idCondition, { sort: { attribute: ['dept', 'name'] } }), 'sort');
 		});
 
+		test('operations API refuses a value search through an unreadable relationship', async () => {
+			const valueSearch = (as: RoleName | 'super', search_attribute: any[], search_value: any) =>
+				op(as, { operation: 'search_by_value', table: 'Emp', search_attribute, search_value, get_attributes: ['id'] });
+			const allowed = await valueSearch('full', ['dept', 'budget'], DEPT.budget);
+			strictEqual(allowed.status, 200, JSON.stringify(allowed.body));
+			deepStrictEqual(allowed.body, [{ id: EMP.id }]);
+			assertRefused(await valueSearch('empOnly', ['dept', 'name'], DEPT.name), 'unreadable table');
+			assertRefused(await valueSearch('restricted', ['dept', 'budget'], DEPT.budget), 'unreadable attribute');
+		});
+
 		test('operations API refuses a grouped condition through an unreadable relationship', async () => {
 			assertRefused(
 				await byConditions('empOnly', [{ operator: 'or', conditions: [...idCondition, ...deptName] }]),
