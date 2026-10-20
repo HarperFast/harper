@@ -2,11 +2,6 @@
  * Reading through an `@relationship` applies the role's permissions on the related table, on every
  * read API: selecting the relationship, and filtering or sorting by a path through it.
  *
- * Emp.dept is a relationship to Dept. Roles:
- *   - full:       read on Emp and Dept
- *   - empOnly:    read on Emp, nothing on Dept
- *   - restricted: read on Emp, and on Dept every attribute except `budget`
- *
  * Run:
  *   npm run build && npm run test:integration -- "integrationTests/security/relationship-related-table-permissions.test.ts"
  */
@@ -338,14 +333,28 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 				conditions: { attribute: ['dept', 'budget'], value: DEPT.budget },
 			});
 			strictEqual(single.status, 403, await single.text());
-			const arrayBody = await query('restricted', [{ attribute: ['dept', 'budget'], value: DEPT.budget }]);
-			strictEqual(arrayBody.status, 403, await arrayBody.text());
-			const setBody = await fetch(`${restURL}/Emp/`, {
-				method: 'QUERY',
-				headers: { ...headers.restricted, 'Content-Type': 'application/cbor', 'Accept': 'application/json' },
-				body: encodeCbor(new Set([{ attribute: ['dept', 'budget'], value: DEPT.budget }])),
-			});
-			strictEqual(setBody.status, 403, await setBody.text());
+			const budgetCondition = { attribute: ['dept', 'budget'], value: DEPT.budget };
+			const queryCbor = (as: RoleName, body: any) =>
+				fetch(`${restURL}/Emp/`, {
+					method: 'QUERY',
+					headers: { ...headers[as], 'Content-Type': 'application/cbor', 'Accept': 'application/json' },
+					body: encodeCbor(body),
+				});
+			for (const [label, send] of [
+				['array body', (as: RoleName) => query(as, [budgetCondition])],
+				['CBOR set body', (as: RoleName) => queryCbor(as, new Set([budgetCondition]))],
+			] as const) {
+				const full = await send('full');
+				const fullText = await full.text();
+				strictEqual(full.status, 200, `${label}: ${fullText}`);
+				deepStrictEqual(
+					JSON.parse(fullText).map((record: any) => record.id),
+					[EMP.id],
+					label
+				);
+				const refused = await send('restricted');
+				strictEqual(refused.status, 403, `${label}: ${await refused.text()}`);
+			}
 		});
 
 		test('REST refuses a condition on a related table or attribute the role cannot read', async () => {
@@ -367,10 +376,8 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			deepStrictEqual(full.body, { id: EMP.id, dept: DEPT });
 
 			const empOnly = await rest('empOnly', `/Emp/${EMP.id}?select(id,dept)`);
-			ok(
-				empOnly.status === 403 || (empOnly.status === 200 && empOnly.body.dept === undefined),
-				`empOnly: ${empOnly.status} ${JSON.stringify(empOnly.body)}`
-			);
+			strictEqual(empOnly.status, 200, JSON.stringify(empOnly.body));
+			deepStrictEqual(empOnly.body, { id: EMP.id });
 
 			const restricted = await rest('restricted', `/Emp/${EMP.id}?select(id,dept)`);
 			strictEqual(restricted.status, 200, JSON.stringify(restricted.body));

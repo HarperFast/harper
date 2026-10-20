@@ -1130,13 +1130,22 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			role.permission.test.tables.ReauthParents = role.permission.test.tables.ReauthDocs;
 			await testUtils.seedUsers([{ username: 'filter_user', active: true, role }]);
 			const user = await resolve('filter_user');
+			let originalEnd;
+			class Tracked extends Docs {
+				subscribe() {
+					const subscription = super.subscribe();
+					originalEnd = subscription.end;
+					return subscription;
+				}
+			}
 			async function subscribeWhere(attribute) {
 				const context = { user, authorize: true };
 				const target = new RequestTarget('/topic');
 				target.id = 'topic';
 				target.conditions = [{ attribute, value: 'x' }];
-				const subscription = await Docs.subscribe(target, undefined, context);
+				const subscription = await Tracked.subscribe(target, undefined, context);
 				handles.push({ unregister: () => subscription.end() });
+				context.end = originalEnd;
 				return context;
 			}
 			const scalar = await subscribeWhere('value');
@@ -1152,6 +1161,12 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 				assert.strictEqual(scalar.user, scalarUser, 'a scalar filter stays identity-only');
 				assert.notStrictEqual(related.user, relatedUser, 'a filter through a relationship is rechecked');
+
+				delete role.permission.test.tables.ReauthParents;
+				await testUtils.seedUsers([{ username: 'filter_user', active: true, role }]);
+				await _sweepNow();
+				assert.strictEqual(related.end.calls.length, 1, 'losing the related table ends it');
+				assert.strictEqual(scalar.end.calls.length, 0, 'a scalar filter keeps its subscription');
 			} finally {
 				userModule.userChangeNotificationEpoch = originalEpoch;
 			}
