@@ -183,14 +183,9 @@ for (const isolated of [false, true]) {
 						branchedDatabases: declaration,
 						restart: true,
 					};
-					let deployed = await operation(deployment);
+					const deployed = await operation(deployment);
 					assert.strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
-					if (isolated) {
-						// The first deploy creates the dedicated worker; its next load can be certified.
-						await read('/PackageProbe/seed');
-						deployed = await operation(deployment);
-						assert.strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
-					}
+					// an isolated application's first worker is its canary too
 					assert.strictEqual(deployed.body.certification, 'certified');
 					const rootConfig = parse(await readFile(join(ctx.harper.dataRootDir, 'harper-config.yaml'), 'utf8'));
 					assert.strictEqual(rootConfig[project].package, pkg);
@@ -275,16 +270,63 @@ for (const isolated of [false, true]) {
 				}
 			);
 
-			test('drop_component with restart removes the package fork', { timeout: 180000 }, async () => {
+			const httpThreadIds = async () =>
+				(await sendOperation(ctx.harper, { operation: 'system_information', attributes: ['threads'] })).threads
+					.filter((thread: { name: string }) => thread.name === 'http')
+					.map((thread: { threadId: number }) => thread.threadId)
+					.sort();
+
+			test('drop_component with keepBranches keeps the package fork and says so', { timeout: 180000 }, async () => {
 				assert.ok(existsSync(branchRoot()));
-				await sendOperation(ctx.harper, { operation: 'drop_component', project, restart: true });
-				await waitFor(() => !existsSync(branchRoot()), {
-					timeout: 30000,
-					interval: 100,
-					message: 'drop left the application fork behind',
-				});
-				assert.strictEqual((await baseRows(['seed']))[0].note, 'base');
+				const dropped = await operation({ operation: 'drop_component', project, restart: true, keepBranches: true });
+				assert.strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
+				assert.strictEqual(dropped.body.componentRemoved, true);
+				assert.strictEqual(dropped.body.branchesRemoved, false);
+				assert.match(dropped.body.message, /left in place \(keepBranches\)/);
+				assert.ok(existsSync(branchRoot()), 'the fork is still there');
 			});
+
+			test(
+				'dropping the application again discards the fork it kept, and restarts nothing',
+				{ timeout: 180000 },
+				async () => {
+					const before = await httpThreadIds();
+					const dropped = await operation({ operation: 'drop_component', project, restart: true });
+					assert.strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
+					assert.strictEqual(dropped.body.componentRemoved, false, 'it was not on this node any more');
+					assert.strictEqual(dropped.body.branchesRemoved, true);
+					assert.ok(!existsSync(branchRoot()), 'the fork is gone');
+					assert.deepStrictEqual(await httpThreadIds(), before, 'no worker was restarted');
+					assert.strictEqual((await baseRows(['seed']))[0].note, 'base');
+				}
+			);
+
+			test(
+				`drop_component removes the package fork by default${isolated ? ', without a restart' : ''}`,
+				{ timeout: 180000 },
+				async () => {
+					const deployed = await operation({
+						operation: 'deploy_component',
+						project,
+						package: pkg,
+						isolated,
+						host,
+						branchedDatabases: isolated ? true : ['data'],
+						restart: true,
+					});
+					assert.strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
+					await read('/PackageProbe/seed');
+					assert.ok(existsSync(branchRoot()));
+					// an isolated application's worker stops with or without restart, so nothing else needs one
+					const dropped = await operation({ operation: 'drop_component', project, restart: !isolated });
+					assert.strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
+					assert.strictEqual(dropped.body.componentRemoved, true);
+					assert.strictEqual(dropped.body.workerStopped, isolated);
+					assert.strictEqual(dropped.body.branchesRemoved, true, JSON.stringify(dropped.body));
+					assert.ok(!existsSync(branchRoot()), 'drop left the application fork behind');
+					assert.strictEqual((await baseRows(['seed']))[0].note, 'base');
+				}
+			);
 		}
 	);
 }

@@ -1043,6 +1043,9 @@ export const ITC_EVENT_TYPES = {
 	OPERATION_REGISTERED: 'operation_registered',
 	OPERATION_EXECUTE_REQUEST: 'operation_execute_request',
 	OPERATION_EXECUTE_RESPONSE: 'operation_execute_response',
+	// A worker hands a whole-component drop_component to the main thread, which owns its lock, stop and cleanup.
+	DROP_COMPONENT_REQUEST: 'drop_component_request',
+	MAIN_THREAD_RESPONSE: 'main_thread_response',
 } as const;
 
 /** Supported thread types */

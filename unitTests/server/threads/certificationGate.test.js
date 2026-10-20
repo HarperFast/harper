@@ -22,6 +22,8 @@ const {
 	setCanaryVerdictTimeout,
 	setHeldReplacementTimeout,
 	setRootComponentsReload,
+	setIsolatedWorkerReconciler,
+	answerMainThreadRequests,
 } = require('#js/server/threads/manageThreads');
 const { assertNotCertifying } = require('#src/components/Application');
 const { certificationRecordPath } = require('#src/components/releaseCertification');
@@ -48,7 +50,9 @@ const RELEASES = [
 	OTHER,
 	{ component: 'isolated-app', deploymentId: '44444444-4444-4444-4444-444444444444' },
 	{ component: 'isolated-app', deploymentId: '55555555-5555-5555-5555-555555555555' },
+	{ component: 'fresh-app', deploymentId: '66666666-6666-6666-6666-666666666666' },
 ];
+const FRESH = { component: 'fresh-app', deploymentId: '66666666-6666-6666-6666-666666666666' };
 
 describe('the release certification gate', function () {
 	this.timeout(60000);
@@ -65,6 +69,24 @@ describe('the release certification gate', function () {
 		rmSync(`${planPath}.starts`, { force: true });
 	}
 
+	function instrument(worker) {
+		started.push(worker);
+		worker.startedAt = Date.now();
+		worker.certifyRequests = [];
+		worker.lifecycle = [];
+		worker.on('message', (message) => {
+			if (message?.type === 'fixture-lifecycle') worker.lifecycle.push(message);
+			if (message?.type === 'fixture-admitted') worker.admitted = true;
+			if (message?.type === 'fixture-joined') worker.joined = (worker.joined ?? 0) + 1;
+			if (message?.type === 'fixture-left') worker.left = (worker.left ?? 0) + 1;
+			if (message?.type === 'fixture-interrupted') worker.interrupted = message.result;
+			if (message?.type !== 'fixture-booted') return;
+			worker.certifyRequests.push(message.certify);
+			worker.failClosed = message.failClosed;
+		});
+		worker.once('exit', () => (worker.exitedAt = Date.now()));
+	}
+
 	function startFixture(index, { application } = {}) {
 		return new Promise((resolve, reject) => {
 			startWorker(FIXTURE, {
@@ -73,21 +95,7 @@ describe('the release certification gate', function () {
 				threadCount: 3,
 				application,
 				onStarted(worker) {
-					started.push(worker);
-					worker.startedAt = Date.now();
-					worker.certifyRequests = [];
-					worker.lifecycle = [];
-					worker.on('message', (message) => {
-						if (message?.type === 'fixture-lifecycle') worker.lifecycle.push(message);
-						if (message?.type === 'fixture-admitted') worker.admitted = true;
-						if (message?.type === 'fixture-joined') worker.joined = (worker.joined ?? 0) + 1;
-						if (message?.type === 'fixture-left') worker.left = (worker.left ?? 0) + 1;
-						if (message?.type === 'fixture-interrupted') worker.interrupted = message.result;
-						if (message?.type !== 'fixture-booted') return;
-						worker.certifyRequests.push(message.certify);
-						worker.failClosed = message.failClosed;
-					});
-					worker.once('exit', () => (worker.exitedAt = Date.now()));
+					instrument(worker);
 					const onReady = (message) => {
 						if (message?.type !== 'child_started') return;
 						worker.off('message', onReady);
@@ -207,6 +215,7 @@ describe('the release certification gate', function () {
 			await worker.terminate();
 		}
 		setCertificationHandler(undefined);
+		setIsolatedWorkerReconciler(null);
 	});
 
 	it('holds a release open to other preparations until its rollout ends, but not while it is being refused', async () => {
@@ -1362,5 +1371,149 @@ describe('the release certification gate', function () {
 		await rolledOut();
 		assert.equal(shutdownOrder.length, 3);
 		assert.equal(shutdownOrder.at(-1), requesterThreadId);
+	});
+
+	/** Starts a dedicated worker for `fresh-app` the first time it reconciles it, as socketRouter's does for a new one. */
+	function freshAppReconciler(calls) {
+		return async (only) => {
+			calls.push(only);
+			if (only !== FRESH.component || calls.length > 1) return [];
+			startWorker(FIXTURE, {
+				name: 'http',
+				workerIndex: 9,
+				threadCount: 3,
+				application: FRESH.component,
+				onStarted: instrument,
+			});
+			return [FRESH.component];
+		};
+	}
+
+	it("arms a new isolated application's release with no worker yet, and certifies it on the worker its rollout starts", async () => {
+		setIsolatedWorkerReconciler(null);
+		assert.deepStrictEqual(
+			await certificationRequest('arm', { ...FRESH, isolated: true, scope: FRESH.component }),
+			{ armed: false, reason: 'unavailable' },
+			'not while nothing could start its worker'
+		);
+		const calls = [];
+		setIsolatedWorkerReconciler(freshAppReconciler(calls));
+		const poolIds = pool.map((worker) => worker.threadId);
+		assert.deepStrictEqual(await certificationRequest('arm', { ...FRESH, isolated: true, scope: FRESH.component }), {
+			armed: true,
+		});
+		assert.equal(await certificationRequest('commit', FRESH), true);
+		assert.equal((await certificationRequest('decision', FRESH)).status, 'certified');
+		await waitFor(() => completions.length > 0, { timeout: 45000, message: 'the rollout never ended' });
+		assert.deepStrictEqual(calls, [FRESH.component], 'its rollout reconciled that application alone');
+		const canary = started.find((worker) => worker.application === FRESH.component);
+		assert.deepStrictEqual(canary.certifyRequests, [[FRESH]], 'its first worker was held for the release');
+		await waitFor(() => canary.admitted, { message: 'the canary was never admitted' });
+		assert.deepStrictEqual(
+			httpWorkers()
+				.filter((worker) => !worker.application)
+				.map((worker) => worker.threadId),
+			poolIds,
+			'no pool worker was replaced'
+		);
+	});
+
+	it("starts no copy of a refused first release's dedicated worker, and withdraws its slot", async () => {
+		setCertificationHandler(
+			handler({
+				decide: async (certification, decision) => {
+					decisions.push({ component: certification.component, ...decision });
+					return decision.status === 'rejected' ? { ...decision, restored: null, failedClosed: true } : decision;
+				},
+			})
+		);
+		plan([{ outcome: 'failed' }]);
+		const calls = [];
+		setIsolatedWorkerReconciler(freshAppReconciler(calls));
+		assert.deepStrictEqual(await certificationRequest('arm', { ...FRESH, isolated: true, scope: FRESH.component }), {
+			armed: true,
+		});
+		assert.equal(await certificationRequest('commit', FRESH), true);
+		const decision = await certificationRequest('decision', FRESH);
+		assert.equal(decision.status, 'rejected');
+		assert.equal(decision.failedClosed, true);
+		await waitFor(() => calls.length === 2, { message: 'its slot was never withdrawn' });
+		assert.deepStrictEqual(calls, [FRESH.component, FRESH.component]);
+		await sleep(500);
+		const dedicated = started.filter((worker) => worker.application === FRESH.component);
+		assert.equal(dedicated.length, 1, 'only the canary ever started');
+		assert.ok(dedicated[0].exitedAt, 'and it was stopped');
+		await waitFor(() => completions.length > 0, { timeout: 45000, message: 'the rollout never ended' });
+	});
+
+	it('restarts the pool with an application a pool worker loaded while it was shared, and its own worker', async () => {
+		await startFixture(3, { application: 'was-shared' });
+		for (const worker of pool) worker.loadedApplications = new Set(['was-shared']);
+		const before = httpWorkers().map((worker) => worker.threadId);
+		const reconciled = [];
+		setIsolatedWorkerReconciler(async (only) => {
+			reconciled.push(only);
+			return [];
+		});
+		await restartWorkers('http', 1, true, undefined, 'was-shared');
+		assert.deepStrictEqual(reconciled, ['was-shared'], 'it reconciles that application alone');
+		for (const worker of httpWorkers()) {
+			assert.ok(!before.includes(worker.threadId), `worker ${worker.workerIndex} was replaced, its own included`);
+		}
+
+		const after = httpWorkers().map((worker) => worker.threadId);
+		await restartWorkers('http', 1, true, undefined, 'never-shared');
+		assert.deepStrictEqual(
+			httpWorkers().map((worker) => worker.threadId),
+			after,
+			'an application no pool worker reported loading restarts none of them'
+		);
+
+		delete httpWorkers().find((worker) => !worker.application).loadedApplications;
+		await restartWorkers('http', 1, true, undefined, 'never-shared');
+		assert.ok(
+			httpWorkers()
+				.filter((worker) => !worker.application)
+				.every((worker) => !after.includes(worker.threadId)),
+			'a pool worker that has not reported what it loaded may hold it'
+		);
+	});
+
+	it("answers each worker's request to main by its own id, and bounds the wait", async () => {
+		const requestType = 'certification_gate_test_request';
+		const gates = new Map();
+		answerMainThreadRequests(requestType, async ({ name }, requester, answerEarly) => {
+			if (name === 'early') {
+				answerEarly({ early: true, threadId: requester.threadId });
+				return { early: false };
+			}
+			if (name === 'fails') throw Object.assign(new Error('refused'), { statusCode: 409 });
+			if (name === 'silent') return new Promise(() => {});
+			const gate = Promise.withResolvers();
+			gates.set(name, gate);
+			return gate.promise.then(() => ({ name }));
+		});
+		const [asker] = pool;
+		const answers = new Map();
+		asker.on('message', (message) => {
+			if (message?.type === 'fixture-main-answer') answers.set(message.tag, message);
+		});
+		const ask = (tag, name, timeoutMs = 10000) =>
+			asker.postMessage({ type: 'fixture-main-request', tag, requestType, payload: { name }, timeoutMs });
+		ask('first', 'first');
+		ask('second', 'second');
+		ask('early', 'early');
+		ask('fails', 'fails');
+		ask('silent', 'silent', 300);
+		await waitFor(() => gates.size === 2, { message: 'main never received both requests' });
+		gates.get('second').resolve();
+		await waitFor(() => answers.has('second'), { message: 'the second request was never answered' });
+		assert.ok(!answers.has('first'), 'an answer to another request answers nothing else');
+		gates.get('first').resolve();
+		await waitFor(() => answers.size === 5, { message: 'not every request was answered' });
+		assert.deepStrictEqual(answers.get('first').result, { name: 'first' });
+		assert.deepStrictEqual(answers.get('early').result, { early: true, threadId: asker.threadId });
+		assert.deepStrictEqual(answers.get('fails').error, { message: 'refused', statusCode: 409 });
+		assert.match(answers.get('silent').error.message, /did not answer certification_gate_test_request within 300ms/);
 	});
 });

@@ -7,12 +7,16 @@ import {
 	setRunningIsolatedApplicationsGetter,
 	workersForApplication,
 	stopWorker,
+	failedClosedInMemory,
+	processIncarnation,
 } from './manageThreads.js';
 import {
 	presentIsolatedApplicationNames,
 	isolatedApplicationRefusal,
 	isolatedApplicationCapacityRefusal,
 } from './isolatedApplications.ts';
+import { failClosedReleases } from '../../components/releaseCertification.ts';
+import { getConfigPath } from '../../config/configUtils.ts';
 import { lifecycle as componentLifecycle } from '../../components/status/index.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as harperLogger from '../../utility/logging/harper_logger.ts';
@@ -110,7 +114,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 		}
 		poolSize = threadCount;
 		nextIsolatedIndex = Math.max(nextIsolatedIndex, threadCount);
-		const isolated = admittedIsolatedApplications([...isolatedSlots.keys()]);
+		const isolated = admittedIsolatedApplications([...isolatedSlots.keys()], await failedClosedApplications());
 		if (dedicatedPools.length > 0) dedicatedWorkerCount = 0;
 		for (const pool of dedicatedPools) dedicatedWorkerCount += pool.count;
 		const heapShareCount = threadCount + dedicatedWorkerCount + isolated.length;
@@ -165,12 +169,13 @@ const poolSlots: IsolatedSlot[] = [];
  * ones are admitted up to `threads.maxIsolated`, and only while a dedicated worker would be reachable
  * at all. Everything refused is refused loudly and loaded nowhere -- never downgraded to the pool.
  */
-function admittedIsolatedApplications(running: string[]): string[] {
+function admittedIsolatedApplications(running: string[], failedClosed: Map<string, Error>): string[] {
 	const names = presentIsolatedApplicationNames();
 	const admitted = [];
+	const refusalOf = (name: string) => failedClosed.get(name)?.message ?? isolatedApplicationRefusal(name);
 	for (const name of running) {
 		if (!names.includes(name)) continue;
-		const refusal = isolatedApplicationRefusal(name);
+		const refusal = refusalOf(name);
 		if (refusal) {
 			reportIsolatedRefusal(name, refusal);
 			continue;
@@ -179,7 +184,7 @@ function admittedIsolatedApplications(running: string[]): string[] {
 	}
 	for (const name of names) {
 		if (admitted.includes(name)) continue;
-		const refusal = isolatedApplicationRefusal(name) ?? isolatedApplicationCapacityRefusal(name, admitted);
+		const refusal = refusalOf(name) ?? isolatedApplicationCapacityRefusal(name, admitted);
 		if (refusal) {
 			reportIsolatedRefusal(name, refusal);
 			continue;
@@ -188,6 +193,21 @@ function admittedIsolatedApplications(running: string[]): string[] {
 		admitted.push(name);
 	}
 	return admitted;
+}
+
+/** Applications whose live release must not load: their dedicated worker would load nothing. */
+async function failedClosedApplications(): Promise<Map<string, Error>> {
+	let failedClosed: Map<string, Error>;
+	try {
+		failedClosed = await failClosedReleases(getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), processIncarnation);
+	} catch (error) {
+		harperLogger.error('Could not read which releases are refused; starting dedicated workers as configured', error);
+		failedClosed = new Map();
+	}
+	for (const name of failedClosedInMemory()) {
+		if (!failedClosed.has(name)) failedClosed.set(name, new Error('its live release was refused'));
+	}
+	return failedClosed;
 }
 
 function reportIsolatedRefusal(name: string, refusal: string) {
@@ -218,6 +238,8 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 	])
 		.then(() => true)
 		.catch(async (error) => {
+			// withdrawn by a reconcile or a drop, which stopped it on purpose
+			if (isolatedSlots.get(application) !== slot) return false;
 			harperLogger.error(`Dedicated worker for isolated application '${application}' failed to start`, error);
 			componentLifecycle.failed(application, error, `Component '${application}' failed to load`);
 			// The slot IS the lease: holding it until the failed worker has actually exited is what stops a
@@ -231,27 +253,33 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 			if (!isolatedSlots.has(application)) cleanupApplicationSockets(application);
 			return false;
 		})
+		.catch((error) => {
+			harperLogger.error(`Could not clean up the failed dedicated worker of '${application}'`, error);
+			return false;
+		})
 		.finally(() => slot.finishStartup());
 }
 
 /**
  * Bring the dedicated workers in line with the root config: start one for each isolated application
- * that has none, stop the one of an application that is no longer isolated or no longer configured.
- * Runs on the main thread after every root-component reload (deploy, drop, restart).
+ * that has none, stop the one of an application that is no longer isolated, no longer configured, or
+ * whose live release is refused. Runs on the main thread after every root-component reload (deploy,
+ * restart) and for a drop. With `only`, it starts or stops that application's worker and no other.
  */
 let reconciling: Promise<string[]> = Promise.resolve([]);
-export function reconcileIsolatedWorkers(): Promise<string[]> {
+export function reconcileIsolatedWorkers(only?: string): Promise<string[]> {
+	const reconcile = () => reconcileIsolatedWorkersNow(only);
 	// serialized: two reloads in flight must not compute `wanted` against each other's half-done work
-	reconciling = reconciling.then(reconcileIsolatedWorkersNow, reconcileIsolatedWorkersNow);
+	reconciling = reconciling.then(reconcile, reconcile);
 	return reconciling;
 }
 
-async function reconcileIsolatedWorkersNow(): Promise<string[]> {
+async function reconcileIsolatedWorkersNow(only?: string): Promise<string[]> {
 	if (!isMainThread || poolSize === 0) return [];
-	const wanted = new Set(admittedIsolatedApplications([...isolatedSlots.keys()]));
+	const wanted = new Set(admittedIsolatedApplications([...isolatedSlots.keys()], await failedClosedApplications()));
 	const stopping = [];
 	for (const [application, slot] of isolatedSlots) {
-		if (wanted.has(application)) continue;
+		if (wanted.has(application) || (only !== undefined && application !== only)) continue;
 		isolatedSlots.delete(application);
 		// awaited: a caller that goes on to remove the application's storage must see its worker gone
 		stopping.push(slot.shutdown().then(() => application));
@@ -266,7 +294,7 @@ async function reconcileIsolatedWorkersNow(): Promise<string[]> {
 	for (const slot of poolSlots) slot.setHeapShareCount(heapShareCount);
 	for (const slot of isolatedSlots.values()) slot.setHeapShareCount(heapShareCount);
 	for (const application of wanted) {
-		if (isolatedSlots.has(application)) continue;
+		if (isolatedSlots.has(application) || (only !== undefined && application !== only)) continue;
 		const slot = startWorkerSlot(nextIsolatedIndex++, poolSize, application, heapShareCount);
 		isolatedSlots.set(application, slot);
 		started.push(application);
