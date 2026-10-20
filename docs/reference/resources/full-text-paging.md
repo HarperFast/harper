@@ -32,7 +32,7 @@ application configuration; see [REST setup](../rest/overview.md).
 
 ## Page through `Table.searchPage()`
 
-Set `continuation: true` and a positive integer `limit` to start. The limit must not exceed `maxPageSize`.
+Use a positive integer `limit` no greater than `maxPageSize`.
 `searchPage()` returns a promise for a bounded array. Omit `continuation` or set it to `true` to start.
 `Table.search()` keeps its async iterable return value and rejects continuation options.
 
@@ -193,6 +193,8 @@ storage:
 | `maxPendingResponseBytes`      |  16 MiB | Reserved response bytes per requesting worker               |
 
 Ordinary searches use the lower of `maxRawHitsPerRequest` and `maxRawHitsPerOrdinaryRequest`, and share the `requestBudgetMilliseconds` execution budget. Increase the ordinary ceiling explicitly if a selective query needs more work. Hitting a ceiling returns an error.
+
+A requesting worker reserves a conservative bound for a complete native batch before dispatch, including two-byte string encoding and message overhead. The reservation may exceed the returned payload. `maxPendingResponseBytes` can reject concurrent reads even when the cursor-count and pending-request limits have room.
 
 Search work and cleanup use separate windows based on `requestBudgetMilliseconds`. With the
 5,000 ms default, a search that uses its full work budget and then closes can take about 10 seconds.
