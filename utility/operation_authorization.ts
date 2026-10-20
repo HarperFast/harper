@@ -984,7 +984,9 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 		checkRelationshipReads(requestJson, operationSchema, table, permsResponse);
 
 	const tableClass =
-		requestJson.conditions && SEARCH_OPS.has(op) && table != undefined
+		(requestJson.conditions || Array.isArray(requestJson.search_attribute ?? requestJson.attribute)) &&
+		SEARCH_OPS.has(op) &&
+		table != undefined
 			? getDatabases()[operationSchema]?.[table]
 			: undefined;
 	const recordAttrs = getRecordAttributes(
@@ -1053,6 +1055,10 @@ function checkRelationshipReads(requestJson: any, operationSchema: string, table
 	checkSelectPaths(state, requestJson.get_attributes, [], tableClass, false);
 	checkConditionPaths(state, requestJson.conditions);
 	checkSortPaths(state, requestJson.sort, []);
+	// search_by_value runs one condition from these, preferring search_attribute; a `*` value runs none
+	const valueAttribute = requestJson.search_attribute ?? requestJson.attribute;
+	const value = requestJson.search_value !== undefined ? requestJson.search_value : requestJson.value;
+	if (Array.isArray(valueAttribute) && value !== '*') checkRelationshipPath(state, valueAttribute);
 	if (!state.denials) return;
 	for (const { denial, attributes } of state.denials.values()) {
 		if (denial.attribute === undefined) permsResponse.addUnauthorizedTable(denial.database, denial.table, [READ_PERM]);
@@ -1364,7 +1370,9 @@ function getRecordAttributes(json, operationName?, isRelationship?: (name: any) 
 			if (json.search_attribute !== undefined) {
 				attribute = json.search_attribute;
 			}
-			affectedAttributes.add(attribute);
+			if (Array.isArray(attribute)) {
+				if (!isRelationship?.(attribute[0])) affectedAttributes.add(attribute[0]);
+			} else affectedAttributes.add(attribute);
 		}
 
 		if (!json.records || json.records.length === 0) {
