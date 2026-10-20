@@ -29,6 +29,7 @@ import { makeSchemaClass, type Contract, type SchemaClass } from './defineResour
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
+const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
 
 const EXTENSION_TYPES = {
@@ -374,6 +375,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 						if (data.select.asArray) narrowed.asArray = true;
 						if (data.select.forceNulls) narrowed.forceNulls = true;
 					}
+					if (allowed[RELATIONSHIPS_LISTED]) narrowed[RELATIONSHIPS_LISTED] = true;
 					data.select = narrowed;
 				} else {
 					data.select = query.select;
@@ -1079,9 +1081,9 @@ function registerLiveSubscriptionForContext(
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
 	securityUser ??= require('../security/user');
 	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
-	// A select written by authorization names no relationship, so the default allowRead's result still
-	// reads only the role's table permission; a caller's select, or a condition or sort through a
-	// relationship, also reads related tables' permissions.
+	// A select written by authorization only narrows or omits relationships, so the default allowRead's
+	// result still reads only the role's table permission; a caller's select, or a condition or sort
+	// through a relationship, also reads related tables' permissions.
 	const sharedDecision =
 		!selectedByCaller &&
 		defaultAllowReads.has(resource.allowRead) &&
@@ -1242,6 +1244,12 @@ export function transformForSelect(select, resource) {
 				});
 			let promises;
 			for (const property of select) {
+				if (property === '*') {
+					if (select[RELATIONSHIPS_LISTED] && resource?._copyUnlistedAttributes)
+						resource._copyUnlistedAttributes(object, selectedData);
+					else for (const key in object) selectedData[key] = object[key];
+					continue;
+				}
 				let value = getProperty(property);
 				if (value === undefined && forceNulls) value = null;
 				if (typeof value?.then === 'function') {

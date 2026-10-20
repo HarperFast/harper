@@ -11,3 +11,9 @@ type Emp @table @export {
 	payload: Any
 	dept: Dept @relationship(from: deptId)
 }
+
+type Seat @table @export {
+	id: ID @primaryKey
+	deptId: ID @indexed
+	dept: Dept @relationship(from: deptId) @enumerable
+}
