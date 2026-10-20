@@ -163,6 +163,7 @@ describe('networkAccess', () => {
 			installed = installMockTable();
 		});
 		afterEach(() => installed.restore());
+		const local = (request) => runWithCallerAddress(undefined, () => setNetworkAccess(request));
 
 		it('registers both operations as super_user-only', () => {
 			const user = (permission) => ({ username: 'joe', role: { role: 'r', permission } });
@@ -186,7 +187,7 @@ describe('networkAccess', () => {
 		});
 
 		it('stores the normalized list with audit fields', async () => {
-			const result = await setNetworkAccess(
+			const result = await local(
 				su('set_network_access', { scope: 'operations', allow: ['10.0.0.0/8', '2001:DB8::/32'] })
 			);
 			assert.deepStrictEqual(result.allow, ['10.0.0.0/8', '2001:db8::/32']);
@@ -263,10 +264,14 @@ describe('networkAccess', () => {
 				assert.ok(installed.mock.rows.has('operations'));
 			});
 
-			it('skips the check for a local connection and an in-process call', async () => {
+			it('skips the check only for the local operations domain socket', async () => {
 				await as(undefined, body());
-				installed.mock.rows.clear();
-				await setNetworkAccess(body());
+				assert.ok(installed.mock.rows.has('operations'));
+			});
+
+			it('requires force for a call with no caller context (MCP, server.operation())', async () => {
+				await assert.rejects(setNetworkAccess(body()), { statusCode: 409, message: /unknown/ });
+				await setNetworkAccess(body({ force: true }));
 				assert.ok(installed.mock.rows.has('operations'));
 			});
 
@@ -279,7 +284,7 @@ describe('networkAccess', () => {
 			});
 
 			it('warns when this node publishes no socket metadata', async () => {
-				const result = await setNetworkAccess(body());
+				const result = await as(undefined, body());
 				assert.match(result.warning, /tls\.unixDomainSockets/);
 			});
 		});

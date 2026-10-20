@@ -26,8 +26,9 @@ import {
 const HARPER_BIN = resolve(import.meta.dirname, '../../dist/bin/harper.js');
 const execFileAsync = promisify(execFile);
 
-// Mirrors are unix domain sockets; Windows has no mirror to publish to.
-const skipSuite = process.platform === 'win32';
+// Mirrors are unix domain sockets; Windows has no mirror to publish to. Under Bun the operations domain
+// socket request carries no address, so the CLI case needs force (unitTests/server/fallbackClientAddress.test.js).
+const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
