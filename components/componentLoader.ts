@@ -251,6 +251,16 @@ function placedOnThisThread(appName: string): boolean {
 	return placed;
 }
 
+/** `placementOf`'s check of the `isolated` value, without reporting a failure the load itself reports later. */
+function isolationConfigValid(appName: string): boolean {
+	try {
+		assertIsolationConfig(appName, (getConfigObj()?.[appName] as any)?.isolated);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function placementOf(appName: string): boolean {
 	try {
 		assertIsolationConfig(appName, (getConfigObj()?.[appName] as any)?.isolated);
@@ -365,7 +375,7 @@ export async function loadComponentDirectories(
 	);
 	const deferComponentLoad = (appName: string) => {
 		// it may load once its preparation settles, after this thread has reported what it loaded
-		if (shouldLoadApplicationHere(appName)) applicationsPlaced.add(appName);
+		if (isolationConfigValid(appName) && shouldLoadApplicationHere(appName)) applicationsPlaced.add(appName);
 		const appFolder = join(CF_ROUTES_DIR, appName);
 		const appWasVisible = existsSync(appFolder);
 		if (appWasVisible) {

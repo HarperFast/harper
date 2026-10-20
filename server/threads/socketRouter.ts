@@ -176,11 +176,9 @@ function admittedIsolatedApplications(
 	failedClosed: Map<string, Error> | undefined,
 	only?: string
 ): string[] {
-	// A reconcile of one application decides nothing about another's worker: one not running takes no place from it, and
-	// gets no report.
-	const names = presentIsolatedApplicationNames().filter(
-		(name) => only === undefined || name === only || running.includes(name)
-	);
+	// Admitted in the order boot admits them, so a restart keeps the same applications; a reconcile of one application
+	// reports nothing about the others, whose workers it leaves as they are.
+	const names = presentIsolatedApplicationNames();
 	const admitted = [];
 	const refusalOf = (name: string) => failedClosed?.get(name)?.message ?? isolatedApplicationRefusal(name);
 	const report = (name: string, refusal: string) => {
@@ -260,7 +258,6 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 	])
 		.then(() => true)
 		.catch(async (error) => {
-			// withdrawn by a reconcile or a drop, which stopped it on purpose
 			if (isolatedSlots.get(application) !== slot) return false;
 			harperLogger.error(`Dedicated worker for isolated application '${application}' failed to start`, error);
 			componentLifecycle.failed(application, error, `Component '${application}' failed to load`);
