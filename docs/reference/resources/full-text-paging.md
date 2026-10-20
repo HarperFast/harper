@@ -9,7 +9,7 @@ title: Full-Text Paging
 The full-text index declaration below is a prerequisite.
 
 Full-text continuation lets a client page through the original search matches while indexing
-updates arrive. It is available through `Table.search()` and REST. Ordinary offset-based paging
+updates arrive. It is available through `Table.searchPage()` and REST. Ordinary offset-based paging
 continues to run each request against its own index snapshot.
 The same continuation options work with autocomplete searches using `matches_prefix` and `matches_fuzzy_prefix`.
 
@@ -30,11 +30,11 @@ type Product @table(audit: true) @export {
 Full-text matches use descending relevance order. REST examples also require `rest: true` in the
 application configuration; see [REST setup](../rest/overview.md).
 
-## Page through `Table.search()`
+## Page through `Table.searchPage()`
 
 Set `continuation: true` and a positive integer `limit` to start. The limit must not exceed `maxPageSize`.
-Continuation mode returns a promise for a bounded array;
-ordinary searches keep their async iterable return value.
+`searchPage()` returns a promise for a bounded array. Omit `continuation` or set it to `true` to start.
+`Table.search()` keeps its async iterable return value and rejects continuation options.
 
 ```javascript
 const query = {
@@ -45,7 +45,7 @@ const query = {
 
 let continuation = true;
 do {
-	const page = await tables.Product.search({ ...query, continuation });
+	const page = await tables.Product.searchPage({ ...query, continuation });
 	for (const record of page) console.log(record);
 	continuation = page.continuation;
 } while (continuation);
@@ -65,7 +65,7 @@ and selected fields, and use the same authenticated caller when resuming. The pa
 returns 400.
 
 In a static custom Resource method, pass the method's `context` argument as the second argument
-to `tables.Product.search()`. In an instance method, use `this.getContext()` instead. See
+to `tables.Product.searchPage()`. In an instance method, use `this.getContext()` instead. See
 [Resource context](./resource-api.md#getcontext-context) for both forms. Set `checkPermission: true`
 in the query. This requests the caller's
 table and searched-source permissions; passing context alone does not request that permission gate.
@@ -76,11 +76,15 @@ The token does not store application callbacks such as `rowFilter` or
 [`vectorFilter`](../database/schema.md#filtered-vector-search-with-a-function-predicate). Supply them
 again on every page, together with the caller's context and permission settings.
 
+If your table overrides `search()`, also implement `searchPage()` with the same filtering policy.
+This applies to static and instance methods. Otherwise paging returns 400, including through REST,
+to avoid bypassing application filters.
+
 ## Page through REST
 
 Use the single-argument `limit(n)` page size and start with `continuation()`. Do not use
 a nonzero starting offset with `limit(start,end)`, request a count with `Prefer: count=`, or change the relevance order. The same
-`explain` and `sync` restrictions as `Table.search()` apply; violations return 400.
+`explain` and `sync` restrictions as `Table.searchPage()` apply; violations return 400.
 
 ```http
 GET /Product/?catalogSearch=matches=trail%20shoes&select(id,title,$score)&limit(25)&continuation()
@@ -168,18 +172,22 @@ storage:
     maxPageSize: 1000
     requestBudgetMilliseconds: 5000
     maxRawHitsPerRequest: 100000
+    maxRawHitsPerOrdinaryRequest: 10000
 ```
 
-| Setting                     | Default | Scope                                                       |
-| --------------------------- | ------: | ----------------------------------------------------------- |
-| `cursorTtlMilliseconds`     |  60,000 | Absolute search lifetime; paging does not extend it         |
-| `maxCursors`                |       4 | Retained searches across all workers in one process         |
-| `maxRetainedQueryBytes`     |   8 MiB | Retained native query text and identity bytes               |
-| `maxPageSize`               |   1,000 | Returned records per page                                   |
-| `requestBudgetMilliseconds` |   5,000 | Freshness wait and page processing budget                   |
-| `maxRawHitsPerRequest`      | 100,000 | Fetched native hits per request, including replayed batches |
-| `maxPendingRequests`        |      32 | Pending requests per requesting worker                      |
-| `maxPendingResponseBytes`   |  16 MiB | Reserved response bytes per requesting worker               |
+| Setting                        | Default | Scope                                                       |
+| ------------------------------ | ------: | ----------------------------------------------------------- |
+| `cursorTtlMilliseconds`        |  60,000 | Absolute search lifetime; paging does not extend it         |
+| `maxCursors`                   |       4 | Retained searches across all workers in one process         |
+| `maxRetainedQueryBytes`        |   8 MiB | Retained native query text and identity bytes               |
+| `maxPageSize`                  |   1,000 | Returned records per page                                   |
+| `requestBudgetMilliseconds`    |   5,000 | Freshness wait and page processing budget                   |
+| `maxRawHitsPerRequest`         | 100,000 | Fetched native hits per request, including replayed batches |
+| `maxRawHitsPerOrdinaryRequest` |  10,000 | Additional hit ceiling for searches without continuation    |
+| `maxPendingRequests`           |      32 | Pending requests per requesting worker                      |
+| `maxPendingResponseBytes`      |  16 MiB | Reserved response bytes per requesting worker               |
+
+Ordinary searches use the lower of `maxRawHitsPerRequest` and `maxRawHitsPerOrdinaryRequest`, and share the `requestBudgetMilliseconds` execution budget. Increase the ordinary ceiling explicitly if a selective query needs more work. Hitting a ceiling returns an error.
 
 Search work and cleanup use separate windows based on `requestBudgetMilliseconds`. With the
 5,000 ms default, a search that uses its full work budget and then closes can take about 10 seconds.
@@ -197,7 +205,7 @@ The usual individual configuration names also work, such as
 `storage_fullText_maxRawHitsPerRequest` with `set_configuration`. Follow the
 [configuration restart procedure](../configuration/operations.md#set-configuration) after applying
 changes with that operation. Native process-wide admission
-settings live under `storage.fullText.runtime` and require a restart when changed. Their defaults
+settings live under `storage.fullText.runtime` and require a full process restart when changed. Restarting only worker threads does not apply new native budgets; replacement workers keep the established process budgets. Their defaults
 are 128 resident indexes, 128 indexing threads, 256 search threads, 4 GiB configured writer memory,
 8 GiB configured queue capacity, and 8 concurrent expensive searches. All limits apply together.
 

@@ -1037,7 +1037,7 @@ Array of condition objects to filter records. Each condition:
 
 Full-text conditions name a query-only `FullText` declaration and use comparators `matches`,
 `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, and `matches_fuzzy_prefix`. See
-[Full-Text Paging](./full-text-paging.md) for snapshot continuation and its query restrictions.
+`Table.searchPage()` and [Full-Text Paging](./full-text-paging.md) for snapshot continuation and its query restrictions.
 
 Example with nested conditions:
 
