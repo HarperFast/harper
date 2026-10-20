@@ -287,13 +287,16 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
 				floors([[9, now - 20, true, 'gen-1', true]]),
 				// a marks-only update reaches the row: a floor-only resume start, then a hole
-				update({ originRouteStates: [[9, now - 25, undefined, undefined]] }),
-				update({ originRouteStates: [[9, now - 24, undefined, undefined]] }),
+				update({ originRouteStates: [[9, now - 25, undefined, undefined, 'gen-1']] }),
+				update({ originRouteStates: [[9, now - 24, undefined, undefined, 'gen-1']] }),
+				// a mark derived under another generation is ignored
+				update({ originRouteStates: [[9, now - 30, undefined, undefined, 'gen-0']] }),
 				update({ originRouteStates: [[9, undefined, undefined, true]] }),
 				// a completed copy makes the route whole again
 				update({ originRouteStates: [[9, undefined, false, undefined]] }),
-				// a revocation clears the floor and sticks under a later, higher certificate
-				update({ originFloorRevocations: [9] }),
+				// a revocation for another generation is ignored; one for the row's clears the floor and sticks
+				update({ originFloorRevocations: [[9, 'gen-0']] }),
+				update({ originFloorRevocations: [[9, 'gen-1']] }),
 				floors([[9, now - 5, true, 'gen-1', true]]),
 				// a new origin generation starts the origin over
 				floors([[9, now - 3, true, 'gen-2', true]]),

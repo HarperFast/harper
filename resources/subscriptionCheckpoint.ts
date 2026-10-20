@@ -103,6 +103,7 @@ export function membersDigest(members: Iterable<[name: string, generation: strin
 /** Reads every `[seq, peerId]` row and merges the checkpoint-grade state of each origin it names. */
 function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState> {
 	const states = new Map<number, OriginState>();
+	const rows = new Map<number, any[]>();
 	const generation = getDatabaseGeneration(auditStore)?.id;
 	const own: OriginState = {
 		nodeId: 0,
@@ -126,16 +127,9 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 				const name = getNodeNameForId(auditStore, node.id, true);
 				if (name === undefined) continue;
 				states.set(node.id, (state = { nodeId: node.id, name }));
+				rows.set(node.id, []);
 			}
-			// revocation and holes are sticky across every row; a floor qualifies only with its own row's qualifiers
-			if (node.floorRevoked === true) {
-				state.floorRevoked = true;
-				// still a member of the sets it was certified in, so a token naming it is refused, not misread
-				if (state.generation === undefined && typeof node.originGeneration === 'string') {
-					state.generation = node.originGeneration;
-				}
-			}
-			if (node.hole === true) state.hole = true;
+			rows.get(node.id)!.push(node);
 			if (
 				isValidFloor(node.closedFloor) &&
 				typeof node.originGeneration === 'string' &&
@@ -153,6 +147,23 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 				state.certifiedFrom = node.certifiedFrom;
 				state.fullCoverage = true;
 			}
+		}
+	}
+	// qualifiers are sticky across rows of one generation: a dead peer's row for an earlier generation of the
+	// origin says nothing about the generation another route certifies now
+	for (const [nodeId, nodeRows] of rows) {
+		const state = states.get(nodeId)!;
+		if (state.generation === undefined) {
+			// no certified floor: a revoked row still names the generation it was certified in, so a token naming
+			// the origin is refused rather than misread; with several, the most recently seen one is as good
+			const revoked = nodeRows.find((node) => node.floorRevoked === true && typeof node.originGeneration === 'string');
+			if (revoked) state.generation = revoked.originGeneration;
+		}
+		for (const node of nodeRows) {
+			const sameGeneration = state.generation === undefined || node.originGeneration === state.generation;
+			if (!sameGeneration) continue;
+			if (node.floorRevoked === true) state.floorRevoked = true;
+			if (node.hole === true) state.hole = true;
 			if (
 				node.fullCoverage === true &&
 				node.partialHistory !== true &&
