@@ -26,7 +26,6 @@ const skipMqtt = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'w
 
 const ROLE = 'doc_no_secret_role';
 const USER = { username: 'doc_no_secret_user', password: 'Doc-no-secret-1!' };
-// every stored secret value carries this marker, so a frame in any encoding can be checked for it
 const SECRET = 'TOPSECRET';
 
 interface Frames {
@@ -123,8 +122,18 @@ suite('Attribute read permissions on subscription deliveries', (ctx: ContextWith
 			},
 			(res) => {
 				res.setEncoding('utf8');
+				let pending = '';
 				res.on('data', (chunk: string) => {
-					for (const line of chunk.split('\n')) if (line.startsWith('data:')) frames.push(line);
+					const blocks = (pending + chunk).split('\n\n');
+					pending = blocks.pop()!;
+					for (const block of blocks) {
+						const data = block
+							.split('\n')
+							.filter((line) => line.startsWith('data:'))
+							.map((line) => line.slice(5).trimStart())
+							.join('\n');
+						if (data) frames.push(data);
+					}
 				});
 			}
 		);
@@ -194,17 +203,20 @@ suite('Attribute read permissions on subscription deliveries', (ctx: ContextWith
 	async function assertDelivered(label: string, frames: string[], titles: string[], secretVisible: boolean) {
 		for (const title of titles) ok(await waitFor(() => hasTitle(frames, title)), `${label}: ${title} delivered`);
 		for (const frame of frames) {
-			if (!frame.includes('"title"')) continue;
-			strictEqual(frame.includes(SECRET), secretVisible, `${label}: ${frame}`);
-			// storage metadata is never part of a delivered event
 			ok(!frame.includes('metadataFlags'), `${label}: ${frame}`);
+			if (!secretVisible) ok(!frame.includes(SECRET), `${label}: ${frame}`);
+			if (!frame.includes('"title"')) continue;
+			ok(frame.includes('locked value'), `${label}: ${frame}`);
+			if (secretVisible) ok(frame.includes(SECRET), `${label}: ${frame}`);
 		}
 	}
 
-	/** The current record, then a full put and a patch, each delivered once the subscription is live. */
-	async function writeSequence(id: string, prefix: string, live: () => boolean) {
-		ok(await waitFor(live), `${prefix}: the current record is delivered`);
+	// a put superseded before it is delivered may be coalesced into the next write, so each is awaited
+	async function writeSequence(id: string, prefix: string, streams: string[][]) {
+		const deliveredToAll = (title: string) => waitFor(() => streams.every((frames) => hasTitle(frames, title)));
+		ok(await deliveredToAll(`${prefix} current`), `${prefix}: the current record is delivered`);
 		await putAsAdmin(id, `${prefix} put`);
+		ok(await deliveredToAll(`${prefix} put`), `${prefix}: the put is delivered`);
 		await write('PATCH', id, { title: `${prefix} patch` });
 		return [`${prefix} current`, `${prefix} put`, `${prefix} patch`];
 	}
@@ -214,11 +226,7 @@ suite('Attribute read permissions on subscription deliveries', (ctx: ContextWith
 		const restricted = openSse('/Doc/sse-1', userAuth);
 		const collection = openSse('/Doc/', userAuth);
 		const superUser = openSse('/Doc/sse-1', adminAuth);
-		const titles = await writeSequence(
-			'sse-1',
-			'sse',
-			() => hasTitle(restricted.frames, 'sse current') && hasTitle(superUser.frames, 'sse current')
-		);
+		const titles = await writeSequence('sse-1', 'sse', [restricted.frames, collection.frames, superUser.frames]);
 		await assertDelivered('restricted SSE', restricted.frames, titles, false);
 		await assertDelivered('restricted collection SSE', collection.frames, titles, false);
 		await assertDelivered('super user SSE', superUser.frames, titles, true);
@@ -228,11 +236,7 @@ suite('Attribute read permissions on subscription deliveries', (ctx: ContextWith
 		await putAsAdmin('ws-1', 'ws current');
 		const restricted = await openWs('/Doc/ws-1', userAuth);
 		const superUser = await openWs('/Doc/ws-1', adminAuth);
-		const titles = await writeSequence(
-			'ws-1',
-			'ws',
-			() => hasTitle(restricted.frames, 'ws current') && hasTitle(superUser.frames, 'ws current')
-		);
+		const titles = await writeSequence('ws-1', 'ws', [restricted.frames, superUser.frames]);
 		await assertDelivered('restricted WebSocket', restricted.frames, titles, false);
 		await assertDelivered('super user WebSocket', superUser.frames, titles, true);
 	});
@@ -245,11 +249,7 @@ suite('Attribute read permissions on subscription deliveries', (ctx: ContextWith
 			const superUser = await connectMqtt(`admin-${id}`, admin());
 			await subscribeMqtt(restricted.client, `Doc/${id}`, qos);
 			await subscribeMqtt(superUser.client, `Doc/${id}`, qos);
-			const titles = await writeSequence(
-				id,
-				`mqtt${qos}`,
-				() => hasTitle(restricted.frames, `mqtt${qos} current`) && hasTitle(superUser.frames, `mqtt${qos} current`)
-			);
+			const titles = await writeSequence(id, `mqtt${qos}`, [restricted.frames, superUser.frames]);
 			await assertDelivered(`restricted MQTT QoS ${qos}`, restricted.frames, titles, false);
 			await assertDelivered(`super user MQTT QoS ${qos}`, superUser.frames, titles, true);
 		});
