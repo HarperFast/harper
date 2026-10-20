@@ -2221,12 +2221,13 @@ export function makeTable(options): TableResourceClass {
 								? event.originFloors
 								: undefined;
 							const certifyingStream = Boolean(event.onFailure) && event.txnStream !== undefined;
-							const originFloorRevocations: number[] | undefined = certifyingStream
+							const originFloorRevocations: (number | [number, string?])[] | undefined = certifyingStream
 								? event.originFloorRevocations
 								: undefined;
-							const originRouteStates: [number, number | undefined, boolean, boolean][] | undefined = certifyingStream
-								? event.originRouteStates
-								: undefined;
+							// `[id, certifiedFrom, partialHistory, hole, generation?]`: a mark derived under one origin generation
+							// says nothing about another, so a generation it names must be the row's
+							const originRouteStates: [number, number | undefined, boolean, boolean, string?][] | undefined =
+								certifyingStream ? event.originRouteStates : undefined;
 							let qualifiersChanged = false;
 							// the key for tracking the sequence ids and txn times received from this node
 							const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
@@ -2319,19 +2320,23 @@ export function makeTable(options): TableResourceClass {
 									}
 								}
 							if (originFloorRevocations)
-								for (const nodeId of originFloorRevocations) {
+								for (const revocation of originFloorRevocations) {
+									const nodeId = Array.isArray(revocation) ? revocation[0] : revocation;
+									const generation = Array.isArray(revocation) ? revocation[1] : undefined;
 									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
 									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
 									if (nodeState.floorRevoked === true) continue;
+									if (generation !== undefined && nodeState.originGeneration !== generation) continue;
 									nodeState.floorRevoked = true;
 									nodeState.closedFloor = undefined;
 									nodeState.relayable = false;
 									qualifiersChanged = true;
 								}
 							if (originRouteStates)
-								for (const [nodeId, certifiedFrom, partialHistory, hole] of originRouteStates) {
+								for (const [nodeId, certifiedFrom, partialHistory, hole, generation] of originRouteStates) {
 									let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
 									if (!nodeState) nodeStates.push((nodeState = { id: nodeId }));
+									if (generation !== undefined && nodeState.originGeneration !== generation) continue;
 									if (
 										typeof certifiedFrom === 'number' &&
 										Number.isFinite(certifiedFrom) &&

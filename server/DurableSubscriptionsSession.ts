@@ -1195,18 +1195,20 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.dirty = true;
 		this.acknowledge(messageId);
 		if (state) {
-			// compacted first, so the receipt limit counts only what is still kept
-			const checkpointFloor =
-				state.entry.checkpoint === undefined ? undefined : state.subscription?.checkpointFloor?.();
-			this.compactReceived(state, checkpointFloor);
+			// compacted first, so the receipt limit counts only what is still kept; the boundary vector built here
+			// is the one the position advance below reuses
+			this.advanceCount++;
+			const checkpoint = state.entry.checkpoint === undefined ? undefined : this.currentCheckpoint(state);
+			const floor = checkpoint === undefined ? undefined : checkpointFloor(checkpoint);
+			this.compactReceived(state, floor);
 			// the position cannot pass it while an older delivery, or the rest of its transaction, is unacknowledged
 			if (identity) {
 				this.addReceived(state, identity);
-				this.compactReceived(state, checkpointFloor);
+				this.compactReceived(state, floor);
 			}
 		}
 		if (failed) return true;
-		this.advancePositions();
+		this.advancePositions(false);
 		return this.owePubrel(messageId);
 	}
 	owePubrel(messageId: number) {
@@ -1383,9 +1385,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (progress === undefined) return;
 		return boundary < progress ? boundary : progress;
 	}
-	advancePositions(): boolean {
+	/** `fresh`: false reuses the checkpoints a `received` computed for this pass. */
+	advancePositions(fresh = true): boolean {
 		let changed = false;
-		this.advanceCount++;
+		if (fresh) this.advanceCount++;
 		for (const state of this.topics.values()) {
 			if (!(state.entry.qos > 0)) continue;
 			const next = this.nextPosition(state);
