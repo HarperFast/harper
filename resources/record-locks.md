@@ -37,14 +37,24 @@ Consequences that shape the code:
   no-op. The key is `lockAttemptKey(tableId, id)` = `[LOCK_KEY_PREFIX, tableId, ...id]`, distinct from
   `getFromSource`'s bare-id single-flight lock.
 - **`RecordLockHandle`** (`recordLock.ts`) carries `store`, `key`, `keyId`, `acquiredAt`, `expiresAt`,
-  `hold`, `released`, and `expired`. `release()` is synchronous: it sets `released`, clears the lease
-  timer, and calls `store.unlock(key)`. A lease timer sets `expired = true` then calls `store.unlock()`
-  on fire; any write staged through an expired or released handle throws 409 in
-  `DatabaseTransaction.save()` before the write reaches the store — from `lockNotHeldError()`, which
-  names the actual cause, since an expired lease and a handle already released (by `unlock()` or by
-  the commit) send a caller after different bugs. `acquireRecordKey` loops
-  `tryLock` → await wake → retry until acquired or `waitMs` elapsed (then 423). The contender wait
-  timer uses `.unref()` so it does not prevent process exit.
+  `hold`, `released`, and `expired`. `release()` sets `released` and clears the lease timer; a lease
+  timer sets `expired = true` and `released = true` on fire. When no native commit is holding the
+  handle, both immediately call `store.unlock(key)` and emit `onRelease` (and `release()` returns `true`).
+  While a submitted native `RocksTransaction` is in flight (`retainForCommit(holdDeadlineMono)` called at
+  first native submission in `DatabaseTransaction.performCommit()`), `store.unlock(key)` and `onRelease`
+  are deferred (and `release()` returns `false`) until `releaseCommitHold()` releases the last commit
+  hold — at local commit landing (immediately before `releaseRecordLocks()`), in `commitOutcome`'s
+  rejection handler on any unlogged give-up, or at the commit-conflict budget boundary via
+  `noteOverdueLoggedCommit` or the handle's own hold-deadline timer when a native commit never settles
+  (harper#3236) — so a logged commit that retries past its lease cannot be overtaken by a same-node
+  contender or emit an early `LOCK_RELEASE` while within its conflict budget. `isExpired()` flips
+  immediately when the timer fires or `revokeLease()`/`release()` runs (while `isLeaseExpired()` reflects
+  only lease expiry or `revokeLease()`, not `release()`), so any new write staged through an expired or
+  released handle (and any unlogged conflict retry) throws 409 in `DatabaseTransaction.save()` or
+  `performCommit()` — from `lockNotHeldError()`, which names the actual cause, since an expired lease and
+  a handle already released (by `unlock()` or by the commit) send a caller after different bugs.
+  `acquireRecordKey` loops `tryLock` → await wake → retry until acquired or `waitMs` elapsed (then 423).
+  The contender wait timer uses `.unref()` so it does not prevent process exit.
 - **Re-entrancy is per-transaction.** `DatabaseTransaction.recordLocks` is a lazily allocated
   `Map<store, Map<keyId, handle>>` (O(1) lookup). `registerRecordLock`, `recordLockFor`, and
   `unregisterRecordLock` manage it. `lock()` consults it before calling `tryLock`; a re-entrant call
@@ -53,7 +63,8 @@ Consequences that shape the code:
 - **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the
   locked instance as `#lockHandle`; every commit or abort calls `releaseRecordLocks()`, which calls
   `handle.release()` on each non-hold handle, so a `{ hold: true }` handle outlives the transaction.
-  `unlock()` calls `handle.release()` directly (synchronous, returns false if already released).
+  `unlock()` calls `handle.release()` directly (synchronous; returns false if already released, or
+  while a commit hold defers the native unlock until the in-flight commit settles).
   `unlock()` also accepts scoped handles: it calls `release()` early and unregisters the handle so the transaction commit does
   not release it again. After any `unlock()` call `#lockWritable` is cleared so writes through the
   instance are no longer accepted. In an explicit transaction with no staged writes and no open
@@ -297,7 +308,20 @@ this node's record of what it has granted. Only an explicit standalone claim cle
 token's generation against the current one and drops it on a mismatch, because a generation change
 may have re-homed the key to a node that knows nothing of this token. Bounding the window between a
 delegate noticing a new generation and the new home granting is the design note's §4.3 drain —
-operator-sequenced, and harper-pro's to hold, not core's.
+operator-sequenced, and harper-pro's to hold, not core's. The home applies the rule to its own
+grants once the drain has ruled on them: the first grant request under a new generation that passes
+the quarantine expires every older grant that a drain (`quiesce`) reported outstanding on a delegate
+the new `homes[]` no longer names (`#retireOlderGrants`), and a key whose own grant qualifies is
+freed on its next request. An outstanding recall to a dropped node is what activation then has to
+cover: harper-pro activates past it only when the operator attests the node stopped
+(harper-pro#973), and otherwise waits out the lease. Expiring it serves that node's keys at once
+instead of after its delegation lease. Every other older grant keeps its lease until its release or
+expiry, including one whose recall was confirmed: that release follows the confirmation, and a
+recall can confirm early while a renewal's inherited admission still runs. For those, the lease is
+the backstop against an activation that came too early or a drain that missed a grant. A
+drain-marked grant to a dropped node has no such backstop: activating past it is the operator's
+statement that the node is stopped, so activating early there is the same operator error as fencing
+a node that is still running.
 
 **Recall revokes capability, not just admission.** Waiting for live admissions is not enough on its
 own: a caller that staged a write and then called `unlock()` leaves nothing for a drain to wait on,
@@ -590,12 +614,16 @@ publishing `g+1` is not by itself what stops `g`, and the note must not pretend 
 1. **Stage** `g+1` to every node named in `homes(g)` and in `homes(g+1)`.
 2. **Quiesce.** Each of those nodes acknowledges that it has stopped granting and stopped honouring
    delegations under `g`, and **its acknowledgement carries its `homeIncarnation`** (§5.1). A node
-   that does not acknowledge must be **externally fenced** — stopped, isolated, or powered off —
+   that does not acknowledge must be **externally fenced** — stopped or powered off —
    before the transition may continue. This is the step that carries the whole safety argument, and
    it is why the operator, not a protocol, is the authority: **declaring a node removed is not a
    fence; stopping it is.**
 3. **Drain.** Wait `maxDelegationMs + skew` after the last acknowledgement or fence. That interval
-   bounds every delegation `g` could have issued before it stopped.
+   bounds every delegation `g` could have issued before it stopped. A node's own drain proof
+   (harper-pro#856) replaces the wait for that node. A fenced node needs none, because nothing on it
+   can commit. **Isolating a node is not fencing it**: a handle it admitted can still commit, and where
+   peers keep digest agreement across a partition, as harper-pro's do, it keeps homing its own keys
+   under `g`.
 4. **Activate.** One **durable activation record**, issued by the control plane, carries the staged
    generation, the routing-capability version (§4.4), every acknowledgement with the incarnation it
    was given under, the external-fence attestations, and a not-before instant. A node answers
@@ -1124,9 +1152,12 @@ feature that has not yet been measured.
 >
 > **§2's exclusion invariant is wider than what (1) and (2) leave.** It requires a successor to
 > exclude every predecessor capability that can still admit _or commit_; what ships excludes
-> admission, and the commit half holds only up to the pre-submission expiry fence
-> (the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.performCommit()`) — a native commit that clears that fence and settles
-> afterwards is limitation (2)'s third route.
+> admission, and the commit half holds up to the pre-submission expiry fence
+> (the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.performCommit()`) plus, on the local
+> node and for clean recall drain, `KeyLockHandle`'s per-handle commit hold (`retainForCommit()` /
+> `releaseCommitHold()`, harper#3236) up to `commitConflictBudget()` — a native commit that clears the
+> pre-submission fence and settles past `commitConflictBudget()` (or after the home's own monotonic
+> delegation lease expires on a peer) is limitation (2)'s third route.
 >
 > **There is no caller-side mitigation for (2) — the obvious candidate is unreachable and, where it
 > is reachable, makes things worse.** `X-Replicate-To` / `confirm=` is meant to be super-user only —
@@ -1364,11 +1395,14 @@ drain and caps, §§5/6/8, plus the three inherited substrate defects in §11) a
 machine is gone, and the home ring, the delegation table, recall with §6 steps 1, 2 and 4, ordered
 fencing tokens, the caps, the §4.3 restart quarantine, the generation monotonicity floor and the
 transport-swap grant fence are in place, with all three inherited defects fixed. **§6 step 3 —
-settlement — is not implemented**: a recall revokes capability and then writes the release without
-waiting for a native commit already submitted to complete. That is exactly limitation (2)'s third
-route in §10, which the contract already states, so the gap is disclosed rather than hidden — but §6
-must not be read as fully implemented. Closing it means hanging the release hook off
-logical-transaction settlement rather than off the last admission unlocking. harper-pro#822 supplies
+settlement — is bounded by the commit-conflict budget (`retainForCommit(holdDeadlineMono)` /
+`releaseCommitHold()`, harper#3236)**: a submitted native `RocksTransaction` retains a commit hold
+on each write's `KeyLockHandle` until local commit landing (or `commitOutcome` rejection), so
+`revokeLease()` defers `store.unlock(key)` and `onRelease` (`LOCK_RELEASE` emission) while the
+commit is within `commitConflictBudget()`. Past `commitConflictBudget()`, `KeyLockHandle`'s
+`#holdTimer` (as well as `noteOverdueLoggedCommit` between retry attempts) releases the hold so a
+wedged conflict cannot pin the key forever, and a peer's own monotonic delegation lease (§5.2) can
+still expire first — which is limitation (2)'s third route in §10. harper-pro#822 supplies
 the operator-agreed home map and `establishLockFreshness()`; the feature is opt-in
 (`replication.recordLocks: true`). A `lockRelease` that reaches a non-coordinating thread is handed
 to the transport's `relayControlEntry` (harper-pro#977). Without the hook, a thread that has a
