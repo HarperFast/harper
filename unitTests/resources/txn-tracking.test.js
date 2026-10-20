@@ -448,22 +448,32 @@ describe('Write txn timeout', () => {
 		setExpiration(20);
 		try {
 			const context = { sourceApply: true };
+			let ownReport;
 			await transaction(context, async () => {
 				await IndexedResource.put(402, { t: 8 }, context);
-				await waitFor(
-					() =>
-						warnings.some(([message]) => String(message).includes('Harper transaction has held RocksDB transaction')),
-					2000
-				);
+				const link = databaseTxns(context)[0];
+				const nativeId = link.transaction.id;
+				const databasePath = link.db.rootStore.path;
+				// This thread's monitor names every holder past the threshold, including ones other suites left
+				// behind, and usually reaches them a tick before this one. Only the line carrying this handle's
+				// native id (the join key with the registry sweep) on this database may end the wait; these
+				// foreign lines, one per half of that key, prove the match rejects the rest.
+				const foreign = (id, path) =>
+					`Harper transaction has held RocksDB transaction ${id} for 1s on thread 0, database test.IndexedTxnTable/ (${path}), holding 0 staged write(s), state: over-limit.`;
+				logger.warn(foreign(nativeId + 1, databasePath));
+				logger.warn(foreign(nativeId, `${databasePath}-other`));
+				const isOwnReport = ([message]) =>
+					String(message).includes(`RocksDB transaction ${nativeId} `) && String(message).includes(`(${databasePath})`);
+				ownReport = await waitFor(() => warnings.find(isOwnReport), {
+					timeout: 2000,
+					message: () =>
+						`no report named RocksDB transaction ${nativeId} on ${databasePath}; captured: ${JSON.stringify(
+							warnings.map(([message]) => String(message))
+						)}`,
+				});
 			});
-			const reported = warnings.filter(([message]) =>
-				String(message).includes('Harper transaction has held RocksDB transaction')
-			);
-			assert.ok(reported.length > 0, 'the un-reaped source-apply holder must be named');
-			const indexedTableReport = reported.find(([message]) => /IndexedTxnTable/.test(String(message)));
-			assert.ok(indexedTableReport, 'the report for this transaction must name IndexedTxnTable');
-			assert.match(indexedTableReport[0], /state: [^,]*source-apply/);
-			assert.match(indexedTableReport[0], /transaction \d+/, 'the native id is the join key with the registry sweep');
+			assert.match(ownReport[0], /IndexedTxnTable/, 'the report for this transaction must name IndexedTxnTable');
+			assert.match(ownReport[0], /state: [^,]*source-apply/);
 			// Attribution must not have changed the exemption it is reporting on.
 			assert.strictEqual((await IndexedResource.get(402))?.t, 8, 'source-apply write should still be preserved');
 		} finally {

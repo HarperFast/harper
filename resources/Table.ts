@@ -4073,8 +4073,14 @@ export function makeTable(options): TableResourceClass {
 		static evict(id, existingRecord, existingVersion) {
 			if (maintenanceClosed) return Promise.resolve();
 			let entry;
-			const lmdbTransaction = txnForContext({ transaction: new DatabaseTransaction() });
-			let transaction = lmdbTransaction.getReadTxn();
+			// On RocksDB this method commits or aborts the native handle itself, so the handle is raw: one
+			// borrowed from a DatabaseTransaction's getReadTxn() leaves that wrapper registered with the
+			// open-transaction monitor, and is a coordinated-retry handle, which resolves a conflict as
+			// RETRY_NOW and stays open instead of rejecting with the ERR_BUSY the catch below expects.
+			const lmdbTransaction = primaryStore.ifVersion
+				? txnForContext({ transaction: new DatabaseTransaction() })
+				: undefined;
+			let transaction = lmdbTransaction ? lmdbTransaction.getReadTxn() : new RocksTransaction(primaryStore.store);
 			let options = { transaction };
 			let committed = false;
 			try {
@@ -4126,9 +4132,8 @@ export function makeTable(options): TableResourceClass {
 						})
 					);
 				}
-				// RocksDB: eviction writes went directly into the raw transaction via options; commit it directly,
-				// as DatabaseTransaction.commit() would abort it (no tracked writes). The raw commit bypasses
-				// DatabaseTransaction's ERR_BUSY retry, so a concurrent-write conflict rejects here — swallow it
+				// RocksDB: eviction writes went directly into the raw transaction via options; commit it directly.
+				// The raw commit has no retry, so a concurrent-write conflict rejects here — swallow it
 				// (abandon the eviction) and log anything unexpected, rather than letting it crash the process.
 				return trackMaintenanceCommit(
 					commitTrackedRocksTransaction(transaction as RocksTransaction, primaryStore).catch((error) => {
