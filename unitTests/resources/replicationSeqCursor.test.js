@@ -260,6 +260,74 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 		}
 	});
 
+	it('merges checkpoint-grade qualifiers, route marks and revocations, each on an update of its own', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		const txnStream = {};
+		const update = (fields) => ({
+			type: 'end_txn',
+			localTime: now,
+			timestamp: now,
+			remoteNodeIds: [51],
+			txnStream,
+			onFailure: () => false,
+			...fields,
+		});
+		const floors = (list) => {
+			const event = update({});
+			event.onCommit = () => {
+				event.originFloors = list;
+			};
+			return event;
+		};
+		const ReplicatedTable = makeReplicatedTable(
+			'SeqCursorQualifierTable',
+			[
+				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
+				floors([[9, now - 20, true, 'gen-1', true]]),
+				// a marks-only update reaches the row: a floor-only resume start, then a hole
+				update({ originRouteStates: [[9, now - 25, undefined, undefined]] }),
+				update({ originRouteStates: [[9, now - 24, undefined, undefined]] }),
+				update({ originRouteStates: [[9, undefined, undefined, true]] }),
+				// a completed copy makes the route whole again
+				update({ originRouteStates: [[9, undefined, false, undefined]] }),
+				// a revocation clears the floor and sticks under a later, higher certificate
+				update({ originFloorRevocations: [9] }),
+				floors([[9, now - 5, true, 'gen-1', true]]),
+				// a new origin generation starts the origin over
+				floors([[9, now - 3, true, 'gen-2', true]]),
+				floors([[9, now - 2, true, 'gen-2', true]]),
+				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now + 1 },
+				update({ localTime: now + 1, timestamp: now + 1 }),
+			],
+			held
+		);
+		try {
+			await waitFor(() => readCursor(ReplicatedTable, 51)?.seqId === now + 1, {
+				timeout: 5000,
+				message: 'the frame after the qualifier updates recorded its sequence id',
+			});
+			const [state] = readCursor(ReplicatedTable, 51).nodes;
+			assert.deepEqual(
+				{ ...state },
+				{
+					id: 9,
+					closedFloor: now - 2,
+					relayable: true,
+					originGeneration: 'gen-2',
+					fullCoverage: true,
+					certifiedFrom: undefined,
+					partialHistory: false,
+					hole: undefined,
+					floorRevoked: undefined,
+				}
+			);
+		} finally {
+			release();
+		}
+	});
+
 	it('repairs a scalar whose write failed, on a repeat frame whose origin cursors did not change', async function () {
 		let release;
 		const held = new Promise((resolve) => (release = resolve));
