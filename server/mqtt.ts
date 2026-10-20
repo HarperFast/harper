@@ -340,14 +340,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 	function closeConnection(error?: Error) {
 		try {
 			if (mqttOptions.protocolVersion >= 5) {
-<<<<<<< HEAD
-				const packet: any = { cmd: 'disconnect', reasonCode: error ? 0x83 : 0x8e };
-=======
-				const packet: any = {
-					cmd: 'disconnect',
-					reasonCode: error ? ((error as any).mqttReasonCode ?? (isNotAuthorized(error) ? 0x87 : 0x83)) : 0x8e,
-				};
->>>>>>> be22f4636 (Answer a refused durable resume with DISCONNECT Not authorized)
+				const packet: any = { cmd: 'disconnect', reasonCode: error ? (isNotAuthorized(error) ? 0x87 : 0x83) : 0x8e };
 				// as for PUBACK: only failures this layer describes itself are safe to hand a client
 				const describable =
 					error instanceof DatabaseGenerationChangedError ||
@@ -720,23 +713,18 @@ function onSocket(socket, send, request, user, mqttSettings) {
 								reasonCode:
 									mqttOptions.protocolVersion < 5
 										? 0x80 // the only error code in v3.1.1
-										: error?.statusCode === 403
+										: isNotAuthorized(error)
 											? 0x87 // not authorized
 											: error?.statusCode === 404
 												? 0x90 // topic name invalid
 												: 0x80, // unspecified error
 							};
-							// Only errors this layer maps to a code of their own are safe to describe: any other
-							// failure carries an internal message that a client must not be handed. Both limits
-							// are in encoded bytes, so measure and trim the string in bytes too.
 							const describable =
 								mqttOptions.protocolVersion >= 5 &&
 								sendProblemInformation &&
 								error?.message &&
-								(error.statusCode === 403 || error.statusCode === 404);
-							const reasonString = describable
-								? Buffer.from(String(error.message), 'utf8').subarray(0, REASON_STRING_LIMIT).toString('utf8')
-								: undefined;
+								hasClientSafeMessage(error);
+							const reasonString = describable ? boundedReasonString(error.message) : undefined;
 							if (
 								reasonString &&
 								(!maximumPacketSize || maximumPacketSize >= Buffer.byteLength(reasonString) + ACK_PACKET_OVERHEAD)
@@ -808,58 +796,6 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		function packetMethodName(packet) {
 			return packet.qos > 0 ? packet.cmd + ',qos=' + packet.qos : packet.cmd;
 		}
-<<<<<<< HEAD
-=======
-		async function publish(packet) {
-			const responseCmd = packet.qos === 2 ? 'pubrec' : 'puback';
-			const deserialize =
-				socket.deserialize ||
-				(socket.deserialize = getDeserializer(request?.headers.get?.('content-type') as string, false));
-			const messageLength = packet.payload?.length || 0;
-			const data = messageLength > 0 ? deserialize(packet.payload) : undefined; // zero payload length maps to a delete
-			let published;
-			try {
-				published = await session.publish(packet, data);
-			} catch (error) {
-				emitEvent('error', error, socket, packet, session);
-				mqttLog.warn?.(error);
-				if (!(packet.qos > 0)) return;
-				// A publish to a topic no resource handles is the same miss addSubscription already
-				// answers with a specific code; reporting it as "unspecified error" leaves it
-				// indistinguishable from an internal failure.
-				const acknowledgement: any = {
-					cmd: responseCmd,
-					messageId: packet.messageId,
-					reasonCode:
-						mqttOptions.protocolVersion < 5
-							? 0x80 // the only error code in v3.1.1
-							: isNotAuthorized(error)
-								? 0x87 // not authorized
-								: error?.statusCode === 404
-									? 0x90 // topic name invalid
-									: 0x80, // unspecified error
-				};
-				const describable =
-					mqttOptions.protocolVersion >= 5 && sendProblemInformation && error?.message && hasClientSafeMessage(error);
-				const reasonString = describable ? boundedReasonString(error.message) : undefined;
-				if (
-					reasonString &&
-					(!maximumPacketSize || maximumPacketSize >= Buffer.byteLength(reasonString) + ACK_PACKET_OVERHEAD)
-				)
-					acknowledgement.properties = { reasonString };
-				return acknowledgement;
-			}
-			if (packet.qos > 0)
-				return {
-					cmd: responseCmd,
-					messageId: packet.messageId,
-					reasonCode:
-						published === false
-							? 0x90 // Topic name invalid
-							: 0, //success
-				};
-		}
->>>>>>> fa90a2d89 (Report an MQTT v5 request with no user as Not authorized)
 	});
 	parser.on('error', (error) => {
 		mqttLog.warn('MQTT parsing error, closing connection:', error.message);
