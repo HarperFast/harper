@@ -6833,7 +6833,7 @@ export function makeTable(options): TableResourceClass {
 							return;
 						} else {
 							value = record[attribute_name];
-							if (value && typeof value === 'object' && attribute_name !== attribute) {
+							if (value && typeof value === 'object' && (attribute.select != null || Array.isArray(attribute))) {
 								const subTransform = TableResource.transformEntryForSelect(
 									attribute.select || attribute,
 									context,
@@ -9140,15 +9140,21 @@ export function makeTable(options): TableResourceClass {
 		return false;
 	}
 	function someRelationshipPath(target: RequestTarget, user: User, checkDenial: boolean): boolean {
-		const conditions = target.conditions as any;
+		let conditions: any = target.conditions;
 		if (conditions == null) {
-			if (target.sort == null && (typeof target[Symbol.iterator] !== 'function' || (target as any).size === 0))
-				return false;
-		} else if (!Array.isArray(conditions) && conditions[Symbol.iterator]) {
+			// a selection's property set (a named array) lists attributes, not conditions
+			if (
+				typeof target[Symbol.iterator] === 'function' &&
+				(target as any).size !== 0 &&
+				(target as any).name === undefined
+			)
+				conditions = searchConditions(target);
+		} else {
 			// search reads the conditions again
-			target.conditions = Array.from(conditions);
+			if (!Array.isArray(conditions) && conditions[Symbol.iterator]) target.conditions = Array.from(conditions);
+			conditions = searchConditions(target);
 		}
-		if (someConditionPath(searchConditions(target), target, user, checkDenial)) return true;
+		if (conditions && someConditionPath(conditions, target, user, checkDenial)) return true;
 		for (let sort = typeof target.sort === 'object' && target.sort; sort; sort = sort.next) {
 			if (relationshipPathMatches(sort.attribute, target, user, checkDenial)) return true;
 		}

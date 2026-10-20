@@ -214,6 +214,16 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 				'nested sort'
 			);
 		});
+		test('a plain JSON selection object without a sub-selection returns the value', async () => {
+			const response = await byConditions(
+				'full',
+				[{ search_attribute: 'id', search_type: 'equals', search_value: EMP.id }],
+				{ get_attributes: ['id', { name: 'payload' }] }
+			);
+			strictEqual(response.status, 200, JSON.stringify(response.body));
+			deepStrictEqual(response.body, [{ id: EMP.id, payload: EMP.payload }]);
+		});
+
 		test('a plain JSON sub-selection cannot reach the relationship', async () => {
 			for (const select of ['dept', ['dept']]) {
 				assertRefused(
@@ -378,6 +388,10 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 			const empOnly = await rest('empOnly', `/Emp/${EMP.id}?select(id,dept)`);
 			strictEqual(empOnly.status, 200, JSON.stringify(empOnly.body));
 			deepStrictEqual(empOnly.body, { id: EMP.id });
+
+			const subSelected = await rest('full', `/Emp/${EMP.id}?select(id,dept{name})`);
+			strictEqual(subSelected.status, 200, JSON.stringify(subSelected.body));
+			deepStrictEqual(subSelected.body, { id: EMP.id, dept: { name: DEPT.name } });
 
 			const restricted = await rest('restricted', `/Emp/${EMP.id}?select(id,dept)`);
 			strictEqual(restricted.status, 200, JSON.stringify(restricted.body));

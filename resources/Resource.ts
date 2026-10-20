@@ -1203,7 +1203,6 @@ export function transformForSelect(select, resource) {
 	const context = resource?.getContext?.();
 	let subTransforms;
 	if (typeof select === 'string' || (!Array.isArray(select) && select?.name !== undefined))
-		// a single string or selection object returns that property's value
 		return function transform(object) {
 			if (object == null || (!resource && typeof object !== 'object')) return object;
 			if (typeof object.then === 'function') return object.then(transform);
@@ -1263,6 +1262,7 @@ export function transformForSelect(select, resource) {
 				if (property.name) {
 					const value = getProperty(property.name);
 					if (!value || typeof value !== 'object' || value instanceof Date) return value;
+					if (property.select == null && !Array.isArray(property)) return value;
 					if (!subTransforms) subTransforms = Object.create(null);
 					// TODO: Get the resource, cache this transform, and apply above
 					let transform = subTransforms[property.name];
