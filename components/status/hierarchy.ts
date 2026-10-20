@@ -17,8 +17,10 @@ import { serializeStatusError } from './ComponentStatusRegistry.ts';
 export interface StatusNode {
 	status: ComponentStatusLevel;
 	message?: string;
+	/** Last known source in collection order, independent of the message/error owner. */
 	source?: ComponentStatusSource;
 	lastChecked?: { main?: number; workers: Record<number, number> };
+	/** Sum of current per-thread counters, including healthy reports. */
 	occurrenceCount?: number;
 	error?: string;
 	children?: Record<string, StatusNode>;

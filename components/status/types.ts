@@ -36,7 +36,7 @@ export interface ComponentStatusSummary {
 	workerIndex?: number;
 	/** How the status was set */
 	source?: ComponentStatusSource;
-	/** Number of times this status has been reported */
+	/** Reports at this thread's current level; resets to 1 when the level changes. */
 	occurrenceCount?: number;
 }
 
@@ -75,9 +75,9 @@ export interface AggregatedComponentStatus {
 	latestMessage?: string;
 	/** Error from the highest-priority, most recent non-healthy thread */
 	error?: Error | string;
-	/** How the status was set */
+	/** Last known source in thread collection order, independent of the message/error owner. */
 	source?: ComponentStatusSource;
-	/** Number of times this status has been reported (across all threads) */
+	/** Sum of current per-thread counters at every level, including healthy; not a lifetime count. */
 	occurrenceCount?: number;
 }
 

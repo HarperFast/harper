@@ -45,10 +45,6 @@ function formatMessage(args: any[]): string {
 	return redactUrlCredentials(message).substring(0, 500);
 }
 
-/**
- * Status handler called by the logger's .status() wrapper.
- * This is registered with harper_logger.ts via setStatusHandler().
- */
 export function handleStatusLog(
 	options: StatusOptions,
 	level: string | null,
@@ -146,10 +142,6 @@ function clearExpiry(key: string) {
 	}
 }
 
-/**
- * Initialize the log-to-status bridge by registering handleStatusLog
- * with the harper logger's setStatusHandler.
- */
 export function initLogBridge() {
 	setStatusHandler(handleStatusLog);
 }

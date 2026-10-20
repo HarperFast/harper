@@ -340,7 +340,7 @@ export class StatusAggregator {
 		let mostRecentCheckTime = 0;
 		let latestMessage: string | undefined;
 		let error: Error | string | undefined;
-		let source: string | undefined;
+		let source: ComponentStatusSummary['source'];
 		let totalOccurrenceCount = 0;
 		const statusCounts = new Map<ComponentStatusLevel, number>();
 		const abnormalities = new Map<string, ComponentStatusAbnormality>();
@@ -417,7 +417,7 @@ export class StatusAggregator {
 			lastChecked: lastCheckedTimes,
 			latestMessage,
 			error,
-			source: source as any,
+			source,
 			occurrenceCount: totalOccurrenceCount || undefined,
 		};
 

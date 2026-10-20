@@ -29,7 +29,6 @@ export * from './types.ts';
 export { initLogBridge } from './logBridge.ts';
 export { startHealthChecks } from './healthChecks.ts';
 
-// Initialize the log-to-status bridge immediately so logger.status() calls work
 initLogBridge();
 
 // Internal query functions for Harper core

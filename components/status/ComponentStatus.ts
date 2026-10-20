@@ -21,11 +21,11 @@ export class ComponentStatus {
 	public error?: Error | string;
 	/** How the status was set */
 	public source?: ComponentStatusSource;
-	/** Epoch ms when this status should auto-clear */
+	/** Optional metadata, unpopulated by the log bridge; its deadlines are tracked separately. */
 	public expiresAt?: number;
-	/** Number of times this status has been reported */
+	/** Consecutive reports at the current level; resets to 1 on a level change. */
 	public occurrenceCount: number;
-	/** When this status was first reported */
+	/** Beginning of the current same-level sequence. */
 	public firstOccurrence: Date;
 
 	constructor(status: ComponentStatusLevel, message?: string, error?: Error | string, source?: ComponentStatusSource) {

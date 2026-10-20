@@ -4252,14 +4252,13 @@ function startMonitoringTxns() {
 					// replay are excluded: they have no resubscribe/resume path, so aborting a write would drop
 					// it while the resume cursor advances past it — a permanent divergence (harper-pro#348). For
 					// those, keep the prior force-commit behavior below.
-					harperLogger
-						.status({ problem: 'database.txn-open-too-long', expires: 120 })
-						.error(
-							`Transaction was open too long and has been aborted after exceeding the open-transaction limit, ` +
-								describeCommitIdentity(txn.db, txn.startedFrom, txn.transaction) +
-								(url ? ` path: ${url}` : ''),
-							...(DEBUG_LONG_TXNS ? ['starting stack trace', txn.stackTraces] : [])
-						);
+					harperLogger.status({ problem: 'database.txn-open-too-long', expires: 120 });
+					harperLogger.error(
+						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, ` +
+							describeCommitIdentity(txn.db, txn.startedFrom, txn.transaction) +
+							(url ? ` path: ${url}` : ''),
+						...(DEBUG_LONG_TXNS ? ['starting stack trace', txn.stackTraces] : [])
+					);
 					try {
 						commitChainHead.abortDueToTimeout();
 					} catch (error) {

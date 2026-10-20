@@ -74,7 +74,6 @@ describe('buildHierarchy', function () {
 	});
 
 	it('defaults an intermediate node with no own status entry to healthy before roll-up', function () {
-		// 'system' itself never appears as a key -- only 'system.disk' does.
 		const statuses = new Map([['system.disk', agg(COMPONENT_STATUS_LEVELS.HEALTHY)]]);
 
 		const tree = buildHierarchy(statuses);

@@ -12,7 +12,7 @@ export interface StatusOptions {
 	problem?: string;
 	/** A key to resolve. Clears the status entry at this key back to healthy. */
 	resolves?: string;
-	/** Seconds until the status auto-clears. Only valid with `problem`. */
+	/** Positive finite seconds until auto-clear, with `problem`; invalid/nonpositive values leave it persistent. */
 	expires?: number;
 	/** Status level for status-only calls (no chained log method). Defaults to 'error'. */
 	level?: string;
