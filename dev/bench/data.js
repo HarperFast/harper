@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792481137876,
+  "lastUpdate": 1792488036493,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -24321,6 +24321,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 924,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1fd591ba23493eca691de3b279157cfbd830e3d6",
+          "message": "Serve a stopped delegate's keys at once after a fenced record-lock home-map change (#3269)\n\n* Expire a home's older-generation grants when a new generation becomes current\n\nA home kept a grant minted under generation g after g+1 activated, and answered\ncontended on that key until the delegation lease ran out (~365 s). When the\ndelegate is a node stopped outside Harper (harper-pro#973's fenced transition),\nthat is a key nobody can admit under. The first grant under a new generation now\nexpires every older grant, the home-side half of \"a delegation is authority\nwithin one generation\".\n\nDispatch-Task: hp-973-fenced-apply-homes\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kcpk75VwseBHAGwqT6mQvP\n\n* Keep an older grant to a delegate still in the ring until its lease ends\n\nExpire an older-generation grant only when its delegate is outside the new\nhomes[] or already confirmed its recall. A delegate the new generation still\nnames keeps its lease, the backstop against an activation that came too early.\nDocument that a drain proof or a stopped (not merely isolated) fenced node is\nwhat lets activation skip the lease-plus-skew wait.\n\nDispatch-Task: hp-973-fenced-apply-homes\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kcpk75VwseBHAGwqT6mQvP\n\n* Cover the recall-confirmed arm of the generation-change grant sweep\n\nDispatch-Task: hp-973-fenced-apply-homes\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kcpk75VwseBHAGwqT6mQvP\n\n* Expire a dropped delegate's older grant only after its recall failed\n\nA drain that never reached a grant (for example one moved to a successor\ncoordinator mid-sweep) must not let the home re-grant the key at activation.\nExpire an older grant only when the delegate confirmed its recall, or when the\nrecall failed and the delegate is outside the new homes[]; harper-pro activates\npast such a recall only when the operator attests the node stopped. Every other\nolder grant keeps its lease. Isolation is not a fence for skipping the wait.\n\nDispatch-Task: hp-973-fenced-apply-homes\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kcpk75VwseBHAGwqT6mQvP\n\n* Mark the grants a drain left outstanding, and sweep on that mark\n\nRecall history cannot tell a drain's recall from a contention recall, and a\ndrain recall still in flight at the drain deadline has no failure recorded when\nthe first g+1 grant sweeps. quiesce now marks each grant it reports\noutstanding; the sweep expires an older grant only when its recall was\nconfirmed, or the drain marked it and its delegate is outside the new ring.\n\nDispatch-Task: hp-973-fenced-apply-homes\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kcpk75VwseBHAGwqT6mQvP\n\n* Define an external fence as stopped or powered off, never isolated\n\nDispatch-Task: hp-973-fenced-apply-homes\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kcpk75VwseBHAGwqT6mQvP\n\n* Expire a recall confirmed after the generation sweep, and drop a renewed grant's drain mark\n\nA recall that confirms after the first grant under the new generation was left\nanswering contended until its lease when the release was lost; the next grant\nrequest now expires it. A renewal re-mints the token, so the drain mark that\ndescribed the old token goes with it.\n\nDispatch-Task: hp-973-fenced-apply-homes\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kcpk75VwseBHAGwqT6mQvP\n\n* Sweep coordinators rebuilt during a drain, and reset a grant's drain mark when a drain reaches it\n\nquiesceDelegations swept a snapshot of the database's coordinators. Staging a\ngeneration replaces the transport, and the table's next lock access rebuilds\nits coordinator, adopting the grants and delegations; a predecessor the sweep\nhad not reached yet returned at once as closed, and the successor was never\nswept, so the drain could report complete with authority still live\n(harper-pro#1061). Re-read the live coordinators after each pass until none is\nnew. A drain also clears the mark an earlier drain left before recalling, so\nthe mark always describes the latest drain that reached the grant.\n\nDispatch-Task: hp-973-fenced-apply-homes\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kcpk75VwseBHAGwqT6mQvP\n\n* Confirm a recall only after an in-flight surrender has fenced, and wait for surrenders in a drain\n\nA surrender removes the delegation before its handles are fenced; a recall\narriving in that window found nothing and confirmed, so the home could treat a\ngrant as drained (and, under the generation sweep, retire it) while a handle\ncould still commit. Such a recall now joins the in-flight surrender, and\nquiesceDelegations waits for in-flight surrenders and reports one that does not\nsettle. The sweep and the per-key late branch share one predicate, and expiring\nunder a generation records that generation as acted on, so a map that reverts\nbelow it cannot re-grant the key. A coordinator closed mid-drain stops, leaving\nits successor to the next pass, and every visited coordinator's ownership\nhorizon is checked again.\n\nDispatch-Task: hp-973-fenced-apply-homes\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kcpk75VwseBHAGwqT6mQvP\n\n* Retire only drain-outstanding grants to a dropped node, at the first mint, and count a drain once\n\n- The generation sweep runs at the first mint under a generation rather than on\n  any map read, so a read that mints nothing neither expires a grant nor raises\n  the floor.\n- A recall-confirmed grant is no longer retired: a recall can confirm early\n  while a renewal's inherited admission still runs, and its release normally\n  follows the confirmation anyway.\n- A sweep that visits a successor counts each delegation, grant and in-flight\n  surrender once, and a handed-off coordinator reports no ownership gap of its\n  own.\n\nDispatch-Task: hp-973-fenced-apply-homes\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kcpk75VwseBHAGwqT6mQvP\n\n* Re-read coordinators after waiting on surrenders, sweep before capacity, and raise the floor on retiring\n\n- The drain waits on in-flight surrenders inside the re-read loop, so a\n  coordinator rebuilt during that wait is swept and its adopted ownership\n  checked; a handed-off predecessor no longer answers for it.\n- The generation sweep runs once per generation from a grant request that\n  passed the quarantine and fencing gates, before the capacity checks, so grants\n  to a dropped node do not hold the table at capacity.\n- Retiring a grant records its generation as acted on, so a map that later\n  reads below it cannot re-grant the key.\n- A drain clears a grant's mark before counting a confirmed recall, and the\n  retire predicate excludes confirmed recalls.\n\nDispatch-Task: hp-973-fenced-apply-homes\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kcpk75VwseBHAGwqT6mQvP\n\n* Sweep again after a later drain marks grants, and answer for a cold-closed successor's ownership\n\nA drain that marks a grant after this generation's sweep re-arms it, so the\nnext grant request retires every marked grant, not only the requested key's.\nA handed-off coordinator whose successor closed without handing on reports the\nsuccessor's ownership gap instead of none.\n\nDispatch-Task: hp-973-fenced-apply-homes\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kcpk75VwseBHAGwqT6mQvP\n\n* Re-arm the sweep on the coordinator holding authority, and say where the lease is no backstop\n\nA drain that marks a grant re-arms the generation sweep on the end of the\nhandoff chain, not on a predecessor it was handed off from mid-drain. The design\nnote now says the lease backs up an early activation only for grants a drain did\nnot mark: activating past a drain-marked grant to a dropped node is the\noperator's statement that the node is stopped.\n\nDispatch-Task: hp-973-fenced-apply-homes\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kcpk75VwseBHAGwqT6mQvP\n\n* Drop the per-key retirement branch the re-armed sweep made unreachable\n\nDispatch-Task: hp-973-fenced-apply-homes\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Kcpk75VwseBHAGwqT6mQvP\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-20T02:21:57Z",
+          "url": "https://github.com/HarperFast/harper/commit/1fd591ba23493eca691de3b279157cfbd830e3d6"
+        },
+        "date": 1792488033945,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 10470,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 10688,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 8055,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 29889472,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 8259,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 1654,
             "unit": "ops"
           }
         ]
