@@ -609,22 +609,7 @@ class SubscriptionsSession {
 		const willId = this.willId;
 		this.willId = undefined;
 		if (willId) {
-			const context = this.createContext();
-			transaction(context, async () => {
-				try {
-					if (!clientTerminated) {
-						const will = await getLastWill().get(willId);
-						if (will && !isWillFromExpiredScopedToken(will)) {
-							// A scoped will authorizes under its own embedded role, never the disconnecting
-							// session's user (which may be a later same-clientId reconnect).
-							const willContext = will.user?._scopedToken ? { ...context, user: will.user } : context;
-							await publishMessage(will, will.data, willContext);
-						}
-					}
-				} finally {
-					await getLastWill().delete(willId);
-				}
-			}).catch((error) => {
+			this.settleWill(willId, !clientTerminated).catch((error) => {
 				warn(`Error publishing MQTT will for ${this.sessionId}`, error);
 			});
 		}
@@ -633,6 +618,23 @@ class SubscriptionsSession {
 			subscription.end();
 		}
 		this.subscriptions = [];
+	}
+	/** The will row is session bookkeeping on contexts of its own; only the publish runs as the session (server/DESIGN.md). */
+	async settleWill(willId: [string, string], publish: boolean) {
+		try {
+			if (publish) {
+				const will = await getLastWill().get(willId, {});
+				if (will && !isWillFromExpiredScopedToken(will)) {
+					const context = this.createContext();
+					// A scoped will authorizes under its own embedded role, never the disconnecting
+					// session's user (which may be a later same-clientId reconnect).
+					if (will.user?._scopedToken) context.user = will.user;
+					await publishMessage(will, will.data, context);
+				}
+			}
+		} finally {
+			await getLastWill().delete(willId, {});
+		}
 	}
 	receivedPacket() {
 		if (this.keepalive) {
