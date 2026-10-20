@@ -170,10 +170,10 @@ describe('Attribute read permissions on subscription deliveries', () => {
 		await Doc.put('computed', { title: 'computed again', secret: 's' });
 		await waitFor(() => delivered(events, 'computed again'));
 		// the current record may arrive twice (retained-message semantics)
-		assert.deepStrictEqual(
-			[...new Set(recordEvents(events).map((event) => JSON.stringify(event.value)))],
-			['{"title":"computed"}', '{"title":"computed again"}']
-		);
+		const distinct = [];
+		for (const { value } of recordEvents(events))
+			if (!distinct.some((seen) => isDeepStrictEqual(seen, value))) distinct.push(value);
+		assert.deepStrictEqual(distinct, [{ title: 'computed' }, { title: 'computed again' }]);
 		assert.strictEqual(resolverCalls, callsBefore);
 	});
 
