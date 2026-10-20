@@ -2480,10 +2480,14 @@ export class DatabaseTransaction implements Transaction {
 			}
 			throw error;
 		}
-		// A retry that ties with the record its own earlier attempt stored skips the write, but that version stands.
+		// A retry that finds the record its own earlier attempt staged at this version skips the write, but that
+		// version stands. A record a competing write moved past it does not.
 		if (operation.trackRecordVersion)
 			operation.appliedRecordVersion =
-				operation.recordVersionApplied || appliedByPriorAttempt === writeVersion ? writeVersion : undefined;
+				operation.recordVersionApplied ||
+				(appliedByPriorAttempt === writeVersion && operation.entry?.version === writeVersion)
+					? writeVersion
+					: undefined;
 		if (typeof completion?.then === 'function') this.stageCompletion(completion, transaction);
 		// Sticky record that THIS write staged with its audit entry appended (log entries batch on the
 		// native transaction and are durably written by its commit attempt — even a failed one — so
