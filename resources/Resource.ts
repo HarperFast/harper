@@ -27,7 +27,7 @@ import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
-import { hasFullTextContinuationOptions } from './indexes/fullTextQueryProtocol.ts';
+import { FULL_TEXT_CONTINUATION_REQUEST, hasFullTextContinuationOptions } from './indexes/fullTextQueryProtocol.ts';
 
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
@@ -377,8 +377,10 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				resource.constructor.loadAsInstance !== false &&
 				typeof resource.searchPage === 'function' &&
 				hasFullTextContinuationOptions(data)
-			)
+			) {
+				(request as any)[FULL_TEXT_CONTINUATION_REQUEST] = true;
 				return resource.constructor.searchPage(data, request);
+			}
 			const result = resource.search
 				? resource.constructor.loadAsInstance === false
 					? resource.search(query, data)

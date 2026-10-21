@@ -304,8 +304,12 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 				{ method: 'QUERY', body: JSON.stringify(query('pagination', {}, { limit: 1000, continuation: true })) },
 			]) {
 				const path = options.method ? `/${resource}/` : `${base}&continuation()`;
-				const error = await request(path, options, 400);
-				assert.match(JSON.stringify(error), /original searchPage\(\) array/);
+				if (resource === 'IgnoredPagingProduct' && options.method)
+					assert.deepStrictEqual(await request(path, options), []);
+				else {
+					const error = await request(path, options, 400);
+					assert.match(JSON.stringify(error), /original searchPage\(\) array/);
+				}
 			}
 		}
 		const response = await fetch(`${ctx.harper.httpURL}/ManualPagingResponse/?limit(1)&continuation()`, {

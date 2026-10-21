@@ -2,6 +2,7 @@ import { ServerError } from '../../utility/errors/hdbError.ts';
 import type { NativeFullTextSearchMode } from './fullTextNativeBinding.ts';
 
 export const FULL_TEXT_CONTINUATION_PAGE = Symbol('fullTextContinuationPage');
+export const FULL_TEXT_CONTINUATION_REQUEST = Symbol('fullTextContinuationRequest');
 export const FULL_TEXT_CONTINUATION_VERSION = Symbol('fullTextContinuationVersion');
 
 export const FULL_TEXT_QUERY_PAUSE_OPERATION = 'pause-full-text-query-readers';

@@ -20,7 +20,9 @@ describe('full-text search resource limits', () => {
 			timeout: 15000,
 		});
 		const rejection = JSON.parse(early.trim().split('\n').at(-1)).unmanaged;
-		assert.strictEqual(rejection.status, 503);
+		assert.strictEqual(rejection.status, 500);
+		assert.strictEqual(rejection.name, 'FullTextWorkerInitializationError');
+		assert.strictEqual(rejection.retryable, false);
 		assert.match(rejection.error, /Initialize Harper before creating application workers/);
 		for (const value of [257, 258]) {
 			const result = execFileSync(process.execPath, [fixture, String(value)], { encoding: 'utf8', timeout: 15000 });

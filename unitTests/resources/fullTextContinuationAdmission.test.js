@@ -54,7 +54,7 @@ async function terminateWorker(worker) {
 }
 
 describe('full-text process-wide continuation admission', () => {
-	it('keeps one native runtime configuration across replacement workers after a live config change', async function () {
+	it('keeps one native runtime configuration across replacement workers and their application workers', async function () {
 		this.timeout(30000);
 		if (!(await supportsPublishedFullTextBinding())) this.skip();
 		const { getFullTextRuntimeConfiguration } = require('#src/resources/indexes/fullTextRuntimeConfiguration');
@@ -83,6 +83,7 @@ describe('full-text process-wide continuation admission', () => {
 				const result = await response(worker, 'runtime-configuration');
 				assert.deepStrictEqual(result.value?.runtime, runtime, JSON.stringify(result));
 				assert.strictEqual(result.value.changedCode, 'E_RESOURCE_LIMIT');
+				assert.strictEqual(result.value.rawChildReady, true);
 			}
 			assert.deepStrictEqual((await response(workers[0], 'runtime-configuration')).value.runtime, runtime);
 		} finally {

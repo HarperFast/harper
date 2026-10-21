@@ -53,13 +53,13 @@ export class CopiedPagingProduct extends Resource {
 		return Boolean(user);
 	}
 
-	async get(target) {
-		const page = await Product.searchPage({ ...target, checkPermission: true }, this.getContext());
-		return page.filter(() => true);
+	get(target) {
+		return this.searchPage(target);
 	}
 
-	search(target) {
-		return this.get(target);
+	async searchPage(target) {
+		const page = await Product.searchPage({ ...target, checkPermission: true }, this.getContext());
+		return page.filter(() => true);
 	}
 }
 

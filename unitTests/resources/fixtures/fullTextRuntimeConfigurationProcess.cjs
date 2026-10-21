@@ -19,7 +19,7 @@ async function run() {
 				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { runtime: { maxSearchThreads: workerData.maxSearchThreads + 1 } });
 				require('#src/resources/indexes/fullTextNativeBinding').loadFullTextNativeBinding().then(
 					() => parentPort.postMessage('ready'),
-					(error) => parentPort.postMessage({ status: error.statusCode, error: error.message })
+					(error) => parentPort.postMessage({ status: error.statusCode, error: error.message, name: error.name, retryable: error.retryable })
 				);
 			`,
 				{ eval: true, workerData: { maxSearchThreads } }

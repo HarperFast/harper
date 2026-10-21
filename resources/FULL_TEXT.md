@@ -159,7 +159,8 @@ These headers are exposed to browser clients. Continuation responses use `Cache-
 Nonzero offsets, count requests, and other result ordering cannot be combined with continuation.
 The names `continuation` and `closeContinuation` are reserved REST options.
 
-A custom Resource should return the original `searchPage()` array. Copying it with `map()`,
+A custom Resource supporting the framework's QUERY paging route must implement `searchPage()`.
+Return the original page array. Copying it with `map()`,
 `filter()` or spread drops its paging metadata; a framework-serialized continuation response
 without that metadata returns 400. Put projections and filters in the query instead. A Resource
 returning an explicit HTTP `Response` owns its response headers, serialization and cache policy.
@@ -239,5 +240,5 @@ opens. Defaults allow 128 resident native indexes, 128 indexing threads, 256 sea
 of configured writer memory, 8 GiB of configured queue capacity, and 8 concurrent expensive searches.
 These limits apply together: for example, two indexing threads and 64 MiB of writer memory per index
 reach the thread and memory budgets at 64 indexes. Readers share each native index's runtime;
-retaining a reader does not allocate another index writer. Harper captures these budgets when the main thread first loads fulltext or creates a managed worker. Workers created afterward inherit that configuration, including application-created workers. An application worker created before capture returns 503 when it tries to load fulltext; initialize Harper before creating those workers. Replacement workers retain the established budgets after a live configuration change. Change these settings to fit the number
+retaining a reader does not allocate another index writer. Harper captures these budgets when the main thread first loads fulltext or creates a managed worker. Workers created afterward inherit that configuration, including application-created workers. A worker created before capture cannot initialize fulltext; recreate it after Harper initializes rather than retrying inside the same worker. Replacement workers retain the established budgets after a live configuration change. Change these settings to fit the number
 of indexes and their configured resources, and restart Harper after changing native admission limits.
