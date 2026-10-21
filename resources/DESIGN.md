@@ -216,7 +216,6 @@ A RocksDB transaction's log key is minted when its native handle is created, or 
 
 - **Only a patch can be reversed.** The backward walk from the live record undoes patches; a put or delete newer than the requested timestamp replaced the whole record, so nothing recorded about it recovers what came before. After crossing one the walk stops reversing, keeps following links to the entry at or before the timestamp, and rebuilds forward from there (`reconstructForward`). Carrying a newer put's image back across it returns a future state, or throws when a later patch fills unknown fields into the frozen decoded put (harper#1413).
 - **An unlinked put ends the walk early, and that is not an empty past.** A put written with no predecessor link (a re-insert after eviction) cuts the chain although older entries are retained. The walk then falls to the timestamp-keyed rebuild, as it does for any broken chain. Rebuilding from a crossed put's own predecessor link would report an empty past for every state older than such a re-insert.
-- **Retention gaps differ by what survives.** `reconstructForward` returns `null` when no entry at or before the timestamp is reachable and `undefined` when a patch was collected but its base is gone; callers treat both as "no value" and `Table.getHistory*` contains a per-entry failure.
 
 ---
 

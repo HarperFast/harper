@@ -129,7 +129,7 @@ export function applyForward(record, update, skipUnseededOps = false) {
 /**
  * Reconstruct the record state at `timestamp` by walking the audit history forward from the most
  * recent full `put` at or before `timestamp`. Used when `getRecordAtTime` has no usable live base
- * (missing/evicted `currentEntry`, a reverse walk that crosses a `delete`, or a post-eviction
+ * (missing/evicted `currentEntry`, a reverse walk that crosses a `put` or `delete`, or a post-eviction
  * re-insert with a broken `previousVersion` chain) and when filling `unknowns` on a live record.
  *
  * `fromPosition` is the starting audit position; the walk follows the previous links from there.
