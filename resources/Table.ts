@@ -564,6 +564,7 @@ export const EVICTED = 8; // note that 2 is reserved for timestamps
 export const DEFAULT_REPLICA_EXPIRATION_MS = 3_600_000;
 const REPLICA_REFRESH_FRACTION = 0.25;
 const MIN_REPLICA_SCAN_INTERVAL_MS = 1000;
+const MAX_REPLICA_REFRESHES_IN_FLIGHT = 50;
 const REPLICA_TABLES_KEY = Symbol.for('replica_tables');
 const REPLICA_EVICTION_ARMED = 'replica-eviction-armed';
 const replicaEvictionArmers = new Map<string, Set<() => void>>();
@@ -6840,7 +6841,8 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						(!includeExpired && entry?.expiresAt != undefined && entry?.expiresAt < Date.now())
+						// an expired replica still answers an indexed-only query locally, as its stub would
+						(!includeExpired && hasExpired(entry) && (checkLoaded || !(entry.metadataFlags & REPLICA)))
 					) {
 						// should expiration really apply?
 						if (context.onlyIfCached) {
@@ -10580,6 +10582,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	function refreshReplicaOnRead(entry: Entry) {
 		if (!sourceLoad || !replicaNeedsRefresh(entry)) return;
+		if (replicaRefreshInFlight.size >= MAX_REPLICA_REFRESHES_IN_FLIGHT) return;
 		const keyId = chainKeyForId(entry.key);
 		if (replicaRefreshInFlight.has(keyId)) return;
 		replicaRefreshInFlight.add(keyId);
@@ -10675,7 +10678,7 @@ export function makeTable(options): TableResourceClass {
 	function releaseReplacedBlobs(replaced: Entry, record: any) {
 		if (replaced.metadataFlags & HAS_BLOBS) deleteBlobsInObject(replaced.value, collectRetainedFileIds(record));
 	}
-	/** Durable before the first replica row, so a restart re-arms the sweep for this table. */
+	/** Written before the first replica row, so a restart can re-arm the sweep for this table. */
 	function markReplicaTable() {
 		if (replicaTableMarked) return;
 		if (!(dbisDb as any).getSync([REPLICA_TABLES_KEY, tableId]))
