@@ -1,8 +1,8 @@
 require('../testUtils');
-const assert = require('assert');
-const { existsSync } = require('fs');
-const { randomBytes } = require('crypto');
-const { setTimeout: delay } = require('timers/promises');
+const assert = require('node:assert');
+const { existsSync } = require('node:fs');
+const { randomBytes } = require('node:crypto');
+const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor.js');
 const { table } = require('#src/resources/databases');
