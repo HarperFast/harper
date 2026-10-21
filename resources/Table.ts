@@ -10465,7 +10465,7 @@ function isDescendantId(ancestorId, descendantId): boolean {
 // wait for an event turn (via a promise)
 const rest = () => new Promise(setImmediate);
 
-function auditRefIndex(refs: Array<{ version: number; nodeId: number }>, version: number, nodeId?: number): number {
+function auditRefIndex(refs: Array<{ version: number; nodeId?: number }>, version: number, nodeId?: number): number {
 	for (let index = 0; index < refs.length; index++) {
 		if (refs[index].version === version && (refs[index].nodeId ?? 0) === (nodeId ?? 0)) return index;
 	}
