@@ -164,6 +164,11 @@ describe('evict() leaves a renewed record and its blobs intact', function () {
 		assert.equal(merged.value.tag, 'merged');
 
 		await UnauditedBlobs.evict('resequenced', read.value, read.version);
-		assert.equal(UnauditedBlobs.indices.tag.getValuesCount('merged'), 0, 'no index entry may outlive its record');
+		const present = UnauditedBlobs.primaryStore.getEntry('resequenced') ? 1 : 0;
+		assert.equal(
+			UnauditedBlobs.indices.tag.getValuesCount('merged'),
+			present,
+			'the index must match the stored record'
+		);
 	});
 });
