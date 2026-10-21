@@ -2218,14 +2218,22 @@ function parseBlock(query, expectedEnd) {
 	let lastBinaryOperator;
 	while ((match = parser.exec(queryString))) {
 		lastIndex = parser.lastIndex;
+		if (match[0] === '' && lastIndex < queryString.length) {
+			recordError(`unexpected character '${queryString[lastIndex]}'`);
+			lastIndex = queryString.length;
+			return query;
+		}
 		const [, value, operator] = match;
 		if (expectingDelimiter) {
 			if (value) recordError(`expected operator, but encountered '${value}'`);
 			expectingDelimiter = false;
 			expectingValue = false;
 		} else expectingValue = true;
-		if (attribute != null && (operator === '(' || operator === '[' || operator === '{'))
+		if (attribute != null && (operator === '(' || operator === '[' || operator === '{')) {
 			recordError(`unexpected '${operator}' in a value`);
+			lastIndex = queryString.length;
+			return query;
+		}
 		let entry;
 		switch (operator) {
 			case '=':
@@ -2278,7 +2286,7 @@ function parseBlock(query, expectedEnd) {
 						if (expectedEnd && operator) recordError(`expected '${expectedEnd}', but encountered '${operator[0]}'`);
 						recordError(`no comparison specified before ${operator ? "'" + operator + "'" : 'end of string'}`);
 					}
-				} else addCondition(query, attribute, comparator, value, valueDecoder, lastBinaryOperator);
+				} else addCondition(query, attribute, comparator, comparatorChosen, value, valueDecoder, lastBinaryOperator);
 				if (operator === '&') {
 					lastBinaryOperator = 'and';
 					attribute = undefined;
@@ -2396,7 +2404,15 @@ function parseBlock(query, expectedEnd) {
 					if (query.conditions) {
 						// finish condition
 						if (attribute != null) {
-							addCondition(query, attribute, comparator || 'equals', value, valueDecoder, lastBinaryOperator);
+							addCondition(
+								query,
+								attribute,
+								comparator || 'equals',
+								comparatorChosen,
+								value,
+								valueDecoder,
+								lastBinaryOperator
+							);
 						} else if (value) {
 							recordError('no attribute or comparison specified');
 						}
@@ -2420,8 +2436,9 @@ function parseBlock(query, expectedEnd) {
 	}
 	if (expectedEnd) recordError(`expected '${expectedEnd}', but encountered end of string`);
 }
-function addCondition(query, attribute, comparator, value, valueDecoder, lastBinaryOperator) {
+function addCondition(query, attribute, comparator, comparatorChosen, value, valueDecoder, lastBinaryOperator) {
 	if (!query.conditions) return recordError('conditions/comparisons are not allowed in a property list');
+	if (attribute === '' && !comparatorChosen) return recordError('a chained condition needs a FIQL comparator');
 	const condition = buildCondition(attribute, comparator, value, valueDecoder);
 	if (attribute === '') {
 		// a chained leg (`&=`/`|=`) on the preceding condition's attribute
