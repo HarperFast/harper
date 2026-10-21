@@ -121,9 +121,11 @@ describe('full-text search resource limits', () => {
 	});
 
 	it('exposes every limit through the conventional configuration parameter map', () => {
-		const { CONFIG_PARAM_MAP } = require('#src/utility/hdbTerms');
+		const { CONFIG_PARAM_MAP, CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 		const { flattenConfig } = require('#src/config/configUtils');
 		const flattened = flattenConfig({ storage: { fullText: structuredClone(DEFAULT_FULL_TEXT_SEARCH_LIMITS) } });
+		assert.deepStrictEqual(flattened.storage_fulltext_runtime, DEFAULT_FULL_TEXT_SEARCH_LIMITS.runtime);
+		assert.strictEqual(CONFIG_PARAM_MAP.storage_fulltext_runtime, CONFIG_PARAMS.STORAGE_FULL_TEXT_RUNTIME);
 		for (const [name, value] of Object.entries(DEFAULT_FULL_TEXT_SEARCH_LIMITS)) {
 			const check = (path, expected) => {
 				const parameter = `storage_fullText_${path}`;

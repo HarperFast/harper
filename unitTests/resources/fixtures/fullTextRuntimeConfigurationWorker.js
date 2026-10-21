@@ -24,7 +24,7 @@ onMessageByType('full-text-runtime-test-command', async (event) => {
 				const { parentPort, workerData } = require('node:worker_threads');
 				const env = require('#src/utility/environment/environmentManager');
 				const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { runtime: { maxSearchThreads: workerData.maxSearchThreads + 1 } });
+				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT_RUNTIME, { maxSearchThreads: workerData.maxSearchThreads + 1 });
 				require('#src/resources/indexes/fullTextNativeBinding').loadFullTextNativeBinding().then(
 					() => parentPort.postMessage({ ready: true }),
 					(error) => parentPort.postMessage({ error: error.message })

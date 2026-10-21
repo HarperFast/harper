@@ -132,7 +132,7 @@ Search settings are under `storage.fullText`:
 
 The hit limit counts fetched hits, not every record Tantivy visits while scoring. Reaching it before the page fills or the search is exhausted returns 400. Exceeding the execution budget returns 503. Narrow the query, reduce the offset, or increase the relevant configured budget. Freshness waiting uses `waitForIndexMilliseconds` separately. Reader acquisition, query construction and some native operations can take additional time; the execution budget is not a hard response-time guarantee.
 
-Each setting has the usual configuration parameter name, such as `storage_fullText_maxRawHitsPerRequest`, for `set_configuration` and environment overrides. Query work limits apply to new searches after configuration changes.
+Each setting has the usual configuration parameter name, such as `storage_fullText_maxRawHitsPerRequest`, for `set_configuration` and environment overrides. After changing request limits, restart HTTP workers with `restart_service` (`service: "http_workers"`) or restart Harper. Native process-budget changes require a full process restart.
 
 Native process admission settings live under `storage.fullText.runtime`:
 

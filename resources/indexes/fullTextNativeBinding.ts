@@ -214,7 +214,7 @@ export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule>
 			binding.configureNativeFullTextRuntime(runtime);
 			try {
 				const requested = resolveFullTextSearchLimits({
-					runtime: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT)?.runtime,
+					runtime: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_RUNTIME),
 				}).runtime;
 				if (Object.keys(runtime).some((name) => runtime[name] !== requested[name]))
 					logger.warn?.('storage.fullText.runtime changed; restart the Harper process to apply its new budgets');

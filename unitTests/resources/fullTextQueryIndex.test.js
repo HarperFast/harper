@@ -1,3 +1,4 @@
+const { getFullTextTestConfiguration, setFullTextTestConfiguration } = require('./fullTextTestConfiguration');
 require('../testUtils');
 const assert = require('node:assert');
 const { toBufferKey } = require('ordered-binary');
@@ -347,9 +348,7 @@ describe('FullTextQueryIndex', () => {
 	});
 
 	it('keeps retained result limits independent from raw work and reports invalid configuration', async () => {
-		const env = require('#src/utility/environment/environmentManager');
-		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+		const previous = getFullTextTestConfiguration();
 		const auditStore = sharedStore();
 		const readinessId = 'independent-results-budget';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -363,7 +362,7 @@ describe('FullTextQueryIndex', () => {
 		});
 		attachCurrentCoverage(index, auditStore, readinessId);
 		try {
-			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, {
+			setFullTextTestConfiguration({
 				...previous,
 				maxRawHitsPerRequest: 500000,
 				maxResultsPerRequest: 10,
@@ -373,7 +372,7 @@ describe('FullTextQueryIndex', () => {
 				(error) => error.statusCode === 400 && /maxResultsPerRequest/.test(error.message)
 			);
 			assert.strictEqual(searches, 0);
-			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, maxRawHitsPerRequest: 0 });
+			setFullTextTestConfiguration({ ...previous, maxRawHitsPerRequest: 0 });
 			await assert.rejects(
 				index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
 				(error) =>
@@ -381,15 +380,13 @@ describe('FullTextQueryIndex', () => {
 			);
 			assert.strictEqual(searches, 0);
 		} finally {
-			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+			setFullTextTestConfiguration(previous);
 			await index.close();
 		}
 	});
 
 	it('rejects unbounded results at the actual work or retained-result ceiling', async () => {
-		const env = require('#src/utility/environment/environmentManager');
-		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+		const previous = getFullTextTestConfiguration();
 		const auditStore = sharedStore();
 		const readinessId = 'unbounded-result-budget';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -403,7 +400,7 @@ describe('FullTextQueryIndex', () => {
 		attachCurrentCoverage(index, auditStore, readinessId);
 		try {
 			for (const name of ['maxRawHitsPerRequest', 'maxResultsPerRequest']) {
-				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, {
+				setFullTextTestConfiguration({
 					...previous,
 					maxRawHitsPerRequest: 500,
 					maxResultsPerRequest: 500,
@@ -415,7 +412,7 @@ describe('FullTextQueryIndex', () => {
 				);
 			}
 		} finally {
-			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+			setFullTextTestConfiguration(previous);
 			await index.close();
 		}
 	});
@@ -2776,10 +2773,8 @@ describe('FullTextQueryIndex', () => {
 
 	for (const configured of [false, true])
 		it(`applies the ${configured ? 'Harper' : 'native'} execution budget across every result page`, async () => {
-			const env = require('#src/utility/environment/environmentManager');
-			const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-			const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
-			if (configured) env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, requestBudgetMilliseconds: 20 });
+			const previous = getFullTextTestConfiguration();
+			if (configured) setFullTextTestConfiguration({ ...previous, requestBudgetMilliseconds: 20 });
 			try {
 				const auditStore = sharedStore();
 				const readinessId = 'query-budget';
@@ -2840,7 +2835,7 @@ describe('FullTextQueryIndex', () => {
 				assert.strictEqual(searches, 1);
 				await index.close();
 			} finally {
-				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+				setFullTextTestConfiguration(previous);
 			}
 		});
 

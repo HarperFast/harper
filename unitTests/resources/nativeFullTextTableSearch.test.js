@@ -1,4 +1,5 @@
-'use strict';
+const { getFullTextTestConfiguration, setFullTextTestConfiguration } = require('./fullTextTestConfiguration');
+('use strict');
 
 require('../testUtils');
 const assert = require('node:assert');
@@ -436,6 +437,7 @@ describe('published native full-text Table.search integration', () => {
 					limit: query.mode?.includes('prefix') ? info.limits.maxAutocompleteResults : 1024,
 					exactTotal: true,
 				});
+				assert.strictEqual(ordinary.totalRelation, 'exact');
 				assert.deepStrictEqual((await reader.searchPage({ query, limit: ordinary.hits.length })).hits, ordinary.hits);
 				const first = await reader.searchPage({ query, limit: 73 });
 				const walk = async (limit) => {
@@ -513,24 +515,23 @@ describe('published native full-text Table.search integration', () => {
 				})
 			);
 		const tail = new Set(ordered.slice(info.limits.maxSearchWindow));
-		const env = require('#src/utility/environment/environmentManager');
-		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-		const previousPolicy = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+
+		const previousPolicy = getFullTextTestConfiguration();
 		try {
-			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previousPolicy, maxRawHitsPerRequest: 128 });
+			setFullTextTestConfiguration({ ...previousPolicy, maxRawHitsPerRequest: 128 });
 			await assert.rejects(
 				search('matches', 'widget catalog', { rowFilter: (record) => tail.has(record.id) }),
 				(error) => error.statusCode === 400 && error.message.includes('storage.fullText.maxRawHitsPerRequest')
 			);
 		} finally {
-			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previousPolicy);
+			setFullTextTestConfiguration(previousPolicy);
 		}
 
 		await assert.rejects(
 			search('matches', 'widget catalog', { rowFilter: (record) => tail.has(record.id) }),
 			(error) => error.statusCode === 400 && /maxRawHitsPerRequest/.test(error.message)
 		);
-		env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, {
+		setFullTextTestConfiguration({
 			...previousPolicy,
 			maxRawHitsPerRequest: count * 3,
 			maxResultsPerRequest: count,
@@ -556,7 +557,7 @@ describe('published native full-text Table.search integration', () => {
 				);
 			}
 		} finally {
-			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previousPolicy);
+			setFullTextTestConfiguration(previousPolicy);
 		}
 	});
 });

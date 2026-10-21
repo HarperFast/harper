@@ -23,7 +23,7 @@ export function getFullTextRuntimeConfiguration(required = true): Readonly<{ run
 			if (required) throw new FullTextWorkerInitializationError();
 			return;
 		}
-		snapshot = { runtime: structuredClone(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT)?.runtime) };
+		snapshot = { runtime: structuredClone(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_RUNTIME)) };
 		setEnvironmentData(configurationKey, snapshot);
 	}
 	if (snapshot.runtime && typeof snapshot.runtime === 'object') Object.freeze(snapshot.runtime);

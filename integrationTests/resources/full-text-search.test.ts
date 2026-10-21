@@ -615,4 +615,81 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await waitForReady('Product');
 		await waitForIds(query('waterproof'), ['one', 'two']);
 	});
+	test(
+		'applies full-text request limits through set_configuration and worker restart',
+		{ skip: process.platform === 'win32' ? 'HTTP worker restart on Windows: HarperFast/harper#549' : false },
+		async () => {
+			async function restartWorkers() {
+				const { job_id } = await operation({ operation: 'restart_service', service: 'http_workers' });
+				assert(job_id);
+				const deadline = Date.now() + 60000;
+				let status;
+				do {
+					let job;
+					try {
+						[job] = await operation({ operation: 'get_job', id: job_id });
+					} catch (error) {
+						const code = (error as any)?.cause?.code ?? (error as any)?.code;
+						if (!['ECONNREFUSED', 'ECONNRESET', 'UND_ERR_SOCKET'].includes(code)) throw error;
+						assert.strictEqual(
+							ctx.harper.process.exitCode,
+							null,
+							`Harper exited during worker restart: ${ctx.harper.process.exitCode}`
+						);
+						assert.strictEqual(
+							ctx.harper.process.signalCode,
+							null,
+							`Harper stopped during worker restart: ${ctx.harper.process.signalCode}`
+						);
+					}
+					status = job?.status;
+					if (status === 'COMPLETE' || status === 'ERROR') break;
+					await delay(25);
+				} while (Date.now() < deadline);
+				assert.strictEqual(status, 'COMPLETE');
+				await waitForReady('Product');
+			}
+			const original = (await operation({ operation: 'get_configuration' })).storage.fullText;
+			try {
+				await operation({
+					operation: 'set_configuration',
+					storage_fullText_maxRawHitsPerRequest: 500,
+					storage_fullText_maxResultsPerRequest: 1,
+					storage_fullText_requestBudgetMilliseconds: 1000,
+				});
+				const updated = (await operation({ operation: 'get_configuration' })).storage.fullText;
+				assert.strictEqual(updated.maxRawHitsPerRequest, 500);
+				assert.strictEqual(updated.maxResultsPerRequest, 1);
+				assert.strictEqual(updated.requestBudgetMilliseconds, 1000);
+				await restartWorkers();
+				let status: number;
+				let body: string;
+				const deadline = Date.now() + 10000;
+				do {
+					const response = await fetch(`${ctx.harper.httpURL}/SearchProduct/`, {
+						method: 'POST',
+						headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+						body: JSON.stringify(query('shoe', {}, { limit: 2 })),
+						signal: AbortSignal.timeout(5000),
+					});
+					status = response.status;
+					body = await response.text();
+					if (status === 400 && body.includes('maxResultsPerRequest')) break;
+					await delay(25);
+				} while (Date.now() < deadline);
+				assert.strictEqual(status, 400, body);
+				assert.match(body, /maxResultsPerRequest/);
+			} finally {
+				if (ctx.harper.process.exitCode === null && ctx.harper.process.signalCode === null) {
+					await operation({
+						operation: 'set_configuration',
+						storage_fullText_maxRawHitsPerRequest: original.maxRawHitsPerRequest,
+						storage_fullText_maxResultsPerRequest: original.maxResultsPerRequest,
+						storage_fullText_requestBudgetMilliseconds: original.requestBudgetMilliseconds,
+					});
+					await restartWorkers();
+				}
+			}
+		}
+	);
 });

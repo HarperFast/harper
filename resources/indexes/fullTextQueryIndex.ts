@@ -412,7 +412,12 @@ export class FullTextQueryIndex {
 		if (options.minResults === 0) return [];
 		let policy;
 		try {
-			policy = resolveFullTextSearchLimits(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT));
+			policy = resolveFullTextSearchLimits({
+				requestBudgetMilliseconds: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_REQUEST_BUDGET_MILLISECONDS),
+				maxRawHitsPerRequest: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_MAX_RAW_HITS_PER_REQUEST),
+				maxResultsPerRequest: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_MAX_RESULTS_PER_REQUEST),
+				runtime: env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT_RUNTIME),
+			});
 		} catch (error) {
 			throw new ServerError(
 				`Invalid full-text configuration: ${error instanceof Error ? error.message : String(error)}`,

@@ -5,7 +5,7 @@ const { resolveFullTextSearchLimits } = require('#src/resources/indexes/fullText
 
 async function run() {
 	const maxSearchThreads = Number(process.argv[2]);
-	env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { runtime: { maxSearchThreads } });
+	env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT_RUNTIME, { maxSearchThreads });
 	if (process.argv[3] === 'unmanaged' || process.argv[3] === 'early-worker') {
 		const { Worker } = require('node:worker_threads');
 		const early = process.argv[3] === 'early-worker';
@@ -16,7 +16,7 @@ async function run() {
 				const { parentPort, workerData } = require('node:worker_threads');
 				const env = require('#src/utility/environment/environmentManager');
 				const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { runtime: { maxSearchThreads: workerData.maxSearchThreads + 1 } });
+				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT_RUNTIME, { maxSearchThreads: workerData.maxSearchThreads + 1 });
 				const optionalRuntime = require('#src/resources/indexes/fullTextRuntimeConfiguration').getFullTextRuntimeConfiguration(false);
 				require('#src/resources/indexes/fullTextNativeBinding').loadFullTextNativeBinding().then(
 					() => parentPort.postMessage('ready'),
@@ -34,7 +34,7 @@ async function run() {
 		return;
 	}
 	const snapshot = getFullTextRuntimeConfiguration();
-	env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { runtime: { maxSearchThreads: maxSearchThreads + 1 } });
+	env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT_RUNTIME, { maxSearchThreads: maxSearchThreads + 1 });
 	if (getFullTextRuntimeConfiguration() !== snapshot) throw new Error('Runtime snapshot changed');
 	const runtime = resolveFullTextSearchLimits(snapshot).runtime;
 	const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
