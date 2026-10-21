@@ -206,6 +206,7 @@ import {
 	createBlob,
 	cleanupUnusedBlobs,
 	collectRetainedFileIds,
+	getFileId,
 	deleteBlobsInObject,
 	findBlobsInObject,
 	startPreCommitBlobsForRecord,
@@ -10614,7 +10615,6 @@ export function makeTable(options): TableResourceClass {
 		if (Number.isFinite(fieldDeadline)) return fieldDeadline;
 		return expirationMs ? Date.now() + expirationMs : undefined;
 	}
-	/** A replica never outlives the record it copies. */
 	function replicaDeadlineFor(rowExpiresAt: number | undefined): number {
 		const deadline = Date.now() + replicaExpirationMs;
 		return rowExpiresAt >= 0 && rowExpiresAt < deadline ? rowExpiresAt : deadline;
@@ -10635,7 +10635,6 @@ export function makeTable(options): TableResourceClass {
 		replicaTableKnown = true;
 		return replicaDeadlines;
 	}
-	/** A write that replaces a REPLICA row takes its deadline entry with it, in the same transaction where one exists. */
 	function dropReplicaDeadline(id: Id, replaced: Partial<Entry> | undefined, transaction: any) {
 		if (!(replaced?.metadataFlags & REPLICA)) return;
 		// lmdb-js cannot open a sub-db inside the write batch this runs in; the arm message opens it on
@@ -10687,7 +10686,6 @@ export function makeTable(options): TableResourceClass {
 			.catch((error) => logger.warn?.('Error refreshing replica', key, error))
 			.finally(() => inFlight.delete(keyId as any));
 	}
-	/** Re-stamp a replica's deadline entry; the row is untouched, so this orders with nothing. */
 	function refreshReplica(id: Id): Promise<boolean> {
 		if (disposed || maintenanceClosed || droppingTable || isReadOnlyMode()) return Promise.resolve(false);
 		const store = openReplicaDeadlines();
@@ -10718,8 +10716,12 @@ export function makeTable(options): TableResourceClass {
 		if (disposed || maintenanceClosed || droppingTable || isReadOnlyMode()) return Promise.resolve(false);
 		const preCommit = startPreCommitBlobsForRecord(body, primaryStore.rootStore);
 		if (!preCommit) return storeReplicaRow(id, body, responseVersion, residentExpiresAt, originNode);
-		// the blob transfer is not a maintenance commit: closing maintenance waits for the row, not the stream
+		// the blob transfer is not a maintenance commit: closing maintenance waits for the row, not the stream.
+		// Only files this write creates are released on a refusal; files received out of band stay with
+		// their receiver, which keeps them while another fetch may still share them
+		const created = preCommit.blobs.filter((blob) => getFileId(blob) == null);
 		const releaseUnused = () => {
+			if (created.length === 0) return;
 			let retained: Set<string> | undefined;
 			try {
 				retained = collectRetainedFileIds(primaryStore.getEntry(id)?.value);
@@ -10727,7 +10729,7 @@ export function makeTable(options): TableResourceClass {
 				// a closed store's rows may reopen holding these files; a dropped table's cannot
 				if (!droppingTable) return;
 			}
-			cleanupUnusedBlobs(preCommit.blobs, retained);
+			cleanupUnusedBlobs(created, retained);
 		};
 		return preCommit.complete().then(
 			() => {
@@ -10757,7 +10759,8 @@ export function makeTable(options): TableResourceClass {
 		residentExpiresAt?: number,
 		originNode?: string
 	): Promise<boolean> {
-		if (disposed || maintenanceClosed || droppingTable || isReadOnlyMode()) return Promise.resolve(false);
+		if (disposed || maintenanceClosed || droppingTable || isReadOnlyMode() || !replicaExpirationMs)
+			return Promise.resolve(false);
 		const store = openReplicaDeadlines(true);
 		const databaseTransaction = txnForContext({ transaction: new DatabaseTransaction() });
 		const transaction = databaseTransaction.getReadTxn();
