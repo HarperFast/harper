@@ -4105,7 +4105,8 @@ export function makeTable(options): TableResourceClass {
 				} else {
 					if (hasDerivedIndexRegistration(auditStore, tableId))
 						reserveLocalKey(primaryStore.rootStore, transaction as RocksTransaction);
-					updateIndices(id, existingRecord, null, options);
+					// the entry read in this transaction, not the caller's copy: a resequenced write can reuse its version
+					updateIndices(id, entry.value, null, options);
 					stageDerivedIndexEviction(transaction as RocksTransaction, id, existingVersion);
 					// not removeEntry: it queues blob reclamation at staging, and this commit can still conflict
 					primaryStore.removeSync(id, options);
