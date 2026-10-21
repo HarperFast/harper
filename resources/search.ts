@@ -963,8 +963,8 @@ export function searchByIndex(
 	}
 	const isPrimaryKey = !fullTextMode && (attribute_name === Table.primaryKey || attribute_name == null);
 	const index = isPrimaryKey ? Table.primaryStore : conditionIndex(Table, attribute_name, Boolean(fullTextMode));
-	// The lowest bound that still covers every real entry. A primary store keeps symbol-keyed metadata
-	// (0x02) below `false`, which only `true` skips; a secondary index starts just above its null block.
+	// A primary store keeps symbol-keyed metadata (0x02) below `false` and opens at `true`, as it always
+	// has; a secondary index starts just above its null block, which `true` would overshoot past `false`.
 	const openStart = isPrimaryKey ? true : null;
 	const openStartExclusive = !isPrimaryKey;
 	let start;
