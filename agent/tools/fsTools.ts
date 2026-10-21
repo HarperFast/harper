@@ -169,7 +169,6 @@ interface Reader {
 interface Source {
 	reader: Reader;
 	size: number;
-	/** The whole file masked by `maskCredentialFile`, at the same byte offsets. */
 	masked?: Buffer;
 }
 
@@ -198,7 +197,6 @@ async function openSource(fh: FileHandle, scope: Scope, requested: string): Prom
 	return { reader, size: file.length, masked };
 }
 
-/** Up to `size` bytes from the start, reading until they are all in or the file ends. */
 async function readWhole(fh: FileHandle, size: number): Promise<Buffer> {
 	const whole = Buffer.alloc(size);
 	let filled = 0;
@@ -374,9 +372,10 @@ export const readFileTool: AgentTool = {
 			}
 			const budget = pageBytes(ctx, path);
 			const window = await readWindow(source.reader, size, start, budget);
-			if (window.page.length === 0 && start < size)
-				throw new Error(`${requested} changed while it was read; read it again`);
 			const page = readPage(window.page, window.reachesEnd, start, lineCount, budget);
+			if (page.endOffset === start && start < size) {
+				throw new Error(`${requested} changed while it was read; read it again`);
+			}
 			assertNoPrivateKey(page.content, requested);
 			assertOutsidePrivateKey(
 				keyStateAt(window),

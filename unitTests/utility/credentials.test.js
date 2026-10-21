@@ -226,11 +226,19 @@ describe('utility/credentials', () => {
 				maskedFile('shared: &k sk-A\ncredentials: [*k]\nother:\n  aws: { secret: *k }\n'),
 				'shared: &k ****\ncredentials: ****\nother:\n  aws: { secret: ****\n'
 			);
+			assert.equal(
+				maskedFile('a: &a sk-deep\nm: &m {x: *a}\ncredentials: [*m]\n'),
+				'a: &a *******\nm: &m *******\ncredentials: ****\n'
+			);
 		});
 
 		it('keeps only keys in a file that does not parse, never reading `KEY=value # a: b` as a key', () => {
 			const line = 'OPENAI_API_KEY=sk-x # todo: rotate';
 			assert.equal(maskedFile(`a: [1\n${line}\nmodel: m\n`), `a: **\n${'*'.repeat(line.length)}\nmodel: *\n`);
+			assert.equal(
+				maskedFile('a: [1\napiKey: |\n    sk-BROKEN:\nmodel: m\n'),
+				'a: **\napiKey: *\n    **********\nmodel: *\n'
+			);
 		});
 
 		it('masks KEY=value lines, which a YAML parse reads as one string', () => {

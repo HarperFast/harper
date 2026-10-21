@@ -1,4 +1,4 @@
-import { isAlias, isNode, isScalar, parseAllDocuments, visit } from 'yaml';
+import { isAlias, isNode, isScalar, parseAllDocuments, visit, type Node } from 'yaml';
 import { isUnresolvedEnvVarPlaceholder } from './expandEnvVar.ts';
 
 /**
@@ -44,13 +44,10 @@ export function maskCredentialFile(file: Buffer): Buffer | undefined {
 	if (!Buffer.from(text, 'utf8').equals(file)) return undefined;
 	const ranges = yamlCredentialRanges(text);
 	const masked = new Uint8Array(text.length);
-	if (ranges) {
-		for (const [start, end] of ranges) masked.fill(1, start, end);
-		const scanned = maskCredentialValues(text);
-		for (let index = 0; index < text.length; index++) if (scanned[index] !== text[index]) masked[index] = 1;
-	} else {
-		markAllValues(text, masked);
-	}
+	if (ranges) for (const [start, end] of ranges) masked.fill(1, start, end);
+	else markAllValues(text, masked);
+	const scanned = maskCredentialValues(text);
+	for (let index = 0; index < text.length; index++) if (scanned[index] !== text[index]) masked[index] = 1;
 	const out = Buffer.from(file);
 	let indenting = true;
 	for (let unit = 0, byte = 0; unit < text.length;) {
@@ -72,22 +69,22 @@ function yamlCredentialRanges(text: string): Array<[number, number]> | undefined
 	try {
 		for (const document of parseAllDocuments(text, { logLevel: 'silent' })) {
 			if (document.errors.length > 0) return undefined;
+			const collected = new Set<Node>();
+			// A credential's value, and the content of every anchor an alias inside it reaches.
+			const collect = (node: Node | null | undefined): void => {
+				const target = isAlias(node) ? node.resolve(document) : node;
+				if (!target || collected.has(target)) return;
+				if (isScalar(target) && isUnresolvedEnvVarPlaceholder(target.value)) return;
+				collected.add(target);
+				for (const ranged of [node, target]) if (ranged?.range) ranges.push([ranged.range[0], ranged.range[1]]);
+				if (!isScalar(target)) visit(target, { Alias: (_, alias) => collect(alias) });
+			};
 			visit(document, {
 				Pair(_, pair) {
 					const key = isScalar(pair.key) ? pair.key.value : undefined;
 					if (typeof key !== 'string' || !CREDENTIAL_KEY.test(key) || !isNode(pair.value)) return;
-					const target = isAlias(pair.value) ? pair.value.resolve(document) : pair.value;
-					if (isScalar(target) && isUnresolvedEnvVarPlaceholder(target.value)) return;
-					for (const node of [pair.value, target]) if (node?.range) ranges.push([node.range[0], node.range[1]]);
-					// An alias anywhere inside the value hands over its anchor's content too.
-					if (target && !isScalar(target)) {
-						visit(target, {
-							Alias(_, alias) {
-								const anchored = alias.resolve(document);
-								if (anchored?.range) ranges.push([anchored.range[0], anchored.range[1]]);
-							},
-						});
-					}
+					collect(pair.value);
+					return visit.SKIP;
 				},
 			});
 		}
