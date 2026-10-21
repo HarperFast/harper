@@ -159,9 +159,29 @@ export async function getReplicationCertAuth() {
 	return certificateTable.get(caName);
 }
 
-// Config omits a field and a record stores it as null/absent interchangeably.
 const sameConfigValue = (recordValue, configValue) =>
 	JSON.stringify(recordValue ?? null) === JSON.stringify(configValue ?? null);
+
+/**
+ * Listeners read a record's ciphers/uses, so a config edit must reach a record the loader wrote even
+ * when its certificate file is unchanged. `from_config` marks that ownership; `setCertTable` nulls it
+ * so ciphers/uses an operator set through the API survive restarts. A record from before the marker
+ * (undefined) is adopted only when it already matches config, since API edits are indistinguishable.
+ * The first config entry to reach a record wins, so entries sharing a file do not overwrite each other.
+ */
+function reconcileConfiguredFields(certRecord, name, certificatePem, ciphers, uses, syncedNames: Set<string>) {
+	if (certRecord.certificate !== certificatePem || syncedNames.has(name)) return;
+	const unmarked = certRecord.from_config === undefined && certRecord.file_timestamp != null;
+	if (certRecord.from_config !== true && !unmarked) return;
+	syncedNames.add(name);
+	const matches = sameConfigValue(certRecord.ciphers, ciphers) && sameConfigValue(certRecord.uses, uses);
+	if (unmarked) return matches ? certificateTable.patch({ name, from_config: true }) : undefined;
+	if (matches) return;
+	logger.info?.(
+		`TLS config for certificate ${name} changed (ciphers: ${certRecord.ciphers ?? 'unset'} -> ${ciphers ?? 'unset'}, uses: ${JSON.stringify(certRecord.uses)} -> ${JSON.stringify(uses)}); updating the certificate record`
+	);
+	return certificateTable.patch({ name, uses, ciphers: ciphers ?? null });
+}
 
 let configuredCertsLoaded;
 const privateKeys = new Map();
@@ -192,6 +212,7 @@ export function loadCertificates() {
 
 	const rootPath = path.dirname(configUtils.getConfigFilePath());
 	let promise;
+	const syncedNames = new Set<string>();
 	for (let { configKey } of CERTIFICATE_CONFIGS) {
 		let configs = configUtils.getConfigFromFile(configKey);
 		if (configs) {
@@ -282,19 +303,15 @@ export function loadCertificates() {
 												recordTimestamp > 1 ? new Date(recordTimestamp) : 'only self signed certificate available'
 											})`
 										);
-									// Listeners read the record's ciphers/uses, so a config edit must reach a record this file
-									// already produced (file_timestamp is only ever written here; the PEM match excludes a
-									// replicated or API-added certificate under the same name).
-									if (
-										certRecord.file_timestamp != null &&
-										certRecord.certificate === certificatePem &&
-										(!sameConfigValue(certRecord.ciphers, config.ciphers) || !sameConfigValue(certRecord.uses, uses))
-									) {
-										logger.info?.(
-											`TLS config for certificate ${certCn} changed (ciphers: ${certRecord.ciphers ?? 'unset'} -> ${config.ciphers ?? 'unset'}, uses: ${JSON.stringify(certRecord.uses)} -> ${JSON.stringify(uses)}); updating the certificate record`
-										);
-										return (promise = certificateTable.patch({ name: certCn, uses, ciphers: config.ciphers ?? null }));
-									}
+									const reconciled = reconcileConfiguredFields(
+										certRecord,
+										certCn,
+										certificatePem,
+										config.ciphers,
+										uses,
+										syncedNames
+									);
+									if (reconciled) return (promise = reconciled);
 									return;
 								}
 
@@ -309,6 +326,7 @@ export function loadCertificates() {
 									is_authority: ca,
 									hostnames,
 									file_timestamp: fileTimestamp,
+									from_config: true,
 									details: {
 										issuer: x509Cert.issuer.replace(/\n/g, ' '),
 										subject: x509Cert.subject?.replace(/\n/g, ' '),
@@ -626,7 +644,8 @@ export async function setCertTable(certRecord) {
 	};
 
 	getCertTable();
-	await certificateTable.patch(certRecord);
+	// an API write takes ownership of ciphers/uses from the config loader
+	await certificateTable.patch({ ...certRecord, from_config: null });
 }
 
 export async function generateKeys() {
