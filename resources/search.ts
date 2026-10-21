@@ -971,18 +971,22 @@ export function searchByIndex(
 		// Negated conditions are filter-only in Phase 1: scan the whole index/table
 		// and exclude matching rows in the filter. Without overriding the range,
 		// the bounded index iteration would only visit *included* rows.
-		start = true;
+		start = null;
+		exclusiveStart = true;
 		needFullScan = true;
 	} else if (fullTextMode) {
-		start = true;
+		start = null;
+		exclusiveStart = true;
 	} else
 		switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
 			case 'lt':
-				start = true;
+				start = null;
+				exclusiveStart = true;
 				end = value;
 				break;
 			case 'le':
-				start = true;
+				start = null;
+				exclusiveStart = true;
 				end = value;
 				inclusiveEnd = true;
 				break;
@@ -1005,7 +1009,8 @@ export function searchByIndex(
 			case 'starts_with':
 				start = value.toString();
 				if (start.length === 0) {
-					start = true;
+					start = null;
+					exclusiveStart = true;
 					needFullScan = true;
 				} else stringPrefix = true;
 				break;
@@ -1033,12 +1038,14 @@ export function searchByIndex(
 				// Phase 1: route through filter — index-merge optimization is a Phase 2 follow-up.
 				// `value` is expected to be an array (empty array matches no rows).
 				if (!Array.isArray(value)) throw new ClientError(`"in" comparator requires an array value`);
-				start = true;
+				start = null;
+				exclusiveStart = true;
 				needFullScan = true;
 				break;
 			case 'ne':
 				if (value === null) {
-					// since null is the lowest value in an index, we can treat anything higher as a non-null
+					// since null is the lowest value in an index, we can treat anything higher as a non-null.
+					// Every other open lower bound uses this form too: `true` sorts above `false`.
 					start = value;
 					exclusiveStart = true;
 					break;
@@ -1047,7 +1054,8 @@ export function searchByIndex(
 			case 'contains':
 			case 'ends_with':
 				// we have to revert to full table scan here
-				start = true;
+				start = null;
+				exclusiveStart = true;
 				needFullScan = true;
 				break;
 			default:
@@ -1887,12 +1895,11 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 	let range;
 	switch (searchType) {
 		case 'lt':
-			// `start: true` mirrors searchByIndex: `true` sorts above `null`, so an indexNulls
-			// index's `[null, primaryKey]` entries are outside the executed range
-			range = { start: true, end: value };
+			// mirrors searchByIndex: an indexNulls index's `[null, primaryKey]` entries are outside the executed range
+			range = { start: null, exclusiveStart: true, end: value };
 			break;
 		case 'le':
-			range = { start: true, end: value, inclusiveEnd: true };
+			range = { start: null, exclusiveStart: true, end: value, inclusiveEnd: true };
 			break;
 		case 'gt':
 			range = { start: value, exclusiveStart: true };
