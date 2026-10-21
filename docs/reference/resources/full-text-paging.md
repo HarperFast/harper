@@ -89,8 +89,9 @@ to avoid bypassing application filters.
 A custom Resource supporting the framework's QUERY paging route must implement `searchPage()`.
 Return the original page array. Copying it with `map()`, `filter()` or
 spread drops its paging metadata. Returning that copy through the normal Resource API returns 400.
-Use the query's `select` and filters instead. A Resource returning an explicit HTTP `Response`
-owns its response headers, serialization and cache policy.
+Use the query's `select` and filters instead. To add custom headers, return
+`{ headers, data: page }` with the original page array. A Resource returning an explicit HTTP
+`Response` owns its response headers, serialization and cache policy.
 
 ## Page through REST
 
@@ -232,6 +233,8 @@ by a running application inherit them. In a standalone process, initialize Harpe
 workers that use full-text search. A worker created before capture cannot initialize full-text
 search; recreate it after Harper initializes rather than retrying inside the same worker.
 Its initialization failure is non-retryable, not a temporary capacity refusal.
+Retained paging still requires Harper's main thread or a managed worker. Inheriting native settings
+does not add paging-message routing to application-created workers.
 
 The runtime keys use integer counts or bytes:
 
