@@ -1434,7 +1434,8 @@ export function makeTable(options): TableResourceClass {
 	let replicaExpirationMs = validReplicaExpirationMs(options.replicaExpirationMS) ?? DEFAULT_REPLICA_EXPIRATION_MS;
 	let replicaEvictionArmed = false;
 	let replicaTableMarked = false;
-	// the interval the record TTL settings asked for, so a replica lifetime change can shorten or restore it
+	// what the record TTL settings ask of the cleanup scan, kept apart from the replica sweep's own interval
+	let recordScanInterval = 0;
 	let recordCleanupInterval = 0;
 	const replicaRefreshInFlight = new Set<string>();
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
@@ -2934,16 +2935,15 @@ export function makeTable(options): TableResourceClass {
 				// `??` so an explicit 0 is treated as the user's chosen value, not as "missing"
 				expirationMs = (opts.expiration ?? 0) * 1000;
 				evictionMs = (opts.eviction ?? 0) * 1000;
-				cleanupInterval = (opts.scanInterval ?? 0) * 1000;
+				recordScanInterval = (opts.scanInterval ?? 0) * 1000;
 			}
 			if (expirationMs < 0) throw new Error('Expiration can not be negative');
 			if (!preserveLoadedConfiguration) {
 				// default to one quarter of the total expiration+eviction window
-				cleanupInterval = cleanupInterval || (expirationMs + evictionMs) / 4;
-				recordCleanupInterval = cleanupInterval;
+				recordCleanupInterval = recordScanInterval || (expirationMs + evictionMs) / 4;
+				cleanupInterval = recordCleanupInterval;
 				expirationScanScheduled = true;
 			}
-			// the replica sweep keeps its own interval whatever the record settings became
 			if (replicaEvictionArmed) {
 				replicaEvictionArmed = false;
 				armReplicaEviction();
@@ -5658,7 +5658,8 @@ export function makeTable(options): TableResourceClass {
 							}
 						})()
 					);
-					updateIndices(id, existingRecord, recordToStore, transaction && { transaction });
+					// a stub stored here carries no inputs for computed indexes; their committed entries stay
+					updateIndices(id, existingRecord, recordToStore, transaction && { transaction }, omitLocalRecord);
 
 					// Preserve an addressable audit head when the record and log clocks diverge.
 					if (isRocksDB && audit && !isCopyApply && appendedLogKey !== txnTime) {
@@ -10586,7 +10587,15 @@ export function makeTable(options): TableResourceClass {
 		const keyId = chainKeyForId(entry.key);
 		if (replicaRefreshInFlight.has(keyId)) return;
 		replicaRefreshInFlight.add(keyId);
-		writeReplica(entry.key).finally(() => replicaRefreshInFlight.delete(keyId));
+		let pending: Promise<boolean>;
+		try {
+			pending = writeReplica(entry.key);
+		} catch (error) {
+			replicaRefreshInFlight.delete(keyId);
+			logger.warn?.('Error refreshing replica', entry.key, error);
+			return;
+		}
+		pending.finally(() => replicaRefreshInFlight.delete(keyId));
 	}
 	/**
 	 * Store a resident's complete record (or, with no body, re-stamp the stored replica's deadline) as a
@@ -10644,7 +10653,7 @@ export function makeTable(options): TableResourceClass {
 			return trackMaintenanceCommit(
 				completion.then(
 					(stored) => {
-						if (stored && !refresh) releaseReplacedBlobs(current, record);
+						if (stored && !refresh) releaseReplacedBlobs(current);
 						if (stored && !replicaEvictionArmed)
 							void broadcast({ type: REPLICA_EVICTION_ARMED, storePath: primaryStore.path, tableId }, true);
 						return stored;
@@ -10675,8 +10684,11 @@ export function makeTable(options): TableResourceClass {
 	function withoutBlobRelease(entry: Entry): Entry {
 		return entry.metadataFlags & HAS_BLOBS ? { ...entry, metadataFlags: entry.metadataFlags & ~HAS_BLOBS } : entry;
 	}
-	function releaseReplacedBlobs(replaced: Entry, record: any) {
-		if (replaced.metadataFlags & HAS_BLOBS) deleteBlobsInObject(replaced.value, collectRetainedFileIds(record));
+	function releaseReplacedBlobs(replaced: Entry) {
+		if (!(replaced.metadataFlags & HAS_BLOBS)) return;
+		// what the key holds now, not what this write stored: a later write may have re-referenced a file
+		const live = primaryStore.getEntry(replaced.key);
+		deleteBlobsInObject(replaced.value, collectRetainedFileIds(live?.value));
 	}
 	/** Written before the first replica row, so a restart can re-arm the sweep for this table. */
 	function markReplicaTable() {
@@ -10709,7 +10721,7 @@ export function makeTable(options): TableResourceClass {
 			transaction,
 		};
 		const releaseBlobs = (stored: unknown) => {
-			if (stored !== false) releaseReplacedBlobs(entry, stub);
+			if (stored !== false) releaseReplacedBlobs(entry);
 		};
 		if (primaryStore.ifVersion) {
 			const indexUpdate = primaryStore.ifVersion(entry.key, entry.version, () => {

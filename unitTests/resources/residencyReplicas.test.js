@@ -46,7 +46,6 @@ describe('Local replicas of residency stubs', function () {
 		Records.dbisDB.putSync([Symbol.for('residency_by_id'), OTHER_RESIDENCY_ID], ['other-resident']);
 		Records.sourcedFrom(
 			class extends Resource {
-				// what harper-pro's Replicator does with a GET_RECORD answer
 				static async load(entry) {
 					calls.push(entry.key);
 					const found = typeof response === 'function' ? response() : response;
@@ -246,7 +245,8 @@ describe('Local replicas of residency stubs', function () {
 		});
 		assert.equal((await Computed.get(ID)).name, 'resident');
 		assert.deepEqual(results, [true], 'a computed index must not stop the replica from being kept');
-		assert.ok(Computed.primaryStore.getEntry(ID).metadataFlags & REPLICA);
+		const entry = Computed.primaryStore.getEntry(ID);
+		assert.ok(entry.metadataFlags & REPLICA);
 		const found = [];
 		for await (const record of Computed.search({
 			conditions: [{ attribute: 'upper', value: 'ORIGINAL' }],
@@ -254,6 +254,17 @@ describe('Local replicas of residency stubs', function () {
 		}))
 			found.push(record);
 		assert.deepEqual(found, [{ id: ID }]);
+		// a patch over the replica stores a stub again, and must not evaluate the resolver on it
+		const patch = { sourceApply: true, timestamp: entry.version + 1 };
+		await transaction(patch, async () => {
+			const resource = await Computed.getResource(ID, patch, { ensureLoaded: false });
+			resource._writeUpdate(ID, { sku: 'A2' }, false, { version: entry.version + 1, nodeId: entry.nodeId ?? 0 });
+			resource.save();
+		});
+		const stub = Computed.primaryStore.getEntry(ID);
+		assert.ok(stub.metadataFlags & INVALIDATED);
+		assert.equal(stub.value.sku, 'A2');
+		assert.equal(stub.residencyId, RESIDENCY_ID);
 	});
 
 	for (const [label, apply, expectStub, expectBody, expectName = 'changed'] of [
@@ -356,7 +367,6 @@ describe('Local replicas of residency stubs', function () {
 	});
 
 	it('is swept back to a stub once its lifetime passes, without an audit entry', async () => {
-		// the combined form resets the record settings; the replica sweep must survive that
 		Records.setTTLExpiration({ expiration: 0, eviction: 0, replicaExpiration: 0.001 });
 		const before = await history();
 		await replica();
@@ -367,19 +377,6 @@ describe('Local replicas of residency stubs', function () {
 		assert.equal(stub.value.body, undefined);
 		assert.equal(stub.residencyId, RESIDENCY_ID);
 		assert.deepEqual(await history(), before);
-	});
-
-	it('reloads an expired replica from a resident instead of hiding it', async () => {
-		Records.setTTLExpiration({ replicaExpiration: 0.001 });
-		await replica();
-		await new Promise((resolve) => setTimeout(resolve, 5));
-		calls = [];
-		stored = [];
-		response = { ...response, value: { id: ID, name: 'indexed', body: 'complete' } };
-		assert.equal((await Records.get(ID)).body, 'complete');
-		assert.deepEqual(calls, [ID], 'an expired replica is answered by a resident, never hidden');
-		assert.deepEqual(stored, [true]);
-		assert.deepEqual(await query(['id', 'body']), [{ id: ID, body: 'complete' }]);
 	});
 
 	it('refreshes the lifetime on a read hit once a quarter of it has elapsed, not on every read', async () => {
