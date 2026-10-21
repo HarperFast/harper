@@ -160,6 +160,7 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		);
 		assert.ok(!description.attributes.some(({ attribute }) => attribute === 'catalogSearch'));
 		const { Product } = await request('/FullTextState/');
+		assert.strictEqual(Product.runtimeSnapshotAtComponentLoad, true);
 		assert.deepStrictEqual(Product.fields, ['catalogSearch']);
 		assert.ok(!Product.attributes.includes('catalogSearch'));
 		assert.ok(!Object.hasOwn(Product.properties, 'catalogSearch'));

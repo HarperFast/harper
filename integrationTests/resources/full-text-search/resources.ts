@@ -1,7 +1,8 @@
-import { threadId } from 'node:worker_threads';
+import { getEnvironmentData, threadId } from 'node:worker_threads';
 declare const Resource: any;
 declare const tables: any;
 declare const createBlob: any;
+const runtimeSnapshotAtComponentLoad = Boolean(getEnvironmentData('harper.fullTextRuntimeConfiguration'));
 
 export class Product extends tables.Product {
 	search(query) {
@@ -102,6 +103,7 @@ export class FullTextState extends Resource {
 					name,
 					{
 						tableId: Table.tableId,
+						runtimeSnapshotAtComponentLoad,
 						generations: Table.fullTextIndexGenerations,
 						storePath: Table.primaryStore.rootStore.path,
 						fields: Table.fullTextIndexes.map(({ name }) => name),
