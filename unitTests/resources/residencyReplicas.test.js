@@ -8,6 +8,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { INVALIDATED, REPLICA, DEFAULT_REPLICA_EXPIRATION_MS } = require('#src/resources/Table');
 const { HAS_BLOBS } = require('#src/resources/auditStore');
 const { createBlob } = require('#src/resources/blob');
+const { server } = require('#src/server/Server');
 
 const RESIDENCY_ID = 123;
 const OTHER_RESIDENCY_ID = 456;
@@ -157,10 +158,22 @@ describe('Local replicas of residency stubs', function () {
 		assert.equal(Records.primaryStore.getEntry(ID)?.value, null);
 	});
 
-	it('keeps a replica for its own lifetime on a table with no record expiry, whatever the resident reports', async () => {
+	it('serves but never keeps a record carrying its own expiry on a table with no record expiry', async () => {
 		response = { ...response, expiresAt: Date.now() + 500 };
-		const entry = await replica();
-		assert.ok(entry.expiresAt > Date.now() + DEFAULT_REPLICA_EXPIRATION_MS - 5000);
+		assert.equal((await Records.get(ID)).body, 'complete');
+		assert.deepEqual(stored, [false]);
+		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
+	});
+
+	it('refuses an equal-version answer from another writer, and accepts the same writer or an unnamed one', async () => {
+		const ownName = server.hostname;
+		response = { ...response, originNode: 'some-other-writer' };
+		assert.equal((await Records.get(ID)).body, 'complete');
+		assert.deepEqual(stored, [false], 'a losing same-timestamp writer must not be cached under the winner');
+		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
+		stored = [];
+		response = { ...response, originNode: ownName };
+		await replica();
 	});
 
 	it('never outlives the record expiry on a table with its own, and does not slide there', async () => {
@@ -404,6 +417,15 @@ describe('Local replicas of residency stubs', function () {
 	});
 
 	it('rejects a negative or non-numeric replicaExpiration', () => {
-		for (const value of [-1, 'soon', NaN]) assert.throws(() => Records.setTTLExpiration({ replicaExpiration: value }));
+		for (const value of [-1, 'soon', NaN, true, ''])
+			assert.throws(() => Records.setTTLExpiration({ replicaExpiration: value }));
+		assert.throws(() =>
+			table({
+				database: 'test',
+				table: 'ResidencyReplicasBad',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+				replicaExpiration: false,
+			})
+		);
 	});
 });

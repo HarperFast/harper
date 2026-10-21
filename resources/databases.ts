@@ -22,7 +22,7 @@ import {
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
 import {
 	makeTable,
-	validReplicaExpirationMs,
+	replicaExpirationMsOf,
 	ignoreAlreadyDropped,
 	acquireUpdateAttributesLock,
 	releaseUpdateAttributesLock,
@@ -1974,7 +1974,7 @@ function initStores(
 					replicate,
 					expirationMS: expiration && expiration * 1000,
 					evictionMS: eviction && eviction * 1000,
-					replicaExpirationMS: replicaExpiration && replicaExpiration * 1000,
+					replicaExpirationMS: replicaExpirationMsOf(replicaExpiration),
 					cacheControl,
 					trackDeletes,
 					tableName,
@@ -4549,8 +4549,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (expiration) primaryKeyAttribute.expiration = expiration;
 			if (eviction) primaryKeyAttribute.eviction = eviction;
 			if (replicaExpiration !== undefined) {
-				validReplicaExpirationMs(+replicaExpiration * 1000);
-				primaryKeyAttribute.replicaExpiration = +replicaExpiration;
+				replicaExpirationMsOf(replicaExpiration);
+				primaryKeyAttribute.replicaExpiration = replicaExpiration;
 			}
 			// persist cacheControl so all threads (and future boots) see it; undefined callers inherit
 			// a descriptor value carried by cluster schema events; null (schema has no directive)
@@ -4695,7 +4695,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				trackDeletes,
 				expirationMS: expiration && expiration * 1000,
 				evictionMS: eviction && eviction * 1000,
-				replicaExpirationMS: replicaExpiration && replicaExpiration * 1000,
+				replicaExpirationMS: replicaExpirationMsOf(replicaExpiration),
 				primaryKey,
 				tableName,
 				tableId: primaryStore.tableId,
@@ -4866,7 +4866,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						(replicate !== undefined && replicate !== attributeDescriptor.replicate) ||
 						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
 						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
-						(replicaExpiration !== undefined && +replicaExpiration !== attributeDescriptor.replicaExpiration) ||
+						(replicaExpiration !== undefined && replicaExpiration !== attributeDescriptor.replicaExpiration) ||
 						attribute.type !== attributeDescriptor.type)
 				) {
 					exclusiveLock();
@@ -4880,8 +4880,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					if (expiration) updatedPrimaryAttribute.expiration = +expiration;
 					if (eviction) updatedPrimaryAttribute.eviction = +eviction;
 					if (replicaExpiration !== undefined) {
-						validReplicaExpirationMs(+replicaExpiration * 1000);
-						updatedPrimaryAttribute.replicaExpiration = +replicaExpiration;
+						replicaExpirationMsOf(replicaExpiration);
+						updatedPrimaryAttribute.replicaExpiration = replicaExpiration;
 					}
 					if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
 					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;

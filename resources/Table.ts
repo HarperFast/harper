@@ -571,12 +571,12 @@ const replicaEvictionArmers = new Map<string, Set<() => void>>();
 onMessageByType(REPLICA_EVICTION_ARMED, ({ storePath, tableId }: { storePath: string; tableId: number }) => {
 	for (const arm of replicaEvictionArmers.get(`${storePath}:${tableId}`) ?? []) arm();
 });
-/** Seconds-derived milliseconds; 0 keeps reads as proxy reads with no replica stored. */
-export function validReplicaExpirationMs(ms: unknown): number | undefined {
-	if (ms == null) return undefined;
-	if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0)
+/** `replicaExpiration` seconds as milliseconds; 0 keeps reads as proxy reads with no replica stored. */
+export function replicaExpirationMsOf(seconds: unknown): number | undefined {
+	if (seconds == null) return undefined;
+	if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0)
 		throw new Error('replicaExpiration must be a finite number of seconds, zero or more');
-	return ms;
+	return seconds * 1000;
 }
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
@@ -941,7 +941,7 @@ interface TableResourceClass {
 	/**
 	 * Keep a record fetched from a resident as a local replica of the stub `existingEntry`; resolves true when stored.
 	 */
-	_storeReplica(existingEntry: Entry, entry: Entry): Promise<boolean>;
+	_storeReplica(existingEntry: Entry, entry: Entry & { originNode?: string }): Promise<boolean>;
 	/**
 	 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
 	 */
@@ -1431,10 +1431,9 @@ export function makeTable(options): TableResourceClass {
 	const tableRootStore = primaryStore.rootStore;
 	const tableRootPath = tableRootStore.path;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
-	let replicaExpirationMs = validReplicaExpirationMs(options.replicaExpirationMS) ?? DEFAULT_REPLICA_EXPIRATION_MS;
+	let replicaExpirationMs = options.replicaExpirationMS ?? DEFAULT_REPLICA_EXPIRATION_MS;
 	let replicaEvictionArmed = false;
 	let replicaTableMarked = false;
-	// what the record TTL settings ask of the cleanup scan, kept apart from the replica sweep's own interval
 	let recordScanInterval = 0;
 	let recordCleanupInterval = 0;
 	const replicaRefreshInFlight = new Set<string>();
@@ -2915,7 +2914,7 @@ export function makeTable(options): TableResourceClass {
 			if (opts == null || (typeof opts !== 'number' && typeof opts !== 'object'))
 				throw new Error('Invalid expiration value type');
 			if (typeof opts === 'object' && opts.replicaExpiration !== undefined)
-				replicaExpirationMs = validReplicaExpirationMs(opts.replicaExpiration * 1000);
+				replicaExpirationMs = replicaExpirationMsOf(opts.replicaExpiration);
 			const declaredHere = typeof opts === 'object' && opts.fromSchema;
 			const isolatedApplicationOwner = declaredHere && opts.isolatedApplicationOwner;
 			const preserveLoadedConfiguration =
@@ -2944,7 +2943,8 @@ export function makeTable(options): TableResourceClass {
 				cleanupInterval = recordCleanupInterval;
 				expirationScanScheduled = true;
 			}
-			if (replicaEvictionArmed) {
+			// a table that holds replicas re-arms at its own interval whatever the record settings became
+			if (replicaEvictionArmed || replicaTableMarked) {
 				replicaEvictionArmed = false;
 				armReplicaEviction();
 			}
@@ -4019,7 +4019,7 @@ export function makeTable(options): TableResourceClass {
 						(!priorStagedOp &&
 							precedesExisting === 0 &&
 							existingEntry?.value &&
-							!(existingEntry.metadataFlags & INVALIDATED) &&
+							!(existingEntry.metadataFlags & (INVALIDATED | REPLICA)) &&
 							options?.residencyId &&
 							TableResource.getResidencyRecord(options.residencyId)?.includes(server.hostname))
 					) {
@@ -4161,16 +4161,19 @@ export function makeTable(options): TableResourceClass {
 		 * untouched: the row keeps the stub's residency and canonical identity, gets no audit entry and never
 		 * replicates. Resolves true when the replica was stored.
 		 */
-		static _storeReplica(existingEntry: Entry, entry: Entry): Promise<boolean> {
+		static _storeReplica(existingEntry: Entry, entry: Entry & { originNode?: string }): Promise<boolean> {
 			if (
 				TableResource.getResidencyById ||
 				!replicaExpirationMs ||
 				!existingEntry?.residencyId ||
 				entry?.value == null ||
-				entry.version == null
+				entry.version == null ||
+				// a record carrying its own expiry on a table without one is served, never kept: the row
+				// could not hold that deadline apart from the replica lifetime
+				(entry.expiresAt >= 0 && !expirationMs && !expiresAtProperty)
 			)
 				return Promise.resolve(false);
-			return writeReplica(existingEntry.key, entry.value, entry.version, entry.expiresAt);
+			return writeReplica(existingEntry.key, entry.value, entry.version, entry.expiresAt, entry.originNode);
 		}
 		/**
 		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
@@ -6842,7 +6845,6 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						// an expired replica still answers an indexed-only query locally, as its stub would
 						(!includeExpired && hasExpired(entry) && (checkLoaded || !(entry.metadataFlags & REPLICA)))
 					) {
 						// should expiration really apply?
@@ -9466,8 +9468,8 @@ export function makeTable(options): TableResourceClass {
 			}
 		} else if (entry?.value) {
 			// if we don't have a source, but we have an entry, we check the expiration; an expired replica
-			// with no resident to reload it from is still the record, so it is served and left to the sweep
-			if (hasExpired(entry) && !(entry.metadataFlags & REPLICA)) {
+			// on a table with no record expiry is still the record, so it is served and left to the sweep
+			if (hasExpired(entry) && (!(entry.metadataFlags & REPLICA) || expirationMs || expiresAtProperty)) {
 				// if it has expired and there is no source, we evict it and then return null, using a fake promise to indicate that this is providing the response
 				TableResource.evict(entry.key, entry.value, entry.version);
 				entry.value = null;
@@ -10574,11 +10576,17 @@ export function makeTable(options): TableResourceClass {
 		if (fieldDeadline < deadline) deadline = fieldDeadline;
 		return deadline;
 	}
+	/**
+	 * A refresh is never decided within a scan interval of the deadline: LMDB's `ifVersion` cannot order
+	 * two writes to one replica (both carry the stub's version), so a refresh must not be able to land
+	 * after the sweep's demotion of the same row.
+	 */
 	function replicaNeedsRefresh(entry: Partial<Entry>): boolean {
-		if (expirationMs || expiresAtProperty || hasExpired(entry)) return false;
+		if (expirationMs || expiresAtProperty || entry.expiresAt == undefined) return false;
+		const remaining = entry.expiresAt - Date.now();
 		return (
-			entry.expiresAt == undefined ||
-			entry.expiresAt - Date.now() < replicaExpirationMs * (1 - REPLICA_REFRESH_FRACTION)
+			remaining > Math.max(cleanupInterval, MIN_REPLICA_SCAN_INTERVAL_MS) &&
+			remaining < replicaExpirationMs * (1 - REPLICA_REFRESH_FRACTION)
 		);
 	}
 	function refreshReplicaOnRead(entry: Entry) {
@@ -10595,7 +10603,9 @@ export function makeTable(options): TableResourceClass {
 			logger.warn?.('Error refreshing replica', entry.key, error);
 			return;
 		}
-		pending.finally(() => replicaRefreshInFlight.delete(keyId));
+		pending
+			.catch((error) => logger.warn?.('Error refreshing replica', entry.key, error))
+			.finally(() => replicaRefreshInFlight.delete(keyId));
 	}
 	/**
 	 * Store a resident's complete record (or, with no body, re-stamp the stored replica's deadline) as a
@@ -10603,7 +10613,13 @@ export function makeTable(options): TableResourceClass {
 	 * audit refs, so history and conflict ordering are unchanged and a later stub for the key still wins.
 	 * Refuses when the key no longer holds a stub or replica, or holds one newer than the response.
 	 */
-	function writeReplica(id: Id, body?: any, responseVersion?: number, residentExpiresAt?: number): Promise<boolean> {
+	function writeReplica(
+		id: Id,
+		body?: any,
+		responseVersion?: number,
+		residentExpiresAt?: number,
+		originNode?: string
+	): Promise<boolean> {
 		const refresh = body === undefined;
 		if (disposed || maintenanceClosed || droppingTable || isReadOnlyMode()) return Promise.resolve(false);
 		const databaseTransaction = txnForContext({ transaction: new DatabaseTransaction() });
@@ -10615,6 +10631,15 @@ export function makeTable(options): TableResourceClass {
 			if (!current?.residencyId || !(current.metadataFlags & (refresh ? REPLICA : INVALIDATED | REPLICA)))
 				return Promise.resolve(false);
 			if (refresh ? !replicaNeedsRefresh(current) : responseVersion < current.version) return Promise.resolve(false);
+			// Two writers can share a timestamp; the stub holds the winner. An answer that names another
+			// writer at that timestamp is the loser's body, and nothing later would correct it.
+			if (
+				!refresh &&
+				originNode &&
+				responseVersion === current.version &&
+				originNode !== (getNodeNameForId(auditStore, current.nodeId ?? 0, true) ?? server.hostname)
+			)
+				return Promise.resolve(false);
 			const record = refresh ? current.value : body;
 			const writeOptions = {
 				expiresAt: replicaDeadline(record, residentExpiresAt),
