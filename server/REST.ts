@@ -380,6 +380,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			(hasFullTextContinuationOptions(target) || (target as any)[FULL_TEXT_CONTINUATION_REQUEST]) &&
 			(!responseData?.headers || serializedDataEnvelope) &&
 			!(status >= 400) &&
+			!(serializedDataEnvelope && responseData.status >= 400) &&
 			!continuationPage &&
 			!fullTextContinuationPage(serializedDataEnvelope && responseData.data)
 		)
