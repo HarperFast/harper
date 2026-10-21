@@ -27,7 +27,7 @@ type Product @table(audit: true) @export {
 Inside an authenticated Resource handler, use `limit` and `offset` with `Table.search()`. `Table.search()` returns an iterable, including when a custom Resource forwards or filters it.
 
 ```javascript
-return Product.search(
+return tables.Product.search(
 	{
 		checkPermission: true,
 		conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'trail shoes' }],
@@ -84,7 +84,7 @@ Native page, response-byte and highlight limits still apply. Query terms and cla
 
 ## Upgrade considerations
 
-This change uses the fulltext 0.6.0 native package. A format-incompatible upgrade rebuilds the local index from stored records; queries on that node return 503 until the index is ready. Full-text indexes require RocksDB and audit logging.
+Harper 5.4 uses the fulltext 0.6.0 native package. A format-incompatible upgrade rebuilds the local index from stored records; queries on that node return 503 until the index is ready. Full-text indexes require RocksDB and audit logging.
 
 The initial native autocomplete batch is not a total-result cap. Harper continues through later batches when needed to satisfy the requested page after filtering. Work and time limits still apply.
 
