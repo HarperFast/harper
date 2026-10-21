@@ -20,9 +20,9 @@ describe('Concurrent source misses on one key', function () {
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 		});
 		CoalescingTable.sourcedFrom({
-			get(id) {
+			get(id, context) {
 				const attempt = ++sourceCalls;
-				return delay(10).then(() => respond(id, attempt));
+				return delay(10).then(() => respond(id, attempt, context));
 			},
 		});
 	});
@@ -61,6 +61,29 @@ describe('Concurrent source misses on one key', function () {
 		assert.equal(CoalescingTable.primaryStore.getEntry('uncached'), undefined);
 	});
 
+	it('fill the cache for a caching waiter behind a noCacheStore leader', async function () {
+		respond = (id) => ({ id, name: 'mixed ' + id });
+		const [uncached, cached] = await Promise.all([
+			CoalescingTable.get('mixed', { noCacheStore: true }),
+			CoalescingTable.get('mixed'),
+		]);
+		assert.deepEqual([uncached?.name, cached?.name], ['mixed mixed', 'mixed mixed']);
+		assert.equal(sourceCalls, 2);
+		await settle('mixed');
+		assert.equal((await CoalescingTable.get('mixed')).name, 'mixed mixed');
+		assert.equal(sourceCalls, 2);
+	});
+
+	it('do not share a response the source opted out of the cache', async function () {
+		respond = (id, attempt, context) => {
+			context.noCacheStore = true;
+			return { id, name: 'private ' + attempt };
+		};
+		const results = outcomes(await concurrentGets(CoalescingTable, 'private'), (record) => record?.name);
+		assert.equal(sourceCalls, 20);
+		assert.equal(new Set(results).size, 20);
+	});
+
 	it('share one source call and cache the record when the source returns one', async function () {
 		respond = (id) => ({ id, name: 'cached ' + id });
 		const results = await concurrentGets(CoalescingTable, 'cached');
@@ -93,6 +116,18 @@ describe('Concurrent source misses on one key', function () {
 		assert.equal(sourceCalls, 2);
 		assert.equal(results.filter((outcome) => outcome?.startsWith('first fill fails')).length, 1);
 		assert.equal(results.filter((outcome) => outcome == null).length, 19);
+	});
+
+	it('do not share a fill that failed after the source answered', async function () {
+		respond = (id, attempt) => {
+			const record = { id, name: 'attempt ' + attempt };
+			// a non-extensible record cannot take the record prototype, so the first fill rejects
+			return attempt === 1 ? Object.preventExtensions(record) : record;
+		};
+		const results = outcomes(await concurrentGets(CoalescingTable, 'non-extensible'), (record) => record?.name);
+		assert.equal(sourceCalls, 2);
+		assert.equal(results.filter((outcome) => outcome === 'attempt 1').length, 0);
+		assert.equal(results.filter((outcome) => outcome === 'attempt 2').length, 19);
 	});
 
 	it('keep 0 and -0 apart', async function () {

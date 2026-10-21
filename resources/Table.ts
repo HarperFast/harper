@@ -294,9 +294,7 @@ type SourceTxnStream = {
 	failure?: { error: unknown; position: number | undefined; event: any };
 	held?: boolean;
 };
-// A source fill held by this thread. `outcome` is set only once a successful fill has committed
-// without its write being discarded, so a waiter may serve it when the store holds nothing valid.
-type SourceFill = { source: unknown; outcome?: Entry };
+type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean };
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -1530,7 +1528,7 @@ export function makeTable(options): TableResourceClass {
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
-	let sourceFills: Map<unknown, SourceFill> | undefined; // keyed by writeKeyId
+	let sourceFills: Map<unknown, SourceFill> | undefined;
 	let primaryKeyAttribute: Attribute | undefined;
 	let lastEvictionCompletion: Promise<void> = Promise.resolve();
 	let recordExpirationCompletion: Promise<void> = Promise.resolve();
@@ -10259,9 +10257,8 @@ export function makeTable(options): TableResourceClass {
 				entry.metadataFlags & (INVALIDATED | EVICTED) ||
 				(entry.expiresAt != undefined && entry.expiresAt < Date.now())
 			) {
-				// a successful fill that stored nothing (an absent record, noCacheStore) still answers us
 				const outcome = heldFill?.source === source ? heldFill.outcome : undefined;
-				if (outcome) {
+				if (outcome && (!heldFill.unstoredRecord || context?.noCacheStore || droppingTable || isReadOnlyMode())) {
 					setLoadedFromSource(target, false);
 					whenResolved(outcome);
 				}
@@ -10311,11 +10308,12 @@ export function makeTable(options): TableResourceClass {
 			expiresAt: undefined,
 			lastModified: undefined,
 		};
+		const presetNoCacheStore = sourceContext.noCacheStore;
 		const responseHeaders = (context as any)?.responseHeaders;
 		return new Promise((resolve, reject) => {
 			// we don't want to wait for the transaction because we want to return as fast as possible
 			// and let the transaction commit in the background
-			let resolved, resolvedEntry: Entry;
+			let resolved, sharedEntry: Entry;
 			let sourceWrite: any;
 			let removedRecordWithBlobs;
 			const commitPromise = transaction(sourceContext, async (_txn) => {
@@ -10443,7 +10441,7 @@ export function makeTable(options): TableResourceClass {
 						isRocksDB && updatedRecord && existingVersion != null
 							? Math.max(sourceVersion, existingVersion)
 							: sourceVersion;
-					resolvedEntry = {
+					const resolvedEntry: Entry = {
 						key: id,
 						version: resolvedVersion,
 						value: updatedRecord,
@@ -10462,6 +10460,8 @@ export function makeTable(options): TableResourceClass {
 						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
+					// a source that opts its own response out of the cache has marked it per-request
+					if (!sourceContext.noCacheStore || presetNoCacheStore) sharedEntry = resolvedEntry;
 					resolve(resolvedEntry);
 				} catch (error) {
 					// A source may reject with anything at all, so deciding how to settle is itself
@@ -10673,7 +10673,10 @@ export function makeTable(options): TableResourceClass {
 			when(
 				commitPromise,
 				() => {
-					if (resolved && !sourceWrite?.skipped) fill.outcome = resolvedEntry;
+					if (sharedEntry && !sourceWrite?.skipped) {
+						fill.outcome = sharedEntry;
+						fill.unstoredRecord = !sourceWrite && sharedEntry.value != null;
+					}
 					releaseFill();
 					if (removedRecordWithBlobs) {
 						try {
