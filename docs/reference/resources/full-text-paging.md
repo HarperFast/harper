@@ -88,7 +88,7 @@ to avoid bypassing application filters.
 
 A custom Resource supporting the framework's QUERY paging route must implement `searchPage()`.
 Return the original page array. Copying it with `map()`, `filter()` or
-spread drops its paging metadata and a framework-serialized continuation response returns 400.
+spread drops its paging metadata. Returning that copy through the normal Resource API returns 400.
 Use the query's `select` and filters instead. A Resource returning an explicit HTTP `Response`
 owns its response headers, serialization and cache policy.
 
