@@ -378,7 +378,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				typeof resource.searchPage === 'function' &&
 				hasFullTextContinuationOptions(data)
 			) {
-				(request as any)[FULL_TEXT_CONTINUATION_REQUEST] = true;
+				(query as any)[FULL_TEXT_CONTINUATION_REQUEST] = true;
 				return resource.constructor.searchPage(data, request);
 			}
 			const result = resource.search

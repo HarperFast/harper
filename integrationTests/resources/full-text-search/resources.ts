@@ -90,6 +90,22 @@ export class ManualPagingResponse extends IgnoredPagingProduct {
 	}
 }
 
+export class AggregatePagingProduct extends IgnoredPagingProduct {
+	async search() {
+		const page = await Product.query(
+			{ isCollection: true, checkPermission: true },
+			{
+				conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'pagination' }],
+				select: ['id'],
+				limit: 1000,
+				continuation: true,
+			},
+			this.getContext()
+		);
+		return { count: page.length };
+	}
+}
+
 export class FullTextState extends Resource {
 	allowRead(user) {
 		return Boolean(user?.role?.permission?.super_user);

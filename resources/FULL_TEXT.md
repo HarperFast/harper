@@ -161,8 +161,8 @@ The names `continuation` and `closeContinuation` are reserved REST options.
 
 A custom Resource supporting the framework's QUERY paging route must implement `searchPage()`.
 Return the original page array. Copying it with `map()`,
-`filter()` or spread drops its paging metadata; a framework-serialized continuation response
-without that metadata returns 400. Put projections and filters in the query instead. A Resource
+`filter()` or spread drops its paging metadata; returning that copy through the normal Resource
+API returns 400. Put projections and filters in the query instead. A Resource
 returning an explicit HTTP `Response` owns its response headers, serialization and cache policy.
 
 These headers are added after serialization and stream startup; they do not guarantee delivery of

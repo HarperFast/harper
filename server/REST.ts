@@ -356,7 +356,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		let status = request.response.status;
 		if (
 			(method === 'GET' || method === 'QUERY') &&
-			(hasFullTextContinuationOptions(target) || (request as any)[FULL_TEXT_CONTINUATION_REQUEST]) &&
+			(hasFullTextContinuationOptions(target) || (target as any)[FULL_TEXT_CONTINUATION_REQUEST]) &&
 			!responseData?.headers &&
 			!(status >= 400) &&
 			(!Array.isArray(responseData) || (responseData as any)[FULL_TEXT_CONTINUATION_PAGE] !== true)

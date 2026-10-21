@@ -298,6 +298,9 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 
 	test('rejects ignored or copied continuation pages while preserving explicit HTTP responses', async () => {
 		assert.deepStrictEqual(await request('/IgnoredPagingProduct/'), []);
+		assert.deepStrictEqual(await request('/AggregatePagingProduct/', { method: 'QUERY', body: '{}' }), {
+			count: PAGE_IDS.length,
+		});
 		for (const resource of ['IgnoredPagingProduct', 'CopiedPagingProduct']) {
 			const base = `/${resource}/?catalogSearch=matches=pagination&limit(1000)&select(id,title)`;
 			for (const options of [
