@@ -183,7 +183,7 @@ Use `limit(start,end)` to page through a collection, and opt in to a total match
 
 Counting is opt-in: without the header, no count is computed and no count headers are returned. It applies only to `GET`/`HEAD` requests and requires a bounded page — the `limit()` must be a non-negative integer no larger than **10,000**, and the requested window (offset + limit) no larger than **1,000,000**. A request with no `limit()`, one outside those bounds, or a non-numeric one is served normally with no count headers, since counting an unbounded page would defeat the point of paging.
 
-Full-text and autocomplete queries use the same paging syntax. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for search work limits and behavior when records change between requests.
+Full-text and autocomplete queries use the same paging syntax. The page window counts eligible records after record filtering, rather than raw full-text hits. Harper fetches more ranked batches to fill that window when needed. A page can contain fewer records when no further matches remain; reaching a search work or time limit produces an error instead of a successful partial page. Each page request runs a new query, so concurrent changes can cause repeats or omissions between pages. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for search work limits and recovery guidance.
 
 The count-header guardrails do not override query-specific limits such as the full-text work budget.
 
