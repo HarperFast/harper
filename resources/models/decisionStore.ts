@@ -422,7 +422,7 @@ export function sourceFingerprint(kind: string, logicalName: string | undefined,
 			canonicalJson({
 				kind,
 				logicalName: logicalName ?? null,
-				config: withoutNamedCredentials(withoutFallback(config)),
+				config: withoutNamedCredentials(withoutRoutingAndPricing(config)),
 			})
 		)
 		.digest('hex');
@@ -445,10 +445,10 @@ function withoutNamedCredentials(value: unknown): unknown {
 	return kept;
 }
 
-/** Which backend serves after this one is routing, not what produces this one's scores. */
-function withoutFallback(config: unknown): unknown {
+/** Which backend serves after this one, and what a call costs, do not change what this one scores. */
+function withoutRoutingAndPricing(config: unknown): unknown {
 	if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
-	const { fallback: _fallback, ...rest } = config as Record<string, unknown>;
+	const { fallback: _fallback, pricing: _pricing, ...rest } = config as Record<string, unknown>;
 	return rest;
 }
 

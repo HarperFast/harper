@@ -226,7 +226,13 @@ SSE and NDJSON serializers eagerly take and hold their first iterator step for G
 
 SSE terminal event data uses `{ error: <code-or-class>, message: <message>, status?: <status> }`; NDJSON wraps the same object as `{ "$harperStreamError": { ... } }` so it cannot be mistaken for an ordinary row with an `error` field.
 Sources with `mapError` remain unmapped for these two formats so their failures reach this single contract instead of becoming legacy data records.
-generic JSON-array streaming retains its older `{ error: "<name>: <message>" }` element shape.
+Generic JSON-array streaming retains its `{ error: "<name>: <message>" }` element shape.
+REST problem details publish only an explicitly negative `retryable: false` hint; a missing hint is unknown.
+All three terminal records add `replicationUnconfirmed: true` for a reported commit whose local writes landed
+but whose confirmation failed, and `retryable: false` for that outcome or another explicitly non-retryable error.
+An enclosing scope that rolls back, or has already discarded, writes removes the confirmation flag while preserving the negative retry hint. Metadata getters
+on a thrown value may fail; omit unreadable extensions and still finish a valid error record. The commit-level
+scope and producer coverage are described in [resources/DESIGN.md](../resources/DESIGN.md#replication-confirmation-failure-means-the-linked-writes-committed-locally).
 The `error` value is the stable programmatic discriminator; `message` is diagnostic and follows the same thrown-message exposure policy as pre-commit Problem Details.
 
 Clean stream completion does not prove completeness; clients must inspect SSE for the `harper-error` event and NDJSON for the `$harperStreamError` control record.
@@ -262,13 +268,14 @@ user resolution touches system-table searches (`listUsers()`) that raise a defau
 storage outage as an unknown credential and hand it to application authorization. The tag is set at
 exactly these points:
 
-| Tagged rejection                                                   | Where                                                                                        |
-| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| unknown user, inactive user, bad password                          | `security/user.ts → findAndValidateUser()`                                                   |
-| JWT syntax, signature, expiry, not-before, subject/claim rejection | `security/tokenAuthentication.ts → validateToken()`                                          |
-| refresh-token hash mismatch, malformed scoped-token claims         | `security/tokenAuthentication.ts`                                                            |
-| an `Authorization` scheme Harper does not implement                | `security/auth.ts`                                                                           |
-| a component's `server.getUser` override that tags its own error    | `markCredentialRejection` / `credentialRejectionError`, exported from `harper` (harper#2703) |
+| Tagged rejection                                                            | Where                                                                                        |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| unknown user, inactive user, bad password                                   | `security/user.ts → findAndValidateUser()`                                                   |
+| JWT syntax, signature, expiry, not-before, subject/claim rejection          | `security/tokenAuthentication.ts → validateToken()`                                          |
+| refresh-token hash mismatch, malformed scoped-token claims                  | `security/tokenAuthentication.ts`                                                            |
+| an `Authorization` scheme Harper does not implement                         | `security/auth.ts`                                                                           |
+| a component's `server.getUser` override that tags its own error             | `markCredentialRejection` / `credentialRejectionError`, exported from `harper` (harper#2703) |
+| a component's `server.registerBearerValidator` hook that tags its own error | `markCredentialRejection` / `credentialRejectionError`, exported from `harper`               |
 
 `validateToken()` separates the two in the same catch: `jsonwebtoken` reports unusable key material
 through the very same `JsonWebTokenError` type it uses for a forged token, so the public key is
@@ -277,10 +284,11 @@ as a fault. An untagged error propagates unmasked.
 
 The Bearer path's refresh-token probe follows the same rule. When operation-token validation says
 `invalid token`, authentication retries the credential as a refresh token; a fault raised by that
-retry propagates, and only an ordinary _tagged_ refresh rejection restores the original
-operation-token rejection for deferral. An in-line fail-closed response logs the original fault
-server-side and returns the same generic authentication failure a rejected credential gets, so
-internal detail never reaches an unauthenticated client.
+retry propagates, and only an ordinary _tagged_ refresh rejection lets the credential go on to the
+component validators (below) and, if they all decline, restores the original operation-token
+rejection for deferral. An in-line fail-closed response logs the original fault server-side and
+returns the same generic authentication failure a rejected credential gets, so internal detail never
+reaches an unauthenticated client.
 
 Any layer that establishes Harper owns the route then settles the deferred state before doing work:
 
@@ -348,6 +356,54 @@ Bun and uWS rebuild their headers from Fastify's reply and merge once. Node hand
 response shared-cacheable. `bridgeChainHeadersToNodeResponse()` therefore runs the same merge from a
 `writeHead` interception, the last point the header set is still mutable and the one Node also routes
 implicit headers through.
+
+### Component Bearer validators (`server.registerBearerValidator`, `security/bearerValidators.ts`)
+
+A component can accept Bearer tokens Harper did not issue (first consumer: the OAuth plugin's MCP
+authorization server). The validators run inside `authentication()`, not as `before: 'authentication'`
+middleware, so one place still decides `request.user` for every Harper-owned route. A middleware that
+set `request.user` itself would have to re-implement, per plugin, what this path enforces:
+
+- **Harper tokens win.** Validators see only a credential `validateOperationToken` and the refresh
+  probe rejected as `invalid token`; an expired Harper token never reaches them.
+- **A validator names a user; Harper supplies the role.** The contract is
+  `{ username, authExpiresAt?, authCacheable? }`, resolved through `server.getUser` (the Basic path's
+  `userRecordVersions` → `getUser` → `trackUserRecords`), so `isCurrentUser` and the authorization
+  cache treat it like a Basic login. A component's `server.getUser` override stays authoritative at
+  login, but live-subscription rechecks and MCP session refreshes re-read `hdb_user` by name, so a
+  user only the override knows loses those at its first recheck, as a Basic login through the same
+  override already does. Any other field is refused, `role` included. Inline-permission principals (a per-token narrowed role under the scoped-token ceiling)
+  were built and dropped: the first consumer's tokens name a Harper user and carry no permissions,
+  and a principal no `hdb_user` backs needs its own revocation at every by-name rehydration site
+  (`security/DESIGN.md`). Refusing `role` now keeps adding it later from changing an existing
+  result's meaning.
+- **Expiry is exact.** `authExpiresAt` is the validator's value (300 s when omitted) capped by the
+  token's own JWT `exp`; it is checked again after the `server.getUser` lookup. `authorizationCache` evicts at
+  it, live subscriptions end at it (#1414), and MQTT wills persist it and are dropped past it, on
+  restart replay checked again after the replay's own `server.getUser` lookup. The
+  decoded `exp` is unverified, so it only shortens, down to refusing a token whose `exp` has passed
+  (`token expired`) even when the validator accepted it. A validator that verified the token's
+  expiry should still return it as `authExpiresAt`, since Harper decodes only JWTs.
+- **The cache key is the Authorization header.** A cached principal is served to any route and host
+  on the worker without calling the validator, so a validator whose answer depends on the request
+  (an RFC 8707 audience bound to one mount, say) must return `authCacheable: false`.
+- **Disposal is exact.** The cache records which registration resolved each principal; a hit whose
+  registration was disposed is evicted, so registering never flushes cached Basic or session users.
+  Declines are not cached: a validator caches its own.
+- **Faults fail closed.** A tagged throw is a credential rejection (deferred, or 401 on Harper-owned
+  routes); an untagged throw, a malformed return, or exceeding `timeoutMs` answers 401 in place. The
+  claim's `server.getUser` lookup shares the chain budget, so total authentication latency stays
+  bounded; a deadline only bounds waiting, it cannot interrupt a synchronous validator.
+- **No minting, no operations port.** A `_bearerValidator` principal cannot turn its token into Harper
+  tokens: `createTokens` refuses it a passwordless operation/refresh mint and (unless operation
+  authorization is bypassed) a scoped token, also after impersonation; a username and password still
+  mint as usual. A dedicated operations API port never runs validators or serves their cache entries. On a shared port they reach `verifyPerms` like any principal.
+
+Registrations are worker-global and outlive `scope.close()`, so in-flight requests drain. The
+`Scope` proxy records what a plugin registers through `scope.server`, and
+`sequentiallyHandleApplication` disposes those if that load fails. A module's `import { server } from
+'harper'` is the application's shared server, not tied to one plugin load, so its registrations stay,
+like its `server.http` middleware.
 
 ### Response Cache-Control / Vary policy (#1518, #1565)
 
