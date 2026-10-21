@@ -29,8 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
     # on a required check. Every step below is capped in its own right and this sits above their
-    # sum (55 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
-    timeout-minutes: 56
+    # sum (59 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -139,8 +139,22 @@ jobs:
 
       - name: 'Unit tests: lmdb'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 6
-        run: npm run test:unit:lmdb
+        timeout-minutes: 10
+        run: |
+          ulimit -c unlimited
+          sudo sysctl -w "kernel.core_pattern=$RUNNER_TEMP/harper-core.%p"
+          lmdb_status=0
+          npm run test:unit:lmdb || lmdb_status=$?
+          if [ "$lmdb_status" -ne 0 ]; then
+            for crash_core in "$RUNNER_TEMP"/harper-core.*; do
+              [ -f "$crash_core" ] || continue
+              if ! command -v gdb >/dev/null; then
+                sudo apt-get update && sudo apt-get install -y gdb || true
+              fi
+              gdb --batch --quiet -ex 'set pagination off' -ex 'set print frame-arguments none' -ex 'thread apply all bt' "$(command -v node)" "$crash_core" || true
+            done
+          fi
+          exit "$lmdb_status"
 
   # Windows had no unit-level coverage at all before this job: every job above pins
   # ubuntu-latest, and integration-tests.yml was the only workflow touching Windows.
@@ -283,4 +297,4 @@ jobs:
         run: node --input-type=module --eval "const binding = await import('@harperfast/fulltext/native'); if (typeof binding.openNativeFullTextIndex !== 'function' || typeof binding.openNativeFullTextReader !== 'function' || typeof binding.NativeFullTextIndex?.prototype.searchPage !== 'function' || (await binding.runtimeInfo()).queryApiVersion !== 4) throw new Error('@harperfast/fulltext loaded without the required writer, reader, and query API 4 contract');"
 
       - name: Native full-text lifecycle test
-        run: npx mocha unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js unitTests/resources/nativeFullTextTableSearch.test.js
+        run: npx mocha unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js unitTests/resources/nativeFullTextTableSearch.test.js --forbid-pending --fail-zero

@@ -319,6 +319,75 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	for (const filtered of [false, true])
+		it(`rejects impossible replay work before traversal (${filtered ? 'filtered' : 'ordinary'})`, async () => {
+			const previous = getFullTextTestConfiguration();
+			const auditStore = sharedStore();
+			const readinessId = `impossible-replay-${filtered}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const hits = Array.from({ length: 1000 }, (_, i) => ({
+				id: nativeId(1, `record-${i}`),
+				version: '1',
+				score: 1000 - i,
+			}));
+			let searches = 0;
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				maxSearchWindow: 10000,
+				hits: () => hits,
+				onSearch: () => searches++,
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			try {
+				setFullTextTestConfiguration({ ...previous, maxRawHitsPerRequest: 500 });
+				await assert.rejects(
+					index.search(
+						{ comparator: 'matches', value: 'shoe' },
+						{},
+						{
+							minResults: 300,
+							...(filtered ? { filter: () => false } : null),
+						}
+					),
+					(error) => error.statusCode === 400 && /maxRawHitsPerRequest/.test(error.message)
+				);
+				assert.strictEqual(searches, 1);
+			} finally {
+				setFullTextTestConfiguration(previous);
+				await index.close();
+			}
+		});
+
+	it('allows exhausted matches below the target when replay still fits the work budget', async () => {
+		const previous = getFullTextTestConfiguration();
+		const auditStore = sharedStore();
+		const readinessId = 'exhausted-replay-budget';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 260 }, (_, i) => ({
+			id: nativeId(1, `record-${i}`),
+			version: '1',
+			score: 260 - i,
+		}));
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			maxSearchWindow: 10000,
+			hits: () => hits,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		try {
+			setFullTextTestConfiguration({ ...previous, maxRawHitsPerRequest: 600 });
+			const result = await index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 500 });
+			assert.strictEqual(result.length, 260);
+		} finally {
+			setFullTextTestConfiguration(previous);
+			await index.close();
+		}
+	});
+
 	it('rejects an empty native page claiming a continuation', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'empty-traversal-page';

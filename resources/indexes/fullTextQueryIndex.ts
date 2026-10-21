@@ -636,8 +636,15 @@ export class FullTextQueryIndex {
 						break;
 					}
 				}
-				if (!traversal && moreMayExist && accepted.length < target)
+				if (!traversal && moreMayExist && accepted.length < target) {
+					const minimumNewHits = Math.min(target - accepted.length, Math.max(0, result.total - result.hits.length));
+					if (bounded && result.hits.length + minimumNewHits > rawHitLimit - rawHitsFetched)
+						throw new ClientError(
+							'Full-text search exceeded storage.fullText.maxRawHitsPerRequest; narrow the query or increase the work budget',
+							400
+						);
 					traversal = { skip: result.hits.length, prefix: result.hits };
+				}
 				if (!moreMayExist) break;
 				if (accepted.length < target) {
 					if (bounded) {
