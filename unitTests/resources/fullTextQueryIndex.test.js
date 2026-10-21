@@ -388,6 +388,62 @@ describe('FullTextQueryIndex', () => {
 		}
 	});
 
+	for (const [count, budget, expectedCalls] of [
+		[1000, 500, 1],
+		[256, 512, 2],
+		[1000, 550, 2],
+	])
+		it(`bounds replay with an uninformative lower-bound total (${count} hits, budget ${budget})`, async () => {
+			const previous = getFullTextTestConfiguration();
+			const auditStore = sharedStore();
+			const readinessId = `lower-bound-replay-${count}-${budget}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const hits = Array.from({ length: count }, (_, i) => ({
+				id: nativeId(1, `record-${i}`),
+				version: '1',
+				score: count - i,
+			}));
+			let searches = 0;
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				maxSearchWindow: 10000,
+				hits: () => hits,
+				searchResult: ({ limit }) => {
+					searches++;
+					return { total: limit, totalRelation: 'lower-bound', hits: hits.slice(0, limit) };
+				},
+				searchPageResult: ({ continuation, limit }) => {
+					searches++;
+					const offset = Number(continuation ?? 0);
+					const page = hits.slice(offset, offset + limit);
+					const next = offset + page.length;
+					return {
+						total: count,
+						totalRelation: 'exact',
+						hits: page,
+						continuation: next < count ? String(next) : undefined,
+					};
+				},
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			try {
+				setFullTextTestConfiguration({ ...previous, maxRawHitsPerRequest: budget });
+				const search = index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 300 });
+				if (count < 300) assert.strictEqual((await search).length, count);
+				else
+					await assert.rejects(
+						search,
+						(error) => error.statusCode === 400 && /maxRawHitsPerRequest/.test(error.message)
+					);
+				assert.strictEqual(searches, expectedCalls);
+			} finally {
+				setFullTextTestConfiguration(previous);
+				await index.close();
+			}
+		});
+
 	it('rejects an empty native page claiming a continuation', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'empty-traversal-page';
