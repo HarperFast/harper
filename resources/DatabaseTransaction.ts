@@ -22,6 +22,7 @@ import { Transaction as RocksTransaction, type Store as RocksStore, constants } 
 import { releaseLocalKey, reserveLocalKey, reservedLocalKey, transferLocalKey } from './originClosedFloor.ts';
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
+import { isReadOnlyMode, readOnlyModeError } from './readOnlyMode.ts';
 import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
 import { server } from '../server/Server.ts';
@@ -2485,6 +2486,7 @@ export class DatabaseTransaction implements Transaction {
 	 * scope or pre-commit work happens to finish. Reads never subscribe.
 	 */
 	admitRequestWrite(): void {
+		if (isReadOnlyMode()) throw readOnlyModeError();
 		const root = this.root ?? this;
 		const signal = root.requestSignal;
 		if (!signal) return;

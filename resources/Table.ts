@@ -48,6 +48,7 @@ import {
 	type Transaction as DatabaseTransactionRecord,
 	confirmingResidents,
 } from './DatabaseTransaction.ts';
+import { readOnlyModeError } from './readOnlyMode.ts';
 import { releaseLocalKey, reserveLocalKey, reservedLocalKey } from './originClosedFloor.ts';
 import {
 	acquireRecordKey,
@@ -1708,6 +1709,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	// Table-scoped, not nested in getNewId(): a nested declaration is instantiated on every call.
 	function replaceIdAllocation(expectedAllocation, nextAllocation) {
+		if (isReadOnlyMode()) throw readOnlyModeError();
 		const storedAllocation = primaryStore.transactionSync(
 			(transaction) => {
 				const options = transaction && { transaction };
@@ -7954,6 +7956,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		static async addAttributes(attributesToAdd: Attribute[]) {
 			TableResource.assertSchemaMutable('add attributes');
+			if (isReadOnlyMode()) throw readOnlyModeError();
 			const new_attributes = attributes.slice(0);
 			for (const attribute of attributesToAdd) {
 				if (!attribute.name) throw new ClientError('Attribute name is required');
