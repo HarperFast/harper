@@ -428,7 +428,6 @@ describe('analytics aggregation cycle', () => {
 			mean: 3,
 			period: PERIOD,
 		});
-		// One row per thread across its paths: 30 requests at 6 ms and 10 at 2 ms.
 		assert.deepStrictEqual(pick(byThread[7], fields), {
 			metric: 'duration-by-thread',
 			path: undefined,
