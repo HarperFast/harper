@@ -2212,6 +2212,7 @@ function parseBlock(query, expectedEnd) {
 	let parser = QUERY_PARSER;
 	let match;
 	let attribute, comparator, expectingDelimiter, expectingValue;
+	let comparatorChosen = false;
 	let valueDecoder: any = decodeURIComponent;
 	let lastBinaryOperator;
 	while ((match = parser.exec(queryString))) {
@@ -2229,8 +2230,10 @@ function parseBlock(query, expectedEnd) {
 					// FIQL operator like =gt= or =starts_with= — accept any identifier
 					// (letters, digits, underscores). Unknown comparator names are
 					// caught at execution time with a clearer error.
-					if (FIQL_OPERATOR_NAME.test(value)) comparator = value;
+					if (comparatorChosen) recordError(`unexpected FIQL operator ${value} after comparator ${comparator}`);
+					else if (FIQL_OPERATOR_NAME.test(value)) comparator = value;
 					else recordError(`invalid FIQL operator ${value}`);
+					comparatorChosen = true;
 					valueDecoder = fullTextComparatorMode(resolveComparator(comparator).comparator)
 						? decodeURIComponent
 						: typedDecoding;
@@ -2238,6 +2241,7 @@ function parseBlock(query, expectedEnd) {
 					// standard equal comparison
 					valueDecoder = decodeURIComponent; // use strict decoding
 					comparator = 'equals'; // strict equals
+					comparatorChosen = false;
 					if (!value) recordError(`attribute must be specified before equality comparator`);
 					attribute = decodeProperty(value);
 				}
@@ -2253,6 +2257,7 @@ function parseBlock(query, expectedEnd) {
 			case '===':
 			case '!==':
 				comparator = SYMBOL_OPERATORS[operator];
+				comparatorChosen = true;
 				valueDecoder = COERCIBLE_OPERATORS[comparator] ? typedDecoding : decodeURIComponent;
 				if (!value) recordError(`attribute must be specified before comparator ${operator}`);
 				attribute = decodeProperty(value);
@@ -2278,9 +2283,11 @@ function parseBlock(query, expectedEnd) {
 				} else if (operator === '&=') {
 					lastBinaryOperator = 'and';
 					attribute = '';
+					comparatorChosen = false;
 				} else if (operator === '|=') {
 					lastBinaryOperator = 'or';
 					attribute = '';
+					comparatorChosen = false;
 				}
 				break;
 			case ',':
@@ -2363,6 +2370,7 @@ function parseBlock(query, expectedEnd) {
 						// handle the case of a query parameter like property[]=value, using the standard equal behavior
 						valueDecoder = decodeURIComponent; // use strict decoding
 						comparator = 'equals'; // strict equals
+						comparatorChosen = false;
 						attribute = decodeProperty(value);
 						parser.lastIndex = ++lastIndex;
 						break;

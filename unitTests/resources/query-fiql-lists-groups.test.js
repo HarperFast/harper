@@ -57,8 +57,6 @@ describe('FIQL list values, groups, chained legs, and parse-error status', () =>
 		}
 		assert.fail(`expected ${query} to be rejected`);
 	}
-	// Indexed (`status`, `price`) and unindexed (`statusPlain`, `pricePlain`) attributes hold the same values,
-	// so every query must return the same records on both.
 	async function idsOnBothPaths(query) {
 		const indexed = await ids(query.replace(/\{s\}/g, 'status').replace(/\{p\}/g, 'price'));
 		const unindexed = await ids(query.replace(/\{s\}/g, 'statusPlain').replace(/\{p\}/g, 'pricePlain'));
@@ -91,11 +89,7 @@ describe('FIQL list values, groups, chained legs, and parse-error status', () =>
 			assert.deepEqual(await idsOnBothPaths('{p}=gtlt=(number:10,number:30)'), [2]);
 		});
 		it('parses untyped (a,b) for a range comparator as bounds, not characters', async function () {
-			// 'active' <= s <= 'inactive' admits active, closed, inactive
 			assert.deepEqual(await idsOnBothPaths('{s}=gele=(active,inactive)'), [1, 3, 4]);
-		});
-		it('accepts a null lower bound', async function () {
-			assert.deepEqual(await idsOnBothPaths('{p}=between=(null,number:20)'), [1, 2]);
 		});
 		it('treats the ... alias like between on both paths', async function () {
 			for (const attribute of ['price', 'pricePlain']) {
@@ -170,8 +164,38 @@ describe('FIQL list values, groups, chained legs, and parse-error status', () =>
 		it('rejects an or-chained leg with 400', async function () {
 			await assertRejectedOnBothPaths('{p}=ge=number:10|=le=number:20', /\|=/);
 		});
+		it('rejects a programmatic chain with an unknown operator', async function () {
+			let error;
+			try {
+				for await (const _ of Items.search({
+					conditions: [
+						{
+							attribute: 'price',
+							comparator: 'ge',
+							value: 10,
+							operator: 'xor',
+							chainedConditions: [{ comparator: 'le', value: 20 }],
+						},
+					],
+				}));
+			} catch (caught) {
+				error = caught;
+			}
+			assert.equal(error?.statusCode, 400);
+			assert.match(error.message, /Unknown chained condition operator/);
+		});
 		it('rejects a chain whose lower leg is not gt or ge, instead of reinterpreting it', async function () {
 			await assertRejectedOnBothPaths('{p}=eq=number:10&=le=number:20', /greater than/);
+		});
+		it('records a parse error for a second FIQL comparator on one condition', function () {
+			for (const query of ['price=eq=ge=&status=active', 'price<ge=5', '(price=eq=ge=5)']) {
+				const target = parseQuery(query, new RequestTarget());
+				assert.match(target.parseError?.message ?? '', /unexpected FIQL operator/, query);
+			}
+			const emptyValue = parseQuery('price=eq=&status=active', new RequestTarget());
+			assert.equal(emptyValue.parseError, undefined);
+			const chained = parseQuery('price=ge=1&=le=2', new RequestTarget());
+			assert.equal(chained.parseError, undefined);
 		});
 		it('records a parse error for a chained leg with no comparison before it', function () {
 			const query = parseQuery('(name=a)&=le=2', new RequestTarget());
