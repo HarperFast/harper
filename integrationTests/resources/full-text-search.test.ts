@@ -286,8 +286,15 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 
 	test('rejects removed paging functions before a collection delete can run', async () => {
 		for (const option of ['continuation()', 'continuation(token)', 'closeContinuation()']) {
-			for (const method of ['GET', 'DELETE'])
-				await request(`/Product/?catalogSearch=matches=pagination&${option}`, { method }, 400);
+			for (const method of ['GET', 'DELETE']) {
+				const response = await fetch(`${ctx.harper.httpURL}/Product/?catalogSearch=matches=pagination&${option}`, {
+					method,
+					headers: { Authorization: authorization },
+					signal: AbortSignal.timeout(45000),
+				});
+				assert.strictEqual(response.ok, false);
+				assert.strictEqual((await response.json()).code, 'SyntaxViolation');
+			}
 		}
 		assert.deepStrictEqual(ids(await search(query('pagination'))), PAGE_IDS);
 	});
