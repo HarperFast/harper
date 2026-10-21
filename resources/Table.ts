@@ -2093,7 +2093,6 @@ export function makeTable(options): TableResourceClass {
 					const subscribeOnThisThread = source.subscribeOnThisThread
 						? source.subscribeOnThisThread(applicationWorkerIndex(), subscriptionOptions)
 						: runsApplicationCodeSingletons(); // set up by the defining application's code, so it runs where that code does
-					// no notification can be applied on a read-only node
 					const subscription =
 						hasSubscribe &&
 						subscribeOnThisThread &&
@@ -4233,6 +4232,7 @@ export function makeTable(options): TableResourceClass {
 		// on one key coalescing instead of racing to tryLock.
 		async lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any> {
 			if (!isRocksDB) throw new ClientError('Record locks are not supported on LMDB', 501);
+			if (isReadOnlyMode()) throw readOnlyModeError();
 			if (options === undefined && isPlainOptions(target)) {
 				options = target as RecordLockOptions;
 				target = undefined;

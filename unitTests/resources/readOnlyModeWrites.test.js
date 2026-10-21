@@ -141,6 +141,14 @@ describe('read-only mode rejects writes', () => {
 		assert.deepStrictEqual(subscribed, ['writable']);
 	});
 
+	it('refuses a record lock before it takes the key, which only a write could use', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		await assertReadOnlyRejection(() => ReadOnlyTable.lock('seed'));
+		__setReadOnlyModeForTest(undefined);
+		const held = await ReadOnlyTable.lock('seed', { timeout: 500, hold: true });
+		await held.unlock();
+	});
+
 	it('still serves reads', async function () {
 		__setReadOnlyModeForTest(true);
 		assert.strictEqual((await ReadOnlyTable.get('seed')).name, 'seed');
