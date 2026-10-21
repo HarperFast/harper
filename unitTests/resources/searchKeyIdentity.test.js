@@ -1,7 +1,7 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { executeConditions } = require('#src/resources/search');
+const { executeConditions, CandidateKeySet } = require('#src/resources/search');
 const { compareKeys } = require('ordered-binary');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
@@ -32,7 +32,6 @@ describe('search key identity and the "..." between alias', () => {
 		for (const id of pendingKeys) await Keyed.put(id, { grp: 'g1', status: 'pending' });
 		// keeps `status = approved` from being the cheaper condition, so `grp` leads and `status` is filtered
 		for (let i = 0; i < 200; i++) await Keyed.put(`z${i}`, { grp: 'g2', status: 'approved' });
-		// composite keys whose NUL-joined text is the same: ['t', 7], ['t', '7'] and 't\0007'
 		await Keyed.put(['t', 7], { grp: 'g1', status: 'approved' });
 		await Keyed.put(['t', '7'], { grp: 'g1', status: 'rejected' });
 		await Keyed.put('t\x007', { grp: 'g1', status: 'rejected' });
@@ -50,8 +49,8 @@ describe('search key identity and the "..." between alias', () => {
 	});
 
 	after(() => {
-		Keyed.dropTable();
-		Ranged.dropTable();
+		Keyed?.dropTable();
+		Ranged?.dropTable();
 	});
 
 	it('does not let an id-filtered condition admit a different key with the same NUL-joined text', async () => {
@@ -94,10 +93,12 @@ describe('search key identity and the "..." between alias', () => {
 			{ attribute: 'id', value: ['tenant', 'item'] },
 			{ attribute: 'grp', value: 'or_a' },
 		];
+		const expected = [['tenant', 'item'], 'scalar'].sort(compareKeys);
 		const all = await collect(Keyed.search({ operator: 'or', conditions, select: ['id'] }));
-		assert.strictEqual(all.length, 2);
+		assert.deepStrictEqual(all.map((record) => record.id).sort(compareKeys), expected);
 		const page = await collect(Keyed.search({ operator: 'or', conditions, select: ['id'], offset: 1, limit: 5 }));
 		assert.strictEqual(page.length, 1);
+		assert.ok(expected.some((id) => compareKeys(id, page[0].id) === 0));
 	});
 
 	for (const comparator of ['...', 'between']) {
@@ -131,4 +132,15 @@ describe('search key identity and the "..." between alias', () => {
 			assert.deepStrictEqual(results.map((record) => record.id).sort(), ['r1', 'r3', 'r5']);
 		});
 	}
+
+	it('reports a key as new once, however it decodes', () => {
+		const keys = new CandidateKeySet();
+		assert.strictEqual(keys.addIfAbsent(['a\x00b', 'c']), true);
+		assert.strictEqual(keys.addIfAbsent(['a\x00b', 'c']), false);
+		assert.strictEqual(keys.addIfAbsent(['a', 'b\x00c']), true);
+		assert.strictEqual(keys.addIfAbsent('a\x00b\x00c'), true);
+		assert.strictEqual(keys.addIfAbsent(5), true);
+		assert.strictEqual(keys.addIfAbsent(5n), false);
+		assert.strictEqual(keys.size, 4);
+	});
 });

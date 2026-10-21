@@ -469,12 +469,23 @@ export class CandidateKeySet {
 		}
 		return this.#encoded.has(writeKeyId(primaryKey));
 	}
+	/** Adds the key and reports whether it was new, encoding a composite key once rather than for `has` and `add`. */
+	addIfAbsent(primaryKey: Id): boolean {
+		if (Array.isArray(primaryKey)) {
+			const identity = writeKeyId(primaryKey);
+			if (this.#encoded.has(identity)) return false;
+			this.#encoded.add(identity);
+			return true;
+		}
+		if (this.has(primaryKey)) return false;
+		this.add(primaryKey);
+		return true;
+	}
 	get size(): number {
 		return this.#byValue.size + this.#encoded.size + (this.#zero ? 1 : 0) + (this.#negativeZero ? 1 : 0);
 	}
 }
 
-/** `entries` without repeated primary keys; the seen-set is per iteration. Entries are keys or `{ key }` entries. */
 function distinctKeys(entries: any): any {
 	const distinct = new ExtendedIterable();
 	(distinct as any).iterate = (options) => {
@@ -483,9 +494,7 @@ function distinctKeys(entries: any): any {
 		return entries
 			.map((entry) => {
 				const id = entry.key ?? entry;
-				if (returned.has(id)) return SKIP;
-				returned.add(id);
-				return entry;
+				return returned.addIfAbsent(id) ? entry : SKIP;
 			})
 			.iterate(options);
 	};
@@ -1873,8 +1882,8 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					}
 					recordFilter.idFilter = (id) => idSet.has(id);
 					(recordFilter.idFilter as any).idSet = idSet;
-					// the set holds encoded identities, so a sole member is kept as the key itself
-					(recordFilter.idFilter as any).onlyId = firstId;
+					// the set holds encoded identities; the singleton relationship lookup needs the key itself
+					(recordFilter.idFilter as any).onlyId = idSet.size === 1 ? firstId : undefined;
 				}
 			}
 			return matches;
