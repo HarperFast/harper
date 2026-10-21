@@ -8,6 +8,20 @@ title: Full-text paging
 
 Full-text and autocomplete searches use Harper's existing paging options. Each request runs a new search; Harper does not retain a search between pages.
 
+## Before you start
+
+Use an audited RocksDB table with a declared full-text field. For example:
+
+```graphql
+type Product @table(audit: true) @export {
+	id: ID @primaryKey
+	title: String
+	catalogSearch: FullText @fullText(fields: [{ name: "title" }])
+}
+```
+
+`catalogSearch` names the index over `title`; it is not a stored record value. The examples below search that index through an exported table route or an authenticated Resource handler.
+
 ## Request a page
 
 Inside an authenticated Resource handler, use `limit` and `offset` with `Table.search()`. `Table.search()` returns an iterable, including when a custom Resource forwards or filters it.
@@ -34,7 +48,7 @@ Each page runs a new query. Changes to records, permissions, or the index can mo
 
 Within one request, Harper reads native batches on the same index reader until enough eligible records have been found or the matches are exhausted. Current source versions and record filters are checked before counting records toward the offset and limit. This traversal also lets prefix and fuzzy-prefix searches return more than the initial autocomplete batch. The library's ordinary search window is not a total-result cutoff for a bounded Harper request.
 
-Use a bounded `limit` for large result sets. An unbounded query that exceeds the native result window returns 400. Offset requests revisit earlier matches; deep offsets and restrictive filters can exhaust the work or time budget. An exhausted search returns its remaining eligible records, including an empty result. A budget failure returns an error instead of a successful incomplete page.
+Use a bounded `limit` for large result sets. An unbounded query that exceeds the native result window returns 400. `offset + limit` must not exceed `maxRawHitsPerRequest`; replay and rejected hits can exhaust that budget even earlier. Offset requests revisit earlier matches; deep offsets and restrictive filters can exhaust the work or time budget. Harper can retain up to `offset + limit` accepted records while building a bounded result, so raising the work limit can also increase memory use. An exhausted search returns its remaining eligible records, including an empty result. A budget failure returns an error instead of a successful incomplete page.
 
 ## Configure search work
 
@@ -64,9 +78,9 @@ Native process admission settings live under `storage.fullText.runtime`:
 
 These limits apply together. For example, two indexing threads and 64 MiB of writer memory per index reach the default thread and memory budgets at 64 indexes. Readers share an index's runtime; they do not allocate another writer. Admission limits are not hard bounds on total resident memory or disk usage.
 
-Harper captures native runtime budgets before loading application components, or on an earlier main-thread native load or managed worker spawn. Application-created workers inherit that configuration. A worker created before capture fails with `FullTextWorkerInitializationError` (500, non-retryable); recreate it after Harper initializes. Replacement workers keep the established budgets after a live configuration change. Restart the Harper process to apply new native runtime budgets; restarting only HTTP workers is insufficient.
+Harper captures native runtime budgets before loading application components, or on an earlier main-thread native load or managed worker spawn. Application-created workers inherit that configuration. A worker created before capture fails on its first native full-text load with `FullTextWorkerInitializationError` (500, non-retryable). Create application workers from a Harper application component, after runtime configuration has been captured; recreate an early worker rather than retrying inside it. Replacement workers keep the established budgets after a live configuration change. Restart the Harper process to apply new native runtime budgets; restarting only HTTP workers is insufficient.
 
-Harper does not configure the library's native filter metadata or submit native filter or candidate-ID requests. Ordinary conditions continue through Harper's secondary-index gates and authoritative record predicates. Native page, response-byte and highlight limits still apply. Query terms and clauses remain limited by the installed library.
+Native page, response-byte and highlight limits still apply. Query terms and clauses remain limited by the installed library.
 
 ## Upgrade considerations
 
@@ -74,7 +88,7 @@ This change uses the fulltext 0.6.0 native package. A format-incompatible upgrad
 
 The initial native autocomplete batch is not a total-result cap. Harper continues through later batches when needed to satisfy the requested page after filtering. Work and time limits still apply.
 
-Full-text queries do not provide an exact record count. When exact counting is enabled and requested, `Content-Range` uses `*` for the total. Estimated counting can return a planner estimate when no opaque row or vector filter suppresses it. A native hit total is not an authorized record count. See [count preferences](../rest/querying.md#pagination-and-total-count) for the default downgrade from exact to estimated counting. For the ordinary REST paging syntax, see [Querying](../rest/querying.md#pagination-and-total-count). The JSON Operations API does not accept REST query syntax; use exported table routes or `Table.search()`.
+Full-text queries do not provide an exact record count. When exact counting is enabled and requested, `Content-Range` uses `*` for the total. Estimated counting can return a planner estimate when no opaque row or vector filter suppresses it. A native hit total is not an authorized record count. See [count preferences](../rest/querying.md#pagination-and-total-count) for the default downgrade from exact to estimated counting. For the ordinary REST paging syntax, see [Querying](../rest/querying.md#pagination-and-total-count). The JSON Operations API uses `search_by_conditions` with `limit` and `offset` rather than REST URL syntax. The same per-request behavior and work limits apply.
 
 ## Errors and recovery
 
@@ -84,3 +98,5 @@ Full-text queries do not provide an exact record count. When exact counting is e
 | Execution budget exhausted                                                  | 503         | Narrow the query or adjust `requestBudgetMilliseconds`; retrying the same expensive query can hit the same limit.  |
 | Index rebuilding or unavailable                                             | 503         | Wait for the local index to become ready before retrying.                                                          |
 | Application worker started before native runtime configuration was captured | 500         | `FullTextWorkerInitializationError` is non-retryable in that worker. Recreate the worker after Harper initializes. |
+
+`INDEX_REBUILDING` and `DERIVED_INDEX_LAGGING` identify retryable readiness or coverage failures. A native busy response also returns 503; reduce concurrency or retry with backoff. HTTP status alone does not distinguish these from an execution-budget failure.
