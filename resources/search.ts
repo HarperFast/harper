@@ -551,9 +551,8 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	let exclusiveStart = false;
 	switch (comparator) {
 		case 'lt':
-			// null, not searchByIndex's `true`: `true` sorts ABOVE null and false, so starting there
-			// would drop indexed rows the record predicate's compareKeys admits — an omission the
-			// post-filter cannot undo.
+			// Inclusive null, where searchByIndex starts just above it: the record predicate's compareKeys
+			// admits indexed nulls, and an omission here is one the post-filter cannot undo.
 			start = null;
 			end = value;
 			break;
@@ -598,21 +597,21 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	if (condition.estimated_count === undefined) estimateCondition(table)(condition);
 	let estimatedCount = condition.estimated_count;
 	if (!(estimatedCount >= 0) || !Number.isFinite(estimatedCount)) return undefined;
-	// estimateRangeCondition measures the range searchByIndex would run, which starts at `true`. Only
-	// lt/le widen below that, and the block they add is read FIRST and can dwarf the rest of the
+	// estimateRangeCondition measures the range searchByIndex would run, which excludes the null
+	// block. Only lt/le scan from null, and that block is read FIRST and can dwarf the rest of the
 	// range, so it has to be counted or the scan overruns a budget sized without it. A statistical
 	// estimate, never getValuesCount: that one steps the whole block, which is the unbounded
 	// per-query cost this is here to avoid. The other comparators' own estimates already cover
 	// whatever they start at.
 	if (comparator === 'lt' || comparator === 'le') {
-		let belowTrue: number | undefined;
+		let nulls: number | undefined;
 		try {
-			belowTrue = index.estimateCount?.({ start: null, end: true })?.count;
+			nulls = index.estimateCount?.({ start: null, end: null, inclusiveEnd: true })?.count;
 		} catch {
 			return undefined;
 		}
-		if (!(belowTrue >= 0)) return undefined;
-		estimatedCount += belowTrue;
+		if (!(nulls >= 0)) return undefined;
+		estimatedCount += nulls;
 	}
 	const canProbe = includePointProbe && comparator === 'equals' && typeof index.hasIndexEntry === 'function';
 	return {
@@ -1044,8 +1043,7 @@ export function searchByIndex(
 				break;
 			case 'ne':
 				if (value === null) {
-					// since null is the lowest value in an index, we can treat anything higher as a non-null.
-					// Every other open lower bound uses this form too: `true` sorts above `false`.
+					// since null is the lowest value in an index, we can treat anything higher as a non-null
 					start = value;
 					exclusiveStart = true;
 					break;

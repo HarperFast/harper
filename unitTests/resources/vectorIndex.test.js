@@ -3613,7 +3613,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		});
 		try {
 			// 200 of 300 rows have a null rank. The range starts at null and reads that block first, so
-			// an estimate taken over `[true, 250n)` would size the budget at 50 and overrun it on entry 51.
+			// an estimate that leaves out the null block would size the budget at 50 and overrun it on entry 51.
 			for (let i = 0; i < 300; i++) await N.put(i, { rank: i < 200 ? null : BigInt(i), vector: [i, 0] });
 			const customIndex = N.indices.vector.customIndex;
 			const original = customIndex.search;
