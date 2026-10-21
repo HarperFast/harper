@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792567407151,
+  "lastUpdate": 1792574328152,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -24507,6 +24507,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 1654,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "07568b1eda109876a3cc54f34e648c3695950e44",
+          "message": "test: pin that a purge waits for create_backup to publish its backup (#3319)\n\n* test: race a purge against create_backup's blob snapshot\n\n#2647 made the whole create (engine backup, blob snapshot, manifest) one\ncritical section under the backup-repository management lock, but no test\npinned the part after the engine call: moving finalizeBackup outside the\nlock, on either create path, left every existing test green. The online\ncreate_backup path had no lock coverage at all.\n\nRefs #2031\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* test: probe the lock during the copy and drain the purge on failure\n\nAsserting the lock is held inside the snapshot window makes the check\ndeterministic, so the non-event window can shrink to 250ms. A create that\nfails now awaits the purge it started, which would otherwise delete the\nnext test's backups.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-21T04:57:09Z",
+          "url": "https://github.com/HarperFast/harper/commit/07568b1eda109876a3cc54f34e648c3695950e44"
+        },
+        "date": 1792574324662,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 18856,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 13307,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 12693,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 22442816,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 7240,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 1295,
             "unit": "ops"
           }
         ]
