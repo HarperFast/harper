@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792488040428,
+  "lastUpdate": 1792567404307,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -7976,6 +7976,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1438.85,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "07568b1eda109876a3cc54f34e648c3695950e44",
+          "message": "test: pin that a purge waits for create_backup to publish its backup (#3319)\n\n* test: race a purge against create_backup's blob snapshot\n\n#2647 made the whole create (engine backup, blob snapshot, manifest) one\ncritical section under the backup-repository management lock, but no test\npinned the part after the engine call: moving finalizeBackup outside the\nlock, on either create path, left every existing test green. The online\ncreate_backup path had no lock coverage at all.\n\nRefs #2031\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* test: probe the lock during the copy and drain the purge on failure\n\nAsserting the lock is held inside the snapshot window makes the check\ndeterministic, so the non-event window can shrink to 250ms. A create that\nfails now awaits the purge it started, which would otherwise delete the\nnext test's backups.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-21T04:57:09Z",
+          "url": "https://github.com/HarperFast/harper/commit/07568b1eda109876a3cc54f34e648c3695950e44"
+        },
+        "date": 1792567402372,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 13332.36,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 22632.73,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 21873.93,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 14264.18,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 10888.64,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 20606.06,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1938.57,
             "unit": "ops/sec"
           }
         ]
