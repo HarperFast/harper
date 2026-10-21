@@ -162,8 +162,9 @@ The names `continuation` and `closeContinuation` are reserved REST options.
 A custom Resource supporting the framework's QUERY paging route must implement `searchPage()`.
 Return the original page array. Copying it with `map()`,
 `filter()` or spread drops its paging metadata; returning that copy through the normal Resource
-API returns 400. Put projections and filters in the query instead. A Resource
-returning an explicit HTTP `Response` owns its response headers, serialization and cache policy.
+API returns 400. Put projections and filters in the query instead. To add custom headers,
+return `{ headers, data: page }` with the original page array. A Resource returning an explicit
+HTTP `Response` owns its response headers, serialization and cache policy.
 
 These headers are added after serialization and stream startup; they do not guarantee delivery of
 the complete body. A later stream error can leave a 200 response with an incomplete body. An
@@ -242,3 +243,5 @@ These limits apply together: for example, two indexing threads and 64 MiB of wri
 reach the thread and memory budgets at 64 indexes. Readers share each native index's runtime;
 retaining a reader does not allocate another index writer. Harper captures these budgets before loading application components, or on an earlier main-thread native load or managed worker spawn. Application-created workers inherit that configuration. A standalone worker created before capture cannot initialize fulltext; recreate it after Harper initializes rather than retrying inside the same worker. Replacement workers retain the established budgets after a live configuration change. Change these settings to fit the number
 of indexes and their configured resources, and restart Harper after changing native admission limits.
+Retained paging still requires Harper's main thread or a managed worker; inheriting native settings
+does not add paging-message routing to application-created workers.

@@ -106,6 +106,28 @@ export class AggregatePagingProduct extends IgnoredPagingProduct {
 	}
 }
 
+export class EnvelopedPagingProduct extends IgnoredPagingProduct {
+	async get(target) {
+		const page = await Product.searchPage({ ...target, checkPermission: true }, this.getContext());
+		return { headers: { 'Fulltext-Test-Envelope': 'true' }, data: page };
+	}
+}
+
+export class TimestampedPagingProduct extends IgnoredPagingProduct {
+	async get(target) {
+		const context = this.getContext();
+		const query = { ...target, checkPermission: true };
+		let result;
+		if (target.continuation !== undefined) result = await Product.searchPage(query, context);
+		else {
+			result = [];
+			for await (const record of Product.search(query, context)) result.push(record);
+		}
+		context.lastModified = 42;
+		return result;
+	}
+}
+
 export class FullTextState extends Resource {
 	allowRead(user) {
 		return Boolean(user?.role?.permission?.super_user);

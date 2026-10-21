@@ -325,6 +325,36 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		assert.deepStrictEqual(await response.json(), []);
 	});
 
+	test('carries paging metadata through envelopes and ignores cache validators for pages', async () => {
+		const query = '?catalogSearch=matches=pagination&limit(1000)&select(id,title)';
+		const headers = { Authorization: authorization };
+		const envelope = await fetch(`${ctx.harper.httpURL}/EnvelopedPagingProduct/${query}&continuation()`, {
+			headers,
+			signal: AbortSignal.timeout(15000),
+		});
+		assert.strictEqual(envelope.status, 200);
+		assert.strictEqual((await envelope.json()).length, PAGE_IDS.length);
+		assert.strictEqual(envelope.headers.get('fulltext-test-envelope'), 'true');
+		assert.strictEqual(envelope.headers.get('harper-continuation-complete'), 'true');
+		assert.strictEqual(envelope.headers.get('cache-control'), 'no-store');
+		const ordinary = await fetch(`${ctx.harper.httpURL}/TimestampedPagingProduct/${query}`, {
+			headers,
+			signal: AbortSignal.timeout(15000),
+		});
+		assert.strictEqual(ordinary.status, 200);
+		assert.strictEqual((await ordinary.json()).length, PAGE_IDS.length);
+		const etag = ordinary.headers.get('etag');
+		assert(etag);
+		const page = await fetch(`${ctx.harper.httpURL}/TimestampedPagingProduct/${query}&continuation()`, {
+			headers: { ...headers, 'If-None-Match': etag },
+			signal: AbortSignal.timeout(15000),
+		});
+		assert.strictEqual(page.status, 200);
+		assert.strictEqual((await page.json()).length, PAGE_IDS.length);
+		assert.strictEqual(page.headers.get('harper-continuation-complete'), 'true');
+		assert.strictEqual(page.headers.get('cache-control'), 'no-store');
+	});
+
 	test('rejects continuation on mutating REST methods without changing records or consuming the token', async () => {
 		const base = '/Product/?catalogSearch=matches=pagination&limit(75)&select(id,title)';
 		const firstResponse = await fetch(`${ctx.harper.httpURL}${base}&continuation()`, {
