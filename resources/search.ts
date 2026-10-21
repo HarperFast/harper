@@ -2356,7 +2356,11 @@ function parseBlock(query, expectedEnd) {
 				attribute = null;
 				break;
 			case '{':
-				if (query.conditions) recordError('property sets are not allowed in a queries');
+				if (query.conditions) {
+					recordError('property sets are not allowed in a query');
+					lastIndex = queryString.length;
+					return query;
+				}
 				if (!value) recordError('property sets must have a defined parent property name');
 				// this is interpreted as property{subProperty}
 				QUERY_PARSER.lastIndex = lastIndex;
