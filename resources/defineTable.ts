@@ -278,6 +278,8 @@ export interface DefineTableOptions {
 	scanInterval?: number;
 	/** Seconds a record fetched from a resident is kept as a local replica; 0 keeps reads as proxy reads. */
 	replicaExpiration?: number;
+	/** Fraction of the replica lifetime after which a read hit renews it, in (0, 1]; 1 never renews. */
+	replicaRefreshFraction?: number;
 	splitSegments?: boolean;
 	trackDeletes?: boolean;
 	randomAccessFields?: boolean;

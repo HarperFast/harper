@@ -6,6 +6,7 @@ const { Resource } = require('#src/resources/Resource');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { INVALIDATED, REPLICA, DEFAULT_REPLICA_EXPIRATION_MS } = require('#src/resources/Table');
+const databases = require('#src/resources/databases');
 const { HAS_BLOBS } = require('#src/resources/auditStore');
 const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
 const { existsSync } = require('node:fs');
@@ -77,7 +78,7 @@ describe('Local replicas of residency stubs', function () {
 	}
 
 	beforeEach(async () => {
-		Records.setTTLExpiration({ replicaExpiration: DEFAULT_REPLICA_EXPIRATION_MS / 1000 });
+		Records.setTTLExpiration({ replicaExpiration: DEFAULT_REPLICA_EXPIRATION_MS / 1000, replicaRefreshFraction: 0.5 });
 		calls = [];
 		stored = [];
 		if (Records.primaryStore.getEntry(ID)?.value) await Records.delete(ID);
@@ -102,6 +103,16 @@ describe('Local replicas of residency stubs', function () {
 		return Records.getHistoryOfRecord(ID).then((entries) => entries.map((entry) => entry.type));
 	}
 
+	// the per-table deadline store (`<table>/@replicas`): id → deadline in ms
+	function deadlines(Table = Records) {
+		return databases.openReplicaDeadlineStore(
+			Table.primaryStore.rootStore,
+			Table.tableName,
+			Table.dbisDB.getSync(Table.tableName + '/')?.generation
+		);
+	}
+	const deadlineOf = (id, Table = Records) => deadlines(Table).getSync(id);
+
 	async function replica() {
 		const record = await Records.get(ID);
 		assert.equal(record.body, 'complete');
@@ -118,10 +129,12 @@ describe('Local replicas of residency stubs', function () {
 		assert.equal(entry.value.body, 'complete');
 		assert.equal(entry.residencyId, RESIDENCY_ID);
 		assert.equal(entry.version, stubVersion);
-		assert.ok(entry.expiresAt > Date.now() + DEFAULT_REPLICA_EXPIRATION_MS - 5000);
-		assert.ok(entry.expiresAt <= Date.now() + DEFAULT_REPLICA_EXPIRATION_MS);
+		assert.equal(entry.expiresAt, undefined, 'the row carries no replica deadline');
+		const deadline = deadlineOf(ID);
+		assert.ok(deadline > Date.now() + DEFAULT_REPLICA_EXPIRATION_MS - 5000);
+		assert.ok(deadline <= Date.now() + DEFAULT_REPLICA_EXPIRATION_MS);
 		assert.deepEqual(await history(), before, 'a replica write leaves the audit history unchanged');
-		assert.ok(Records.dbisDB.getSync([Symbol.for('replica_tables'), Records.tableId]));
+		assert.equal(Records.dbisDB.getSync(`${Records.tableName}/@replicas`)?.auxiliary, '@replicas');
 		assert.deepEqual(calls, [ID]);
 		assert.equal((await Records.get(ID)).body, 'complete');
 		assert.deepEqual(await query(['id', 'body'], [{ attribute: 'name', value: 'indexed' }]), [
@@ -165,11 +178,21 @@ describe('Local replicas of residency stubs', function () {
 		assert.equal(Records.primaryStore.getEntry(ID)?.value, null);
 	});
 
-	it('serves but never keeps a record carrying its own expiry on a table with no record expiry', async () => {
-		response = { ...response, expiresAt: Date.now() + 500 };
-		assert.equal((await Records.get(ID)).body, 'complete');
-		assert.deepEqual(stored, [false]);
-		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
+	it('keeps a record carrying its own expiry, which then expires like any row', async () => {
+		const expiresAt = Date.now() + 500;
+		response = { ...response, expiresAt };
+		const entry = await replica();
+		assert.equal(entry.expiresAt, expiresAt, 'the record expiry is stored exactly as reported');
+		assert.equal(deadlineOf(ID), expiresAt, 'the replica deadline never passes the record expiry');
+		await new Promise((resolve) => setTimeout(resolve, 600));
+		calls = [];
+		assert.equal(await Records.get(ID), undefined, 'an expired record reads as a resident reads it: gone');
+		const demoted = await waitFor(() => {
+			const current = Records.primaryStore.getEntry(ID);
+			return current.metadataFlags & INVALIDATED ? current : undefined;
+		}, 'the expired replica to be demoted');
+		assert.equal(demoted.expiresAt, expiresAt, 'the stub keeps the record expiry');
+		assert.equal(deadlineOf(ID), undefined);
 	});
 
 	it('keeps an equal-version answer only from the stub writer, and a newer one from anyone', async () => {
@@ -186,27 +209,29 @@ describe('Local replicas of residency stubs', function () {
 		await replica();
 	});
 
-	it('reloads an expired replica from a resident instead of hiding it', async () => {
+	it('serves a replica past its deadline until the sweep demotes it; reads honor only the record expiry', async () => {
 		Records.setTTLExpiration({ replicaExpiration: 0.2 });
 		await replica();
 		await Records.closeMaintenance();
 		try {
 			await new Promise((resolve) => setTimeout(resolve, 250));
-			const expired = Records.primaryStore.getEntry(ID);
-			assert.ok(expired.metadataFlags & REPLICA && expired.expiresAt < Date.now(), 'an expired replica still held');
+			const held = Records.primaryStore.getEntry(ID);
+			assert.ok(held.metadataFlags & REPLICA && deadlineOf(ID) < Date.now(), 'a replica past its deadline still held');
 			calls = [];
 			assert.equal((await Records.get(ID)).body, 'complete');
-			assert.deepEqual(calls, [ID], 'an expired replica is answered by a resident, never hidden');
 			assert.deepEqual(await query(['id', 'body']), [{ id: ID, body: 'complete' }]);
-			assert.deepEqual(calls, [ID, ID]);
-			assert.deepEqual(await query(['id', 'name']), [{ id: ID, name: 'indexed' }], 'an indexed-only query stays local');
-			assert.deepEqual(calls, [ID, ID]);
+			assert.deepEqual(calls, [], 'a replica past its deadline is served, not reloaded');
 		} finally {
 			Records.resumeMaintenance();
 		}
+		await waitFor(
+			() => (Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED ? true : undefined),
+			'the sweep to demote the replica'
+		);
+		assert.equal(deadlineOf(ID), undefined, 'demotion takes the deadline entry with it');
 	});
 
-	it('never outlives the record expiry on a table with its own, and does not slide there', async () => {
+	it('slides on a table with its own record expiry, never past that expiry, which a demoted stub keeps', async () => {
 		const Expiring = table({
 			database: 'test',
 			table: 'ResidencyReplicasExpiring',
@@ -216,7 +241,7 @@ describe('Local replicas of residency stubs', function () {
 			replicaExpiration: 2,
 		});
 		const loaded = [];
-		let residentExpiresAt = Date.now() + 400;
+		let residentExpiresAt = Date.now() + 3600_000;
 		Expiring.sourcedFrom(
 			class extends Resource {
 				static async load(entry) {
@@ -234,37 +259,48 @@ describe('Local replicas of residency stubs', function () {
 			},
 			{ intermediateSource: true }
 		);
-		const context = {};
-		await transaction(context, async () => {
-			const resource = await Expiring.getResource(ID, context, { ensureLoaded: false });
-			resource._writeInvalidate(ID, { name: 'indexed' }, { residencyId: RESIDENCY_ID });
-		});
+		const stub = async (newer) => {
+			const context = { sourceApply: true, timestamp: Date.now() + newer };
+			await transaction(context, async () => {
+				const resource = await Expiring.getResource(ID, context, { ensureLoaded: false });
+				resource._writeInvalidate(ID, { name: 'indexed' }, { residencyId: RESIDENCY_ID, version: context.timestamp });
+			});
+		};
+		await stub(0);
 		assert.equal((await Expiring.get(ID)).body, 'complete');
-		const entry = Expiring.primaryStore.getEntry(ID);
+		let entry = Expiring.primaryStore.getEntry(ID);
 		assert.ok(entry.metadataFlags & REPLICA);
-		assert.equal(entry.expiresAt, residentExpiresAt, 'the resident expiry bounds the lifetime');
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.equal(entry.expiresAt, residentExpiresAt, 'the row keeps the record expiry as reported');
+		const first = deadlineOf(ID, Expiring);
+		assert.ok(first <= Date.now() + 2000 && first > Date.now() + 1500);
+		await new Promise((resolve) => setTimeout(resolve, 1100));
 		assert.equal((await Expiring.get(ID)).body, 'complete');
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		assert.equal(
-			Expiring.primaryStore.getEntry(ID).expiresAt,
-			residentExpiresAt,
-			'a read hit never extends a record expiry'
-		);
-		await Expiring.closeMaintenance();
-		try {
-			await new Promise((resolve) => setTimeout(resolve, 300));
-			assert.ok(Expiring.primaryStore.getEntry(ID).metadataFlags & REPLICA, 'an expired replica still held');
-			const local = [];
-			for await (const record of Expiring.search({ select: ['id', 'name'] }, { replicateFrom: false }))
-				local.push(record);
-			assert.deepEqual(local, [{ id: ID, name: 'indexed' }], 'an indexed-only read stays local past the deadline');
-			residentExpiresAt = Date.now() + 3600_000;
-			assert.equal((await Expiring.get(ID)).body, 'complete');
-			assert.deepEqual(loaded, [ID, ID], 'an expired replica is answered by a resident again');
-		} finally {
-			Expiring.resumeMaintenance();
-		}
+		await waitFor(() => (deadlineOf(ID, Expiring) > first ? true : undefined), 'a read hit to renew the deadline');
+		assert.equal(Expiring.primaryStore.getEntry(ID).expiresAt, residentExpiresAt, 'a renewal never touches the row');
+		assert.deepEqual(loaded, [ID]);
+
+		residentExpiresAt = Date.now() + 1500;
+		await stub(1000);
+		assert.equal((await Expiring.get(ID)).body, 'complete');
+		entry = Expiring.primaryStore.getEntry(ID);
+		assert.equal(entry.expiresAt, residentExpiresAt);
+		assert.equal(deadlineOf(ID, Expiring), residentExpiresAt, 'the record expiry caps the deadline');
+		await new Promise((resolve) => setTimeout(resolve, 1100));
+		assert.equal((await Expiring.get(ID)).body, 'complete');
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.equal(deadlineOf(ID, Expiring), residentExpiresAt, 'a read hit never extends past the record expiry');
+		assert.deepEqual(loaded, [ID, ID]);
+
+		residentExpiresAt = Date.now() + 3600_000;
+		await stub(2000);
+		Expiring.setTTLExpiration({ expiration: 3600, replicaExpiration: 0.2 });
+		assert.equal((await Expiring.get(ID)).body, 'complete');
+		const demoted = await waitFor(() => {
+			const current = Expiring.primaryStore.getEntry(ID);
+			return current.metadataFlags & INVALIDATED ? current : undefined;
+		}, 'the sweep to demote the replica');
+		assert.equal(demoted.expiresAt, residentExpiresAt, 'a demoted stub keeps the record expiry');
+		assert.equal(deadlineOf(ID, Expiring), undefined);
 	});
 
 	it('keeps committed computed index entries when the fetched body replaces a stub', async () => {
@@ -373,6 +409,7 @@ describe('Local replicas of residency stubs', function () {
 				apply(resource, { version: before.version + 1, nodeId: before.nodeId ?? 0, residencyId: RESIDENCY_ID });
 			});
 			const after = Records.primaryStore.getEntry(ID);
+			assert.equal(deadlineOf(ID), undefined, 'an overwrite takes the deadline entry with it');
 			if (expectStub === null) {
 				assert.equal(after?.value, null);
 				return;
@@ -447,57 +484,103 @@ describe('Local replicas of residency stubs', function () {
 		assert.deepEqual(await history(), before);
 	});
 
-	it('refreshes the lifetime on a read hit once a quarter of it has elapsed, not on every read', async function () {
-		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+	it('renews the deadline on a read hit once half the lifetime has passed, not on every read', async () => {
 		Records.setTTLExpiration({ replicaExpiration: 2 });
 		const entry = await replica();
+		const first = deadlineOf(ID);
 		assert.equal((await Records.get(ID)).body, 'complete');
 		await new Promise((resolve) => setTimeout(resolve, 50));
-		assert.equal(Records.primaryStore.getEntry(ID).expiresAt, entry.expiresAt, 'a fresh replica is not rewritten');
-		await new Promise((resolve) => setTimeout(resolve, 600));
+		assert.equal(deadlineOf(ID), first, 'a fresh replica is not renewed');
+		await new Promise((resolve) => setTimeout(resolve, 1050));
 		assert.equal((await Records.get(ID)).body, 'complete');
-		const refreshed = await waitFor(() => {
-			const current = Records.primaryStore.getEntry(ID);
-			return current.expiresAt > entry.expiresAt ? current : undefined;
-		}, 'the read hit to extend the replica lifetime');
-		assert.ok(refreshed.metadataFlags & REPLICA);
-		assert.equal(refreshed.version, entry.version);
-		assert.deepEqual(calls, [ID], 'a refresh is a local write');
+		await waitFor(() => (deadlineOf(ID) > first ? true : undefined), 'the read hit to renew the deadline');
+		const current = Records.primaryStore.getEntry(ID);
+		assert.ok(current.metadataFlags & REPLICA);
+		assert.equal(current.version, entry.version);
+		assert.equal(current.expiresAt, undefined, 'a renewal never touches the row');
+		assert.deepEqual(calls, [ID], 'a renewal is a local write');
 	});
 
-	it('keeps the blob file of a replica whose lifetime was refreshed', async function () {
-		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+	it('renews after the configured fraction of the lifetime, and never when it is 1', async () => {
+		Records.setTTLExpiration({ replicaExpiration: 2, replicaRefreshFraction: 0.25 });
+		await replica();
+		const first = deadlineOf(ID);
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		assert.equal((await Records.get(ID)).body, 'complete');
+		await waitFor(() => (deadlineOf(ID) > first ? true : undefined), 'a quarter of the lifetime to renew');
+
+		Records.setTTLExpiration({ replicaExpiration: 2, replicaRefreshFraction: 1 });
+		await Records.delete(ID);
+		stored = [];
+		const stub = await invalidate(Object.freeze({ name: 'indexed' }), {}, 1);
+		response = { ...response, version: stub.version };
+		await replica();
+		const fixed = deadlineOf(ID);
+		await new Promise((resolve) => setTimeout(resolve, 1100));
+		assert.equal((await Records.get(ID)).body, 'complete');
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.equal(deadlineOf(ID), fixed, 'a fraction of 1 is a fixed lifetime');
+	});
+
+	it('keeps the blob file of a replica whose deadline was renewed', async function () {
 		Records.setTTLExpiration({ replicaExpiration: 2 });
 		const file = createBlob(randomBytes(25000));
 		response = { ...response, value: { id: ID, name: 'indexed', body: 'complete', file } };
 		const entry = await replica();
+		const first = deadlineOf(ID);
 		const filePath = getFilePathForBlob(entry.value.file);
 		assert.ok(existsSync(filePath));
 		setDeletionDelay(0);
 		try {
-			await new Promise((resolve) => setTimeout(resolve, 600));
+			await new Promise((resolve) => setTimeout(resolve, 1100));
 			assert.equal((await Records.get(ID)).body, 'complete');
-			const refreshed = await waitFor(() => {
-				const current = Records.primaryStore.getEntry(ID);
-				return current.expiresAt > entry.expiresAt ? current : undefined;
-			}, 'the read hit to extend the replica lifetime');
-			assert.ok(refreshed.metadataFlags & HAS_BLOBS);
+			await waitFor(() => (deadlineOf(ID) > first ? true : undefined), 'the read hit to renew the deadline');
+			assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & HAS_BLOBS);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			assert.ok(existsSync(filePath), 'the refresh released the body’s own blob file');
+			assert.ok(existsSync(filePath), 'the renewal released the body’s own blob file');
 			assert.equal((await (await Records.get(ID)).file.arrayBuffer()).byteLength, 25000);
 		} finally {
 			setDeletionDelay(undefined);
 		}
 	});
 
-	it('never slides on LMDB', async function () {
-		if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') return this.skip();
-		Records.setTTLExpiration({ replicaExpiration: 2 });
-		const entry = await replica();
-		await new Promise((resolve) => setTimeout(resolve, 600));
-		assert.equal((await Records.get(ID)).body, 'complete');
-		await new Promise((resolve) => setTimeout(resolve, 100));
-		assert.equal(Records.primaryStore.getEntry(ID).expiresAt, entry.expiresAt);
+	it('removes a deadline entry whose key no longer holds a replica', async () => {
+		Records.setTTLExpiration({ replicaExpiration: 0.2 });
+		await deadlines().put('ghost', Date.now() - 1);
+		await replica();
+		await waitFor(() => (deadlineOf('ghost') === undefined ? true : undefined), 'the sweep to drop the orphan entry');
+	});
+
+	it('drops the deadline store with its table', async () => {
+		const Dropped = table({
+			database: 'test',
+			table: 'ResidencyReplicasDropped',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', indexed: true }, { name: 'body' }],
+		});
+		Dropped.sourcedFrom(
+			class extends Resource {
+				static async load(entry) {
+					const found = { key: ID, value: { id: ID, name: 'indexed', body: 'complete' }, version: entry.version };
+					await Dropped._storeReplica(entry, { ...found, originNode: server.hostname });
+					return found;
+				}
+			},
+			{ intermediateSource: true }
+		);
+		const context = {};
+		await transaction(context, async () => {
+			const resource = await Dropped.getResource(ID, context, { ensureLoaded: false });
+			resource._writeInvalidate(ID, { name: 'indexed' }, { residencyId: RESIDENCY_ID });
+		});
+		assert.equal((await Dropped.get(ID)).body, 'complete');
+		const catalogKey = `${Dropped.tableName}/@replicas`;
+		assert.ok(Dropped.dbisDB.getSync(catalogKey));
+		const rootStore = Dropped.primaryStore.rootStore;
+		const storeName = databases.storeNameFor(catalogKey, Dropped.dbisDB.getSync(`${Dropped.tableName}/`)?.generation);
+		if (rootStore.columns) assert.ok(rootStore.columns.includes(storeName));
+		await Dropped.dropTable();
+		assert.equal(Dropped.dbisDB.getSync(catalogKey), undefined, 'the catalog row goes with the table');
+		if (rootStore.columns) assert.ok(!rootStore.columns.includes(storeName), 'the column family goes with the table');
 	});
 
 	it('re-arms the sweep after replicas are disabled and enabled again', async () => {
@@ -545,6 +628,20 @@ describe('Local replicas of residency stubs', function () {
 		assert.equal((await Records.get(ID)).body, 'complete');
 		assert.deepEqual(stored, [false]);
 		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
+	});
+
+	it('rejects a replicaRefreshFraction outside (0, 1]', () => {
+		for (const value of [0, -1, 1.5, 'half', NaN, true])
+			assert.throws(() => Records.setTTLExpiration({ replicaRefreshFraction: value }));
+		assert.throws(() =>
+			table({
+				database: 'test',
+				table: 'ResidencyReplicasBadFraction',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+				replicaRefreshFraction: 2,
+			})
+		);
+		Records.setTTLExpiration({ replicaRefreshFraction: 1 });
 	});
 
 	it('rejects a negative or non-numeric replicaExpiration', () => {
