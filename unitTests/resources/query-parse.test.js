@@ -199,11 +199,61 @@ describe('Parsing queries', () => {
 		assert.throws(() => parseQuery('name==value'), /unexpected operator/);
 		assert.throws(() => parseQuery('name&'), /no comparison/);
 	});
+	it('Parenthesized group values parse like top-level values', function () {
+		const query = parseQuery('(name=(value)|tags=in=(a,b))');
+		const group = query.conditions[0];
+		assert.equal(group.operator, 'or');
+		assert.equal(group.conditions[0].value, '(value)');
+		assert.deepEqual(group.conditions[1].value, ['a', 'b']);
+	});
+	it('Empty FIQL values before a separator or group closer', function () {
+		for (const [query, operator] of [
+			['(a=eq=|b=B)', 'or'],
+			['(a=eq=&b=B)', 'and'],
+			['[a=eq=|b=B]', 'or'],
+		]) {
+			const group = parseQuery(query).conditions[0];
+			assert.equal(group.operator, operator, query);
+			assert.deepEqual(
+				group.conditions.map(({ attribute, value }) => [attribute, value]),
+				[
+					['a', ''],
+					['b', 'B'],
+				],
+				query
+			);
+		}
+		const topLevel = parseQuery('a=eq=&b=B');
+		assert.deepEqual(
+			topLevel.conditions.map(({ attribute, value }) => [attribute, value]),
+			[
+				['a', ''],
+				['b', 'B'],
+			]
+		);
+		assert.equal(parseQuery('(a=eq=)').conditions[0].conditions[0].value, '');
+	});
+	it('Truncated groups are rejected, and a valid parse after a failed one is unaffected', function () {
+		for (const query of ['(a=in=(x,y)', '(a=eq=foo(bar)', '((a=1|b=2)', '(a=1&(b=in=(x,y))', '[a=1']) {
+			assert.throws(() => parseQuery(query), /but encountered end of string/, query);
+			assert.match(new RequestTarget('/T/?' + query).parseError?.message, /end of string/, query);
+		}
+		const query = parseQuery('(a=in=(x,y))');
+		assert.deepEqual(query.conditions[0].conditions[0].value, ['x', 'y']);
+	});
+	it('Single-argument select forms', function () {
+		assert.equal(parseQuery('select(name)').select, 'name');
+		assert.deepEqual(parseQuery('select(name,)').select, ['name']);
+		const asArray = parseQuery('select([name,id])').select;
+		assert.deepEqual([...asArray], ['name', 'id']);
+		assert.equal(asArray.asArray, true);
+	});
 	it('Bad nesting', function () {
 		assert.throws(() => parseQuery('(name=value)shouldntbehere'), /expected operator/);
 		assert.throws(() => parseQuery('(name))'), /no attribute/);
 		assert.throws(() => parseQuery('(=value&=test)'), /attribute must be specified/);
-		assert.throws(() => parseQuery('(name=(value))'), /no attribute/);
+		assert.throws(() => parseQuery('(name=value))'), /unexpected token '\)'/);
+		assert.throws(() => parseQuery('(name=value'), /expected '\)', but encountered end of string/);
 		assert.throws(() => parseQuery('name=value|test=3&foo=bar'), /mix operators/);
 		assert.throws(() => parseQuery('name=value&[test=3&foo=bar|test=4]'), /mix operators/);
 	});
