@@ -126,6 +126,17 @@ describe('replicatedConfirmation of a write that appends nothing to replicate', 
 		assert.equal((await Unaudited.get(id)).name, 'new');
 	});
 
+	it('does not wait on a copy-apply snapshot row, which carries no audit entry', async function () {
+		if (isLMDB) this.skip(); // LMDB applies a copied row as an ordinary audited write
+		const id = nextId('copy-apply');
+		await settlesWithoutWaiting(
+			confirmedWrite(Audited, id, (resource) =>
+				resource._writeUpdate(id, { id, name: 'copied' }, true, { isCopyApply: true })
+			)
+		);
+		assert.equal((await Audited.get(id)).name, 'copied');
+	});
+
 	it('does not wait on a local-only publish', async () => {
 		const id = nextId('local-publish');
 		await Audited.put({ id, name: 'row' });
