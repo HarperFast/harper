@@ -263,22 +263,16 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	let auditNodeId = initialPosition.nodeId;
 	// Iterate in reverse through the record history, trying to reverse all changes
 	const unknowns = new Set<string>();
+	let replaced = false;
 	while (auditTime > timestamp) {
 		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
 		if (!auditEntry) break;
 		switch (auditEntry.type) {
-			case 'put': {
-				// A put newer than `timestamp` replaced the whole record, so patches older than it
-				// can't be reversed onto its image; rebuild from the history before it, as for a delete.
-				const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
-				// An unlinked put (a re-insert after eviction has no previous link) can't be crossed;
-				// the timestamp-keyed fallback after the loop handles it.
-				if (previousPosition.txnLogKey > 0)
-					return reconstructForward(auditStore, store, tableId, recordId, previousPosition, timestamp);
+			case 'put':
+				replaced = true;
 				break;
-			}
 			case 'patch':
-				applyReverse(record, auditEntry.getValue(store), unknowns);
+				if (!replaced) applyReverse(record, auditEntry.getValue(store), unknowns);
 				break;
 			case 'delete':
 				// The reverse walk reached a delete that is newer than `timestamp`. There is no
@@ -299,6 +293,16 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	}
 	if (!(auditTime > 0 && auditTime <= timestamp)) {
 		return reconstructForward(auditStore, store, tableId, recordId, { txnLogKey: timestamp, nodeId }, timestamp);
+	}
+	if (replaced) {
+		return reconstructForward(
+			auditStore,
+			store,
+			tableId,
+			recordId,
+			{ txnLogKey: auditTime, nodeId: auditNodeId },
+			timestamp
+		);
 	}
 	// If the most recent entry at or before `timestamp` is a delete, the record did not exist then.
 	// (A delete reached as a boundary — rather than crossed, which returns via reconstructForward —

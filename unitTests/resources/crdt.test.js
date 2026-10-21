@@ -286,8 +286,6 @@ describe('crdt getRecordAtTime', () => {
 	});
 
 	describe('a put newer than the requested timestamp (harper#1413)', () => {
-		// Decoded put values are frozen in the real store; freeze them here so a reverse walk that
-		// uses a newer put as its base fails the same way (assigning an unknown field throws).
 		const frozen = (value) => Object.freeze(value);
 		const base = {
 			version: 10,
@@ -311,8 +309,6 @@ describe('crdt getRecordAtTime', () => {
 		});
 
 		it('resolves unknown fields across a newer put instead of assigning to its frozen image', () => {
-			// put, patch(count), put, patch(count), put(current): reversing the later patch leaves
-			// `count` unknown while an older put is still ahead of the target.
 			const events = [
 				base,
 				patch,
@@ -348,23 +344,41 @@ describe('crdt getRecordAtTime', () => {
 		});
 
 		it('reports an unrecoverable state when history before the crossed put has been pruned', () => {
-			// Linked predecessor missing, nothing in range survives: absent. A surviving patch whose
-			// base put is gone: undefined (as for a crossed delete), never the later put's image.
 			const current = currentEntry({ id: 'U', title: 'v3', count: 300 }, 30);
 			assert.strictEqual(getRecordAtTime(current, 25, makeStore([put]), 1, 'U'), null);
 			assert.strictEqual(getRecordAtTime(current, 25, makeStore([patch, put]), 1, 'U'), undefined);
 		});
 
-		it('recovers by timestamp when the put is not linked to earlier history (re-insert after eviction)', () => {
-			const reinsert = { version: 40, type: 'put', value: frozen({ id: 'U', title: 'v4' }), previousVersion: 0 };
-			const store = makeStore([base, patch, reinsert]);
-			const current = currentEntry({ id: 'U', title: 'v4' }, 40);
+		it('reverses a patch newer than the put before crossing it', () => {
+			const events = [base, patch, put, { version: 40, type: 'patch', value: { count: 350 }, previousVersion: 30 }];
+			const store = makeStore(events);
+			const current = currentEntry({ id: 'U', title: 'v3', count: 350 }, 40);
 			assert.deepStrictEqual(getRecordAtTime(current, 20, store, 1, 'U'), {
 				id: 'U',
 				title: 'v1',
 				count: 15,
 				extra: 'keep',
 			});
+		});
+
+		it('recovers a state older than an unlinked put (re-insert after eviction), even under later linked puts', () => {
+			const reinsert = { version: 40, type: 'put', value: frozen({ id: 'U', title: 'v4' }), previousVersion: 0 };
+			const later = { version: 50, type: 'put', value: frozen({ id: 'U', title: 'v5' }), previousVersion: 40 };
+			const expected = { id: 'U', title: 'v1', count: 15, extra: 'keep' };
+			assert.deepStrictEqual(
+				getRecordAtTime(currentEntry({ id: 'U', title: 'v4' }, 40), 20, makeStore([base, patch, reinsert]), 1, 'U'),
+				expected
+			);
+			assert.deepStrictEqual(
+				getRecordAtTime(
+					currentEntry({ id: 'U', title: 'v5' }, 50),
+					20,
+					makeStore([base, patch, reinsert, later]),
+					1,
+					'U'
+				),
+				expected
+			);
 		});
 
 		it('reports the record absent before a first put that has no earlier history', () => {
