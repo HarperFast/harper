@@ -299,7 +299,6 @@ describe('mcp/adapters/harperHttp', () => {
 		});
 		afterEach(() => env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, undefined));
 
-		// Emits chunks and never 'end', so only a handler that gives up at the limit can settle.
 		function endlessBody(chunkSize) {
 			const emitter = new EventEmitter();
 			const wrapper = {
@@ -309,12 +308,13 @@ describe('mcp/adapters/harperHttp', () => {
 					return wrapper;
 				},
 			};
-			setImmediate(() => {
-				for (let i = 0; i < 100; i++) {
-					wrapper.emitted++;
-					emitter.emit('data', Buffer.alloc(chunkSize, 0x61));
-				}
-			});
+			const timer = setInterval(() => {
+				if (wrapper.emitted >= 100) return clearInterval(timer);
+				wrapper.emitted++;
+				emitter.emit('data', Buffer.alloc(chunkSize, 0x61));
+			}, 1);
+			timer.unref();
+			wrapper.stop = () => clearInterval(timer);
 			return wrapper;
 		}
 
@@ -326,20 +326,17 @@ describe('mcp/adapters/harperHttp', () => {
 			const result = await handler({ method: 'POST', headers: makeHeaders(), body, user: { username: 'alice' } }, next);
 
 			assert.equal(result.status, 413);
-			assert.match(JSON.parse(result.body).error, /Request body too large, maximum size is 1000 bytes/);
+			body.stop();
+			assert.equal(JSON.parse(result.body).error, 'payload_too_large');
+			assert.match(JSON.parse(result.body).message, /Request body too large, maximum size is 1000 bytes/);
 			assert.equal(result.headers['Mcp-Session-Id'], undefined);
+			assert.ok(body.emitted <= 4, `reading continued past the limit (${body.emitted} chunks)`);
 		});
 
-		it('answers 413 from a declared Content-Length without reading the body', async () => {
+		it('answers 413 from a declared Content-Length and keeps draining the body without buffering it', async () => {
 			env.setProperty(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE, 1000);
 			const handler = createHarperHttpHandler('application');
-			let bodyRead = false;
-			const body = {
-				on() {
-					bodyRead = true;
-					return body;
-				},
-			};
+			const body = new EventEmitter();
 
 			const result = await handler(
 				{ method: 'POST', headers: makeHeaders({ 'content-length': '1001' }), body, user: { username: 'alice' } },
@@ -347,7 +344,11 @@ describe('mcp/adapters/harperHttp', () => {
 			);
 
 			assert.equal(result.status, 413);
-			assert.equal(bodyRead, false);
+			assert.equal(body.listenerCount('data'), 1, 'a data listener must flow the stream so it is discarded');
+			assert.equal(body.listenerCount('error'), 1);
+			body.emit('data', Buffer.alloc(2000));
+			body.emit('error', new Error('socket reset after the early response'));
+			body.emit('end');
 		});
 
 		it('still serves a body under the limit', async () => {
@@ -390,8 +391,9 @@ describe('mcp/adapters/harperHttp', () => {
 			const result = await handler({ method: 'POST', headers: makeHeaders(), body, user: { username: 'alice' } }, next);
 
 			assert.equal(result.status, 413);
-			assert.match(JSON.parse(result.body).error, /maximum size is 10000000 bytes/);
-			assert.equal(body.emitted > 10, true);
+			assert.match(JSON.parse(result.body).message, /maximum size is 10000000 bytes/);
+			body.stop();
+			assert.ok(body.emitted <= 11, `reading continued past the limit (${body.emitted} chunks)`);
 		});
 	});
 });

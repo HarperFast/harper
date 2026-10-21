@@ -186,7 +186,6 @@ suite('MCP v1 application profile + operations error framing (#1317)', (ctx: Con
 		const declared = await fetch(url, { method: 'POST', headers, body: Buffer.alloc(11_000_000, 0x20) });
 		strictEqual(declared.status, 413);
 
-		// No Content-Length: the body is cut off as it streams in.
 		let sent = 0;
 		const chunked = await fetch(url, {
 			method: 'POST',
