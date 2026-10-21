@@ -1,6 +1,8 @@
 const assert = require('assert');
 const { parseQuery } = require('#src/resources/search');
 const { RequestTarget } = require('#src/resources/RequestTarget');
+const { spawnSync } = require('node:child_process');
+const path = require('node:path');
 // might want to enable an iteration with NATS being assigned as a source
 describe('Parsing queries', () => {
 	before(function () {});
@@ -263,11 +265,33 @@ describe('Parsing queries', () => {
 			(error) => error.statusCode === 400 && /in a value/.test(error.message)
 		);
 		assert.throws(() => parseQuery('p=ge=1&=5'), /chained condition needs a FIQL comparator/);
+		assert.throws(
+			() => parseQuery('a=gt=1&b{c}'),
+			(error) =>
+				error.statusCode === 400 && /property sets are not allowed/.test(error.message) && !/push/.test(error.message)
+		);
 	});
 	it('A character no tokenizer accepts ends the parse with an error instead of looping', function () {
-		for (const query of ['(?a=1)', 'a=gt=1&(?)', 'select(?)', 'a=gt=1&?b=2']) {
-			assert.throws(() => parseQuery(query), /unexpected character '\?'/, query);
-		}
+		// a child process, so a regression fails on the timeout instead of hanging the suite
+		const script = `
+			const { parseQuery } = require('#src/resources/search');
+			for (const query of ['(?a=1)', 'a=gt=1&(?)', 'select(?)', 'a=gt=1&?b=2']) {
+				try {
+					parseQuery(query);
+					console.log(query + ': no error');
+				} catch (error) {
+					console.log(query + ': ' + error.message);
+				}
+			}`;
+		const result = spawnSync(process.execPath, ['-e', script], {
+			cwd: path.join(__dirname, '../..'),
+			encoding: 'utf8',
+			timeout: 20000,
+		});
+		assert.equal(result.error, undefined, result.error?.message);
+		const lines = result.stdout.trim().split('\n');
+		assert.equal(lines.length, 4, result.stdout + result.stderr);
+		for (const line of lines) assert.match(line, /unexpected character '\?'/);
 	});
 	it('Single-argument select forms', function () {
 		assert.equal(parseQuery('select(name)').select, 'name');
