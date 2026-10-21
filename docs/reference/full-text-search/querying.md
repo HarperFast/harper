@@ -139,9 +139,7 @@ const products = Product.search({
 });
 ```
 
-When `category` and `available` are declared in the index's `filterFields`, Harper includes these conditions in the Tantivy query. Tantivy removes non-matching IDs before Harper loads records. The metadata is score-neutral, and Harper rechecks the original conditions against current records before returning them.
-
-The same query remains valid when an attribute is not declared in `filterFields`; Harper applies that condition after full-text search. Small, complete result sets from Harper secondary indexes can also be passed to Tantivy automatically as candidate IDs. This path does not require `filterFields`.
+Harper checks the structured conditions against current source records before returning them. Existing Harper secondary indexes can narrow candidate IDs or support point checks; no separate full-text filter metadata declaration is required. Rejected hits do not count toward a v5.4 page's offset and limit, but fetching them still consumes the raw-hit budget.
 
 An `or` group may combine conditions from the same full-text index:
 
@@ -205,9 +203,9 @@ Before v5.4, any expression containing one of these modes uses a 100-record nati
 
 Full-text and autocomplete searches use Harper's existing `limit` and `offset`. Bounded queries can pass the ordinary native result window, including the earlier 100-record prefix boundary. Within one request, one native reader fetches ranked batches until Harper has enough eligible records for the offset and limit, exhausts the matches, or reaches a request budget. Source-version checks and record filters run before records count toward the requested page.
 
-For example, `offset: 100` and `limit: 10` skip the first 100 eligible records and return up to the next 10, even for prefix matching. A short or empty page means matches were exhausted; reaching a work budget while more matches remain raises an error instead. An unbounded query can still fail when it exceeds the native window or configured limits.
+For example, `offset: 100` and `limit: 10` skip the first 100 eligible records and return up to the next 10, even for prefix matching. A short or empty page means matches were exhausted. Exhausting the fetched-hit or retained-result budget returns `400`; narrow the query, reduce offset or limit, or raise the named budget. Exhausting the execution budget returns `503`; narrow the query or adjust the execution budget rather than retrying it unchanged. These budget errors carry no readiness-specific `code` or `retryable` flag. If a response has already started streaming, a later error terminates that stream instead of changing its HTTP status. An unbounded query can still fail when it exceeds the native window or configured limits.
 
-`storage.fullText.maxRawHitsPerRequest`, `maxResultsPerRequest` and `requestBudgetMilliseconds` bound fetched work, retained results and execution time. Replayed or rejected hits consume raw work; a request can exhaust that budget before reaching its result target. See [storage configuration](../configuration/options.md#storage) for the controls and [REST paging and counts](../rest/querying.md#pagination-and-total-count) for URL syntax and count behavior.
+`storage.fullText.maxRawHitsPerRequest`, `storage.fullText.maxResultsPerRequest` and `storage.fullText.requestBudgetMilliseconds` bound fetched work, retained results and execution time. Replayed or rejected hits consume raw work; a request can exhaust that budget before reaching its result target. The execution budget is not a hard response-time guarantee; reader acquisition and some native work can take additional time. See [storage configuration](../configuration/options.md#storage) for the controls and [REST paging and counts](../rest/querying.md#pagination-and-total-count) for URL syntax and count behavior.
 
 Each offset request runs a new query and can see changed records, permissions or index contents. Pages can therefore repeat or omit records during concurrent changes. There are no continuation tokens, close operations or retained searches across requests.
 

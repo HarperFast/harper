@@ -68,7 +68,7 @@ Full-text search can be combined with structured filters. Harper pushes compatib
 ## Limits and troubleshooting
 
 - Phrase search requires `positions: true`; prefix and fuzzy-prefix require `surfaceTerms: true`.
-- Before v5.4, prefix expressions restrict `offset + limit` to 100. In v5.4, bounded full-text and autocomplete queries fetch additional batches within request budgets. Use a bounded `limit` and see [paging and prefix result windows](./querying.md#paging-and-prefix-result-windows); native windows are not total-result cutoffs for bounded v5.4 queries.
+- Before v5.4, prefix and fuzzy-prefix expressions restrict `offset + limit` to 100. In v5.4, bounded full-text and autocomplete queries fetch additional batches within request budgets. Use a bounded `limit` and see [paging and prefix result windows](./querying.md#paging-and-prefix-result-windows); native windows are not total-result cutoffs for bounded v5.4 queries.
 - One query can use only one full-text index. An `or` group cannot mix full-text and ordinary record conditions.
 - Each Blob source is limited to 1 MiB (1,048,576 bytes). A media-type mismatch, oversized value, or invalid UTF-8 removes the entire record from the index, including its other full-text source fields, until valid content is indexed.
 - `INDEX_REBUILDING` is transient and retryable. `DERIVED_INDEX_LAGGING` can mean a query coverage wait expired or local writes were shed after prolonged index lag. `unavailable` means automatic rebuild attempts were exhausted or activation failed; inspect readiness and logs rather than retrying every `503` indefinitely.

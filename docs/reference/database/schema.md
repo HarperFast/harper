@@ -380,7 +380,7 @@ type Product @table(database: "catalog", audit: true) {
 }
 ```
 
-The `FullText` field is query-only. It is not stored with records or exposed as a selectable record property. Add another `FullText` field to create another independent index. Full-text indexes require RocksDB and an audited table. They are local derived state rebuilt from committed table data rather than authoritative record storage. See [Full-Text Search Configuration](../full-text-search/configuration.md) for the complete field contract, filter metadata, phrase and prefix storage, synonyms, highlighting, and rebuild behavior.
+The `FullText` field is query-only. It is not stored with records or exposed as a selectable record property. Add another `FullText` field to create another independent index. Full-text indexes require RocksDB and an audited table. They are local derived state rebuilt from committed table data rather than authoritative record storage. See [Full-Text Search Configuration](../full-text-search/configuration.md) for the complete field contract, structured filters, phrase and prefix storage, synonyms, highlighting, and rebuild behavior.
 
 ### `@decide`
 
