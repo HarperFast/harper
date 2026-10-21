@@ -58,6 +58,12 @@ export type {
 	WritableRecord,
 } from './resources/ResourceInterface.ts';
 export type { User } from './security/user.ts';
+export type {
+	BearerValidator,
+	BearerValidatorIdentity,
+	BearerValidatorOptions,
+	BearerValidatorResult,
+} from './server/Server.ts';
 export type { RecordObject } from './resources/RecordEncoder.ts';
 export type { IterableEventQueue } from './resources/IterableEventQueue.ts';
 export type { Table } from './resources/databases.ts';

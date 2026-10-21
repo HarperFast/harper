@@ -4073,8 +4073,12 @@ export function makeTable(options): TableResourceClass {
 		static evict(id, existingRecord, existingVersion) {
 			if (maintenanceClosed) return Promise.resolve();
 			let entry;
-			const lmdbTransaction = txnForContext({ transaction: new DatabaseTransaction() });
-			let transaction = lmdbTransaction.getReadTxn();
+			// Raw on RocksDB: this method commits or aborts the handle itself, and its catch expects a conflict
+			// to reject with ERR_BUSY (resources/DESIGN.md, over-time transactions).
+			const lmdbTransaction = primaryStore.ifVersion
+				? txnForContext({ transaction: new DatabaseTransaction() })
+				: undefined;
+			let transaction = lmdbTransaction ? lmdbTransaction.getReadTxn() : new RocksTransaction(primaryStore.store);
 			let options = { transaction };
 			let committed = false;
 			try {
@@ -4126,9 +4130,8 @@ export function makeTable(options): TableResourceClass {
 						})
 					);
 				}
-				// RocksDB: eviction writes went directly into the raw transaction via options; commit it directly,
-				// as DatabaseTransaction.commit() would abort it (no tracked writes). The raw commit bypasses
-				// DatabaseTransaction's ERR_BUSY retry, so a concurrent-write conflict rejects here — swallow it
+				// RocksDB: eviction writes went directly into the raw transaction via options; commit it directly.
+				// The raw commit has no retry, so a concurrent-write conflict rejects here — swallow it
 				// (abandon the eviction) and log anything unexpected, rather than letting it crash the process.
 				return trackMaintenanceCommit(
 					commitTrackedRocksTransaction(transaction as RocksTransaction, primaryStore).catch((error) => {
@@ -4940,6 +4943,20 @@ export function makeTable(options): TableResourceClass {
 						let belowAuditFloor = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
+							if (
+								stagedOwnAuditEntry &&
+								committedBy?.sourceApply &&
+								isRocksDB &&
+								!replaying &&
+								precedesExisting === 0 &&
+								receivedLogKey === txnTime &&
+								appendedLogKey === receivedLogKey &&
+								(existingEntry.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore)) &&
+								!existingEntry.additionalAuditRefs?.length
+							) {
+								write.skipped = true;
+								return;
+							}
 							// A re-delivered out-of-order write (full-copy audit-replay re-delivers writes) must not have
 							// its commutative ops re-folded. additionalAuditRefs is the record's own list of folded
 							// out-of-order versions, read with read-your-writes consistency, so this skips the duplicate up
