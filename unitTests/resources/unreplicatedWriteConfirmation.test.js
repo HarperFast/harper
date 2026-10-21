@@ -2,6 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { hostname } = require('node:os');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
@@ -36,7 +37,6 @@ describe('replicatedConfirmation of a write that appends nothing to replicate', 
 		waits = [];
 		checks = [];
 		releases = [];
-		// a waiter that settles only when released: a commit that waits on it hangs instead of resolving
 		const wait = (...args) => {
 			waits.push(args);
 			return new Promise((resolve) => releases.push(resolve));
@@ -66,7 +66,6 @@ describe('replicatedConfirmation of a write that appends nothing to replicate', 
 		});
 	}
 
-	// resolves promptly or reports the commit as stuck on its confirmation
 	async function settlesWithoutWaiting(promise) {
 		let timer;
 		const stuck = new Promise((resolve) => (timer = setTimeout(() => resolve('stuck'), 2000)));
@@ -85,11 +84,14 @@ describe('replicatedConfirmation of a write that appends nothing to replicate', 
 			() => (settled = true),
 			() => (settled = true)
 		);
-		await new Promise((resolve) => setTimeout(resolve, 200));
-		assert.equal(settled, false, 'the commit waits on its confirmation');
-		assert.equal(waits.length, 1);
-		assert.ok(waits[0][1], 'with a position to wait for');
-		for (const release of releases) release();
+		try {
+			await waitFor(() => waits.length > 0, { timeout: 10_000, message: 'the commit never asked for confirmation' });
+			assert.equal(settled, false, 'the commit waits on its confirmation');
+			assert.equal(waits.length, 1);
+			assert.ok(waits[0][1], 'with a position to wait for');
+		} finally {
+			for (const release of releases) release();
+		}
 		await promise;
 	}
 

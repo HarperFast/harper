@@ -702,12 +702,11 @@ export type TransactionWrite = {
 	// sticky: a non-isRetry staging of this write appended its audit entry (set in save(); the retry
 	// dedup guards in the commit handler read it to ignore the write's own orphaned entry)
 	appendedAuditEntry?: boolean;
-	// the audit entry recordUpdater staged for this write in the current staging, if any (handlers pass
-	// the write as its `write` option); 'local' is a LOCAL_ONLY entry, which the sender never replicates
-	stagedAudit?: 'replicable' | 'local';
-	// the last staging ran and appended nothing a peer will receive, so there is nothing to confirm;
-	// derived per staging, since a runtime enableAuditing() changes the answer for a restaged write
-	replicatesNothing?: boolean;
+	// the audit entry recordUpdater appended for this write in its current staging (handlers pass the
+	// write as its `write` option): 'none' until it appends, 'local' for a LOCAL_ONLY entry, which the
+	// sender never replicates. Reset per fresh staging: a runtime enableAuditing() changes the answer
+	// for a restaged write. Unset when no staging has run.
+	stagedAudit?: 'none' | 'local' | 'replicable';
 	// the transaction holding this write in its `writes` (set in addWrite). A deferred write's save() is
 	// only its trigger, so it can be triggered after the context has moved on to another transaction;
 	// this is who commits it when the transaction current at that point is not a scope (#2292).
@@ -764,8 +763,13 @@ export type TransactionWrite = {
 	instanceClosed?: boolean;
 };
 
+// read when confirmation is decided rather than when the handler returns, so an append after an awaited
+// dependency still counts; a skipped write confirms on the entry that beat it
 function confirmsNothing(write: TransactionWrite): boolean {
-	return write.skipReplicationConfirmation || write.replicatesNothing;
+	return (
+		write.skipReplicationConfirmation ||
+		(!write.skipped && (write.stagedAudit === 'none' || write.stagedAudit === 'local'))
+	);
 }
 
 export function closeWriteInstance(operation: TransactionWrite | null | undefined): void {
@@ -2316,7 +2320,7 @@ export class DatabaseTransaction implements Transaction {
 			if (shouldStampStagedOn) operation.stagedOn = transaction;
 			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
-			if (!(transaction as RocksTransactionWithRetry).isRetry) operation.stagedAudit = undefined;
+			if (!(transaction as RocksTransactionWithRetry).isRetry) operation.stagedAudit = 'none';
 			try {
 				completion = operation.commit(
 					writeVersion,
@@ -2353,14 +2357,11 @@ export class DatabaseTransaction implements Transaction {
 		// skip the log write, so they never set it. The retry dedup guards in the commit handler key
 		// off this: a launderable proxy (like last attempt's skipped state) breaks under multi-round
 		// retries where a recommit round self-skips before a fresh-transaction replay.
-		if (!(transaction as RocksTransactionWithRetry).isRetry) {
-			operation.replicatesNothing = !operation.skipped && operation.stagedAudit !== 'replicable';
-			if (!operation.skipped && operation.stagedAudit) {
-				operation.appendedAuditEntry = true;
-				// unlike the sticky flag, names the handle (an iterator replay discards the original's batch);
-				// recorded whether or not confirmation is requested yet, since it can be requested later
-				operation.appendedTo = transaction;
-			}
+		if (!operation.skipped && operation.stagedAudit !== 'none' && !(transaction as RocksTransactionWithRetry).isRetry) {
+			operation.appendedAuditEntry = true;
+			// unlike the sticky flag, names the handle (an iterator replay discards the original's batch);
+			// recorded whether or not confirmation is requested yet, since it can be requested later
+			operation.appendedTo = transaction;
 		}
 		if (immediateCommit) {
 			// immediately commit if the harper transaction is closed
