@@ -2547,6 +2547,19 @@ describe('history after record eviction (issue #3164)', () => {
 		assert.strictEqual(byTimestampAfterReinsert.length, 4);
 		assert.deepStrictEqual(byTimestampAfterReinsert[1].records, [{ id: 'rec-1', name: 'patched', count: 1 }]);
 		assert.deepStrictEqual(byTimestampAfterReinsert[3].records, [{ id: 'rec-1', name: 'refetched', count: 7 }]);
+
+		await EvictedHistoryTable.put({ id: 'rec-1', name: 'rewritten', count: 8 });
+		const byTimestampAfterRewrite = await Array.fromAsync(
+			await bridge.readAuditLog({
+				schema,
+				table: tableName,
+				search_type: 'timestamp',
+				search_values: [0],
+			})
+		);
+		assert.strictEqual(byTimestampAfterRewrite.length, 5);
+		assert.deepStrictEqual(byTimestampAfterRewrite[1].records, [{ id: 'rec-1', name: 'patched', count: 1 }]);
+		assert.deepStrictEqual(byTimestampAfterRewrite[4].records, [{ id: 'rec-1', name: 'rewritten', count: 8 }]);
 	});
 
 	it('contains a per-entry reconstruction failure in getHistory, getHistoryOfRecord, and readAuditLog without dropping buffered or subsequent entries', async () => {
