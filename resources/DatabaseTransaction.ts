@@ -1974,9 +1974,8 @@ export class DatabaseTransaction implements Transaction {
 	 * replicable writes staged earlier: writes that opt out or replicate nothing (unaudited or local-only
 	 * writes, and audit-only markers, which stage no record), and writes with no stored entry at all — a
 	 * delete leaves a readable tombstone on any audited or delete-tracking table, so only a delete on a
-	 * table with neither is entry-less. Such a
-	 * `put(A); delete(B)` confirms on A's entry, whose version is this transaction's (every write in a
-	 * transaction is stamped with one version).
+	 * table with neither is entry-less. Such a `put(A); delete(B)` confirms on A's entry, whose version is
+	 * this transaction's (every write in a transaction is stamped with one version).
 	 */
 	lastConfirmableEntry(): Partial<Entry> | undefined {
 		for (let i = this.writes.length - 1; i >= 0; i--) {
