@@ -309,11 +309,13 @@ describe('mcp/adapters/harperHttp', () => {
 				},
 			};
 			const timer = setInterval(() => {
-				if (wrapper.emitted >= 100) return clearInterval(timer);
+				if (wrapper.emitted >= 100) {
+					clearInterval(timer);
+					return emitter.emit('end');
+				}
 				wrapper.emitted++;
 				emitter.emit('data', Buffer.alloc(chunkSize, 0x61));
 			}, 1);
-			timer.unref();
 			wrapper.stop = () => clearInterval(timer);
 			return wrapper;
 		}
