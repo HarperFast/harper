@@ -1438,7 +1438,7 @@ export function makeTable(options): TableResourceClass {
 	let replicaTableMarked = false;
 	let replicaTableKnown = false; // learned on this thread: a store, a thread message, or the catalog marker at load
 	let recordScanInterval = 0;
-	let recordCleanupInterval = expirationMs || evictionMs ? (expirationMs + evictionMs) / 4 : 0;
+	let recordCleanupInterval = 86400000;
 	const replicaRefreshInFlight = new Set<string>();
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
 	// an isolated application's schema was declared here. Hydrating persisted metadata does not set it:
@@ -2916,7 +2916,7 @@ export function makeTable(options): TableResourceClass {
 		) {
 			if (opts == null || (typeof opts !== 'number' && typeof opts !== 'object'))
 				throw new Error('Invalid expiration value type');
-			if (typeof opts === 'object' && opts.replicaExpiration !== undefined)
+			if (typeof opts === 'object' && opts.replicaExpiration != null)
 				replicaExpirationMs = replicaExpirationMsOf(opts.replicaExpiration);
 			const declaredHere = typeof opts === 'object' && opts.fromSchema;
 			const isolatedApplicationOwner = declaredHere && opts.isolatedApplicationOwner;
@@ -2941,8 +2941,10 @@ export function makeTable(options): TableResourceClass {
 			}
 			if (expirationMs < 0) throw new Error('Expiration can not be negative');
 			if (!preserveLoadedConfiguration) {
-				// default to one quarter of the total expiration+eviction window
-				recordCleanupInterval = recordScanInterval || (expirationMs + evictionMs) / 4;
+				// default to one quarter of the total expiration+eviction window; the number form keeps the
+				// record cadence it had
+				recordCleanupInterval =
+					(typeof opts === 'number' ? recordCleanupInterval : recordScanInterval) || (expirationMs + evictionMs) / 4;
 				cleanupInterval = recordCleanupInterval;
 				expirationScanScheduled = true;
 			}
@@ -10730,7 +10732,8 @@ export function makeTable(options): TableResourceClass {
 		if (replicaEvictionArmed || !replicaExpirationMs || disposed) return;
 		replicaEvictionArmed = true;
 		const interval = Math.max(replicaExpirationMs / 4, MIN_REPLICA_SCAN_INTERVAL_MS);
-		cleanupInterval = recordCleanupInterval > 0 ? Math.min(recordCleanupInterval, interval) : interval;
+		cleanupInterval =
+			expirationScanScheduled && recordCleanupInterval > 0 ? Math.min(recordCleanupInterval, interval) : interval;
 		expirationScanScheduled = true;
 		scheduleCleanup();
 	}
