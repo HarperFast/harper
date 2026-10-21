@@ -55,9 +55,6 @@ Harper uses [FIQL](https://datatracker.ietf.org/doc/html/draft-nottingham-atompu
 | `=`, `===`           | Strict equality (no type conversion)   |
 | `!==`                | Strict inequality (no type conversion) |
 
-Declared full-text fields use `=matches=`, `=matches_prefix=` or `=matches_fuzzy_prefix=`.
-See [Full-Text Paging](../resources/full-text-paging.md#page-through-rest) for examples and continuation.
-
 **Examples**:
 
 ```http
@@ -176,27 +173,15 @@ GET /Product/?rating=gt=3&sort(+name)
 GET /Product/?sort(+rating,-price)
 ```
 
-### `continuation()` and `closeContinuation()`
-
-<VersionBadge version="v5.4.0" />
-
-Full-text searches can retain their original index snapshot between requests. Start with
-`continuation()`, resume with `continuation(token)`, and close early with `closeContinuation()`
-alongside the token. Use `limit(n)` to set the page size. See
-[Full-Text Paging](../resources/full-text-paging.md#page-through-rest) for the token headers,
-query restrictions and recovery steps.
-
 ## Pagination and Total Count
+
+Full-text and autocomplete queries use the same paging syntax. See [Full-text paging](../resources/full-text-paging.md) for search work limits and behavior when records change between requests.
 
 <VersionBadge version="v5.3.0" />
 
 Use `limit(start,end)` to page through a collection, and opt in to a total match count with the `Prefer` request header (`Prefer: count=exact`) so a client can render pagination (for example "1-25 of 1,234") without a second request.
 
-For full-text paging across requests (<VersionBadge version="v5.4.0" />), use [continuation](#continuation-and-closecontinuation) instead of offset paging or a count request.
-
 Counting is opt-in: without the header, no count is computed and no count headers are returned. It applies only to `GET`/`HEAD` requests and requires a bounded page — the `limit()` must be a non-negative integer no larger than **10,000**, and the requested window (offset + limit) no larger than **1,000,000**. A request with no `limit()`, one outside those bounds, or a non-numeric one is served normally with no count headers, since counting an unbounded page would defeat the point of paging.
-
-Full-text queries also have [search work limits](../resources/full-text-paging.md#configure-resource-limits). A count request does not remove those limits; a full-text query can fail before returning a page or count.
 
 ### Requesting a count
 

@@ -91,17 +91,7 @@ The `get()` method returns a `RecordObject` — a frozen plain object with all r
 
 ### `search(query: RequestTarget | Query, context?): ExtendedIterable`
 
-Performs a query on the resource or table. This is called by `get()` on collection requests and can be overridden to define custom query behavior. A table overriding `search()` must also implement `searchPage()` with the same filtering policy to enable continuation, including through REST. The default implementation on tables queries by the `conditions`, `limit`, `offset`, `select`, and `sort` properties parsed from the URL or query object. See [Query Object](#query-object) below for available query options. See the [ExtendedIterable](#extendediterable) below for how to interact with the query results.
-
----
-
-### `searchPage(query: RequestTarget | Query, context?): Promise<FullTextSearchPage>`
-
-<VersionBadge version="v5.4.0" />
-
-Tables use `searchPage()` for full-text and autocomplete continuation. Supply a positive `limit` and omit `continuation` or set it to `true` to start; supply the returned token to resume. `FullTextSearchPage` is an array of records with `continuation`, `complete`, and `expiresAt` properties; see the [result properties](./full-text-paging.md#page-through-tablesearchpage). `search()` stays iterable and rejects continuation options.
-
-When serving an authenticated caller, pass the caller's context and set `checkPermission: true` in the query. A custom `search()` override must explicitly implement `searchPage()` with the same filtering policy; otherwise paging returns 400. See [Full-Text Paging](./full-text-paging.md) for examples, supported queries, closing a search, and token expiry.
+Performs a query on the resource or table. This is called by `get()` on collection requests and can be overridden to define custom query behavior. The default implementation on tables queries by the `conditions`, `limit`, `offset`, `select`, and `sort` properties parsed from the URL or query object. See [Query Object](#query-object) below for available query options. See the [ExtendedIterable](#extendediterable) below for how to interact with the query results.
 
 ---
 
@@ -1031,21 +1021,7 @@ body, so avoid putting sensitive detail in thrown error messages.
 
 ## Query Object
 
-The `Query` object is accepted by `search()`, `searchPage()`, and the static `get()` method.
-
-### `continuation`
-
-For `searchPage()`, omit this field or use `true` to start a search; use the returned token to resume. Keep the query and caller context consistent. See [Full-Text Paging](./full-text-paging.md#page-through-tablesearchpage).
-
-### `closeContinuation`
-
-Use `true` with an existing continuation token to close the search early. See [Close or restart a search](./full-text-paging.md#close-or-restart-a-search).
-
-### `checkPermission`
-
-Set `true` on every page when a direct table call acts for a caller, and pass that caller's context. Without it, the call does not request the caller's table and searched-source permission checks; context alone does not enable them. Automatic REST applies its permission checks. See [Full-Text Paging](./full-text-paging.md#page-through-tablesearchpage).
-
-Set this field in server code; never copy permission-control fields from client data.
+The `Query` object is accepted by `search()` and the static `get()` method.
 
 ### `conditions`
 
@@ -1058,10 +1034,6 @@ Array of condition objects to filter records. Each condition:
 | `comparator` | `equals` (default), `greater_than`, `greater_than_equal`, `less_than`, `less_than_equal`, `starts_with`, `contains`, `ends_with`, `between`, `not_equal` |
 | `conditions` | Nested conditions array                                                                                                                                  |
 | `operator`   | `and` (default) or `or` for the nested `conditions`                                                                                                      |
-
-Full-text conditions name a query-only `FullText` declaration and use comparators `matches`,
-`matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, and `matches_fuzzy_prefix`. Each also has a `not_`-prefixed form; a negated full-text condition requires a positive full-text condition in the query. See
-`Table.searchPage()` and [Full-Text Paging](./full-text-paging.md) for snapshot continuation and its query restrictions.
 
 Example with nested conditions:
 
@@ -1113,7 +1085,6 @@ Special properties:
 - `$id` — Returns the primary key regardless of its name
 - `$updatedtime` — Returns the last-updated timestamp
 - `$distance` — When the query ranks or filters by a vector index, returns the computed distance from the target vector. See [Vector Indexing](../database/schema.md#vector-indexing).
-- `$score` - When a query uses a full-text index, returns its relevance score. See [Full-Text Paging](./full-text-paging.md#page-through-tablesearchpage).
 
 #### Selecting related records
 

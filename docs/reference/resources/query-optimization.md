@@ -79,12 +79,6 @@ When a secondary index is still being built — for example, just after a new `@
 
 This is a transient condition — the index finishes building in the background, after which the same query succeeds. Clients should retry (with backoff) rather than treating it as an empty result or a permanent failure. On the operations API the error body includes `code` and `retryable`, so callers can branch on `error.code === 'INDEX_REBUILDING'` or `error.retryable`.
 
-### Full-Text Search Work Limits
-
-<VersionBadge type="changed" version="v5.4.0" />
-
-Full-text queries have configurable work limits, including ordinary searches without continuation. A selective filter can exhaust a work limit and fail the request instead of returning a partial page. See [Full-Text Paging](./full-text-paging.md#configure-resource-limits) for the limits, errors and cost of increasing them.
-
 ## Relationships and Joins
 
 Harper supports relationship-based queries that join data across tables. See [Schema documentation](../database/schema.md) for how to define relationships.

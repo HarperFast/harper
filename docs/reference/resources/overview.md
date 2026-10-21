@@ -172,4 +172,3 @@ Parameterized routes also surface in the generated OpenAPI document (as template
 | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | [Resource API](./resource-api.md)             | Complete reference for instance methods, static methods, the Query object, RequestTarget, and response handling |
 | [Query Optimization](./query-optimization.md) | How Harper executes queries and how to write performant conditions                                              |
-| [Full-Text Paging](./full-text-paging.md)     | Resume full-text and autocomplete searches on their original index snapshot                                     |
