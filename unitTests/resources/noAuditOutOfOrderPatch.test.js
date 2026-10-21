@@ -1,7 +1,3 @@
-// On an audit:false table an out-of-order patch has no history to resequence against, so it may
-// contribute only the keys the newer record does not already hold. A patch with nothing left must be
-// dropped (not re-applied over the newer record), and the blobs it saved for the keys it lost must
-// not outlive it as unreferenced files.
 require('../testUtils');
 const assert = require('node:assert');
 const { existsSync } = require('node:fs');
@@ -35,7 +31,7 @@ describe('out-of-order patch on an audit:false table', () => {
 		if (NoAudit.indexingOperation) await NoAudit.indexingOperation;
 	});
 
-	after(() => setDeletionDelay(500)); // restore the default; later test files share this mocha process
+	after(() => setDeletionDelay(undefined));
 
 	async function seedNewerRecord() {
 		const id = `noaudit-${nextId++}`;

@@ -5394,10 +5394,7 @@ export function makeTable(options): TableResourceClass {
 							return writeCommit(false);
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
-							incrementalUpdateToApply = remainingAgainstRecord(
-								incrementalUpdateToApply ?? recordUpdate,
-								existingRecord
-							);
+							incrementalUpdateToApply = remainingAgainstRecord(recordUpdate, existingRecord);
 							logger.debug?.('Rebuilding update without audit:', incrementalUpdateToApply);
 							if (!incrementalUpdateToApply) {
 								write.skipped = true;
@@ -5405,7 +5402,7 @@ export function makeTable(options): TableResourceClass {
 							}
 							// fields dropped from the update leave their pre-saved blobs unreferenced; the commit's
 							// superseded cleanup keeps any the merged record retained
-							write.superseded = true;
+							if (incrementalUpdateToApply !== recordUpdate) write.superseded = true;
 						}
 						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
 					}
