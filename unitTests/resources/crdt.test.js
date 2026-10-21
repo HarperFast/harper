@@ -557,11 +557,15 @@ describe('remainingAgainstRecord', () => {
 	});
 
 	it('keeps an own __proto__ key as data instead of adopting its value as a prototype', () => {
-		const update = JSON.parse('{"__proto__":{"__op__":"add","value":1,"tag":"stale"}}');
-		const remaining = remainingAgainstRecord(update, { tag: 'newer' });
+		const update = JSON.parse('{"held":"old","__proto__":{"__op__":"add","value":1,"tag":"stale"}}');
+		const remaining = remainingAgainstRecord(update, { held: 'newer' });
 		assert.deepStrictEqual(Object.keys(remaining), ['__proto__']);
 		assert.strictEqual(Object.getPrototypeOf(remaining), Object.prototype);
 		assert.strictEqual(remaining.tag, undefined);
+	});
+
+	it('leaves nothing for an empty update', () => {
+		assert.strictEqual(remainingAgainstRecord({}, { held: 'newer' }), null);
 	});
 
 	it('passes the update through when there is no record to compare with', () => {

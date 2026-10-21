@@ -117,7 +117,7 @@ export function remainingAgainstRecord(update: any, record: any) {
 			else remaining[key] = value;
 		} else dropped = true;
 	}
-	return dropped ? remaining : update;
+	return dropped || !remaining ? remaining : update;
 }
 
 // Stored fields are own properties, or accessors on a decoder-installed prototype; Object.prototype
