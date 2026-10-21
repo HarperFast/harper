@@ -10724,8 +10724,8 @@ export function makeTable(options): TableResourceClass {
 			try {
 				retained = collectRetainedFileIds(primaryStore.getEntry(id)?.value);
 			} catch {
-				// the store closed while the transfer ran; its rows may reopen holding these files
-				return;
+				// a closed store's rows may reopen holding these files; a dropped table's cannot
+				if (!droppingTable) return;
 			}
 			cleanupUnusedBlobs(preCommit.blobs, retained);
 		};
