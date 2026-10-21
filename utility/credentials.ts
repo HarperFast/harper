@@ -1,3 +1,4 @@
+import { isUtf8 } from 'node:buffer';
 import { isAlias, isNode, isScalar, parseAllDocuments, visit, type Node } from 'yaml';
 import { isUnresolvedEnvVarPlaceholder } from './expandEnvVar.ts';
 
@@ -38,8 +39,8 @@ export const MAX_CREDENTIAL_FILE_BYTES = 256 * 1024;
  * parse keeps only its keys. Undefined when the bytes are not UTF-8.
  */
 export function maskCredentialFile(file: Buffer): Buffer | undefined {
+	if (!isUtf8(file)) return undefined;
 	const text = file.toString('utf8');
-	if (!Buffer.from(text, 'utf8').equals(file)) return undefined;
 	const ranges = yamlCredentialRanges(text);
 	const masked = new Uint8Array(text.length);
 	if (ranges) for (const [start, end] of ranges) masked.fill(1, start, end);
