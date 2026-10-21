@@ -177,10 +177,13 @@ describe('table-reload marker (harper-pro#489)', () => {
 			deleteTransaction.replicatedConfirmation = 1;
 			confirmedVersion = undefined;
 			await deleteTransaction.commit({ doneWriting: true });
-			assert.equal(confirmationCalls, 3, 'the put staged before an entry-less delete is still confirmed');
-			// LMDB confirms on the audit store's local time, which an `audit: false` table's records do not
-			// carry at all (pre-existing: every confirmed write on such a table passes undefined).
-			if (!isLMDB) assert.ok(confirmedVersion != null, 'confirmation uses the stored entry of the put, not the delete');
+			if (isLMDB) {
+				// LMDB confirms on the audit log's local time, which an `audit: false` table's records do not carry
+				assert.equal(confirmationCalls, 2, 'an unaudited LMDB write has no log position for peers to acknowledge');
+			} else {
+				assert.equal(confirmationCalls, 3, 'the put staged before an entry-less delete is still confirmed');
+				assert.ok(confirmedVersion != null, 'confirmation uses the stored entry of the put, not the delete');
+			}
 		} finally {
 			setReplicationConfirmation(undefined);
 		}

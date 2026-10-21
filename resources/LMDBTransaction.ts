@@ -421,12 +421,8 @@ export class LMDBTransaction extends DatabaseTransaction {
 		}
 		throw error;
 	}
-	/**
-	 * The count this link waits for. An LMDB store can't claim the RocksDB-class root `transaction()`
-	 * creates, so the root's count belongs to its first link while the root holds no store; decided
-	 * at commit because a RocksDB table can still claim the root after this link exists. Later links
-	 * stay unconfirmed, as on RocksDB (harper#3341).
-	 */
+	// Decided at commit, not when the link is created: a RocksDB table can still claim the root later
+	// (resources/DESIGN.md, replication confirmation).
 	private confirmationCount(): number | undefined {
 		if (this.replicatedConfirmation) return this.replicatedConfirmation;
 		const root = this.root;

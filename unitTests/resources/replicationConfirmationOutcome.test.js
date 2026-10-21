@@ -18,7 +18,7 @@ const { contentTypes } = require('#src/server/serverHelpers/contentTypes');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('Replication confirmation failure after a local commit', () => {
-	let First, Second;
+	let First, FirstUnaudited, Second;
 	let sequence = 0;
 	const nextId = () => `confirmation-${sequence++}`;
 
@@ -29,6 +29,12 @@ describe('Replication confirmation failure after a local commit', () => {
 			database: 'confirmation-outcome-first',
 			table: 'Records',
 			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		FirstUnaudited = table({
+			database: 'confirmation-outcome-first',
+			table: 'Unaudited',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+			audit: false,
 		});
 		Second = table({
 			database: 'confirmation-outcome-second',
@@ -927,6 +933,19 @@ describe('Replication confirmation failure after a local commit', () => {
 				await First.put({ id: `${id}-b` }, context);
 			});
 			assert.deepStrictEqual(calls, [firstDatabase(), firstDatabase()]);
+		});
+
+		it('confirms an audited write followed by an unaudited one at the audited write', async () => {
+			const id = nextId();
+			const versions = [];
+			registerConfirmation((databaseName, version) => versions.push(version));
+			await transaction({ replicatedConfirmation: 1 }, async () => {
+				await First.put({ id });
+				await FirstUnaudited.put({ id });
+			});
+			assert.strictEqual(versions.length, 1);
+			assert.ok(versions[0] > 0, `confirmation waits on a log position, got ${versions[0]}`);
+			assert.strictEqual((await FirstUnaudited.get(id)).id, id);
 		});
 
 		it('does not call the waiter for a read-only scope or an unconfirmed write', async () => {
