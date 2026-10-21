@@ -4548,7 +4548,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			audit = primaryKeyAttribute.audit = typeof audit === 'boolean' ? audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
 			if (expiration) primaryKeyAttribute.expiration = expiration;
 			if (eviction) primaryKeyAttribute.eviction = eviction;
-			if (replicaExpiration !== undefined) {
+			if (replicaExpiration != null) {
 				replicaExpirationMsOf(replicaExpiration);
 				primaryKeyAttribute.replicaExpiration = replicaExpiration;
 			}
@@ -4866,7 +4866,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						(replicate !== undefined && replicate !== attributeDescriptor.replicate) ||
 						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
 						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
-						(replicaExpiration !== undefined && replicaExpiration !== attributeDescriptor.replicaExpiration) ||
+						(replicaExpiration != null && replicaExpiration !== attributeDescriptor.replicaExpiration) ||
 						attribute.type !== attributeDescriptor.type)
 				) {
 					exclusiveLock();
@@ -4879,7 +4879,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					}
 					if (expiration) updatedPrimaryAttribute.expiration = +expiration;
 					if (eviction) updatedPrimaryAttribute.eviction = +eviction;
-					if (replicaExpiration !== undefined) {
+					if (replicaExpiration != null) {
 						replicaExpirationMsOf(replicaExpiration);
 						updatedPrimaryAttribute.replicaExpiration = replicaExpiration;
 					}

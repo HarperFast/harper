@@ -249,14 +249,20 @@ describe('Local replicas of residency stubs', function () {
 			residentExpiresAt,
 			'a read hit never extends a record expiry'
 		);
-		await new Promise((resolve) => setTimeout(resolve, 300));
-		const local = [];
-		for await (const record of Expiring.search({ select: ['id', 'name'] }, { replicateFrom: false }))
-			local.push(record);
-		assert.deepEqual(local, [{ id: ID, name: 'indexed' }], 'an indexed-only read stays local past the deadline');
-		residentExpiresAt = Date.now() + 3600_000;
-		assert.equal((await Expiring.get(ID)).body, 'complete');
-		assert.deepEqual(loaded, [ID, ID], 'an expired replica is answered by a resident again');
+		await Expiring.closeMaintenance();
+		try {
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			assert.ok(Expiring.primaryStore.getEntry(ID).metadataFlags & REPLICA, 'an expired replica still held');
+			const local = [];
+			for await (const record of Expiring.search({ select: ['id', 'name'] }, { replicateFrom: false }))
+				local.push(record);
+			assert.deepEqual(local, [{ id: ID, name: 'indexed' }], 'an indexed-only read stays local past the deadline');
+			residentExpiresAt = Date.now() + 3600_000;
+			assert.equal((await Expiring.get(ID)).body, 'complete');
+			assert.deepEqual(loaded, [ID, ID], 'an expired replica is answered by a resident again');
+		} finally {
+			Expiring.resumeMaintenance();
+		}
 	});
 
 	it('keeps committed computed index entries when the fetched body replaces a stub', async () => {

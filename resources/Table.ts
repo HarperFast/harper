@@ -1436,7 +1436,7 @@ export function makeTable(options): TableResourceClass {
 	let replicaExpirationMs = options.replicaExpirationMS ?? DEFAULT_REPLICA_EXPIRATION_MS;
 	let replicaEvictionArmed = false;
 	let replicaTableMarked = false;
-	let replicaTableKnown = false; // learned on this thread: a store, a thread message, or the catalog marker at load
+	let replicaTableKnown = false;
 	let recordScanInterval = 0;
 	let recordCleanupInterval = 86400000;
 	const replicaRefreshInFlight = new Set<string>();
@@ -2941,8 +2941,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			if (expirationMs < 0) throw new Error('Expiration can not be negative');
 			if (!preserveLoadedConfiguration) {
-				// default to one quarter of the total expiration+eviction window; the number form keeps the
-				// record cadence it had
+				// default to one quarter of the total expiration+eviction window
 				recordCleanupInterval =
 					(typeof opts === 'number' ? recordCleanupInterval : recordScanInterval) || (expirationMs + evictionMs) / 4;
 				cleanupInterval = recordCleanupInterval;
@@ -9475,7 +9474,7 @@ export function makeTable(options): TableResourceClass {
 				} else return loadingFromSource; // return the promise for the resolved value
 			}
 		} else if (entry?.value) {
-			// an expired replica is only ever reloaded from a resident; with none it is served and left to the sweep
+			// an expired replica is served here: only a resident may replace it
 			if (hasExpired(entry) && !(entry.metadataFlags & REPLICA)) {
 				// if it has expired and there is no source, we evict it and then return null, using a fake promise to indicate that this is providing the response
 				TableResource.evict(entry.key, entry.value, entry.version);
