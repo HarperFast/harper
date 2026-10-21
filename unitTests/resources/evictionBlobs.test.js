@@ -20,7 +20,8 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const RECLAMATION_SETTLE_MS = 200;
 const REREFERENCED = 1; // hold-state slot offset, resources/blob.ts
 
-describe('evict() leaves a renewed record and its blobs intact', () => {
+describe('evict() leaves a renewed record and its blobs intact', function () {
+	this.timeout(10000);
 	let UnauditedBlobs;
 
 	before(function () {
@@ -61,13 +62,13 @@ describe('evict() leaves a renewed record and its blobs intact', () => {
 		assert.equal(UnauditedBlobs.indices.tag.getValuesCount('v2'), 1, "the renewed record's index entry must survive");
 		assert.ok(existsSync(renewed.filePath), "the renewed record's blob file must survive");
 
-		// The same reclamation timing does unlink once the eviction targets the live version.
 		await UnauditedBlobs.evict('renewed', renewed.entry.value, renewed.entry.version);
 		assert.equal(UnauditedBlobs.primaryStore.getEntry('renewed'), undefined);
 		assert.equal(UnauditedBlobs.indices.tag.getValuesCount('v2'), 0);
 		await waitFor(() => !existsSync(renewed.filePath), {
 			message: 'an eviction of the live version reclaims its blob',
 		});
+		await UnauditedBlobs.evict('renewed', renewed.entry.value, renewed.entry.version); // already gone
 	});
 
 	it('keeps the blob file when its eviction loses a commit conflict', async function () {
@@ -121,5 +122,33 @@ describe('evict() leaves a renewed record and its blobs intact', () => {
 			existsSync(filePath),
 			'an abandoned eviction must not reclaim the blob the competing write still references'
 		);
+	});
+
+	it('keeps a blob file that a write committed after the eviction references again', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip(); // exercises the RocksDB post-commit step
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const originalCommit = Transaction.prototype.commit;
+		const { entry, filePath } = await putWithBlob('refilled', 'resident');
+		Transaction.prototype.commit = function (...args) {
+			Transaction.prototype.commit = originalCommit;
+			// lands between the eviction's commit and its blob cleanup
+			return originalCommit
+				.apply(this, args)
+				.then((result) => UnauditedBlobs.put({ ...entry.value, tag: 'refilled' }).then(() => result));
+		};
+		try {
+			await UnauditedBlobs.evict('refilled', entry.value, entry.version);
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+		}
+		await delay(RECLAMATION_SETTLE_MS);
+
+		const { table: holdState, slot } = getBlobHoldStateForTesting(
+			UnauditedBlobs.primaryStore.rootStore,
+			getFileId(entry.value.blob)
+		);
+		assert.equal(UnauditedBlobs.primaryStore.getEntry('refilled')?.value.tag, 'refilled');
+		assert.equal(Atomics.load(holdState, slot + REREFERENCED), 1, 'the refilled record keeps its blob file');
+		assert.ok(existsSync(filePath));
 	});
 });
