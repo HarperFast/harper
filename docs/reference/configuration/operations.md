@@ -18,6 +18,8 @@ For the full list of configurable options, see [Configuration Options](./options
 
 Modifies one or more Harper configuration parameters. **Requires a [restart](../operations-api/operations.md#restart) or [restart_service](../operations-api/operations.md#restart_service) to take effect** (a [restart](../operations-api/operations.md#restart) for `threads.v8Flags`). A change to `replication.threads` takes effect only on a full `restart`.
 
+Full-text request work limits (`storage.fullText.maxRawHitsPerRequest` and `requestBudgetMilliseconds`) apply to new searches without a restart. Changes to `storage.fullText.runtime` require a full Harper process restart; `restart_service` does not replace the native process budget. See [Full-text paging](../resources/full-text-paging.md#configure-search-work).
+
 `operation` _(required)_ — must be `set_configuration`
 
 `replicated` _(optional)_ <VersionBadge version="v5.2.0" /> — set to `true` to apply the same configuration change to all cluster nodes in a single call. The origin node applies the change first; if its local write fails, nothing is sent to peers. Requires replication to be configured.

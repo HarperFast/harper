@@ -74,4 +74,13 @@ This change uses the fulltext 0.6.0 native package. A format-incompatible upgrad
 
 The initial native autocomplete batch is not a total-result cap. Harper continues through later batches when needed to satisfy the requested page after filtering. Work and time limits still apply.
 
-Full-text counts are unavailable: a count response does not turn a native hit total into an authorized record count. For the ordinary REST paging syntax, see [Querying](../rest/querying.md#pagination-and-total-count). The JSON Operations API does not accept REST query syntax; use exported table routes or `Table.search()`.
+For an eligible bounded count request, full-text counts are unavailable and `Content-Range` uses `*` for the total. A native hit total is not an authorized record count. For the ordinary REST paging syntax, see [Querying](../rest/querying.md#pagination-and-total-count). The JSON Operations API does not accept REST query syntax; use exported table routes or `Table.search()`.
+
+## Errors and recovery
+
+| Situation                                                                   | HTTP status | Action                                                                                                             |
+| --------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------ |
+| Fetched-hit budget exhausted                                                | 400         | Narrow the query, reduce the offset, or raise `maxRawHitsPerRequest`.                                              |
+| Execution budget exhausted                                                  | 503         | Narrow the query or adjust `requestBudgetMilliseconds`; retrying the same expensive query can hit the same limit.  |
+| Index rebuilding or unavailable                                             | 503         | Wait for the local index to become ready before retrying.                                                          |
+| Application worker started before native runtime configuration was captured | 500         | `FullTextWorkerInitializationError` is non-retryable in that worker. Recreate the worker after Harper initializes. |

@@ -55,6 +55,8 @@ Harper uses [FIQL](https://datatracker.ietf.org/doc/html/draft-nottingham-atompu
 | `=`, `===`           | Strict equality (no type conversion)   |
 | `!==`                | Strict inequality (no type conversion) |
 
+Full-text indexes support `=matches=`, `=matches_all=`, `=matches_phrase=`, `=matches_prefix=`, `=matches_fuzzy=`, and `=matches_fuzzy_prefix=`. These use the full-text index rather than ordinary string comparisons. See [Full-text paging](../resources/full-text-paging.md).
+
 **Examples**:
 
 ```http
@@ -157,7 +159,7 @@ GET /Product/?brand.name=Microsoft&select(name,brand{name})
 
 ### `limit(end)` or `limit(start,end)`
 
-Limit the number of results returned, with an optional starting offset.
+Limit the number of results returned, with an optional starting offset. The start is inclusive and the end is exclusive: `limit(10,30)` skips 10 records and returns up to 20.
 
 ```http
 GET /Product/?rating=gt=3&inStock=true&select(rating,name)&limit(20)
