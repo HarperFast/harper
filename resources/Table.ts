@@ -10640,7 +10640,7 @@ export function makeTable(options): TableResourceClass {
 			// LMDB cannot order two writes at the stub's version: an expired replica there is demoted first,
 			// version-guarded, rather than replaced in place, and the next answer is kept over the stub
 			if (!refresh && primaryStore.ifVersion && current.metadataFlags & REPLICA) {
-				void TableResource.evict(id, current.value, current.version);
+				if (hasExpired(current)) void TableResource.evict(id, current.value, current.version);
 				return Promise.resolve(false);
 			}
 			// Two writers can share a timestamp; the stub holds the winner. An answer at that timestamp is
