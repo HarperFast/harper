@@ -80,7 +80,7 @@ These limits apply together. For example, two indexing threads and 64 MiB of wri
 
 Harper captures native runtime budgets before loading application components, or on an earlier main-thread native load or managed worker spawn. Application-created workers inherit that configuration. A worker created before capture fails on its first native full-text load with `FullTextWorkerInitializationError` (500, non-retryable). Create application workers from a Harper application component, after runtime configuration has been captured; recreate an early worker rather than retrying inside it. Replacement workers keep the established budgets after a live configuration change. Restart the Harper process to apply new native runtime budgets; restarting only HTTP workers is insufficient.
 
-Native page, response-byte and highlight limits still apply. Query terms and clauses remain limited by the installed library.
+Native page, response-byte and highlight limits still apply. Fulltext 0.6.0 also limits each analyzed query leaf to 64 terms and the compiled query to 256 clauses. Raising Harper's work budgets does not raise those limits. See the [published library limits](https://github.com/HarperFast/fulltext/blob/v0.6.0/docs/limits.md) for the full list and recovery guidance.
 
 ## Upgrade considerations
 
