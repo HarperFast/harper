@@ -948,6 +948,33 @@ describe('Replication confirmation failure after a local commit', () => {
 			assert.strictEqual((await FirstUnaudited.get(id)).id, id);
 		});
 
+		it('confirms at the last write that applied, not one that lost to a newer entry', async () => {
+			const id = nextId();
+			await transaction({ timestamp: Date.now() + 60_000 }, () => First.put({ id: `${id}-newer`, name: 'newer' }));
+			const versions = [];
+			registerConfirmation((databaseName, version) => versions.push(version));
+			await transaction({ replicatedConfirmation: 1 }, async () => {
+				await First.put({ id });
+				await First.put({ id: `${id}-newer`, name: 'older' });
+			});
+			assert.strictEqual((await First.get(`${id}-newer`)).name, 'newer');
+			assert.strictEqual(versions.length, 1);
+			if (isLMDB) assert.strictEqual(versions[0], First.primaryStore.getEntry(id).localTime);
+			else assert.ok(versions[0] > 0);
+		});
+
+		it('confirms a commit whose only write lost at the entry that superseded it', async () => {
+			const id = nextId();
+			await transaction({ timestamp: Date.now() + 60_000 }, () => First.put({ id, name: 'newer' }));
+			const versions = [];
+			registerConfirmation((databaseName, version) => versions.push(version));
+			await transaction({ replicatedConfirmation: 1 }, () => First.put({ id, name: 'older' }));
+			assert.strictEqual((await First.get(id)).name, 'newer');
+			assert.strictEqual(versions.length, 1);
+			const winner = First.primaryStore.getEntry(id);
+			assert.strictEqual(versions[0], isLMDB ? winner.localTime : winner.version);
+		});
+
 		it('does not call the waiter for a read-only scope or an unconfirmed write', async () => {
 			const id = nextId();
 			let called = false;

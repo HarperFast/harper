@@ -178,7 +178,6 @@ describe('table-reload marker (harper-pro#489)', () => {
 			confirmedVersion = undefined;
 			await deleteTransaction.commit({ doneWriting: true });
 			if (isLMDB) {
-				// LMDB confirms on the audit log's local time, which an `audit: false` table's records do not carry
 				assert.equal(confirmationCalls, 2, 'an unaudited LMDB write has no log position for peers to acknowledge');
 			} else {
 				assert.equal(confirmationCalls, 3, 'the put staged before an entry-less delete is still confirmed');

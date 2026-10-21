@@ -341,11 +341,18 @@ export class LMDBTransaction extends DatabaseTransaction {
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
 						const confirmReplication = registeredReplicationConfirmation();
 						const databaseName = this.writes[0]?.store.rootStore.databaseName;
-						const lastEntry = this.lastConfirmableEntry();
-						if (confirmReplication && databaseName && lastEntry)
-							confirmation = confirmReplicationAfterCommit(() =>
-								confirmReplication(databaseName, (lastEntry as any).localTime, confirmationCount)
-							);
+						// the write has landed: a failure here is this commit's outcome, after the bookkeeping below
+						try {
+							const position = confirmReplication && databaseName ? this.confirmationPosition() : undefined;
+							if (position !== undefined)
+								confirmation = confirmReplicationAfterCommit(() =>
+									confirmReplication(databaseName, position, confirmationCount)
+								);
+						} catch (error) {
+							const refusal = Promise.reject(error);
+							refusal.catch(() => {}); // surfaces through the completions, even if bookkeeping throws first
+							completions.push(refusal);
+						}
 					}
 					// commit succeeded; clean up files for any writes whose commit-handler took an early-return,
 					// or whose stored record a later write to the same key replaced without an audit entry
@@ -421,12 +428,30 @@ export class LMDBTransaction extends DatabaseTransaction {
 		}
 		throw error;
 	}
-	// Decided at commit, not when the link is created: a RocksDB table can still claim the root later
-	// (resources/DESIGN.md, replication confirmation).
 	private confirmationCount(): number | undefined {
 		if (this.replicatedConfirmation) return this.replicatedConfirmation;
 		const root = this.root;
 		if (root && root.next === this && !root.db) return root.replicatedConfirmation;
+	}
+	/**
+	 * The audit-log position (`localTime`) peers must acknowledge: that of the last write this commit
+	 * appended. A write that lost to a newer entry appended nothing, and its stored entry is the newer
+	 * one, at a position peers may already have passed, so it counts only when no write applied — then
+	 * peers must hold the entry that superseded it, as on RocksDB. Writes that opt out (audit-only
+	 * markers), have no stored entry (a delete on a table that neither audits nor tracks deletes) or go to
+	 * an unaudited table (no local time, nothing appended) are skipped rather than ending the search.
+	 */
+	private confirmationPosition(): number | undefined {
+		let supersededAt: number | undefined;
+		for (let i = this.writes.length - 1; i >= 0; i--) {
+			const write = this.writes[i];
+			if (!write || write.skipReplicationConfirmation) continue;
+			const localTime = write.store.getEntry(write.key)?.localTime;
+			if (!localTime) continue;
+			if (!write.skipped) return localTime;
+			supersededAt ??= localTime;
+		}
+		return supersededAt;
 	}
 	/**
 	 * Force-release the retained read snapshot without touching staged writes. The base class's
