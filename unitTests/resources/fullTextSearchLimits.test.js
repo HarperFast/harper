@@ -23,6 +23,7 @@ describe('full-text search resource limits', () => {
 		assert.strictEqual(rejection.status, 500);
 		assert.strictEqual(rejection.name, 'FullTextWorkerInitializationError');
 		assert.strictEqual(rejection.retryable, false);
+		assert.strictEqual(rejection.optionalRuntimeAvailable, false);
 		assert.match(rejection.error, /Initialize Harper before creating application workers/);
 		for (const value of [257, 258]) {
 			const result = execFileSync(process.execPath, [fixture, String(value)], { encoding: 'utf8', timeout: 15000 });
@@ -37,6 +38,16 @@ describe('full-text search resource limits', () => {
 	it('resolves missing settings without changing the defaults', () => {
 		assert.deepStrictEqual(resolveFullTextSearchLimits(undefined), DEFAULT_FULL_TEXT_SEARCH_LIMITS);
 		assert(Object.isFrozen(DEFAULT_FULL_TEXT_SEARCH_LIMITS.runtime));
+	});
+
+	it('observes changed work limits when a live configuration object is reused', () => {
+		const config = { maxRawHitsPerRequest: 10, requestBudgetMilliseconds: 100 };
+		assert.strictEqual(resolveFullTextSearchLimits(config).maxRawHitsPerRequest, 10);
+		config.maxRawHitsPerRequest = 20;
+		config.requestBudgetMilliseconds = 200;
+		const updated = resolveFullTextSearchLimits(config);
+		assert.strictEqual(updated.maxRawHitsPerRequest, 20);
+		assert.strictEqual(updated.requestBudgetMilliseconds, 200);
 	});
 
 	it('accepts integer strings and independently merges the native process budget', () => {

@@ -37,7 +37,7 @@ export function fullTextComparatorMode(comparator: string | undefined): NativeFu
 
 type FullTextReplayHit = { id: string; score: number; version?: string };
 
-export function fullTextReplayPrefixMatches(
+function fullTextReplayPrefixMatches(
 	expected: readonly FullTextReplayHit[],
 	actual: readonly FullTextReplayHit[],
 	start: number,

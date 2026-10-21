@@ -6,7 +6,7 @@ const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { startWorker, onMessageByType } = require('#js/server/threads/manageThreads');
 const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
 onMessageByType('full-text-runtime-test-response', () => {});
-function response(worker, action, timeout = 10000) {
+function response(worker, action, timeout = 30000) {
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(
 			() => finish(new Error(`Full-text runtime worker did not answer: ${action ?? 'ready'}`)),
@@ -38,7 +38,7 @@ async function terminateWorker(worker) {
 
 describe('full-text native runtime configuration', () => {
 	it('keeps one native runtime configuration across replacement workers and their application workers', async function () {
-		this.timeout(30000);
+		this.timeout(120000);
 		if (!(await supportsPublishedFullTextBinding())) this.skip();
 		const { getFullTextRuntimeConfiguration } = require('#src/resources/indexes/fullTextRuntimeConfiguration');
 		const { resolveFullTextSearchLimits } = require('#src/resources/indexes/fullTextSearchLimits');

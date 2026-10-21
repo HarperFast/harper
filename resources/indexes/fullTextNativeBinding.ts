@@ -2,7 +2,7 @@ import type { FullTextDerivedIndexEngine } from './fullTextDerivedIndex.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { resolveFullTextSearchLimits } from './fullTextSearchLimits.ts';
-import { getFullTextRuntimeConfiguration } from './fullTextRuntimeConfiguration.ts';
+import { getFullTextRuntimeConfiguration, FullTextWorkerInitializationError } from './fullTextRuntimeConfiguration.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const FULLTEXT_NATIVE_ABI_VERSION = 9;
@@ -230,7 +230,9 @@ export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule>
 				const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
 				try {
 					logger.warn?.(
-						`The @harperfast/fulltext native module is unavailable${typeof code === 'string' ? ` (${code})` : ''}`
+						error instanceof FullTextWorkerInitializationError
+							? error.message
+							: `The @harperfast/fulltext native module is unavailable${typeof code === 'string' ? ` (${code})` : ''}`
 					);
 				} catch {}
 			}

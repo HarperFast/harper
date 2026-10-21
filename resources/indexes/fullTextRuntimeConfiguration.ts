@@ -7,7 +7,7 @@ const configurationKey = 'harper.fullTextRuntimeConfiguration';
 let snapshot: { runtime: unknown } | undefined =
 	workerData?.fullTextRuntimeConfiguration ?? getEnvironmentData(configurationKey);
 
-class FullTextWorkerInitializationError extends ServerError {
+export class FullTextWorkerInitializationError extends ServerError {
 	readonly retryable = false;
 	constructor() {
 		super('Initialize Harper before creating application workers that use full-text search');
@@ -15,9 +15,14 @@ class FullTextWorkerInitializationError extends ServerError {
 	}
 }
 
-export function getFullTextRuntimeConfiguration(): Readonly<{ runtime: unknown }> {
+export function getFullTextRuntimeConfiguration(required?: true): Readonly<{ runtime: unknown }>;
+export function getFullTextRuntimeConfiguration(required: false): Readonly<{ runtime: unknown }> | undefined;
+export function getFullTextRuntimeConfiguration(required = true): Readonly<{ runtime: unknown }> | undefined {
 	if (!snapshot) {
-		if (!isMainThread) throw new FullTextWorkerInitializationError();
+		if (!isMainThread) {
+			if (required) throw new FullTextWorkerInitializationError();
+			return;
+		}
 		snapshot = { runtime: structuredClone(env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT)?.runtime) };
 		setEnvironmentData(configurationKey, snapshot);
 	}

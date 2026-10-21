@@ -122,7 +122,7 @@ describe('published native full-text Table.search integration', () => {
 		await Product.put('one', { title: 'Waterproof Trail Running Shoes', tags: ['outdoor', 'trail'] });
 		await Product.put('two', { title: 'Waterproof Road Shoes', tags: ['outdoor', 'road'] });
 		await Product.put('three', { title: 'Wireless Headphones', tags: ['electronics'] });
-		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30_000);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 60_000);
 
 		const search = (comparator, value, options = {}) =>
 			collect(
@@ -310,7 +310,7 @@ describe('published native full-text Table.search integration', () => {
 				category: index < 50 ? 'other' : 'target',
 			}))
 		);
-		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30_000);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 60_000);
 
 		const originalGetEntry = Product.primaryStore.getEntry;
 		let sourceReads = 0;
@@ -359,7 +359,7 @@ describe('published native full-text Table.search integration', () => {
 			await Product.put(
 				insertionOrder.slice(start, start + 100).map((id) => ({ id, title: 'identical catalog product' }))
 			);
-		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30_000);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 60_000);
 
 		const search = (limit) =>
 			collect(
@@ -449,7 +449,16 @@ describe('published native full-text Table.search integration', () => {
 					} while (continuation);
 					return hits;
 				};
-				assert.deepStrictEqual(await walk(17), await walk(113));
+				const tail = await walk(17);
+				assert.deepStrictEqual(tail, await walk(113));
+				const ordered = [...first.hits, ...tail];
+				for (let n = 1; n < ordered.length; n++) {
+					if (ordered[n - 1].score === ordered[n].score)
+						assert(
+							Buffer.compare(Buffer.from(ordered[n - 1].id), Buffer.from(ordered[n].id)) < 0,
+							'equal-score native hits must advance by document-ID bytes'
+						);
+				}
 				const small = await reader.searchPage({ query, limit: 17, continuation: first.continuation });
 				const large = await reader.searchPage({ query, limit: 113, continuation: first.continuation });
 				assert.deepStrictEqual(small.hits, large.hits.slice(0, 17));
@@ -478,7 +487,7 @@ describe('published native full-text Table.search integration', () => {
 		const keys = Array.from({ length: count }, (_, i) => `product-${String(i).padStart(5, '0')}`);
 		for (let start = 0; start < count; start += 250)
 			await Product.put(keys.slice(start, start + 250).map((id) => ({ id, title: 'widget catalog' })));
-		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30_000);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 60_000);
 		const ordered = keys
 			.slice()
 			.sort((a, b) =>

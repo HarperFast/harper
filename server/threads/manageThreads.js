@@ -435,7 +435,7 @@ function registerWorkerDataProvider(name, provider) {
 // setProperty() clones each value as it records it, so this provider cannot hit the log-and-skip
 // path below — which for this one would mean spawning the worker on the on-disk config.
 registerWorkerDataProvider('configOverrides', () => envMgr.getConfigOverrides());
-registerWorkerDataProvider('fullTextRuntimeConfiguration', getFullTextRuntimeConfiguration);
+registerWorkerDataProvider('fullTextRuntimeConfiguration', () => getFullTextRuntimeConfiguration(false));
 function collectProvidedWorkerData(options) {
 	if (workerDataProviders.size === 0) return undefined;
 	let provided;

@@ -17,9 +17,10 @@ async function run() {
 				const env = require('#src/utility/environment/environmentManager');
 				const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { runtime: { maxSearchThreads: workerData.maxSearchThreads + 1 } });
+				const optionalRuntime = require('#src/resources/indexes/fullTextRuntimeConfiguration').getFullTextRuntimeConfiguration(false);
 				require('#src/resources/indexes/fullTextNativeBinding').loadFullTextNativeBinding().then(
 					() => parentPort.postMessage('ready'),
-					(error) => parentPort.postMessage({ status: error.statusCode, error: error.message, name: error.name, retryable: error.retryable })
+					(error) => parentPort.postMessage({ status: error.statusCode, error: error.message, name: error.name, retryable: error.retryable, optionalRuntimeAvailable: optionalRuntime !== undefined })
 				);
 			`,
 				{ eval: true, workerData: { maxSearchThreads } }

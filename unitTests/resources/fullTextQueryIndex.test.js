@@ -255,24 +255,6 @@ function readyQueryIndex(auditStore, readinessId, storeName) {
 	return fixture.index;
 }
 
-describe('full-text replay prefix validation', () => {
-	const { fullTextReplayPrefixMatches } = require('#src/resources/indexes/fullTextQueryProtocol');
-	const hits = [
-		{ id: 'a', score: 2, version: '1' },
-		{ id: 'é', score: 1, version: '2' },
-	];
-	it('validates a replay split across different batch sizes', () => {
-		assert.strictEqual(fullTextReplayPrefixMatches(hits, hits, 0, 2), true);
-		assert.strictEqual(fullTextReplayPrefixMatches(hits, hits.slice(1), 1, 1), true);
-	});
-	it('rejects changed order, score, version and missing prefix entries', () => {
-		assert.strictEqual(fullTextReplayPrefixMatches(hits, hits.slice().reverse(), 0, 2), false);
-		assert.strictEqual(fullTextReplayPrefixMatches(hits, [{ ...hits[0], score: 3 }], 0, 1), false);
-		assert.strictEqual(fullTextReplayPrefixMatches(hits, [{ ...hits[0], version: 'other' }], 0, 1), false);
-		assert.strictEqual(fullTextReplayPrefixMatches(hits, [], 0, 1), false);
-	});
-});
-
 describe('full-text replay page protocol', () => {
 	const { replayFullTextPrefix } = require('#src/resources/indexes/fullTextQueryProtocol');
 	const prefix = [
