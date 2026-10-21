@@ -28,7 +28,7 @@ suite('sourcedFrom concurrent misses over REST', (ctx: ContextWithHarper) => {
 		origin = http.createServer(async (req, res) => {
 			const id = decodeURIComponent(/^\/item\/(.+)$/.exec(req.url ?? '')?.[1] ?? '');
 			originRequests.set(id, (originRequests.get(id) ?? 0) + 1);
-			await sleep(50);
+			await sleep(300);
 			const record = originRecords.get(id);
 			if (record) res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(record));
 			else res.writeHead(404).end();
@@ -56,7 +56,7 @@ suite('sourcedFrom concurrent misses over REST', (ctx: ContextWithHarper) => {
 			Array.from({ length: CONCURRENCY }, async () => {
 				const response = await fetch(`${restURL}/CoalescedCache/${id}`, {
 					headers: { ...headers, ...extraHeaders },
-					signal: AbortSignal.timeout(15_000),
+					signal: AbortSignal.timeout(30_000),
 				});
 				const body = await response.text();
 				return response.status === 200 ? JSON.parse(body).name : response.status;

@@ -1,4 +1,3 @@
-// The source reads from an origin the test runs, which counts the requests for each id.
 const { CoalescedCache } = tables;
 
 CoalescedCache.sourcedFrom({
