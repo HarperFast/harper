@@ -139,7 +139,7 @@ GET and QUERY can return continuation pages. OPTIONS returns request metadata wi
 search. HEAD is an exception to the usual GET-without-a-body behavior: it returns 400 before
 opening or advancing a continuation. Other methods also reject continuation parameters with 400.
 
-Long record IDs make continuation tokens larger. Qualification with the released library produced
+Long record IDs make continuation tokens larger. Local measurements produced
 tokens of about 600 bytes for short IDs and nearly 8 KB near the supported ID limit. Review Harper's
 `http.maxHeaderSize` setting and any proxy response-header and request-line limits. Leave room for the
 token, query, authentication, and other headers; a token that fits Harper may exceed a proxy limit.
