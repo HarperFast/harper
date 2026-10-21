@@ -145,7 +145,7 @@ class sqlStatementBucket {
 	getRowAccessors(): string[] {
 		const accessors = [];
 		for (const node of astNodes(this.ast)) {
-			if (node.columnid === '_') accessors.push('_');
+			if (node instanceof (alasql as any).yy.Column && node.columnid === '_') accessors.push('_');
 			else if (node instanceof (alasql as any).yy.JavaScript) accessors.push('JavaScript expression');
 		}
 		return accessors;
@@ -487,17 +487,8 @@ function getAttributionScope(ast: any): AttributionTable[] {
 }
 
 /**
- * Pull the table attributes specified in a SELECT into affectedAttributes.
- *
- * Every column reference — select list, WHERE, GROUP BY, HAVING, each JOIN's ON and USING, ORDER BY —
- * is attributed with the v2 binder's own rules (sqlEngine/binder/columnScope.ts), so a column is
- * permission-checked against the table the engine reads it from. A qualifier that names no table in
- * scope, or several, goes to unresolvedColumns and the statement is refused.
- *
- * @param ast - the SELECT syntax tree
- * @param {Map} affectedAttributes - [schema, Map[table, [attributesArray]]], filled in.
- * @param {Map} tableLookup - [alias, tableName], filled in.
- * @param {string[]} unresolvedColumns - column references that could not be attributed, filled in.
+ * Attributes every column reference in a SELECT to the table the engines read it from, using the v2
+ * binder's rules (sqlEngine/binder/columnScope.ts). See sqlTranslator/DESIGN.md.
  */
 function getSelectAttributes(
 	ast: any,
@@ -550,8 +541,9 @@ function getSelectAttributes(
 			const claimants = clauseScope.filter(
 				(entry) => entry.effectiveAlias === node.tableid || entry.table === node.tableid
 			);
+			const reference = `${node.tableid}.${node.columnid}`;
 			if (claimants.length === 1) record(claimants[0], node.columnid);
-			else unresolvedColumns.push(`${node.tableid}.${node.columnid}`);
+			else if (!unresolvedColumns.includes(reference)) unresolvedColumns.push(reference);
 			return;
 		}
 		// Wildcards stay with the FROM table; updateAttributeWildcardsForRolePerms() expands them there.
@@ -580,7 +572,6 @@ function getSelectAttributes(
 	recordColumns(ast.order, scope);
 	(ast.joins ?? []).forEach((join, index) => {
 		const joinedIdx = ast.from.length + index;
-		// Each ON sees only the tables joined so far, as the binder resolves it.
 		recordColumns(join?.on, scope.slice(0, joinedIdx + 1));
 		for (const column of join?.using ?? []) {
 			const columnid = column?.columnid;

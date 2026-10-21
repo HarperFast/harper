@@ -615,8 +615,7 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_TABLE);
 		}
 
-		// Attribute checks below only see attributes the bucket attributed to a table; a column it could
-		// not attribute, or a whole-row read that names no attribute, would go unchecked.
+		// Neither reaches the attribute checks below.
 		if (!isSuperUser) {
 			const unresolvedColumns = parsedAst.getUnresolvedColumnRefs();
 			if (unresolvedColumns.length > 0) {

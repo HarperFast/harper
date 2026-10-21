@@ -125,15 +125,15 @@ describe('SQL column attribution for attribute permissions', () => {
 		});
 
 		it("reports a qualifier that is one table's alias and another's base name", () => {
-			// v2 would read R.ssn (alias first); legacy SQL would read L.ssn.
+			// v2 would read R.ssn (alias first); legacy SQL matches both tables.
 			const bucket = bucketFor('SELECT L.ssn FROM data.L a JOIN data.R L ON a.id = L.id');
 			assert.ok(bucket.getUnresolvedColumnRefs().includes('L.ssn'));
 			assert.ok(!attributesOf(bucket, 'data', 'R').includes('ssn'));
 		});
 
 		it('reports a qualifier shared by same-named tables in different databases', () => {
-			const bucket = bucketFor('SELECT L.secret FROM data.L JOIN vault.L ON data.L.id = vault.L.id');
-			assert.ok(bucket.getUnresolvedColumnRefs().includes('L.secret'));
+			const bucket = bucketFor('SELECT L.secret FROM data.L JOIN vault.L USING (id)');
+			assert.deepStrictEqual(bucket.getUnresolvedColumnRefs(), ['L.secret']);
 		});
 
 		it('reports a qualifier that names no table in scope', () => {
@@ -183,10 +183,16 @@ describe('SQL column attribution for attribute permissions', () => {
 		it('walks a subquery node AlaSQL shares between two fields', () => {
 			const bucket = bucketFor('SELECT label FROM data.L WHERE EXISTS (SELECT id FROM data.R)');
 			assert.deepStrictEqual(bucket.getRowAccessors(), []);
+			// Nested queries are walked with the outer scope, which is safe only because they are refused.
+			assert.deepStrictEqual(bucket.getUnauthorizedTableRefs(), ['nested query in "exists"']);
 		});
 
 		it('lists nothing for a statement that names its columns', () => {
 			assert.deepStrictEqual(bucketFor(`SELECT VALUE label FROM data.L WHERE id = 1`).getRowAccessors(), []);
+			assert.deepStrictEqual(
+				bucketFor("INSERT INTO data.L (id, label) VALUES ('x', {columnid:'_'})").getRowAccessors(),
+				[]
+			);
 		});
 	});
 });

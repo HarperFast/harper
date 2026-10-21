@@ -1,12 +1,8 @@
-/**
- * Column-to-table resolution rules for multi-table SQL, shared by the v2 binder (bind.ts,
- * logical/build.ts) and the authorization layer (sqlTranslator/sql_statement_bucket.ts). One rule
- * set means a column is authorized against the same table the engine reads it from.
- */
+// Shared with SQL authorization (sqlTranslator/sql_statement_bucket.ts) so a column is authorized
+// against the table the engine reads it from.
 
 export interface ScopeTable {
 	table: string;
-	/** alias ?? table — unique within a join scope. */
 	effectiveAlias: string;
 	attributes: readonly { name: string }[];
 }
