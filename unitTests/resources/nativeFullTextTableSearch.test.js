@@ -439,6 +439,12 @@ describe('published native full-text Table.search integration', () => {
 				});
 				assert.strictEqual(ordinary.totalRelation, 'exact');
 				assert.deepStrictEqual((await reader.searchPage({ query, limit: ordinary.hits.length })).hits, ordinary.hits);
+				for (const limit of [17, 73, 113, 257]) {
+					const page = await reader.searchPage({ query, limit });
+					const sharedLength = Math.min(ordinary.hits.length, page.hits.length);
+					assert.strictEqual(sharedLength, Math.min(ordinary.hits.length, limit));
+					assert.deepStrictEqual(page.hits.slice(0, sharedLength), ordinary.hits.slice(0, sharedLength));
+				}
 				const first = await reader.searchPage({ query, limit: 73 });
 				const walk = async (limit) => {
 					const hits = [];
