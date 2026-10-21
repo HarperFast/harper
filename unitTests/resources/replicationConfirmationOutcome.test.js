@@ -6,10 +6,9 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction, contextStorage } = require('#src/resources/transaction');
 const {
-	replicationConfirmation: rocksConfirmation,
+	replicationConfirmation: registerConfirmation,
 	settleCommitCompletions,
 } = require('#src/resources/DatabaseTransaction');
-const { replicationConfirmation: lmdbConfirmation } = require('#src/resources/LMDBTransaction');
 const { ReplicationConfirmationError, ServerError } = require('#src/utility/errors/hdbError');
 const { Resource } = require('#src/resources/Resource');
 const { Resources } = require('#src/resources/Resources');
@@ -17,7 +16,6 @@ const { handleApplication } = require('#src/server/REST');
 const { contentTypes } = require('#src/server/serverHelpers/contentTypes');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
-const registerConfirmation = isLMDB ? lmdbConfirmation : rocksConfirmation;
 
 describe('Replication confirmation failure after a local commit', () => {
 	let First, Second;
@@ -41,18 +39,10 @@ describe('Replication confirmation failure after a local commit', () => {
 	});
 	afterEach(() => registerConfirmation(undefined));
 
-	function requestConfirmation(context) {
-		let link = context.transaction;
-		while (link.db?.path !== First.primaryStore.path) link = link.next;
-		// LMDB's production registry is unregistered; these tests explicitly exercise its commit path.
-		link.replicatedConfirmation = 1;
-	}
-
 	async function confirmedWrite(id) {
 		const context = { replicatedConfirmation: 1 };
 		return transaction(context, async () => {
 			await First.put({ id });
-			requestConfirmation(context);
 		});
 	}
 
@@ -238,7 +228,7 @@ describe('Replication confirmation failure after a local commit', () => {
 		const id = nextId();
 		const failure = new ServerError('Confirmation count cannot be met', 400);
 		let waiterCalled = false;
-		rocksConfirmation(
+		registerConfirmation(
 			() => (waiterCalled = true),
 			() => {
 				throw failure;
@@ -271,7 +261,6 @@ describe('Replication confirmation failure after a local commit', () => {
 		let settled = false;
 		const committing = transaction(context, async () => {
 			await First.put({ id });
-			requestConfirmation(context);
 			await Delayed.put({ id });
 		}).then(
 			() => {
@@ -315,7 +304,6 @@ describe('Replication confirmation failure after a local commit', () => {
 			let settled = false;
 			const committing = transaction(context, async () => {
 				await First.put({ id });
-				if (confirmation) requestConfirmation(context);
 				await Failing.put({ id });
 			}).then(
 				() => (settled = true),
@@ -374,7 +362,6 @@ describe('Replication confirmation failure after a local commit', () => {
 		let outcome;
 		const committing = transaction(context, async () => {
 			await First.put({ id });
-			requestConfirmation(context);
 			await Second.put({ id });
 			let child = context.transaction;
 			while (child.db?.path !== Second.primaryStore.path) child = child.next;
@@ -485,7 +472,6 @@ describe('Replication confirmation failure after a local commit', () => {
 				const completing = transaction(context, async (txn) => {
 					scope = txn;
 					await First.put({ id });
-					requestConfirmation(context);
 					if (explicit) await txn.commit();
 				}).then(
 					() => (settled = true),
@@ -525,7 +511,6 @@ describe('Replication confirmation failure after a local commit', () => {
 			transaction(context, async (txn) => {
 				scope = txn;
 				await First.put({ id });
-				requestConfirmation(context);
 			}),
 			(error) => error.replicationUnconfirmed === true && error.retryable === false
 		);
@@ -726,7 +711,6 @@ describe('Replication confirmation failure after a local commit', () => {
 		await assert.rejects(
 			transaction(context, async (scope) => {
 				await First.put({ id });
-				requestConfirmation(context);
 				await scope.commit();
 			}),
 			(error) => error.replicationUnconfirmed === true
@@ -848,8 +832,8 @@ describe('Replication confirmation failure after a local commit', () => {
 						if (rollback === 'aborted') contextStorage.getStore().transaction.abort();
 						await confirmedWrite(target.id);
 					} else {
+						contextStorage.getStore().transaction.replicatedConfirmation = 1;
 						await First.put({ id: target.id });
-						requestConfirmation(contextStorage.getStore());
 					}
 					return 'created';
 				}
@@ -881,4 +865,77 @@ describe('Replication confirmation failure after a local commit', () => {
 			if (rollback) assert.equal(await Second.get(`outer-rest-${id}`), null);
 		});
 	}
+
+	describe('the context count, on either engine', () => {
+		const firstDatabase = () => First.primaryStore.rootStore.databaseName;
+
+		for (const exclusive of isLMDB ? [false, true] : [false]) {
+			it(`holds the write until the registered waiter confirms it${exclusive ? ' (exclusive LMDB)' : ''}`, async () => {
+				const id = nextId();
+				const release = Promise.withResolvers();
+				const calls = [];
+				registerConfirmation((databaseName, version, count) => {
+					calls.push({ databaseName, version, count });
+					return release.promise;
+				});
+				const previousRisk = First.primaryStore.retryRisk;
+				if (exclusive) First.primaryStore.retryRisk = 101;
+				let settled = false;
+				try {
+					const committing = transaction({ replicatedConfirmation: 2 }, () => First.put({ id })).finally(
+						() => (settled = true)
+					);
+					await waitFor(() => calls.length > 0, { message: 'the registered waiter was never called' });
+					await new Promise((resolve) => setTimeout(resolve, 20));
+					assert.strictEqual(settled, false, 'the write resolved before its confirmation');
+					assert.deepStrictEqual(
+						calls.map(({ databaseName, count }) => ({ databaseName, count })),
+						[{ databaseName: firstDatabase(), count: 2 }]
+					);
+					assert.ok(calls[0].version > 0);
+					release.resolve();
+					await committing;
+				} finally {
+					release.resolve();
+					First.primaryStore.retryRisk = previousRisk;
+				}
+				assert.strictEqual((await First.get(id)).id, id);
+			});
+		}
+
+		it('confirms only the first database of a two-database transaction', async () => {
+			const id = nextId();
+			const calls = [];
+			registerConfirmation((databaseName) => calls.push(databaseName));
+			await transaction({ replicatedConfirmation: 1 }, async () => {
+				await First.put({ id });
+				await Second.put({ id });
+			});
+			assert.deepStrictEqual(calls, [firstDatabase()]);
+			assert.strictEqual((await Second.get(id)).id, id);
+		});
+
+		it('confirms each segment of a scope that commits mid-way', async () => {
+			const id = nextId();
+			const calls = [];
+			registerConfirmation((databaseName) => calls.push(databaseName));
+			const context = { replicatedConfirmation: 1 };
+			await transaction(context, async () => {
+				await First.put({ id: `${id}-a` }, context);
+				await context.transaction.commit();
+				assert.strictEqual(calls.length, 1, 'the mid-scope commit waited for confirmation');
+				await First.put({ id: `${id}-b` }, context);
+			});
+			assert.deepStrictEqual(calls, [firstDatabase(), firstDatabase()]);
+		});
+
+		it('does not call the waiter for a read-only scope or an unconfirmed write', async () => {
+			const id = nextId();
+			let called = false;
+			registerConfirmation(() => (called = true));
+			await transaction({ replicatedConfirmation: 1 }, () => First.get(id));
+			await transaction({}, () => First.put({ id }));
+			assert.strictEqual(called, false);
+		});
+	});
 });

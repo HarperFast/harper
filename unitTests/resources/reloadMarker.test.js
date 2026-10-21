@@ -5,14 +5,12 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { LOCAL_ONLY } = require('#src/resources/auditStore');
 const {
 	DatabaseTransaction,
-	replicationConfirmation: rocksReplicationConfirmation,
+	replicationConfirmation: setReplicationConfirmation,
 } = require('#src/resources/DatabaseTransaction');
-const { replicationConfirmation: lmdbReplicationConfirmation } = require('#src/resources/LMDBTransaction');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
-const setReplicationConfirmation = isLMDB ? lmdbReplicationConfirmation : rocksReplicationConfirmation;
 
 // A table-reload marker is a whole-table signal (harper-pro#489): one LOCAL_ONLY audit entry of type
 // 'reload' with no record, delivered to every subscriber on the table so they re-read it. It exists so

@@ -8,6 +8,7 @@ import {
 	requestAbortedError,
 	transactionOpenTooLongError,
 	confirmReplicationAfterCommit,
+	registeredReplicationConfirmation,
 	settleCommitCompletions,
 	type CommitOptions,
 	type TransactionWrite,
@@ -28,11 +29,6 @@ export const TRANSACTION_STATE = {
 	OPEN: 1, // the transaction is open and can be used for reads and writes
 	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
 };
-let confirmReplication;
-export function replicationConfirmation(callback) {
-	confirmReplication = callback;
-}
-
 export class LMDBTransaction extends DatabaseTransaction {
 	stagesWriteOnSave = false;
 	#context: Context;
@@ -339,14 +335,16 @@ export class LMDBTransaction extends DatabaseTransaction {
 						if (store) completions.push(store.flushed);
 					}
 					let confirmation: Promise<void>;
-					if (this.replicatedConfirmation) {
+					const confirmationCount = this.confirmationCount();
+					if (confirmationCount) {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
+						const confirmReplication = registeredReplicationConfirmation();
 						const databaseName = this.writes[0]?.store.rootStore.databaseName;
 						const lastEntry = this.lastConfirmableEntry();
 						if (confirmReplication && databaseName && lastEntry)
 							confirmation = confirmReplicationAfterCommit(() =>
-								confirmReplication(databaseName, (lastEntry as any).localTime, this.replicatedConfirmation)
+								confirmReplication(databaseName, (lastEntry as any).localTime, confirmationCount)
 							);
 					}
 					// commit succeeded; clean up files for any writes whose commit-handler took an early-return,
@@ -422,6 +420,17 @@ export class LMDBTransaction extends DatabaseTransaction {
 			}
 		}
 		throw error;
+	}
+	/**
+	 * The count this link waits for. An LMDB store can't claim the RocksDB-class root `transaction()`
+	 * creates, so the root's count belongs to its first link while the root holds no store; decided
+	 * at commit because a RocksDB table can still claim the root after this link exists. Later links
+	 * stay unconfirmed, as on RocksDB (harper#3341).
+	 */
+	private confirmationCount(): number | undefined {
+		if (this.replicatedConfirmation) return this.replicatedConfirmation;
+		const root = this.root;
+		if (root && root.next === this && !root.db) return root.replicatedConfirmation;
 	}
 	/**
 	 * Force-release the retained read snapshot without touching staged writes. The base class's

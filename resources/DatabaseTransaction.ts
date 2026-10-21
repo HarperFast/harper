@@ -489,6 +489,10 @@ export function replicationConfirmation(callback, feasibility?: typeof confirmat
 	confirmReplication = callback;
 	confirmationFeasibility = feasibility;
 }
+/** The waiter registered through replicationConfirmation, shared by every storage engine's commit. */
+export function registeredReplicationConfirmation() {
+	return confirmReplication;
+}
 
 export function confirmReplicationAfterCommit(callback: () => unknown): Promise<void> {
 	let result;
