@@ -1013,15 +1013,15 @@ export function searchByIndex(
 			case 'gele':
 			case 'gelt':
 			case 'gtlt':
-			case 'gtle':
-				start = value[0];
+			case 'gtle': {
+				[start, end] = rangeBounds(comparator, value);
 				if (start instanceof Date) start = start.getTime();
-				end = value[1];
 				if (end instanceof Date) end = end.getTime();
-				inclusiveEnd =
-					(comparator as any) === 'gele' || (comparator as any) === 'gtle' || (comparator as any) === 'between';
-				exclusiveStart = (comparator as any) === 'gtlt' || (comparator as any) === 'gtle';
+				const rangeComparator = ALTERNATE_COMPARATOR_NAMES[comparator] || comparator;
+				inclusiveEnd = rangeComparator === 'gele' || rangeComparator === 'gtle' || rangeComparator === 'between';
+				exclusiveStart = rangeComparator === 'gtlt' || rangeComparator === 'gtle';
 				break;
+			}
 			case 'equals':
 			case undefined:
 				start = value;
@@ -1494,7 +1494,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 	});
 }
 
-const ALTERNATE_COMPARATOR_NAMES = {
+export const ALTERNATE_COMPARATOR_NAMES = {
 	'eq': 'equals',
 	'greater_than': 'gt',
 	'greaterThan': 'gt',
@@ -1520,9 +1520,9 @@ const ALTERNATE_COMPARATOR_NAMES = {
 	'...': 'between',
 };
 
-// Comparators whose value is a list (array) of values. Used to recognize the
+// Canonical comparators whose value is a list (array) of values. Used to recognize the
 // REST `(v1,v2,...)` value syntax during parsing.
-const LIST_VALUE_COMPARATORS = new Set(['in', 'between']);
+const LIST_VALUE_COMPARATORS = new Set(['in', 'between', 'gele', 'gelt', 'gtlt', 'gtle']);
 
 // Base comparators that accept the `not_` prefix to produce a negated form.
 // `not_equal` is an existing alias for `ne` and keeps its existing semantics.
@@ -1561,6 +1561,12 @@ export function resolveComparator(comparator: string | undefined): {
 		}
 	}
 	return { comparator, negated: false };
+}
+
+function rangeBounds(comparator: string, value: any): [any, any] {
+	if (!Array.isArray(value) || value.length !== 2)
+		throw new ClientError(`"${comparator}" comparator requires a two-element array value`);
+	return value as [any, any];
 }
 
 /**
@@ -1746,6 +1752,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		case 'gtlt':
 		case 'gtle':
 		case 'gelt': {
+			rangeBounds(comparator, value);
 			if (value[0] instanceof Date) value[0] = value[0].getTime();
 			if (value[1] instanceof Date) value[1] = value[1].getTime();
 			const resolvedComparator = ALTERNATE_COMPARATOR_NAMES[comparator] || comparator;
@@ -2109,10 +2116,15 @@ export function estimateCondition(table) {
 	}
 	return estimateConditionForTable;
 }
-class SyntaxViolation extends Violation {}
+class SyntaxViolation extends Violation {
+	statusCode = 400;
+}
 const NEEDS_PARSER = /[()[\]|!<>.]|(=\w*=)/;
 const QUERY_PARSER = /([^?&|=<>!([{}\]),]*)([([{}\])|,&]|[=<>!]*)/g;
-const VALUE_PARSER = /([^&|=[\]{}]+)([[\]{}]|[&|=]*)/g;
+const VALUE_PARSER = /([^&|=[\]{}]*)([[\]{}]|[&|]=?|=|)/g;
+// Inside a `(...)` group a value may hold one level of balanced parentheses (the `(v1,v2)` list syntax), and an
+// unmatched `)` closes the group
+const PAREN_VALUE_PARSER = /((?:[^&|=()[\]{}]|\([^&|=()[\]{}]*\))*)([()[\]{}]|[&|]=?|=|)/g;
 const FIQL_OPERATOR_NAME = /^[a-zA-Z_][a-zA-Z_0-9]*$/;
 let lastIndex;
 let currentQuery;
@@ -2133,7 +2145,7 @@ export function parseQuery(queryToParse: string, query: RequestTarget) {
 			parseBlock(currentQuery, '');
 			if (lastIndex !== queryString.length) recordError(`Unable to parse query, unexpected end of query`);
 			if ((currentQuery as any).parseErrorMessage) {
-				(currentQuery as any).parseError = new SyntaxViolation((query as any).parseErrorMessage);
+				(currentQuery as any).parseError = new SyntaxViolation((currentQuery as any).parseErrorMessage);
 				if (!query) throw (currentQuery as any).parseError;
 			}
 			return currentQuery;
@@ -2214,26 +2226,10 @@ function parseBlock(query, expectedEnd) {
 			case undefined:
 				if (attribute == null) {
 					if (attribute === undefined) {
-						if (expectedEnd)
-							recordError(
-								`expected '${expectedEnd}', but encountered ${operator[0] ? "'" + operator[0] + "'" : 'end of string'}}`
-							);
+						if (expectedEnd && operator) recordError(`expected '${expectedEnd}', but encountered '${operator[0]}'`);
 						recordError(`no comparison specified before ${operator ? "'" + operator + "'" : 'end of string'}`);
 					}
-				} else {
-					if (!query.conditions) recordError('conditions/comparisons are not allowed in a property list');
-					const condition = buildCondition(attribute, comparator, value, valueDecoder);
-					if (attribute === '') {
-						// this is a nested condition
-						const lastCondition = query.conditions[query.conditions.length - 1];
-						lastCondition.chainedConditions = lastCondition.chainedConditions || [];
-						lastCondition.chainedConditions.push(condition);
-						lastCondition.operator = lastBinaryOperator;
-					} else {
-						assignOperator(query, lastBinaryOperator);
-						query.conditions.push(condition);
-					}
-				}
+				} else addCondition(query, attribute, comparator, value, valueDecoder, lastBinaryOperator);
 				if (operator === '&') {
 					lastBinaryOperator = 'and';
 					attribute = undefined;
@@ -2282,7 +2278,7 @@ function parseBlock(query, expectedEnd) {
 						if (Array.isArray(args[0]) && args.length === 1 && !(args[0] as any).name) {
 							query.select = args[0];
 							query.select.asArray = true;
-						} else if (args.length === 1) query.select = args[0];
+						} else if (args.length === 1 && !(args[0] as any).name) query.select = args[0];
 						else if (args.length === 2 && args[1] === '') query.select = args.slice(0, 1);
 						else query.select = args;
 						break;
@@ -2347,10 +2343,8 @@ function parseBlock(query, expectedEnd) {
 					// assert that it is expected
 					if (query.conditions) {
 						// finish condition
-						if (attribute) {
-							const condition = buildCondition(attribute, comparator || 'equals', value, valueDecoder);
-							assignOperator(query, lastBinaryOperator);
-							query.conditions.push(condition);
+						if (attribute != null) {
+							addCondition(query, attribute, comparator || 'equals', value, valueDecoder, lastBinaryOperator);
 						} else if (value) {
 							recordError('no attribute or comparison specified');
 						}
@@ -2363,13 +2357,29 @@ function parseBlock(query, expectedEnd) {
 			default:
 				recordError(`unexpected operator '${operator}'`);
 		}
-		if (expectedEnd !== ')') {
-			parser = attribute ? VALUE_PARSER : QUERY_PARSER;
-			parser.lastIndex = lastIndex;
+		parser = attribute == null ? QUERY_PARSER : expectedEnd === ')' ? PAREN_VALUE_PARSER : VALUE_PARSER;
+		parser.lastIndex = lastIndex;
+		if (lastIndex === queryString.length) {
+			if (expectedEnd) recordError(`expected '${expectedEnd}', but encountered end of string`);
+			return query;
 		}
-		if (lastIndex === queryString.length) return query;
 	}
 	if (expectedEnd) recordError(`expected '${expectedEnd}', but encountered end of string`);
+}
+function addCondition(query, attribute, comparator, value, valueDecoder, lastBinaryOperator) {
+	if (!query.conditions) return recordError('conditions/comparisons are not allowed in a property list');
+	const condition = buildCondition(attribute, comparator, value, valueDecoder);
+	if (attribute === '') {
+		// a chained leg (`&=`/`|=`) on the preceding condition's attribute
+		const lastCondition = query.conditions[query.conditions.length - 1];
+		if (lastCondition?.attribute == null) return recordError('a chained condition must follow a comparison');
+		lastCondition.chainedConditions = lastCondition.chainedConditions || [];
+		lastCondition.chainedConditions.push(condition);
+		lastCondition.operator = lastBinaryOperator;
+	} else {
+		assignOperator(query, lastBinaryOperator);
+		query.conditions.push(condition);
+	}
 }
 function assignOperator(query, lastBinaryOperator) {
 	if (query.conditions.length > 0) {
@@ -2433,7 +2443,7 @@ function buildCondition(
 	const { comparator: resolvedComparator, negated } = resolveComparator(rawComparator);
 	let value: any;
 	if (
-		LIST_VALUE_COMPARATORS.has(resolvedComparator as string) &&
+		LIST_VALUE_COMPARATORS.has(ALTERNATE_COMPARATOR_NAMES[resolvedComparator] ?? resolvedComparator) &&
 		rawValue.length >= 2 &&
 		rawValue.charCodeAt(0) === 0x28 /* ( */ &&
 		rawValue.charCodeAt(rawValue.length - 1) === 0x29 /* ) */
