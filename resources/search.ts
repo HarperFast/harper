@@ -475,12 +475,12 @@ export class CandidateKeySet {
 			this.add(primaryKey);
 			return true;
 		}
-		const identity = writeKeyId(primaryKey);
 		if (typeof primaryKey === 'bigint') {
 			const number = Number(primaryKey);
 			if (BigInt(number) === primaryKey && (number === 0 ? this.#zero : this.#byValue.has(number))) return false;
 			this.#holdsBigInt = true;
 		}
+		const identity = writeKeyId(primaryKey);
 		if (this.#encoded.has(identity)) return false;
 		this.#encoded.add(identity);
 		return true;
