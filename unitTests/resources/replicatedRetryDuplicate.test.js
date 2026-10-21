@@ -145,19 +145,23 @@ describe('Retried replicated duplicates (harper#3361)', function () {
 		assert.equal((await state.T.get('counter')).count, 2, 'both distinct increments must survive');
 	});
 
-	for (const offset of [0, 20]) {
-		it(`preserves distinct log keys sharing a record version during a retry (offset ${offset})`, async function () {
+	for (const [offset, committedOffset] of [
+		[0, 10],
+		[20, 10],
+		[20, 0],
+	]) {
+		it(`preserves distinct log keys sharing a record version during a retry (offsets ${offset}/${committedOffset})`, async function () {
 			if (isLMDB) return this.skip();
 			const version = Date.now() + 86400000;
-			const state = await fixture(`DistinctKeys${offset}`, version);
+			const state = await fixture(`DistinctKeys${offset}_${committedOffset}`, version);
 			const { write } = await conflict(
 				state,
 				{ count: { __op__: 'add', value: 1 } },
 				{ version, logKey: version + offset },
-				{ version, logKey: version + 10 }
+				{ version, logKey: version + committedOffset }
 			);
-			assert.equal(write.skipped, false, 'equal record versions alone do not prove write identity');
 			assert.equal((await state.T.get('counter')).count, 2);
+			assert.equal(write.skipped, false, 'equal record versions alone do not prove write identity');
 		});
 	}
 
