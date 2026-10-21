@@ -1789,6 +1789,7 @@ function initStores(
 		const trackDeletes = primaryAttribute.trackDeletes;
 		const expiration = primaryAttribute.expiration;
 		const eviction = primaryAttribute.eviction;
+		const replicaExpiration = primaryAttribute.replicaExpiration;
 		const sealed = primaryAttribute.sealed;
 		const cacheControl = primaryAttribute.cacheControl;
 		const splitSegments = primaryAttribute.splitSegments;
@@ -1972,6 +1973,7 @@ function initStores(
 					replicate,
 					expirationMS: expiration && expiration * 1000,
 					evictionMS: eviction && eviction * 1000,
+					replicaExpirationMS: replicaExpiration && replicaExpiration * 1000,
 					cacheControl,
 					trackDeletes,
 					tableName,
@@ -2528,6 +2530,8 @@ interface TableDefinition {
 	expiration?: number;
 	eviction?: number;
 	scanInterval?: number;
+	/** Seconds a record fetched from a resident is kept as a local replica; 0 keeps reads as proxy reads. */
+	replicaExpiration?: number;
 	audit?: boolean;
 	sealed?: boolean;
 	splitSegments?: boolean;
@@ -3825,6 +3829,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		expiration,
 		eviction,
 		scanInterval,
+		replicaExpiration,
 		attributes,
 		audit,
 		sealed,
@@ -4542,6 +4547,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			audit = primaryKeyAttribute.audit = typeof audit === 'boolean' ? audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
 			if (expiration) primaryKeyAttribute.expiration = expiration;
 			if (eviction) primaryKeyAttribute.eviction = eviction;
+			if (replicaExpiration !== undefined) primaryKeyAttribute.replicaExpiration = +replicaExpiration;
 			// persist cacheControl so all threads (and future boots) see it; undefined callers inherit
 			// a descriptor value carried by cluster schema events; null (schema has no directive)
 			// clears a stale value the carried descriptor may hold
@@ -4685,6 +4691,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				trackDeletes,
 				expirationMS: expiration && expiration * 1000,
 				evictionMS: eviction && eviction * 1000,
+				replicaExpirationMS: replicaExpiration && replicaExpiration * 1000,
 				primaryKey,
 				tableName,
 				tableId: primaryStore.tableId,
@@ -4855,6 +4862,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						(replicate !== undefined && replicate !== attributeDescriptor.replicate) ||
 						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
 						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
+						(replicaExpiration !== undefined && +replicaExpiration !== attributeDescriptor.replicaExpiration) ||
 						attribute.type !== attributeDescriptor.type)
 				) {
 					exclusiveLock();
@@ -4867,6 +4875,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					}
 					if (expiration) updatedPrimaryAttribute.expiration = +expiration;
 					if (eviction) updatedPrimaryAttribute.eviction = +eviction;
+					if (replicaExpiration !== undefined) updatedPrimaryAttribute.replicaExpiration = +replicaExpiration;
 					if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
 					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
 					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
@@ -5246,11 +5255,18 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if ((hasChanges || refreshRelationshipAttributes) && !target.branch) {
 		databaseEventsEmitter.emit('updateTable', Table, origin !== 'cluster');
 	}
-	if (expiration || eviction || scanInterval || attributes.some((attribute) => attribute.expiresAt))
+	if (
+		expiration ||
+		eviction ||
+		scanInterval ||
+		replicaExpiration !== undefined ||
+		attributes.some((attribute) => attribute.expiresAt)
+	)
 		Table.setTTLExpiration({
 			expiration,
 			eviction,
 			scanInterval,
+			replicaExpiration,
 			fromSchema: true,
 			isolatedApplicationOwner,
 		});

@@ -276,6 +276,8 @@ export interface DefineTableOptions {
 	expiration?: number;
 	eviction?: number;
 	scanInterval?: number;
+	/** Seconds a record fetched from a resident is kept as a local replica; 0 keeps reads as proxy reads. */
+	replicaExpiration?: number;
 	splitSegments?: boolean;
 	trackDeletes?: boolean;
 	randomAccessFields?: boolean;

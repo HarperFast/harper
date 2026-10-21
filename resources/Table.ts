@@ -133,6 +133,8 @@ import {
 	ownsStoreExpiration,
 	runsApplicationCodeSingletons,
 	isDedicatedWorker,
+	broadcast,
+	onMessageByType,
 } from '../server/threads/manageThreads.js';
 import {
 	HAS_BLOBS,
@@ -555,7 +557,28 @@ export function frozenRecordView(record: any): any {
 	});
 }
 export const INVALIDATED = 1;
+// A complete record fetched from a resident and kept locally only: never audited, replicated, served as
+// a complete record, or counted as a resident. Exclusive with INVALIDATED; the stub's residencyId stays.
+export const REPLICA = 4;
 export const EVICTED = 8; // note that 2 is reserved for timestamps
+export const DEFAULT_REPLICA_EXPIRATION_MS = 3_600_000;
+// A read hit rewrites a replica's deadline only once this much of its lifetime has elapsed.
+const REPLICA_REFRESH_FRACTION = 0.25;
+const MIN_REPLICA_SCAN_INTERVAL_MS = 1000;
+const REPLICA_TABLES_KEY = Symbol.for('replica_tables');
+const REPLICA_EVICTION_ARMED = 'replica-eviction-armed';
+// The arming hooks of the live table classes on this thread, keyed by store path and table id.
+const replicaEvictionArmers = new Map<string, Set<() => void>>();
+onMessageByType(REPLICA_EVICTION_ARMED, ({ storePath, tableId }: { storePath: string; tableId: number }) => {
+	for (const arm of replicaEvictionArmers.get(`${storePath}:${tableId}`) ?? []) arm();
+});
+/** Seconds-derived milliseconds; 0 keeps reads as proxy reads with no replica stored. */
+function validReplicaExpirationMs(ms: unknown): number | undefined {
+	if (ms == null) return undefined;
+	if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0)
+		throw new Error('replicaExpiration must be a finite number of seconds, zero or more');
+	return ms;
+}
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
 const EVENT_HIGH_WATER_MARK = 100;
@@ -870,7 +893,7 @@ interface TableResourceClass {
 	 * This also informs the scheduling for record eviction.
 	 * @param opts Time in seconds until records expire, or an options object with `expiration`, `eviction`,
 	 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
-	 * eviction/scanInterval; object form replaces all three. An internal schema ownership-only call with
+	 * eviction/scanInterval; object form replaces all three, unless it names only `replicaExpiration`. An internal schema ownership-only call with
 	 * none of those values preserves the settings already loaded from the catalog.
 	 */
 	setTTLExpiration(
@@ -880,6 +903,7 @@ interface TableResourceClass {
 					expiration?: number;
 					eviction?: number;
 					scanInterval?: number;
+					replicaExpiration?: number;
 					fromSchema?: boolean;
 					isolatedApplicationOwner?: boolean;
 			  }
@@ -916,9 +940,9 @@ interface TableResourceClass {
 	 */
 	dropTable(options?: { droppedTime?: number; localOnly?: boolean; peer?: boolean }): Promise<boolean>;
 	/**
-	 * Record the relocation of an entry (when a record is moved to a different node), return true if it is now located locally
+	 * Keep a record fetched from a resident as a local replica of the stub `existingEntry`; resolves true when stored.
 	 */
-	_recordRelocate(existingEntry: any, entry: any): boolean;
+	_storeReplica(existingEntry: Entry, entry: Entry): Promise<boolean>;
 	/**
 	 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
 	 */
@@ -1408,6 +1432,10 @@ export function makeTable(options): TableResourceClass {
 	const tableRootStore = primaryStore.rootStore;
 	const tableRootPath = tableRootStore.path;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
+	let replicaExpirationMs = validReplicaExpirationMs(options.replicaExpirationMS) ?? DEFAULT_REPLICA_EXPIRATION_MS;
+	let replicaEvictionArmed = false;
+	let replicaTableMarked = false;
+	const replicaRefreshInFlight = new Set<string>();
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
 	// an isolated application's schema was declared here. Hydrating persisted metadata does not set it:
 	// dedicated workers open unrelated shared tables too, whose scan remains owned by the pool.
@@ -2867,7 +2895,7 @@ export function makeTable(options): TableResourceClass {
 		 * This also informs the scheduling for record eviction.
 		 * @param opts Time in seconds until records expire, or an options object with `expiration`, `eviction`,
 		 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
-		 * eviction/scanInterval; object form replaces all three. An internal schema ownership-only call with
+		 * eviction/scanInterval; object form replaces all three, unless it names only `replicaExpiration`. An internal schema ownership-only call with
 		 * none of those values preserves the settings already loaded from the catalog.
 		 */
 		static setTTLExpiration(
@@ -2877,16 +2905,32 @@ export function makeTable(options): TableResourceClass {
 						expiration?: number;
 						eviction?: number;
 						scanInterval?: number;
+						replicaExpiration?: number;
 						fromSchema?: boolean;
 						isolatedApplicationOwner?: boolean;
 				  }
 		) {
 			if (opts == null || (typeof opts !== 'number' && typeof opts !== 'object'))
 				throw new Error('Invalid expiration value type');
+			if (typeof opts === 'object' && opts.replicaExpiration !== undefined) {
+				const ms = validReplicaExpirationMs(opts.replicaExpiration * 1000);
+				if (ms !== replicaExpirationMs) {
+					replicaExpirationMs = ms;
+					if (replicaEvictionArmed) {
+						replicaEvictionArmed = false;
+						armReplicaEviction();
+					}
+				}
+			}
 			const declaredHere = typeof opts === 'object' && opts.fromSchema;
 			const isolatedApplicationOwner = declaredHere && opts.isolatedApplicationOwner;
+			// an object naming only replicaExpiration leaves the record settings as they are
 			const preserveLoadedConfiguration =
-				declaredHere && opts.expiration === undefined && opts.eviction === undefined && opts.scanInterval === undefined;
+				typeof opts === 'object' &&
+				(declaredHere || opts.replicaExpiration !== undefined) &&
+				opts.expiration === undefined &&
+				opts.eviction === undefined &&
+				opts.scanInterval === undefined;
 			if (((!ttlFromLoad && !declaredHere) || isolatedApplicationOwner) && !ttlConfiguredByApplication) {
 				ttlConfiguredByApplication = true;
 				// the scan owner may have changed with this: re-evaluate even if the interval did not
@@ -4115,37 +4159,20 @@ export function makeTable(options): TableResourceClass {
 		}
 
 		/**
-		 * Record the relocation of an entry (when a record is moved to a different node), return true if it is now located locally
-		 * @param existingEntry
-		 * @param entry
+		 * Keep a record fetched from a resident as a local replica of the stub `existingEntry`. Placement is
+		 * untouched: the row keeps the stub's residency and canonical identity, gets no audit entry and never
+		 * replicates. Resolves true when the replica was stored.
 		 */
-		static _recordRelocate(existingEntry, entry): boolean {
-			if (this.getResidencyById) return false; // we don't want to relocate entries that are located by id
-			const context = {
-				previousResidency: this.getResidencyRecord(existingEntry.residencyId),
-				isRelocation: true,
-			};
-			const residency = residencyFromFunction(this.getResidency(entry.value, context));
-			let residencyId: number;
-			if (residency) {
-				if (!residency.includes(server.hostname)) return false; // if we aren't in the residency, we don't need to do anything, we are not responsible for storing this record
-				residencyId = getResidencyId(residency);
-			}
-			const metadata = 0;
-			logger.debug?.('Performing a relocate of an entry', existingEntry.key, entry.value, residency);
-			updateRecord(
-				existingEntry.key,
-				entry.value, // store the record we downloaded
-				existingEntry,
-				existingEntry.version, // version number should not change
-				metadata,
-				true,
-				{ residencyId, expiresAt: entry.expiresAt, transaction: txnForContext(context).transaction },
-				'relocate',
-				false,
-				null // the audit record value should be empty since there are no changes to the actual data
-			);
-			return true;
+		static _storeReplica(existingEntry: Entry, entry: Entry): Promise<boolean> {
+			if (
+				TableResource.getResidencyById ||
+				!replicaExpirationMs ||
+				!existingEntry?.residencyId ||
+				entry?.value == null ||
+				entry.version == null
+			)
+				return Promise.resolve(false);
+			return writeReplica(existingEntry.key, entry.value, entry.version, entry.expiresAt);
 		}
 		/**
 		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
@@ -4169,6 +4196,30 @@ export function makeTable(options): TableResourceClass {
 				if (hasSourceGet) {
 					// if there is a resolution in-progress, abandon the eviction
 					if (primaryStore.hasLock(id, entry.version)) return;
+				}
+				entry ??= primaryStore.getEntry(id, options);
+				if (entry?.metadataFlags & REPLICA && entry.version === existingVersion) {
+					if (primaryStore.ifVersion) {
+						const demotion = demoteReplica(entry, undefined);
+						(lmdbTransaction as any).commit();
+						committed = true;
+						return trackMaintenanceCommit(
+							demotion.catch((error) => logger.warn?.('Error demoting replica', id, error))
+						);
+					}
+					if (hasDerivedIndexRegistration(auditStore, tableId))
+						reserveLocalKey(primaryStore.rootStore, transaction as RocksTransaction);
+					const demotion = demoteReplica(entry, transaction);
+					committed = true;
+					return trackMaintenanceCommit(
+						demotion.catch((error) => {
+							try {
+								(transaction as any).abort();
+							} catch {}
+							if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned demotion of busy replica', id);
+							else logger.warn?.('Error demoting replica', id, error);
+						})
+					);
 				}
 				// Eviction is not a canonical delete. Indexed caching tables add a local-only control entry so
 				// their derived indexes can remove the resident projection without exposing a delete event.
@@ -5584,27 +5635,8 @@ export function makeTable(options): TableResourceClass {
 						// only removes already-past records and so can never extend past the table default).
 						// Read from recordToStore so the metadata matches exactly what the pruning sweep later
 						// reads back. Falls back to the table default when the field is unset or not a timestamp.
-						const fieldExpiresAt = expiresAtProperty ? recordToStore?.[expiresAtProperty.name] : undefined;
-						// Coerce only genuine timestamp shapes: a number/bigint epoch, a Date, or a numeric/ISO
-						// string. Booleans, empty/whitespace strings, and null/undefined fall through to NaN so a
-						// nonsensical field value uses the table default rather than expiring the record at epoch 0.
-						let fieldExpiresAtMs = NaN;
-						if (typeof fieldExpiresAt === 'number' || typeof fieldExpiresAt === 'bigint')
-							fieldExpiresAtMs = Number(fieldExpiresAt);
-						else if (fieldExpiresAt instanceof Date) fieldExpiresAtMs = fieldExpiresAt.getTime();
-						else if (typeof fieldExpiresAt === 'string' && fieldExpiresAt.trim() !== '') {
-							const numeric = Number(fieldExpiresAt);
-							fieldExpiresAtMs = Number.isFinite(numeric) ? numeric : Date.parse(fieldExpiresAt);
-						}
-						// Only a finite, non-negative epoch counts: negatives collide with the -1 "no expiration"
-						// sentinel (the encoder omits HAS_EXPIRATION for <0, but the field sweep would still evict a
-						// negative field value), so treat a negative/NaN field as unset and use the table default.
-						expiresAt =
-							Number.isFinite(fieldExpiresAtMs) && fieldExpiresAtMs >= 0
-								? fieldExpiresAtMs
-								: expirationMs
-									? expirationMs + Date.now()
-									: -1;
+						const fieldDeadline = fieldExpiresAtMs(recordToStore);
+						expiresAt = Number.isFinite(fieldDeadline) ? fieldDeadline : expirationMs ? expirationMs + Date.now() : -1;
 					}
 					if (!fullUpdate) {
 						// we use our own data as the basis for the audit record, which will include information about the incremental updates, even if it was overwritten by CRDT resolution
@@ -6789,6 +6821,7 @@ export function makeTable(options): TableResourceClass {
 					if (entry.metadataFlags & INVALIDATED && context.replicateFrom === false && canSkip && entry.residencyId) {
 						return SKIP;
 					}
+					if (entry.metadataFlags & REPLICA && record) refreshReplicaOnRead(entry);
 					if (!record && (entry.key === undefined || entry.deref)) {
 						// if the record is not loaded, either due to the entry actually be a key, or the entry's value
 						// being GC'ed, we need to load it now
@@ -8908,6 +8941,10 @@ export function makeTable(options): TableResourceClass {
 		/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
 		static cleanup() {
 			disposed = true;
+			const armerKey = `${primaryStore.path}:${tableId}`;
+			const armers = replicaEvictionArmers.get(armerKey);
+			armers?.delete(armReplicaEviction);
+			if (armers?.size === 0) replicaEvictionArmers.delete(armerKey);
 			TableResource.getResource = unavailableResource;
 			void TableResource.derivedIndexRuntime
 				?.close()
@@ -8983,6 +9020,11 @@ export function makeTable(options): TableResourceClass {
 		TableResource.cleanup();
 		throw error;
 	}
+	const armerKey = `${primaryStore.path}:${tableId}`;
+	let armers = replicaEvictionArmers.get(armerKey);
+	if (!armers) replicaEvictionArmers.set(armerKey, (armers = new Set()));
+	armers.add(armReplicaEviction);
+	if (replicaExpirationMs && (dbisDb as any).getSync([REPLICA_TABLES_KEY, tableId])) armReplicaEviction();
 	return TableResource;
 	function updateIndices(id: any, existingRecord: any, record: any, options?: any, preserveComputed = false) {
 		let hasChanges;
@@ -9130,16 +9172,11 @@ export function makeTable(options): TableResourceClass {
 			// but we only do this when users have opted into loadAsInstance/freezeRecords to avoid back-compat
 			// issues
 			freezeRecord(entry?.value);
-			if (
-				entry?.residencyId &&
-				entry.metadataFlags & INVALIDATED &&
-				sourceLoad &&
-				options.ensureLoaded &&
-				context?.replicateFrom !== false
-			) {
+			if (options.ensureLoaded && needsResidentLoad(entry, context)) {
 				// load from other node
 				return sourceLoad(entry).then((entry) => withEntry(entry, id));
 			}
+			if (entry?.metadataFlags & REPLICA) refreshReplicaOnRead(entry);
 			if (entry && context) {
 				if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
 				if (entry?.localTime && !context.lastRefreshed) context.lastRefreshed = entry.localTime;
@@ -9386,7 +9423,7 @@ export function makeTable(options): TableResourceClass {
 			if (!entry?.value) throw new ServerError('Entry is not cached', 504);
 			return;
 		}
-		if (entry?.residencyId && entry.metadataFlags & INVALIDATED && sourceLoad && context?.replicateFrom !== false)
+		if (needsResidentLoad(entry, context))
 			return sourceLoad(entry).then((loaded) => {
 				if (context && loaded?.version > (context.lastModified || 0)) context.lastModified = loaded.version;
 				return loaded;
@@ -9426,8 +9463,9 @@ export function makeTable(options): TableResourceClass {
 				} else return loadingFromSource; // return the promise for the resolved value
 			}
 		} else if (entry?.value) {
-			// if we don't have a source, but we have an entry, we check the expiration
-			if (entry.expiresAt != undefined && entry.expiresAt < Date.now()) {
+			// if we don't have a source, but we have an entry, we check the expiration; an expired replica
+			// with no resident to reload it from is still the record, so it is served and left to the sweep
+			if (hasExpired(entry) && !(entry.metadataFlags & REPLICA)) {
 				// if it has expired and there is no source, we evict it and then return null, using a fake promise to indicate that this is providing the response
 				TableResource.evict(entry.key, entry.value, entry.version);
 				entry.value = null;
@@ -10365,7 +10403,7 @@ export function makeTable(options): TableResourceClass {
 										if (action) {
 											// Blob-bearing records stay on the per-record evict() path, which reclaims their blob
 											// files only after its own commit; the batcher's removeEntry would queue them at staging.
-											if (batcher && !(action === 'evict' && metadataFlags & HAS_BLOBS)) {
+											if (batcher && !(action === 'evict' && metadataFlags & (HAS_BLOBS | REPLICA))) {
 												await batcher.add(action, key, version);
 											} else {
 												const resolution =
@@ -10493,6 +10531,186 @@ export function makeTable(options): TableResourceClass {
 			stub[createdTimeProperty.name] = record[createdTimeProperty.name];
 		}
 		return stub;
+	}
+	function hasExpired(entry: Partial<Entry> | undefined): boolean {
+		return entry?.expiresAt != undefined && entry.expiresAt < Date.now();
+	}
+	/** A stub, or a replica past its deadline, is answered by a resident. */
+	function needsResidentLoad(entry: Partial<Entry> | undefined, context: Context | undefined): boolean {
+		return Boolean(
+			entry?.residencyId &&
+			sourceLoad &&
+			context?.replicateFrom !== false &&
+			(entry.metadataFlags & INVALIDATED || (entry.metadataFlags & REPLICA && hasExpired(entry)))
+		);
+	}
+	/**
+	 * The @expiresAt field as an epoch, or NaN when unset or not a timestamp shape. Only a finite,
+	 * non-negative epoch counts: negatives collide with the -1 "no expiration" sentinel.
+	 */
+	function fieldExpiresAtMs(record: any): number {
+		const fieldExpiresAt = expiresAtProperty ? record?.[expiresAtProperty.name] : undefined;
+		let epoch = NaN;
+		if (typeof fieldExpiresAt === 'number' || typeof fieldExpiresAt === 'bigint') epoch = Number(fieldExpiresAt);
+		else if (fieldExpiresAt instanceof Date) epoch = fieldExpiresAt.getTime();
+		else if (typeof fieldExpiresAt === 'string' && fieldExpiresAt.trim() !== '') {
+			const numeric = Number(fieldExpiresAt);
+			epoch = Number.isFinite(numeric) ? numeric : Date.parse(fieldExpiresAt);
+		}
+		return Number.isFinite(epoch) && epoch >= 0 ? epoch : NaN;
+	}
+	/** The replica lifetime never outlives the record's own expiry, reported by the resident or carried in the record. */
+	function replicaDeadline(record: any, residentExpiresAt?: number): number {
+		let deadline = Date.now() + replicaExpirationMs;
+		if (residentExpiresAt >= 0 && residentExpiresAt < deadline) deadline = residentExpiresAt;
+		const fieldDeadline = fieldExpiresAtMs(record);
+		if (fieldDeadline < deadline) deadline = fieldDeadline;
+		return deadline;
+	}
+	function replicaNeedsRefresh(entry: Partial<Entry>): boolean {
+		// a record expiry is authoritative; only a lifetime that is purely the replica's slides, and an
+		// expired replica is reloaded from a resident instead
+		if (expirationMs || expiresAtProperty || hasExpired(entry)) return false;
+		return (
+			entry.expiresAt == undefined ||
+			entry.expiresAt - Date.now() < replicaExpirationMs * (1 - REPLICA_REFRESH_FRACTION)
+		);
+	}
+	function refreshReplicaOnRead(entry: Entry) {
+		if (!sourceLoad || !replicaNeedsRefresh(entry)) return;
+		const keyId = chainKeyForId(entry.key);
+		if (replicaRefreshInFlight.has(keyId)) return;
+		replicaRefreshInFlight.add(keyId);
+		writeReplica(entry.key).finally(() => replicaRefreshInFlight.delete(keyId));
+	}
+	/**
+	 * Store a resident's complete record (or, with no body, re-stamp the stored replica's deadline) as a
+	 * REPLICA row, in its own transaction. The row keeps the stub's canonical identity: version, origin and
+	 * audit refs, so history and conflict ordering are unchanged and a later stub for the key still wins.
+	 * Refuses when the key no longer holds a stub or replica, or holds one newer than the response.
+	 */
+	function writeReplica(id: Id, body?: any, responseVersion?: number, residentExpiresAt?: number): Promise<boolean> {
+		const refresh = body === undefined;
+		if (disposed || maintenanceClosed || droppingTable || isReadOnlyMode()) return Promise.resolve(false);
+		const databaseTransaction = txnForContext({ transaction: new DatabaseTransaction() });
+		const transaction = databaseTransaction.getReadTxn();
+		const options = { transaction };
+		let committed = false;
+		try {
+			const current: Entry = primaryStore.getEntry(id, options);
+			if (!current?.residencyId || !(current.metadataFlags & (refresh ? REPLICA : INVALIDATED | REPLICA)))
+				return Promise.resolve(false);
+			if (refresh ? !replicaNeedsRefresh(current) : responseVersion < current.version) return Promise.resolve(false);
+			const record = refresh ? current.value : body;
+			const writeOptions = {
+				expiresAt: replicaDeadline(record, residentExpiresAt),
+				residencyId: current.residencyId,
+				recordNodeId: current.nodeId,
+				additionalAuditRefs: current.additionalAuditRefs,
+				transaction: undefined as any,
+			};
+			if (!refresh) markReplicaTable();
+			let completion: Promise<boolean>;
+			if (primaryStore.ifVersion) {
+				const indexUpdate = primaryStore.ifVersion(id, current.version, () => {
+					updateIndices(id, current.value, record);
+				});
+				const stored = updateRecord(id, record, current, current.version, REPLICA, false, writeOptions, 'put', true);
+				(databaseTransaction as any).commit();
+				completion = Promise.all([indexUpdate, stored]).then(([, result]) => (result as unknown) !== false);
+			} else {
+				if (hasDerivedIndexRegistration(auditStore, tableId))
+					reserveLocalKey(primaryStore.rootStore, transaction as RocksTransaction);
+				writeOptions.transaction = transaction;
+				updateIndices(id, current.value, record, options);
+				updateRecord(id, record, current, current.version, REPLICA, false, writeOptions, 'put', true);
+				completion = commitTrackedRocksTransaction(transaction as RocksTransaction, primaryStore).then(() => true);
+			}
+			committed = true;
+			return trackMaintenanceCommit(
+				completion.then(
+					(stored) => {
+						if (stored && !replicaEvictionArmed)
+							void broadcast({ type: REPLICA_EVICTION_ARMED, storePath: primaryStore.path, tableId }, true);
+						return stored;
+					},
+					(error) => {
+						if (!primaryStore.ifVersion) {
+							try {
+								(transaction as any).abort();
+							} catch {}
+						}
+						if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned replica write of busy record', id);
+						else logger.warn?.('Error storing replica', id, error);
+						return false;
+					}
+				)
+			);
+		} finally {
+			if (!committed) {
+				if (primaryStore.ifVersion) (databaseTransaction as any).abort?.();
+				else {
+					releaseLocalKey(transaction as RocksTransaction);
+					(transaction as any)?.abort?.();
+				}
+			}
+		}
+	}
+	/** Durable before the first replica row, so a restart re-arms the sweep for this table. */
+	function markReplicaTable() {
+		if (replicaTableMarked) return;
+		replicaTableMarked = true;
+		if (!(dbisDb as any).getSync([REPLICA_TABLES_KEY, tableId]))
+			(dbisDb as any).putSync([REPLICA_TABLES_KEY, tableId], true);
+	}
+	function armReplicaEviction() {
+		if (replicaEvictionArmed || !replicaExpirationMs || disposed) return;
+		replicaEvictionArmed = true;
+		const interval = Math.max(replicaExpirationMs / 4, MIN_REPLICA_SCAN_INTERVAL_MS);
+		if (!expirationScanScheduled || !cleanupInterval || interval < cleanupInterval) cleanupInterval = interval;
+		expirationScanScheduled = true;
+		scheduleCleanup();
+	}
+	/**
+	 * Rewrite an expired replica as the stub it was fetched over: indexed fields, created time and the
+	 * residency and identity it already carries. No audit entry, nothing replicates. The replica body's
+	 * blobs are released only once the rewrite is known to have committed.
+	 */
+	function demoteReplica(entry: Entry, transaction: any): Promise<unknown> {
+		const stub = residencyStub(entry.value) ?? {};
+		if (primaryKey) stub[primaryKey] = entry.key;
+		const base =
+			entry.metadataFlags & HAS_BLOBS ? { ...entry, metadataFlags: entry.metadataFlags & ~HAS_BLOBS } : entry;
+		const writeOptions = {
+			residencyId: entry.residencyId,
+			recordNodeId: entry.nodeId,
+			additionalAuditRefs: entry.additionalAuditRefs,
+			transaction,
+		};
+		const releaseBlobs = (stored: unknown) => {
+			if (stored !== false && entry.metadataFlags & HAS_BLOBS) deleteBlobsInObject(entry.value);
+		};
+		if (primaryStore.ifVersion) {
+			const indexUpdate = primaryStore.ifVersion(entry.key, entry.version, () => {
+				updateIndices(entry.key, entry.value, stub, undefined, true);
+			});
+			const stored = updateRecord(
+				entry.key,
+				stub,
+				base,
+				entry.version,
+				INVALIDATED,
+				false,
+				writeOptions,
+				'invalidate',
+				true,
+				null
+			);
+			return Promise.all([indexUpdate, stored]).then(([, result]) => releaseBlobs(result));
+		}
+		updateIndices(entry.key, entry.value, stub, { transaction }, true);
+		updateRecord(entry.key, stub, base, entry.version, INVALIDATED, false, writeOptions, 'invalidate', false, null);
+		return commitTrackedRocksTransaction(transaction as RocksTransaction, primaryStore).then(releaseBlobs);
 	}
 	function warnWriterKeptResident(residency: string[]) {
 		if (writerResidencyWarned) return;
