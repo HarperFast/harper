@@ -30,6 +30,8 @@ describe('utility/credentials', () => {
 				'credentials',
 				'accessKeyId',
 				'access_key_id',
+				'AWS_ACCESS_KEY_ID',
+				'awsAccessKeyId',
 			]) {
 				assert.ok(CREDENTIAL_KEY.test(key), key);
 			}
@@ -42,6 +44,7 @@ describe('utility/credentials', () => {
 				'refreshTokenTimeout',
 				'authorizeLocal',
 				'requireAuthentication',
+				'requireAuthorization',
 				'authentication',
 				'certificateAuthority',
 				'model',
@@ -72,6 +75,23 @@ describe('utility/credentials', () => {
 			assert.equal(
 				masked('storage:\n  credentials:\n    region: us\n    secretAccessKey: s\n  bucket: b\n'),
 				'storage:\n  credentials:\n    **********\n    ******************\n  bucket: b\n'
+			);
+		});
+
+		it('treats a credential key followed only by a comment as empty, so its indentless items are masked', () => {
+			assert.equal(masked('credentials: # rotated\n- secret\nb: 1\n'), 'credentials: *********\n********\nb: 1\n');
+		});
+
+		it('masks a quoted credential that continues onto later lines, whatever their indentation', () => {
+			assert.equal(masked('x: {apiKey: "abc\n  def", model: m}\n'), 'x: {apiKey: "***\n  ***", model: m}\n');
+			assert.equal(masked('  apiKey: "abc\n  def"\n  model: m\n'), '  apiKey: "***\n  ***"\n  model: m\n');
+			assert.equal(masked("  token: 'a\n   b''c'\n  model: m\n"), "  token: '*\n   ****'\n  model: m\n");
+		});
+
+		it('ends an unterminated quote at the next column-0 line, as the next log entry', () => {
+			assert.equal(
+				masked('T [warn]: {"password":"abc\n  def\nT [info]: next\n'),
+				'T [warn]: {"password":"***\n  ***\nT [info]: next\n'
 			);
 		});
 

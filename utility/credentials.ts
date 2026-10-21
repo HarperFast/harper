@@ -11,33 +11,34 @@ import { isUnresolvedEnvVarPlaceholder } from './expandEnvVar.ts';
  * CREDENTIAL_KEY_PATTERN, so settings such as `maxTokens` and `operationTokenTimeout` are not credentials.
  */
 export const CREDENTIAL_KEY =
-	/^(?:.*(?:secret|passw(?:or)?d|passphrase|credential).*|.*(?:key|token|cookie|authorization)|access[-_]?key[-_]?id)$/i;
+	/^(?:.*(?:secret|passw(?:or)?d|passphrase|credential).*|.*(?:key|token|cookie)|(?:proxy[-_]?)?authorization|.*access[-_]?key[-_]?id)$/i;
 
 const MASK = '*';
-// `key: value` or `key=value` anywhere in a line, the key optionally quoted.
 const ASSIGNMENT = /(?<![\w$.-])(["']?)([A-Za-z_$][\w$.-]*)\1[ \t]*([:=])[ \t]*/g;
-// Indentation and YAML sequence markers before a line's first key.
 const LINE_PREFIX = /^[ \t]*(?:-[ \t]+)*/;
 
 /**
  * Where masking stands at the start of a line. `block`: the lines of a credential key's value, which in
  * YAML are every following line indented deeper than the key (blank lines included) and, when the key's
- * own line held no value, its same-column `- ` items. `unknown`: no line seen yet fixes the state.
+ * own line held no value, its same-column `- ` items. `quote`: inside a quoted credential value that
+ * continues past its line. `unknown`: no line seen yet fixes the state. A line that starts in column 0
+ * with anything but a space, tab or `-` ends every one of them, as it ends every YAML value.
  */
-type State = { kind: 'none' } | { kind: 'unknown' } | { kind: 'block'; column: number; empty: boolean };
+type State =
+	| { kind: 'none' }
+	| { kind: 'unknown' }
+	| { kind: 'block'; column: number; empty: boolean }
+	| { kind: 'quote'; quote: string };
 
 const NONE: State = { kind: 'none' };
 
 /**
  * `text` with the value of every credential-named key replaced by `*`, one per UTF-16 unit, so the result
- * has the same length and line breaks as `text`. A value that is exactly a `${VAR}` placeholder is kept.
+ * has the same length and line breaks. A value that is exactly a `${VAR}` placeholder is kept.
  *
- * `before` is the text that precedes `text` in its source, read only to decide whether `text` starts
- * inside a credential value. `beforeAtSourceStart` says whether it begins where the source does; if not,
- * its first line may be the cut end of a longer one.
- * Masking state is taken from the last line in it that starts in column 0 with anything but a space,
- * tab or `-`, since every YAML value ends before such a line. With no such line and no source start in
- * reach, every line is masked until one appears.
+ * `before` is what precedes `text` in its source, read only to find the state `text` starts in;
+ * `beforeAtSourceStart` says whether it begins where the source does. With no state-ending line in it
+ * and no source start, lines are masked until such a line appears.
  */
 export function maskCredentialValues(text: string, before = '', beforeAtSourceStart = true): string {
 	const start = stateStart(text, before, beforeAtSourceStart);
@@ -58,7 +59,6 @@ export function maskCredentialValues(text: string, before = '', beforeAtSourceSt
 	}
 }
 
-/** Where to start reading for state: the last line start that fixes it, found by walking back through `before`. */
 function stateStart(text: string, before: string, atSourceStart: boolean): { index: number; known: boolean } {
 	let lineStart = before.length === 0 ? 0 : before.lastIndexOf('\n', before.length - 1) + 1;
 	for (;;) {
@@ -76,33 +76,41 @@ function maskInState(line: string, state: State, partial: boolean): { text: stri
 	const end = line.endsWith('\r') ? line.length - 1 : line.length;
 	let indent = 0;
 	while (indent < end && (line[indent] === ' ' || line[indent] === '\t')) indent++;
-	const blank = indent === end;
-	if (state.kind === 'unknown') {
-		if (partial || blank || indent > 0 || !resetsState(line[0])) {
-			return { text: maskRange(line, partial ? 0 : indent, end), state };
-		}
-	} else if (state.kind === 'block') {
+	const resets = !partial && indent === 0 && indent < end && resetsState(line[0]);
+	if (state.kind === 'unknown' && !resets) {
+		return { text: maskRange(line, partial ? 0 : indent, end), state };
+	}
+	if (state.kind === 'quote' && !resets) {
+		const close = closingQuote(line, indent, end, state.quote);
+		if (close === -1) return { text: maskRange(line, indent, end), state };
+		const rest = maskLine(line, end, close + 1);
+		return { text: maskRange(rest.text, indent, close), state: rest.state };
+	}
+	if (state.kind === 'block') {
 		const sequenceItem =
 			line[indent] === '-' && (indent + 1 === end || line[indent + 1] === ' ' || line[indent + 1] === '\t');
-		if (blank || indent > state.column || (state.empty && indent === state.column && sequenceItem)) {
+		if (indent === end || indent > state.column || (state.empty && indent === state.column && sequenceItem)) {
 			return { text: maskRange(line, indent, end), state };
 		}
 	}
-	return maskLine(line, end);
+	return maskLine(line, end, 0);
 }
 
-/** One line on its own: every credential assignment in it, and whether it opens a block. */
-function maskLine(line: string, end: number): { text: string; state: State } {
+/** Masks every credential assignment in `line` at or after `from`, leaving what precedes `from` as is. */
+function maskLine(line: string, end: number, from: number): { text: string; state: State } {
 	const prefix = LINE_PREFIX.exec(line)![0].length;
 	let state = NONE;
 	let text = '';
 	let copied = 0;
-	ASSIGNMENT.lastIndex = 0;
+	ASSIGNMENT.lastIndex = from;
 	for (let match = ASSIGNMENT.exec(line); match && match.index < end; match = ASSIGNMENT.exec(line)) {
 		if (!CREDENTIAL_KEY.test(match[2])) continue;
 		const valueStart = Math.min(match.index + match[0].length, end);
-		const opensBlock = match.index === prefix && match[3] === ':';
-		if (opensBlock) state = { kind: 'block', column: prefix, empty: valueStart === end };
+		// A YAML comment after the key leaves its value empty, so the key's `- ` items below are its value.
+		const comment = line[valueStart] === '#' && /[ \t]/.test(line[valueStart - 1]);
+		if (match.index === prefix && match[3] === ':') {
+			state = { kind: 'block', column: prefix, empty: valueStart === end || comment };
+		}
 		if (valueStart === end || isPlaceholder(line.slice(valueStart, end).trimEnd())) continue;
 		let maskStart = valueStart;
 		let maskEnd = end;
@@ -110,7 +118,8 @@ function maskLine(line: string, end: number): { text: string; state: State } {
 		if (quote === '"' || quote === "'") {
 			maskStart++;
 			const close = closingQuote(line, maskStart, end, quote);
-			if (close !== -1) maskEnd = close;
+			if (close === -1) state = { kind: 'quote', quote };
+			else maskEnd = close;
 		}
 		text += line.slice(copied, maskStart) + MASK.repeat(maskEnd - maskStart);
 		copied = maskEnd;
