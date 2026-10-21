@@ -4940,6 +4940,22 @@ export function makeTable(options): TableResourceClass {
 						let belowAuditFloor = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
+							// Without explicit refs, the committed head's log key is its record version.
+							if (
+								stagedOwnAuditEntry &&
+								committedBy?.sourceApply &&
+								isRocksDB &&
+								!replaying &&
+								!write.priorWrite &&
+								precedesExisting === 0 &&
+								receivedLogKey === txnTime &&
+								appendedLogKey === receivedLogKey &&
+								(existingEntry.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore)) &&
+								!existingEntry.additionalAuditRefs?.length
+							) {
+								write.skipped = true;
+								return;
+							}
 							// A re-delivered out-of-order write (full-copy audit-replay re-delivers writes) must not have
 							// its commutative ops re-folded. additionalAuditRefs is the record's own list of folded
 							// out-of-order versions, read with read-your-writes consistency, so this skips the duplicate up

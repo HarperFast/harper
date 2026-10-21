@@ -157,6 +157,7 @@ Consequences worth knowing:
   no entry (readers already tolerate a ref whose entry aged out).
   Under stage 2 the stored reference field can be renamed; until then, "fixing" it to the record
   version silently unaddresses the entry it points at.
+- **Retried duplicates use committed identity before audit I/O.** `Table._writeUpdate` recognizes an implicit head only when origin, version and received log key match and no explicit refs exist; `replicatedRetryDuplicate.test.js` covers real conflicts, while commit cleanup preserves blobs owned by the staged audit entry.
 - **Crash replay uses both.** `replayLogs` replays each write at its stored `version`; stamping a
   replayed record at its log key would move its version forward and make a later legitimate write
   look stale. Its transactions follow native commits: one ends at a commit's last-entry `endTxn`

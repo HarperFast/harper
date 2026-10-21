@@ -717,7 +717,7 @@ export type TransactionWrite = {
 	// commit-handler round, like stagedEntry.
 	superseded?: boolean;
 	// this write appended an audit entry, which references its saved blobs — they then belong to the
-	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
+	// audit trail (audit pruning deletes them), so skipped/superseded cleanup must leave them alone
 	blobsAuditReferenced?: boolean;
 	// Lock handle set by Table._writeUpdate when the write is staged through a held record lock;
 	// used in DatabaseTransaction.save() to assign and track that handle's write versions.
@@ -3060,7 +3060,7 @@ export class DatabaseTransaction implements Transaction {
 										: Boolean(write.stagedOn) && write.stagedOn !== committedTransaction
 								)
 									continue;
-								if (write.skipped || (write.superseded && !write.blobsAuditReferenced))
+								if ((write.skipped || write.superseded) && !write.blobsAuditReferenced)
 									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
 							const committedStagedTxnTime = this.getHandleStagedTxnTime(committedTransaction);
@@ -3259,7 +3259,7 @@ export class DatabaseTransaction implements Transaction {
 							: this.hasSiblingCommitInFlight(transaction) && Boolean(write.stagedOn) && write.stagedOn !== transaction
 					)
 						continue;
-					if (write.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
+					if (write.savedBlobs && (write.skipped || write.superseded) && !write.blobsAuditReferenced)
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				if (this.recordLocks) this.noteCommittedLockVersions(transaction);
