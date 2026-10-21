@@ -978,6 +978,35 @@ describe('Audit log', () => {
 			'previousVersion must resolve back to the actual prior audit entry'
 		);
 	});
+	it('getHistoryOfRecord reconstructs a patch entry that a later put overwrote (harper#1413)', async () => {
+		const id = 'patch-under-later-put';
+		await AuditedTable.put(id, { name: 'v1' });
+		await AuditedTable.patch(id, { name: 'v2' });
+		await AuditedTable.put(id, { name: 'v3' });
+		await AuditedTable.patch(id, { name: 'v4' });
+		await AuditedTable.put(id, { name: 'v5' });
+		const history = await AuditedTable.getHistoryOfRecord(id);
+		assert.deepEqual(
+			history.map((entry) => [entry.type, entry.value?.name]),
+			[
+				['put', 'v1'],
+				['patch', 'v2'],
+				['put', 'v3'],
+				['patch', 'v4'],
+				['put', 'v5'],
+			]
+		);
+		const byHash = await new ResourceBridge().readAuditLog({
+			schema: AuditedTable.databaseName,
+			table: 'AuditedTable',
+			search_type: 'hash_value',
+			search_values: [id],
+		});
+		assert.deepEqual(
+			byHash[id].map((entry) => entry.records[0]?.name),
+			['v1', 'v2', 'v3', 'v4', 'v5']
+		);
+	});
 	// LMDB assigns each record's own localTime via lmdb-js's native monotonic clock, independent of
 	// the application-supplied `version` (e.g. a replicated/out-of-order write's origin timestamp,
 	// which can be backdated relative to this node's clock). previousVersion must point at the prior

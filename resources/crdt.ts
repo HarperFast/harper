@@ -267,9 +267,16 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
 		if (!auditEntry) break;
 		switch (auditEntry.type) {
-			case 'put':
-				record = auditEntry.getValue(store);
+			case 'put': {
+				// A put newer than `timestamp` replaced the whole record, so patches older than it
+				// can't be reversed onto its image; rebuild from the history before it, as for a delete.
+				const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
+				// An unlinked put (a re-insert after eviction has no previous link) can't be crossed;
+				// the timestamp-keyed fallback after the loop handles it.
+				if (previousPosition.txnLogKey > 0)
+					return reconstructForward(auditStore, store, tableId, recordId, previousPosition, timestamp);
 				break;
+			}
 			case 'patch':
 				applyReverse(record, auditEntry.getValue(store), unknowns);
 				break;

@@ -212,6 +212,14 @@ A RocksDB transaction's log key is minted when its native handle is created, or 
 
 ---
 
+## Historical record reconstruction (`getRecordAtTime`)
+
+- **Only a patch can be reversed.** The backward walk from the live record undoes patches; a put or delete newer than the requested timestamp replaced the whole record, so nothing recorded about it recovers what came before. Reaching one ends the walk and the state is rebuilt forward from the entry before it (`reconstructForward`). Carrying a newer put's image back across it returns a future state, or throws when a later patch fills unknown fields into the frozen decoded put (harper#1413).
+- **An unlinked put is not proof of an empty past.** A put written with no predecessor link (a re-insert after eviction) cannot be crossed, but older retained entries may exist; the timestamp-keyed fallback after the loop recovers them. Only a linked predecessor routes through `reconstructForward` directly.
+- **Retention gaps differ by what survives.** `reconstructForward` returns `null` when no entry at or before the timestamp is reachable and `undefined` when a patch was collected but its base is gone; callers treat both as "no value" and `Table.getHistory*` contains a per-entry failure.
+
+---
+
 ## Path routing & parameterised routes
 
 `Resources.ts` is the registry that maps URL paths to `Resource` classes; `jsResource.ts` registers a component's exports. The user-facing rules — the default export-name path, `static path`, export-name-as-path, the root-relative leading `/`, `:name`/`*name` parameters and precedence — are documented in [Resources → Path Parameters](https://github.com/HarperFast/documentation/blob/main/reference/resources/overview.md#path-parameters).
