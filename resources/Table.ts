@@ -6850,9 +6850,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						(!includeExpired &&
-							hasExpired(entry) &&
-							(checkLoaded || !(entry.metadataFlags & REPLICA) || expirationMs || expiresAtProperty))
+						(!includeExpired && hasExpired(entry) && (checkLoaded || !(entry.metadataFlags & REPLICA)))
 					) {
 						// should expiration really apply?
 						if (context.onlyIfCached) {
@@ -9035,7 +9033,10 @@ export function makeTable(options): TableResourceClass {
 	let armers = replicaEvictionArmers.get(armerKey);
 	if (!armers) replicaEvictionArmers.set(armerKey, (armers = new Set()));
 	armers.add(armReplicaEviction);
-	if (replicaExpirationMs && (dbisDb as any).getSync([REPLICA_TABLES_KEY, tableId])) armReplicaEviction();
+	if ((dbisDb as any).getSync([REPLICA_TABLES_KEY, tableId])) {
+		replicaTableKnown = true;
+		if (replicaExpirationMs) armReplicaEviction();
+	}
 	return TableResource;
 	function updateIndices(id: any, existingRecord: any, record: any, options?: any, preserveComputed = false) {
 		let hasChanges;
@@ -9474,8 +9475,8 @@ export function makeTable(options): TableResourceClass {
 				} else return loadingFromSource; // return the promise for the resolved value
 			}
 		} else if (entry?.value) {
-			// an expired replica on a table with no record expiry is still the record: served, left to the sweep
-			if (hasExpired(entry) && (!(entry.metadataFlags & REPLICA) || expirationMs || expiresAtProperty)) {
+			// an expired replica is only ever reloaded from a resident; with none it is served and left to the sweep
+			if (hasExpired(entry) && !(entry.metadataFlags & REPLICA)) {
 				// if it has expired and there is no source, we evict it and then return null, using a fake promise to indicate that this is providing the response
 				TableResource.evict(entry.key, entry.value, entry.version);
 				entry.value = null;
@@ -10637,6 +10638,9 @@ export function makeTable(options): TableResourceClass {
 			if (!current?.residencyId || !(current.metadataFlags & (refresh ? REPLICA : INVALIDATED | REPLICA)))
 				return Promise.resolve(false);
 			if (refresh ? !replicaNeedsRefresh(current) : responseVersion < current.version) return Promise.resolve(false);
+			// LMDB cannot order two writes at the stub's version: an expired replica there waits for the
+			// sweep's demotion before a fresh body is kept, rather than racing it
+			if (!refresh && primaryStore.ifVersion && current.metadataFlags & REPLICA) return Promise.resolve(false);
 			// Two writers can share a timestamp; the stub holds the winner. An answer at that timestamp is
 			// kept only when it names the same writer: a loser's body would never be corrected, and an
 			// answer with no writer (an older responder) or an unmapped origin cannot be told apart.
