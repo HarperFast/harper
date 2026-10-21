@@ -10655,8 +10655,6 @@ export function makeTable(options): TableResourceClass {
 		const now = Date.now();
 		const throttle = Math.min(replicaRefreshFraction, 1 - replicaRefreshFraction) * replicaExpirationMs;
 		const key = entry.key;
-		// a primitive id is its own throttle key; a composite id is encoded, in maps of its own so an
-		// encoded form can never collide with a string id
 		const composite = typeof key === 'object';
 		const keyId = composite ? chainKeyForId(key) : key;
 		const checkedAt = composite ? replicaRefreshCheckedAtComposite : replicaRefreshCheckedAt;
@@ -10715,22 +10713,30 @@ export function makeTable(options): TableResourceClass {
 		originNode?: string
 	): Promise<boolean> {
 		if (disposed || maintenanceClosed || droppingTable || isReadOnlyMode()) return Promise.resolve(false);
-		// as a committed write does: the body's blob files are complete before the row that references them
 		const preCommit = startPreCommitBlobsForRecord(body, primaryStore.rootStore);
 		if (!preCommit) return storeReplicaRow(id, body, responseVersion, residentExpiresAt, originNode);
-		return trackMaintenanceCommit(
-			preCommit.complete().then(
-				() =>
-					storeReplicaRow(id, body, responseVersion, residentExpiresAt, originNode).then((stored) => {
-						if (!stored) cleanupUnusedBlobs(preCommit.blobs, collectRetainedFileIds(primaryStore.getEntry(id)?.value));
-						return stored;
-					}),
-				(error) => {
-					logger.warn?.('Error saving the blobs of a replica', id, error);
-					cleanupUnusedBlobs(preCommit.blobs, collectRetainedFileIds(primaryStore.getEntry(id)?.value));
-					return false;
+		// the blob transfer is not a maintenance commit: closing maintenance waits for the row, not the stream
+		const releaseUnused = () =>
+			cleanupUnusedBlobs(preCommit.blobs, collectRetainedFileIds(primaryStore.getEntry(id)?.value));
+		return preCommit.complete().then(
+			() => {
+				let stored: Promise<boolean>;
+				try {
+					stored = storeReplicaRow(id, body, responseVersion, residentExpiresAt, originNode);
+				} catch (error) {
+					releaseUnused();
+					throw error;
 				}
-			)
+				return stored.then((kept) => {
+					if (!kept) releaseUnused();
+					return kept;
+				});
+			},
+			(error) => {
+				logger.warn?.('Error saving the blobs of a replica', id, error);
+				releaseUnused();
+				return false;
+			}
 		);
 	}
 	function storeReplicaRow(
@@ -10887,7 +10893,7 @@ export function makeTable(options): TableResourceClass {
 	 */
 	async function runReplicaSweep() {
 		if (disposed || maintenanceClosed || !replicaEvictionArmed || replicaSweepRunning) return;
-		if (isReadOnlyMode()) return scheduleReplicaSweep();
+		if (isReadOnlyMode()) return;
 		replicaSweepRunning = true;
 		const state = replicaSweep();
 		const admissionsAtStart = Atomics.load(state, 0);
