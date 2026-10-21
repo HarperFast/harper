@@ -63,11 +63,12 @@ Retry rejected writes with backoff rather than immediately adding more load. Ins
 
 The native index ranks matching documents with BM25. Harper then loads the authoritative table records for the matching IDs and discards stale or deleted candidates. Selecting `$score` includes the relevance score in each result.
 
-Full-text search can be combined with structured filters. Harper pushes compatible filters into candidate evaluation so selective filters do not silently under-fill a requested page.
+Full-text search can be combined with structured filters. Harper checks conditions against current source records before returning them. In v5.4, additional ranked batches can fill a filtered page within request budgets; those budgets can prevent the page from filling.
 
 ## Limits and troubleshooting
 
 - Phrase search requires `positions: true`; prefix and fuzzy-prefix require `surfaceTerms: true`.
+- Deep offsets revisit earlier matches and increase fetched work and source reads. Prefer narrower filters and a bounded maximum offset over repeatedly raising work budgets.
 - Before v5.4, prefix and fuzzy-prefix expressions restrict `offset + limit` to 100. In v5.4, bounded full-text and autocomplete queries fetch additional batches within request budgets. Use a bounded `limit` and see [paging and prefix result windows](./querying.md#paging-and-prefix-result-windows); native windows are not total-result cutoffs for bounded v5.4 queries.
 - One query can use only one full-text index. An `or` group cannot mix full-text and ordinary record conditions.
 - Each Blob source is limited to 1 MiB (1,048,576 bytes). A media-type mismatch, oversized value, or invalid UTF-8 removes the entire record from the index, including its other full-text source fields, until valid content is indexed.

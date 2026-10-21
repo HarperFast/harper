@@ -1036,8 +1036,8 @@ Array of condition objects to filter records. Each condition:
 | `operator`                 | `and` (default) or `or` for the nested `conditions`                                                                                                                                                                                |
 | `fields`                   | Full-text source fields to search; every name must belong to the selected full-text index                                                                                                                                          |
 | `includeHighlights`        | Include configured full-text highlights                                                                                                                                                                                            |
-| `maxIndexLagMilliseconds`  | Maximum accepted full-text index lag; defaults to `3000`                                                                                                                                                                           |
-| `waitForIndexMilliseconds` | Time to wait for acceptable full-text coverage, from `0` through `30000`                                                                                                                                                           |
+| `maxIndexLagMilliseconds`  | Maximum accepted full-text index lag; see [freshness controls](../full-text-search/querying.md#freshness-controls)                                                                                                                 |
+| `waitForIndexMilliseconds` | Time to wait for acceptable full-text coverage; see [freshness controls](../full-text-search/querying.md#freshness-controls)                                                                                                       |
 
 The final four properties apply to full-text conditions (v5.3.0). See [Querying Full-Text Indexes](../full-text-search/querying.md) for their constraints, error behavior, and permission requirements for direct server-side searches.
 
