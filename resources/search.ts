@@ -1045,7 +1045,9 @@ export function searchByIndex(
 			case 'gelt':
 			case 'gtlt':
 			case 'gtle': {
-				[start, end] = rangeBounds(comparator, value);
+				rangeBounds(comparator, value);
+				start = value[0];
+				end = value[1];
 				if (start instanceof Date) start = start.getTime();
 				if (end instanceof Date) end = end.getTime();
 				inclusiveEnd =
@@ -1596,10 +1598,9 @@ export function resolveComparator(comparator: string | undefined): {
 	return { comparator, negated: false };
 }
 
-function rangeBounds(comparator: string, value: any): [any, any] {
+function rangeBounds(comparator: string, value: any) {
 	if (!Array.isArray(value) || value.length !== 2)
 		throw new ClientError(`"${comparator}" comparator requires a two-element array value`);
-	return value as [any, any];
 }
 
 /**
@@ -2223,6 +2224,8 @@ function parseBlock(query, expectedEnd) {
 			expectingDelimiter = false;
 			expectingValue = false;
 		} else expectingValue = true;
+		if (attribute != null && (operator === '(' || operator === '[' || operator === '{'))
+			recordError(`unexpected '${operator}' in a value`);
 		let entry;
 		switch (operator) {
 			case '=':
@@ -2242,6 +2245,7 @@ function parseBlock(query, expectedEnd) {
 					valueDecoder = decodeURIComponent; // use strict decoding
 					comparator = 'equals'; // strict equals
 					comparatorChosen = false;
+					if (!query.conditions) recordError('conditions/comparisons are not allowed in a property list');
 					if (!value) recordError(`attribute must be specified before equality comparator`);
 					attribute = decodeProperty(value);
 				}
@@ -2258,6 +2262,7 @@ function parseBlock(query, expectedEnd) {
 			case '!==':
 				comparator = SYMBOL_OPERATORS[operator];
 				comparatorChosen = true;
+				if (!query.conditions) recordError('conditions/comparisons are not allowed in a property list');
 				valueDecoder = COERCIBLE_OPERATORS[comparator] ? typedDecoding : decodeURIComponent;
 				if (!value) recordError(`attribute must be specified before comparator ${operator}`);
 				attribute = decodeProperty(value);
@@ -2407,6 +2412,8 @@ function parseBlock(query, expectedEnd) {
 		parser = attribute == null ? QUERY_PARSER : expectedEnd === ')' ? PAREN_VALUE_PARSER : VALUE_PARSER;
 		parser.lastIndex = lastIndex;
 		if (lastIndex === queryString.length) {
+			// a condition still pending at the end of the string is finished by one more (empty) token
+			if (attribute != null && operator) continue;
 			if (expectedEnd) recordError(`expected '${expectedEnd}', but encountered end of string`);
 			return query;
 		}

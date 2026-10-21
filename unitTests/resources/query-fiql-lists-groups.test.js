@@ -115,6 +115,8 @@ describe('FIQL list values, groups, chained legs, and parse-error status', () =>
 			await assertRejectedOnBothPaths('{p}=between=number:10', /two-element/);
 			await assertRejectedOnBothPaths('{s}=between=active', /two-element/);
 			await assertRejectedOnBothPaths('{p}=gtlt=(number:10,number:20,number:30)', /two-element/);
+			await assertRejectedOnBothPaths('{s}=eq=active&{p}=between=null', /two-element/);
+			await assertRejectedOnBothPaths('{s}=eq=active&{p}=between=number:10', /two-element/);
 		});
 		it('rejects a malformed programmatic range value with 400', async function () {
 			for (const attribute of ['price', 'pricePlain']) {
