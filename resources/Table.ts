@@ -192,7 +192,7 @@ import {
 	storedFieldsOnly,
 } from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
-import { commutativeOpsOf, rebuildUpdateBefore } from './crdt.ts';
+import { commutativeOpsOf, rebuildUpdateBefore, remainingAgainstRecord } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import {
@@ -5394,12 +5394,18 @@ export function makeTable(options): TableResourceClass {
 							return writeCommit(false);
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
-							incrementalUpdateToApply = rebuildUpdateBefore(
+							incrementalUpdateToApply = remainingAgainstRecord(
 								incrementalUpdateToApply ?? recordUpdate,
-								existingRecord,
-								fullUpdate
+								existingRecord
 							);
 							logger.debug?.('Rebuilding update without audit:', incrementalUpdateToApply);
+							if (!incrementalUpdateToApply) {
+								write.skipped = true;
+								return writeCommit(false);
+							}
+							// fields dropped from the update leave their pre-saved blobs unreferenced; the commit's
+							// superseded cleanup keeps any the merged record retained
+							write.superseded = true;
 						}
 						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
 					}

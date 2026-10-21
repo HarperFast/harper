@@ -96,6 +96,24 @@ export function commutativeOpsOf(update: any) {
 	return ops;
 }
 
+/**
+ * What an out-of-order `update` still contributes to a materialized `record` that already includes
+ * newer writes: commutative operations and keys the record lacks. Null when nothing remains.
+ * Not `rebuildUpdateBefore`, which expects the newer side to be an update: a stored value carries no
+ * `__op__`, so it drops an incoming `add` on any key the record holds.
+ */
+export function remainingAgainstRecord(update: any, record: any) {
+	if (record == null) return update;
+	let remaining = null;
+	for (const key in update) {
+		if (update[key]?.__op__ || !(key in record)) {
+			if (!remaining) remaining = {};
+			remaining[key] = update[key];
+		}
+	}
+	return remaining;
+}
+
 export function applyReverse(record, update, unknowns: Set<string>) {
 	for (const key in update) {
 		const value = update[key];
