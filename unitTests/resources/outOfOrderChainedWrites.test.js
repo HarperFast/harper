@@ -1,7 +1,5 @@
-// An out-of-order transaction (older than the stored version) that writes one key twice must apply
-// both writes. On RocksDB the second write reloads the entry the first staged, which carries the
-// first write's out-of-order audit ref under the shared transaction log key; the re-delivery dedup
-// must not read that ref as proof that this transaction was already applied.
+// On RocksDB the second write reloads the entry the first staged, carrying the first write's audit ref
+// under the shared log key; that ref is not proof of a re-delivery.
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
@@ -138,8 +136,7 @@ describe('Out-of-order transaction with chained writes to one key', function () 
 					yield frame(t0, [write('put', { id, a: 'init-a', b: 'init-b', c: 'init-c', count: 100 }, newer, t0)]);
 					yield frame(t2, [write('patch', { c: 'from-t2' }, newer, t2)]);
 					yield chainFrame;
-					// re-delivered, as a reconnect replays it (LMDB: no re-delivery dedup, see above)
-					if (!isLMDB) yield chainFrame;
+					if (!isLMDB) yield chainFrame; // LMDB has no re-delivery dedup (see above)
 					yield frame(marker, [{ type: 'put', id: 'marker', value: { id: 'marker' }, nodeId: newer, version: marker }]);
 					await held;
 				},
@@ -183,7 +180,6 @@ describe('Out-of-order transaction with chained writes to one key', function () 
 	});
 
 	describe('across a commit conflict retry', () => {
-		/** Stages the whole chain, lets `concurrent` commit the same key, and returns the chain's writes. */
 		async function chainAgainst(id, t1, concurrent) {
 			let native, writes;
 			await applyFromOrigin(id, chain, { version: t1, nodeId: older }, async (txn) => {
