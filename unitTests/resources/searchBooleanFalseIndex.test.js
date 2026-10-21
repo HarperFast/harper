@@ -7,6 +7,8 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const alasql = require('alasql');
 const router = require('#src/sqlEngine/router');
 const binder = require('#src/sqlEngine/binder/bind');
+const mutation = require('#src/sqlEngine/executor/runMutation');
+const { transaction } = require('#src/resources/transaction');
 
 // ordered-binary sorts null (0x00) < false (0x06) < true (0x07). A scan that opens its lower bound at
 // `true` therefore skips every indexed `false`.
@@ -148,6 +150,8 @@ describe('SQL over an indexed boolean attribute', () => {
 			],
 		});
 		binder._setDatabasesLoader(() => ({ test: { BooleanFalseSqlTest: T } }));
+		// the default runner loads resources/transaction.js, which only exists in dist/
+		mutation._setTransactionRunner(transaction);
 	});
 
 	beforeEach(async () => {
@@ -166,6 +170,7 @@ describe('SQL over an indexed boolean attribute', () => {
 
 	after(() => {
 		binder._setDatabasesLoader(null);
+		mutation._setTransactionRunner(null);
 		if (originalEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
 		else process.env.HARPER_SQL_ENGINE = originalEngine;
 		T.dropTable();
@@ -209,4 +214,39 @@ describe('SQL over an indexed boolean attribute', () => {
 		await runSql('DELETE FROM test.BooleanFalseSqlTest WHERE flag < true');
 		assert.deepStrictEqual(await remaining(), { t1: 'seed', n1: 'seed' });
 	});
+});
+
+// A primary store keeps symbol-keyed metadata (such as the id allocator) below `false`, so a scan that
+// opens at null instead of `true` would return it as a row.
+describe('primary-key scans skip store metadata', () => {
+	let T;
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'PrimaryKeyMetadataTest',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true, type: 'Long' }, { name: 'name' }],
+		});
+		for (const name of ['a', 'b', 'c']) await T.create({ name });
+	});
+
+	after(() => {
+		T.dropTable();
+	});
+
+	for (const [name, query] of [
+		['lt', { conditions: [{ attribute: 'id', comparator: 'lt', value: Number.MAX_SAFE_INTEGER }] }],
+		['le', { conditions: [{ attribute: 'id', comparator: 'le', value: Number.MAX_SAFE_INTEGER }] }],
+		['ne', { conditions: [{ attribute: 'id', comparator: 'ne', value: -1 }] }],
+		['negated', { conditions: [{ attribute: 'id', comparator: 'ge', value: Number.MAX_SAFE_INTEGER, negated: true }] }],
+		['sort descending', { sort: { attribute: 'id', descending: true } }],
+	]) {
+		it(`${name} returns only the real rows`, async () => {
+			const names = [];
+			for await (const record of T.search({ select: ['name'], ...query })) names.push(record.name);
+			assert.deepStrictEqual(names.sort(), ['a', 'b', 'c']);
+		});
+	}
 });

@@ -963,6 +963,10 @@ export function searchByIndex(
 	}
 	const isPrimaryKey = !fullTextMode && (attribute_name === Table.primaryKey || attribute_name == null);
 	const index = isPrimaryKey ? Table.primaryStore : conditionIndex(Table, attribute_name, Boolean(fullTextMode));
+	// The lowest bound that still covers every real entry. A primary store keeps symbol-keyed metadata
+	// (0x02) below `false`, which only `true` skips; a secondary index holds nothing between null and false.
+	const openStart = isPrimaryKey ? true : null;
+	const openStartExclusive = !isPrimaryKey;
 	let start;
 	let end, inclusiveEnd, exclusiveStart, stringPrefix;
 	if (value instanceof Date) value = value.getTime();
@@ -970,22 +974,22 @@ export function searchByIndex(
 		// Negated conditions are filter-only in Phase 1: scan the whole index/table
 		// and exclude matching rows in the filter. Without overriding the range,
 		// the bounded index iteration would only visit *included* rows.
-		start = null;
-		exclusiveStart = true;
+		start = openStart;
+		exclusiveStart = openStartExclusive;
 		needFullScan = true;
 	} else if (fullTextMode) {
-		start = null;
-		exclusiveStart = true;
+		start = openStart;
+		exclusiveStart = openStartExclusive;
 	} else
 		switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
 			case 'lt':
-				start = null;
-				exclusiveStart = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				end = value;
 				break;
 			case 'le':
-				start = null;
-				exclusiveStart = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				end = value;
 				inclusiveEnd = true;
 				break;
@@ -1008,8 +1012,8 @@ export function searchByIndex(
 			case 'starts_with':
 				start = value.toString();
 				if (start.length === 0) {
-					start = null;
-					exclusiveStart = true;
+					start = openStart;
+					exclusiveStart = openStartExclusive;
 					needFullScan = true;
 				} else stringPrefix = true;
 				break;
@@ -1037,8 +1041,8 @@ export function searchByIndex(
 				// Phase 1: route through filter — index-merge optimization is a Phase 2 follow-up.
 				// `value` is expected to be an array (empty array matches no rows).
 				if (!Array.isArray(value)) throw new ClientError(`"in" comparator requires an array value`);
-				start = null;
-				exclusiveStart = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				needFullScan = true;
 				break;
 			case 'ne':
@@ -1052,8 +1056,8 @@ export function searchByIndex(
 			case 'contains':
 			case 'ends_with':
 				// we have to revert to full table scan here
-				start = null;
-				exclusiveStart = true;
+				start = openStart;
+				exclusiveStart = openStartExclusive;
 				needFullScan = true;
 				break;
 			default:
@@ -1891,13 +1895,14 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 	let value = condition[1] ?? condition.value;
 	if (value instanceof Date) value = value.getTime();
 	let range;
+	const openLowerBound = isPrimaryKey ? { start: true } : { start: null, exclusiveStart: true };
 	switch (searchType) {
 		case 'lt':
 			// mirrors searchByIndex: an indexNulls index's `[null, primaryKey]` entries are outside the executed range
-			range = { start: null, exclusiveStart: true, end: value };
+			range = { ...openLowerBound, end: value };
 			break;
 		case 'le':
-			range = { start: null, exclusiveStart: true, end: value, inclusiveEnd: true };
+			range = { ...openLowerBound, end: value, inclusiveEnd: true };
 			break;
 		case 'gt':
 			range = { start: value, exclusiveStart: true };

@@ -808,8 +808,10 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
   been got wrong: `lt`/`le` need `searchByIndex`'s `start: null, exclusiveStart: true` lower bound,
   or the estimate counts the `[null, primaryKey]` entries an `indexNulls` index holds and
   execution skips, which on a mostly-null index is worse than the flat heuristic it replaces. That
-  is the one open lower bound for every non-null scan: `true` sorts above `false`, so starting
-  there drops boolean `false` rows (`searchBooleanFalseIndex.test.js`); and `RocksIndexStore` must widen value-space bounds to
+  is the open lower bound for every secondary-index scan: `true` sorts above `false`, so starting
+  there drops boolean `false` rows. A primary store keeps symbol-keyed metadata (the id allocator)
+  between null and `false`, so its scans still start at `true`; `openStart` picks per store
+  (`searchBooleanFalseIndex.test.js`); and `RocksIndexStore` must widen value-space bounds to
   `[value, MAXIMUM_KEY]` composite bounds, because the base implementation's byte-successor
   semantics exclude the wrong entries on composite `[value, primaryKey]` keys. `getRange` and
   `estimateCount` therefore share one `translateIndexBounds` helper rather than two copies.
