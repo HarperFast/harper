@@ -1440,7 +1440,6 @@ export function makeTable(options): TableResourceClass {
 	// shared across this node's threads: [0] replica admissions, [1] whether the owner's sweep runs at the
 	// replica cadence; a store on any thread wakes the sweep when [1] is 0
 	let replicaSweepState: Int32Array | undefined;
-	// the cleanup cadence this thread had before replicas armed it, restored when the sweep stands down
 	let replicaBaseline: { interval: number; scheduled: boolean } | undefined;
 	let recordScanInterval = 0;
 	let recordCleanupInterval = 86400000;
@@ -9480,7 +9479,6 @@ export function makeTable(options): TableResourceClass {
 				} else return loadingFromSource; // return the promise for the resolved value
 			}
 		} else if (entry?.value) {
-			// an expired replica is served here: only a resident may replace it
 			if (hasExpired(entry) && !(entry.metadataFlags & REPLICA)) {
 				// if it has expired and there is no source, we evict it and then return null, using a fake promise to indicate that this is providing the response
 				TableResource.evict(entry.key, entry.value, entry.version);
@@ -10455,8 +10453,11 @@ export function makeTable(options): TableResourceClass {
 										completePass &&
 										replicasSeen === 0 &&
 										Atomics.load(sweepState, 0) === admissionsAtStart
-									)
+									) {
 										standDownReplicaSweep();
+										// a store that landed after the check above saw the flag still set and sent no wake
+										if (Atomics.load(sweepState, 0) !== admissionsAtStart) armReplicaEviction();
+									}
 								} catch (error) {
 									logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
 								}
@@ -10711,12 +10712,12 @@ export function makeTable(options): TableResourceClass {
 			return trackMaintenanceCommit(
 				completion.then(
 					(stored) => {
-						if (stored && !refresh) releaseReplacedBlobs(current);
 						if (stored) {
 							const state = replicaSweep();
 							Atomics.add(state, 0, 1);
 							if (Atomics.load(state, 1) === 0)
 								void broadcast({ type: REPLICA_EVICTION_ARMED, storePath: primaryStore.path, tableId }, true);
+							if (!refresh) releaseReplacedBlobs(current);
 						}
 						return stored;
 					},
@@ -10770,14 +10771,21 @@ export function makeTable(options): TableResourceClass {
 	}
 	function armReplicaEviction() {
 		replicaTableKnown = true;
-		if (replicaEvictionArmed || !replicaExpirationMs || disposed) return;
-		replicaEvictionArmed = true;
-		replicaBaseline ??= { interval: cleanupInterval, scheduled: expirationScanScheduled || cleanupTimer !== undefined };
-		const interval = Math.max(replicaExpirationMs / 4, MIN_REPLICA_SCAN_INTERVAL_MS);
-		cleanupInterval =
-			(expirationScanScheduled || replicaBaseline.scheduled) && recordCleanupInterval > 0
-				? Math.min(recordCleanupInterval, interval)
-				: interval;
+		if (!replicaExpirationMs || disposed) return;
+		if (!replicaEvictionArmed) {
+			replicaEvictionArmed = true;
+			replicaBaseline ??= {
+				interval: cleanupInterval,
+				scheduled: expirationScanScheduled || cleanupTimer !== undefined,
+			};
+			const interval = Math.max(replicaExpirationMs / 4, MIN_REPLICA_SCAN_INTERVAL_MS);
+			cleanupInterval =
+				(expirationScanScheduled || replicaBaseline.scheduled) && recordCleanupInterval > 0
+					? Math.min(recordCleanupInterval, interval)
+					: interval;
+		}
+		// an already-armed thread may own the timer only now (the main thread under threads: 0 loads
+		// tables before it is worker 0), so the flag and the timer are settled on every wake
 		if (ownsCleanup()) Atomics.store(replicaSweep(), 1, 1);
 		scheduleCleanup();
 	}
@@ -10785,13 +10793,12 @@ export function makeTable(options): TableResourceClass {
 		if (!replicaEvictionArmed) return;
 		replicaEvictionArmed = false;
 		if (ownsCleanup()) Atomics.store(replicaSweep(), 1, 0);
-		cleanupInterval =
-			expirationScanScheduled || evictionMs
-				? recordCleanupInterval
-				: replicaBaseline?.scheduled
-					? replicaBaseline.interval
-					: 0;
-		scheduleCleanup();
+		cleanupInterval = expirationScanScheduled || evictionMs ? recordCleanupInterval : replicaBaseline.interval;
+		if (expirationScanScheduled || evictionMs || replicaBaseline.scheduled) return void scheduleCleanup();
+		// back to a table with no timer: the next delete or TTL call schedules one at this interval
+		if (cleanupTimer) clearTimeout(cleanupTimer);
+		cleanupTimer = undefined;
+		lastCleanupInterval = undefined;
 	}
 	/**
 	 * Rewrite an expired replica as the stub it was fetched over: indexed fields, created time and the

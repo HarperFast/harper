@@ -480,15 +480,24 @@ describe('Local replicas of residency stubs', function () {
 	});
 
 	it('stands down after a complete empty sweep and wakes on the next replica', async () => {
+		const sweepArmed = () =>
+			Atomics.load(
+				new Int32Array(
+					Records.primaryStore.getUserSharedBuffer(`replica-sweep:${Records.tableId}`, new ArrayBuffer(8))
+				),
+				1
+			);
 		Records.setTTLExpiration({ replicaExpiration: 0.2 });
 		await replica();
+		assert.equal(sweepArmed(), 1);
 		await waitFor(
 			() => (Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED ? true : undefined),
 			'the first demotion'
 		);
-		await new Promise((resolve) => setTimeout(resolve, 2200)); // two more passes meet no replica
+		await waitFor(() => (sweepArmed() === 0 ? true : undefined), 'the empty sweep to stand down');
 		stored = [];
 		await replica();
+		await waitFor(() => (sweepArmed() === 1 ? true : undefined), 'the new replica to wake the sweep');
 		await waitFor(
 			() => (Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED ? true : undefined),
 			'the woken sweep to demote the new replica'

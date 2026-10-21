@@ -217,7 +217,6 @@ describe('Reads of residency stubs', function () {
 			new Blobs('blob-record', context)._writeInvalidate('blob-record', { blob: first });
 			new Blobs('blob-record', context)._writeInvalidate('blob-record', { blob: second });
 		});
-		// A retained audit blob is still readable and can be referenced by a later write.
 		await Blobs.put('blob-record', { blob: first });
 		assert.deepEqual(Buffer.from(await (await Blobs.get('blob-record')).blob.arrayBuffer()), data);
 	});
