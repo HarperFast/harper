@@ -55,6 +55,9 @@ Harper uses [FIQL](https://datatracker.ietf.org/doc/html/draft-nottingham-atompu
 | `=`, `===`           | Strict equality (no type conversion)   |
 | `!==`                | Strict inequality (no type conversion) |
 
+Declared full-text fields use `=matches=`, `=matches_prefix=` or `=matches_fuzzy_prefix=`.
+See [Full-Text Paging](../resources/full-text-paging.md#page-through-rest) for examples and continuation.
+
 **Examples**:
 
 ```http

@@ -12,6 +12,7 @@ Full-text continuation lets a client page through the original search matches wh
 updates arrive. It is available through `Table.searchPage()` and REST. Ordinary offset-based paging
 continues to run each request against its own index snapshot.
 The same continuation options work with autocomplete searches using `matches_prefix` and `matches_fuzzy_prefix`.
+Operations API searches do not support continuation options; use `Table.searchPage()` or REST.
 
 ## Declare a full-text index
 
@@ -232,9 +233,12 @@ Harper captures the native settings before loading application components, so wo
 by a running application inherit them. In a standalone process, initialize Harper before creating
 workers that use full-text search. A worker created before capture cannot initialize full-text
 search; recreate it after Harper initializes rather than retrying inside the same worker.
-Its initialization failure is non-retryable, not a temporary capacity refusal.
+This throws `FullTextWorkerInitializationError` with status 500 and `retryable: false`.
 Retained paging still requires Harper's main thread or a managed worker. Inheriting native settings
 does not add paging-message routing to application-created workers.
+Attempting retained paging from an unmanaged worker returns 503 with
+`Full-text continuation requires a Harper-managed worker`; waiting and retrying on that worker
+does not add routing. Run the page request through Harper's main thread or a managed worker.
 
 The runtime keys use integer counts or bytes:
 
