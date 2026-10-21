@@ -1463,6 +1463,64 @@ describe('Test keys module', () => {
 			const record = await certTable.get(certCn);
 			expect(record.certificate, 'an older file must not overwrite the stored cert').to.equal('SENTINEL-FUTURE');
 		});
+
+		describe('ciphers and uses follow config while the certificate file is unchanged', () => {
+			const stubTlsConfig = (extra) => {
+				sandbox.restore();
+				sandbox.stub(config_utils, 'getConfigFromFile').callsFake((key) => {
+					if (key === 'tls') return { certificate: test_cert_path, privateKey: test_private_key_path, ...extra };
+					if (key === 'rootPath') return root_path;
+					return undefined;
+				});
+			};
+
+			// Loads the config-derived record from a file newer than whatever earlier tests left stored.
+			const loadFromNewerFile = async () => {
+				await certTable.put({ ...originalRecord, file_timestamp: Date.now() - 24 * 60 * 60 * 1000 });
+				fs.utimesSync(test_cert_path, new Date(), new Date());
+				await reloadCertificates();
+			};
+
+			it('updates ciphers and uses on the record when config changes and the file does not', async () => {
+				stubTlsConfig({ ciphers: 'TLS_AES_128_GCM_SHA256', uses: ['https'] });
+				await loadFromNewerFile();
+				let record = await certTable.get(certCn);
+				expect(record.ciphers).to.equal('TLS_AES_128_GCM_SHA256');
+				expect(record.uses).to.deep.equal(['https']);
+				const { file_timestamp, certificate } = record;
+
+				stubTlsConfig({ ciphers: 'TLS_AES_256_GCM_SHA384', uses: ['https', 'operations-api'] });
+				await reloadCertificates();
+				record = await certTable.get(certCn);
+				expect(record.ciphers).to.equal('TLS_AES_256_GCM_SHA384');
+				expect(record.uses).to.deep.equal(['https', 'operations-api']);
+				expect(record.file_timestamp, 'the unchanged file keeps its timestamp').to.equal(file_timestamp);
+				expect(record.certificate).to.equal(certificate);
+				const resolve = keys.__get__('resolveEffectiveTlsCiphers');
+				expect(resolve([], [record], 'https', false)).to.equal('TLS_AES_256_GCM_SHA384');
+			});
+
+			it('clears ciphers on the record when config no longer sets them', async () => {
+				stubTlsConfig({ ciphers: 'TLS_AES_128_GCM_SHA256' });
+				await loadFromNewerFile();
+				expect((await certTable.get(certCn)).ciphers).to.equal('TLS_AES_128_GCM_SHA256');
+
+				stubTlsConfig({});
+				await reloadCertificates();
+				expect((await certTable.get(certCn)).ciphers).to.not.be.ok;
+			});
+
+			it('leaves a record without a file_timestamp alone', async () => {
+				stubTlsConfig({ ciphers: 'TLS_AES_128_GCM_SHA256' });
+				await loadFromNewerFile();
+				const { file_timestamp: _omitted, ...apiRecord } = await certTable.get(certCn);
+				await certTable.put({ ...apiRecord, ciphers: 'TLS_CHACHA20_POLY1305_SHA256' });
+
+				stubTlsConfig({ ciphers: 'TLS_AES_256_GCM_SHA384' });
+				await reloadCertificates();
+				expect((await certTable.get(certCn)).ciphers).to.equal('TLS_CHACHA20_POLY1305_SHA256');
+			});
+		});
 	});
 
 	describe('loadAndWatch periodic re-read safety net (#586)', () => {

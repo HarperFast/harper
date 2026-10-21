@@ -159,6 +159,10 @@ export async function getReplicationCertAuth() {
 	return certificateTable.get(caName);
 }
 
+// Config omits a field and a record stores it as null/absent interchangeably.
+const sameConfigValue = (recordValue, configValue) =>
+	JSON.stringify(recordValue ?? null) === JSON.stringify(configValue ?? null);
+
 let configuredCertsLoaded;
 const privateKeys = new Map();
 const configuredPrivateKeyPaths = new Map<string, string>();
@@ -268,6 +272,7 @@ export function loadCertificates() {
 									!certRecord || certRecord.is_self_signed
 										? 1
 										: (certRecord.file_timestamp ?? certRecord.__updatedtime__);
+								const uses = config.uses ?? (configKey.includes('operations') ? ['operations-api'] : []);
 								if (certRecord && fileTimestamp <= recordTimestamp) {
 									if (fileTimestamp < recordTimestamp)
 										logger.info?.(
@@ -277,6 +282,19 @@ export function loadCertificates() {
 												recordTimestamp > 1 ? new Date(recordTimestamp) : 'only self signed certificate available'
 											})`
 										);
+									// Listeners read the record's ciphers/uses, so a config edit must reach a record this file
+									// already produced (file_timestamp is only ever written here; the PEM match excludes a
+									// replicated or API-added certificate under the same name).
+									if (
+										certRecord.file_timestamp != null &&
+										certRecord.certificate === certificatePem &&
+										(!sameConfigValue(certRecord.ciphers, config.ciphers) || !sameConfigValue(certRecord.uses, uses))
+									) {
+										logger.info?.(
+											`TLS config for certificate ${certCn} changed (ciphers: ${certRecord.ciphers ?? 'unset'} -> ${config.ciphers ?? 'unset'}, uses: ${JSON.stringify(certRecord.uses)} -> ${JSON.stringify(uses)}); updating the certificate record`
+										);
+										return (promise = certificateTable.patch({ name: certCn, uses, ciphers: config.ciphers ?? null }));
+									}
 									return;
 								}
 
@@ -284,7 +302,7 @@ export function loadCertificates() {
 								// assigned as well to preserve loadCertificates()'s awaited-return contract.
 								return (promise = certificateTable.put({
 									name: certCn,
-									uses: config.uses ?? (configKey.includes('operations') ? ['operations-api'] : []),
+									uses,
 									ciphers: config.ciphers,
 									certificate: certificatePem,
 									private_key_name,
