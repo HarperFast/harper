@@ -6051,20 +6051,18 @@ export function makeTable(options): TableResourceClass {
 					if (condition.chainedConditions) {
 						if (condition.operator === 'or')
 							throw new ClientError('Chaining a condition with |= is not supported, use | with the attribute name');
+						if (condition.operator && condition.operator !== 'and')
+							throw new ClientError(`Unknown chained condition operator ${condition.operator}`);
 						if (condition.chainedConditions.length !== 1)
 							throw new ClientError('Chaining more than one condition onto a condition is not supported');
 						const chained = condition.chainedConditions[0];
-						const comparatorOf = (leg: any) => ALTERNATE_COMPARATOR_NAMES[leg.comparator] || leg.comparator;
-						let upper: any, lower: any;
-						if (comparatorOf(chained) === 'gt' || comparatorOf(chained) === 'ge') {
-							upper = condition;
-							lower = chained;
-						} else {
-							upper = chained;
-							lower = condition;
-						}
-						const lowerComparator = comparatorOf(lower);
-						const upperComparator = comparatorOf(upper);
+						const conditionComparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
+						const chainedComparator = ALTERNATE_COMPARATOR_NAMES[chained.comparator] || chained.comparator;
+						const chainedIsLower = chainedComparator === 'gt' || chainedComparator === 'ge';
+						const lower = chainedIsLower ? chained : condition;
+						const upper = chainedIsLower ? condition : chained;
+						const lowerComparator = chainedIsLower ? chainedComparator : conditionComparator;
+						const upperComparator = chainedIsLower ? conditionComparator : chainedComparator;
 						if (
 							(lowerComparator !== 'gt' && lowerComparator !== 'ge') ||
 							(upperComparator !== 'lt' && upperComparator !== 'le')
