@@ -232,7 +232,7 @@ logging:
   level: warn
   root: ~/hdb/log
   stdStreams: false
-  auditLog: false
+  auditLog: true
   rotation:
     interval: 1D
     maxSize: 100M
@@ -244,7 +244,7 @@ logging:
 - `path` — Explicit log file path (overrides `root`)
 - `stdStreams` — Write to stdout/stderr; _Default_: `false`
 - `console` — Include `console.*` output; _Default_: `true`
-- `auditLog` — Enable table transaction audit logging; _Default_: `false`
+- `auditLog` — Enable table transaction audit logging; _Default_: `true`
 - `auditRetention` — Audit log retention duration; _Default_: `3d`
 - `external` — Logging for components using the logger API; sub-options: `level`, `path`
 - `rotation.enabled` / `rotation.compress` / `rotation.interval` / `rotation.maxSize` / `rotation.path` — Log file rotation (activates when `interval` or `maxSize` is set)
