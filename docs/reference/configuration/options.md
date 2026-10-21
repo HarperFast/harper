@@ -487,7 +487,7 @@ models:
 ```
 
 - **Which keys.** A key that ends in `key`, `token`, `cookie`, or `authorization`, or contains `secret`, `password`, `passwd`, `passphrase`, or `credential`, and `accessKeyId` in any spelling. The whole key must match, so settings such as `maxTokens` and `operationTokenTimeout` are shown. A value that is exactly an environment reference, such as `${OPENAI_API_KEY}`, is shown as written.
-- **Which forms.** `key: value` and `key=value`, with the key quoted or not, anywhere in a line: YAML, JSON, `Authorization: Bearer ...` headers, and `?api_key=...` query strings. A quoted value is masked up to its closing quote, an unquoted one to the end of the line. A YAML value that continues on more-indented lines, such as a long folded value or a `|` block, is masked on every line.
+- **Which forms.** `key: value` and `key=value`, with the key quoted or not, anywhere in a line: YAML, JSON, `Authorization: Bearer ...` headers, and `?api_key=...` query strings. A quoted value is masked up to its closing quote, even on a later line, and an unquoted one to the end of the line. A YAML value that continues on more-indented lines, such as a long folded value or a `|` block, is masked on every line, as are the `- ` items under a key with no value of its own.
 - **Positional reads.** The mask keeps the text's length, so a `read_file` `offset` into a value, the later parts of a long line, and the end of a line that `tail_file` returns are masked too. `size` and `nextOffset` still count the file's bytes, so a masked value's length is visible; its content is not.
 - **Searches.** `grep_files` searches the masked text, so a pattern that matches only a credential's value finds nothing.
 
