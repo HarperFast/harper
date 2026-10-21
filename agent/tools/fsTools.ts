@@ -13,7 +13,7 @@
 
 import { readFile, writeFile, readdir, stat, mkdir, realpath, lstat, open, type FileHandle } from 'node:fs/promises';
 import { resolve, dirname, relative, sep, isAbsolute, basename } from 'node:path';
-import { maskCredentialValues } from '../../utility/credentials.ts';
+import { maskCredentialFile, maskCredentialValues } from '../../utility/credentials.ts';
 import type { AgentTool, AgentToolContext, AgentScopes } from '../types.ts';
 
 const MAX_READ_BYTES = 5 * 1024 * 1024; // 5 MiB — grep skips larger files
@@ -162,6 +162,36 @@ function assertOutsidePrivateKey(state: KeyState, path: string, insideMessage: s
 	}
 }
 
+interface Reader {
+	read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number }>;
+}
+
+interface Source {
+	reader: Reader;
+	size: number;
+	/** The whole file masked by `maskCredentialFile`, at the same byte offsets. */
+	masked?: Buffer;
+}
+
+/**
+ * A config-scope file is read and masked whole, so the YAML parse sees every key; one too large to parse,
+ * or not UTF-8, falls back to the per-page text scan the logs scope uses.
+ */
+async function openSource(fh: FileHandle, scope: Scope): Promise<Source> {
+	const { size } = await fh.stat();
+	if (scope !== 'config' || size > MAX_READ_BYTES) return { reader: fh, size };
+	const whole = Buffer.alloc(size);
+	const file = whole.subarray(0, (await fh.read(whole, 0, size, 0)).bytesRead);
+	const masked = maskCredentialFile(file);
+	if (!masked) return { reader: fh, size };
+	const reader: Reader = {
+		read: async (buffer, offset, length, position) => ({
+			bytesRead: position >= file.length ? 0 : file.copy(buffer, offset, position, position + length),
+		}),
+	};
+	return { reader, size: file.length, masked };
+}
+
 interface Window {
 	page: Buffer;
 	reachesEnd: boolean;
@@ -175,11 +205,11 @@ interface Window {
  * Up to `budget` bytes from `start`, and the look-back the key-material and credential checks judge them by,
  * in one read so a file changed in place cannot give the two different contents.
  */
-async function readWindow(fh: FileHandle, size: number, start: number, budget: number): Promise<Window> {
+async function readWindow(reader: Reader, size: number, start: number, budget: number): Promise<Window> {
 	const from = Math.max(0, start - KEY_LOOKBACK_BYTES);
 	const pageLength = Math.min(budget, size - start);
 	const buffer = Buffer.alloc(start - from + Math.max(pageLength, ARMOR_LINE_OVERLAP_BYTES));
-	const { bytesRead } = await fh.read(buffer, 0, buffer.length, from);
+	const { bytesRead } = await reader.read(buffer, 0, buffer.length, from);
 	const pageStart = Math.min(start - from, bytesRead);
 	const page = buffer.subarray(pageStart, Math.min(bytesRead, start - from + pageLength));
 	return {
@@ -313,18 +343,21 @@ export const readFileTool: AgentTool = {
 		const startLine = offset === undefined ? (requestedLine ?? 1) : requestedLine;
 		const fh = await open(path, 'r');
 		try {
-			const { size } = await fh.stat();
+			const source = await openSource(fh, scope);
+			const { size } = source;
 			if (offset !== undefined && offset > size) {
 				throw new Error(`offset ${offset} is past the end of the file (${size} bytes)`);
 			}
 			let start = offset;
 			if (start === undefined) {
-				const located = await findLineStart(fh, size, startLine, ctx.signal);
+				const located = await findLineStart(source.reader, size, startLine, ctx.signal);
 				if ('totalLines' in located) return { path, size, startLine, content: '', totalLines: located.totalLines };
 				start = located.offset;
 			}
 			const budget = pageBytes(ctx, path);
-			const window = await readWindow(fh, size, start, budget);
+			const window = await readWindow(source.reader, size, start, budget);
+			if (window.page.length === 0 && start < size)
+				throw new Error(`${requested} changed while it was read; read it again`);
 			const page = readPage(window.page, window.reachesEnd, start, lineCount, budget);
 			assertNoPrivateKey(page.content, requested);
 			assertOutsidePrivateKey(
@@ -333,9 +366,11 @@ export const readFileTool: AgentTool = {
 				`Refusing to read key material: ${requested} holds a PEM private key at that position`
 			);
 			// Masking never lengthens text, so the page still fits the budget it was cut to.
-			const content = masksCredentials(scope)
-				? maskCredentialValues(page.content, { before: window.before, beforeAtSourceStart: window.beforeAtFileStart })
-				: page.content;
+			const content = source.masked
+				? source.masked.toString('utf8', start, page.endOffset)
+				: masksCredentials(scope)
+					? maskCredentialValues(page.content, { before: window.before, beforeAtSourceStart: window.beforeAtFileStart })
+					: page.content;
 			const result: Record<string, unknown> = { path, size, offset: start, content };
 			const endLine = startLine === undefined || page.lines === 0 ? undefined : startLine + page.lines - 1;
 			if (startLine !== undefined) Object.assign(result, { startLine, endLine });
@@ -394,7 +429,7 @@ function readPage(bytes: Buffer, reachesEnd: boolean, start: number, lineCount: 
 
 /** The byte offset where `line` starts, or the file's line count when it has fewer lines than that. */
 async function findLineStart(
-	fh: FileHandle,
+	reader: Reader,
 	size: number,
 	line: number,
 	signal?: AbortSignal
@@ -405,7 +440,7 @@ async function findLineStart(
 	let lastByte = NEWLINE;
 	for (let position = 0; position < size;) {
 		signal?.throwIfAborted();
-		const { bytesRead } = await fh.read(chunk, 0, Math.min(chunk.length, size - position), position);
+		const { bytesRead } = await reader.read(chunk, 0, Math.min(chunk.length, size - position), position);
 		if (bytesRead === 0) break;
 		const read = chunk.subarray(0, bytesRead);
 		for (let index = read.indexOf(NEWLINE); index !== -1; index = read.indexOf(NEWLINE, index + 1)) {
@@ -601,11 +636,18 @@ export const grepFilesTool: AgentTool = {
 				skippedFiles++;
 				return true;
 			}
-			const text = await readFile(file, 'utf8').catch(() => '');
+			const bytes = await readFile(file).catch(() => Buffer.alloc(0));
+			const text = bytes.toString('utf8');
 			// Skipped whole, like an oversize file: a matched line could be one line of a key.
 			if (!text || PRIVATE_KEY_ARMOR.test(text)) return true;
 			// Matched after masking, or whether a guessed value matches would tell the model what was masked.
-			const lines = (masks ? maskCredentialValues(text) : text).split('\n');
+			const searched =
+				scope === 'config'
+					? (maskCredentialFile(bytes)?.toString('utf8') ?? maskCredentialValues(text))
+					: masks
+						? maskCredentialValues(text)
+						: text;
+			const lines = searched.split('\n');
 			for (let i = 0; i < lines.length; i++) {
 				if (!pattern.test(lines[i])) continue;
 				const match = { path: file, line: i + 1, text: clipLine(lines[i]) };
@@ -667,22 +709,25 @@ export const tailFileTool: AgentTool = {
 		try {
 			// Read only the trailing page — a multi-GB log file otherwise OOMs the process — and the bytes
 			// before it that can hold the BEGIN line of a key the page ends inside.
-			const { size } = await fh.stat();
+			const source = await openSource(fh, scope);
+			const { size } = source;
 			const start = Math.max(0, size - budget);
 			const scanStart = Math.max(0, start - KEY_LOOKBACK_BYTES);
 			const scanned = Buffer.alloc(size - scanStart);
-			const { bytesRead } = await fh.read(scanned, 0, scanned.length, scanStart);
+			const { bytesRead } = await source.reader.read(scanned, 0, scanned.length, scanStart);
 			const bytes = scanned.subarray(start - scanStart, bytesRead);
 			let firstChar = 0;
 			while (start > 0 && firstChar < bytes.length && (bytes[firstChar] & 0xc0) === 0x80) firstChar++;
 			const rawText = bytes.toString('utf8', firstChar);
 			const pageAt = Math.min(start - scanStart + firstChar, bytesRead);
-			const text = masksCredentials(scope)
-				? maskCredentialValues(rawText, {
-						before: scanned.toString('utf8', 0, pageAt),
-						beforeAtSourceStart: scanStart === 0,
-					})
-				: rawText;
+			const text = source.masked
+				? source.masked.toString('utf8', start + firstChar, scanStart + bytesRead)
+				: masksCredentials(scope)
+					? maskCredentialValues(rawText, {
+							before: scanned.toString('utf8', 0, pageAt),
+							beforeAtSourceStart: scanStart === 0,
+						})
+					: rawText;
 			// Masking keeps every line break, so the raw and masked lines pair up by index.
 			const all = text.split('\n');
 			const rawAll = text === rawText ? all : rawText.split('\n');
@@ -700,7 +745,6 @@ export const tailFileTool: AgentTool = {
 			const rawLines = rawAll.slice(begin, end);
 			if (lines.length === 1 && used > budget) {
 				lines[0] = escapedTail(lines[0], budget);
-				rawLines[0] = rawLines[0].slice(rawLines[0].length - lines[0].length);
 				lastLineCut = true;
 			}
 			assertNoPrivateKey(rawLines.join('\n'), requested);

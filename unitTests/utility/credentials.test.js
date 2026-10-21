@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { CREDENTIAL_KEY, maskCredentialValues } = require('#src/utility/credentials');
+const { CREDENTIAL_KEY, maskCredentialFile, maskCredentialValues } = require('#src/utility/credentials');
 
 function masked(text, before, atSourceStart) {
 	const result = maskCredentialValues(text, { before, beforeAtSourceStart: atSourceStart });
@@ -190,6 +190,39 @@ describe('utility/credentials', () => {
 
 		it('keeps the length of text with characters outside the BMP', () => {
 			assert.equal(masked('apiKey: 🔑🔑\n'), 'apiKey: ****\n');
+		});
+	});
+
+	describe('maskCredentialFile', () => {
+		const maskedFile = (text) => {
+			const file = Buffer.from(text, 'utf8');
+			const result = maskCredentialFile(file);
+			assert.equal(result.length, file.length, 'masking keeps the byte length');
+			return result.toString('utf8');
+		};
+
+		it('masks the values of keys only a YAML parse resolves: an escaped key, and the anchor an alias points at', () => {
+			const config =
+				'common: &k sk-ANCHOR\nmodels:\n  d:\n    "api\\u004Bey": sk-ESCAPED\n    apiKey: *k\n    model: m\n';
+			assert.equal(
+				maskedFile(config),
+				'common: &k *********\nmodels:\n  d:\n    "api\\u004Bey": **********\n    apiKey: **\n    model: m\n'
+			);
+		});
+
+		it('keeps line breaks, indentation and  references, and masks a block scalar byte for byte', () => {
+			assert.equal(
+				maskedFile('a:\n  token: |-\n    é1\n    two\n  key: \n  b: 1\n'),
+				'a:\n  token: **\n    ***\n    ***\n  key: \n  b: 1\n'
+			);
+		});
+
+		it('masks KEY=value lines, which a YAML parse reads as one string', () => {
+			assert.equal(maskedFile('OPENAI_API_KEY=sk-env\nREGION=us\n'), 'OPENAI_API_KEY=******\nREGION=us\n');
+		});
+
+		it('returns undefined for bytes that are not UTF-8', () => {
+			assert.equal(maskCredentialFile(Buffer.from([0x61, 0x3a, 0x20, 0xff, 0x0a])), undefined);
 		});
 	});
 });

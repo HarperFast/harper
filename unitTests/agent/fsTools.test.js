@@ -899,4 +899,19 @@ describe('agent/fsTools credential values in the read-only scopes (harper#3097)'
 		const page = await readFileTool.handler({ root: 'config', startLine: 4, lineCount: 2 }, ctx(scopes));
 		assert.equal(page.content, '      ***************\n    model: m\n');
 	});
+
+	it('masks credentials a YAML parse resolves but text cannot show: an escaped key and an aliased anchor', async () => {
+		writeFileSync(
+			join(root, 'harper-config.yaml'),
+			'common: &k sk-ANCHOR\nmodels:\n  d:\n    "api\\u004Bey": sk-ESCAPED\n    apiKey: *k\n'
+		);
+		const read = await readFileTool.handler({ root: 'config' }, ctx(scopes));
+		assert.doesNotMatch(read.content, /sk-/);
+		const atAnchor = await readFileTool.handler({ root: 'config', offset: 11, lineCount: 1 }, ctx(scopes));
+		assert.equal(atAnchor.content, '*********\n');
+		const tail = await tailFileTool.handler({ root: 'config', path: 'harper-config.yaml' }, ctx(scopes));
+		assert.doesNotMatch(tail.lines.join('\n'), /sk-/);
+		const grep = await grepFilesTool.handler({ root: 'config', pattern: 'sk-' }, ctx(scopes));
+		assert.equal(grep.count, 0);
+	});
 });

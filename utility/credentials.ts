@@ -1,3 +1,4 @@
+import { isAlias, isNode, isScalar, parseAllDocuments, visit } from 'yaml';
 import { isUnresolvedEnvVarPlaceholder } from './expandEnvVar.ts';
 
 /**
@@ -26,6 +27,51 @@ export interface MaskOptions {
 	beforeAtSourceStart?: boolean;
 	/** The text is one log entry, so a quote left open runs to its end instead of to the next column-0 line. */
 	oneEntry?: boolean;
+}
+
+/**
+ * `file` with every credential value masked byte for byte, line breaks kept, so offsets into the result are
+ * offsets into the file. A file is parsed as YAML, which finds the keys a text scan cannot (an escaped key,
+ * an anchor a credential key aliases), and also scanned as text, which finds `KEY=value` lines a YAML parse
+ * reads as one string. Undefined when the bytes are not UTF-8, so offsets cannot be mapped.
+ */
+export function maskCredentialFile(file: Buffer): Buffer | undefined {
+	const text = file.toString('utf8');
+	if (!Buffer.from(text, 'utf8').equals(file)) return undefined;
+	const masked = new Uint8Array(text.length);
+	for (const [start, end] of yamlCredentialRanges(text)) masked.fill(1, start, end);
+	const scanned = maskCredentialValues(text);
+	for (let index = 0; index < text.length; index++) if (scanned[index] !== text[index]) masked[index] = 1;
+	const out = Buffer.from(file);
+	let indenting = true;
+	for (let unit = 0, byte = 0; unit < text.length;) {
+		const point = text.codePointAt(unit)!;
+		const units = point > 0xffff ? 2 : 1;
+		const bytes = point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4;
+		const lineBreak = point === 0x0a || point === 0x0d;
+		indenting = lineBreak || (indenting && (point === 0x20 || point === 0x09));
+		if ((masked[unit] || masked[unit + units - 1]) && !lineBreak && !indenting) out.fill(MASK, byte, byte + bytes);
+		unit += units;
+		byte += bytes;
+	}
+	return out;
+}
+
+/** Source ranges of the values of credential keys, as YAML resolves the keys, and of the anchors they alias. */
+function yamlCredentialRanges(text: string): Array<[number, number]> {
+	const ranges: Array<[number, number]> = [];
+	for (const document of parseAllDocuments(text)) {
+		visit(document, {
+			Pair(_, pair) {
+				const key = isScalar(pair.key) ? pair.key.value : undefined;
+				if (typeof key !== 'string' || !CREDENTIAL_KEY.test(key) || !isNode(pair.value)) return;
+				const target = isAlias(pair.value) ? pair.value.resolve(document) : pair.value;
+				if (isScalar(target) && isUnresolvedEnvVarPlaceholder(target.value)) return;
+				for (const node of [pair.value, target]) if (node?.range) ranges.push([node.range[0], node.range[1]]);
+			},
+		});
+	}
+	return ranges;
 }
 
 /** `text` with the value of every credential-named key replaced by `*`, one per UTF-16 unit. */
