@@ -1,7 +1,7 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { executeConditions, CandidateKeySet } = require('#src/resources/search');
+const { executeConditions, CandidateKeySet, distinctKeys } = require('#src/resources/search');
 const { compareKeys } = require('ordered-binary');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
@@ -141,6 +141,17 @@ describe('search key identity and the "..." between alias', () => {
 		assert.strictEqual(keys.addIfAbsent('a\x00b\x00c'), true);
 		assert.strictEqual(keys.addIfAbsent(5), true);
 		assert.strictEqual(keys.addIfAbsent(5n), false);
-		assert.strictEqual(keys.size, 4);
+		assert.strictEqual(keys.addIfAbsent(2n ** 62n), true);
+		assert.strictEqual(keys.addIfAbsent(2n ** 62n), false);
+		assert.strictEqual(keys.addIfAbsent(true), true);
+		assert.strictEqual(keys.addIfAbsent(true), false);
+		assert.strictEqual(keys.size, 6);
+	});
+
+	it('dedupes an OR union that a synchronous index returns as a plain array', () => {
+		const entries = [['k', 1], { key: ['k', 1] }, 'k1', { key: 'k1' }, ['k', 2]];
+		const distinct = distinctKeys(entries);
+		assert.strictEqual(distinct.length, 3);
+		assert.strictEqual(distinctKeys(entries).length, 3, 'each call starts with an empty seen-set');
 	});
 });

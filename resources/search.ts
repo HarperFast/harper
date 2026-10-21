@@ -469,16 +469,20 @@ export class CandidateKeySet {
 		}
 		return this.#encoded.has(writeKeyId(primaryKey));
 	}
-	/** Adds the key and reports whether it was new, encoding a composite key once rather than for `has` and `add`. */
 	addIfAbsent(primaryKey: Id): boolean {
-		if (Array.isArray(primaryKey)) {
-			const identity = writeKeyId(primaryKey);
-			if (this.#encoded.has(identity)) return false;
-			this.#encoded.add(identity);
+		if (typeof primaryKey === 'string' || typeof primaryKey === 'number') {
+			if (this.has(primaryKey)) return false;
+			this.add(primaryKey);
 			return true;
 		}
-		if (this.has(primaryKey)) return false;
-		this.add(primaryKey);
+		const identity = writeKeyId(primaryKey);
+		if (typeof primaryKey === 'bigint') {
+			const number = Number(primaryKey);
+			if (BigInt(number) === primaryKey && (number === 0 ? this.#zero : this.#byValue.has(number))) return false;
+			this.#holdsBigInt = true;
+		}
+		if (this.#encoded.has(identity)) return false;
+		this.#encoded.add(identity);
 		return true;
 	}
 	get size(): number {
@@ -486,17 +490,16 @@ export class CandidateKeySet {
 	}
 }
 
-function distinctKeys(entries: any): any {
+export function distinctKeys(entries: any): any {
+	if (Array.isArray(entries)) {
+		const returned = new CandidateKeySet();
+		return entries.filter((entry) => returned.addIfAbsent(entry.key ?? entry));
+	}
 	const distinct = new ExtendedIterable();
 	(distinct as any).iterate = (options) => {
 		const returned = new CandidateKeySet();
 		// map rather than filter: filter clears `continueOnRecoverableError` for everything below it
-		return entries
-			.map((entry) => {
-				const id = entry.key ?? entry;
-				return returned.addIfAbsent(id) ? entry : SKIP;
-			})
-			.iterate(options);
+		return entries.map((entry) => (returned.addIfAbsent(entry.key ?? entry) ? entry : SKIP)).iterate(options);
 	};
 	return distinct;
 }
