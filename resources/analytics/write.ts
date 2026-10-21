@@ -66,6 +66,8 @@ export function setAnalyticsEnabled(enabled: boolean) {
 	else stopEventLoopDelayMonitor();
 	clearTimeout(sendAnalyticsTimeout); // reset this
 	sendAnalyticsTimeout = null;
+	// The cancelled window must not stretch the next one's period or skip its histogram reset.
+	analyticsStart = 0;
 }
 
 function recordExistingAction(value: Value, action: Action) {
