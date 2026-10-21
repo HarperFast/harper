@@ -1,5 +1,3 @@
-/** Credential detection shared by the models-config hash and the agent's read-only reads; see agent/DESIGN.md. */
-
 import { isUnresolvedEnvVarPlaceholder } from './expandEnvVar.ts';
 
 /**
@@ -7,12 +5,12 @@ import { isUnresolvedEnvVarPlaceholder } from './expandEnvVar.ts';
  * CREDENTIAL_KEY_PATTERN, so settings such as `maxTokens` and `operationTokenTimeout` are not credentials.
  */
 export const CREDENTIAL_KEY =
-	/^(?:.*(?:secret|passw(?:or)?d|passphrase|credential).*|.*(?:key|token|cookie)|(?:proxy[-_]?)?authorization|.*access[-_]?key[-_]?id)$/i;
+	/^(?:.*(?:secret|passw(?:or)?d|passphrase|credential).*|.*(?:key|token|cookie|authorization)|.*access[-_]?key[-_]?id)$/i;
 
 const MASK = '*';
-// The key's quote may itself be escaped, as in JSON logged inside a JSON string. A match never starts past
-// the second backslash of a run, so a long run is scanned once rather than once per backslash.
-const ASSIGNMENT = /(?<![\w$.-])(?<!\\\\)(\\*["']|)([A-Za-z_$][\w$.-]*)\1[ \t]*([:=])[ \t]*/g;
+// The key's quote may itself be escaped, as in JSON logged inside a JSON string. A key may follow an escape
+// such as `\n`, but a match never starts past the second backslash of a run, so a run is scanned once.
+const ASSIGNMENT = /(?<!(?<!\\)[\w$.-])(?<!\\\\)(\\*["']|)([A-Za-z_$][\w$.-]*)\1[ \t]*([:=])[ \t]*/g;
 const LINE_PREFIX = /^[ \t]*(?:-[ \t]+)*/;
 
 type State =
@@ -24,7 +22,6 @@ type State =
 const NONE: State = { kind: 'none' };
 
 export interface MaskOptions {
-	/** What precedes the text in its source, read only for the state the text starts in. */
 	before?: string;
 	beforeAtSourceStart?: boolean;
 	/** The text is one log entry, so a quote left open runs to its end instead of to the next column-0 line. */

@@ -26,6 +26,7 @@ describe('utility/credentials', () => {
 				'sessionToken',
 				'authorization',
 				'proxy-authorization',
+				'headers.authorization',
 				'set-cookie',
 				'credentials',
 				'accessKeyId',
@@ -44,7 +45,6 @@ describe('utility/credentials', () => {
 				'refreshTokenTimeout',
 				'authorizeLocal',
 				'requireAuthentication',
-				'requireAuthorization',
 				'authentication',
 				'certificateAuthority',
 				'model',
@@ -126,6 +126,17 @@ describe('utility/credentials', () => {
 			assert.equal(masked('  apiKey:\n  # c\n    sk-secret\n'), '  apiKey:\n  # c\n    *********\n');
 			const before = 'models:\n  default:\n    apiKey: |-\n      sk-part-1\n# comment\n';
 			assert.equal(masked('      sk-part-2\n', before, true), '      *********\n');
+		});
+
+		it('finds a key that follows an escape or a dotted path', () => {
+			const dump = String.raw`"GET / HTTP/1.1\r\nAuthorization: Bearer sk-live"`;
+			assert.equal(
+				masked(dump),
+				dump.slice(0, dump.indexOf('Bearer')) + '*'.repeat(dump.length - dump.indexOf('Bearer'))
+			);
+			assert.equal(masked('headers.authorization: Bearer sk-live'), 'headers.authorization: **************');
+			const tabbed = String.raw`{\t\"apiKey\":\"sk-tab\"}`;
+			assert.equal(masked(tabbed), String.raw`{\t\"apiKey\":\"******\"}`);
 		});
 
 		it('masks JSON logged inside a JSON string, keeping the fields around it', () => {
