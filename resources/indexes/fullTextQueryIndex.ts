@@ -588,7 +588,10 @@ export class FullTextQueryIndex {
 					if (!entry) continue;
 					if (options.filter && !candidateDecides && !options.filter(key, entry)) continue;
 					accepted.push({ key, $score: hit.score, nativeId: hit.id, record: entry.value, recordEntry: entry });
-					if (accepted.length >= target) break;
+					if (accepted.length >= target) {
+						if (!bounded && hitIndex + 1 < result.hits.length) moreMayExist = true;
+						break;
+					}
 				}
 				if (!moreMayExist) break;
 				if (accepted.length < target) {
@@ -605,8 +608,18 @@ export class FullTextQueryIndex {
 					await new Promise((resolve) => setImmediate(resolve));
 				}
 			}
-			if (!bounded && moreMayExist)
-				throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
+			if (!bounded && moreMayExist) {
+				const bound =
+					target < searchWindow
+						? target === rawHitLimit
+							? 'storage.fullText.maxRawHitsPerRequest'
+							: 'storage.fullText.maxResultsPerRequest'
+						: `the ${searchWindow}-result search window`;
+				throw new ClientError(
+					`Unbounded full-text query exceeds ${bound}; add a limit or increase the relevant budget`,
+					400
+				);
+			}
 			if (condition.includeHighlights && accepted.length > 0)
 				await this.#addHighlights(
 					reader,

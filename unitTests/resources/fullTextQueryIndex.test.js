@@ -307,6 +307,39 @@ describe('FullTextQueryIndex', () => {
 		}
 	});
 
+	it('rejects unbounded results at the actual work or retained-result ceiling', async () => {
+		const env = require('#src/utility/environment/environmentManager');
+		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+		const auditStore = sharedStore();
+		const readinessId = 'unbounded-result-budget';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			maxSearchWindow: 1000,
+			hits: () => Array.from({ length: 200 }, (_, i) => ({ id: nativeId(1, String(i)), score: 200 - i, version: '1' })),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		try {
+			for (const name of ['maxRawHitsPerRequest', 'maxResultsPerRequest']) {
+				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, {
+					...previous,
+					maxRawHitsPerRequest: 500,
+					maxResultsPerRequest: 500,
+					[name]: 100,
+				});
+				await assert.rejects(
+					index.search({ comparator: 'matches', value: 'shoe' }, {}),
+					(error) => error.statusCode === 400 && error.message.includes(`storage.fullText.${name}`)
+				);
+			}
+		} finally {
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+			await index.close();
+		}
+	});
 	it('does not treat prototype property names as full-text comparators', () => {
 		for (const comparator of ['constructor', 'toString', '__proto__'])
 			assert.strictEqual(fullTextComparatorMode(comparator), undefined);
