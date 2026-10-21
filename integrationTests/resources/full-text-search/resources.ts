@@ -64,6 +64,12 @@ export class CopiedPagingProduct extends Resource {
 	}
 }
 
+export class CopiedEnvelopePagingProduct extends CopiedPagingProduct {
+	async searchPage(target) {
+		return { headers: { 'Fulltext-Test-Envelope': 'true' }, data: await super.searchPage(target) };
+	}
+}
+
 export class IgnoredPagingProduct extends Resource {
 	allowRead(user) {
 		return Boolean(user);
