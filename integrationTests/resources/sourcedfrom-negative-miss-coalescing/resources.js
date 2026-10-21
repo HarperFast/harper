@@ -1,6 +1,5 @@
 const { CoalescedCache } = tables;
 
-// Each id's first source call waits until the rest of its burst has parked on the record lock.
 const burstWaiters = Number(process.env.COALESCING_BURST_WAITERS);
 const parked = new Map();
 const held = new Set();
@@ -15,7 +14,9 @@ async function holdFirstCall(id) {
 	if (held.has(id)) return;
 	held.add(id);
 	const deadline = Date.now() + 10_000;
-	while ((parked.get(id) ?? 0) < burstWaiters && Date.now() < deadline) {
+	while ((parked.get(id) ?? 0) < burstWaiters) {
+		if (Date.now() > deadline)
+			throw new Error(`only ${parked.get(id) ?? 0} of ${burstWaiters} reads parked on the record lock`);
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
 }

@@ -14,20 +14,25 @@ describe('Concurrent source misses on one key', function () {
 	let bursts = [];
 	let tryLock;
 	const burstFor = (id) => bursts.find((burst) => Object.is(burst.id, id));
-	// Holds the first source call for `id` until `waiters` other reads have parked on its record lock.
 	function holdFirstCall(id, waiters) {
 		let release;
 		const allParked = new Promise((resolve) => (release = resolve));
 		bursts = bursts.filter((burst) => !Object.is(burst.id, id));
-		bursts.push({
+		const burst = {
 			id,
 			parked: 0,
 			started: false,
-			allParked: Promise.race([allParked, delay(5000)]),
+			allParked: Promise.race([
+				allParked,
+				delay(5000).then(() => {
+					throw new Error(`only ${burst.parked} of ${waiters} reads parked on the record lock`);
+				}),
+			]),
 			park() {
 				if (++this.parked >= waiters) release();
 			},
-		});
+		};
+		bursts.push(burst);
 	}
 	before(function () {
 		setupTestDBPath();
