@@ -10452,6 +10452,7 @@ export function makeTable(options): TableResourceClass {
 									if (
 										replicaEvictionArmed &&
 										completePass &&
+										!maintenanceClosed &&
 										replicasSeen === 0 &&
 										Atomics.load(sweepState, 0) === admissionsAtStart
 									) {
