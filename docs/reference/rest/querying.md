@@ -64,6 +64,12 @@ GET /Product/?name==Keyboard*
 GET /Product/?category=software&price=gt=100&price=lt=200
 ```
 
+For date fields, colons must be URL-encoded as `%3A`:
+
+```http
+GET /Product/?listDate=gt=2017-03-08T09%3A30%3A00.000Z
+```
+
 ### Full-Text Operators
 
 <VersionBadge version="v5.3.0" /> <EngineBadge engines="RocksDB" />
@@ -82,15 +88,15 @@ REST supports `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `mat
 GET /Product/?catalogSearch=matches=waterproof&catalogSearch=not_matches=leather
 ```
 
+In v5.4, REST's `limit(start,end)` uses an exclusive end. This prefix query skips 100 eligible products and requests the next 10, within request budgets:
+
+```http
+GET /Product/?catalogSearch=matches_prefix=waterproof%20tra&limit(100,110)
+```
+
 Use `Table.search()` or `search_by_conditions` when conditions need source-field selection, condition-level highlighting, or freshness controls. See [Querying Full-Text Indexes](../full-text-search/querying.md) for ranking, highlights, query combinations, and freshness controls.
 
 The REST URL syntax searches every source field in the index, so the caller must be allowed to read every source field. Before v5.4, prefix and fuzzy-prefix queries restrict `offset + limit` to 100. In v5.4, bounded full-text and autocomplete queries can pass that native window within request budgets; source-version checks and filters run before records count toward the offset and limit. Each page is a new query and can see concurrent changes. See [paging and prefix result windows](../full-text-search/querying.md#paging-and-prefix-result-windows). Full-text queries cannot provide an exact total count. On a REST interface with `exactCount: true`, a `Prefer: count=exact` request returns an unavailable total (`Content-Range: items <range>/*`). Without that opt-in, Harper applies `count=estimated` instead and can return an estimate.
-
-For date fields, colons must be URL-encoded as `%3A`:
-
-```http
-GET /Product/?listDate=gt=2017-03-08T09%3A30%3A00.000Z
-```
 
 ### Chained Conditions (Range)
 

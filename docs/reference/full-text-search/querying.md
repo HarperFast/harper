@@ -255,3 +255,5 @@ REST can return configured highlights by selecting `$highlights`. Use `Table.sea
 ```
 
 If an index is `unknown`, `needs-rebuild`, or `rebuilding`, the query returns `503` with `code: "INDEX_REBUILDING"` and `retryable: true`. An index in terminal `unavailable` state returns a generic, non-retryable `503`; inspect readiness and logs instead of retrying it as a rebuild. Other busy paths can also return a generic `503`, so clients should branch on the code rather than the status alone. Unreadable source fields return `403`. Invalid declarations, unsupported match modes, incompatible combinations, and out-of-range options return `400` responses.
+
+For paging-budget and native response-envelope failures, see [paging and prefix result windows](#paging-and-prefix-result-windows).

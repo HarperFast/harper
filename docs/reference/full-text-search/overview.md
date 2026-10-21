@@ -63,7 +63,7 @@ Retry rejected writes with backoff rather than immediately adding more load. Ins
 
 The native index ranks matching documents with BM25. Harper then loads the authoritative table records for the matching IDs and discards stale or deleted candidates. Selecting `$score` includes the relevance score in each result.
 
-Full-text search can be combined with structured filters. Harper checks conditions against current source records before returning them. In v5.4, additional ranked batches can fill a filtered page within request budgets; those budgets can prevent the page from filling.
+Full-text search can be combined with structured filters. Harper checks conditions against current source records before returning them. In v5.4, additional ranked batches can fill a filtered page within request budgets; exhausting a budget returns an error rather than a budget-truncated page.
 
 ## Limits and troubleshooting
 
