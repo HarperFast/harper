@@ -3,6 +3,7 @@ import { contextStorage } from '../transaction.ts';
 import {
 	defineBackend,
 	getBackend,
+	getBackendPricing,
 	getBackendSource,
 	ModelBackendNotFoundError,
 	registerBackend as registerBackendImpl,
@@ -27,7 +28,7 @@ import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelC
 import { recordAction } from '../analytics/write.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import { runAgentLoop, runAgentLoopStream } from './agentLoop.ts';
-import { assignFiniteTokenCount, ChoiceScoringUnsupportedError } from './backendHelpers.ts';
+import { assignFiniteTokenCount, ChoiceScoringUnsupportedError, isTokenCount } from './backendHelpers.ts';
 import {
 	DecisionContractError,
 	DecisionInputError,
@@ -71,6 +72,7 @@ import type {
 	GenerateResult,
 	ModelBackend,
 	ModelKind,
+	ModelPricing,
 	ModelRouter,
 	ModelCallResult,
 	Models as ModelsContract,
@@ -230,7 +232,7 @@ export class Models implements ModelsContract {
 		let firstError: unknown = undefined;
 		let hasError = false;
 		for (const backend of resolved.candidates) {
-			let completed: GenerateResult | undefined;
+			let completed: { output: GenerateResult; usage?: TokenUsage } | undefined;
 			// Don't spend a backend call on an already-cancelled request — between
 			// candidates the caller may have aborted (and at entry it may already be).
 			signal?.throwIfAborted();
@@ -240,11 +242,9 @@ export class Models implements ModelsContract {
 				const backendOpts = toBackendOpts(opts, signal, accounting);
 				const result = await backend.generate!(input, backendOpts);
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
+				if (!result.output) throw new ServerError(`Model backend '${backend.name}' completed without output`);
 				this.#record(backend, 'generate', opts.model, accounting, opts, result, attemptStart);
-				// Propagate usage onto the returned GenerateResult so callers (notably the
-				// `toolMode: 'auto'` loop's budget tracker) can read cumulative tokens without
-				// re-querying analytics. Pure pass-through — backend usage is the source of truth.
-				completed = result.usage ? { ...result.output, usage: result.usage } : result.output;
+				completed = { output: result.output, usage: result.usage };
 			} catch (err) {
 				this.#recordFailure(backend, 'generate', opts.model, accounting, opts, attemptStart, err);
 				if (!hasError) {
@@ -255,7 +255,7 @@ export class Models implements ModelsContract {
 			}
 			if (completed) {
 				reportServed(opts, backend);
-				return completed;
+				return finalizeGenerateResult(completed.output, completed.usage, getBackendPricing(backend));
 			}
 		}
 		throw firstError;
@@ -679,6 +679,28 @@ function usageFromError(err: unknown): TokenUsage | undefined {
 	for (const key of ['promptTokens', 'completionTokens', 'embeddingTokens'] as const)
 		assignFiniteTokenCount(usage, key, (reported as Record<string, unknown>)[key]);
 	return Object.keys(usage).length > 0 ? usage : undefined;
+}
+
+/** Runs after the candidate try/catch, so an accounting fault cannot turn a billed success into a fallback call. */
+function finalizeGenerateResult(
+	output: GenerateResult,
+	usage: TokenUsage | undefined,
+	pricing: ModelPricing | undefined
+): GenerateResult {
+	const { usage: _backendUsage, costUsd: _backendCost, ...result } = output;
+	const generateResult: GenerateResult = result;
+	if (usage) generateResult.usage = usage;
+	const costUsd = callCostUsd(usage, pricing);
+	if (costUsd !== undefined) generateResult.costUsd = costUsd;
+	return generateResult;
+}
+
+/** Cost from both token counts; a missing or invalid count leaves the call unpriced rather than under-priced. */
+function callCostUsd(usage: TokenUsage | undefined, pricing: ModelPricing | undefined): number | undefined {
+	if (!pricing || !isTokenCount(usage?.promptTokens) || !isTokenCount(usage?.completionTokens)) return undefined;
+	const costUsd =
+		(usage.promptTokens * pricing.inputPerMtok + usage.completionTokens * pricing.outputPerMtok) / 1_000_000;
+	return Number.isFinite(costUsd) && costUsd >= 0 ? costUsd : undefined;
 }
 
 function buildRecord(

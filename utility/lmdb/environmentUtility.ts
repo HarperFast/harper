@@ -111,7 +111,10 @@ export async function createEnvironment(
 	envName = envName.toString();
 	let schemasConfig = envMngr.get(hdbTerms.CONFIG_PARAMS.DATABASES);
 	if (!schemasConfig) updateConfigObject(hdbTerms.CONFIG_PARAMS.DATABASES, (schemasConfig = {}));
-	if (!schemasConfig[dbName]) schemasConfig[dbName] = {};
+	// defineProperty makes an own entry for any name: `schemasConfig.__proto__ = {}` would reparent the map instead
+	if (!Object.hasOwn(schemasConfig, dbName)) {
+		Object.defineProperty(schemasConfig, dbName, { value: {}, enumerable: true, writable: true, configurable: true });
+	}
 	schemasConfig[dbName].path = basePath;
 	try {
 		await validateEnvironmentPath(basePath, envName, isV3);

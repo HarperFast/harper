@@ -100,6 +100,27 @@ describe('agent/agent resolveAgentIdentity', () => {
 	});
 });
 
+describe('agent/agent mergeConfig maxToolResultBytes', () => {
+	it('defaults to 65536', () => {
+		assert.strictEqual(mergeConfig({ server: {} }).maxToolResultBytes, 65536);
+	});
+
+	it('accepts an integer in range, including the numeric string an env var supplies', () => {
+		assert.strictEqual(mergeConfig({ server: {}, maxToolResultBytes: 131072 }).maxToolResultBytes, 131072);
+		assert.strictEqual(mergeConfig({ server: {}, maxToolResultBytes: '16384' }).maxToolResultBytes, 16384);
+	});
+
+	it('falls back to the default rather than running uncapped on a bad value', () => {
+		for (const maxToolResultBytes of [0, 512, 2_000_000_000, 'lots', 4096.5, true]) {
+			assert.strictEqual(
+				mergeConfig({ server: {}, maxToolResultBytes }).maxToolResultBytes,
+				65536,
+				String(maxToolResultBytes)
+			);
+		}
+	});
+});
+
 describe('agent/agent resolveScopes (harper#3041)', () => {
 	let root;
 	beforeEach(() => {
@@ -206,5 +227,27 @@ describe('agent/agent mergeConfig maxTokens', () => {
 		for (const maxTokens of [0, -5, 1.5, true, [8192], '', 'abc', null, 8n, { value: 1 }]) {
 			assert.strictEqual(mergeConfig({ maxTokens }).maxTokens, 16384, String(maxTokens));
 		}
+	});
+});
+
+describe('agent/agent startOnMainThread budget caps (#3040)', () => {
+	const { startOnMainThread } = require('#src/agent/agent');
+
+	it('refuses to start an enabled agent with a malformed cap, before registering anything', async () => {
+		const registered = [];
+		const server = { registerOperation: (op) => registered.push(op.name) };
+		await assert.rejects(startOnMainThread({ server, enabled: true, maxSessionTokens: 'lots' }), (err) => {
+			assert.match(err.message, /agent\.maxSessionTokens must be a positive integer/);
+			return true;
+		});
+		await assert.rejects(startOnMainThread({ server, enabled: true, maxCostUsd: -1 }), /agent\.maxCostUsd must be/);
+		await assert.rejects(startOnMainThread({ server, enabled: true, maxTurns: 'lots' }), /agent\.maxTurns must be/);
+		// A bare `maxTurns:` key in the config file arrives as null.
+		await assert.rejects(startOnMainThread({ server, enabled: true, maxTurns: null }), /agent\.maxTurns must be/);
+		assert.deepStrictEqual(registered, []);
+	});
+
+	it('ignores a malformed cap while the agent is disabled', async () => {
+		await startOnMainThread({ server: { registerOperation: () => {} }, enabled: false, maxSessionTokens: 'lots' });
 	});
 });

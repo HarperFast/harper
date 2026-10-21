@@ -1525,7 +1525,7 @@ describe('Test keys module', () => {
 		});
 
 		it("chokidar's 'change' event reloads even when it emits no stats (alwaysStat off)", () => {
-			// chokidar v4 defaults alwaysStat:false, so the 'change' handler is called with undefined
+			// chokidar defaults alwaysStat:false, so the 'change' handler is called with undefined
 			// stats; loadFile must stat the file itself rather than throw and silently skip the reload.
 			let changeHandler;
 			chokidar.default.watch = () =>
@@ -1753,7 +1753,7 @@ describe('Test keys module', () => {
 		const watchTimers = keys.__get__('certificateWatchTimers');
 		const watchPollers = keys.__get__('certificateWatchPollers');
 		const chokidar = require('chokidar');
-		const realChokidarWatch = chokidar.watch;
+		const realChokidarWatch = chokidar.default.watch;
 		let watchPath;
 
 		const bumpMtime = () => {
@@ -1762,7 +1762,7 @@ describe('Test keys module', () => {
 		};
 
 		beforeEach(() => {
-			chokidar.watch = () => ({
+			chokidar.default.watch = () => ({
 				on: function () {
 					return this;
 				},
@@ -1773,7 +1773,7 @@ describe('Test keys module', () => {
 		});
 
 		afterEach(() => {
-			chokidar.watch = realChokidarWatch;
+			chokidar.default.watch = realChokidarWatch;
 			const timer = watchTimers.get(watchPath);
 			if (timer) clearInterval(timer);
 			watchTimers.delete(watchPath);

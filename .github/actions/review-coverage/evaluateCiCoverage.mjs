@@ -5,7 +5,7 @@ import { classifyPullRequest, easyDiffWaiver, isAiAuthored } from './prExemption
 // The exact output of `formatReviewCoverage` (HarperFast/skills-internal
 // skills/cross-model-review/bin/prepush-policy.mjs), whose leg names come from REVIEW_LEGS there.
 // A footer that helper could not have written grants no enforceable coverage.
-const COVERAGE_LEGS = new Set([
+export const COVERAGE_LEGS = new Set([
 	'codex',
 	'claude',
 	'claude(fallback)',
@@ -14,6 +14,7 @@ const COVERAGE_LEGS = new Set([
 	'cursor-composer',
 	'cursor-kimi',
 	'cursor-muse',
+	'muse',
 ]);
 const RECEIPT_LEGS = new Set([...COVERAGE_LEGS, 'domain', 'conformance']);
 const knownLegs = (key, allowed, legs) => {
@@ -28,7 +29,9 @@ const SEGMENTS = new Map([
 	[
 		'authored',
 		(value) =>
-			/^(?:claude|codex|unknown)$/.test(value) ? '' : `has \`authored=${value}\`, not claude, codex or unknown`,
+			/^(?:claude|codex|gemini|unknown)$/.test(value)
+				? ''
+				: `has \`authored=${value}\`, not claude, codex, gemini or unknown`,
 	],
 	['ran', (value) => (value === 'none' ? '' : legList('ran', COVERAGE_LEGS)(value))],
 	['adjudicated', legList('adjudicated', new Set(['domain']))],

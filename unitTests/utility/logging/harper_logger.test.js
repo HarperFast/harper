@@ -2,7 +2,7 @@
 
 const assert = require('node:assert');
 const { EventEmitter, once } = require('node:events');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
@@ -239,6 +239,158 @@ describe('Test harper_logger module', () => {
 			assert.equal(code, 0, `fixture exited ${code}: ${stderr}`);
 			assert.match(stderr, /no-config stream check/);
 			assert.match(stdout, /stdout-guard=true stderr-guard=true/);
+		});
+
+		it('rebinds component and tagged loggers captured before initLogSettings(true) to the configured log file', async () => {
+			const rebindRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-rebind-logger-'));
+			const logRoot = path.join(rebindRoot, 'log');
+			const logPath = path.join(logRoot, 'hdb.log');
+			const originalRootPath = process.env.ROOTPATH;
+			const originalLoggingLevel = process.env.LOGGING_LEVEL;
+			process.env.ROOTPATH = rebindRoot;
+			delete process.env.LOGGING_LEVEL;
+			afterThisTest.push(() => {
+				if (originalRootPath === undefined) delete process.env.ROOTPATH;
+				else process.env.ROOTPATH = originalRootPath;
+				if (originalLoggingLevel === undefined) delete process.env.LOGGING_LEVEL;
+				else process.env.LOGGING_LEVEL = originalLoggingLevel;
+				try {
+					fs.removeSync(rebindRoot);
+				} catch {}
+			});
+
+			const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+			harper_logger.__set__('PropertiesReader', sandbox.stub().throws(enoent));
+			const stdio = captureStdio();
+			try {
+				harper_logger.initLogSettings(true);
+			} finally {
+				restoreStdio(stdio);
+			}
+
+			const storageLogger = harper_logger.forComponent('storage');
+			const customCompLogger = harper_logger.forComponent('customComp');
+			const tlsConditional = harper_logger.forComponent('tls').conditional;
+			const mainConditional = harper_logger.conditional;
+			const authEventLogger = harper_logger.forComponent('authentication').withTag('auth-event');
+			const mainTaggedLogger = harper_logger.loggerWithTag('watcher', true);
+			const unconditionalTaggedLogger = harper_logger.loggerWithTag('plain-tag');
+
+			expect(tlsConditional.info).to.be.undefined;
+			expect(mainConditional.info).to.be.undefined;
+			expect(authEventLogger.info).to.be.null;
+			expect(mainTaggedLogger.info).to.be.null;
+
+			fs.mkdirpSync(logRoot);
+			const configFile = path.join(rebindRoot, 'harperdb-config.yaml');
+			fs.writeFileSync(
+				configFile,
+				[
+					`rootPath: ${JSON.stringify(rebindRoot)}`,
+					'logging:',
+					'  file: true',
+					'  stdStreams: false',
+					'  level: info',
+					`  root: ${JSON.stringify(logRoot)}`,
+					'customComp:',
+					'  logging:',
+					'    level: debug',
+					'    tag: custom-tag',
+					'storage:',
+					'  logging: debug',
+					'',
+				].join('\n')
+			);
+
+			const stdioAfter = captureStdio();
+			try {
+				harper_logger.initLogSettings(true);
+			} finally {
+				restoreStdio(stdioAfter);
+			}
+
+			expect(harper_logger.forComponent('storage')).to.equal(storageLogger);
+			expect(storageLogger.path).to.equal(logPath);
+			expect(storageLogger.logToStdstreams).to.be.false;
+			expect(storageLogger.conditional.debug).to.be.a('function');
+			expect(customCompLogger.path).to.equal(logPath);
+			expect(customCompLogger.tag).to.equal('custom-tag');
+			expect(customCompLogger.conditional.debug).to.be.a('function');
+			expect(mainConditional.info).to.be.a('function');
+
+			storageLogger.info('storage component log after rebind');
+			customCompLogger.debug('custom component debug log after rebind');
+			tlsConditional.info?.('tls conditional log after rebind');
+			mainConditional.info?.('main conditional log after rebind');
+			authEventLogger.info?.('auth-event tagged log after rebind');
+			mainTaggedLogger.info?.('watcher tagged log after rebind');
+			unconditionalTaggedLogger.info('plain-tag log after rebind');
+
+			await waitFor(
+				() => fs.pathExistsSync(logPath) && fs.readFileSync(logPath, 'utf8').includes('plain-tag log after rebind')
+			);
+			const content = fs.readFileSync(logPath, 'utf8');
+			expect(content).to.include('[info] [storage]: storage component log after rebind');
+			expect(content).to.include('[debug] [custom-tag]: custom component debug log after rebind');
+			expect(content).to.include('[info] [tls]: tls conditional log after rebind');
+			expect(content).to.include('[info]: main conditional log after rebind');
+			expect(content).to.include('[info] [auth-event] [authentication]: auth-event tagged log after rebind');
+			expect(content).to.include('[info] [watcher]: watcher tagged log after rebind');
+			expect(content).to.include('[info] [plain-tag]: plain-tag log after rebind');
+
+			harper_logger._applyLogSettingsForTests({
+				rootPath: rebindRoot,
+				logging: { file: true, stdStreams: true, level: 'error', root: logRoot },
+				authentication: { logging: { level: 'error' } },
+				customComp: { logging: { level: 'debug' } },
+			});
+			expect(customCompLogger.logToStdstreams).to.be.true;
+			expect(authEventLogger.info).to.be.null;
+			expect(mainTaggedLogger.info).to.be.null;
+
+			fs.removeSync(configFile);
+			const stdioFallback = captureStdio();
+			try {
+				harper_logger.initLogSettings(true);
+			} finally {
+				restoreStdio(stdioFallback);
+			}
+			expect(storageLogger.path).to.be.undefined;
+			expect(storageLogger.logToStdstreams).to.be.true;
+			expect(tlsConditional.info).to.be.undefined;
+			expect(mainConditional.info).to.be.undefined;
+			expect(authEventLogger.info).to.be.null;
+			expect(mainTaggedLogger.info).to.be.null;
+		});
+
+		it('logs keys.ts tls messages to the configured file in a first-boot install+run process', function () {
+			this.timeout(30000);
+			const firstBootRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-first-boot-tls-'));
+			afterThisTest.push(() => {
+				try {
+					fs.removeSync(firstBootRoot);
+				} catch {}
+			});
+
+			const result = spawnSync(process.execPath, [require.resolve('./fixtures/firstBootComponentLogging.cjs')], {
+				env: { ...process.env, ROOTPATH: firstBootRoot, LOGGING_LEVEL: 'warn' },
+				timeout: 20000,
+				encoding: 'utf8',
+			});
+
+			assert.ifError(result.error);
+			assert.equal(result.status, 0, `fixture exited ${result.status}: ${result.stderr}`);
+			assert.doesNotMatch(result.stdout + result.stderr, /\[tls\]/, result.stderr);
+
+			const logPath = path.join(firstBootRoot, 'log', 'hdb.log');
+			assert.ok(fs.pathExistsSync(logPath), 'expected configured hdb.log to exist');
+			const logContent = fs.readFileSync(logPath, 'utf8');
+			assert.match(
+				logContent,
+				/\[info\] \[tls\]: node url is missing from harperdb-config\.yaml, using default host127\.0\.0\.1/
+			);
+			assert.match(logContent, /\[warn\] \[tls\]: Composed TLS cipher configuration for the 'https' listener/);
 		});
 
 		it('Test that if error code is not ENOENT error is handled correctly', () => {
@@ -3055,11 +3207,19 @@ describe('Test harper_logger module', () => {
 	describe('Test applyLogSettings function (harper#2191)', () => {
 		const { _applyLogSettingsForTests, getLogFilePath } = harperLoggerModule;
 
-		it('does not throw on a component key declared with no body', () => {
+		it('does not throw on a component key declared with no body or scalar logging', () => {
 			// `myComponent:` with nothing under it parses to null, and this runs from the root
 			// config's async `change` listener, where the TypeError escapes as an unhandled
 			// rejection rather than as a listener fault the watcher contains.
-			assert.doesNotThrow(() => _applyLogSettingsForTests({ noBody: null }));
+			assert.doesNotThrow(() =>
+				_applyLogSettingsForTests({
+					logging: 'info',
+					noBody: null,
+					scalarLogging: { logging: 'debug' },
+					boolLogging: { logging: true },
+				})
+			);
+			expect(harperLoggerModule.forComponent('scalarLogging').conditional.debug).to.be.a('function');
 		});
 
 		it('leaves the established settings alone when the barrier settles carrying no config', () => {
