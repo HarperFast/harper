@@ -82,7 +82,12 @@ describe('Local replicas of residency stubs', function () {
 		const stub = await invalidate(Object.freeze({ name: 'indexed' }), {}, 1);
 		assert.ok(stub.metadataFlags & INVALIDATED);
 		stubVersion = stub.version;
-		response = { key: ID, value: { id: ID, name: 'indexed', body: 'complete' }, version: stubVersion };
+		response = {
+			key: ID,
+			value: { id: ID, name: 'indexed', body: 'complete' },
+			version: stubVersion,
+			originNode: server.hostname,
+		};
 	});
 
 	async function query(select, conditions = []) {
@@ -165,15 +170,38 @@ describe('Local replicas of residency stubs', function () {
 		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
 	});
 
-	it('refuses an equal-version answer from another writer, and accepts the same writer or an unnamed one', async () => {
-		const ownName = server.hostname;
-		response = { ...response, originNode: 'some-other-writer' };
-		assert.equal((await Records.get(ID)).body, 'complete');
-		assert.deepEqual(stored, [false], 'a losing same-timestamp writer must not be cached under the winner');
-		assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
+	it('keeps an equal-version answer only from the stub writer, and a newer one from anyone', async () => {
+		for (const originNode of ['some-other-writer', undefined]) {
+			response = { ...response, originNode };
+			calls = [];
+			stored = [];
+			assert.equal((await Records.get(ID)).body, 'complete');
+			assert.deepEqual(stored, [false], `${originNode} at the stub version must not be kept under its writer`);
+			assert.ok(Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED);
+		}
 		stored = [];
-		response = { ...response, originNode: ownName };
+		response = { ...response, originNode: undefined, version: stubVersion + 1 };
 		await replica();
+	});
+
+	it('reloads an expired replica from a resident instead of hiding it', async () => {
+		Records.setTTLExpiration({ replicaExpiration: 0.001 });
+		await replica();
+		await Records.closeMaintenance();
+		try {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			const expired = Records.primaryStore.getEntry(ID);
+			assert.ok(expired.metadataFlags & REPLICA && expired.expiresAt < Date.now(), 'an expired replica still held');
+			calls = [];
+			assert.equal((await Records.get(ID)).body, 'complete');
+			assert.deepEqual(calls, [ID], 'an expired replica is answered by a resident, never hidden');
+			assert.deepEqual(await query(['id', 'body']), [{ id: ID, body: 'complete' }]);
+			assert.deepEqual(calls, [ID, ID]);
+			assert.deepEqual(await query(['id', 'name']), [{ id: ID, name: 'indexed' }], 'an indexed-only query stays local');
+			assert.deepEqual(calls, [ID, ID]);
+		} finally {
+			Records.resumeMaintenance();
+		}
 	});
 
 	it('never outlives the record expiry on a table with its own, and does not slide there', async () => {
@@ -195,6 +223,7 @@ describe('Local replicas of residency stubs', function () {
 						key: ID,
 						value: { id: ID, name: 'indexed', body: 'complete' },
 						version: entry.version,
+						originNode: server.hostname,
 						expiresAt: residentExpiresAt,
 					};
 					await Expiring._storeReplica(entry, found);
@@ -221,6 +250,10 @@ describe('Local replicas of residency stubs', function () {
 			'a read hit never extends a record expiry'
 		);
 		await new Promise((resolve) => setTimeout(resolve, 300));
+		const hidden = [];
+		for await (const record of Expiring.search({ select: ['id', 'name'] }, { replicateFrom: false }))
+			hidden.push(record);
+		assert.deepEqual(hidden, [], 'an expired replica is hidden like any expired record on a table with record expiry');
 		residentExpiresAt = Date.now() + 3600_000;
 		assert.equal((await Expiring.get(ID)).body, 'complete');
 		assert.deepEqual(loaded, [ID, ID], 'an expired replica is answered by a resident again');
@@ -243,7 +276,12 @@ describe('Local replicas of residency stubs', function () {
 		Computed.sourcedFrom(
 			class extends Resource {
 				static async load(entry) {
-					const found = { key: ID, value: { id: ID, sku: 'A1', name: 'resident' }, version: entry.version };
+					const found = {
+						key: ID,
+						value: { id: ID, sku: 'A1', name: 'resident' },
+						version: entry.version,
+						originNode: server.hostname,
+					};
 					results.push(await Computed._storeReplica(entry, found));
 					return found;
 				}
@@ -267,7 +305,6 @@ describe('Local replicas of residency stubs', function () {
 		}))
 			found.push(record);
 		assert.deepEqual(found, [{ id: ID }]);
-		// a patch over the replica stores a stub again, and must not evaluate the resolver on it
 		const patch = { sourceApply: true, timestamp: entry.version + 1 };
 		await transaction(patch, async () => {
 			const resource = await Computed.getResource(ID, patch, { ensureLoaded: false });
@@ -417,7 +454,7 @@ describe('Local replicas of residency stubs', function () {
 	});
 
 	it('rejects a negative or non-numeric replicaExpiration', () => {
-		for (const value of [-1, 'soon', NaN, true, ''])
+		for (const value of [-1, 'soon', NaN, true, '', Number.MAX_VALUE])
 			assert.throws(() => Records.setTTLExpiration({ replicaExpiration: value }));
 		assert.throws(() =>
 			table({

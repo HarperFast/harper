@@ -576,7 +576,9 @@ export function replicaExpirationMsOf(seconds: unknown): number | undefined {
 	if (seconds == null) return undefined;
 	if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0)
 		throw new Error('replicaExpiration must be a finite number of seconds, zero or more');
-	return seconds * 1000;
+	const ms = seconds * 1000;
+	if (!Number.isFinite(ms)) throw new Error('replicaExpiration is too large');
+	return ms;
 }
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
@@ -1435,7 +1437,7 @@ export function makeTable(options): TableResourceClass {
 	let replicaEvictionArmed = false;
 	let replicaTableMarked = false;
 	let recordScanInterval = 0;
-	let recordCleanupInterval = 0;
+	let recordCleanupInterval = expirationMs || evictionMs ? (expirationMs + evictionMs) / 4 : 0;
 	const replicaRefreshInFlight = new Set<string>();
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
 	// an isolated application's schema was declared here. Hydrating persisted metadata does not set it:
@@ -2943,10 +2945,10 @@ export function makeTable(options): TableResourceClass {
 				cleanupInterval = recordCleanupInterval;
 				expirationScanScheduled = true;
 			}
-			// a table that holds replicas re-arms at its own interval whatever the record settings became
 			if (replicaEvictionArmed || replicaTableMarked) {
 				replicaEvictionArmed = false;
-				armReplicaEviction();
+				if (replicaExpirationMs) armReplicaEviction();
+				else cleanupInterval = recordCleanupInterval;
 			}
 			// Re-evaluate an existing table-level scan after an ownership-only declaration, but do not
 			// create the default daily cleanup timer for a table that has only an @expiresAt field.
@@ -6845,7 +6847,9 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						(!includeExpired && hasExpired(entry) && (checkLoaded || !(entry.metadataFlags & REPLICA)))
+						(!includeExpired &&
+							hasExpired(entry) &&
+							(checkLoaded || !(entry.metadataFlags & REPLICA) || expirationMs || expiresAtProperty))
 					) {
 						// should expiration really apply?
 						if (context.onlyIfCached) {
@@ -9467,8 +9471,7 @@ export function makeTable(options): TableResourceClass {
 				} else return loadingFromSource; // return the promise for the resolved value
 			}
 		} else if (entry?.value) {
-			// if we don't have a source, but we have an entry, we check the expiration; an expired replica
-			// on a table with no record expiry is still the record, so it is served and left to the sweep
+			// an expired replica on a table with no record expiry is still the record: served, left to the sweep
 			if (hasExpired(entry) && (!(entry.metadataFlags & REPLICA) || expirationMs || expiresAtProperty)) {
 				// if it has expired and there is no source, we evict it and then return null, using a fake promise to indicate that this is providing the response
 				TableResource.evict(entry.key, entry.value, entry.version);
@@ -10631,15 +10634,13 @@ export function makeTable(options): TableResourceClass {
 			if (!current?.residencyId || !(current.metadataFlags & (refresh ? REPLICA : INVALIDATED | REPLICA)))
 				return Promise.resolve(false);
 			if (refresh ? !replicaNeedsRefresh(current) : responseVersion < current.version) return Promise.resolve(false);
-			// Two writers can share a timestamp; the stub holds the winner. An answer that names another
-			// writer at that timestamp is the loser's body, and nothing later would correct it.
-			if (
-				!refresh &&
-				originNode &&
-				responseVersion === current.version &&
-				originNode !== (getNodeNameForId(auditStore, current.nodeId ?? 0, true) ?? server.hostname)
-			)
-				return Promise.resolve(false);
+			// Two writers can share a timestamp; the stub holds the winner. An answer at that timestamp is
+			// kept only when it names the same writer: a loser's body would never be corrected, and an
+			// answer with no writer (an older responder) or an unmapped origin cannot be told apart.
+			if (!refresh && responseVersion === current.version) {
+				const stubWriter = current.nodeId ? getNodeNameForId(auditStore, current.nodeId, true) : server.hostname;
+				if (!originNode || !stubWriter || originNode !== stubWriter) return Promise.resolve(false);
+			}
 			const record = refresh ? current.value : body;
 			const writeOptions = {
 				expiresAt: replicaDeadline(record, residentExpiresAt),
