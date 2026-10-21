@@ -479,6 +479,22 @@ describe('Local replicas of residency stubs', function () {
 		}, 'the re-armed sweep to demote the replica');
 	});
 
+	it('stands down after a complete empty sweep and wakes on the next replica', async () => {
+		Records.setTTLExpiration({ replicaExpiration: 0.2 });
+		await replica();
+		await waitFor(
+			() => (Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED ? true : undefined),
+			'the first demotion'
+		);
+		await new Promise((resolve) => setTimeout(resolve, 2200)); // two more passes meet no replica
+		stored = [];
+		await replica();
+		await waitFor(
+			() => (Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED ? true : undefined),
+			'the woken sweep to demote the new replica'
+		);
+	});
+
 	it('stores nothing when replicaExpiration is zero', async () => {
 		Records.setTTLExpiration({ replicaExpiration: 0 });
 		assert.equal((await Records.get(ID)).body, 'complete');

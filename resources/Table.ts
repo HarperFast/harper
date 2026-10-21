@@ -567,13 +567,10 @@ const MIN_REPLICA_SCAN_INTERVAL_MS = 1000;
 const MAX_REPLICA_REFRESHES_IN_FLIGHT = 50;
 const REPLICA_TABLES_KEY = Symbol.for('replica_tables');
 const REPLICA_EVICTION_ARMED = 'replica-eviction-armed';
-const replicaEvictionArmers = new Map<string, Set<(idle?: boolean) => void>>();
-onMessageByType(
-	REPLICA_EVICTION_ARMED,
-	({ storePath, tableId, idle }: { storePath: string; tableId: number; idle?: boolean }) => {
-		for (const arm of replicaEvictionArmers.get(`${storePath}:${tableId}`) ?? []) arm(idle);
-	}
-);
+const replicaEvictionArmers = new Map<string, Set<() => void>>();
+onMessageByType(REPLICA_EVICTION_ARMED, ({ storePath, tableId }: { storePath: string; tableId: number }) => {
+	for (const arm of replicaEvictionArmers.get(`${storePath}:${tableId}`) ?? []) arm();
+});
 /** `replicaExpiration` seconds as milliseconds; 0 keeps reads as proxy reads with no replica stored. */
 export function replicaExpirationMsOf(seconds: unknown): number | undefined {
 	if (seconds == null) return undefined;
@@ -1440,6 +1437,11 @@ export function makeTable(options): TableResourceClass {
 	let replicaEvictionArmed = false;
 	let replicaTableMarked = false;
 	let replicaTableKnown = false;
+	// shared across this node's threads: [0] replica admissions, [1] whether the owner's sweep runs at the
+	// replica cadence; a store on any thread wakes the sweep when [1] is 0
+	let replicaSweepState: Int32Array | undefined;
+	// the cleanup cadence this thread had before replicas armed it, restored when the sweep stands down
+	let replicaBaseline: { interval: number; scheduled: boolean } | undefined;
 	let recordScanInterval = 0;
 	let recordCleanupInterval = 86400000;
 	const replicaRefreshInFlight = new Set<string>();
@@ -2951,9 +2953,10 @@ export function makeTable(options): TableResourceClass {
 				expirationScanScheduled = true;
 			}
 			if (replicaTableKnown) {
-				replicaEvictionArmed = false;
-				if (replicaExpirationMs) armReplicaEviction();
-				else cleanupInterval = recordCleanupInterval;
+				if (replicaExpirationMs) {
+					replicaEvictionArmed = false;
+					armReplicaEviction();
+				} else standDownReplicaSweep();
 			}
 			// Re-evaluate an existing table-level scan after an ownership-only declaration, but do not
 			// create the default daily cleanup timer for a table that has only an @expiresAt field.
@@ -8982,7 +8985,7 @@ export function makeTable(options): TableResourceClass {
 			if (disposed || !maintenanceClosed) return;
 			maintenanceClosed = false;
 			lastCleanupInterval = undefined;
-			if (expirationScanScheduled || evictionMs) scheduleCleanup();
+			if (expirationScanScheduled || evictionMs || replicaEvictionArmed) scheduleCleanup();
 			if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
 		}
 		static _readTxnForContext(context) {
@@ -10315,7 +10318,7 @@ export function makeTable(options): TableResourceClass {
 		// Left unrecorded by a thread with no worker index yet: under threads: 0 the main thread loads tables
 		// before it becomes worker 0, and its next call for this interval has to arm the scan then.
 		if (getWorkerIndex() !== undefined) lastCleanupInterval = cleanupInterval;
-		if (ownsStoreMaintenance(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
+		if (ownsCleanup()) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
 			if (!cleanupInterval) {
@@ -10391,6 +10394,9 @@ export function makeTable(options): TableResourceClass {
 								try {
 									let count = 0;
 									let replicasSeen = 0;
+									const sweepState = replicaSweep();
+									const admissionsAtStart = Atomics.load(sweepState, 0);
+									let completePass = true;
 									let removeDeletedRecords = !audit || isRocksDB;
 									// RocksDB coalesces eviction/tombstone removals into shared transactions to amortize
 									// the per-record commit cost; LMDB keeps the per-record path (eventTurnBatching already
@@ -10403,7 +10409,10 @@ export function makeTable(options): TableResourceClass {
 										versions: true,
 										lazy: true, // only want to access metadata most of the time
 									})) {
-										if (maintenanceClosed) break;
+										if (maintenanceClosed) {
+											completePass = false;
+											break;
+										}
 										const { key, value: record, version, expiresAt, metadataFlags } = entry;
 										if (metadataFlags & REPLICA) replicasSeen++;
 										// if there is no auditing cleanup and we are tracking deletion, need to do cleanup of
@@ -10439,13 +10448,15 @@ export function makeTable(options): TableResourceClass {
 									await Promise.all(outstandingCleanupOperations.filter(Boolean));
 									if (batcher) await batcher.drain();
 									logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
-									// a sweep that met no replica stands the replica cadence down on every thread; the next
-									// replica stored anywhere arms it again
-									if (replicaEvictionArmed && replicasSeen === 0)
-										void broadcast(
-											{ type: REPLICA_EVICTION_ARMED, storePath: primaryStore.path, tableId, idle: true },
-											true
-										);
+									// only a complete pass that met no replica, with no admission since it began, proves
+									// the table idle; the next replica stored on any thread wakes the sweep again
+									if (
+										replicaEvictionArmed &&
+										completePass &&
+										replicasSeen === 0 &&
+										Atomics.load(sweepState, 0) === admissionsAtStart
+									)
+										standDownReplicaSweep();
 								} catch (error) {
 									logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
 								}
@@ -10701,8 +10712,12 @@ export function makeTable(options): TableResourceClass {
 				completion.then(
 					(stored) => {
 						if (stored && !refresh) releaseReplacedBlobs(current);
-						if (stored && !replicaEvictionArmed)
-							void broadcast({ type: REPLICA_EVICTION_ARMED, storePath: primaryStore.path, tableId }, true);
+						if (stored) {
+							const state = replicaSweep();
+							Atomics.add(state, 0, 1);
+							if (Atomics.load(state, 1) === 0)
+								void broadcast({ type: REPLICA_EVICTION_ARMED, storePath: primaryStore.path, tableId }, true);
+						}
 						return stored;
 					},
 					(error) => {
@@ -10745,21 +10760,37 @@ export function makeTable(options): TableResourceClass {
 		replicaTableMarked = true;
 		replicaTableKnown = true;
 	}
-	function armReplicaEviction(idle?: boolean) {
+	function replicaSweep(): Int32Array {
+		return (replicaSweepState ??= new Int32Array(
+			primaryStore.getUserSharedBuffer(`replica-sweep:${tableId}`, new ArrayBuffer(8))
+		));
+	}
+	function ownsCleanup(): boolean {
+		return ownsStoreMaintenance(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker());
+	}
+	function armReplicaEviction() {
 		replicaTableKnown = true;
-		if (idle) {
-			if (!replicaEvictionArmed) return;
-			replicaEvictionArmed = false;
-			cleanupInterval = recordCleanupInterval;
-			scheduleCleanup();
-			return;
-		}
 		if (replicaEvictionArmed || !replicaExpirationMs || disposed) return;
 		replicaEvictionArmed = true;
+		replicaBaseline ??= { interval: cleanupInterval, scheduled: expirationScanScheduled || cleanupTimer !== undefined };
 		const interval = Math.max(replicaExpirationMs / 4, MIN_REPLICA_SCAN_INTERVAL_MS);
 		cleanupInterval =
-			expirationScanScheduled && recordCleanupInterval > 0 ? Math.min(recordCleanupInterval, interval) : interval;
-		expirationScanScheduled = true;
+			(expirationScanScheduled || replicaBaseline.scheduled) && recordCleanupInterval > 0
+				? Math.min(recordCleanupInterval, interval)
+				: interval;
+		if (ownsCleanup()) Atomics.store(replicaSweep(), 1, 1);
+		scheduleCleanup();
+	}
+	function standDownReplicaSweep() {
+		if (!replicaEvictionArmed) return;
+		replicaEvictionArmed = false;
+		if (ownsCleanup()) Atomics.store(replicaSweep(), 1, 0);
+		cleanupInterval =
+			expirationScanScheduled || evictionMs
+				? recordCleanupInterval
+				: replicaBaseline?.scheduled
+					? replicaBaseline.interval
+					: 0;
 		scheduleCleanup();
 	}
 	/**
