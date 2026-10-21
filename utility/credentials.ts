@@ -9,9 +9,9 @@ export const CREDENTIAL_KEY =
 	/^(?:.*(?:secret|passw(?:or)?d|passphrase|credential).*|.*(?:key|token|cookie|authorization)|.*access[-_]?key[-_]?id)$/i;
 
 const MASK = '*';
-// The key's quote may itself be escaped, as in JSON logged inside a JSON string. A key may follow an escape
-// such as `\n`, but a match never starts past the second backslash of a run, so a run is scanned once.
-const ASSIGNMENT = /(?<!(?<!\\)[\w$.-])(?<!\\\\)(\\*["']|)([A-Za-z_$][\w$.-]*)\1[ \t]*([:=])[ \t]*/g;
+// The key's quote may itself be escaped, as in JSON logged inside a JSON string, and a key may follow an escape
+// such as `\n`. A match never starts inside a run of backslashes, so a run is scanned once.
+const ASSIGNMENT = /(?<!(?<!\\)[\w$.-])(?!(?<=\\)\\)(\\*["']|)([A-Za-z_$][\w$.-]*)\1[ \t]*([:=])[ \t]*/g;
 const LINE_PREFIX = /^[ \t]*(?:-[ \t]+)*/;
 
 type State =
@@ -79,6 +79,15 @@ function yamlCredentialRanges(text: string): Array<[number, number]> | undefined
 					const target = isAlias(pair.value) ? pair.value.resolve(document) : pair.value;
 					if (isScalar(target) && isUnresolvedEnvVarPlaceholder(target.value)) return;
 					for (const node of [pair.value, target]) if (node?.range) ranges.push([node.range[0], node.range[1]]);
+					// An alias anywhere inside the value hands over its anchor's content too.
+					if (target && !isScalar(target)) {
+						visit(target, {
+							Alias(_, alias) {
+								const anchored = alias.resolve(document);
+								if (anchored?.range) ranges.push([anchored.range[0], anchored.range[1]]);
+							},
+						});
+					}
 				},
 			});
 		}
@@ -88,10 +97,10 @@ function yamlCredentialRanges(text: string): Array<[number, number]> | undefined
 	return ranges;
 }
 
+// A plain key holds no `=` or `#`, so `KEY=secret # note: x` is not read as one long key.
 const KEY_LINE =
-	/^[ \t]*(?:-[ \t]+)*(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\n]|'')*'|[^\s#'"][^:\n]*?)[ \t]*:(?=[ \t]|\r?$)[ \t]*/;
+	/^[ \t]*(?:-[ \t]+)*(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\n]|'')*'|[^\s#'"=][^:#=\n]*?)[ \t]*:(?=[ \t]|\r?$)[ \t]*/;
 
-/** Marks everything but each line's key: values, list items, comments and continuation lines. */
 function markAllValues(text: string, masked: Uint8Array): void {
 	for (let lineStart = 0; lineStart <= text.length;) {
 		const newline = text.indexOf('\n', lineStart);

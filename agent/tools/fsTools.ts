@@ -11,7 +11,7 @@
  * reach more of the filesystem than a remote CLI.
  */
 
-import { readFile, writeFile, readdir, stat, mkdir, realpath, lstat, open, type FileHandle } from 'node:fs/promises';
+import { writeFile, readdir, stat, mkdir, realpath, lstat, open, type FileHandle } from 'node:fs/promises';
 import { resolve, dirname, relative, sep, isAbsolute, basename } from 'node:path';
 import { MAX_CREDENTIAL_FILE_BYTES, maskCredentialFile, maskCredentialValues } from '../../utility/credentials.ts';
 import type { AgentTool, AgentToolContext, AgentScopes } from '../types.ts';
@@ -641,20 +641,24 @@ export const grepFilesTool: AgentTool = {
 		const results: Array<{ path: string; line: number; text: string }> = [];
 		const grepFile = async (file: string): Promise<boolean> => {
 			if (truncated) return false;
-			// `stat` first so a multi-GB log or database file can't be slurped into memory by a
-			// well-formed grep request. Anything over the read cap is silently skipped.
-			let size = 0;
+			// Sized on the open handle and read no further than that size, so a multi-GB log, or a file that
+			// grows after the check, is never slurped into memory or handed to the YAML parse.
+			let bytes: Buffer;
 			try {
-				const st = await stat(file);
-				size = st.size;
+				const handle = await open(file, 'r');
+				try {
+					const { size } = await handle.stat();
+					if (size > (scope === 'config' ? MAX_CREDENTIAL_FILE_BYTES : MAX_READ_BYTES)) {
+						skippedFiles++;
+						return true;
+					}
+					bytes = await readWhole(handle, size);
+				} finally {
+					await handle.close();
+				}
 			} catch {
 				return true;
 			}
-			if (size > (scope === 'config' ? MAX_CREDENTIAL_FILE_BYTES : MAX_READ_BYTES)) {
-				skippedFiles++;
-				return true;
-			}
-			const bytes = await readFile(file).catch(() => Buffer.alloc(0));
 			const text = bytes.toString('utf8');
 			// Skipped whole, like an oversize file: a matched line could be one line of a key.
 			if (!text || PRIVATE_KEY_ARMOR.test(text)) return true;

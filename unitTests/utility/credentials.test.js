@@ -111,6 +111,10 @@ describe('utility/credentials', () => {
 			assert.equal(masked(line), "apiKey: '" + '*'.repeat(line.length - "apiKey: '".length));
 		});
 
+		it('finds a key after an escaped backslash', () => {
+			assert.equal(masked(String.raw`"\\password: sk-x"`), String.raw`"\\password: *****`);
+		});
+
 		it('scans a long run of backslashes once', function () {
 			this.timeout(5000);
 			const run = `token ${'\\'.repeat(1 << 20)}`;
@@ -215,6 +219,18 @@ describe('utility/credentials', () => {
 				maskedFile('a:\n  token: |-\n    é1\n    two\n  key: \n  b: 1\n'),
 				'a:\n  token: **\n    ***\n    ***\n  key: \n  b: 1\n'
 			);
+		});
+
+		it("masks the anchor of an alias nested inside a credential's value", () => {
+			assert.equal(
+				maskedFile('shared: &k sk-A\ncredentials: [*k]\nother:\n  aws: { secret: *k }\n'),
+				'shared: &k ****\ncredentials: ****\nother:\n  aws: { secret: ****\n'
+			);
+		});
+
+		it('keeps only keys in a file that does not parse, never reading `KEY=value # a: b` as a key', () => {
+			const line = 'OPENAI_API_KEY=sk-x # todo: rotate';
+			assert.equal(maskedFile(`a: [1\n${line}\nmodel: m\n`), `a: **\n${'*'.repeat(line.length)}\nmodel: *\n`);
 		});
 
 		it('masks KEY=value lines, which a YAML parse reads as one string', () => {
