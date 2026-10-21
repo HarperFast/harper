@@ -390,26 +390,35 @@ describe('FullTextQueryIndex', () => {
 		const auditStore = sharedStore();
 		const readinessId = 'unbounded-result-budget';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let nativeHitCount = 200;
 		const { index } = simpleQueryIndex({
 			auditStore,
 			readinessId,
 			payload: publicationPayload(),
 			maxSearchWindow: 1000,
-			hits: () => Array.from({ length: 200 }, (_, i) => ({ id: nativeId(1, String(i)), score: 200 - i, version: '1' })),
+			hits: () =>
+				Array.from({ length: nativeHitCount }, (_, i) => ({
+					id: nativeId(1, String(i)),
+					score: 200 - i,
+					version: '1',
+				})),
 		});
 		attachCurrentCoverage(index, auditStore, readinessId);
 		try {
-			for (const name of ['maxRawHitsPerRequest', 'maxResultsPerRequest']) {
-				setFullTextTestConfiguration({
-					...previous,
-					maxRawHitsPerRequest: 500,
-					maxResultsPerRequest: 500,
-					[name]: 100,
-				});
-				await assert.rejects(
-					index.search({ comparator: 'matches', value: 'shoe' }, {}),
-					(error) => error.statusCode === 400 && error.message.includes(`storage.fullText.${name}`)
-				);
+			for (const count of [200, 2000]) {
+				nativeHitCount = count;
+				for (const name of ['maxRawHitsPerRequest', 'maxResultsPerRequest']) {
+					setFullTextTestConfiguration({
+						...previous,
+						maxRawHitsPerRequest: 500,
+						maxResultsPerRequest: 500,
+						[name]: 100,
+					});
+					await assert.rejects(
+						index.search({ comparator: 'matches', value: 'shoe' }, {}),
+						(error) => error.statusCode === 400 && error.message.includes(`storage.fullText.${name}`)
+					);
+				}
 			}
 		} finally {
 			setFullTextTestConfiguration(previous);

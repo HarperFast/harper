@@ -456,7 +456,6 @@ export class FullTextQueryIndex {
 				record: Record<string, unknown>;
 				recordEntry: any;
 			}> = [];
-			let offset = 0;
 			let traversal:
 				{ continuation?: string; skip: number; prefix?: NativeFullTextSearchPageResult['hits'] } | undefined;
 			let maxRawPageSize = this.#maxFilteredRawPageSize!;
@@ -521,7 +520,7 @@ export class FullTextQueryIndex {
 					if (replayedHits > 0) result = { ...result, hits: replay.hits };
 				}
 				if (!bounded && result.totalRelation === 'exact' && result.total > searchWindow)
-					throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
+					throw unboundedSearchLimitError(target, searchWindow, rawHitLimit);
 				if (previousHit && result.hits.length > 0 && !fullTextHitsAdvance(previousHit, result.hits[0]))
 					throw new ServerError('Full-text traversal did not advance past its previous page', 500);
 				if (result.hits.length > 0) previousHit = result.hits[result.hits.length - 1];
@@ -530,12 +529,12 @@ export class FullTextQueryIndex {
 					!traversal &&
 					result.totalRelation === 'lower-bound' &&
 					result.hits.length < limit &&
-					offset + result.hits.length < result.total
+					result.hits.length < result.total
 				) {
 					if (!this.#incompletePageFailureLogged) {
 						this.#incompletePageFailureLogged = true;
 						logger.error?.(
-							`Full-text index '${this.#definition.name}' returned ${result.hits.length} of ${limit} hits at offset ${offset} with lower-bound total ${result.total}`
+							`Full-text index '${this.#definition.name}' returned ${result.hits.length} of ${limit} hits at offset 0 with lower-bound total ${result.total}`
 						);
 					}
 					throw new ServerError('Full-text index returned an incomplete result page', 500);
@@ -637,8 +636,8 @@ export class FullTextQueryIndex {
 						break;
 					}
 				}
-				offset += result.hits.length;
-				if (!traversal && moreMayExist && accepted.length < target) traversal = { skip: offset, prefix: result.hits };
+				if (!traversal && moreMayExist && accepted.length < target)
+					traversal = { skip: result.hits.length, prefix: result.hits };
 				if (!moreMayExist) break;
 				if (accepted.length < target) {
 					if (bounded) {
@@ -654,18 +653,7 @@ export class FullTextQueryIndex {
 					await new Promise((resolve) => setImmediate(resolve));
 				}
 			}
-			if (!bounded && moreMayExist) {
-				const bound =
-					target < searchWindow
-						? target === rawHitLimit
-							? 'storage.fullText.maxRawHitsPerRequest'
-							: 'storage.fullText.maxResultsPerRequest'
-						: `the ${searchWindow}-result search window`;
-				throw new ClientError(
-					`Unbounded full-text query exceeds ${bound}; add a limit or increase the relevant budget`,
-					400
-				);
-			}
+			if (!bounded && moreMayExist) throw unboundedSearchLimitError(target, searchWindow, rawHitLimit);
 			if (condition.includeHighlights && accepted.length > 0)
 				await this.#addHighlights(
 					reader,
@@ -1396,6 +1384,19 @@ const REBUILD_REQUIRED_CODES = new Set([
 	'E_SCHEMA_MISMATCH',
 	'E_INDEX_FORMAT_INCOMPATIBLE',
 ]);
+
+function unboundedSearchLimitError(target: number, searchWindow: number, rawHitLimit: number): ClientError {
+	const bound =
+		target < searchWindow
+			? target === rawHitLimit
+				? 'storage.fullText.maxRawHitsPerRequest'
+				: 'storage.fullText.maxResultsPerRequest'
+			: `the ${searchWindow}-result search window`;
+	return new ClientError(
+		`Unbounded full-text query exceeds ${bound}; add a limit or increase the relevant budget`,
+		400
+	);
+}
 
 function remainingSearchBudget(deadline: number): number {
 	const remaining = Math.floor(deadline - performance.now());

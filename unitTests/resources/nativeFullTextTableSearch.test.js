@@ -1,5 +1,6 @@
+'use strict';
+
 const { getFullTextTestConfiguration, setFullTextTestConfiguration } = require('./fullTextTestConfiguration');
-('use strict');
 
 require('../testUtils');
 const assert = require('node:assert');
