@@ -740,8 +740,26 @@ function stubMethod(instance, name, replacement) {
 	};
 }
 
+let registryStatusStub;
+
+/**
+ * Replace rocksdb-js `getRegistryStatus()` with `fake` until `restoreRegistryStatus()`. Production modules compile to
+ * CommonJS and read the export at call time, so stubbing the shared exports object reaches them.
+ */
+function fakeRegistryStatus(fake) {
+	registryStatusStub ??= sinon.stub(require('@harperfast/rocksdb-js'), 'getRegistryStatus');
+	registryStatusStub.callsFake(fake);
+}
+
+function restoreRegistryStatus() {
+	registryStatusStub?.restore();
+	registryStatusStub = undefined;
+}
+
 module.exports = {
 	stubMethod,
+	fakeRegistryStatus,
+	restoreRegistryStatus,
 	routePutThroughPutSync,
 	changeProcessToBinDir,
 	deepClone,

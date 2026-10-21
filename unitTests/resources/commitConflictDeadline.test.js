@@ -1,15 +1,14 @@
 require('../testUtils');
 const assert = require('assert');
-const { setupTestDBPath } = require('../testUtils');
+const { setupTestDBPath, fakeRegistryStatus, restoreRegistryStatus } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { getOutstandingCommits, resetStuckCommitLogCooldownForTests } = require('#src/resources/DatabaseTransaction');
-const { setRegistryStatusForTests } = require('#src/resources/longLivedTransactions');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { waitFor } = require('../waitFor');
 const { setTimeout: delay } = require('node:timers/promises');
-const { getRegistryStatus, constants } = require('@harperfast/rocksdb-js');
+const { constants } = require('@harperfast/rocksdb-js');
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 
 // rocksdb-js parks a coordinated-retry commit on a conflicting write intent and returns control
@@ -155,7 +154,7 @@ describe('request-path commits are abandoned once their conflict budget is spent
 		const errorLines = [];
 		const originalError = harperLogger.error;
 		harperLogger.error = (...args) => errorLines.push(args);
-		setRegistryStatusForTests(() => [
+		fakeRegistryStatus(() => [
 			{
 				path: DeadlineA.primaryStore.rootStore.path,
 				transactionDetails: [{ id: 999, ageMs: 3600000 }],
@@ -167,7 +166,7 @@ describe('request-path commits are abandoned once their conflict budget is spent
 			({ outcome, error } = await outcomeOf(writePastBudget('retry-now', singleStoreWrite)));
 		} finally {
 			harperLogger.error = originalError;
-			setRegistryStatusForTests(getRegistryStatus);
+			restoreRegistryStatus();
 		}
 		assert.strictEqual(outcome, 'rejected', 'the awaited transaction promise must reject, not hang or commit');
 		assert.strictEqual(error.statusCode, 503);

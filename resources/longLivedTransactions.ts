@@ -21,10 +21,6 @@ const ATTRIBUTION_STATE_TTL_MS = 3600000;
 // per tick, so pruning per call is O(N^2) in exactly the leak this reporting exists to describe.
 const ATTRIBUTION_PRUNE_INTERVAL_MS = 60000;
 
-type RegistryStatusFn = typeof getRegistryStatus;
-let registryStatusFn: RegistryStatusFn | undefined =
-	typeof getRegistryStatus === 'function' ? getRegistryStatus : undefined;
-
 // Report state is keyed by database path AND native id: rocksdb-js allocates transaction ids per
 // database descriptor, so two databases routinely both have id 2, and a reopen restarts the counter.
 type ReportState = { nextReportAgeMs: number; lastAgeMs: number; touchedAt: number };
@@ -128,8 +124,8 @@ export function runLongLivedTransactionSweep(): void {
 	try {
 		const thresholdMs = getReportThresholdMs();
 		rebaseLongLivedTransactionReports(thresholdMs);
-		if (thresholdMs === 0 || !registryStatusFn) return;
-		const status = registryStatusFn();
+		if (thresholdMs === 0) return;
+		const status = getRegistryStatus();
 		const seen = new Set<string>();
 		const due: { path: string | undefined; id: number; ageMs: number; state: ReportState }[] = [];
 		let missingDetails = false;
@@ -181,12 +177,6 @@ export function runLongLivedTransactionSweep(): void {
  */
 export function startLongLivedTransactionReporting(): void {
 	if (!isMainThread || sweepTimer) return;
-	if (!registryStatusFn) {
-		logger.debug?.(
-			'Long-lived transaction reporting unavailable; @harperfast/rocksdb-js exposes no getRegistryStatus()'
-		);
-		return;
-	}
 	sweepTimer = setInterval(runLongLivedTransactionSweep, SWEEP_INTERVAL_MS).unref();
 }
 
@@ -233,7 +223,6 @@ export function finishLongLivedHolderReports(reportBudget: LongLivedHolderReport
  */
 export function reportLongLivedHolder(holder: LongLivedHolder, reportBudget?: LongLivedHolderReportBudget): void {
 	try {
-		if (!registryStatusFn) return;
 		const thresholdMs = reportBudget?.thresholdMs ?? getReportThresholdMs();
 		rebaseLongLivedTransactionReports(thresholdMs);
 		if (thresholdMs === 0) return;
@@ -287,14 +276,14 @@ export function describeHolderCandidates(
 	databasePath: string | undefined,
 	excludeNativeId: number | undefined
 ): string {
-	if (!databasePath || !registryStatusFn) return '';
+	if (!databasePath) return '';
 	try {
 		if (getReportThresholdMs() === 0) return '';
 		const target = resolve(databasePath);
 		const candidates: { id: number; ageMs: number; sameDatabase: boolean; path: string | undefined }[] = [];
 		let targetSeen = false;
 		let targetHasDetails = false;
-		for (const database of registryStatusFn()) {
+		for (const database of getRegistryStatus()) {
 			// An entry with no path can never be the target, and resolve() would throw on it — which,
 			// inside this loop, would drop the candidate list for every database rather than just this one.
 			const sameDatabase = database.path != null && resolve(database.path) === target;
@@ -343,10 +332,6 @@ export function describeHolderCandidates(
 	} catch {
 		return '';
 	}
-}
-
-export function setRegistryStatusForTests(fn?: RegistryStatusFn): void {
-	registryStatusFn = fn;
 }
 
 export function resetLongLivedTransactionReportsForTests(): void {
