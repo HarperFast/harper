@@ -441,6 +441,7 @@ describe('mqtt.ts reason codes for a refused request', () => {
 		const BAD_CREDENTIALS = 0x86;
 		const BAD_CREDENTIALS_311 = 4;
 		const NOT_AUTHORIZED_311 = 5;
+		const SERVER_UNAVAILABLE_311 = 3;
 		const versions = [
 			{ name: 'v5', protocolVersion: 5, badCredentials: BAD_CREDENTIALS, notAuthorized: NOT_AUTHORIZED, other: 0x80 },
 			{
@@ -448,10 +449,9 @@ describe('mqtt.ts reason codes for a refused request', () => {
 				protocolVersion: 4,
 				badCredentials: BAD_CREDENTIALS_311,
 				notAuthorized: NOT_AUTHORIZED_311,
-				other: NOT_AUTHORIZED_311,
+				other: SERVER_UNAVAILABLE_311,
 			},
 		];
-		// mqtt-packet reads reasonCode from a v5 CONNACK and returnCode from a 3.1.1 one
 		const codeOf = (connack, protocolVersion) => (protocolVersion === 5 ? connack.reasonCode : connack.returnCode);
 		let originalGetUser;
 		before(() => {
@@ -517,7 +517,12 @@ describe('mqtt.ts reason codes for a refused request', () => {
 		it('passes on a v5 refusal code the error names, and not to a 3.1.1 client', async () => {
 			refuseWith(Object.assign(new Error('banned'), { code: 0x8a }));
 			assert.strictEqual((await connect(open, { protocolVersion: 5 })).connack.reasonCode, 0x8a);
-			assert.strictEqual((await connect(open, { protocolVersion: 4 })).connack.returnCode, NOT_AUTHORIZED_311);
+			assert.strictEqual((await connect(open, { protocolVersion: 4 })).connack.returnCode, SERVER_UNAVAILABLE_311);
+		});
+
+		it('does not send a v5 reason code that is not allowed in a CONNACK', async () => {
+			refuseWith(Object.assign(new Error('bad'), { code: 0x8e }));
+			assert.strictEqual((await connect(open, { protocolVersion: 5 })).connack.reasonCode, UNSPECIFIED_ERROR);
 		});
 
 		it('passes on a 3.1.1 refusal code the error names, and not to a v5 client', async () => {

@@ -212,19 +212,19 @@ const isNotAuthorized = (error: any) => error?.statusCode === 401 || error?.stat
 const CONNACK_REFUSALS = {
 	badCredentials: { reasonCode: 0x86, returnCode: 4 },
 	notAuthorized: { reasonCode: 0x87, returnCode: 5 },
-	unspecified: { reasonCode: 0x80, returnCode: 5 }, // 3.1.1 has no generic refusal
+	unspecified: { reasonCode: 0x80, returnCode: 3 }, // 3.1.1 has no generic refusal; "server unavailable" is closest
 };
-/**
- * A code the thrown error names is passed on only when it is a refusal code in the client's own
- * protocol version; an HTTP status (401/403 as `code` or `statusCode`) is "Not authorized", and
- * anything else is unspecified.
- */
+/** The reason codes MQTT 5 allows in a CONNACK. */
+const V5_CONNACK_REFUSAL_CODES = new Set([
+	0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8c, 0x90, 0x95, 0x97, 0x99, 0x9a, 0x9b, 0x9c,
+	0x9d, 0x9f,
+]);
+/** A code the error names reaches the client only if its own protocol version allows it; an HTTP status is never written raw. */
 function connackRefusalFor(error: any, protocolVersion: number | undefined) {
 	const { code } = error ?? {};
-	const mqtt5 = protocolVersion === 5;
-	if (typeof code === 'number' && (mqtt5 ? code >= 0x80 && code <= 0x9f : code >= 1 && code <= 5)) {
-		return { reasonCode: code, returnCode: code };
-	}
+	const allowed =
+		protocolVersion === 5 ? V5_CONNACK_REFUSAL_CODES.has(code) : Number.isInteger(code) && code >= 1 && code <= 5;
+	if (allowed) return { reasonCode: code, returnCode: code };
 	if (isNotAuthorized(error) || code === 401 || code === 403) return CONNACK_REFUSALS.notAuthorized;
 	return CONNACK_REFUSALS.unspecified;
 }
