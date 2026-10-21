@@ -1519,6 +1519,15 @@ describe('Test keys module', () => {
 				expect(record.file_timestamp, 'the API write keeps file_timestamp, so it is not the ownership signal').to.be.ok;
 			});
 
+			it('keeps following config after a setCertTable write that sets neither field', async () => {
+				await loadFromNewerFile({ ciphers: AES128 });
+				const { certificate } = await certTable.get(certCn);
+				await keys.setCertTable({ name: certCn, certificate });
+
+				const record = await reloadWith(entry({ ciphers: AES256 }));
+				expect(record.ciphers).to.equal(AES256);
+			});
+
 			it('adopts a record from before the ownership marker only when it already matches config', async () => {
 				const { from_config: _marker, ...legacy } = originalRecord;
 				const seedLegacy = (ciphers) =>

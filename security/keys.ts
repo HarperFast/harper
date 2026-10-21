@@ -163,24 +163,32 @@ const sameConfigValue = (recordValue, configValue) =>
 	JSON.stringify(recordValue ?? null) === JSON.stringify(configValue ?? null);
 
 /**
- * Listeners read a record's ciphers/uses, so a config edit must reach a record the loader wrote even
- * when its certificate file is unchanged. `from_config` marks that ownership; `setCertTable` nulls it
- * so ciphers/uses an operator set through the API survive restarts. A record from before the marker
- * (undefined) is adopted only when it already matches config, since API edits are indistinguishable.
- * The first config entry to reach a record wins, so entries sharing a file do not overwrite each other.
+ * Reconciles ciphers/uses onto a record the loader wrote, whose file is unchanged. API writes null
+ * `from_config`, and a pre-marker record (undefined) is adopted only if it already matches config
+ * because an operator edit looks the same. The first entry to reach a record claims it for the load.
  */
 function reconcileConfiguredFields(certRecord, name, certificatePem, ciphers, uses, syncedNames: Set<string>) {
 	if (certRecord.certificate !== certificatePem || syncedNames.has(name)) return;
-	const unmarked = certRecord.from_config === undefined && certRecord.file_timestamp != null;
-	if (certRecord.from_config !== true && !unmarked) return;
-	syncedNames.add(name);
+	const owned = certRecord.from_config === true;
+	const adoptable = certRecord.from_config === undefined && certRecord.file_timestamp != null;
 	const matches = sameConfigValue(certRecord.ciphers, ciphers) && sameConfigValue(certRecord.uses, uses);
-	if (unmarked) return matches ? certificateTable.patch({ name, from_config: true }) : undefined;
-	if (matches) return;
-	logger.info?.(
-		`TLS config for certificate ${name} changed (ciphers: ${certRecord.ciphers ?? 'unset'} -> ${ciphers ?? 'unset'}, uses: ${JSON.stringify(certRecord.uses)} -> ${JSON.stringify(uses)}); updating the certificate record`
-	);
-	return certificateTable.patch({ name, uses, ciphers: ciphers ?? null });
+	if (!owned && !(adoptable && matches)) {
+		if (!matches)
+			logger.info?.(
+				`TLS config for certificate ${name} differs from its record, which was not written from config; leaving the record unchanged`
+			);
+		return;
+	}
+	syncedNames.add(name);
+	if (owned && matches) return;
+	if (owned)
+		logger.info?.(
+			`TLS config for certificate ${name} changed (ciphers: ${certRecord.ciphers ?? 'unset'} -> ${ciphers ?? 'unset'}, uses: ${JSON.stringify(certRecord.uses)} -> ${JSON.stringify(uses)}); updating the certificate record`
+		);
+	const write = certificateTable.patch(owned ? { name, uses, ciphers: ciphers ?? null } : { name, from_config: true });
+	// a failed write must not stop the poll's retry from reconciling
+	Promise.resolve(write).catch(() => syncedNames.delete(name));
+	return write;
 }
 
 let configuredCertsLoaded;
@@ -317,6 +325,7 @@ export function loadCertificates() {
 
 								// Returned so loadAndWatch can roll back its fingerprint latch if the write fails —
 								// assigned as well to preserve loadCertificates()'s awaited-return contract.
+								syncedNames.add(certCn);
 								return (promise = certificateTable.put({
 									name: certCn,
 									uses,
@@ -644,8 +653,8 @@ export async function setCertTable(certRecord) {
 	};
 
 	getCertTable();
-	// an API write takes ownership of ciphers/uses from the config loader
-	await certificateTable.patch({ ...certRecord, from_config: null });
+	const setsConfigurableFields = certRecord.ciphers !== undefined || certRecord.uses !== undefined;
+	await certificateTable.patch(setsConfigurableFields ? { ...certRecord, from_config: null } : certRecord);
 }
 
 export async function generateKeys() {
