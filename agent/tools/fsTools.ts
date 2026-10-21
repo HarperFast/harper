@@ -85,7 +85,6 @@ const SCOPE_DESCRIPTION =
 	"'logs' (read-only), or 'config' (read-only). Defaults to 'components'. In the read-only scopes, credential " +
 	'values (apiKey, password, token, secret and the like) come back as `*`s.';
 
-// The writable scope is returned exact, so a read followed by write_file never writes back a mask.
 function masksCredentials(scope: Scope): boolean {
 	return scope !== 'components';
 }

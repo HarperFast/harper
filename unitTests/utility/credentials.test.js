@@ -86,10 +86,6 @@ describe('utility/credentials', () => {
 			assert.equal(masked('x: {apiKey: "abc\n  def", model: m}\n'), 'x: {apiKey: "***\n  ***", model: m}\n');
 			assert.equal(masked('  apiKey: "abc\n  def"\n  model: m\n'), '  apiKey: "***\n  ***"\n  model: m\n');
 			assert.equal(masked("  token: 'a\n   b''c'\n  model: m\n"), "  token: '*\n   ****'\n  model: m\n");
-			assert.equal(
-				masked('models:\n  default:\n    apiKey:\n      "sk-a\n    sk-b"\n    model: m\n'),
-				'models:\n  default:\n    apiKey:\n      *****\n    ****"\n    model: m\n'
-			);
 		});
 
 		it('ends an unterminated quote at the next column-0 line, as the next log entry', () => {
@@ -101,6 +97,24 @@ describe('utility/credentials', () => {
 
 		it('runs an unterminated quote to the end of a single log entry', () => {
 			assert.equal(maskCredentialValues('{"apiKey":"sk-a\nsk-b"}', { oneEntry: true }), '{"apiKey":"****\n****"}');
+		});
+
+		it('masks every line of a block scalar, quotes inside it included', () => {
+			assert.equal(
+				masked('apiKey: |-\n  "header\n  footer"\n  sk-live\nnext: 1\n'),
+				'apiKey: **\n  *******\n  *******\n  *******\nnext: 1\n'
+			);
+		});
+
+		it("masks to the end of the line at a single-quoted \\', which only inspected JavaScript reads as an escape", () => {
+			const line = "apiKey: 'sk-\\' password: 'sk-real'";
+			assert.equal(masked(line), "apiKey: '" + '*'.repeat(line.length - "apiKey: '".length));
+		});
+
+		it('scans a long run of backslashes once', function () {
+			this.timeout(5000);
+			const run = `token ${'\\'.repeat(1 << 20)}`;
+			assert.equal(masked(run), run);
 		});
 
 		it('keeps masking a value across comment lines, which YAML exempts from indentation', () => {

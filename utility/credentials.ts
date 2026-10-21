@@ -10,8 +10,9 @@ export const CREDENTIAL_KEY =
 	/^(?:.*(?:secret|passw(?:or)?d|passphrase|credential).*|.*(?:key|token|cookie)|(?:proxy[-_]?)?authorization|.*access[-_]?key[-_]?id)$/i;
 
 const MASK = '*';
-// The key's quote may itself be escaped, as in JSON logged inside a JSON string.
-const ASSIGNMENT = /(?<![\w$.-])(\\*["']|)([A-Za-z_$][\w$.-]*)\1[ \t]*([:=])[ \t]*/g;
+// The key's quote may itself be escaped, as in JSON logged inside a JSON string. A match never starts past
+// the second backslash of a run, so a long run is scanned once rather than once per backslash.
+const ASSIGNMENT = /(?<![\w$.-])(?<!\\\\)(\\*["']|)([A-Za-z_$][\w$.-]*)\1[ \t]*([:=])[ \t]*/g;
 const LINE_PREFIX = /^[ \t]*(?:-[ \t]+)*/;
 
 type State =
@@ -25,7 +26,6 @@ const NONE: State = { kind: 'none' };
 export interface MaskOptions {
 	/** What precedes the text in its source, read only for the state the text starts in. */
 	before?: string;
-	/** Whether `before` begins where the source does. */
 	beforeAtSourceStart?: boolean;
 	/** The text is one log entry, so a quote left open runs to its end instead of to the next column-0 line. */
 	oneEntry?: boolean;
@@ -93,9 +93,7 @@ function maskInState(line: string, state: State, partial: boolean, oneEntry: boo
 		const sequenceItem =
 			line[indent] === '-' && (indent + 1 === end || line[indent + 1] === ' ' || line[indent + 1] === '\t');
 		if (indent === end || indent > state.column || (state.empty && indent === state.column && sequenceItem)) {
-			const quote = line[indent];
-			const opensQuote = (quote === '"' || quote === "'") && closingQuote(line, indent + 1, end, quote) === -1;
-			return { text: maskRange(line, indent, end), state: opensQuote ? { kind: 'quote', quote } : state };
+			return { text: maskRange(line, indent, end), state };
 		}
 		if (line[indent] === '#') return { text: line, state };
 	}
@@ -140,11 +138,16 @@ function maskLine(line: string, end: number, from: number): { text: string; stat
 	return { text: copied === 0 ? line : text + line.slice(copied), state };
 }
 
-/** The closing quote's index, or -1. `\` escapes in both quote styles and `''` in single quotes (YAML); where a style has no such escape, reading one as an escape only masks more. */
+/**
+ * The closing quote's index, `end` to mask the rest of the line, or -1 when the quote stays open. In single
+ * quotes `''` is YAML's escape, and `\'` is one in inspected JavaScript but not in YAML, so it masks to the end.
+ */
 function closingQuote(line: string, from: number, end: number, quote: string): number {
 	for (let index = from; index < end; index++) {
-		if (line[index] === '\\') index++;
-		else if (line[index] === quote) {
+		if (line[index] === '\\') {
+			if (quote === "'" && line[index + 1] === "'") return end;
+			index++;
+		} else if (line[index] === quote) {
 			if (quote === "'" && line[index + 1] === "'") index++;
 			else return index;
 		}
