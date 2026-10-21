@@ -74,7 +74,7 @@ This change uses the fulltext 0.6.0 native package. A format-incompatible upgrad
 
 The initial native autocomplete batch is not a total-result cap. Harper continues through later batches when needed to satisfy the requested page after filtering. Work and time limits still apply.
 
-For an eligible bounded count request, full-text counts are unavailable and `Content-Range` uses `*` for the total. A native hit total is not an authorized record count. For the ordinary REST paging syntax, see [Querying](../rest/querying.md#pagination-and-total-count). The JSON Operations API does not accept REST query syntax; use exported table routes or `Table.search()`.
+Full-text queries do not provide an exact record count. When exact counting is enabled and requested, `Content-Range` uses `*` for the total. Estimated counting can return a planner estimate when no opaque row or vector filter suppresses it. A native hit total is not an authorized record count. See [count preferences](../rest/querying.md#pagination-and-total-count) for the default downgrade from exact to estimated counting. For the ordinary REST paging syntax, see [Querying](../rest/querying.md#pagination-and-total-count). The JSON Operations API does not accept REST query syntax; use exported table routes or `Table.search()`.
 
 ## Errors and recovery
 
