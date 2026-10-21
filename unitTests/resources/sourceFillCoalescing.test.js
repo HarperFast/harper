@@ -79,7 +79,10 @@ describe('Concurrent source misses on one key', function () {
 
 	it('share one source call when the source reports the record missing', async function () {
 		respond = () => undefined;
-		assert.deepEqual(outcomes(await concurrentGets(CoalescingTable, 'missing')), Array(20).fill(undefined));
+		assert.deepStrictEqual(
+			outcomes(await concurrentGets(CoalescingTable, 'missing'), (record) => record ?? null),
+			Array(20).fill(null)
+		);
 		assert.equal(sourceCalls, 1);
 	});
 
