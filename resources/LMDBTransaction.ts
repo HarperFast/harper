@@ -434,24 +434,21 @@ export class LMDBTransaction extends DatabaseTransaction {
 		if (root && root.next === this && !root.db) return root.replicatedConfirmation;
 	}
 	/**
-	 * The audit-log position (`localTime`) peers must acknowledge: that of the last write this commit
-	 * appended. A write that lost to a newer entry appended nothing, and its stored entry is the newer
-	 * one, at a position peers may already have passed, so it counts only when no write applied — then
-	 * peers must hold the entry that superseded it, as on RocksDB. Writes that opt out (audit-only
-	 * markers), have no stored entry (a delete on a table that neither audits nor tracks deletes) or go to
-	 * an unaudited table (no local time, nothing appended) are skipped rather than ending the search.
+	 * The audit-log position (`localTime`) peers must acknowledge: the newest among the written keys. Any
+	 * entry this commit did not store predates it — a write that lost to a newer entry, or an out-of-order
+	 * patch that only appended audit — so the newest is this commit's own position whenever a write stored a
+	 * record, and otherwise the entry that superseded its writes, as on RocksDB. A concurrent later write can
+	 * only raise it. Writes that opt out (audit-only markers) and unaudited tables (no local time, nothing
+	 * appended for peers to acknowledge) are not considered.
 	 */
 	private confirmationPosition(): number | undefined {
-		let supersededAt: number | undefined;
-		for (let i = this.writes.length - 1; i >= 0; i--) {
-			const write = this.writes[i];
+		let position: number | undefined;
+		for (const write of this.writes) {
 			if (!write || write.skipReplicationConfirmation) continue;
 			const localTime = write.store.getEntry(write.key)?.localTime;
-			if (!localTime) continue;
-			if (!write.skipped) return localTime;
-			supersededAt ??= localTime;
+			if (localTime && !(position >= localTime)) position = localTime;
 		}
-		return supersededAt;
+		return position;
 	}
 	/**
 	 * Force-release the retained read snapshot without touching staged writes. The base class's

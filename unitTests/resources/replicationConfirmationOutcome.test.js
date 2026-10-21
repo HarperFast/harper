@@ -963,6 +963,22 @@ describe('Replication confirmation failure after a local commit', () => {
 			else assert.ok(versions[0] > 0);
 		});
 
+		it('confirms at the applied write when a trailing out-of-order patch only appends audit', async () => {
+			const id = nextId();
+			await First.put({ id: `${id}-patched`, name: 'base' });
+			await transaction({ timestamp: Date.now() + 60_000 }, () => First.patch(`${id}-patched`, { name: 'newer' }));
+			const versions = [];
+			registerConfirmation((databaseName, version) => versions.push(version));
+			await transaction({ replicatedConfirmation: 1 }, async () => {
+				await First.put({ id });
+				await First.patch(`${id}-patched`, { name: 'older' });
+			});
+			assert.strictEqual((await First.get(`${id}-patched`)).name, 'newer');
+			assert.strictEqual(versions.length, 1);
+			if (isLMDB) assert.strictEqual(versions[0], First.primaryStore.getEntry(id).localTime);
+			else assert.ok(versions[0] > 0);
+		});
+
 		it('confirms a commit whose only write lost at the entry that superseded it', async () => {
 			const id = nextId();
 			await transaction({ timestamp: Date.now() + 60_000 }, () => First.put({ id, name: 'newer' }));
