@@ -511,7 +511,14 @@
 							"minimum": 1,
 							"maximum": 9007199254740991,
 							"default": 10000,
-							"description": "Maximum fetched native hits per full-text request, including replay during traversal."
+							"description": "Maximum fetched native hits per full-text request."
+						},
+						"maxResultsPerRequest": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 9007199254740991,
+							"default": 10000,
+							"description": "Maximum offset plus limit retained by a full-text request, independent of fetched-hit work."
 						},
 						"runtime": {
 							"type": "object",

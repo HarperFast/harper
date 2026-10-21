@@ -3,12 +3,14 @@ import type { NativeFullTextRuntimeBudget } from './fullTextNativeBinding.ts';
 export type FullTextSearchLimits = Readonly<{
 	requestBudgetMilliseconds: number;
 	maxRawHitsPerRequest: number;
+	maxResultsPerRequest: number;
 	runtime: Readonly<NativeFullTextRuntimeBudget>;
 }>;
 
 export const DEFAULT_FULL_TEXT_SEARCH_LIMITS: FullTextSearchLimits = Object.freeze({
 	requestBudgetMilliseconds: 5_000,
 	maxRawHitsPerRequest: 10_000,
+	maxResultsPerRequest: 10_000,
 	runtime: Object.freeze({
 		maxResidentIndexes: 128,
 		maxIndexingThreads: 128,

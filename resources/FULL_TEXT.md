@@ -126,7 +126,8 @@ Search settings are under `storage.fullText`:
 
 | Setting                     | Default | Meaning                                                                                                           |
 | --------------------------- | ------: | ----------------------------------------------------------------------------------------------------------------- |
-| `maxRawHitsPerRequest`      |  10,000 | Fetched native hits, including the initial batch replay when switching to traversal                               |
+| `maxRawHitsPerRequest`      |  10,000 | Fetched native hits                                                                                               |
+| `maxResultsPerRequest`      |  10,000 | Maximum retained offset plus limit, independent of fetched-hit work                                               |
 | `requestBudgetMilliseconds` |   5,000 | Execution budget across native batches, source checks and highlight tracing, capped by the native execution limit |
 
 The hit limit counts fetched hits, not every record Tantivy visits while scoring. Reaching it before the page fills or the search is exhausted returns 400. Exceeding the execution budget returns 503. Narrow the query, reduce the offset, or increase the relevant configured budget. Freshness waiting uses `waitForIndexMilliseconds` separately. Reader acquisition, query construction and some native operations can take additional time; the execution budget is not a hard response-time guarantee.

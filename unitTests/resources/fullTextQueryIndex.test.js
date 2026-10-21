@@ -255,39 +255,6 @@ function readyQueryIndex(auditStore, readinessId, storeName) {
 	return fixture.index;
 }
 
-describe('full-text replay page protocol', () => {
-	const { replayFullTextPrefix } = require('#src/resources/indexes/fullTextQueryProtocol');
-	const prefix = [
-		{ id: 'a', score: 3, version: '1' },
-		{ id: 'b', score: 2, version: '1' },
-		{ id: 'c', score: 1, version: '1' },
-	];
-	it('accounts for a prefix split over several lower-bound pages before returning new hits', () => {
-		const first = { hits: prefix.slice(0, 1), totalRelation: 'lower-bound', continuation: 'next' };
-		const one = replayFullTextPrefix(prefix, 3, first);
-		assert.deepStrictEqual(one, { skipped: 1, remaining: 2, hits: [] });
-		assert.strictEqual(first.totalRelation, 'lower-bound');
-		const next = { id: 'd', score: 0, version: '1' };
-		assert.deepStrictEqual(replayFullTextPrefix(prefix, one.remaining, { hits: [...prefix.slice(1), next] }), {
-			skipped: 2,
-			remaining: 0,
-			hits: [next],
-		});
-	});
-	it('rejects an empty page claiming more hits, a changed prefix and premature exhaustion', () => {
-		for (const page of [
-			{ hits: [], continuation: 'next' },
-			{ hits: [{ ...prefix[0], version: '2' }], continuation: 'next' },
-			{ hits: prefix.slice(0, 1) },
-		])
-			assert.throws(
-				() => replayFullTextPrefix(prefix, 3, page),
-				(error) => error.statusCode === 500
-			);
-		assert.deepStrictEqual(replayFullTextPrefix(undefined, 0, { hits: [] }), { skipped: 0, remaining: 0, hits: [] });
-	});
-});
-
 describe('full-text traversal ordering guard', () => {
 	it('requires a new page to advance by score and then UTF-8 ID order', () => {
 		const { fullTextHitsAdvance } = require('#src/resources/indexes/fullTextQueryProtocol');
@@ -300,6 +267,46 @@ describe('full-text traversal ordering guard', () => {
 });
 
 describe('FullTextQueryIndex', () => {
+	it('keeps retained result limits independent from raw work and reports invalid configuration', async () => {
+		const env = require('#src/utility/environment/environmentManager');
+		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
+		const auditStore = sharedStore();
+		const readinessId = 'independent-results-budget';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let searches = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+			onSearch: () => searches++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		try {
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, {
+				...previous,
+				maxRawHitsPerRequest: 500000,
+				maxResultsPerRequest: 10,
+			});
+			await assert.rejects(
+				index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 11 }),
+				(error) => error.statusCode === 400 && /maxResultsPerRequest/.test(error.message)
+			);
+			assert.strictEqual(searches, 0);
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, maxRawHitsPerRequest: 0 });
+			await assert.rejects(
+				index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+				(error) =>
+					error.statusCode === 500 && /Invalid full-text configuration:.*maxRawHitsPerRequest/.test(error.message)
+			);
+			assert.strictEqual(searches, 0);
+		} finally {
+			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
+			await index.close();
+		}
+	});
+
 	it('does not treat prototype property names as full-text comparators', () => {
 		for (const comparator of ['constructor', 'toString', '__proto__'])
 			assert.strictEqual(fullTextComparatorMode(comparator), undefined);
@@ -1500,7 +1507,7 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(searches, 0);
 		assert.strictEqual((await index.search(query, {}, { minResults: 3 })).length, 3);
 		await assert.rejects(index.search(query, {}), /exceeds the 2-result search window/);
-		assert.strictEqual(lastRequest.exactTotal, true);
+		assert.strictEqual(lastRequest.exactTotal, undefined);
 		await index.close();
 	});
 
@@ -1558,8 +1565,8 @@ describe('FullTextQueryIndex', () => {
 		assert.deepStrictEqual(
 			requests.map(({ offset, limit, exactTotal }) => ({ offset, limit, exactTotal })),
 			[
-				{ offset: 0, limit: 256, exactTotal: true },
-				{ offset: 0, limit: 512, exactTotal: undefined },
+				{ offset: 0, limit: 256, exactTotal: undefined },
+				{ offset: 256, limit: 256, exactTotal: undefined },
 			]
 		);
 		await index.close();
@@ -1596,7 +1603,7 @@ describe('FullTextQueryIndex', () => {
 			requests.map(({ offset, limit }) => ({ offset, limit })),
 			[
 				{ offset: 0, limit: 40 },
-				{ offset: 0, limit: 200 },
+				{ offset: 40, limit: 160 },
 				{ offset: 200, limit: 640 },
 				{ offset: 840, limit: 1_022 },
 				{ offset: 1_862, limit: 1_022 },
@@ -1641,7 +1648,7 @@ describe('FullTextQueryIndex', () => {
 			requests.map(({ offset, limit }) => ({ offset, limit })),
 			[
 				{ offset: 0, limit: 40 },
-				{ offset: 0, limit: 760 },
+				{ offset: 40, limit: 720 },
 			]
 		);
 		assert.deepStrictEqual(
@@ -2419,30 +2426,21 @@ describe('FullTextQueryIndex', () => {
 		await fallback.index.close();
 	});
 
-	it('fails closed when a short lower-bound native page claims more hits', async () => {
+	it('rejects an empty native page claiming a continuation', async () => {
 		const auditStore = sharedStore();
-		const readinessId = 'short-lower-bound-page';
+		const readinessId = 'empty-traversal-page';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
 		const { index } = simpleQueryIndex({
 			auditStore,
 			readinessId,
 			payload: publicationPayload(),
 			hits: () => [],
-			maxSearchWindow: 100,
-			searchResult: ({ limit }) => ({
-				total: limit + 1,
-				totalRelation: 'lower-bound',
-				hits: Array.from({ length: limit - 1 }, (_value, id) => ({
-					id: nativeId(1, `record-${id}`),
-					version: '1',
-					score: limit - id,
-				})),
-			}),
+			searchPageResult: () => ({ total: 1, totalRelation: 'exact', hits: [], continuation: 'next' }),
 		});
 		attachCurrentCoverage(index, auditStore, readinessId);
 		await assert.rejects(
 			index.search({ attribute: readinessId, comparator: 'matches', value: 'pack' }, {}, { minResults: 1 }),
-			/incomplete result page/
+			/empty page with more results/
 		);
 		await index.close();
 	});
@@ -2580,7 +2578,7 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('keeps the initial autocomplete window and traverses larger prefix expressions', async () => {
+	it('uses native traversal for prefix expressions without the ordinary autocomplete window', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'autocomplete-window';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -2644,8 +2642,8 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual((await index.search(query, {})).length, hits.length);
 		assert.deepStrictEqual((({ offset, limit, exactTotal }) => ({ offset, limit, exactTotal }))(requests[0]), {
 			offset: 0,
-			limit: 100,
-			exactTotal: true,
+			limit: 256,
+			exactTotal: undefined,
 		});
 		requests.length = 0;
 		assert.strictEqual((await index.search(query, {}, { minResults: 100 })).length, 100);
@@ -3164,7 +3162,7 @@ describe('FullTextQueryIndex', () => {
 			assert.strictEqual(reloads, 0);
 			assert.deepStrictEqual(pages, [
 				{ readerIndex: 0, offset: 0 },
-				{ readerIndex: 0, offset: 0 },
+				{ readerIndex: 0, offset: 256 },
 				{ readerIndex: 1, offset: 0 },
 			]);
 			await waitFor(() => closes === 1);

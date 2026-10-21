@@ -530,7 +530,11 @@ describe('published native full-text Table.search integration', () => {
 			search('matches', 'widget catalog', { rowFilter: (record) => tail.has(record.id) }),
 			(error) => error.statusCode === 400 && /maxRawHitsPerRequest/.test(error.message)
 		);
-		env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previousPolicy, maxRawHitsPerRequest: count * 3 });
+		env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, {
+			...previousPolicy,
+			maxRawHitsPerRequest: count * 3,
+			maxResultsPerRequest: count,
+		});
 		try {
 			assert.deepStrictEqual(
 				(await search('matches', 'widget catalog', { rowFilter: (record) => tail.has(record.id) })).map(({ id }) => id),

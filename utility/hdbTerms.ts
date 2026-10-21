@@ -745,6 +745,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_FULL_TEXT: 'storage_fullText',
 	STORAGE_FULL_TEXT_REQUEST_BUDGET_MILLISECONDS: 'storage_fullText_requestBudgetMilliseconds',
 	STORAGE_FULL_TEXT_MAX_RAW_HITS_PER_REQUEST: 'storage_fullText_maxRawHitsPerRequest',
+	STORAGE_FULL_TEXT_MAX_RESULTS_PER_REQUEST: 'storage_fullText_maxResultsPerRequest',
 	STORAGE_FULL_TEXT_RUNTIME: 'storage_fullText_runtime',
 	STORAGE_FULL_TEXT_RUNTIME_MAX_RESIDENT_INDEXES: 'storage_fullText_runtime_maxResidentIndexes',
 	STORAGE_FULL_TEXT_RUNTIME_MAX_INDEXING_THREADS: 'storage_fullText_runtime_maxIndexingThreads',

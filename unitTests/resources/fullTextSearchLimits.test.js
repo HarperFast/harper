@@ -141,6 +141,7 @@ describe('full-text search resource limits', () => {
 		for (const value of [null, 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '', '1.5', '1e3', true]) {
 			assert.throws(() => resolveFullTextSearchLimits({ requestBudgetMilliseconds: value }), /positive safe integer/);
 			assert.throws(() => resolveFullTextSearchLimits({ maxRawHitsPerRequest: value }), /positive safe integer/);
+			assert.throws(() => resolveFullTextSearchLimits({ maxResultsPerRequest: value }), /positive safe integer/);
 			assert.throws(
 				() => resolveFullTextSearchLimits({ runtime: { maxSearchThreads: value } }),
 				/positive safe integer/
