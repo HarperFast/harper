@@ -377,14 +377,23 @@ describe('analytics aggregation cycle', () => {
 		assert.strictEqual(byThread[0].perThread, undefined);
 	});
 
-	it('breaks duration down per thread without changing its aggregate row', async function () {
+	it('rolls duration up once per thread, across its paths, without changing its aggregate rows', async function () {
 		this.timeout(30000);
 		await nextPeriod();
 		await runCycle();
 		const first = lastRawKey() + 1;
+		const threadSeven = durationReport(first + 1, 7, 'ThreadPath', 30, 6);
+		threadSeven.metrics.push({
+			metric: 'duration',
+			path: 'OtherPath',
+			method: 'POST',
+			count: 10,
+			mean: 2,
+			distribution: [{ value: 2, count: 10 }],
+		});
 		await seedRawReports([
 			durationReport(first, 0, 'ThreadPath', 10, 2),
-			durationReport(first + 1, 7, 'ThreadPath', 30, 6),
+			threadSeven,
 			durationReport(first + 2, 0, 'ThreadPath', 10, 4),
 		]);
 		await nextPeriod();
@@ -402,7 +411,7 @@ describe('analytics aggregation cycle', () => {
 		// The cycle writes its rows one by one, so each read waits for the rows it checks.
 		const perThread = await waitFor(
 			() => {
-				const rows = aggregatedMetrics('duration-by-thread', first + 2).filter((row) => row.path === 'ThreadPath');
+				const rows = aggregatedMetrics('duration-by-thread', first + 2);
 				return rows.length === 2 && rows;
 			},
 			{ timeout: 10000, message: 'both per-thread rows were aggregated' }
@@ -411,22 +420,23 @@ describe('analytics aggregation cycle', () => {
 		const fields = ['metric', 'path', 'method', 'type', 'thread', 'count', 'mean', 'period'];
 		assert.deepStrictEqual(pick(byThread[0], fields), {
 			metric: 'duration-by-thread',
-			path: 'ThreadPath',
-			method: 'GET',
-			type: 'cache-hit',
+			path: undefined,
+			method: undefined,
+			type: undefined,
 			thread: 0,
 			count: 20,
 			mean: 3,
 			period: PERIOD,
 		});
+		// One row per thread across its paths: 30 requests at 6 ms and 10 at 2 ms.
 		assert.deepStrictEqual(pick(byThread[7], fields), {
 			metric: 'duration-by-thread',
-			path: 'ThreadPath',
-			method: 'GET',
-			type: 'cache-hit',
+			path: undefined,
+			method: undefined,
+			type: undefined,
 			thread: 7,
-			count: 30,
-			mean: 6,
+			count: 40,
+			mean: 5,
 			period: PERIOD,
 		});
 		assert.strictEqual(byThread[0].p95, undefined);
@@ -469,12 +479,11 @@ describe('analytics aggregation cycle', () => {
 		await runCycle();
 
 		const perThread = await waitFor(
-			() =>
-				aggregatedMetrics('duration-by-thread', first + 1).find((row) => row.path === 'ThreadPath' && row.thread === 1),
+			() => aggregatedMetrics('duration-by-thread', first + 1).find((row) => row.thread === 1),
 			{ timeout: 10000, message: 'the per-thread row was aggregated' }
 		);
-		assert.strictEqual(perThread.count, 10);
-		assert.strictEqual(perThread.mean, 2);
+		assert.strictEqual(perThread.count, 17);
+		assert.strictEqual(perThread.mean, 27 / 17);
 		const ordinary = await waitFor(
 			() =>
 				aggregatedMetrics('duration', first + 1).find(
@@ -500,6 +509,28 @@ describe('analytics aggregation cycle', () => {
 		assert.strictEqual(typeof entry.threadId, 'number');
 		assert.ok(entry.count >= 1, JSON.stringify(entry));
 		assert.ok(entry.mean >= 0 && entry.maxDelay >= entry.mean, JSON.stringify(entry));
+	});
+
+	it('keeps a stall that comes right after a flush, before the next window opens', async function () {
+		this.timeout(30000);
+		const flushes = [];
+		analytics.addAnalyticsListener((metrics) => {
+			if (metrics.some((entry) => entry.metric === 'db-write' && entry.path === 'GapFirst')) {
+				// Past the sampler's first firings after the flush's own reset, well inside one interval.
+				setTimeout(() => {
+					const end = performance.now() + 300;
+					while (performance.now() < end);
+					analytics.recordAction(1, 'db-write', 'GapProbe');
+				}, 60);
+			}
+			if (metrics.some((entry) => entry.metric === 'db-write' && entry.path === 'GapProbe')) flushes.push(metrics);
+		});
+		analytics.setAnalyticsEnabled(false);
+		analytics.setAnalyticsEnabled(true);
+		analytics.recordAction(1, 'db-write', 'GapFirst');
+		await waitFor(() => flushes.length > 0, { timeout: 10000, message: 'the probe after the stall was flushed' });
+		const delay = flushes[0].find((entry) => entry.metric === 'event-loop-delay');
+		assert.ok(delay && delay.maxDelay >= 200, JSON.stringify(delay));
 	});
 
 	it('reports a stall that ran past the flush deadline in that flush', async function () {

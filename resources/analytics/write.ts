@@ -68,6 +68,7 @@ export function setAnalyticsEnabled(enabled: boolean) {
 	sendAnalyticsTimeout = null;
 	// The cancelled window must not stretch the next one's period or skip its histogram reset.
 	analyticsStart = 0;
+	lastFlushAt = 0;
 }
 
 function recordExistingAction(value: Value, action: Action) {
@@ -150,6 +151,7 @@ export function recordActionBinary(value, metric, path?, method?, type?) {
 }
 
 let analyticsStart = 0;
+let lastFlushAt = 0;
 export const analyticsDelay = 1000;
 const ANALYTICS_REPORT_TYPE = 'analytics-report';
 const analyticsListeners = [];
@@ -170,8 +172,9 @@ const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1
 function sendAnalytics() {
 	if (!analyticsStart) {
 		analyticsStart = performance.now();
-		// The report's delay covers its own window, not the idle gap or the boot before it.
-		resetEventLoopDelay();
+		// After an idle gap or at boot, the report's delay covers its own window, not the gap. Right
+		// after a flush, which already reset the histogram, another reset would only add a blind spot.
+		if (!lastFlushAt || analyticsStart - lastFlushAt > analyticsDelay) resetEventLoopDelay();
 	}
 	sendAnalyticsTimeout = setTimeout(() => {
 		// One more timer turn: a stall that ran past the deadline is recorded by the event loop
@@ -189,9 +192,10 @@ async function flushAnalytics() {
 	activeActions = new Map();
 	const period = performance.now() - analyticsStart;
 	analyticsStart = 0;
-	// Read before the first yield too: a sample that lands mid-flush opens the next window, which
-	// resets the histogram.
+	// Read before the first yield too, so the event loop's samples from the rest of the flush belong
+	// to the next report.
 	const eventLoopDelay = readEventLoopDelay();
+	lastFlushAt = performance.now();
 	const metrics = [];
 	const report = {
 		time: Date.now(),
@@ -1102,7 +1106,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 			aggregateEntry(entry);
 			const perThreadMetric = PER_THREAD_METRICS.get(entry.metric);
 			if (perThreadMetric)
-				aggregateEntry({ ...entry, metric: perThreadMetric, perThread: true, distribution: undefined });
+				aggregateEntry({ metric: perThreadMetric, count: entry.count, mean: entry.mean, perThread: true });
 		}
 		await rest();
 	}
