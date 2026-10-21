@@ -19,10 +19,9 @@ const { totalmem } = require('os');
 const { setHeapSnapshotNearHeapLimit } = typeof globalThis.Bun !== 'undefined' ? {} : require('v8');
 const hdbTerms = require('../../utility/hdbTerms.ts');
 const envMgr = require('../../utility/environment/environmentManager.ts');
-const { DEFAULT_FULL_TEXT_SEARCH_LIMITS } = require('../../resources/indexes/fullTextSearchLimits.ts');
-const { getFullTextRuntimeConfiguration } = require('../../resources/indexes/fullTextRuntimeConfiguration.ts');
 const harperLogger = require('../../utility/logging/harper_logger.ts');
 const { randomBytes } = require('crypto');
+const { getFullTextRuntimeConfiguration } = require('../../resources/indexes/fullTextRuntimeConfiguration.ts');
 const { _assignPackageExport } = require('../../globals.js');
 const { PACKAGE_ROOT, PRODUCT_NAME } = require('../../utility/packageUtils.js');
 const { resolvePreloadModules } = require('./resolvePreload.ts');
@@ -170,12 +169,6 @@ const initialRestartNumber = workerData?.restartNumber || 1;
 // would not. `undefined` on a worker started without it; consumers must fall back, not treat that
 // as a mismatch.
 const processIncarnation = workerData ? workerData.processIncarnation : randomBytes(8).toString('hex');
-const fullTextContinuationRoutingKey = workerData
-	? workerData.fullTextContinuationRoutingKey
-	: randomBytes(32).toString('base64url');
-function getFullTextContinuationRoutingKey() {
-	return fullTextContinuationRoutingKey;
-}
 
 // Every value in this literal is a bare identifier: Node's CommonJS export scan, which supplies the
 // named bindings an ES module import can use, stops reading the literal at the first value that is not.
@@ -235,7 +228,6 @@ module.exports = {
 	setRootComponentsReload,
 	restartNumber: initialRestartNumber,
 	processIncarnation,
-	getFullTextContinuationRoutingKey,
 	whenThreadsStarted,
 	threadsHaveStarted,
 	// Assigned further down once defined. TypeScript 7 only treats keys of this literal as exports and
@@ -406,7 +398,6 @@ const RESERVED_WORKER_DATA_KEYS = [
 	'name',
 	'restartNumber',
 	'processIncarnation',
-	'fullTextContinuationRoutingKey',
 	'ticketKeys',
 	'databaseDropPreparations',
 	'noServerStart',
@@ -527,68 +518,6 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_RESPONSE, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_REGISTERED, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE, null);
-let fullTextContinuationLoading;
-let fullTextContinuationQueued = 0;
-let fullTextContinuationResponsesQueued = 0;
-function rejectFullTextContinuation(event, port, reason = 'is unavailable') {
-	if (
-		typeof event.message?.id !== 'string' ||
-		event.message.id.length !== 32 ||
-		event.message.originator !== port.threadId
-	)
-		return;
-	try {
-		port.postMessage({
-			type: hdbTerms.ITC_EVENT_TYPES.FULL_TEXT_CONTINUATION_RESPONSE,
-			message: {
-				id: event.message.id,
-				originator: threadId,
-				error: { status: 503, message: `Full-text continuation ${reason}; retry this search` },
-			},
-		});
-	} catch {}
-}
-
-function dispatchFullTextContinuation(event, port, response) {
-	const configured = Number(
-		envMgr.get(hdbTerms.CONFIG_PARAMS.STORAGE_FULL_TEXT)?.maxPendingRequests ??
-			DEFAULT_FULL_TEXT_SEARCH_LIMITS.maxPendingRequests
-	);
-	const maximum =
-		Number.isSafeInteger(configured) && configured > 0
-			? configured
-			: DEFAULT_FULL_TEXT_SEARCH_LIMITS.maxPendingRequests;
-	if (!port) return;
-	if ((response ? fullTextContinuationResponsesQueued : fullTextContinuationQueued) >= maximum) {
-		if (!response) rejectFullTextContinuation(event, port, 'reached storage.fullText.maxPendingRequests');
-		return;
-	}
-	if (response) fullTextContinuationResponsesQueued++;
-	else fullTextContinuationQueued++;
-	fullTextContinuationLoading ??= import('../../resources/indexes/fullTextContinuation.ts').catch((error) => {
-		fullTextContinuationLoading = undefined;
-		throw error;
-	});
-	fullTextContinuationLoading
-		.then((module) => {
-			if (response) module.fullTextContinuationResponse(event, port.threadId);
-			else return module.fullTextContinuationRequest(event, port.threadId);
-		})
-		.catch(() => {
-			if (!response) rejectFullTextContinuation(event, port);
-		})
-		.finally(() => {
-			if (response) fullTextContinuationResponsesQueued--;
-			else fullTextContinuationQueued--;
-		});
-}
-onMessageByType(hdbTerms.ITC_EVENT_TYPES.FULL_TEXT_CONTINUATION_REQUEST, (event, port) => {
-	dispatchFullTextContinuation(event, port, false);
-});
-onMessageByType(hdbTerms.ITC_EVENT_TYPES.FULL_TEXT_CONTINUATION_RESPONSE, (event, port) => {
-	dispatchFullTextContinuation(event, port, true);
-});
-
 // These request/response functions register their own one-shot parentPort listener per
 // call rather than going through onMessageByType, so without this, every reply would also reach
 // addPort's permanent dispatcher as an "unregistered" type: notifyMessageListeners would warn and
@@ -1384,7 +1313,6 @@ function startWorker(path, options = {}, startOptions = {}) {
 			poolIndex: options.poolIndex,
 			restartNumber: module.exports.restartNumber,
 			processIncarnation: module.exports.processIncarnation,
-			fullTextContinuationRoutingKey,
 			ticketKeys: getTicketKeys(),
 			databaseDropPreparations: databaseDropPreparationSnapshot(),
 			certify,

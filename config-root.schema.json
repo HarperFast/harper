@@ -497,45 +497,9 @@
 			"properties": {
 				"fullText": {
 					"type": "object",
-					"description": "Full-text continuation and native process budgets. Native process budgets require a restart to change. These settings do not cap total traversable results or guarantee a bound on process memory or retained disk space.",
+					"description": "Full-text request work limits and native process budgets. Native process budgets require a Harper process restart to change; they do not cap total process memory or disk usage.",
 					"additionalProperties": false,
 					"properties": {
-						"cursorTtlMilliseconds": {
-							"type": "integer",
-							"minimum": 1,
-							"maximum": 2147483647,
-							"default": 60000
-						},
-						"maxCursors": {
-							"type": "integer",
-							"minimum": 1,
-							"maximum": 4294967295,
-							"default": 4
-						},
-						"maxRetainedQueryBytes": {
-							"type": "integer",
-							"minimum": 1,
-							"maximum": 9007199254740991,
-							"default": 8388608
-						},
-						"maxPendingRequests": {
-							"type": "integer",
-							"minimum": 1,
-							"maximum": 4294967295,
-							"default": 32
-						},
-						"maxPendingResponseBytes": {
-							"type": "integer",
-							"minimum": 1,
-							"maximum": 9007199254740991,
-							"default": 16777216
-						},
-						"maxPageSize": {
-							"type": "integer",
-							"minimum": 1,
-							"maximum": 4294967295,
-							"default": 1000
-						},
 						"requestBudgetMilliseconds": {
 							"type": "integer",
 							"minimum": 1,
@@ -546,15 +510,8 @@
 							"type": "integer",
 							"minimum": 1,
 							"maximum": 9007199254740991,
-							"default": 100000,
-							"description": "Maximum native hits fetched per request, including the initial replay. Exhaustion returns an explicit error."
-						},
-						"maxRawHitsPerOrdinaryRequest": {
-							"type": "integer",
-							"minimum": 1,
-							"maximum": 9007199254740991,
 							"default": 10000,
-							"description": "Additional native-hit ceiling for searches without continuation. The lower of this and maxRawHitsPerRequest applies."
+							"description": "Maximum fetched native hits per full-text request, including replay during traversal."
 						},
 						"runtime": {
 							"type": "object",

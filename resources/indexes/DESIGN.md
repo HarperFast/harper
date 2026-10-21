@@ -527,17 +527,17 @@ single record larger than the native trace limit is rejected before crossing the
 
 Search hits carry the source record version. Harper reads the authoritative record in its transaction and omits a hit when the version no longer matches; it never combines an old score or highlight with new content. Bounded searches begin by over-fetching 32–256 native hits. When version checks or structured filters under-fill a page, Harper sizes the next request from observed yield. Pages grow within the native response envelope, with 4,096 as an absolute ceiling, then shrink as selectivity improves; a zero-yield page grows geometrically because it provides no selectivity estimate.
 
-Each page yields after at most 256 estimated source and companion-index point reads to check cancellation and the execution deadline. Equality point probes are limited to four index reads per candidate; wider equality plans use the authoritative record predicate. The requested visible `offset + limit` remains bounded by the native ordinary result window. One reader lease keeps every native batch in a request on the same snapshot.
+Each page yields after at most 256 estimated source and companion-index point reads to check cancellation and the execution deadline. Equality point probes are limited to four index reads per candidate; wider equality plans use the authoritative record predicate. The requested visible `offset + limit` is bounded by the configured raw-hit budget, not the native ordinary result window. One reader lease keeps every native batch in a request on the same snapshot.
 
 Harper does not configure native `filterFields` or send native `filter` or `candidateIds` payloads. Candidate planning, companion-index probes and the authoritative record predicate remain Harper-owned; the wrapper's candidate limits do not cap those mechanisms.
 
 Keep the first ordinary/prefix batch on `reader.search` so queries filled by that batch retain their existing collection path. When more raw hits are needed, switch to `searchPage` on the same reader. Native offset results carry no continuation, so traversal starts at the beginning and skips the already-processed raw prefix before checking source records again. The prefix is at most one initial batch, not the traversal depth. Native ordering must agree across the two methods and across page sizes. The published-addon regression compares ordinary and traversal prefixes and mixed-score, Unicode and Boolean sequences across page sizes.
 
-Subsequent batches follow native continuations without the ordinary or autocomplete raw-result cutoff. Their byte-aware size adapts to observed filter yield. An oversized response retries the unchanged boundary at a smaller size under the same deadline. An empty traversal page with a continuation is an error. Ordinary lower-bound responses must still describe retrievable hits; a short page claiming more hits fails closed. Exhausting the snapshot returns the remaining eligible records, including an empty result, even when current source versions differ. Freshness checks still enforce requested index coverage before searching. Native totals are not authorized source counts. Each request fetches at most `storage.fullText.maxRawHitsPerRequest` native hits (100,000 by default), including the bounded replay; reaching that budget before filling or exhausting the page returns an explicit 400 error. This bounds returned-hit and source-check work, not Tantivy scorer visits or uninterrupted query construction.
+Subsequent batches follow native continuations without the ordinary or autocomplete raw-result cutoff. Their byte-aware size adapts to observed filter yield. An oversized response retries the unchanged boundary at a smaller size under the same deadline. An empty traversal page with a continuation is an error. Ordinary lower-bound responses must still describe retrievable hits; a short page claiming more hits fails closed. Exhausting the snapshot returns the remaining eligible records, including an empty result, even when current source versions differ. Freshness checks still enforce requested index coverage before searching. Native totals are not authorized source counts. Each request fetches at most `storage.fullText.maxRawHitsPerRequest` native hits (10,000 by default), including the bounded replay; reaching that budget before filling or exhausting the page returns an explicit 400 error. This bounds returned-hit and source-check work, not Tantivy scorer visits or uninterrupted query construction.
 
 Harper requires Fulltext 0.6.0, native ABI 9 and Query API 4. The traversal response body reserves 82 bytes before hits, plus 13 bytes per versioned hit before ID/version strings. Batch capacity uses advertised response, ID, version and page-size limits. The first ordinary response still uses its existing framing; the conservative traversal capacity also bounds that initial batch. Prefix first-batch capacity remains independent of the visible result target.
 
-REST exposes the index coverage header; callers requiring current coverage use `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`. Full-text score descending is the only supported ordering. Count requests return `recordCount: null` and `recordCountExact: false`; native totals cannot become exact Harper counts after authorization, structured filtering and source-version checks. Ordinary requests release their reader at completion. Explicit continuation mode retains a revocable reader lease across requests, described below.
+REST exposes the index coverage header; callers requiring current coverage use `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`. Full-text score descending is the only supported ordering. Count requests return `recordCount: null` and `recordCountExact: false`; native totals cannot become exact Harper counts after authorization, structured filtering and source-version checks. Each request releases its reader lease in `finally`. Separate limit/offset requests execute independently and may see different publications; Harper retains no search state between requests.
 
 A declared Blob source is part of one index document. An oversized, invalid UTF-8 or otherwise
 permanently unusable Blob makes that whole document unindexable rather than publishing a partial
@@ -547,38 +547,6 @@ backoff, but an unreadable authoritative record never becomes an index deletion.
 behind that record until its source is readable, preserving cursor and publication atomicity at the
 cost of delaying unrelated records in the batch. The normal derived-index lag policy makes prolonged
 failure visible and eventually applies write backpressure rather than silently diverging replicas.
-
-### Retained search snapshots
-
-Native readers stay on their original worker. Other workers send a query hash, snapshot boundary
-and hit metadata through `fullTextContinuation.ts`; they load records and check permissions locally.
-`fullTextContinuationOwner.ts` holds the worker registry. Native readers own ranking and traversal.
-
-Each pending request reserves reply bytes before sending. Native-page allowances use native limits
-and batch size; other operations use fixed allowances. The owner bounds hit strings at two bytes per code unit
-before sending; read replies are not serialized again for measurement. Timeouts and worker exit release pending capacity. Admission is process-wide;
-losing the owner expires the search rather than forwarding it to another server.
-
-Publication may retire a reader while its searches finish. Reset, close and definition changes
-revoke leases before draining admitted native work. `FullTextContinuationPage` binds query,
-selection, configuration and principal. Only the reserving worker can release its claim; the lease's
-drain promise carries that acknowledgement, separately from reader-retirement failures. Close has
-its own bounded cleanup window: context and lifecycle checks still apply afterward, but an expired
-search budget cannot discard a terminal page whose token is already revoked.
-
-`Table.searchPage` and `searchByIndex` supply their existing materializer and entry loader. The index
-feeds bounded candidate groups through them until the page fills or traversal ends. Source refresh
-rechecks the saved native version. First-page highlighting shares the retained lease's active-use
-and drain accounting; resumed highlighting releases only its separately acquired local reader.
-The adapter loads admission on first continuation use. Page validation imports only the clock
-helper, keeping the limits module native-free and ordinary startup free of admission.
-
-Deadlines and expiry use the pinned RocksDB `steadyClockNow()` shared by all workers. Bun's worker-local
-`process.hrtime.bigint()` and wall-clock `derivedIndexTime()` cannot replace it. Transfer only remaining
-durations into local `performance.now()` deadlines. `expiresAt` is display metadata; timers and cleanup
-can run late under event-loop load. See [the dependency contract](../../dependencies.md#harperfastrocksdb-js).
-
-REST keeps array bodies and sends continuation headers. Resume does not claim newer reader coverage.
 
 ### Bounded delivery
 

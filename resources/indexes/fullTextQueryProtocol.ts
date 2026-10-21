@@ -1,10 +1,6 @@
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import type { NativeFullTextSearchMode } from './fullTextNativeBinding.ts';
 
-export const FULL_TEXT_CONTINUATION_PAGE = Symbol('fullTextContinuationPage');
-export const FULL_TEXT_CONTINUATION_REQUEST = Symbol('fullTextContinuationRequest');
-export const FULL_TEXT_CONTINUATION_VERSION = Symbol('fullTextContinuationVersion');
-
 export const FULL_TEXT_QUERY_PAUSE_OPERATION = 'pause-full-text-query-readers';
 export const FULL_TEXT_QUERY_RESUME_OPERATION = 'resume-full-text-query-readers';
 
@@ -37,15 +33,6 @@ export function fullTextComparatorMode(comparator: string | undefined): NativeFu
 	return comparator !== undefined && Object.hasOwn(FULL_TEXT_MODES, comparator)
 		? FULL_TEXT_MODES[comparator as PositiveFullTextComparator]
 		: undefined;
-}
-
-export function hasFullTextContinuationOptions(
-	target: { continuation?: unknown; closeContinuation?: unknown } | undefined
-): boolean {
-	return (
-		target?.continuation !== undefined ||
-		(target?.closeContinuation !== undefined && target.closeContinuation !== false)
-	);
 }
 
 type FullTextReplayHit = { id: string; score: number; version?: string };
@@ -86,10 +73,4 @@ export function replayFullTextPrefix(
 	if (remaining > 0 && !page.continuation)
 		throw new ServerError('Full-text traversal ended before its previously read hits', 500);
 	return { skipped, remaining, hits: skipped > 0 ? page.hits.slice(skipped) : page.hits };
-}
-
-export function fullTextPageResponseBytes(page: { hits: FullTextReplayHit[]; continuation?: string }): number {
-	let bytes = 1024;
-	for (const hit of page.hits) bytes += 2 * (hit.id.length + (hit.version?.length ?? 0)) + 128;
-	return bytes + 2 * (page.continuation?.length ?? 0);
 }

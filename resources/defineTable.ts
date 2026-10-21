@@ -29,7 +29,6 @@ import { table, type Table } from './databases.ts';
 import { attributeToFragment } from './jsonSchemaTypes.ts';
 import type { RecordLockOptions } from './recordLock.ts';
 import type { WritableRecord } from './ResourceInterface.ts';
-import type { FullTextSearchPage } from './indexes/fullTextContinuationPage.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Field model — phantom-typed Field. Flags are set via GETTER PROPERTIES (no call):
@@ -241,7 +240,6 @@ interface TypedVerbs<S extends Shape> {
 	lock(id: IdOf<S>, options?: RecordLockOptions, context?: any): Promise<WritableRecord<InstanceOf<S>>>;
 	delete(id: IdOf<S>, context?: any): MaybePromise<unknown>;
 	search(query?: any, context?: any): AsyncIterable<ReadVariant<S>>;
-	searchPage(query: { limit: number; [key: string]: any }, context?: any): Promise<FullTextSearchPage<ReadVariant<S>>>;
 	query(query?: any, context?: any): AsyncIterable<ReadVariant<S>>;
 }
 
@@ -253,7 +251,7 @@ interface TypedVerbs<S extends Shape> {
  */
 export type TableHandle<S extends Shape = Shape> = Omit<
 	Table,
-	'get' | 'put' | 'post' | 'patch' | 'update' | 'lock' | 'delete' | 'search' | 'searchPage' | 'query'
+	'get' | 'put' | 'post' | 'patch' | 'update' | 'lock' | 'delete' | 'search' | 'query'
 > &
 	TypedVerbs<S> & {
 		// phantom projection carriers — discovery surface, zero runtime cost

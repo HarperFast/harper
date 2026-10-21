@@ -220,8 +220,6 @@ mirror because it only widens what an allowlist may _name_; enforcement stays on
 
 `REST.ts → http(request, nextHandler)` is the chief integration point: it takes a `Request`, asks the `Resources` registry for a match, builds a `RequestTarget`, and dispatches into the Resource class's static method. Cache headers are translated to `request.expiresAt` / `onlyIfCached` / `noCache` flags within the same function.
 
-URL continuation controls are read-only: GET and QUERY may execute them; OPTIONS only returns metadata. The guard follows deferred credential rejection and precedes resource dispatch. `Table.delete()` also rejects continuation targets before starting its internal search, so application and retained-message dispatch cannot hand a Promise-backed page to the delete scan's async iterator.
-
 ### Streaming startup errors
 
 SSE and NDJSON serializers eagerly take and hold their first iterator step for GET requests. `REST.ts` waits through the next event-loop turn for that step: an immediate rejection remains an HTTP error rendered as Problem Details, while a first item or the cutoff commits the stream. Mutating requests do not use the startup-status gate because their transaction has already committed by this point; all of their stream failures use the in-band form. Later GET failures are terminal, format-valid records (`event: harper-error` for SSE and a reserved control record for NDJSON). Keep the decision in the serializer/REST boundary so Node, uWS, Bun, compression, and injection share one contract; transports must not independently prefetch the iterator.

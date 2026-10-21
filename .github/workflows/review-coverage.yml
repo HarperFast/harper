@@ -137,7 +137,6 @@ jobs:
             resources/derivedIndexes.ts
             resources/derivedIndexRuntime.ts
             resources/indexes/HierarchicalNavigableSmallWorld.ts
-            resources/indexes/fullTextContinuationClock.ts
             resources/longLivedTransactions.ts
             resources/nodeIdMapping.ts
             resources/originClosedFloor.ts

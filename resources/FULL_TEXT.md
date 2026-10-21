@@ -94,154 +94,60 @@ A format-incompatible native package upgrade causes each node to rebuild its loc
 
 Earlier beta declarations and indexes are unsupported. This field-only API does not provide a compatibility or upgrade path for them.
 
-Harper keeps the requested `offset + limit` within the native ordinary result window. When source checks or other conditions reject the first batch, Harper uses native traversal to reach later matches on the same reader snapshot. This also lets prefix and fuzzy-prefix queries return more than the native first-batch autocomplete limit. Raw batch sizes are bounded by the installed addon’s page and response-byte limits; all batches share one execution budget. A timeout returns an error, including when native work finishes after its budget with a full batch. Harper does not accept a late batch as a completed page. If the snapshot runs out of eligible matches, Harper returns the remaining matches, including an empty result; filtering beyond an old native window no longer causes a 400 error.
+## Paging and work limits
 
-Earlier bounded searches could raise `DerivedIndexLagError` when source-version changes left a
-short page. Snapshot exhaustion now returns the eligible records instead. The explicit freshness
-checks still apply before the search and can raise a retryable lag error.
+Full-text search uses Harper's usual `limit` and `offset` options. `Table.search()` returns an iterable, including when a custom Resource forwards or filters it.
 
-Each request has a configurable work budget: `storage.fullText.maxRawHitsPerRequest` defaults to 100,000 native hits, including replay. Ordinary searches also apply `maxRawHitsPerOrdinaryRequest`, which defaults to 10,000; the lower ceiling applies. Both paths use `requestBudgetMilliseconds` (5,000 ms by default), capped by the native execution limit. Reaching the fetched-hit ceiling returns 400; exhausting the execution budget returns 503. Narrow the query or increase the relevant configured budget; Harper does not return a successful incomplete page. This limit counts fetched hits, not every record Tantivy visits while scoring.
-
-Ordinary offset-based requests each use their own snapshot and may observe different index publications. Use continuation mode below to keep the original search across requests. Highlight tracing has separate record and source-byte bounds. Query construction and some native operations cannot be interrupted, so the execution budget is not a hard response-time guarantee.
-
-Harper does not configure Fulltext's native filter metadata or submit native filter or candidate-ID requests. Ordinary conditions continue through Harper's secondary-index gates and authoritative record predicates.
-
-For implementation details, see the [full-text invariants in the Resource design guide](DESIGN.md#full-text-declarations-and-reader-snapshots). The schema contract lives in [schema.graphql](../schema.graphql); the compiler and generation rules are in [fullTextSchema.ts](fullTextSchema.ts).
-
-## Continue a search across requests
-
-Call `Table.searchPage()` with a positive `limit`. It starts a new search when `continuation` is omitted or `true`, and returns a promise for an array with
-`continuation`, `complete`, and `expiresAt` properties. These properties are not part of the JSON
-array body. `Table.search()` keeps its iterable return value and rejects continuation options.
-
-A custom `search()` override must explicitly implement `searchPage()` with the same row-filter policy before it can serve continuation requests. This applies to static and instance overrides, including through REST.
-
-Inside an authenticated Resource instance method:
-
-```js
-const context = this.getContext();
-const query = {
-	conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'trail shoes' }],
-	limit: 25,
-	checkPermission: true,
-};
-let continuation = true;
-do {
-	const page = await Product.searchPage({ ...query, continuation }, context);
-	for (const record of page) console.log(record);
-	continuation = page.continuation;
-} while (continuation);
+```javascript
+return Product.search(
+	{
+		checkPermission: true,
+		conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'trail shoes' }],
+		offset: 20,
+		limit: 20,
+	},
+	this.getContext()
+);
 ```
 
-Keep the same conditions and selected fields when resuming. The page size may change. Application
-callbacks such as `rowFilter` and `vectorFilter` are not stored in the token. Supply them on every
-page, along with the same context and `checkPermission: true` when searching on behalf of a caller.
-Each request checks the caller's current permissions and loads current records. The retained snapshot fixes index
-matches and their ranking; it does not retain historical Harper records. Updated, deleted, expired,
-or newly unauthorized records can be omitted. New index matches do not enter that search. Freshness controls apply when the snapshot is started; later pages keep that snapshot and do not claim current index coverage.
-
-REST uses `continuation()` for the first request and `continuation(token)` for later requests:
+The equivalent REST range has an inclusive start and exclusive end:
 
 ```text
-GET /Product/?catalogSearch=matches=trail%20shoes&limit(25)&continuation()
+GET /Product/?catalogSearch=matches=trail%20shoes&limit(20,40)
 ```
 
-Read the next token from `Harper-Continuation` and pass it back unchanged, URL-encoded. The body stays
-a JSON array. `Harper-Continuation-Complete` says whether traversal finished;
-`Harper-Continuation-Expires` is the absolute expiry time in milliseconds since the Unix epoch.
-Completed pages omit the token and expiry.
-Request URL logging can record continuation tokens. Keep them out of logs and analytics;
-QUERY also accepts the token in its JSON body with the same query fields. Tokens still require
-the same caller and query and expire with their search.
-GET and QUERY can return continuation pages. OPTIONS returns request metadata without running a
-search. Other methods reject continuation parameters with 400.
-These headers are exposed to browser clients. Continuation responses use `Cache-Control: no-store`.
-Nonzero offsets, count requests, and other result ordering cannot be combined with continuation.
-The names `continuation` and `closeContinuation` are reserved REST options.
+Each page runs a new query. Changes to records, permissions, or the index can move results between requests, so separate pages may omit or repeat records. There is no retained search or cross-request snapshot.
 
-A custom Resource supporting the framework's QUERY paging route must implement `searchPage()`.
-Return the original page array. Copying it with `map()`,
-`filter()` or spread drops its paging metadata; returning that copy through the normal Resource
-API returns 400. Put projections and filters in the query instead. To add custom headers,
-return `{ headers, data: page }` with the original page array. A Resource returning an explicit
-HTTP `Response` owns its response headers, serialization and cache policy.
+Within one request, Harper reads native batches on the same index reader until enough eligible records have been found or the matches are exhausted. Current source versions and record filters are checked before counting records toward the offset and limit. This traversal also lets prefix and fuzzy-prefix searches return more than the initial autocomplete batch. The library's ordinary search window is not a total-result cutoff for a bounded Harper request.
 
-These headers are added after serialization and stream startup; they do not guarantee delivery of
-the complete body. A later stream error can leave a 200 response with an incomplete body. An
-unfinished search can be retried with its previous token while that token remains valid. If no
-token was received on the first request, its cursor slot may stay occupied until expiry.
+Use a bounded `limit` for large result sets. An unbounded query that exceeds the native result window returns 400. Offset requests revisit earlier matches; deep offsets and restrictive filters can exhaust the work or time budget. An exhausted search returns its remaining eligible records, including an empty result. A budget failure returns an error instead of a successful incomplete page.
 
-Long IDs make tokens larger. Qualification with the released library produced tokens of about
-600 bytes for short IDs and nearly 8 KB near the supported ID limit. Review `http.maxHeaderSize`
-and any proxy response-header and request-line limits, allowing room for the token, query,
-authentication, and other headers. A token that fits Harper may exceed a proxy limit.
+Search settings are under `storage.fullText`:
 
-To stop early, repeat the query with its token and `closeContinuation: true`. In REST, add
-`closeContinuation()` alongside `continuation(token)`. Closing returns an empty completed page.
-Close and terminal pages wait for admission release before reporting success. A release failure
-returns an error instead; the revoked token may then return 410, and its admission slot can remain
-occupied until absolute expiry or worker exit. This acknowledgement covers admission capacity,
-not immediate removal of old index segments from disk.
-Closing has a separate cleanup budget. Once release is acknowledged, the completed page can return
-after its search-work deadline; cancellation, transaction and index-lifecycle checks still apply.
-Completion, explicit close, expiry, index reset, definition changes, worker loss, and process restart
-release or invalidate the search. A previous token then returns 410; start a new search. Retries
-before completion keep the same index boundary, but current record and permission changes can
-change the returned rows. Continuation stays on one Harper instance; it does not coordinate servers.
-Changing any `storage.fullText` setting also invalidates existing tokens, including when only a
-capacity setting changes. Start a new search after changing these settings.
+| Setting                     | Default | Meaning                                                                                                           |
+| --------------------------- | ------: | ----------------------------------------------------------------------------------------------------------------- |
+| `maxRawHitsPerRequest`      |  10,000 | Fetched native hits, including the initial batch replay when switching to traversal                               |
+| `requestBudgetMilliseconds` |   5,000 | Execution budget across native batches, source checks and highlight tracing, capped by the native execution limit |
 
-Search and continuation settings are under `storage.fullText`:
+The hit limit counts fetched hits, not every record Tantivy visits while scoring. Reaching it before the page fills or the search is exhausted returns 400. Exceeding the execution budget returns 503. Narrow the query, reduce the offset, or increase the relevant configured budget. Freshness waiting uses `waitForIndexMilliseconds` separately. Reader acquisition, query construction and some native operations can take additional time; the execution budget is not a hard response-time guarantee.
 
-| Setting                        | Default | What it bounds                                           |
-| ------------------------------ | ------: | -------------------------------------------------------- |
-| `cursorTtlMilliseconds`        |  60,000 | Absolute lifetime; paging does not extend it             |
-| `maxCursors`                   |       4 | Retained searches across all workers in one process      |
-| `maxRetainedQueryBytes`        |   8 MiB | Retained native query text and identity bytes            |
-| `maxPageSize`                  |   1,000 | Returned records per page                                |
-| `requestBudgetMilliseconds`    |   5,000 | Freshness wait and native/page processing budget         |
-| `maxRawHitsPerRequest`         | 100,000 | Fetched native hits, including replayed batches          |
-| `maxRawHitsPerOrdinaryRequest` |  10,000 | Additional hit ceiling for searches without continuation |
-| `maxPendingRequests`           |      32 | Pending worker requests per requesting worker            |
-| `maxPendingResponseBytes`      |  16 MiB | Reserved response bytes per requesting worker            |
+Each setting has the usual configuration parameter name, such as `storage_fullText_maxRawHitsPerRequest`, for `set_configuration` and environment overrides. Query work limits apply to new searches after configuration changes.
 
-A requesting worker reserves a conservative bound for each native batch before dispatch, including two-byte string encoding and message overhead. The reservation can exceed the returned payload. `maxPendingResponseBytes` can therefore reject concurrent reads even when the cursor-count and pending-request limits have room.
+Native process admission settings live under `storage.fullText.runtime`:
 
-Search work and cleanup use separate windows based on `requestBudgetMilliseconds`. With the
-5,000 ms default, a search that uses its full work budget and then closes can take about 10 seconds.
-Waiting for other page requests already using the snapshot can add time. Native work checks its
-deadline while running; these settings are not a hard limit on total response time.
+| Setting                | Default |
+| ---------------------- | ------: |
+| `maxResidentIndexes`   |     128 |
+| `maxIndexingThreads`   |     128 |
+| `maxSearchThreads`     |     256 |
+| `maxWriterMemoryBytes` |   4 GiB |
+| `maxQueuedBytes`       |   8 GiB |
+| `maxExpensiveSearches` |       8 |
 
-Ordinary searches can use secondary indexes to skip record reads and enlarge batches when many
-matches are filtered out. Continued searches do not yet use those optimizations; they fetch up to
-256 native hits per batch and check current records. A selective filter can therefore add many
-record reads and, when the snapshot belongs to another worker, many worker requests.
-Qualification and these optimizations are tracked in
-[Qualify native full-text filtering and catalog-scale operation for v5.4](https://github.com/HarperFast/harper/issues/2512).
+These limits apply together. For example, two indexing threads and 64 MiB of writer memory per index reach the default thread and memory budgets at 64 indexes. Readers share an index's runtime; they do not allocate another writer. Admission limits are not hard bounds on total resident memory or disk usage.
 
-Each setting also has the usual configuration parameter name, such as
-`storage_fullText_maxRawHitsPerRequest` or `storage_fullText_runtime_maxSearchThreads`, for
-`set_configuration` and environment overrides. Changing one setting preserves the others.
+Harper captures native runtime budgets before loading application components, or on an earlier main-thread native load or managed worker spawn. Application-created workers inherit that configuration. A worker created before capture fails with `FullTextWorkerInitializationError` (500, non-retryable); recreate it after Harper initializes. Replacement workers keep the established budgets after a live configuration change. Restart the Harper process to apply new native runtime budgets; restarting only HTTP workers is insufficient.
 
-The cursor limit is shared by all callers. Four unfinished searches fill the default pool; another
-caller receives 503 until a search closes, finishes, or expires. Set `maxCursors` for the number of
-unfinished searches the application expects to retain. There is no per-caller reservation or eviction.
+Harper does not configure the library's native filter metadata or submit native filter or candidate-ID requests. Ordinary conditions continue through Harper's secondary-index gates and authoritative record predicates. Native page, response-byte and highlight limits still apply. Query terms and clauses remain limited by the installed library.
 
-Cursor slots, pending-request counts, and response-byte allowances apply separately. Raising
-`maxCursors` does not raise `maxPendingRequests` or `maxPendingResponseBytes`. Across workers,
-response reservations use the library's largest supported IDs and versions, rather than the
-average size of the current records. More searches may be retained than can fetch a page at once.
-
-Capacity exhaustion returns an error rather than a successful partial page. Snapshot readers can
-keep old index segments on disk until released. Neither query bytes nor native admission settings
-provide a hard bound on resident memory or retained disk space.
-
-The `storage.fullText.runtime` settings bound native process-wide admission before the first index
-opens. Defaults allow 128 resident native indexes, 128 indexing threads, 256 search threads, 4 GiB
-of configured writer memory, 8 GiB of configured queue capacity, and 8 concurrent expensive searches.
-These limits apply together: for example, two indexing threads and 64 MiB of writer memory per index
-reach the thread and memory budgets at 64 indexes. Readers share each native index's runtime;
-retaining a reader does not allocate another index writer. Harper captures these budgets before loading application components, or on an earlier main-thread native load or managed worker spawn. Application-created workers inherit that configuration. A standalone worker created before capture cannot initialize fulltext; recreate it after Harper initializes rather than retrying inside the same worker. Replacement workers retain the established budgets after a live configuration change. Change these settings to fit the number
-of indexes and their configured resources, and restart Harper after changing native admission limits.
-Retained paging still requires Harper's main thread or a managed worker; inheriting native settings
-does not add paging-message routing to application-created workers.
+For implementation details, see the [full-text invariants in the Resource design guide](DESIGN.md#full-text-declarations-and-reader-snapshots). The schema contract lives in [schema.graphql](../schema.graphql); compiler and generation rules live in [fullTextSchema.ts](fullTextSchema.ts).

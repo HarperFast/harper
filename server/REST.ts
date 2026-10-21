@@ -1,8 +1,3 @@
-import {
-	FULL_TEXT_CONTINUATION_PAGE,
-	FULL_TEXT_CONTINUATION_REQUEST,
-	hasFullTextContinuationOptions,
-} from '../resources/indexes/fullTextQueryProtocol.ts';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -41,24 +36,6 @@ const etagBytes = new Uint8Array(8);
 const etagFloat = new Float64Array(etagBytes.buffer, 0, 1);
 
 const OPENAPI_DOMAIN = 'openapi';
-
-function fullTextContinuationPage(value) {
-	return Array.isArray(value) && (value as any)[FULL_TEXT_CONTINUATION_PAGE] === true ? (value as any) : undefined;
-}
-
-function setFullTextContinuationHeaders(headers, page) {
-	headers.set('Harper-Continuation-Complete', String(page.complete));
-	if (page.continuation) headers.set('Harper-Continuation', page.continuation);
-	if (page.expiresAt !== undefined) headers.set('Harper-Continuation-Expires', String(page.expiresAt));
-	headers.set('Cache-Control', 'no-store');
-	const exposed = headers.get('Access-Control-Expose-Headers');
-	headers.set(
-		'Access-Control-Expose-Headers',
-		[exposed, 'Harper-Continuation', 'Harper-Continuation-Complete', 'Harper-Continuation-Expires']
-			.filter(Boolean)
-			.join(', ')
-	);
-}
 
 /**
  * Finalize a Response (or a response-like envelope carrying a `headers` field) into the response object
@@ -258,8 +235,6 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		}
 		const settledCredentialRejection = settleDeferredCredentialRejection(request);
 		if (settledCredentialRejection) return settledCredentialRejection;
-		if (method !== 'GET' && method !== 'QUERY' && method !== 'OPTIONS' && hasFullTextContinuationOptions(target))
-			throw new ClientError('Full-text continuation requires GET or QUERY', 400);
 		if ((resource as any)?.isCaching) {
 			const cacheControl = headersObject['cache-control'];
 			if (cacheControl) {
@@ -372,22 +347,6 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			}
 		});
 		let status = request.response.status;
-		const continuationPage = fullTextContinuationPage(responseData);
-		const serializedDataEnvelope =
-			responseData?.headers && !(responseData instanceof Response) && !responseData.body && 'data' in responseData;
-		if (
-			(method === 'GET' || method === 'QUERY') &&
-			(hasFullTextContinuationOptions(target) || (target as any)[FULL_TEXT_CONTINUATION_REQUEST]) &&
-			(!responseData?.headers || serializedDataEnvelope) &&
-			!(status >= 400) &&
-			!(serializedDataEnvelope && responseData.status >= 400) &&
-			!continuationPage &&
-			!fullTextContinuationPage(serializedDataEnvelope && responseData.data)
-		)
-			throw new ClientError(
-				'This resource must return the original searchPage() array for full-text continuation',
-				400
-			);
 		let lastModification = request.lastModified;
 		if (responseData == undefined) {
 			status ??= method === 'GET' || method === 'HEAD' ? 404 : 204;
@@ -396,19 +355,16 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
 		} else if (responseData.headers) {
 			// if response is a Response object (or response-like envelope with headers), use it as the response
-			const page = fullTextContinuationPage(responseData.data);
 			const response = finalizeResponse(responseData, headers, status, request);
 			if (request.method === 'HEAD') {
 				discardSerializedStream(response.body);
 				if (!(response instanceof Response)) response.body = undefined;
-			} else if (request.method === 'GET' || (request.method === 'QUERY' && page)) {
+			} else if (request.method === 'GET') {
 				const startup = waitForStreamStartup(response.body);
 				if (startup) await startup;
 			}
-			if (page && response.status >= 200 && response.status < 300)
-				setFullTextContinuationHeaders(response.headers, page);
 			return response;
-		} else if (!continuationPage && isFinite(lastModification)) {
+		} else if (isFinite(lastModification)) {
 			etagFloat[0] = lastModification;
 			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)
 			// very fast and efficient
@@ -484,13 +440,11 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			if (request.method === 'HEAD') {
 				discardSerializedStream(responseObject.body);
 				responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
-			} else if (request.method === 'GET' || (request.method === 'QUERY' && continuationPage)) {
+			} else if (request.method === 'GET') {
 				const startup = waitForStreamStartup(responseObject.body);
 				if (startup) await startup;
 			}
 		}
-		if (continuationPage && responseObject.status >= 200 && responseObject.status < 300)
-			setFullTextContinuationHeaders(headers, continuationPage);
 		// A collection read's count headers vary by the request's `Prefer` value; serialize() just reset
 		// `Vary`, so declare it here (after serialization) — otherwise a shared cache could serve count
 		// headers to a request that didn't ask, or a cached non-count response to one that did.
@@ -553,9 +507,6 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			'Content-Range',
 			'Range-Unit',
 			'Preference-Applied',
-			'Harper-Continuation',
-			'Harper-Continuation-Complete',
-			'Harper-Continuation-Expires',
 			'Age',
 		])
 			headers.delete(header);

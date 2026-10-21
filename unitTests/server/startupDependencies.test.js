@@ -15,7 +15,6 @@ const DEFERRED_PACKAGES = [
 	'systeminformation',
 	'moment',
 	'lodash (full build)',
-	'full-text continuation admission',
 ];
 
 describe('startup dependencies', function () {

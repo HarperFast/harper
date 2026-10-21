@@ -60,9 +60,9 @@ describe('published native full-text Table.search integration', () => {
 		setFullTextNativeBindingForTests(undefined);
 	});
 
-	it('preserves iterable searches and requires custom search filters to opt into paging', async () => {
+	it('keeps custom iterable searches and re-evaluates later offset requests', async () => {
 		Product = table({
-			database: `fulltext-search-contract-${Date.now()}`,
+			database: `fulltext-offset-contract-${Date.now()}`,
 			table: 'Product',
 			audit: true,
 			attributes: [
@@ -71,265 +71,7 @@ describe('published native full-text Table.search integration', () => {
 			],
 			fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1 }])],
 		});
-		await Product.put('a', { title: 'widget' });
-		await Product.put('b', { title: 'widget' });
-		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
-		const query = {
-			conditions: [
-				{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget', waitForIndexMilliseconds: 5000 },
-			],
-			limit: 1,
-		};
-		const instance = new Product();
-		for (const continuation of [true, 'token', null, false, 0, ''])
-			assert.throws(
-				() => instance.search({ ...query, continuation }),
-				(error) => error.statusCode === 400 && /searchPage/.test(error.message)
-			);
-		const ordinary = Product.search(query);
-		assert.strictEqual(typeof ordinary[Symbol.asyncIterator], 'function');
-		assert.strictEqual((await collect(ordinary)).length, 1);
-		class Filtered extends Product {
-			search(target) {
-				return super.search({ ...target, rowFilter: (record) => record.id === 'b' });
-			}
-		}
-		class StaticFiltered extends Product {
-			static search(target, context) {
-				return super.search({ ...target, rowFilter: (record) => record.id === 'b' }, context);
-			}
-		}
-		for (const Table of [Filtered, StaticFiltered])
-			await assert.rejects(
-				Table.searchPage(query),
-				(error) => error.statusCode === 400 && /explicitly implement/.test(error.message)
-			);
-		class PageFiltered extends Filtered {
-			searchPage(target) {
-				return super.searchPage({ ...target, rowFilter: (record) => record.id === 'b' });
-			}
-		}
-		const page = await PageFiltered.searchPage(query);
-		assert.deepStrictEqual(ids(page), ['b']);
-		assert.strictEqual(page.complete, true);
-		class StaticPageFiltered extends StaticFiltered {
-			static searchPage(target, context) {
-				return super.searchPage({ ...target, rowFilter: (record) => record.id === 'b' }, context);
-			}
-		}
-		assert.deepStrictEqual(ids(await StaticPageFiltered.searchPage(query)), ['b']);
-		class AsyncPageFiltered extends PageFiltered {
-			allowRead() {
-				return Promise.resolve(true);
-			}
-		}
-		const context = { user: { username: 'reader', role: { permission: { super_user: true } } } };
-		assert.deepStrictEqual(ids(await AsyncPageFiltered.searchPage({ ...query, checkPermission: true }, context)), [
-			'b',
-		]);
-		class FurtherFiltered extends PageFiltered {
-			search(target) {
-				return super.search({ ...target, rowFilter: () => false });
-			}
-		}
-		await assert.rejects(FurtherFiltered.searchPage(query), (error) => error.statusCode === 400);
-	});
-
-	it('continues immutable full-text pages while applying current row filters', async () => {
-		Product = table({
-			database: `fulltext-native-continuation-${Date.now()}`,
-			table: 'Product',
-			audit: true,
-			attributes: [
-				{ name: 'id', type: 'ID', isPrimaryKey: true },
-				{ name: 'title', type: 'String' },
-				{ name: 'allowed', type: 'Boolean' },
-			],
-			fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1, highlight: false }])],
-		});
-		for (let n = 0; n < 35; n++)
-			await Product.put(String(n).padStart(3, '0'), { title: 'widget', allowed: n % 3 === 0 });
-		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
-		const base = {
-			conditions: [
-				{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget', waitForIndexMilliseconds: 5000 },
-			],
-			limit: 4,
-		};
-		const first = await Product.searchPage({ ...base, continuation: true, rowFilter: (record) => record.allowed });
-		assert(Array.isArray(first));
-		assert.strictEqual(first.length, 4);
-		assert.strictEqual(first.complete, false);
-		assert(first.continuation);
-		assert(first.expiresAt > Date.now());
-		assert.strictEqual(JSON.stringify(first).includes('continuation'), false);
-		const token = first.continuation;
-		await Product.put('new', { title: 'widget widget widget', allowed: true });
-		const second = await Product.searchPage({ ...base, continuation: token, rowFilter: (record) => record.allowed });
-		const replay = await Product.searchPage({ ...base, continuation: token, rowFilter: (record) => record.allowed });
-		assert.deepStrictEqual(ids(replay), ids(second));
-		const seen = new Set([...ids(first), ...ids(second)]);
-		let next = second.continuation;
-		while (next) {
-			const page = await Product.searchPage({ ...base, continuation: next, rowFilter: (record) => record.allowed });
-			for (const record of page) {
-				assert(!seen.has(record.id));
-				seen.add(record.id);
-			}
-			next = page.continuation;
-			if (!next) {
-				assert.strictEqual(page.complete, true);
-				assert.strictEqual(page.expiresAt, undefined);
-			}
-		}
-		assert.strictEqual(seen.size, 12);
-		assert(!seen.has('new'));
-		await assert.rejects(Product.searchPage({ ...base, continuation: token }), (error) => error.statusCode === 410);
-		const beforeClose = await Product.searchPage({ ...base, continuation: true });
-		await Product.fullTextQueryIndexes.catalogSearch.customIndex.close();
-		await assert.rejects(
-			Product.searchPage({ ...base, continuation: beforeClose.continuation }),
-			(error) => error.statusCode === 410
-		);
-	});
-
-	it('admits sixteen concurrent retained searches when the configured pool is raised', async () => {
-		const env = require('#src/utility/environment/environmentManager');
-		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
-		const pages = [];
-		const query = {
-			conditions: [
-				{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget', waitForIndexMilliseconds: 5000 },
-			],
-			limit: 1,
-		};
-		try {
-			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, maxCursors: 16 });
-			Product = table({
-				database: `fulltext-concurrency-${Date.now()}`,
-				table: 'Product',
-				audit: true,
-				attributes: [
-					{ name: 'id', type: 'ID', isPrimaryKey: true },
-					{ name: 'title', type: 'String' },
-				],
-				fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1 }])],
-			});
-			await Product.put('one', { title: 'widget' });
-			await Product.put('two', { title: 'widget' });
-			await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
-			const results = await Promise.allSettled(
-				Array.from({ length: 16 }, () => Product.searchPage({ ...query, continuation: true }))
-			);
-			for (const result of results) if (result.status === 'fulfilled') pages.push(result.value);
-			assert.strictEqual(pages.length, 16, JSON.stringify(results.filter(({ status }) => status === 'rejected')));
-			assert.strictEqual(new Set(pages.map(({ continuation }) => continuation)).size, 16);
-			for (const page of pages) {
-				assert.strictEqual(page.length, 1);
-				assert(page.continuation);
-			}
-		} finally {
-			try {
-				await Promise.all(
-					pages.map((page) =>
-						Product.searchPage({ ...query, continuation: page.continuation, closeContinuation: true })
-					)
-				);
-			} finally {
-				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
-			}
-		}
-	});
-
-	it('continues batch-aligned pages within a one-hit raw budget', async function () {
-		this.timeout(15000);
-		const env = require('#src/utility/environment/environmentManager');
-		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-		const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
-		try {
-			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, maxRawHitsPerRequest: 1 });
-			Product = table({
-				database: `fulltext-single-hit-${Date.now()}`,
-				table: 'Product',
-				audit: true,
-				attributes: [
-					{ name: 'id', type: 'ID', isPrimaryKey: true },
-					{ name: 'title', type: 'String' },
-				],
-				fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1 }])],
-			});
-			for (const id of ['a', 'b', 'c']) await Product.put(id, { title: 'widget' });
-			await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 10000);
-			const seen = [];
-			let continuation = true;
-			for (let pageNumber = 0; continuation && pageNumber < 4; pageNumber++) {
-				const page = await Product.searchPage({
-					conditions: [
-						{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget', waitForIndexMilliseconds: 5000 },
-					],
-					limit: 1,
-					continuation,
-				});
-				assert.strictEqual(page.length, 1);
-				seen.push(...ids(page));
-				continuation = page.continuation;
-			}
-			assert.strictEqual(continuation, undefined);
-			assert.deepStrictEqual(seen.sort(), ['a', 'b', 'c']);
-		} finally {
-			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
-		}
-	});
-
-	it('continues through coerced BigInt filters with closeContinuation disabled', async () => {
-		Product = table({
-			database: `fulltext-native-bigint-${Date.now()}`,
-			table: 'Product',
-			audit: true,
-			attributes: [
-				{ name: 'id', type: 'ID', isPrimaryKey: true },
-				{ name: 'title', type: 'String' },
-				{ name: 'rank', type: 'BigInt', indexed: true },
-			],
-			fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1, highlight: false }])],
-		});
-		for (const id of ['a', 'b']) await Product.put(id, { title: 'widget', rank: 9007199254740993n });
-		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
-		const query = {
-			conditions: [
-				{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget' },
-				{ attribute: 'rank', comparator: 'equals', value: '9007199254740993' },
-			],
-			limit: 1,
-			closeContinuation: false,
-		};
-		assert.strictEqual((await collect(Product.search(query))).length, 1);
-		const first = await Product.searchPage({ ...query, continuation: true });
-		assert(first.continuation);
-		const second = await Product.searchPage({ ...query, continuation: first.continuation });
-		assert.deepStrictEqual(ids([...first, ...second]), ['a', 'b']);
-		assert.strictEqual(second.complete, true);
-	});
-
-	it('preserves native highlights and the retained reader across publication and resume', async () => {
-		Product = table({
-			database: `fulltext-highlight-reuse-${Date.now()}`,
-			table: 'Product',
-			audit: true,
-			attributes: [
-				{ name: 'id', type: 'ID', isPrimaryKey: true },
-				{ name: 'title', type: 'String' },
-			],
-			fullTextIndexes: [
-				{
-					...definition('catalogSearch', [{ name: 'title', weight: 1, highlight: true }]),
-					highlighting: { fragmentLength: 80, maxFragments: 2 },
-				},
-			],
-		});
-		await Product.put('a', { title: 'widget' });
-		await Product.put('b', { title: 'widget' });
+		await Product.put(['a', 'b', 'c'].map((id) => ({ id, title: 'widget' })));
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
 		const query = {
 			conditions: [
@@ -337,202 +79,25 @@ describe('published native full-text Table.search integration', () => {
 					attribute: 'catalogSearch',
 					comparator: 'matches',
 					value: 'widget',
-					includeHighlights: true,
+					maxIndexLagMilliseconds: 0,
 					waitForIndexMilliseconds: 5000,
 				},
 			],
 			limit: 1,
-			select: ['id', 'title', '$highlights'],
 		};
-		const before = await collect(Product.search({ ...query, limit: 2 }));
-		assert(before.every((record) => record.$highlights?.title?.length));
-		const first = await Product.searchPage({ ...query, continuation: true });
-		assert(first.continuation);
-		assert.deepStrictEqual(first[0].$highlights, before[0].$highlights);
-		await Product.put('c', { title: 'widget' });
-		await waitFor(async () => (await collect(Product.search({ ...query, limit: 3 }))).length === 3, 30000);
-		const last = await Product.searchPage({ ...query, continuation: first.continuation });
-		assert.strictEqual(last.complete, true);
-		assert.deepStrictEqual(ids([...first, ...last]), ['a', 'b']);
-		assert.deepStrictEqual(last[0].$highlights, before[1].$highlights);
-	});
-
-	it('validates continuation options and query binding and allows explicit close through REST syntax', async () => {
-		Product = table({
-			database: `fulltext-native-continuation-close-${Date.now()}`,
-			table: 'Product',
-			audit: true,
-			attributes: [
-				{ name: 'id', type: 'ID', isPrimaryKey: true },
-				{ name: 'title', type: 'String' },
-			],
-			fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1, highlight: false }])],
-		});
-		await Product.put('a', { title: 'widget' });
-		await Product.put('b', { title: 'widget' });
-		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
-		const base = { conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget' }], limit: 1 };
-		const { RequestTarget } = require('#src/resources/RequestTarget');
-		await assert.rejects(
-			Product.delete({ ...base, continuation: true }),
-			(error) => error.statusCode === 400 && error.message.includes('continuation')
-		);
-		await assert.rejects(
-			new Product().delete(new RequestTarget('/?catalogSearch=matches=widget&limit(1)&continuation(unsupported)')),
-			(error) => error.statusCode === 400 && error.message.includes('continuation')
-		);
-		for (const closeContinuation of [true, null, 0, '']) {
-			await assert.rejects(
-				new Product().delete({ ...base, isCollection: true, closeContinuation }),
-				(error) => error.statusCode === 400 && error.message.includes('continuation')
-			);
-			await assert.rejects(Product.searchPage({ ...base, closeContinuation }), (error) => error.statusCode === 400);
-		}
-		assert.deepStrictEqual(ids(await collect(Product.search({ ...base, limit: 2 }))), ['a', 'b']);
-		let allow = true;
-		let checks = 0;
-		class AsyncAllowedProduct extends Product {
-			allowRead() {
-				checks++;
-				return Promise.resolve(allow);
+		class Filtered extends Product {
+			search(target) {
+				return super.search({ ...target, rowFilter: (record) => record.id !== 'a' });
 			}
 		}
-		class AsyncDeniedProduct extends Product {
-			allowRead() {
-				return Promise.resolve(false);
-			}
-		}
-		const policyContext = { user: { username: 'policy-reader', role: { permission: { super_user: true } } } };
-		const allowedResource = new AsyncAllowedProduct(null, policyContext);
-		const sharedTarget = { ...base, continuation: true, checkPermission: true };
-		const authorized = await allowedResource.searchPage(sharedTarget);
-		assert.strictEqual(authorized.length, 1);
-		assert(authorized.continuation);
-		assert.strictEqual(sharedTarget.checkPermission, true);
-		sharedTarget.continuation = authorized.continuation;
-		allow = false;
-		await assert.rejects(allowedResource.searchPage(sharedTarget), (error) => error.statusCode === 403);
-		allow = true;
-
-		await allowedResource.searchPage({
-			...base,
-			continuation: authorized.continuation,
-			closeContinuation: true,
-			checkPermission: true,
-		});
-		await assert.rejects(
-			new AsyncDeniedProduct(null, { user: { username: 'policy-reader' } }).searchPage({
-				...base,
-				continuation: true,
-				checkPermission: true,
-			}),
-			(error) => error.statusCode === 403
-		);
-		assert.strictEqual(checks, 3);
-		let syncAllow = true;
-		class SyncProduct extends Product {
-			allowRead() {
-				return syncAllow;
-			}
-		}
-		const syncResource = new SyncProduct(null, policyContext);
-		const syncTarget = { ...base, continuation: true, checkPermission: true };
-		const syncPage = await syncResource.searchPage(syncTarget);
-		assert.strictEqual(syncTarget.checkPermission, true);
-		syncTarget.continuation = syncPage.continuation;
-		syncAllow = false;
-		await assert.rejects(syncResource.searchPage(syncTarget), (error) => error.statusCode === 403);
-		syncAllow = true;
-		await syncResource.searchPage({ ...syncTarget, closeContinuation: true });
-		const edited = new RequestTarget('/?catalogSearch=matches=widget&limit(1)&continuation()&debug=ignored');
-		edited.delete('debug');
-		assert.strictEqual(edited.parseError, undefined);
-		const editedFirst = await Product.searchPage(edited);
-		assert(editedFirst.continuation);
-		const editedResume = new RequestTarget(
-			`/?catalogSearch=matches=widget&limit(1)&continuation(${editedFirst.continuation})&debug=ignored`
-		);
-		editedResume.delete('debug');
-		const editedLast = await Product.searchPage(editedResume);
-		assert.strictEqual(editedLast.complete, true);
-		assert.deepStrictEqual(ids([...editedFirst, ...editedLast]), ['a', 'b']);
-		const first = await Product.searchPage({ ...base, continuation: true });
-		assert(first.continuation);
-		assert.deepStrictEqual(first.getColumns(), ['id', 'title']);
-		const changed = { ...base, select: ['id'], continuation: first.continuation };
-		await assert.rejects(Product.searchPage(changed), (error) => error.statusCode === 410);
-		for (const invalid of [
-			{ limit: 0 },
-			{ offset: 1 },
-			{ count: 'exact' },
-			{ limit: require('#src/resources/indexes/fullTextSearchLimits').DEFAULT_FULL_TEXT_SEARCH_LIMITS.maxPageSize + 1 },
-		])
-			await assert.rejects(
-				Product.searchPage({ ...base, continuation: true, ...invalid }),
-				(error) => error.statusCode === 400
-			);
-		const parsed = parseQuery(
-			`catalogSearch=matches=widget&limit(1)&continuation(${first.continuation})&closeContinuation()`
-		);
-		assert.strictEqual(parsed.continuation, first.continuation);
-		const closed = await Product.searchPage(parsed);
-		assert.strictEqual(closed.length, 0);
-		assert.strictEqual(closed.complete, true);
-		const groupedQuery = '(catalogSearch=matches=widget|catalogSearch=matches=missing)&limit(1)';
-		const grouped = await Product.searchPage(parseQuery(`${groupedQuery}&continuation()`));
-		assert.strictEqual(grouped.length, 1);
-		assert(grouped.continuation);
-		const groupedNext = await Product.searchPage(parseQuery(`${groupedQuery}&continuation(${grouped.continuation})`));
-		assert.strictEqual(groupedNext.length, 1);
-		assert.notStrictEqual(groupedNext[0].id, grouped[0].id);
-		if (groupedNext.continuation)
-			await Product.searchPage(
-				parseQuery(`${groupedQuery}&continuation(${groupedNext.continuation})&closeContinuation()`)
-			);
-		await assert.rejects(
-			Product.searchPage({ ...base, continuation: first.continuation }),
-			(error) => error.statusCode === 410
-		);
-	});
-
-	it('binds a continuation to its database even when table IDs and definitions match', async () => {
-		let other;
-		try {
-			const make = (database) =>
-				table({
-					database,
-					table: 'Product',
-					audit: true,
-					attributes: [
-						{ name: 'id', type: 'ID', isPrimaryKey: true },
-						{ name: 'title', type: 'String' },
-					],
-					fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1 }])],
-				});
-			Product = make(`fulltext-scope-a-${Date.now()}`);
-			other = make(`fulltext-scope-b-${Date.now()}`);
-			assert.strictEqual(other.tableId, Product.tableId);
-			for (const resource of [Product, other]) {
-				await resource.put('one', { title: 'widget' });
-				await resource.put('two', { title: 'widget' });
-				await waitFor(() => fullTextDerivedIndexReadiness(resource, 'catalogSearch').state === 'ready', 30000);
-			}
-			const query = {
-				conditions: [
-					{ attribute: 'catalogSearch', comparator: 'matches', value: 'widget', waitForIndexMilliseconds: 5000 },
-				],
-				limit: 1,
-			};
-			const first = await Product.searchPage({ ...query, continuation: true });
-			assert(first.continuation);
-			await assert.rejects(
-				other.searchPage({ ...query, continuation: first.continuation }),
-				(error) => error.statusCode === 410
-			);
-			await Product.searchPage({ ...query, continuation: first.continuation, closeContinuation: true });
-		} finally {
-			await other?.derivedIndexRuntime?.close();
-		}
+		assert.strictEqual(Product.searchPage, undefined);
+		assert.strictEqual(new Product().searchPage, undefined);
+		assert.strictEqual(typeof Filtered.search(query)[Symbol.asyncIterator], 'function');
+		assert.deepStrictEqual(ids(await collect(Filtered.search(query))), ['b']);
+		assert.deepStrictEqual(ids(await collect(Filtered.search({ ...query, offset: 1 }))), ['c']);
+		await Product.delete('b');
+		assert.deepStrictEqual(ids(await collect(Filtered.search(query))), ['c']);
+		assert.deepStrictEqual(await collect(Filtered.search({ ...query, offset: 1 })), []);
 	});
 
 	it('executes every query mode, negation, REST syntax, field selection, and same-index OR', async () => {
@@ -954,38 +519,18 @@ describe('published native full-text Table.search integration', () => {
 
 		await assert.rejects(
 			search('matches', 'widget catalog', { rowFilter: (record) => tail.has(record.id) }),
-			(error) => error.statusCode === 400 && /maxRawHitsPerOrdinaryRequest/.test(error.message)
+			(error) => error.statusCode === 400 && /maxRawHitsPerRequest/.test(error.message)
 		);
-		env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previousPolicy, maxRawHitsPerOrdinaryRequest: count * 3 });
+		env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previousPolicy, maxRawHitsPerRequest: count * 3 });
 		try {
 			assert.deepStrictEqual(
 				(await search('matches', 'widget catalog', { rowFilter: (record) => tail.has(record.id) })).map(({ id }) => id),
 				ordered.slice(info.limits.maxSearchWindow)
 			);
-			const snapshotQuery = {
-				conditions: [
-					{
-						attribute: 'catalogSearch',
-						comparator: 'matches',
-						value: 'widget catalog',
-						waitForIndexMilliseconds: 5000,
-					},
-				],
-				limit: require('#src/resources/indexes/fullTextSearchLimits').DEFAULT_FULL_TEXT_SEARCH_LIMITS.maxPageSize,
-				select: ['id', '$score'],
-			};
-			const snapshotIds = [];
-			let continuation = true;
-			while (continuation) {
-				const page = await Product.searchPage({ ...snapshotQuery, continuation });
-				snapshotIds.push(...page.map(({ id }) => id));
-				continuation = page.continuation;
-				if (!continuation) {
-					assert.strictEqual(page.complete, true);
-					assert.strictEqual(page.expiresAt, undefined);
-				}
-			}
-			assert.deepStrictEqual(snapshotIds, ordered);
+			assert.deepStrictEqual(
+				(await search('matches', 'widget catalog', { offset: info.limits.maxSearchWindow })).map(({ id }) => id),
+				ordered.slice(info.limits.maxSearchWindow)
+			);
 			const first = new Set(ordered.slice(0, info.limits.maxAutocompleteResults));
 			for (const comparator of ['matches_prefix', 'matches_fuzzy_prefix']) {
 				assert.deepStrictEqual(

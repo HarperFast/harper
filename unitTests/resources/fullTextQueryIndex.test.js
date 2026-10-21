@@ -1,6 +1,5 @@
 require('../testUtils');
 const assert = require('node:assert');
-const { fullTextContinuationNow } = require('#src/resources/indexes/fullTextContinuationClock');
 const { toBufferKey } = require('ordered-binary');
 const { waitFor } = require('../waitFor');
 const { publishDerivedIndexReadiness } = require('#src/resources/derivedIndexRuntime');
@@ -319,322 +318,6 @@ describe('full-text traversal ordering guard', () => {
 });
 
 describe('FullTextQueryIndex', () => {
-	it('traces the first page with its retained reader and keeps it through publication and resume', async function () {
-		this.timeout(10000);
-		if (!(await require('./fullTextNativePlatform').supportsPublishedFullTextBinding())) this.skip();
-		const { FullTextContinuationPage } = require('#src/resources/indexes/fullTextContinuationPage');
-		const auditStore = sharedStore();
-		const readinessId = 'borrowed-highlight-reader';
-		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-		let opens = 0,
-			closes = 0,
-			published = false;
-		const tracedReaders = [];
-		const { index } = simpleQueryIndex({
-			auditStore,
-			readinessId,
-			storeName: readinessId,
-			payload: publicationPayload(),
-			hits: () => ['a', 'b'].map((key) => ({ id: nativeId(1, key), version: '1', score: 1 })),
-			onOpen: () => ++opens,
-			onClose: () => closes++,
-			onGetEntry: () => {
-				if (!published) {
-					published = true;
-					auditStore.publish(readinessId, false);
-				}
-			},
-			onTrace: async (_request, records, readerId) => {
-				tracedReaders.push(readerId);
-				return {
-					complete: true,
-					records: records.map(({ id }) => ({
-						id,
-						values: [{ field: 'title', valueIndex: 0, spans: [{ start: 0, end: 4 }] }],
-					})),
-				};
-			},
-		});
-		attachCurrentCoverage(index, auditStore, readinessId);
-		const condition = { comparator: 'matches', value: 'shoe', includeHighlights: true };
-		const page = (continuation) => {
-			const value = new FullTextContinuationPage({ continuation, limit: 1 }, readinessId);
-			value.materialize = async (entries) => entries;
-			value.ready.resolve();
-			return value;
-		};
-		try {
-			const first = page(true);
-			await index.search(condition, {}, { continuationPage: first });
-			assert.strictEqual(opens, 1);
-			assert.strictEqual(closes, 0);
-			assert.deepStrictEqual(tracedReaders, [1]);
-			assert(first.continuation);
-			const last = page(first.continuation);
-			await index.search(condition, {}, { continuationPage: last });
-			assert.strictEqual(last.complete, true);
-			assert.deepStrictEqual(
-				[...first.records, ...last.records].map(({ key }) => key),
-				['a', 'b']
-			);
-			assert.deepStrictEqual(tracedReaders, [1, 2]);
-		} finally {
-			await index.close();
-		}
-		assert.strictEqual(closes, 2);
-	});
-
-	for (const explicitClose of [false, true]) {
-		it(`preserves an acknowledged ${explicitClose ? 'explicit close' : 'terminal page'} after the search budget expires`, async function () {
-			this.timeout(10000);
-			const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
-			if (!(await supportsPublishedFullTextBinding())) this.skip();
-			const env = require('#src/utility/environment/environmentManager');
-			const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-			const { FullTextContinuationPage } = require('#src/resources/indexes/fullTextContinuationPage');
-			const { fullTextContinuationOwner } = require('#src/resources/indexes/fullTextContinuationOwner');
-			const previous = env.get(CONFIG_PARAMS.STORAGE_FULL_TEXT);
-			env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, { ...previous, requestBudgetMilliseconds: 1000 });
-			const auditStore = sharedStore();
-			const readinessId = `completed-close-${explicitClose}`;
-			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-			const { index } = simpleQueryIndex({
-				auditStore,
-				readinessId,
-				storeName: readinessId,
-				payload: publicationPayload(),
-				hits: () => ['a', 'b'].map((key) => ({ id: nativeId(1, key), version: '1', score: 1 })),
-			});
-			attachCurrentCoverage(index, auditStore, readinessId);
-			const first = new FullTextContinuationPage({ continuation: true, limit: 1 }, readinessId);
-			first.materialize = async (entries) => entries;
-			first.ready.resolve();
-			try {
-				await index.search({ comparator: 'matches', value: 'shoe' }, {}, { continuationPage: first });
-				const owner = await fullTextContinuationOwner();
-				const page = new FullTextContinuationPage(
-					{ continuation: first.continuation, limit: 1, closeContinuation: explicitClose },
-					readinessId
-				);
-				page.materialize = async (entries) => entries;
-				page.ready.resolve();
-				let crossedDeadline = false;
-				await index.search(
-					{ comparator: 'matches', value: 'shoe' },
-					{},
-					{
-						continuationPage: page,
-						assertTransactionActive() {
-							try {
-								owner.leases.resume(first.continuation, page.queryHash);
-							} catch (error) {
-								if (error.statusCode !== 410) throw error;
-								if (!crossedDeadline) {
-									crossedDeadline = true;
-									const waiting = new Int32Array(new SharedArrayBuffer(4));
-									while (fullTextContinuationNow() <= page.deadline) Atomics.wait(waiting, 0, 0, 1);
-								}
-							}
-						},
-					}
-				);
-				assert.strictEqual(crossedDeadline, true);
-				assert.strictEqual(page.complete, true);
-				assert.strictEqual(page.expiresAt, undefined);
-				assert.deepStrictEqual(
-					page.records.map(({ key }) => key),
-					explicitClose ? [] : ['b']
-				);
-			} finally {
-				await index.close();
-				env.setProperty(CONFIG_PARAMS.STORAGE_FULL_TEXT, previous);
-			}
-		});
-	}
-	it('rejects a resumed continuation when the requesting index changes during setup', async function () {
-		this.timeout(10000);
-		const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
-		if (!(await supportsPublishedFullTextBinding())) this.skip();
-		const { FullTextContinuationPage } = require('#src/resources/indexes/fullTextContinuationPage');
-		const auditStore = sharedStore();
-		const indexes = ['resume-owner', 'resume-requester'].map((readinessId) => {
-			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-			const { index } = simpleQueryIndex({
-				auditStore,
-				readinessId,
-				storeName: readinessId,
-				payload: publicationPayload(),
-				hits: () => ['a', 'b'].map((key) => ({ id: nativeId(1, key), version: '1', score: 1 })),
-			});
-			attachCurrentCoverage(index, auditStore, readinessId);
-			return index;
-		});
-		const search = (index, page) =>
-			index.search(
-				{ comparator: 'matches', value: 'shoe' },
-				{ signal: AbortSignal.timeout(5000) },
-				{ continuationPage: page }
-			);
-		try {
-			const first = new FullTextContinuationPage({ continuation: true, limit: 1 }, 'resume-fence');
-			first.materialize = async (entries) => entries;
-			first.ready.resolve();
-			await search(indexes[0], first);
-			assert(first.continuation);
-			const resumed = new FullTextContinuationPage({ continuation: first.continuation, limit: 1 }, 'resume-fence');
-			resumed.materialize = async (entries) => entries;
-			const pending = search(indexes[1], resumed);
-			indexes[1].updateDefinition({ ...definition(), fields: [{ name: 'title', weight: 7 }] });
-			resumed.ready.resolve();
-			await assert.rejects(pending, (error) => error.statusCode === 410);
-		} finally {
-			await Promise.all(indexes.map((index) => index.close()));
-		}
-	});
-	it('rejects a first continuation whose definition changed during page setup', async function () {
-		this.timeout(10000);
-		const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
-		if (!(await supportsPublishedFullTextBinding())) this.skip();
-		const { FullTextContinuationPage } = require('#src/resources/indexes/fullTextContinuationPage');
-		const auditStore = sharedStore();
-		const readinessId = 'continuation-setup-definition-change';
-		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-		const { index } = simpleQueryIndex({
-			auditStore,
-			readinessId,
-			payload: publicationPayload(),
-			hits: () => ['a', 'b'].map((key) => ({ id: nativeId(1, key), version: '1', score: 1 })),
-		});
-		attachCurrentCoverage(index, auditStore, readinessId);
-		const page = new FullTextContinuationPage({ continuation: true, limit: 1 }, readinessId);
-		page.materialize = async (entries) => entries;
-		const searching = index.search(
-			{ comparator: 'matches', value: 'shoe' },
-			{ signal: AbortSignal.timeout(5000) },
-			{ continuationPage: page }
-		);
-		index.updateDefinition({ ...definition(), fields: [{ name: 'title', weight: 7 }] });
-		page.ready.resolve();
-		try {
-			await assert.rejects(searching, (error) => error.statusCode === 410);
-		} finally {
-			await index.close();
-		}
-	});
-
-	for (const failure of [null, 'native interruption', 17]) {
-		it(`preserves a non-Error cancellation from a continuation read: ${String(failure)}`, async function () {
-			const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
-			if (!(await supportsPublishedFullTextBinding())) this.skip();
-			const { FullTextContinuationPage } = require('#src/resources/indexes/fullTextContinuationPage');
-			const controller = new AbortController();
-			const auditStore = sharedStore();
-			const readinessId = `continuation-non-error-${String(failure)}`;
-			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-			const { index } = simpleQueryIndex({
-				auditStore,
-				readinessId,
-				payload: publicationPayload(),
-				hits: () => [],
-				searchPageResult() {
-					controller.abort(failure);
-					throw failure;
-				},
-			});
-			attachCurrentCoverage(index, auditStore, readinessId);
-			const page = new FullTextContinuationPage({ continuation: true, limit: 1 }, readinessId);
-			page.materialize = async (entries) => entries;
-			page.ready.resolve();
-			try {
-				await index
-					.search({ comparator: 'matches', value: 'shoe' }, { signal: controller.signal }, { continuationPage: page })
-					.then(
-						() => assert.fail('Expected cancellation'),
-						(error) => assert.strictEqual(error, failure)
-					);
-			} finally {
-				await index.close();
-			}
-		});
-	}
-
-	it('normalizes an undefined continuation failure when no request was aborted', async function () {
-		const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
-		if (!(await supportsPublishedFullTextBinding())) this.skip();
-		const { FullTextContinuationPage } = require('#src/resources/indexes/fullTextContinuationPage');
-		const auditStore = sharedStore();
-		const readinessId = 'continuation-undefined-failure';
-		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-		const { index } = simpleQueryIndex({
-			auditStore,
-			readinessId,
-			payload: publicationPayload(),
-			hits: () => [],
-			searchPageResult() {
-				throw undefined;
-			},
-		});
-		attachCurrentCoverage(index, auditStore, readinessId);
-		try {
-			for (const context of [{}, { signal: new AbortController().signal }]) {
-				const page = new FullTextContinuationPage({ continuation: true, limit: 1 }, readinessId);
-				page.materialize = async (entries) => entries;
-				page.ready.resolve();
-				await assert.rejects(
-					index.search({ comparator: 'matches', value: 'shoe' }, context, { continuationPage: page }),
-					(error) => error?.statusCode === 500
-				);
-			}
-		} finally {
-			await index.close();
-		}
-	});
-
-	for (const repeatBoundary of [true, false]) {
-		it(`rejects repeated continuation hits with ${repeatBoundary ? 'the same' : 'a different'} native boundary`, async function () {
-			this.timeout(10000);
-			const { supportsPublishedFullTextBinding } = require('./fullTextNativePlatform');
-			if (!(await supportsPublishedFullTextBinding())) this.skip();
-			const { FullTextContinuationPage } = require('#src/resources/indexes/fullTextContinuationPage');
-			const auditStore = sharedStore();
-			const readinessId = `continuation-progress-${repeatBoundary}`;
-			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-			let calls = 0;
-			const { index } = simpleQueryIndex({
-				auditStore,
-				readinessId,
-				payload: publicationPayload(),
-				hits: () => [],
-				searchPageResult: () => {
-					calls++;
-					return {
-						total: 100,
-						totalRelation: 'exact',
-						hits: ['a', 'b'].map((key) => ({ id: nativeId(1, key), version: '1', score: 1 })),
-						continuation: repeatBoundary ? 'same' : String(calls),
-					};
-				},
-			});
-			attachCurrentCoverage(index, auditStore, readinessId);
-			const page = new FullTextContinuationPage({ continuation: true, limit: 3 }, readinessId);
-			page.materialize = async (entries) => entries;
-			page.ready.resolve();
-			try {
-				await assert.rejects(
-					index.search(
-						{ comparator: 'matches', value: 'shoe' },
-						{ signal: AbortSignal.timeout(5000) },
-						{ continuationPage: page }
-					),
-					(error) => error.statusCode === 500 && /boundary|advance/.test(error.message)
-				);
-				assert.strictEqual(calls, 2);
-			} finally {
-				await index.close();
-			}
-		});
-	}
-
 	it('does not treat prototype property names as full-text comparators', () => {
 		for (const comparator of ['constructor', 'toString', '__proto__'])
 			assert.strictEqual(fullTextComparatorMode(comparator), undefined);
@@ -1779,7 +1462,7 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('requires callers to page searches larger than the native result window', async () => {
+	it('bounds unbounded searches but permits bounded requests beyond the native result window', async () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'query-window', 'ready');
 		let searches = 0;
@@ -1818,7 +1501,8 @@ describe('FullTextQueryIndex', () => {
 								hits: [
 									{ id: nativeId(1, 'one'), version: '1', score: 2 },
 									{ id: nativeId(1, 'two'), version: '1', score: 1 },
-								],
+									{ id: nativeId(1, 'three'), version: '1', score: 0 },
+								].slice(request.offset ?? 0, (request.offset ?? 0) + request.limit),
 							};
 						},
 						committedPayload: publicationPayload(),
@@ -1832,8 +1516,7 @@ describe('FullTextQueryIndex', () => {
 		const query = { attribute: 'query-window', comparator: 'matches', value: 'shoe' };
 		assert.deepStrictEqual(await index.search(query, {}, { minResults: 0 }), []);
 		assert.strictEqual(searches, 0);
-		await assert.rejects(index.search(query, {}, { minResults: 3 }), /reduce offset or limit/);
-		assert.strictEqual(searches, 0);
+		assert.strictEqual((await index.search(query, {}, { minResults: 3 })).length, 3);
 		await assert.rejects(index.search(query, {}), /exceeds the 2-result search window/);
 		assert.strictEqual(lastRequest.exactTotal, true);
 		await index.close();

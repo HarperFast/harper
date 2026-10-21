@@ -40,9 +40,12 @@ describe('full-text search resource limits', () => {
 	});
 
 	it('accepts integer strings and independently merges the native process budget', () => {
-		const limits = resolveFullTextSearchLimits({ maxCursors: '7', runtime: { maxResidentIndexes: '256' } });
-		assert.strictEqual(limits.maxCursors, 7);
-		assert.strictEqual(limits.cursorTtlMilliseconds, DEFAULT_FULL_TEXT_SEARCH_LIMITS.cursorTtlMilliseconds);
+		const limits = resolveFullTextSearchLimits({
+			requestBudgetMilliseconds: '7',
+			runtime: { maxResidentIndexes: '256' },
+		});
+		assert.strictEqual(limits.requestBudgetMilliseconds, 7);
+		assert.strictEqual(limits.maxRawHitsPerRequest, DEFAULT_FULL_TEXT_SEARCH_LIMITS.maxRawHitsPerRequest);
 		assert.strictEqual(limits.runtime.maxResidentIndexes, 256);
 		assert.strictEqual(limits.runtime.maxSearchThreads, DEFAULT_FULL_TEXT_SEARCH_LIMITS.runtime.maxSearchThreads);
 	});
@@ -56,12 +59,12 @@ describe('full-text search resource limits', () => {
 					true
 				).error?.details ?? []
 			).filter(({ path }) => path[0] === 'storage' && path[1] === 'fullText');
-		assert.deepStrictEqual(errors({ maxCursors: 7, runtime: { maxResidentIndexes: 256 } }), []);
+		assert.deepStrictEqual(errors({ requestBudgetMilliseconds: 7, runtime: { maxResidentIndexes: 256 } }), []);
 		for (const value of [
-			{ maxCursors: 0 },
+			{ requestBudgetMilliseconds: 0 },
 			{ maxCursor: 4 },
 			{ runtime: { maxSearchThreads: null } },
-			{ cursorTtlMilliseconds: 0x80000000 },
+			{ requestBudgetMilliseconds: -1 },
 		])
 			assert(errors(value).length > 0, JSON.stringify(value));
 	});
@@ -122,15 +125,11 @@ describe('full-text search resource limits', () => {
 	});
 
 	it('rejects missing-shape, unknown and unbounded policy values', () => {
-		for (const value of [null, [], true, 'settings', new Date(), Object.create({ maxCursors: 7 })])
+		for (const value of [null, [], true, 'settings', new Date(), Object.create({ requestBudgetMilliseconds: 7 })])
 			assert.throws(() => resolveFullTextSearchLimits(value));
 		for (const value of [null, 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '', '1.5', '1e3', true]) {
-			assert.throws(() => resolveFullTextSearchLimits({ maxCursors: value }), /positive safe integer/);
+			assert.throws(() => resolveFullTextSearchLimits({ requestBudgetMilliseconds: value }), /positive safe integer/);
 			assert.throws(() => resolveFullTextSearchLimits({ maxRawHitsPerRequest: value }), /positive safe integer/);
-			assert.throws(
-				() => resolveFullTextSearchLimits({ maxRawHitsPerOrdinaryRequest: value }),
-				/positive safe integer/
-			);
 			assert.throws(
 				() => resolveFullTextSearchLimits({ runtime: { maxSearchThreads: value } }),
 				/positive safe integer/
@@ -139,7 +138,6 @@ describe('full-text search resource limits', () => {
 		assert.throws(() => resolveFullTextSearchLimits({ maxCursor: 4 }), /Unknown/);
 		assert.throws(() => resolveFullTextSearchLimits({ runtime: { threads: 4 } }), /Unknown/);
 		assert.throws(() => resolveFullTextSearchLimits({ constructor: 4 }), /Unknown/);
-		assert.throws(() => resolveFullTextSearchLimits({ maxCursors: 0x100000000 }), /u32/);
-		assert.throws(() => resolveFullTextSearchLimits({ cursorTtlMilliseconds: 0x80000000 }), /timer range/);
+		assert.throws(() => resolveFullTextSearchLimits({ runtime: { maxResidentIndexes: 0x100000000 } }), /u32/);
 	});
 });

@@ -70,15 +70,8 @@ operationsApi:
 rootPath: null
 storage:
   fullText:
-    cursorTtlMilliseconds: 60000
-    maxCursors: 4
-    maxRetainedQueryBytes: 8388608
-    maxPendingRequests: 32
-    maxPendingResponseBytes: 16777216
-    maxPageSize: 1000
     requestBudgetMilliseconds: 5000
-    maxRawHitsPerRequest: 100000
-    maxRawHitsPerOrdinaryRequest: 10000
+    maxRawHitsPerRequest: 10000
     runtime:
       maxResidentIndexes: 128
       maxIndexingThreads: 128

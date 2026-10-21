@@ -1,4 +1,3 @@
-import { FULL_TEXT_CONTINUATION_PAGE } from './indexes/fullTextQueryProtocol.ts';
 import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
@@ -168,7 +167,6 @@ export function executeConditions(
 			minResults:
 				request.limit === 0 ? 0 : request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
 			resultOffset: request.offset || 0,
-			continuationPage: request[FULL_TEXT_CONTINUATION_PAGE],
 		});
 	}
 	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount) {
@@ -875,14 +873,13 @@ export function searchByIndex(
 		minResults?: number;
 		// Rows before this offset are needed for correct paging but do not need highlight metadata.
 		resultOffset?: number;
-		continuationPage?: any;
 	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
 	// fail loud rather than silently reading every option as undefined.
 	if (typeof options !== 'object' || options === null)
 		throw new TypeError('searchByIndex: the 5th argument is an options object (#2165), not a positional value');
-	const { allowFullScan, filtered, context, minResults, resultOffset, continuationPage } = options;
+	const { allowFullScan, filtered, context, minResults, resultOffset } = options;
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
@@ -1184,7 +1181,6 @@ export function searchByIndex(
 				resultOffset,
 				assertTransactionActive: checkActive,
 				candidateKeys,
-				continuationPage,
 			});
 			const coverage = (searched as any).indexCoverage;
 			if (!waiting && coverage && context?.responseHeaders) {
@@ -1222,7 +1218,6 @@ export function searchByIndex(
 				}
 				return loaded;
 			};
-			if (continuationPage) continuationPage.loadEntries = processEntries;
 			if (typeof (searched as any)?.then === 'function') {
 				let settled = false;
 				const pending = waiting
@@ -2270,17 +2265,6 @@ function parseBlock(query, expectedEnd) {
 						assignOperator(query, lastBinaryOperator);
 						query.conditions.push(args);
 						break;
-					case 'continuation': {
-						const token = Array.isArray(args[0]) ? args[0].join('.') : args[0];
-						if (args.length === 0) query.continuation = true;
-						else if (args.length === 1 && typeof token === 'string' && token) query.continuation = token;
-						else throw new ClientError('continuation accepts zero arguments or one token', 400);
-						break;
-					}
-					case 'closeContinuation':
-						if (args.length !== 0) throw new ClientError('closeContinuation accepts no arguments', 400);
-						query.closeContinuation = true;
-						break;
 					case 'limit':
 						switch (args.length) {
 							case 1:
@@ -2500,8 +2484,6 @@ function toSortEntry(sort) {
 
 class Query {
 	declare conditions: { attribute: string; value: any; comparator: string }[];
-	declare continuation: true | string;
-	declare closeContinuation: boolean;
 	declare limit: number;
 	declare offset: number;
 	declare select: string[];

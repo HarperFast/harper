@@ -1,28 +1,14 @@
 import type { NativeFullTextRuntimeBudget } from './fullTextNativeBinding.ts';
 
 export type FullTextSearchLimits = Readonly<{
-	cursorTtlMilliseconds: number;
-	maxCursors: number;
-	maxRetainedQueryBytes: number;
-	maxPendingRequests: number;
-	maxPendingResponseBytes: number;
-	maxPageSize: number;
 	requestBudgetMilliseconds: number;
 	maxRawHitsPerRequest: number;
-	maxRawHitsPerOrdinaryRequest: number;
 	runtime: Readonly<NativeFullTextRuntimeBudget>;
 }>;
 
 export const DEFAULT_FULL_TEXT_SEARCH_LIMITS: FullTextSearchLimits = Object.freeze({
-	cursorTtlMilliseconds: 60_000,
-	maxCursors: 4,
-	maxRetainedQueryBytes: 8 * 1024 * 1024,
-	maxPendingRequests: 32,
-	maxPendingResponseBytes: 16 * 1024 * 1024,
-	maxPageSize: 1_000,
 	requestBudgetMilliseconds: 5_000,
-	maxRawHitsPerRequest: 100_000,
-	maxRawHitsPerOrdinaryRequest: 10_000,
+	maxRawHitsPerRequest: 10_000,
 	runtime: Object.freeze({
 		maxResidentIndexes: 128,
 		maxIndexingThreads: 128,
@@ -55,10 +41,6 @@ export function resolveFullTextSearchLimits(value: unknown): FullTextSearchLimit
 	for (const name of Object.keys(runtime))
 		if (!Object.hasOwn(DEFAULT_FULL_TEXT_SEARCH_LIMITS.runtime, name))
 			throw new TypeError(`Unknown storage.fullText.runtime option '${name}'`);
-	for (const name of ['maxCursors', 'maxPendingRequests', 'maxPageSize'])
-		if (limits[name] > 0xffffffff) throw new TypeError(`storage.fullText.${name} must fit a u32`);
-	if (limits.cursorTtlMilliseconds > 0x7fffffff)
-		throw new TypeError('storage.fullText.cursorTtlMilliseconds exceeds the timer range');
 	for (const name of ['maxResidentIndexes', 'maxIndexingThreads', 'maxSearchThreads', 'maxExpensiveSearches'])
 		if (budget[name] > 0xffffffff) throw new TypeError(`storage.fullText.runtime.${name} must fit a u32`);
 	return Object.freeze({ ...limits, runtime: Object.freeze(budget) }) as FullTextSearchLimits;

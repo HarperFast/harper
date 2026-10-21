@@ -8,14 +8,6 @@ import { CONFIG_PARAMS, OPERATIONS_ENUM, MAX_SET_TIMEOUT_MS } from '../utility/h
 import type { Database, Transaction as LMDBReadTransaction } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
-import {
-	FullTextContinuationPage,
-	type FullTextSearchPage,
-	FULL_TEXT_CONTINUATION_PAGE,
-	FULL_TEXT_CONTINUATION_VERSION,
-} from './indexes/fullTextContinuationPage.ts';
-import { hasFullTextContinuationOptions } from './indexes/fullTextQueryProtocol.ts';
-import type { FullTextQueryIndex } from './indexes/fullTextQueryIndex.ts';
 import { performance } from 'node:perf_hooks';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping, getNodeNameForId } from './nodeIdMapping.ts';
@@ -739,7 +731,6 @@ interface TableResourceInstance<Record extends object = any> {
 	delete(target: RequestTargetOrId): Promise<boolean>;
 	_writeDelete(id: Id, options?: any): boolean;
 	search(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>>;
-	searchPage(target: RequestTarget): Promise<FullTextSearchPage<Record & Partial<RecordObject>>>;
 	subscribe(request: SubscriptionRequest): Promise<AsyncIterable<Record>>;
 	doesExist(): boolean;
 	/**
@@ -1152,10 +1143,6 @@ interface TableResourceClass {
 		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
 		reliesOnPrototype: boolean;
 	};
-	searchPage: {
-		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
-		reliesOnPrototype: boolean;
-	};
 	query: {
 		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
 		reliesOnPrototype: boolean;
@@ -1173,20 +1160,11 @@ interface TableResourceClass {
 	parsePath(path: any, context: any, query: any): any;
 }
 
-function cloneContinuationTarget(target: any): RequestTarget {
-	const copy =
-		target instanceof RequestTarget
-			? new RequestTarget()
-			: target instanceof URLSearchParams
-				? new URLSearchParams(target)
-				: Array.isArray(target)
-					? []
-					: Object.create(Object.getPrototypeOf(target));
-	if (target instanceof RequestTarget)
-		for (const [name, value] of target) URLSearchParams.prototype.append.call(copy, name, value);
-	return Object.assign(copy, target);
-}
-
+/**
+ * This returns a Table class for the given table settings (determined from the metadata table)
+ * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
+ * @param options
+ */
 // Shallow-clone each condition entry (recursing into nested `and`/`or` groups) so
 // query planning never writes through to the caller's objects (harper#1572).
 // Array-form entries (`[attribute, value]`) and primitives pass through as-is;
@@ -1397,11 +1375,6 @@ function resumeRefusal(auditStore: any, generationId: string, cursor: number): E
 		: new DatabaseGenerationChangedError();
 }
 
-/**
- * This returns a Table class for the given table settings (determined from the metadata table)
- * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
- * @param options
- */
 export function makeTable(options): TableResourceClass {
 	const {
 		primaryKey,
@@ -3426,9 +3399,7 @@ export function makeTable(options): TableResourceClass {
 			if (typeof target === 'string' && constructor.loadAsInstance !== false) return this.getProperty(target);
 			if (isSearchTarget(target)) {
 				// go back to the static search method so it gets a chance to override
-				return hasFullTextContinuationOptions(target)
-					? constructor.searchPage(target, this.getContext())
-					: constructor.search(target, this.getContext());
+				return constructor.search(target, this.getContext());
 			}
 			if (target && target.id == null && !target.toString()) {
 				const description = {
@@ -5655,8 +5626,6 @@ export function makeTable(options): TableResourceClass {
 
 		async delete(target: RequestTargetOrId): Promise<boolean> {
 			if (isSearchTarget(target)) {
-				if (hasFullTextContinuationOptions(target))
-					throw new ClientError('Full-text continuation cannot be used to delete records', 400);
 				let scanTarget = target;
 				if ((target as any).checkPermission && (this.constructor as any).loadAsInstance === false) {
 					// False mode keeps model hooks at request scope. Authorize the destructive operation
@@ -5807,51 +5776,10 @@ export function makeTable(options): TableResourceClass {
 
 		// #section: search-query
 		search(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>> {
-			if (hasFullTextContinuationOptions(target))
-				throw new ClientError('Use searchPage() to request full-text continuation', 400);
-			return this.#search(target) as AsyncIterable<Record & Partial<RecordObject>>;
-		}
-
-		searchPage(target: RequestTarget): Promise<FullTextSearchPage<Record & Partial<RecordObject>>> {
-			return Promise.resolve().then(() => {
-				const constructor = this.constructor as typeof TableResource;
-				for (const [instance, base] of [
-					[this, TableResource.prototype],
-					[constructor, Resource],
-				]) {
-					let pageDeclared = false;
-					for (
-						let prototype = instance;
-						prototype && prototype !== base;
-						prototype = Object.getPrototypeOf(prototype)
-					) {
-						if (Object.hasOwn(prototype, 'searchPage')) pageDeclared = true;
-						if (Object.hasOwn(prototype, 'search') && !pageDeclared)
-							throw new ClientError('A custom search() must explicitly implement searchPage() for continuation', 400);
-					}
-				}
-				if (target?.continuation === undefined) {
-					target = cloneContinuationTarget(target ?? {});
-					target.continuation = true;
-				}
-				return this.#search(target) as Promise<FullTextSearchPage<Record & Partial<RecordObject>>>;
-			});
-		}
-
-		#search(
-			target: RequestTarget
-		): AsyncIterable<Record & Partial<RecordObject>> | Promise<FullTextSearchPage<Record & Partial<RecordObject>>> {
 			const context = this.getContext();
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
-			if (hasFullTextContinuationOptions(target)) target = cloneContinuationTarget(target);
-			if (target.parseError) throw target.parseError;
-			if (
-				target.closeContinuation !== undefined &&
-				target.closeContinuation !== false &&
-				target.continuation === undefined
-			)
-				throw new ClientError('closeContinuation requires an existing continuation token', 400);
+			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
 			const getColumns = () => {
 				const select = target.select;
@@ -5886,24 +5814,13 @@ export function makeTable(options): TableResourceClass {
 							try {
 								// Initialize the real search before the static transaction settles so it reserves
 								// the same stable read snapshot as a synchronously-authorized search.
-								return {
-									allowed: true,
-									results: await (hasFullTextContinuationOptions(target)
-										? self.searchPage(target)
-										: self.search(target)),
-								};
+								return { allowed: true, results: await self.search(target) };
 							} catch (error) {
 								return { allowed: true, error };
 							}
 						},
 						() => ({ allowed: false })
 					);
-					if (hasFullTextContinuationOptions(target))
-						return authorization.then((state: any) => {
-							if (state.error) throw state.error;
-							if (!state.allowed) throw new AccessViolation((context as any).user);
-							return state.results;
-						}) as any;
 					gatedResults.selectApplied = true;
 					gatedResults.getColumns = getColumns;
 					gatedResults.iterate = (options: any = {}) => {
@@ -6167,26 +6084,6 @@ export function makeTable(options): TableResourceClass {
 			}
 			const operator = target.operator;
 			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
-			let continuationPage: FullTextContinuationPage | undefined;
-			if (hasFullTextContinuationOptions(target)) {
-				if (!conditionsContainFullText(conditions, TableResource.fullTextIndexes))
-					throw new ClientError('Continuation requires a full-text query', 400);
-				continuationPage = new FullTextContinuationPage(target, {
-					database: databaseName,
-					table: tableName,
-					tableId: TableResource.tableId,
-					conditions,
-					operator: operator || 'and',
-					select: target.select,
-					user: (context as any)?.user?.username ?? null,
-					definitions: TableResource.fullTextIndexes.map(({ name }) => [
-						name,
-						(TableResource.fullTextQueryIndexes[name]?.customIndex as FullTextQueryIndex | undefined)
-							?.configurationIdentity ?? null,
-					]),
-				});
-				(target as any)[FULL_TEXT_CONTINUATION_PAGE] = continuationPage;
-			}
 			let sort = typeof target.sort === 'object' && target.sort;
 			if (
 				TableResource.fullTextIndexes.length > 0 &&
@@ -6360,34 +6257,6 @@ export function makeTable(options): TableResourceClass {
 					includeExpired,
 					postOrdering
 				);
-				if (continuationPage) {
-					const page = continuationPage;
-					page.materialize = async (candidates) => {
-						const transformed = TableResource.transformToOrderedSelect(
-							page.loadEntries(candidates),
-							select,
-							undefined,
-							context,
-							readTxn,
-							transformToRecord
-						);
-						const records = [];
-						for await (const record of transformed) records.push(record);
-						return records;
-					};
-					page.ready.resolve();
-					return (async () => {
-						try {
-							for await (const _entry of entries) {
-							}
-							const result = page.result();
-							Object.defineProperty(result, 'getColumns', { value: getColumns, writable: true, configurable: true });
-							return result;
-						} finally {
-							txn.doneReadTxn();
-						}
-					})() as any;
-				}
 				let results = TableResource.transformToOrderedSelect(
 					entries,
 					select,
@@ -6522,7 +6391,6 @@ export function makeTable(options): TableResourceClass {
 				results.getColumns = getColumns;
 				return results;
 			} catch (error) {
-				continuationPage?.ready.reject(error);
 				txn.doneReadTxn();
 				throw error;
 			}
@@ -6816,11 +6684,7 @@ export function makeTable(options): TableResourceClass {
 						swrResource.setRecord(record);
 						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context, swrResource);
 						if (loadingFromSource?.then) {
-							return loadingFromSource.then((refreshed) => {
-								const version = (entry as any)[FULL_TEXT_CONTINUATION_VERSION];
-								if (version !== undefined && (!refreshed || String(refreshed.version) !== version)) return SKIP;
-								return transform.call(this, refreshed);
-							});
+							return loadingFromSource.then(transform.bind(this));
 						}
 					}
 				}

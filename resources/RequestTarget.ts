@@ -27,8 +27,6 @@ export class RequestTarget extends URLSearchParams {
 	declare limit?: number;
 	/**	 The number of records to skip	 */
 	declare offset?: number;
-	declare continuation?: true | string;
-	declare closeContinuation?: boolean;
 	/**	 The number of operator to use*/
 	declare operator?: 'AND' | 'OR';
 	/**	 The sort attribute and direction to use */

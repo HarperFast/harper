@@ -743,15 +743,8 @@ export const CONFIG_PARAMS = {
 	ROOTPATH: 'rootPath',
 	SERIALIZATION_BIGINT: 'serialization_bigInt',
 	STORAGE_FULL_TEXT: 'storage_fullText',
-	STORAGE_FULL_TEXT_CURSOR_TTL_MILLISECONDS: 'storage_fullText_cursorTtlMilliseconds',
-	STORAGE_FULL_TEXT_MAX_CURSORS: 'storage_fullText_maxCursors',
-	STORAGE_FULL_TEXT_MAX_RETAINED_QUERY_BYTES: 'storage_fullText_maxRetainedQueryBytes',
-	STORAGE_FULL_TEXT_MAX_PENDING_REQUESTS: 'storage_fullText_maxPendingRequests',
-	STORAGE_FULL_TEXT_MAX_PENDING_RESPONSE_BYTES: 'storage_fullText_maxPendingResponseBytes',
-	STORAGE_FULL_TEXT_MAX_PAGE_SIZE: 'storage_fullText_maxPageSize',
 	STORAGE_FULL_TEXT_REQUEST_BUDGET_MILLISECONDS: 'storage_fullText_requestBudgetMilliseconds',
 	STORAGE_FULL_TEXT_MAX_RAW_HITS_PER_REQUEST: 'storage_fullText_maxRawHitsPerRequest',
-	STORAGE_FULL_TEXT_MAX_RAW_HITS_PER_ORDINARY_REQUEST: 'storage_fullText_maxRawHitsPerOrdinaryRequest',
 	STORAGE_FULL_TEXT_RUNTIME: 'storage_fullText_runtime',
 	STORAGE_FULL_TEXT_RUNTIME_MAX_RESIDENT_INDEXES: 'storage_fullText_runtime_maxResidentIndexes',
 	STORAGE_FULL_TEXT_RUNTIME_MAX_INDEXING_THREADS: 'storage_fullText_runtime_maxIndexingThreads',
@@ -1061,8 +1054,6 @@ export const ITC_EVENT_TYPES = {
 	OPERATION_REGISTERED: 'operation_registered',
 	OPERATION_EXECUTE_REQUEST: 'operation_execute_request',
 	OPERATION_EXECUTE_RESPONSE: 'operation_execute_response',
-	FULL_TEXT_CONTINUATION_REQUEST: 'full_text_continuation_request',
-	FULL_TEXT_CONTINUATION_RESPONSE: 'full_text_continuation_response',
 } as const;
 
 /** Supported thread types */
