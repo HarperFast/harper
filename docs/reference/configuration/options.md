@@ -323,7 +323,7 @@ storage:
   - `runtime.maxQueuedBytes` — Native queued-write admission budget; default `8589934592` (8 GiB).
   - `runtime.maxExpensiveSearches` — Maximum concurrent expensive native searches; default `8`.
 
-  The runtime budgets apply together and are not hard bounds on total process memory. Work-limit changes through `set_configuration` apply to new searches; runtime-budget changes require a full Harper process restart. Use the usual underscore-separated parameter names, such as `storage_fullText_maxRawHitsPerRequest`. See [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for costs and failure recovery.
+  The runtime budgets apply together and are not hard bounds on total process memory. After changing request limits through `set_configuration`, use `restart_service` or restart Harper to apply them to HTTP workers. Native runtime-budget changes require a full Harper process restart. Use the usual underscore-separated parameter names, such as `storage_fullText_maxRawHitsPerRequest`. See [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for costs and failure recovery.
 
 - `writeAsync` — Disable disk sync for higher throughput (**disables durability guarantees**); _Default_: `false`
 - `caching` — In-memory record caching; _Default_: `true`

@@ -93,7 +93,7 @@ Use a bounded `limit` for large result sets. An unbounded search that exceeds it
 
 The fetched-hit budget includes the initial batch replay when Harper switches to native traversal. It counts hits returned by the native library, not every record Tantivy visits while scoring. Exhausting that budget throws a 400 error; exhausting the execution budget throws 503. The adapter does not return a shortened result as if the search had completed. If a custom resource has already started streaming a response, a later query error ends that stream instead of changing its HTTP status. When there are no further native matches, Harper returns the eligible records found, which may be an empty result. This differs from reaching a budget while more matches remain.
 
-Configure the three request limits and six native process budgets under [`storage.fullText`](../configuration/options.md#storage). Work-limit changes through `set_configuration` apply to new queries. The execution budget is not a hard response-time guarantee: reader acquisition, query construction and some native operations can take additional time. Freshness waiting and reader acquisition use separate bounds.
+Configure the three request limits and six native process budgets under [`storage.fullText`](../configuration/options.md#storage). After changing request limits through `set_configuration`, use `restart_service` or restart Harper to apply them to HTTP workers. The execution budget is not a hard response-time guarantee: reader acquisition, query construction and some native operations can take additional time. Freshness waiting and reader acquisition use separate bounds.
 
 ### Native runtime configuration
 

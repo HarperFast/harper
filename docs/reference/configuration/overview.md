@@ -21,7 +21,7 @@ For a complete reference of all available configuration options, see [Configurat
 
 ## The Configuration File
 
-To change a configuration value, edit `harper-config.yaml` and save. **Restart Harper to apply file edits.** To change full-text request work limits without a restart, use [`set_configuration`](./operations.md#set-configuration). Native full-text runtime budgets still require a full process restart.
+To change a configuration value, edit `harper-config.yaml` and save. **Restart Harper to apply file edits.** For full-text request limits, `restart_service` reloads the HTTP workers. Native full-text runtime budgets require a full process restart.
 
 Configuration keys use camelCase (e.g. `operationsApi`). Nested keys use dot notation conceptually (e.g. `operationsApi.network.port`).
 
