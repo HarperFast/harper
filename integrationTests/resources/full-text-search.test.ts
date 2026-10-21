@@ -649,6 +649,25 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 				assert.strictEqual(status, 'COMPLETE');
 				await waitForReady('Product');
 			}
+			async function assertBudget(name: string) {
+				let status: number;
+				let body: string;
+				const deadline = Date.now() + 10000;
+				do {
+					const response = await fetch(`${ctx.harper.httpURL}/SearchProduct/`, {
+						method: 'POST',
+						headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+						body: JSON.stringify(query('shoe', {}, { limit: 2 })),
+						signal: AbortSignal.timeout(5000),
+					});
+					status = response.status;
+					body = await response.text();
+					if (status === 400 && body.includes(name)) break;
+					await delay(25);
+				} while (Date.now() < deadline);
+				assert.strictEqual(status, 400, body);
+				assert.ok(body.includes(name), body);
+			}
 			const original = (await operation({ operation: 'get_configuration' })).storage.fullText;
 			assert.ok(original, 'Installed configuration must include full-text defaults');
 			try {
@@ -663,38 +682,14 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 				assert.strictEqual(updated.maxResultsPerRequest, 1);
 				assert.strictEqual(updated.requestBudgetMilliseconds, 1000);
 				await restartWorkers();
-				let status: number;
-				let body: string;
-				const deadline = Date.now() + 10000;
-				do {
-					const response = await fetch(`${ctx.harper.httpURL}/SearchProduct/`, {
-						method: 'POST',
-						headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
-						body: JSON.stringify(query('shoe', {}, { limit: 2 })),
-						signal: AbortSignal.timeout(5000),
-					});
-					status = response.status;
-					body = await response.text();
-					if (status === 400 && body.includes('maxResultsPerRequest')) break;
-					await delay(25);
-				} while (Date.now() < deadline);
-				assert.strictEqual(status, 400, body);
-				assert.match(body, /maxResultsPerRequest/);
+				await assertBudget('maxResultsPerRequest');
 				await operation({
 					operation: 'set_configuration',
 					storage_fullText_maxRawHitsPerRequest: 1,
 					storage_fullText_maxResultsPerRequest: 500,
 				});
 				await restartWorkers();
-				const response = await fetch(`${ctx.harper.httpURL}/SearchProduct/`, {
-					method: 'POST',
-					headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
-					body: JSON.stringify(query('shoe', {}, { limit: 2 })),
-					signal: AbortSignal.timeout(5000),
-				});
-				body = await response.text();
-				assert.strictEqual(response.status, 400, body);
-				assert.match(body, /maxRawHitsPerRequest/);
+				await assertBudget('maxRawHitsPerRequest');
 			} finally {
 				if (ctx.harper.process.exitCode === null && ctx.harper.process.signalCode === null) {
 					await operation({
