@@ -8,6 +8,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { replicationConfirmation: rocksConfirmation } = require('#src/resources/DatabaseTransaction');
 const { replicationConfirmation: lmdbConfirmation } = require('#src/resources/LMDBTransaction');
+const { Transaction } = require('@harperfast/rocksdb-js');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const SELF = global.server.hostname || hostname();
@@ -195,6 +196,36 @@ describe('replicatedConfirmation of a write that appends nothing to replicate', 
 			await waitsUntilReleased(commit);
 		} finally {
 			iterator?.return?.();
+		}
+	});
+
+	it('does not wait on a coordinated retry that appends nothing after auditing was enabled', async function () {
+		if (isLMDB) this.skip(); // the recommit of one native transaction is RocksDB's
+		const Retried = table({
+			table: 'UnreplicatedRetried',
+			database: 'testUnreplicatedRetry',
+			attributes,
+			audit: false,
+		});
+		const targetDb = Retried.primaryStore.store.db;
+		const originalCommit = Transaction.prototype.commit;
+		let forced = false;
+		// the recommit re-runs the commit handler, now audited, but the log store appends nothing on a retry
+		Transaction.prototype.commit = async function (...args) {
+			if (this.store?.db !== targetDb || forced) return originalCommit.apply(this, args);
+			forced = true;
+			Retried.enableAuditing();
+			throw Object.assign(new Error('forced busy'), { code: 'ERR_BUSY' });
+		};
+		try {
+			const id = nextId('retried');
+			await settlesWithoutWaiting(
+				confirmedWrite(Retried, id, (resource) => resource._writeUpdate(id, { id, name: 'new' }, true, {}))
+			);
+			assert.ok(forced, 'the commit was retried');
+			assert.equal((await Retried.get(id)).name, 'new');
+		} finally {
+			Transaction.prototype.commit = originalCommit;
 		}
 	});
 

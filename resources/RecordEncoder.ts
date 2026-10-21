@@ -1104,7 +1104,7 @@ export function recordUpdater(store, tableId, auditStore) {
 							},
 							{ ifVersion: ifVersion, transaction: options.transaction, nodeId, viaNodeId }
 						);
-						noteStagedAudit(options?.write, extendedType);
+						noteStagedAudit(options, extendedType);
 						return result;
 					}
 				}
@@ -1137,7 +1137,7 @@ export function recordUpdater(store, tableId, auditStore) {
 						viaNodeId,
 					}
 				);
-				noteStagedAudit(options?.write, extendedType);
+				noteStagedAudit(options, extendedType);
 			}
 			if (options?.tableToTrack && TRACKED_WRITE_TYPES.has(type)) {
 				recordAction(lastValueEncoding?.length ?? 1, 'db-write', options.tableToTrack, null);
@@ -1159,8 +1159,10 @@ export function recordUpdater(store, tableId, auditStore) {
 		}
 	};
 }
-function noteStagedAudit(write: any, extendedType: number) {
-	if (write && write.stagedAudit !== 'replicable')
+// a coordinated retry's put appends nothing; its write keeps what the attempt it retries appended
+function noteStagedAudit(options: any, extendedType: number) {
+	const write = options?.write;
+	if (write && write.stagedAudit !== 'replicable' && !options.transaction?.isRetry)
 		write.stagedAudit = extendedType & LOCAL_ONLY ? 'local' : 'replicable';
 }
 export function setAdditionalAuditRefs(refs: Array<{ version: number; nodeId: number }> | undefined) {
