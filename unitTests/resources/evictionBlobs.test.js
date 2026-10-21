@@ -68,7 +68,7 @@ describe('evict() leaves a renewed record and its blobs intact', function () {
 		await waitFor(() => !existsSync(renewed.filePath), {
 			message: 'an eviction of the live version reclaims its blob',
 		});
-		await UnauditedBlobs.evict('renewed', renewed.entry.value, renewed.entry.version); // already gone
+		await UnauditedBlobs.evict('renewed', renewed.entry.value, renewed.entry.version);
 	});
 
 	it('keeps the blob file when its eviction loses a commit conflict', async function () {
