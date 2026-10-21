@@ -1088,6 +1088,37 @@ describe('ComponentStatusRegistry', function () {
 				);
 			});
 
+			it('should redact URL passwords containing delimiter characters', function () {
+				const cases = [
+					['postgres://user:pa/ss@db.internal:5432/app', 'postgres://[REDACTED]@db.internal:5432/app'],
+					['postgres://user:pa?ss@db.internal/app', 'postgres://[REDACTED]@db.internal/app'],
+					['postgres://user:pa#ss@db.internal/app', 'postgres://[REDACTED]@db.internal/app'],
+					['postgres://user:pa%2Fss@db.internal/app', 'postgres://[REDACTED]@db.internal/app'],
+					['postgres://user:a/b?c#d@db.internal/app', 'postgres://[REDACTED]@db.internal/app'],
+				];
+				for (const [raw, expected] of cases) {
+					registry.setStatus('my-app', COMPONENT_STATUS_LEVELS.ERROR, `connect failed: ${raw} (retrying)`);
+					const message = registry.getStatus('my-app').message;
+					assert.equal(message, `connect failed: ${expected} (retrying)`);
+					assert(!message.includes('user:'));
+				}
+			});
+
+			it('should leave credential-free URLs untouched and redact each URL in a multi-URL message', function () {
+				registry.setStatus('my-app', COMPONENT_STATUS_LEVELS.ERROR, 'fetch https://example.com/a/b?x=1#frag failed');
+				assert.equal(registry.getStatus('my-app').message, 'fetch https://example.com/a/b?x=1#frag failed');
+
+				registry.setStatus(
+					'my-app',
+					COMPONENT_STATUS_LEVELS.ERROR,
+					'primary postgres://u1:p/1@a.internal/db and replica https://example.com/health then https://u2:p?2@b.internal/x'
+				);
+				assert.equal(
+					registry.getStatus('my-app').message,
+					'primary postgres://[REDACTED]@a.internal/db and replica https://example.com/health then https://[REDACTED]@b.internal/x'
+				);
+			});
+
 			it('should redact embedded URL credentials in status messages at write time and deduplicate fail-closed refusals', async function () {
 				class RejectedReleaseError extends Error {
 					constructor(message) {

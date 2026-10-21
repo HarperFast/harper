@@ -259,7 +259,8 @@ export class ComponentStatusRegistry {
 	}
 }
 
-const CREDENTIAL_URL_USERINFO_PATTERN = /(?<=[a-z][a-z0-9+.-]*:\/\/)[^/?#\s]+@/gi;
+// Greedy to the last `@` in the token: a raw `/ ? #` in the password is indistinguishable from a path delimiter.
+const CREDENTIAL_URL_USERINFO_PATTERN = /(?<=[a-z][a-z0-9+.-]*:\/\/)\S+@/gi;
 const LOADER_COMPONENT_FAILURE_MESSAGE = /^Could not load component '[^']*'$/;
 const LOADER_DIRECTORY_FAILURE_MESSAGE = /^Could not load \S+$/;
 
