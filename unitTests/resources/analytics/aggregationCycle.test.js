@@ -399,8 +399,14 @@ describe('analytics aggregation cycle', () => {
 		assert.strictEqual(typeof aggregate.p95, 'number');
 		assert.strictEqual(aggregate.thread, undefined);
 
-		const perThread = aggregatedMetrics('duration-by-thread', first + 2).filter((row) => row.path === 'ThreadPath');
-		assert.strictEqual(perThread.length, 2);
+		// The cycle writes its rows one by one, so each read waits for the rows it checks.
+		const perThread = await waitFor(
+			() => {
+				const rows = aggregatedMetrics('duration-by-thread', first + 2).filter((row) => row.path === 'ThreadPath');
+				return rows.length === 2 && rows;
+			},
+			{ timeout: 10000, message: 'both per-thread rows were aggregated' }
+		);
 		const byThread = Object.fromEntries(perThread.map((row) => [row.thread, row]));
 		const fields = ['metric', 'path', 'method', 'type', 'thread', 'count', 'mean', 'period'];
 		assert.deepStrictEqual(pick(byThread[0], fields), {
@@ -424,7 +430,13 @@ describe('analytics aggregation cycle', () => {
 			period: PERIOD,
 		});
 		assert.strictEqual(byThread[0].p95, undefined);
-		const writes = aggregatedMetrics('db-write', first + 2).filter((row) => row.path === 'ThreadPath');
+		const writes = await waitFor(
+			() => {
+				const rows = aggregatedMetrics('db-write', first + 2).filter((row) => row.path === 'ThreadPath');
+				return rows.length > 0 && rows;
+			},
+			{ timeout: 10000, message: 'the db-write row was aggregated' }
+		);
 		assert.strictEqual(writes.length, 1, 'a metric outside the per-thread set keeps its single aggregate row');
 		assert.strictEqual(writes[0].count, 50);
 		assert.strictEqual(writes[0].thread, undefined);
@@ -463,8 +475,12 @@ describe('analytics aggregation cycle', () => {
 		);
 		assert.strictEqual(perThread.count, 10);
 		assert.strictEqual(perThread.mean, 2);
-		const ordinary = aggregatedMetrics('duration', first + 1).find(
-			(row) => row.method === 'by-thread-ThreadPath-GET-cache-hit-thread-1'
+		const ordinary = await waitFor(
+			() =>
+				aggregatedMetrics('duration', first + 1).find(
+					(row) => row.method === 'by-thread-ThreadPath-GET-cache-hit-thread-1'
+				),
+			{ timeout: 10000, message: 'the ordinary duration row was aggregated' }
 		);
 		assert.strictEqual(ordinary.count, 7);
 		assert.strictEqual(ordinary.mean, 1);
