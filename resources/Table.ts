@@ -4917,6 +4917,10 @@ export function makeTable(options): TableResourceClass {
 					// directions; the table default is the final fallback. -1 means no expiration.
 					let expiresAt: number | undefined = options?.expiresAt ?? context?.expiresAt;
 					const additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
+					const isOwnAuditRef = (ref: { version: number; nodeId: number }) =>
+						ref.version === appendedLogKey && (ref.nodeId ?? 0) === (options?.nodeId ?? 0);
+					// An earlier write of this transaction to this key already carried this write's ref over.
+					const hasOwnAuditRef = () => additionalAuditRefs.some(isOwnAuditRef);
 					// Bulk base-copy snapshot apply: store current-state directly with no audit/transaction-log entry
 					// and no out-of-order resequencing/dedup (the source of the O(n) keyed-lookup spin in
 					// harper-pro#480). Durability for these (WAL-off) rows comes from an explicit RocksDB flush that
@@ -4968,8 +4972,12 @@ export function makeTable(options): TableResourceClass {
 							// only as previousAdditionalAuditRefs on the audit log), so that case falls back to the
 							// best-effort keyed lookup in the capped block below — see #1148. precedesExistingVersion(...)
 							// === 0 is the identity tie: same version AND same node (the local node is id 0, so an undefined
-							// options?.nodeId resolves to the same 0 the ref stored).
+							// options?.nodeId resolves to the same 0 the ref stored). Not after an earlier write of this
+							// transaction to this key: every write in it shares one log key, so the ref that write left is
+							// this one's identity too. A re-delivery still dedups, because its first write is skipped here
+							// and stages nothing.
 							if (
+								!priorStaged &&
 								existingEntry.additionalAuditRefs?.some(
 									(ref, index) =>
 										(ref.version === appendedLogKey ||
@@ -5263,7 +5271,8 @@ export function makeTable(options): TableResourceClass {
 										// value is a LOG key, not a record version: every consumer follows it straight into
 										// `auditStore.get` (see the `auditRefsToVisit` mapping above and below), and on an
 										// applied write those two clocks differ.
-										additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
+										if (!hasOwnAuditRef())
+											additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
 										logger.debug?.('Adding additional audit ref for out-of-order write', {
 											txnLogKey: appendedLogKey,
 											nodeId: options?.nodeId,
@@ -5385,7 +5394,7 @@ export function makeTable(options): TableResourceClass {
 							// re-delivery of these ops on. Best-effort, like every other guard here: the encoder bounds
 							// the persisted list, so an identity can age out of it (harper#1148's full-copy convergence
 							// is the backstop).
-							additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
+							if (!hasOwnAuditRef()) additionalAuditRefs.push({ version: appendedLogKey, nodeId: options?.nodeId });
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes —
@@ -5508,9 +5517,7 @@ export function makeTable(options): TableResourceClass {
 
 					// Preserve an addressable audit head when the record and log clocks diverge.
 					if (isRocksDB && audit && !isCopyApply && appendedLogKey !== txnTime) {
-						const headIndex = additionalAuditRefs.findIndex(
-							(ref) => ref.version === appendedLogKey && (ref.nodeId ?? 0) === (options?.nodeId ?? 0)
-						);
+						const headIndex = additionalAuditRefs.findIndex(isOwnAuditRef);
 						if (headIndex > 0) additionalAuditRefs.unshift(additionalAuditRefs.splice(headIndex, 1)[0]);
 						else if (headIndex < 0) additionalAuditRefs.unshift({ version: appendedLogKey, nodeId: options?.nodeId });
 					}
