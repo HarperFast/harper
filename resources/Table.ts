@@ -567,10 +567,13 @@ const MIN_REPLICA_SCAN_INTERVAL_MS = 1000;
 const MAX_REPLICA_REFRESHES_IN_FLIGHT = 50;
 const REPLICA_TABLES_KEY = Symbol.for('replica_tables');
 const REPLICA_EVICTION_ARMED = 'replica-eviction-armed';
-const replicaEvictionArmers = new Map<string, Set<() => void>>();
-onMessageByType(REPLICA_EVICTION_ARMED, ({ storePath, tableId }: { storePath: string; tableId: number }) => {
-	for (const arm of replicaEvictionArmers.get(`${storePath}:${tableId}`) ?? []) arm();
-});
+const replicaEvictionArmers = new Map<string, Set<(idle?: boolean) => void>>();
+onMessageByType(
+	REPLICA_EVICTION_ARMED,
+	({ storePath, tableId, idle }: { storePath: string; tableId: number; idle?: boolean }) => {
+		for (const arm of replicaEvictionArmers.get(`${storePath}:${tableId}`) ?? []) arm(idle);
+	}
+);
 /** `replicaExpiration` seconds as milliseconds; 0 keeps reads as proxy reads with no replica stored. */
 export function replicaExpirationMsOf(seconds: unknown): number | undefined {
 	if (seconds == null) return undefined;
@@ -10387,6 +10390,7 @@ export function makeTable(options): TableResourceClass {
 
 								try {
 									let count = 0;
+									let replicasSeen = 0;
 									let removeDeletedRecords = !audit || isRocksDB;
 									// RocksDB coalesces eviction/tombstone removals into shared transactions to amortize
 									// the per-record commit cost; LMDB keeps the per-record path (eventTurnBatching already
@@ -10401,6 +10405,7 @@ export function makeTable(options): TableResourceClass {
 									})) {
 										if (maintenanceClosed) break;
 										const { key, value: record, version, expiresAt, metadataFlags } = entry;
+										if (metadataFlags & REPLICA) replicasSeen++;
 										// if there is no auditing cleanup and we are tracking deletion, need to do cleanup of
 										// these deletion entries (LMDB audit cleanup has its own scheduled job for this)
 										let action: 'tombstone' | 'evict' | undefined;
@@ -10434,6 +10439,13 @@ export function makeTable(options): TableResourceClass {
 									await Promise.all(outstandingCleanupOperations.filter(Boolean));
 									if (batcher) await batcher.drain();
 									logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
+									// a sweep that met no replica stands the replica cadence down on every thread; the next
+									// replica stored anywhere arms it again
+									if (replicaEvictionArmed && replicasSeen === 0)
+										void broadcast(
+											{ type: REPLICA_EVICTION_ARMED, storePath: primaryStore.path, tableId, idle: true },
+											true
+										);
 								} catch (error) {
 									logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
 								}
@@ -10666,12 +10678,12 @@ export function makeTable(options): TableResourceClass {
 			if (!refresh) markReplicaTable();
 			let completion: Promise<boolean>;
 			if (primaryStore.ifVersion) {
+				const stored = updateRecord(id, record, base, current.version, REPLICA, false, writeOptions, 'put', true);
 				const indexUpdate = refresh
 					? undefined
 					: primaryStore.ifVersion(id, current.version, () => {
 							updateIndices(id, current.value, record, undefined, preserveComputed);
 						});
-				const stored = updateRecord(id, record, base, current.version, REPLICA, false, writeOptions, 'put', true);
 				(databaseTransaction as any).commit();
 				completion = Promise.all([indexUpdate, stored]).then(([, result]) => (result as unknown) !== false);
 			} else {
@@ -10733,8 +10745,15 @@ export function makeTable(options): TableResourceClass {
 		replicaTableMarked = true;
 		replicaTableKnown = true;
 	}
-	function armReplicaEviction() {
+	function armReplicaEviction(idle?: boolean) {
 		replicaTableKnown = true;
+		if (idle) {
+			if (!replicaEvictionArmed) return;
+			replicaEvictionArmed = false;
+			cleanupInterval = recordCleanupInterval;
+			scheduleCleanup();
+			return;
+		}
 		if (replicaEvictionArmed || !replicaExpirationMs || disposed) return;
 		replicaEvictionArmed = true;
 		const interval = Math.max(replicaExpirationMs / 4, MIN_REPLICA_SCAN_INTERVAL_MS);
@@ -10762,9 +10781,6 @@ export function makeTable(options): TableResourceClass {
 			if (stored !== false) releaseReplacedBlobs(entry);
 		};
 		if (primaryStore.ifVersion) {
-			const indexUpdate = primaryStore.ifVersion(entry.key, entry.version, () => {
-				updateIndices(entry.key, entry.value, stub, undefined, true);
-			});
 			const stored = updateRecord(
 				entry.key,
 				stub,
@@ -10777,6 +10793,9 @@ export function makeTable(options): TableResourceClass {
 				true,
 				null
 			);
+			const indexUpdate = primaryStore.ifVersion(entry.key, entry.version, () => {
+				updateIndices(entry.key, entry.value, stub, undefined, true);
+			});
 			return Promise.all([indexUpdate, stored]).then(([, result]) => releaseBlobs(result));
 		}
 		updateIndices(entry.key, entry.value, stub, { transaction }, true);
