@@ -139,7 +139,8 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 			});
 
 			test("a qualifier that is one table's alias and another's base name is refused", async () => {
-				const sql = `SELECT ColPermRight.code FROM data.ColPermRight r JOIN data.ColPermLeft ColPermRight ON r.label = ColPermRight.label WHERE ColPermRight.id = 'l1'`;
+				// v2 reads the aliased ColPermRight's read-denied primary key; ColPermLeft.id is readable.
+				const sql = `SELECT ColPermLeft.id FROM data.ColPermLeft l JOIN data.ColPermRight ColPermLeft ON l.label = ColPermLeft.label WHERE l.id = 'l1'`;
 				assertRefused(await asReader(sql), sql);
 			});
 
