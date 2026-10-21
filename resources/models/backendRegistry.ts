@@ -6,6 +6,7 @@ import type {
 	ModelBackend,
 	ModelCapabilities,
 	ModelKind,
+	ModelPricing,
 	ToolCall,
 } from './types.ts';
 
@@ -66,6 +67,19 @@ export function setBackendSource(backend: ModelBackend, fingerprint: string): vo
 
 export function getBackendSource(backend: ModelBackend): string | undefined {
 	return sources.get(backend);
+}
+
+// Keyed by instance, like `sources`, so a call is priced by the entry that built the backend that
+// served it, and a reload that rebuilds the backend drops the old price with it.
+const pricing = new WeakMap<ModelBackend, ModelPricing>();
+
+export function setBackendPricing(backend: ModelBackend, modelPricing: ModelPricing | undefined): void {
+	if (modelPricing) pricing.set(backend, modelPricing);
+	else pricing.delete(backend);
+}
+
+export function getBackendPricing(backend: ModelBackend): ModelPricing | undefined {
+	return pricing.get(backend);
 }
 
 // Async-context scoped: a module-global slot would divert unrelated registrations and collide

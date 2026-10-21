@@ -44,10 +44,20 @@ function streamErrorRecord(error: any) {
 		if (typeof error?.message === 'string') message = error.message;
 	} catch {}
 	message ??= harperErrorToString(error);
-	const record: { error: string; message: string; status?: number } = { error: name, message };
+	const record: { error: string; message: string; status?: number; replicationUnconfirmed?: true; retryable?: false } =
+		{
+			error: name,
+			message,
+		};
 	try {
 		const status = error?.statusCode ?? error?.status;
 		if (typeof status === 'number') record.status = status;
+	} catch {}
+	try {
+		if (error?.replicationUnconfirmed === true) {
+			record.replicationUnconfirmed = true;
+			record.retryable = false;
+		} else if (error?.retryable === false) record.retryable = false;
 	} catch {}
 	return record;
 }

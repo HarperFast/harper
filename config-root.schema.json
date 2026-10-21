@@ -839,10 +839,15 @@
 					"maximum": 1048576,
 					"description": "Largest tool result, in bytes of JSON, the agent adds to its conversation. A larger result is cut to this size with a note telling the model how to ask for less, and the filesystem read tools return pages of at most half this size. Tunable at runtime via set_agent_config. Default: 65536"
 				},
+				"maxSessionTokens": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Per-session cap on prompt plus completion tokens, checked after each model call; a session at the cap makes no further calls. A model that reports no token usage stops the session instead of running uncapped. A call that fails is not counted. Default: none"
+				},
 				"maxCostUsd": {
 					"type": "number",
 					"minimum": 0,
-					"description": "Per-session cost budget. NOT YET ENFORCED — surfacing operator intent until #612 ships per-call cost telemetry. Default: 5.00"
+					"description": "Per-session cost cap in USD, checked after each model call and priced from the `pricing` on the models.generative entry that served it. A call with no pricing stops the session instead of running uncapped. A call that fails is not counted. Default: none"
 				},
 				"autoApprove": {
 					"type": "boolean",

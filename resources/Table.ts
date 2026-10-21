@@ -7305,11 +7305,12 @@ export function makeTable(options): TableResourceClass {
 						// The latest record-time the cursor saw, tombstones included; only includeSuperseded
 						// subscribers without progress reporting gate on it (audit-log time domain).
 						let cursorMaxTime = 0;
+						let now = Date.now();
 						// Retained-message semantics: subscriber may legitimately receive a record twice
 						// if a post-subscribe write hits a key the cursor also visits. This is
 						// idempotent for "current state then live updates" — both deliveries land at
 						// the same final state. We don't dedupe.
-						for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
+						for (const { key: id, value, version, localTime, expiresAt, size } of primaryStore.getRange({
 							start: thisId ?? false,
 							end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
 							versions: true,
@@ -7319,18 +7320,21 @@ export function makeTable(options): TableResourceClass {
 								recordsSinceYield = 0;
 								await rest();
 								if (!isActive()) return;
+								now = Date.now();
 							}
-							// Update cursorMaxTime BEFORE the !value check so deletion tombstones
-							// (which have null value but a real localTime/version) still raise the gate.
+							// Update cursorMaxTime BEFORE the !value / expiresAt checks so deletion tombstones
+							// (which have null value but a real localTime/version) and expired rows still raise the gate.
 							const t = localTime ?? version;
 							if (t > cursorMaxTime) cursorMaxTime = t;
 							if (!value) continue;
+							if (isHiddenExpiry(expiresAt, now)) continue;
 							const scanned: any = { id, localTime, value, version, type: 'put', size };
 							if (reportingProgress) scanned.fromScan = true;
 							if (!send(scanned)) return;
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								// if we have too many messages, we need to pause and let the client catch up
 								if ((await subscription.waitForDrain()) === false) return;
+								now = Date.now();
 							}
 						}
 						if (includeSuperseded && !reportingProgress) {
@@ -7429,7 +7433,7 @@ export function makeTable(options): TableResourceClass {
 						}
 						// with no entry, a pruned tombstone may have taken the history with it
 					} else if (checkResume && !entry && !checkResume()) return;
-					if (!request.omitCurrent && entry?.value) {
+					if (!request.omitCurrent && entry?.value && !isHiddenExpiry(entry.expiresAt)) {
 						// if retain and it exists, send the current value first
 						const current: any = { id: thisId, ...entry, type: 'put' };
 						if (reportingProgress) current.fromScan = true;
@@ -7536,7 +7540,8 @@ export function makeTable(options): TableResourceClass {
 				const isCollection = request.isCollection ?? thisId == null;
 				if (isCollection) {
 					let sinceYield = 0;
-					for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
+					let now = Date.now();
+					for (const { key: id, value, version, localTime, expiresAt, size } of primaryStore.getRange({
 						start: thisId ?? false,
 						end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
 						versions: true,
@@ -7546,13 +7551,19 @@ export function makeTable(options): TableResourceClass {
 							sinceYield = 0;
 							await rest();
 							if (!isActive()) return;
+							now = Date.now();
 						}
 						if (!value) continue; // skip tombstones
+						if (isHiddenExpiry(expiresAt, now)) continue;
 						yield { id, localTime, value, version, type: 'put', size };
+						if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+							if ((await subscription.waitForDrain()) === false) return;
+							now = Date.now();
+						}
 					}
 				} else {
 					const entry = primaryStore.getEntry(thisId);
-					if (entry?.value) yield { id: thisId, ...entry, type: 'put' };
+					if (entry?.value && !isHiddenExpiry(entry.expiresAt)) yield { id: thisId, ...entry, type: 'put' };
 				}
 			}
 			// Drain the current scope into the subscription with the same back-pressure as the live path.
@@ -7574,9 +7585,6 @@ export function makeTable(options): TableResourceClass {
 						for await (const record of currentScopeRecords()) {
 							if (!subscription.subscriptions) return;
 							if (!send(record)) return;
-							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
-								if ((await subscription.waitForDrain()) === false) return;
-							}
 						}
 					}
 				} catch (error) {
@@ -9284,6 +9292,9 @@ export function makeTable(options): TableResourceClass {
 		// cache disposition is a per-get result, recorded on the RequestTarget of the get (#1576)
 		// target may be a primitive id on instance-API calls, which can't hold the flag
 		if (target && typeof target === 'object') target.loadedFromSource = loadedFromSource;
+	}
+	function isHiddenExpiry(expiresAt: number | undefined, now = Date.now()) {
+		return !hasSourceGet && expiresAt != undefined && expiresAt < now;
 	}
 	function ensureLoadedFromSource(source: TableResourceClass, id, entry, context, resource?, target?) {
 		if (context?.onlyIfCached) {

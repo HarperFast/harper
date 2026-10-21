@@ -122,11 +122,21 @@ describe('score-source identity for calibration (#2841)', () => {
 	describe('configured entries carry a fingerprint of their settings', () => {
 		const entry = (extra = {}) => ({ backend: FLAKY, answer: '{"value":"bug"}', ...extra });
 
-		it('ignores credentials and the fallback list, and changes with revision or any other setting', () => {
+		it('ignores credentials, the fallback list and pricing, and changes with revision or any other setting', () => {
 			const base = sourceFingerprint('generative', undefined, { backend: 'openai', model: 'm', apiKey: 'a' });
 			assert.strictEqual(
 				sourceFingerprint('generative', undefined, { backend: 'openai', model: 'm', apiKey: 'b', fallback: ['x'] }),
 				base
+			);
+			assert.strictEqual(
+				sourceFingerprint('generative', undefined, {
+					backend: 'openai',
+					model: 'm',
+					apiKey: 'a',
+					pricing: { inputPerMtok: 3, outputPerMtok: 15 },
+				}),
+				base,
+				'a price edit must not restart calibration'
 			);
 			assert.notStrictEqual(
 				sourceFingerprint('generative', undefined, { backend: 'openai', model: 'm', apiKey: 'a', revision: 'r2' }),

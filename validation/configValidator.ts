@@ -207,6 +207,14 @@ const generativeDecisionEntrySchema = Joi.object({
 const unknownBackendEntrySchema = Joi.object({
 	backend: string.required(),
 }).unknown(true);
+// USD per million tokens. Only generative calls are priced, so every other kind refuses the field
+// rather than accepting a price nothing reads.
+const pricingSchema = Joi.object({
+	inputPerMtok: number.min(0).required(),
+	outputPerMtok: number.min(0).required(),
+}).unknown(false);
+const withPricingFor = (kind, schema) =>
+	schema.keys({ pricing: kind === 'generative' ? pricingSchema.optional() : Joi.forbidden() });
 // A built-in that cannot serve the kind it is listed under fails here, with the kind named, rather
 // than passing as a module specifier and failing at boot.
 function rejectWrongKind(kind) {
@@ -217,20 +225,20 @@ const wrongKindEntrySchema = (kind) =>
 const providerEntrySchema = (kind) =>
 	Joi.alternatives().conditional('.backend', {
 		switch: [
-			{ is: 'ollama', then: ollamaEntrySchema },
-			{ is: 'openai', then: openaiEntrySchema },
-			{ is: 'anthropic', then: anthropicEntrySchema },
-			{ is: 'bedrock', then: bedrockEntrySchema },
+			{ is: 'ollama', then: withPricingFor(kind, ollamaEntrySchema) },
+			{ is: 'openai', then: withPricingFor(kind, openaiEntrySchema) },
+			{ is: 'anthropic', then: withPricingFor(kind, anthropicEntrySchema) },
+			{ is: 'bedrock', then: withPricingFor(kind, bedrockEntrySchema) },
 			{ is: 'generative', then: wrongKindEntrySchema(kind) },
 		],
-		otherwise: unknownBackendEntrySchema,
+		otherwise: withPricingFor(kind, unknownBackendEntrySchema),
 	});
 const decisionEntrySchema = Joi.alternatives().conditional('.backend', {
 	switch: [
 		{ is: 'generative', then: generativeDecisionEntrySchema },
 		{ is: Joi.valid('ollama', 'openai', 'anthropic', 'bedrock'), then: wrongKindEntrySchema('decision') },
 	],
-	otherwise: unknownBackendEntrySchema,
+	otherwise: withPricingFor('decision', unknownBackendEntrySchema),
 });
 const modelsSchema = Joi.object({
 	embedding: Joi.object().pattern(Joi.string(), providerEntrySchema('embedding')).optional(),
