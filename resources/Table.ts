@@ -1456,6 +1456,8 @@ export function makeTable(options): TableResourceClass {
 	let replicaDeadlinesRepaired = false;
 	const replicaRefreshCheckedAt = new Map<Id, number>();
 	const replicaRefreshCheckedAtComposite = new Map<string, number>();
+	// a cached entry object is checked once per throttle without encoding its key
+	const replicaRefreshCheckedEntries = new WeakMap<object, number>();
 	let replicaEvictionArmed = false;
 	let replicaTableKnown = false;
 	// shared across this node's threads: [0] replica admissions, [1] whether the owner's sweep is armed;
@@ -10651,6 +10653,10 @@ export function makeTable(options): TableResourceClass {
 	 */
 	function refreshReplicaOnRead(entry: Entry) {
 		if (replicaRefreshFraction >= 1 || !replicaExpirationMs || !sourceLoad) return;
+		const now = Date.now();
+		const throttle = Math.min(replicaRefreshFraction, 1 - replicaRefreshFraction) * replicaExpirationMs;
+		const entryChecked = replicaRefreshCheckedEntries.get(entry);
+		if (entryChecked !== undefined && now - entryChecked < throttle) return;
 		const key = entry.key;
 		// a primitive id is its own throttle key; a composite id is encoded, in maps of its own so an
 		// encoded form can never collide with a string id
@@ -10658,10 +10664,11 @@ export function makeTable(options): TableResourceClass {
 		const keyId = composite ? chainKeyForId(key) : key;
 		const checkedAt = composite ? replicaRefreshCheckedAtComposite : replicaRefreshCheckedAt;
 		const inFlight = composite ? replicaRefreshInFlightComposite : replicaRefreshInFlight;
-		const now = Date.now();
 		const checked = checkedAt.get(keyId as any);
-		const throttle = Math.min(replicaRefreshFraction, 1 - replicaRefreshFraction) * replicaExpirationMs;
-		if (checked !== undefined && now - checked < throttle) return;
+		if (checked !== undefined && now - checked < throttle) {
+			replicaRefreshCheckedEntries.set(entry, checked);
+			return;
+		}
 		if (
 			replicaRefreshInFlight.size + replicaRefreshInFlightComposite.size >= MAX_REPLICA_REFRESHES_IN_FLIGHT ||
 			inFlight.has(keyId as any)
@@ -10672,6 +10679,7 @@ export function makeTable(options): TableResourceClass {
 			if (checkedAt.size >= MAX_REPLICA_REFRESH_THROTTLE_KEYS) checkedAt.clear();
 		}
 		checkedAt.set(keyId as any, now);
+		replicaRefreshCheckedEntries.set(entry, now);
 		inFlight.add(keyId as any);
 		let pending: Promise<boolean>;
 		try {
@@ -10767,12 +10775,17 @@ export function makeTable(options): TableResourceClass {
 			return trackMaintenanceCommit(
 				completion.then(
 					(stored) => {
+						// the row is committed; nothing after this may turn a kept replica into "not kept"
 						if (stored) {
-							const state = replicaSweep();
-							Atomics.add(state, 0, 1);
-							if (Atomics.load(state, 1) === 0)
-								void broadcast({ type: REPLICA_EVICTION_ARMED, storePath: primaryStore.path, tableId }, true);
-							releaseReplacedBlobs(current);
+							try {
+								const state = replicaSweep();
+								Atomics.add(state, 0, 1);
+								if (Atomics.load(state, 1) === 0)
+									void broadcast({ type: REPLICA_EVICTION_ARMED, storePath: primaryStore.path, tableId }, true);
+								releaseReplacedBlobs(current);
+							} catch (error) {
+								logger.warn?.('Error after storing replica', id, error);
+							}
 						}
 						return stored;
 					},
@@ -10882,7 +10895,10 @@ export function makeTable(options): TableResourceClass {
 			}
 		})();
 		lastReplicaSweep = trackMaintenanceCommit(
-			pass.catch((error) => logger.warn?.(`Error in replica sweep for ${tableName}:`, error))
+			pass.catch((error) => {
+				complete = false;
+				logger.warn?.(`Error in replica sweep for ${tableName}:`, error);
+			})
 		);
 		await lastReplicaSweep;
 		replicaSweepRunning = false;
@@ -10901,7 +10917,7 @@ export function makeTable(options): TableResourceClass {
 	async function repairReplicaDeadlines(store: any): Promise<boolean> {
 		let repaired = 0;
 		for (const entry of primaryStore.getRange({ start: true, versions: true, lazy: true }) as Iterable<Entry>) {
-			if (disposed || maintenanceClosed) return false;
+			if (disposed || maintenanceClosed || !replicaEvictionArmed) return false;
 			if (entry.metadataFlags & REPLICA && store.getSync(entry.key) === undefined) {
 				await store.put(entry.key, replicaDeadlineFor(entry.expiresAt));
 				repaired++;
