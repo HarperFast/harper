@@ -2,12 +2,10 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, __setReadOnlyModeForTest } = require('#src/resources/databases');
+const { Resource } = require('#src/resources/Resource');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
-// harper#474. In read-only mode LMDB attaches no write methods to its stores, so a write used to die
-// with "write.store.ifVersion is not a function"; RocksDB failed with a native 500. Every write
-// surface must instead be refused with a 405 before it reaches the engine. Runs on whichever engine
-// HARPER_STORAGE_ENGINE selects.
+// harper#474. Runs on whichever engine HARPER_STORAGE_ENGINE selects.
 describe('read-only mode rejects writes', () => {
 	let ReadOnlyTable;
 	let NumericTable;
@@ -71,6 +69,15 @@ describe('read-only mode rejects writes', () => {
 		assert.strictEqual(NumericTable.primaryStore.getEntry(Symbol.for('id_allocation')), undefined);
 	});
 
+	it('refuses to hand out an id from a stored range without advancing the counter', async function () {
+		const first = NumericTable.getNewId();
+		__setReadOnlyModeForTest(true);
+		// well past the 512-id threshold at which the incrementer schedules a range expansion
+		for (let i = 0; i < 1000; i++) assert.throws(() => NumericTable.getNewId(), { statusCode: 405 });
+		__setReadOnlyModeForTest(undefined);
+		assert.strictEqual(NumericTable.getNewId(), first + 1);
+	});
+
 	it('refuses to add an attribute, which changes the catalog', async function () {
 		const before = NumericTable.attributes.length;
 		await assertReadOnlyRejection(() => NumericTable.addAttributes([{ name: 'extra', indexed: true }]));
@@ -89,6 +96,20 @@ describe('read-only mode rejects writes', () => {
 		} finally {
 			process.off('unhandledRejection', record);
 		}
+	});
+
+	it('leaves a custom resource that does not touch storage usable', async function () {
+		class Custom extends Resource {
+			put() {
+				return 'put handled';
+			}
+			post() {
+				return 'post handled';
+			}
+		}
+		__setReadOnlyModeForTest(true);
+		assert.strictEqual(await Custom.put('x', { a: 1 }), 'put handled');
+		assert.strictEqual(await Custom.post('x', { a: 1 }), 'post handled');
 	});
 
 	it('still serves reads', async function () {

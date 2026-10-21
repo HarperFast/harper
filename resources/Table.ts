@@ -1709,7 +1709,6 @@ export function makeTable(options): TableResourceClass {
 	}
 	// Table-scoped, not nested in getNewId(): a nested declaration is instantiated on every call.
 	function replaceIdAllocation(expectedAllocation, nextAllocation) {
-		if (isReadOnlyMode()) throw readOnlyModeError();
 		const storedAllocation = primaryStore.transactionSync(
 			(transaction) => {
 				const options = transaction && { transaction };
@@ -2637,6 +2636,7 @@ export function makeTable(options): TableResourceClass {
 			const type = primaryKeyAttribute?.type;
 			// the default Resource behavior is to return a GUID, but for a table we can return incrementing numeric keys if the type is (or can be) numeric
 			if (type === 'String' || type === 'ID') return super.getNewId();
+			if (isReadOnlyMode()) throw readOnlyModeError();
 			if (!idIncrementer) {
 				// if there is no id incrementer yet, we get or create one
 				let idAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY)?.value;

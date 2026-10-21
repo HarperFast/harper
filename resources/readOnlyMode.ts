@@ -16,18 +16,15 @@ export function __setReadOnlyModeForTest(value: boolean | undefined): void {
 
 export function isReadOnlyMode(): boolean {
 	if (_isReadOnlyMode !== undefined) return _isReadOnlyMode;
-	// Check environment variable
 	const envReadOnly = process.env.HARPER_READONLY;
 	if (envReadOnly && envReadOnly !== '0' && envReadOnly !== 'false') {
 		_isReadOnlyMode = true;
 		return true;
 	}
-	// Check CLI flag (simple argv check)
 	if (process.argv.includes('--readonly') || process.argv.includes('--read-only')) {
 		_isReadOnlyMode = true;
 		return true;
 	}
-	// Check config setting
 	if (envGet(CONFIG_PARAMS.STORAGE_READONLY)) {
 		_isReadOnlyMode = true;
 		return true;

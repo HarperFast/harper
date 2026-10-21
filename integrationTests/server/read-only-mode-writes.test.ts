@@ -1,10 +1,7 @@
 /**
- * A read-only server (`storage.readOnly`) refuses every write surface deliberately: HTTP 405 for REST and
- * the operations API, a failed acknowledgment for MQTT (harper#474). LMDB attaches no write methods to a
- * read-only store, so these writes used to die with "write.store.ifVersion is not a function"; RocksDB
- * failed with its native "Not supported operation in read only mode".
- *
- * Runs on whichever engine HARPER_STORAGE_ENGINE selects.
+ * A read-only server (`storage.readOnly`) refuses writes with HTTP 405 over REST and the operations API,
+ * and with a failed acknowledgment over MQTT (harper#474). Runs on whichever engine
+ * HARPER_STORAGE_ENGINE selects.
  *
  *   npm run test:integration -- "integrationTests/server/read-only-mode-writes.test.ts"
  */
@@ -44,7 +41,7 @@ suite('read-only mode rejects writes', { skip: skipSuite }, (ctx: ContextWithHar
 			.set(client.headers)
 			.send({ id: 'seed', body: 'seed' })
 			.expect((r: any) => ok(r.status < 300, `seeding failed: ${r.status} ${r.text}`));
-		// created through the operations API, so the table has no declared schema and takes new attributes on insert
+		// create_table leaves the schema undeclared, so an insert can add attributes
 		await client
 			.req()
 			.send({ operation: 'create_table', database: 'readonlytest', table: 'Dyn', primary_key: 'id' })

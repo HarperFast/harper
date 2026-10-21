@@ -29,8 +29,8 @@ import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 
-// post, publish, copy and move are left to the transaction's write admission: a custom post() is often a
-// non-storage call that a read-only server must still answer
+// Only table-backed classes are refused here: a custom resource's put/post/delete may be a non-storage call that a
+// read-only server must still answer. post, publish, copy and move are left to the transaction's write admission.
 const WRITE_METHODS = new Set(['put', 'patch', 'delete', 'invalidate', 'update']);
 
 function refuseWriteInReadOnlyMode(...args: any[]): Promise<never> {
@@ -694,7 +694,8 @@ function transactional(
 	const writesByDefinition = options.method !== undefined && WRITE_METHODS.has(options.method);
 	return applyContext;
 	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
-		if (writesByDefinition && isReadOnlyMode()) return refuseWriteInReadOnlyMode(idOrQuery, dataOrContext);
+		if (writesByDefinition && isReadOnlyMode() && (this as any).primaryStore)
+			return refuseWriteInReadOnlyMode(idOrQuery, dataOrContext);
 		let id, query, isCollection;
 		let data;
 		// An absent argument, not a context — and not this call's data either.
