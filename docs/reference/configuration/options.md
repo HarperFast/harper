@@ -474,7 +474,7 @@ Setting `configScope` to `rootPath` also exposes the rest of `rootPath`, though 
 
 ### Masked credential values
 
-<VersionBadge version="v5.4.0" />
+<VersionBadge type="changed" version="v5.4.0" />
 
 The config file can hold plaintext credentials: a model `apiKey` passed through `HARPER_SET_CONFIG` is written there. Logs hold whatever a component logged. When the agent reads the `logs` or `config` scope, the value of every credential-named key comes back as `*`s:
 
@@ -487,7 +487,7 @@ models:
 ```
 
 - **Which keys.** A key that ends in `key`, `token`, `cookie`, or `authorization`, or contains `secret`, `password`, `passwd`, `passphrase`, or `credential`, and `accessKeyId` in any spelling. The whole key must match, so settings such as `maxTokens` and `operationTokenTimeout` are shown. A value that is exactly an environment reference, such as `${OPENAI_API_KEY}`, is shown as written.
-- **Which forms.** `key: value` and `key=value`, with the key quoted or not, anywhere in a line: YAML, JSON (including JSON logged inside a JSON string), `Authorization: Bearer ...` headers, and `?api_key=...` query strings. A quoted value is masked up to its closing quote, even on a later line, and an unquoted one to the end of the line. A YAML value that continues on more-indented lines, such as a long folded value or a `|` block, is masked on every line, as are the `- ` items under a key with no value of its own. In the `config` scope each file is also parsed as YAML, so a key written with escapes, such as `"api\u004Bey"`, and a value reached through an alias are masked too. A config file that does not parse shows only its keys, with every value masked, and one over 256 KiB or not UTF-8 is refused.
+- **Which forms.** `key: value` and `key=value`, with the key quoted or not, anywhere in a line: YAML, JSON (including JSON logged inside a JSON string), `Authorization: Bearer ...` headers, and `?api_key=...` query strings. A quoted value is masked up to its closing quote, even on a later line, and an unquoted one to the end of the line. A YAML value that continues on more-indented lines, such as a long folded value or a `|` block, is masked on every line, as are the `- ` items under a key with no value of its own. In the `config` scope each file is also parsed as YAML, so a key written with escapes, such as `"api\u004Bey"`, and a value reached through an alias are masked too. A config file that does not parse shows only its keys, with every value masked. A config file over 256 KiB or not UTF-8 is refused.
 - **Positional reads.** The mask keeps each value in place (in a config file, one `*` per byte), so a `read_file` `offset` into a value, the later parts of a long line, and the end of a line that `tail_file` returns are masked too. `size` and `nextOffset` still count the file's bytes, so a masked value's length is visible; its content is not.
 - **Searches.** `grep_files` searches the masked text, so a pattern that matches only a credential's value finds nothing.
 
