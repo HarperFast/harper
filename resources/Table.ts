@@ -5495,8 +5495,7 @@ export function makeTable(options): TableResourceClass {
 						}
 						residencyId = getResidencyId(residency);
 					}
-					// a caller that catches the refusal must not be able to commit it, even on a retry; a write that
-					// will append nothing replicable has nothing to confirm
+					// a caller that catches the refusal must not be able to commit it, even on a retry
 					if (
 						residencyId &&
 						committedBy?.replicatedConfirmation &&

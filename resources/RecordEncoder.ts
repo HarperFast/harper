@@ -1047,9 +1047,6 @@ export function recordUpdater(store, tableId, auditStore) {
 				}
 			}
 			if (audit) {
-				const write = options?.write;
-				if (write && write.stagedAudit !== 'replicable')
-					write.stagedAudit = extendedType & LOCAL_ONLY ? 'local' : 'replicable';
 				const username = typeof options?.user === 'string' ? options.user : options?.user?.username;
 				if (auditRecord) {
 					// The audit encodedRecord is durable record state too (it is the transaction log and the
@@ -1107,6 +1104,7 @@ export function recordUpdater(store, tableId, auditStore) {
 							},
 							{ ifVersion: ifVersion, transaction: options.transaction, nodeId, viaNodeId }
 						);
+						noteStagedAudit(options?.write, extendedType);
 						return result;
 					}
 				}
@@ -1139,6 +1137,7 @@ export function recordUpdater(store, tableId, auditStore) {
 						viaNodeId,
 					}
 				);
+				noteStagedAudit(options?.write, extendedType);
 			}
 			if (options?.tableToTrack && TRACKED_WRITE_TYPES.has(type)) {
 				recordAction(lastValueEncoding?.length ?? 1, 'db-write', options.tableToTrack, null);
@@ -1159,6 +1158,10 @@ export function recordUpdater(store, tableId, auditStore) {
 			clearNextEncoding();
 		}
 	};
+}
+function noteStagedAudit(write: any, extendedType: number) {
+	if (write && write.stagedAudit !== 'replicable')
+		write.stagedAudit = extendedType & LOCAL_ONLY ? 'local' : 'replicable';
 }
 export function setAdditionalAuditRefs(refs: Array<{ version: number; nodeId: number }> | undefined) {
 	additionalAuditRefsNextEncoding = refs;
