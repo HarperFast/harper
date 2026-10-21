@@ -313,7 +313,8 @@ storage:
 
 - `engine` — The database storage engine to use for new databases. Currently supported engines are `rocksdb` and `lmdb`. The default is `rocksdb`. Existing databases will use the engine that was used when they were created.
 - `fullText` <VersionBadge version="v5.4.0" /> — Full-text search work and native process limits. Sub-options:
-  - `maxRawHitsPerRequest` — Maximum fetched hits per request, including replay when switching to native traversal; default `10000`.
+  - `maxRawHitsPerRequest` — Maximum fetched hits per request; default `10000`.
+  - `maxResultsPerRequest` — Maximum retained offset plus limit, independent of fetched-hit work; default `10000`.
   - `requestBudgetMilliseconds` — Execution budget across native batches, source checks and highlights, capped by the native execution limit; default `5000` ms. Reader acquisition and freshness waiting have separate bounds.
   - `runtime.maxResidentIndexes` — Maximum resident native indexes; default `128`.
   - `runtime.maxIndexingThreads` — Maximum native indexing threads; default `128`.

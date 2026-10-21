@@ -18,7 +18,7 @@ For the full list of configurable options, see [Configuration Options](./options
 
 Modifies one or more Harper configuration parameters. **Most changes require a [restart](../operations-api/operations.md#restart) or [restart_service](../operations-api/operations.md#restart_service) to take effect** (a [restart](../operations-api/operations.md#restart) for `threads.v8Flags`). A change to `replication.threads` takes effect only on a full `restart`.
 
-Full-text request work limits (`storage.fullText.maxRawHitsPerRequest` and `storage.fullText.requestBudgetMilliseconds`) apply to new searches without a restart. Changes to `storage.fullText.runtime` require a full Harper process restart; `restart_service` does not replace the native process budget. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging).
+Full-text request work limits (`storage.fullText.maxRawHitsPerRequest`, `storage.fullText.maxResultsPerRequest` and `storage.fullText.requestBudgetMilliseconds`) apply to new searches without a restart. Changes to `storage.fullText.runtime` require a full Harper process restart; `restart_service` does not replace the native process budget. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging).
 
 `operation` _(required)_ — must be `set_configuration`
 
