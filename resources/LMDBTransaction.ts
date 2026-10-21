@@ -254,6 +254,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 			} finally {
 				closeWriteInstance(write);
 			}
+			if (write.skipped) write.stagedAudit = undefined;
 			if (typeof completion?.then === 'function') {
 				// the aggregating Promise.all is attached a turn or more later (after the conditional batch
 				// or the exclusive transaction resolves), so handle rejection here to keep the gap from

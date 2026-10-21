@@ -705,7 +705,8 @@ export type TransactionWrite = {
 	// the audit entry recordUpdater appended for this write in its current staging (handlers pass the
 	// write as its `write` option): 'none' until it appends, 'local' for a LOCAL_ONLY entry, which the
 	// sender never replicates. Reset per fresh staging: a runtime enableAuditing() changes the answer
-	// for a restaged write. Unset when no staging has run.
+	// for a restaged write. Unset when no staging has run, or the last fresh one was skipped (it lost to
+	// a newer entry and confirms on that entry, harper#3182).
 	stagedAudit?: 'none' | 'local' | 'replicable';
 	// the transaction holding this write in its `writes` (set in addWrite). A deferred write's save() is
 	// only its trigger, so it can be triggered after the context has moved on to another transaction;
@@ -764,12 +765,9 @@ export type TransactionWrite = {
 };
 
 // read when confirmation is decided rather than when the handler returns, so an append after an awaited
-// dependency still counts; a skipped write confirms on the entry that beat it
+// dependency still counts
 function confirmsNothing(write: TransactionWrite): boolean {
-	return (
-		write.skipReplicationConfirmation ||
-		(!write.skipped && (write.stagedAudit === 'none' || write.stagedAudit === 'local'))
-	);
+	return write.skipReplicationConfirmation || write.stagedAudit === 'none' || write.stagedAudit === 'local';
 }
 
 export function closeWriteInstance(operation: TransactionWrite | null | undefined): void {
@@ -2357,11 +2355,14 @@ export class DatabaseTransaction implements Transaction {
 		// skip the log write, so they never set it. The retry dedup guards in the commit handler key
 		// off this: a launderable proxy (like last attempt's skipped state) breaks under multi-round
 		// retries where a recommit round self-skips before a fresh-transaction replay.
-		if (!operation.skipped && operation.stagedAudit !== 'none' && !(transaction as RocksTransactionWithRetry).isRetry) {
-			operation.appendedAuditEntry = true;
-			// unlike the sticky flag, names the handle (an iterator replay discards the original's batch);
-			// recorded whether or not confirmation is requested yet, since it can be requested later
-			operation.appendedTo = transaction;
+		if (!(transaction as RocksTransactionWithRetry).isRetry) {
+			if (operation.skipped) operation.stagedAudit = undefined;
+			else if (operation.stagedAudit !== 'none') {
+				operation.appendedAuditEntry = true;
+				// unlike the sticky flag, names the handle (an iterator replay discards the original's batch);
+				// recorded whether or not confirmation is requested yet, since it can be requested later
+				operation.appendedTo = transaction;
+			}
 		}
 		if (immediateCommit) {
 			// immediately commit if the harper transaction is closed
