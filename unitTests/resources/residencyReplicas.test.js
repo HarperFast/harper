@@ -185,11 +185,12 @@ describe('Local replicas of residency stubs', function () {
 	});
 
 	it('reloads an expired replica from a resident instead of hiding it', async () => {
-		Records.setTTLExpiration({ replicaExpiration: 0.001 });
+		// a lifetime the sweep cannot reach before maintenance is paused, then let it pass
+		Records.setTTLExpiration({ replicaExpiration: 0.2 });
 		await replica();
 		await Records.closeMaintenance();
 		try {
-			await new Promise((resolve) => setTimeout(resolve, 5));
+			await new Promise((resolve) => setTimeout(resolve, 250));
 			const expired = Records.primaryStore.getEntry(ID);
 			assert.ok(expired.metadataFlags & REPLICA && expired.expiresAt < Date.now(), 'an expired replica still held');
 			calls = [];
@@ -464,7 +465,7 @@ describe('Local replicas of residency stubs', function () {
 	});
 
 	it('re-arms the sweep after replicas are disabled and enabled again', async () => {
-		Records.setTTLExpiration({ replicaExpiration: 0.001 });
+		Records.setTTLExpiration({ replicaExpiration: 0.2 });
 		await replica();
 		await Records.closeMaintenance();
 		Records.setTTLExpiration({ expiration: 0, eviction: 0, replicaExpiration: 0 });
