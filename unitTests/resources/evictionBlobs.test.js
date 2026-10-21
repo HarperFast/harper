@@ -151,4 +151,19 @@ describe('evict() leaves a renewed record and its blobs intact', function () {
 		assert.equal(Atomics.load(holdState, slot + REREFERENCED), 1, 'the refilled record keeps its blob file');
 		assert.ok(existsSync(filePath));
 	});
+
+	it('removes the index keys of the record it removes when a resequenced write reused the version', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip(); // only RocksDB resequences under a reused version
+		await UnauditedBlobs.put({ id: 'resequenced', tag: 'read' });
+		const { version: baseVersion } = UnauditedBlobs.primaryStore.getEntry('resequenced');
+		await UnauditedBlobs.patch('resequenced', { blob: null }, { timestamp: baseVersion + 100 });
+		const read = UnauditedBlobs.primaryStore.getEntry('resequenced');
+		await UnauditedBlobs.patch('resequenced', { tag: 'merged' }, { timestamp: baseVersion + 50 });
+		const merged = UnauditedBlobs.primaryStore.getEntry('resequenced');
+		assert.equal(merged.version, read.version, 'precondition: the resequenced write kept the version the caller read');
+		assert.equal(merged.value.tag, 'merged');
+
+		await UnauditedBlobs.evict('resequenced', read.value, read.version);
+		assert.equal(UnauditedBlobs.indices.tag.getValuesCount('merged'), 0, 'no index entry may outlive its record');
+	});
 });
