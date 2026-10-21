@@ -403,3 +403,9 @@ storage:
 - [Compaction](./compaction.md) — reclaiming space inside existing database files
 - [Resource API — `sourcedFrom`](../resources/resource-api.md#sourcedfromresource-options) — caching tables that interact with reclamation
 - [Database API — `createBlob`](./api.md) — creating blobs that live under `blobPaths`
+
+### `storage.fullText`
+
+Type: `object`
+
+The [storage option reference](../configuration/options.md#storage) lists the full-text request and native process defaults. Raise the fetched-hit budget to allow more filtering work; raising it does not raise the separate retained-result limit. Larger limits can increase CPU, source reads and memory use for every permitted query. Native process budgets also share capacity across indexes, so tune them with concurrent workloads rather than a single query. See [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for paging costs, restart requirements and failure recovery.
