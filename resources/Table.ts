@@ -2956,7 +2956,7 @@ export function makeTable(options): TableResourceClass {
 				if (replicaExpirationMs) {
 					replicaEvictionArmed = false;
 					armReplicaEviction();
-				} else standDownReplicaSweep();
+				} else standDownReplicaSweep(false);
 			}
 			// Re-evaluate an existing table-level scan after an ownership-only declaration, but do not
 			// create the default daily cleanup timer for a table that has only an @expiresAt field.
@@ -10450,14 +10450,14 @@ export function makeTable(options): TableResourceClass {
 									await Promise.all(outstandingCleanupOperations.filter(Boolean));
 									if (batcher) await batcher.drain();
 									logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
-									// the next replica stored on any thread wakes the sweep again
 									if (
 										replicaEvictionArmed &&
 										completePass &&
 										replicasSeen === 0 &&
 										Atomics.load(sweepState, 0) === admissionsAtStart
 									) {
-										standDownReplicaSweep();
+										// awaiters past this pass's snapshot are owed a pass of their own
+										standDownReplicaSweep(pendingCleanupResolvers.size > settling.length);
 										// a store that landed after the check above saw the flag still set and sent no wake
 										if (Atomics.load(sweepState, 0) !== admissionsAtStart) armReplicaEviction();
 									}
@@ -10800,13 +10800,14 @@ export function makeTable(options): TableResourceClass {
 			armingReplicaSweep = false;
 		}
 	}
-	function standDownReplicaSweep() {
+	function standDownReplicaSweep(awaited: boolean) {
 		if (!replicaEvictionArmed) return;
 		replicaEvictionArmed = false;
 		if (ownsCleanup()) Atomics.store(replicaSweep(), 1, 0);
-		cleanupInterval = expirationScanScheduled || evictionMs ? recordCleanupInterval : replicaBaseline.interval;
-		if (expirationScanScheduled || evictionMs || replicaBaseline.scheduled || pendingCleanupResolvers.size > 0)
-			return void scheduleCleanup();
+		const { interval, scheduled } = replicaBaseline;
+		replicaBaseline = undefined;
+		cleanupInterval = expirationScanScheduled || evictionMs ? recordCleanupInterval : interval;
+		if (expirationScanScheduled || evictionMs || scheduled || awaited) return void scheduleCleanup();
 		// back to a table with no timer: the next delete or TTL call schedules one at this interval
 		if (cleanupTimer) clearTimeout(cleanupTimer);
 		cleanupTimer = undefined;

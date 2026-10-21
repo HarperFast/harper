@@ -465,6 +465,31 @@ describe('Local replicas of residency stubs', function () {
 		assert.deepEqual(calls, [ID], 'a refresh is a local write');
 	});
 
+	it('keeps the blob file of a replica whose lifetime was refreshed', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		Records.setTTLExpiration({ replicaExpiration: 2 });
+		const file = createBlob(randomBytes(25000));
+		response = { ...response, value: { id: ID, name: 'indexed', body: 'complete', file } };
+		const entry = await replica();
+		const filePath = getFilePathForBlob(entry.value.file);
+		assert.ok(existsSync(filePath));
+		setDeletionDelay(0);
+		try {
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			assert.equal((await Records.get(ID)).body, 'complete');
+			const refreshed = await waitFor(() => {
+				const current = Records.primaryStore.getEntry(ID);
+				return current.expiresAt > entry.expiresAt ? current : undefined;
+			}, 'the read hit to extend the replica lifetime');
+			assert.ok(refreshed.metadataFlags & HAS_BLOBS);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.ok(existsSync(filePath), 'the refresh released the body’s own blob file');
+			assert.equal((await (await Records.get(ID)).file.arrayBuffer()).byteLength, 25000);
+		} finally {
+			setDeletionDelay(undefined);
+		}
+	});
+
 	it('never slides on LMDB', async function () {
 		if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') return this.skip();
 		Records.setTTLExpiration({ replicaExpiration: 2 });
