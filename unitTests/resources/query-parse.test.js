@@ -241,6 +241,24 @@ describe('Parsing queries', () => {
 		const query = parseQuery('(a=in=(x,y))');
 		assert.deepEqual(query.conditions[0].conditions[0].value, ['x', 'y']);
 	});
+	it('A condition pending at the end of the string is kept', function () {
+		const single = parseQuery('a=eq=');
+		assert.deepEqual(
+			single.conditions.map(({ attribute, value }) => [attribute, value]),
+			[['a', '']]
+		);
+		assert.equal(parseQuery('b=B&a=eq=').conditions.length, 2);
+		const chained = parseQuery('price=ge=10&=le=');
+		assert.equal(chained.conditions[0].chainedConditions.length, 1);
+		assert.equal(chained.conditions[0].chainedConditions[0].comparator, 'le');
+	});
+	it('Grouping and comparisons are rejected where they cannot apply', function () {
+		assert.throws(() => parseQuery('(a=eq=(b=1))'), /unexpected '\(' in a value/);
+		assert.throws(() => parseQuery('a=eq=[b=1]'), /unexpected '\[' in a value/);
+		assert.throws(() => parseQuery('select(a=1,b)'), /not allowed in a property list/);
+		assert.throws(() => parseQuery('select(a<1)'), /not allowed in a property list/);
+		assert.equal(parseQuery('(note=eq=select(id))').conditions[0].conditions[0].value, 'select(id)');
+	});
 	it('Single-argument select forms', function () {
 		assert.equal(parseQuery('select(name)').select, 'name');
 		assert.deepEqual(parseQuery('select(name,)').select, ['name']);
