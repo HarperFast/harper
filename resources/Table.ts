@@ -1456,8 +1456,6 @@ export function makeTable(options): TableResourceClass {
 	let replicaDeadlinesRepaired = false;
 	const replicaRefreshCheckedAt = new Map<Id, number>();
 	const replicaRefreshCheckedAtComposite = new Map<string, number>();
-	// a cached entry object is checked once per throttle without encoding its key
-	const replicaRefreshCheckedEntries = new WeakMap<object, number>();
 	let replicaEvictionArmed = false;
 	let replicaTableKnown = false;
 	// shared across this node's threads: [0] replica admissions, [1] whether the owner's sweep is armed;
@@ -10655,8 +10653,6 @@ export function makeTable(options): TableResourceClass {
 		if (replicaRefreshFraction >= 1 || !replicaExpirationMs || !sourceLoad) return;
 		const now = Date.now();
 		const throttle = Math.min(replicaRefreshFraction, 1 - replicaRefreshFraction) * replicaExpirationMs;
-		const entryChecked = replicaRefreshCheckedEntries.get(entry);
-		if (entryChecked !== undefined && now - entryChecked < throttle) return;
 		const key = entry.key;
 		// a primitive id is its own throttle key; a composite id is encoded, in maps of its own so an
 		// encoded form can never collide with a string id
@@ -10665,10 +10661,7 @@ export function makeTable(options): TableResourceClass {
 		const checkedAt = composite ? replicaRefreshCheckedAtComposite : replicaRefreshCheckedAt;
 		const inFlight = composite ? replicaRefreshInFlightComposite : replicaRefreshInFlight;
 		const checked = checkedAt.get(keyId as any);
-		if (checked !== undefined && now - checked < throttle) {
-			replicaRefreshCheckedEntries.set(entry, checked);
-			return;
-		}
+		if (checked !== undefined && now - checked < throttle) return;
 		if (
 			replicaRefreshInFlight.size + replicaRefreshInFlightComposite.size >= MAX_REPLICA_REFRESHES_IN_FLIGHT ||
 			inFlight.has(keyId as any)
@@ -10679,7 +10672,6 @@ export function makeTable(options): TableResourceClass {
 			if (checkedAt.size >= MAX_REPLICA_REFRESH_THROTTLE_KEYS) checkedAt.clear();
 		}
 		checkedAt.set(keyId as any, now);
-		replicaRefreshCheckedEntries.set(entry, now);
 		inFlight.add(keyId as any);
 		let pending: Promise<boolean>;
 		try {
@@ -10868,6 +10860,7 @@ export function makeTable(options): TableResourceClass {
 	 */
 	async function runReplicaSweep() {
 		if (disposed || maintenanceClosed || !replicaEvictionArmed || replicaSweepRunning) return;
+		if (isReadOnlyMode()) return scheduleReplicaSweep();
 		replicaSweepRunning = true;
 		const state = replicaSweep();
 		const admissionsAtStart = Atomics.load(state, 0);
