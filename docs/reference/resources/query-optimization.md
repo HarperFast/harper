@@ -115,7 +115,7 @@ Full-text indexes require audit logging; a table declared with `@table(audit: fa
 | Index readiness or coverage                        | 503         | `INDEX_REBUILDING` or `DERIVED_INDEX_LAGGING`, with `retryable: true`.                                   |
 | Worker loaded native search before runtime capture | 500         | `FullTextWorkerInitializationError`, with `retryable: false`; recreate that worker after initialization. |
 
-A native result that cannot fit even a single-hit response returns 413. Other native failures and invalid query configuration can return 500; inspect the error and server logs rather than assuming they are retryable. The table lists common failures, not every possible error.
+A native result that exceeds the response-byte envelope can return 413, including an oversized ordinary batch even when each individual hit would fit. Other native failures and invalid query configuration can return 500; inspect the error and server logs rather than assuming they are retryable. The table lists common failures, not every possible error.
 
 For read-after-write queries, `maxIndexLagMilliseconds: 0` requires current coverage. `waitForIndexMilliseconds` lets a query wait for coverage (default `0`, maximum `30000` ms); without an override, the allowed index lag is `3000` ms. These options belong to the full-text condition.
 

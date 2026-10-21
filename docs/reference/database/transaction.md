@@ -204,7 +204,7 @@ type Dog @table(audit: true) {
 }
 ```
 
-This overrides the [`logging.auditLog`](../logging/configuration.md) global configuration for that specific table.
+This overrides the [`logging.auditLog`](../logging/configuration.md) global configuration for that specific table. Keep auditing enabled for tables with full-text indexes: disabling it prevents full-text index registration.
 
 ## Related Documentation
 
