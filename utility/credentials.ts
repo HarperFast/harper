@@ -33,11 +33,9 @@ export interface MaskOptions {
 export const MAX_CREDENTIAL_FILE_BYTES = 256 * 1024;
 
 /**
- * `file` with every credential value masked byte for byte, line breaks and indentation kept, so offsets into
- * the result are offsets into the file. A file is parsed as YAML, which finds the keys a text scan cannot (an
- * escaped key, an anchor a credential key aliases), and also scanned as text, which finds `KEY=value` lines a
- * YAML parse reads as one string. A file that does not parse cleanly keeps only its keys: every value, item
- * and comment is masked. Undefined when the bytes are not UTF-8, so offsets cannot be mapped.
+ * `file` masked byte for byte, line breaks and indentation kept, so its offsets are the file's: the values
+ * of the keys a YAML parse resolves as credentials, plus what the text scan masks. A file that does not
+ * parse keeps only its keys. Undefined when the bytes are not UTF-8.
  */
 export function maskCredentialFile(file: Buffer): Buffer | undefined {
 	const text = file.toString('utf8');
@@ -70,7 +68,6 @@ function yamlCredentialRanges(text: string): Array<[number, number]> | undefined
 		for (const document of parseAllDocuments(text, { logLevel: 'silent' })) {
 			if (document.errors.length > 0) return undefined;
 			const collected = new Set<Node>();
-			// A credential's value, and the content of every anchor an alias inside it reaches.
 			const collect = (node: Node | null | undefined): void => {
 				const target = isAlias(node) ? node.resolve(document) : node;
 				if (!target || collected.has(target)) return;
@@ -81,7 +78,8 @@ function yamlCredentialRanges(text: string): Array<[number, number]> | undefined
 			};
 			visit(document, {
 				Pair(_, pair) {
-					const key = isScalar(pair.key) ? pair.key.value : undefined;
+					const keyNode = isAlias(pair.key) ? pair.key.resolve(document) : pair.key;
+					const key = isScalar(keyNode) ? keyNode.value : undefined;
 					if (typeof key !== 'string' || !CREDENTIAL_KEY.test(key) || !isNode(pair.value)) return;
 					collect(pair.value);
 					return visit.SKIP;

@@ -219,7 +219,7 @@ interface Window {
 
 /**
  * Up to `budget` bytes from `start`, and the look-back the key-material and credential checks judge them by,
- * in one read so a file changed in place cannot give the two different contents.
+ * taken by the same read.
  */
 async function readWindow(reader: Reader, size: number, start: number, budget: number): Promise<Window> {
 	const from = Math.max(0, start - KEY_LOOKBACK_BYTES);

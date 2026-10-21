@@ -232,6 +232,10 @@ describe('utility/credentials', () => {
 			);
 		});
 
+		it('masks the value of a key written as an alias of a credential name', () => {
+			assert.equal(maskedFile('x: &n apiKey\n*n : sk-live\n'), 'x: &n apiKey\n*n : *******\n');
+		});
+
 		it('keeps only keys in a file that does not parse, never reading `KEY=value # a: b` as a key', () => {
 			const line = 'OPENAI_API_KEY=sk-x # todo: rotate';
 			assert.equal(maskedFile(`a: [1\n${line}\nmodel: m\n`), `a: **\n${'*'.repeat(line.length)}\nmodel: *\n`);
