@@ -29,7 +29,7 @@ The supported analyzer is `english@2`. `stopWords`, `positions`, and `surfaceTer
 From an authenticated Resource handler, request table permission checks and pass its context through to `Product.search()`:
 
 ```javascript
-return Product.search(
+return tables.Product.search(
 	{
 		checkPermission: true,
 		conditions: [
@@ -99,7 +99,7 @@ Earlier beta declarations and indexes are unsupported. This field-only API does 
 Full-text search uses Harper's usual `limit` and `offset` options. `Table.search()` returns an iterable, including when a custom Resource forwards or filters it.
 
 ```javascript
-return Product.search(
+return tables.Product.search(
 	{
 		checkPermission: true,
 		conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'trail shoes' }],
@@ -148,6 +148,6 @@ These limits apply together. For example, two indexing threads and 64 MiB of wri
 
 Harper captures native runtime budgets before loading application components, or on an earlier main-thread native load or managed worker spawn. Application-created workers inherit that configuration. A worker created before capture fails with `FullTextWorkerInitializationError` (500, non-retryable); recreate it after Harper initializes. Replacement workers keep the established budgets after a live configuration change. Restart the Harper process to apply new native runtime budgets; restarting only HTTP workers is insufficient.
 
-Harper does not configure the library's native filter metadata or submit native filter or candidate-ID requests. Ordinary conditions continue through Harper's secondary-index gates and authoritative record predicates. Native page, response-byte and highlight limits still apply. Query terms and clauses remain limited by the installed library.
+Harper does not configure the library's native filter metadata or submit native filter or candidate-ID requests. Ordinary conditions continue through Harper's secondary-index gates and authoritative record predicates. Native page, response-byte and highlight limits still apply. Fulltext 0.6.0 also limits each analyzed query leaf to 64 terms and the compiled query to 256 clauses. Raising Harper's work budgets does not raise those limits. See the [published library limits](https://github.com/HarperFast/fulltext/blob/v0.6.0/docs/limits.md) for the full list and recovery guidance. Configuration of those query limits is tracked in [Make query term and clause limits configurable with bounded resource policy](https://github.com/HarperFast/fulltext/issues/63).
 
 For implementation details, see the [full-text invariants in the Resource design guide](DESIGN.md#full-text-declarations-and-reader-snapshots). The schema contract lives in [schema.graphql](../schema.graphql); compiler and generation rules live in [fullTextSchema.ts](fullTextSchema.ts).
